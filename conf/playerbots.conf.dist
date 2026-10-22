@@ -1311,10 +1311,26 @@ Playerbots.BotActiveAloneForceWhenInGuild = 1
 # They log a character of the account below in through a server-side session without a client and without bot AI,
 # so the bots count it as a real player (the force-active rules above apply), and walk it along a named route in a
 # loop (stormwind-loop, elwynn-questing). A missing character is created (human warrior). The account must exist
-# and must not be a random-bot account.
+# and must not be a random-bot account. The test player does not count as a real player for
+# DisabledWithoutRealPlayer = 1 (it is not registered with the session manager); leave that option at 0 for tests.
 #
 Playerbots.TestPlayer.Enable = 0
 Playerbots.TestPlayer.Account = "WBTEST"
+
+# World census (1 = on, 0 = off)
+# Every IntervalSeconds (5..3600) one CSV line per online bot (type RND) and per real player or test player (type
+# PLR) is written to <LogsDir>/census/bot_locations.csv, and one line per bot level-up to
+# <LogsDir>/census/bot_events.csv. Both files are truncated when the server starts and have no header line. The world
+# thread only formats the lines; a writer thread owns the files. Cost: O(online players) once per interval.
+# bot_locations.csv columns (the layout of spp-map's player_location.csv, three columns appended):
+#   time (UTC), RND|PLR, name, "POINT(y x)" (the game's y first), orientation, race, class, map, level, health,
+#   power %, money, grouper type, guilder type, allowActivity (active|inactive), in world (active|delay),
+#   combat (combat|non-combat), safe (always n/a), alive (alive|dead), zoneId, areaId, inCombat (1|0)
+# bot_events.csv columns: time, name, LevelUp, "POINT(y x)", race, class, level, "old level", "new level"
+# The hub tool tools/liveliness.js turns bot_locations.csv into a report.
+#
+Playerbots.Census.Enable = 0
+Playerbots.Census.IntervalSeconds = 30
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

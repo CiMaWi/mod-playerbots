@@ -29,6 +29,7 @@
 #include "ScriptMgr.h"
 #include "ServerScript.h"
 #include "SessionScript.h"
+#include "CensusMgr.h"
 #include "TestPlayer.h"
 #include "WorldScript.h"
 #include "cmath"
@@ -548,6 +549,7 @@ public:
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none
+        CensusMgr::Instance().Update(diff);  // Opt-in world census; returns at once when off
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
     }
@@ -556,6 +558,7 @@ public:
     void OnShutdown() override
     {
         TestPlayerMgr::Instance().Shutdown();
+        CensusMgr::Instance().Shutdown();
         LOG_INFO("playerbots", "Logging out all bots...");
         sRandomPlayerbotMgr.LogoutAllBots();
         PlayerbotHolder::ClearPendingLogins();
@@ -619,6 +622,7 @@ void AddSC_HyjalBotScripts();
 void AddSC_IcecrownBotScripts();
 void AddSC_RubySanctumBotScripts();
 void AddSC_randombot_level_mgr();
+void AddSC_census();
 
 void AddPlayerbotsScripts()
 {
@@ -643,4 +647,5 @@ void AddPlayerbotsScripts()
     AddSC_IcecrownBotScripts();
     AddSC_RubySanctumBotScripts();
     AddSC_randombot_level_mgr();
+    AddSC_census();
 }

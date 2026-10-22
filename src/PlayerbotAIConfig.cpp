@@ -692,6 +692,9 @@ bool PlayerbotAIConfig::Initialize()
     BotActiveAloneForceWhenInGuild = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInGuild", 1);
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
+    CensusEnable = sConfigMgr->GetOption<bool>("Playerbots.Census.Enable", false);
+    CensusIntervalSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Census.IntervalSeconds", 30), 5, 3600);
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);
