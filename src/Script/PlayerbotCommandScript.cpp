@@ -9,6 +9,7 @@
 #include "GuildTaskMgr.h"
 #include "PerfMonitor.h"
 #include "PlayerbotMgr.h"
+#include "PvpTest.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "TestPlayer.h"
@@ -40,6 +41,12 @@ public:
             {"status", TestPlayerMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsPvpTestCommandTable = {
+            {"arena", PvpTestMgr::HandleArenaCommand, SEC_GAMEMASTER, Console::Yes},
+            {"status", PvpTestMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stop", PvpTestMgr::HandleStopCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -48,6 +55,7 @@ public:
             {"debug", playerbotsDebugCommandTable},
             {"account", playerbotsAccountCommandTable},
             {"testplayer", playerbotsTestPlayerCommandTable},
+            {"pvptest", playerbotsPvpTestCommandTable},
         };
 
         static ChatCommandTable commandTable = {

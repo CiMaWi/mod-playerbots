@@ -1317,6 +1317,23 @@ Playerbots.BotActiveAloneForceWhenInGuild = 1
 Playerbots.TestPlayer.Enable = 0
 Playerbots.TestPlayer.Account = "WBTEST"
 
+# PvP test harness (for unattended tests; 1 = on, 0 = off)
+# Enables the GM/console commands
+#   .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] [seed=<n>]
+#   .playerbots pvptest status
+#   .playerbots pvptest stop
+# "arena" forces one 2v2 arena match between two random-bot sides, each a 2v2 arena team name (quoted if it has
+# spaces) or two bot names. All four bots must be at the maximum level. Offline bots are logged in, taken out of
+# their groups and BG queues, put into one group per side and invited straight into a new arena (no queue wait).
+# The match is unrated unless rated=1 (needs two arena teams). The map is drawn from the seed unless map= names it.
+# The command returns at once; the result ("PVPTEST ... Winner: ...") goes to the playerbots log, to the issuing
+# player and to "status". Afterwards the bots leave the arena, the two groups are disbanded and the bots' strategies
+# are reset; bots the harness logged in stay online. One job at a time.
+# TimeoutSeconds (60..3600): a match without a winner by then is ended as a draw.
+#
+Playerbots.PvpTest.Enable = 0
+Playerbots.PvpTest.TimeoutSeconds = 900
+
 # World census (1 = on, 0 = off)
 # Every IntervalSeconds (5..3600) one CSV line per online bot (type RND) and per real player or test player (type
 # PLR) is written to <LogsDir>/census/bot_locations.csv, and one line per bot level-up to

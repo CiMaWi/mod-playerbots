@@ -692,6 +692,9 @@ bool PlayerbotAIConfig::Initialize()
     BotActiveAloneForceWhenInGuild = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInGuild", 1);
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
+    PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
+    PvpTestTimeoutSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpTest.TimeoutSeconds", 900), 60, 3600);
     CensusEnable = sConfigMgr->GetOption<bool>("Playerbots.Census.Enable", false);
     CensusIntervalSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Census.IntervalSeconds", 30), 5, 3600);

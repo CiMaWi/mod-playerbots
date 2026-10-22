@@ -25,6 +25,7 @@
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "PvpTest.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "ServerScript.h"
@@ -550,6 +551,7 @@ public:
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none
         CensusMgr::Instance().Update(diff);  // Opt-in world census; returns at once when off
+        PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
     }
@@ -559,6 +561,7 @@ public:
     {
         TestPlayerMgr::Instance().Shutdown();
         CensusMgr::Instance().Shutdown();
+        PvpTestMgr::Instance().Shutdown();
         LOG_INFO("playerbots", "Logging out all bots...");
         sRandomPlayerbotMgr.LogoutAllBots();
         PlayerbotHolder::ClearPendingLogins();

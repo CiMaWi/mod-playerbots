@@ -370,6 +370,8 @@ public:
     bool BotActiveAloneForceWhenInGuild;
     bool TestPlayerEnable;
     std::string TestPlayerAccount;
+    bool PvpTestEnable;
+    uint32 PvpTestTimeoutSeconds;
     bool CensusEnable;
     uint32 CensusIntervalSeconds;
     bool BotActiveAloneSmartScale;
