@@ -67,6 +67,7 @@ public:
     void OnDamage(Unit* attacker, Unit* victim, uint32 damage);
     void OnHeal(Unit* healer, Unit* receiver, uint32 gain);
     void OnKill(Player* killer, Player* killed);
+    void OnUnitDeath(Unit* victim, Unit* killer);
     void OnDuelEnd(Player* winner, Player* loser, uint32 type);
 
 private:
@@ -74,6 +75,7 @@ private:
 
     size_t FindSlot(uint64 rawGuid) const;
     bool SameSide(size_t first, size_t second) const;
+    void CountKill(uint64 killerGuid, uint64 killedGuid);
 
     std::atomic<bool> _active{false};
     std::atomic<size_t> _sideASize{0};
@@ -178,6 +180,7 @@ private:
     uint32 _challengeMs = 0;
     bool _statsBegun = false;
     bool _duelSeen = false;
+    bool _duelStarted = false;
     bool _acceptSent = false;
     PvpTestResult _result;
     PvpTestMatchRecord _record;

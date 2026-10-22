@@ -141,7 +141,7 @@ class PvpTestFightUnitScript : public UnitScript
 {
 public:
     PvpTestFightUnitScript()
-        : UnitScript("PvpTestFightUnitScript", true, {UNITHOOK_ON_DAMAGE, UNITHOOK_ON_HEAL}),
+        : UnitScript("PvpTestFightUnitScript", true, {UNITHOOK_ON_DAMAGE, UNITHOOK_ON_HEAL, UNITHOOK_ON_UNIT_DEATH}),
           _stats(PvpTestFightStats::Instance())
     {
     }
@@ -149,6 +149,9 @@ public:
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override { _stats.OnDamage(attacker, victim, damage); }
 
     void OnHeal(Unit* healer, Unit* receiver, uint32& gain) override { _stats.OnHeal(healer, receiver, gain); }
+
+    // PlayerScript::OnPlayerPVPKill fires for player killers only; this one sees pets and ghouls
+    void OnUnitDeath(Unit* unit, Unit* killer) override { _stats.OnUnitDeath(unit, killer); }
 
 private:
     PvpTestFightStats& _stats;
@@ -308,8 +311,26 @@ void PvpTestFightStats::OnKill(Player* killer, Player* killed)
     if (!_active.load(std::memory_order_relaxed) || !killer || !killed)
         return;
 
-    size_t const from = FindSlot(killer->GetGUID().GetRawValue());
-    size_t const to = FindSlot(killed->GetGUID().GetRawValue());
+    CountKill(killer->GetGUID().GetRawValue(), killed->GetGUID().GetRawValue());
+}
+
+// A pet, ghoul or other guardian that kills a member counts for its owner (O(1): one owner lookup)
+void PvpTestFightStats::OnUnitDeath(Unit* victim, Unit* killer)
+{
+    if (!_active.load(std::memory_order_relaxed) || !victim || !killer || killer->IsPlayer() || !victim->IsPlayer())
+        return;
+
+    Unit* owner = killer->GetCharmerOrOwnerOrSelf();
+    if (owner == killer || !owner->IsPlayer())
+        return;
+
+    CountKill(owner->GetGUID().GetRawValue(), victim->GetGUID().GetRawValue());
+}
+
+void PvpTestFightStats::CountKill(uint64 killerGuid, uint64 killedGuid)
+{
+    size_t const from = FindSlot(killerGuid);
+    size_t const to = FindSlot(killedGuid);
     if (from == NoSlot || to == NoSlot || SameSide(from, to))
         return;
 
@@ -655,6 +676,14 @@ void PvpTestFightJob::SaveOriginsAndTeleport()
         origin.X = player->GetPositionX();
         origin.Y = player->GetPositionY();
         origin.Z = player->GetPositionZ();
+        if (player->IsFlying() || player->IsFalling())
+        {
+            // Mounted in the air: remember the ground below, so the bot does not fall when it is sent back
+            float const ground = player->GetMapHeight(origin.X, origin.Y, origin.Z);
+            if (ground > INVALID_HEIGHT)
+                origin.Z = ground + SpawnHeight;
+        }
+
         origin.O = player->GetOrientation();
         origin.Pvp = player->IsPvP();
         LOG_INFO("playerbots", "PVPTEST {} {} vs {}: {} saved at map {} ({:.1f} {:.1f} {:.1f})", _params.Kind,
@@ -803,11 +832,19 @@ void PvpTestFightJob::UpdateChallenge()
         return;
     }
 
+    bool const timedOut = _stageMs - _challengeMs >= ChallengeTimeoutMs;
     if (challenger->duel && challenged->duel)
     {
         _duelSeen = true;
-        if (challenged->duel->State == DUEL_STATE_CHALLENGED)
+        DuelState const state = challenged->duel->State;
+        if (state == DUEL_STATE_CHALLENGED)
         {
+            if (timedOut)
+            {
+                Fail(Acore::StringFormat("the duel was not accepted within {} s", ChallengeTimeoutMs / MsPerSecond));
+                return;
+            }
+
             if (!_acceptSent && _stageMs - _challengeMs >= AcceptFallbackMs)
             {
                 // What AcceptDuelAction sends, for a bot whose AI has not accepted in time
@@ -822,21 +859,25 @@ void PvpTestFightJob::UpdateChallenge()
             return;
         }
 
+        if (state == DUEL_STATE_COUNTDOWN)
+            return;  // accepted; the fight starts when the 3 s countdown of the core ends
+
         _phase = Phase::Active;
+        _duelStarted = true;
         _fightStartMs = _totalMs;
         LOG_INFO("playerbots", "PVPTEST duel {} vs {}: the duel starts", _sideA.Label, _sideB.Label);
         return;
     }
 
-    if (_duelSeen)
+    if (_duelSeen || PvpTestFightStats::Instance().GetDuelEnd().Seen)
     {
-        // The duel is gone again (declined or already over): UpdateDuel reads how it ended
+        // The duel is gone again (declined, cancelled or already over): UpdateDuel reads how it ended
         _phase = Phase::Active;
         _fightStartMs = _totalMs;
         return;
     }
 
-    if (_stageMs - _challengeMs >= ChallengeTimeoutMs)
+    if (timedOut)
         Fail(Acore::StringFormat("no duel was created within {} s", ChallengeTimeoutMs / MsPerSecond));
 }
 
@@ -859,7 +900,12 @@ void PvpTestFightJob::UpdateDuel()
     PvpTestFightStats::DuelEnd const end = PvpTestFightStats::Instance().GetDuelEnd();
     if (end.Seen)
     {
-        if (end.Type == DUEL_INTERRUPTED)
+        if (end.Type == DUEL_INTERRUPTED && !_duelStarted)
+        {
+            _result.Outcome = "ended";
+            _result.Reason = "the duel was declined or cancelled before it started";
+        }
+        else if (end.Type == DUEL_INTERRUPTED)
         {
             _result.Outcome = "draw";
             _result.Reason = "the duel was interrupted";
