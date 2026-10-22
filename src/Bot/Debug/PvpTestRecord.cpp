@@ -139,13 +139,13 @@ std::string PvpTestRecordWriter::ToJson(PvpTestMatchRecord const& record)
     std::string json;
     json.reserve(ExpectedLineBytes);
     json += Acore::StringFormat(
-        "{{\"schema\":{},\"kind\":\"arena\",\"id\":{},\"plan\":{},\"index\":{},\"time\":{},\"seed\":{},\"map\":{},"
+        "{{\"schema\":{},\"kind\":{},\"id\":{},\"plan\":{},\"index\":{},\"time\":{},\"seed\":{},\"map\":{},"
         "\"arenaType\":{},\"rated\":{},\"outcome\":{},\"winner\":{},\"winnerSide\":{},\"reason\":{},"
         "\"failedStage\":{},\"fightMs\":{},\"totalMs\":{},\"sides\":[",
-        SchemaVersion, Quote(record.Id), Quote(record.PlanId), record.Index, Quote(record.StartTime), record.Seed,
-        Quote(record.Map), static_cast<uint32>(record.ArenaType), record.Rated ? "true" : "false",
-        Quote(record.Outcome), Quote(record.Winner), Quote(record.WinnerSide), Quote(record.Reason),
-        Quote(record.FailedStage), record.FightMs, record.TotalMs);
+        SchemaVersion, Quote(record.Kind), Quote(record.Id), Quote(record.PlanId), record.Index,
+        Quote(record.StartTime), record.Seed, Quote(record.Map), static_cast<uint32>(record.ArenaType),
+        record.Rated ? "true" : "false", Quote(record.Outcome), Quote(record.Winner), Quote(record.WinnerSide),
+        Quote(record.Reason), Quote(record.FailedStage), record.FightMs, record.TotalMs);
     json += SideToJson(record.Sides[0]) + "," + SideToJson(record.Sides[1]) + "]}";
     return json;
 }

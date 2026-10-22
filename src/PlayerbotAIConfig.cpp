@@ -18,6 +18,7 @@
 #include "Talentspec.h"
 #include "TravelMgr.h"
 #include <cctype>
+#include <cstdio>
 #include <iostream>
 #include <sstream>
 
@@ -695,6 +696,32 @@ bool PlayerbotAIConfig::Initialize()
     PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
     PvpTestTimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpTest.TimeoutSeconds", 900), 60, 3600);
+    // "<map> <x> <y> <z> <o>"; the default is the Hillsbrad Foothills spot (a contested zone, duels allowed)
+    PvpTestFightMap = 0;
+    PvpTestFightX = -436.657f;
+    PvpTestFightY = -581.254f;
+    PvpTestFightZ = 53.5944f;
+    PvpTestFightO = 1.25917f;
+    std::string const fightLocation = sConfigMgr->GetOption<std::string>("Playerbots.PvpTest.FightLocation", "");
+    if (!fightLocation.empty())
+    {
+        uint32 map = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        float o = 0.0f;
+        if (std::sscanf(fightLocation.c_str(), "%u %f %f %f %f", &map, &x, &y, &z, &o) == 5)
+        {
+            PvpTestFightMap = map;
+            PvpTestFightX = x;
+            PvpTestFightY = y;
+            PvpTestFightZ = z;
+            PvpTestFightO = o;
+        }
+        else
+            LOG_ERROR("playerbots",
+                      "Playerbots.PvpTest.FightLocation must be \"<map> <x> <y> <z> <o>\"; using the default spot");
+    }
     CensusEnable = sConfigMgr->GetOption<bool>("Playerbots.Census.Enable", false);
     CensusIntervalSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Census.IntervalSeconds", 30), 5, 3600);

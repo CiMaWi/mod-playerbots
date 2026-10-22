@@ -1325,6 +1325,8 @@ Playerbots.TestPlayer.Account = "WBTEST"
 #   .playerbots pvptest plan start total=<n> [concurrency=<n>] [seed=<base>] [map=...] [pool=<pool>]
 #   .playerbots pvptest plan status
 #   .playerbots pvptest plan stop
+#   .playerbots pvptest duel <botA> <botB>
+#   .playerbots pvptest brawl <bot,bot,...> vs <bot,bot,...>
 # "arena" forces one 2v2 arena match between two random-bot sides, each a 2v2 arena team name (quoted if it has
 # spaces) or two bot names. All four bots must be at the maximum level. Offline bots are logged in, taken out of
 # their groups and BG queues, put into one group per side and invited straight into a new arena (no queue wait).
@@ -1345,10 +1347,25 @@ Playerbots.TestPlayer.Account = "WBTEST"
 # map, outcome, winner, fightMs, totalMs and per side the bots with class, spec, gear score, damage, healing,
 # killing blows, deaths; skill is null until the bots have one) to <LogsDir>/pvptest/matches-<YYYYMMDD>.jsonl. The
 # world thread only builds the line; a writer thread owns the file.
+# "duel" and "brawl" force an unrated fight in the open world (not in a battleground): the bots (maximum-level random
+# bots, at most 5 per side) are logged in, taken out of groups, queues and combat, and teleported to FightLocation
+# below, side A and side B facing each other. A duel is one bot against one bot (any factions): the first bot casts
+# the duel spell, the second accepts through its duel strategy, full health and mana are restored first. A brawl has
+# several bots per side; the two sides must be of opposite factions (same-faction bots are not hostile; use a duel),
+# the bots are PvP-flagged, pointed at each other and re-pointed when a target dies; it ends when one side has no
+# living bot. Unrated; nothing touches arena teams or ratings. When the fight is over (or the timeout below passes)
+# the bots are revived, restored, taken out of combat and teleported back to where they were. One fight at a time.
+# Each fight appends one JSON line like an arena match, with kind duel or brawl, arenaType 0, rated false, map = the
+# zone name, faction = the real faction of the side, entered = the bot took part; damage and healing are counted
+# for the hits and heals between the bots of the fight only.
+# FightLocation "<map> <x> <y> <z> <o>": an open-world spot in a contested zone that allows duels and is no PvP
+# prohibited zone (checked on arrival, else the fight is recorded as failed), away from towns and guards. The default
+# is the Hillsbrad Foothills spot (Eastern Kingdoms), the "HillsbradFoothills" entry of game_tele.
 # TimeoutSeconds (60..3600): a match without a winner by then is ended as a draw.
 #
 Playerbots.PvpTest.Enable = 0
 Playerbots.PvpTest.TimeoutSeconds = 900
+Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 
 # World census (1 = on, 0 = off)
 # Every IntervalSeconds (5..3600) one CSV line per online bot (type RND) and per real player or test player (type

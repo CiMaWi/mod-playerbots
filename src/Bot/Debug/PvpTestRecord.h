@@ -48,6 +48,8 @@ struct PvpTestSideRecord
 // matches are unrated and pass an MMR of 0.
 struct PvpTestMatchRecord
 {
+    // arena, duel or brawl
+    std::string Kind = "arena";
     std::string Id;
     std::string PlanId;
     uint32 Index = 0;

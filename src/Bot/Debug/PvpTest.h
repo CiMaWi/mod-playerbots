@@ -15,7 +15,9 @@
 
 #include "Common.h"
 #include "ObjectGuid.h"
+#include "PvpTestFight.h"
 #include "PvpTestRecord.h"
+#include "PvpTestUtil.h"
 #include "SharedDefines.h"
 
 class Battleground;
@@ -36,30 +38,6 @@ struct PvpTestArenaParams
     std::string MatchId;
     std::string PlanId;
     uint32 PlanIndex = 0;
-};
-
-// One side of a match: an arena team or an explicit roster of bot names
-struct PvpTestSide
-{
-    std::string Label;
-    uint32 ArenaTeamId = 0;
-    std::vector<ObjectGuid> Members;
-    std::vector<std::string> Names;
-    std::vector<bool> LoginRequested;
-    ObjectGuid::LowType GroupId = 0;
-};
-
-// The outcome of one job; the match record is built from it and the roster facts
-struct PvpTestResult
-{
-    std::string Outcome;  // winner, draw, timeout, ended, failed, stopped
-    std::string Winner;
-    std::string WinnerSide;  // A, B or empty
-    std::string Map;
-    std::string FailedStage;
-    std::string Reason;
-    uint32 FightMs = 0;
-    uint32 TotalMs = 0;
 };
 
 // One forced arena match between two bot sides, ticked from the world thread. Stages: Resolve (in the command) ->
@@ -128,7 +106,6 @@ private:
     uint32 _fightStartMs = 0;
     bool _fightStarted = false;
     bool _acceptFallbackSent = false;
-    bool _scoresCaptured = false;
     uint32 _instanceId = 0;
     BattlegroundTypeId _bgTypeId = BATTLEGROUND_TYPE_NONE;
     BattlegroundQueueTypeId _queueTypeId = BATTLEGROUND_QUEUE_NONE;
@@ -169,6 +146,7 @@ struct PvpTestPlan
 
 // Opt-in PvP harness (Playerbots.PvpTest.Enable): GM and console commands that force matches between bot teams.
 // Single matches and plans of N matches (concurrent matches use disjoint bots); each finished match writes a record.
+// Duels and brawls in the open world are single jobs of their own.
 class PvpTestMgr
 {
 public:
@@ -185,6 +163,9 @@ public:
     void Shutdown();
 
     static bool HandleArenaCommand(ChatHandler* handler, char const* args);
+    // Forced open-world fights (PvpTestFight.cpp): duel <a> <b> and brawl <a,b,...> vs <c,...>
+    static bool HandleDuelCommand(ChatHandler* handler, char const* args);
+    static bool HandleBrawlCommand(ChatHandler* handler, char const* args);
     static bool HandleStatusCommand(ChatHandler* handler, char const* args);
     static bool HandleStopCommand(ChatHandler* handler, char const* args);
     static bool HandlePlanStartCommand(ChatHandler* handler, char const* args);
@@ -195,6 +176,8 @@ private:
     PvpTestMgr() = default;
 
     void Report(PvpTestArenaJob const& job);
+    void ReportFight(PvpTestFightJob const& job);
+    static bool HandleFightCommand(ChatHandler* handler, PvpTestFightParams& params);
     void UpdatePlan();
     bool LaunchPlanMatch(std::string& error);
     bool DrawRoster(PvpTestPlan const& plan, std::set<ObjectGuid> const& inUse, PvpTestArenaParams& params);
@@ -204,6 +187,8 @@ private:
     void FinishPlan();
 
     std::vector<std::unique_ptr<PvpTestArenaJob>> _jobs;
+    // At most one open-world fight at a time (the damage counters are shared)
+    std::vector<std::unique_ptr<PvpTestFightJob>> _fightJobs;
     std::unique_ptr<PvpTestPlan> _plan;
     uint32 _planTickMs = 0;
     uint32 _singleCounter = 0;

@@ -372,6 +372,12 @@ public:
     std::string TestPlayerAccount;
     bool PvpTestEnable;
     uint32 PvpTestTimeoutSeconds;
+    // Where pvptest duel and brawl fight: map id and position
+    uint32 PvpTestFightMap;
+    float PvpTestFightX;
+    float PvpTestFightY;
+    float PvpTestFightZ;
+    float PvpTestFightO;
     bool CensusEnable;
     uint32 CensusIntervalSeconds;
     bool BotActiveAloneSmartScale;

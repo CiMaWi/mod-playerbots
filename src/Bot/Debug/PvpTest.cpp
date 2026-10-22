@@ -43,16 +43,13 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
+using namespace PvpTestUtil;
+
 namespace
 {
-constexpr uint32 TickIntervalMs = 500;             // cadence of the O(roster) work
-constexpr uint32 GatherTimeoutMs = 60000;          // logins, leaving queues, combat ending
 constexpr uint32 AcceptFallbackMs = 15000;         // bots that have not entered by then get the accept packet sent
-constexpr uint32 TearDownTimeoutMs = 60000;        // leaving the arena and the teleport back
 constexpr uint16 BattlefieldPortUnknown = 0x1F90;  // the constant the client sends, as in BGStatusAction
 constexpr uint8 BattlefieldPortAccept = 1;
-constexpr uint32 MsPerSecond = 1000;
-constexpr uint32 SecondsPerMinute = 60;
 constexpr uint32 MaxPlanConcurrency = 4;  // matches of one plan at once
 constexpr uint32 MaxPlanTotal = 10000;
 constexpr size_t RecentOutcomeCount = 3;  // outcomes shown by "plan status"
@@ -79,80 +76,6 @@ constexpr char const* Usage =
     "Usage: .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] "
     "[seed=<n>] (quote team names with spaces)";
 
-bool CommandFail(ChatHandler* handler, std::string const& text)
-{
-    handler->SendSysMessage(text);
-    handler->SetSentErrorMessage(true);
-    return false;
-}
-
-bool CheckEnabled(ChatHandler* handler)
-{
-    if (sPlayerbotAIConfig.PvpTestEnable)
-        return true;
-
-    return CommandFail(handler, "The PvP test harness is disabled (Playerbots.PvpTest.Enable = 0)");
-}
-
-std::string ToLower(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return text;
-}
-
-std::string Trim(std::string const& text)
-{
-    size_t const first = text.find_first_not_of(" \t");
-    if (first == std::string::npos)
-        return "";
-
-    size_t const last = text.find_last_not_of(" \t");
-    return text.substr(first, last - first + 1);
-}
-
-// Splits at blanks outside double quotes, so a team name with spaces can be quoted
-std::vector<std::string> Tokenize(std::string const& text)
-{
-    std::vector<std::string> tokens;
-    std::string current;
-    bool quoted = false;
-    bool hasToken = false;
-    for (char const c : text)
-    {
-        if (c == '"')
-        {
-            quoted = !quoted;
-            hasToken = true;
-            continue;
-        }
-
-        if (!quoted && std::isspace(static_cast<unsigned char>(c)))
-        {
-            if (hasToken)
-                tokens.push_back(current);
-
-            current.clear();
-            hasToken = false;
-            continue;
-        }
-
-        current += c;
-        hasToken = true;
-    }
-
-    if (hasToken)
-        tokens.push_back(current);
-
-    return tokens;
-}
-
-std::string FormatDuration(uint32 ms)
-{
-    uint32 const seconds = ms / MsPerSecond;
-    return Acore::StringFormat("{}:{:02}", seconds / SecondsPerMinute, seconds % SecondsPerMinute);
-}
-
 std::string DescribeSide(PvpTestSide const& side)
 {
     std::string names;
@@ -160,42 +83,6 @@ std::string DescribeSide(PvpTestSide const& side)
         names += names.empty() ? name : ", " + name;
 
     return Acore::StringFormat("{} [{}]", side.Label, names);
-}
-
-// One status line per bot: where it is and whether it is still in a group, a battleground or a queue
-std::string DescribeMember(ObjectGuid const& guid)
-{
-    Player* player = ObjectAccessor::FindConnectedPlayer(guid);
-    if (!player)
-    {
-        CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(guid);
-        return Acore::StringFormat("  {}: offline", entry ? entry->Name : guid.ToString());
-    }
-
-    uint32 queues = 0;
-    for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
-    {
-        if (player->GetBattlegroundQueueTypeId(slot) != BATTLEGROUND_QUEUE_NONE)
-            ++queues;
-    }
-
-    Group const* group = player->GetGroup();
-    return Acore::StringFormat("  {}: map {}, group {}, battleground {}, queues {}", player->GetName(),
-                               player->GetMapId(), group ? std::to_string(group->GetGUID().GetCounter()) : "none",
-                               player->InBattleground() ? std::to_string(player->GetBattlegroundId()) : "none", queues);
-}
-
-void LeaveQueues(Player* player)
-{
-    for (uint32 slot = 0; slot < PLAYER_MAX_BATTLEGROUND_QUEUES; ++slot)
-    {
-        BattlegroundQueueTypeId const queueTypeId = player->GetBattlegroundQueueTypeId(slot);
-        if (queueTypeId == BATTLEGROUND_QUEUE_NONE)
-            continue;
-
-        sBattlegroundMgr->GetBattlegroundQueue(queueTypeId).RemovePlayer(player->GetGUID(), true);
-        player->RemoveBattlegroundQueueId(queueTypeId);
-    }
 }
 
 bool ResolveSide(std::string const& spec, uint8 arenaType, PvpTestSide& side, std::string& error)
@@ -433,7 +320,7 @@ void PvpTestArenaJob::Abort(std::string const& reason)
         return;
 
     // The scores die with the arena, so a stopped fight keeps what was counted so far
-    if (_stage == Stage::Monitor && !_scoresCaptured)
+    if (_stage == Stage::Monitor)
     {
         if (Battleground* arena = sBattlegroundMgr->GetBattleground(_instanceId, _bgTypeId))
             CaptureScores(arena);
@@ -746,8 +633,10 @@ void PvpTestArenaJob::CaptureRoster()
     }
 }
 
-// The battleground's score map dies with the battleground, so this runs before the tear-down. A bot without a score
-// entry never entered the arena; its scores stay zero.
+// The battleground's score map dies with the battleground, and a bot that leaves takes its score entry along, so this
+// runs on every slow tick while the fight is on and again when the winner is first seen. It only ever fills in: a bot
+// whose entry is already gone keeps the values of the last snapshot. A bot that never had a score entry never entered
+// the arena; its scores stay zero.
 void PvpTestArenaJob::CaptureScores(Battleground const* arena)
 {
     auto const* scores = arena->GetPlayerScores();
@@ -767,8 +656,6 @@ void PvpTestArenaJob::CaptureScores(Battleground const* arena)
             bot.HonorableKills = itr->second->GetHonorableKills();
         }
     }
-
-    _scoresCaptured = true;
 }
 
 PvpTestMatchRecord PvpTestArenaJob::BuildRecord() const
@@ -841,6 +728,10 @@ void PvpTestArenaJob::UpdateMonitor(bool slowTick)
 
     if (!slowTick)
         return;
+
+    // The rolling snapshot (C4, F1): the winning side's bots may leave before the end is seen
+    if (status == STATUS_IN_PROGRESS)
+        CaptureScores(arena);
 
     if (!_acceptFallbackSent && _stageMs >= AcceptFallbackMs)
         SendAcceptFallback();
@@ -973,22 +864,6 @@ std::string PvpTestArenaJob::ResultLine() const
 
 namespace
 {
-// Splits at a separator; the parts are trimmed and empty ones dropped
-std::vector<std::string> Split(std::string const& text, char separator)
-{
-    std::vector<std::string> parts;
-    std::stringstream stream(text);
-    std::string part;
-    while (std::getline(stream, part, separator))
-    {
-        part = Trim(part);
-        if (!part.empty())
-            parts.push_back(part);
-    }
-
-    return parts;
-}
-
 // Fisher-Yates with the seeded generator, so a seed draws the same order on every platform
 template <typename T>
 void Shuffle(std::vector<T>& items, uint32 seed)
@@ -996,32 +871,6 @@ void Shuffle(std::vector<T>& items, uint32 seed)
     std::mt19937 generator(seed);
     for (size_t index = items.size(); index > 1; --index)
         std::swap(items[index - 1], items[generator() % index]);
-}
-
-// The harness takes random bots at the maximum level only
-bool CheckBot(ObjectGuid const& guid, std::string& error)
-{
-    CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(guid);
-    if (!entry)
-    {
-        error = Acore::StringFormat("Character {} is unknown", guid.ToString());
-        return false;
-    }
-
-    if (!sPlayerbotAIConfig.IsInRandomAccountList(entry->AccountId))
-    {
-        error = Acore::StringFormat("{} is not a random bot", entry->Name);
-        return false;
-    }
-
-    uint32 const requiredLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
-    if (entry->Level != requiredLevel)
-    {
-        error = Acore::StringFormat("{} is level {}, a match needs level {}", entry->Name, entry->Level, requiredLevel);
-        return false;
-    }
-
-    return true;
 }
 
 char const* PoolName(PvpTestPool pool)
@@ -1045,14 +894,66 @@ bool SidesOverlap(PvpTestSide const& first, PvpTestSide const& second)
         first.Members.begin(), first.Members.end(), [&second](ObjectGuid const& guid)
         { return std::find(second.Members.begin(), second.Members.end(), guid) != second.Members.end(); });
 }
+
+// The record of a plan match that could not be set up: the roster as far as the draw gave one, outcome failed
+PvpTestMatchRecord SetupFailureRecord(PvpTestArenaParams const& params, std::string const& error)
+{
+    PvpTestMatchRecord record;
+    record.Id = params.MatchId;
+    record.PlanId = params.PlanId;
+    record.Index = params.PlanIndex;
+    record.StartTime = PvpTestRecordWriter::IsoTimeNow();
+    record.Seed = params.Seed;
+    record.ArenaType = params.ArenaType;
+    record.Rated = params.Rated;
+    if (Battleground* bgTemplate = sBattlegroundMgr->GetBattlegroundTemplate(params.Map))
+        record.Map = bgTemplate->GetName();
+
+    record.Outcome = "failed";
+    record.Reason = error;
+    record.FailedStage = "resolve";
+    std::array<std::string const*, 2> const specs = {{&params.SideA, &params.SideB}};
+    for (size_t index = 0; index < record.Sides.size(); ++index)
+    {
+        PvpTestSideRecord& side = record.Sides[index];
+        side.Label = *specs[index];
+        side.Side = index == 0 ? 'A' : 'B';
+        side.Faction = index == 0 ? "alliance" : "horde";
+        if (side.Label.find(',') == std::string::npos)
+            continue;  // an arena team name: its members were not resolved
+
+        for (std::string name : Split(side.Label, ','))
+        {
+            PvpTestBotRecord bot;
+            bot.Name = name;
+            ObjectGuid const guid =
+                normalizePlayerName(name) ? sCharacterCache->GetCharacterGuidByName(name) : ObjectGuid::Empty;
+            if (CharacterCacheEntry const* entry =
+                    guid.IsEmpty() ? nullptr : sCharacterCache->GetCharacterCacheByGuid(guid))
+            {
+                bot.Guid = guid.GetCounter();
+                bot.ClassId = entry->Class;
+                bot.RaceId = entry->Race;
+                bot.Level = entry->Level;
+            }
+
+            side.Bots.push_back(std::move(bot));
+        }
+    }
+
+    return record;
+}
 }  // namespace
 
 void PvpTestMgr::Update(uint32 diff)
 {
-    if (_jobs.empty() && !_plan)
+    if (_jobs.empty() && _fightJobs.empty() && !_plan)
         return;
 
     for (std::unique_ptr<PvpTestArenaJob>& job : _jobs)
+        job->Update(diff);
+
+    for (std::unique_ptr<PvpTestFightJob>& job : _fightJobs)
         job->Update(diff);
 
     for (auto itr = _jobs.begin(); itr != _jobs.end();)
@@ -1065,6 +966,18 @@ void PvpTestMgr::Update(uint32 diff)
 
         Report(**itr);
         itr = _jobs.erase(itr);
+    }
+
+    for (auto itr = _fightJobs.begin(); itr != _fightJobs.end();)
+    {
+        if (!(*itr)->IsDone())
+        {
+            ++itr;
+            continue;
+        }
+
+        ReportFight(**itr);
+        itr = _fightJobs.erase(itr);
     }
 
     if (!_plan)
@@ -1084,7 +997,11 @@ void PvpTestMgr::Shutdown()
     for (std::unique_ptr<PvpTestArenaJob> const& job : _jobs)
         PvpTestRecordWriter::Instance().Write(job->BuildRecord());
 
+    for (std::unique_ptr<PvpTestFightJob> const& job : _fightJobs)
+        PvpTestRecordWriter::Instance().Write(job->BuildRecord());
+
     _jobs.clear();
+    _fightJobs.clear();
     _plan.reset();
     PvpTestRecordWriter::Instance().Shutdown();
 }
@@ -1123,6 +1040,12 @@ std::set<ObjectGuid> PvpTestMgr::MembersInUse() const
 {
     std::set<ObjectGuid> members;
     for (std::unique_ptr<PvpTestArenaJob> const& job : _jobs)
+    {
+        for (ObjectGuid const& guid : job->AllMembers())
+            members.insert(guid);
+    }
+
+    for (std::unique_ptr<PvpTestFightJob> const& job : _fightJobs)
     {
         for (ObjectGuid const& guid : job->AllMembers())
             members.insert(guid);
@@ -1211,14 +1134,29 @@ bool PvpTestMgr::LaunchPlanMatch(std::string& error)
     if (!DrawRoster(*_plan, MembersInUse(), params))
         return false;
 
-    PvpTestSide sideA;
-    PvpTestSide sideB;
-    if (!ChooseMap(_plan->MapKey, params, error) || !PvpTestArenaJob::Resolve(params, sideA, sideB, error))
-        return false;
-
     params.PlanId = _plan->Id;
     params.PlanIndex = _plan->Launched + 1;
     params.MatchId = Acore::StringFormat("m-{}-{}", _plan->Id, params.PlanIndex);
+    PvpTestSide sideA;
+    PvpTestSide sideB;
+    if (!ChooseMap(_plan->MapKey, params, error) || !PvpTestArenaJob::Resolve(params, sideA, sideB, error))
+    {
+        // C4, F2: the match counts as launched, finished and failed, leaves a record and the plan goes on
+        ++_plan->Launched;
+        ++_plan->Finished;
+        ++_plan->Failed;
+        PvpTestRecordWriter::Instance().Write(SetupFailureRecord(params, error));
+        _lastResult = Acore::StringFormat("PVPTEST plan {} match {}: failed in stage resolve ({}), seed {}", _plan->Id,
+                                          params.PlanIndex, error, params.Seed);
+        LOG_INFO("playerbots", "{}", _lastResult);
+        _plan->Recent.push_back(Acore::StringFormat("#{} failed", params.PlanIndex));
+        while (_plan->Recent.size() > RecentOutcomeCount)
+            _plan->Recent.pop_front();
+
+        error.clear();
+        return true;
+    }
+
     ++_plan->Launched;
     std::unique_ptr<PvpTestArenaJob> job =
         std::make_unique<PvpTestArenaJob>(params, std::move(sideA), std::move(sideB), _plan->Issuer);
@@ -1236,10 +1174,18 @@ void PvpTestMgr::UpdatePlan()
         while (plan.Launched < plan.Total && ActivePlanJobs() < plan.Concurrency)
         {
             std::string error;
+            uint32 const failedBefore = plan.Failed;
             if (LaunchPlanMatch(error))
-                continue;
+            {
+                // A launch error leaves a failed record; the next match waits for the next tick, so an error that
+                // repeats cannot write the whole plan at once
+                if (plan.Failed != failedBefore)
+                    break;
 
-            // An error is final; no error means the free bots are short, which a running match will end
+                continue;
+            }
+
+            // No error means the free bots are short, which a running match will end
             if (!error.empty())
                 plan.EndedEarly = error;
             else if (_jobs.empty())
@@ -1361,7 +1307,7 @@ bool PvpTestMgr::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     if (manager._plan)
         handler->SendSysMessage(manager.DescribePlan());
 
-    if (manager._jobs.empty())
+    if (manager._jobs.empty() && manager._fightJobs.empty())
     {
         handler->SendSysMessage("No pvptest job runs");
         if (!manager._lastResult.empty())
@@ -1380,6 +1326,13 @@ bool PvpTestMgr::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
             handler->SendSysMessage(DescribeMember(guid));
     }
 
+    for (std::unique_ptr<PvpTestFightJob> const& job : manager._fightJobs)
+    {
+        handler->SendSysMessage(job->Describe());
+        for (ObjectGuid const& guid : job->AllMembers())
+            handler->SendSysMessage(DescribeMember(guid));
+    }
+
     return true;
 }
 
@@ -1389,13 +1342,19 @@ bool PvpTestMgr::HandleStopCommand(ChatHandler* handler, char const* /*args*/)
         return false;
 
     PvpTestMgr& manager = Instance();
-    if (manager._jobs.empty() && !manager._plan)
+    if (manager._jobs.empty() && manager._fightJobs.empty() && !manager._plan)
         return CommandFail(handler, "No pvptest job runs");
 
     if (manager._plan)
         manager._plan->StopRequested = true;
 
     for (std::unique_ptr<PvpTestArenaJob>& job : manager._jobs)
+    {
+        job->Abort("stopped by a GM");
+        handler->PSendSysMessage("Stopping: {}", job->Describe());
+    }
+
+    for (std::unique_ptr<PvpTestFightJob>& job : manager._fightJobs)
     {
         job->Abort("stopped by a GM");
         handler->PSendSysMessage("Stopping: {}", job->Describe());

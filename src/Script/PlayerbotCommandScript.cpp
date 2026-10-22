@@ -49,6 +49,8 @@ public:
 
         static ChatCommandTable playerbotsPvpTestCommandTable = {
             {"arena", PvpTestMgr::HandleArenaCommand, SEC_GAMEMASTER, Console::Yes},
+            {"duel", PvpTestMgr::HandleDuelCommand, SEC_GAMEMASTER, Console::Yes},
+            {"brawl", PvpTestMgr::HandleBrawlCommand, SEC_GAMEMASTER, Console::Yes},
             {"plan", playerbotsPvpTestPlanCommandTable},
             {"status", PvpTestMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"stop", PvpTestMgr::HandleStopCommand, SEC_GAMEMASTER, Console::Yes},
