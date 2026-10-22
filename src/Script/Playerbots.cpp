@@ -29,6 +29,7 @@
 #include "ScriptMgr.h"
 #include "ServerScript.h"
 #include "SessionScript.h"
+#include "TestPlayer.h"
 #include "WorldScript.h"
 #include "cmath"
 
@@ -546,6 +547,7 @@ public:
     {
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
+        TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
     }
@@ -553,6 +555,7 @@ public:
     // Runs before the sessions are kicked on server shutdown
     void OnShutdown() override
     {
+        TestPlayerMgr::Instance().Shutdown();
         LOG_INFO("playerbots", "Logging out all bots...");
         sRandomPlayerbotMgr.LogoutAllBots();
         PlayerbotHolder::ClearPendingLogins();

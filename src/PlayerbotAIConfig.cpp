@@ -690,6 +690,8 @@ bool PlayerbotAIConfig::Initialize()
     BotActiveAloneForceWhenInMap = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInMap", 0);
     BotActiveAloneForceWhenIsFriend = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenIsFriend", 0);
     BotActiveAloneForceWhenInGuild = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInGuild", 1);
+    TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
+    TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);

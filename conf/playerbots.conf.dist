@@ -1302,6 +1302,20 @@ Playerbots.BotActiveAloneForceWhenInMap = 0
 Playerbots.BotActiveAloneForceWhenIsFriend = 0
 Playerbots.BotActiveAloneForceWhenInGuild = 1
 
+# Headless test player (for unattended tests; 1 = on, 0 = off)
+# Enables the GM/console commands
+#   .playerbots testplayer login <character> [route=<name>]
+#   .playerbots testplayer route <name>|none
+#   .playerbots testplayer logout
+#   .playerbots testplayer status
+# They log a character of the account below in through a server-side session without a client and without bot AI,
+# so the bots count it as a real player (the force-active rules above apply), and walk it along a named route in a
+# loop (stormwind-loop, elwynn-questing). A missing character is created (human warrior). The account must exist
+# and must not be a random-bot account.
+#
+Playerbots.TestPlayer.Enable = 0
+Playerbots.TestPlayer.Account = "WBTEST"
+
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).
 # When the server slows down, fewer bots are kept active to reduce load.

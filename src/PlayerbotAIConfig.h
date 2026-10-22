@@ -368,6 +368,8 @@ public:
     bool BotActiveAloneForceWhenInMap;
     bool BotActiveAloneForceWhenIsFriend;
     bool BotActiveAloneForceWhenInGuild;
+    bool TestPlayerEnable;
+    std::string TestPlayerAccount;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;
