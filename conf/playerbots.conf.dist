@@ -1322,13 +1322,29 @@ Playerbots.TestPlayer.Account = "WBTEST"
 #   .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] [seed=<n>]
 #   .playerbots pvptest status
 #   .playerbots pvptest stop
+#   .playerbots pvptest plan start total=<n> [concurrency=<n>] [seed=<base>] [map=...] [pool=<pool>]
+#   .playerbots pvptest plan status
+#   .playerbots pvptest plan stop
 # "arena" forces one 2v2 arena match between two random-bot sides, each a 2v2 arena team name (quoted if it has
 # spaces) or two bot names. All four bots must be at the maximum level. Offline bots are logged in, taken out of
 # their groups and BG queues, put into one group per side and invited straight into a new arena (no queue wait).
 # The match is unrated unless rated=1 (needs two arena teams). The map is drawn from the seed unless map= names it.
 # The command returns at once; the result ("PVPTEST ... Winner: ...") goes to the playerbots log, to the issuing
 # player and to "status". Afterwards the bots leave the arena, the two groups are disbanded and the bots' strategies
-# are reset; bots the harness logged in stay online. One job at a time.
+# are reset; bots the harness logged in stay online.
+# "plan start" runs total=<n> matches in a row, up to concurrency=<n> at once (default 1, at most 4 and at most what
+# the pool fits). Match k (1-based) replays seed <base>+k-1 (the base is drawn when seed= is missing). The pool is
+#   random                 (default) random disjoint 2v2 sides of maximum-level random bots, drawn per match from the
+#                          seed; bots with a real player and bots in a running match are left out. The candidates
+#                          are read from the database once, when the plan starts.
+#   teams:<A>;<B>;...      2v2 arena teams, two per match (quote the whole option if a name has spaces)
+#   bots:<name>,<name>,... a list of bots, four per match
+# A match that cannot gather its bots is recorded as failed and the plan goes on; "plan stop" ends the running
+# matches (recorded as stopped) and launches no more. One plan at a time; "stop" also stops the plan.
+# Every finished, failed or stopped match appends one JSON line (schema 1, kind arena: id, plan, index, time, seed,
+# map, outcome, winner, fightMs, totalMs and per side the bots with class, spec, gear score, damage, healing,
+# killing blows, deaths; skill is null until the bots have one) to <LogsDir>/pvptest/matches-<YYYYMMDD>.jsonl. The
+# world thread only builds the line; a writer thread owns the file.
 # TimeoutSeconds (60..3600): a match without a winner by then is ended as a draw.
 #
 Playerbots.PvpTest.Enable = 0

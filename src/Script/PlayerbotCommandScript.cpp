@@ -41,8 +41,15 @@ public:
             {"status", TestPlayerMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsPvpTestPlanCommandTable = {
+            {"start", PvpTestMgr::HandlePlanStartCommand, SEC_GAMEMASTER, Console::Yes},
+            {"status", PvpTestMgr::HandlePlanStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stop", PvpTestMgr::HandlePlanStopCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsPvpTestCommandTable = {
             {"arena", PvpTestMgr::HandleArenaCommand, SEC_GAMEMASTER, Console::Yes},
+            {"plan", playerbotsPvpTestPlanCommandTable},
             {"status", PvpTestMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"stop", PvpTestMgr::HandleStopCommand, SEC_GAMEMASTER, Console::Yes},
         };

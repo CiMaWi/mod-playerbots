@@ -7,14 +7,18 @@
 #ifndef _PLAYERBOT_PVPTEST_H
 #define _PLAYERBOT_PVPTEST_H
 
+#include <deque>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "Common.h"
 #include "ObjectGuid.h"
+#include "PvpTestRecord.h"
 #include "SharedDefines.h"
 
+class Battleground;
 class ChatHandler;
 class Player;
 
@@ -28,6 +32,10 @@ struct PvpTestArenaParams
     BattlegroundTypeId Map = BATTLEGROUND_AA;
     bool Rated = false;
     uint32 Seed = 0;
+    // The record's identity: set by the manager; a single arena command has no plan and index 0
+    std::string MatchId;
+    std::string PlanId;
+    uint32 PlanIndex = 0;
 };
 
 // One side of a match: an arena team or an explicit roster of bot names
@@ -41,11 +49,12 @@ struct PvpTestSide
     ObjectGuid::LowType GroupId = 0;
 };
 
-// The outcome of one job; C2 attaches its record to this
+// The outcome of one job; the match record is built from it and the roster facts
 struct PvpTestResult
 {
     std::string Outcome;  // winner, draw, timeout, ended, failed, stopped
     std::string Winner;
+    std::string WinnerSide;  // A, B or empty
     std::string Map;
     std::string FailedStage;
     std::string Reason;
@@ -85,6 +94,10 @@ public:
     std::string Describe() const;
     std::string ResultLine() const;
     ObjectGuid GetIssuer() const { return _issuer; }
+    std::string const& GetPlanId() const { return _params.PlanId; }
+    uint32 GetPlanIndex() const { return _params.PlanIndex; }
+    // The match record with every field filled from what the job knows now (also for failed and stopped matches)
+    PvpTestMatchRecord BuildRecord() const;
     // Side A, then side B
     std::vector<ObjectGuid> AllMembers() const;
 
@@ -96,6 +109,8 @@ private:
     bool GatherMember(PvpTestSide& side, size_t index);
     bool FormGroup(PvpTestSide& side);
     bool StartArena(std::string& error);
+    void CaptureRoster();
+    void CaptureScores(Battleground const* arena);
     void UpdateMonitor(bool slowTick);
     void SendAcceptFallback();
     void UpdateTearDown();
@@ -113,15 +128,47 @@ private:
     uint32 _fightStartMs = 0;
     bool _fightStarted = false;
     bool _acceptFallbackSent = false;
-    bool _ended = false;
+    bool _scoresCaptured = false;
     uint32 _instanceId = 0;
     BattlegroundTypeId _bgTypeId = BATTLEGROUND_TYPE_NONE;
     BattlegroundQueueTypeId _queueTypeId = BATTLEGROUND_QUEUE_NONE;
     PvpTestResult _result;
+    PvpTestMatchRecord _record;
+};
+
+// Where a plan takes its bots from
+enum class PvpTestPool
+{
+    Random,  // random disjoint pairs of maximum-level random bots
+    Teams,   // the listed arena teams, two of them per match
+    Bots     // the listed bots, drawn into disjoint sides
+};
+
+// N matches in a row with a concurrency cap; match k (1-based) replays seed SeedBase + k - 1. Modelled on
+// mod-dungeon-clear's DcTestPlan.
+struct PvpTestPlan
+{
+    std::string Id;
+    uint32 Total = 0;
+    uint32 Concurrency = 1;
+    uint32 SeedBase = 0;
+    PvpTestPool Pool = PvpTestPool::Random;
+    std::string MapKey = "random";
+    // Random and Bots: the candidates in guid order; Teams: the resolved sides
+    std::vector<ObjectGuid> Candidates;
+    std::vector<PvpTestSide> Teams;
+    ObjectGuid Issuer;
+    uint32 Launched = 0;
+    uint32 Finished = 0;
+    uint32 Failed = 0;
+    uint32 Stopped = 0;
+    bool StopRequested = false;
+    std::string EndedEarly;  // why no more matches were launched, when the pool ran dry
+    std::deque<std::string> Recent;
 };
 
 // Opt-in PvP harness (Playerbots.PvpTest.Enable): GM and console commands that force matches between bot teams.
-// One job at a time for now; the job list is a vector so later steps can run several.
+// Single matches and plans of N matches (concurrent matches use disjoint bots); each finished match writes a record.
 class PvpTestMgr
 {
 public:
@@ -133,19 +180,34 @@ public:
 
     // World thread, once per world tick; returns at once while no job exists
     void Update(uint32 diff);
-    // Drops the jobs (server shutdown logs the bots out anyway)
+    // Writes the records of the unfinished jobs as stopped, drops the jobs and joins the record writer (server
+    // shutdown logs the bots out anyway)
     void Shutdown();
 
     static bool HandleArenaCommand(ChatHandler* handler, char const* args);
     static bool HandleStatusCommand(ChatHandler* handler, char const* args);
     static bool HandleStopCommand(ChatHandler* handler, char const* args);
+    static bool HandlePlanStartCommand(ChatHandler* handler, char const* args);
+    static bool HandlePlanStatusCommand(ChatHandler* handler, char const* args);
+    static bool HandlePlanStopCommand(ChatHandler* handler, char const* args);
 
 private:
     PvpTestMgr() = default;
 
     void Report(PvpTestArenaJob const& job);
+    void UpdatePlan();
+    bool LaunchPlanMatch(std::string& error);
+    bool DrawRoster(PvpTestPlan const& plan, std::set<ObjectGuid> const& inUse, PvpTestArenaParams& params);
+    std::set<ObjectGuid> MembersInUse() const;
+    uint32 ActivePlanJobs() const;
+    std::string DescribePlan() const;
+    void FinishPlan();
 
     std::vector<std::unique_ptr<PvpTestArenaJob>> _jobs;
+    std::unique_ptr<PvpTestPlan> _plan;
+    uint32 _planTickMs = 0;
+    uint32 _singleCounter = 0;
+    std::string _lastPlan;
     std::string _lastResult;
     // The bots of the last finished job, listed by status to show they are out of groups and arenas
     std::vector<ObjectGuid> _lastMembers;
