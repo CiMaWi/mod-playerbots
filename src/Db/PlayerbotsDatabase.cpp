@@ -126,6 +126,13 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
     PrepareStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_EVENT, "DELETE FROM playerbots_random_bots WHERE event = ?", CONNECTION_SYNCH);
 
     PrepareStatement(PLAYERBOTS_SEL_TEXT_CHANCE, "SELECT name, probability FROM ai_playerbot_texts_chance", CONNECTION_SYNCH);
+
+    PrepareStatement(PLAYERBOTS_SEL_BOT_PROFILE_ALL, "SELECT guid, pvp_skill, version FROM playerbots_bot_profile",
+                     CONNECTION_SYNCH);
+    PrepareStatement(PLAYERBOTS_INS_BOT_PROFILE,
+                     "INSERT INTO playerbots_bot_profile (guid, pvp_skill, version) VALUES (?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE pvp_skill = ?, version = ?",
+                     CONNECTION_ASYNC);
 }
 PlayerbotsDatabaseConnection::PlayerbotsDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)
 {

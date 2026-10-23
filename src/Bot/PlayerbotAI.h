@@ -610,6 +610,10 @@ public:
     bool HasItemInInventory(uint32 itemId);
     std::vector<std::pair<Quest const*, uint32>> GetCurrentQuestsRequiringItemId(uint32 itemId);
     uint32 GetReactDelay();
+    // Hidden PvP skill 1-99 (BotProfileMgr), set at login; 0 when Playerbots.Skill.Enable is 0. Only GM commands and
+    // the PvP harness records may show it.
+    uint8 GetPvpSkill() const { return pvpSkill; }
+    void SetPvpSkill(uint8 skill) { pvpSkill = skill; }
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -672,6 +676,7 @@ protected:
     Position jumpDestination = Position();
     uint32 nextTransportCheck = 0;
     bool spellInterruptRequested = false;
+    uint8 pvpSkill = 0;
 };
 
 #endif

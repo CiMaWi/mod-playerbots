@@ -64,14 +64,15 @@ std::string Quote(std::string const& text)
 
 std::string BotToJson(PvpTestBotRecord const& bot)
 {
-    // skill stays null until D2 gives the bots a skill value
+    // skill is null when Playerbots.Skill.Enable is 0 or the player is not a bot
     return Acore::StringFormat(
         "{{\"guid\":{},\"name\":{},\"class\":{},\"classId\":{},\"race\":{},\"level\":{},\"spec\":{},\"gearScore\":{},"
-        "\"skill\":null,\"entered\":{},\"damage\":{},\"healing\":{},\"killingBlows\":{},\"deaths\":{},"
+        "\"skill\":{},\"entered\":{},\"damage\":{},\"healing\":{},\"killingBlows\":{},\"deaths\":{},"
         "\"honorableKills\":{}}}",
         bot.Guid, Quote(bot.Name), Quote(PvpTestRecordWriter::ClassName(bot.ClassId)), static_cast<uint32>(bot.ClassId),
         static_cast<uint32>(bot.RaceId), static_cast<uint32>(bot.Level), Quote(bot.Spec), bot.GearScore,
-        bot.Entered ? "true" : "false", bot.Damage, bot.Healing, bot.KillingBlows, bot.Deaths, bot.HonorableKills);
+        bot.Skill < 0 ? std::string("null") : std::to_string(bot.Skill), bot.Entered ? "true" : "false", bot.Damage,
+        bot.Healing, bot.KillingBlows, bot.Deaths, bot.HonorableKills);
 }
 
 std::string SideToJson(PvpTestSideRecord const& side)

@@ -1382,6 +1382,14 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 Playerbots.Census.Enable = 0
 Playerbots.Census.IntervalSeconds = 30
 
+# Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
+# sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table
+# playerbots_bot_profile. All profiles are loaded with one query at startup; a bot login reads memory only, new rows
+# are written asynchronously. The skill is hidden: only the GM command
+# .playerbots skill [<bot> [set <1-99> | reroll]] and the PvP test harness records show it.
+# With 0 (default) nothing is rolled, stored or used, and the harness records carry "skill":null.
+Playerbots.Skill.Enable = 0
+
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).
 # When the server slows down, fewer bots are kept active to reduce load.

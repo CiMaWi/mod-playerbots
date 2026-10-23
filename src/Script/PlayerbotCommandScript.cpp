@@ -5,6 +5,7 @@
  */
 
 #include "BattleGroundTactics.h"
+#include "BotProfileMgr.h"
 #include "Chat.h"
 #include "GuildTaskMgr.h"
 #include "PerfMonitor.h"
@@ -66,6 +67,7 @@ public:
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
+            {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
             {"account", playerbotsAccountCommandTable},
             {"testplayer", playerbotsTestPlayerCommandTable},

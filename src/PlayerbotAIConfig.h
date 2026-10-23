@@ -386,6 +386,7 @@ public:
     float PvpTestFightO;
     bool CensusEnable;
     uint32 CensusIntervalSeconds;
+    bool SkillEnable;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;

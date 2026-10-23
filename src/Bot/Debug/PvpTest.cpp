@@ -628,7 +628,11 @@ void PvpTestArenaJob::CaptureRoster()
             bot.Level = player->GetLevel();
             bot.Spec = AiFactory::GetPlayerSpecName(player);
             if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+            {
                 bot.GearScore = botAI->GetEquipGearScore(player);
+                if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
+                    bot.Skill = botAI->GetPvpSkill();
+            }
         }
     }
 }

@@ -26,6 +26,8 @@ struct PvpTestBotRecord
     uint8 Level = 0;
     std::string Spec;
     uint32 GearScore = 0;
+    // Hidden skill 1-99 (Playerbots.Skill.Enable); -1 = none, written as null
+    int32 Skill = -1;
     // False when the bot never entered the arena (no score entry); its scores stay zero
     bool Entered = false;
     uint32 Damage = 0;

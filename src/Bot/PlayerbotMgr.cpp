@@ -6,6 +6,7 @@
 
 #include "PlayerbotMgr.h"
 #include "PlayerbotsDatabase.h"
+#include "BotProfileMgr.h"
 #include "BroadcastHelper.h"
 #include "ChannelMgr.h"
 #include "CharacterCache.h"
@@ -572,6 +573,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(bot));
     }
     PlayerbotRepository::instance().Load(botAI);
+    if (sPlayerbotAIConfig.SkillEnable)
+        botAI->SetPvpSkill(BotProfileMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter()));
 
     if (master && !master->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {

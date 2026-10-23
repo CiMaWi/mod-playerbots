@@ -7,6 +7,7 @@
 #include "Playerbots.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BotProfileMgr.h"
 #include "Channel.h"
 #include "CheckMountStateAction.h"
 #include "Config.h"
@@ -541,6 +542,7 @@ public:
 
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
+        BotProfileMgr::instance().Load();
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
     }
