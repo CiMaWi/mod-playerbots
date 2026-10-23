@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_SKILLSTRATEGY_H
 #define PLAYERBOTS_SKILLSTRATEGY_H
 
+#include <string>
 #include <unordered_map>
 
 #include "Multiplier.h"
@@ -29,6 +30,8 @@ enum class SkillNoticeCategory : uint8
 };
 
 char const* SkillNoticeCategoryName(SkillNoticeCategory category);
+// The category of an action by its name (None for an action the skill strategy leaves alone)
+SkillNoticeCategory SkillNoticeCategoryOf(std::string const& actionName);
 
 // Returns 0 for an action of a notice category until the bot has noticed it in the current window. The notice time
 // and the missed windows come from a hash of guid, category and window, so the result is stable within a window and

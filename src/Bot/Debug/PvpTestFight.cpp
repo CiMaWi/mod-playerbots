@@ -789,6 +789,8 @@ void PvpTestFightJob::UpdateArrive()
             bot.GearScore = botAI->GetEquipGearScore(player);
             if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
                 bot.Skill = botAI->GetPvpSkill();
+
+            botAI->SetPvpTestCounting(true);
         }
 
         bot.Entered = true;
@@ -1009,6 +1011,10 @@ void PvpTestFightJob::CaptureStats()
         bot.Healing = totals.Healing;
         bot.KillingBlows = totals.KillingBlows;
         bot.Deaths = totals.Deaths;
+
+        Player* player = ObjectAccessor::FindConnectedPlayer(_members[index]);
+        if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
+            bot.Casts = botAI->GetPvpTestExecuted();
     }
 }
 
@@ -1072,6 +1078,13 @@ void PvpTestFightJob::UpdateTearDown()
 
 void PvpTestFightJob::FinishTearDown(bool timedOut)
 {
+    for (ObjectGuid const& guid : _members)
+    {
+        Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+        if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
+            botAI->SetPvpTestCounting(false);
+    }
+
     for (size_t index = 0; index < _members.size(); ++index)
     {
         Origin const& origin = _origins[index];

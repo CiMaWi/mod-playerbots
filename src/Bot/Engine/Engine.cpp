@@ -597,6 +597,10 @@ bool Engine::ListenAndExecute(Action* action, Event event)
         return actionExecuted;
     }
 
+    // Only bots in a PvP test match count executed casts of the skill categories (the match record)
+    ObjectGuid countTarget;
+    uint8 const countCategory = botAI->IsPvpTestCounting() ? botAI->BeginExecutedCount(action, countTarget) : 0;
+
     if (actionExecutionListeners.Before(action, event))
     {
         actionExecuted = actionExecutionListeners.AllowExecution(action, event) ? action->Execute(event) : true;
@@ -623,6 +627,9 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     actionExecuted = actionExecutionListeners.OverrideResult(action, actionExecuted, event);
     actionExecutionListeners.After(action, actionExecuted, event);
+
+    if (countCategory && actionExecuted)
+        botAI->EndExecutedCount(countCategory, countTarget);
 
     if (actionExecuted && action->GetDuration() > 0)
         botAI->SetActionDuration(action);

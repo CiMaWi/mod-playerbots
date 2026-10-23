@@ -35,6 +35,9 @@ struct PvpTestBotRecord
     uint32 KillingBlows = 0;
     uint32 Deaths = 0;
     uint32 HonorableKills = 0;
+    // Executed casts by skill category while the match ran: interrupt, defensive, dispel, crowd control, cc break,
+    // target switch (the categories of Playerbots.Skill.Notice*)
+    std::array<uint32, 6> Casts{};
 };
 
 struct PvpTestSideRecord

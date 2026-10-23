@@ -632,8 +632,21 @@ void PvpTestArenaJob::CaptureRoster()
                 bot.GearScore = botAI->GetEquipGearScore(player);
                 if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
                     bot.Skill = botAI->GetPvpSkill();
+
+                botAI->SetPvpTestCounting(true);
             }
         }
+    }
+}
+
+// Counting on zeroes the executed casts, so the count starts with the fight; off when the match is torn down
+void PvpTestArenaJob::SetCounting(bool on)
+{
+    for (ObjectGuid const& guid : AllMembers())
+    {
+        Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+        if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
+            botAI->SetPvpTestCounting(on);
     }
 }
 
@@ -658,6 +671,10 @@ void PvpTestArenaJob::CaptureScores(Battleground const* arena)
             bot.KillingBlows = itr->second->GetKillingBlows();
             bot.Deaths = itr->second->GetDeaths();
             bot.HonorableKills = itr->second->GetHonorableKills();
+
+            Player* player = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(bot.Guid));
+            if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
+                bot.Casts = botAI->GetPvpTestExecuted();
         }
     }
 }
@@ -704,6 +721,7 @@ void PvpTestArenaJob::UpdateMonitor(bool slowTick)
     {
         _fightStarted = true;
         _fightStartMs = _totalMs;
+        SetCounting(true);
     }
 
     if (status == STATUS_WAIT_LEAVE)
@@ -818,6 +836,7 @@ void PvpTestArenaJob::FinishTearDown(bool timedOut)
         side->GroupId = 0;
     }
 
+    SetCounting(false);
     for (ObjectGuid const& guid : AllMembers())
     {
         Player* player = ObjectAccessor::FindConnectedPlayer(guid);

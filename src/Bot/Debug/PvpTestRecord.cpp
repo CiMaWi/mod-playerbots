@@ -68,11 +68,13 @@ std::string BotToJson(PvpTestBotRecord const& bot)
     return Acore::StringFormat(
         "{{\"guid\":{},\"name\":{},\"class\":{},\"classId\":{},\"race\":{},\"level\":{},\"spec\":{},\"gearScore\":{},"
         "\"skill\":{},\"entered\":{},\"damage\":{},\"healing\":{},\"killingBlows\":{},\"deaths\":{},"
-        "\"honorableKills\":{}}}",
+        "\"honorableKills\":{},\"casts\":{{\"interrupt\":{},\"defensive\":{},\"dispel\":{},\"crowdControl\":{},"
+        "\"ccBreak\":{},\"targetSwitch\":{}}}}}",
         bot.Guid, Quote(bot.Name), Quote(PvpTestRecordWriter::ClassName(bot.ClassId)), static_cast<uint32>(bot.ClassId),
         static_cast<uint32>(bot.RaceId), static_cast<uint32>(bot.Level), Quote(bot.Spec), bot.GearScore,
         bot.Skill < 0 ? std::string("null") : std::to_string(bot.Skill), bot.Entered ? "true" : "false", bot.Damage,
-        bot.Healing, bot.KillingBlows, bot.Deaths, bot.HonorableKills);
+        bot.Healing, bot.KillingBlows, bot.Deaths, bot.HonorableKills, bot.Casts[0], bot.Casts[1], bot.Casts[2],
+        bot.Casts[3], bot.Casts[4], bot.Casts[5]);
 }
 
 std::string SideToJson(PvpTestSideRecord const& side)

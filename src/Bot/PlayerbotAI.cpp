@@ -48,6 +48,7 @@
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SkillStrategy.h"
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
@@ -6753,6 +6754,41 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
             lerp(sPlayerbotAIConfig.SkillNoticeMissPercentLow, sPlayerbotAIConfig.SkillNoticeMissPercentHigh);
         skillNoticeDelayMs = lerp(sPlayerbotAIConfig.SkillNoticeDelayMsLow, sPlayerbotAIConfig.SkillNoticeDelayMsHigh);
     }
+}
+
+void PlayerbotAI::SetPvpTestCounting(bool on)
+{
+    pvpTestCounting = on;
+    if (on)
+        pvpTestExecuted.fill(0);
+}
+
+uint8 PlayerbotAI::BeginExecutedCount(Action* action, ObjectGuid& previousTarget)
+{
+    SkillNoticeCategory const category = SkillNoticeCategoryOf(action->getName());
+    if (category == SkillNoticeCategory::None)
+        return 0;
+
+    if (category == SkillNoticeCategory::TargetSwitch)
+    {
+        Unit* const current = aiObjectContext->GetValue<Unit*>("current target")->Get();
+        previousTarget = current ? current->GetGUID() : ObjectGuid::Empty;
+    }
+
+    return static_cast<uint8>(category);
+}
+
+void PlayerbotAI::EndExecutedCount(uint8 category, ObjectGuid previousTarget)
+{
+    if (category == static_cast<uint8>(SkillNoticeCategory::TargetSwitch))
+    {
+        // An assist that keeps the target is not a switch
+        Unit* const current = aiObjectContext->GetValue<Unit*>("current target")->Get();
+        if (!current || current->GetGUID() == previousTarget)
+            return;
+    }
+
+    ++pvpTestExecuted[category - 1];
 }
 
 bool PlayerbotAI::IsPvpFight() const

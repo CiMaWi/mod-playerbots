@@ -193,6 +193,8 @@ char const* SkillNoticeCategoryName(SkillNoticeCategory category)
     }
 }
 
+SkillNoticeCategory SkillNoticeCategoryOf(std::string const& actionName) { return LookupCategory(actionName); }
+
 float SkillMultiplier::GetValue(Action* action)
 {
     // Cheap exits first: most bots' actions end at the cached category lookup

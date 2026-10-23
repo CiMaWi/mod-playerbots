@@ -89,6 +89,7 @@ private:
     bool StartArena(std::string& error);
     void CaptureRoster();
     void CaptureScores(Battleground const* arena);
+    void SetCounting(bool on);
     void UpdateMonitor(bool slowTick);
     void SendAcceptFallback();
     void UpdateTearDown();

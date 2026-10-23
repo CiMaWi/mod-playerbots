@@ -636,6 +636,16 @@ public:
     uint32 GetSkillNoticeMissPercent() const { return skillNoticeMissPercent; }
     uint32 GetSkillNoticeDelayMs() const { return skillNoticeDelayMs; }
     SkillNoticeCounters& GetSkillNoticeCounters() { return skillNoticeCounters; }
+    // PvP test harness: while a match runs, the actions of the notice categories that executed (cast successfully),
+    // one slot per category in the order of SkillNoticeCounters. Counting costs nothing outside a match: one flag.
+    // Turning it on zeroes the counts.
+    void SetPvpTestCounting(bool on);
+    bool IsPvpTestCounting() const { return pvpTestCounting; }
+    std::array<uint32, SkillNoticeCounters::Categories> const& GetPvpTestExecuted() const { return pvpTestExecuted; }
+    // Around Action::Execute: Begin returns the category (0 = not counted) and the current target for a target switch,
+    // End counts the action once it has executed (a target switch only when the current target changed)
+    uint8 BeginExecutedCount(Action* action, ObjectGuid& previousTarget);
+    void EndExecutedCount(uint8 category, ObjectGuid previousTarget);
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -703,6 +713,8 @@ protected:
     uint32 skillNoticeMissPercent = 0;
     uint32 skillNoticeDelayMs = 0;
     SkillNoticeCounters skillNoticeCounters;
+    bool pvpTestCounting = false;
+    std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
 };
 
 #endif
