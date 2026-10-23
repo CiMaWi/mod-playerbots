@@ -1796,6 +1796,16 @@ Playerbots.RandomBotArenaTeam5v5Count = 5
 Playerbots.RandomBotArenaTeamMaxRating = 2000
 Playerbots.RandomBotArenaTeamMinRating = 1000
 
+# How the rating of randombot arena teams is set.
+#    0 = random: a new team gets a random rating between Min and Max above, and its members' matchmaking rating (MMR)
+#        follows it once the team is full (default)
+#    1 = earned: a new team keeps the core's start values (Arena.ArenaStartRating, Arena.ArenaStartMatchmakerRating)
+#        and climbs by winning rated matches. Min and Max are ignored.
+# Teams that already exist keep their ratings when the mode changes. To set all of them to the start values once, run
+# the GM command: .playerbots arena resetratings (works from the console)
+# Default: 0
+Playerbots.RandomBotArenaTeamRatingMode = 0
+
 # Delete all randombot (and any addclass bot) arena teams on startup. While enabled,
 # no new randombot arena teams are created or joined. Set back to 0 and restart the
 # server to resume normal randombot arena team assignment.

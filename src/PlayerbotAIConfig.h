@@ -54,6 +54,12 @@ enum class AutoPartyBuffMode : uint8
     GROUP_OR_RAID = 2
 };
 
+enum ArenaRatingMode : uint32
+{
+    ARENA_RATING_MODE_RANDOM = 0,
+    ARENA_RATING_MODE_EARNED = 1,
+};
+
 enum NewRpgStatus : int
 {
     //Initial Status
@@ -418,6 +424,7 @@ public:
 
     uint32 RandomBotArenaTeamMaxRating;
     uint32 RandomBotArenaTeamMinRating;
+    uint32 RandomBotArenaTeamRatingMode;
     uint32 RandomBotArenaTeam2v2Count;
     uint32 RandomBotArenaTeam3v3Count;
     uint32 RandomBotArenaTeam5v5Count;

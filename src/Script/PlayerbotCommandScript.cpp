@@ -10,6 +10,7 @@
 #include "PerfMonitor.h"
 #include "PlayerbotMgr.h"
 #include "PvpTest.h"
+#include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "TestPlayer.h"
@@ -56,6 +57,10 @@ public:
             {"stop", PvpTestMgr::HandleStopCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsArenaCommandTable = {
+            {"resetratings", HandleArenaResetRatingsCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -65,6 +70,7 @@ public:
             {"account", playerbotsAccountCommandTable},
             {"testplayer", playerbotsTestPlayerCommandTable},
             {"pvptest", playerbotsPvpTestCommandTable},
+            {"arena", playerbotsArenaCommandTable},
         };
 
         static ChatCommandTable commandTable = {
@@ -123,6 +129,15 @@ public:
 
         sPerfMonitor.PrintStats();
         sPerfMonitor.DumpJson(false);
+        return true;
+    }
+
+    static bool HandleArenaResetRatingsCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        uint32 resetMembers = 0;
+        uint32 const resetTeams = RandomPlayerbotFactory::ResetBotArenaTeamRatings(resetMembers);
+        handler->PSendSysMessage("Reset the ratings of {} bot arena teams ({} members) to the start values.",
+                                 resetTeams, resetMembers);
         return true;
     }
 

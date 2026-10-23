@@ -7,6 +7,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
+#include "ArenaSeasonMgr.h"
 #include "ArenaTeamMgr.h"
 #include "CharacterCache.h"
 #include "ObjectAccessor.h"
@@ -960,7 +961,8 @@ void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot)
             continue;
         }
 
-        if (team->GetMembersSize() >= static_cast<uint32>(team->GetType()))
+        if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM &&
+            team->GetMembersSize() >= static_cast<uint32>(team->GetType()))
         {
             uint32 teamRating = team->GetRating();
             team->SetRatingForAll(teamRating);
@@ -1003,8 +1005,9 @@ void RandomPlayerbotFactory::CreateBotArenaTeam(Player* bot, ArenaType type)
         return;
     }
 
-    arenateam->SetRatingForAll(
-        urand(sPlayerbotAIConfig.RandomBotArenaTeamMinRating, sPlayerbotAIConfig.RandomBotArenaTeamMaxRating));
+    if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
+        arenateam->SetRatingForAll(
+            urand(sPlayerbotAIConfig.RandomBotArenaTeamMinRating, sPlayerbotAIConfig.RandomBotArenaTeamMaxRating));
 
     uint32 const backgroundColor = urand(0xFF000000, 0xFFFFFFFF);
     uint8 const emblemStyle = urand(0, 101);
@@ -1066,6 +1069,56 @@ void RandomPlayerbotFactory::DeleteBotArenaTeams()
 
     _botArenaTeamRegistry.clear();
     LOG_INFO("playerbots", "Deleted {} random bot arena teams", teamsToDisband.size());
+}
+
+// Mirrors the thresholds in ArenaTeam::AddMember.
+static constexpr uint8 FIRST_MODERN_ARENA_SEASON = 6;
+static constexpr uint32 LEGACY_ARENA_PERSONAL_START_RATING = 1500;
+static constexpr uint32 ARENA_PERSONAL_RATING_THRESHOLD = 1000;
+
+uint32 RandomPlayerbotFactory::ResetBotArenaTeamRatings(uint32& resetMembers)
+{
+    resetMembers = 0;
+
+    // A fresh team carries the core's start rating for the current season (same rule as the ArenaTeam constructor).
+    ArenaTeam const startTeam;
+    uint32 const startRating = startTeam.GetRating();
+    uint32 const startMmr = sWorld->getIntConfig(CONFIG_ARENA_START_MATCHMAKER_RATING);
+
+    // Same rule as ArenaTeam::AddMember.
+    uint32 startPersonal = 0;
+    if (sWorld->getIntConfig(CONFIG_ARENA_START_PERSONAL_RATING) > 0)
+        startPersonal = sWorld->getIntConfig(CONFIG_ARENA_START_PERSONAL_RATING);
+    else if (sArenaSeasonMgr->GetCurrentSeason() < FIRST_MODERN_ARENA_SEASON)
+        startPersonal = LEGACY_ARENA_PERSONAL_START_RATING;
+    else if (startRating >= ARENA_PERSONAL_RATING_THRESHOLD)
+        startPersonal = ARENA_PERSONAL_RATING_THRESHOLD;
+
+    uint32 resetTeams = 0;
+    for (auto const& [id, arenateam] : sArenaTeamMgr->GetArenaTeams())
+    {
+        if (!IsBotArenaTeam(arenateam))
+            continue;
+
+        ArenaTeamStats stats = arenateam->GetStats();
+        stats.Rating = startRating;
+        arenateam->SetArenaTeamStats(stats);
+
+        for (ArenaTeamMember& member : arenateam->GetMembers())
+        {
+            member.PersonalRating = startPersonal;
+            member.MatchMakerRating = startMmr;
+            member.MaxMMR = startMmr;
+            ++resetMembers;
+        }
+
+        arenateam->SaveToDB(true);
+        ++resetTeams;
+    }
+
+    LOG_INFO("playerbots", "Reset {} random bot arena teams ({} members) to rating {}, personal rating {}, MMR {}",
+             resetTeams, resetMembers, startRating, startPersonal, startMmr);
+    return resetTeams;
 }
 
 std::string RandomPlayerbotFactory::CreateRandomArenaTeamName()

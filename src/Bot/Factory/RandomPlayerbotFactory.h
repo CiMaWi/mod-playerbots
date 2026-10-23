@@ -63,6 +63,9 @@ public:
     static void DeleteBotArenaTeams();
     static uint32 GetBotArenaTeamCount(ArenaType type);
     static void LoadArenaTeamData();
+    // Sets every bot arena team's rating and its members' personal rating and MMR to the core's start values.
+    // Returns the number of teams reset; resetMembers receives the number of members.
+    static uint32 ResetBotArenaTeamRatings(uint32& resetMembers);
 
 private:
     friend class ArenaTeamAssignOperation;

@@ -790,6 +790,10 @@ bool PlayerbotAIConfig::Initialize()
     DeleteRandomBotArenaTeams = sConfigMgr->GetOption<bool>("Playerbots.DeleteRandomBotArenaTeams", false);
     RandomBotArenaTeamMaxRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMaxRating", 2000);
     RandomBotArenaTeamMinRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMinRating", 1000);
+    RandomBotArenaTeamRatingMode =
+        sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamRatingMode", 0) == ARENA_RATING_MODE_EARNED
+            ? ARENA_RATING_MODE_EARNED
+            : ARENA_RATING_MODE_RANDOM;
 
     SelfBotLevel = sConfigMgr->GetOption<int32>("Playerbots.SelfBotLevel", 1);
 
