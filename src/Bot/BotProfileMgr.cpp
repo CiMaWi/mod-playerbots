@@ -256,17 +256,21 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
         }
 
         profile = mgr.SetSkill(low, static_cast<uint8>(*skill));
+        // An actual skill change resets the notice counters; a plain read must not
+        if (botAI)
+            botAI->SetPvpSkill(profile.Skill);
     }
     else if (verb == "reroll")
+    {
         profile = mgr.Reroll(low);
+        if (botAI)
+            botAI->SetPvpSkill(profile.Skill);
+    }
     else
     {
         handler->PSendSysMessage("Usage: .playerbots skill [<bot> [set <{}-{}> | reroll]]", MinSkill, MaxSkill);
         return false;
     }
-
-    if (botAI)
-        botAI->SetPvpSkill(profile.Skill);
 
     handler->PSendSysMessage("{} (guid {}, {}): skill {}, roll {}", name, low, botAI ? "online" : "offline",
                              static_cast<uint32>(profile.Skill), profile.Version);
