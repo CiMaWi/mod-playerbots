@@ -387,6 +387,10 @@ public:
     bool CensusEnable;
     uint32 CensusIntervalSeconds;
     bool SkillEnable;
+    float SkillReactFactorLow;
+    float SkillReactFactorHigh;
+    bool SkillFullAbilityInPvE;
+    bool SkillReactActive;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;

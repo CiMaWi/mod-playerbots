@@ -726,6 +726,12 @@ bool PlayerbotAIConfig::Initialize()
     CensusIntervalSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Census.IntervalSeconds", 30), 5, 3600);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
+    SkillReactFactorLow =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);
+    SkillReactFactorHigh =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill99", 1.0f), 0.1f, 10.0f);
+    SkillFullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
+    SkillReactActive = SkillEnable && (SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f);
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);

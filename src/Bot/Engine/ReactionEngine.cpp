@@ -211,8 +211,16 @@ bool ReactionEngine::Update(uint32 elapsed, bool minimal, bool canControlSelf, b
             }
         }
 
-        if (!HasIncomingReaction() && !IsReacting() && aiReactionUpdateDelay < sPlayerbotAIConfig.ReactDelay)
-            aiReactionUpdateDelay = minimal ? sPlayerbotAIConfig.ReactDelay * 10 : sPlayerbotAIConfig.ReactDelay;
+        if (!HasIncomingReaction() && !IsReacting())
+        {
+            float const skillFactor = botAI->GetEffectiveSkillReactFactor();
+            uint32 const reset =
+                skillFactor == 1.0f
+                    ? sPlayerbotAIConfig.ReactDelay
+                    : std::max<uint32>(1u, static_cast<uint32>(sPlayerbotAIConfig.ReactDelay * skillFactor));
+            if (aiReactionUpdateDelay < reset)
+                aiReactionUpdateDelay = minimal ? reset * 10 : reset;
+        }
     }
 
     return HasIncomingReaction() || IsReacting();

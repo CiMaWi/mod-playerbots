@@ -1390,6 +1390,17 @@ Playerbots.Census.IntervalSeconds = 30
 # With 0 (default) nothing is rolled, stored or used, and the harness records carry "skill":null.
 Playerbots.Skill.Enable = 0
 
+# Skill knob 1, reaction delay. Needs Playerbots.Skill.Enable = 1. A bot's reaction delay (GetReactDelay and the
+# reaction engine's reset delay) is multiplied by a factor that falls linearly from ReactFactorAtSkill1 (skill 1) to
+# ReactFactorAtSkill99 (skill 99). For example 2.5 and 0.7: the weakest bots react 2.5 times later, the best 0.7 times
+# as late. Each is clamped to 0.1-10. Default 1.0 and 1.0 = no change. Bots with a game-client master are not scaled.
+Playerbots.Skill.ReactFactorAtSkill1 = 1.0
+Playerbots.Skill.ReactFactorAtSkill99 = 1.0
+
+# By default the skill acts in every fight, PvE included. With 1, bots play at full ability (factor 1.0) unless they
+# are in a battleground, an arena, a duel or PvP combat; the skill then only shows in PvP.
+Playerbots.Skill.FullAbilityInPvE = 0
+
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).
 # When the server slows down, fewer bots are kept active to reduce load.

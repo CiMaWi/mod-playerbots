@@ -610,10 +610,16 @@ public:
     bool HasItemInInventory(uint32 itemId);
     std::vector<std::pair<Quest const*, uint32>> GetCurrentQuestsRequiringItemId(uint32 itemId);
     uint32 GetReactDelay();
+    uint32 ComputeReactDelay();
     // Hidden PvP skill 1-99 (BotProfileMgr), set at login; 0 when Playerbots.Skill.Enable is 0. Only GM commands and
     // the PvP harness records may show it.
     uint8 GetPvpSkill() const { return pvpSkill; }
-    void SetPvpSkill(uint8 skill) { pvpSkill = skill; }
+    void SetPvpSkill(uint8 skill);
+    // Reaction-delay factor from the hidden skill (Playerbots.Skill.React*), cached by SetPvpSkill. 1.0 when the
+    // skill system or the factor range is off, and in PvE fights when Playerbots.Skill.FullAbilityInPvE is on.
+    float GetEffectiveSkillReactFactor() const;
+    // PvP fight: battleground, arena, duel or PvP combat. Everything else counts as PvE for the skill knobs.
+    bool IsPvpFight() const;
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -677,6 +683,7 @@ protected:
     uint32 nextTransportCheck = 0;
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
+    float skillReactFactor = 1.0f;
 };
 
 #endif

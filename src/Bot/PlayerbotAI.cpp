@@ -6728,7 +6728,40 @@ std::set<uint32> PlayerbotAI::GetCurrentIncompleteQuestIds()
     return result;
 }
 
+void PlayerbotAI::SetPvpSkill(uint8 skill)
+{
+    pvpSkill = skill;
+    skillReactFactor = 1.0f;
+    if (skill > 0 && sPlayerbotAIConfig.SkillReactActive)
+        skillReactFactor = sPlayerbotAIConfig.SkillReactFactorLow +
+                           (sPlayerbotAIConfig.SkillReactFactorHigh - sPlayerbotAIConfig.SkillReactFactorLow) *
+                               (static_cast<float>(std::clamp<uint8>(skill, 1, 99)) - 1.0f) / 98.0f;
+}
+
+bool PlayerbotAI::IsPvpFight() const
+{
+    return bot->InBattleground() || bot->InArena() || bot->duel != nullptr || bot->GetCombatManager().HasPvPCombat();
+}
+
+float PlayerbotAI::GetEffectiveSkillReactFactor() const
+{
+    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive)
+        return 1.0f;
+    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
+        return 1.0f;
+    return skillReactFactor;
+}
+
 uint32 PlayerbotAI::GetReactDelay()
+{
+    uint32 const delay = ComputeReactDelay();
+    float const factor = GetEffectiveSkillReactFactor();
+    if (factor == 1.0f || HasGameClientMaster())
+        return delay;
+    return std::max<uint32>(1u, static_cast<uint32>(delay * factor));
+}
+
+uint32 PlayerbotAI::ComputeReactDelay()
 {
     uint32 base = sPlayerbotAIConfig.ReactDelay;  // Default 100(ms)
 
