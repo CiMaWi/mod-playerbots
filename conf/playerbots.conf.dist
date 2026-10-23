@@ -1401,6 +1401,20 @@ Playerbots.Skill.ReactFactorAtSkill99 = 1.0
 # are in a battleground, an arena, a duel or PvP combat; the skill then only shows in PvP.
 Playerbots.Skill.FullAbilityInPvE = 0
 
+# Skill knob 2, noticing. Needs Playerbots.Skill.Enable = 1. Interrupts, defensive cooldowns, dispels, crowd control,
+# crowd-control breaks (Every Man for Himself, Will of the Forsaken, Escape Artist) and target switches wait until the
+# bot has noticed them. Time runs in windows of NoticeWindowMs plus the bot's delay. In each window and category the bot
+# notices after a delay of 0 to its NoticeDelayMs, or misses the whole window with its NoticeMissPercent chance; both
+# come from a hash of the bot and the window, not a roll per action. Delay and miss chance fall linearly from AtSkill1
+# (skill 1) to AtSkill99 (skill 99). A target switch is only delayed when the bot already has a live target. Bots with
+# a game-client master are not affected. Miss chance 0-95, delays 0-10000 ms, window 100-60000 ms.
+# Default 0 everywhere = no change (the "skill" strategy is not added).
+Playerbots.Skill.NoticeMissPercentAtSkill1 = 0
+Playerbots.Skill.NoticeMissPercentAtSkill99 = 0
+Playerbots.Skill.NoticeDelayMsAtSkill1 = 0
+Playerbots.Skill.NoticeDelayMsAtSkill99 = 0
+Playerbots.Skill.NoticeWindowMs = 1500
+
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).
 # When the server slows down, fewer bots are kept active to reduce load.

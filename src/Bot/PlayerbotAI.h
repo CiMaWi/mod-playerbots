@@ -7,6 +7,9 @@
 #ifndef PLAYERBOTS_PLAYERBOTAI_H
 #define PLAYERBOTS_PLAYERBOTAI_H
 
+#include <array>
+#include <stack>
+
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
@@ -24,7 +27,6 @@
 #include "SpellAuras.h"
 #include "Util.h"
 #include "WorldPacket.h"
-#include <stack>
 
 class Action;
 class AiObjectContext;
@@ -393,6 +395,15 @@ private:
     time_t time;
 };
 
+// Verdicts of the skill multiplier (SkillStrategy) per notice category, counted since the skill was last set. Only the
+// GM command .playerbots skill <bot> shows them.
+struct SkillNoticeCounters
+{
+    static constexpr size_t Categories = 6;
+    std::array<uint32, Categories> blocked{};
+    std::array<uint32, Categories> allowed{};
+};
+
 class PlayerbotAI : public PlayerbotAIBase
 {
     // Consumes queued chat commands from FindReaction(); needs HandleCommands().
@@ -620,6 +631,11 @@ public:
     float GetEffectiveSkillReactFactor() const;
     // PvP fight: battleground, arena, duel or PvP combat. Everything else counts as PvE for the skill knobs.
     bool IsPvpFight() const;
+    // Skill knob 2, noticing (Playerbots.Skill.Notice*, SkillStrategy): chance to miss a window and longest notice
+    // delay from the hidden skill, cached by SetPvpSkill; both 0 when the knob is off.
+    uint32 GetSkillNoticeMissPercent() const { return skillNoticeMissPercent; }
+    uint32 GetSkillNoticeDelayMs() const { return skillNoticeDelayMs; }
+    SkillNoticeCounters& GetSkillNoticeCounters() { return skillNoticeCounters; }
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -684,6 +700,9 @@ protected:
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
     float skillReactFactor = 1.0f;
+    uint32 skillNoticeMissPercent = 0;
+    uint32 skillNoticeDelayMs = 0;
+    SkillNoticeCounters skillNoticeCounters;
 };
 
 #endif

@@ -732,6 +732,18 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill99", 1.0f), 0.1f, 10.0f);
     SkillFullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
     SkillReactActive = SkillEnable && (SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f);
+    SkillNoticeMissPercentLow =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill1", 0), 0, 95);
+    SkillNoticeMissPercentHigh =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill99", 0), 0, 95);
+    SkillNoticeDelayMsLow =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill1", 0), 0, 10000);
+    SkillNoticeDelayMsHigh =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill99", 0), 0, 10000);
+    SkillNoticeWindowMs =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
+    SkillNoticeActive = SkillEnable && (SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
+                                        SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0);
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);

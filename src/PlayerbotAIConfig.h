@@ -391,6 +391,12 @@ public:
     float SkillReactFactorHigh;
     bool SkillFullAbilityInPvE;
     bool SkillReactActive;
+    uint32 SkillNoticeMissPercentLow;
+    uint32 SkillNoticeMissPercentHigh;
+    uint32 SkillNoticeDelayMsLow;
+    uint32 SkillNoticeDelayMsHigh;
+    uint32 SkillNoticeWindowMs;
+    bool SkillNoticeActive;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;

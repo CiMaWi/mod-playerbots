@@ -22,6 +22,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "SkillStrategy.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 
@@ -269,5 +270,19 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
 
     handler->PSendSysMessage("{} (guid {}, {}): skill {}, roll {}", name, low, botAI ? "online" : "offline",
                              static_cast<uint32>(profile.Skill), profile.Version);
+    if (botAI && sPlayerbotAIConfig.SkillNoticeActive)
+    {
+        // Multiplier verdicts since the skill was last set, not executed casts
+        SkillNoticeCounters const& counters = botAI->GetSkillNoticeCounters();
+        std::string verdicts;
+        for (size_t i = 0; i < SkillNoticeCounters::Categories; ++i)
+            verdicts += Acore::StringFormat("{}{} {}/{}", i ? ", " : "",
+                                            SkillNoticeCategoryName(static_cast<SkillNoticeCategory>(i + 1)),
+                                            counters.blocked[i], counters.allowed[i]);
+
+        handler->PSendSysMessage("Notice: miss {}%, delay up to {} ms; blocked/allowed: {}",
+                                 botAI->GetSkillNoticeMissPercent(), botAI->GetSkillNoticeDelayMs(), verdicts);
+    }
+
     return true;
 }

@@ -495,6 +495,10 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->removeStrategy("threat", false);
         engine->addStrategy("boost", false);
     }
+
+    // Skill knob 2, noticing: only when configured, so the default engine has no extra multiplier
+    if (sPlayerbotAIConfig.SkillNoticeActive)
+        engine->addStrategy("skill", false);
 }
 
 Engine* AiFactory::createCombatEngine(Player* player, PlayerbotAI* const facade, AiObjectContext* aiObjectContext)

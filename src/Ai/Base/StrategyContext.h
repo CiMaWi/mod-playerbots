@@ -47,6 +47,7 @@
 #include "ReturnStrategy.h"
 #include "RpgStrategy.h"
 #include "RunawayStrategy.h"
+#include "SkillStrategy.h"
 #include "StayStrategy.h"
 #include "TankAssistStrategy.h"
 #include "TellTargetStrategy.h"
@@ -81,6 +82,7 @@ public:
         creators["potions"] = &StrategyContext::potions;
         creators["react"] = &StrategyContext::react;
         creators["cast time"] = &StrategyContext::cast_time;
+        creators["skill"] = &StrategyContext::skill;
         creators["threat"] = &StrategyContext::threat;
         creators["focus"] = &StrategyContext::focus;
         creators["tell target"] = &StrategyContext::tell_target;
@@ -144,6 +146,7 @@ private:
     static Strategy* threat(PlayerbotAI* botAI) { return new ThreatStrategy(botAI); }
     static Strategy* focus(PlayerbotAI* botAI) { return new FocusStrategy(botAI); }
     static Strategy* cast_time(PlayerbotAI* botAI) { return new CastTimeStrategy(botAI); }
+    static Strategy* skill(PlayerbotAI* botAI) { return new SkillStrategy(botAI); }
     static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }
     static Strategy* react(PlayerbotAI* botAI) { return new ReactionStrategy(botAI); }
     static Strategy* kite(PlayerbotAI* botAI) { return new KiteStrategy(botAI); }

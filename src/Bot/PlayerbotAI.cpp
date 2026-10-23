@@ -6732,10 +6732,27 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
 {
     pvpSkill = skill;
     skillReactFactor = 1.0f;
-    if (skill > 0 && sPlayerbotAIConfig.SkillReactActive)
-        skillReactFactor = sPlayerbotAIConfig.SkillReactFactorLow +
-                           (sPlayerbotAIConfig.SkillReactFactorHigh - sPlayerbotAIConfig.SkillReactFactorLow) *
-                               (static_cast<float>(std::clamp<uint8>(skill, 1, 99)) - 1.0f) / 98.0f;
+    skillNoticeMissPercent = 0;
+    skillNoticeDelayMs = 0;
+    skillNoticeCounters = SkillNoticeCounters();
+    if (skill == 0)
+        return;
+
+    // 0 at skill 1, 1 at skill 99
+    float const position = (static_cast<float>(std::clamp<uint8>(skill, 1, 99)) - 1.0f) / 98.0f;
+    if (sPlayerbotAIConfig.SkillReactActive)
+        skillReactFactor =
+            sPlayerbotAIConfig.SkillReactFactorLow +
+            (sPlayerbotAIConfig.SkillReactFactorHigh - sPlayerbotAIConfig.SkillReactFactorLow) * position;
+
+    if (sPlayerbotAIConfig.SkillNoticeActive)
+    {
+        auto const lerp = [position](uint32 low, uint32 high)
+        { return static_cast<uint32>(low + (static_cast<float>(high) - low) * position + 0.5f); };
+        skillNoticeMissPercent =
+            lerp(sPlayerbotAIConfig.SkillNoticeMissPercentLow, sPlayerbotAIConfig.SkillNoticeMissPercentHigh);
+        skillNoticeDelayMs = lerp(sPlayerbotAIConfig.SkillNoticeDelayMsLow, sPlayerbotAIConfig.SkillNoticeDelayMsHigh);
+    }
 }
 
 bool PlayerbotAI::IsPvpFight() const
