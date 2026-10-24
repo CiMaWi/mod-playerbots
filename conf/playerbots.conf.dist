@@ -2708,7 +2708,9 @@ Playerbots.DebugThreadChecks = 0
 
 # Skip trigger checks that cannot fire: the chat command triggers while the bot has no chat command pending, and
 # the "combat start" trigger's attackers lookup while the bot is out of combat with no group, duel, battleground
-# or prioritized target. Saves CPU with many bots; commands and combat starts behave as before.
+# or prioritized target. Saves CPU with many bots; commands are answered as before and combat starts are never
+# missed, but "combat start" can fire once more within 1 second after the bot leaves combat or feigns death
+# (the attackers value is cached for 1 second).
 # Default: 0 (disabled)
 Playerbots.SkipIdleTriggerChecks = 0
 
