@@ -37,7 +37,9 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotMgr.h"
+#include "PlayerbotOperations.h"
 #include "PlayerbotTextMgr.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PositionValue.h"
 #include "RBAC.h"
@@ -599,17 +601,10 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
         if (logout)
         {
-            PlayerbotMgr* masterBotMgr = nullptr;
-            if (master)
-                masterBotMgr = GET_PLAYERBOT_MGR(master);
-            if (masterBotMgr)
-            {
-                masterBotMgr->LogoutPlayerBot(bot->GetGUID());
-            }
-            else
-            {
-                sRandomPlayerbotMgr.LogoutPlayerBot(bot->GetGUID());
-            }
+            // Map thread: the logout runs on the world thread (the operation picks the holder that holds the bot)
+            PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                std::make_unique<BotLogoutOperation>(bot->GetGUID()));
+            SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
             return;
         }
 
@@ -1166,7 +1161,9 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
                 TellMaster(message);
             }
 
-            masterBotMgr->LogoutPlayerBot(bot->GetGUID());
+            // Commands can arrive on a map thread (a bot's whisper, an action): the logout runs on the world thread
+            PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                std::make_unique<BotLogoutOperation>(bot->GetGUID()));
         }
         else if (type == CHAT_MSG_WHISPER)
         {

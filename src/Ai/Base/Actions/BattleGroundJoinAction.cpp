@@ -84,8 +84,10 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
         // if (!member && !sObjectMgr->GetPlayerAccountIdByGUID(itr->guid))
         //     continue;
 
+        // Map thread: the login runs on the world thread
         if (offline)
-            sRandomPlayerbotMgr.AddPlayerBot(itr->Guid, 0);
+            PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                std::make_unique<AddPlayerBotOperation>(itr->Guid, 0));
 
         if (member)
         {

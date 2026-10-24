@@ -31,6 +31,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
+#include "ThreadCheck.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
 #include <algorithm>
@@ -88,6 +89,8 @@ public:
 
 void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId)
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("PlayerbotHolder::AddPlayerBot");
+
     if (botLoading.find(playerGuid) != botLoading.end())
         return;
 
@@ -394,6 +397,8 @@ void PlayerbotMgr::CancelLogout()
 
 void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("PlayerbotHolder::LogoutPlayerBot");
+
     if (Player* bot = GetPlayerBot(guid))
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);

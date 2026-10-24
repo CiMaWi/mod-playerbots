@@ -483,6 +483,51 @@ private:
     uint32 m_masterAccountId;
 };
 
+// Bot logout operation (for logging out bots from map threads). The holder is picked when the operation runs: the
+// master's PlayerbotMgr if it holds the bot (alt/addclass bots), else the random bot manager (random bots, also when
+// a real player is their master, as in HireAction). LogoutPlayerBot does nothing when that holder does not hold the
+// bot, so a second operation queued for the same bot is harmless.
+// Known window (< 50 ms, user-triggered): if `.playerbots bot add` runs for this bot while the operation is queued,
+// AddPlayerBot returns (the bot is still in the world) and this operation then logs the bot out.
+class BotLogoutOperation : public PlayerbotOperation
+{
+public:
+    explicit BotLogoutOperation(ObjectGuid botGuid) : m_botGuid(botGuid) {}
+
+    bool Execute() override
+    {
+        Player* bot = ObjectAccessor::FindConnectedPlayer(m_botGuid);
+        if (!bot)
+            return false;
+
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI)
+            return false;
+
+        Player* master = botAI->GetMaster();
+        PlayerbotMgr* masterBotMgr = master ? GET_PLAYERBOT_MGR(master) : nullptr;
+        if (masterBotMgr && masterBotMgr->GetPlayerBot(m_botGuid))
+            masterBotMgr->LogoutPlayerBot(m_botGuid);
+        else
+            sRandomPlayerbotMgr.LogoutPlayerBot(m_botGuid);
+
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    uint32 GetPriority() const override { return 60; }
+    std::string GetName() const override { return "BotLogout"; }
+
+    bool IsValid() const override
+    {
+        Player* bot = ObjectAccessor::FindConnectedPlayer(m_botGuid);
+        return bot && GET_PLAYERBOT_AI(bot);
+    }
+
+private:
+    ObjectGuid m_botGuid;
+};
+
 class OnBotLoginOperation : public PlayerbotOperation
 {
 public:

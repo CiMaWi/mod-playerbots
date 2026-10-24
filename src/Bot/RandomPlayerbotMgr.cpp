@@ -29,7 +29,9 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
+#include "PlayerbotOperations.h"
 #include "PlayerbotTextMgr.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "Position.h"
 #include "RaceMgr.h"
@@ -2893,6 +2895,10 @@ void RandomPlayerbotMgr::PrintStats()
     printStatsTimer = time(nullptr);
     LOG_INFO("playerbots", "Random Bots Stats: {} online", playerBots.size());
     LOG_INFO("playerbots", "Event cache: {} loads off the world thread", _offThreadEventLoads.load());
+    PlayerbotWorldThreadProcessor::Statistics const opStats = PlayerbotWorldThreadProcessor::instance().GetStatistics();
+    LOG_INFO("playerbots", "World thread operations: {} processed, {} failed, {} skipped, {} queued (max {})",
+             opStats.totalOperationsProcessed, opStats.totalOperationsFailed, opStats.totalOperationsSkipped,
+             opStats.currentQueueSize, opStats.maxQueueSize);
 
     std::map<uint8, uint32> alliance, horde;
     for (uint32 i = 0; i < 10; ++i)
@@ -3270,7 +3276,8 @@ void RandomPlayerbotMgr::Remove(Player* bot)
         eventCache.erase(botId);
     }
 
-    LogoutPlayerBot(owner);
+    // Called from HireAction on a map thread: the logout runs on the world thread
+    PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<BotLogoutOperation>(owner));
 }
 
 CreatureData const* RandomPlayerbotMgr::GetCreatureDataByEntry(uint32 entry)
