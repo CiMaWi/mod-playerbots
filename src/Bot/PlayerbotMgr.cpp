@@ -1902,6 +1902,36 @@ PlayerbotMgr* PlayerbotsMgr::GetPlayerbotMgr(Player* player)
     return nullptr;
 }
 
+void PlayerbotsMgr::RefreshLfgStates(uint32 diff)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("PlayerbotsMgr LFG state refresh");
+
+    // A new pass starts from a fresh snapshot; bots added meanwhile wait for it, removed ones are skipped below
+    if (_lfgRefreshIndex >= _lfgRefreshGuids.size())
+    {
+        _lfgRefreshGuids.clear();
+        _lfgRefreshGuids.reserve(_playerbotsAIMap.size());
+        for (auto const& entry : _playerbotsAIMap)
+            _lfgRefreshGuids.push_back(entry.first);
+
+        _lfgRefreshIndex = 0;
+    }
+
+    // One pass per LFG_STATE_REFRESH_PERIOD_MS: size x diff / period bots this tick, the remainder carried over
+    uint64 const credit = _lfgRefreshCredit + uint64(_lfgRefreshGuids.size()) * diff;
+    uint64 count = credit / LFG_STATE_REFRESH_PERIOD_MS;
+    _lfgRefreshCredit = credit % LFG_STATE_REFRESH_PERIOD_MS;
+
+    for (; count && _lfgRefreshIndex < _lfgRefreshGuids.size(); --count)
+    {
+        auto const itr = _playerbotsAIMap.find(_lfgRefreshGuids[_lfgRefreshIndex++]);
+        if (itr == _playerbotsAIMap.end() || !itr->second->IsBotAI())
+            continue;
+
+        static_cast<PlayerbotAI*>(itr->second)->RefreshLfgState();
+    }
+}
+
 void PlayerbotMgr::HandleSetSecurityKeyCommand(Player* player, std::string const& key)
 {
     uint32 accountId = player->GetSession()->GetAccountId();

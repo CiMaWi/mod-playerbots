@@ -1304,6 +1304,8 @@ void RandomPlayerbotMgr::LogBattlegroundInfo()
 
 void RandomPlayerbotMgr::CheckLfgQueue()
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("RandomPlayerbotMgr LFG queue check");  // Reads LFGMgr, which inserts on read
+
     if (!LfgCheckTimer || time(nullptr) > (LfgCheckTimer + 30))
         LfgCheckTimer = time(nullptr);
 

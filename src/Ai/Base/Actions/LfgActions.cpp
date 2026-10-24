@@ -107,9 +107,8 @@ uint32 LfgJoinAction::GetRoles()
 
 bool LfgJoinAction::JoinLFG()
 {
-    // check if already in lfg
-    LfgState state = sLFGMgr->GetState(bot->GetGUID());
-    if (state != LFG_STATE_NONE)
+    // check if already in lfg (state cached on the world thread)
+    if (botAI->GetCachedLfgState() != LFG_STATE_NONE)
         return false;
 
     /*ItemCountByQuality visitor;
@@ -193,6 +192,8 @@ bool LfgJoinAction::JoinLFG()
     *data << (uint8)3 << (uint8)0 << (uint8)0 << (uint8)0;
     *data << _gs;
     bot->GetSession()->QueuePacket(data);
+    // The cached state is up to a second old; count the bot as queued until the next refresh
+    botAI->MarkLfgJoinQueued();
 
     return true;
 }
@@ -298,7 +299,7 @@ bool LfgLeaveAction::Execute(Event /*event*/)
     //    return false;
 
     // Don't leave if already invited / in dungeon
-    if (sLFGMgr->GetState(bot->GetGUID()) > LFG_STATE_QUEUED)
+    if (botAI->GetCachedLfgState() > LFG_STATE_QUEUED)
         return false;
 
     // Don't drop a queue we deliberately joined. The "seldom" tick (RandomTrigger, ~300s)
@@ -379,8 +380,7 @@ bool LfgJoinAction::isUseful()
     if (map && map->Instanceable())
         return false;
 
-    LfgState state = sLFGMgr->GetState(bot->GetGUID());
-    if (state != LFG_STATE_NONE)
+    if (botAI->GetCachedLfgState() != LFG_STATE_NONE)
         return false;
 
     return true;

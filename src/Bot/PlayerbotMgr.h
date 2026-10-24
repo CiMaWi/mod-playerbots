@@ -122,7 +122,12 @@ public:
     PlayerbotAI* GetPlayerbotAI(Player* player);
     PlayerbotMgr* GetPlayerbotMgr(Player* player);
 
+    // World thread only: refreshes the cached LFG state of a slice of the bots, each bot about once a second
+    void RefreshLfgStates(uint32 diff);
+
 private:
+    static constexpr uint32 LFG_STATE_REFRESH_PERIOD_MS = 1000;
+
     PlayerbotsMgr() = default;
     ~PlayerbotsMgr() = default;
 
@@ -134,6 +139,11 @@ private:
 
     std::unordered_map<ObjectGuid, PlayerbotAIBase*> _playerbotsAIMap;
     std::unordered_map<ObjectGuid, PlayerbotAIBase*> _playerbotsMgrMap;
+
+    // Round-robin over a snapshot of _playerbotsAIMap's keys (iterators would not survive an erase between ticks)
+    std::vector<ObjectGuid> _lfgRefreshGuids;
+    size_t _lfgRefreshIndex = 0;
+    uint64 _lfgRefreshCredit = 0;  // bots x ms not yet spent, carried to the next tick
 };
 
 #define sPlayerbotsMgr PlayerbotsMgr::instance()

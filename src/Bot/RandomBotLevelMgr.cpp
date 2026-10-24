@@ -21,6 +21,7 @@
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
+#include "ThreadCheck.h"
 #include "World.h"
 #include <algorithm>
 #include <cmath>
@@ -70,6 +71,8 @@ static bool BotInArenaTeam(Player* bot)
 // in a battleground/arena/dungeon queue or flight, and grouped only with other bots).
 static bool IsBotSafeForLevelReset(Player* bot)
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("RandomBotLevelMgr LFG state check");  // Reads LFGMgr, which inserts on read
+
     if (!bot || !bot->GetSession() || bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
         return false;
 

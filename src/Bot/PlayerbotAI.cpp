@@ -54,6 +54,7 @@
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
+#include "ThreadCheck.h"
 #include "Transport.h"
 #include "Unit.h"
 #include "UpdateTime.h"
@@ -4835,17 +4836,8 @@ bool PlayerbotAI::AllowActive(ActivityType activityType)
         }
     }
 
-    // bot is in LFG queue — stay active
-    bool isLFG = false;
-    if (group)
-    {
-        if (sLFGMgr->GetState(group->GetGUID()) != lfg::LFG_STATE_NONE)
-            isLFG = true;
-    }
-    if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE)
-        isLFG = true;
-
-    if (isLFG)
+    // bot or its group is in LFG — stay active (state cached on the world thread by RefreshLfgState)
+    if (lfgBotState != lfg::LFG_STATE_NONE || lfgGroupState != lfg::LFG_STATE_NONE)
         return true;
 
     // a real player has this bot on their friends list
@@ -4916,6 +4908,20 @@ bool PlayerbotAI::AllowActivity(ActivityType activityType, bool checkNow)
     allowActiveCheckTimer[activityIndex] = getMSTime();
 
     return allowed;
+}
+
+void PlayerbotAI::RefreshLfgState()
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("PlayerbotAI LFG state refresh");
+
+    // Out of the world (login, map change, logout) the bot keeps its last state
+    if (!bot || !bot->IsInWorld())
+        return;
+
+    lfgBotState = sLFGMgr->GetState(bot->GetGUID());
+
+    Group* group = bot->GetGroup();
+    lfgGroupState = group ? sLFGMgr->GetState(group->GetGUID()) : lfg::LFG_STATE_NONE;
 }
 
 uint32 PlayerbotAI::AutoScaleActivity(uint32 mod)

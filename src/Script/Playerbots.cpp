@@ -557,6 +557,8 @@ public:
         CensusMgr::Instance().Update(diff);  // Opt-in world census; returns at once when off
         PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
         PlayerbotWorldThreadProcessor::instance().Update(diff);
+        // Cached LFG state per bot, read on map threads
+        PlayerbotsMgr::instance().RefreshLfgStates(diff);
         sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
     }
 
