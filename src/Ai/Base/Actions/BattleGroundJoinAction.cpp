@@ -69,6 +69,12 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     if (arenateam->GetMembersSize() < ((uint32)arenateam->GetType()))
         return false;
 
+    // RandomBotArenaGroupOnWorldThread: the world thread forms the group (ArenaGroupFormationOperation, queued below on
+    // an earlier pass); once it stands, the captain queues with it
+    bool const groupOnWorldThread = sPlayerbotAIConfig.RandomBotArenaGroupOnWorldThread;
+    if (groupOnWorldThread && LeadsCompleteArenaTeamGroup(bot, arenateam, (uint32)arenateam->GetType()))
+        return true;
+
     GuidVector members;
 
     // search for arena team members and make them online
@@ -121,10 +127,14 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
                 continue;
             }
 
-            if (member->GetGroup())
-                member->GetGroup()->RemoveMember(member->GetGUID());
+            // with the option on, ArenaGroupFormationOperation does both on the world thread
+            if (!groupOnWorldThread)
+            {
+                if (member->GetGroup())
+                    member->GetGroup()->RemoveMember(member->GetGUID());
 
-            memberBotAI->Reset();
+                memberBotAI->Reset();
+            }
         }
 
         if (member)
@@ -135,6 +145,14 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     {
         LOG_INFO("playerbots", "Team #{} <{}> has not enough members for match", arenateam->GetId(),
                  arenateam->GetName().c_str());
+        return false;
+    }
+
+    // Map thread: the group forming and the teleports run on the world thread; the captain queues on a later pass
+    if (groupOnWorldThread)
+    {
+        PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<ArenaGroupFormationOperation>(
+            bot->GetGUID(), members, (uint32)arenateam->GetType(), arenateam->GetId(), arenateam->GetName()));
         return false;
     }
 

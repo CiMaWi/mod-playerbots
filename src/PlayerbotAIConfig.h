@@ -277,6 +277,7 @@ public:
     uint32 RandomBotAutoJoinBGRatedArena2v2Count;
     uint32 RandomBotAutoJoinBGRatedArena3v3Count;
     uint32 RandomBotAutoJoinBGRatedArena5v5Count;
+    bool RandomBotArenaGroupOnWorldThread;
 
     uint32 RandomBotTeleLowerLevel, RandomBotTeleHigherLevel;
     std::map<uint32, std::pair<uint32, uint32>> ZoneBrackets;

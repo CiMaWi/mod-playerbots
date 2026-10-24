@@ -21,6 +21,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "ThreadCheck.h"
 #include "UseMeetingStoneAction.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
@@ -268,7 +269,24 @@ private:
     ObjectGuid m_newLeaderGuid;
 };
 
-// Form arena group
+// True when the leader leads a group of exactly requiredSize members, all connected and all members of the arena team:
+// the group ArenaGroupFormationOperation formed stands. Read-only; the captain checks it before queuing.
+inline bool LeadsCompleteArenaTeamGroup(Player* leader, ArenaTeam const* team, uint32 requiredSize)
+{
+    Group* group = leader->GetGroup();
+    if (!group || group->GetLeaderGUID() != leader->GetGUID() || group->GetMembersCount() != requiredSize)
+        return false;
+
+    for (Group::MemberSlot const& slot : group->GetMemberSlots())
+    {
+        if (!team->IsMember(slot.guid) || !ObjectAccessor::FindConnectedPlayer(slot.guid))
+            return false;
+    }
+
+    return true;
+}
+
+// Form arena group (world thread): queued by BGJoinAction::gatherArenaTeam with RandomBotArenaGroupOnWorldThread on
 class ArenaGroupFormationOperation : public PlayerbotOperation
 {
 public:
@@ -281,12 +299,22 @@ public:
 
     bool Execute() override
     {
+        PLAYERBOT_CHECK_WORLD_THREAD("ArenaGroupFormationOperation::Execute");
+
         Player* leader = ObjectAccessor::FindPlayer(m_leaderGuid);
         if (!leader)
         {
             LOG_ERROR("playerbots", "ArenaGroupFormationOperation: Leader not found");
             return false;
         }
+
+        ArenaTeam* arenaTeam = sArenaTeamMgr->GetArenaTeamById(m_arenaTeamId);
+        if (!arenaTeam)
+            return false;
+
+        // A duplicate (the captain retried before an earlier operation ran): the group stands, keep it
+        if (LeadsCompleteArenaTeamGroup(leader, arenaTeam, m_requiredSize))
+            return true;
 
         // Step 1: Remove all members from their existing groups
         for (ObjectGuid const& memberGuid : m_memberGuids)
@@ -323,25 +351,21 @@ public:
         }
 
         sGroupMgr->AddGroup(newGroup);
-        LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Created new arena group with leader {}",
-                 leader->GetName());
+        LOG_INFO("playerbots", "Bot {} <{}>: Leader of <{}>", leader->GetGUID().ToString().c_str(), leader->GetName(),
+                 m_arenaTeamName);
 
-        // Step 4: Add members to the new group
+        // Step 4: Add members to the new group, up to the team size (the caller filtered them by bracket)
         uint32 addedMembers = 0;
         for (ObjectGuid const& memberGuid : m_memberGuids)
         {
+            if (newGroup->GetMembersCount() >= m_requiredSize)
+                break;
+
             Player* member = ObjectAccessor::FindPlayer(memberGuid);
             if (!member)
             {
                 LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Member {} not found, skipping",
                          memberGuid.ToString());
-                continue;
-            }
-
-            if (member->GetLevel() < 70)
-            {
-                LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Member {} is below level 70, skipping",
-                         member->GetName());
                 continue;
             }
 
@@ -358,7 +382,9 @@ public:
 
         if (addedMembers == 0)
         {
-            LOG_ERROR("playerbots", "ArenaGroupFormationOperation: No members were added to the arena group");
+            // members in a loading screen are not in the world: the captain retries on a later pass
+            LOG_INFO("playerbots", "Team #{} <{}> Group is not ready for match (no member could be added)",
+                     m_arenaTeamId, m_arenaTeamName);
             newGroup->Disband();
             return false;
         }
@@ -378,7 +404,8 @@ public:
             member->TeleportTo(leader->GetMapId(), leader->GetPositionX(), leader->GetPositionY(),
                               leader->GetPositionZ(), 0);
 
-            LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Teleported {} to leader", member->GetName());
+            LOG_INFO("playerbots", "Bot {} <{}>: Member of <{}>", member->GetGUID().ToString().c_str(),
+                     member->GetName().c_str(), m_arenaTeamName.c_str());
         }
 
         // Check if we have enough members

@@ -1814,6 +1814,12 @@ Playerbots.RandomBotAutoJoinBGRatedArena2v2Count = 0
 Playerbots.RandomBotAutoJoinBGRatedArena3v3Count = 0
 Playerbots.RandomBotAutoJoinBGRatedArena5v5Count = 0
 
+# Form a bot arena captain's group and teleport its team members on the world thread (a queued operation) instead of
+# inline on the captain's map thread; the captain joins the rated queue on a later pass, once its group stands.
+# Recommended with MapUpdate.Threads > 1, where two map threads may otherwise change the same groups.
+# Default: 0 (disabled, the group is formed inline)
+Playerbots.RandomBotArenaGroupOnWorldThread = 0
+
 # Randombot arena team count
 # Teams are created when bots are initialized on server restart.
 # You may need to first delete all arena teams, then reinitialize bots.
