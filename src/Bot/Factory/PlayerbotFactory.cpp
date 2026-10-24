@@ -41,6 +41,7 @@
 #include "Trainer.h"
 #include "World.h"
 #include <array>
+#include <mutex>
 #include <unordered_set>
 #include <utility>
 
@@ -104,6 +105,8 @@ std::list<uint32> PlayerbotFactory::specialQuestIds;
 std::vector<uint32> PlayerbotFactory::enchantSpellIdCache;
 std::vector<uint32> PlayerbotFactory::enchantGemIdCache;
 std::unordered_map<uint32, std::vector<uint32>> PlayerbotFactory::trainerIdCache;
+// Guards trainerIdCache: InitAvailableSpells also runs on map threads (revive, level-up)
+static std::mutex trainerIdCacheLock;
 std::vector<uint32> PlayerbotFactory::ccBreakTrinketCache;
 
 namespace
@@ -3548,8 +3551,18 @@ void PlayerbotFactory::SetRandomSkill(uint16 id)
 
 void PlayerbotFactory::InitAvailableSpells()
 {
-    if (trainerIdCache[bot->getClass()].empty())
+    uint32 const cls = bot->getClass();
+    std::vector<uint32> trainerIds;
     {
+        std::lock_guard<std::mutex> guard(trainerIdCacheLock);
+        auto it = trainerIdCache.find(cls);
+        if (it != trainerIdCache.end())
+            trainerIds = it->second;
+    }
+
+    if (trainerIds.empty())
+    {
+        // Scan without the lock (the templates and trainers are read-only after startup), then publish
         CreatureTemplateContainer const* creatureTemplateContainer = sObjectMgr->GetCreatureTemplates();
         for (CreatureTemplateContainer::const_iterator i = creatureTemplateContainer->begin();
              i != creatureTemplateContainer->end(); ++i)
@@ -3567,10 +3580,16 @@ void PlayerbotFactory::InitAvailableSpells()
                 !trainer->IsTrainerValidForPlayer(bot))
                 continue;
 
-            trainerIdCache[bot->getClass()].push_back(i->first);
+            trainerIds.push_back(i->first);
         }
+
+        std::lock_guard<std::mutex> guard(trainerIdCacheLock);
+        std::vector<uint32>& cached = trainerIdCache[cls];
+        if (cached.empty())
+            cached = trainerIds;
     }
-    for (uint32 trainerId : trainerIdCache[bot->getClass()])
+
+    for (uint32 trainerId : trainerIds)
     {
         Trainer::Trainer* trainer = sObjectMgr->GetTrainer(trainerId);
 
