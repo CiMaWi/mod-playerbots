@@ -2695,6 +2695,11 @@ Playerbots.TellWhenAvoidAoe = 0
 # Enable/Disable performance monitor
 Playerbots.PerfMonEnabled = 0
 
+# Log an error (once per call site) when world-thread-only code runs on another thread, e.g. on a map update thread
+# with MapUpdate.Threads > 1, and log each event cache load that runs off the world thread
+# Default: 0 (disabled)
+Playerbots.DebugThreadChecks = 0
+
 #
 #
 ####################################################################################################

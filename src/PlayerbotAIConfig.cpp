@@ -16,6 +16,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "Talentspec.h"
+#include "ThreadCheck.h"
 #include "TravelMgr.h"
 #include <cctype>
 #include <cstdio>
@@ -472,6 +473,8 @@ bool PlayerbotAIConfig::Initialize()
 
     CommandServerPort = sConfigMgr->GetOption<int32>("Playerbots.CommandServerPort", 8888);
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
+    DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
+    PlayerbotThreadCheck::enabled = DebugThreadChecks;
 
     UseGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseGroundMountAtMinLevel", 20);
     UseFastGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseFastGroundMountAtMinLevel", 40);

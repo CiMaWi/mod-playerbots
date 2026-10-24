@@ -33,6 +33,7 @@
 #include "SessionScript.h"
 #include "CensusMgr.h"
 #include "TestPlayer.h"
+#include "ThreadCheck.h"
 #include "WorldScript.h"
 #include "cmath"
 
@@ -549,6 +550,7 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        PlayerbotThreadCheck::SetWorldThread();  // Thread checks (Playerbots.DebugThreadChecks) compare against this
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none

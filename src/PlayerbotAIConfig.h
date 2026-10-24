@@ -357,6 +357,7 @@ public:
 
     uint32 CommandServerPort;
     bool PerfMonEnabled;
+    bool DebugThreadChecks;
     bool SummonWhenGroup;
     ShowHideCosmetic RandomBotShowHelmet;
     ShowHideCosmetic RandomBotShowCloak;
