@@ -2706,6 +2706,12 @@ Playerbots.PerfMonEnabled = 0
 # Default: 0 (disabled)
 Playerbots.DebugThreadChecks = 0
 
+# Skip trigger checks that cannot fire: the chat command triggers while the bot has no chat command pending, and
+# the "combat start" trigger's attackers lookup while the bot is out of combat with no group, duel, battleground
+# or prioritized target. Saves CPU with many bots; commands and combat starts behave as before.
+# Default: 0 (disabled)
+Playerbots.SkipIdleTriggerChecks = 0
+
 #
 #
 ####################################################################################################

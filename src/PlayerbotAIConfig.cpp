@@ -477,6 +477,7 @@ bool PlayerbotAIConfig::Initialize()
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
     DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
     PlayerbotThreadCheck::enabled = DebugThreadChecks;
+    SkipIdleTriggerChecks = sConfigMgr->GetOption<bool>("Playerbots.SkipIdleTriggerChecks", false);
 
     UseGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseGroundMountAtMinLevel", 20);
     UseFastGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseFastGroundMountAtMinLevel", 40);

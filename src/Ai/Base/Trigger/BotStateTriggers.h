@@ -19,7 +19,11 @@ public:
     bool IsActive() override;
 
 private:
+    bool CannotHaveAttackers();
+
     bool hadAttackers = false;
+    Value<GuidVector>* _attackers = nullptr;
+    Value<GuidVector>* _prioritizedTargets = nullptr;
 };
 
 #endif

@@ -16,7 +16,17 @@ bool CombatStartTrigger::IsActive()
     // also catches the master pulling while the bot itself is still out of combat.
     // Edge-triggered: fire once when attackers first appear, not on every tick they persist,
     // or the reaction would keep clearing the main AI delay for a bot that is idling on purpose.
-    bool const hasAttackers = !AI_VALUE(GuidVector, "attackers").empty();
+    bool hasAttackers = false;
+    if (!sPlayerbotAIConfig.SkipIdleTriggerChecks)
+        hasAttackers = !AI_VALUE(GuidVector, "attackers").empty();
+    else if (!CannotHaveAttackers())
+    {
+        if (!_attackers)
+            _attackers = context->GetValue<GuidVector>("attackers");
+
+        hasAttackers = _attackers && !_attackers->Get().empty();
+    }
+
     bool const started = hasAttackers && !hadAttackers;
     hadAttackers = hasAttackers;
 
@@ -24,4 +34,17 @@ bool CombatStartTrigger::IsActive()
         return false;
 
     return started;
+}
+
+// True only when every input of AttackersValue::Calculate is empty: threat lists need combat, the other sources need
+// a group, a duel, a battleground or a prioritized target.
+bool CombatStartTrigger::CannotHaveAttackers()
+{
+    if (bot->IsInCombat() || bot->GetGroup() || bot->duel || bot->InBattleground())
+        return false;
+
+    if (!_prioritizedTargets)
+        _prioritizedTargets = context->GetValue<GuidVector>("prioritized targets");
+
+    return _prioritizedTargets && _prioritizedTargets->Get().empty();
 }

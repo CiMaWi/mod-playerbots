@@ -455,6 +455,9 @@ void Engine::ProcessTriggers(bool minimal)
 {
     std::unordered_map<Trigger*, Event> fires;
     uint32 now = getMSTime();
+    // With no chat command pending every chat command trigger is unset: checking or resetting it is a no-op.
+    bool const skipChatCommands =
+        sPlayerbotAIConfig.SkipIdleTriggerChecks && !aiObjectContext->HasPendingChatCommands();
     for (std::vector<TriggerNode*>::iterator i = triggers.begin(); i != triggers.end(); i++)
     {
         TriggerNode* node = *i;
@@ -469,6 +472,9 @@ void Engine::ProcessTriggers(bool minimal)
         }
 
         if (!trigger)
+            continue;
+
+        if (skipChatCommands && node->IsChatCommand())
             continue;
 
         if (fires.find(trigger) != fires.end())
@@ -498,19 +504,25 @@ void Engine::ProcessTriggers(bool minimal)
         }
     }
 
-    for (std::vector<TriggerNode*>::iterator i = triggers.begin(); i != triggers.end(); i++)
+    if (!fires.empty())
     {
-        TriggerNode* node = *i;
-        Trigger* trigger = node->getTrigger();
-        if (fires.find(trigger) == fires.end())
-            continue;
+        for (std::vector<TriggerNode*>::iterator i = triggers.begin(); i != triggers.end(); i++)
+        {
+            TriggerNode* node = *i;
+            Trigger* trigger = node->getTrigger();
+            if (fires.find(trigger) == fires.end())
+                continue;
 
-        Event event = fires[trigger];
-        MultiplyAndPush(node->getHandlers(), 0.0f, false, event, "trigger");
+            Event event = fires[trigger];
+            MultiplyAndPush(node->getHandlers(), 0.0f, false, event, "trigger");
+        }
     }
 
     for (std::vector<TriggerNode*>::iterator i = triggers.begin(); i != triggers.end(); i++)
     {
+        if (skipChatCommands && (*i)->IsChatCommand())
+            continue;
+
         if (Trigger* trigger = (*i)->getTrigger())
             trigger->Reset();
     }

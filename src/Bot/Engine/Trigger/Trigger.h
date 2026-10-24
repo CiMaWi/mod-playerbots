@@ -29,6 +29,7 @@ public:
     virtual bool IsActive() { return false; }
     virtual bool IsBuffTrigger() { return false; }
     virtual bool IsDebuffTrigger() { return false; }
+    virtual bool IsChatCommand() { return false; }
     virtual std::vector<NextAction> getHandlers() { return {}; }
     void Update() {}
     virtual void Reset() {}
@@ -56,7 +57,13 @@ public:
     {}
 
     Trigger* getTrigger() { return trigger; }
-    void setTrigger(Trigger* trigger) { this->trigger = trigger; }
+    void setTrigger(Trigger* trigger)
+    {
+        this->trigger = trigger;
+        _chatCommand = trigger && trigger->IsChatCommand();
+    }
+
+    bool IsChatCommand() const { return _chatCommand; }
     const std::string getName() { return name; }
 
     std::vector<NextAction> getHandlers()
@@ -84,6 +91,7 @@ private:
     Trigger* trigger;
     std::vector<NextAction> handlers;
     const std::string name;
+    bool _chatCommand = false;
 };
 
 #endif

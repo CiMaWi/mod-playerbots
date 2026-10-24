@@ -22,6 +22,7 @@ public:
     void ExternalEvent(std::string const param, Player* owner = nullptr) override;
     Event Check() override;
     void Reset() override;
+    bool IsChatCommand() override { return true; }
 
 private:
     std::string param;

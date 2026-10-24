@@ -5,6 +5,7 @@
  */
 
 #include "ChatCommandTrigger.h"
+#include "AiObjectContext.h"
 #include "Playerbots.h"
 
 ChatCommandTrigger::ChatCommandTrigger(PlayerbotAI* botAI, std::string const command)
@@ -16,6 +17,9 @@ void ChatCommandTrigger::ExternalEvent(std::string const paramName, Player* even
 {
     param = paramName;
     owner = eventPlayer;
+    if (!triggered)
+        context->NotePendingChatCommand();
+
     triggered = true;
 }
 
@@ -27,4 +31,10 @@ Event ChatCommandTrigger::Check()
     return Event(getName(), param, owner);
 }
 
-void ChatCommandTrigger::Reset() { triggered = false; }
+void ChatCommandTrigger::Reset()
+{
+    if (triggered)
+        context->ClearPendingChatCommand();
+
+    triggered = false;
+}

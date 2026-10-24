@@ -71,6 +71,11 @@ public:
 
     PerformanceStack performanceStack;
 
+    // Chat command triggers that are set and not yet reset; only this bot's own update changes it.
+    void NotePendingChatCommand() { ++_pendingChatCommands; }
+    void ClearPendingChatCommand() { --_pendingChatCommands; }
+    bool HasPendingChatCommands() const { return _pendingChatCommands > 0; }
+
     static void BuildAllSharedContexts();
 
     static void BuildSharedContexts();
@@ -86,6 +91,8 @@ protected:
     NamedObjectContextList<UntypedValue> valueContexts;
 
 private:
+    uint32 _pendingChatCommands = 0;
+
     static SharedNamedObjectContextList<Strategy> sharedStrategyContexts;
     static SharedNamedObjectContextList<Action> sharedActionContexts;
     static SharedNamedObjectContextList<Trigger> sharedTriggerContexts;
