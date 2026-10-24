@@ -15,24 +15,65 @@
 #ifndef PLAYERBOTS_PERFMONITOR_H
 #define PLAYERBOTS_PERFMONITOR_H
 
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
-typedef std::vector<std::string> PerformanceStack;
+struct PerformanceData;
 
+// The rows of the operations a bot has started and not finished yet, innermost last
+typedef std::vector<PerformanceData*> PerformanceStack;
+
+struct PerformanceSnapshot
+{
+    uint64_t minTime = 0;
+    uint64_t maxTime = 0;
+    uint64_t totalTime = 0;
+    uint64_t count = 0;
+    uint64_t blocks = 0;
+};
+
+// Each thread records into its own shard (its own cache line) with relaxed atomics, so the map threads neither lock nor
+// share a line; readers sum the shards. The shard of a thread is fixed (see PerfMonitor.cpp).
+constexpr std::size_t PerfMonitorCacheLineSize = 64;
+
+struct alignas(PerfMonitorCacheLineSize) PerformanceShard
+{
+    std::atomic<uint64_t> minTime{0};
+    std::atomic<uint64_t> maxTime{0};
+    std::atomic<uint64_t> totalTime{0};
+    std::atomic<uint64_t> count{0};
+    std::atomic<uint64_t> blocks{0};
+};
+
+// One row of the monitor. Rows are created by the PerfMonitor registry and never freed, so the pointers that values,
+// multipliers and performance stacks keep stay valid; Reset zeroes them in place.
 struct PerformanceData
 {
-    uint64_t minTime;
-    uint64_t maxTime;
-    uint64_t totalTime;
-    uint64_t count;
-    uint64_t blocks;
-    std::mutex lock;
+    static constexpr std::size_t ShardCount = 8;
+
+    PerformanceData(std::string name, std::string chain);
+
+    void Record(uint64_t elapsed);
+    void CountBlock();
+    PerformanceSnapshot Snapshot() const;
+    void Clear();
+
+    // Plain operation name; a child operation lists it in its own row name
+    std::string const Name;
+    // What the row name of a child operation puts between its brackets: this name, then the names of the parents
+    std::string const Chain;
+
+private:
+    std::array<PerformanceShard, ShardCount> _shards;
 };
 
 enum PerformanceMetric
@@ -48,14 +89,14 @@ enum PerformanceMetric
 class PerfMonitorOperation
 {
 public:
-    PerfMonitorOperation(PerformanceData* data, std::string const name, PerformanceStack* stack);
     void finish();
 
 private:
-    PerformanceData* data;
-    std::string const name;
-    PerformanceStack* stack;
-    std::chrono::microseconds started;
+    friend class PerfMonitor;
+
+    PerformanceData* _data = nullptr;
+    PerformanceStack* _stack = nullptr;
+    std::chrono::microseconds _started{};
 };
 
 class PerfMonitorScope
@@ -84,15 +125,16 @@ public:
 
     static bool IsEnabled();
 
-    PerfMonitorOperation* start(PerformanceMetric metric, std::string const name,
-                                       PerformanceStack* stack = nullptr);
-    PerformanceData* acquire(PerformanceMetric metric, std::string const& name);
+    PerfMonitorOperation* start(PerformanceMetric metric, std::string_view name, PerformanceStack* stack = nullptr);
+    PerformanceData* acquire(PerformanceMetric metric, std::string_view name);
     static void CountBlock(PerformanceData* data);
     void PrintStats(bool perTick = false, bool fullStack = false);
     void DumpJson(bool perTick = false);
     void Reset();
 
 private:
+    typedef std::map<PerformanceMetric, std::map<std::string, PerformanceSnapshot>> Snapshots;
+
     PerfMonitor() = default;
     virtual ~PerfMonitor() = default;
 
@@ -102,10 +144,12 @@ private:
     PerfMonitor(PerfMonitor&&) = delete;
     PerfMonitor& operator=(PerfMonitor&&) = delete;
 
-    PerformanceData* GetOrCreate(PerformanceMetric metric, std::string const& name);
+    PerformanceData* Find(PerformanceMetric metric, PerformanceData const* parent, std::string_view name);
+    PerformanceData* GetOrCreate(PerformanceMetric metric, PerformanceData const* parent, std::string_view name);
+    Snapshots TakeSnapshots();
 
-    std::map<PerformanceMetric, std::map<std::string, PerformanceData*> > data;
-    std::mutex lock;
+    std::map<PerformanceMetric, std::map<std::string, PerformanceData*>> _rows;
+    std::mutex _registryLock;
 };
 
 #define sPerfMonitor PerfMonitor::instance()

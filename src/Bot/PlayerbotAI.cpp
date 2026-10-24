@@ -555,10 +555,13 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (!bot->GetMap())
         return; // instances are created and destroyed on demand
 
-    // kinda expensive call to make on every single updateAI, do we really need this information?
-    std::string const mapString = WorldPosition(bot).isOverworld() ? std::to_string(bot->GetMapId()) : "I";
-    PerfMonitorOperation* pmo =
-        sPerfMonitor.start(PERF_MON_TOTAL, "PlayerbotAI::UpdateAIInternal " + mapString);
+    PerfMonitorOperation* pmo = nullptr;
+    if (PerfMonitor::IsEnabled())
+    {
+        // kinda expensive call to make on every single updateAI, do we really need this information?
+        std::string const mapString = WorldPosition(bot).isOverworld() ? std::to_string(bot->GetMapId()) : "I";
+        pmo = sPerfMonitor.start(PERF_MON_TOTAL, "PlayerbotAI::UpdateAIInternal " + mapString);
+    }
 
     ExternalEventHelper helper(aiObjectContext);
 
@@ -606,10 +609,16 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
             PlayerbotWorldThreadProcessor::instance().QueueOperation(
                 std::make_unique<BotLogoutOperation>(bot->GetGUID()));
             SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
+            if (pmo)
+                pmo->finish();
+
             return;
         }
 
         SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
+        if (pmo)
+            pmo->finish();
+
         return;
     }
 

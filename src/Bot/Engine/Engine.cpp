@@ -218,7 +218,10 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                     }
                 }
 
-                PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_ACTION, action->getName(), &aiObjectContext->performanceStack);
+                PerfMonitorOperation* pmo =
+                    PerfMonitor::IsEnabled()
+                        ? sPerfMonitor.start(PERF_MON_ACTION, action->getName(), &aiObjectContext->performanceStack)
+                        : nullptr;
                 actionExecuted = ListenAndExecute(action, event);
                 if (pmo)
                     pmo->finish();
@@ -477,7 +480,9 @@ void Engine::ProcessTriggers(bool minimal)
                 continue;
 
             PerfMonitorOperation* pmo =
-                sPerfMonitor.start(PERF_MON_TRIGGER, trigger->getName(), &aiObjectContext->performanceStack);
+                PerfMonitor::IsEnabled()
+                    ? sPerfMonitor.start(PERF_MON_TRIGGER, trigger->getName(), &aiObjectContext->performanceStack)
+                    : nullptr;
             Event event = trigger->Check();
             if (pmo)
                 pmo->finish();

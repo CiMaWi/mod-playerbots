@@ -69,7 +69,7 @@ public:
     std::vector<std::string> Save();
     void Load(std::vector<std::string> data);
 
-    std::vector<std::string> performanceStack;
+    PerformanceStack performanceStack;
 
     static void BuildAllSharedContexts();
 
