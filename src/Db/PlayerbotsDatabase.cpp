@@ -132,6 +132,18 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
                      "INSERT INTO playerbots_bot_profile (guid, pvp_skill, version) VALUES (?, ?, ?) "
                      "ON DUPLICATE KEY UPDATE pvp_skill = ?, version = ?",
                      CONNECTION_ASYNC);
+    PrepareStatement(PLAYERBOTS_SEL_ACQUAINTANCE_ALL,
+                     "SELECT player_guid, bot_guid, first_met, last_met, score, flags, group_seconds, guild_seconds, "
+                     "nearby_seconds, direct_events, event_points FROM playerbots_acquaintance",
+                     CONNECTION_SYNCH);
+    PrepareStatement(
+        PLAYERBOTS_INS_ACQUAINTANCE,
+        "INSERT INTO playerbots_acquaintance (player_guid, bot_guid, first_met, last_met, score, flags, "
+        "group_seconds, guild_seconds, nearby_seconds, direct_events, event_points) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON DUPLICATE KEY UPDATE last_met = ?, score = ?, flags = ?, group_seconds = ?, guild_seconds = ?, "
+        "nearby_seconds = ?, direct_events = ?, event_points = ?",
+        CONNECTION_ASYNC);
 }
 PlayerbotsDatabaseConnection::PlayerbotsDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)
 {

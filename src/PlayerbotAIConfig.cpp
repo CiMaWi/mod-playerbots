@@ -731,6 +731,29 @@ bool PlayerbotAIConfig::Initialize()
     CensusEnable = sConfigMgr->GetOption<bool>("Playerbots.Census.Enable", false);
     CensusIntervalSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Census.IntervalSeconds", 30), 5, 3600);
+    AcquaintanceEnable = sConfigMgr->GetOption<bool>("Playerbots.Acquaintance.Enable", false);
+    AcquaintanceFlushSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.FlushSeconds", 30), 5, 3600);
+    AcquaintanceDirectCooldownSeconds = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.DirectCooldownSeconds", 60), 0, 86400);
+    AcquaintanceGroupJoinCooldownSeconds = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GroupJoinCooldownSeconds", 600), 0, 86400);
+    AcquaintancePointsDirect =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsDirect", 10), 0, 10000);
+    AcquaintancePointsGroupJoin =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsGroupJoin", 20), 0, 10000);
+    AcquaintancePointsGuildJoin =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsGuildJoin", 15), 0, 10000);
+    AcquaintancePointsPvpKill =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPvpKill", 5), 0, 10000);
+    AcquaintancePointsPerGroupMinute =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerGroupMinute", 5), 0, 10000);
+    AcquaintancePointsPerGuildHour =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerGuildHour", 6), 0, 10000);
+    AcquaintancePointsPerNearbyMinute =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerNearbyMinute", 1), 0, 10000);
+    AcquaintanceMaxScore =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.MaxScore", 1000000), 1, 2000000000);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);

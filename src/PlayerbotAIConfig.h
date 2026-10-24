@@ -389,6 +389,18 @@ public:
     float PvpTestFightO;
     bool CensusEnable;
     uint32 CensusIntervalSeconds;
+    bool AcquaintanceEnable;
+    uint32 AcquaintanceFlushSeconds;
+    uint32 AcquaintanceDirectCooldownSeconds;
+    uint32 AcquaintanceGroupJoinCooldownSeconds;
+    uint32 AcquaintancePointsDirect;
+    uint32 AcquaintancePointsGroupJoin;
+    uint32 AcquaintancePointsGuildJoin;
+    uint32 AcquaintancePointsPvpKill;
+    uint32 AcquaintancePointsPerGroupMinute;
+    uint32 AcquaintancePointsPerGuildHour;
+    uint32 AcquaintancePointsPerNearbyMinute;
+    uint32 AcquaintanceMaxScore;
     bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;

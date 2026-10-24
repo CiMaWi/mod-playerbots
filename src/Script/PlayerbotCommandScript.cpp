@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "AcquaintanceMgr.h"
 #include "BattleGroundTactics.h"
 #include "BotProfileMgr.h"
 #include "Chat.h"
@@ -68,6 +69,7 @@ public:
             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
+            {"acquaintances", AcquaintanceMgr::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
             {"account", playerbotsAccountCommandTable},
             {"testplayer", playerbotsTestPlayerCommandTable},

@@ -5,6 +5,7 @@
  */
 
 #include "Playerbots.h"
+#include "AcquaintanceMgr.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "BotProfileMgr.h"
@@ -544,6 +545,7 @@ public:
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
         BotProfileMgr::instance().Load();
+        AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
     }
@@ -555,6 +557,7 @@ public:
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none
         CensusMgr::Instance().Update(diff);  // Opt-in world census; returns at once when off
+        AcquaintanceMgr::Instance().Update(diff);  // Opt-in; drains the hook events, writes in batches
         PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         // Cached LFG state per bot, read on map threads
@@ -567,6 +570,7 @@ public:
     {
         TestPlayerMgr::Instance().Shutdown();
         CensusMgr::Instance().Shutdown();
+        AcquaintanceMgr::Instance().Shutdown();
         PvpTestMgr::Instance().Shutdown();
         LOG_INFO("playerbots", "Logging out all bots...");
         sRandomPlayerbotMgr.LogoutAllBots();
@@ -636,6 +640,7 @@ void AddSC_IcecrownBotScripts();
 void AddSC_RubySanctumBotScripts();
 void AddSC_randombot_level_mgr();
 void AddSC_census();
+void AddSC_acquaintance();
 
 void AddPlayerbotsScripts()
 {
@@ -662,4 +667,5 @@ void AddPlayerbotsScripts()
     AddSC_RubySanctumBotScripts();
     AddSC_randombot_level_mgr();
     AddSC_census();
+    AddSC_acquaintance();
 }
