@@ -515,6 +515,9 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     PlayerbotsMgr::instance().AddPlayerbotData(bot, true);
     playerBots[bot->GetGUID()] = bot;
 
+    // World thread: cache the bot's events now, so its AI on a map thread never loads them from the DB
+    sRandomPlayerbotMgr.PreloadEvents(bot->GetGUID().GetCounter());
+
     OnBotLoginInternal(bot);
 
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);

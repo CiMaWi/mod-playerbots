@@ -12,6 +12,7 @@
 #include "ObjectGuid.h"
 #include "PlayerbotCommandServer.h"
 #include "PlayerbotMgr.h"
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <unordered_set>
@@ -147,6 +148,8 @@ public:
     void SetValue(Player* bot, std::string const& type, uint32 value, std::string const& data = "");
     bool IsSpecPvp(uint32 bot, uint8 cls);
     void Remove(Player* bot);
+    // Loads the bot's events into the cache unless loaded; world thread (bot login), so map threads find them cached.
+    void PreloadEvents(uint32 bot);
     ObjectGuid GetBattleMasterGUID(Player* bot, BattlegroundTypeId bgTypeId);
     CreatureData const* GetCreatureDataByEntry(uint32 entry);
     void LoadBattleMastersCache();
@@ -225,7 +228,11 @@ private:
     bool _isBotInitializing = true;
     bool _isBotLogging = true;
     NewRpgStatistic rpgStasticTotal;
-    CachedEvent* FindEvent(uint32 bot, std::string const& event);
+    // Event cache: read from map threads (bot AI) and the world thread, guarded by _eventCacheLock. The helpers below
+    // run with the lock held and never hand a pointer into the cache to callers; no DB query runs with the lock held.
+    static void CopyEventLocked(BotEventCache& cache, std::string const& event, uint32* value, std::string* data);
+    void ReadEvent(uint32 bot, std::string const& event, uint32* value, std::string* data);
+    void LoadEvents(uint32 bot, bool lazy);
     uint32 GetEventValue(uint32 bot, std::string const& event);
     std::string GetEventData(uint32 bot, std::string const& event);
     uint32 SetEventValue(uint32 bot, std::string const& event, uint32 value, uint32 validIn,
@@ -254,6 +261,8 @@ private:
     std::map<TeamId, std::map<BattlegroundTypeId, std::vector<uint32>>> BattleMastersCache;
     std::unordered_map<uint32, ObjectGuid::LowType> BattleMasterSpawnIds;
     std::unordered_map<uint32, BotEventCache> eventCache;
+    std::mutex _eventCacheLock;
+    std::atomic<uint32> _offThreadEventLoads{0};  // lazy event loads that ran off the world thread
     std::unordered_set<uint32> currentBots;
     uint32 playersLevel;
     // Written on the world thread, read from map threads.
