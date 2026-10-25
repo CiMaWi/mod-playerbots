@@ -8,22 +8,29 @@
 #define _PLAYERBOT_PVPGEARMGR_H
 
 #include <array>
+#include <functional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include "AsyncCallbackProcessor.h"
 #include "Define.h"
+#include "Transaction.h"
 
 class ChatHandler;
+class Item;
 class Player;
 class StatsWeightCalculator;
 
 // PvP gear of the ladder bots (Playerbots.PvpGear.Enable): a catalogue of the PvP vendor items grouped into tiers,
 // built at startup, and a stored loadout per ladder bot (one item entry per equipment slot, playerbots table
 // playerbots_pvp_loadout). A ladder bot is a random bot at the maximum level in an arena team. The loadout is plain
-// data: nothing is created, worn or bought here, and the PvE gear is never touched. All loadouts are loaded with one
-// query at startup; bot logins read memory only and writes are asynchronous. World thread only (startup, the login
-// hook, the GM commands).
+// data; wearing it (Playerbots.PvpGear.Wear, PvpGearWear.cpp) creates its items in arenas and battlegrounds while the
+// PvE items wait in the bags, and no PvE item is ever destroyed. All loadouts and worn slots are loaded with one query
+// each at startup; bot logins read memory only and writes are asynchronous. World thread only (startup, the login
+// hook, the GM commands, the swap), except the queue calls of the battleground hooks and the upkeep guards.
 class PvpGearMgr
 {
 public:
@@ -97,6 +104,70 @@ public:
     // The stored loadout, or nullptr
     Loadout const* Find(uint32 guid) const;
 
+    // Wearing (PvpGearWear.cpp). One playerbots_pvp_worn row per swapped slot
+    struct WornSlot
+    {
+        uint32 PvpItem = 0;  // the created loadout item (0: the slot was only emptied, the off hand of a two-hander)
+        uint32 PveItem = 0;  // the PvE item moved to the bags (0: the slot was empty)
+    };
+    using Worn = std::array<WornSlot, SlotCount>;
+
+    enum class WearStep : uint8
+    {
+        Keep,         // empty loadout slot, or the PvE item is the loadout's entry
+        AlreadyWorn,  // the slot has a row
+        Equip,        // empty slot: the loadout item goes on
+        Displace,     // the PvE item to the bags, the loadout item on
+        BagsFull,     // the slot keeps its PvE item (logged)
+        CannotEquip,  // the core refuses the loadout item: the slot keeps its PvE item
+    };
+    struct WearInput
+    {
+        uint32 LoadoutItem = 0;
+        uint32 EquippedItem = 0;  // entry, 0: empty slot
+        bool HasRow = false;
+        bool CanEquip = false;
+        bool BagRoom = false;  // for the equipped item
+    };
+    enum class UnwearStep : uint8
+    {
+        NothingToRestore,  // the slot was empty before the swap
+        Lost,              // the PvE item is gone (logged; the factory refills the slot)
+        AlreadyEquipped,   // a crash before the swap was saved
+        Restore,           // from the bags back into the slot
+        SlotTaken,         // the PvE item stays in the bags (logged)
+    };
+    struct UnwearInput
+    {
+        uint32 PveItem = 0;
+        bool PveFound = false;
+        bool PveEquipped = false;  // in its slot already
+        bool SlotFree = false;     // after the PvP items were destroyed
+    };
+    // Pure: the step for one slot (no game state; the selftest models the cases)
+    static WearStep DecideWear(WearInput const& in);
+    static UnwearStep DecideUnwear(UnwearInput const& in);
+
+    // Map threads (the battleground hooks): queue the swap as a world-thread operation; nothing when off or for a bot
+    // that is not a ladder bot
+    static void QueueWear(Player* bot);
+    static void QueueUnwear(Player* bot);
+    // World thread: the loadout's items on, the displaced PvE items to the bags, one row per swapped slot
+    void Wear(Player* bot);
+    // World thread: the PvP items destroyed, the PvE items equipped again, the inventory saved and the rows deleted
+    // after that commit (also the crash repair at login, which runs with PvP gear off as well). false: not now (dead or
+    // teleporting); the caller hands the bot to RetryUnwear
+    bool Unwear(Player* bot, char const* reason);
+    void RetryUnwear(uint32 guid, uint32 attempts = 0);
+    // World thread, every tick: the inventory saves of the unwears, the deferred unwears every 5 s; returns at once
+    // when there are none
+    void Update(uint32 diff);
+    // Any thread (the gear upkeep guards on map threads): the bot wears its loadout; the item is a worn PvP item or a
+    // displaced PvE item of the bot. Also with PvP gear off: the rows are loaded at every start
+    bool IsWorn(Player const* bot) const;
+    bool IsWornItem(Player const* bot, Item const* item) const;
+    static void SelftestWear(std::function<void(bool, std::string const&)> const& check);
+
     // Pure: the tier order option, one entry per tier, each a list of lower-case name prefixes ("hateful/savage")
     static std::vector<std::vector<std::string>> ParseTierOrder(std::string const& order);
     // Pure: the offers grouped into tiers (sorted by tier, then entry); left-out offers are counted in skipped
@@ -121,6 +192,7 @@ private:
     };
 
     PvpGearMgr() = default;
+    void LoadWorn();
     bool Usable(Player* bot, CatalogueItem const& item) const;
     // The best usable item of the groups in groupMask for the slot in the lowest tier from minTier up that has one
     // (ccBreak 1: only the PvP trinket, -1: no PvP trinket; maxRating: leaves out items that need a higher rating)
@@ -137,12 +209,18 @@ private:
     static uint32 MissingSlots(Loadout const& loadout);
 
     bool _loaded = false;
+    bool _wornLoaded = false;  // the worn rows, loaded at every start (also with Enable 0 or no catalogue)
     std::vector<std::string> _tierNames;
     uint8 _baseTier = 0;
     uint32 _season = 1;
     std::vector<std::vector<CatalogueItem>> _tiers;
     std::unordered_map<uint32, CatalogueItem const*> _byEntry;  // into _tiers, which is not changed after Load
     std::unordered_map<uint32, Loadout> _loadouts;
+    mutable std::shared_mutex _wornLock;  // the guards read on map threads, the world thread writes
+    std::unordered_map<uint32, Worn> _worn;
+    std::vector<std::pair<uint32, uint32>> _retry;  // guid, attempts (world thread)
+    uint32 _retryTimer = 0;
+    AsyncCallbackProcessor<TransactionCallback> _saveCallbacks;  // the unwears' inventory saves (world thread)
 };
 
 #endif

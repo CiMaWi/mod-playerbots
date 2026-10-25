@@ -778,6 +778,7 @@ bool PlayerbotAIConfig::Initialize()
     PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
     PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
+    PvpGearWear = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Wear", false);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);

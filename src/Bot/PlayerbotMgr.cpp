@@ -588,9 +588,9 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     PlayerbotRepository::instance().Load(botAI);
     if (sPlayerbotAIConfig.SkillEnable)
         botAI->SetPvpSkill(BotProfileMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter()));
-    // A ladder bot without a PvP loadout gets the base tier (memory, async write)
-    if (sPlayerbotAIConfig.PvpGearEnable)
-        PvpGearMgr::Instance().OnBotLogin(bot);
+    // PvP gear left on by a stop during a match comes off (also with PvP gear off); a ladder bot without a PvP
+    // loadout gets the base tier (memory, async write)
+    PvpGearMgr::Instance().OnBotLogin(bot);
 
     if (master && !master->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {

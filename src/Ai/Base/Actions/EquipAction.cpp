@@ -11,6 +11,7 @@
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include "StatsWeightCalculator.h"
 #include <utility>
 
@@ -370,6 +371,10 @@ bool EquipUpgradesPacketAction::Execute(Event event)
 {
     if (!sPlayerbotAIConfig.AutoEquipUpgradeLoot && !sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
+
+    // The PvP loadout is worn: no upgrade replaces a worn item or equips a displaced PvE item
+    if (PvpGearMgr::Instance().IsWorn(bot))
+        return false;
     std::string const source = event.GetSource();
     if (source == "trade status")
     {
@@ -410,6 +415,9 @@ bool EquipUpgradesPacketAction::Execute(Event event)
 
 bool EquipUpgradeAction::Execute(Event /*event*/)
 {
+    if (PvpGearMgr::Instance().IsWorn(bot))
+        return false;
+
     ItemIds items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;

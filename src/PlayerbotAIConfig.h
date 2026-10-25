@@ -424,6 +424,7 @@ public:
     bool PvpGearEnable;
     std::string PvpGearTierOrder;
     std::string PvpGearBaseTier;
+    bool PvpGearWear;
     bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;

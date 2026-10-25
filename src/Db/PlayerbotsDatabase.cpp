@@ -163,6 +163,12 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
                      CONNECTION_ASYNC);
     PrepareStatement(PLAYERBOTS_DEL_PVP_LOADOUT, "DELETE FROM playerbots_pvp_loadout WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(PLAYERBOTS_DEL_PVP_LOADOUT_ALL, "DELETE FROM playerbots_pvp_loadout", CONNECTION_ASYNC);
+    PrepareStatement(PLAYERBOTS_SEL_PVP_WORN_ALL,
+                     "SELECT guid, slot, pvp_item_guid, pve_item_guid FROM playerbots_pvp_worn", CONNECTION_SYNCH);
+    PrepareStatement(PLAYERBOTS_REP_PVP_WORN,
+                     "REPLACE INTO playerbots_pvp_worn (guid, slot, pvp_item_guid, pve_item_guid) VALUES (?, ?, ?, ?)",
+                     CONNECTION_ASYNC);
+    PrepareStatement(PLAYERBOTS_DEL_PVP_WORN, "DELETE FROM playerbots_pvp_worn WHERE guid = ?", CONNECTION_ASYNC);
 }
 PlayerbotsDatabaseConnection::PlayerbotsDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)
 {

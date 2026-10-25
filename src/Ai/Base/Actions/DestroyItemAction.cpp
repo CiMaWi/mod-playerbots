@@ -8,6 +8,7 @@
 #include "Event.h"
 #include "ItemCountValue.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include <algorithm>
 
 namespace
@@ -49,6 +50,9 @@ void DestroyItemAction::DestroyItem(FindItemVisitor* visitor)
     std::vector<Item*> items = visitor->GetResult();
     for (Item* item : items)
     {
+        if (PvpGearMgr::Instance().IsWornItem(bot, item))  // a worn PvP item or a displaced PvE item
+            continue;
+
         std::ostringstream out;
         out << chat->FormatItem(item->GetTemplate()) << " destroyed";
         botAI->TellMaster(out);

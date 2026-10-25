@@ -12,6 +12,7 @@
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include "ReputationMgr.h"
 #include "Trainer.h"
 
@@ -316,6 +317,14 @@ bool BisGearAction::Execute(Event event)
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
             "bis_command_unavailable_error",
             "bis command is not allowed, please check the configuration.", {}));
+        return false;
+    }
+
+    // Wearing its PvP loadout (Playerbots.PvpGear.Wear): the bags hold the displaced PvE gear, which bis would destroy
+    if (PvpGearMgr::Instance().IsWorn(bot))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "bis_pvp_gear_worn_error", "I wear my PvP gear; use bis after the match.", {}));
         return false;
     }
 

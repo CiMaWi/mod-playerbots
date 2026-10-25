@@ -418,6 +418,14 @@ std::vector<PvpGearMgr::CatalogueItem> PvpGearMgr::BuildCatalogue(std::vector<Of
 
 void PvpGearMgr::Load()
 {
+    // The worn rows also with PvP gear off or without a catalogue: a bot left in PvP gear (a stop during a match, a
+    // crash) is repaired at its login and its PvE items stay guarded until then
+    if (!_wornLoaded)
+    {
+        LoadWorn();
+        _wornLoaded = true;
+    }
+
     if (!sPlayerbotAIConfig.PvpGearEnable || _loaded)
         return;
 
@@ -621,6 +629,11 @@ uint32 PvpGearMgr::MissingSlots(Loadout const& loadout)
 void PvpGearMgr::OnBotLogin(Player* bot)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::OnBotLogin");
+    // Rows left by a crash or a logout during a match: the PvE gear goes back on first (also for a bot that is no
+    // longer a ladder bot, and with PvP gear off)
+    if (!Unwear(bot, "login repair"))
+        RetryUnwear(bot->GetGUID().GetCounter());
+
     if (!_loaded || !IsLadderBot(bot))
         return;
 
@@ -1308,6 +1321,7 @@ bool PvpGearMgr::HandleSelftestCommand(ChatHandler* handler, char const* /*args*
     check(std::is_sorted(catalogue.begin(), catalogue.end(), [](CatalogueItem const& a, CatalogueItem const& b)
                          { return std::tie(a.Tier, a.Entry) < std::tie(b.Tier, b.Entry); }),
           "sorted by tier and entry");
+    SelftestWear(check);
 
     handler->PSendSysMessage("PvP gear selftest: {} checks, {} failed: {}", checks, failures,
                              failures ? "FAIL" : "PASS");

@@ -567,6 +567,7 @@ public:
         ArenaTeamFormation::Instance().Update(diff);  // Opt-in; bot arena team rosters, every UpdateSeconds
         PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
         LadderMgr::Instance().Update(diff);  // Opt-in arena team moves; returns at once when none is pending
+        PvpGearMgr::Instance().Update(diff);  // Deferred PvP gear unwears; returns at once when there are none
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         // Cached LFG state per bot, read on map threads
         PlayerbotsMgr::instance().RefreshLfgStates(diff);
@@ -627,6 +628,15 @@ public:
     void OnBattlegroundEnd(Battleground* bg, TeamId /*winnerTeam*/) override
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
+    }
+
+    // Map thread: a ladder bot puts its PvP loadout on (Playerbots.PvpGear.Wear; queued to the world thread)
+    void OnBattlegroundAddPlayer(Battleground* /*bg*/, Player* player) override { PvpGearMgr::QueueWear(player); }
+
+    // Map thread: the loadout comes off and the PvE gear back on (queued to the world thread)
+    void OnBattlegroundRemovePlayerAtLeave(Battleground* /*bg*/, Player* player) override
+    {
+        PvpGearMgr::QueueUnwear(player);
     }
 };
 

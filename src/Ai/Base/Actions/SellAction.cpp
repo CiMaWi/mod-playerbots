@@ -11,6 +11,7 @@
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 
 class SellItemsVisitor : public IterateItemsVisitor
 {
@@ -149,6 +150,9 @@ void SellAction::Sell(FindItemVisitor* visitor)
 
 void SellAction::Sell(Item* item)
 {
+    if (PvpGearMgr::Instance().IsWornItem(bot, item))  // a worn PvP item or a displaced PvE item
+        return;
+
     std::ostringstream out;
 
     GuidVector vendors = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();

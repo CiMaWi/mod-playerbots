@@ -21,6 +21,7 @@
 #include "PlayerbotOperation.h"
 #include "PlayerbotRepository.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "ThreadCheck.h"
@@ -705,6 +706,39 @@ public:
 private:
     uint32 m_arenaTeamId;
     ObjectGuid m_botGuid;
+};
+
+// PvP gear (PvpGearMgr::QueueWear / QueueUnwear): the loadout on at the entry into an arena or a battleground, off at
+// the leave. The bot is found also while it is not in a map (the leave teleport); Unwear defers a bot that is dead or
+// teleporting
+class PvpGearWearOperation : public PlayerbotOperation
+{
+public:
+    PvpGearWearOperation(ObjectGuid botGuid, bool wear) : m_botGuid(botGuid), m_wear(wear) {}
+
+    bool Execute() override
+    {
+        Player* bot = ObjectAccessor::FindConnectedPlayer(m_botGuid);
+        if (!bot)
+            return false;
+
+        if (m_wear)
+            PvpGearMgr::Instance().Wear(bot);
+        else if (!PvpGearMgr::Instance().Unwear(bot, "leave"))
+            PvpGearMgr::Instance().RetryUnwear(m_botGuid.GetCounter());
+
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+
+    std::string GetName() const override { return m_wear ? "PvpGearWear" : "PvpGearUnwear"; }
+
+    bool IsValid() const override { return ObjectAccessor::FindConnectedPlayer(m_botGuid) != nullptr; }
+
+private:
+    ObjectGuid m_botGuid;
+    bool m_wear;
 };
 
 #endif

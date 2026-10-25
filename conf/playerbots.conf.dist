@@ -1495,7 +1495,8 @@ Playerbots.Ladder.PoolTeams = 0
 # asks for honor and/or arena points; token costs and items that need a 3v3 or 5v5 rating are left out), grouped into
 # the tiers of Playerbots.PvpGear.TierOrder, and keeps for every ladder bot a stored PvP loadout: one item entry per
 # equipment slot, chosen for the bot's class and spec, in the playerbots table playerbots_pvp_loadout. A missing
-# loadout is created at the base tier at the bot's login. Nothing is worn or bought yet and the PvE gear is untouched.
+# loadout is created at the base tier at the bot's login. Nothing is bought yet; Playerbots.PvpGear.Wear decides whether
+# the loadout is worn.
 # All loadouts are loaded with one query at startup; a login reads memory only, writes are asynchronous.
 # Commands: .playerbots pvpgear status | reset [season] | show <bot> | check [count] | selftest
 # reset starts a season: every online ladder bot gets the base tier at once, the other loadouts are deleted and
@@ -1515,6 +1516,16 @@ Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathfu
 # filled when a tier has one, also for races with a racial that does the same.
 # Default: "" (the first tier)
 Playerbots.PvpGear.BaseTier = ""
+
+# Ladder bots wear their PvP loadout in arenas and battlegrounds (needs Playerbots.PvpGear.Enable). When a ladder bot
+# enters an arena or a battleground, a world-thread operation creates the loadout's items and equips them; the PvE
+# items they replace go to the bags (a slot whose PvE item does not fit in the bags keeps it, logged). At the leave the
+# PvP items are destroyed and the PvE items equipped again. While the loadout is worn, the upgrade actions, the
+# level-up gear upkeep, selling and destroying leave the worn and the displaced items alone. Each swapped slot is a row
+# in the playerbots table playerbots_pvp_worn, so a crash during a match is repaired at the bot's next login (rows are
+# loaded and repaired at every start, also with this option or Playerbots.PvpGear.Enable off).
+# Default: 0 (off: the bots fight in their PvE gear)
+Playerbots.PvpGear.Wear = 0
 
 # Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table

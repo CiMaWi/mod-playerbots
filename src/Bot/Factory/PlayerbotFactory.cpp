@@ -31,6 +31,7 @@
 #include "PlayerbotRepository.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include "QuestDef.h"
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotFactory.h"
@@ -2344,6 +2345,10 @@ void Shuffle(std::vector<uint32>& items)
 
 void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
 {
+    // The PvP loadout is worn (an arena or battleground): the PvE gear waits in the bags untouched
+    if (PvpGearMgr::Instance().IsWorn(bot))
+        return;
+
     if (level < 5)
     {
         // original items
@@ -2905,6 +2910,9 @@ inline Item* StoreNewItemInInventorySlot(Player* player, uint32 newItemId, uint3
 
 void PlayerbotFactory::InitBags(bool destroyOld)
 {
+    if (PvpGearMgr::Instance().IsWorn(bot))  // the bags hold the displaced PvE gear
+        return;
+
     for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
     {
         uint32 newItemId = 51809;
@@ -3978,12 +3986,18 @@ void PlayerbotFactory::InitInstanceQuests()
 
 void PlayerbotFactory::ClearInventory()
 {
+    if (PvpGearMgr::Instance().IsWorn(bot))  // the bags hold the displaced PvE gear
+        return;
+
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor);
 }
 
 void PlayerbotFactory::ClearAllItems()
 {
+    if (PvpGearMgr::Instance().IsWorn(bot))
+        return;
+
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor, ITERATE_ALL_ITEMS);
 }
@@ -4087,6 +4101,9 @@ uint32 PlayerbotFactory::CalcMixedGearScore(uint32 gs, uint32 quality)
 
 void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 {
+    if (PvpGearMgr::Instance().IsWorn(bot))
+        return;
+
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
         if (slot == EQUIPMENT_SLOT_TABARD || slot == EQUIPMENT_SLOT_BODY)
