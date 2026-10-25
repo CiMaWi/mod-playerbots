@@ -95,7 +95,8 @@ public:
     // Startup (world DB and DBC stores loaded, before any map runs): catalogue and every loadout row. Nothing when off
     void Load();
     bool IsLoaded() const { return _loaded; }
-    // World thread, bot login: a ladder bot without a loadout gets one at the base tier (memory, async write)
+    // World thread, bot login: a ladder bot without a loadout gets one at the base tier (memory, async write); on an
+    // arena server (WearsAlways) a hosted ladder bot puts it on, elsewhere worn rows are a crash and are repaired
     void OnBotLogin(Player* bot);
     // A random bot at the maximum level in an arena team
     static bool IsLadderBot(Player* bot);
@@ -152,8 +153,16 @@ public:
     // that is not a ladder bot
     static void QueueWear(Player* bot);
     static void QueueUnwear(Player* bot);
-    // World thread: the loadout's items on, the displaced PvE items to the bags, one row per swapped slot
-    void Wear(Player* bot);
+    // Arena server (Playerbots.Ladder.Role 2 with PvP gear and the wearing on): the ladder bots wear the loadout from
+    // login on, also between matches; a depart takes it off before the members log out
+    bool WearsAlways() const;
+    // World thread: the loadout's items on, the displaced PvE items to the bags, one row per swapped slot. Worn slots
+    // whose loadout entry changed are swapped again (the old PvP item destroyed). Outside an arena or battleground only
+    // on an arena server. false: nothing ran (not now, not a ladder bot, no loadout)
+    bool Wear(Player* bot, char const* reason);
+    // World thread: the bot's loadout rows changed (a reset, a bought upgrade): a bot that wears its loadout swaps the
+    // changed slots now; true when it did
+    bool OnLoadoutChanged(Player* bot);
     // World thread: the PvP items destroyed, the PvE items equipped again, the inventory saved and the rows deleted
     // after that commit (also the crash repair at login, which runs with PvP gear off as well). false: not now (dead or
     // teleporting); the caller hands the bot to RetryUnwear
@@ -193,6 +202,9 @@ private:
 
     PvpGearMgr() = default;
     void LoadWorn();
+    void EnsureLoadout(Player* bot);
+    // Wear's first pass: worn slots whose PvP item is gone or no longer the loadout's entry get their PvE item back
+    uint32 RefreshWorn(Player* bot, Worn& worn, Loadout const& loadout) const;
     bool Usable(Player* bot, CatalogueItem const& item) const;
     // The best usable item of the groups in groupMask for the slot in the lowest tier from minTier up that has one
     // (ccBreak 1: only the PvP trinket, -1: no PvP trinket; maxRating: leaves out items that need a higher rating)

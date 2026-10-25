@@ -18,6 +18,7 @@
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "ItemTemplate.h"
+#include "LadderMgr.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -629,14 +630,24 @@ uint32 PvpGearMgr::MissingSlots(Loadout const& loadout)
 void PvpGearMgr::OnBotLogin(Player* bot)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::OnBotLogin");
-    // Rows left by a crash or a logout during a match: the PvE gear goes back on first (also for a bot that is no
-    // longer a ladder bot, and with PvP gear off)
-    if (!Unwear(bot, "login repair"))
-        RetryUnwear(bot->GetGUID().GetCounter());
+    // On an arena server a hosted ladder bot's rows are its gear, not a crash: it keeps them and wears the loadout.
+    // Elsewhere rows left by a crash or a logout during a match: the PvE gear goes back on first (also for a bot that
+    // is no longer a ladder bot, and with PvP gear off)
+    uint32 const guid = bot->GetGUID().GetCounter();
+    bool const wearsAlways = WearsAlways() && IsLadderBot(bot) && !LadderMgr::Instance().IsAway(guid);
+    if (!wearsAlways && !Unwear(bot, "login repair"))
+        RetryUnwear(guid);
 
     if (!_loaded || !IsLadderBot(bot))
         return;
 
+    EnsureLoadout(bot);
+    if (wearsAlways)
+        Wear(bot, "login");
+}
+
+void PvpGearMgr::EnsureLoadout(Player* bot)
+{
     uint32 const guid = bot->GetGUID().GetCounter();
     if (_loadouts.contains(guid))
         return;
@@ -940,6 +951,17 @@ bool PvpGearMgr::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     return true;
 }
 
+namespace
+{
+bool ResetUsage(ChatHandler* handler)
+{
+    handler->SendSysMessage(
+        "Usage: .playerbots pvpgear reset [season, default the current + 1] [tier name or its start, default the base "
+        "tier]");
+    return false;
+}
+}  // namespace
+
 bool PvpGearMgr::HandleResetCommand(ChatHandler* handler, char const* args)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::HandleResetCommand");
@@ -947,17 +969,29 @@ bool PvpGearMgr::HandleResetCommand(ChatHandler* handler, char const* args)
     if (!mgr._loaded)
         return Off(handler);
 
+    // [season] [tier]: the season number (default the current + 1) and the tier the loadouts start at (a tier name or
+    // its start, default Playerbots.PvpGear.BaseTier)
     uint32 season = mgr._season + 1;
-    std::string const text = Trim(args ? args : "");
-    if (!text.empty())
+    uint8 tier = mgr._baseTier;
+    std::istringstream words(Trim(args ? args : ""));
+    for (std::string word; words >> word;)
     {
-        std::optional<uint32> const number = Acore::StringTo<uint32>(text);
-        if (!number || !*number)
+        if (std::optional<uint32> const number = Acore::StringTo<uint32>(word))
         {
-            handler->PSendSysMessage("Usage: .playerbots pvpgear reset [season, default the current + 1]");
-            return false;
+            if (!*number)
+                return ResetUsage(handler);
+
+            season = *number;
+            continue;
         }
-        season = *number;
+
+        std::string const prefix = Lower(word);
+        auto const found = std::find_if(mgr._tierNames.begin(), mgr._tierNames.end(),
+                                        [&prefix](std::string const& name) { return Lower(name).starts_with(prefix); });
+        if (found == mgr._tierNames.end())
+            return ResetUsage(handler);
+
+        tier = static_cast<uint8>(found - mgr._tierNames.begin());
     }
 
     std::unordered_map<uint32, Loadout> rebuilt;
@@ -970,7 +1004,7 @@ bool PvpGearMgr::HandleResetCommand(ChatHandler* handler, char const* args)
             continue;
 
         uint32 filled = 0;
-        Loadout const loadout = mgr.BuildLoadout(bot, mgr._baseTier, season, filled);
+        Loadout const loadout = mgr.BuildLoadout(bot, tier, season, filled);
         items += filled;
         missing += MissingSlots(loadout);
         rebuilt.emplace(bot->GetGUID().GetCounter(), loadout);
@@ -990,12 +1024,19 @@ bool PvpGearMgr::HandleResetCommand(ChatHandler* handler, char const* args)
     PlayerbotsDatabase.CommitTransaction(transaction);
     mgr._loadouts = std::move(rebuilt);
     mgr._season = season;
+    mgr._baseTier = tier;  // until the restart: the cleared loadouts are rebuilt at this tier
+
+    // The bots that wear their loadout now (in a match, or on an arena server) swap the changed slots
+    uint32 rewears = 0;
+    for (auto const& [guid, loadout] : mgr._loadouts)
+        if (mgr.OnLoadoutChanged(ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(guid))))
+            ++rewears;
 
     std::string const message = Acore::StringFormat(
-        "PvP gear season {}: {} online ladder bots set to the base tier {} ({} items, {} slots empty); {} other "
-        "loadouts cleared, rebuilt at the bot's next login. A ladder bot is a random bot at the maximum level in an "
-        "arena team.",
-        season, mgr._loadouts.size(), mgr._tierNames[mgr._baseTier], items, missing, cleared);
+        "PvP gear season {}: {} online ladder bots set to the tier {} ({} items, {} slots empty, {} bots wearing "
+        "it swapped); {} other loadouts cleared, rebuilt at the bot's next login. A ladder bot is a random bot at the "
+        "maximum level in an arena team.",
+        season, mgr._loadouts.size(), mgr._tierNames[tier], items, missing, rewears, cleared);
     handler->SendSysMessage(message);
     LOG_INFO("playerbots", "{}", message);
     return true;

@@ -1498,7 +1498,7 @@ Playerbots.Ladder.PoolTeams = 0
 # loadout is created at the base tier at the bot's login. Nothing is bought yet; Playerbots.PvpGear.Wear decides whether
 # the loadout is worn.
 # All loadouts are loaded with one query at startup; a login reads memory only, writes are asynchronous.
-# Commands: .playerbots pvpgear status | reset [season] | show <bot> | check [count] | selftest
+# Commands: .playerbots pvpgear status | reset [season] [tier] | show <bot> | check [count] | selftest
 # reset starts a season: every online ladder bot gets the base tier at once, the other loadouts are deleted and
 # rebuilt at the bot's next login.
 # Default: 0 (off: no catalogue, no rows)
@@ -1523,7 +1523,10 @@ Playerbots.PvpGear.BaseTier = ""
 # PvP items are destroyed and the PvE items equipped again. While the loadout is worn, the upgrade actions, the
 # level-up gear upkeep, selling and destroying leave the worn and the displaced items alone. Each swapped slot is a row
 # in the playerbots table playerbots_pvp_worn, so a crash during a match is repaired at the bot's next login (rows are
-# loaded and repaired at every start, also with this option or Playerbots.PvpGear.Enable off).
+# loaded and repaired at every start, also with this option or Playerbots.PvpGear.Enable off). On an arena server
+# (Playerbots.Ladder.Role = 2) the hosted ladder bots wear the loadout from login on, also between matches; a depart
+# takes it off before the members log out, so a team never leaves in PvP gear. A changed loadout (a pvpgear reset)
+# swaps the changed slots of the bots that wear it.
 # Default: 0 (off: the bots fight in their PvE gear)
 Playerbots.PvpGear.Wear = 0
 

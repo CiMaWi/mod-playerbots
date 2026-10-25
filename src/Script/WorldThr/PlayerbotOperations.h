@@ -723,7 +723,7 @@ public:
             return false;
 
         if (m_wear)
-            PvpGearMgr::Instance().Wear(bot);
+            PvpGearMgr::Instance().Wear(bot, "match");
         else if (!PvpGearMgr::Instance().Unwear(bot, "leave"))
             PvpGearMgr::Instance().RetryUnwear(m_botGuid.GetCounter());
 

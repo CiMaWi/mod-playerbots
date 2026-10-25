@@ -25,6 +25,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "PvpGearMgr.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "StringConvert.h"
@@ -449,6 +450,18 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
             if (player && (player->InBattleground() || player->InBattlegroundQueue()))
             {
                 move.Note = Acore::StringFormat("waits: {} is queued or in a battleground", member.Name);
+                return;
+            }
+        }
+
+        // The PvP gear comes off here first (an arena server wears it all the time): the worn rows stay on this
+        // server, and a character leaving in PvP gear would arrive with its PvE items in the bags
+        for (ArenaTeamMember const& member : team->GetMembers())
+        {
+            Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid);
+            if (player && PvpGearMgr::Instance().IsWorn(player) && !PvpGearMgr::Instance().Unwear(player, "depart"))
+            {
+                move.Note = Acore::StringFormat("waits: {} takes its PvP gear off", member.Name);
                 return;
             }
         }

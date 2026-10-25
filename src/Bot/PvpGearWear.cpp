@@ -8,8 +8,11 @@
 // battleground the loadout's items are created and equipped and the PvE items they replace go to the bags; at the leave
 // the PvP items are destroyed and the PvE items equipped again. Every worn slot is a row in playerbots_pvp_worn (per
 // server, never copied), so a crash during a match is repaired at the bot's next login. The PvE items are only moved,
-// never destroyed or recreated: their enchants, gems and durability stay.
+// never destroyed or recreated: their enchants, gems and durability stay. On an arena server (WearsAlways) the
+// hosted ladder bots wear the loadout from login on; a depart (LadderMgr) takes it off before the members log out,
+// since the rows stay on the server and a character must not leave it in PvP gear.
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 
@@ -17,9 +20,11 @@
 #include "DatabaseEnv.h"
 #include "Item.h"
 #include "ItemTemplate.h"
+#include "LadderMgr.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotOperations.h"
@@ -227,36 +232,96 @@ void PvpGearMgr::QueueWear(Player* bot)
 
 void PvpGearMgr::QueueUnwear(Player* bot)
 {
-    if (!Instance().IsWorn(bot))  // also with PvP gear off: a bot repaired late (the retry) may queue again
+    PvpGearMgr const& mgr = Instance();
+    if (!mgr.IsWorn(bot))  // also with PvP gear off: a bot repaired late (the retry) may queue again
+        return;
+
+    if (mgr.WearsAlways() && IsLadderBot(bot))  // an arena server: worn between matches as well
         return;
 
     PlayerbotWorldThreadProcessor::instance().QueueOperation(
         std::make_unique<PvpGearWearOperation>(bot->GetGUID(), false));
 }
 
-void PvpGearMgr::Wear(Player* bot)
+bool PvpGearMgr::WearsAlways() const
+{
+    return _loaded && sPlayerbotAIConfig.PvpGearEnable && sPlayerbotAIConfig.PvpGearWear &&
+           sPlayerbotAIConfig.LadderRole == LADDER_ROLE_ARENA;
+}
+
+bool PvpGearMgr::OnLoadoutChanged(Player* bot)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::OnLoadoutChanged");
+    if (!bot || (!IsWorn(bot) && !WearsAlways()))
+        return false;
+
+    return Wear(bot, "loadout changed");
+}
+
+uint32 PvpGearMgr::RefreshWorn(Player* bot, Worn& worn, Loadout const& loadout) const
+{
+    uint32 refreshed = 0;
+    bool mainhand = false;
+    for (uint8 slot = 0; slot < SlotCount; ++slot)
+    {
+        WornSlot& row = worn[slot];
+        if (!HasRow(row))
+            continue;
+
+        // A row without a PvP item is the off hand emptied for a two-hander: it follows a swapped main hand
+        Item* pvpItem = ItemByCounter(bot, row.PvpItem);
+        bool const inSlot = pvpItem && pvpItem->GetBagSlot() == INVENTORY_SLOT_BAG_0 && pvpItem->GetSlot() == slot;
+        bool const stale = row.PvpItem ? !inSlot || pvpItem->GetEntry() != loadout[slot].Item
+                                       : slot == EQUIPMENT_SLOT_OFFHAND && mainhand;
+        if (!stale)
+            continue;
+
+        mainhand |= slot == EQUIPMENT_SLOT_MAINHAND;
+        if (pvpItem && (inSlot || FindItem(pvpItem->GetEntry())))
+            bot->DestroyItem(pvpItem->GetBagSlot(), pvpItem->GetSlot(), true);
+
+        Item* pveItem = ItemByCounter(bot, row.PveItem);
+        bool const pveInSlot = pveItem && pveItem->GetBagSlot() == INVENTORY_SLOT_BAG_0 && pveItem->GetSlot() == slot;
+        if (!row.PveItem || pveInSlot || (pveItem && EquipFromBags(bot, slot, pveItem)))
+            row = {};
+        else if (!pveItem)
+        {
+            LOG_ERROR("playerbots", "PvP gear: {} PvE item lost (guid {}, slot {})", bot->GetName(), row.PveItem, slot);
+            row = {};
+        }
+        else
+            row.PvpItem = 0;  // the PvE item stays in the bags, recorded for the unwear
+
+        ++refreshed;
+    }
+
+    return refreshed;
+}
+
+bool PvpGearMgr::Wear(Player* bot, char const* reason)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::Wear");
     if (!_loaded || !sPlayerbotAIConfig.PvpGearWear || !bot->IsInWorld() || bot->IsBeingTeleported() || !bot->IsAlive())
-        return;
+        return false;
 
-    // Only while the bot is still in the arena or battleground (a short match may be over before this runs)
-    Battleground* bg = bot->GetBattleground();
-    if (!bg || bg->GetStatus() == STATUS_WAIT_LEAVE || !IsLadderBot(bot))
-        return;
-
-    auto const start = std::chrono::steady_clock::now();
+    // On main only while the bot is still in the arena or battleground (a short match may be over before this runs);
+    // on an arena server at any time, except for a member of a departing team (its logouts have started)
     uint32 const guid = bot->GetGUID().GetCounter();
-    if (!Find(guid))
-        OnBotLogin(bot);  // a bot that joined its arena team after its login gets the base tier now
+    Battleground* bg = bot->GetBattleground();
+    bool const inMatch = bg && bg->GetStatus() != STATUS_WAIT_LEAVE;
+    if ((WearsAlways() ? LadderMgr::Instance().IsAway(guid) : !inMatch) || !IsLadderBot(bot))
+        return false;
 
+    EnsureLoadout(bot);  // a bot that joined its arena team after its login gets the base tier now
     Loadout const* loadout = Find(guid);
     if (!loadout)
     {
         LOG_INFO("playerbots", "PvP gear: {} has no loadout, fights in its PvE gear", bot->GetName());
-        return;
+        return false;
     }
 
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "PvpGear wear");
+    auto const start = std::chrono::steady_clock::now();
     Worn worn{};
     {
         std::shared_lock lock(_wornLock);
@@ -264,11 +329,14 @@ void PvpGearMgr::Wear(Player* bot)
             worn = it->second;
     }
 
+    // Slots whose loadout entry changed since they were swapped (a reset, an upgrade) or whose PvP item is gone (a
+    // crash before the save) get their PvE item back first; the loop below swaps them like any other slot
+    uint32 const refreshed = RefreshWorn(bot, worn, *loadout);
     uint32 equipped = 0;
     uint32 displaced = 0;
     uint32 bagsFull = 0;
     uint32 refused = 0;
-    bool changed = false;
+    bool changed = refreshed > 0;
     for (uint8 slot = 0; slot < SlotCount; ++slot)
     {
         uint32 const entry = (*loadout)[slot].Item;
@@ -356,20 +424,35 @@ void PvpGearMgr::Wear(Player* bot)
 
     if (changed)
     {
+        bool const anyRow = std::any_of(worn.begin(), worn.end(), HasRow);
         {
             std::unique_lock lock(_wornLock);
-            _worn[guid] = worn;
+            if (anyRow)
+                _worn[guid] = worn;
+            else
+                _worn.erase(guid);
         }
 
-        WriteRows(guid, &worn);
-        bot->AdditionalSavingAddMask(ADDITIONAL_SAVING_INVENTORY_AND_GOLD);
+        // The rows first, then the inventory now (not the additional-save mask: PlayerSave.AdditionalSaves may be 0,
+        // which leaves the swap unsaved until the next periodic save and a crash with PvP items nobody tracks)
+        WriteRows(guid, anyRow ? &worn : nullptr);
+        CharacterDatabaseTransaction transaction = CharacterDatabase.BeginTransaction();
+        bot->SaveInventoryAndGoldToDB(transaction);
+        CharacterDatabase.CommitTransaction(transaction);
     }
 
+    if (pmo)
+        pmo->finish();
+
+    std::string const where =
+        !inMatch ? "on the arena server"
+                 : Acore::StringFormat("in {} {}", bg->isArena() ? "arena" : "battleground", bg->GetMapId());
     LOG_INFO("playerbots",
-             "PvP gear: {} wears its loadout in {} {} ({} items equipped, {} PvE items to the bags, {} slots keep "
-             "their PvE item: bags full, {} not equippable) in {} us",
-             bot->GetName(), bg->isArena() ? "arena" : "battleground", bg->GetMapId(), equipped, displaced, bagsFull,
-             refused, MicrosecondsSince(start));
+             "PvP gear: {} wears its loadout {} ({}: {} items equipped, {} slots swapped again, {} PvE items to the "
+             "bags, {} slots keep their PvE item: bags full, {} not equippable) in {} us",
+             bot->GetName(), where, reason, equipped, refreshed, displaced, bagsFull, refused,
+             MicrosecondsSince(start));
+    return true;
 }
 
 bool PvpGearMgr::Unwear(Player* bot, char const* reason)
@@ -394,6 +477,7 @@ bool PvpGearMgr::Unwear(Player* bot, char const* reason)
     if (!bot->IsInWorld() || bot->IsBeingTeleported() || !bot->IsAlive())
         return false;
 
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "PvpGear unwear");
     auto const start = std::chrono::steady_clock::now();
     Loadout const* loadout = Find(guid);
     uint32 destroyed = 0;
@@ -492,6 +576,9 @@ bool PvpGearMgr::Unwear(Player* bot, char const* reason)
 
                 WriteRows(guid, nullptr);
             });
+    if (pmo)
+        pmo->finish();
+
     LOG_INFO("playerbots",
              "PvP gear: {} takes its loadout off ({}: {} PvP items destroyed, {} PvE items equipped, {} left in the "
              "bags, {} lost) in {} us",
