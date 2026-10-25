@@ -27,6 +27,7 @@
 #include "Guild.h"
 #include "GuildMgr.h"
 #include "GuildScript.h"
+#include "LadderMgr.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -516,6 +517,10 @@ void AcquaintanceMgr::Apply(AcquaintanceEvent kind, uint32 player, uint32 bot, u
 
     Rescore(data);
     MarkDirty(Key(player, bot), entry);
+
+    // Playerbots.Ladder.ContactMinutes: a direct contact or an invited group pins the bot's arena team
+    if (direct || kind == AcquaintanceEvent::GroupJoin)
+        LadderMgr::Instance().NoteContact(bot, now);
 }
 
 void AcquaintanceMgr::AddTime(AcquaintanceTally tally, uint32 player, uint32 bot, uint32 seconds)

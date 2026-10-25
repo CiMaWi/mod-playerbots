@@ -46,6 +46,8 @@ public:
             {"route", TestPlayerMgr::HandleRouteCommand, SEC_GAMEMASTER, Console::Yes},
             {"logout", TestPlayerMgr::HandleLogoutCommand, SEC_GAMEMASTER, Console::Yes},
             {"status", TestPlayerMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"whisper", TestPlayerMgr::HandleWhisperCommand, SEC_GAMEMASTER, Console::Yes},
+            {"group", TestPlayerMgr::HandleGroupCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsPvpTestPlanCommandTable = {
@@ -84,6 +86,10 @@ public:
             {"depart", LadderMgr::HandleDepartCommand, SEC_GAMEMASTER, Console::Yes},
             {"arrive", LadderMgr::HandleArriveCommand, SEC_GAMEMASTER, Console::Yes},
             {"status", LadderMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"teams", LadderMgr::HandleTeamsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"pin", LadderMgr::HandlePinCommand, SEC_GAMEMASTER, Console::Yes},
+            {"drain", LadderMgr::HandleDrainCommand, SEC_GAMEMASTER, Console::Yes},
+            {"undrain", LadderMgr::HandleUndrainCommand, SEC_GAMEMASTER, Console::Yes},
             {"pool", playerbotsLadderPoolCommandTable},
         };
 

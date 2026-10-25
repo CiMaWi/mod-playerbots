@@ -16,6 +16,8 @@
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
+#include "Group.h"
+#include "GroupMgr.h"
 #include "Log.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
@@ -154,6 +156,109 @@ bool TestPlayerMgr::HandleStatusCommand(ChatHandler* handler, char const* /*args
         return false;
 
     Instance().Status(handler);
+    return true;
+}
+
+bool TestPlayerMgr::HandleWhisperCommand(ChatHandler* handler, char const* args)
+{
+    if (!CheckEnabled(handler))
+        return false;
+
+    std::istringstream in(args ? args : "");
+    std::string target;
+    std::string text;
+    in >> target;
+    std::getline(in >> std::ws, text);
+    if (target.empty() || text.empty())
+        return Fail(handler, "Usage: .playerbots testplayer whisper <character> <text>");
+
+    return Instance().Whisper(handler, target, text);
+}
+
+bool TestPlayerMgr::HandleGroupCommand(ChatHandler* handler, char const* args)
+{
+    if (!CheckEnabled(handler))
+        return false;
+
+    std::istringstream in(args ? args : "");
+    std::string target;
+    in >> target;
+    if (target.empty())
+        return Fail(handler, "Usage: .playerbots testplayer group <character>|none");
+
+    return Instance().GroupWith(handler, target);
+}
+
+Player* TestPlayerMgr::OnlinePlayer() const
+{
+    return _state == State::Online && _session ? _session->GetPlayer() : nullptr;
+}
+
+bool TestPlayerMgr::Whisper(ChatHandler* handler, std::string const& target, std::string const& text)
+{
+    Player* player = OnlinePlayer();
+    if (!player)
+        return Fail(handler, "No test player is online");
+
+    Player* receiver = ObjectAccessor::FindPlayerByName(target);
+    if (!receiver)
+        return Fail(handler, Acore::StringFormat("{} is not online", target));
+
+    // The faction's own language: the handler refuses universal from a player who is no GM
+    uint32 const lang = player->GetTeamId() == TEAM_ALLIANCE ? LANG_COMMON : LANG_ORCISH;
+    WorldPacket packet(CMSG_MESSAGECHAT, 4 + 4 + receiver->GetName().size() + 1 + text.size() + 1);
+    packet << uint32(CHAT_MSG_WHISPER);
+    packet << lang;
+    packet << receiver->GetName();
+    packet << text;
+    _session->HandleMessagechatOpcode(packet);
+    handler->PSendSysMessage("Test player {} whispered {}: {}", _name, receiver->GetName(), text);
+    return true;
+}
+
+bool TestPlayerMgr::GroupWith(ChatHandler* handler, std::string const& target)
+{
+    Player* player = OnlinePlayer();
+    if (!player)
+        return Fail(handler, "No test player is online");
+
+    if (target == "none")
+    {
+        Group* group = player->GetGroup();
+        if (!group)
+            return Fail(handler, "The test player is in no group");
+
+        group->RemoveMember(player->GetGUID());
+        handler->PSendSysMessage("Test player {} left its group", _name);
+        return true;
+    }
+
+    Player* member = ObjectAccessor::FindPlayerByName(target);
+    if (!member || member == player)
+        return Fail(handler, Acore::StringFormat("{} is not online", target));
+
+    if (member->GetGroup() || member->InBattleground())
+        return Fail(handler, Acore::StringFormat("{} is in a group or a battleground", target));
+
+    // No invite round trip: a headless session has no client to answer one
+    Group* group = player->GetGroup();
+    if (!group)
+    {
+        group = new Group();
+        if (!group->Create(player))
+        {
+            delete group;
+            return Fail(handler, "The group could not be created");
+        }
+
+        sGroupMgr->AddGroup(group);
+    }
+
+    if (group->IsFull() || !group->AddMember(member))
+        return Fail(handler, Acore::StringFormat("{} could not join the test player's group", target));
+
+    handler->PSendSysMessage("Test player {} groups with {}", _name, member->GetName());
+    LOG_INFO("playerbots", "TestPlayer: {} groups with {}", _name, member->GetName());
     return true;
 }
 

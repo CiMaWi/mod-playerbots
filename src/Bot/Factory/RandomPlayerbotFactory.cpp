@@ -1088,8 +1088,7 @@ void RandomPlayerbotFactory::CreateBotArenaTeam(Player* bot, ArenaType type)
     sArenaTeamMgr->AddArenaTeam(arenateam);
     _botArenaTeamRegistry[type].push_back(arenateam->GetId());
 
-    LOG_DEBUG("playerbots", "Created {}v{} arena team '{}' with captain {}",
-              type, type, teamName, bot->GetName());
+    LOG_DEBUG("playerbots", "Created {}v{} arena team '{}' with captain {}", type, type, teamName, bot->GetName());
 }
 
 void RandomPlayerbotFactory::SetRandomRatingAndEmblem(ArenaTeam* team)
@@ -1164,6 +1163,13 @@ uint32 RandomPlayerbotFactory::CreatePairArenaTeam(Player* founder, ObjectGuid c
     LOG_INFO("playerbots", "Ladder pool: arena team {} <{}> for {} and {}", team->GetId(), teamName, captainName,
              partnerName);
     return team->GetId();
+}
+
+bool RandomPlayerbotFactory::IsRegisteredBotArenaTeam(uint8 type, uint32 teamId)
+{
+    auto const it = _botArenaTeamRegistry.find(static_cast<ArenaType>(type));
+    return it != _botArenaTeamRegistry.end() &&
+           std::find(it->second.begin(), it->second.end(), teamId) != it->second.end();
 }
 
 uint32 RandomPlayerbotFactory::GetBotArenaTeamCount(ArenaType type)

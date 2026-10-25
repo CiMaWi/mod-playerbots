@@ -47,6 +47,10 @@ public:
     static bool HandleRouteCommand(ChatHandler* handler, char const* args);
     static bool HandleLogoutCommand(ChatHandler* handler, char const* args);
     static bool HandleStatusCommand(ChatHandler* handler, char const* args);
+    // Whispers a character through the chat opcode handler, as a client would (the chat hooks run)
+    static bool HandleWhisperCommand(ChatHandler* handler, char const* args);
+    // Groups a character with the test player as the leader (as an accepted invite), or "none" leaves the group
+    static bool HandleGroupCommand(ChatHandler* handler, char const* args);
 
 private:
     enum class State
@@ -63,6 +67,9 @@ private:
     bool SetRoute(ChatHandler* handler, std::string const& route);
     bool Logout(ChatHandler* handler);
     void Status(ChatHandler* handler);
+    Player* OnlinePlayer() const;
+    bool Whisper(ChatHandler* handler, std::string const& target, std::string const& text);
+    bool GroupWith(ChatHandler* handler, std::string const& target);
 
     void StartLoad();
     void OnLoaded(LoginQueryHolder const& holder);

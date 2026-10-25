@@ -1440,10 +1440,13 @@ Playerbots.Acquaintance.NearbyRadius = 30
 # Runtime arena team moves (1 = on, 0 = off)
 # When 1, the GM/console commands .playerbots ladder depart <arenaTeamId> | arrive <arenaTeamId> | status [<id>] move
 # one random bot arena team out of and back into the running server. depart stops the members queueing, waits until
-# none of them is queued or in a battleground (refused while one is grouped with a real player), logs them out, saves
-# the team and drops it from memory (no DB row is deleted); arrive loads the team again from its DB rows with async
-# queries and lets the members log in; an arrive while a depart still waits cancels the depart. Meant for the hub's
-# ladder tooling. With 0 (default) the commands refuse unless Playerbots.Ladder.Role is set.
+# none of them is queued or in a battleground (refused while the team is pinned, see Playerbots.Ladder.ContactMinutes),
+# logs them out, saves the team and drops it from memory (no DB row is deleted); arrive loads the team again from its
+# DB rows with async queries and lets the members log in; an arrive while a depart still waits cancels the depart.
+# Also: .playerbots ladder teams [pinned|busy] (the teams in memory with rating, MMR, members online, time hosted,
+# busy and pinned), pin <arenaTeamId> [minutes] (a GM pin, test aid; 0 unpins), drain (no arena team member queues;
+# queued members and running matches carry on; not kept over a restart) and undrain. Meant for the hub's ladder
+# tooling. With 0 (default) the commands refuse unless Playerbots.Ladder.Role is set.
 Playerbots.Ladder.Enable = 0
 
 # Ladder role of this server (0 = off, 1 = main, 2 = arena instance). Read at startup.
@@ -1465,6 +1468,14 @@ Playerbots.Ladder.ServerId = ""
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600
+
+# Minutes a real player's direct contact with a random bot (whisper, party chat, trade, duel, a group the player
+# invited it to) pins the bot's arena team (0-1440; 0 = no contact pins): depart refuses the team and a depart in
+# progress is cancelled. The contacts come from the acquaintance event hooks, so they need
+# Playerbots.Acquaintance.Enable = 1. A team is also pinned while a member is in a group, battleground or arena with a
+# real player, or duels or trades with one (whatever this option says). Ignored while the moves are off.
+# Default: 15
+Playerbots.Ladder.ContactMinutes = 15
 
 # Main role (Playerbots.Ladder.Role = 1): the number of 2v2 teams in the ladder pool (0-5000). A pool team is two
 # random bots at the maximum level that are in no other arena team; the teams away on an arena server count. While

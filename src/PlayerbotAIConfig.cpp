@@ -770,6 +770,8 @@ bool PlayerbotAIConfig::Initialize()
     LadderServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
     LadderDepartTimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.DepartTimeoutSeconds", 600), 5, 86400);
+    LadderContactMinutes =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
     LadderPoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =

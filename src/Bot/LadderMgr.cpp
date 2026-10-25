@@ -16,6 +16,7 @@
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
@@ -38,6 +39,12 @@ constexpr uint32 CheckIntervalMs = 1000;
 constexpr uint8 ArenaSlotCount = 3;  // 2v2, 3v3, 5v5
 constexpr uint32 PoolCheckIntervalMs = 30 * IN_MILLISECONDS;
 constexpr uint32 PoolBuildPerCheck = 10;
+constexpr uint32 RelogoutIntervalMs = 10 * IN_MILLISECONDS;  // a member still online after the logouts
+constexpr size_t MaxContacts = 10000;
+constexpr uint32 DefaultGmPinMinutes = 60;
+constexpr uint32 MaxGmPinMinutes = 7 * 24 * 60;
+
+uint32 UnixNow() { return static_cast<uint32>(GameTime::GetGameTime().count()); }
 
 Optional<uint32> ParseTeamId(char const* args)
 {
@@ -137,6 +144,13 @@ void LadderMgr::LoadRoster()
         move.Note = "away (roster)";
     }
 
+    // The bot arena team assignment asks PoolWants from the first logins on
+    if (PoolOn())
+    {
+        PoolCount const pool = CountPool();
+        _poolShort = pool.Resident + pool.Away < sPlayerbotAIConfig.LadderPoolTeams;
+    }
+
     uint32 missing = 0;
     for (uint32 const teamId : _hostedTeams)
         if (!sArenaTeamMgr->GetArenaTeamById(teamId))
@@ -203,18 +217,41 @@ char const* LadderMgr::StateName(State state)
 
 bool LadderMgr::GroupedWithRealPlayer(Player* player)
 {
-    Group* group = player->GetGroup();
-    if (!group)
-        return false;
-
-    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    // In a battleground the original group is the player's own one
+    for (Group* group : {player->GetGroup(), player->GetOriginalGroup()})
     {
-        Player* member = ref->GetSource();
-        if (member && !GET_PLAYERBOT_AI(member))
-            return true;
+        if (!group)
+            continue;
+
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && !GET_PLAYERBOT_AI(member))
+                return true;
+        }
     }
 
     return false;
+}
+
+// The live part of the pin: what the member does with a real player now, or nullptr
+char const* LadderMgr::WithRealPlayer(Player* player)
+{
+    if (GroupedWithRealPlayer(player))
+        return "is grouped with";
+
+    if (player->duel && player->duel->Opponent && IsRealPlayer(player->duel->Opponent))
+        return "duels";
+
+    if (Player* trader = player->GetTrader(); trader && IsRealPlayer(trader))
+        return "trades with";
+
+    if (Battleground* bg = player->GetBattleground())
+        for (auto const& [guid, other] : bg->GetPlayers())
+            if (other && IsRealPlayer(other))
+                return "is in a battleground or arena with";
+
+    return nullptr;
 }
 
 void LadderMgr::SetState(Move& move, State state)
@@ -241,14 +278,15 @@ void LadderMgr::SetBlocked(uint32 teamId, bool blocked)
 
 bool LadderMgr::IsQueueBlocked(Player* bot)
 {
-    if (!_anyBlocked.load(std::memory_order_relaxed))
+    bool const draining = _draining.load(std::memory_order_relaxed);
+    if (!draining && !_anyBlocked.load(std::memory_order_relaxed))
         return false;
 
     std::lock_guard<std::mutex> guard(_blockedLock);
     for (uint8 slot = 0; slot < ArenaSlotCount; ++slot)
     {
         uint32 const teamId = bot->GetArenaTeamId(slot);
-        if (teamId && _blockedTeams.contains(teamId))
+        if (teamId && (draining || _blockedTeams.contains(teamId)))
             return true;
     }
 
@@ -372,6 +410,15 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
         return;
     }
 
+    // Also once the logouts have started: a contact noted for an offline member, a GM pin
+    std::string reason;
+    if (IsTeamPinned(team, &reason))
+    {
+        CancelDepart(teamId, move, State::Failed, Acore::StringFormat("depart cancelled: pinned ({})", reason));
+        LOG_INFO("playerbots", "Ladder: arena team {} failed: {}", teamId, move.Note);
+        return;
+    }
+
     // A member who joined after the logouts started (recruit) restarts the wait
     if (move.LoggedOut)
     {
@@ -390,18 +437,9 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
         for (ArenaTeamMember const& member : team->GetMembers())
         {
             Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid);
-            if (!player)
-                continue;
-
-            if (player->InBattleground() || player->InBattlegroundQueue())
+            if (player && (player->InBattleground() || player->InBattlegroundQueue()))
             {
                 move.Note = Acore::StringFormat("waits: {} is queued or in a battleground", member.Name);
-                return;
-            }
-
-            if (GroupedWithRealPlayer(player))
-            {
-                move.Note = Acore::StringFormat("waits: {} is grouped with a real player", member.Name);
                 return;
             }
         }
@@ -423,15 +461,36 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
         _hostedTeams.erase(teamId);
         WriteRoster(teamId, move.Members, true);
         move.LoggedOut = true;
+        move.LogoutIssuedMs = move.WaitedMs;
         move.Note = "waits for the logouts";
         LOG_INFO("playerbots", "Ladder: arena team {} <{}> logs out {} members", teamId, team->GetName(),
                  team->GetMembersSize());
         return;
     }
 
+    // A login in flight when the logouts started can complete after them: such a member is logged out again
+    bool const reissue = move.WaitedMs - move.LogoutIssuedMs >= RelogoutIntervalMs;
+    bool online = false;
     for (ObjectGuid const& guid : move.Members)
-        if (ObjectAccessor::FindConnectedPlayer(guid))
-            return;
+    {
+        if (!ObjectAccessor::FindConnectedPlayer(guid))
+            continue;
+
+        online = true;
+        if (reissue)
+            sRandomPlayerbotMgr.LadderLogout(guid.GetCounter());
+    }
+
+    if (online)
+    {
+        if (reissue)
+        {
+            move.LogoutIssuedMs = move.WaitedMs;
+            move.Note = "waits for the logouts (issued again)";
+        }
+
+        return;
+    }
 
     // Every member is offline and saved (their logout saves are queued before the barrier below)
     team->SaveToDB(true);
@@ -554,6 +613,7 @@ void LadderMgr::OnMemberRows(uint32 teamId, QueryResult result)
     ReleaseMembers(teamId, move);
     SetBlocked(teamId, false);
     SetState(move, State::Hosted);
+    move.HostedSince = UnixNow();
     move.Note = Acore::StringFormat("<{}> rating {}, {} members loaded", team->GetName(), team->GetRating(),
                                     team->GetMembersSize());
     LOG_INFO("playerbots", "Ladder: arena team {} arrived: {}", teamId, move.Note);
@@ -591,17 +651,17 @@ bool LadderMgr::HandleDepartCommand(ChatHandler* handler, char const* args)
                 return Refuse(handler, Acore::StringFormat("Team {}: {} is also in arena team {}", *teamId, member.Name,
                                                            otherTeamId));
         }
-
-        Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid);
-        if (player && GroupedWithRealPlayer(player))
-            return Refuse(handler,
-                          Acore::StringFormat("Team {}: {} is grouped with a real player", *teamId, member.Name));
     }
+
+    std::string reason;
+    if (mgr.IsTeamPinned(team, &reason))
+        return Refuse(handler, Acore::StringFormat("Team {}: pinned ({})", *teamId, reason));
 
     Move& move = mgr._moves[*teamId];
     mgr.ReleaseMembers(*teamId, move);
     mgr.NoteTeam(move, team);
     move.WaitedMs = 0;
+    move.LogoutIssuedMs = 0;
     move.Note = "waits until no member is queued or in a battleground";
     mgr.SetState(move, State::Departing);
     mgr.SetBlocked(*teamId, true);
@@ -674,10 +734,11 @@ bool LadderMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
     LadderMgr const& mgr = Instance();
     Optional<uint32> const teamId = ParseTeamId(args);
     std::string const& serverId = sPlayerbotAIConfig.LadderServerId;
-    handler->PSendSysMessage("Ladder role {} (server {}); moves {}; {} pending; random bots online {} of {}",
+    handler->PSendSysMessage("Ladder role {} (server {}); moves {}; {} pending; queues {}; random bots online {} of {}",
                              RoleName(sPlayerbotAIConfig.LadderRole), serverId.empty() ? "unnamed" : serverId,
-                             MovesOn() ? "on" : "off", mgr._busy, sRandomPlayerbotMgr.GetPlayerbotsCount(),
-                             sRandomPlayerbotMgr.GetMaxAllowedBotCount());
+                             MovesOn() ? "on" : "off", mgr._busy,
+                             mgr._draining.load(std::memory_order_relaxed) ? "drained" : "open",
+                             sRandomPlayerbotMgr.GetPlayerbotsCount(), sRandomPlayerbotMgr.GetMaxAllowedBotCount());
 
     uint32 arenas = 0;
     uint32 rated = 0;
@@ -722,9 +783,198 @@ bool LadderMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
         ++shown;
     }
 
+    ArenaTeam* team = teamId ? sArenaTeamMgr->GetArenaTeamById(*teamId) : nullptr;
     if (teamId && !shown)
-        handler->PSendSysMessage("#{} {}", *teamId, sArenaTeamMgr->GetArenaTeamById(*teamId) ? "hosted" : "not loaded");
+        handler->PSendSysMessage("#{} {}", *teamId, team ? "hosted" : "not loaded");
 
+    if (team)
+    {
+        std::string reason;
+        bool const pinned = mgr.IsTeamPinned(team, &reason);
+        handler->PSendSysMessage("#{} {}, {}", *teamId, IsTeamBusy(team) ? "busy" : "not busy",
+                                 pinned ? "pinned (" + reason + ")" : "not pinned");
+    }
+
+    return true;
+}
+
+void LadderMgr::NoteContact(uint32 botLowGuid, uint32 now)
+{
+    if (!sPlayerbotAIConfig.LadderContactMinutes || !MovesOn())
+        return;
+
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::NoteContact");
+    if (_contacts.size() >= MaxContacts && !_contacts.contains(botLowGuid))
+    {
+        PruneContacts(now);
+        if (_contacts.size() >= MaxContacts)
+            return;
+    }
+
+    _contacts[botLowGuid] = now;
+}
+
+void LadderMgr::PruneContacts(uint32 now)
+{
+    uint32 const window = sPlayerbotAIConfig.LadderContactMinutes * MINUTE;
+    std::erase_if(_contacts, [now, window](auto const& contact) { return now - contact.second >= window; });
+    std::erase_if(_gmPins, [now](auto const& pin) { return now >= pin.second; });
+}
+
+bool LadderMgr::IsTeamPinned(ArenaTeam* team, std::string* reason) const
+{
+    uint32 const now = UnixNow();
+    if (auto const it = _gmPins.find(team->GetId()); it != _gmPins.end() && now < it->second)
+    {
+        if (reason)
+            *reason = Acore::StringFormat("GM pin, {} s left", it->second - now);
+
+        return true;
+    }
+
+    uint32 const window = sPlayerbotAIConfig.LadderContactMinutes * MINUTE;
+    for (ArenaTeamMember const& member : team->GetMembers())
+    {
+        if (Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid))
+        {
+            if (char const* what = WithRealPlayer(player))
+            {
+                if (reason)
+                    *reason = Acore::StringFormat("{} {} a real player", member.Name, what);
+
+                return true;
+            }
+        }
+
+        auto const it = _contacts.find(member.Guid.GetCounter());
+        if (it != _contacts.end() && now - it->second < window)
+        {
+            if (reason)
+                *reason = Acore::StringFormat("{} had a direct contact with a real player {} s ago", member.Name,
+                                              now - it->second);
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool LadderMgr::IsTeamBusy(ArenaTeam* team)
+{
+    for (ArenaTeamMember const& member : team->GetMembers())
+        if (Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid))
+            if (player->InBattleground() || player->InBattlegroundQueue())
+                return true;
+
+    return false;
+}
+
+bool LadderMgr::HandleTeamsCommand(ChatHandler* handler, char const* args)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::HandleTeamsCommand");
+    std::string_view const filter = args ? std::string_view(args) : std::string_view();
+    bool const onlyPinned = filter == "pinned";
+    bool const onlyBusy = filter == "busy";
+    if (!filter.empty() && !onlyPinned && !onlyBusy)
+        return Refuse(handler, "Usage: .playerbots ladder teams [pinned|busy]");
+
+    LadderMgr& mgr = Instance();
+    uint32 const now = UnixNow();
+    uint32 const start = static_cast<uint32>(GameTime::GetStartTime().count());
+    mgr.PruneContacts(now);
+    uint32 busyTeams = 0;
+    uint32 pinnedTeams = 0;
+    for (auto const& [id, team] : sArenaTeamMgr->GetArenaTeams())
+    {
+        std::string reason;
+        bool const pinned = mgr.IsTeamPinned(team, &reason);
+        bool const busy = IsTeamBusy(team);
+        if (pinned)
+            ++pinnedTeams;
+
+        if (busy)
+            ++busyTeams;
+
+        if ((onlyPinned && !pinned) || (onlyBusy && !busy))
+            continue;
+
+        uint32 online = 0;
+        uint32 mmr = 0;
+        for (ArenaTeamMember const& member : team->GetMembers())
+        {
+            mmr += member.MatchMakerRating;
+            if (ObjectAccessor::FindConnectedPlayer(member.Guid))
+                ++online;
+        }
+
+        uint32 const members = team->GetMembersSize();
+        auto const it = mgr._moves.find(id);
+        bool const moved = it != mgr._moves.end();
+        uint32 const since = moved && it->second.HostedSince ? it->second.HostedSince : start;
+        std::string const state =
+            moved && IsBusy(it->second.Current) ? Acore::StringFormat(" {}", StateName(it->second.Current)) : "";
+        handler->PSendSysMessage("#{} <{}> {}v{} rating {} mmr {} members {}/{} hosted {} min{}{}{}", id,
+                                 team->GetName(), team->GetType(), team->GetType(), team->GetRating(),
+                                 members ? mmr / members : 0, online, members, (now - since) / MINUTE, state,
+                                 busy ? " busy" : "", pinned ? " pinned (" + reason + ")" : "");
+    }
+
+    handler->PSendSysMessage("{} teams in memory: {} busy, {} pinned; {} recent contacts; queues {}",
+                             sArenaTeamMgr->GetArenaTeams().size(), busyTeams, pinnedTeams, mgr._contacts.size(),
+                             mgr._draining.load(std::memory_order_relaxed) ? "drained" : "open");
+    return true;
+}
+
+bool LadderMgr::HandlePinCommand(ChatHandler* handler, char const* args)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::HandlePinCommand");
+    if (!MovesOn())
+        return Refuse(handler, MovesOffText);
+
+    std::string_view const text = args ? std::string_view(args) : std::string_view();
+    size_t const space = text.find(' ');
+    Optional<uint32> const teamId = ParseTeamId(args);
+    Optional<uint32> const minutes = space == std::string_view::npos ? Optional<uint32>(DefaultGmPinMinutes)
+                                                                     : Acore::StringTo<uint32>(text.substr(space + 1));
+    if (!teamId || !minutes || *minutes > MaxGmPinMinutes)
+        return Refuse(handler, "Usage: .playerbots ladder pin <arenaTeamId> [minutes, default 60; 0 unpins]");
+
+    LadderMgr& mgr = Instance();
+    if (!*minutes)
+    {
+        mgr._gmPins.erase(*teamId);
+        handler->PSendSysMessage("Team {}: GM pin removed", *teamId);
+        return true;
+    }
+
+    mgr._gmPins[*teamId] = UnixNow() + *minutes * MINUTE;
+    handler->PSendSysMessage("Team {} pinned for {} min; a depart in progress is cancelled", *teamId, *minutes);
+    LOG_INFO("playerbots", "Ladder: arena team {} pinned by a GM for {} min", *teamId, *minutes);
+    return true;
+}
+
+bool LadderMgr::HandleDrainCommand(ChatHandler* handler, char const* /*args*/)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::HandleDrainCommand");
+    if (!MovesOn())
+        return Refuse(handler, MovesOffText);
+
+    Instance()._draining.store(true, std::memory_order_relaxed);
+    handler->SendSysMessage("Ladder drained: no arena team member queues; queued members and matches carry on");
+    LOG_INFO("playerbots", "Ladder: drained");
+    return true;
+}
+
+bool LadderMgr::HandleUndrainCommand(ChatHandler* handler, char const* /*args*/)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::HandleUndrainCommand");
+    if (!MovesOn())
+        return Refuse(handler, MovesOffText);
+
+    Instance()._draining.store(false, std::memory_order_relaxed);
+    handler->SendSysMessage("Ladder undrained: arena team members queue again");
+    LOG_INFO("playerbots", "Ladder: undrained");
     return true;
 }
 
@@ -757,7 +1007,14 @@ bool LadderMgr::IsPoolTeam(ArenaTeam* team)
     return true;
 }
 
-bool LadderMgr::PoolWants(Player* bot) const { return _poolShort && PoolOn() && bot->GetLevel() >= MaxLevel(); }
+bool LadderMgr::PoolWants(Player* bot) const
+{
+    if (!_poolShort || !PoolOn())
+        return false;
+
+    uint8 const maxLevel = MaxLevel();
+    return bot->GetLevel() >= maxLevel && IsFreePoolBot(bot->GetGUID(), maxLevel);
+}
 
 void LadderMgr::CollectAwayTeams(uint8 type, std::vector<uint32>& out) const
 {
@@ -906,7 +1163,9 @@ void LadderMgr::OnPoolCandidates(QueryResult result)
         } while (result->NextRow());
     }
 
-    uint32 const wanted = std::min(target - before.Resident - before.Away, PoolBuildPerCheck);
+    uint32 const repaired = RepairPoolTeams(freeBots);
+    uint32 const missing = target - before.Resident - before.Away;
+    uint32 const wanted = std::min(missing > repaired ? missing - repaired : 0, PoolBuildPerCheck);
     Player* founder = nullptr;
     uint32 created = 0;
     uint32 failed = 0;
@@ -936,13 +1195,79 @@ void LadderMgr::OnPoolCandidates(QueryResult result)
     PoolCount const after = CountPool();
     _poolShort = after.Resident + after.Away < target;
     _poolNote = Acore::StringFormat(
-        "last check: {} free bots at level {} ({} alliance, {} horde), {} teams created, {} failed, {} without a "
-        "founder",
+        "last check: {} free bots at level {} ({} alliance, {} horde), {} teams repaired, {} created, {} failed, {} "
+        "without a founder",
         freeBots[TEAM_ALLIANCE].size() + freeBots[TEAM_HORDE].size(), maxLevel, freeBots[TEAM_ALLIANCE].size(),
-        freeBots[TEAM_HORDE].size(), created, failed, noFounder);
-    if (created || failed || noFounder)
+        freeBots[TEAM_HORDE].size(), repaired, created, failed, noFounder);
+    if (repaired || created || failed || noFounder)
         LOG_INFO("playerbots", "Ladder pool: {} of {} teams ({} resident, {} away); {}", after.Resident + after.Away,
                  target, after.Resident, after.Away, _poolNote);
+}
+
+// A pool team a formation leave left with one member: outside the pool count and the bot arena team registry, so
+// nothing else fills it
+bool LadderMgr::IsBrokenPoolTeam(ArenaTeam* team) const
+{
+    if (team->GetType() != ARENA_TYPE_2v2 || team->GetMembersSize() != 1 ||
+        RandomPlayerbotFactory::IsRegisteredBotArenaTeam(ARENA_TYPE_2v2, team->GetId()))
+        return false;
+
+    if (auto const it = _moves.find(team->GetId()); it != _moves.end() && IsBusy(it->second.Current))
+        return false;
+
+    CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(team->GetMembers().front().Guid);
+    if (!entry || entry->Level < MaxLevel() || !sPlayerbotAIConfig.IsInRandomAccountList(entry->AccountId))
+        return false;
+
+    for (uint8 slot = 0; slot < ArenaSlotCount; ++slot)
+        if (slot != team->GetSlot() && entry->ArenaTeamId[slot])
+            return false;
+
+    return true;
+}
+
+// Refills each broken pool team with a free bot of its member's faction (taken out of freeBots)
+uint32 LadderMgr::RepairPoolTeams(std::array<std::vector<PoolBot>, 2>& freeBots)
+{
+    std::vector<ArenaTeam*> broken;
+    for (auto const& [id, team] : sArenaTeamMgr->GetArenaTeams())
+        if (IsBrokenPoolTeam(team))
+            broken.push_back(team);
+
+    uint32 repaired = 0;
+    for (ArenaTeam* team : broken)
+    {
+        CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(team->GetMembers().front().Guid);
+        TeamId const faction = Player::TeamIdForRace(entry->Race);
+        if ((faction != TEAM_ALLIANCE && faction != TEAM_HORDE) || freeBots[faction].empty())
+            continue;
+
+        ObjectGuid const partner = ObjectGuid::Create<HighGuid::Player>(freeBots[faction].back().Guid);
+        freeBots[faction].pop_back();
+        if (!team->AddMember(partner))
+            continue;
+
+        if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
+        {
+            // As in a new pool team: the personal rating and the MMR follow the artificial team rating
+            for (ArenaTeamMember& member : team->GetMembers())
+            {
+                if (member.Guid != partner)
+                    continue;
+
+                member.PersonalRating = static_cast<uint16>(team->GetRating());
+                member.MatchMakerRating = member.PersonalRating;
+                member.MaxMMR = std::max(member.MaxMMR, member.PersonalRating);
+            }
+        }
+
+        team->SaveToDB(true);
+        ++repaired;
+        LOG_INFO("playerbots", "Ladder pool: arena team {} <{}> refilled with {}", team->GetId(), team->GetName(),
+                 partner.ToString());
+    }
+
+    return repaired;
 }
 
 std::vector<std::pair<LadderMgr::PoolBot, LadderMgr::PoolBot>> LadderMgr::PairPoolBots(

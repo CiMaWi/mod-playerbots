@@ -67,6 +67,8 @@ public:
     static bool SameArenaBracket(uint8 level, uint8 otherLevel);
     static void DeleteBotArenaTeams();
     static uint32 GetBotArenaTeamCount(ArenaType type);
+    // World thread: the team is in the bot arena team registry (the joins and the formation fill it)
+    static bool IsRegisteredBotArenaTeam(uint8 type, uint32 teamId);
     // World thread: a 2v2 team of captain and partner (online or not), founded by an online bot, which leaves it at
     // once unless it is the captain. Not in the bot arena team registry (main's ladder pool). Returns the team id or 0
     static uint32 CreatePairArenaTeam(Player* founder, ObjectGuid captain, ObjectGuid partner);

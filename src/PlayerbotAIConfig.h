@@ -419,6 +419,7 @@ public:
     uint32 LadderRole;
     std::string LadderServerId;
     uint32 LadderDepartTimeoutSeconds;
+    uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;
     bool SkillEnable;
     float SkillReactFactorLow;
