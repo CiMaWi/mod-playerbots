@@ -99,8 +99,9 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
         // if (!member && !sObjectMgr->GetPlayerAccountIdByGUID(itr->guid))
         //     continue;
 
-        // Map thread: the login runs on the world thread
-        if (offline)
+        // Map thread: the login runs on the world thread. A re-pick logs in no bench member: it draws from the online
+        // ones (else every match of every larger roster would log in its offline members again)
+        if (offline && !repick)
             PlayerbotWorldThreadProcessor::instance().QueueOperation(
                 std::make_unique<AddPlayerBotOperation>(itr->Guid, 0));
 
@@ -152,6 +153,10 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
 
     if (!members.size() || (int)members.size() < (int)(arenateam->GetType() - 1))
     {
+        // Too few online and idle members for a fresh pick: the standing group is complete and queues as it is
+        if (repick)
+            return true;
+
         LOG_INFO("playerbots", "Team #{} <{}> has not enough members for match", arenateam->GetId(),
                  arenateam->GetName().c_str());
         return false;

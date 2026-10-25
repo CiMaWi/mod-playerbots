@@ -51,7 +51,7 @@ public:
     void Update(uint32 diff);
 
     // World thread (login assignment, a leaver): adds the bot to the best-fitting candidate team other than
-    // excludedTeamId; true when it joined one
+    // excludedTeamId and the team it left last; true when it joined one
     bool JoinBestTeam(Player* bot, std::vector<ArenaTeam*> const& candidates, uint32 excludedTeamId);
     // World thread: a new team the bot founded (log and tracking)
     void OnFounded(Player* bot, ArenaTeam const* team);
@@ -83,6 +83,8 @@ private:
     struct Candidate
     {
         ObjectGuid Guid;
+        // The team the bot left last: it does not recruit the bot back
+        uint32 LeftTeamId = 0;
         bool Taken = false;
     };
 
@@ -90,19 +92,25 @@ private:
     // Polls the members' season counters; true when a member lost a match since the last pass
     bool TrackLosses(ArenaTeam* team);
     void TryLeave(ArenaTeam* team, time_t now);
-    void Recruit(ArenaTeam* team, std::vector<Candidate>& pool, uint32& joinsLeft, time_t now);
+    void Recruit(ArenaTeam* team, std::vector<Candidate>& pool, uint32& joinsLeft, time_t now, uint32 target);
+    bool WantsRecruitAboveMin(ArenaTeam const* team, time_t now) const;
     void BuildPool(std::vector<Candidate>& pool) const;
     void OnJoined(Player* bot, ArenaTeam* team, time_t now);
     // Fit of a candidate for a team, or a negative value when its skill is outside the team's tolerance
     float TeamFit(ArenaTeam* team, Player* candidate) const;
     float LadderPercentile(uint32 teamId) const;
     uint32 LossStreakOf(ObjectGuid guid, uint32 teamId) const;
+    // The team the bot left last, or 0
+    uint32 LeftTeamOf(ObjectGuid guid) const;
 
     uint32 _timer = 0;
     uint32 _pass = 0;
     uint32 _leaves = 0;
     uint32 _joins = 0;
     std::unordered_map<ObjectGuid::LowType, MemberTrack> _tracks;
+    // guid -> the team the bot left last (world thread). The bot never joins that team again, only others, until it
+    // leaves another one. In memory only: a restart forgets it.
+    std::unordered_map<ObjectGuid::LowType, uint32> _leftTeam;
     std::unordered_map<uint32, time_t> _teamChangedAt;
     std::unordered_map<uint32, float> _percentiles;
     // team id -> the team's season games when the pair for its next match was formed (written on the world thread,

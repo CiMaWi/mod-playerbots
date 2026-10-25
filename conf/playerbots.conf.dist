@@ -1899,8 +1899,10 @@ Playerbots.RandomBotArenaTeamRatingMode = 0
 # hold more members than the team size (up to MaxRoster); every queue takes a random set of the available members
 # (the captain is always in: only the captain queues). After a lost match the member with the longest current loss
 # streak (then the most losses since joining; skill plays no part) may leave; a leaving captain hands the team over
-# first. Teams short of members recruit online randombots without a team (same faction and arena bracket). Teams low on
-# the bot ladder are forgiving (rare leaves, a wide skill tolerance, weighted-random picks: more varied pairings),
+# first. A bot never joins the team it left last again (remembered in memory until it leaves another team; a restart
+# forgets it). Teams short of members recruit online randombots without a team (same faction and arena bracket), the
+# teams below MinMembers first. Without Playerbots.Skill.Enable every skill is unknown: no skill closeness and no skill
+# tolerance, the score is class synergy only. Teams low on the bot ladder are forgiving (rare leaves, a wide skill tolerance, weighted-random picks: more varied pairings),
 # teams at the top strict (frequent leaves, a narrow tolerance, the best-scoring recruit). The values in between follow
 # the team's rating rank among the bot teams of its type. Every membership change runs on the world thread every
 # UpdateSeconds; loss streaks are kept in memory only (a restart starts them at 0). The starting values below are not
@@ -1917,6 +1919,9 @@ Playerbots.RandomBotArenaTeamRatingMode = 0
 #   ToleranceBottom, ToleranceTop (1..98 skill points): the largest skill gap to the team's mean a recruit may have.
 #   SynergyWeight (0.0..1.0): the share of class synergy in the score (the rest is skill closeness).
 #   RecruitsPerPass (0..100): the most recruits per pass, over all teams.
+#   RecruitAboveMinChance (0..100 percent): the chance per pass that a team between MinMembers and its max roster takes
+#     one more member (not within MinTeamStaySeconds of its last change). 0 = only teams below MinMembers recruit, so
+#     after the login fill the rosters only shrink; above 0 members keep leaving and joining.
 #
 Playerbots.ArenaTeam.Formation.Enable = 0
 Playerbots.ArenaTeam.UpdateSeconds = 60
@@ -1934,6 +1939,7 @@ Playerbots.ArenaTeam.ToleranceBottom = 40
 Playerbots.ArenaTeam.ToleranceTop = 8
 Playerbots.ArenaTeam.SynergyWeight = 0.4
 Playerbots.ArenaTeam.RecruitsPerPass = 4
+Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 
 # Delete all randombot (and any addclass bot) arena teams on startup. While enabled,
 # no new randombot arena teams are created or joined. Set back to 0 and restart the

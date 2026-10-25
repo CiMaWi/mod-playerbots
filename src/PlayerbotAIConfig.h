@@ -476,6 +476,7 @@ public:
     uint32 ArenaTeamToleranceTop;
     float ArenaTeamSynergyWeight;
     uint32 ArenaTeamRecruitsPerPass;
+    uint32 ArenaTeamRecruitAboveMinChance;
 
     uint32 SelfBotLevel;
     bool DowngradeMaxLevelBot;

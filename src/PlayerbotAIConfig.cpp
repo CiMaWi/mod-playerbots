@@ -879,6 +879,8 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.SynergyWeight", 0.4f), 0.0f, 1.0f);
     ArenaTeamRecruitsPerPass =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitsPerPass", 4), 0, 100);
+    ArenaTeamRecruitAboveMinChance =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitAboveMinChance", 0), 0, 100);
     if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
         LOG_INFO("server.loading",
                  "Playerbots.ArenaTeam.Formation.Enable is ignored: it needs "

@@ -236,6 +236,7 @@ void ArenaTeamFormation::RunPass()
     bool poolBuilt = false;
     bool const logSummary = _pass % SummaryEveryPasses == 0;
     _percentiles.clear();
+    std::vector<std::pair<ArenaType, std::vector<ArenaTeam*>>> typeTeams;
 
     for (ArenaType type : ArenaTypes)
     {
@@ -273,25 +274,43 @@ void ArenaTeamFormation::RunPass()
                 TryLeave(team, now);
         }
 
-        uint32 const minRoster = MinRoster(type);
-        for (ArenaTeam* team : teams)
+        typeTeams.emplace_back(type, std::move(teams));
+    }
+
+    // Teams below MinRoster fill up to it first (every type); then teams between it and the max roster may take one
+    // more (RecruitAboveMinChance), so members keep leaving and joining after the login fill
+    for (bool const aboveMin : {false, true})
+    {
+        for (auto const& [type, teams] : typeTeams)
         {
-            if (!joinsLeft)
-                break;
-
-            if (team->GetMembersSize() >= minRoster)
-                continue;
-
-            if (!poolBuilt)
+            uint32 const minRoster = MinRoster(type);
+            uint32 const maxRoster = MaxRoster(type);
+            for (ArenaTeam* team : teams)
             {
-                BuildPool(pool);
-                poolBuilt = true;
+                if (!joinsLeft)
+                    break;
+
+                uint32 const size = team->GetMembersSize();
+                if (size >= maxRoster || (size >= minRoster) != aboveMin)
+                    continue;
+
+                if (aboveMin && !WantsRecruitAboveMin(team, now))
+                    continue;
+
+                if (!poolBuilt)
+                {
+                    BuildPool(pool);
+                    poolBuilt = true;
+                }
+
+                Recruit(team, pool, joinsLeft, now, aboveMin ? size + 1 : minRoster);
             }
-
-            Recruit(team, pool, joinsLeft, now);
         }
+    }
 
-        if (logSummary)
+    if (logSummary)
+    {
+        for (auto const& [type, teams] : typeTeams)
         {
             std::vector<uint32> rosterCounts(MaxRoster(type) + 1, 0);
             for (ArenaTeam const* team : teams)
@@ -462,6 +481,7 @@ void ArenaTeamFormation::TryLeave(ArenaTeam* team, time_t now)
 
     team->DelMember(leaverGuid, true);
     _tracks.erase(leaverGuid.GetCounter());
+    _leftTeam[leaverGuid.GetCounter()] = teamId;
     _teamChangedAt[teamId] = now;
     ++_leaves;
     LOG_INFO("playerbots", "Arena formation: {} left {} ({}v{}, rating {}, loss streak {}, chance {}%)", leaverName,
@@ -491,27 +511,42 @@ void ArenaTeamFormation::BuildPool(std::vector<Candidate>& pool) const
             teamed = bot->GetArenaTeamId(slot) || sCharacterCache->GetCharacterArenaTeamIdByGuid(bot->GetGUID(), slot);
 
         if (!teamed)
-            pool.push_back(Candidate{bot->GetGUID(), false});
+            pool.push_back(Candidate{bot->GetGUID(), LeftTeamOf(bot->GetGUID()), false});
     }
 }
 
-void ArenaTeamFormation::Recruit(ArenaTeam* team, std::vector<Candidate>& pool, uint32& joinsLeft, time_t now)
+bool ArenaTeamFormation::WantsRecruitAboveMin(ArenaTeam const* team, time_t now) const
+{
+    uint32 const chance = sPlayerbotAIConfig.ArenaTeamRecruitAboveMinChance;
+    if (!chance)
+        return false;
+
+    // Not within MinTeamStaySeconds of the team's last join or leave
+    auto const changed = _teamChangedAt.find(team->GetId());
+    if (changed != _teamChangedAt.end() && now < changed->second + sPlayerbotAIConfig.ArenaTeamMinTeamStaySeconds)
+        return false;
+
+    return urand(1, PercentMax) <= chance;
+}
+
+void ArenaTeamFormation::Recruit(ArenaTeam* team, std::vector<Candidate>& pool, uint32& joinsLeft, time_t now,
+                                 uint32 target)
 {
     CharacterCacheEntry const* captain = sCharacterCache->GetCharacterCacheByGuid(team->GetCaptain());
     if (!captain)
         return;
 
     TeamId const faction = Player::TeamIdForRace(captain->Race);
-    uint32 const minRoster = MinRoster(team->GetType());
+    uint32 const roster = std::min(target, MaxRoster(team->GetType()));
     float const percentile = LadderPercentile(team->GetId());
 
-    while (joinsLeft && team->GetMembersSize() < minRoster)
+    while (joinsLeft && team->GetMembersSize() < roster)
     {
         std::vector<size_t> indices;
         std::vector<float> fits;
         for (size_t i = 0; i < pool.size(); ++i)
         {
-            if (pool[i].Taken)
+            if (pool[i].Taken || pool[i].LeftTeamId == team->GetId())
                 continue;
 
             Player* bot = ObjectAccessor::FindConnectedPlayer(pool[i].Guid);
@@ -552,9 +587,10 @@ bool ArenaTeamFormation::JoinBestTeam(Player* bot, std::vector<ArenaTeam*> const
     std::vector<float> needyFits;
     std::vector<ArenaTeam*> others;
     std::vector<float> otherFits;
+    uint32 const leftTeamId = LeftTeamOf(bot->GetGUID());
     for (ArenaTeam* team : candidates)
     {
-        if (!team || team->GetId() == excludedTeamId)
+        if (!team || team->GetId() == excludedTeamId || team->GetId() == leftTeamId)
             continue;
 
         float const fit = TeamFit(team, bot);
@@ -639,6 +675,12 @@ uint32 ArenaTeamFormation::LossStreakOf(ObjectGuid guid, uint32 teamId) const
 {
     auto const it = _tracks.find(guid.GetCounter());
     return it != _tracks.end() && it->second.TeamId == teamId ? it->second.LossStreak : 0;
+}
+
+uint32 ArenaTeamFormation::LeftTeamOf(ObjectGuid guid) const
+{
+    auto const it = _leftTeam.find(guid.GetCounter());
+    return it != _leftTeam.end() ? it->second : 0;
 }
 
 bool ArenaTeamFormation::ShouldRepick(Player* captain, ArenaTeam const* team) const
