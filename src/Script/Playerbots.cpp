@@ -6,6 +6,7 @@
 
 #include "Playerbots.h"
 #include "AcquaintanceMgr.h"
+#include "ActivityBudget.h"
 #include "ArenaTeamFormation.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
@@ -554,6 +555,7 @@ public:
     void OnUpdate(uint32 diff) override
     {
         PlayerbotThreadCheck::SetWorldThread();  // Thread checks (Playerbots.DebugThreadChecks) compare against this
+        ActivityBudget::Instance().Update();  // Smart scale percentile; returns at once when off
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none

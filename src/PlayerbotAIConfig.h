@@ -421,6 +421,7 @@ public:
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;
     uint32 BotActiveAloneSmartScaleWhenMinLevel;
     uint32 BotActiveAloneSmartScaleWhenMaxLevel;
+    uint32 BotActiveAloneSmartScalePercentile;
 
     bool FreeMethodLoot;
     int32 LootNeedRollLevel;

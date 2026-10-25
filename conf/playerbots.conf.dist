@@ -1478,11 +1478,20 @@ Playerbots.Skill.NoticeWindowMs = 1500
 #   Bots outside the range always use the full BotActiveAlone value.
 #   Force rules always win over SmartScale.
 #
+# Percentile — which tick time SmartScale follows.
+#   0 (default) - the maximum of the core's recent update times (the last 500-1000 ticks), as before.
+#                 One slow tick lowers the active share until it leaves the table.
+#   1-100       - that percentile of the core's last 500 ticks (50 = the median, 95 = ignore the slowest 5%),
+#                 computed once per world tick. Lower values react less to single slow ticks.
+#   Values above 100 are used as 100.
+#   Default: 0
+#
 Playerbots.botActiveAloneSmartScale = 1
 Playerbots.botActiveAloneSmartScaleDiffLimitfloor = 50
 Playerbots.botActiveAloneSmartScaleDiffLimitCeiling = 200
 Playerbots.botActiveAloneSmartScaleWhenMinLevel = 1
 Playerbots.botActiveAloneSmartScaleWhenMaxLevel = 80
+Playerbots.botActiveAloneSmartScalePercentile = 0
 
 #
 #

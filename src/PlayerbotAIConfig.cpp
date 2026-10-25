@@ -786,6 +786,13 @@ bool PlayerbotAIConfig::Initialize()
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);
     BotActiveAloneSmartScaleWhenMinLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMinLevel", 1);
     BotActiveAloneSmartScaleWhenMaxLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMaxLevel", 80);
+    BotActiveAloneSmartScalePercentile = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScalePercentile", 0);
+    if (BotActiveAloneSmartScalePercentile > 100)
+    {
+        LOG_WARN("playerbots", "Playerbots.botActiveAloneSmartScalePercentile {} is above 100, using 100",
+                 BotActiveAloneSmartScalePercentile);
+        BotActiveAloneSmartScalePercentile = 100;
+    }
 
     RandomBotsWalkingRPG = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG", false);
     RandomBotsWalkingRPGInDoors = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG.InDoors", false);

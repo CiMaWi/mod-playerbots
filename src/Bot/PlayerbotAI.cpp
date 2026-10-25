@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotAI.h"
+#include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
@@ -4936,7 +4937,7 @@ void PlayerbotAI::RefreshLfgState()
 uint32 PlayerbotAI::AutoScaleActivity(uint32 mod)
 {
     // Current max server update time (ms), and the configured floor/ceiling values for bot scaling
-    uint32 maxDiff = sWorldUpdateTime.GetMaxUpdateTimeOfCurrentTable();
+    uint32 maxDiff = ActivityBudget::Instance().GetTickMs();
     uint32 diffLimitFloor = sPlayerbotAIConfig.BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 diffLimitCeiling = sPlayerbotAIConfig.BotActiveAloneSmartScaleDiffLimitCeiling;
 
