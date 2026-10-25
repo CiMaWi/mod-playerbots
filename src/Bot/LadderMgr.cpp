@@ -20,19 +20,24 @@
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
+#include "World.h"
 
 namespace
 {
 constexpr uint32 CheckIntervalMs = 1000;
 constexpr uint8 ArenaSlotCount = 3;  // 2v2, 3v3, 5v5
+constexpr uint32 PoolCheckIntervalMs = 30 * IN_MILLISECONDS;
+constexpr uint32 PoolBuildPerCheck = 10;
 
 Optional<uint32> ParseTeamId(char const* args)
 {
@@ -66,6 +71,10 @@ char const* RoleName(uint32 role)
 
 constexpr char const* MovesOffText =
     "Ladder moves are off (Playerbots.Ladder.Enable = 0 and Playerbots.Ladder.Role = 0)";
+constexpr char const* PoolOffText =
+    "Ladder pool is off (needs Playerbots.Ladder.Role = 1 and Playerbots.Ladder.PoolTeams)";
+
+uint8 MaxLevel() { return static_cast<uint8>(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL)); }
 }  // namespace
 
 bool LadderMgr::MovesOn()
@@ -83,6 +92,7 @@ void LadderMgr::LoadRoster()
 
     _rosterLoaded = true;
     _hostedOnly = role == LADDER_ROLE_ARENA;
+    _poolOn = role == LADDER_ROLE_MAIN;
     uint32 const start = getMSTime();
     PlayerbotsDatabasePreparedStatement* stmt =
         PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_LADDER_ROSTER_ALL);
@@ -113,7 +123,12 @@ void LadderMgr::LoadRoster()
             dropped.push_back(team);
 
     for (ArenaTeam* team : dropped)
+    {
+        if (!_hostedOnly)
+            NoteTeam(_moves[team->GetId()], team);
+
         DropTeam(team);
+    }
 
     for (uint32 const teamId : _awayTeams)
     {
@@ -311,6 +326,9 @@ void LadderMgr::Fail(uint32 teamId, std::string const& reason)
 
 void LadderMgr::Update(uint32 diff)
 {
+    if (_poolOn)
+        UpdatePool(diff);
+
     if (!_busy)
         return;
 
@@ -565,6 +583,15 @@ bool LadderMgr::HandleDepartCommand(ChatHandler* handler, char const* args)
         if (!sPlayerbotAIConfig.IsInRandomAccountList(sCharacterCache->GetCharacterAccountIdByGuid(member.Guid)))
             return Refuse(handler, Acore::StringFormat("Team {}: {} is no random bot", *teamId, member.Name));
 
+        // The roster has one row per bot, and the away set one team per bot
+        for (uint8 slot = 0; slot < ArenaSlotCount; ++slot)
+        {
+            uint32 const otherTeamId = sCharacterCache->GetCharacterArenaTeamIdByGuid(member.Guid, slot);
+            if (slot != team->GetSlot() && otherTeamId)
+                return Refuse(handler, Acore::StringFormat("Team {}: {} is also in arena team {}", *teamId, member.Name,
+                                                           otherTeamId));
+        }
+
         Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid);
         if (player && GroupedWithRealPlayer(player))
             return Refuse(handler,
@@ -573,6 +600,7 @@ bool LadderMgr::HandleDepartCommand(ChatHandler* handler, char const* args)
 
     Move& move = mgr._moves[*teamId];
     mgr.ReleaseMembers(*teamId, move);
+    mgr.NoteTeam(move, team);
     move.WaitedMs = 0;
     move.Note = "waits until no member is queued or in a battleground";
     mgr.SetState(move, State::Departing);
@@ -669,6 +697,12 @@ bool LadderMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage("Arena teams in memory {}; {}away {} teams ({} members); arenas running {} ({} rated)",
                              sArenaTeamMgr->GetArenaTeams().size(), hosted, mgr._awayTeams.size(), mgr._away.size(),
                              arenas, rated);
+    if (mgr.PoolOn())
+    {
+        PoolCount const pool = mgr.CountPool();
+        handler->PSendSysMessage("Pool {} of {} teams ({} resident, {} away)", pool.Resident + pool.Away,
+                                 sPlayerbotAIConfig.LadderPoolTeams, pool.Resident, pool.Away);
+    }
 
     std::array<uint32, static_cast<size_t>(State::Failed) + 1> counts{};
     for (auto const& [id, move] : mgr._moves)
@@ -691,5 +725,367 @@ bool LadderMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
     if (teamId && !shown)
         handler->PSendSysMessage("#{} {}", *teamId, sArenaTeamMgr->GetArenaTeamById(*teamId) ? "hosted" : "not loaded");
 
+    return true;
+}
+
+void LadderMgr::NoteTeam(Move& move, ArenaTeam* team)
+{
+    move.Type = static_cast<uint8>(team->GetType());
+    move.Pool = PoolOn() && IsPoolTeam(team);
+}
+
+bool LadderMgr::PoolOn() const { return _poolOn && sPlayerbotAIConfig.LadderPoolTeams > 0; }
+
+bool LadderMgr::IsPoolTeam(ArenaTeam* team)
+{
+    if (!team || team->GetType() != ARENA_TYPE_2v2 || team->GetMembersSize() != 2)
+        return false;
+
+    uint8 const maxLevel = MaxLevel();
+    uint8 const slot = team->GetSlot();
+    for (ArenaTeamMember const& member : team->GetMembers())
+    {
+        CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(member.Guid);
+        if (!entry || entry->Level < maxLevel || !sPlayerbotAIConfig.IsInRandomAccountList(entry->AccountId))
+            return false;
+
+        for (uint8 other = 0; other < ArenaSlotCount; ++other)
+            if (other != slot && entry->ArenaTeamId[other])
+                return false;
+    }
+
+    return true;
+}
+
+bool LadderMgr::PoolWants(Player* bot) const { return _poolShort && PoolOn() && bot->GetLevel() >= MaxLevel(); }
+
+void LadderMgr::CollectAwayTeams(uint8 type, std::vector<uint32>& out) const
+{
+    if (_hostedOnly)
+        return;
+
+    for (uint32 const teamId : _awayTeams)
+    {
+        auto const it = _moves.find(teamId);
+        if (it != _moves.end() && it->second.Type == type && !it->second.Pool &&
+            !sArenaTeamMgr->GetArenaTeamById(teamId))
+            out.push_back(teamId);
+    }
+}
+
+LadderMgr::PoolCount LadderMgr::CountPool() const
+{
+    PoolCount count;
+    for (auto const& [id, team] : sArenaTeamMgr->GetArenaTeams())
+        if (IsPoolTeam(team))
+            ++count.Resident;
+
+    // Dropped from memory, so the startup drop or the depart noted whether it was a pool team
+    for (uint32 const teamId : _awayTeams)
+    {
+        auto const it = _moves.find(teamId);
+        if (it != _moves.end() && it->second.Pool && !sArenaTeamMgr->GetArenaTeamById(teamId))
+            ++count.Away;
+    }
+
+    return count;
+}
+
+bool LadderMgr::IsFreePoolBot(ObjectGuid guid, uint8 maxLevel) const
+{
+    CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(guid);
+    if (!entry || entry->Level < maxLevel || IsAway(guid.GetCounter()))
+        return false;
+
+    if (!sPlayerbotAIConfig.IsInRandomAccountList(entry->AccountId) ||
+        sRandomPlayerbotMgr.IsAddClassAccount(entry->AccountId))
+        return false;
+
+    if (sPlayerbotAIConfig.DisableDeathKnightLogin && entry->Class == CLASS_DEATH_KNIGHT)
+        return false;
+
+    for (uint8 slot = 0; slot < ArenaSlotCount; ++slot)
+        if (entry->ArenaTeamId[slot])
+            return false;
+
+    Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+    if (!player)
+        return true;
+
+    for (uint8 slot = 0; slot < ArenaSlotCount; ++slot)
+        if (player->GetArenaTeamId(slot))
+            return false;
+
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
+    return botAI && !botAI->HasGameClientMaster();
+}
+
+// The core founds a team only with an online captain. For a pair of offline bots, an online random bot below the
+// maximum level (never a pool bot) founds the team and leaves it at once
+Player* LadderMgr::FindPoolFounder()
+{
+    uint8 const maxLevel = MaxLevel();
+    for (auto it = sRandomPlayerbotMgr.GetPlayerBotsBegin(); it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+    {
+        Player* bot = it->second;
+        if (!bot || !bot->IsInWorld() || !bot->GetSession() || bot->GetLevel() >= maxLevel || bot->GetGroup() ||
+            bot->InBattleground() || bot->InBattlegroundQueue())
+            continue;
+
+        if (!sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId()) ||
+            bot->GetArenaTeamId(ARENA_SLOT_2v2) ||
+            sCharacterCache->GetCharacterArenaTeamIdByGuid(bot->GetGUID(), ARENA_SLOT_2v2))
+            continue;
+
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (botAI && !botAI->HasGameClientMaster())
+            return bot;
+    }
+
+    return nullptr;
+}
+
+void LadderMgr::UpdatePool(uint32 diff)
+{
+    if (_poolQueryPending)
+    {
+        _queryProcessor.ProcessReadyCallbacks();
+        return;
+    }
+
+    _poolTimer += diff;
+    if (_poolTimer < PoolCheckIntervalMs)
+        return;
+
+    _poolTimer = 0;
+    if (!PoolOn())
+        return;
+
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::UpdatePool");
+    PoolCount const count = CountPool();
+    _poolShort = count.Resident + count.Away < sPlayerbotAIConfig.LadderPoolTeams;
+    if (_poolShort)
+        QueryPoolCandidates();
+}
+
+void LadderMgr::QueryPoolCandidates()
+{
+    // Characters at the maximum level in no arena team; the world thread filters them by the character cache
+    _poolQueryPending = true;
+    std::string const sql = Acore::StringFormat(
+        "SELECT c.guid FROM characters c LEFT JOIN arena_team_member m ON m.guid = c.guid "
+        "WHERE c.level >= {} AND c.account <> 0 AND m.guid IS NULL",
+        MaxLevel());
+    _queryProcessor.AddCallback(
+        CharacterDatabase.AsyncQuery(sql).WithCallback([this](QueryResult result) { OnPoolCandidates(result); }));
+}
+
+void LadderMgr::OnPoolCandidates(QueryResult result)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::OnPoolCandidates");
+    _poolQueryPending = false;
+    uint32 const target = sPlayerbotAIConfig.LadderPoolTeams;
+    PoolCount const before = CountPool();
+    _poolShort = before.Resident + before.Away < target;
+    if (!_poolShort)
+        return;
+
+    uint8 const maxLevel = MaxLevel();
+    std::array<std::vector<PoolBot>, 2> freeBots;
+    if (result)
+    {
+        do
+        {
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(result->Fetch()[0].Get<uint32>());
+            if (!IsFreePoolBot(guid, maxLevel))
+                continue;
+
+            TeamId const faction = Player::TeamIdForRace(sCharacterCache->GetCharacterCacheByGuid(guid)->Race);
+            if (faction == TEAM_ALLIANCE || faction == TEAM_HORDE)
+                freeBots[faction].push_back({guid.GetCounter(), ObjectAccessor::FindConnectedPlayer(guid) != nullptr});
+        } while (result->NextRow());
+    }
+
+    uint32 const wanted = std::min(target - before.Resident - before.Away, PoolBuildPerCheck);
+    Player* founder = nullptr;
+    uint32 created = 0;
+    uint32 failed = 0;
+    uint32 noFounder = 0;
+    for (auto const& [first, second] : PairPoolBots(freeBots, wanted))
+    {
+        ObjectGuid const captain = ObjectGuid::Create<HighGuid::Player>(first.Guid);
+        ObjectGuid const partner = ObjectGuid::Create<HighGuid::Player>(second.Guid);
+        Player* teamFounder = ObjectAccessor::FindConnectedPlayer(captain);
+        if (!teamFounder)
+        {
+            if (!founder)
+                founder = FindPoolFounder();
+
+            teamFounder = founder;
+        }
+
+        if (!teamFounder)
+            ++noFounder;
+        else if (RandomPlayerbotFactory::CreatePairArenaTeam(teamFounder, captain, partner))
+            ++created;
+        else
+            ++failed;
+    }
+
+    _poolCreated += created;
+    PoolCount const after = CountPool();
+    _poolShort = after.Resident + after.Away < target;
+    _poolNote = Acore::StringFormat(
+        "last check: {} free bots at level {} ({} alliance, {} horde), {} teams created, {} failed, {} without a "
+        "founder",
+        freeBots[TEAM_ALLIANCE].size() + freeBots[TEAM_HORDE].size(), maxLevel, freeBots[TEAM_ALLIANCE].size(),
+        freeBots[TEAM_HORDE].size(), created, failed, noFounder);
+    if (created || failed || noFounder)
+        LOG_INFO("playerbots", "Ladder pool: {} of {} teams ({} resident, {} away); {}", after.Resident + after.Away,
+                 target, after.Resident, after.Away, _poolNote);
+}
+
+std::vector<std::pair<LadderMgr::PoolBot, LadderMgr::PoolBot>> LadderMgr::PairPoolBots(
+    std::array<std::vector<PoolBot>, 2> const& freeBots, uint32 wanted)
+{
+    std::array<std::vector<std::pair<PoolBot, PoolBot>>, 2> byFaction;
+    for (size_t faction = 0; faction < freeBots.size(); ++faction)
+    {
+        std::vector<PoolBot> online;
+        std::vector<PoolBot> offline;
+        for (PoolBot const& bot : freeBots[faction])
+            (bot.Online ? online : offline).push_back(bot);
+
+        std::vector<std::pair<PoolBot, PoolBot>>& pairs = byFaction[faction];
+        size_t on = 0;
+        size_t off = 0;
+        for (; on < online.size() && off < offline.size(); ++on, ++off)
+            pairs.emplace_back(online[on], offline[off]);
+
+        for (; on + 1 < online.size(); on += 2)
+            pairs.emplace_back(online[on], online[on + 1]);
+
+        for (; off + 1 < offline.size(); off += 2)
+            pairs.emplace_back(offline[off], offline[off + 1]);
+    }
+
+    std::vector<std::pair<PoolBot, PoolBot>> out;
+    std::array<size_t, 2> next{};
+    bool added = true;
+    while (added && out.size() < wanted)
+    {
+        added = false;
+        for (size_t faction = 0; faction < byFaction.size() && out.size() < wanted; ++faction)
+        {
+            if (next[faction] < byFaction[faction].size())
+            {
+                out.push_back(byFaction[faction][next[faction]++]);
+                added = true;
+            }
+        }
+    }
+
+    return out;
+}
+
+bool LadderMgr::HandlePoolStatusCommand(ChatHandler* handler, char const* /*args*/)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::HandlePoolStatusCommand");
+    LadderMgr const& mgr = Instance();
+    if (!mgr.PoolOn())
+        return Refuse(handler, PoolOffText);
+
+    PoolCount const count = mgr.CountPool();
+    handler->PSendSysMessage(
+        "Ladder pool: {} of {} teams ({} resident, {} away); {} teams created since the start; {}{}",
+        count.Resident + count.Away, sPlayerbotAIConfig.LadderPoolTeams, count.Resident, count.Away, mgr._poolCreated,
+        mgr._poolNote, mgr._poolQueryPending ? " (a check is running)" : "");
+    return true;
+}
+
+bool LadderMgr::HandlePoolBuildCommand(ChatHandler* handler, char const* /*args*/)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::HandlePoolBuildCommand");
+    LadderMgr& mgr = Instance();
+    if (!mgr.PoolOn())
+        return Refuse(handler, PoolOffText);
+
+    if (mgr._poolQueryPending)
+        return Refuse(handler, "Ladder pool: a check is running");
+
+    PoolCount const count = mgr.CountPool();
+    mgr._poolTimer = 0;
+    mgr.QueryPoolCandidates();
+    handler->PSendSysMessage(
+        "Ladder pool: {} of {} teams; looking for free bots at level {} (see .playerbots ladder "
+        "pool status)",
+        count.Resident + count.Away, sPlayerbotAIConfig.LadderPoolTeams, MaxLevel());
+    return true;
+}
+
+bool LadderMgr::HandlePoolSelftestCommand(ChatHandler* handler, char const* /*args*/)
+{
+    using Pairs = std::vector<std::pair<PoolBot, PoolBot>>;
+    uint32 failures = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        if (ok)
+            return;
+
+        ++failures;
+        handler->PSendSysMessage("Ladder pool selftest FAIL: {}", what);
+    };
+
+    // Every bot once, both of a pair of one faction, an online captain where the pair has an online bot, as many
+    // pairs as the factions allow up to wanted
+    auto checkPairs = [&](std::string const& name, std::array<std::vector<PoolBot>, 2> const& freeBots, uint32 wanted,
+                          Pairs const& pairs)
+    {
+        std::unordered_map<uint32, size_t> factionOf;
+        for (size_t faction = 0; faction < freeBots.size(); ++faction)
+            for (PoolBot const& bot : freeBots[faction])
+                factionOf[bot.Guid] = faction;
+
+        std::unordered_set<uint32> used;
+        for (auto const& [captain, partner] : pairs)
+        {
+            check(used.insert(captain.Guid).second && used.insert(partner.Guid).second, name + ": a bot in two pairs");
+            check(factionOf.contains(captain.Guid) && factionOf.contains(partner.Guid) &&
+                      factionOf[captain.Guid] == factionOf[partner.Guid],
+                  name + ": a pair of two factions or an unknown bot");
+            check(captain.Online || !partner.Online, name + ": an offline captain with an online partner");
+        }
+
+        size_t const possible = freeBots[TEAM_ALLIANCE].size() / 2 + freeBots[TEAM_HORDE].size() / 2;
+        size_t const expected = std::min<size_t>(possible, wanted);
+        check(pairs.size() == expected, Acore::StringFormat("{}: {} pairs, expected {}", name, pairs.size(), expected));
+    };
+
+    std::array<std::vector<PoolBot>, 2> mixed;
+    mixed[TEAM_ALLIANCE] = {{1, false}, {2, false}, {3, false}};
+    mixed[TEAM_HORDE] = {{10, true}, {11, true}, {12, false}, {13, false}, {14, false}};
+    Pairs const all = PairPoolBots(mixed, 10);
+    checkPairs("mixed", mixed, 10, all);
+    check(all.size() == 3 && all[0].first.Guid == 1 && all[0].second.Guid == 2 && all[1].first.Guid == 10 &&
+              all[1].second.Guid == 12 && all[2].first.Guid == 11 && all[2].second.Guid == 13,
+          "mixed: factions in turn, online captains with offline partners first");
+    checkPairs("mixed, wanted 1", mixed, 1, PairPoolBots(mixed, 1));
+    checkPairs("mixed, wanted 0", mixed, 0, PairPoolBots(mixed, 0));
+    std::array<std::vector<PoolBot>, 2> const none;
+    checkPairs("empty", none, 5, PairPoolBots(none, 5));
+
+    std::array<std::vector<PoolBot>, 2> online;
+    online[TEAM_HORDE] = {{20, true}, {21, true}, {22, true}, {23, true}, {24, true}};
+    checkPairs("online horde", online, 5, PairPoolBots(online, 5));
+
+    std::array<std::vector<PoolBot>, 2> odd;
+    odd[TEAM_ALLIANCE] = {{30, false}, {31, true}, {32, true}};
+    odd[TEAM_HORDE] = {{40, false}};
+    Pairs const oddPairs = PairPoolBots(odd, 5);
+    checkPairs("odd", odd, 5, oddPairs);
+    check(oddPairs.size() == 1 && oddPairs[0].first.Guid == 31 && oddPairs[0].second.Guid == 30,
+          "odd: the online bot captains the offline one");
+
+    handler->PSendSysMessage("Ladder pool selftest: {} ({} failures)", failures ? "FAIL" : "PASS", failures);
     return true;
 }

@@ -15,6 +15,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "DatabaseEnv.h"
+#include "LadderMgr.h"
 #include "LocaleColumns.h"
 #include "Log.h"
 #include "PlayerbotAI.h"
@@ -430,6 +431,10 @@ uint32 RandomPlayerbotFactory::CalculateTotalAccountCount()
     // Take periodic online/offline into account
     if (sPlayerbotAIConfig.EnablePeriodicOnlineOffline)
         maxBots *= sPlayerbotAIConfig.PeriodicOnlineOfflineRatio;
+
+    // Main's ladder pool may be away on arena servers, outside the online count
+    if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)
+        maxBots += 2 * sPlayerbotAIConfig.LadderPoolTeams;
 
     // Calculate number of accounts needed for RNDbots
     // Result is rounded up for maxBots not cleanly divisible by the divisor
@@ -874,9 +879,15 @@ void RandomPlayerbotFactory::LoadArenaTeamData()
 
     _botArenaTeamRegistry.clear();
 
+    LadderMgr& ladder = LadderMgr::Instance();
+    bool const pool = ladder.PoolOn();
     for (auto const& [id, team] : sArenaTeamMgr->GetArenaTeams())
     {
         if (!IsBotArenaTeam(team))
+            continue;
+
+        // Main's ladder pool (Playerbots.Ladder.PoolTeams): its pairs stay out of the joins and the formation
+        if (pool && LadderMgr::IsPoolTeam(team))
             continue;
 
         CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(team->GetCaptain());
@@ -885,6 +896,15 @@ void RandomPlayerbotFactory::LoadArenaTeamData()
 
         ArenaType type = static_cast<ArenaType>(team->GetType());
         _botArenaTeamRegistry[type].push_back(id);
+    }
+
+    // Teams away on an arena server still count against the targets, so creation does not replace them
+    for (auto const& [type, target] : _configTargets)
+    {
+        std::vector<uint32> away;
+        ladder.CollectAwayTeams(type, away);
+        if (!away.empty())
+            _botArenaTeamRegistry[type].insert(_botArenaTeamRegistry[type].end(), away.begin(), away.end());
     }
 
     _availableArenaTeamNames.clear();
@@ -977,6 +997,10 @@ void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot, uint32 ex
             return;
     }
 
+    // Main's ladder pool takes the free bots at the maximum level while it is short
+    if (LadderMgr::Instance().PoolWants(bot))
+        return;
+
     TeamId const botTeam = bot->GetTeamId();
 
     // Randomize type order so no single type starves the others
@@ -1059,8 +1083,19 @@ void RandomPlayerbotFactory::CreateBotArenaTeam(Player* bot, ArenaType type)
         return;
     }
 
+    SetRandomRatingAndEmblem(arenateam);
+    arenateam->SaveToDB();
+    sArenaTeamMgr->AddArenaTeam(arenateam);
+    _botArenaTeamRegistry[type].push_back(arenateam->GetId());
+
+    LOG_DEBUG("playerbots", "Created {}v{} arena team '{}' with captain {}",
+              type, type, teamName, bot->GetName());
+}
+
+void RandomPlayerbotFactory::SetRandomRatingAndEmblem(ArenaTeam* team)
+{
     if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
-        arenateam->SetRatingForAll(
+        team->SetRatingForAll(
             urand(sPlayerbotAIConfig.RandomBotArenaTeamMinRating, sPlayerbotAIConfig.RandomBotArenaTeamMaxRating));
 
     uint32 const backgroundColor = urand(0xFF000000, 0xFFFFFFFF);
@@ -1068,14 +1103,67 @@ void RandomPlayerbotFactory::CreateBotArenaTeam(Player* bot, ArenaType type)
     uint32 const emblemColor = urand(0xFF000000, 0xFFFFFFFF);
     uint8 const borderStyle = urand(0, 5);
     uint32 const borderColor = urand(0xFF000000, 0xFFFFFFFF);
-    arenateam->SetEmblem(backgroundColor, emblemStyle, emblemColor, borderStyle, borderColor);
+    team->SetEmblem(backgroundColor, emblemStyle, emblemColor, borderStyle, borderColor);
+}
 
-    arenateam->SaveToDB();
-    sArenaTeamMgr->AddArenaTeam(arenateam);
-    _botArenaTeamRegistry[type].push_back(arenateam->GetId());
+uint32 RandomPlayerbotFactory::CreatePairArenaTeam(Player* founder, ObjectGuid captain, ObjectGuid partner)
+{
+    // A founder that is no member joins and leaves at once, so it needs a free 2v2 slot
+    bool const founderIsCaptain = founder->GetGUID() == captain;
+    if (!founderIsCaptain && (founder->GetArenaTeamId(ARENA_SLOT_2v2) ||
+                              sCharacterCache->GetCharacterArenaTeamIdByGuid(founder->GetGUID(), ARENA_SLOT_2v2)))
+        return 0;
 
-    LOG_DEBUG("playerbots", "Created {}v{} arena team '{}' with captain {}",
-              type, type, teamName, bot->GetName());
+    std::string teamName = CreateRandomArenaTeamName();
+    if (teamName.empty())
+        return 0;
+
+    ArenaTeam* team = new ArenaTeam();
+    if (!team->Create(founder->GetGUID(), ARENA_TYPE_2v2, teamName, 0, 0, 0, 0, 0))
+    {
+        LOG_ERROR("playerbots", "Error creating arena team {}", teamName);
+        delete team;
+        _availableArenaTeamNames.push_back(std::move(teamName));
+        return 0;
+    }
+
+    sArenaTeamMgr->AddArenaTeam(team);
+    bool const added = (founderIsCaptain || team->AddMember(captain)) && team->AddMember(partner);
+    if (!founderIsCaptain)
+    {
+        if (added)
+            team->SetCaptain(captain);
+
+        team->DelMember(founder->GetGUID(), true);
+    }
+
+    if (!added)
+    {
+        LOG_ERROR("playerbots", "Ladder pool: arena team {} could not take its members; disbanded", teamName);
+        team->Disband(nullptr);
+        delete team;
+        return 0;
+    }
+
+    SetRandomRatingAndEmblem(team);
+    if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
+    {
+        // As a team filled by the joins: the MMR follows the artificial rating
+        for (ArenaTeamMember& member : team->GetMembers())
+        {
+            member.MatchMakerRating = member.PersonalRating;
+            member.MaxMMR = std::max(member.MaxMMR, member.PersonalRating);
+        }
+    }
+
+    team->SaveToDB(true);
+    std::string captainName;
+    std::string partnerName;
+    sCharacterCache->GetCharacterNameByGuid(captain, captainName);
+    sCharacterCache->GetCharacterNameByGuid(partner, partnerName);
+    LOG_INFO("playerbots", "Ladder pool: arena team {} <{}> for {} and {}", team->GetId(), teamName, captainName,
+             partnerName);
+    return team->GetId();
 }
 
 uint32 RandomPlayerbotFactory::GetBotArenaTeamCount(ArenaType type)

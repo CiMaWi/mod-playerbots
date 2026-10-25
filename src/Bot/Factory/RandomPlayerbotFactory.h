@@ -67,6 +67,9 @@ public:
     static bool SameArenaBracket(uint8 level, uint8 otherLevel);
     static void DeleteBotArenaTeams();
     static uint32 GetBotArenaTeamCount(ArenaType type);
+    // World thread: a 2v2 team of captain and partner (online or not), founded by an online bot, which leaves it at
+    // once unless it is the captain. Not in the bot arena team registry (main's ladder pool). Returns the team id or 0
+    static uint32 CreatePairArenaTeam(Player* founder, ObjectGuid captain, ObjectGuid partner);
     static void LoadArenaTeamData();
     // Sets every bot arena team's rating and its members' personal rating and MMR to the core's start values.
     // Returns the number of teams reset; resetMembers receives the number of members.
@@ -84,6 +87,7 @@ private:
     static void AssignBotToArenaTeamInternal(Player* bot, uint32 excludedTeamId = 0);
     static void CollectJoinableBotArenaTeams(ArenaType type, TeamId faction, uint8 level, std::vector<ArenaTeam*>& out);
     static void CreateBotArenaTeam(Player* bot, ArenaType type);
+    static void SetRandomRatingAndEmblem(ArenaTeam* team);
     static bool IsBotArenaTeam(ArenaTeam const* team);
     static std::string CreateRandomArenaTeamName();
     static std::string GetLocalizedNameSelector(bool localized, std::string const& column);

@@ -7,11 +7,13 @@
 #ifndef _PLAYERBOT_LADDERMGR_H
 #define _PLAYERBOT_LADDERMGR_H
 
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "AsyncCallbackProcessor.h"
@@ -27,7 +29,9 @@ class Player;
 // memory once no member is queued or in a battleground and every member has logged out; arrive loads it back from its
 // DB rows with two async queries. Never disbands and never deletes a team row. With a ladder role the members' state
 // (hosted or away) is kept in the playerbots table playerbots_ladder_roster, written only by depart and arrive and read
-// at startup. World thread only, except IsQueueBlocked (bot AI, map threads).
+// at startup. On main (Playerbots.Ladder.Role = 1) with Playerbots.Ladder.PoolTeams it also keeps up the pool: pairs of
+// random bots at the maximum level, each in exactly one 2v2 team. World thread only, except IsQueueBlocked (bot AI, map
+// threads).
 class LadderMgr
 {
 public:
@@ -82,9 +86,36 @@ public:
     // World thread, arena role: lets every hosted bot that is not in the random bot manager's set log in
     void LoginHosted();
 
+    // Main role with Playerbots.Ladder.PoolTeams > 0
+    bool PoolOn() const;
+    // A pool team: a 2v2 team of exactly two random bots at the maximum level that are in no other arena team
+    static bool IsPoolTeam(ArenaTeam* team);
+    // World thread: true while the pool is short, so the bot arena team assignment leaves free bots at the maximum
+    // level to the pool
+    bool PoolWants(Player* bot) const;
+    // World thread: the away teams of this type that are not pool teams and not in memory. The bot arena team registry
+    // counts them, so team creation does not replace a team that is away (also after a restart)
+    void CollectAwayTeams(uint8 type, std::vector<uint32>& out) const;
+
+    // A free bot for the pool and whether it is online
+    struct PoolBot
+    {
+        uint32 Guid = 0;
+        bool Online = false;
+    };
+    // Pairs free bots per faction (index TEAM_ALLIANCE, TEAM_HORDE) into at most wanted (captain, partner) pairs, the
+    // factions in turn. An online bot captains an offline one first (it founds the team itself), then online pairs,
+    // then offline pairs (founded by another online bot). Each bot is in one pair at most
+    static std::vector<std::pair<PoolBot, PoolBot>> PairPoolBots(std::array<std::vector<PoolBot>, 2> const& freeBots,
+                                                                 uint32 wanted);
+
     static bool HandleDepartCommand(ChatHandler* handler, char const* args);
     static bool HandleArriveCommand(ChatHandler* handler, char const* args);
     static bool HandleStatusCommand(ChatHandler* handler, char const* args);
+    static bool HandlePoolStatusCommand(ChatHandler* handler, char const* args);
+    static bool HandlePoolBuildCommand(ChatHandler* handler, char const* args);
+    // Checks PairPoolBots on made-up inputs (no game state)
+    static bool HandlePoolSelftestCommand(ChatHandler* handler, char const* args);
 
 private:
     struct Move
@@ -95,6 +126,15 @@ private:
         bool LoggedOut = false;
         uint32 WaitedMs = 0;
         std::string Note;
+        // Set by the depart (or the startup drop of an away team): the team's type and whether it was a pool team
+        uint8 Type = 0;
+        bool Pool = false;
+    };
+
+    struct PoolCount
+    {
+        uint32 Resident = 0;
+        uint32 Away = 0;
     };
 
     LadderMgr() = default;
@@ -113,6 +153,13 @@ private:
     void UpdateDeparting(uint32 teamId, Move& move);
     void OnTeamRow(QueryCallback& callback, uint32 teamId, QueryResult result);
     void OnMemberRows(uint32 teamId, QueryResult result);
+    void NoteTeam(Move& move, ArenaTeam* team);
+    PoolCount CountPool() const;
+    bool IsFreePoolBot(ObjectGuid guid, uint8 maxLevel) const;
+    static Player* FindPoolFounder();
+    void UpdatePool(uint32 diff);
+    void QueryPoolCandidates();
+    void OnPoolCandidates(QueryResult result);
 
     std::unordered_map<uint32, Move> _moves;
     // Arrive: the team row while the member query runs
@@ -131,6 +178,13 @@ private:
     uint32 _checkTimer = 0;
     bool _hostedOnly = false;
     bool _rosterLoaded = false;
+    // Pool (main role); world thread only
+    bool _poolOn = false;
+    bool _poolShort = true;  // until the first count
+    bool _poolQueryPending = false;
+    uint32 _poolTimer = 0;
+    uint32 _poolCreated = 0;
+    std::string _poolNote = "not checked yet";
 };
 
 #endif

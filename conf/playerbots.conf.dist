@@ -1466,6 +1466,17 @@ Playerbots.Ladder.ServerId = ""
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600
 
+# Main role (Playerbots.Ladder.Role = 1): the number of 2v2 teams in the ladder pool (0-5000). A pool team is two
+# random bots at the maximum level that are in no other arena team; the teams away on an arena server count. While
+# the pool is short, main pairs free bots at the maximum level of one faction into new 2v2 teams every 30 s (at most
+# 10 per check; a pair of offline bots is founded by an online bot below the maximum level, which leaves at once), and
+# the random bot arena team assignment leaves such bots to the pool. Pool teams stay out of the random bot team joins
+# and the formation. An automatic Playerbots.RandomBotAccountCount counts 2 bots per pool team on top of
+# MaxRandomBots, so main still fills its online cap while the pool is away. Ignored with any other role.
+# Commands: .playerbots ladder pool status|build|selftest
+# Default: 0 (no pool)
+Playerbots.Ladder.PoolTeams = 0
+
 # Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table
 # playerbots_bot_profile. All profiles are loaded with one query at startup; a bot login reads memory only, new rows

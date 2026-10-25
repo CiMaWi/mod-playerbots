@@ -74,10 +74,17 @@ public:
             {"force", ActivityBudget::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsLadderPoolCommandTable = {
+            {"status", LadderMgr::HandlePoolStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"build", LadderMgr::HandlePoolBuildCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", LadderMgr::HandlePoolSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsLadderCommandTable = {
             {"depart", LadderMgr::HandleDepartCommand, SEC_GAMEMASTER, Console::Yes},
             {"arrive", LadderMgr::HandleArriveCommand, SEC_GAMEMASTER, Console::Yes},
             {"status", LadderMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"pool", playerbotsLadderPoolCommandTable},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
