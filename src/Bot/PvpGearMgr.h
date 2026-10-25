@@ -8,6 +8,7 @@
 #define _PLAYERBOT_PVPGEARMGR_H
 
 #include <array>
+#include <deque>
 #include <functional>
 #include <shared_mutex>
 #include <string>
@@ -19,6 +20,7 @@
 #include "Define.h"
 #include "Transaction.h"
 
+class Battleground;
 class ChatHandler;
 class Item;
 class Player;
@@ -30,7 +32,8 @@ class StatsWeightCalculator;
 // data; wearing it (Playerbots.PvpGear.Wear, PvpGearWear.cpp) creates its items in arenas and battlegrounds while the
 // PvE items wait in the bags, and no PvE item is ever destroyed. All loadouts and worn slots are loaded with one query
 // each at startup; bot logins read memory only and writes are asynchronous. World thread only (startup, the login
-// hook, the GM commands, the swap), except the queue calls of the battleground hooks and the upkeep guards.
+// hook, the GM commands, the swap, the buying), except the queue calls of the battleground hooks and the upkeep
+// guards. Buying (Playerbots.PvpGear.Buy.Enable) changes loadout rows and the bot's honor and arena points only.
 class PvpGearMgr
 {
 public:
@@ -176,6 +179,61 @@ public:
     bool IsWorn(Player const* bot) const;
     bool IsWornItem(Player const* bot, Item const* item) const;
     static void SelftestWear(std::function<void(bool, std::string const&)> const& check);
+    // Any thread holding no worn lock: the guid has worn rows on this server (also while the bot is offline)
+    bool HasWornRows(uint32 guid) const;
+
+    // Buying (Playerbots.PvpGear.Buy.*): at the vendor prices (honor, arena points) and rating requirements, after a
+    // rated arena match and on a slow timer, a few bots per world tick
+    static constexpr uint8 NoSlot = 0xFF;
+    struct BuyCandidate
+    {
+        uint32 Entry = 0;
+        uint8 Tier = 0;
+        uint16 ItemLevel = 0;
+        uint32 Honor = 0;
+        uint32 ArenaPoints = 0;
+        uint32 Rating = 0;
+        float Score = 0.0f;  // StatsWeightCalculator, PvP mode
+    };
+    struct BuySlot
+    {
+        uint8 Slot = 0;
+        uint32 Current = 0;  // the loadout's entry (0: empty, any candidate is an upgrade)
+        uint8 CurrentTier = 0;
+        uint16 CurrentLevel = 0;
+        uint8 Pair = NoSlot;  // the other ring (and the main hand for the off hand): never the same entry
+        std::vector<BuyCandidate> Candidates;
+    };
+    struct Wallet
+    {
+        uint32 Honor = 0;
+        uint32 ArenaPoints = 0;
+    };
+    struct Purchase
+    {
+        uint8 Slot = 0;
+        uint32 Old = 0;
+        uint32 Entry = 0;
+        uint8 Tier = 0;
+        uint32 Honor = 0;
+        uint32 ArenaPoints = 0;
+    };
+    // Pure: the purchases of one bot. slots in priority order; an upgrade is a higher (tier, item level) than the
+    // slot's item and needs rating >= its requirement; per slot the target is the best upgrade the rating allows
+    // (tier, then score). saveTowardBetter: a target the wallet cannot pay yet is not replaced by a lesser upgrade, and
+    // the later slots spend none of the currencies it needs; off: per slot the best upgrade the wallet can pay. The
+    // wallet is reduced by the purchases
+    static std::vector<Purchase> DecideBuys(std::vector<BuySlot> const& slots, Wallet& wallet, uint32 rating,
+                                            bool saveTowardBetter);
+    // Pure: the slot priority option (weapon, ranged, head, neck, shoulders, chest, waist, legs, feet, wrists, hands,
+    // back, rings, trinkets or a slot name such as "ring 1"); the slots it leaves out follow in the default order.
+    // Unknown names are listed in unknown
+    static std::vector<uint8> ParseSlotPriority(std::string const& text, std::string& unknown);
+    // Map thread (OnBattlegroundEnd): the players of a rated arena match get a buy check, queued to the world thread
+    static void QueueMatchEnd(Battleground* bg);
+    // World thread: the bots are checked before the timer's sweep
+    void AddBuyChecks(std::vector<uint32> const& guids, bool matchEnd);
+    static void SelftestBuy(std::function<void(bool, std::string const&)> const& check);
 
     // Pure: the tier order option, one entry per tier, each a list of lower-case name prefixes ("hateful/savage")
     static std::vector<std::vector<std::string>> ParseTierOrder(std::string const& order);
@@ -192,12 +250,28 @@ public:
     static bool HandleCheckCommand(ChatHandler* handler, char const* args);
     // Checks ParseTierOrder and BuildCatalogue on made-up offers (no game state)
     static bool HandleSelftestCommand(ChatHandler* handler, char const* args);
+    // Tier and item level by rating band, purchases, currency and income of the online ladder bots
+    static bool HandleStatsCommand(ChatHandler* handler, char const* args);
+    // Tests: adds honor and arena points to one online ladder bot or to all
+    static bool HandleGrantCommand(ChatHandler* handler, char const* args);
 
 private:
     struct Pick
     {
         CatalogueItem const* Item = nullptr;
         float Score = 0.0f;
+    };
+    struct PurchaseRecord
+    {
+        std::string Bot;
+        uint8 Slot = 0;
+        uint32 Old = 0;
+        uint32 Entry = 0;
+        uint8 Tier = 0;
+        uint32 Honor = 0;
+        uint32 ArenaPoints = 0;
+        uint32 Rating = 0;
+        uint32 At = 0;
     };
 
     PvpGearMgr() = default;
@@ -210,20 +284,28 @@ private:
     // (ccBreak 1: only the PvP trinket, -1: no PvP trinket; maxRating: leaves out items that need a higher rating)
     Pick Best(Player* bot, StatsWeightCalculator& calc, uint32 groupMask, uint8 slot, uint8 minTier,
               std::vector<uint32> const& exclude, int8 ccBreak, uint32 maxRating = UINT32_MAX) const;
-    // Best plus the final CanEquipNewItem check: a candidate it rejects for good is left out and the next one taken
+    // Best plus the final CanEquipNewItem check: a candidate it rejects for good is left out and the next one taken.
+    // maxRating: the bot's rating; a slot nothing fits at that rating takes the pick without the limit (logged)
     Pick BestEquippable(Player* bot, StatsWeightCalculator& calc, uint32 groupMask, uint8 slot, uint8 minTier,
-                        std::vector<uint32> exclude, int8 ccBreak) const;
+                        std::vector<uint32> exclude, int8 ccBreak, uint32 maxRating) const;
     Loadout BuildLoadout(Player* bot, uint8 tier, uint32 season, uint32& filled) const;
     void Store(uint32 guid, Loadout const& loadout);
     std::string TierLabel(uint8 tier) const;
     std::string NextUpgrade(Player* bot, uint32 guid, Loadout const& loadout, uint8 slot) const;
+    CatalogueItem const* NextItem(Player* bot, uint32 guid, Loadout const& loadout, uint8 slot) const;
+    void UpdateBuys(uint32 diff);
+    std::vector<BuySlot> BuildBuySlots(Player* bot, Loadout const& loadout, uint32 rating) const;
+    uint32 CheckBuys(uint32 guid);
+    // The currency seen at the last check; a rise since then is income (grants and purchases move the mark)
+    void NoteWallet(uint32 guid, Wallet const& now, bool countIncome);
     CatalogueItem const* FindItem(uint32 entry) const;
     static uint32 MissingSlots(Loadout const& loadout);
 
     bool _loaded = false;
     bool _wornLoaded = false;  // the worn rows, loaded at every start (also with Enable 0 or no catalogue)
     std::vector<std::string> _tierNames;
-    uint8 _baseTier = 0;
+    uint8 _baseTier = 0;        // the login builds; a reset with a tier word changes it until the restart
+    uint8 _configBaseTier = 0;  // Playerbots.PvpGear.BaseTier: the default of a reset
     uint32 _season = 1;
     std::vector<std::vector<CatalogueItem>> _tiers;
     std::unordered_map<uint32, CatalogueItem const*> _byEntry;  // into _tiers, which is not changed after Load
@@ -233,6 +315,23 @@ private:
     std::vector<std::pair<uint32, uint32>> _retry;  // guid, attempts (world thread)
     uint32 _retryTimer = 0;
     AsyncCallbackProcessor<TransactionCallback> _saveCallbacks;  // the unwears' inventory saves (world thread)
+    // Buying (world thread)
+    std::vector<uint8> _buyOrder;
+    std::vector<uint32> _buyPending;  // the bots of rated matches that ended
+    std::vector<uint32> _buySweep;    // the timer's pass over the online ladder bots
+    uint32 _buyTimer = 0;
+    uint32 _buyStart = 0;  // Unix time of the load
+    uint64 _purchases = 0;
+    uint64 _queuedChecks = 0;    // Checks queued by grants and rated match ends
+    uint64 _ratedMatchEnds = 0;  // Rated arena matches that queued their players
+    uint64 _matchEndPlayers = 0;
+    uint64 _timerChecks = 0;
+    uint64 _spentHonor = 0;
+    uint64 _spentArenaPoints = 0;
+    uint64 _incomeHonor = 0;
+    uint64 _incomeArenaPoints = 0;
+    std::unordered_map<uint32, Wallet> _wallets;
+    std::deque<PurchaseRecord> _recent;
 };
 
 #endif

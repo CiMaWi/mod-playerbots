@@ -567,7 +567,7 @@ public:
         ArenaTeamFormation::Instance().Update(diff);  // Opt-in; bot arena team rosters, every UpdateSeconds
         PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
         LadderMgr::Instance().Update(diff);  // Opt-in arena team moves; returns at once when none is pending
-        PvpGearMgr::Instance().Update(diff);  // Deferred PvP gear unwears; returns at once when there are none
+        PvpGearMgr::Instance().Update(diff);  // Deferred PvP gear unwears, opt-in buying; returns at once when idle
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         // Cached LFG state per bot, read on map threads
         PlayerbotsMgr::instance().RefreshLfgStates(diff);
@@ -628,6 +628,7 @@ public:
     void OnBattlegroundEnd(Battleground* bg, TeamId /*winnerTeam*/) override
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
+        PvpGearMgr::QueueMatchEnd(bg);  // Map thread: a rated arena's players get a buy check on the world thread
     }
 
     // Map thread: a ladder bot puts its PvP loadout on (Playerbots.PvpGear.Wear; queued to the world thread)

@@ -100,6 +100,8 @@ public:
             {"check", PvpGearMgr::HandleCheckCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", PvpGearMgr::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"status", PvpGearMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stats", PvpGearMgr::HandleStatsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"grant", PvpGearMgr::HandleGrantCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

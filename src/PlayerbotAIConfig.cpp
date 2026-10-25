@@ -779,6 +779,16 @@ bool PlayerbotAIConfig::Initialize()
                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
     PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
     PvpGearWear = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Wear", false);
+    PvpGearBuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
+    // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
+    PvpGearBuySlotPriority = sConfigMgr->GetOption<std::string>(
+        "Playerbots.PvpGear.Buy.SlotPriority",
+        "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged");
+    PvpGearBuySaveTowardBetter = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.SaveTowardBetter", true);
+    PvpGearBuyCheckIntervalMinutes =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
+    PvpGearBuyBatchPerTick =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);

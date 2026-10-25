@@ -1495,12 +1495,13 @@ Playerbots.Ladder.PoolTeams = 0
 # asks for honor and/or arena points; token costs and items that need a 3v3 or 5v5 rating are left out), grouped into
 # the tiers of Playerbots.PvpGear.TierOrder, and keeps for every ladder bot a stored PvP loadout: one item entry per
 # equipment slot, chosen for the bot's class and spec, in the playerbots table playerbots_pvp_loadout. A missing
-# loadout is created at the base tier at the bot's login. Nothing is bought yet; Playerbots.PvpGear.Wear decides whether
-# the loadout is worn.
+# loadout is created at the base tier at the bot's login. Playerbots.PvpGear.Buy.Enable lets the bots buy upgrades;
+# Playerbots.PvpGear.Wear decides whether the loadout is worn.
 # All loadouts are loaded with one query at startup; a login reads memory only, writes are asynchronous.
-# Commands: .playerbots pvpgear status | reset [season] [tier] | show <bot> | check [count] | selftest
-# reset starts a season: every online ladder bot gets the base tier at once, the other loadouts are deleted and
-# rebuilt at the bot's next login.
+# Commands: .playerbots pvpgear status | reset [season] [tier] | show <bot> | check [count] [all] | selftest |
+# stats [count] | grant <bot|all> <honor> <arena points>
+# reset starts a season: every online ladder bot gets the given tier (default Playerbots.PvpGear.BaseTier) at once, the
+# other loadouts are deleted and rebuilt at the bot's next login (at the reset's tier until the restart).
 # Default: 0 (off: no catalogue, no rows)
 Playerbots.PvpGear.Enable = 0
 
@@ -1513,9 +1514,43 @@ Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathfu
 # The tier every ladder bot starts a season with (and gets at its first login): a tier name or prefix from
 # Playerbots.PvpGear.TierOrder. A slot the tier has no item for (e.g. the Hateful/Savage vendors sell no weapons) takes
 # the lowest tier above that has one. The slot of the PvP trinket (the medallion that breaks crowd control) is always
-# filled when a tier has one, also for races with a racial that does the same.
+# filled when a tier has one, also for races with a racial that does the same. Within a tier a bot gets only items its
+# arena rating allows (e.g. the Furious weapons are all item level 239 at rating 2350); a slot with no such item takes
+# one from the tiers above, then from the tiers below, and only then one that needs a higher rating.
 # Default: "" (the first tier)
 Playerbots.PvpGear.BaseTier = ""
+
+# Ladder bots buy PvP gear upgrades with their honor and arena points at the vendor prices and rating requirements
+# (needs Playerbots.PvpGear.Enable). After every rated arena match and every
+# Playerbots.PvpGear.Buy.CheckIntervalMinutes, a few bots per world tick: an upgrade is an item of a higher tier or,
+# within a tier, of a higher item level, of the same kind (no switch between a two-hander and one-handers; trinket 1
+# stays the PvP trinket; the rings differ), usable by the bot, whose rating requirement the bot meets (the best of
+# min(personal rating, team rating) over its arena teams, the vendor's rule). Per slot the bot aims at the best upgrade its rating allows. The honor and arena
+# points are taken from the character and the loadout row changes; a bot that wears its loadout (in a match, or on an
+# arena server) swaps the slot at once. One log line per purchase; the PvE gear is never touched. Bots earn currency
+# only from battleground honor and the arena point distribution (worldserver Arena.AutoDistributePoints).
+# Default: 0 (off: nothing is bought)
+Playerbots.PvpGear.Buy.Enable = 0
+
+# The slots in the order the bots buy for them, comma-separated: weapon (main and off hand; a hunter's ranged slot
+# takes the place before its main hand), ranged, head, neck, shoulders, chest, waist, legs, feet, wrists, hands, back,
+# rings, trinkets, or one slot ("ring 1", "trinket 2", "main hand"). Slots left out follow in the default order.
+# Default: "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged"
+Playerbots.PvpGear.Buy.SlotPriority = "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged"
+
+# 1: a bot saves toward the best upgrade its rating allows: while it cannot pay it, it buys no lesser piece for that
+# slot, and the slots after it in the priority spend none of the currencies that piece needs (an honor piece can still
+# be bought while the bot saves arena points). 0: in priority order, each slot gets the best upgrade the bot can pay.
+# Default: 1
+Playerbots.PvpGear.Buy.SaveTowardBetter = 1
+
+# Minutes between two checks of every online ladder bot (1-1440; the checks after a rated arena match come on top).
+# Default: 60
+Playerbots.PvpGear.Buy.CheckIntervalMinutes = 60
+
+# Bots checked per world tick (1-100; the match-end checks first).
+# Default: 5
+Playerbots.PvpGear.Buy.BatchPerTick = 5
 
 # Ladder bots wear their PvP loadout in arenas and battlegrounds (needs Playerbots.PvpGear.Enable). When a ladder bot
 # enters an arena or a battleground, a world-thread operation creates the loadout's items and equips them; the PvE

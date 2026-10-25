@@ -425,6 +425,11 @@ public:
     std::string PvpGearTierOrder;
     std::string PvpGearBaseTier;
     bool PvpGearWear;
+    bool PvpGearBuyEnable;
+    std::string PvpGearBuySlotPriority;
+    bool PvpGearBuySaveTowardBetter;
+    uint32 PvpGearBuyCheckIntervalMinutes;
+    uint32 PvpGearBuyBatchPerTick;
     bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;

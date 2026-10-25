@@ -202,6 +202,15 @@ bool PvpGearMgr::IsWorn(Player const* bot) const
     return _worn.contains(bot->GetGUID().GetCounter());
 }
 
+bool PvpGearMgr::HasWornRows(uint32 guid) const
+{
+    if (!_wornLoaded)
+        return false;
+
+    std::shared_lock lock(_wornLock);
+    return _worn.contains(guid);
+}
+
 bool PvpGearMgr::IsWornItem(Player const* bot, Item const* item) const
 {
     if (!_wornLoaded || !bot || !item)
@@ -599,6 +608,7 @@ void PvpGearMgr::RetryUnwear(uint32 guid, uint32 attempts)
 void PvpGearMgr::Update(uint32 diff)
 {
     _saveCallbacks.ProcessReadyCallbacks();  // returns at once when there are none
+    UpdateBuys(diff);                        // returns at once when buying is off
     if (_retry.empty())
         return;
 
