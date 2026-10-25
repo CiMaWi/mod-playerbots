@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_PLAYERBOTOPERATIONS_H
 #define PLAYERBOTS_PLAYERBOTOPERATIONS_H
 
+#include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
 #include "Group.h"
@@ -640,6 +641,33 @@ public:
 
 private:
     ObjectGuid m_botGuid;
+};
+
+// A real player's arena team invite to a bot (ArenaTeamAcceptAction): the hidden acceptance rule reads the acquaintance
+// map and joins the team, so it runs on the world thread
+class ArenaTeamRecruitOperation : public PlayerbotOperation
+{
+public:
+    ArenaTeamRecruitOperation(ObjectGuid botGuid, ObjectGuid inviterGuid)
+        : m_botGuid(botGuid), m_inviterGuid(inviterGuid)
+    {
+    }
+
+    bool Execute() override
+    {
+        ArenaRecruit::ProcessInvite(m_botGuid, m_inviterGuid);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+
+    std::string GetName() const override { return "ArenaTeamRecruit"; }
+
+    bool IsValid() const override { return ObjectAccessor::FindPlayer(m_botGuid) != nullptr; }
+
+private:
+    ObjectGuid m_botGuid;
+    ObjectGuid m_inviterGuid;
 };
 
 // Drop a bot that has left its captain's arena bracket: the team can't queue with it

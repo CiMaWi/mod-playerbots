@@ -5,6 +5,7 @@
  */
 
 #include "AcquaintanceMgr.h"
+#include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BattleGroundTactics.h"
 #include "BotProfileMgr.h"
@@ -63,6 +64,7 @@ public:
         static ChatCommandTable playerbotsArenaCommandTable = {
             {"resetratings", HandleArenaResetRatingsCommand, SEC_GAMEMASTER, Console::Yes},
             {"teams", ArenaTeamFormation::HandleTeamsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"recruit", ArenaRecruit::HandleRecruitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

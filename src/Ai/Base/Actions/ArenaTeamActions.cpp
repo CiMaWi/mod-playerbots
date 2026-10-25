@@ -6,7 +6,9 @@
 
 #include "ArenaTeamActions.h"
 #include "ArenaTeamMgr.h"
+#include "PlayerbotOperations.h"
 #include "PlayerbotTextMgr.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 
 bool ArenaTeamAcceptAction::Execute(Event event)
@@ -26,6 +28,20 @@ bool ArenaTeamAcceptAction::Execute(Event event)
     ArenaTeam* at = sArenaTeamMgr->GetArenaTeamById(bot->GetArenaTeamIdInvited());
     if (!at)
         return false;
+
+    // Scouting: a real player's invite goes through the hidden rule on the world thread (it reads the acquaintance
+    // map and joins the team); the invite stays pending until then
+    if (sPlayerbotAIConfig.ArenaRecruitEnable && IsRealPlayer(inviter) && sRandomPlayerbotMgr.IsRandomBot(bot))
+    {
+        if (PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                std::make_unique<ArenaTeamRecruitOperation>(bot->GetGUID(), inviter->GetGUID())))
+            return true;
+
+        // Queue full: the pending invite would never be answered, so decline it quietly
+        WorldPacket decline(CMSG_ARENA_TEAM_DECLINE);
+        bot->GetSession()->HandleArenaTeamDeclineOpcode(decline);
+        return false;
+    }
 
     bool accept = true;
 

@@ -881,6 +881,21 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitsPerPass", 4), 0, 100);
     ArenaTeamRecruitAboveMinChance =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitAboveMinChance", 0), 0, 100);
+    ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", false);
+    ArenaRecruitRatingAtSkill1 =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill1", 0), 0, 10000);
+    ArenaRecruitRatingAtSkill99 =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill99", 2000), 0, 10000);
+    ArenaRecruitDeltaBase =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaBase", 300), 0, 10000);
+    ArenaRecruitDeltaPerAcquaintancePoint = std::clamp(
+        sConfigMgr->GetOption<float>("Playerbots.ArenaRecruit.DeltaPerAcquaintancePoint", 4.0f), 0.0f, 1000.0f);
+    ArenaRecruitDeltaMax =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaMax", 1500), 0, 10000);
+    ArenaRecruitLoyaltyMinGames =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinGames", 5), 1, 1000);
+    ArenaRecruitLoyaltyMinWinPercent =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinWinPercent", 55), 0, 100);
     if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
         LOG_INFO("server.loading",
                  "Playerbots.ArenaTeam.Formation.Enable is ignored: it needs "

@@ -1941,6 +1941,30 @@ Playerbots.ArenaTeam.SynergyWeight = 0.4
 Playerbots.ArenaTeam.RecruitsPerPass = 4
 Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 
+# Scouting: a real player's arena team invite to a randombot goes through a hidden rule instead of being accepted
+# always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
+# considers its own level, which comes from its hidden skill (a bot without a skill, e.g. with Playerbots.Skill.Enable
+# = 0, counts as the population mean 50, so the rule still applies). The acquaintance score
+# (Playerbots.Acquaintance.Enable) widens the allowed rating gap but never replaces the test: a big gap always refuses.
+# Otherwise the bot refuses in character (texts arena_team_recruit_*, translatable; never a number, never the skill).
+# Invites from other bots keep today's behaviour. 0 = every invite is accepted as before.
+# The starting values below are not tuned yet (E4).
+#   RatingAtSkill1, RatingAtSkill99 (0..10000): the team rating a bot of skill 1 / 99 considers its own level (linear).
+#   DeltaBase (0..10000): the rating gap every bot allows. DeltaPerAcquaintancePoint (0.0..1000.0): extra gap per
+#     acquaintance score point. DeltaMax (0..10000): the most gap that is ever allowed.
+#   LoyaltyMinGames (1..1000), LoyaltyMinWinPercent (0..100): a bot whose team has played at least this many games this
+#     season and won at least this share of them is loyal and refuses, whatever the acquaintance.
+# GM command (console works): .playerbots arena recruit <bot> <player> [rating <n>] [score <n>] [skill <n>] [loyal 0|1]
+# evaluates the rule without an invite (and shows the skill; decisions are logged at debug level, Logger.playerbots=5).
+Playerbots.ArenaRecruit.Enable = 0
+Playerbots.ArenaRecruit.RatingAtSkill1 = 0
+Playerbots.ArenaRecruit.RatingAtSkill99 = 2000
+Playerbots.ArenaRecruit.DeltaBase = 300
+Playerbots.ArenaRecruit.DeltaPerAcquaintancePoint = 4.0
+Playerbots.ArenaRecruit.DeltaMax = 1500
+Playerbots.ArenaRecruit.LoyaltyMinGames = 5
+Playerbots.ArenaRecruit.LoyaltyMinWinPercent = 55
+
 # Delete all randombot (and any addclass bot) arena teams on startup. While enabled,
 # no new randombot arena teams are created or joined. Set back to 0 and restart the
 # server to resume normal randombot arena team assignment.

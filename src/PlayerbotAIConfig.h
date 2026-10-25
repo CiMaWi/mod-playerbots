@@ -477,6 +477,15 @@ public:
     float ArenaTeamSynergyWeight;
     uint32 ArenaTeamRecruitsPerPass;
     uint32 ArenaTeamRecruitAboveMinChance;
+    // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite to a randombot
+    bool ArenaRecruitEnable;
+    uint32 ArenaRecruitRatingAtSkill1;
+    uint32 ArenaRecruitRatingAtSkill99;
+    uint32 ArenaRecruitDeltaBase;
+    float ArenaRecruitDeltaPerAcquaintancePoint;
+    uint32 ArenaRecruitDeltaMax;
+    uint32 ArenaRecruitLoyaltyMinGames;
+    uint32 ArenaRecruitLoyaltyMinWinPercent;
 
     uint32 SelfBotLevel;
     bool DowngradeMaxLevelBot;
