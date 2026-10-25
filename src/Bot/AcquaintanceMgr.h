@@ -16,6 +16,8 @@
 #include "Define.h"
 
 class ChatHandler;
+class Group;
+class Player;
 
 // Which kinds of meeting a pair had at least once (the `flags` column)
 namespace AcquaintanceFlags
@@ -81,11 +83,13 @@ public:
         return instance;
     }
 
-    // World thread, startup: one synchronous query for all rows; does nothing when the feature is off
+    // World thread, startup (or the first tick after a config reload turned the feature on): one synchronous query
+    // for all rows; does nothing when the feature is off
     void Load();
-    // World thread, once per world tick: drains the events, writes dirty rows every FlushSeconds
+    // World thread, once per world tick: drains the events, runs the time samplers, writes dirty rows every
+    // FlushSeconds; after a config reload turned the feature off it writes the dirty rows once
     void Update(uint32 diff);
-    // World thread, server shutdown: drains the events and writes every dirty row
+    // World thread, server shutdown: drains the events and queues every dirty row behind the earlier flushes
     void Shutdown();
 
     // Any thread; one lock, no I/O. The world thread checks that bot is a random bot when it drains the event.
@@ -151,7 +155,14 @@ private:
     Entry& Touch(uint32 player, uint32 bot, uint32 now);
     void MarkDirty(uint64 key, Entry& entry);
     static void Rescore(Acquaintance& data);
-    void Flush(bool direct);
+    void Flush();
+
+    void Sample(uint32 diff);
+    void SampleGroup(Player* player, Group* group, AcquaintanceTally tally, uint32 seconds);
+    void SampleGuild(Player* player, uint32 seconds);
+    void SampleNearby(Player* player, uint32 seconds);
+    // Whole seconds that elapsed reached the interval: returns them and keeps the remainder; 0 otherwise
+    static uint32 TakeSeconds(uint32& elapsed, uint32 diff, uint32 intervalSeconds);
 
     // Shared with the hooks
     std::mutex _queueMutex;
@@ -164,9 +175,20 @@ private:
     std::vector<uint64> _dirty;
     std::vector<Event> _draining;
     uint32 _flushElapsed = 0;
+    uint32 _groupElapsed = 0;
+    uint32 _guildElapsed = 0;
+    uint32 _nearbyElapsed = 0;
+    // Scratch lists of one sampler pass, empty between ticks (no Player* is kept)
+    std::vector<Player*> _realPlayers;
+    std::vector<Player*> _nearby;
     uint64 _eventsDrained = 0;
     uint64 _rowsWritten = 0;
+    uint64 _samples = 0;
+    uint32 _lastSampleMicroseconds = 0;
+    uint32 _lastSamplePlayers = 0;
     bool _loaded = false;
+    // The feature was on at the last tick (a config reload may turn it off)
+    bool _active = false;
 };
 
 #endif

@@ -8,14 +8,19 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <limits>
 #include <optional>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
 
+#include "CellImpl.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "GameTime.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "GroupScript.h"
@@ -25,6 +30,7 @@
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerScript.h"
 #include "PlayerbotAI.h"
@@ -153,6 +159,16 @@ void SaturatingAdd(uint32& value, uint64 amount, uint64 cap)
     value = static_cast<uint32>(std::min<uint64>(static_cast<uint64>(value) + amount, cap));
 }
 
+// DE.3: a group the player formed is the strongest kind; a battleground team and a dungeon finder group, which the
+// player did not choose, only count as the weak closeness
+AcquaintanceTally TallyOf(Group const* group)
+{
+    if (group->isBGGroup() || group->isBFGroup())
+        return AcquaintanceTally::Battleground;
+
+    return group->isLFGGroup() ? AcquaintanceTally::Nearby : AcquaintanceTally::Group;
+}
+
 // The hooks run on map threads or the world thread: they only test the option and the two sides, then queue
 class AcquaintancePlayerScript : public PlayerScript
 {
@@ -261,7 +277,8 @@ public:
 
 void AcquaintanceMgr::Load()
 {
-    // Runs in OnBeforeWorldInitialized, before the world thread is known to the thread checks
+    // Runs in OnBeforeWorldInitialized, before the world thread is known to the thread checks, or in Update after a
+    // config reload turned the feature on
     if (!sPlayerbotAIConfig.AcquaintanceEnable || _loaded)
         return;
 
@@ -304,11 +321,25 @@ void AcquaintanceMgr::Load()
 
 void AcquaintanceMgr::Update(uint32 diff)
 {
-    if (!sPlayerbotAIConfig.AcquaintanceEnable)
+    bool const enabled = sPlayerbotAIConfig.AcquaintanceEnable;
+    if (!enabled && !_active)
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::Update");
+    if (!enabled)
+    {
+        // A config reload turned the feature off: write what was counted once; the pairs stay in memory
+        _active = false;
+        Drain();
+        Flush();
+        return;
+    }
+
+    // Nothing is counted or written before the stored rows are in memory: an empty pair would overwrite its row
+    Load();
+    _active = true;
     Drain();
+    Sample(diff);
 
     _flushElapsed += diff;
     bool const requested =
@@ -316,19 +347,20 @@ void AcquaintanceMgr::Update(uint32 diff)
     if (requested || _flushElapsed >= sPlayerbotAIConfig.AcquaintanceFlushSeconds * MS_PER_SECOND)
     {
         _flushElapsed = 0;
-        Flush(false);
+        Flush();
     }
 }
 
 void AcquaintanceMgr::Shutdown()
 {
-    if (!sPlayerbotAIConfig.AcquaintanceEnable)
+    if (!_loaded)
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::Shutdown");
     Drain();
-    // Synchronous: the asynchronous queue may close before it runs; no map thread runs at shutdown
-    Flush(true);
+    // Asynchronous like every flush, so it runs after the earlier ones (one worker by default,
+    // PlayerbotsDatabase.WorkerThreads; the upsert never lowers a tally either); closing the pool waits for the queue
+    Flush();
     LOG_INFO("playerbots", "Acquaintances: {} pairs, {} rows written since startup", _pairs.size(), _rowsWritten);
 }
 
@@ -488,7 +520,7 @@ void AcquaintanceMgr::Apply(AcquaintanceEvent kind, uint32 player, uint32 bot, u
 
 void AcquaintanceMgr::AddTime(AcquaintanceTally tally, uint32 player, uint32 bot, uint32 seconds)
 {
-    if (!sPlayerbotAIConfig.AcquaintanceEnable || !seconds)
+    if (!sPlayerbotAIConfig.AcquaintanceEnable || !_loaded || !seconds)
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::AddTime");
@@ -554,9 +586,133 @@ void AcquaintanceMgr::Rescore(Acquaintance& data)
     data.Score = static_cast<uint32>(std::min<uint64>(score, sPlayerbotAIConfig.AcquaintanceMaxScore));
 }
 
-void AcquaintanceMgr::Flush(bool direct)
+uint32 AcquaintanceMgr::TakeSeconds(uint32& elapsed, uint32 diff, uint32 intervalSeconds)
 {
-    if (_dirty.empty())
+    if (!intervalSeconds)
+        return 0;
+
+    elapsed += diff;
+    if (elapsed < intervalSeconds * MS_PER_SECOND)
+        return 0;
+
+    uint32 const seconds = elapsed / MS_PER_SECOND;
+    elapsed -= seconds * MS_PER_SECOND;
+    return seconds;
+}
+
+// World thread, while no map update runs: players, groups, guilds and grids are only read here. The passes cover the
+// online real players only, each bounded by its group, guild or a radius search; no pass scans the bots.
+void AcquaintanceMgr::Sample(uint32 diff)
+{
+    uint32 const groupSeconds = TakeSeconds(_groupElapsed, diff, sPlayerbotAIConfig.AcquaintanceGroupSampleSeconds);
+    uint32 const guildSeconds = TakeSeconds(_guildElapsed, diff, sPlayerbotAIConfig.AcquaintanceGuildSampleSeconds);
+    uint32 const nearbySeconds =
+        TakeSeconds(_nearbyElapsed, diff, sPlayerbotAIConfig.AcquaintanceNearbyIntervalSeconds);
+    if (!groupSeconds && !guildSeconds && !nearbySeconds)
+        return;
+
+    PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::Sample");
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "Acquaintance");
+    auto const start = std::chrono::steady_clock::now();
+    {
+        std::shared_lock<std::shared_mutex> guard(*HashMapHolder<Player>::GetLock());
+        for (auto const& pair : ObjectAccessor::GetPlayers())
+        {
+            Player* player = pair.second;
+            if (player && player->IsInWorld() && IsRealPlayer(player))
+                _realPlayers.push_back(player);
+        }
+    }
+
+    for (Player* player : _realPlayers)
+    {
+        if (groupSeconds)
+        {
+            Group* group = player->GetGroup();
+            if (group)
+                SampleGroup(player, group, TallyOf(group), groupSeconds);
+
+            // In a battleground the player's own group is kept as the original group
+            Group* original = player->GetOriginalGroup();
+            if (original && original != group)
+                SampleGroup(player, original, TallyOf(original), groupSeconds);
+        }
+
+        if (guildSeconds)
+            SampleGuild(player, guildSeconds);
+
+        // In a battleground only the own team counts (the group pass)
+        if (nearbySeconds && !player->InBattleground())
+            SampleNearby(player, nearbySeconds);
+    }
+
+    _lastSamplePlayers = static_cast<uint32>(_realPlayers.size());
+    _realPlayers.clear();
+    ++_samples;
+    _lastSampleMicroseconds = static_cast<uint32>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    if (pmo)
+        pmo->finish();
+}
+
+void AcquaintanceMgr::SampleGroup(Player* player, Group* group, AcquaintanceTally tally, uint32 seconds)
+{
+    uint32 const low = player->GetGUID().GetCounter();
+    for (GroupReference* reference = group->GetFirstMember(); reference; reference = reference->next())
+    {
+        Player* member = reference->GetSource();
+        if (member && member != player && sRandomPlayerbotMgr.IsRandomBot(member))
+            AddTime(tally, low, member->GetGUID().GetCounter(), seconds);
+    }
+}
+
+void AcquaintanceMgr::SampleGuild(Player* player, uint32 seconds)
+{
+    uint32 const guildId = player->GetGuildId();
+    if (!guildId)
+        return;
+
+    Guild const* guild = sGuildMgr->GetGuildById(guildId);
+    if (!guild)
+        return;
+
+    uint32 const low = player->GetGUID().GetCounter();
+    for (auto const& pair : guild->GetUnorderedMembers())
+    {
+        uint32 const member = pair.first;
+        if (member == low || !sRandomPlayerbotMgr.IsRandomBot(member))
+            continue;
+
+        Player const* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(member));
+        if (bot && bot->IsInWorld())
+            AddTime(AcquaintanceTally::Guild, low, member, seconds);
+    }
+}
+
+void AcquaintanceMgr::SampleNearby(Player* player, uint32 seconds)
+{
+    float const radius = sPlayerbotAIConfig.AcquaintanceNearbyRadius;
+    Acore::AnyPlayerInObjectRangeCheck check(player, radius, false);
+    Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(player, _nearby, check);
+    Cell::VisitObjects(player, searcher, radius);
+
+    uint32 const low = player->GetGUID().GetCounter();
+    Group const* group = player->GetGroup();
+    for (Player* other : _nearby)
+    {
+        // Group members get the stronger group time instead
+        if (other == player || (group && other->GetGroup() == group) || !sRandomPlayerbotMgr.IsRandomBot(other))
+            continue;
+
+        AddTime(AcquaintanceTally::Nearby, low, other->GetGUID().GetCounter(), seconds);
+    }
+
+    _nearby.clear();
+}
+
+void AcquaintanceMgr::Flush()
+{
+    if (!_loaded || _dirty.empty())
         return;
 
     PlayerbotsDatabaseTransaction transaction = PlayerbotsDatabase.BeginTransaction();
@@ -588,10 +744,7 @@ void AcquaintanceMgr::Flush(bool direct)
 
     _rowsWritten += _dirty.size();
     _dirty.clear();
-    if (direct)
-        PlayerbotsDatabase.DirectCommitTransaction(transaction);
-    else
-        PlayerbotsDatabase.CommitTransaction(transaction);
+    PlayerbotsDatabase.CommitTransaction(transaction);
 }
 
 Acquaintance const* AcquaintanceMgr::Find(uint32 player, uint32 bot) const
@@ -654,8 +807,9 @@ bool AcquaintanceMgr::HandleCommand(ChatHandler* handler, char const* args)
 
         handler->PSendSysMessage(
             "Acquaintances: {} pairs of {} players, {} dirty, {} queued, {} events drained, {} "
-            "rows written",
-            mgr._pairs.size(), mgr._byPlayer.size(), mgr._dirty.size(), queued, mgr._eventsDrained, mgr._rowsWritten);
+            "rows written; {} sampler passes, the last {} us over {} real players",
+            mgr._pairs.size(), mgr._byPlayer.size(), mgr._dirty.size(), queued, mgr._eventsDrained, mgr._rowsWritten,
+            mgr._samples, mgr._lastSampleMicroseconds, mgr._lastSamplePlayers);
         return true;
     }
 

@@ -141,8 +141,12 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
         "INSERT INTO playerbots_acquaintance (player_guid, bot_guid, first_met, last_met, score, flags, "
         "group_seconds, guild_seconds, nearby_seconds, direct_events, event_points) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-        "ON DUPLICATE KEY UPDATE last_met = ?, score = ?, flags = ?, group_seconds = ?, guild_seconds = ?, "
-        "nearby_seconds = ?, direct_events = ?, event_points = ?",
+        // Every value but the score only grows: a row written late by an older transaction cannot undo a newer one
+        // (the score is recomputed from the others at the next load)
+        "ON DUPLICATE KEY UPDATE last_met = GREATEST(last_met, ?), score = ?, flags = flags | ?, "
+        "group_seconds = GREATEST(group_seconds, ?), guild_seconds = GREATEST(guild_seconds, ?), "
+        "nearby_seconds = GREATEST(nearby_seconds, ?), direct_events = GREATEST(direct_events, ?), "
+        "event_points = GREATEST(event_points, ?)",
         CONNECTION_ASYNC);
 }
 PlayerbotsDatabaseConnection::PlayerbotsDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)

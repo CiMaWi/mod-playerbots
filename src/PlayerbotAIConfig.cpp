@@ -754,6 +754,14 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerNearbyMinute", 1), 0, 10000);
     AcquaintanceMaxScore =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.MaxScore", 1000000), 1, 2000000000);
+    AcquaintanceGroupSampleSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GroupSampleSeconds", 10), 1, 3600);
+    AcquaintanceGuildSampleSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GuildSampleSeconds", 60), 5, 3600);
+    AcquaintanceNearbyIntervalSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
+    AcquaintanceNearbyRadius =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);

@@ -1389,6 +1389,7 @@ Playerbots.Census.IntervalSeconds = 30
 # (no bot AI attached, so the owner's own alt bots do not), and only random bots on the other side. The hooks only
 # queue an event; the world thread counts it. All rows are loaded with one query at startup; changed rows are written
 # every FlushSeconds (5..3600) by one asynchronous transaction, and after a real player's logout and at shutdown.
+# Turning it on with a config reload loads the rows at the next tick; turning it off writes the changed rows once.
 # GM command: .playerbots acquaintances [<player>] | stats | record <player> <bot> <kind> (record is a test aid that
 # counts an event as the hooks do). With 0 (default) nothing is tracked, loaded or written.
 #
@@ -1404,6 +1405,13 @@ Playerbots.Census.IntervalSeconds = 30
 #   PointsPerNearbyMinute: per full minute near each other or on the same battleground team.
 #   MaxScore caps the score of a pair; the score never falls while the weights stay.
 #
+# Time samplers (world thread, over the online real players only):
+#   GroupSampleSeconds (1..3600): the random bots in the player's group get group time, those in the player's
+#     battleground or arena team battleground time, those in a dungeon finder group nearby time.
+#   GuildSampleSeconds (5..3600): the online random bots of the player's guild get guild time.
+#   NearbyIntervalSeconds (0..3600, 0 = off): the random bots within NearbyRadius yards (1..100; same map and phase,
+#     not in a battleground, not in the player's group) get nearby time. The weakest kind; turn it off on its own.
+#
 Playerbots.Acquaintance.Enable = 0
 Playerbots.Acquaintance.FlushSeconds = 30
 Playerbots.Acquaintance.DirectCooldownSeconds = 60
@@ -1416,6 +1424,10 @@ Playerbots.Acquaintance.PointsPerGroupMinute = 5
 Playerbots.Acquaintance.PointsPerGuildHour = 6
 Playerbots.Acquaintance.PointsPerNearbyMinute = 1
 Playerbots.Acquaintance.MaxScore = 1000000
+Playerbots.Acquaintance.GroupSampleSeconds = 10
+Playerbots.Acquaintance.GuildSampleSeconds = 60
+Playerbots.Acquaintance.NearbyIntervalSeconds = 10
+Playerbots.Acquaintance.NearbyRadius = 30
 
 # Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table

@@ -401,6 +401,10 @@ public:
     uint32 AcquaintancePointsPerGuildHour;
     uint32 AcquaintancePointsPerNearbyMinute;
     uint32 AcquaintanceMaxScore;
+    uint32 AcquaintanceGroupSampleSeconds;
+    uint32 AcquaintanceGuildSampleSeconds;
+    uint32 AcquaintanceNearbyIntervalSeconds;
+    float AcquaintanceNearbyRadius;
     bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;
