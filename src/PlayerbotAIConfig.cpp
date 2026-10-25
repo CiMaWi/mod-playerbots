@@ -773,6 +773,11 @@ bool PlayerbotAIConfig::Initialize()
     LadderContactMinutes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
     LadderPoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
+    PvpGearEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Enable", false);
+    // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
+    PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
+                                                          "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
+    PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);

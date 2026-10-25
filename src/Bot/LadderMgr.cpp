@@ -278,15 +278,24 @@ void LadderMgr::SetBlocked(uint32 teamId, bool blocked)
 
 bool LadderMgr::IsQueueBlocked(Player* bot)
 {
-    bool const draining = _draining.load(std::memory_order_relaxed);
-    if (!draining && !_anyBlocked.load(std::memory_order_relaxed))
+    // Drained: every arena team member is blocked, the set is not needed
+    if (_draining.load(std::memory_order_relaxed))
+    {
+        for (uint8 slot = 0; slot < ArenaSlotCount; ++slot)
+            if (bot->GetArenaTeamId(slot))
+                return true;
+
+        return false;
+    }
+
+    if (!_anyBlocked.load(std::memory_order_relaxed))
         return false;
 
     std::lock_guard<std::mutex> guard(_blockedLock);
     for (uint8 slot = 0; slot < ArenaSlotCount; ++slot)
     {
         uint32 const teamId = bot->GetArenaTeamId(slot);
-        if (teamId && (draining || _blockedTeams.contains(teamId)))
+        if (teamId && _blockedTeams.contains(teamId))
             return true;
     }
 
@@ -949,7 +958,9 @@ bool LadderMgr::HandlePinCommand(ChatHandler* handler, char const* args)
     }
 
     mgr._gmPins[*teamId] = UnixNow() + *minutes * MINUTE;
-    handler->PSendSysMessage("Team {} pinned for {} min; a depart in progress is cancelled", *teamId, *minutes);
+    handler->PSendSysMessage(
+        "Team {} pinned for {} min; a depart still waiting for its members is cancelled (one that is saving completes)",
+        *teamId, *minutes);
     LOG_INFO("playerbots", "Ladder: arena team {} pinned by a GM for {} min", *teamId, *minutes);
     return true;
 }

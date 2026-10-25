@@ -421,6 +421,9 @@ public:
     uint32 LadderDepartTimeoutSeconds;
     uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;
+    bool PvpGearEnable;
+    std::string PvpGearTierOrder;
+    std::string PvpGearBaseTier;
     bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;

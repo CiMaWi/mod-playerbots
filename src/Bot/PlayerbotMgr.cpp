@@ -29,6 +29,7 @@
 #include "PlayerbotTextMgr.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
 #include "ThreadCheck.h"
@@ -587,6 +588,9 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     PlayerbotRepository::instance().Load(botAI);
     if (sPlayerbotAIConfig.SkillEnable)
         botAI->SetPvpSkill(BotProfileMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter()));
+    // A ladder bot without a PvP loadout gets the base tier (memory, async write)
+    if (sPlayerbotAIConfig.PvpGearEnable)
+        PvpGearMgr::Instance().OnBotLogin(bot);
 
     if (master && !master->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {

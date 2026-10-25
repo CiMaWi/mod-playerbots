@@ -1316,6 +1316,8 @@ Playerbots.BotActiveAloneForceWhenInGuild = 1
 #   .playerbots testplayer route <name>|none
 #   .playerbots testplayer logout
 #   .playerbots testplayer status
+#   .playerbots testplayer whisper <character> <text>
+#   .playerbots testplayer group <character>|none
 # They log a character of the account below in through a server-side session without a client and without bot AI,
 # so the bots count it as a real player (the force-active rules above apply), and walk it along a named route in a
 # loop (stormwind-loop, elwynn-questing). A missing character is created (human warrior). The account must exist
@@ -1487,6 +1489,32 @@ Playerbots.Ladder.ContactMinutes = 15
 # Commands: .playerbots ladder pool status|build|selftest
 # Default: 0 (no pool)
 Playerbots.Ladder.PoolTeams = 0
+
+# PvP gear for ladder bots (a random bot at the maximum level in an arena team; real players and their bots are never
+# touched). When 1, the server builds a catalogue at startup from the PvP vendors (npc_vendor rows whose ExtendedCost
+# asks for honor and/or arena points; token costs and items that need a 3v3 or 5v5 rating are left out), grouped into
+# the tiers of Playerbots.PvpGear.TierOrder, and keeps for every ladder bot a stored PvP loadout: one item entry per
+# equipment slot, chosen for the bot's class and spec, in the playerbots table playerbots_pvp_loadout. A missing
+# loadout is created at the base tier at the bot's login. Nothing is worn or bought yet and the PvE gear is untouched.
+# All loadouts are loaded with one query at startup; a login reads memory only, writes are asynchronous.
+# Commands: .playerbots pvpgear status | reset [season] | show <bot> | check [count] | selftest
+# reset starts a season: every online ladder bot gets the base tier at once, the other loadouts are deleted and
+# rebuilt at the bot's next login.
+# Default: 0 (off: no catalogue, no rows)
+Playerbots.PvpGear.Enable = 0
+
+# The tiers, lowest first, comma-separated. A tier lists one or more item name prefixes separated by "/": an item named
+# "<prefix> Gladiator's ..." belongs to that tier; an item without such a name (e.g. the faction medallions) belongs to
+# the highest tier whose named items start at or below its item level. Unknown prefixes simply match nothing.
+# Default: "Hateful/Savage,Deadly,Furious,Relentless,Wrathful"
+Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathful"
+
+# The tier every ladder bot starts a season with (and gets at its first login): a tier name or prefix from
+# Playerbots.PvpGear.TierOrder. A slot the tier has no item for (e.g. the Hateful/Savage vendors sell no weapons) takes
+# the lowest tier above that has one. The slot of the PvP trinket (the medallion that breaks crowd control) is always
+# filled when a tier has one, also for races with a racial that does the same.
+# Default: "" (the first tier)
+Playerbots.PvpGear.BaseTier = ""
 
 # Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table

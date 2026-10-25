@@ -30,6 +30,7 @@
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "PvpGearMgr.h"
 #include "PvpTest.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
@@ -549,6 +550,7 @@ public:
         GatherNodeMgr::instance().Load();
         BotProfileMgr::instance().Load();
         AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
+        PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
     }

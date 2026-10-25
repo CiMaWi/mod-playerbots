@@ -15,6 +15,7 @@
 #include "LadderMgr.h"
 #include "PerfMonitor.h"
 #include "PlayerbotMgr.h"
+#include "PvpGearMgr.h"
 #include "PvpTest.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
@@ -93,6 +94,14 @@ public:
             {"pool", playerbotsLadderPoolCommandTable},
         };
 
+        static ChatCommandTable playerbotsPvpGearCommandTable = {
+            {"reset", PvpGearMgr::HandleResetCommand, SEC_GAMEMASTER, Console::Yes},
+            {"show", PvpGearMgr::HandleShowCommand, SEC_GAMEMASTER, Console::Yes},
+            {"check", PvpGearMgr::HandleCheckCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", PvpGearMgr::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"status", PvpGearMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -107,6 +116,7 @@ public:
             {"arena", playerbotsArenaCommandTable},
             {"situation", playerbotsSituationCommandTable},
             {"ladder", playerbotsLadderCommandTable},
+            {"pvpgear", playerbotsPvpGearCommandTable},
         };
 
         static ChatCommandTable commandTable = {
