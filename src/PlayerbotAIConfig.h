@@ -422,6 +422,13 @@ public:
     uint32 BotActiveAloneSmartScaleWhenMinLevel;
     uint32 BotActiveAloneSmartScaleWhenMaxLevel;
     uint32 BotActiveAloneSmartScalePercentile;
+    // Situation budgets (ActivityBudget): per-situation smart scale floor and ceiling, indexed by BotSituation
+    // (open world, dungeon, boss, PvP); 0 = the global value. SituationForce: -1 = detect, else a BotSituation.
+    bool SituationEnable;
+    uint32 SituationIntervalMs;
+    int32 SituationForce;
+    uint32 SituationDiffLimitFloor[4];
+    uint32 SituationDiffLimitCeiling[4];
 
     bool FreeMethodLoot;
     int32 LootNeedRollLevel;

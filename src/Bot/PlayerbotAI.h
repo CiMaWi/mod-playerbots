@@ -638,6 +638,9 @@ public:
     float GetEffectiveSkillReactFactor() const;
     // PvP fight: battleground, arena, duel or PvP combat. Everything else counts as PvE for the skill knobs.
     bool IsPvpFight() const;
+    // The same test for any player (situation budgets classify the real players with it). World thread or the
+    // player's own map thread.
+    static bool IsPlayerInPvpFight(Player* player);
     // Skill knob 2, noticing (Playerbots.Skill.Notice*, SkillStrategy): chance to miss a window and longest notice
     // delay from the hidden skill, cached by SetPvpSkill; both 0 when the knob is off.
     uint32 GetSkillNoticeMissPercent() const { return skillNoticeMissPercent; }

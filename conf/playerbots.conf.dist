@@ -1493,6 +1493,34 @@ Playerbots.botActiveAloneSmartScaleWhenMinLevel = 1
 Playerbots.botActiveAloneSmartScaleWhenMaxLevel = 80
 Playerbots.botActiveAloneSmartScalePercentile = 0
 
+# Situation budgets — smart scale's floor and ceiling follow what the real players online are doing.
+#   About once per IntervalMs the server classifies every real player (the headless test player included) as
+#   PvP (arena, battleground, duel or PvP combat), boss (an instance encounter in progress), dungeon (or raid)
+#   or open world. The strictest situation present (PvP > boss > dungeon > open world) selects the floor and
+#   ceiling smart scale uses; with nobody online the global values above apply.
+#   World bosses and Wintergrasp outside a fight count as open world.
+#   Needs Playerbots.botActiveAloneSmartScale = 1.
+#
+#   Enable           - 0 (default): the global floor and ceiling always apply, as before.
+#   IntervalMs       - how often the players are classified (100-60000). Default: 1000
+#   Force            - empty (default) = detect; pvp, boss, dungeon or open pins that situation (for tests).
+#                      The console command ".playerbots situation force <pvp|boss|dungeon|open|off>" overrides it
+#                      until the restart; ".playerbots situation status" shows the situation and the values.
+#   <Situation>.DiffLimitFloor / .DiffLimitCeiling (Pvp, Boss, Dungeon, OpenWorld)
+#                    - the floor and ceiling (ms) in that situation; 0 (default) = the global value.
+#
+Playerbots.Situation.Enable = 0
+Playerbots.Situation.IntervalMs = 1000
+Playerbots.Situation.Force =
+Playerbots.Situation.Pvp.DiffLimitFloor = 0
+Playerbots.Situation.Pvp.DiffLimitCeiling = 0
+Playerbots.Situation.Boss.DiffLimitFloor = 0
+Playerbots.Situation.Boss.DiffLimitCeiling = 0
+Playerbots.Situation.Dungeon.DiffLimitFloor = 0
+Playerbots.Situation.Dungeon.DiffLimitCeiling = 0
+Playerbots.Situation.OpenWorld.DiffLimitFloor = 0
+Playerbots.Situation.OpenWorld.DiffLimitCeiling = 0
+
 #
 #
 ####################################################################################################

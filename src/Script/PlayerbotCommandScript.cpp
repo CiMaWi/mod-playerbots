@@ -5,6 +5,7 @@
  */
 
 #include "AcquaintanceMgr.h"
+#include "ActivityBudget.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BattleGroundTactics.h"
@@ -67,6 +68,11 @@ public:
             {"recruit", ArenaRecruit::HandleRecruitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsSituationCommandTable = {
+            {"status", ActivityBudget::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"force", ActivityBudget::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -79,6 +85,7 @@ public:
             {"testplayer", playerbotsTestPlayerCommandTable},
             {"pvptest", playerbotsPvpTestCommandTable},
             {"arena", playerbotsArenaCommandTable},
+            {"situation", playerbotsSituationCommandTable},
         };
 
         static ChatCommandTable commandTable = {

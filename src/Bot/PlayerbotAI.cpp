@@ -4936,10 +4936,12 @@ void PlayerbotAI::RefreshLfgState()
 
 uint32 PlayerbotAI::AutoScaleActivity(uint32 mod)
 {
-    // Current max server update time (ms), and the configured floor/ceiling values for bot scaling
-    uint32 maxDiff = ActivityBudget::Instance().GetTickMs();
-    uint32 diffLimitFloor = sPlayerbotAIConfig.BotActiveAloneSmartScaleDiffLimitFloor;
-    uint32 diffLimitCeiling = sPlayerbotAIConfig.BotActiveAloneSmartScaleDiffLimitCeiling;
+    // Current server update time (ms), and the floor/ceiling values for bot scaling: the configured ones, or the
+    // situation budget's (Playerbots.Situation.Enable)
+    ActivityBudget const& budget = ActivityBudget::Instance();
+    uint32 maxDiff = budget.GetTickMs();
+    uint32 diffLimitFloor = budget.GetDiffLimitFloor();
+    uint32 diffLimitCeiling = budget.GetDiffLimitCeiling();
 
     if (diffLimitCeiling <= diffLimitFloor)
     {
@@ -6804,9 +6806,12 @@ void PlayerbotAI::EndExecutedCount(uint8 category, ObjectGuid previousTarget)
     ++pvpTestExecuted[category - 1];
 }
 
-bool PlayerbotAI::IsPvpFight() const
+bool PlayerbotAI::IsPvpFight() const { return IsPlayerInPvpFight(bot); }
+
+bool PlayerbotAI::IsPlayerInPvpFight(Player* player)
 {
-    return bot->InBattleground() || bot->InArena() || bot->duel != nullptr || bot->GetCombatManager().HasPvPCombat();
+    return player->InBattleground() || player->InArena() || player->duel != nullptr ||
+           player->GetCombatManager().HasPvPCombat();
 }
 
 float PlayerbotAI::GetEffectiveSkillReactFactor() const
