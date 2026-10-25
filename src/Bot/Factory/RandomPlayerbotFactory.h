@@ -74,12 +74,14 @@ public:
 
 private:
     friend class ArenaTeamAssignOperation;
+    friend class ArenaTeamFormation;
 
     static bool IsValidRaceClassCombination(uint8 race, uint8 class_, uint32 expansion);
     std::string const CreateRandomBotName(NameRaceAndGender raceAndGender);
 
     static bool IsEligibleForBotArenaTeam(Player* bot);
-    static void AssignBotToArenaTeamInternal(Player* bot);
+    // excludedTeamId: a team the bot just left (Playerbots.ArenaTeam.Formation.Enable)
+    static void AssignBotToArenaTeamInternal(Player* bot, uint32 excludedTeamId = 0);
     static void CollectJoinableBotArenaTeams(ArenaType type, TeamId faction, uint8 level, std::vector<ArenaTeam*>& out);
     static void CreateBotArenaTeam(Player* bot, ArenaType type);
     static bool IsBotArenaTeam(ArenaTeam const* team);

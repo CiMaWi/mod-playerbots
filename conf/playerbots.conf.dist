@@ -1892,6 +1892,49 @@ Playerbots.RandomBotArenaTeamMinRating = 1000
 # Default: 0
 Playerbots.RandomBotArenaTeamRatingMode = 0
 
+# Arena team formation (1 = on, 0 = off; only with RandomBotArenaTeamRatingMode = 1, ignored in mode 0)
+# When 1, randombot arena teams are formed by partner score instead of at random, and their rosters change over time.
+# A score from skill closeness (the hidden skill, Playerbots.Skill.Enable; unknown skill counts as neutral) and class
+# synergy (a healer beside damage dealers, tank and healer, no class twice) decides which team a bot joins. A roster may
+# hold more members than the team size (up to MaxRoster); every queue takes a random set of the available members
+# (the captain is always in: only the captain queues). After a lost match the member with the longest current loss
+# streak (then the most losses since joining; skill plays no part) may leave; a leaving captain hands the team over
+# first. Teams short of members recruit online randombots without a team (same faction and arena bracket). Teams low on
+# the bot ladder are forgiving (rare leaves, a wide skill tolerance, weighted-random picks: more varied pairings),
+# teams at the top strict (frequent leaves, a narrow tolerance, the best-scoring recruit). The values in between follow
+# the team's rating rank among the bot teams of its type. Every membership change runs on the world thread every
+# UpdateSeconds; loss streaks are kept in memory only (a restart starts them at 0). The starting values below are not
+# tuned yet. GM command: .playerbots arena teams (works from the console) lists every bot team and its roster.
+#   UpdateSeconds (5..3600): the pass interval.
+#   MaxRoster2v2 (2..4), MaxRoster3v3 (3..6), MaxRoster5v5 (5..10): the most members a team holds.
+#   MinMembers (2..10, never below the team size): fewer members recruit; a team at this size loses no member.
+#   RandomPair (1/0): the queuing members are a random set of the roster, else the roster order (as before).
+#   RepickEachQueue (1/0): with RandomPair, a roster larger than the team size re-forms its group with a fresh random
+#     set after every match (with RandomBotArenaGroupOnWorldThread = 1), else the standing group stays.
+#   LossStreakToConsider (1..50): the loss streak from which a member may leave.
+#   LeaveChanceBottom, LeaveChanceTop (0..100 percent): the chance per lost match at the bottom and the top.
+#   MinTeamStaySeconds (0..86400): no member leaves a team within this time after its last join or leave.
+#   ToleranceBottom, ToleranceTop (1..98 skill points): the largest skill gap to the team's mean a recruit may have.
+#   SynergyWeight (0.0..1.0): the share of class synergy in the score (the rest is skill closeness).
+#   RecruitsPerPass (0..100): the most recruits per pass, over all teams.
+#
+Playerbots.ArenaTeam.Formation.Enable = 0
+Playerbots.ArenaTeam.UpdateSeconds = 60
+Playerbots.ArenaTeam.MaxRoster2v2 = 4
+Playerbots.ArenaTeam.MaxRoster3v3 = 6
+Playerbots.ArenaTeam.MaxRoster5v5 = 10
+Playerbots.ArenaTeam.MinMembers = 2
+Playerbots.ArenaTeam.RandomPair = 1
+Playerbots.ArenaTeam.RepickEachQueue = 1
+Playerbots.ArenaTeam.LossStreakToConsider = 3
+Playerbots.ArenaTeam.LeaveChanceBottom = 20
+Playerbots.ArenaTeam.LeaveChanceTop = 50
+Playerbots.ArenaTeam.MinTeamStaySeconds = 600
+Playerbots.ArenaTeam.ToleranceBottom = 40
+Playerbots.ArenaTeam.ToleranceTop = 8
+Playerbots.ArenaTeam.SynergyWeight = 0.4
+Playerbots.ArenaTeam.RecruitsPerPass = 4
+
 # Delete all randombot (and any addclass bot) arena teams on startup. While enabled,
 # no new randombot arena teams are created or joined. Set back to 0 and restart the
 # server to resume normal randombot arena team assignment.

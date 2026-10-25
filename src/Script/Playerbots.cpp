@@ -6,6 +6,7 @@
 
 #include "Playerbots.h"
 #include "AcquaintanceMgr.h"
+#include "ArenaTeamFormation.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "BotProfileMgr.h"
@@ -558,6 +559,7 @@ public:
         TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none
         CensusMgr::Instance().Update(diff);  // Opt-in world census; returns at once when off
         AcquaintanceMgr::Instance().Update(diff);  // Opt-in; drains the hook events, writes in batches
+        ArenaTeamFormation::Instance().Update(diff);  // Opt-in; bot arena team rosters, every UpdateSeconds
         PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         // Cached LFG state per bot, read on map threads

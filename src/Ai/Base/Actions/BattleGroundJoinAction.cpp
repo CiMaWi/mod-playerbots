@@ -6,6 +6,7 @@
 
 #include "BattleGroundJoinAction.h"
 #include "ArenaTeam.h"
+#include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
 #include "BattlegroundMgr.h"
 #include "Event.h"
@@ -72,8 +73,16 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     // RandomBotArenaGroupOnWorldThread: the world thread forms the group (ArenaGroupFormationOperation, queued below on
     // an earlier pass); once it stands, the captain queues with it
     bool const groupOnWorldThread = sPlayerbotAIConfig.RandomBotArenaGroupOnWorldThread;
+    // Playerbots.ArenaTeam.RepickEachQueue: a roster larger than the team size gets a fresh random pair once the
+    // standing group has played its match
+    bool repick = false;
     if (groupOnWorldThread && LeadsCompleteArenaTeamGroup(bot, arenateam, (uint32)arenateam->GetType()))
-        return true;
+    {
+        if (!ArenaTeamFormation::Instance().ShouldRepick(bot, arenateam))
+            return true;
+
+        repick = true;
+    }
 
     GuidVector members;
 
@@ -148,11 +157,18 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
         return false;
     }
 
+    // Playerbots.ArenaTeam.RandomPair: the first available members in a random order join the captain
+    if (ArenaTeamFormation::IsActive() && sPlayerbotAIConfig.ArenaTeamRandomPair)
+    {
+        for (size_t i = members.size(); i > 1; --i)
+            std::swap(members[i - 1], members[urand(0, i - 1)]);
+    }
+
     // Map thread: the group forming and the teleports run on the world thread; the captain queues on a later pass
     if (groupOnWorldThread)
     {
         PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<ArenaGroupFormationOperation>(
-            bot->GetGUID(), members, (uint32)arenateam->GetType(), arenateam->GetId(), arenateam->GetName()));
+            bot->GetGUID(), members, (uint32)arenateam->GetType(), arenateam->GetId(), arenateam->GetName(), repick));
         return false;
     }
 

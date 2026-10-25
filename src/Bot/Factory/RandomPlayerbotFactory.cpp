@@ -8,6 +8,7 @@
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "ArenaSeasonMgr.h"
+#include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
 #include "CharacterCache.h"
 #include "DBCStores.h"
@@ -966,7 +967,7 @@ void RandomPlayerbotFactory::AssignBotToArenaTeam(Player* bot)
         std::make_unique<ArenaTeamAssignOperation>(bot->GetGUID()));
 }
 
-void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot)
+void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot, uint32 excludedTeamId)
 {
     // Check if bot has team, only one per bot to avoid queue conflicts
     for (uint8 arenaSlot = ARENA_SLOT_2v2; arenaSlot <= ARENA_SLOT_5v5; ++arenaSlot)
@@ -986,6 +987,15 @@ void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot)
     std::vector<ArenaTeam*> candidates;
     for (ArenaType type : order)
         CollectJoinableBotArenaTeams(type, botTeam, bot->GetLevel(), candidates);
+
+    // Playerbots.ArenaTeam.Formation.Enable: the best-fitting team instead of a random one
+    if (ArenaTeamFormation::IsActive())
+    {
+        if (ArenaTeamFormation::Instance().JoinBestTeam(bot, candidates, excludedTeamId))
+            return;
+
+        candidates.clear();
+    }
 
     for (size_t i = candidates.size(); i > 0; --i)
     {
@@ -1024,6 +1034,11 @@ void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot)
         if (GetBotArenaTeamCount(type) < _configTargets[type])
         {
             CreateBotArenaTeam(bot, type);
+            if (ArenaTeamFormation::IsActive())
+            {
+                if (ArenaTeam const* team = sArenaTeamMgr->GetArenaTeamByCaptain(bot->GetGUID(), type))
+                    ArenaTeamFormation::Instance().OnFounded(bot, team);
+            }
             return;
         }
     }
@@ -1076,7 +1091,9 @@ void RandomPlayerbotFactory::CollectJoinableBotArenaTeams(ArenaType type, TeamId
     if (it == _botArenaTeamRegistry.end())
         return;
 
-    uint32 const capacity = static_cast<uint32>(type);
+    // A formation roster may hold more members than the team size
+    uint32 const capacity =
+        ArenaTeamFormation::IsActive() ? ArenaTeamFormation::MaxRoster(type) : static_cast<uint32>(type);
     for (uint32 teamId : it->second)
     {
         ArenaTeam* team = sArenaTeamMgr->GetArenaTeamById(teamId);

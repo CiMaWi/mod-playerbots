@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_PLAYERBOTOPERATIONS_H
 #define PLAYERBOTS_PLAYERBOTOPERATIONS_H
 
+#include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
 #include "Group.h"
 #include "GroupMgr.h"
@@ -286,14 +287,19 @@ inline bool LeadsCompleteArenaTeamGroup(Player* leader, ArenaTeam const* team, u
     return true;
 }
 
-// Form arena group (world thread): queued by BGJoinAction::gatherArenaTeam with RandomBotArenaGroupOnWorldThread on
+// Form arena group (world thread): queued by BGJoinAction::gatherArenaTeam with RandomBotArenaGroupOnWorldThread on.
+// forceRepick (Playerbots.ArenaTeam.RepickEachQueue): re-form a standing group with the members given (a new pair)
 class ArenaGroupFormationOperation : public PlayerbotOperation
 {
 public:
-    ArenaGroupFormationOperation(ObjectGuid leaderGuid, std::vector<ObjectGuid> memberGuids,
-                                 uint32 requiredSize, uint32 arenaTeamId, std::string arenaTeamName)
-        : m_leaderGuid(leaderGuid), m_memberGuids(memberGuids),
-          m_requiredSize(requiredSize), m_arenaTeamId(arenaTeamId), m_arenaTeamName(arenaTeamName)
+    ArenaGroupFormationOperation(ObjectGuid leaderGuid, std::vector<ObjectGuid> memberGuids, uint32 requiredSize,
+                                 uint32 arenaTeamId, std::string arenaTeamName, bool forceRepick = false)
+        : m_leaderGuid(leaderGuid),
+          m_memberGuids(memberGuids),
+          m_requiredSize(requiredSize),
+          m_arenaTeamId(arenaTeamId),
+          m_arenaTeamName(arenaTeamName),
+          m_forceRepick(forceRepick)
     {
     }
 
@@ -312,8 +318,11 @@ public:
         if (!arenaTeam)
             return false;
 
-        // A duplicate (the captain retried before an earlier operation ran): the group stands, keep it
-        if (LeadsCompleteArenaTeamGroup(leader, arenaTeam, m_requiredSize))
+        // A duplicate (the captain retried before an earlier operation ran): the group stands, keep it. A re-pick
+        // keeps it too once an earlier one formed the pair for the next match, and never re-forms a queued group
+        if (LeadsCompleteArenaTeamGroup(leader, arenaTeam, m_requiredSize) &&
+            (!m_forceRepick || leader->InBattleground() || leader->InBattlegroundQueue() ||
+             ArenaTeamFormation::Instance().IsPairFresh(m_arenaTeamId, arenaTeam->GetStats().SeasonGames)))
             return true;
 
         // Step 1: Remove all members from their existing groups
@@ -419,6 +428,16 @@ public:
 
         LOG_INFO("playerbots", "Team #{} <{}> Group is ready for match with {} members",
                 m_arenaTeamId, m_arenaTeamName, newGroup->GetMembersCount());
+
+        if (ArenaTeamFormation::IsActive())
+        {
+            ArenaTeamFormation::Instance().OnPairFormed(m_arenaTeamId, arenaTeam->GetStats().SeasonGames);
+            std::string pair;
+            for (Group::MemberSlot const& slot : newGroup->GetMemberSlots())
+                pair += (pair.empty() ? "" : ", ") + slot.name;
+
+            LOG_INFO("playerbots", "Arena formation: {} pair {}", m_arenaTeamName, pair);
+        }
         return true;
     }
 
@@ -440,6 +459,7 @@ private:
     uint32 m_requiredSize;
     uint32 m_arenaTeamId;
     std::string m_arenaTeamName;
+    bool m_forceRepick;
 };
 
 // Bot logout group cleanup operation

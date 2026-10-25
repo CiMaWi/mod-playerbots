@@ -459,6 +459,23 @@ public:
     uint32 RandomBotArenaTeam3v3Count;
     uint32 RandomBotArenaTeam5v5Count;
     bool DeleteRandomBotArenaTeams;
+    // Playerbots.ArenaTeam.*: team formation by partner score (earned rating mode only)
+    bool ArenaTeamFormationEnable;
+    uint32 ArenaTeamUpdateSeconds;
+    uint32 ArenaTeamMaxRoster2v2;
+    uint32 ArenaTeamMaxRoster3v3;
+    uint32 ArenaTeamMaxRoster5v5;
+    uint32 ArenaTeamMinMembers;
+    bool ArenaTeamRandomPair;
+    bool ArenaTeamRepickEachQueue;
+    uint32 ArenaTeamLossStreakToConsider;
+    uint32 ArenaTeamLeaveChanceBottom;
+    uint32 ArenaTeamLeaveChanceTop;
+    uint32 ArenaTeamMinTeamStaySeconds;
+    uint32 ArenaTeamToleranceBottom;
+    uint32 ArenaTeamToleranceTop;
+    float ArenaTeamSynergyWeight;
+    uint32 ArenaTeamRecruitsPerPass;
 
     uint32 SelfBotLevel;
     bool DowngradeMaxLevelBot;

@@ -850,6 +850,39 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamRatingMode", 0) == ARENA_RATING_MODE_EARNED
             ? ARENA_RATING_MODE_EARNED
             : ARENA_RATING_MODE_RANDOM;
+    ArenaTeamFormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", false);
+    ArenaTeamUpdateSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.UpdateSeconds", 60), 5, 3600);
+    ArenaTeamMaxRoster2v2 =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster2v2", 4), 2, 4);
+    ArenaTeamMaxRoster3v3 =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster3v3", 6), 3, 6);
+    ArenaTeamMaxRoster5v5 =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster5v5", 10), 5, 10);
+    ArenaTeamMinMembers =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MinMembers", 2), 2, 10);
+    ArenaTeamRandomPair = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.RandomPair", true);
+    ArenaTeamRepickEachQueue = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.RepickEachQueue", true);
+    ArenaTeamLossStreakToConsider =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LossStreakToConsider", 3), 1, 50);
+    ArenaTeamLeaveChanceBottom =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LeaveChanceBottom", 20), 0, 100);
+    ArenaTeamLeaveChanceTop =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LeaveChanceTop", 50), 0, 100);
+    ArenaTeamMinTeamStaySeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MinTeamStaySeconds", 600), 0, 86400);
+    ArenaTeamToleranceBottom =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.ToleranceBottom", 40), 1, 98);
+    ArenaTeamToleranceTop =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.ToleranceTop", 8), 1, 98);
+    ArenaTeamSynergyWeight =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.SynergyWeight", 0.4f), 0.0f, 1.0f);
+    ArenaTeamRecruitsPerPass =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitsPerPass", 4), 0, 100);
+    if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
+        LOG_INFO("server.loading",
+                 "Playerbots.ArenaTeam.Formation.Enable is ignored: it needs "
+                 "Playerbots.RandomBotArenaTeamRatingMode = 1");
 
     SelfBotLevel = sConfigMgr->GetOption<int32>("Playerbots.SelfBotLevel", 1);
 
