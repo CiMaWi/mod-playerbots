@@ -148,6 +148,12 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
         "nearby_seconds = GREATEST(nearby_seconds, ?), direct_events = GREATEST(direct_events, ?), "
         "event_points = GREATEST(event_points, ?)",
         CONNECTION_ASYNC);
+    PrepareStatement(PLAYERBOTS_SEL_LADDER_ROSTER_ALL, "SELECT guid, team_id, state FROM playerbots_ladder_roster",
+                     CONNECTION_SYNCH);
+    PrepareStatement(PLAYERBOTS_REP_LADDER_ROSTER,
+                     "REPLACE INTO playerbots_ladder_roster (guid, team_id, state) VALUES (?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(PLAYERBOTS_DEL_LADDER_ROSTER_TEAM, "DELETE FROM playerbots_ladder_roster WHERE team_id = ?",
+                     CONNECTION_ASYNC);
 }
 PlayerbotsDatabaseConnection::PlayerbotsDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)
 {

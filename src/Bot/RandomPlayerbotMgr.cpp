@@ -17,10 +17,10 @@
 #include "DatabaseEnv.h"
 #include "Define.h"
 #include "FleeManager.h"
-#include "LadderMgr.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "LFGMgr.h"
+#include "LadderMgr.h"
 #include "MapMgr.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
@@ -174,7 +174,13 @@ double botPIDImpl::calculate(double setpoint, double pv)
 
 botPIDImpl::~botPIDImpl() {}
 
-uint32 RandomPlayerbotMgr::GetMaxAllowedBotCount() { return GetEventValue(0, "bot_count"); }
+uint32 RandomPlayerbotMgr::GetMaxAllowedBotCount()
+{
+    uint32 const count = GetEventValue(0, "bot_count");
+    // Ladder arena role: only the hosted roster bots log in, so they are the cap
+    LadderMgr const& ladder = LadderMgr::Instance();
+    return ladder.IsHostedOnly() ? std::min(count, ladder.GetHostedBotCount()) : count;
+}
 
 void RandomPlayerbotMgr::LogPlayerLocation()
 {
@@ -314,6 +320,9 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
                       urand(sPlayerbotAIConfig.RandomBotCountChangeMinInterval,
                             sPlayerbotAIConfig.RandomBotCountChangeMaxInterval));
     }
+
+    if (LadderMgr::Instance().IsHostedOnly())
+        maxAllowedBotCount = GetMaxAllowedBotCount();
 
     GetBots();
     // Copied deliberately: ProcessBot() erases from currentBots while this is
@@ -665,6 +674,13 @@ bool RandomPlayerbotMgr::IsAddClassAccount(uint32 accountId) const
 // Phase 4 is reached if and only if the value of RandomBotAccountCount is lower than it should.
 uint32 RandomPlayerbotMgr::AddRandomBots()
 {
+    // Ladder arena role: the hosted roster bots, not a random pick among every random bot character
+    if (LadderMgr::Instance().IsHostedOnly())
+    {
+        LadderMgr::Instance().LoginHosted();
+        return 0;
+    }
+
     uint32 maxAllowedBotCount = GetEventValue(0, "bot_count");
     static time_t missingBotsTimer = 0;
 
@@ -2351,6 +2367,10 @@ void RandomPlayerbotMgr::LadderLogin(uint32 bot)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("RandomPlayerbotMgr::LadderLogin");
     if (currentBots.contains(bot))
+        return;
+
+    // At the cap: AddRandomBots logs the bot in later like any other random bot
+    if (currentBots.size() >= GetMaxAllowedBotCount())
         return;
 
     uint32 const addTime =

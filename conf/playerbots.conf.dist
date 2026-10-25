@@ -1442,8 +1442,29 @@ Playerbots.Acquaintance.NearbyRadius = 30
 # one random bot arena team out of and back into the running server. depart stops the members queueing, waits until
 # none of them is queued or in a battleground (refused while one is grouped with a real player), logs them out, saves
 # the team and drops it from memory (no DB row is deleted); arrive loads the team again from its DB rows with async
-# queries and lets the members log in. Meant for the hub's ladder tooling. With 0 (default) the commands refuse.
+# queries and lets the members log in; an arrive while a depart still waits cancels the depart. Meant for the hub's
+# ladder tooling. With 0 (default) the commands refuse unless Playerbots.Ladder.Role is set.
 Playerbots.Ladder.Enable = 0
+
+# Ladder role of this server (0 = off, 1 = main, 2 = arena instance). Read at startup.
+# 0 (default): as without the option; the moves follow Playerbots.Ladder.Enable and keep who is away in memory only.
+# 1 and 2 turn the moves on (whatever Playerbots.Ladder.Enable says) and keep a roster in the playerbots table
+# playerbots_ladder_roster, written only by depart and arrive and loaded at startup.
+# 1 (main): a member of a team that departed is away: it never logs in, also after a restart, and its team is dropped
+# from memory at startup (no DB writes). Bots never auto-queue for rated arenas (the
+# RandomBotAutoJoinBGRatedArena*Count options count as 0): main's arena matches come from the ladder only.
+# 2 (arena instance): only the bots the roster hosts log in (the online cap is their count at most) and every other
+# arena team is dropped from memory at startup (no DB writes; an empty roster hosts nothing). Bot arena teams are
+# never created, deleted, formed or recruited for (RandomBotArenaTeam*Count count as 0; DeleteRandomBotArenaTeams,
+# ArenaTeam.Formation.Enable and ArenaRecruit.Enable as 0).
+Playerbots.Ladder.Role = 0
+
+# Name of this server in .playerbots ladder status (e.g. main, arena1). Default: empty
+Playerbots.Ladder.ServerId = ""
+
+# Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
+# members log in again and the move ends as failed (5-86400). Default: 600
+Playerbots.Ladder.DepartTimeoutSeconds = 600
 
 # Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table

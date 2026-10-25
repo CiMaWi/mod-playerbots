@@ -7,6 +7,7 @@
 #include "PlayerbotAIConfig.h"
 #include "BisListMgr.h"
 #include "Config.h"
+#include "LadderMgr.h"
 #include "NewRpgInfo.h"
 #include "PlayerbotDungeonRepository.h"
 #include "PlayerbotFactory.h"
@@ -764,6 +765,11 @@ bool PlayerbotAIConfig::Initialize()
     AcquaintanceNearbyRadius =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
     LadderEnable = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Enable", false);
+    LadderRole = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
+                                    LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
+    LadderServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
+    LadderDepartTimeoutSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.DepartTimeoutSeconds", 600), 5, 86400);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);
@@ -935,6 +941,33 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinGames", 5), 1, 1000);
     ArenaRecruitLoyaltyMinWinPercent =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinWinPercent", 55), 0, 100);
+    // Ladder roles: an arena instance runs only the teams its roster hosts; main gets arena matches only from the
+    // ladder's matchmaker
+    if (LadderRole == LADDER_ROLE_ARENA)
+    {
+        if (RandomBotArenaTeam2v2Count || RandomBotArenaTeam3v3Count || RandomBotArenaTeam5v5Count ||
+            DeleteRandomBotArenaTeams || ArenaTeamFormationEnable || ArenaRecruitEnable)
+            LOG_INFO("server.loading",
+                     "Playerbots.Ladder.Role = 2: bot arena team creation, deletion, formation and recruiting are off");
+
+        RandomBotArenaTeam2v2Count = 0;
+        RandomBotArenaTeam3v3Count = 0;
+        RandomBotArenaTeam5v5Count = 0;
+        DeleteRandomBotArenaTeams = false;
+        ArenaTeamFormationEnable = false;
+        ArenaRecruitEnable = false;
+    }
+    else if (LadderRole == LADDER_ROLE_MAIN)
+    {
+        if (RandomBotAutoJoinBGRatedArena2v2Count || RandomBotAutoJoinBGRatedArena3v3Count ||
+            RandomBotAutoJoinBGRatedArena5v5Count)
+            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 1: bot rated arena auto-join is off");
+
+        RandomBotAutoJoinBGRatedArena2v2Count = 0;
+        RandomBotAutoJoinBGRatedArena3v3Count = 0;
+        RandomBotAutoJoinBGRatedArena5v5Count = 0;
+    }
+
     if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
         LOG_INFO("server.loading",
                  "Playerbots.ArenaTeam.Formation.Enable is ignored: it needs "
@@ -958,6 +991,7 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     PlayerbotGuildMgr::instance().Init();
+    LadderMgr::Instance().LoadRoster();  // Ladder role: drops the teams not hosted here before the registry is built
     sRandomPlayerbotMgr.InitArenaTeams();
     sRandomItemMgr.Init();
     sRandomItemMgr.InitAfterAhBot();

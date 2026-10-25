@@ -60,6 +60,14 @@ enum ArenaRatingMode : uint32
     ARENA_RATING_MODE_EARNED = 1,
 };
 
+// Playerbots.Ladder.Role
+enum LadderRole : uint32
+{
+    LADDER_ROLE_OFF = 0,
+    LADDER_ROLE_MAIN = 1,
+    LADDER_ROLE_ARENA = 2,
+};
+
 enum NewRpgStatus : int
 {
     //Initial Status
@@ -408,6 +416,9 @@ public:
     uint32 AcquaintanceNearbyIntervalSeconds;
     float AcquaintanceNearbyRadius;
     bool LadderEnable;
+    uint32 LadderRole;
+    std::string LadderServerId;
+    uint32 LadderDepartTimeoutSeconds;
     bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;

@@ -133,7 +133,7 @@ public:
     void SetTradeDiscount(Player* bot, Player* master, uint32 value);
     uint32 GetTradeDiscount(Player* bot, Player* master);
     void Refresh(Player* bot);
-    // Playerbots.Ladder.Enable: log a random bot out and keep it out of currentBots, or let it log in again
+    // Ladder moves: log a random bot out and keep it out of currentBots, or let it log in again (not over the cap)
     void LadderLogout(uint32 bot);
     void LadderLogin(uint32 bot);
     void RandomTeleportForLevel(Player* bot);
