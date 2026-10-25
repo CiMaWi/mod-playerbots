@@ -109,6 +109,7 @@ bool PlayerbotAIConfig::Initialize()
 
     FarDistance = sConfigMgr->GetOption<float>("Playerbots.FarDistance", 20.0f);
     SightDistance = sConfigMgr->GetOption<float>("Playerbots.SightDistance", 100.0f);
+    BotSightRangeCap = std::max(0.0f, sConfigMgr->GetOption<float>("Playerbots.BotSightRangeCap", 0.0f));
     SpellDistance = sConfigMgr->GetOption<float>("Playerbots.SpellDistance", 28.5f);
     ShootDistance = sConfigMgr->GetOption<float>("Playerbots.ShootDistance", 5.0f);
     HealDistance = sConfigMgr->GetOption<float>("Playerbots.HealDistance", 38.5f);

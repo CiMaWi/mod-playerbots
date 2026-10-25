@@ -6,6 +6,8 @@
 
 #include "TestPlayer.h"
 
+#include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -543,6 +545,13 @@ void TestPlayerMgr::Status(ChatHandler* handler)
     uint32 active = 0;
     uint32 total = 0;
     uint32 totalActive = 0;
+    // Visibility per distance band (0-100, 100-150, 150-250, 250+ yards): bots at the player's client, and bots that
+    // have the player at their client and see it within their own sight range (Playerbots.BotSightRangeCap)
+    std::array<uint32, 4> playerSees = {};
+    std::array<uint32, 4> seePlayer = {};
+    uint32 playerSeesTotal = 0;
+    float farthestSeen = 0.0f;
+    Player const* sampleBot = nullptr;
     for (auto itr = sRandomPlayerbotMgr.GetPlayerBotsBegin(); itr != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++itr)
     {
         Player* const bot = itr->second;
@@ -555,6 +564,19 @@ void TestPlayerMgr::Status(ChatHandler* handler)
         totalActive += isActive ? 1 : 0;
         if (bot->GetMapId() != player->GetMapId())
             continue;
+
+        float const dist = player->GetExactDist(bot);
+        std::size_t const band = dist < 100.0f ? 0 : (dist < 150.0f ? 1 : (dist < 250.0f ? 2 : 3));
+        if (player->HaveAtClient(bot))
+        {
+            ++playerSees[band];
+            ++playerSeesTotal;
+            farthestSeen = std::max(farthestSeen, dist);
+        }
+        if (bot->HaveAtClient(player) && bot->CanSeeOrDetect(player, false, true))
+            ++seePlayer[band];
+        if (!sampleBot)
+            sampleBot = bot;
 
         bool const sameZone = bot->GetZoneId() == player->GetZoneId();
         bool const nearby = bot->IsWithinDistInMap(player, radius);
@@ -579,4 +601,17 @@ void TestPlayerMgr::Status(ChatHandler* handler)
     handler->PSendSysMessage(
         "  random bots in zone {}, within {:.0f} yd {}, of these active {}; all random bots {}, active {}", inZone,
         radius, inRadius, active, total, totalActive);
+    handler->PSendSysMessage(
+        "  visibility: player sees {} bots (farthest {:.0f} yd; 0-100 {}, 100-150 {}, 150-250 {}, "
+        "250+ {}); bots that see the player: 0-100 {}, 100-150 {}, 150-250 {}, 250+ {}",
+        playerSeesTotal, farthestSeen, playerSees[0], playerSees[1], playerSees[2], playerSees[3], seePlayer[0],
+        seePlayer[1], seePlayer[2], seePlayer[3]);
+    std::string botSight = "none";
+    if (sampleBot)
+    {
+        Optional<float> const cap = sampleBot->GetSightRangeCap();
+        botSight = Acore::StringFormat("{} {:.0f} (cap {})", sampleBot->GetName(), sampleBot->GetSightRange(),
+                                       cap ? Acore::StringFormat("{:.0f}", *cap) : std::string("off"));
+    }
+    handler->PSendSysMessage("  sight range: player {:.0f}, bot {}", player->GetSightRange(), botSight);
 }

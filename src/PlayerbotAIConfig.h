@@ -121,6 +121,8 @@ public:
     float SightDistance, SpellDistance, ReactDistance, GrindDistance, LootDistance, ShootDistance, FleeDistance,
         TooCloseDistance, MeleeDistance, FollowDistance, WhisperDistance, ContactDistance, AoeRadius, RpgDistance,
         TargetPosRecalcDistance, FarDistance, HealDistance, AggroDistance;
+    // Each bot's own sight range on world maps (core Player::SetSightRangeCap), set at login; 0 = off
+    float BotSightRangeCap;
     uint32 CriticalHealth, LowHealth, MediumHealth, AlmostFullHealth;
     uint32 LowMana, MediumMana, HighMana;
     bool AutoSaveMana;

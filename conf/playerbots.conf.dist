@@ -421,6 +421,14 @@ Playerbots.RpgDistance = 200
 Playerbots.GrindDistance = 75.0
 Playerbots.ReactDistance = 150.0
 
+# Caps each bot's own sight range (yards) on world maps (the continents), so real players can see farther than bots.
+# With Visibility.Distance.Continents = 250 in worldserver.conf, real players see 250 yards and bots still show to them
+# out to 250, while each bot sees the player and everything else (and keeps map cells active) only to this range.
+# Instances, battlegrounds, Wintergrasp and objects with their own visibility distance keep their ranges.
+# Needs the core's per-player sight cap (Player::SetSightRangeCap). Applied at bot login; changing it needs a relog.
+# Default: 0 (off: bots see as far as real players, the map range)
+Playerbots.BotSightRangeCap = 0
+
 #
 #
 ####################################################################################################
