@@ -407,6 +407,7 @@ public:
     uint32 AcquaintanceGuildSampleSeconds;
     uint32 AcquaintanceNearbyIntervalSeconds;
     float AcquaintanceNearbyRadius;
+    bool LadderEnable;
     bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;

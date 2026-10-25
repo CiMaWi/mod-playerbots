@@ -11,6 +11,7 @@
 #include "BattlegroundMgr.h"
 #include "Event.h"
 #include "GroupMgr.h"
+#include "LadderMgr.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotOperations.h"
 #include "PlayerbotWorldThreadProcessor.h"
@@ -369,6 +370,10 @@ bool BGJoinAction::isUseful()
 
     // can't queue while in BG/Arena queue
     if (bot->InBattlegroundQueue())
+        return false;
+
+    // Playerbots.Ladder.Enable: a member of a departing arena team does not queue
+    if (LadderMgr::Instance().IsQueueBlocked(bot))
         return false;
 
     // do not try right after login (currently not working)

@@ -23,6 +23,7 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "LadderMgr.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -563,6 +564,7 @@ public:
         AcquaintanceMgr::Instance().Update(diff);  // Opt-in; drains the hook events, writes in batches
         ArenaTeamFormation::Instance().Update(diff);  // Opt-in; bot arena team rosters, every UpdateSeconds
         PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
+        LadderMgr::Instance().Update(diff);  // Opt-in arena team moves; returns at once when none is pending
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         // Cached LFG state per bot, read on map threads
         PlayerbotsMgr::instance().RefreshLfgStates(diff);

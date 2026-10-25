@@ -17,6 +17,7 @@
 #include "DatabaseEnv.h"
 #include "Define.h"
 #include "FleeManager.h"
+#include "LadderMgr.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "LFGMgr.h"
@@ -762,6 +763,9 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         // Lambda to handle bot login logic
         auto tryLoginBot = [&](CharacterInfo const& charInfo) -> bool
         {
+            if (LadderMgr::Instance().IsAway(charInfo.guid))
+                return false;
+
             if (GetEventValue(charInfo.guid, "add") ||
                 GetEventValue(charInfo.guid, "logout") ||
                 GetPlayerBot(charInfo.guid) ||
@@ -1394,7 +1398,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     Player* player = GetPlayerBot(botGUID);
     PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
 
-    uint32 isValid = GetEventValue(bot, "add");
+    uint32 isValid = LadderMgr::Instance().IsAway(bot) ? 0 : GetEventValue(bot, "add");
     if (!isValid)
     {
         if (!player || !player->GetGroup())
@@ -2333,6 +2337,31 @@ bool RandomPlayerbotMgr::IsAddclassBot(ObjectGuid::LowType bot)
     return false;
 }
 
+void RandomPlayerbotMgr::LadderLogout(uint32 bot)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("RandomPlayerbotMgr::LadderLogout");
+    SetEventValue(bot, "add", 0, 0);
+    currentBots.erase(bot);
+    ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(bot);
+    if (GetPlayerBot(guid))
+        LogoutPlayerBot(guid);
+}
+
+void RandomPlayerbotMgr::LadderLogin(uint32 bot)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("RandomPlayerbotMgr::LadderLogin");
+    if (currentBots.contains(bot))
+        return;
+
+    uint32 const addTime =
+        sPlayerbotAIConfig.EnablePeriodicOnlineOffline
+            ? urand(sPlayerbotAIConfig.MinRandomBotInWorldTime, sPlayerbotAIConfig.MaxRandomBotInWorldTime)
+            : sPlayerbotAIConfig.PermanentlyInWorldTime;
+    SetEventValue(bot, "add", 1, addTime);
+    SetEventValue(bot, "logout", 0, 0);
+    currentBots.insert(bot);
+}
+
 void RandomPlayerbotMgr::GetBots()
 {
     if (!currentBots.empty())
@@ -2349,7 +2378,7 @@ void RandomPlayerbotMgr::GetBots()
         {
             Field* fields = result->Fetch();
             uint32 bot = fields[0].Get<uint32>();
-            if (GetEventValue(bot, "add"))
+            if (GetEventValue(bot, "add") && !LadderMgr::Instance().IsAway(bot))
                 currentBots.insert(bot);
 
             if (currentBots.size() >= maxAllowedBotCount)

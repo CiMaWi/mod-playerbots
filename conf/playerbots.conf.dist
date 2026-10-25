@@ -1437,6 +1437,14 @@ Playerbots.Acquaintance.GuildSampleSeconds = 60
 Playerbots.Acquaintance.NearbyIntervalSeconds = 10
 Playerbots.Acquaintance.NearbyRadius = 30
 
+# Runtime arena team moves (1 = on, 0 = off)
+# When 1, the GM/console commands .playerbots ladder depart <arenaTeamId> | arrive <arenaTeamId> | status [<id>] move
+# one random bot arena team out of and back into the running server. depart stops the members queueing, waits until
+# none of them is queued or in a battleground (refused while one is grouped with a real player), logs them out, saves
+# the team and drops it from memory (no DB row is deleted); arrive loads the team again from its DB rows with async
+# queries and lets the members log in. Meant for the hub's ladder tooling. With 0 (default) the commands refuse.
+Playerbots.Ladder.Enable = 0
+
 # Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table
 # playerbots_bot_profile. All profiles are loaded with one query at startup; a bot login reads memory only, new rows

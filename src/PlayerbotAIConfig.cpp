@@ -763,6 +763,7 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
     AcquaintanceNearbyRadius =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
+    LadderEnable = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Enable", false);
     SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);

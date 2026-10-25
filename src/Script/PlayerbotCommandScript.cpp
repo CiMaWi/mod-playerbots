@@ -12,6 +12,7 @@
 #include "BotProfileMgr.h"
 #include "Chat.h"
 #include "GuildTaskMgr.h"
+#include "LadderMgr.h"
 #include "PerfMonitor.h"
 #include "PlayerbotMgr.h"
 #include "PvpTest.h"
@@ -73,6 +74,12 @@ public:
             {"force", ActivityBudget::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsLadderCommandTable = {
+            {"depart", LadderMgr::HandleDepartCommand, SEC_GAMEMASTER, Console::Yes},
+            {"arrive", LadderMgr::HandleArriveCommand, SEC_GAMEMASTER, Console::Yes},
+            {"status", LadderMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -86,6 +93,7 @@ public:
             {"pvptest", playerbotsPvpTestCommandTable},
             {"arena", playerbotsArenaCommandTable},
             {"situation", playerbotsSituationCommandTable},
+            {"ladder", playerbotsLadderCommandTable},
         };
 
         static ChatCommandTable commandTable = {
