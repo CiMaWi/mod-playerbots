@@ -68,7 +68,9 @@ struct TraceUnit
 // the executed actions of the skill categories and the positions every second. At the match end the trace is one JSON
 // line in <LogsDir>/pvptest/traces-<date>.jsonl, keyed by the match id of its record in matches-<date>.jsonl.
 // The buffer of a match is pushed to on its arena map's thread; the registry of the running traces (instance id ->
-// trace) is shared and guarded by one mutex, which the hooks take only while a trace runs. The line is formatted on
+// trace) is shared and guarded by one mutex, which the hooks take only for a player in a traced arena (a lock-free
+// mark per instance id tells it first). A trace leaves the registry at its arena's next update after the end, when
+// its map is destroyed, or as stale after 3 h (counted as dropped unless it was closed). The line is formatted on
 // the writer thread. Caps per match: Playerbots.MatchLog.TraceMaxEvents and TraceMaxBytes; a cut trace keeps its
 // deaths (a reserve) and ends with a "truncated" row.
 class MatchTrace

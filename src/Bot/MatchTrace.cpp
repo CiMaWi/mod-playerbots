@@ -7,6 +7,7 @@
 #include "MatchTrace.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -166,11 +167,19 @@ struct LiveTrace
     Clock::time_point Created = Clock::now();
 };
 
+using Registry = std::unordered_map<uint32, LiveTrace>;
+
 // Shared between the arena map threads (and the world thread for an arena the battleground update ends)
 std::mutex TraceLock;
-std::unordered_map<uint32, LiveTrace> Traces;
+Registry Traces;
 // Traces.size(), read by every hook without the lock: 0 = nothing to do
 std::atomic<uint32> LiveCount{0};
+// The lock-free filter per arena: Marks[id % MarkBuckets] counts the live traces whose instance ids fall into that
+// bucket (written under the lock, read without it). An arena whose bucket is 0 has no trace: its hooks return before
+// the PerfMonitor op and the lock. A bucket shared with a traced arena only sends the other arena's events on to the
+// lookup, which finds nothing (at most 64 live traces in 4096 buckets).
+constexpr uint32 MarkBuckets = 4096;
+std::array<std::atomic<uint16>, MarkBuckets> Marks{};
 
 std::atomic<uint64> Started{0};
 std::atomic<uint64> Queued{0};
@@ -192,15 +201,21 @@ uint64 OwnerCounter(Unit const* unit)
     return player ? player->GetGUID().GetCounter() : 0;
 }
 
-// The filter of the hooks, cheapest test first, no lock: the key of the arena a player is in while any trace runs,
-// else 0. Pets and totems are not participants. The natural tracer (G0e) replaces this predicate with "a traced unit".
+// The instance id when its bucket has a live trace, else 0 (one relaxed load, no lock)
+uint32 TracedKey(uint32 instanceId)
+{
+    return Marks[instanceId % MarkBuckets].load(std::memory_order_relaxed) ? instanceId : 0;
+}
+
+// The filter of the hooks, cheapest test first, no lock: the key of the traced arena a player is in, else 0. Pets and
+// totems are not participants. The natural tracer (G0e) replaces this predicate with "a traced unit".
 uint32 ArenaKeyOf(Unit const* unit)
 {
     if (!LiveCount.load(std::memory_order_relaxed) || !unit || !unit->IsPlayer())
         return 0;
 
     Map const* map = unit->FindMap();
-    return map && map->IsBattleArena() ? map->GetInstanceId() : 0;
+    return map && map->IsBattleArena() ? TracedKey(map->GetInstanceId()) : 0;
 }
 
 // Stamps the row with the trace's clock and appends it, when the arena has a trace
@@ -222,21 +237,42 @@ void PushRow(uint32 key, TraceRow row)
         pmo->finish();
 }
 
-// The registry lock is held
-void Prune()
+// The registry lock is held: removes a trace and its mark. A closed trace goes to `closed` (queued once the lock is
+// released), an unfinished one counts as dropped. Returns the next entry.
+Registry::iterator Retire(Registry::iterator itr, std::vector<std::shared_ptr<MatchTrace>>& closed)
 {
-    Clock::time_point const now = Clock::now();
+    if (itr->second.Closed)
+        closed.push_back(std::move(itr->second.Trace));
+    else
+        ++DroppedTraces;
+
+    Marks[itr->first % MarkBuckets].fetch_sub(1, std::memory_order_relaxed);
+    itr = Traces.erase(itr);
+    LiveCount.store(static_cast<uint32>(Traces.size()), std::memory_order_relaxed);
+    return itr;
+}
+
+// The registry lock is held: the traces older than MaxAge (a match that never ended)
+void SweepStale(Clock::time_point now, std::vector<std::shared_ptr<MatchTrace>>& closed)
+{
     for (auto itr = Traces.begin(); itr != Traces.end();)
     {
         if (now - itr->second.Created > MaxAge)
-        {
-            itr = Traces.erase(itr);
-            ++DroppedTraces;
-        }
+            itr = Retire(itr, closed);
         else
             ++itr;
     }
+}
 
+// The registry lock is held: the trace of an instance, in place of the one a reused instance id left behind, after
+// the stale traces and the oldest over the cap
+void Add(uint32 key, LiveTrace live, Clock::time_point now, std::vector<std::shared_ptr<MatchTrace>>& closed)
+{
+    auto const found = Traces.find(key);
+    if (found != Traces.end())
+        Retire(found, closed);
+
+    SweepStale(now, closed);
     while (Traces.size() >= MaxLiveTraces)
     {
         auto oldest = Traces.begin();
@@ -246,9 +282,12 @@ void Prune()
                 oldest = itr;
         }
 
-        Traces.erase(oldest);
-        ++DroppedTraces;
+        Retire(oldest, closed);
     }
+
+    Traces.emplace(key, std::move(live));
+    Marks[key % MarkBuckets].fetch_add(1, std::memory_order_relaxed);
+    LiveCount.store(static_cast<uint32>(Traces.size()), std::memory_order_relaxed);
 }
 
 // Queues a closed trace to the writer thread, which formats it (map thread: a pointer move)
@@ -287,16 +326,17 @@ void Queue(std::shared_ptr<MatchTrace> trace)
         pmo->finish();
 }
 
-// Map thread, once per map update: queues a closed trace, and once a second the positions of the participants
+// Map thread, once per map update of a traced arena: queues a closed trace, and once a second the positions of the
+// participants (or drops the trace when its match has run past MaxAge without an end)
 void OnArenaMapUpdate(Map* map)
 {
-    if (!LiveCount.load(std::memory_order_relaxed) || !map->IsBattleArena())
+    if (!LiveCount.load(std::memory_order_relaxed) || !map->IsBattleArena() || !TracedKey(map->GetInstanceId()))
         return;
 
     uint32 const key = map->GetInstanceId();
     uint32 const now = getMSTime();
     uint32 elapsed = 0;
-    std::shared_ptr<MatchTrace> closed;
+    std::vector<std::shared_ptr<MatchTrace>> closed;
     {
         std::lock_guard<std::mutex> guard(TraceLock);
         auto const found = Traces.find(key);
@@ -304,24 +344,26 @@ void OnArenaMapUpdate(Map* map)
             return;
 
         if (found->second.Closed)
-        {
-            closed = std::move(found->second.Trace);
-            Traces.erase(found);
-            LiveCount.store(static_cast<uint32>(Traces.size()), std::memory_order_relaxed);
-        }
+            Retire(found, closed);
         else
         {
             elapsed = getMSTimeDiff(found->second.StartMs, now);
             if (elapsed < found->second.NextPositionMs)
                 return;
 
+            if (Clock::now() - found->second.Created > MaxAge)
+            {
+                Retire(found, closed);
+                return;
+            }
+
             found->second.NextPositionMs = elapsed - elapsed % PositionEveryMs + PositionEveryMs;
         }
     }
 
-    if (closed)
+    if (!closed.empty())
     {
-        Queue(std::move(closed));
+        Queue(std::move(closed.front()));
         return;
     }
 
@@ -362,6 +404,25 @@ void OnArenaMapUpdate(Map* map)
 
     if (pmo)
         pmo->finish();
+}
+
+// From the destructor of an arena map: its trace leaves the registry (a closed one still goes to the writer, an
+// unfinished one counts as dropped), so a match that never ended does not keep LiveCount above 0
+void OnArenaMapDestroy(Map* map)
+{
+    if (!LiveCount.load(std::memory_order_relaxed) || !map->IsBattleArena() || !TracedKey(map->GetInstanceId()))
+        return;
+
+    std::vector<std::shared_ptr<MatchTrace>> closed;
+    {
+        std::lock_guard<std::mutex> guard(TraceLock);
+        auto const found = Traces.find(map->GetInstanceId());
+        if (found != Traces.end())
+            Retire(found, closed);
+    }
+
+    for (std::shared_ptr<MatchTrace>& trace : closed)
+        Queue(std::move(trace));
 }
 }  // namespace
 
@@ -521,13 +582,14 @@ void MatchTrace::Begin(uint32 instanceId, std::string const& matchId)
     live.Trace = std::make_shared<MatchTrace>(matchId, every, sPlayerbotAIConfig.MatchLogTraceMaxEvents,
                                               sPlayerbotAIConfig.MatchLogTraceMaxBytes);
     live.StartMs = getMSTime();
+    std::vector<std::shared_ptr<MatchTrace>> closed;
     {
         std::lock_guard<std::mutex> guard(TraceLock);
-        Traces.erase(instanceId);
-        Prune();
-        Traces[instanceId] = std::move(live);
-        LiveCount.store(static_cast<uint32>(Traces.size()), std::memory_order_relaxed);
+        Add(instanceId, std::move(live), Clock::now(), closed);
     }
+
+    for (std::shared_ptr<MatchTrace>& trace : closed)
+        Queue(std::move(trace));
 
     ++Started;
     if (pmo)
@@ -536,7 +598,7 @@ void MatchTrace::Begin(uint32 instanceId, std::string const& matchId)
 
 void MatchTrace::End(uint32 instanceId, PvpTestMatchRecord const& record)
 {
-    if (!LiveCount.load(std::memory_order_relaxed))
+    if (!LiveCount.load(std::memory_order_relaxed) || !TracedKey(instanceId))
         return;
 
     std::lock_guard<std::mutex> guard(TraceLock);
@@ -721,12 +783,66 @@ bool MatchTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*args*
               smallLine.size() <= 4096 && MatchLog::JsonWellFormed(smallLine),
           Acore::StringFormat("the byte cap holds ({} bytes)", smallLine.size()));
 
+    // The registry, with instance ids far above the core's (which counts up from 1). The filter checks run while this
+    // thread holds the registry lock: a lock inside the filter would hang here instead of passing. The closed trace
+    // of the last check is not queued, and the drops of this test are taken back from the status counter.
+    auto liveTrace = [](char const* matchId, Clock::time_point created)
+    {
+        LiveTrace live;
+        live.Trace = std::make_shared<MatchTrace>(matchId, 1, 100, 4096);
+        live.Created = created;
+        return live;
+    };
+    {
+        std::vector<std::shared_ptr<MatchTrace>> closed;
+        std::lock_guard<std::mutex> guard(TraceLock);
+        uint32 const keyA = 0xFFF00000u;
+        uint32 const keyB = keyA + MarkBuckets;  // keyA's bucket
+        uint32 keyC = keyA + 1;                  // an untraced arena: the next bucket without a live trace
+        while (Marks[keyC % MarkBuckets].load() && keyC < keyA + MarkBuckets - 1)
+            ++keyC;
+
+        uint16 const markBefore = Marks[keyA % MarkBuckets].load();
+        uint64 const droppedBefore = DroppedTraces.load();
+        size_t const liveBefore = Traces.size();
+        Clock::time_point const now = Clock::now();
+        Add(keyB, liveTrace("selftest-old", now), now, closed);
+        Add(keyA, liveTrace("selftest-stale", now - MaxAge - std::chrono::minutes(1)), now, closed);
+        bool const staleKept = Traces.count(keyA) == 1;  // Add sweeps before it inserts
+        check(TracedKey(keyA) == keyA && TracedKey(keyB) == keyB && !TracedKey(keyC),
+              "the marks tell traced arenas from an untraced one without the lock");
+        uint32 const before = LiveCount.load();
+        SweepStale(now, closed);
+        check(staleKept && !Traces.count(keyA) && Traces.count(keyB) == 1 && LiveCount.load() == before - 1 &&
+                  DroppedTraces.load() == droppedBefore + 1 && closed.empty(),
+              "a stale trace is swept, counted as dropped and leaves LiveCount");
+        check(TracedKey(keyA) == keyA && Marks[keyA % MarkBuckets].load() == markBefore + 1,
+              "a bucket another live trace shares stays marked");
+        Add(keyB, liveTrace("selftest-new", now), now, closed);
+        auto const found = Traces.find(keyB);
+        check(found != Traces.end() && found->second.Trace->MatchId() == "selftest-new" &&
+                  DroppedTraces.load() == droppedBefore + 2 && Marks[keyB % MarkBuckets].load() == markBefore + 1,
+              "a reused instance id counts the unfinished trace it replaces as dropped");
+        if (found != Traces.end())
+        {
+            found->second.Closed = true;
+            Retire(found, closed);
+        }
+
+        check(closed.size() == 1 && DroppedTraces.load() == droppedBefore + 2 &&
+                  Marks[keyA % MarkBuckets].load() == markBefore && Traces.size() == liveBefore &&
+                  LiveCount.load() == liveBefore,
+              "a closed trace leaves for the writer, not as dropped, and clears its mark");
+        DroppedTraces -= DroppedTraces.load() - droppedBefore;
+    }
+
     handler->PSendSysMessage("MATCHLOG trace selftest: {} checks, {} failed", checks, failures);
     handler->PSendSysMessage("MATCHLOG sample trace: {}", cutLine);
     return true;
 }
 
-// The hooks: each returns after one test while no trace runs (LiveCount 0, always with TraceEvery 0)
+// The hooks: each returns after one test while no trace runs (LiveCount 0, always with TraceEvery 0), and in an
+// untraced arena after its mark, before the PerfMonitor op and the lock
 class MatchTraceSpellScript : public AllSpellScript
 {
 public:
@@ -845,9 +961,12 @@ public:
 class MatchTraceMapScript : public AllMapScript
 {
 public:
-    MatchTraceMapScript() : AllMapScript("MatchTraceMapScript", {ALLMAPHOOK_ON_MAP_UPDATE}) {}
+    MatchTraceMapScript() : AllMapScript("MatchTraceMapScript", {ALLMAPHOOK_ON_MAP_UPDATE, ALLMAPHOOK_ON_DESTROY_MAP})
+    {
+    }
 
     void OnMapUpdate(Map* map, uint32 /*diff*/) override { OnArenaMapUpdate(map); }
+    void OnDestroyMap(Map* map) override { OnArenaMapDestroy(map); }
 };
 
 void AddSC_match_trace()
