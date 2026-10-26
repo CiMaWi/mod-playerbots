@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -97,7 +98,8 @@ struct PvpTestMatchRecord
 };
 
 // Appends one JSON line per match to <LogsDir>/pvptest/matches-<YYYYMMDD>.jsonl. The world thread builds the line;
-// a writer thread (started with the first record) owns the file and touches nothing but strings.
+// a writer thread (started with the first record) owns the file and touches nothing but strings. WriteLine is the
+// generic part (M10): any line for <LogsDir>/pvptest/<prefix>-<YYYYMMDD>.jsonl, e.g. the match traces.
 class PvpTestRecordWriter
 {
 public:
@@ -111,6 +113,10 @@ public:
 
     // Any thread (since M9 the arena map threads too): builds the line and queues it, no I/O
     void Write(PvpTestMatchRecord const& record);
+    // Any thread: queues one line (text ends with a newline) for <prefix>-<date>.jsonl, no I/O. With make, the text is
+    // made by make on the writer thread instead (a big line from plain values; make owns them and touches no game
+    // object)
+    void WriteLine(std::string prefix, std::string date, std::string text, std::function<std::string()> make = {});
     // Flushes the queue and joins the writer thread (server shutdown)
     void Shutdown();
     // Any thread: records waiting for the writer, the most that ever waited, written to the file, lost
@@ -126,15 +132,22 @@ public:
     // The current time as 2026-10-23T12:00:00Z
     static std::string IsoTimeNow();
     static std::string ClassName(uint8 classId);
+    // A JSON string literal of text (quotes, backslashes and control characters escaped)
+    static std::string JsonQuote(std::string const& text);
 
 private:
     PvpTestRecordWriter() = default;
 
     struct Line
     {
+        std::string Prefix;
         std::string Date;
         std::string Text;
+        std::function<std::string()> Make;
     };
+
+    // Appends a line to its file; _fileMutex is held
+    bool Append(std::string const& directory, Line& line);
 
     void WriterLoop(std::string directory);
 

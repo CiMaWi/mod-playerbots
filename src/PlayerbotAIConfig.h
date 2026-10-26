@@ -419,6 +419,9 @@ public:
     uint32 LadderRole;
     std::string LadderServerId;
     bool MatchLogEnable;
+    uint32 MatchLogTraceEvery;
+    uint32 MatchLogTraceMaxEvents;
+    uint32 MatchLogTraceMaxBytes;
     uint32 LadderDepartTimeoutSeconds;
     uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;

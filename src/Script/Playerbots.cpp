@@ -664,6 +664,7 @@ void AddSC_randombot_level_mgr();
 void AddSC_census();
 void AddSC_acquaintance();
 void AddSC_match_log();
+void AddSC_match_trace();
 
 void AddPlayerbotsScripts()
 {
@@ -692,4 +693,5 @@ void AddPlayerbotsScripts()
     AddSC_census();
     AddSC_acquaintance();
     AddSC_match_log();
+    AddSC_match_trace();
 }

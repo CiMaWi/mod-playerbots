@@ -28,6 +28,7 @@
 #include "LogLevelAction.h"
 #include "LootObjectStack.h"
 #include "MapMgr.h"
+#include "MatchTrace.h"
 #include "MotionMaster.h"
 #include "MoveSplineInit.h"
 #include "NewRpgStrategy.h"
@@ -6827,15 +6828,20 @@ uint8 PlayerbotAI::BeginExecutedCount(Action* action, ObjectGuid& previousTarget
 
 void PlayerbotAI::EndExecutedCount(uint8 category, ObjectGuid previousTarget)
 {
+    ObjectGuid target;
     if (category == static_cast<uint8>(SkillNoticeCategory::TargetSwitch))
     {
         // An assist that keeps the target is not a switch
         Unit* const current = aiObjectContext->GetValue<Unit*>("current target")->Get();
         if (!current || current->GetGUID() == previousTarget)
             return;
+
+        target = current->GetGUID();
     }
 
     ++pvpTestExecuted[category - 1];
+    // A traced arena keeps the action (M10; one test while no trace runs)
+    MatchTrace::OnAction(bot, category, target);
 }
 
 bool PlayerbotAI::IsPvpFight() const { return IsPlayerInPvpFight(bot); }

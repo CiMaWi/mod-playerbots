@@ -49,6 +49,8 @@ public:
     static std::string ServerId();
     // <server>-<process start YYYYMMDDHHMMSS UTC>-<n>
     static std::string NewMatchId();
+    // A string-aware check that a JSON text is balanced and closes every string (the selftests)
+    static bool JsonWellFormed(std::string const& json);
 
     static bool HandleStatusCommand(ChatHandler* handler, char const* args);
     static bool HandleSelftestCommand(ChatHandler* handler, char const* args);

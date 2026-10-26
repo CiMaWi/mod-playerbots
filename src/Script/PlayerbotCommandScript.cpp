@@ -14,6 +14,7 @@
 #include "GuildTaskMgr.h"
 #include "LadderMgr.h"
 #include "MatchLog.h"
+#include "MatchTrace.h"
 #include "PerfMonitor.h"
 #include "PlayerbotMgr.h"
 #include "PvpGearMgr.h"
@@ -108,6 +109,7 @@ public:
         static ChatCommandTable playerbotsMatchLogCommandTable = {
             {"status", MatchLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", MatchLog::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"traceselftest", MatchTrace::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

@@ -169,7 +169,32 @@ void PvpTestRecordWriter::Write(PvpTestMatchRecord const& record)
 {
     std::string date = record.StartTime.substr(0, DateLength);
     date.erase(std::remove(date.begin(), date.end(), '-'), date.end());
-    std::string text = ToJson(record) + "\n";
+    WriteLine("matches", std::move(date), ToJson(record) + "\n");
+}
+
+std::string PvpTestRecordWriter::JsonQuote(std::string const& text) { return Quote(text); }
+
+bool PvpTestRecordWriter::Append(std::string const& directory, Line& line)
+{
+    if (line.Make)
+        line.Text = line.Make();
+
+    std::ofstream file(directory + line.Prefix + "-" + line.Date + ".jsonl", std::ios::out | std::ios::app);
+    if (!file)
+    {
+        ++_failed;
+        return false;
+    }
+
+    file << line.Text;
+    ++_written;
+    return true;
+}
+
+void PvpTestRecordWriter::WriteLine(std::string prefix, std::string date, std::string text,
+                                    std::function<std::string()> make)
+{
+    Line line{std::move(prefix), std::move(date), std::move(text), std::move(make)};
     {
         std::lock_guard<std::mutex> guard(_mutex);
         if (_stop)
@@ -182,15 +207,7 @@ void PvpTestRecordWriter::Write(PvpTestMatchRecord const& record)
             std::string const directory = Directory();
             std::error_code error;
             std::filesystem::create_directories(directory, error);
-            std::ofstream file(directory + "matches-" + date + ".jsonl", std::ios::out | std::ios::app);
-            if (file)
-            {
-                file << text;
-                ++_written;
-            }
-            else
-                ++_failed;
-
+            Append(directory, line);
             return;
         }
 
@@ -198,7 +215,7 @@ void PvpTestRecordWriter::Write(PvpTestMatchRecord const& record)
         if (!_writer.joinable())
             _writer = std::thread(&PvpTestRecordWriter::WriterLoop, this, Directory());
 
-        _queue.push_back(Line{std::move(date), std::move(text)});
+        _queue.push_back(std::move(line));
         if (_queue.size() > _queueHigh.load())
             _queueHigh.store(_queue.size());
     }
@@ -233,19 +250,10 @@ void PvpTestRecordWriter::WriterLoop(std::string directory)
 
         // Held for the batch: a record written after the stop appends under the same lock (see Write)
         std::lock_guard<std::mutex> fileGuard(_fileMutex);
-        for (Line const& line : batch)
+        for (Line& line : batch)
         {
-            std::ofstream file(directory + "matches-" + line.Date + ".jsonl", std::ios::out | std::ios::app);
-            if (file)
-            {
-                file << line.Text;
-                ++_written;
-            }
-            else
-            {
-                ++_failed;
-                LOG_ERROR("playerbots", "PVPTEST: cannot append to the match record file in {}", directory);
-            }
+            if (!Append(directory, line))
+                LOG_ERROR("playerbots", "PVPTEST: cannot append to the {} file in {}", line.Prefix, directory);
         }
 
         batch.clear();

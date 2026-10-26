@@ -22,6 +22,7 @@
 #include "BattlegroundScore.h"
 #include "Chat.h"
 #include "Log.h"
+#include "MatchTrace.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -178,10 +179,68 @@ void MergeExtras(PvpTestMatchRecord const& from, PvpTestMatchRecord& to)
     }
 }
 
-bool IsClaimed(uint32 instanceId)
+// The harness claimed this arena: its match id
+bool IsClaimed(uint32 instanceId, std::string& matchId)
 {
     std::lock_guard<std::mutex> guard(RegistryLock);
-    return Claims.find(instanceId) != Claims.end();
+    auto const claim = Claims.find(instanceId);
+    if (claim == Claims.end())
+        return false;
+
+    matchId = claim->second.MatchId;
+    return true;
+}
+
+// A member of the roster as he is now; a bot counts its casts from now on when count is set
+PvpTestBotRecord MakeBot(Player* player, bool count)
+{
+    PvpTestBotRecord bot;
+    bot.Guid = player->GetGUID().GetCounter();
+    bot.Name = player->GetName();
+    bot.ClassId = player->getClass();
+    bot.RaceId = player->getRace();
+    bot.Level = player->GetLevel();
+    bot.Spec = AiFactory::GetPlayerSpecName(player);
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
+    bot.Real = !botAI;
+    if (botAI)
+    {
+        // The gear score after the PvP loadout is worn: the wear is queued when the player is added to the arena
+        // and has had the preparation time to finish
+        bot.GearScore = botAI->GetEquipGearScore(player);
+        if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
+            bot.Skill = botAI->GetPvpSkill();
+
+        if (count)
+            botAI->SetPvpTestCounting(true);
+    }
+
+    return bot;
+}
+
+// The members that were not in the arena when its gates opened (M9 review): the roster gets them at the end,
+// without "before" values and casts
+void AddLateMembers(Battleground* bg, PvpTestMatchRecord& record)
+{
+    for (auto const& [guid, player] : bg->GetPlayers())
+    {
+        if (!player)
+            continue;
+
+        bool known = false;
+        for (PvpTestSideRecord const& side : record.Sides)
+        {
+            for (PvpTestBotRecord const& member : side.Bots)
+                known = known || member.Guid == guid.GetCounter();
+        }
+
+        if (known)
+            continue;
+
+        PvpTestBotRecord bot = MakeBot(player, false);
+        record.Real = record.Real || bot.Real;
+        record.Sides[player->GetBgTeamId() == TEAM_HORDE ? 1 : 0].Bots.push_back(std::move(bot));
+    }
 }
 
 // The roster and the team facts of an arena as they are now. atStart: the "before" values are these; otherwise (a
@@ -227,27 +286,7 @@ PvpTestMatchRecord BuildRoster(Battleground* bg, bool atStart, bool count)
             continue;
 
         size_t const index = player->GetBgTeamId() == TEAM_HORDE ? 1 : 0;
-        PvpTestBotRecord bot;
-        bot.Guid = guid.GetCounter();
-        bot.Name = player->GetName();
-        bot.ClassId = player->getClass();
-        bot.RaceId = player->getRace();
-        bot.Level = player->GetLevel();
-        bot.Spec = AiFactory::GetPlayerSpecName(player);
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
-        bot.Real = !botAI;
-        if (botAI)
-        {
-            // The gear score after the PvP loadout is worn: the wear is queued when the player is added to the arena
-            // and has had the preparation time to finish
-            bot.GearScore = botAI->GetEquipGearScore(player);
-            if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
-                bot.Skill = botAI->GetPvpSkill();
-
-            if (count)
-                botAI->SetPvpTestCounting(true);
-        }
-
+        PvpTestBotRecord bot = MakeBot(player, count);
         if (atStart && teams[index])
         {
             if (ArenaTeamMember* member = teams[index]->GetMember(guid))
@@ -339,7 +378,8 @@ void FinishRecord(Battleground* bg, TeamId winnerTeam, bool counted, Capture& ca
             if (player != bg->GetPlayers().end() && player->second)
                 botAI = GET_PLAYERBOT_AI(player->second);
 
-            if (botAI)
+            // A member that came late never counted: his counts are an older match's
+            if (botAI && botAI->IsPvpTestCounting())
             {
                 bot.Casts = botAI->GetPvpTestExecuted();
                 botAI->SetPvpTestCounting(false);
@@ -381,6 +421,8 @@ bool WellFormed(std::string const& json)
 
 bool Contains(std::string const& text, char const* part) { return text.find(part) != std::string::npos; }
 }  // namespace
+
+bool MatchLog::JsonWellFormed(std::string const& json) { return WellFormed(json); }
 
 std::string MatchLog::ServerId()
 {
@@ -431,8 +473,12 @@ void MatchLog::OnArenaStart(Battleground* bg)
     uint32 const instanceId = bg->GetInstanceID();
     Capture capture;
     // A harness job counts the casts itself (from the start of its fight)
-    capture.Counted = !IsClaimed(instanceId);
+    std::string claimedId;
+    capture.Counted = !IsClaimed(instanceId, claimedId);
     capture.Record = BuildRoster(bg, true, capture.Counted);
+    // The id is known from the start (M10: the trace is chosen by it); a harness match has the id of its claim
+    capture.Record.MatchId = capture.Counted ? NewMatchId() : claimedId;
+    MatchTrace::Begin(instanceId, capture.Record.MatchId);
     {
         std::lock_guard<std::mutex> guard(RegistryLock);
         Prune(Captures, MaxCaptures - 1);
@@ -469,10 +515,18 @@ void MatchLog::OnLeave(Battleground* bg, Player* player)
     if (!botAI || !botAI->IsPvpTestCounting())
         return;
 
-    // After the end the capture is gone and the end has already stopped the counting; a harness job counts itself
+    // After the end the capture is gone; a bot whose leave ended the match may have left the battleground's player
+    // list before the end read it, so it stops counting here (M9 review; harmless when the end stopped it, and the
+    // counts stay for a harness job to read). A harness job counts itself while its match runs.
     std::lock_guard<std::mutex> guard(RegistryLock);
     auto const capture = Captures.find(bg->GetInstanceID());
-    if (capture == Captures.end() || !capture->second.Counted)
+    if (capture == Captures.end())
+    {
+        botAI->SetPvpTestCounting(false);
+        return;
+    }
+
+    if (!capture->second.Counted)
         return;
 
     capture->second.Leavers[player->GetGUID().GetCounter()] = botAI->GetPvpTestExecuted();
@@ -516,12 +570,20 @@ void MatchLog::OnEnd(Battleground* bg, TeamId winnerTeam)
         capture.Record = BuildRoster(bg, false, false);
         ++LateRecords;
     }
+    else
+        AddLateMembers(bg, capture.Record);
 
     FinishRecord(bg, winnerTeam, seenStart && !claimed, capture);
     PvpTestMatchRecord& record = capture.Record;
-    record.MatchId = claimed ? claimedId : NewMatchId();
+    if (claimed)
+        record.MatchId = claimedId;
+    else if (record.MatchId.empty())
+        record.MatchId = NewMatchId();
+
     record.Id = record.MatchId;
     ++Ended;
+    // The trace of this match (if it has one) closes with the record's facts; its line is queued on the next update
+    MatchTrace::End(instanceId, record);
     if (claimed)
     {
         // The harness job writes the record (it also covers failed and stopped matches); it merges these fields in
@@ -589,6 +651,7 @@ bool MatchLog::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
         "MATCHLOG: counting: {} actions went through the name lookup, {} lookups timed, mean {} ns (clock included), "
         "estimated total {} ms",
         counting.Calls, counting.Samples, meanNs, counting.Calls * meanNs / 1000000);
+    handler->PSendSysMessage("{}", MatchTrace::StatusText());
     return true;
 }
 
