@@ -2363,14 +2363,15 @@ void RandomPlayerbotMgr::LadderLogout(uint32 bot)
         LogoutPlayerBot(guid);
 }
 
-void RandomPlayerbotMgr::LadderLogin(uint32 bot)
+void RandomPlayerbotMgr::LadderLogin(uint32 bot, bool overCap)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("RandomPlayerbotMgr::LadderLogin");
     if (currentBots.contains(bot))
         return;
 
     // At the cap: AddRandomBots logs the bot in later like any other random bot
-    if (currentBots.size() >= GetMaxAllowedBotCount())
+    bool const atCap = currentBots.size() >= GetMaxAllowedBotCount();
+    if (atCap && !overCap)
         return;
 
     uint32 const addTime =
@@ -2380,6 +2381,13 @@ void RandomPlayerbotMgr::LadderLogin(uint32 bot)
     SetEventValue(bot, "add", 1, addTime);
     SetEventValue(bot, "logout", 0, 0);
     currentBots.insert(bot);
+    if (!atCap)
+        return;
+
+    // The login loop takes no new bot at the cap: this one logs in now
+    LOG_INFO("playerbots", "Ladder: bot #{} logs in over the bot cap ({}/{}) for a short stay", bot, currentBots.size(),
+             GetMaxAllowedBotCount());
+    ProcessBot(bot);
 }
 
 void RandomPlayerbotMgr::GetBots()

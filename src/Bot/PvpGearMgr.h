@@ -221,10 +221,18 @@ public:
     // Pure: the purchases of one bot. slots in priority order; an upgrade is a higher (tier, item level) than the
     // slot's item and needs rating >= its requirement; per slot the target is the best upgrade the rating allows
     // (tier, then score). saveTowardBetter: a target the wallet cannot pay yet is not replaced by a lesser upgrade, and
-    // the later slots spend none of the currencies it needs; off: per slot the best upgrade the wallet can pay. The
-    // wallet is reduced by the purchases
+    // its price (what of it the wallet holds) is kept for it: the later slots spend only the rest. A target that needs
+    // a currency of which nothing is left is not saved toward (the slot takes the best upgrade it can pay); off: per
+    // slot the best upgrade the wallet can pay. The wallet is reduced by the purchases
     static std::vector<Purchase> DecideBuys(std::vector<BuySlot> const& slots, Wallet& wallet, uint32 rating,
                                             bool saveTowardBetter);
+    // Pure: DecideBuys with a final check of every purchase (equippable false: the bot cannot equip it for good). A
+    // rejected entry is left out of the slots' candidates and the pass decided again, so it holds no currency back for
+    // the later slots; the rejected entries are added to rejected
+    static std::vector<Purchase> DecideCheckedBuys(std::vector<BuySlot>& slots, Wallet& wallet, uint32 rating,
+                                                   bool saveTowardBetter,
+                                                   std::function<bool(Purchase const&)> const& equippable,
+                                                   std::vector<uint32>& rejected);
     // Pure: the slot priority option (weapon, ranged, head, neck, shoulders, chest, waist, legs, feet, wrists, hands,
     // back, rings, trinkets or a slot name such as "ring 1"); the slots it leaves out follow in the default order.
     // Unknown names are listed in unknown
@@ -332,6 +340,8 @@ private:
     uint64 _incomeArenaPoints = 0;
     std::unordered_map<uint32, Wallet> _wallets;
     std::deque<PurchaseRecord> _recent;
+    std::unordered_map<uint32, std::vector<uint32>> _unbuyable;  // per bot: entries CanEquipNewItem rejected for good
+    std::vector<std::pair<uint32, uint32>> _prices;  // the catalogue's (honor, arena points), none cheaper in both
 };
 
 #endif

@@ -1525,22 +1525,26 @@ Playerbots.PvpGear.BaseTier = ""
 # Playerbots.PvpGear.Buy.CheckIntervalMinutes, a few bots per world tick: an upgrade is an item of a higher tier or,
 # within a tier, of a higher item level, of the same kind (no switch between a two-hander and one-handers; trinket 1
 # stays the PvP trinket; the rings differ), usable by the bot, whose rating requirement the bot meets (the best of
-# min(personal rating, team rating) over its arena teams, the vendor's rule). Per slot the bot aims at the best upgrade its rating allows. The honor and arena
-# points are taken from the character and the loadout row changes; a bot that wears its loadout (in a match, or on an
-# arena server) swaps the slot at once. One log line per purchase; the PvE gear is never touched. Bots earn currency
-# only from battleground honor and the arena point distribution (worldserver Arena.AutoDistributePoints).
+# min(personal rating, team rating) over its arena teams, the vendor's rule). Per slot the bot aims at the best
+# upgrade its rating allows. The honor and arena points are taken from the character and the loadout row changes; a
+# bot that wears its loadout (in a match, or on an arena server) swaps the slot at once. One log line per purchase;
+# the PvE gear is never touched. Bots earn currency only from battleground honor and the arena point distribution
+# (worldserver Arena.AutoDistributePoints).
 # Default: 0 (off: nothing is bought)
 Playerbots.PvpGear.Buy.Enable = 0
 
 # The slots in the order the bots buy for them, comma-separated: weapon (main and off hand; a hunter's ranged slot
 # takes the place before its main hand), ranged, head, neck, shoulders, chest, waist, legs, feet, wrists, hands, back,
-# rings, trinkets, or one slot ("ring 1", "trinket 2", "main hand"). Slots left out follow in the default order.
+# rings, trinkets, or one slot ("ring 1", "trinket 2", "main hand"). Slots left out follow in the default order
+# (the value below lists the first ten; neck, rings, trinkets and ranged follow).
 # Default: "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged"
-Playerbots.PvpGear.Buy.SlotPriority = "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged"
+Playerbots.PvpGear.Buy.SlotPriority = "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back"
 
 # 1: a bot saves toward the best upgrade its rating allows: while it cannot pay it, it buys no lesser piece for that
-# slot, and the slots after it in the priority spend none of the currencies that piece needs (an honor piece can still
-# be bought while the bot saves arena points). 0: in priority order, each slot gets the best upgrade the bot can pay.
+# slot, and the slots after it in the priority spend only what is left after that piece's price. A piece that needs a
+# currency the bot has none of left is not saved toward (the slot gets the best upgrade the bot can pay): with no
+# arena points, the honor still buys honor pieces. 0: in priority order, each slot gets the best upgrade the bot can
+# pay.
 # Default: 1
 Playerbots.PvpGear.Buy.SaveTowardBetter = 1
 

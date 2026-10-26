@@ -466,10 +466,10 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
             }
 
             // Offline with worn rows here: it would leave in PvP gear. It logs in (the login wears or repairs it) and
-            // a later pass takes the gear off
+            // a later pass takes the gear off; also at the bot cap, as the logout follows at once
             if (!player && PvpGearMgr::Instance().HasWornRows(member.Guid.GetCounter()))
             {
-                sRandomPlayerbotMgr.LadderLogin(member.Guid.GetCounter());
+                sRandomPlayerbotMgr.LadderLogin(member.Guid.GetCounter(), true);
                 move.Note = Acore::StringFormat("waits: {} logs in to take its PvP gear off", member.Name);
                 return;
             }

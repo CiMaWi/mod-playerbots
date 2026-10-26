@@ -529,6 +529,17 @@ void PvpGearMgr::Load()
         for (CatalogueItem const& item : tier)
             _byEntry[item.Entry] = &item;
 
+    // The prices no other undercuts in both currencies (sorted by honor: each has fewer arena points than those before)
+    std::vector<std::pair<uint32, uint32>> prices;
+    for (CatalogueItem const& item : catalogue)
+        prices.emplace_back(item.Honor, item.ArenaPoints);
+
+    std::sort(prices.begin(), prices.end());
+    _prices.clear();
+    for (std::pair<uint32, uint32> const& price : prices)
+        if (_prices.empty() || price.second < _prices.back().second)
+            _prices.push_back(price);
+
     std::string summary;
     for (size_t tier = 0; tier < _tiers.size(); ++tier)
     {
@@ -1448,14 +1459,16 @@ std::vector<PvpGearMgr::Purchase> PvpGearMgr::DecideBuys(std::vector<BuySlot> co
 
     auto const key = [](BuyCandidate const& candidate)
     { return std::make_tuple(candidate.Tier, candidate.Score, candidate.ItemLevel); };
-    bool savingHonor = false;
-    bool savingArenaPoints = false;
+    uint32 heldHonor = 0;  // kept for the targets of earlier slots (never more than the wallet)
+    uint32 heldArenaPoints = 0;
     std::vector<Purchase> purchases;
     for (BuySlot const& slot : slots)
     {
         if (slot.Slot >= SlotCount)
             continue;
 
+        uint32 const freeHonor = wallet.Honor - heldHonor;
+        uint32 const freeArenaPoints = wallet.ArenaPoints - heldArenaPoints;
         uint32 const pairEntry = slot.Pair < SlotCount ? entries[slot.Pair] : 0;
         BuyCandidate const* target = nullptr;      // the best upgrade the rating allows
         BuyCandidate const* affordable = nullptr;  // the best one the wallet pays without a saved currency
@@ -1472,8 +1485,7 @@ std::vector<PvpGearMgr::Purchase> PvpGearMgr::DecideBuys(std::vector<BuySlot> co
             if (!target || key(candidate) > key(*target))
                 target = &candidate;
 
-            bool const payable = candidate.Honor <= wallet.Honor && candidate.ArenaPoints <= wallet.ArenaPoints &&
-                                 !(savingHonor && candidate.Honor) && !(savingArenaPoints && candidate.ArenaPoints);
+            bool const payable = candidate.Honor <= freeHonor && candidate.ArenaPoints <= freeArenaPoints;
             if (payable && (!affordable || key(candidate) > key(*affordable)))
                 affordable = &candidate;
         }
@@ -1481,11 +1493,14 @@ std::vector<PvpGearMgr::Purchase> PvpGearMgr::DecideBuys(std::vector<BuySlot> co
         if (!target)
             continue;
 
-        if (saveTowardBetter && (!affordable || key(*affordable) < key(*target)))
+        // Saving toward the target: nothing lesser here, and the later slots spend only what is left after its price.
+        // A target that needs a currency of which nothing is left is not saved toward, so honor still buys the honor
+        // items while a bot has no arena points (none come in with Arena.AutoDistributePoints = 0)
+        bool const reachable = (!target->Honor || freeHonor) && (!target->ArenaPoints || freeArenaPoints);
+        if (saveTowardBetter && reachable && (!affordable || key(*affordable) < key(*target)))
         {
-            // Saving toward the target: nothing lesser here, and the later slots keep its currencies
-            savingHonor |= target->Honor > 0;
-            savingArenaPoints |= target->ArenaPoints > 0;
+            heldHonor += std::min(target->Honor, freeHonor);
+            heldArenaPoints += std::min(target->ArenaPoints, freeArenaPoints);
             continue;
         }
 
@@ -1595,6 +1610,50 @@ void PvpGearMgr::NoteWallet(uint32 guid, Wallet const& now, bool countIncome)
     it->second = now;
 }
 
+std::vector<PvpGearMgr::Purchase> PvpGearMgr::DecideCheckedBuys(std::vector<BuySlot>& slots, Wallet& wallet,
+                                                                uint32 rating, bool saveTowardBetter,
+                                                                std::function<bool(Purchase const&)> const& equippable,
+                                                                std::vector<uint32>& rejected)
+{
+    auto const isRejected = [&rejected](uint32 entry)
+    { return std::find(rejected.begin(), rejected.end(), entry) != rejected.end(); };
+    Wallet const start = wallet;
+    std::vector<Purchase> purchases;
+    for (uint8 attempt = 0; attempt < MaxEquipAttempts; ++attempt)
+    {
+        wallet = start;
+        purchases = DecideBuys(slots, wallet, rating, saveTowardBetter);
+        size_t const before = rejected.size();
+        for (Purchase const& purchase : purchases)
+            if (!equippable(purchase))
+                rejected.push_back(purchase.Entry);
+
+        if (rejected.size() == before)
+            return purchases;
+
+        for (BuySlot& slot : slots)
+            slot.Candidates.erase(
+                std::remove_if(slot.Candidates.begin(), slot.Candidates.end(),
+                               [&isRejected](BuyCandidate const& candidate) { return isRejected(candidate.Entry); }),
+                slot.Candidates.end());
+    }
+
+    // Still a rejection in the last attempt: only the purchases that passed (a part of a set the wallet pays)
+    wallet = start;
+    std::vector<Purchase> checked;
+    for (Purchase const& purchase : purchases)
+    {
+        if (isRejected(purchase.Entry))
+            continue;
+
+        wallet.Honor -= purchase.Honor;
+        wallet.ArenaPoints -= purchase.ArenaPoints;
+        checked.push_back(purchase);
+    }
+
+    return checked;
+}
+
 std::vector<PvpGearMgr::BuySlot> PvpGearMgr::BuildBuySlots(Player* bot, Loadout const& loadout, uint32 rating) const
 {
     std::vector<uint8> order = _buyOrder;
@@ -1609,6 +1668,12 @@ std::vector<PvpGearMgr::BuySlot> PvpGearMgr::BuildBuySlots(Player* bot, Loadout 
     StatsWeightCalculator calc(bot);
     calc.SetPvpSpec(true);
     bool const titanGrip = bot->CanTitanGrip();
+    auto const unbuyable = _unbuyable.find(bot->GetGUID().GetCounter());
+    auto const leftOut = [&unbuyable, this](uint32 entry)
+    {
+        return unbuyable != _unbuyable.end() &&
+               std::find(unbuyable->second.begin(), unbuyable->second.end(), entry) != unbuyable->second.end();
+    };
     std::vector<BuySlot> slots;
     for (uint8 slot : order)
     {
@@ -1647,7 +1712,8 @@ std::vector<PvpGearMgr::BuySlot> PvpGearMgr::BuildBuySlots(Player* bot, Loadout 
                     continue;
 
                 if ((ccBreak > 0 && !item.CcBreak) || (ccBreak < 0 && item.CcBreak) ||
-                    (titanGrip && group == GROUP_TWO_HAND && IsPolearmOrStaff(item.Entry)) || !Usable(bot, item))
+                    (titanGrip && group == GROUP_TWO_HAND && IsPolearmOrStaff(item.Entry)) || !Usable(bot, item) ||
+                    leftOut(item.Entry))
                     continue;
 
                 BuyCandidate candidate;
@@ -1679,8 +1745,10 @@ uint32 PvpGearMgr::CheckBuys(uint32 guid)
     wallet.Honor = bot->GetHonorPoints();
     wallet.ArenaPoints = bot->GetArenaPoints();
     NoteWallet(guid, wallet, true);
-    if (!wallet.Honor && !wallet.ArenaPoints)
-        return 0;  // every catalogue item costs honor or arena points
+    // Not even the cheapest catalogue price: no candidates to build (every item costs honor or arena points)
+    if (std::none_of(_prices.begin(), _prices.end(), [&wallet](std::pair<uint32, uint32> const& price)
+                     { return price.first <= wallet.Honor && price.second <= wallet.ArenaPoints; }))
+        return 0;
 
     EnsureLoadout(bot);
     auto const found = _loadouts.find(guid);
@@ -1689,8 +1757,28 @@ uint32 PvpGearMgr::CheckBuys(uint32 guid)
 
     // The vendor's rule: the best of min(personal rating, team rating) over the bot's arena teams
     uint32 const rating = bot->GetMaxPersonalArenaRatingRequirement(0);
-    std::vector<Purchase> const purchases = DecideBuys(BuildBuySlots(bot, found->second, rating), wallet, rating,
-                                                       sPlayerbotAIConfig.PvpGearBuySaveTowardBetter);
+    std::vector<BuySlot> slots = BuildBuySlots(bot, found->second, rating);
+    auto const equippable = [bot](Purchase const& purchase)
+    {
+        // A check only: the probe item is deleted at once
+        uint16 dest = 0;
+        InventoryResult const result = bot->CanEquipNewItem(purchase.Slot, dest, purchase.Entry, true);
+        if (result == EQUIP_ERR_OK || IsStateDependent(result))
+            return true;
+
+        LOG_DEBUG("playerbots", "PvP gear buy: {} cannot equip {} in the {} slot (error {}), left out for good",
+                  bot->GetName(), purchase.Entry, SlotNames[purchase.Slot], static_cast<uint32>(result));
+        return false;
+    };
+    std::vector<uint32> rejected;
+    std::vector<Purchase> const purchases =
+        DecideCheckedBuys(slots, wallet, rating, sPlayerbotAIConfig.PvpGearBuySaveTowardBetter, equippable, rejected);
+    if (!rejected.empty())
+    {
+        std::vector<uint32>& unbuyable = _unbuyable[guid];
+        unbuyable.insert(unbuyable.end(), rejected.begin(), rejected.end());
+    }
+
     if (purchases.empty())
         return 0;
 
@@ -1702,16 +1790,6 @@ uint32 PvpGearMgr::CheckBuys(uint32 guid)
     uint32 bought = 0;
     for (Purchase const& purchase : purchases)
     {
-        // A check only: the probe item is deleted at once
-        uint16 dest = 0;
-        InventoryResult const result = bot->CanEquipNewItem(purchase.Slot, dest, purchase.Entry, true);
-        if (result != EQUIP_ERR_OK && !IsStateDependent(result))
-        {
-            LOG_DEBUG("playerbots", "PvP gear buy: {} cannot equip {} in the {} slot (error {}), not bought",
-                      bot->GetName(), purchase.Entry, SlotNames[purchase.Slot], static_cast<uint32>(result));
-            continue;
-        }
-
         CatalogueItem const* item = FindItem(purchase.Entry);
         bot->ModifyHonorPoints(-static_cast<int32>(purchase.Honor));
         bot->ModifyArenaPoints(-static_cast<int32>(purchase.ArenaPoints));
@@ -2082,6 +2160,53 @@ void PvpGearMgr::SelftestBuy(std::function<void(bool, std::string const&)> const
           "buy: two upgrades, the wallet pays one");
     check(decide({chest, head2}, 0, 2000, 0, false).size() == 2 && left.ArenaPoints == 0,
           "buy: two buys in one pass never exceed the wallet");
+
+    // Organic income: honor, no arena points (Arena.AutoDistributePoints = 0); the Relentless chest needs both
+    BuySlot const relentlessChest =
+        slotOf(EQUIPMENT_SLOT_CHEST, 200, 0, 200, {candidate(205, 3, 245, 13200, 770, 0, 9.0f)});
+    BuySlot const honorFeet = slotOf(EQUIPMENT_SLOT_FEET, 900, 0, 200, {candidate(901, 1, 213, 20000, 0, 0, 3.0f)});
+    check(entries(decide({relentlessChest, honorFeet}, 30000, 0, 0, true)) == Entries{901} && left.Honor == 10000,
+          "buy: no arena points, a target that needs them holds no honor back (a later honor item bought)");
+    BuySlot const twoChests =
+        slotOf(EQUIPMENT_SLOT_CHEST, 200, 0, 200,
+               {candidate(205, 3, 245, 13200, 770, 0, 9.0f), candidate(206, 1, 213, 10000, 0, 0, 5.0f)});
+    check(entries(decide({twoChests}, 30000, 0, 0, true)) == Entries{206},
+          "buy: no arena points, the honor chest instead of saving toward the arena-point one");
+    check(decide({relentlessChest, honorFeet}, 30000, 100, 0, true).empty(),
+          "buy: saving toward the chest holds its 13200 honor back (16800 left, the feet cost 20000)");
+    BuySlot const cheapFeet = slotOf(EQUIPMENT_SLOT_FEET, 900, 0, 200, {candidate(902, 1, 213, 15000, 0, 0, 3.0f)});
+    check(entries(decide({relentlessChest, cheapFeet}, 30000, 100, 0, true)) == Entries{902} && left.Honor == 15000 &&
+              left.ArenaPoints == 100,
+          "buy: saving holds only the target's price, the rest buys a later slot");
+
+    // A purchase the bot cannot equip for good is left out and decided again: it holds no currency back
+    auto const notEntry = [](uint32 entry)
+    { return [entry](Purchase const& purchase) { return purchase.Entry != entry; }; };
+    std::vector<BuySlot> probed = {
+        slotOf(EQUIPMENT_SLOT_MAINHAND, 100, 1, 213, {candidate(110, 2, 226, 20000, 0, 0, 10.0f)}),
+        slotOf(EQUIPMENT_SLOT_FEET, 900, 0, 200, {candidate(911, 1, 213, 15000, 0, 0, 3.0f)})};
+    std::vector<uint32> rejected;
+    left.Honor = 30000;
+    left.ArenaPoints = 0;
+    check(entries(DecideCheckedBuys(probed, left, 0, true, notEntry(110), rejected)) == Entries{911} &&
+              rejected == Entries{110} && left.Honor == 15000 && probed[0].Candidates.empty(),
+          "buy: an unequippable weapon is left out, its honor buys the feet");
+    std::vector<BuySlot> probed2 = {
+        slotOf(EQUIPMENT_SLOT_MAINHAND, 100, 1, 213,
+               {candidate(110, 2, 226, 20000, 0, 0, 10.0f), candidate(111, 1, 219, 10000, 0, 0, 7.0f)})};
+    std::vector<BuySlot> probed3 = probed2;
+    rejected.clear();
+    left.Honor = 30000;
+    check(entries(DecideCheckedBuys(probed2, left, 0, true, notEntry(110), rejected)) == Entries{111} &&
+              left.Honor == 20000,
+          "buy: an unequippable target is left out, the next weapon bought");
+    rejected.clear();
+    left.Honor = 30000;
+    check(DecideCheckedBuys(
+              probed3, left, 0, true, [](Purchase const&) { return false; }, rejected)
+                  .empty() &&
+              rejected.size() == 2 && left.Honor == 30000,
+          "buy: nothing equippable, nothing bought and the wallet whole");
 }
 
 bool PvpGearMgr::HandleSelftestCommand(ChatHandler* handler, char const* /*args*/)

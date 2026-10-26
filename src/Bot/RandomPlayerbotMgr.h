@@ -133,9 +133,10 @@ public:
     void SetTradeDiscount(Player* bot, Player* master, uint32 value);
     uint32 GetTradeDiscount(Player* bot, Player* master);
     void Refresh(Player* bot);
-    // Ladder moves: log a random bot out and keep it out of currentBots, or let it log in again (not over the cap)
+    // Ladder moves: log a random bot out and keep it out of currentBots, or let it log in again (not over the cap;
+    // overCap: a short login that is logged out again at once, e.g. a depart's unwear, also at the cap)
     void LadderLogout(uint32 bot);
-    void LadderLogin(uint32 bot);
+    void LadderLogin(uint32 bot, bool overCap = false);
     void RandomTeleportForLevel(Player* bot);
     void RandomTeleportGrindForLevel(Player* bot);
     void RandomTeleportForRpg(Player* bot);
