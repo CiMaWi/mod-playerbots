@@ -42,6 +42,7 @@
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
 #include "WorldScript.h"
+#include "WorldThreadMonitor.h"
 #include "cmath"
 
 class PlayerbotsDatabaseScript : public DatabaseScript
@@ -560,6 +561,8 @@ public:
     void OnUpdate(uint32 diff) override
     {
         PlayerbotThreadCheck::SetWorldThread();  // Thread checks (Playerbots.DebugThreadChecks) compare against this
+        // Opt-in world-thread busy share (Playerbots.PerfMonWorldThread); returns at once when off
+        WorldThreadMonitor::Instance().BeginHook();
         ActivityBudget::Instance().Update();  // Smart scale percentile; returns at once when off
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
@@ -575,6 +578,7 @@ public:
         // Cached LFG state per bot, read on map threads
         PlayerbotsMgr::instance().RefreshLfgStates(diff);
         sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
+        WorldThreadMonitor::Instance().EndHook();
     }
 
     // Runs before the sessions are kicked on server shutdown

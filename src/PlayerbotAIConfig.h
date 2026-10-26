@@ -368,6 +368,7 @@ public:
 
     uint32 CommandServerPort;
     bool PerfMonEnabled;
+    bool PerfMonWorldThread;
     bool DebugThreadChecks;
     bool SkipIdleTriggerChecks;
     bool SummonWhenGroup;

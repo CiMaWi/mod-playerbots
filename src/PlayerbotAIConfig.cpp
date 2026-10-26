@@ -477,6 +477,7 @@ bool PlayerbotAIConfig::Initialize()
 
     CommandServerPort = sConfigMgr->GetOption<int32>("Playerbots.CommandServerPort", 8888);
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
+    PerfMonWorldThread = sConfigMgr->GetOption<bool>("Playerbots.PerfMonWorldThread", false);
     DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
     PlayerbotThreadCheck::enabled = DebugThreadChecks;
     SkipIdleTriggerChecks = sConfigMgr->GetOption<bool>("Playerbots.SkipIdleTriggerChecks", false);
