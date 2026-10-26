@@ -559,6 +559,17 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (!bot->GetMap())
         return; // instances are created and destroyed on demand
 
+    if (strategySnapshotRequested.load(std::memory_order_relaxed))
+        TakeStrategySnapshot();
+
+    if (sPlayerbotAIConfig.TacticsEnable)
+    {
+        tacticContext.store(static_cast<uint8>(ProbeTacticContext(bot)), std::memory_order_relaxed);
+        // Harness matches keep the "fight enemies" snapshot of .playerbots tactics show current
+        if (pvpTestCounting)
+            aiObjectContext->GetValue<GuidVector>("fight enemies")->Get();
+    }
+
     PerfMonitorOperation* pmo = nullptr;
     if (PerfMonitor::IsEnabled())
     {
@@ -6824,7 +6835,68 @@ void PlayerbotAI::SetPvpTestCounting(bool on)
         pvpTestExecuted.fill(0);
         pvpTestCc = PvpTestCcCounters();
         pvpTestTactics.fill(0);
+        return;
     }
+
+    // A tactic mask the harness forced lasts for the match only
+    ResetTacticMask();
+}
+
+void PlayerbotAI::SetTacticMask(uint32 mask, bool forced)
+{
+    tacticMask.store(mask & TACTIC_ALL_MASK, std::memory_order_relaxed);
+    tacticMaskForced.store(forced, std::memory_order_relaxed);
+}
+
+TacticContext PlayerbotAI::ProbeTacticContext(Player* player)
+{
+    return ClassifyTacticContext(player->InArena(), player->InBattleground(), IsPlayerInPvpFight(player));
+}
+
+void PlayerbotAI::SetFightEnemiesSnapshot(GuidVector const& enemies)
+{
+    uint32 const count = std::min<uint32>(enemies.size(), TACTIC_FIGHT_ENEMIES_MAX);
+    for (uint32 index = 0; index < count; ++index)
+        fightEnemies[index].store(enemies[index].GetRawValue(), std::memory_order_relaxed);
+
+    fightEnemyCount.store(count, std::memory_order_release);
+}
+
+// Debug only: entries of two consecutive results may mix
+uint32 PlayerbotAI::GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const
+{
+    uint32 const count = std::min(fightEnemyCount.load(std::memory_order_acquire), TACTIC_FIGHT_ENEMIES_MAX);
+    for (uint32 index = 0; index < count; ++index)
+        enemies[index] = ObjectGuid(fightEnemies[index].load(std::memory_order_relaxed));
+
+    return count;
+}
+
+void PlayerbotAI::TakeStrategySnapshot()
+{
+    strategySnapshotRequested.store(false, std::memory_order_relaxed);
+    std::string text;
+    for (BotState const state : {BOT_STATE_COMBAT, BOT_STATE_NON_COMBAT})
+    {
+        text += state == BOT_STATE_COMBAT ? "combat:" : "; non-combat:";
+        for (std::string const& strategy : GetStrategies(state))
+            text += " " + strategy;
+    }
+
+    std::lock_guard<std::mutex> guard(strategySnapshotLock);
+    strategySnapshot = std::move(text);
+    strategySnapshotMs = getMSTime();
+}
+
+bool PlayerbotAI::GetStrategySnapshot(std::string& text, uint32& takenMs) const
+{
+    std::lock_guard<std::mutex> guard(strategySnapshotLock);
+    if (!strategySnapshotMs)
+        return false;
+
+    text = strategySnapshot;
+    takenMs = strategySnapshotMs;
+    return true;
 }
 
 namespace

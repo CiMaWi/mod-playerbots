@@ -8,6 +8,8 @@
 #define PLAYERBOTS_PLAYERBOTAI_H
 
 #include <array>
+#include <atomic>
+#include <mutex>
 #include <stack>
 
 #include "Chat.h"
@@ -27,6 +29,7 @@
 #include "PlayerbotTextMgr.h"
 #include "PvpTestCounters.h"
 #include "SpellAuras.h"
+#include "Tactics.h"
 #include "Util.h"
 #include "WorldPacket.h"
 
@@ -664,6 +667,33 @@ public:
         if (pvpTestCounting)
             ++pvpTestTactics[static_cast<uint32>(counter)];
     }
+    // Tactics (Tactics.h): one bit per TacticId. The mask comes from config at login (ResetTacticMask); the PvP
+    // harness overrides it per side for a match, and turning counting off gives the config mask back. Written on the
+    // world thread or the bot's own, read by the bot's update: atomic.
+    uint32 GetTacticMask() const { return tacticMask.load(std::memory_order_relaxed); }
+    bool IsTacticMaskForced() const { return tacticMaskForced.load(std::memory_order_relaxed); }
+    void SetTacticMask(uint32 mask, bool forced);
+    void ResetTacticMask() { SetTacticMask(sPlayerbotAIConfig.TacticsConfigMask, false); }
+    // The context probed at the start of the bot's last update (only while Playerbots.Tactics.Enable is 1; Pve before)
+    TacticContext GetTacticContext() const
+    {
+        return static_cast<TacticContext>(tacticContext.load(std::memory_order_relaxed));
+    }
+    static TacticContext ProbeTacticContext(Player* player);
+    // The tactic is in the bot's mask and its scope holds the current context. No master exemption (DT.2).
+    bool TacticEnabledHere(TacticId id) const
+    {
+        return IsTacticAllowed(sPlayerbotAIConfig.TacticsEnable, GetTacticMask(), id,
+                               sPlayerbotAIConfig.TacticConfig[static_cast<uint32>(id)].Scope, GetTacticContext());
+    }
+    // A tactic fired: counted per tactic and context for .playerbots tactics stats
+    void NoteTacticUse(TacticId id) const { NoteTacticActivation(id, GetTacticContext()); }
+    // Debug snapshots for .playerbots tactics show (world thread): the last "fight enemies" result, and the strategy
+    // lists, taken at the bot's next update after a request
+    void SetFightEnemiesSnapshot(GuidVector const& enemies);
+    uint32 GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const;
+    void RequestStrategySnapshot() { strategySnapshotRequested.store(true, std::memory_order_relaxed); }
+    bool GetStrategySnapshot(std::string& text, uint32& takenMs) const;
     // Around Action::Execute: Begin returns the category (0 = not counted) and the current target for a target switch,
     // End counts the action once it has executed (a target switch only when the current target changed)
     uint8 BeginExecutedCount(Action* action, ObjectGuid& previousTarget);
@@ -751,6 +781,16 @@ protected:
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
     PvpTestCcCounters pvpTestCc;
     std::array<uint32, PVPTEST_TACTIC_COUNT> pvpTestTactics{};
+    std::atomic<uint32> tacticMask{0};
+    std::atomic<bool> tacticMaskForced{false};
+    std::atomic<uint8> tacticContext{static_cast<uint8>(TacticContext::Pve)};
+    std::atomic<uint32> fightEnemyCount{0};
+    std::array<std::atomic<uint64>, TACTIC_FIGHT_ENEMIES_MAX> fightEnemies{};
+    std::atomic<bool> strategySnapshotRequested{false};
+    mutable std::mutex strategySnapshotLock;
+    std::string strategySnapshot;
+    uint32 strategySnapshotMs = 0;
+    void TakeStrategySnapshot();
 };
 
 #endif

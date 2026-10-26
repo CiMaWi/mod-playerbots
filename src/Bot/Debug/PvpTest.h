@@ -9,6 +9,7 @@
 
 #include <deque>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -44,6 +45,9 @@ struct PvpTestArenaParams
     uint8 SkillB = 0;
     std::vector<std::string> CompA;
     std::vector<std::string> CompB;
+    // G0c: the tactic mask edit of each side ("+x,-y" on the config mask, "" = no tactic), unset = the config mask
+    std::optional<std::string> TacticsA;
+    std::optional<std::string> TacticsB;
 };
 
 // One forced arena match between two bot sides, ticked from the world thread. Stages: Resolve (in the command) ->
@@ -169,6 +173,9 @@ struct PvpTestPlan
     // skill=<hi>:<lo>: A is high on odd matches and low on even ones, B the other way round (0 = not forced)
     uint8 SkillHigh = 0;
     uint8 SkillLow = 0;
+    // tacticsA= / tacticsB=: the same edits for every match of the plan
+    std::optional<std::string> TacticsA;
+    std::optional<std::string> TacticsB;
     std::string WaitReason;  // why the last draw gave no roster (a comp short of bots), empty when it did
     ObjectGuid Issuer;
     uint32 Launched = 0;

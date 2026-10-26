@@ -29,6 +29,7 @@
 #include "EnemyHealerTargetValue.h"
 #include "EnemyPlayerValue.h"
 #include "EstimatedLifetimeValue.h"
+#include "FightEnemiesValue.h"
 #include "FishValues.h"
 #include "Formations.h"
 #include "GrindTargetValue.h"
@@ -211,6 +212,7 @@ public:
 
         creators["balance"] = &ValueContext::balance;
         creators["attackers"] = &ValueContext::attackers;
+        creators["fight enemies"] = &ValueContext::fight_enemies;
         creators["invalid target"] = &ValueContext::invalid_target;
         creators["mana save level"] = &ValueContext::mana_save_level;
         creators["combat"] = &ValueContext::combat;
@@ -361,6 +363,7 @@ private:
     static UntypedValue* invalid_target(PlayerbotAI* botAI) { return new InvalidTargetValue(botAI); }
     static UntypedValue* balance(PlayerbotAI* botAI) { return new BalancePercentValue(botAI); }
     static UntypedValue* attackers(PlayerbotAI* botAI) { return new AttackersValue(botAI); }
+    static UntypedValue* fight_enemies(PlayerbotAI* botAI) { return new FightEnemiesValue(botAI); }
 
     static UntypedValue* position(PlayerbotAI* botAI) { return new PositionValue(botAI); }
     static UntypedValue* pos(PlayerbotAI* botAI) { return new SinglePositionValue(botAI); }

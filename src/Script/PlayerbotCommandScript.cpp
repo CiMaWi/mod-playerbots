@@ -23,6 +23,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
+#include "Tactics.h"
 #include "TestPlayer.h"
 #include "WorldThreadMonitor.h"
 
@@ -122,6 +123,12 @@ public:
             {"traceselftest", MatchTrace::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsTacticsCommandTable = {
+            {"show", TacticCommands::HandleShowCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stats", TacticCommands::HandleStatsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", TacticCommands::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -139,6 +146,7 @@ public:
             {"ladder", playerbotsLadderCommandTable},
             {"pvpgear", playerbotsPvpGearCommandTable},
             {"matchlog", playerbotsMatchLogCommandTable},
+            {"tactics", playerbotsTacticsCommandTable},
         };
 
         static ChatCommandTable commandTable = {

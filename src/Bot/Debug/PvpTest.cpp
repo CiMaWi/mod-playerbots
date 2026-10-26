@@ -44,6 +44,7 @@
 #include "SpellMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
+#include "Tactics.h"
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -76,11 +77,13 @@ std::array<ArenaMap, 5> const ArenaMaps = {{
 constexpr char const* PlanUsage =
     "Usage: .playerbots pvptest plan start total=<n> [concurrency=<n>] [seed=<base>] [map=na|be|rl|ds|rv|random] "
     "[pool=random|teams:<teamA>;<teamB>;...|bots:<name>,<name>,...|comps:<class>/<spec>+<class>/<spec>[;...]] "
-    "[skill=<hi>:<lo>] (quote a token that contains spaces)";
+    "[skill=<hi>:<lo>] [tacticsA=<+name,-name>] [tacticsB=<+name,-name>] (quote a token that contains spaces; "
+    "tactics edits start from the config mask, an empty value means no tactic)";
 
 constexpr char const* Usage =
     "Usage: .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] "
-    "[seed=<n>] [skillA=<1-99>] [skillB=<1-99>] (quote team names with spaces)";
+    "[seed=<n>] [skillA=<1-99>] [skillB=<1-99>] [tacticsA=<+name,-name>] [tacticsB=<+name,-name>] (quote team "
+    "names with spaces; tactics edits start from the config mask, an empty value means no tactic)";
 
 std::string DescribeSide(PvpTestSide const& side)
 {
@@ -238,6 +241,16 @@ PvpTestArenaJob::PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide s
         sideRecord.ForcedComp = index == 0 ? _params.CompA : _params.CompB;
         if (uint8 const forcedSkill = index == 0 ? _params.SkillA : _params.SkillB)
             sideRecord.ForcedSkill = forcedSkill;
+
+        std::optional<std::string> const& forcedTactics = index == 0 ? _params.TacticsA : _params.TacticsB;
+        uint32 forcedMask = 0;
+        std::string tacticsError;
+        if (forcedTactics &&
+            ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, *forcedTactics, forcedMask, tacticsError))
+        {
+            sideRecord.ForcedTactics = *forcedTactics;
+            sideRecord.ForcedTacticMask = forcedMask;
+        }
 
         for (size_t member = 0; member < side.Members.size(); ++member)
         {
@@ -632,6 +645,8 @@ void PvpTestArenaJob::CaptureRoster()
     {
         // G0a: the skill forced on this side, set once here before it is read into the record and counting starts
         uint8 const forcedSkill = index == 0 ? _params.SkillA : _params.SkillB;
+        // G0c: the side's tactic mask, until counting is turned off (PlayerbotAI::SetPvpTestCounting)
+        std::optional<uint32> const forcedMask = _record.Sides[index].ForcedTacticMask;
         for (PvpTestBotRecord& bot : _record.Sides[index].Bots)
         {
             Player* player = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(bot.Guid));
@@ -649,6 +664,9 @@ void PvpTestArenaJob::CaptureRoster()
                     botAI->SetPvpSkill(forcedSkill);
                     _skillsApplied = true;
                 }
+
+                if (forcedMask)
+                    botAI->SetTacticMask(*forcedMask, true);
 
                 bot.GearScore = botAI->GetEquipGearScore(player);
                 if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
@@ -1459,6 +1477,23 @@ bool DrawCompRoster(PvpTestPlan& plan, std::set<ObjectGuid> const& inUse, PvpTes
     return shortage.empty();
 }
 
+// G0c: a side's tactic mask edit, checked against the names here so the match starts with a valid one
+bool ParseTactics(std::string const& value, std::optional<std::string>& tactics, std::string& error)
+{
+    if (!sPlayerbotAIConfig.TacticsEnable)
+    {
+        error = "Forced tactics need Playerbots.Tactics.Enable = 1";
+        return false;
+    }
+
+    uint32 mask = 0;
+    if (!ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, value, mask, error))
+        return false;
+
+    tactics = value;
+    return true;
+}
+
 bool ParseSkill(std::string const& value, uint8& skill, std::string& error)
 {
     if (!sPlayerbotAIConfig.SkillEnable)
@@ -1566,6 +1601,8 @@ bool PvpTestMgr::LaunchPlanMatch(std::string& error)
         params.SkillB = sideAHigh ? _plan->SkillLow : _plan->SkillHigh;
     }
 
+    params.TacticsA = _plan->TacticsA;
+    params.TacticsB = _plan->TacticsB;
     params.PlanId = _plan->Id;
     params.PlanIndex = _plan->Launched + 1;
     params.MatchId = Acore::StringFormat("m-{}-{}", _plan->Id, params.PlanIndex);
@@ -1699,6 +1736,12 @@ bool PvpTestMgr::HandleArenaCommand(ChatHandler* handler, char const* args)
             std::string skillError;
             if (!ParseSkill(value, key == "skilla" ? params.SkillA : params.SkillB, skillError))
                 return CommandFail(handler, skillError);
+        }
+        else if (key == "tacticsa" || key == "tacticsb")
+        {
+            std::string tacticsError;
+            if (!ParseTactics(value, key == "tacticsa" ? params.TacticsA : params.TacticsB, tacticsError))
+                return CommandFail(handler, Acore::StringFormat("Bad option '{}': {}", token, tacticsError));
         }
         else
             return CommandFail(handler, Acore::StringFormat("Bad option '{}'. {}", token, Usage));
@@ -1844,6 +1887,12 @@ bool PvpTestMgr::HandlePlanStartCommand(ChatHandler* handler, char const* args)
                 !ParseSkill(skills[1], plan->SkillLow, skillError))
                 return CommandFail(handler,
                                    Acore::StringFormat("Bad option '{}': {}. {}", token, skillError, PlanUsage));
+        }
+        else if (key == "tacticsa" || key == "tacticsb")
+        {
+            std::string tacticsError;
+            if (!ParseTactics(value, key == "tacticsa" ? plan->TacticsA : plan->TacticsB, tacticsError))
+                return CommandFail(handler, Acore::StringFormat("Bad option '{}': {}", token, tacticsError));
         }
         else
             return CommandFail(handler, Acore::StringFormat("Bad option '{}'. {}", token, PlanUsage));

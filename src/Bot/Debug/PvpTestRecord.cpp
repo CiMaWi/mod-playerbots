@@ -15,6 +15,7 @@
 #include "Config.h"
 #include "Log.h"
 #include "StringFormat.h"
+#include "Tactics.h"
 
 namespace
 {
@@ -147,13 +148,27 @@ std::string SideToJson(PvpTestSideRecord const& side)
     for (std::string const& entry : side.ForcedComp)
         forcedComp += (forcedComp.empty() ? "" : ",") + Quote(entry);
 
+    std::string forcedTacticMask = "null";
+    if (side.ForcedTacticMask)
+    {
+        std::string names;
+        for (uint32 index = 0; index < TACTIC_COUNT; ++index)
+        {
+            if (*side.ForcedTacticMask & TacticBit(static_cast<TacticId>(index)))
+                names += (names.empty() ? "" : ",") + Quote(TACTIC_DEFINITIONS[index].Name);
+        }
+
+        forcedTacticMask = "[" + names + "]";
+    }
+
     return Acore::StringFormat(
         "{{\"label\":{},\"side\":{},\"teamId\":{},\"faction\":{},\"comp\":[{}],\"bots\":[{}],"
         "\"teamName\":{},\"teamRatingBefore\":{},\"teamRatingAfter\":{},\"mmrBefore\":{},\"mmrAfter\":{},"
-        "\"forced\":{{\"comp\":[{}],\"skill\":{}}}}}",
+        "\"forced\":{{\"comp\":[{}],\"skill\":{},\"tactics\":{},\"tacticMask\":{}}}}}",
         Quote(side.Label), Quote(std::string(1, side.Side)), side.TeamId, Quote(side.Faction), compJson, bots,
         Quote(side.TeamName), NumberOrNull(side.TeamRatingBefore), NumberOrNull(side.TeamRatingAfter),
-        NumberOrNull(side.MmrBefore), NumberOrNull(side.MmrAfter), forcedComp, NumberOrNull(side.ForcedSkill));
+        NumberOrNull(side.MmrBefore), NumberOrNull(side.MmrAfter), forcedComp, NumberOrNull(side.ForcedSkill),
+        side.ForcedTactics ? Quote(*side.ForcedTactics) : std::string("null"), forcedTacticMask);
 }
 }  // namespace
 

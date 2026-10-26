@@ -837,6 +837,28 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
     SkillNoticeActive = SkillEnable && (SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
                                         SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0);
+    TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
+    TacticsConfigMask = 0;
+    for (uint32 index = 0; index < TACTIC_COUNT; ++index)
+    {
+        TacticDefinition const& definition = TACTIC_DEFINITIONS[index];
+        std::string const prefix = std::string("Playerbots.Tactics.") + definition.ConfigName;
+        TacticSettings& settings = TacticConfig[index];
+        // The per-tactic keys are optional (commented in playerbots.conf.dist): no missing-key warnings
+        settings.Enable = sConfigMgr->GetOption<bool>(prefix + ".Enable", false, false);
+        settings.Scope = definition.DefaultScope;
+        std::string const scope = sConfigMgr->GetOption<std::string>(prefix + ".Scope", "", false);
+        std::string error;
+        if (!scope.empty() && !ParseTacticScope(scope, settings.Scope, error))
+        {
+            LOG_WARN("playerbots", "{}.Scope: {}; using {}", prefix, error, FormatTacticScope(definition.DefaultScope));
+            settings.Scope = definition.DefaultScope;
+        }
+
+        if (TacticsEnable && settings.Enable)
+            TacticsConfigMask |= TacticBit(static_cast<TacticId>(index));
+    }
+
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);

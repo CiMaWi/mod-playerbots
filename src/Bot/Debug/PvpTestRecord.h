@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -71,6 +72,10 @@ struct PvpTestSideRecord
     // none) and the hidden skill set for the match (-1 = none, written as null)
     std::vector<std::string> ForcedComp;
     int32 ForcedSkill = -1;
+    // G0c (additive): the tactic mask edit forced for the side ("+x,-y", written as null when none) and the mask it
+    // gave (the tactics' names)
+    std::optional<std::string> ForcedTactics;
+    std::optional<uint32> ForcedTacticMask;
     std::vector<PvpTestBotRecord> Bots;
 };
 

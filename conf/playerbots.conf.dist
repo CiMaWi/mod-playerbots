@@ -1696,6 +1696,37 @@ Playerbots.Skill.NoticeDelayMsAtSkill1 = 0
 Playerbots.Skill.NoticeDelayMsAtSkill99 = 0
 Playerbots.Skill.NoticeWindowMs = 1500
 
+# Bot tactics. With 0 (default) no tactic runs, nothing is probed per update and the bots' strategies are today's.
+# With 1, a tactic acts only when it is in the bot's tactic mask (the tactics whose own Enable is 1; the PvP test
+# harness overrides the mask per side with tacticsA= / tacticsB=) and the bot's current context is in its Scope.
+# Every bot uses the enabled tactics, the bots in a real player's group included.
+# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope]
+Playerbots.Tactics.Enable = 0
+
+# Per tactic (both keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,
+# a comma list of the contexts it acts in: Arena, Battleground, World (open-world PvP: duels and PvP combat outside
+# battlegrounds), Pve, or All / None. An unknown context logs a warning and keeps the default. The names and their
+# default scopes:
+#   Hold        Arena,Battleground,World   target hold
+#   Plan        Arena,Battleground         team plan (kill and crowd-control marks)
+#   Cc          Arena,Battleground,World   crowd control use and chains
+#   OwnCc       All                        own crowd control kept
+#   Trinket     Arena,Battleground,World   trinket and racials on crowd control that matters
+#   Dispel      All                        partner's crowd control dispelled first
+#   Interrupt   All                        interrupt choice and timing
+#   Defensive   All                        defensives on burst
+#   Protect     Arena,Battleground,World   partner protection
+#   Fake        Arena,Battleground,World   fake casts
+#   Los         Arena,Battleground,World   line of sight regained
+#   Pillar      Arena                      pillar play
+#   Kite        Arena,Battleground,World   kiting
+#   Drink       Arena,Battleground         drinking
+#   Natural     All                        natural reaction, facing, tracking, paths (PvE: in sight of a real player)
+#   Jump        Arena                      tactical jumps
+# Example (the defaults):
+# Playerbots.Tactics.Hold.Enable = 0
+# Playerbots.Tactics.Hold.Scope = Arena,Battleground,World
+
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).
 # When the server slows down, fewer bots are kept active to reduce load.

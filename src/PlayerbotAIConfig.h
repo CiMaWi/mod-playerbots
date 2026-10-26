@@ -9,6 +9,7 @@
 
 #include "DBCEnums.h"
 #include "SharedDefines.h"
+#include "Tactics.h"
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -458,6 +459,11 @@ public:
     uint32 SkillNoticeDelayMsHigh;
     uint32 SkillNoticeWindowMs;
     bool SkillNoticeActive;
+    // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope (indexed by TacticId), and the mask of
+    // the tactics enabled in config (0 while the system is off)
+    bool TacticsEnable;
+    std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
+    uint32 TacticsConfigMask;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;
