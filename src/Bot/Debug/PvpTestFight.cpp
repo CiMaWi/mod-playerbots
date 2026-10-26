@@ -17,6 +17,7 @@
 #include "DBCStores.h"
 #include "Group.h"
 #include "Log.h"
+#include "MatchLog.h"
 #include "ObjectAccessor.h"
 #include "Opcodes.h"
 #include "Player.h"
@@ -373,6 +374,7 @@ PvpTestFightJob::PvpTestFightJob(PvpTestFightParams const& params, PvpTestSide s
     // The record has every field from the start, so a failed or stopped fight is still a complete line
     _record.Kind = _params.Kind;
     _record.Id = _params.MatchId;
+    MatchLog::Stamp(_record);
     _record.StartTime = PvpTestRecordWriter::IsoTimeNow();
     _record.ArenaType = 0;
     _record.Rated = false;

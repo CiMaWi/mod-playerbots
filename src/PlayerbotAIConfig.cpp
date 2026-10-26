@@ -768,6 +768,7 @@ bool PlayerbotAIConfig::Initialize()
     LadderRole = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
                                     LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
     LadderServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
+    MatchLogEnable = sConfigMgr->GetOption<bool>("Playerbots.MatchLog.Enable", false);
     LadderDepartTimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.DepartTimeoutSeconds", 600), 5, 86400);
     LadderContactMinutes =

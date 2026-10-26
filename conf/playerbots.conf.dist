@@ -1356,7 +1356,8 @@ Playerbots.TestPlayer.Account = "WBTEST"
 # Every finished, failed or stopped match appends one JSON line (schema 1, kind arena: id, plan, index, time, seed,
 # map, outcome, winner, fightMs, totalMs and per side the bots with class, spec, gear score, damage, healing,
 # killing blows, deaths; skill is null until the bots have one) to <LogsDir>/pvptest/matches-<YYYYMMDD>.jsonl. The
-# world thread only builds the line; a writer thread owns the file.
+# line is built in memory; a writer thread owns the file. The line also carries the server and a match id (always);
+# with Playerbots.MatchLog.Enable it also carries the ratings, honor and the real flag (see there).
 # "duel" and "brawl" force an unrated fight in the open world (not in a battleground): the bots (maximum-level random
 # bots, at most 5 per side) are logged in, taken out of groups, queues and combat, and teleported to FightLocation
 # below, side A and side B facing each other. A duel is one bot against one bot (any factions): the first bot casts
@@ -1466,6 +1467,18 @@ Playerbots.Ladder.Role = 0
 
 # Name of this server in .playerbots ladder status (e.g. main, arena1). Default: empty
 Playerbots.Ladder.ServerId = ""
+
+# Match log: every arena match that ends on this server (a match of bots, a harness match, a match with a real player)
+# appends exactly one JSON line to <LogsDir>/pvptest/matches-<YYYYMMDD>.jsonl, the file and schema 1 of the PvP test
+# harness (Playerbots.PvpTest.*), with these keys added: server (Playerbots.Ladder.ServerId, "main" when empty), matchId
+# (<server>-<process start YYYYMMDDHHMMSS UTC>-<n>), source (organic, harness or player), real (a real player took
+# part), ratingsKnown, per side teamName, teamRatingBefore/After and mmrBefore/After (null for an unrated match) and per
+# bot real, honor, personalBefore/After, mmrChange and the cast counts (casts), which are counted for every bot of an
+# arena from the moment its gates open. A harness match keeps its own record and id (m-...) and gets the same fields.
+# One "MATCHLOG:" line per record in the log; .playerbots matchlog status shows the counts and the writer queue.
+# The hooks run on the arena maps' threads and cost one capture per match; with 0 they return at once and no bot counts.
+# Default: 0 (off: only harness matches write records)
+Playerbots.MatchLog.Enable = 0
 
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600

@@ -656,6 +656,15 @@ public:
     // End counts the action once it has executed (a target switch only when the current target changed)
     uint8 BeginExecutedCount(Action* action, ObjectGuid& previousTarget);
     void EndExecutedCount(uint8 category, ObjectGuid previousTarget);
+    // What the counting cost since the start of the process, all bots: the actions that went through
+    // BeginExecutedCount (a multiple of 8 per thread) and the summed time of the sampled name lookups
+    struct CountingStats
+    {
+        uint64 Calls = 0;
+        uint64 Samples = 0;
+        uint64 SampledNs = 0;
+    };
+    static CountingStats GetCountingStats();
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();

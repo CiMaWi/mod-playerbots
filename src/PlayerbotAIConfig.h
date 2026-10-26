@@ -418,6 +418,7 @@ public:
     bool LadderEnable;
     uint32 LadderRole;
     std::string LadderServerId;
+    bool MatchLogEnable;
     uint32 LadderDepartTimeoutSeconds;
     uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;

@@ -24,6 +24,7 @@
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
 #include "LadderMgr.h"
+#include "MatchLog.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -625,9 +626,10 @@ public:
         BGTactics::SetBotStrategies(bg->GetInstanceID(), data);
     }
 
-    void OnBattlegroundEnd(Battleground* bg, TeamId /*winnerTeam*/) override
+    void OnBattlegroundEnd(Battleground* bg, TeamId winnerTeam) override
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
+        MatchLog::OnEnd(bg, winnerTeam);  // Map thread: an arena's record (Playerbots.MatchLog.Enable)
         PvpGearMgr::QueueMatchEnd(bg);  // Map thread: a rated arena's players get a buy check on the world thread
     }
 
@@ -635,8 +637,9 @@ public:
     void OnBattlegroundAddPlayer(Battleground* /*bg*/, Player* player) override { PvpGearMgr::QueueWear(player); }
 
     // Map thread: the loadout comes off and the PvE gear back on (queued to the world thread)
-    void OnBattlegroundRemovePlayerAtLeave(Battleground* /*bg*/, Player* player) override
+    void OnBattlegroundRemovePlayerAtLeave(Battleground* bg, Player* player) override
     {
+        MatchLog::OnLeave(bg, player);  // Map thread: an arena bot stops counting and keeps its casts
         PvpGearMgr::QueueUnwear(player);
     }
 };
@@ -660,6 +663,7 @@ void AddSC_RubySanctumBotScripts();
 void AddSC_randombot_level_mgr();
 void AddSC_census();
 void AddSC_acquaintance();
+void AddSC_match_log();
 
 void AddPlayerbotsScripts()
 {
@@ -687,4 +691,5 @@ void AddPlayerbotsScripts()
     AddSC_randombot_level_mgr();
     AddSC_census();
     AddSC_acquaintance();
+    AddSC_match_log();
 }

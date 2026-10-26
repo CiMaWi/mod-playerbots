@@ -616,7 +616,10 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     // Only bots in a PvP test match count executed casts of the skill categories (the match record)
     ObjectGuid countTarget;
-    uint8 const countCategory = botAI->IsPvpTestCounting() ? botAI->BeginExecutedCount(action, countTarget) : 0;
+    bool const counting = botAI->IsPvpTestCounting();
+    // The row of everything a counting bot executes (PerfMonitor on): the base the cost of the counting is read against
+    PerfMonitorOperation* countingPmo = counting ? sPerfMonitor.start(PERF_MON_TOTAL, "Counted bot actions") : nullptr;
+    uint8 const countCategory = counting ? botAI->BeginExecutedCount(action, countTarget) : 0;
 
     if (actionExecutionListeners.Before(action, event))
     {
@@ -647,6 +650,9 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     if (countCategory && actionExecuted)
         botAI->EndExecutedCount(countCategory, countTarget);
+
+    if (countingPmo)
+        countingPmo->finish();
 
     if (actionExecuted && action->GetDuration() > 0)
         botAI->SetActionDuration(action);

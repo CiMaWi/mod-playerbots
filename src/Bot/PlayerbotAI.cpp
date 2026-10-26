@@ -60,6 +60,8 @@
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <sstream>
@@ -6778,9 +6780,39 @@ void PlayerbotAI::SetPvpTestCounting(bool on)
         pvpTestExecuted.fill(0);
 }
 
+namespace
+{
+// The cost of the counting (M9 review): the actions that went through BeginExecutedCount and the time of the name
+// lookup, which is timed in one call out of CountSampleEvery per thread (so the other calls pay no atomic and no clock)
+constexpr uint32 CountSampleEvery = 8;
+std::atomic<uint64> countingCalls{0};
+std::atomic<uint64> countingSamples{0};
+std::atomic<uint64> countingSampledNs{0};
+}  // namespace
+
+PlayerbotAI::CountingStats PlayerbotAI::GetCountingStats()
+{
+    return CountingStats{countingCalls.load(), countingSamples.load(), countingSampledNs.load()};
+}
+
 uint8 PlayerbotAI::BeginExecutedCount(Action* action, ObjectGuid& previousTarget)
 {
-    SkillNoticeCategory const category = SkillNoticeCategoryOf(action->getName());
+    static thread_local uint32 tick = 0;
+    SkillNoticeCategory category;
+    if (++tick % CountSampleEvery == 0)
+    {
+        auto const start = std::chrono::steady_clock::now();
+        category = SkillNoticeCategoryOf(action->getName());
+        auto const elapsed = std::chrono::steady_clock::now() - start;
+        countingCalls.fetch_add(CountSampleEvery, std::memory_order_relaxed);
+        countingSamples.fetch_add(1, std::memory_order_relaxed);
+        countingSampledNs.fetch_add(
+            static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
+            std::memory_order_relaxed);
+    }
+    else
+        category = SkillNoticeCategoryOf(action->getName());
+
     if (category == SkillNoticeCategory::None)
         return 0;
 

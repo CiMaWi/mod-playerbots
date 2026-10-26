@@ -13,6 +13,7 @@
 #include "Chat.h"
 #include "GuildTaskMgr.h"
 #include "LadderMgr.h"
+#include "MatchLog.h"
 #include "PerfMonitor.h"
 #include "PlayerbotMgr.h"
 #include "PvpGearMgr.h"
@@ -104,6 +105,11 @@ public:
             {"grant", PvpGearMgr::HandleGrantCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsMatchLogCommandTable = {
+            {"status", MatchLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", MatchLog::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -119,6 +125,7 @@ public:
             {"situation", playerbotsSituationCommandTable},
             {"ladder", playerbotsLadderCommandTable},
             {"pvpgear", playerbotsPvpGearCommandTable},
+            {"matchlog", playerbotsMatchLogCommandTable},
         };
 
         static ChatCommandTable commandTable = {

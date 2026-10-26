@@ -28,6 +28,7 @@
 #include "Group.h"
 #include "GroupMgr.h"
 #include "Log.h"
+#include "MatchLog.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -211,6 +212,7 @@ PvpTestArenaJob::PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide s
 {
     // The record has every field from the start, so a failed or stopped match is still a complete line
     _record.Id = _params.MatchId;
+    MatchLog::Stamp(_record);  // M9: server and match id (the id stays the harness id)
     _record.PlanId = _params.PlanId;
     _record.Index = _params.PlanIndex;
     _record.StartTime = PvpTestRecordWriter::IsoTimeNow();
@@ -595,6 +597,8 @@ bool PvpTestArenaJob::StartArena(std::string& error)
         return false;
     }
 
+    // M9: the match log leaves the record of this arena to this job (it hands over the ratings at the arena's end)
+    MatchLog::Claim(arena->GetInstanceID(), _record.MatchId);
     // The invite decides the sides, so two teams of one faction can meet
     arena->SetArenaMatchmakerRating(TEAM_ALLIANCE, matchmakerRatingA);
     arena->SetArenaMatchmakerRating(TEAM_HORDE, matchmakerRatingB);
@@ -682,6 +686,9 @@ void PvpTestArenaJob::CaptureScores(Battleground const* arena)
 PvpTestMatchRecord PvpTestArenaJob::BuildRecord() const
 {
     PvpTestMatchRecord record = _record;
+    if (_instanceId)
+        MatchLog::Merge(_instanceId, record);  // M9: ratings, honor and the like, when the arena's end was seen
+
     record.Outcome = _result.Outcome;
     record.Winner = _result.Winner;
     record.WinnerSide = _result.WinnerSide;
@@ -923,6 +930,7 @@ PvpTestMatchRecord SetupFailureRecord(PvpTestArenaParams const& params, std::str
 {
     PvpTestMatchRecord record;
     record.Id = params.MatchId;
+    MatchLog::Stamp(record);
     record.PlanId = params.PlanId;
     record.Index = params.PlanIndex;
     record.StartTime = PvpTestRecordWriter::IsoTimeNow();
