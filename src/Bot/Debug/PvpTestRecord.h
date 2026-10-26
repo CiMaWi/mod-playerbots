@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "Common.h"
+#include "PvpTestCounters.h"
 
 // One bot of a recorded match: roster facts taken when the arena starts, scores taken from the battleground
 struct PvpTestBotRecord
@@ -40,6 +41,9 @@ struct PvpTestBotRecord
     // Executed casts by skill category while the match ran: interrupt, defensive, dispel, crowd control, cc break,
     // target switch (the categories of Playerbots.Skill.Notice*)
     std::array<uint32, 6> Casts{};
+    // G0b (additive): crowd control by DR group and the tactics' named counters while the match ran
+    PvpTestCcCounters Cc;
+    std::array<uint32, PVPTEST_TACTIC_COUNT> Tactics{};
     // M9 (additive): a real (non-bot) player; honor from the battleground score; the personal arena rating before and
     // after the match (-1 = none, written as null); the matchmaker rating change of the member (only when known)
     bool Real = false;

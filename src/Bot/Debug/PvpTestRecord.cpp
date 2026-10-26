@@ -65,6 +65,46 @@ std::string Quote(std::string const& text)
 // A count that is null when unknown (-1)
 std::string NumberOrNull(int32 value) { return value < 0 ? std::string("null") : std::to_string(value); }
 
+// {"fear":2,...} with the non-zero DR groups only
+std::string DrGroupsToJson(std::array<uint32, PVPTEST_DR_GROUP_COUNT> const& counts)
+{
+    std::string json = "{";
+    for (uint32 group = 0; group < PVPTEST_DR_GROUP_COUNT; ++group)
+    {
+        if (!counts[group])
+            continue;
+
+        if (json.size() > 1)
+            json += ',';
+
+        json += Acore::StringFormat("\"{}\":{}", PVPTEST_DR_GROUP_NAMES[group], counts[group]);
+    }
+
+    json += '}';
+    return json;
+}
+
+// The cc and tactics objects of a bot (G0b); the tactics object lists every named counter, zero included
+std::string CountersToJson(PvpTestBotRecord const& bot)
+{
+    PvpTestCcCounters const& cc = bot.Cc;
+    std::string json = Acore::StringFormat(
+        "\"cc\":{{\"cast\":{},\"atImmune\":{},\"received\":{},\"ownBreaks\":{},\"trinket\":{},\"racialBreak\":{},"
+        "\"partnerDispel\":{},\"lostEarly\":{}}},\"tactics\":{{",
+        DrGroupsToJson(cc.Cast), cc.AtImmune, DrGroupsToJson(cc.Received), cc.OwnBreaks, cc.Trinket, cc.RacialBreak,
+        cc.PartnerDispel, cc.LostEarly);
+    for (uint32 index = 0; index < PVPTEST_TACTIC_COUNT; ++index)
+    {
+        if (index)
+            json += ',';
+
+        json += Acore::StringFormat("\"{}\":{}", PVPTEST_TACTIC_NAMES[index], bot.Tactics[index]);
+    }
+
+    json += '}';
+    return json;
+}
+
 std::string BotToJson(PvpTestBotRecord const& bot)
 {
     // skill is null when Playerbots.Skill.Enable is 0 or the player is not a bot
@@ -72,13 +112,13 @@ std::string BotToJson(PvpTestBotRecord const& bot)
         "{{\"guid\":{},\"name\":{},\"class\":{},\"classId\":{},\"race\":{},\"level\":{},\"spec\":{},\"gearScore\":{},"
         "\"skill\":{},\"entered\":{},\"damage\":{},\"healing\":{},\"killingBlows\":{},\"deaths\":{},"
         "\"honorableKills\":{},\"casts\":{{\"interrupt\":{},\"defensive\":{},\"dispel\":{},\"crowdControl\":{},"
-        "\"ccBreak\":{},\"targetSwitch\":{}}},\"real\":{},\"honor\":{},\"personalBefore\":{},"
+        "\"ccBreak\":{},\"targetSwitch\":{}}},{},\"real\":{},\"honor\":{},\"personalBefore\":{},"
         "\"personalAfter\":{},\"mmrChange\":{}}}",
         bot.Guid, Quote(bot.Name), Quote(PvpTestRecordWriter::ClassName(bot.ClassId)), static_cast<uint32>(bot.ClassId),
         static_cast<uint32>(bot.RaceId), static_cast<uint32>(bot.Level), Quote(bot.Spec), bot.GearScore,
         bot.Skill < 0 ? std::string("null") : std::to_string(bot.Skill), bot.Entered ? "true" : "false", bot.Damage,
         bot.Healing, bot.KillingBlows, bot.Deaths, bot.HonorableKills, bot.Casts[0], bot.Casts[1], bot.Casts[2],
-        bot.Casts[3], bot.Casts[4], bot.Casts[5], bot.Real ? "true" : "false", bot.Honor,
+        bot.Casts[3], bot.Casts[4], bot.Casts[5], CountersToJson(bot), bot.Real ? "true" : "false", bot.Honor,
         NumberOrNull(bot.PersonalBefore), NumberOrNull(bot.PersonalAfter),
         bot.MmrChangeKnown ? std::to_string(bot.MmrChange) : std::string("null"));
 }

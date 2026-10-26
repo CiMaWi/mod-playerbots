@@ -3672,6 +3672,33 @@ bool PlayerbotAI::CastSpell(std::string const name, Unit* target, Item* itemTarg
     return result;
 }
 
+namespace
+{
+// The DR group a cast counts under. A trap is cast as a summon spell without a group of its own (the spell only puts
+// the trap down); its crowd control is the spell the trap's game object casts when it springs.
+uint32 GetPvpTestCastGroup(SpellInfo const* spellInfo)
+{
+    uint32 const group = GetDiminishingReturnsGroupForSpell(spellInfo, false);
+    if (group != DIMINISHING_NONE)
+        return group;
+
+    for (SpellEffectInfo const& effect : spellInfo->Effects)
+    {
+        if (effect.Effect != SPELL_EFFECT_SUMMON_OBJECT_WILD && effect.Effect != SPELL_EFFECT_SUMMON_OBJECT_SLOT1)
+            continue;
+
+        GameObjectTemplate const* trap = sObjectMgr->GetGameObjectTemplate(effect.MiscValue);
+        if (!trap || trap->type != GAMEOBJECT_TYPE_TRAP)
+            continue;
+
+        if (SpellInfo const* trapSpell = sSpellMgr->GetSpellInfo(trap->trap.spellId))
+            return GetDiminishingReturnsGroupForSpell(trapSpell, false);
+    }
+
+    return DIMINISHING_NONE;
+}
+}  // namespace
+
 bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 {
     if (!spellId)
@@ -3872,6 +3899,18 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     // if (spellSuccess != SPELL_CAST_OK)
     //     return false;
 
+    // Harness counting reads the target's DR state before the cast, as the cast itself changes it. A partner's CC
+    // landing in the same moment can race with this read; accepted.
+    bool const counting = pvpTestCounting;
+    uint32 drGroup = 0;
+    bool atImmune = false;
+    if (counting)
+    {
+        drGroup = GetPvpTestCastGroup(spellInfo);
+        atImmune = IsPvpTestCcGroup(drGroup) && target != bot && target->IsPlayer() &&
+                   target->GetDiminishing(static_cast<DiminishingGroup>(drGroup)) == DIMINISHING_LEVEL_IMMUNE;
+    }
+
     SpellCastResult result = spell->prepare(&targets);
 
     if (result != SPELL_CAST_OK)
@@ -3968,6 +4007,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     }
 
     forceRebuff.NoteCast(spellInfo);
+
+    if (counting)
+        CountPvpTestCast(spellId, drGroup, atImmune);
 
     return true;
 }
@@ -6778,7 +6820,42 @@ void PlayerbotAI::SetPvpTestCounting(bool on)
 {
     pvpTestCounting = on;
     if (on)
+    {
         pvpTestExecuted.fill(0);
+        pvpTestCc = PvpTestCcCounters();
+        pvpTestTactics.fill(0);
+    }
+}
+
+namespace
+{
+constexpr uint32 SPELL_PVP_TRINKET = 42292;
+constexpr uint32 SPELL_EVERY_MAN_FOR_HIMSELF = 59752;
+constexpr uint32 SPELL_WILL_OF_THE_FORSAKEN = 7744;
+constexpr uint32 SPELL_ESCAPE_ARTIST = 20589;
+}  // namespace
+
+void PlayerbotAI::CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune)
+{
+    if (IsPvpTestCcGroup(drGroup))
+    {
+        ++pvpTestCc.Cast[drGroup];
+        if (atImmune)
+            ++pvpTestCc.AtImmune;
+    }
+
+    // The trinket and the racials have no DR group; no action casts the trinket yet
+    if (spellId == SPELL_PVP_TRINKET)
+        ++pvpTestCc.Trinket;
+    else if (spellId == SPELL_EVERY_MAN_FOR_HIMSELF || spellId == SPELL_WILL_OF_THE_FORSAKEN ||
+             spellId == SPELL_ESCAPE_ARTIST)
+        ++pvpTestCc.RacialBreak;
+}
+
+void PlayerbotAI::CountPvpTestReceivedCc(uint32 drGroup)
+{
+    if (pvpTestCounting && IsPvpTestCcGroup(drGroup))
+        ++pvpTestCc.Received[drGroup];
 }
 
 namespace

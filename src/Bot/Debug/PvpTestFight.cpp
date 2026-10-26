@@ -142,9 +142,29 @@ class PvpTestFightUnitScript : public UnitScript
 {
 public:
     PvpTestFightUnitScript()
-        : UnitScript("PvpTestFightUnitScript", true, {UNITHOOK_ON_DAMAGE, UNITHOOK_ON_HEAL, UNITHOOK_ON_UNIT_DEATH}),
+        : UnitScript("PvpTestFightUnitScript", true,
+                     {UNITHOOK_ON_DAMAGE, UNITHOOK_ON_HEAL, UNITHOOK_ON_UNIT_DEATH, UNITHOOK_ON_AURA_APPLY}),
           _stats(PvpTestFightStats::Instance())
     {
+    }
+
+    // A CC aura of an enemy landing on a counting bot (G0b). Fires for every aura of every unit: players only, then
+    // the bot's counting flag. A stack refresh fires it again; CC auras do not stack, a refresh is a new application.
+    void OnAuraApply(Unit* unit, Aura* aura) override
+    {
+        if (!unit->IsPlayer())
+            return;
+
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(unit->ToPlayer());
+        if (!botAI || !botAI->IsPvpTestCounting())
+            return;
+
+        Unit* caster = aura->GetCaster();
+        if (!caster || caster == unit || !caster->IsHostileTo(unit))
+            return;
+
+        botAI->CountPvpTestReceivedCc(
+            static_cast<uint32>(GetDiminishingReturnsGroupForSpell(aura->GetSpellInfo(), false)));
     }
 
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override { _stats.OnDamage(attacker, victim, damage); }
@@ -1016,7 +1036,11 @@ void PvpTestFightJob::CaptureStats()
 
         Player* player = ObjectAccessor::FindConnectedPlayer(_members[index]);
         if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
+        {
             bot.Casts = botAI->GetPvpTestExecuted();
+            bot.Cc = botAI->GetPvpTestCc();
+            bot.Tactics = botAI->GetPvpTestTactics();
+        }
     }
 }
 

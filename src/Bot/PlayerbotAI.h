@@ -25,6 +25,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
+#include "PvpTestCounters.h"
 #include "SpellAuras.h"
 #include "Util.h"
 #include "WorldPacket.h"
@@ -652,6 +653,17 @@ public:
     void SetPvpTestCounting(bool on);
     bool IsPvpTestCounting() const { return pvpTestCounting; }
     std::array<uint32, SkillNoticeCounters::Categories> const& GetPvpTestExecuted() const { return pvpTestExecuted; }
+    // Crowd control by DR group (casts, receipts, trinket and racial breaks) and the tactics' named counters; counted
+    // only while counting is on, zeroed when it is turned on
+    PvpTestCcCounters const& GetPvpTestCc() const { return pvpTestCc; }
+    std::array<uint32, PVPTEST_TACTIC_COUNT> const& GetPvpTestTactics() const { return pvpTestTactics; }
+    void CountPvpTestReceivedCc(uint32 drGroup);
+    void CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune);
+    void CountTactic(TacticCounter counter)
+    {
+        if (pvpTestCounting)
+            ++pvpTestTactics[static_cast<uint32>(counter)];
+    }
     // Around Action::Execute: Begin returns the category (0 = not counted) and the current target for a target switch,
     // End counts the action once it has executed (a target switch only when the current target changed)
     uint8 BeginExecutedCount(Action* action, ObjectGuid& previousTarget);
@@ -737,6 +749,8 @@ protected:
     SkillNoticeCounters skillNoticeCounters;
     bool pvpTestCounting = false;
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
+    PvpTestCcCounters pvpTestCc;
+    std::array<uint32, PVPTEST_TACTIC_COUNT> pvpTestTactics{};
 };
 
 #endif

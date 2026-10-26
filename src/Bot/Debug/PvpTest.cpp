@@ -695,7 +695,11 @@ void PvpTestArenaJob::CaptureScores(Battleground const* arena)
 
             Player* player = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(bot.Guid));
             if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
+            {
                 bot.Casts = botAI->GetPvpTestExecuted();
+                bot.Cc = botAI->GetPvpTestCc();
+                bot.Tactics = botAI->GetPvpTestTactics();
+            }
         }
     }
 }
