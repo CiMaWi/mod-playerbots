@@ -425,6 +425,17 @@ public:
     uint32 LadderDepartTimeoutSeconds;
     uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;
+    bool LadderMatchmakerEnable;
+    uint32 LadderMatchmakerDelayMinSeconds;
+    uint32 LadderMatchmakerDelayMaxSeconds;
+    uint32 LadderMatchmakerMmrWidth;
+    uint32 LadderMatchmakerWindow;
+    uint32 LadderMatchmakerWindowGrowth;
+    uint32 LadderMatchmakerRecentOpponents;
+    uint32 LadderMatchmakerTimeoutSeconds;
+    uint32 LadderMatchmakerMaxPicks;
+    bool LadderMatchmakerSkirmish;
+    bool LadderMatchmakerPoolOnly;
     bool PvpGearEnable;
     std::string PvpGearTierOrder;
     std::string PvpGearBaseTier;

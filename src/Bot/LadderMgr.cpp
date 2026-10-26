@@ -19,6 +19,7 @@
 #include "GameTime.h"
 #include "Group.h"
 #include "Log.h"
+#include "Matchmaker.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -64,9 +65,11 @@ bool Refuse(ChatHandler* handler, std::string const& message)
     return false;
 }
 
+}  // namespace
+
 // Invited from a queue: the slot's instance id (STATUS_WAIT_JOIN). Player::IsInvitedForBattlegroundInstance() without
 // an id is set only at the port accept, when the player is already in the battleground
-bool HasBattlegroundInvite(Player* player)
+bool LadderMgr::HasBattlegroundInvite(Player* player)
 {
     for (uint32 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
     {
@@ -81,7 +84,7 @@ bool HasBattlegroundInvite(Player* player)
 // The core's leave-queue path (WorldSession::HandleBattleFieldPortOpcode, action 0) for every queue the player is in
 // but not invited from. World thread (the queue update runs there too). A rated group not invited yet leaves as a
 // whole (BattlegroundQueue::RemovePlayer); without an invite the leave counts no loss and writes no deserter row
-void LeaveBattlegroundQueues(Player* player)
+void LadderMgr::LeaveBattlegroundQueues(Player* player, char const* reason)
 {
     for (uint32 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
     {
@@ -111,11 +114,13 @@ void LeaveBattlegroundQueues(Player* player)
             sBattlegroundMgr->ScheduleQueueUpdate(ginfo.ArenaMatchmakerRating, ginfo.ArenaType, queueTypeId,
                                                   ginfo.BgTypeId, BattlegroundBracketId(ginfo.BracketId));
 
-        LOG_INFO("playerbots", "Ladder: {} left the {} queue (its team departs)", player->GetName(),
-                 ginfo.ArenaType ? "arena" : "battleground");
+        LOG_INFO("playerbots", "Ladder: {} left the {} queue ({})", player->GetName(),
+                 ginfo.ArenaType ? "arena" : "battleground", reason);
     }
 }
 
+namespace
+{
 char const* RoleName(uint32 role)
 {
     switch (role)
@@ -514,7 +519,7 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
         for (ArenaTeamMember const& member : team->GetMembers())
         {
             if (Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid))
-                LeaveBattlegroundQueues(player);
+                LeaveBattlegroundQueues(player, "its team departs");
         }
 
         // The PvP gear comes off here first (an arena server wears it all the time): the worn rows stay on this
@@ -1004,12 +1009,21 @@ bool LadderMgr::IsTeamPinned(ArenaTeam* team, std::string* reason) const
 
 bool LadderMgr::IsTeamBusy(ArenaTeam* team)
 {
+    if (Matchmaker::Instance().IsReserved(team->GetId()))
+        return true;
+
     for (ArenaTeamMember const& member : team->GetMembers())
         if (Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid))
             if (player->InBattleground() || player->InBattlegroundQueue())
                 return true;
 
     return false;
+}
+
+bool LadderMgr::IsMoving(uint32 teamId) const
+{
+    auto const it = _moves.find(teamId);
+    return it != _moves.end() && IsBusy(it->second.Current);
 }
 
 bool LadderMgr::HandleTeamsCommand(ChatHandler* handler, char const* args)

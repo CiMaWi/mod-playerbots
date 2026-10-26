@@ -51,6 +51,9 @@ public:
     static bool HandleWhisperCommand(ChatHandler* handler, char const* args);
     // Groups a character with the test player as the leader (as an accepted invite), or "none" leaves the group
     static bool HandleGroupCommand(ChatHandler* handler, char const* args);
+    // Queues a 2v2 arena (rated: in a 2v2 team with the character, founded if missing) grouped with a character;
+    // "leave" leaves the queue. The test player accepts every battleground invite
+    static bool HandleArenaQueueCommand(ChatHandler* handler, char const* args);
 
 private:
     enum class State
@@ -70,6 +73,8 @@ private:
     Player* OnlinePlayer() const;
     bool Whisper(ChatHandler* handler, std::string const& target, std::string const& text);
     bool GroupWith(ChatHandler* handler, std::string const& target);
+    bool ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated);
+    void AcceptInvites(Player* player, uint32 diff);
 
     void StartLoad();
     void OnLoaded(LoginQueryHolder const& holder);
@@ -94,6 +99,7 @@ private:
     std::vector<TestPlayerWaypoint> const* _route = nullptr;
     uint32 _waypoint = 0;
     uint32 _attempts = 0;
+    uint32 _portTimer = 0;
 };
 
 #endif

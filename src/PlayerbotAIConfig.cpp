@@ -779,6 +779,26 @@ bool PlayerbotAIConfig::Initialize()
     LadderContactMinutes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
     LadderPoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
+    LadderMatchmakerEnable = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Enable", false);
+    LadderMatchmakerDelayMinSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMinSeconds", 3), 0, 600);
+    LadderMatchmakerDelayMaxSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMaxSeconds", 8),
+                           LadderMatchmakerDelayMinSeconds, 600);
+    LadderMatchmakerMmrWidth =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MmrWidth", 150), 1, 5000);
+    LadderMatchmakerWindow =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.Window", 200), 1, 5000);
+    LadderMatchmakerWindowGrowth =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.WindowGrowth", 5), 0, 1000);
+    LadderMatchmakerRecentOpponents =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.RecentOpponents", 3), 0, 20);
+    LadderMatchmakerTimeoutSeconds =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.TimeoutSeconds", 60), 5, 3600);
+    LadderMatchmakerMaxPicks =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MaxPicks", 3), 1, 100);
+    LadderMatchmakerSkirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
+    LadderMatchmakerPoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
     PvpGearEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Enable", false);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
     PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
@@ -981,6 +1001,10 @@ bool PlayerbotAIConfig::Initialize()
         DeleteRandomBotArenaTeams = false;
         ArenaTeamFormationEnable = false;
         ArenaRecruitEnable = false;
+        if (LadderMatchmakerEnable)
+            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 2: the matchmaker is off");
+
+        LadderMatchmakerEnable = false;
     }
     else if (LadderRole == LADDER_ROLE_MAIN)
     {

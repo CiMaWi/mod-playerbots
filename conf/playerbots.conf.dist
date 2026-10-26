@@ -1521,6 +1521,58 @@ Playerbots.Ladder.ContactMinutes = 15
 # Default: 0 (no pool)
 Playerbots.Ladder.PoolTeams = 0
 
+# Main: answers each 2v2 arena queue of a real player's group (rated, and skirmish with
+# Playerbots.Ladder.Matchmaker.Skirmish) with one resident pool team (Playerbots.Ladder.PoolTeams), queued a few
+# seconds later, so the core pairs the two: set the worldserver's Arena.MaxRatingDifference = 0 and keep bot rated
+# arena auto-join off (Playerbots.Ladder.Role = 1 does that). The team is drawn at random around the group's MMR,
+# weighted by 1 / (1 + (distance / MmrWidth)^2), inside a window of Window + WindowGrowth per second of the
+# player's wait (an empty window doubles until it holds a team). Never drawn: one of the last RecentOpponents teams
+# a player of the group faced (when only those are free, all but the last one), a pinned team
+# (Playerbots.Ladder.ContactMinutes) and a team with a member offline, in a battleground or its queue, a dungeon or
+# raid, the dungeon finder, another level bracket, or moving between servers. A drawn team that has not formed its
+# group, or not been paired, within TimeoutSeconds leaves the queue and another is drawn, up to MaxPicks per queue.
+# When the player leaves the queue the team leaves it too; its group is dissolved then and after the match. A group
+# with fewer players than the arena type is not answered. The recent opponents are kept in memory only. Never on
+# an arena server (Role = 2). Commands: .playerbots ladder matchmaker status|candidates [mmr]|selftest
+# Default: 0 (off)
+Playerbots.Ladder.Matchmaker.Enable = 0
+
+# Seconds from the player's queue to the pick: a random value in this range (0-600)
+# Default: 3, 8
+Playerbots.Ladder.Matchmaker.DelayMinSeconds = 3
+Playerbots.Ladder.Matchmaker.DelayMaxSeconds = 8
+
+# MMR distance at which a team is half as likely as a team at the group's MMR (1-5000)
+# Default: 150
+Playerbots.Ladder.Matchmaker.MmrWidth = 150
+
+# MMR window around the group at its queue (1-5000) and its growth per second of wait (0-1000)
+# Default: 200, 5
+Playerbots.Ladder.Matchmaker.Window = 200
+Playerbots.Ladder.Matchmaker.WindowGrowth = 5
+
+# Number of teams a player faced last that are not drawn again (0-20)
+# Default: 3
+Playerbots.Ladder.Matchmaker.RecentOpponents = 3
+
+# Seconds a drawn team has to form its group, and then to be paired, before it leaves the queue (5-3600)
+# Default: 60
+Playerbots.Ladder.Matchmaker.TimeoutSeconds = 60
+
+# Teams drawn at most for one queue of the player (1-100)
+# Default: 3
+Playerbots.Ladder.Matchmaker.MaxPicks = 3
+
+# Answer skirmish (unrated) queues too, drawn without the MMR weight
+# Default: 1
+Playerbots.Ladder.Matchmaker.Skirmish = 1
+
+# Draw only pool teams (Playerbots.Ladder.PoolTeams, the ladder residents in memory here). 0: every 2v2 team of
+# random bots in memory, also the formation rosters of up to 4 (the captain and the next free members play; a
+# member in a battleground or its queue still makes the team busy)
+# Default: 1
+Playerbots.Ladder.Matchmaker.PoolOnly = 1
+
 # PvP gear for ladder bots (a random bot at the maximum level in an arena team; real players and their bots are never
 # touched). When 1, the server builds a catalogue at startup from the PvP vendors (npc_vendor rows whose ExtendedCost
 # asks for honor and/or arena points; token costs and items that need a 3v3 or 5v5 rating are left out), grouped into

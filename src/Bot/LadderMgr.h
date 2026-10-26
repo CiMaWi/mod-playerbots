@@ -92,8 +92,15 @@ public:
     // World thread: a member is with a real player now (group, battleground or arena, duel, trade), had a direct
     // contact with one within Playerbots.Ladder.ContactMinutes, or a GM pinned the team. A pinned team never departs
     bool IsTeamPinned(ArenaTeam* team, std::string* reason = nullptr) const;
-    // World thread: a member is queued or in a battleground or arena
+    // World thread: a member is queued or in a battleground or arena, or the matchmaker picked the team
     static bool IsTeamBusy(ArenaTeam* team);
+    // World thread: a depart or arrive of the team is in progress
+    bool IsMoving(uint32 teamId) const;
+    // Invited from a queue (STATUS_WAIT_JOIN)
+    static bool HasBattlegroundInvite(Player* player);
+    // World thread: the core's leave-queue path for every queue the player is in but not invited from; reason goes
+    // into the log line
+    static void LeaveBattlegroundQueues(Player* player, char const* reason);
 
     // Main role with Playerbots.Ladder.PoolTeams > 0
     bool PoolOn() const;

@@ -15,6 +15,7 @@
 #include "LadderMgr.h"
 #include "MatchLog.h"
 #include "MatchTrace.h"
+#include "Matchmaker.h"
 #include "PerfMonitor.h"
 #include "PlayerbotMgr.h"
 #include "PvpGearMgr.h"
@@ -51,6 +52,7 @@ public:
             {"status", TestPlayerMgr::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"whisper", TestPlayerMgr::HandleWhisperCommand, SEC_GAMEMASTER, Console::Yes},
             {"group", TestPlayerMgr::HandleGroupCommand, SEC_GAMEMASTER, Console::Yes},
+            {"arenaqueue", TestPlayerMgr::HandleArenaQueueCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsPvpTestPlanCommandTable = {
@@ -85,6 +87,12 @@ public:
             {"selftest", LadderMgr::HandlePoolSelftestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsLadderMatchmakerCommandTable = {
+            {"status", Matchmaker::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"candidates", Matchmaker::HandleCandidatesCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", Matchmaker::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsLadderCommandTable = {
             {"depart", LadderMgr::HandleDepartCommand, SEC_GAMEMASTER, Console::Yes},
             {"arrive", LadderMgr::HandleArriveCommand, SEC_GAMEMASTER, Console::Yes},
@@ -94,6 +102,7 @@ public:
             {"drain", LadderMgr::HandleDrainCommand, SEC_GAMEMASTER, Console::Yes},
             {"undrain", LadderMgr::HandleUndrainCommand, SEC_GAMEMASTER, Console::Yes},
             {"pool", playerbotsLadderPoolCommandTable},
+            {"matchmaker", playerbotsLadderMatchmakerCommandTable},
         };
 
         static ChatCommandTable playerbotsPvpGearCommandTable = {

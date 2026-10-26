@@ -292,6 +292,11 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
         BracketSize = (uint32)(type * 2);
         TeamSize = (uint32)type;
 
+        // Main's matchmaker (DM.6) answers a real player's 2v2 queue with one resident team of its own: no bot joins
+        // the queues it answers through this action
+        bool const matchmakerRated = sPlayerbotAIConfig.LadderMatchmakerEnable && type == ARENA_TYPE_2v2;
+        bool const matchmakerSkirmish = matchmakerRated && sPlayerbotAIConfig.LadderMatchmakerSkirmish;
+
         // Check if bots should join Rated Arena (Only captains can queue)
         uint32 ratedArenaBotCount = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].ratedArenaBotCount;
         uint32 ratedArenaPlayerCount =
@@ -304,7 +309,7 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
         bool isRated = (ratedArenaBotCount + ratedArenaPlayerCount) <
                        (BracketSize * (activeRatedArenaQueue + ratedArenaInstanceCount));
 
-        if (isRated)
+        if (isRated && !matchmakerRated)
         {
             if (sArenaTeamMgr->GetArenaTeamByCaptain(bot->GetGUID(), type))
             {
@@ -328,7 +333,7 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
         if (maxRequiredSkirmishBots != 0)
             maxRequiredSkirmishBots = maxRequiredSkirmishBots + TeamSize;
 
-        if ((skirmishArenaBotCount + skirmishArenaPlayerCount) < maxRequiredSkirmishBots)
+        if (!matchmakerSkirmish && (skirmishArenaBotCount + skirmishArenaPlayerCount) < maxRequiredSkirmishBots)
         {
             return true;
         }
@@ -627,6 +632,11 @@ bool FreeBGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battleg
         BracketSize = (uint32)(type * 2);
         TeamSize = (uint32)type;
 
+        // Main's matchmaker (DM.6) answers a real player's 2v2 queue with one resident team of its own: no bot joins
+        // the queues it answers through this action
+        bool const matchmakerRated = sPlayerbotAIConfig.LadderMatchmakerEnable && type == ARENA_TYPE_2v2;
+        bool const matchmakerSkirmish = matchmakerRated && sPlayerbotAIConfig.LadderMatchmakerSkirmish;
+
         // Check if bots should join Rated Arena (Only captains can queue)
         uint32 ratedArenaBotCount = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].ratedArenaBotCount;
         uint32 ratedArenaPlayerCount =
@@ -639,7 +649,7 @@ bool FreeBGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battleg
         bool isRated = (ratedArenaBotCount + ratedArenaPlayerCount) <
                        (BracketSize * (activeRatedArenaQueue + ratedArenaInstanceCount));
 
-        if (isRated)
+        if (isRated && !matchmakerRated)
         {
             if (sArenaTeamMgr->GetArenaTeamByCaptain(bot->GetGUID(), type))
             {
@@ -663,7 +673,7 @@ bool FreeBGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battleg
         if (maxRequiredSkirmishBots != 0)
             maxRequiredSkirmishBots = maxRequiredSkirmishBots + TeamSize;
 
-        if ((skirmishArenaBotCount + skirmishArenaPlayerCount) < maxRequiredSkirmishBots)
+        if (!matchmakerSkirmish && (skirmishArenaBotCount + skirmishArenaPlayerCount) < maxRequiredSkirmishBots)
         {
             return true;
         }

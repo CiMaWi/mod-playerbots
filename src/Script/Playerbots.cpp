@@ -25,6 +25,7 @@
 #include "GuildTaskMgr.h"
 #include "LadderMgr.h"
 #include "MatchLog.h"
+#include "Matchmaker.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -568,6 +569,7 @@ public:
         ArenaTeamFormation::Instance().Update(diff);  // Opt-in; bot arena team rosters, every UpdateSeconds
         PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
         LadderMgr::Instance().Update(diff);  // Opt-in arena team moves; returns at once when none is pending
+        Matchmaker::Instance().Update(diff);  // Opt-in answers to real players' arena queues; idle without one
         PvpGearMgr::Instance().Update(diff);  // Deferred PvP gear unwears, opt-in buying; returns at once when idle
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         // Cached LFG state per bot, read on map threads
@@ -665,6 +667,7 @@ void AddSC_census();
 void AddSC_acquaintance();
 void AddSC_match_log();
 void AddSC_match_trace();
+void AddSC_matchmaker();
 
 void AddPlayerbotsScripts()
 {
@@ -694,4 +697,5 @@ void AddPlayerbotsScripts()
     AddSC_acquaintance();
     AddSC_match_log();
     AddSC_match_trace();
+    AddSC_matchmaker();
 }

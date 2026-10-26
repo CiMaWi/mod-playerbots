@@ -13,12 +13,17 @@
 #include <sstream>
 
 #include "AccountMgr.h"
+#include "ArenaTeam.h"
+#include "ArenaTeamMgr.h"
+#include "BattlegroundMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "LadderMgr.h"
 #include "Log.h"
+#include "Matchmaker.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -36,6 +41,7 @@
 namespace
 {
 constexpr uint32 CheckIntervalMs = 500;       // route check cadence
+constexpr uint32 PortIntervalMs = 1000;       // between tries to accept a battleground invite
 constexpr uint32 PendingTimeoutMs = 30000;    // give up a creation or login that never completes
 constexpr uint32 MaxAttemptsPerWaypoint = 3;  // re-issues of a leg that ended short before skipping the point
 constexpr float ArrivalRadius = 5.0f;         // 2D distance that counts as "at the waypoint"
@@ -262,6 +268,117 @@ bool TestPlayerMgr::GroupWith(ChatHandler* handler, std::string const& target)
     return true;
 }
 
+bool TestPlayerMgr::HandleArenaQueueCommand(ChatHandler* handler, char const* args)
+{
+    if (!CheckEnabled(handler))
+        return false;
+
+    std::istringstream in(args ? args : "");
+    std::string partner;
+    std::string mode;
+    in >> partner >> mode;
+    if (partner.empty() || (!mode.empty() && mode != "rated" && mode != "skirmish"))
+        return Fail(handler, "Usage: .playerbots testplayer arenaqueue <character> [rated|skirmish] | leave");
+
+    return Instance().ArenaQueue(handler, partner, mode != "skirmish");
+}
+
+bool TestPlayerMgr::ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated)
+{
+    Player* player = OnlinePlayer();
+    if (!player)
+        return Fail(handler, "No test player is online");
+
+    if (partnerName == "leave")
+    {
+        if (!player->InBattlegroundQueue())
+            return Fail(handler, "The test player is in no queue");
+
+        std::vector<Player*> members = {player};
+        if (Group* group = player->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != player)
+                    members.push_back(member);
+
+        for (Player* member : members)
+            LadderMgr::LeaveBattlegroundQueues(member, "the test player left the queue");
+
+        handler->PSendSysMessage("Test player {} left its queues", _name);
+        LOG_INFO("playerbots", "TestPlayer: {} left its queues", _name);
+        return true;
+    }
+
+    Player* partner = ObjectAccessor::FindPlayerByName(partnerName);
+    if (!partner || partner == player)
+        return Fail(handler, Acore::StringFormat("{} is not online", partnerName));
+
+    if (rated)
+    {
+        uint8 const slot = ArenaTeam::GetSlotByType(ARENA_TEAM_2v2);
+        ArenaTeam* team = sArenaTeamMgr->GetArenaTeamById(player->GetArenaTeamId(slot));
+        if (!team)
+        {
+            std::string const name = "Test " + _name;
+            if (sArenaTeamMgr->GetArenaTeamByName(name))
+                return Fail(handler, Acore::StringFormat("An arena team named {} exists", name));
+
+            team = new ArenaTeam();
+            // The colours .arena create uses
+            if (!team->Create(player->GetGUID(), ARENA_TEAM_2v2, name, 4293102085, 101, 4293253939, 4, 4284049911))
+            {
+                delete team;
+                return Fail(handler, "The arena team could not be created");
+            }
+
+            sArenaTeamMgr->AddArenaTeam(team);
+            handler->PSendSysMessage("Test player {} founded the 2v2 team #{} <{}>", _name, team->GetId(), name);
+        }
+
+        if (!team->IsMember(partner->GetGUID()) &&
+            (partner->GetArenaTeamId(slot) || !team->AddMember(partner->GetGUID())))
+            return Fail(handler, Acore::StringFormat("{} could not join <{}> (in another 2v2 team?)",
+                                                     partner->GetName(), team->GetName()));
+    }
+
+    Group* group = player->GetGroup();
+    if ((!group || !group->IsMember(partner->GetGUID())) && !GroupWith(handler, partner->GetName()))
+        return false;
+
+    std::string const error = Matchmaker::JoinArenaQueue(player, ARENA_TYPE_2v2, rated);
+    if (!error.empty())
+        return Fail(handler, "The queue refused the group: " + error);
+
+    handler->PSendSysMessage("Test player {} queued {} 2v2 with {}", _name, rated ? "rated" : "skirmish",
+                             partner->GetName());
+    LOG_INFO("playerbots", "TestPlayer: {} queued {} 2v2 with {}", _name, rated ? "rated" : "skirmish",
+             partner->GetName());
+    return true;
+}
+
+void TestPlayerMgr::AcceptInvites(Player* player, uint32 diff)
+{
+    _portTimer += diff;
+    if (_portTimer < PortIntervalMs || player->InBattleground() || !player->InBattlegroundQueue())
+        return;
+
+    _portTimer = 0;
+    for (uint32 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
+    {
+        BattlegroundQueueTypeId const queueTypeId = player->GetBattlegroundQueueTypeId(i);
+        if (queueTypeId == BATTLEGROUND_QUEUE_NONE || !player->IsInvitedForBattlegroundQueueType(queueTypeId))
+            continue;
+
+        // As a client accepting the invite (CMSG_BATTLEFIELD_PORT, action 1 = enter)
+        WorldPacket packet(CMSG_BATTLEFIELD_PORT, 9);
+        packet << uint8(BattlegroundMgr::BGArenaType(queueTypeId)) << uint8(0);
+        packet << uint32(BattlegroundMgr::BGTemplateId(queueTypeId)) << uint16(0x1F90) << uint8(1);
+        _session->HandleBattleFieldPortOpcode(packet);
+        LOG_INFO("playerbots", "TestPlayer: {} accepts the invite of queue type {}", _name,
+                 static_cast<uint32>(queueTypeId));
+        return;
+    }
+}
+
 bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string const& route)
 {
     if (_state != State::Idle)
@@ -464,13 +581,16 @@ void TestPlayerMgr::Update(uint32 diff)
     if (HandleTeleport(player) || !player->IsInWorld())
         return;
 
-    if (!player->IsAlive())
+    // Dead in a battleground or arena: the match decides
+    if (!player->IsAlive() && !player->InBattleground())
     {
         player->ResurrectPlayer(1.0f);
         player->SpawnCorpseBones();
     }
 
-    if (_route)
+    AcceptInvites(player, diff);
+    // The route would walk or teleport the player out of a battleground
+    if (_route && !player->InBattleground())
         UpdateRoute(player, diff);
 }
 
