@@ -38,6 +38,12 @@ struct PvpTestArenaParams
     std::string MatchId;
     std::string PlanId;
     uint32 PlanIndex = 0;
+    // G0a: the hidden skill forced on each side for this match only (0 = the bots keep their own), and the comp the
+    // plan drew each side for ("class/spec" per slot, empty when no comp was asked); both end up in the record
+    uint8 SkillA = 0;
+    uint8 SkillB = 0;
+    std::vector<std::string> CompA;
+    std::vector<std::string> CompB;
 };
 
 // One forced arena match between two bot sides, ticked from the world thread. Stages: Resolve (in the command) ->
@@ -90,6 +96,7 @@ private:
     void CaptureRoster();
     void CaptureScores(Battleground const* arena);
     void SetCounting(bool on);
+    void RestoreSkills();
     void UpdateMonitor(bool slowTick);
     void SendAcceptFallback();
     void UpdateTearDown();
@@ -107,6 +114,8 @@ private:
     uint32 _fightStartMs = 0;
     bool _fightStarted = false;
     bool _acceptFallbackSent = false;
+    // G0a: forced skills were set on the bots (by CaptureRoster) and are restored from the profiles at tear-down
+    bool _skillsApplied = false;
     uint32 _instanceId = 0;
     BattlegroundTypeId _bgTypeId = BATTLEGROUND_TYPE_NONE;
     BattlegroundQueueTypeId _queueTypeId = BATTLEGROUND_QUEUE_NONE;
@@ -119,7 +128,26 @@ enum class PvpTestPool
 {
     Random,  // random disjoint pairs of maximum-level random bots
     Teams,   // the listed arena teams, two of them per match
-    Bots     // the listed bots, drawn into disjoint sides
+    Bots,    // the listed bots, drawn into disjoint sides
+    Comps    // mirrored comps by class and spec: side A drawn from the candidates, side B the same at the nearest gear
+};
+
+// One slot of a comp: a class and a spec as AiFactory::GetPlayerSpecName names it ("afflic", "shadow")
+struct PvpTestCompSlot
+{
+    uint8 ClassId = 0;
+    std::string Spec;
+};
+
+// A level-80 random bot of a comps pool, read from the database when the plan starts (the bot may be offline)
+struct PvpTestCandidate
+{
+    ObjectGuid Guid;
+    std::string Name;
+    uint8 ClassId = 0;
+    std::string Spec;
+    // The item levels of the equipped items (characters.equipmentCache), the measure the sides are paired by
+    uint32 ItemLevel = 0;
 };
 
 // N matches in a row with a concurrency cap; match k (1-based) replays seed SeedBase + k - 1. Modelled on
@@ -135,6 +163,13 @@ struct PvpTestPlan
     // Random and Bots: the candidates in guid order; Teams: the resolved sides
     std::vector<ObjectGuid> Candidates;
     std::vector<PvpTestSide> Teams;
+    // Comps pool: the comps (each ArenaType slots; match k plays comp k mod count) and the candidates in guid order
+    std::vector<std::vector<PvpTestCompSlot>> Comps;
+    std::vector<PvpTestCandidate> CompCandidates;
+    // skill=<hi>:<lo>: A is high on odd matches and low on even ones, B the other way round (0 = not forced)
+    uint8 SkillHigh = 0;
+    uint8 SkillLow = 0;
+    std::string WaitReason;  // why the last draw gave no roster (a comp short of bots), empty when it did
     ObjectGuid Issuer;
     uint32 Launched = 0;
     uint32 Finished = 0;
@@ -181,7 +216,7 @@ private:
     static bool HandleFightCommand(ChatHandler* handler, PvpTestFightParams& params);
     void UpdatePlan();
     bool LaunchPlanMatch(std::string& error);
-    bool DrawRoster(PvpTestPlan const& plan, std::set<ObjectGuid> const& inUse, PvpTestArenaParams& params);
+    bool DrawRoster(PvpTestPlan& plan, std::set<ObjectGuid> const& inUse, PvpTestArenaParams& params);
     std::set<ObjectGuid> MembersInUse() const;
     uint32 ActivePlanJobs() const;
     std::string DescribePlan() const;

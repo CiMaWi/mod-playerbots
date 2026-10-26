@@ -14,6 +14,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 #include "AiFactory.h"
 #include "ArenaTeam.h"
@@ -21,6 +22,7 @@
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundQueue.h"
+#include "BotProfileMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -38,6 +40,8 @@
 #include "Playerbots.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "World.h"
@@ -71,11 +75,12 @@ std::array<ArenaMap, 5> const ArenaMaps = {{
 
 constexpr char const* PlanUsage =
     "Usage: .playerbots pvptest plan start total=<n> [concurrency=<n>] [seed=<base>] [map=na|be|rl|ds|rv|random] "
-    "[pool=random|teams:<teamA>;<teamB>;...|bots:<name>,<name>,...] (quote a token that contains spaces)";
+    "[pool=random|teams:<teamA>;<teamB>;...|bots:<name>,<name>,...|comps:<class>/<spec>+<class>/<spec>[;...]] "
+    "[skill=<hi>:<lo>] (quote a token that contains spaces)";
 
 constexpr char const* Usage =
     "Usage: .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] "
-    "[seed=<n>] (quote team names with spaces)";
+    "[seed=<n>] [skillA=<1-99>] [skillB=<1-99>] (quote team names with spaces)";
 
 std::string DescribeSide(PvpTestSide const& side)
 {
@@ -230,6 +235,10 @@ PvpTestArenaJob::PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide s
         sideRecord.Side = index == 0 ? 'A' : 'B';
         sideRecord.TeamId = side.ArenaTeamId;
         sideRecord.Faction = index == 0 ? "alliance" : "horde";
+        sideRecord.ForcedComp = index == 0 ? _params.CompA : _params.CompB;
+        if (uint8 const forcedSkill = index == 0 ? _params.SkillA : _params.SkillB)
+            sideRecord.ForcedSkill = forcedSkill;
+
         for (size_t member = 0; member < side.Members.size(); ++member)
         {
             PvpTestBotRecord bot;
@@ -619,9 +628,11 @@ bool PvpTestArenaJob::StartArena(std::string& error)
 // Class, race, level, spec and gear score of the bots while all of them are online
 void PvpTestArenaJob::CaptureRoster()
 {
-    for (PvpTestSideRecord& sideRecord : _record.Sides)
+    for (size_t index = 0; index < _record.Sides.size(); ++index)
     {
-        for (PvpTestBotRecord& bot : sideRecord.Bots)
+        // G0a: the skill forced on this side, set once here before it is read into the record and counting starts
+        uint8 const forcedSkill = index == 0 ? _params.SkillA : _params.SkillB;
+        for (PvpTestBotRecord& bot : _record.Sides[index].Bots)
         {
             Player* player = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(bot.Guid));
             if (!player)
@@ -633,6 +644,12 @@ void PvpTestArenaJob::CaptureRoster()
             bot.Spec = AiFactory::GetPlayerSpecName(player);
             if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
             {
+                if (forcedSkill && sPlayerbotAIConfig.SkillEnable)
+                {
+                    botAI->SetPvpSkill(forcedSkill);
+                    _skillsApplied = true;
+                }
+
                 bot.GearScore = botAI->GetEquipGearScore(player);
                 if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
                     bot.Skill = botAI->GetPvpSkill();
@@ -830,6 +847,33 @@ void PvpTestArenaJob::UpdateTearDown()
     FinishTearDown(pending);
 }
 
+// G0a: the forced skills were in memory only; the stored profile (never touched by the harness) gives them back. A bot
+// that logged out meanwhile reloads its profile at login.
+void PvpTestArenaJob::RestoreSkills()
+{
+    if (!_skillsApplied)
+        return;
+
+    for (PvpTestSide const* side : {&_sideA, &_sideB})
+    {
+        if (!(side == &_sideA ? _params.SkillA : _params.SkillB))
+            continue;
+
+        for (ObjectGuid const& guid : side->Members)
+        {
+            Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+            PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
+            if (!botAI)
+                continue;
+
+            auto const profile = BotProfileMgr::instance().Find(guid.GetCounter());
+            botAI->SetPvpSkill(profile ? profile->Skill : 0);
+        }
+    }
+
+    _skillsApplied = false;
+}
+
 void PvpTestArenaJob::FinishTearDown(bool timedOut)
 {
     for (PvpTestSide* side : {&_sideA, &_sideB})
@@ -844,6 +888,7 @@ void PvpTestArenaJob::FinishTearDown(bool timedOut)
     }
 
     SetCounting(false);
+    RestoreSkills();
     for (ObjectGuid const& guid : AllMembers())
     {
         Player* player = ObjectAccessor::FindConnectedPlayer(guid);
@@ -913,6 +958,8 @@ char const* PoolName(PvpTestPool pool)
             return "teams";
         case PvpTestPool::Bots:
             return "bots";
+        case PvpTestPool::Comps:
+            return "comps";
     }
 
     return "unknown";
@@ -1091,10 +1138,352 @@ uint32 PvpTestMgr::ActivePlanJobs() const
                                              { return !job->GetPlanId().empty(); }));
 }
 
+namespace
+{
+// G0a: the spec names AiFactory::GetPlayerSpecName gives by class and talent tab (the tab order of the enums in
+// PlayerbotAI.h), with the long name a command may use as well. Keep in step with AiFactory.cpp; a copy so that this
+// harness-only step does not touch AiFactory.h (included nearly everywhere).
+struct SpecName
+{
+    uint8 ClassId;
+    uint8 Tab;
+    char const* Engine;
+    char const* Alias;  // the long name; nullptr when the engine name is the long name already
+};
+
+std::array<SpecName, 30> const SpecNames = {{
+    {CLASS_WARRIOR, WARRIOR_TAB_ARMS, "arms", nullptr},
+    {CLASS_WARRIOR, WARRIOR_TAB_FURY, "fury", nullptr},
+    {CLASS_WARRIOR, WARRIOR_TAB_PROTECTION, "prot", "protection"},
+    {CLASS_PALADIN, PALADIN_TAB_HOLY, "holy", nullptr},
+    {CLASS_PALADIN, PALADIN_TAB_PROTECTION, "prot", "protection"},
+    {CLASS_PALADIN, PALADIN_TAB_RETRIBUTION, "retrib", "retribution"},
+    {CLASS_HUNTER, HUNTER_TAB_BEAST_MASTERY, "beast", "beastmastery"},
+    {CLASS_HUNTER, HUNTER_TAB_MARKSMANSHIP, "marks", "marksmanship"},
+    {CLASS_HUNTER, HUNTER_TAB_SURVIVAL, "surv", "survival"},
+    {CLASS_ROGUE, ROGUE_TAB_ASSASSINATION, "assas", "assassination"},
+    {CLASS_ROGUE, ROGUE_TAB_COMBAT, "combat", nullptr},
+    {CLASS_ROGUE, ROGUE_TAB_SUBTLETY, "subtle", "subtlety"},
+    {CLASS_PRIEST, PRIEST_TAB_DISCIPLINE, "disc", "discipline"},
+    {CLASS_PRIEST, PRIEST_TAB_HOLY, "holy", nullptr},
+    {CLASS_PRIEST, PRIEST_TAB_SHADOW, "shadow", nullptr},
+    {CLASS_DEATH_KNIGHT, DEATH_KNIGHT_TAB_BLOOD, "blooddps", "blood"},
+    {CLASS_DEATH_KNIGHT, DEATH_KNIGHT_TAB_FROST, "frostdps", "frost"},
+    {CLASS_DEATH_KNIGHT, DEATH_KNIGHT_TAB_UNHOLY, "unholydps", "unholy"},
+    {CLASS_SHAMAN, SHAMAN_TAB_ELEMENTAL, "elem", "elemental"},
+    {CLASS_SHAMAN, SHAMAN_TAB_ENHANCEMENT, "enhance", "enhancement"},
+    {CLASS_SHAMAN, SHAMAN_TAB_RESTORATION, "resto", "restoration"},
+    {CLASS_MAGE, MAGE_TAB_ARCANE, "arcane", nullptr},
+    {CLASS_MAGE, MAGE_TAB_FIRE, "fire", nullptr},
+    {CLASS_MAGE, MAGE_TAB_FROST, "frost", nullptr},
+    {CLASS_WARLOCK, WARLOCK_TAB_AFFLICTION, "afflic", "affliction"},
+    {CLASS_WARLOCK, WARLOCK_TAB_DEMONOLOGY, "demo", "demonology"},
+    {CLASS_WARLOCK, WARLOCK_TAB_DESTRUCTION, "destro", "destruction"},
+    {CLASS_DRUID, DRUID_TAB_BALANCE, "balance", nullptr},
+    {CLASS_DRUID, DRUID_TAB_FERAL, "feraldps", "feral"},
+    {CLASS_DRUID, DRUID_TAB_RESTORATION, "resto", "restoration"},
+}};
+
+constexpr uint8 TalentTabCount = 3;
+constexpr uint8 FirstClassId = CLASS_WARRIOR;
+constexpr uint8 LastClassId = CLASS_DRUID;
+
+SpecName const* FindSpecByTab(uint8 classId, uint8 tab)
+{
+    auto const itr = std::find_if(SpecNames.begin(), SpecNames.end(), [classId, tab](SpecName const& spec)
+                                  { return spec.ClassId == classId && spec.Tab == tab; });
+    return itr == SpecNames.end() ? nullptr : &*itr;
+}
+
+// The engine name or the long name, lower case
+SpecName const* FindSpecByName(uint8 classId, std::string const& name)
+{
+    auto const itr = std::find_if(
+        SpecNames.begin(), SpecNames.end(), [classId, &name](SpecName const& spec)
+        { return spec.ClassId == classId && (name == spec.Engine || (spec.Alias && name == spec.Alias)); });
+    return itr == SpecNames.end() ? nullptr : &*itr;
+}
+
+// The class named as the records name it (warlock, deathknight), lower case; 0 when unknown
+uint8 ParseClassName(std::string const& name)
+{
+    if (name == "dk" || name == "death_knight" || name == "death-knight")
+        return CLASS_DEATH_KNIGHT;
+
+    for (uint8 classId = FirstClassId; classId <= LastClassId; ++classId)
+    {
+        if (name == PvpTestRecordWriter::ClassName(classId))
+            return classId;
+    }
+
+    return 0;
+}
+
+std::string SlotText(PvpTestCompSlot const& slot)
+{
+    return PvpTestRecordWriter::ClassName(slot.ClassId) + "/" + slot.Spec;
+}
+
+// "warlock/afflic+priest/shadow;mage/fire+mage/frost": comps of arenaType slots each
+bool ParseComps(std::string const& list, uint8 arenaType, std::vector<std::vector<PvpTestCompSlot>>& comps,
+                std::string& error)
+{
+    for (std::string const& compText : Split(list, ';'))
+    {
+        std::vector<PvpTestCompSlot> comp;
+        for (std::string const& slotText : Split(compText, '+'))
+        {
+            std::vector<std::string> const parts = Split(slotText, '/');
+            uint8 const classId = parts.size() == 2 ? ParseClassName(ToLower(parts[0])) : 0;
+            SpecName const* spec = classId ? FindSpecByName(classId, ToLower(parts[1])) : nullptr;
+            if (!spec)
+            {
+                error = Acore::StringFormat("Bad comp slot '{}' (class/spec, e.g. warlock/afflic)", slotText);
+                return false;
+            }
+
+            comp.push_back({classId, spec->Engine});
+        }
+
+        if (comp.size() != arenaType)
+        {
+            error = Acore::StringFormat("Comp '{}' has {} slots, a {}v{} match needs {}", compText, comp.size(),
+                                        arenaType, arenaType, arenaType);
+            return false;
+        }
+
+        comps.push_back(std::move(comp));
+    }
+
+    if (comps.empty())
+    {
+        error = "A comps pool lists at least one comp";
+        return false;
+    }
+
+    return true;
+}
+
+// characters.equipmentCache: "<itemId> <enchant>" for each equipment slot; the sum of the items' item levels
+uint32 EquipmentItemLevel(std::string const& cache)
+{
+    std::vector<std::string> const tokens = Split(cache, ' ');
+    uint32 total = 0;
+    for (size_t slot = 0; slot < EQUIPMENT_SLOT_END && slot * 2 < tokens.size(); ++slot)
+    {
+        Optional<uint32> const itemId = Acore::StringTo<uint32>(tokens[slot * 2]);
+        ItemTemplate const* proto = itemId && *itemId ? sObjectMgr->GetItemTemplate(*itemId) : nullptr;
+        if (proto)
+            total += proto->ItemLevel;
+    }
+
+    return total;
+}
+
+// The comps pool's candidates: the maximum-level random bots with their spec and equipment, from two queries when the
+// plan starts (none while it runs). The spec follows AiFactory::GetPlayerSpecTab: the tab with the most points in
+// the active talent spec (the first on a tie), the class default without points.
+void LoadCompCandidates(PvpTestPlan& plan)
+{
+    struct Build
+    {
+        PvpTestCandidate Candidate;
+        uint32 ActiveMask = 1;
+        std::array<uint32, TalentTabCount> Points = {};
+    };
+
+    uint32 const maxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    QueryResult characters = CharacterDatabase.Query(
+        "SELECT guid, class, activeTalentGroup, equipmentCache FROM characters WHERE level = {}", maxLevel);
+    if (!characters)
+        return;
+
+    std::unordered_map<uint32, Build> builds;
+    do
+    {
+        Field* fields = characters->Fetch();
+        ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(fields[0].Get<uint32>());
+        std::string ignored;
+        CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(guid);
+        if (!entry || !CheckBot(guid, ignored))
+            continue;
+
+        Build& build = builds[guid.GetCounter()];
+        build.Candidate.Guid = guid;
+        build.Candidate.Name = entry->Name;
+        build.Candidate.ClassId = fields[1].Get<uint8>();
+        build.ActiveMask = 1u << fields[2].Get<uint8>();
+        build.Candidate.ItemLevel = EquipmentItemLevel(fields[3].Get<std::string>());
+    } while (characters->NextRow());
+
+    QueryResult talents = CharacterDatabase.Query(
+        "SELECT t.guid, t.spell, t.specMask FROM character_talent t JOIN characters c ON c.guid = t.guid "
+        "WHERE c.level = {}",
+        maxLevel);
+    if (talents)
+    {
+        do
+        {
+            Field* fields = talents->Fetch();
+            auto const itr = builds.find(fields[0].Get<uint32>());
+            if (itr == builds.end() || !(itr->second.ActiveMask & fields[2].Get<uint8>()))
+                continue;
+
+            uint32 const spellId = fields[1].Get<uint32>();
+            TalentSpellPos const* talentPos = GetTalentSpellPos(spellId);
+            TalentEntry const* talentInfo = talentPos ? sTalentStore.LookupEntry(talentPos->talent_id) : nullptr;
+            if (!talentInfo)
+                continue;
+
+            uint32 const* tabPages = GetTalentTabPages(itr->second.Candidate.ClassId);
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+            uint32 const rank = spellInfo ? spellInfo->GetRank() : 1;
+            for (uint8 tab = 0; tab < TalentTabCount; ++tab)
+            {
+                if (talentInfo->TalentTab == tabPages[tab])
+                    itr->second.Points[tab] += rank;
+            }
+        } while (talents->NextRow());
+    }
+
+    for (auto& entry : builds)
+    {
+        Build& build = entry.second;
+        uint8 tab = 0;
+        switch (build.Candidate.ClassId)
+        {
+            case CLASS_MAGE:
+                tab = MAGE_TAB_FROST;
+                break;
+            case CLASS_PALADIN:
+                tab = PALADIN_TAB_RETRIBUTION;
+                break;
+            case CLASS_PRIEST:
+                tab = PRIEST_TAB_HOLY;
+                break;
+            case CLASS_WARLOCK:
+                tab = WARLOCK_TAB_DEMONOLOGY;
+                break;
+            default:
+                break;
+        }
+
+        if (build.Points[0] + build.Points[1] + build.Points[2] > 0)
+        {
+            tab = 0;
+            for (uint8 other = 1; other < TalentTabCount; ++other)
+            {
+                if (build.Points[other] > build.Points[tab])
+                    tab = other;
+            }
+        }
+
+        SpecName const* spec = FindSpecByTab(build.Candidate.ClassId, tab);
+        if (!spec)
+            continue;
+
+        build.Candidate.Spec = spec->Engine;
+        plan.CompCandidates.push_back(std::move(build.Candidate));
+    }
+
+    std::sort(plan.CompCandidates.begin(), plan.CompCandidates.end(),
+              [](PvpTestCandidate const& first, PvpTestCandidate const& second) { return first.Guid < second.Guid; });
+}
+
+// The comps draw: per slot side A takes a free bot of the class and spec (seeded), side B the free one of the same
+// class and spec whose equipment is nearest in item level; no bot twice. A slot with fewer than two free bots sets the
+// plan's wait reason and the draw gives no roster.
+bool DrawCompRoster(PvpTestPlan& plan, std::set<ObjectGuid> const& inUse, PvpTestArenaParams& params)
+{
+    std::vector<PvpTestCompSlot> const& comp = plan.Comps[plan.Launched % plan.Comps.size()];
+    std::set<ObjectGuid> taken(inUse);
+    std::string shortage;
+    for (size_t slot = 0; slot < comp.size(); ++slot)
+    {
+        PvpTestCompSlot const& wanted = comp[slot];
+        std::vector<PvpTestCandidate const*> usable;
+        uint32 inPool = 0;
+        for (PvpTestCandidate const& candidate : plan.CompCandidates)
+        {
+            if (candidate.ClassId != wanted.ClassId || candidate.Spec != wanted.Spec)
+                continue;
+
+            ++inPool;
+            if (taken.count(candidate.Guid))
+                continue;
+
+            if (Player* player = ObjectAccessor::FindConnectedPlayer(candidate.Guid))
+            {
+                PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
+                if (!botAI || botAI->HasGameClientMaster())
+                    continue;
+            }
+
+            usable.push_back(&candidate);
+        }
+
+        if (usable.size() < 2)
+        {
+            shortage += Acore::StringFormat("{}{} free {}/2 ({} in the pool)", shortage.empty() ? "" : ", ",
+                                            SlotText(wanted), usable.size(), inPool);
+            continue;
+        }
+
+        std::mt19937 generator(params.Seed + static_cast<uint32>(slot));
+        PvpTestCandidate const* first = usable[generator() % usable.size()];
+        auto const distance = [first](PvpTestCandidate const* other)
+        {
+            return first->ItemLevel > other->ItemLevel ? first->ItemLevel - other->ItemLevel
+                                                       : other->ItemLevel - first->ItemLevel;
+        };
+        PvpTestCandidate const* second = nullptr;
+        for (PvpTestCandidate const* candidate : usable)
+        {
+            if (candidate != first && (!second || distance(candidate) < distance(second)))
+                second = candidate;
+        }
+
+        taken.insert(first->Guid);
+        taken.insert(second->Guid);
+        params.SideA += params.SideA.empty() ? first->Name : "," + first->Name;
+        params.SideB += params.SideB.empty() ? second->Name : "," + second->Name;
+        params.CompA.push_back(SlotText(wanted));
+        params.CompB.push_back(SlotText(wanted));
+    }
+
+    plan.WaitReason = shortage;
+    return shortage.empty();
+}
+
+bool ParseSkill(std::string const& value, uint8& skill, std::string& error)
+{
+    if (!sPlayerbotAIConfig.SkillEnable)
+    {
+        error = "Forced skills need Playerbots.Skill.Enable = 1";
+        return false;
+    }
+
+    Optional<uint32> const number = Acore::StringTo<uint32>(value);
+    if (!number || *number < BotProfileMgr::MinSkill || *number > BotProfileMgr::MaxSkill)
+    {
+        error = Acore::StringFormat("Skill '{}' is not a number from {} to {}", value,
+                                    static_cast<uint32>(BotProfileMgr::MinSkill),
+                                    static_cast<uint32>(BotProfileMgr::MaxSkill));
+        return false;
+    }
+
+    skill = static_cast<uint8>(*number);
+    return true;
+}
+}  // namespace
+
 // Fills the two sides of the next match from the pool, leaving out the bots in use and any bot with a real player.
 // Returns false when the pool cannot give a roster now.
-bool PvpTestMgr::DrawRoster(PvpTestPlan const& plan, std::set<ObjectGuid> const& inUse, PvpTestArenaParams& params)
+bool PvpTestMgr::DrawRoster(PvpTestPlan& plan, std::set<ObjectGuid> const& inUse, PvpTestArenaParams& params)
 {
+    if (plan.Pool == PvpTestPool::Comps)
+        return DrawCompRoster(plan, inUse, params);
+
     if (plan.Pool == PvpTestPool::Teams)
     {
         std::vector<size_t> order;
@@ -1165,6 +1554,14 @@ bool PvpTestMgr::LaunchPlanMatch(std::string& error)
     if (!DrawRoster(*_plan, MembersInUse(), params))
         return false;
 
+    // G0a: skill=<hi>:<lo>: side A is high on odd matches and low on even ones
+    if (_plan->SkillHigh)
+    {
+        bool const sideAHigh = (_plan->Launched + 1) % 2 == 1;
+        params.SkillA = sideAHigh ? _plan->SkillHigh : _plan->SkillLow;
+        params.SkillB = sideAHigh ? _plan->SkillLow : _plan->SkillHigh;
+    }
+
     params.PlanId = _plan->Id;
     params.PlanIndex = _plan->Launched + 1;
     params.MatchId = Acore::StringFormat("m-{}-{}", _plan->Id, params.PlanIndex);
@@ -1219,7 +1616,7 @@ void PvpTestMgr::UpdatePlan()
             // No error means the free bots are short, which a running match will end
             if (!error.empty())
                 plan.EndedEarly = error;
-            else if (_jobs.empty())
+            else if (_jobs.empty() && plan.Pool != PvpTestPool::Comps)  // a short comp waits (WaitReason), not ends
                 plan.EndedEarly = "the pool has no free roster for another match";
 
             break;
@@ -1240,10 +1637,13 @@ std::string PvpTestMgr::DescribePlan() const
 
     return Acore::StringFormat(
         "PVPTEST plan {}: total {}, launched {}, finished {} (failed {}, stopped {}), active {}, concurrency {}, seed "
-        "base {}, pool {}, map {}{}{}; last: {}; records: {}",
+        "base {}, pool {}, map {}{}{}{}{}; last: {}; records: {}",
         plan.Id, plan.Total, plan.Launched, plan.Finished, plan.Failed, plan.Stopped, ActivePlanJobs(),
-        plan.Concurrency, plan.SeedBase, PoolName(plan.Pool), plan.MapKey, plan.StopRequested ? " (stopped)" : "",
-        plan.EndedEarly.empty() ? "" : " (ended early: " + plan.EndedEarly + ")", recent.empty() ? "-" : recent,
+        plan.Concurrency, plan.SeedBase, PoolName(plan.Pool), plan.MapKey,
+        plan.SkillHigh ? Acore::StringFormat(", skill {}:{}", plan.SkillHigh, plan.SkillLow) : std::string(),
+        plan.StopRequested ? " (stopped)" : "",
+        plan.EndedEarly.empty() ? "" : " (ended early: " + plan.EndedEarly + ")",
+        plan.WaitReason.empty() ? "" : " (waiting: " + plan.WaitReason + ")", recent.empty() ? "-" : recent,
         PvpTestRecordWriter::TodayFile());
 }
 
@@ -1289,6 +1689,12 @@ bool PvpTestMgr::HandleArenaCommand(ChatHandler* handler, char const* args)
         {
             params.Seed = *Acore::StringTo<uint32>(value);
             seedGiven = true;
+        }
+        else if ((key == "skilla" || key == "skillb") && !value.empty())
+        {
+            std::string skillError;
+            if (!ParseSkill(value, key == "skilla" ? params.SkillA : params.SkillB, skillError))
+                return CommandFail(handler, skillError);
         }
         else
             return CommandFail(handler, Acore::StringFormat("Bad option '{}'. {}", token, Usage));
@@ -1426,6 +1832,15 @@ bool PvpTestMgr::HandlePlanStartCommand(ChatHandler* handler, char const* args)
             poolSpec = value;
         else if (key == "map" && !value.empty())
             plan->MapKey = ToLower(value);
+        else if (key == "skill" && !value.empty())
+        {
+            std::vector<std::string> const skills = Split(value, ':');
+            std::string skillError = "skill is <hi>:<lo>";
+            if (skills.size() != 2 || !ParseSkill(skills[0], plan->SkillHigh, skillError) ||
+                !ParseSkill(skills[1], plan->SkillLow, skillError))
+                return CommandFail(handler,
+                                   Acore::StringFormat("Bad option '{}': {}. {}", token, skillError, PlanUsage));
+        }
         else
             return CommandFail(handler, Acore::StringFormat("Bad option '{}'. {}", token, PlanUsage));
     }
@@ -1497,12 +1912,25 @@ bool PvpTestMgr::HandlePlanStartCommand(ChatHandler* handler, char const* args)
             plan->Teams.push_back(std::move(team));
         }
     }
+    else if (poolKind == "comps" && !poolList.empty())
+    {
+        plan->Pool = PvpTestPool::Comps;
+        if (!ParseComps(poolList, scratch.ArenaType, plan->Comps, error))
+            return CommandFail(handler, error);
+
+        // Two queries when the plan starts, none while it runs
+        LoadCompCandidates(*plan);
+        handler->PSendSysMessage("Comps pool: {} maximum-level random bots with a class and spec to draw from",
+                                 plan->CompCandidates.size());
+    }
     else
         return CommandFail(handler, Acore::StringFormat("Bad pool '{}'. {}", poolSpec, PlanUsage));
 
     std::sort(plan->Candidates.begin(), plan->Candidates.end());
     if (plan->Pool == PvpTestPool::Teams)
         capacity = static_cast<uint32>(plan->Teams.size() / 2);
+    else if (plan->Pool == PvpTestPool::Comps)
+        capacity = MaxPlanConcurrency;  // a comp short of bots makes the plan wait, it is no reason to refuse it
     else
         capacity = static_cast<uint32>(plan->Candidates.size() / (2u * scratch.ArenaType));
 

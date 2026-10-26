@@ -63,6 +63,10 @@ struct PvpTestSideRecord
     int32 TeamRatingAfter = -1;
     int32 MmrBefore = -1;
     int32 MmrAfter = -1;
+    // G0a (additive): what the harness forced for this side: the comp slots it was drawn for ("class/spec", empty when
+    // none) and the hidden skill set for the match (-1 = none, written as null)
+    std::vector<std::string> ForcedComp;
+    int32 ForcedSkill = -1;
     std::vector<PvpTestBotRecord> Bots;
 };
 

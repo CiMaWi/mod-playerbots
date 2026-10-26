@@ -103,12 +103,17 @@ std::string SideToJson(PvpTestSideRecord const& side)
     for (std::string const& entry : comp)
         compJson += (compJson.empty() ? "" : ",") + Quote(entry);
 
+    std::string forcedComp;
+    for (std::string const& entry : side.ForcedComp)
+        forcedComp += (forcedComp.empty() ? "" : ",") + Quote(entry);
+
     return Acore::StringFormat(
         "{{\"label\":{},\"side\":{},\"teamId\":{},\"faction\":{},\"comp\":[{}],\"bots\":[{}],"
-        "\"teamName\":{},\"teamRatingBefore\":{},\"teamRatingAfter\":{},\"mmrBefore\":{},\"mmrAfter\":{}}}",
+        "\"teamName\":{},\"teamRatingBefore\":{},\"teamRatingAfter\":{},\"mmrBefore\":{},\"mmrAfter\":{},"
+        "\"forced\":{{\"comp\":[{}],\"skill\":{}}}}}",
         Quote(side.Label), Quote(std::string(1, side.Side)), side.TeamId, Quote(side.Faction), compJson, bots,
         Quote(side.TeamName), NumberOrNull(side.TeamRatingBefore), NumberOrNull(side.TeamRatingAfter),
-        NumberOrNull(side.MmrBefore), NumberOrNull(side.MmrAfter));
+        NumberOrNull(side.MmrBefore), NumberOrNull(side.MmrAfter), forcedComp, NumberOrNull(side.ForcedSkill));
 }
 }  // namespace
 

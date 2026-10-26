@@ -1351,6 +1351,17 @@ Playerbots.TestPlayer.Account = "WBTEST"
 #                          are read from the database once, when the plan starts.
 #   teams:<A>;<B>;...      2v2 arena teams, two per match (quote the whole option if a name has spaces)
 #   bots:<name>,<name>,... a list of bots, four per match
+#   comps:<class>/<spec>+<class>/<spec>[;...]
+#                          mirrored comps from the maximum-level random bots, one class/spec per slot (warlock/afflic
+#                          or warlock/affliction, priest/shadow): side A takes a bot of each slot, side B a bot of the
+#                          same class and spec with the nearest gear (summed item level of the equipment). Several
+#                          comps (separated by ;) take turns. The candidates and their specs (from the talents of the
+#                          active spec) are read from the database once, when the plan starts. A comp short of bots
+#                          makes the plan wait ("plan status" says which slot); "plan stop" ends it.
+# plan start also takes skill=<hi>:<lo> (needs Playerbots.Skill.Enable = 1): A plays at skill <hi> on odd matches and <lo>
+# on even ones, B the other way round. arena takes skillA=<n> and skillB=<n>. The skill is set in memory when the
+# match counts and restored from the bot's stored profile at tear-down (also after "stop"); the profile is never
+# written. Each side of the record has forced {comp, skill} (null when nothing was forced).
 # A match that cannot gather its bots is recorded as failed and the plan goes on; "plan stop" ends the running
 # matches (recorded as stopped) and launches no more. One plan at a time; "stop" also stops the plan.
 # Every finished, failed or stopped match appends one JSON line (schema 1, kind arena: id, plan, index, time, seed,
