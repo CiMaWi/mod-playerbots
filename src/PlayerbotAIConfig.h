@@ -287,6 +287,7 @@ public:
     uint32 RandomBotAutoJoinBGRatedArena2v2Count;
     uint32 RandomBotAutoJoinBGRatedArena3v3Count;
     uint32 RandomBotAutoJoinBGRatedArena5v5Count;
+    uint32 RandomBotAutoJoinRatedArenaQueueSlots;
     bool RandomBotArenaGroupOnWorldThread;
 
     uint32 RandomBotTeleLowerLevel, RandomBotTeleHigherLevel;

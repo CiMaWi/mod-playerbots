@@ -1206,13 +1206,20 @@ void RandomPlayerbotMgr::CheckBgQueue()
         std::vector<uint32> wsBrackets = parseBrackets(sPlayerbotAIConfig.RandomBotAutoJoinWSBrackets);
 
         // Check both bgInstanceCount / bgInstances.size
-        // to help counter against potentional inconsistencies
+        // to help counter against potentional inconsistencies.
+        // Playerbots.RandomBotAutoJoinRatedArenaQueueSlots: up to that many matches' worth of captains may queue until
+        // the next check (1: one match at a time), never more than the count still allows
+        uint32 const ratedQueueSlots = sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaQueueSlots;
         auto updateRatedArenaInstanceCount = [&](uint32 queueType, uint32 bracket, uint32 minCount)
         {
-            if (BattlegroundData[queueType][bracket].activeRatedArenaQueue == 0 &&
-                BattlegroundData[queueType][bracket].ratedArenaInstanceCount < minCount &&
-                BattlegroundData[queueType][bracket].ratedArenaInstances.size() < minCount)
-                BattlegroundData[queueType][bracket].activeRatedArenaQueue = 1;
+            BattlegroundInfo& info = BattlegroundData[queueType][bracket];
+            uint32 const running =
+                std::max(info.ratedArenaInstanceCount, static_cast<uint32>(info.ratedArenaInstances.size()));
+            if (running >= minCount)
+                return;
+
+            uint32 const open = std::min(ratedQueueSlots, minCount - running);
+            info.activeRatedArenaQueue = std::max(info.activeRatedArenaQueue, open);
         };
 
         auto updateBGInstanceCount = [&](uint32 queueType, std::vector<uint32> brackets, uint32 minCount)

@@ -410,6 +410,8 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinBGRatedArena3v3Count", 0);
     RandomBotAutoJoinBGRatedArena5v5Count =
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinBGRatedArena5v5Count", 0);
+    RandomBotAutoJoinRatedArenaQueueSlots =
+        std::max(1, sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", 1));
     RandomBotArenaGroupOnWorldThread =
         sConfigMgr->GetOption<bool>("Playerbots.RandomBotArenaGroupOnWorldThread", false);
     LogInGroupOnly = sConfigMgr->GetOption<bool>("Playerbots.LogInGroupOnly", true);

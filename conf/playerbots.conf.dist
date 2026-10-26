@@ -2121,6 +2121,13 @@ Playerbots.RandomBotAutoJoinBGRatedArena2v2Count = 0
 Playerbots.RandomBotAutoJoinBGRatedArena3v3Count = 0
 Playerbots.RandomBotAutoJoinBGRatedArena5v5Count = 0
 
+# Rated arena queue slots: how many matches' worth of bot arena captains may join a rated arena queue (per arena type)
+# between two checks of the bot manager (every 35 s), never more than the arena battles count above still allows.
+# With 1 at most one rated match forms per check, so the count is reached slowly and few matches run at once; raise it
+# (e.g. to the arena battles count) when many bot teams should play at the same time.
+# Default: 1 (one match at a time)
+Playerbots.RandomBotAutoJoinRatedArenaQueueSlots = 1
+
 # Form a bot arena captain's group and teleport its team members on the world thread (a queued operation) instead of
 # inline on the captain's map thread; the captain joins the rated queue on a later pass, once its group stands.
 # Recommended with MapUpdate.Threads > 1, where two map threads may otherwise change the same groups.
