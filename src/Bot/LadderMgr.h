@@ -120,8 +120,9 @@ public:
         bool Online = false;
     };
     // Pairs free bots per faction (index TEAM_ALLIANCE, TEAM_HORDE) into at most wanted (captain, partner) pairs, the
-    // factions in turn. An online bot captains an offline one first (it founds the team itself), then online pairs,
-    // then offline pairs (founded by another online bot). Each bot is in one pair at most
+    // factions in turn. Two online bots pair first (the matchmaker picks only a team whose members are online), then
+    // an online bot captains an offline one (it founds the team itself), then offline pairs (founded by another online
+    // bot). Each bot is in one pair at most
     static std::vector<std::pair<PoolBot, PoolBot>> PairPoolBots(std::array<std::vector<PoolBot>, 2> const& freeBots,
                                                                  uint32 wanted);
 

@@ -1440,13 +1440,14 @@ std::vector<std::pair<LadderMgr::PoolBot, LadderMgr::PoolBot>> LadderMgr::PairPo
             (bot.Online ? online : offline).push_back(bot);
 
         std::vector<std::pair<PoolBot, PoolBot>>& pairs = byFaction[faction];
+        // Online pairs first: the matchmaker picks only a resident team whose members are both online (M17)
         size_t on = 0;
         size_t off = 0;
-        for (; on < online.size() && off < offline.size(); ++on, ++off)
-            pairs.emplace_back(online[on], offline[off]);
-
         for (; on + 1 < online.size(); on += 2)
             pairs.emplace_back(online[on], online[on + 1]);
+
+        for (; on < online.size() && off < offline.size(); ++on, ++off)
+            pairs.emplace_back(online[on], offline[off]);
 
         for (; off + 1 < offline.size(); off += 2)
             pairs.emplace_back(offline[off], offline[off + 1]);
@@ -1550,8 +1551,8 @@ bool LadderMgr::HandlePoolSelftestCommand(ChatHandler* handler, char const* /*ar
     Pairs const all = PairPoolBots(mixed, 10);
     checkPairs("mixed", mixed, 10, all);
     check(all.size() == 3 && all[0].first.Guid == 1 && all[0].second.Guid == 2 && all[1].first.Guid == 10 &&
-              all[1].second.Guid == 12 && all[2].first.Guid == 11 && all[2].second.Guid == 13,
-          "mixed: factions in turn, online captains with offline partners first");
+              all[1].second.Guid == 11 && all[2].first.Guid == 12 && all[2].second.Guid == 13,
+          "mixed: factions in turn, two online bots paired first");
     checkPairs("mixed, wanted 1", mixed, 1, PairPoolBots(mixed, 1));
     checkPairs("mixed, wanted 0", mixed, 0, PairPoolBots(mixed, 0));
     std::array<std::vector<PoolBot>, 2> const none;
@@ -1566,8 +1567,15 @@ bool LadderMgr::HandlePoolSelftestCommand(ChatHandler* handler, char const* /*ar
     odd[TEAM_HORDE] = {{40, false}};
     Pairs const oddPairs = PairPoolBots(odd, 5);
     checkPairs("odd", odd, 5, oddPairs);
-    check(oddPairs.size() == 1 && oddPairs[0].first.Guid == 31 && oddPairs[0].second.Guid == 30,
-          "odd: the online bot captains the offline one");
+    check(oddPairs.size() == 1 && oddPairs[0].first.Guid == 31 && oddPairs[0].second.Guid == 32,
+          "odd: the two online bots pair, the offline one stays free");
+
+    std::array<std::vector<PoolBot>, 2> oneOnline;
+    oneOnline[TEAM_ALLIANCE] = {{50, false}, {51, true}, {52, false}};
+    Pairs const onePairs = PairPoolBots(oneOnline, 5);
+    checkPairs("one online", oneOnline, 5, onePairs);
+    check(onePairs.size() == 1 && onePairs[0].first.Guid == 51 && onePairs[0].second.Guid == 50,
+          "one online: a lone online bot captains an offline one");
 
     handler->PSendSysMessage("Ladder pool selftest: {} ({} failures)", failures ? "FAIL" : "PASS", failures);
     return true;
