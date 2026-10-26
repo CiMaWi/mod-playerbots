@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "AsyncCallbackProcessor.h"
+#include "DatabaseEnvFwd.h"
 #include "Define.h"
 #include "Transaction.h"
 
@@ -98,6 +99,10 @@ public:
     // Startup (world DB and DBC stores loaded, before any map runs): catalogue and every loadout row. Nothing when off
     void Load();
     bool IsLoaded() const { return _loaded; }
+    // World thread, a ladder arrive before the members log in: their loadouts from the rows the move copied (the
+    // result of "SELECT guid, slot, item_entry, tier, season, bought_at" for them) replace what memory held; the
+    // season follows the rows like at startup
+    void ReloadLoadouts(std::vector<uint32> const& guids, QueryResult result);
     // World thread, bot login: a ladder bot without a loadout gets one at the base tier (memory, async write); on an
     // arena server (WearsAlways) a hosted ladder bot puts it on, elsewhere worn rows are a crash and are repaired
     void OnBotLogin(Player* bot);
@@ -284,6 +289,8 @@ private:
 
     PvpGearMgr() = default;
     void LoadWorn();
+    // One playerbots_pvp_loadout row into memory; false for a row it leaves out
+    bool ReadLoadoutRow(Field* fields, uint32& season);
     void EnsureLoadout(Player* bot);
     // Wear's first pass: worn slots whose PvP item is gone or no longer the loadout's entry get their PvE item back
     uint32 RefreshWorn(Player* bot, Worn& worn, Loadout const& loadout) const;

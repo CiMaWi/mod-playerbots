@@ -37,7 +37,7 @@ class LadderMgr
 public:
     enum class State : uint8
     {
-        Departing,  // waits until no member is queued or in a battleground, then for the logouts
+        Departing,  // waits until no member is invited to or in a battleground, then for the logouts
         Saving,     // dropped from memory; waits for the async barrier behind the writes
         Departed,
         Arriving,  // async load in flight
@@ -170,6 +170,7 @@ private:
     void UpdateDeparting(uint32 teamId, Move& move);
     void OnTeamRow(QueryCallback& callback, uint32 teamId, QueryResult result);
     void OnMemberRows(uint32 teamId, QueryResult result);
+    void FinishArrive(uint32 teamId, ArenaTeam* team);
     void NoteTeam(Move& move, ArenaTeam* team);
     void PruneContacts(uint32 now);
     PoolCount CountPool() const;

@@ -1446,8 +1446,9 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
                            std::max(12, static_cast<int>(randomBotUpdateInterval * 2)));
         SetEventValue(bot, "update", 1, randomTime);
 
-        // do not randomize or teleport immediately after server start (prevent lagging)
-        if (!GetEventValue(bot, "randomize"))
+        // do not randomize or teleport immediately after server start (prevent lagging). An arena ladder server
+        // never randomizes: its bots are ladder members whose levels, talents and gear come with them from main
+        if (!LadderMgr::Instance().IsHostedOnly() && !GetEventValue(bot, "randomize"))
         {
             randomTime = urand(3, std::max(4, static_cast<int>(randomBotUpdateInterval * 0.4)));
             ScheduleRandomize(bot, randomTime);
@@ -1580,7 +1581,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     {
         // randomize
         uint32 randomize = GetEventValue(botId, "randomize");
-        if (!randomize)
+        if (!randomize && !LadderMgr::Instance().IsHostedOnly())
         {
             // bool randomiser = true;
             // if (player->GetGuildId())

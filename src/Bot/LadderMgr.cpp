@@ -64,6 +64,58 @@ bool Refuse(ChatHandler* handler, std::string const& message)
     return false;
 }
 
+// Invited from a queue: the slot's instance id (STATUS_WAIT_JOIN). Player::IsInvitedForBattlegroundInstance() without
+// an id is set only at the port accept, when the player is already in the battleground
+bool HasBattlegroundInvite(Player* player)
+{
+    for (uint32 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
+    {
+        BattlegroundQueueTypeId const queueTypeId = player->GetBattlegroundQueueTypeId(i);
+        if (queueTypeId != BATTLEGROUND_QUEUE_NONE && player->IsInvitedForBattlegroundQueueType(queueTypeId))
+            return true;
+    }
+
+    return false;
+}
+
+// The core's leave-queue path (WorldSession::HandleBattleFieldPortOpcode, action 0) for every queue the player is in
+// but not invited from. World thread (the queue update runs there too). A rated group not invited yet leaves as a
+// whole (BattlegroundQueue::RemovePlayer); without an invite the leave counts no loss and writes no deserter row
+void LeaveBattlegroundQueues(Player* player)
+{
+    for (uint32 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
+    {
+        BattlegroundQueueTypeId const queueTypeId = player->GetBattlegroundQueueTypeId(i);
+        if (queueTypeId == BATTLEGROUND_QUEUE_NONE || player->IsInvitedForBattlegroundQueueType(queueTypeId))
+            continue;
+
+        BattlegroundQueue& queue = sBattlegroundMgr->GetBattlegroundQueue(queueTypeId);
+        GroupQueueInfo ginfo;
+        bool const queued = queue.GetPlayerGroupInfoData(player->GetGUID(), &ginfo);
+        if (queued)
+            queue.RemovePlayer(player->GetGUID(), true);
+
+        player->RemoveBattlegroundQueueId(queueTypeId);
+        if (!queued)
+            continue;
+
+        if (Battleground* bg = sBattlegroundMgr->GetBattlegroundTemplate(ginfo.BgTypeId))
+        {
+            WorldPacket data;
+            sBattlegroundMgr->BuildBattlegroundStatusPacket(&data, bg, i, STATUS_NONE, 0, 0, 0, TEAM_NEUTRAL);
+            player->SendDirectMessage(&data);
+        }
+
+        // As the port handler: a battleground queue is updated, an arena queue is not
+        if (!ginfo.ArenaType)
+            sBattlegroundMgr->ScheduleQueueUpdate(ginfo.ArenaMatchmakerRating, ginfo.ArenaType, queueTypeId,
+                                                  ginfo.BgTypeId, BattlegroundBracketId(ginfo.BracketId));
+
+        LOG_INFO("playerbots", "Ladder: {} left the {} queue (its team departs)", player->GetName(),
+                 ginfo.ArenaType ? "arena" : "battleground");
+    }
+}
+
 char const* RoleName(uint32 role)
 {
     switch (role)
@@ -444,14 +496,25 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
 
     if (!move.LoggedOut)
     {
+        // Only an invite or a match holds the team: a logout with a pending rated invite counts a loss
+        // (BattlegroundQueue::RemovePlayer) and writes a deserter row (WorldSession::LogoutPlayer)
         for (ArenaTeamMember const& member : team->GetMembers())
         {
             Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid);
-            if (player && (player->InBattleground() || player->InBattlegroundQueue()))
+            if (player && (player->InBattleground() || HasBattlegroundInvite(player)))
             {
-                move.Note = Acore::StringFormat("waits: {} is queued or in a battleground", member.Name);
+                move.Note = Acore::StringFormat("waits: {} is invited to or in a battleground", member.Name);
                 return;
             }
+        }
+
+        // A member merely queued leaves its queues now, so no invite reaches it before its logout lands, and a team
+        // without an opponent on this server does not wait forever. It does not queue again while the team departs
+        // (IsQueueBlocked)
+        for (ArenaTeamMember const& member : team->GetMembers())
+        {
+            if (Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid))
+                LeaveBattlegroundQueues(player);
         }
 
         // The PvP gear comes off here first (an arena server wears it all the time): the worn rows stay on this
@@ -531,21 +594,25 @@ void LadderMgr::UpdateDeparting(uint32 teamId, Move& move)
     SetState(move, State::Saving);
     move.Note = Acore::StringFormat("<{}> rating {} dropped; waits for the save barrier", name, rating);
 
-    // One async character DB worker (CharacterDatabase.WorkerThreads = 1): FIFO, so this answer follows every write
-    _queryProcessor.AddCallback(CharacterDatabase.AsyncQuery("SELECT 1")
-                                    .WithCallback(
-                                        [this, teamId, name](QueryResult /*result*/)
-                                        {
-                                            auto const it = _moves.find(teamId);
-                                            if (it == _moves.end() || it->second.Current != State::Saving)
-                                                return;
+    // One async worker per DB (CharacterDatabase and PlayerbotsDatabase.WorkerThreads = 1): FIFO, so each answer
+    // follows every write queued before it; the playerbots DB one covers a buy's loadout rows and the unwear's worn
+    // rows
+    _queryProcessor.AddCallback(
+        CharacterDatabase.AsyncQuery("SELECT 1")
+            .WithChainingCallback([](QueryCallback& callback, QueryResult /*result*/)
+                                  { callback.SetNextQuery(PlayerbotsDatabase.AsyncQuery("SELECT 1")); })
+            .WithCallback(
+                [this, teamId, name](QueryResult /*result*/)
+                {
+                    auto const it = _moves.find(teamId);
+                    if (it == _moves.end() || it->second.Current != State::Saving)
+                        return;
 
-                                            SetState(it->second, State::Departed);
-                                            it->second.Note =
-                                                Acore::StringFormat("<{}> saved and dropped, {} members away", name,
-                                                                    it->second.Members.size());
-                                            LOG_INFO("playerbots", "Ladder: arena team {} <{}> departed", teamId, name);
-                                        }));
+                    SetState(it->second, State::Departed);
+                    it->second.Note =
+                        Acore::StringFormat("<{}> saved and dropped, {} members away", name, it->second.Members.size());
+                    LOG_INFO("playerbots", "Ladder: arena team {} <{}> departed", teamId, name);
+                }));
 }
 
 void LadderMgr::OnTeamRow(QueryCallback& callback, uint32 teamId, QueryResult result)
@@ -640,6 +707,50 @@ void LadderMgr::OnMemberRows(uint32 teamId, QueryResult result)
         if (std::find(move.Members.begin(), move.Members.end(), member.Guid) == move.Members.end())
             move.Members.push_back(member.Guid);
 
+    if (!PvpGearMgr::Instance().IsLoaded())
+    {
+        FinishArrive(teamId, team);
+        return;
+    }
+
+    // Before any member logs in: the PvP loadouts from the rows the move copied. Memory holds none for a first stay
+    // here (the login would store a base loadout over the copy) or stale ones from this server's start
+    std::vector<uint32> guids;
+    std::string list;
+    for (ObjectGuid const& guid : move.Members)
+    {
+        guids.push_back(guid.GetCounter());
+        list += Acore::StringFormat("{}{}", list.empty() ? "" : ", ", guid.GetCounter());
+    }
+
+    move.Note = "loading the PvP loadouts";
+    _queryProcessor.AddCallback(
+        PlayerbotsDatabase
+            .AsyncQuery(Acore::StringFormat("SELECT guid, slot, item_entry, tier, season, bought_at FROM "
+                                            "playerbots_pvp_loadout WHERE guid IN ({})",
+                                            list))
+            .WithCallback(
+                [this, teamId, guids](QueryResult loadouts)
+                {
+                    auto const it = _moves.find(teamId);
+                    if (it == _moves.end() || it->second.Current != State::Arriving)
+                        return;
+
+                    ArenaTeam* arrived = sArenaTeamMgr->GetArenaTeamById(teamId);
+                    if (!arrived)
+                    {
+                        Fail(teamId, "the team left memory while its PvP loadouts loaded");
+                        return;
+                    }
+
+                    PvpGearMgr::Instance().ReloadLoadouts(guids, loadouts);
+                    FinishArrive(teamId, arrived);
+                }));
+}
+
+void LadderMgr::FinishArrive(uint32 teamId, ArenaTeam* team)
+{
+    Move& move = _moves[teamId];
     WriteRoster(teamId, move.Members, false);
     ReleaseMembers(teamId, move);
     SetBlocked(teamId, false);
@@ -693,7 +804,7 @@ bool LadderMgr::HandleDepartCommand(ChatHandler* handler, char const* args)
     mgr.NoteTeam(move, team);
     move.WaitedMs = 0;
     move.LogoutIssuedMs = 0;
-    move.Note = "waits until no member is queued or in a battleground";
+    move.Note = "waits until no member is invited to or in a battleground";
     mgr.SetState(move, State::Departing);
     mgr.SetBlocked(*teamId, true);
     handler->PSendSysMessage("Team {} <{}> rating {} departing: {}", *teamId, team->GetName(), team->GetRating(),

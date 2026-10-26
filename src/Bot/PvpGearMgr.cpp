@@ -574,19 +574,11 @@ void PvpGearMgr::Load()
     {
         do
         {
-            Field* fields = result->Fetch();
-            uint8 const slot = fields[1].Get<uint8>();
-            if (slot >= SlotCount)
+            uint32 season = 0;
+            if (!ReadLoadoutRow(result->Fetch(), season))
                 continue;
 
-            LoadoutSlot& data = _loadouts[fields[0].Get<uint32>()][slot];
-            data.Item = fields[2].Get<uint32>();
-            // The catalogue decides the tier, so a changed tier order does not mislabel stored items
-            CatalogueItem const* item = FindItem(data.Item);
-            data.Tier = item ? item->Tier : fields[3].Get<uint8>();
-            data.Season = fields[4].Get<uint32>();
-            data.BoughtAt = fields[5].Get<uint32>();
-            maxSeason = std::max(maxSeason, data.Season);
+            maxSeason = std::max(maxSeason, season);
             ++rows;
         } while (result->NextRow());
     }
@@ -607,6 +599,58 @@ void PvpGearMgr::Load()
                  sPlayerbotAIConfig.PvpGearBuyCheckIntervalMinutes, sPlayerbotAIConfig.PvpGearBuyBatchPerTick,
                  sPlayerbotAIConfig.PvpGearBuySaveTowardBetter ? "on" : "off", order);
     }
+}
+
+bool PvpGearMgr::ReadLoadoutRow(Field* fields, uint32& season)
+{
+    uint8 const slot = fields[1].Get<uint8>();
+    if (slot >= SlotCount)
+        return false;
+
+    LoadoutSlot& data = _loadouts[fields[0].Get<uint32>()][slot];
+    data.Item = fields[2].Get<uint32>();
+    // The catalogue decides the tier, so a changed tier order does not mislabel stored items
+    CatalogueItem const* item = FindItem(data.Item);
+    data.Tier = item ? item->Tier : fields[3].Get<uint8>();
+    data.Season = fields[4].Get<uint32>();
+    data.BoughtAt = fields[5].Get<uint32>();
+    season = data.Season;
+    return true;
+}
+
+void PvpGearMgr::ReloadLoadouts(std::vector<uint32> const& guids, QueryResult result)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::ReloadLoadouts");
+    if (!_loaded)
+        return;
+
+    // No rows: the login builds a base loadout, as for a bot that never had one
+    for (uint32 guid : guids)
+        _loadouts.erase(guid);
+
+    uint32 rows = 0;
+    uint32 maxSeason = 0;
+    if (result)
+    {
+        do
+        {
+            uint32 season = 0;
+            if (!ReadLoadoutRow(result->Fetch(), season))
+                continue;
+
+            maxSeason = std::max(maxSeason, season);
+            ++rows;
+        } while (result->NextRow());
+    }
+
+    // Like Load: the newest season among the rows, so a restart would not change it
+    if (maxSeason > _season)
+    {
+        LOG_INFO("playerbots", "PvP gear: season {} -> {} (an arriving bot's loadout)", _season, maxSeason);
+        _season = maxSeason;
+    }
+
+    LOG_DEBUG("playerbots", "PvP gear: {} loadout rows of {} arriving bots loaded", rows, guids.size());
 }
 
 bool PvpGearMgr::IsMaxLevelRandomBot(Player* bot)
