@@ -1555,7 +1555,8 @@ Playerbots.Natural.Trace.SampleEvery = 1
 # <on|off|config> overrides it at runtime. Default: 0
 Playerbots.Natural.Trace.Organic = 0
 
-# The directory of the trace files; empty = <LogsDir>/natural. Created when missing. Default: ""
+# The directory of the trace files; empty = <LogsDir>/natural. Created when missing. With Format = binary it is the
+# root of the per-instance folders (see Format). Default: ""
 Playerbots.Natural.Trace.Dir = ""
 
 # The sample interval in ms (50-1000). Default: 100
@@ -1563,6 +1564,16 @@ Playerbots.Natural.Trace.IntervalMs = 100
 
 # Rows kept per traced unit (100-10000000); then a truncated row and the rest dropped. Default: 200000 (5.5 h)
 Playerbots.Natural.Trace.MaxRowsPerUnit = 200000
+
+# The format of the trace files (G0i): jsonl = <Dir>/trace-<YYYYMMDD>.jsonl as above; binary = one file per traced
+# match, <Dir>/<instance>/<YYYY-MM-DD>/<match id>.ntr (instance = Playerbots.Ladder.ServerId, main when empty; the day
+# is the UTC day of the match's first trace start, so a match across midnight stays in one file; a GM trace is one
+# file per session, gm-<guid counter>-<unix seconds>.ntr). A binary file is little endian: a versioned header (match
+# id, instance, source, interval, a field table of the row kinds and fields above), then one block of rows per
+# flushed batch of a unit (a pos row 49 bytes, about a quarter of its JSON); readers decode by the file's own field
+# table. The writer thread creates the folders and opens a file per batch (no handle kept). Read at each trace start:
+# a .reload config switches new traces only. An unknown value is logged and jsonl is used. Default: jsonl
+Playerbots.Natural.Trace.Format = "jsonl"
 
 # Natural reaction times and attention. Needs Playerbots.Skill.Enable = 1. With 1, the skill multiplier of the notice
 # categories (interrupts, defensive cooldowns, dispels, crowd control, crowd-control breaks, target switches; see

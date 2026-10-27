@@ -25,7 +25,8 @@ class Unit;
 // health %, the current cast's spell, state, elapsed and remaining time), plus event rows (cast start, finish,
 // cancel, interrupt received, target change, and for a real player its exact movement packets). The rows are plain
 // values, buffered per unit and formatted on PvpTestRecordWriter's thread into <Dir>/trace-<YYYYMMDD>.jsonl, one JSON
-// object per line. Skill is never written: rows carry the match id, which joins them to the match record.
+// object per line, or (G0i, Format = binary) into one compact file per match, <Dir>/<instance>/<YYYY-MM-DD>/<match
+// id>.ntr. Skill is never written: rows carry the match id, which joins them to the match record.
 // Threads: the samples and most events come from the unit's map thread; the registry (guid -> state) is guarded by
 // one mutex, which a hook takes only for a unit whose lock-free mark is set. While nothing is traced, every hook
 // returns after one relaxed load (Any).

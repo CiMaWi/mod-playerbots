@@ -293,6 +293,9 @@ bool PvpTestRecordWriter::Append(std::string const& directory, Line& line)
     }
 
     std::string const& target = line.Directory.empty() ? directory : line.Directory;
+    if (!line.File.empty())
+        return AppendBinary(target + line.File, line);
+
     std::ofstream file(target + line.Prefix + "-" + line.Date + ".jsonl", std::ios::out | std::ios::app);
     if (!file)
     {
@@ -305,10 +308,50 @@ bool PvpTestRecordWriter::Append(std::string const& directory, Line& line)
     return true;
 }
 
-void PvpTestRecordWriter::WriteLine(std::string prefix, std::string date, std::string text,
-                                    std::function<std::string()> make, std::string directory)
+bool PvpTestRecordWriter::AppendBinary(std::string const& path, Line& line)
 {
-    Line line{std::move(prefix), std::move(date), std::move(text), std::move(make), std::move(directory)};
+    std::error_code error;
+    std::uintmax_t const size = std::filesystem::file_size(path, error);
+    bool const fresh = error || !size;
+    std::ios::openmode const mode = std::ios::out | std::ios::app | std::ios::binary;
+    std::ofstream file(path, mode);
+    if (!file && !line.Directory.empty())
+    {
+        // The folder went away while the server runs (a prune of the natural folder): created again
+        std::filesystem::create_directories(line.Directory, error);
+        file.open(path, mode);
+    }
+
+    if (!file)
+    {
+        ++_failed;
+        return false;
+    }
+
+    if (fresh && line.Header)
+    {
+        std::string const header = line.Header();
+        file.write(header.data(), static_cast<std::streamsize>(header.size()));
+    }
+
+    file.write(line.Text.data(), static_cast<std::streamsize>(line.Text.size()));
+    file.flush();
+    if (!file)
+    {
+        ++_failed;
+        return false;
+    }
+
+    ++_written;
+    return true;
+}
+
+void PvpTestRecordWriter::WriteLine(std::string prefix, std::string date, std::string text,
+                                    std::function<std::string()> make, std::string directory, std::string file,
+                                    std::function<std::string()> header)
+{
+    Line line{std::move(prefix),    std::move(date), std::move(text),  std::move(make),
+              std::move(directory), std::move(file), std::move(header)};
     {
         std::lock_guard<std::mutex> guard(_mutex);
         if (_stop)

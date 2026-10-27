@@ -8,8 +8,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -127,20 +130,38 @@ struct Row
     char const* Source = "";
 };
 
-// The rows of one unit on their way to the file
+// Where the rows of a trace go, made at its start on the map thread and shared by its batches. JSONL (G0e): the file
+// <Directory>trace-<Date>.jsonl. Binary (G0i): the file <Directory><File>, Directory = <root>/<instance>/<YYYY-MM-DD>/;
+// Instance and StartUnixMs go into the header of a new file. The units of one binary match share the place of the
+// match's first start (Tracer::Insert), so its day folder and header fields are fixed per match.
+struct Place
+{
+    std::string Directory;
+    std::string Date;
+    bool Binary = false;
+    std::string File;
+    std::string Instance;
+    uint64 StartUnixMs = 0;
+};
+
+using PlacePtr = std::shared_ptr<Place const>;
+
+// The rows of one unit on their way to the file, with the unit's start source and interval (the header fields of a
+// binary file this batch creates)
 struct Batch
 {
     std::string MatchId;
-    std::string Directory;
-    std::string Date;
+    PlacePtr Where;
+    char const* Source = "";
+    uint32 Interval = 0;
     std::vector<Row> Rows;
 };
 
 struct UnitState
 {
     std::string MatchId;
-    std::string Directory;
-    std::string Date;
+    PlacePtr Where;
+    char const* Source = "";
     uint32 StartMs = 0;
     uint32 Interval = 100;
     uint32 MaxRows = 0;
@@ -178,8 +199,8 @@ public:
     // Lock-free: false for a unit that is certainly not traced
     bool Marked(uint64 guid) const { return _marks[guid % MarkBuckets].load(std::memory_order_relaxed) != 0; }
 
-    AddResult Add(uint64 guid, std::string matchId, std::string directory, std::string date, Row start, uint32 maxUnits,
-                  uint32 interval, uint32 maxRows)
+    AddResult Add(uint64 guid, std::string matchId, PlacePtr where, Row start, uint32 maxUnits, uint32 interval,
+                  uint32 maxRows)
     {
         std::lock_guard<std::mutex> guard(_lock);
         if (_units.count(guid))
@@ -191,15 +212,14 @@ public:
             return AddResult::Full;
         }
 
-        Insert(guid, std::move(matchId), std::move(directory), std::move(date), start, interval, maxRows);
+        Insert(guid, std::move(matchId), std::move(where), start, interval, maxRows);
         return AddResult::Added;
     }
 
     // All of a group (the players of an organic match, each with its start row) or none, under one lock: Exists
     // when one of them is traced already, Full when they do not all fit under maxUnits (all counted as refused)
-    AddResult AddGroup(std::vector<std::pair<uint64, Row>> members, std::string const& matchId,
-                       std::string const& directory, std::string const& date, uint32 maxUnits, uint32 interval,
-                       uint32 maxRows)
+    AddResult AddGroup(std::vector<std::pair<uint64, Row>> members, std::string const& matchId, PlacePtr const& where,
+                       uint32 maxUnits, uint32 interval, uint32 maxRows)
     {
         std::lock_guard<std::mutex> guard(_lock);
         for (auto const& member : members)
@@ -218,7 +238,7 @@ public:
         }
 
         for (auto& member : members)
-            Insert(member.first, matchId, directory, date, member.second, interval, maxRows);
+            Insert(member.first, matchId, where, member.second, interval, maxRows);
 
         return AddResult::Added;
     }
@@ -355,17 +375,44 @@ public:
     std::atomic<uint64> TruncatedUnits{0};
     std::atomic<uint64> DroppedRows{0};
 
+    // The binary matches with a traced unit (their shared places)
+    size_t Matches()
+    {
+        std::lock_guard<std::mutex> guard(_lock);
+        return _matches.size();
+    }
+
 private:
     using Units = std::unordered_map<uint64, UnitState>;
 
+    // A binary match's place and its traced units
+    struct MatchPlace
+    {
+        PlacePtr Where;
+        uint32 Units = 0;
+    };
+
     // The lock is held and the unit is not traced: its state, start row, mark and count
-    void Insert(uint64 guid, std::string matchId, std::string directory, std::string date, Row& start, uint32 interval,
-                uint32 maxRows)
+    void Insert(uint64 guid, std::string matchId, PlacePtr where, Row& start, uint32 interval, uint32 maxRows)
     {
         UnitState& state = _units[guid];
+        // One binary file per match: a unit of a match with a traced unit takes the match's place (day, header)
+        auto const match = matchId.empty() ? _matches.end() : _matches.find(matchId);
+        if (match != _matches.end())
+        {
+            ++match->second.Units;
+            state.Where = match->second.Where;
+        }
+        else
+        {
+            if (where->Binary && !matchId.empty())
+                _matches[matchId] = MatchPlace{where, 1};
+
+            state.Where = std::move(where);
+        }
+
         state.MatchId = std::move(matchId);
-        state.Directory = std::move(directory);
-        state.Date = std::move(date);
+        state.Source = start.Source;
         state.StartMs = _clock();
         state.Interval = std::max<uint32>(interval, 1);
         state.MaxRows = maxRows;
@@ -412,8 +459,9 @@ private:
             return;
 
         batch.MatchId = state.MatchId;
-        batch.Directory = state.Directory;
-        batch.Date = state.Date;
+        batch.Where = state.Where;
+        batch.Source = state.Source;
+        batch.Interval = state.Interval;
         batch.Rows.swap(state.Buffer);
         state.Buffer.reserve(FlushRows + 2);
     }
@@ -429,10 +477,18 @@ private:
         end.Extra = static_cast<int32>(state.Rows);
         end.Extra2 = static_cast<int32>(state.Dropped);
         state.Buffer.push_back(end);
+        if (!state.MatchId.empty())
+        {
+            auto const match = _matches.find(state.MatchId);
+            if (match != _matches.end() && match->second.Where == state.Where && !--match->second.Units)
+                _matches.erase(match);
+        }
+
         Batch batch;
         batch.MatchId = std::move(state.MatchId);
-        batch.Directory = std::move(state.Directory);
-        batch.Date = std::move(state.Date);
+        batch.Where = std::move(state.Where);
+        batch.Source = state.Source;
+        batch.Interval = state.Interval;
         batch.Rows = std::move(state.Buffer);
         batches.push_back(std::move(batch));
         _marks[itr->first % MarkBuckets].fetch_sub(1, std::memory_order_relaxed);
@@ -453,6 +509,7 @@ private:
     ClockFn _clock;
     std::mutex _lock;
     Units _units;
+    std::unordered_map<std::string, MatchPlace> _matches;
     std::array<std::atomic<uint16>, MarkBuckets> _marks{};
 };
 
@@ -524,10 +581,324 @@ std::string BatchText(Batch const& batch)
     return text;
 }
 
+// G0i: the binary format v1 (the hub's .claude/plans/living-azeroth/drafts/phase-g/natural-format.md; decoded by
+// tools/lib/natural-trace.js). Little endian, written byte by byte, so the layout does not depend on the host.
+constexpr uint16 TraceFormatVersion = 1;
+constexpr uint16 TraceFormatLittleEndian = 1;
+constexpr uint8 BlockRows = 1;
+constexpr size_t BlockHeadBytes = 9;
+constexpr size_t BlockLengthAt = 5;
+constexpr size_t HeaderSizeAt = 8;
+constexpr uint8 KindCount = static_cast<uint8>(RowKind::End) + 1;
+constexpr size_t SafeNameLength = 120;
+
+enum FieldType : uint8
+{
+    FieldU8 = 1,
+    FieldU16 = 2,
+    FieldU32 = 3,
+    FieldI16 = 4,
+    FieldI32 = 5,
+    FieldBool = 6,
+    FieldChar = 7,
+    FieldEnum = 8,
+    FieldI32OrNull = 9
+};
+
+struct FieldDef
+{
+    char const* Name;
+    FieldType Type;
+    uint16 Scale;
+};
+
+// The values of the one enum field (start: src), in table order
+std::array<char const*, 3> const SourceNames = {"organic", "harness", "gm"};
+
+// The v1 field table by RowKind value (= kind id); PutRow writes the same fields in the same order
+std::vector<FieldDef> const& KindFields(RowKind kind)
+{
+    static std::array<std::vector<FieldDef>, KindCount> const table = {{
+        {{"src", FieldEnum, 1},
+         {"side", FieldChar, 1},
+         {"cls", FieldU8, 1},
+         {"bot", FieldBool, 1},
+         {"iv", FieldU32, 1}},
+        {{"x", FieldI32, 100},
+         {"y", FieldI32, 100},
+         {"z", FieldI32, 100},
+         {"o", FieldI16, 1000},
+         {"mf", FieldU32, 1},
+         {"mov", FieldBool, 1},
+         {"spl", FieldBool, 1},
+         {"run", FieldU16, 100},
+         {"tg", FieldU32, 1},
+         {"vi", FieldU32, 1},
+         {"hp", FieldU8, 1},
+         {"cs", FieldU32, 1},
+         {"st", FieldU8, 1},
+         {"ce", FieldI32OrNull, 1},
+         {"cr", FieldI32OrNull, 1}},
+        {{"tg", FieldU32, 1}},
+        {{"s", FieldU32, 1}, {"tg", FieldU32, 1}, {"ct", FieldI32, 1}},
+        {{"s", FieldU32, 1}, {"tg", FieldU32, 1}},
+        {{"s", FieldU32, 1}, {"self", FieldBool, 1}},
+        {{"s", FieldU32, 1}},
+        {{"op", FieldU32, 1},
+         {"mf", FieldU32, 1},
+         {"x", FieldI32, 100},
+         {"y", FieldI32, 100},
+         {"z", FieldI32, 100},
+         {"o", FieldI16, 1000}},
+        {},
+        {{"rows", FieldU32, 1}, {"dropped", FieldU32, 1}},
+    }};
+    return table[static_cast<size_t>(kind)];
+}
+
+uint32 TypeBytes(FieldType type)
+{
+    switch (type)
+    {
+        case FieldU16:
+        case FieldI16:
+            return 2;
+        case FieldU32:
+        case FieldI32:
+        case FieldI32OrNull:
+            return 4;
+        default:
+            return 1;
+    }
+}
+
+void PutU8(std::string& out, uint32 value) { out.push_back(static_cast<char>(value & 0xFF)); }
+
+void PutU16(std::string& out, uint32 value)
+{
+    PutU8(out, value);
+    PutU8(out, value >> 8);
+}
+
+void PutU32(std::string& out, uint32 value)
+{
+    PutU16(out, value & 0xFFFF);
+    PutU16(out, value >> 16);
+}
+
+void PutU64(std::string& out, uint64 value)
+{
+    PutU32(out, static_cast<uint32>(value & 0xFFFFFFFFu));
+    PutU32(out, static_cast<uint32>(value >> 32));
+}
+
+void SetU32(std::string& out, size_t at, uint32 value)
+{
+    for (size_t index = 0; index < 4; ++index)
+        out[at + index] = static_cast<char>((value >> (8 * index)) & 0xFF);
+}
+
+// A length-prefixed UTF-8 string: u8 or (wide) u16 length; a longer text is cut
+void PutString(std::string& out, std::string const& text, bool wide)
+{
+    size_t const length = std::min<size_t>(text.size(), wide ? 0xFFFF : 0xFF);
+    if (wide)
+        PutU16(out, static_cast<uint32>(length));
+    else
+        PutU8(out, static_cast<uint32>(length));
+
+    out.append(text, 0, length);
+}
+
+// round(value * scale), half up as the hub's encoder, clamped to the field's range; NaN writes 0
+int64 Scaled(float value, double scale, int64 low, int64 high)
+{
+    double const scaled = std::floor(static_cast<double>(value) * scale + 0.5);
+    if (std::isnan(scaled))
+        return 0;
+
+    return static_cast<int64>(std::clamp(scaled, static_cast<double>(low), static_cast<double>(high)));
+}
+
+void PutI32(std::string& out, int32 value) { PutU32(out, static_cast<uint32>(value)); }
+
+void PutCoordinate(std::string& out, float value)
+{
+    PutI32(out, static_cast<int32>(
+                    Scaled(value, 100.0, std::numeric_limits<int32>::min(), std::numeric_limits<int32>::max())));
+}
+
+void PutFacing(std::string& out, float value)
+{
+    PutU16(out, static_cast<uint16>(static_cast<int16>(
+                    Scaled(value, 1000.0, std::numeric_limits<int16>::min(), std::numeric_limits<int16>::max()))));
+}
+
+uint32 Counter(uint64 guid) { return static_cast<uint32>(std::min<uint64>(guid, 0xFFFFFFFFu)); }
+
+// i32n: negative = null, written as -1
+void PutOrNull(std::string& out, int32 value) { PutI32(out, value < 0 ? -1 : value); }
+
+uint32 SourceIndex(char const* source)
+{
+    for (size_t index = 0; source && index < SourceNames.size(); ++index)
+    {
+        if (!std::strcmp(source, SourceNames[index]))
+            return static_cast<uint32>(index);
+    }
+
+    return 0xFF;
+}
+
+// One row: u8 kind id, u32 t, the kind's payload (KindFields)
+void PutRow(std::string& out, Row const& row)
+{
+    PutU8(out, static_cast<uint32>(row.Kind));
+    PutU32(out, row.Ms);
+    switch (row.Kind)
+    {
+        case RowKind::Start:
+            PutU8(out, SourceIndex(row.Source));
+            PutU8(out, static_cast<uint8>(row.Side));
+            PutU8(out, std::min<uint32>(row.Spell, 0xFF));
+            PutU8(out, row.Flag ? 1 : 0);
+            PutU32(out, static_cast<uint32>(std::max<int32>(row.Extra, 0)));
+            break;
+        case RowKind::Pos:
+            PutCoordinate(out, row.X);
+            PutCoordinate(out, row.Y);
+            PutCoordinate(out, row.Z);
+            PutFacing(out, row.O);
+            PutU32(out, row.MoveFlags);
+            PutU8(out, row.Moving ? 1 : 0);
+            PutU8(out, row.Spline ? 1 : 0);
+            PutU16(out, static_cast<uint32>(Scaled(row.Speed, 100.0, 0, 0xFFFF)));
+            PutU32(out, Counter(row.Target));
+            PutU32(out, Counter(row.Victim));
+            PutU8(out, row.Health);
+            PutU32(out, row.Spell);
+            PutU8(out, row.CastState);
+            PutOrNull(out, row.Extra);
+            PutOrNull(out, row.Extra2);
+            break;
+        case RowKind::Target:
+            PutU32(out, Counter(row.Target));
+            break;
+        case RowKind::CastStart:
+            PutU32(out, row.Spell);
+            PutU32(out, Counter(row.Target));
+            PutI32(out, row.Extra);
+            break;
+        case RowKind::CastFinish:
+            PutU32(out, row.Spell);
+            PutU32(out, Counter(row.Target));
+            break;
+        case RowKind::Cancel:
+            PutU32(out, row.Spell);
+            PutU8(out, row.Flag ? 1 : 0);
+            break;
+        case RowKind::Interrupt:
+            PutU32(out, row.Spell);
+            break;
+        case RowKind::Move:
+            PutU32(out, static_cast<uint32>(row.Extra));
+            PutU32(out, row.MoveFlags);
+            PutCoordinate(out, row.X);
+            PutCoordinate(out, row.Y);
+            PutCoordinate(out, row.Z);
+            PutFacing(out, row.O);
+            break;
+        case RowKind::Truncated:
+            break;
+        case RowKind::End:
+            PutU32(out, static_cast<uint32>(std::max<int32>(row.Extra, 0)));
+            PutU32(out, static_cast<uint32>(std::max<int32>(row.Extra2, 0)));
+            break;
+    }
+}
+
+// The header of a new binary file: magic, version, flags, its size, the match's wall clock start and interval, match
+// id, instance, source (of the unit whose batch creates the file), then the field table
+std::string HeaderBytes(std::string const& matchId, std::string const& instance, char const* source, uint32 interval,
+                        uint64 startUnixMs)
+{
+    std::string out;
+    out.reserve(512);
+    out.append("NTRC", 4);
+    PutU16(out, TraceFormatVersion);
+    PutU16(out, TraceFormatLittleEndian);
+    PutU32(out, 0);
+    PutU64(out, startUnixMs);
+    PutU32(out, interval);
+    PutString(out, matchId, true);
+    PutString(out, instance, true);
+    PutString(out, source ? source : "", true);
+    PutU8(out, KindCount);
+    for (uint8 id = 0; id < KindCount; ++id)
+    {
+        RowKind const kind = static_cast<RowKind>(id);
+        std::vector<FieldDef> const& fields = KindFields(kind);
+        uint32 payload = 0;
+        for (FieldDef const& field : fields)
+            payload += TypeBytes(field.Type);
+
+        PutU8(out, id);
+        PutString(out, KindName(kind), false);
+        PutU16(out, payload);
+        PutU8(out, static_cast<uint32>(fields.size()));
+        for (FieldDef const& field : fields)
+        {
+            PutString(out, field.Name, false);
+            PutU8(out, field.Type);
+            PutU16(out, field.Scale);
+            if (field.Type != FieldEnum)
+                continue;
+
+            PutU8(out, static_cast<uint32>(SourceNames.size()));
+            for (char const* name : SourceNames)
+                PutString(out, name, false);
+        }
+    }
+
+    SetU32(out, HeaderSizeAt, static_cast<uint32>(out.size()));
+    return out;
+}
+
+// One block of one unit's rows: u8 type, u32 unit guid counter, u32 payload bytes, the rows
+std::string BlockBytes(std::vector<Row> const& rows)
+{
+    std::string out;
+    out.reserve(BlockHeadBytes + rows.size() * 50);
+    PutU8(out, BlockRows);
+    PutU32(out, rows.empty() ? 0 : Counter(rows.front().Guid));
+    PutU32(out, 0);
+    for (Row const& row : rows)
+        PutRow(out, row);
+
+    SetU32(out, BlockLengthAt, static_cast<uint32>(out.size() - BlockHeadBytes));
+    return out;
+}
+
+// A file name part: every character outside [A-Za-z0-9._-] becomes _, at most 120 characters (the hub's safeName)
+std::string SafeName(std::string const& text)
+{
+    std::string name = text.substr(0, SafeNameLength);
+    for (char& c : name)
+    {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '_' && c != '-')
+            c = '_';
+    }
+
+    return name.empty() ? std::string("_") : name;
+}
+
 std::atomic<uint64> QueuedBatches{0};
 std::atomic<uint64> WrittenRows{0};
 std::atomic<uint64> WrittenBytes{0};
-std::atomic<bool> DirectoryLogged{false};
+// Binary files created (a header written)
+std::atomic<uint64> WrittenFiles{0};
+// The formats whose place was logged (bit 0 JSONL, bit 1 binary)
+std::atomic<uint8> LoggedFormats{0};
 // .playerbots natural sample: -1 = Playerbots.Natural.Trace.SampleEvery, else the N set by the command (0 = off)
 std::atomic<int32> SampleOverride{-1};
 // .playerbots natural organic: -1 = Playerbots.Natural.Trace.Organic, else 0 or 1 set by the command
@@ -535,15 +906,38 @@ std::atomic<int32> OrganicOverride{-1};
 // Set by Shutdown (before the sessions are kicked, while map threads still update): no trace begins after it
 std::atomic<bool> Stopping{false};
 
-// Map thread: hands a batch to the writer thread, which formats it (a pointer move here)
+// Map thread: hands a batch to the writer thread, which formats it (a pointer move here). Binary: the block, and the
+// header when the writer finds the file new or empty
 void WriteBatch(Batch&& batch)
 {
     ++QueuedBatches;
-    std::string directory = batch.Directory;
-    std::string date = batch.Date;
     auto shared = std::make_shared<Batch>(std::move(batch));
+    Place const& where = *shared->Where;
+    if (where.Binary)
+    {
+        PvpTestRecordWriter::Instance().WriteLine(
+            "trace", std::string(), std::string(),
+            [shared]()
+            {
+                std::string bytes = BlockBytes(shared->Rows);
+                WrittenRows += shared->Rows.size();
+                WrittenBytes += bytes.size();
+                return bytes;
+            },
+            where.Directory, where.File,
+            [shared]()
+            {
+                std::string header = HeaderBytes(shared->MatchId, shared->Where->Instance, shared->Source,
+                                                 shared->Interval, shared->Where->StartUnixMs);
+                WrittenBytes += header.size();
+                ++WrittenFiles;
+                return header;
+            });
+        return;
+    }
+
     PvpTestRecordWriter::Instance().WriteLine(
-        "trace", std::move(date), std::string(),
+        "trace", where.Date, std::string(),
         [shared]()
         {
             std::string text = BatchText(*shared);
@@ -551,7 +945,7 @@ void WriteBatch(Batch&& batch)
             WrittenBytes += text.size();
             return text;
         },
-        std::move(directory));
+        where.Directory);
 }
 
 Tracer& Global()
@@ -595,6 +989,29 @@ std::string Today()
     std::string date = PvpTestRecordWriter::IsoTimeNow().substr(0, DateLength);
     date.erase(std::remove(date.begin(), date.end(), '-'), date.end());
     return date;
+}
+
+// Map thread, at a trace start (strings only, no I/O): where the unit's rows go. Binary: <root>/<instance>/<UTC day>/
+// <match id>.ntr; a GM trace (no match id) gets one file per session, gm-<guid counter>-<unix seconds>.ntr
+PlacePtr MakePlace(std::string const& matchId, uint64 guid)
+{
+    auto place = std::make_shared<Place>();
+    place->Binary = sPlayerbotAIConfig.NaturalTraceBinary;
+    place->Directory = TraceDirectory();
+    if (!place->Binary)
+    {
+        place->Date = Today();
+        return place;
+    }
+
+    uint64 const nowMs = static_cast<uint64>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    place->Instance = MatchLog::ServerId();
+    place->StartUnixMs = nowMs;
+    place->Directory += SafeName(place->Instance) + "/" + PvpTestRecordWriter::IsoTimeNow().substr(0, DateLength) + "/";
+    place->File = SafeName(matchId.empty() ? Acore::StringFormat("gm-{}-{}", guid, nowMs / 1000) : matchId) + ".ntr";
+    return place;
 }
 
 // Map thread: what a pos row reads from the unit (its own fields only)
@@ -756,10 +1173,16 @@ Row StartRow(Player* player, char side, char const* source)
     return start;
 }
 
-void LogDirectoryOnce(std::string const& directory)
+void LogDirectoryOnce(Place const& where)
 {
-    if (!DirectoryLogged.exchange(true))
-        LOG_INFO("playerbots", "NATURAL: traces go to {}trace-<YYYYMMDD>.jsonl", directory);
+    uint8 const bit = where.Binary ? 2 : 1;
+    if (LoggedFormats.fetch_or(bit) & bit)
+        return;
+
+    if (where.Binary)
+        LOG_INFO("playerbots", "NATURAL: traces go to {}<match id>.ntr (binary, one file per match)", where.Directory);
+    else
+        LOG_INFO("playerbots", "NATURAL: traces go to {}trace-<YYYYMMDD>.jsonl", where.Directory);
 }
 }  // namespace
 
@@ -769,13 +1192,13 @@ bool NaturalTrace::Begin(Player* player, std::string const& matchId, char side, 
         return false;
 
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "NaturalTraceStart");
-    std::string const directory = TraceDirectory();
+    uint64 const guid = player->GetGUID().GetCounter();
+    PlacePtr const where = MakePlace(matchId, guid);
     AddResult const result =
-        Global().Add(player->GetGUID().GetCounter(), matchId, directory, Today(), StartRow(player, side, source),
-                     sPlayerbotAIConfig.NaturalTraceMaxUnits, sPlayerbotAIConfig.NaturalTraceIntervalMs,
-                     sPlayerbotAIConfig.NaturalTraceMaxRowsPerUnit);
+        Global().Add(guid, matchId, where, StartRow(player, side, source), sPlayerbotAIConfig.NaturalTraceMaxUnits,
+                     sPlayerbotAIConfig.NaturalTraceIntervalMs, sPlayerbotAIConfig.NaturalTraceMaxRowsPerUnit);
     if (result == AddResult::Added)
-        LogDirectoryOnce(directory);
+        LogDirectoryOnce(*where);
 
     if (pmo)
         pmo->finish();
@@ -800,11 +1223,11 @@ void NaturalTrace::OnArenaStart(Battleground* bg, std::string const& matchId)
                                  StartRow(player, player->GetBgTeamId() == TEAM_ALLIANCE ? 'A' : 'B', "organic"));
     }
 
-    std::string const directory = TraceDirectory();
-    if (Global().AddGroup(std::move(members), matchId, directory, Today(), sPlayerbotAIConfig.NaturalTraceMaxUnits,
+    PlacePtr const where = MakePlace(matchId, 0);
+    if (Global().AddGroup(std::move(members), matchId, where, sPlayerbotAIConfig.NaturalTraceMaxUnits,
                           sPlayerbotAIConfig.NaturalTraceIntervalMs,
                           sPlayerbotAIConfig.NaturalTraceMaxRowsPerUnit) == AddResult::Added)
-        LogDirectoryOnce(directory);
+        LogDirectoryOnce(*where);
 
     if (pmo)
         pmo->finish();
@@ -909,10 +1332,11 @@ bool NaturalTrace::HandleStatusCommand(ChatHandler* handler, char const* /*args*
     Tracer& tracer = Global();
     int32 const forced = SampleOverride.load();
     handler->PSendSysMessage(
-        "NATURAL trace: enable {}, organic {}, sample every {} ({}), interval {} ms, max units {}, dir {}",
+        "NATURAL trace: enable {}, organic {}, sample every {} ({}), interval {} ms, max units {}, dir {}, format {}",
         sPlayerbotAIConfig.NaturalTraceEnable ? 1 : 0, Organic() ? 1 : 0, SampleEvery(),
         forced >= 0 ? "command" : "config", sPlayerbotAIConfig.NaturalTraceIntervalMs,
-        sPlayerbotAIConfig.NaturalTraceMaxUnits, TraceDirectory());
+        sPlayerbotAIConfig.NaturalTraceMaxUnits, TraceDirectory(),
+        sPlayerbotAIConfig.NaturalTraceBinary ? "binary" : "jsonl");
     handler->PSendSysMessage(
         "NATURAL units: live {}, started {}, ended {}, refused {}, truncated {}; rows: pos {}, events {}, mv {}, "
         "dropped {}",
@@ -920,8 +1344,9 @@ bool NaturalTrace::HandleStatusCommand(ChatHandler* handler, char const* /*args*
         tracer.PosRows.load(), tracer.EventRows.load(), tracer.MoveRows.load(), tracer.DroppedRows.load());
     PvpTestRecordWriter& writer = PvpTestRecordWriter::Instance();
     handler->PSendSysMessage(
-        "NATURAL writer: batches queued {}, rows written {}, bytes written {}, queue {}, failed {}",
-        QueuedBatches.load(), WrittenRows.load(), WrittenBytes.load(), writer.QueueSize(), writer.Failed());
+        "NATURAL writer: batches queued {}, rows written {}, bytes written {}, queue {}, failed {}, binary files {}",
+        QueuedBatches.load(), WrittenRows.load(), WrittenBytes.load(), writer.QueueSize(), writer.Failed(),
+        WrittenFiles.load());
     return true;
 }
 
@@ -949,6 +1374,7 @@ bool NaturalTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*arg
     uint64 const playerB = 102;
     uint64 const extra = 103;
     std::string const matchId = "selftest-20261027000000-1";
+    PlacePtr const jsonl = std::make_shared<Place const>(Place{"d/", "20261027"});
     Row startBot;
     startBot.Source = "harness";
     startBot.Side = 'A';
@@ -959,12 +1385,12 @@ bool NaturalTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*arg
     startPlayer.Spell = 1;
 
     check(!tracer->Marked(botA) && !live.load(), "nothing traced: the hooks stop at the flag");
-    check(tracer->Add(botA, matchId, "d/", "20261027", startBot, 2, 100, 100000) == AddResult::Added &&
-              tracer->Add(playerB, matchId, "d/", "20261027", startPlayer, 2, 100, 100000) == AddResult::Added &&
+    check(tracer->Add(botA, matchId, jsonl, startBot, 2, 100, 100000) == AddResult::Added &&
+              tracer->Add(playerB, matchId, jsonl, startPlayer, 2, 100, 100000) == AddResult::Added &&
               live.load() == 2 && tracer->Marked(botA) && tracer->Marked(playerB),
           "two units traced, marked, counted");
-    check(tracer->Add(extra, matchId, "d/", "20261027", startBot, 2, 100, 100000) == AddResult::Full &&
-              tracer->Add(botA, matchId, "d/", "20261027", startBot, 2, 100, 100000) == AddResult::Exists &&
+    check(tracer->Add(extra, matchId, jsonl, startBot, 2, 100, 100000) == AddResult::Full &&
+              tracer->Add(botA, matchId, jsonl, startBot, 2, 100, 100000) == AddResult::Exists &&
               !tracer->Marked(extra),
           "MaxUnits and a second trace of a unit are refused");
 
@@ -981,15 +1407,14 @@ bool NaturalTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*arg
             return list;
         };
 
-        group.Add(201, "", "d/", "20261027", startPlayer, 4, 100, 100000);
-        check(group.AddGroup(members({301, 302, 303, 304}), matchId, "d/", "20261027", 4, 100, 100000) ==
-                      AddResult::Full &&
+        group.Add(201, "", jsonl, startPlayer, 4, 100, 100000);
+        check(group.AddGroup(members({301, 302, 303, 304}), matchId, jsonl, 4, 100, 100000) == AddResult::Full &&
                   groupLive.load() == 1 && !group.Marked(301) && !group.Marked(304) && group.Refused.load() == 4,
               "a group that does not fit under MaxUnits is refused whole");
-        check(group.AddGroup(members({301, 302, 303}), matchId, "d/", "20261027", 4, 100, 100000) == AddResult::Added &&
+        check(group.AddGroup(members({301, 302, 303}), matchId, jsonl, 4, 100, 100000) == AddResult::Added &&
                   groupLive.load() == 4 && group.Marked(301) && group.Marked(303) && group.Started.load() == 4,
               "a group that fits is traced whole");
-        check(group.AddGroup(members({401, 302}), matchId, "d/", "20261027", 10, 100, 100000) == AddResult::Exists &&
+        check(group.AddGroup(members({401, 302}), matchId, jsonl, 10, 100, 100000) == AddResult::Exists &&
                   groupLive.load() == 4 && !group.Marked(401),
               "a group with a traced unit is refused whole");
 
@@ -1002,8 +1427,8 @@ bool NaturalTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*arg
             std::atomic<uint32> added{0};
             auto start = [&](uint64 first)
             {
-                if (race.AddGroup(members({first, first + 1, first + 2, first + 3}), matchId, "d/", "20261027", 6, 100,
-                                  100000) == AddResult::Added)
+                if (race.AddGroup(members({first, first + 1, first + 2, first + 3}), matchId, jsonl, 6, 100, 100000) ==
+                    AddResult::Added)
                     ++added;
             };
 
@@ -1123,7 +1548,7 @@ bool NaturalTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*arg
     // The row cap: 5 rows kept, one truncated row, the rest counted
     out.clear();
     clock = base;
-    tracer->Add(extra, "", "d/", "20261027", startPlayer, 2, 100, 5);
+    tracer->Add(extra, "", jsonl, startPlayer, 2, 100, 5);
     for (uint32 step = 0; step < 20; ++step)
     {
         clock = base + step * 100;
@@ -1171,6 +1596,162 @@ bool NaturalTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*arg
 
     check(everyOne == 400 && everyFour >= 60 && everyFour <= 140 && !MatchTrace::Selected(matchId, 0),
           Acore::StringFormat("one match in N by match id (N = 4: {} of 400)", everyFour));
+
+    // G0i, the binary format: the spec's fixture (natural-format.md, the hub's FIXTURE_ROWS) byte for byte
+    {
+        std::string const hex =
+            "4e54524301000100a9010000d8ef5e7ca10100006400000016006c6162312d32"
+            "303236313032373036353931392d323604006c61623107006f7267616e69630a"
+            "000573746172740800050373726308010003076f7267616e6963076861726e65"
+            "737302676d047369646507010003636c7301010003626f740601000269760301"
+            "000103706f732c000f01780564000179056400017a056400016f04e803026d66"
+            "030100036d6f760601000373706c0601000372756e0264000274670301000276"
+            "6903010002687001010002637303010002737401010002636509010002637209"
+            "01000206746172676574040001027467030100030a636173745f73746172740c"
+            "00030173030100027467030100026374050100040b636173745f66696e697368"
+            "0800020173030100027467030100050663616e63656c05000201730301000473"
+            "656c660601000609696e74657272757074040001017303010007026d76160006"
+            "026f70030100026d6603010001780564000179056400017a056400016f04e803"
+            "08097472756e63617465640000000903656e6408000204726f77730301000764"
+            "726f70706564030100013f080000d60000000000000000004101016400000002"
+            "000000002e05000001000000002bf301009aa90200b20c000000000000000000"
+            "00bc022e05000000000000640000000000ffffffffffffffff0165000000282f"
+            "eaff129a0900a1ebffffbdf30102000801014103411700001f000000395aa700"
+            "000155070000e91e0000032c0700005aa700001f00000055070000046c070000"
+            "4a7c00000000000005d00700005ab900000006d10700005ab9000007d2070000"
+            "b500000001000000960000001fffffff00000000721808d307000009ba140000"
+            "3700000000000000";
+        std::string expected;
+        for (size_t index = 0; index + 1 < hex.size(); index += 2)
+            expected.push_back(static_cast<char>(std::stoi(hex.substr(index, 2), nullptr, 16)));
+
+        auto make = [](RowKind kind, uint32 ms)
+        {
+            Row row;
+            row.Kind = kind;
+            row.Ms = ms;
+            row.Guid = 2111;
+            return row;
+        };
+        std::vector<Row> rows;
+        Row row = make(RowKind::Start, 0);
+        row.Source = "organic";
+        row.Side = 'A';
+        row.Spell = 1;
+        row.Flag = true;
+        row.Extra = 100;
+        rows.push_back(row);
+        row = make(RowKind::Target, 0);
+        row.Target = 1326;
+        rows.push_back(row);
+        row = make(RowKind::Pos, 0);
+        row.X = 1277.87f;
+        row.Y = 1744.9f;
+        row.Z = 32.5f;
+        row.Speed = 7.0f;
+        row.Target = 1326;
+        row.Health = 100;
+        row.Extra = -1;
+        row.Extra2 = -1;
+        rows.push_back(row);
+        row = make(RowKind::Pos, 101);
+        row.X = -14297.2f;
+        row.Y = 6292.66f;
+        row.Z = -52.15f;
+        row.O = -3.139f;
+        row.MoveFlags = 134218241;
+        row.Moving = true;
+        row.Spline = true;
+        row.Speed = 8.33f;
+        row.Target = 5953;
+        row.Victim = 31;
+        row.Health = 57;
+        row.Spell = 42842;
+        row.CastState = 1;
+        row.Extra = 1877;
+        row.Extra2 = 7913;
+        rows.push_back(row);
+        row = make(RowKind::CastStart, 1836);
+        row.Spell = 42842;
+        row.Target = 31;
+        row.Extra = 1877;
+        rows.push_back(row);
+        row = make(RowKind::CastFinish, 1900);
+        row.Spell = 31818;
+        rows.push_back(row);
+        row = make(RowKind::Cancel, 2000);
+        row.Spell = 47450;
+        rows.push_back(row);
+        row = make(RowKind::Interrupt, 2001);
+        row.Spell = 47450;
+        rows.push_back(row);
+        row = make(RowKind::Move, 2002);
+        row.Extra = 181;
+        row.MoveFlags = 1;
+        row.X = 1.5f;
+        row.Y = -2.25f;
+        row.O = 6.258f;
+        rows.push_back(row);
+        rows.push_back(make(RowKind::Truncated, 2003));
+        row = make(RowKind::End, 5306);
+        row.Extra = 55;
+        rows.push_back(row);
+
+        std::string const header =
+            HeaderBytes("lab1-20261027065919-26", "lab1", "organic", 100, UINT64_C(1793087959000));
+        std::string const bytes = header + BlockBytes(rows);
+        size_t differ = 0;
+        while (differ < bytes.size() && differ < expected.size() && bytes[differ] == expected[differ])
+            ++differ;
+
+        check(expected.size() == 648 && bytes == expected,
+              Acore::StringFormat("the binary encoder writes the spec's 648-byte fixture ({} bytes, first difference "
+                                  "at {})",
+                                  bytes.size(), differ));
+        check(header.size() == 425 && TraceFormatVersion == 1 && header[4] == 1 && header[5] == 0 && header[6] == 1 &&
+                  header[7] == 0 && header[8] == static_cast<char>(0xA9) && header[9] == 1,
+              "the header says version 1 (never another), little endian, its own size");
+
+        // One file per match: the units of a binary match share the first start's place; a GM trace has its own
+        std::atomic<uint32> binaryLive{0};
+        std::vector<Batch> binaryOut;
+        Tracer binary(
+            binaryLive, [&binaryOut](Batch&& batch) { binaryOut.push_back(std::move(batch)); },
+            [&clock]() { return clock; });
+        PlacePtr const first =
+            std::make_shared<Place const>(Place{"r/lab1/2026-10-27/", "", true, "m-1.ntr", "lab1", 1});
+        PlacePtr const later =
+            std::make_shared<Place const>(Place{"r/lab1/2026-10-28/", "", true, "m-1.ntr", "lab1", 2});
+        PlacePtr const gm =
+            std::make_shared<Place const>(Place{"r/lab1/2026-10-28/", "", true, "gm-7-2.ntr", "lab1", 2});
+        binary.Add(501, "m-1", first, startBot, 8, 100, 100000);
+        binary.Add(502, "m-1", later, startPlayer, 8, 100, 100000);
+        binary.Add(503, "", gm, startPlayer, 8, 100, 100000);
+        bool const shared = binary.Matches() == 1;
+        binary.EndMatch("m-1");
+        bool const released = binary.Matches() == 0 && binaryLive.load() == 1;
+        binary.Clear();
+        bool samePlace = binaryOut.size() == 3;
+        for (Batch const& batch : binaryOut)
+        {
+            uint64 const guid = batch.Rows.empty() ? 0 : batch.Rows.front().Guid;
+            if (guid == 503)
+                samePlace = samePlace && batch.Where == gm && batch.MatchId.empty();
+            else
+                samePlace = samePlace && batch.Where == first && batch.Interval == 100 &&
+                            !std::strcmp(batch.Source, guid == 501 ? "harness" : "gm");
+        }
+
+        check(shared && released && samePlace,
+              "a binary match's units share its first place (day, header) until its last unit ends; a GM trace has "
+              "its own");
+        std::string const block = BlockBytes(binaryOut.front().Rows);
+        check(block.size() == BlockHeadBytes + 13 + 13 && block[0] == 1 &&
+                  static_cast<size_t>(static_cast<uint8>(block[BlockLengthAt])) == block.size() - BlockHeadBytes &&
+                  SafeName("a/b c:d") == "a_b_c_d" && SafeName(std::string(200, 'x')).size() == SafeNameLength &&
+                  SafeName("") == "_",
+              "a block is type, unit, payload length and rows (start and end: 13 + 13 bytes); file names are safe");
+    }
 
     handler->PSendSysMessage("NATURAL selftest: {} checks, {} failed", checks, failures);
     handler->PSendSysMessage("NATURAL sample row: {}", sample);

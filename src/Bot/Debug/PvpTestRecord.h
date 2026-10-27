@@ -130,9 +130,11 @@ public:
     void Write(PvpTestMatchRecord const& record);
     // Any thread: queues one line (text ends with a newline) for <prefix>-<date>.jsonl, no I/O. With make, the text is
     // made by make on the writer thread instead (a big line from plain values; make owns them and touches no game
-    // object). A non-empty directory (ending in a slash) replaces <LogsDir>/pvptest/; the writer creates it.
+    // object). A non-empty directory (ending in a slash) replaces <LogsDir>/pvptest/; the writer creates it. G0i: a
+    // non-empty file replaces <prefix>-<date>.jsonl by <directory><file>, appended in binary mode, with the bytes of
+    // header (made on the writer thread) first when the file is new or empty.
     void WriteLine(std::string prefix, std::string date, std::string text, std::function<std::string()> make = {},
-                   std::string directory = {});
+                   std::string directory = {}, std::string file = {}, std::function<std::string()> header = {});
     // Flushes the queue and joins the writer thread (server shutdown)
     void Shutdown();
     // Any thread: records waiting for the writer, the most that ever waited, written to the file, lost
@@ -166,10 +168,14 @@ private:
         std::string Text;
         std::function<std::string()> Make;
         std::string Directory;
+        std::string File;
+        std::function<std::string()> Header;
     };
 
     // Appends a line to its file (in line.Directory when set, else in directory); _fileMutex is held
     bool Append(std::string const& directory, Line& line);
+    // G0i: appends line.Text to the binary file path, line.Header first when it is new or empty; _fileMutex is held
+    bool AppendBinary(std::string const& path, Line& line);
 
     void WriterLoop(std::string directory);
 

@@ -791,6 +791,13 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.IntervalMs", 100), 50, 1000);
     NaturalTraceMaxRowsPerUnit = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.MaxRowsPerUnit", 200000), 100, 10000000);
+    {
+        std::string format = sConfigMgr->GetOption<std::string>("Playerbots.Natural.Trace.Format", "jsonl");
+        std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return std::tolower(c); });
+        NaturalTraceBinary = format == "binary";
+        if (!NaturalTraceBinary && format != "jsonl")
+            LOG_ERROR("server.loading", "Playerbots.Natural.Trace.Format = {}: unknown, jsonl is used", format);
+    }
     LadderDepartTimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.DepartTimeoutSeconds", 600), 5, 86400);
     LadderContactMinutes =

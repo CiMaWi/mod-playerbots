@@ -436,6 +436,8 @@ public:
     std::string NaturalTraceDir;
     uint32 NaturalTraceIntervalMs;
     uint32 NaturalTraceMaxRowsPerUnit;
+    // Playerbots.Natural.Trace.Format (G0i): false = jsonl (one file per day), true = binary (one file per match)
+    bool NaturalTraceBinary;
     uint32 LadderDepartTimeoutSeconds;
     uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;
