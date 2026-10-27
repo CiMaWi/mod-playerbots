@@ -1481,6 +1481,16 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
         PlaceArenaOnlyHome(player))
         return true;
 
+    // Playerbots.ArenaOnly.Enable: a waiting bot that died comes back where it stands; team members are grouped, so
+    // the revive in ProcessBot(Player*) below never sees them
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && player->isDead() && !player->InBattleground() &&
+        !player->IsBeingTeleported() && player->GetLevel() >= sPlayerbotAIConfig.RandomBotMinLevel)
+    {
+        player->ResurrectPlayer(1.0f);
+        player->SpawnCorpseBones();
+        return true;
+    }
+
     if (player->GetGroup() || player->HasUnitState(UNIT_STATE_IN_FLIGHT))
         return false;
 
@@ -3556,6 +3566,38 @@ bool RandomPlayerbotMgr::RatedArenaCaptainMayQueue(uint32 queuedPlayers, uint32 
     return queuedPlayers < bracketSize * (opening + running);
 }
 
+namespace
+{
+// Playerbots.ArenaOnly.Enable: idle cycles (back from a battleground -> next queue) and rated joins since the start
+constexpr uint32 ArenaOnlyIdleBucketSeconds[5] = {5, 10, 20, 40, 80};
+std::atomic<uint64> arenaOnlyIdleCycles{0};
+std::atomic<uint64> arenaOnlyIdleMsTotal{0};
+std::atomic<uint32> arenaOnlyIdleMsMax{0};
+std::array<std::atomic<uint64>, 6> arenaOnlyIdleBuckets{};
+std::atomic<uint64> arenaOnlyJoinsSent{0};
+std::atomic<uint64> arenaOnlyJoinsNotReady{0};
+std::atomic<uint64> arenaOnlyInvitesAccepted{0};
+}  // namespace
+
+void RandomPlayerbotMgr::NoteArenaOnlyIdle(uint32 ms)
+{
+    ++arenaOnlyIdleCycles;
+    arenaOnlyIdleMsTotal += ms;
+    uint32 max = arenaOnlyIdleMsMax.load();
+    while (ms > max && !arenaOnlyIdleMsMax.compare_exchange_weak(max, ms))
+        max = arenaOnlyIdleMsMax.load();
+
+    size_t bucket = 0;
+    while (bucket < 5 && ms >= ArenaOnlyIdleBucketSeconds[bucket] * IN_MILLISECONDS)
+        ++bucket;
+
+    ++arenaOnlyIdleBuckets[bucket];
+}
+
+void RandomPlayerbotMgr::NoteArenaOnlyJoin(bool sent) { ++(sent ? arenaOnlyJoinsSent : arenaOnlyJoinsNotReady); }
+
+void RandomPlayerbotMgr::NoteArenaOnlyInviteAccepted() { ++arenaOnlyInvitesAccepted; }
+
 bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char const* /*args*/)
 {
     // Console, world thread: one pass over the random bots
@@ -3603,6 +3645,14 @@ bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char
         "0 {}, 1 {}, 530 {}, 571 {}, other {}",
         bots, inArena, inBattleground, queued, idle, teleporting, waitingByMap[0], waitingByMap[1], waitingByMap[2],
         waitingByMap[3], waitingByMap[4]);
+    uint64 const cycles = arenaOnlyIdleCycles.load();
+    handler->PSendSysMessage(
+        "ARENAONLY: idle cycles {}, mean {} ms, max {} ms, under 5/10/20/40/80 s and over {}/{}/{}/{}/{}/{}; rated "
+        "joins sent {}, team not ready {}, invites accepted at once {}",
+        cycles, cycles ? arenaOnlyIdleMsTotal.load() / cycles : 0, arenaOnlyIdleMsMax.load(),
+        arenaOnlyIdleBuckets[0].load(), arenaOnlyIdleBuckets[1].load(), arenaOnlyIdleBuckets[2].load(),
+        arenaOnlyIdleBuckets[3].load(), arenaOnlyIdleBuckets[4].load(), arenaOnlyIdleBuckets[5].load(),
+        arenaOnlyJoinsSent.load(), arenaOnlyJoinsNotReady.load(), arenaOnlyInvitesAccepted.load());
     return true;
 }
 

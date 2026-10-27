@@ -783,6 +783,7 @@ protected:
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
     ArenaOnlyState arenaOnlyState = ArenaOnlyState::Off;
+    uint32 arenaOnlyLeftAt = 0;  // getMSTime() when the bot came back from a battleground, 0 once it queued again
     float skillReactFactor = 1.0f;
     uint32 skillNoticeMissPercent = 0;
     uint32 skillNoticeDelayMs = 0;

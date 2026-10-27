@@ -161,6 +161,12 @@ public:
     // .playerbots arenaonly status | selftest
     static bool HandleArenaOnlyStatusCommand(ChatHandler* handler, char const* args);
     static bool HandleArenaOnlySelftestCommand(ChatHandler* handler, char const* args);
+    // Playerbots.ArenaOnly.Enable, any thread: one idle cycle of a bot (back from a battleground -> next queue, ms)
+    // and one rated join attempt of a captain (sent: the queue packet went out; else the team was not ready)
+    static void NoteArenaOnlyIdle(uint32 ms);
+    static void NoteArenaOnlyJoin(bool sent);
+    // Playerbots.ArenaOnly.Enable, any thread: an invite accepted by BGStatusCheckAction without the status round trip
+    static void NoteArenaOnlyInviteAccepted();
     void ChangeStrategy(Player* player);
     void ChangeStrategyOnce(Player* player);
     uint32 GetValue(Player* bot, std::string const& type);

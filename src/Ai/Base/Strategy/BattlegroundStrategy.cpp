@@ -9,7 +9,10 @@
 
 void BGStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
-    triggers.push_back(new TriggerNode("often", { NextAction("bg join", relevance)}));
+    // Playerbots.ArenaOnly.Enable: a waiting bot checks for its next queue every Playerbots.RepeatDelay instead of
+    // at random ("often": one check in five on average), so a team does not stand idle between its matches
+    std::string const joinTrigger = sPlayerbotAIConfig.ArenaOnlyEnable ? "bg join check" : "often";
+    triggers.push_back(new TriggerNode(joinTrigger, {NextAction("bg join", relevance)}));
     triggers.push_back(new TriggerNode("bg invite active", { NextAction("bg status check", relevance)}));
     triggers.push_back(new TriggerNode("timer", { NextAction("bg strategy check", relevance)}));
 }

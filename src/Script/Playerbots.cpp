@@ -153,8 +153,22 @@ public:
         PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT,
         PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
         PLAYERHOOK_ON_GIVE_EXP,
-        PLAYERHOOK_ON_BEFORE_TELEPORT
+        PLAYERHOOK_ON_BEFORE_TELEPORT,
+        PLAYERHOOK_ON_MONEY_CHANGED
     }) {}
+
+    void OnPlayerMoneyChanged(Player* player, int32& amount) override
+    {
+        // Playerbots.ArenaOnly.Enable: a test bot's money should not change outside its matches; one line per change
+        // (rare), so the cause of any change shows in the log
+        if (!sPlayerbotAIConfig.ArenaOnlyEnable || !amount || !sRandomPlayerbotMgr.IsRandomBot(player))
+            return;
+
+        LOG_INFO("playerbots",
+                 "ARENAONLY money: bot {} <{}> {} copper (had {}), in battleground {}, map {}, dead {}, in combat {}",
+                 player->GetGUID().GetCounter(), player->GetName(), amount, player->GetMoney(),
+                 player->InBattleground(), player->GetMapId(), player->isDead(), player->IsInCombat());
+    }
 
     void OnPlayerLogin(Player* player) override
     {

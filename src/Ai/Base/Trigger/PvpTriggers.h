@@ -97,7 +97,7 @@ public:
 class BgInviteActiveTrigger : public Trigger
 {
 public:
-    BgInviteActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "bg invite active", 10) {}
+    BgInviteActiveTrigger(PlayerbotAI* botAI);
 
     bool IsActive() override;
 };

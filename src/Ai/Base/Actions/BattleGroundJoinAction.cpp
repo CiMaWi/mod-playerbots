@@ -47,7 +47,12 @@ bool BGJoinAction::Execute(Event /*event*/)
                 isRated = true;
 
             if (isRated && !gatherArenaTeam(type))
+            {
+                if (sPlayerbotAIConfig.ArenaOnlyEnable)
+                    RandomPlayerbotMgr::NoteArenaOnlyJoin(false);
+
                 return false;
+            }
 
             botAI->GetAiObjectContext()->GetValue<uint32>("arena type")->Set(isRated);
         }
@@ -58,7 +63,11 @@ bool BGJoinAction::Execute(Event /*event*/)
         queueType = queueTypeId;
     }
 
-    return JoinQueue(queueType);
+    bool const joined = JoinQueue(queueType);
+    if (joined && sPlayerbotAIConfig.ArenaOnlyEnable)
+        RandomPlayerbotMgr::NoteArenaOnlyJoin(true);
+
+    return joined;
 }
 
 bool BGJoinAction::gatherArenaTeam(ArenaType type)
@@ -1119,10 +1128,71 @@ bool BGStatusAction::Execute(Event event)
     return true;
 }
 
+namespace
+{
+// Playerbots.ArenaOnly.Enable: accepts the invite of the first queue the bot is invited to, as BGStatusAction's force
+// join does (the core checks the invite again on the world thread)
+bool AcceptArenaOnlyInvite(PlayerbotAI* botAI, Player* bot)
+{
+    for (uint8 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
+    {
+        BattlegroundQueueTypeId const queueTypeId = bot->GetBattlegroundQueueTypeId(i);
+        if (queueTypeId == BATTLEGROUND_QUEUE_NONE || !bot->IsInvitedForBattlegroundQueueType(queueTypeId))
+            continue;
+
+        GroupQueueInfo ginfo;
+        BattlegroundQueue& bgQueue = sBattlegroundMgr->GetBattlegroundQueue(queueTypeId);
+        if (!bgQueue.GetPlayerGroupInfoData(bot->GetGUID(), &ginfo) || !ginfo.IsInvitedToBGInstanceGUID)
+            continue;
+
+        BattlegroundTypeId bgTypeId = BattlegroundMgr::BGTemplateId(queueTypeId);
+        // BattlegroundMgr::GetBattleground() does not return battleground if bgTypeId==BATTLEGROUND_AA
+        Battleground* bg = sBattlegroundMgr->GetBattleground(
+            ginfo.IsInvitedToBGInstanceGUID, bgTypeId == BATTLEGROUND_AA ? BATTLEGROUND_TYPE_NONE : bgTypeId);
+        if (!bg)
+            continue;
+
+        uint8 const arenaType = BattlegroundMgr::BGArenaType(queueTypeId);
+        if (arenaType)
+            bgTypeId = bg->GetBgTypeID();
+
+        LOG_INFO("playerbots", "Bot {} <{}>: accepts the invite at once ({})", bot->GetGUID().ToString().c_str(),
+                 bot->GetName(), arenaType ? "Arena" : "BG");
+
+        WorldPacket emptyPacket;
+        bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
+        WorldPacket packet(CMSG_BATTLEFIELD_PORT, 20);
+        packet << arenaType << uint8(0) << uint32(bgTypeId) << uint16(0x1F90) << uint8(1);
+        bot->GetSession()->QueuePacket(new WorldPacket(packet));
+
+        botAI->ResetStrategies(false);
+        // the first bot to join has no battleground yet: "bg strategy check" sets the strategies up once inside
+        if (!bot->GetBattleground())
+            botAI->ChangeStrategy("+bg", BOT_STATE_NON_COMBAT);
+
+        AiObjectContext* context = botAI->GetAiObjectContext();
+        context->GetValue<uint32>("bg role")->Set(urand(0, 9));
+        PositionMap& posMap = context->GetValue<PositionMap&>("position")->Get();
+        PositionInfo pos = posMap["bg objective"];
+        pos.Reset();
+        posMap["bg objective"] = pos;
+        RandomPlayerbotMgr::NoteArenaOnlyInviteAccepted();
+        return true;
+    }
+
+    return false;
+}
+}  // namespace
+
 bool BGStatusCheckAction::Execute(Event /*event*/)
 {
     if (bot->IsBeingTeleported())
         return false;
+
+    // Playerbots.ArenaOnly.Enable: an invited bot accepts at once; the status round trip below answers through the
+    // "bg status" packet trigger, which keeps only the last packet, and a lost answer costs the next check
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && AcceptArenaOnlyInvite(botAI, bot))
+        return true;
 
     WorldPacket packet(CMSG_BATTLEFIELD_STATUS);
     bot->GetSession()->HandleBattlefieldStatusOpcode(packet);

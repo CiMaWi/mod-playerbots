@@ -2202,8 +2202,13 @@ Playerbots.RandomBotAutoJoinRatedArenaUncapped = 0
 # chat commands and the battleground join ("default", "chat", "bg"), so no RPG, questing, grinding, looting, trading,
 # vendoring, mail, auction, buffs, food, gear or talent changes; the random bot manager does no randomize, refresh or
 # level teleport for it (a bot below Playerbots.RandomBotMinLevel, i.e. a new character, still gets its first
-# randomize). In matches nothing changes. PvP gear buying (Playerbots.PvpGear.Buy.Enable) is separate. With
-# SpreadContinents 1 (default) each waiting bot stands at one of three safe spots of its faction on its team's home
+# randomize). Its combat and dead strategies are reduced to "default" and "chat" too (it does not fight, release
+# its spirit or run to a corpse outside a match); a bot that dies there is revived where it stands. Its captain
+# checks for the next queue every Playerbots.RepeatDelay instead of at random, an invited bot accepts at once (the
+# invite trigger runs on every AI pass), and every change of its money is logged ("ARENAONLY money:"). In matches
+# nothing changes. PvP gear buying (Playerbots.PvpGear.Buy.Enable) is
+# separate. With SpreadContinents 1 (default) each waiting bot stands at one of three safe spots of its faction on
+# its team's home
 # continent (team id % 4: Eastern Kingdoms, Kalimdor, Outland, Northrend; a bot without a team: guid % 4), moved there
 # when it logs in or comes back from a match, so no single continent map carries every waiting bot.
 # .playerbots arenaonly status counts the bots in a match, queued and neither, per continent; .playerbots arenaonly

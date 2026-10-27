@@ -499,6 +499,14 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     // Skill knob 2, noticing: only when configured, so the default engine has no extra multiplier
     if (sPlayerbotAIConfig.SkillNoticeActive)
         engine->addStrategy("skill", false);
+
+    // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
+    // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && !player->InBattleground() && sRandomPlayerbotMgr.IsRandomBot(player))
+    {
+        engine->removeAllStrategies();
+        engine->addStrategiesNoInit("default", "chat", nullptr);
+    }
 }
 
 Engine* AiFactory::createCombatEngine(Player* player, PlayerbotAI* const facade, AiObjectContext* aiObjectContext)
@@ -751,6 +759,14 @@ void AiFactory::AddDefaultDeadStrategies(Player* player, PlayerbotAI* const faca
 
     if (sRandomPlayerbotMgr.IsRandomBot(player) && !player->GetGroup())
         deadEngine->removeStrategy("follow", false);
+
+    // Playerbots.ArenaOnly.Enable: a random bot that died outside a battleground stays where it fell (no release,
+    // graveyard or corpse run); RandomPlayerbotMgr::ProcessBot revives it in place
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && !player->InBattleground() && sRandomPlayerbotMgr.IsRandomBot(player))
+    {
+        deadEngine->removeAllStrategies();
+        deadEngine->addStrategiesNoInit("default", "chat", nullptr);
+    }
 }
 
 Engine* AiFactory::createDeadEngine(Player* player, PlayerbotAI* const facade, AiObjectContext* AiObjectContext)

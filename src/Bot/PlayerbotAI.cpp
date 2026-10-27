@@ -61,9 +61,11 @@
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -1624,12 +1626,25 @@ void PlayerbotAI::DoNextAction(bool min)
     }
 
     // Playerbots.ArenaOnly.Enable: a bot that went into or out of a battleground without a reset gets the other
-    // strategy set (O(1): two flags)
-    if (arenaOnlyState != ArenaOnlyState::Off && !bot->IsBeingTeleported() &&
-        (arenaOnlyState == ArenaOnlyState::Waiting) == bot->InBattleground())
+    // strategy set (O(1): two flags); the time from leaving one (back in the world) to the next queue is its idle cycle
+    // (arenaOnlyLeftAt: UINT32_MAX while in a battleground; the leave path may reset the strategies itself)
+    if (arenaOnlyState != ArenaOnlyState::Off && !bot->IsBeingTeleported())
     {
-        ResetStrategies();
-        return;
+        if (bot->InBattleground())
+            arenaOnlyLeftAt = std::numeric_limits<uint32>::max();
+        else if (arenaOnlyLeftAt == std::numeric_limits<uint32>::max())
+            arenaOnlyLeftAt = std::clamp<uint32>(getMSTime(), 1, std::numeric_limits<uint32>::max() - 1);
+        else if (arenaOnlyLeftAt && bot->InBattlegroundQueue())
+        {
+            RandomPlayerbotMgr::NoteArenaOnlyIdle(getMSTimeDiff(arenaOnlyLeftAt, getMSTime()));
+            arenaOnlyLeftAt = 0;
+        }
+
+        if ((arenaOnlyState == ArenaOnlyState::Waiting) == bot->InBattleground())
+        {
+            ResetStrategies();
+            return;
+        }
     }
 
     // Clear targets if in combat but sticking with old data
