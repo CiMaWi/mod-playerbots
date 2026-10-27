@@ -864,6 +864,18 @@ bool PlayerbotAIConfig::Initialize()
         SkillMin = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Min", 1.0f), 1.0f, 99.0f);
         SkillMax = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Max", 99.0f), SkillMin, 99.0f);
     }
+    SkillExemptRealMasterBots = sConfigMgr->GetOption<bool>("Playerbots.Skill.ExemptRealMasterBots", true);
+    {
+        auto const percent = [](std::string const& key, uint32 fallback, uint32 high)
+        { return static_cast<uint8>(std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, high)); };
+        SkillGate.CurveExponent =
+            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.CurveExponent", 1.0f), 0.1f, 10.0f);
+        SkillGate.KnowledgeSpread = percent("Playerbots.Skill.KnowledgeSpread", 15, 50);
+        SkillGate.EffortAtSkill1 = percent("Playerbots.Skill.EffortAtSkill1", 100, 100);
+        SkillGate.EffortAtSkill99 = percent("Playerbots.Skill.EffortAtSkill99", 100, 100);
+        SkillGate.EffortSpread = percent("Playerbots.Skill.EffortSpread", 0, 50);
+        SkillGate.StyleSpread = percent("Playerbots.Skill.StyleSpread", 0, 50);
+    }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
@@ -881,6 +893,15 @@ bool PlayerbotAIConfig::Initialize()
             LOG_WARN("playerbots", "{}.Scope: {}; using {}", prefix, error, FormatTacticScope(definition.DefaultScope));
             settings.Scope = definition.DefaultScope;
         }
+
+        auto const percent = [&prefix](char const* key, uint32 fallback)
+        {
+            return static_cast<uint8>(
+                std::clamp<uint32>(sConfigMgr->GetOption<uint32>(prefix + key, fallback, false), 0, 100));
+        };
+        settings.KnownFromSkill = percent(".KnownFromSkill", 0);
+        settings.UseChanceAtSkill1 = percent(".UseChanceAtSkill1", 100);
+        settings.UseChanceAtSkill99 = percent(".UseChanceAtSkill99", 100);
 
         if (TacticsEnable && settings.Enable)
             TacticsConfigMask |= TacticBit(static_cast<TacticId>(index));

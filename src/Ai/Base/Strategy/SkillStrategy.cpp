@@ -9,6 +9,7 @@
 #include <string>
 
 #include "Playerbots.h"
+#include "SplitMix64.h"
 #include "Timer.h"
 
 namespace
@@ -18,16 +19,6 @@ constexpr uint64 NoticeSalt = 0xA54FF53A5F1D36F1ULL;
 
 static_assert(static_cast<size_t>(SkillNoticeCategory::TargetSwitch) == SkillNoticeCounters::Categories,
               "SkillNoticeCounters needs one slot per notice category");
-
-// splitmix64, as in BotProfileMgr: a fixed integer mix, the same on every build
-uint64 SplitMix64(uint64 state)
-{
-    state += 0x9E3779B97F4A7C15ULL;
-    uint64 z = state;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
 
 // Built once, read only afterwards (C++11 guarantees a thread-safe initialisation). The table also lists the
 // alternatives of its actions (ActionNode /*A*/), so a blocked action does not fall through to a twin under another
@@ -205,7 +196,7 @@ float SkillMultiplier::GetValue(Action* action)
     if (category == SkillNoticeCategory::None)
         return 1.0f;
 
-    if (botAI->HasGameClientMaster())
+    if (botAI->IsSkillExempt())
         return 1.0f;
 
     if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())

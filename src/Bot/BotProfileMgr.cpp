@@ -35,8 +35,9 @@ constexpr double SkillMean = 50.0;
 constexpr double SkillDeviation = 15.0;
 constexpr double Pi = 3.14159265358979323846;
 
-// splitmix64: a fixed integer mix, so a guid gives the same skill on every build and standard library
-uint64 SplitMix64(uint64& state)
+// splitmix64 stepping its state (the stateless hash is SplitMix64.h's): a fixed integer mix, so a guid gives the same
+// skill on every build and standard library
+uint64 SplitMix64Next(uint64& state)
 {
     state += 0x9E3779B97F4A7C15ULL;
     uint64 z = state;
@@ -46,7 +47,7 @@ uint64 SplitMix64(uint64& state)
 }
 
 // Uniform in [0, 1) from the top 53 bits
-double Uniform(uint64& state) { return static_cast<double>(SplitMix64(state) >> 11) / 9007199254740992.0; }
+double Uniform(uint64& state) { return static_cast<double>(SplitMix64Next(state) >> 11) / 9007199254740992.0; }
 
 // Percentiles stay inside (0, 1), so the inverse CDF is finite
 constexpr double MinPercentile = 1e-15;

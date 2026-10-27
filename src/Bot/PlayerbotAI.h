@@ -29,6 +29,7 @@
 #include "PlayerbotTextMgr.h"
 #include "PvpTestCounters.h"
 #include "SpellAuras.h"
+#include "TacticGate.h"
 #include "Tactics.h"
 #include "Util.h"
 #include "WorldPacket.h"
@@ -695,6 +696,18 @@ public:
         return IsTacticAllowed(sPlayerbotAIConfig.TacticsEnable, GetTacticMask(), id,
                                sPlayerbotAIConfig.TacticConfig[static_cast<uint32>(id)].Scope, GetTacticContext());
     }
+    // Playerbots.Skill.ExemptRealMasterBots 1 and a game-client master: the skill knobs and the tactic gate leave the
+    // bot at full ability. Asks the master (not free) only while the option is on: call it after the cheap exits.
+    bool IsSkillExempt() { return sPlayerbotAIConfig.SkillExemptRealMasterBots && HasGameClientMaster(); }
+    // Full ability for the tactic gate: skill 0, PvE with Playerbots.Skill.FullAbilityInPvE, or exempt
+    bool HasFullSkillAbility();
+    // The tactic gate (TacticGate.h), cached by SetPvpSkill: enabled here (mask and scope), known at the bot's skill
+    // and used in the current window. Later tactics call this, then NoteTacticUse when they act.
+    bool TacticActive(TacticId id);
+    TacticGateState const& GetTacticGate() const { return tacticGate; }
+    // Effort 0-100 (100 = tries everything) and style traits 0-100 (50 = neutral), hidden like the skill
+    uint8 GetSkillEffort() { return HasFullSkillAbility() ? SKILL_GATE_FULL : tacticGate.Effort; }
+    uint8 GetSkillStyle(SkillStyleTrait trait) const { return tacticGate.Style[static_cast<uint32>(trait)]; }
     // A tactic fired: counted per tactic and context for .playerbots tactics stats
     void NoteTacticUse(TacticId id) const { NoteTacticActivation(id, GetTacticContext()); }
     // Debug snapshots for .playerbots tactics show (world thread): the last "fight enemies" result, and the strategy
@@ -788,6 +801,7 @@ protected:
     uint32 skillNoticeMissPercent = 0;
     uint32 skillNoticeDelayMs = 0;
     SkillNoticeCounters skillNoticeCounters;
+    TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
     bool pvpTestCounting = false;
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
     PvpTestCcCounters pvpTestCc;

@@ -1729,7 +1729,8 @@ Playerbots.Skill.Enable = 0
 # Skill knob 1, reaction delay. Needs Playerbots.Skill.Enable = 1. A bot's reaction delay (GetReactDelay and the
 # reaction engine's reset delay) is multiplied by a factor that falls linearly from ReactFactorAtSkill1 (skill 1) to
 # ReactFactorAtSkill99 (skill 99). For example 2.5 and 0.7: the weakest bots react 2.5 times later, the best 0.7 times
-# as late. Each is clamped to 0.1-10. Default 1.0 and 1.0 = no change. Bots with a game-client master are not scaled.
+# as late. Each is clamped to 0.1-10. Default 1.0 and 1.0 = no change. Bots with a game-client master are not scaled
+# in GetReactDelay while Playerbots.Skill.ExemptRealMasterBots is 1 (the reset delay scales every bot).
 Playerbots.Skill.ReactFactorAtSkill1 = 1.0
 Playerbots.Skill.ReactFactorAtSkill99 = 1.0
 
@@ -1743,7 +1744,8 @@ Playerbots.Skill.FullAbilityInPvE = 0
 # notices after a delay of 0 to its NoticeDelayMs, or misses the whole window with its NoticeMissPercent chance; both
 # come from a hash of the bot and the window, not a roll per action. Delay and miss chance fall linearly from AtSkill1
 # (skill 1) to AtSkill99 (skill 99). A target switch is only delayed when the bot already has a live target. Bots with
-# a game-client master are not affected. Miss chance 0-95, delays 0-10000 ms, window 100-60000 ms.
+# a game-client master are not affected while Playerbots.Skill.ExemptRealMasterBots is 1. Miss chance 0-95, delays
+# 0-10000 ms, window 100-60000 ms.
 # Default 0 everywhere = no change (the "skill" strategy is not added).
 Playerbots.Skill.NoticeMissPercentAtSkill1 = 0
 Playerbots.Skill.NoticeMissPercentAtSkill99 = 0
@@ -1764,14 +1766,43 @@ Playerbots.Skill.Sd = 15
 Playerbots.Skill.Min = 1
 Playerbots.Skill.Max = 99
 
+# Real-master exemption. With 1 (default, as before) a bot whose master plays through a game client (a real player or
+# a self-bot) plays at full ability: no reaction factor in GetReactDelay, no notice delay or miss, every tactic known
+# and used, full effort. With 0 the bots in a real player's group keep their skill like every other bot.
+Playerbots.Skill.ExemptRealMasterBots = 1
+
+# Skill curve. Every lerp from AtSkill1 to AtSkill99 (the reaction factor, the notice miss chance and delay, the
+# tactics' use chances, effort) runs along position' = 1 - (1 - position)^CurveExponent, where position goes from 0 at
+# skill 1 to 1 at skill 99. 1.0 (default) is the straight line, as before. Above 1 most of the ability comes early
+# (at 2.0 skill 50 sits 75 % of the way), below 1 late. Clamped to 0.1-10.
+Playerbots.Skill.CurveExponent = 1.0
+
+# Tactic knowledge, effort and style: the skill gate of Playerbots.Tactics.* (hidden: only .playerbots tactics show
+# lists them). Needs Playerbots.Skill.Enable = 1; a bot without a skill plays at full ability.
+#   KnowledgeSpread: a tactic's KnownFromSkill (see Playerbots.Tactics) moves per bot and tactic by a fixed amount
+#     from -KnowledgeSpread to +KnowledgeSpread (a hash of the guid and the tactic), so knowledge is patchy: a skill-45
+#     bot may know one tactic of threshold 50 and miss another of threshold 40. 0-50, default 15.
+#   EffortAtSkill1/99: how hard a bot tries, 0-100, lerped over skill (100: drinks, resets, uses every cooldown and
+#     consumable, plays on when behind; low: gives up). EffortSpread moves it per bot by -EffortSpread..+EffortSpread
+#     (from the guid), clamped to 0-100. Defaults 100, 100 and 0: every bot at full effort.
+#   StyleSpread: three hidden traits per bot (aggression, caution, patience), each 50 plus a fixed amount from
+#     -StyleSpread to +StyleSpread from the guid only, never from the skill: equal skill does not mean equal play.
+#     0-50, default 0: every trait 50 (neutral).
+# No tactic reads effort or style yet; the later tactics do.
+Playerbots.Skill.KnowledgeSpread = 15
+Playerbots.Skill.EffortAtSkill1 = 100
+Playerbots.Skill.EffortAtSkill99 = 100
+Playerbots.Skill.EffortSpread = 0
+Playerbots.Skill.StyleSpread = 0
+
 # Bot tactics. With 0 (default) no tactic runs, nothing is probed per update and the bots' strategies are today's.
 # With 1, a tactic acts only when it is in the bot's tactic mask (the tactics whose own Enable is 1; the PvP test
 # harness overrides the mask per side with tacticsA= / tacticsB=) and the bot's current context is in its Scope.
 # Every bot uses the enabled tactics, the bots in a real player's group included.
-# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope]
+# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate]
 Playerbots.Tactics.Enable = 0
 
-# Per tactic (both keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,
+# Per tactic (all keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,
 # a comma list of the contexts it acts in: Arena, Battleground, World (open-world PvP: duels and PvP combat outside
 # battlegrounds), Pve, or All / None. An unknown context logs a warning and keeps the default. The names and their
 # default scopes:
@@ -1791,9 +1822,19 @@ Playerbots.Tactics.Enable = 0
 #   Drink       Arena,Battleground         drinking
 #   Natural     All                        natural reaction, facing, tracking, paths (PvE: in sight of a real player)
 #   Jump        Arena                      tactical jumps
+# The skill gate (needs Playerbots.Skill.Enable = 1): Playerbots.Tactics.<Name>.KnownFromSkill, 0-100 (default 0 =
+# every bot knows it; 100 = no bot), the skill from which a bot knows the tactic, moved per bot by
+# Playerbots.Skill.KnowledgeSpread; below it the bot never uses the tactic. Playerbots.Tactics.<Name>.UseChanceAtSkill1
+# and .UseChanceAtSkill99, 0-100 % (default 100 and 100): the chance that a bot that knows the tactic uses it in a
+# window of Playerbots.Skill.NoticeWindowMs, lerped by skill from skill 1 to skill 99 (Playerbots.Skill.CurveExponent
+# applies). One answer per bot, tactic and window (a hash, not a roll per update). The defaults leave a tactic as its
+# Enable and Scope make it.
 # Example (the defaults):
 # Playerbots.Tactics.Hold.Enable = 0
 # Playerbots.Tactics.Hold.Scope = Arena,Battleground,World
+# Playerbots.Tactics.Hold.KnownFromSkill = 0
+# Playerbots.Tactics.Hold.UseChanceAtSkill1 = 100
+# Playerbots.Tactics.Hold.UseChanceAtSkill99 = 100
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

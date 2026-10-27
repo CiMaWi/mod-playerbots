@@ -9,6 +9,7 @@
 
 #include "DBCEnums.h"
 #include "SharedDefines.h"
+#include "TacticGate.h"
 #include "Tactics.h"
 #include <algorithm>
 #include <map>
@@ -474,6 +475,11 @@ public:
     float SkillSd;
     float SkillMin;
     float SkillMax;
+    // Playerbots.Skill.ExemptRealMasterBots: bots with a game-client master play at full ability (1, phase D) or keep
+    // their skill (0, DT.2)
+    bool SkillExemptRealMasterBots;
+    // Playerbots.Skill.CurveExponent, KnowledgeSpread, Effort*, StyleSpread: the tactic gate's skill parameters
+    TacticGateParams SkillGate;
     // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
     bool ArenaOnlyEnable;
     bool ArenaOnlySpreadContinents;

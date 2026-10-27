@@ -99,6 +99,11 @@ struct TacticSettings
 {
     bool Enable = false;
     uint8 Scope = 0;
+    // Skill gate (TacticGate.h): the skill from which bots know the tactic (0 = all) and the chance per window that a
+    // bot that knows it uses it, at skill 1 and 99. The defaults let the tactic act wherever Enable and Scope allow.
+    uint8 KnownFromSkill = 0;
+    uint8 UseChanceAtSkill1 = 100;
+    uint8 UseChanceAtSkill99 = 100;
 };
 
 constexpr uint32 TacticBit(TacticId id) { return 1u << static_cast<uint32>(id); }

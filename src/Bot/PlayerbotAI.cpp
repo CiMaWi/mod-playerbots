@@ -6843,24 +6843,46 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     skillNoticeMissPercent = 0;
     skillNoticeDelayMs = 0;
     skillNoticeCounters = SkillNoticeCounters();
+    // The tactic gate from the guid and the skill (skill 0: full ability); the hashes never see the percentile
+    tacticGate = ComputeTacticGate(sPlayerbotAIConfig.SkillGate, sPlayerbotAIConfig.TacticConfig, skill,
+                                   bot ? bot->GetGUID().GetCounter() : 0);
     if (skill == 0)
         return;
 
-    // 0 at skill 1, 1 at skill 99
-    float const position = (static_cast<float>(std::clamp<uint8>(skill, 1, 99)) - 1.0f) / 98.0f;
+    // 0 at skill 1, 1 at skill 99, bent by Playerbots.Skill.CurveExponent (1.0: the straight line, as before)
+    float const position = SkillPosition(skill);
+    float const exponent = sPlayerbotAIConfig.SkillGate.CurveExponent;
     if (sPlayerbotAIConfig.SkillReactActive)
-        skillReactFactor =
-            sPlayerbotAIConfig.SkillReactFactorLow +
-            (sPlayerbotAIConfig.SkillReactFactorHigh - sPlayerbotAIConfig.SkillReactFactorLow) * position;
+        skillReactFactor = SkillLerp(sPlayerbotAIConfig.SkillReactFactorLow, sPlayerbotAIConfig.SkillReactFactorHigh,
+                                     position, exponent);
 
     if (sPlayerbotAIConfig.SkillNoticeActive)
     {
-        auto const lerp = [position](uint32 low, uint32 high)
-        { return static_cast<uint32>(low + (static_cast<float>(high) - low) * position + 0.5f); };
-        skillNoticeMissPercent =
-            lerp(sPlayerbotAIConfig.SkillNoticeMissPercentLow, sPlayerbotAIConfig.SkillNoticeMissPercentHigh);
-        skillNoticeDelayMs = lerp(sPlayerbotAIConfig.SkillNoticeDelayMsLow, sPlayerbotAIConfig.SkillNoticeDelayMsHigh);
+        skillNoticeMissPercent = SkillLerpRounded(sPlayerbotAIConfig.SkillNoticeMissPercentLow,
+                                                  sPlayerbotAIConfig.SkillNoticeMissPercentHigh, position, exponent);
+        skillNoticeDelayMs = SkillLerpRounded(sPlayerbotAIConfig.SkillNoticeDelayMsLow,
+                                              sPlayerbotAIConfig.SkillNoticeDelayMsHigh, position, exponent);
     }
+}
+
+bool PlayerbotAI::HasFullSkillAbility()
+{
+    if (pvpSkill == 0)
+        return true;
+
+    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
+        return true;
+
+    return IsSkillExempt();
+}
+
+bool PlayerbotAI::TacticActive(TacticId id)
+{
+    if (!TacticEnabledHere(id))
+        return false;
+
+    return TacticGatePasses(tacticGate, id, HasFullSkillAbility(), bot->GetGUID().GetCounter(),
+                            sPlayerbotAIConfig.SkillNoticeWindowMs, getMSTime());
 }
 
 void PlayerbotAI::SetPvpTestCounting(bool on)
@@ -7050,7 +7072,8 @@ uint32 PlayerbotAI::GetReactDelay()
 {
     uint32 const delay = ComputeReactDelay();
     float const factor = GetEffectiveSkillReactFactor();
-    if (factor == 1.0f || HasGameClientMaster())
+    // The reaction engine's reset delay (ReactionEngine.cpp) has always scaled every bot, exempt or not
+    if (factor == 1.0f || IsSkillExempt())
         return delay;
     return std::max<uint32>(1u, static_cast<uint32>(delay * factor));
 }
