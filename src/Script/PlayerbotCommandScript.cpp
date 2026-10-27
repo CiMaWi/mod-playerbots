@@ -16,7 +16,9 @@
 #include "MatchLog.h"
 #include "MatchTrace.h"
 #include "Matchmaker.h"
+#include "ObjectAccessor.h"
 #include "PerfMonitor.h"
+#include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
@@ -132,6 +134,8 @@ public:
         static ChatCommandTable playerbotsArenaOnlyCommandTable = {
             {"status", RandomPlayerbotMgr::HandleArenaOnlyStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", RandomPlayerbotMgr::HandleArenaOnlySelftestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"kill", HandleArenaOnlyKillCommand, SEC_GAMEMASTER, Console::Yes},
+            {"botstate", HandleArenaOnlyBotStateCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -170,6 +174,80 @@ public:
     static bool HandleRandomPlayerbotCommand(ChatHandler* handler, char const* args)
     {
         return RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(handler, args);
+    }
+
+    // M17c.3 check of the in-place revive of a waiting bot: "kill [name]" kills the named random bot, or without a name
+    // the first grouped bot that waits outside a battleground (queued first); "botstate <name>" shows its state.
+    // Refused unless Playerbots.ArenaOnly.Enable is on (lab diagnostics only). Console, world thread.
+    static bool HandleArenaOnlyKillCommand(ChatHandler* handler, char const* args)
+    {
+        if (!sPlayerbotAIConfig.ArenaOnlyEnable)
+        {
+            handler->PSendSysMessage("ARENAONLY kill: refused, Playerbots.ArenaOnly.Enable is off");
+            return true;
+        }
+
+        std::string const name = args ? args : "";
+        Player* target = nullptr;
+        if (!name.empty())
+        {
+            target = ObjectAccessor::FindPlayerByName(name);
+            if (target && !sRandomPlayerbotMgr.IsRandomBot(target))
+                target = nullptr;
+        }
+        else
+        {
+            Player* fallback = nullptr;
+            for (auto const& [guid, bot] : sRandomPlayerbotMgr.GetAllBots())
+            {
+                if (!bot || !bot->IsInWorld() || !bot->IsAlive() || !bot->GetGroup() || bot->InBattleground() ||
+                    bot->IsBeingTeleported())
+                    continue;
+
+                if (bot->InBattlegroundQueue())
+                {
+                    target = bot;
+                    break;
+                }
+
+                if (!fallback)
+                    fallback = bot;
+            }
+
+            if (!target)
+                target = fallback;
+        }
+
+        if (!target || !target->IsInWorld() || !target->IsAlive() || target->InBattleground())
+        {
+            handler->PSendSysMessage("ARENAONLY kill: no alive random bot outside a battleground found ({})", name);
+            return true;
+        }
+
+        bool const queued = target->InBattlegroundQueue();
+        bool const grouped = target->GetGroup() != nullptr;
+        target->KillSelf(false);
+        handler->PSendSysMessage("ARENAONLY kill: bot {} killed on map {}, grouped {}, queued {}, dead {}",
+                                 target->GetName(), target->GetMapId(), grouped, queued, target->isDead());
+        return true;
+    }
+
+    static bool HandleArenaOnlyBotStateCommand(ChatHandler* handler, char const* args)
+    {
+        std::string const name = args ? args : "";
+        Player* bot = name.empty() ? nullptr : ObjectAccessor::FindPlayerByName(name, false);
+        if (!bot)
+        {
+            handler->PSendSysMessage("ARENAONLY botstate: {} not online", name);
+            return true;
+        }
+
+        handler->PSendSysMessage(
+            "ARENAONLY botstate: bot {} {}, health {}, map {}, in bg {}, grouped {}, queued {}, teleporting {}",
+            bot->GetName(), bot->isDead() ? (bot->GetCorpse() ? "ghost" : "dead") : "alive", bot->GetHealth(),
+            bot->GetMapId(), bot->InBattleground(), bot->GetGroup() != nullptr, bot->InBattlegroundQueue(),
+            bot->IsBeingTeleported());
+        return true;
     }
 
     static bool HandleGuildTaskCommand(ChatHandler* handler, char const* args)
