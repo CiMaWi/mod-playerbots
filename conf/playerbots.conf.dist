@@ -105,6 +105,13 @@ Playerbots.AddClassAccountPoolSize = 50
 # Do not change this prefix while there are existing bot accounts.
 Playerbots.RandomBotAccountPrefix = "rndbot"
 
+# Test names for new random bots. Empty (default): names come from the name pool (playerbots_names). Otherwise every
+# new random bot is named this prefix plus a letters-only counter (Testa, Testb, ..., Testaa, Testab, ...), so test
+# bots never use up pool names. Letters only: the core's name check rejects digits (a character with an invalid name
+# is flagged for a rename). 2-9 letters; names that fail the core's check (three equal letters in a row, reserved,
+# profane) or that a character already has are skipped. Applies to characters created from now on, nothing is renamed.
+Playerbots.RandomBotTestNamePrefix = ""
+
 # Delete all randombot accounts
 # To apply this, set the number to 1 and run the Worldserver. Once deletion is complete, if you would
 # like to recreate randombots, set the number back to 0 and rerun the Worldserver.
@@ -1696,6 +1703,19 @@ Playerbots.Skill.NoticeDelayMsAtSkill1 = 0
 Playerbots.Skill.NoticeDelayMsAtSkill99 = 0
 Playerbots.Skill.NoticeWindowMs = 1500
 
+# Skill distribution. Every bot keeps a fixed percentile (from its guid, stored in playerbots_bot_profile.percentile);
+# its skill is that percentile mapped through this distribution, rounded and clamped to 1-99. Changing the
+# distribution or its parameters only stretches or shrinks the spread at the next start: every bot keeps its rank.
+#    normal  = mean Mean, standard deviation Sd (default 50 and 15: exactly the skills rolled before)
+#    uniform = evenly from Min to Max
+# The GM command .playerbots skill <bot> reroll re-applies the distribution to the bot's percentile (it no longer draws
+# a new one); set <1-99> sets the skill and the matching percentile. .playerbots skill selftest checks the mapping.
+Playerbots.Skill.Distribution = normal
+Playerbots.Skill.Mean = 50
+Playerbots.Skill.Sd = 15
+Playerbots.Skill.Min = 1
+Playerbots.Skill.Max = 99
+
 # Bot tactics. With 0 (default) no tactic runs, nothing is probed per update and the bots' strategies are today's.
 # With 1, a tactic acts only when it is in the bot's tactic mask (the tactics whose own Enable is 1; the PvP test
 # harness overrides the mask per side with tacticsA= / tacticsB=) and the bot's current context is in its Scope.
@@ -2170,6 +2190,28 @@ Playerbots.RandomBotAutoJoinBGRatedArena5v5Count = 0
 # Default: 1 (one match at a time)
 Playerbots.RandomBotAutoJoinRatedArenaQueueSlots = 1
 
+# Uncapped rated arena queue, for lab and arena servers (forced off with Playerbots.Ladder.Role = 1). When 1, every
+# bot team that is free queues for its rated arena as soon as its captain checks (no queue slots, no arena battles
+# count limit; a count above 0 still turns the arena type on). The core's queue pairs teams by rating
+# (Arena.MaxRatingDifference), so a team may wait in the queue for a close match; no team idles outside it.
+# Default: 0 (the slots and the count above apply)
+Playerbots.RandomBotAutoJoinRatedArenaUncapped = 0
+
+# Arena only, for lab and arena servers (forced off with Playerbots.Ladder.Role = 1). When 1, a random bot outside a
+# battleground or arena only waits for its next match: its non-combat strategies are reduced to the packet handlers,
+# chat commands and the battleground join ("default", "chat", "bg"), so no RPG, questing, grinding, looting, trading,
+# vendoring, mail, auction, buffs, food, gear or talent changes; the random bot manager does no randomize, refresh or
+# level teleport for it (a bot below Playerbots.RandomBotMinLevel, i.e. a new character, still gets its first
+# randomize). In matches nothing changes. PvP gear buying (Playerbots.PvpGear.Buy.Enable) is separate. With
+# SpreadContinents 1 (default) each waiting bot stands at one of three safe spots of its faction on its team's home
+# continent (team id % 4: Eastern Kingdoms, Kalimdor, Outland, Northrend; a bot without a team: guid % 4), moved there
+# when it logs in or comes back from a match, so no single continent map carries every waiting bot.
+# .playerbots arenaonly status counts the bots in a match, queued and neither, per continent; .playerbots arenaonly
+# selftest checks the continent split, the queue rule and the rating seed.
+# Default: 0 (off)
+Playerbots.ArenaOnly.Enable = 0
+Playerbots.ArenaOnly.SpreadContinents = 1
+
 # Form a bot arena captain's group and teleport its team members on the world thread (a queued operation) instead of
 # inline on the captain's map thread; the captain joins the rated queue on a later pass, once its group stands.
 # Recommended with MapUpdate.Threads > 1, where two map threads may otherwise change the same groups.
@@ -2200,6 +2242,16 @@ Playerbots.RandomBotArenaTeamMinRating = 1000
 # the GM command: .playerbots arena resetratings (works from the console)
 # Default: 0
 Playerbots.RandomBotArenaTeamRatingMode = 0
+
+# Seeded bot team ratings, for test servers (forced off with Playerbots.Ladder.Role = 1). When 1, a bot arena team that
+# has just been completed and has never played gets rating = 1500 + Spread * (mean skill percentile of its members
+# - 0.5) + a normal noise term with standard deviation NoiseSd, clamped to 0-4000; its members' personal and
+# matchmaking ratings follow. The ladder then starts near settled (close matches dominate) while the noise still gives
+# a range of skill differences. Works in both rating modes and replaces mode 0's random rating for these teams.
+# Default: 0 (off), Spread 800, NoiseSd 100
+Playerbots.ArenaTeam.Seed.Enable = 0
+Playerbots.ArenaTeam.Seed.Spread = 800
+Playerbots.ArenaTeam.Seed.NoiseSd = 100
 
 # Arena team formation (1 = on, 0 = off; only with RandomBotArenaTeamRatingMode = 1, ignored in mode 0)
 # When 1, randombot arena teams are formed by partner score instead of at random, and their rosters change over time.

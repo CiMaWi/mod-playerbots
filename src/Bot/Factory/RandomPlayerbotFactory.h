@@ -72,6 +72,14 @@ public:
     // World thread: a 2v2 team of captain and partner (online or not), founded by an online bot, which leaves it at
     // once unless it is the captain. Not in the bot arena team registry (main's ladder pool). Returns the team id or 0
     static uint32 CreatePairArenaTeam(Player* founder, ObjectGuid captain, ObjectGuid partner);
+    // World thread, Playerbots.ArenaTeam.Seed.Enable: a complete team that never played gets its seeded rating, its
+    // members' personal ratings and MMR follow; true when it did (the team is saved)
+    static bool SeedTeamRating(ArenaTeam* team);
+    // 1500 + spread * (meanPercentile - 0.5) + noise, rounded and clamped to 0-4000
+    static uint32 SeedRating(double meanPercentile, double spread, double noise);
+    // Playerbots.RandomBotTestNamePrefix: the next free test name (prefix + a letters-only counter); empty when the
+    // counter has no room left in a name
+    static std::string CreateTestBotName();
     static void LoadArenaTeamData();
     // Sets every bot arena team's rating and its members' personal rating and MMR to the core's start values.
     // Returns the number of teams reset; resetMembers receives the number of members.

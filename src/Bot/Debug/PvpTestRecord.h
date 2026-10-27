@@ -139,6 +139,11 @@ public:
     uint64 Failed() const { return _failed.load(); }
 
     static std::string ToJson(PvpTestMatchRecord const& record);
+    // M17c (additive "ratingDelta", "mmrDelta", "skillDelta"): the sides' absolute differences before the match in
+    // team rating, matchmaker rating and mean bot skill; -1 (null) when a side has none
+    static int32 RatingDelta(PvpTestMatchRecord const& record);
+    static int32 MmrDelta(PvpTestMatchRecord const& record);
+    static double SkillDelta(PvpTestMatchRecord const& record);
     static std::string Directory();
     // The file of today's records
     static std::string TodayFile();

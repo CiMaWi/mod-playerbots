@@ -7,6 +7,8 @@
 #include "PvpTestRecord.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -221,8 +223,51 @@ std::string PvpTestRecordWriter::ToJson(PvpTestMatchRecord const& record)
         Quote(record.Reason), Quote(record.FailedStage), record.FightMs, record.TotalMs, Quote(record.Server),
         Quote(record.MatchId), Quote(record.Source), record.Real ? "true" : "false",
         record.RatingsKnown ? "true" : "false");
-    json += SideToJson(record.Sides[0]) + "," + SideToJson(record.Sides[1]) + "]}";
+    json += SideToJson(record.Sides[0]) + "," + SideToJson(record.Sides[1]) + "]";
+    double const skillDelta = SkillDelta(record);
+    json += Acore::StringFormat(",\"ratingDelta\":{},\"mmrDelta\":{},\"skillDelta\":{}}}",
+                                NumberOrNull(RatingDelta(record)), NumberOrNull(MmrDelta(record)),
+                                skillDelta < 0.0 ? std::string("null") : Acore::StringFormat("{:.1f}", skillDelta));
     return json;
+}
+
+int32 PvpTestRecordWriter::RatingDelta(PvpTestMatchRecord const& record)
+{
+    int32 const a = record.Sides[0].TeamRatingBefore;
+    int32 const b = record.Sides[1].TeamRatingBefore;
+    return a < 0 || b < 0 ? -1 : std::abs(a - b);
+}
+
+int32 PvpTestRecordWriter::MmrDelta(PvpTestMatchRecord const& record)
+{
+    int32 const a = record.Sides[0].MmrBefore;
+    int32 const b = record.Sides[1].MmrBefore;
+    return a < 0 || b < 0 ? -1 : std::abs(a - b);
+}
+
+double PvpTestRecordWriter::SkillDelta(PvpTestMatchRecord const& record)
+{
+    std::array<double, 2> means{};
+    for (size_t index = 0; index < record.Sides.size(); ++index)
+    {
+        double sum = 0.0;
+        uint32 count = 0;
+        for (PvpTestBotRecord const& bot : record.Sides[index].Bots)
+        {
+            if (bot.Skill < 0)
+                continue;
+
+            sum += bot.Skill;
+            ++count;
+        }
+
+        if (!count)
+            return -1.0;
+
+        means[index] = sum / count;
+    }
+
+    return std::abs(means[0] - means[1]);
 }
 
 void PvpTestRecordWriter::Write(PvpTestMatchRecord const& record)

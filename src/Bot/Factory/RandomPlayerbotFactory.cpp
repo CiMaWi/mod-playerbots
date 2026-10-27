@@ -10,6 +10,7 @@
 #include "ArenaSeasonMgr.h"
 #include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
+#include "BotProfileMgr.h"
 #include "CharacterCache.h"
 #include "DBCStores.h"
 #include "ObjectAccessor.h"
@@ -24,6 +25,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "RaceMgr.h"
+#include "Random.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
@@ -31,6 +33,8 @@
 #include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"
+
+#include <cmath>
 
 void RandomPlayerbotFactory::LoadLocalizedNameColumns()
 {
@@ -144,7 +148,9 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
     const auto raceAndGender = CombineRaceAndGender(race, gender);
 
     std::string name;
-    if (!nameCache.empty())
+    if (!sPlayerbotAIConfig.RandomBotTestNamePrefix.empty())
+        name = CreateTestBotName();
+    else if (!nameCache.empty())
     {
         if (nameCache[raceAndGender].empty())
         {
@@ -737,7 +743,8 @@ void RandomPlayerbotFactory::CreateRandomBots()
             continue;
         }
 
-        if (!nameCached)
+        // Test names (Playerbots.RandomBotTestNamePrefix) need no name pool
+        if (!nameCached && sPlayerbotAIConfig.RandomBotTestNamePrefix.empty())
         {
             nameCached = true;
             LOG_INFO("playerbots", "Creating cache for names per gender and race...");
@@ -1034,6 +1041,9 @@ void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot, uint32 ex
             continue;
         }
 
+        if (SeedTeamRating(team))
+            return;
+
         if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM &&
             team->GetMembersSize() >= static_cast<uint32>(team->GetType()))
         {
@@ -1145,7 +1155,7 @@ uint32 RandomPlayerbotFactory::CreatePairArenaTeam(Player* founder, ObjectGuid c
     }
 
     SetRandomRatingAndEmblem(team);
-    if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
+    if (!SeedTeamRating(team) && sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
     {
         // As a team filled by the joins: the MMR follows the artificial rating
         for (ArenaTeamMember& member : team->GetMembers())
@@ -1163,6 +1173,75 @@ uint32 RandomPlayerbotFactory::CreatePairArenaTeam(Player* founder, ObjectGuid c
     LOG_INFO("playerbots", "Ladder pool: arena team {} <{}> for {} and {}", team->GetId(), teamName, captainName,
              partnerName);
     return team->GetId();
+}
+
+uint32 RandomPlayerbotFactory::SeedRating(double meanPercentile, double spread, double noise)
+{
+    double const rating = 1500.0 + spread * (meanPercentile - 0.5) + noise;
+    return static_cast<uint32>(std::clamp<long>(std::lround(rating), 0, 4000));
+}
+
+bool RandomPlayerbotFactory::SeedTeamRating(ArenaTeam* team)
+{
+    // Only at the team's start: complete and never played, so the earned ratings stay the core's afterwards
+    if (!sPlayerbotAIConfig.ArenaTeamSeedEnable || !team || team->GetMembersSize() < team->GetType() ||
+        team->GetStats().SeasonGames)
+        return false;
+
+    double sum = 0.0;
+    for (ArenaTeamMember const& member : team->GetMembers())
+        sum += BotProfileMgr::instance().Percentile(member.Guid.GetCounter());
+
+    double const mean = sum / team->GetMembersSize();
+    // Box-Muller on the core's random source: every team and run draws its own noise
+    double const u1 = 1.0 - rand_norm();
+    double const z = std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * 3.14159265358979323846 * rand_norm());
+    uint32 const rating =
+        SeedRating(mean, sPlayerbotAIConfig.ArenaTeamSeedSpread, z * sPlayerbotAIConfig.ArenaTeamSeedNoiseSd);
+    team->SetRatingForAll(rating);
+    for (ArenaTeamMember& member : team->GetMembers())
+    {
+        member.MatchMakerRating = static_cast<uint16>(rating);
+        member.MaxMMR = std::max(member.MaxMMR, static_cast<uint16>(rating));
+    }
+
+    team->SaveToDB(true);
+    LOG_DEBUG("playerbots", "Arena team {} <{}>: seeded rating {} (mean percentile {:.3f})", team->GetId(),
+              team->GetName(), rating, mean);
+    return true;
+}
+
+std::string RandomPlayerbotFactory::CreateTestBotName()
+{
+    // One counter per process; the in-memory character cache skips the names already taken (earlier runs), so a
+    // rerun goes on after the last test name without a query
+    static uint32 counter = 0;
+    std::string const& prefix = sPlayerbotAIConfig.RandomBotTestNamePrefix;
+    size_t const room = MAX_PLAYER_NAME > prefix.size() ? MAX_PLAYER_NAME - prefix.size() : 0;
+    while (true)
+    {
+        // Bijective base 26: a..z, aa..zz, aaa..; letters only, the core's name check rejects digits
+        std::string letters;
+        for (uint32 n = counter + 1; n; n = (n - 1) / 26)
+            letters.insert(letters.begin(), static_cast<char>('a' + (n - 1) % 26));
+
+        if (letters.size() > room)
+        {
+            LOG_ERROR("playerbots", "No test bot names left for the prefix {}", prefix);
+            return "";
+        }
+
+        ++counter;
+        std::string name = prefix + letters;
+        // Three equal letters in a row, reserved and profane names fail here
+        if (ObjectMgr::CheckPlayerName(name, true) != CHAR_NAME_SUCCESS)
+            continue;
+
+        if (!sCharacterCache->GetCharacterGuidByName(name).IsEmpty())
+            continue;
+
+        return name;
+    }
 }
 
 bool RandomPlayerbotFactory::IsRegisteredBotArenaTeam(uint8 type, uint32 teamId)

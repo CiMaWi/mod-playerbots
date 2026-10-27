@@ -279,6 +279,14 @@ enum ActivityType
     MAX_ACTIVITY_TYPE
 };
 
+// Playerbots.ArenaOnly.Enable: the strategy set AiFactory gave a random bot at its last reset
+enum class ArenaOnlyState : uint8
+{
+    Off,             // not an arena-only bot
+    Waiting,         // outside a battleground: the waiting strategies only
+    InBattleground,  // inside: the full strategies
+};
+
 enum BotRoles : uint8
 {
     BOT_ROLE_NONE = 0x00,
@@ -637,6 +645,7 @@ public:
     // the PvP harness records may show it.
     uint8 GetPvpSkill() const { return pvpSkill; }
     void SetPvpSkill(uint8 skill);
+    void SetArenaOnlyState(ArenaOnlyState state) { arenaOnlyState = state; }
     // Reaction-delay factor from the hidden skill (Playerbots.Skill.React*), cached by SetPvpSkill. 1.0 when the
     // skill system or the factor range is off, and in PvE fights when Playerbots.Skill.FullAbilityInPvE is on.
     float GetEffectiveSkillReactFactor() const;
@@ -773,6 +782,7 @@ protected:
     uint32 nextTransportCheck = 0;
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
+    ArenaOnlyState arenaOnlyState = ArenaOnlyState::Off;
     float skillReactFactor = 1.0f;
     uint32 skillNoticeMissPercent = 0;
     uint32 skillNoticeDelayMs = 0;

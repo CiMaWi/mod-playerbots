@@ -716,6 +716,23 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
             nonCombatEngine->removeStrategy("mount", false);
         }
     }
+
+    // Playerbots.ArenaOnly.Enable: outside a battleground a random bot only waits for its next match (packet handlers
+    // for the invite and the group, chat commands, the battleground join); PlayerbotAI resets the strategies when it
+    // enters or leaves one
+    ArenaOnlyState arenaOnly = ArenaOnlyState::Off;
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && sRandomPlayerbotMgr.IsRandomBot(player))
+    {
+        arenaOnly = player->InBattleground() ? ArenaOnlyState::InBattleground : ArenaOnlyState::Waiting;
+        if (arenaOnly == ArenaOnlyState::Waiting)
+        {
+            nonCombatEngine->removeAllStrategies();
+            nonCombatEngine->addStrategiesNoInit("default", "chat", "bg", nullptr);
+        }
+    }
+
+    if (facade)
+        facade->SetArenaOnlyState(arenaOnly);
 }
 
 Engine* AiFactory::createNonCombatEngine(Player* player, PlayerbotAI* const facade, AiObjectContext* aiObjectContext)

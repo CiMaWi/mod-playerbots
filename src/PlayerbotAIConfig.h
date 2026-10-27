@@ -289,6 +289,8 @@ public:
     uint32 RandomBotAutoJoinBGRatedArena3v3Count;
     uint32 RandomBotAutoJoinBGRatedArena5v5Count;
     uint32 RandomBotAutoJoinRatedArenaQueueSlots;
+    // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free bot team queues, no slot or count limit
+    bool RandomBotAutoJoinRatedArenaUncapped;
     bool RandomBotArenaGroupOnWorldThread;
 
     uint32 RandomBotTeleLowerLevel, RandomBotTeleHigherLevel;
@@ -459,6 +461,17 @@ public:
     uint32 SkillNoticeDelayMsHigh;
     uint32 SkillNoticeWindowMs;
     bool SkillNoticeActive;
+    // Playerbots.Skill.Distribution and its parameters: a bot's fixed percentile maps to its skill through it
+    bool SkillDistributionUniform;
+    float SkillMean;
+    float SkillSd;
+    float SkillMin;
+    float SkillMax;
+    // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
+    bool ArenaOnlyEnable;
+    bool ArenaOnlySpreadContinents;
+    // Playerbots.RandomBotTestNamePrefix: new random bots are named prefix + a letters-only counter (empty = pool)
+    std::string RandomBotTestNamePrefix;
     // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope (indexed by TacticId), and the mask of
     // the tactics enabled in config (0 while the system is off)
     bool TacticsEnable;
@@ -515,6 +528,10 @@ public:
     uint32 RandomBotArenaTeam3v3Count;
     uint32 RandomBotArenaTeam5v5Count;
     bool DeleteRandomBotArenaTeams;
+    // Playerbots.ArenaTeam.Seed.*: a new bot team's rating and MMR from its members' skill percentiles plus noise
+    bool ArenaTeamSeedEnable;
+    float ArenaTeamSeedSpread;
+    float ArenaTeamSeedNoiseSd;
     // Playerbots.ArenaTeam.*: team formation by partner score (earned rating mode only)
     bool ArenaTeamFormationEnable;
     uint32 ArenaTeamUpdateSeconds;

@@ -91,6 +91,8 @@ private:
     botPIDImpl* pimpl;
 };
 
+class ChatHandler;
+
 class RandomPlayerbotMgr : public PlayerbotHolder
 {
 public:
@@ -143,6 +145,22 @@ public:
     uint32 GetMaxAllowedBotCount();
     bool ProcessBot(Player* player);
     void Revive(Player* player);
+    // Playerbots.ArenaOnly.SpreadContinents, world thread: moves a waiting bot (not in a battleground or its queue,
+    // alive, out of combat) to its home spot when it stands on another map; true when it teleported
+    bool PlaceArenaOnlyHome(Player* bot);
+    // The home continent (0 Eastern Kingdoms, 1 Kalimdor, 2 Outland, 3 Northrend) of a key: the bot's first arena
+    // team id (both members share it), else its guid; the spot is one of three per continent and faction
+    static uint32 ArenaOnlyHomeKey(Player* bot);
+    static uint32 ArenaOnlyContinent(uint32 key) { return key % 4; }
+    static WorldLocation ArenaOnlyHomeSpot(uint32 key, bool horde);
+    // The rated arena queue opening one check sets (Playerbots.RandomBotAutoJoinRatedArenaQueueSlots, ...Uncapped)
+    // and whether a bot captain may queue on it (BGJoinAction::shouldJoinBg)
+    static uint32 RatedArenaQueueOpening(uint32 slots, uint32 count, uint32 running, bool uncapped);
+    static bool RatedArenaCaptainMayQueue(uint32 queuedPlayers, uint32 bracketSize, uint32 opening, uint32 running,
+                                          bool uncapped);
+    // .playerbots arenaonly status | selftest
+    static bool HandleArenaOnlyStatusCommand(ChatHandler* handler, char const* args);
+    static bool HandleArenaOnlySelftestCommand(ChatHandler* handler, char const* args);
     void ChangeStrategy(Player* player);
     void ChangeStrategyOnce(Player* player);
     uint32 GetValue(Player* bot, std::string const& type);

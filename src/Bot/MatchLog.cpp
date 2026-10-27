@@ -600,12 +600,14 @@ void MatchLog::OnEnd(Battleground* bg, TeamId winnerTeam)
         record.Source = record.Real ? "player" : "organic";
         PvpTestRecordWriter::Instance().Write(record);
         ++Written;
-        LOG_INFO("playerbots", "MATCHLOG: {} {}v{} {}: {} vs {}, winner {}, ratings {}->{} / {}->{}, source {}",
+        LOG_INFO("playerbots",
+                 "MATCHLOG: {} {}v{} {}: {} vs {}, winner {}, ratings {}->{} / {}->{}, delta rating {} mmr {}, "
+                 "source {}",
                  record.MatchId, static_cast<uint32>(record.ArenaType), static_cast<uint32>(record.ArenaType),
                  record.Map, record.Sides[0].Label, record.Sides[1].Label,
                  record.WinnerSide.empty() ? std::string("draw") : record.WinnerSide, record.Sides[0].TeamRatingBefore,
                  record.Sides[0].TeamRatingAfter, record.Sides[1].TeamRatingBefore, record.Sides[1].TeamRatingAfter,
-                 record.Source);
+                 PvpTestRecordWriter::RatingDelta(record), PvpTestRecordWriter::MmrDelta(record), record.Source);
     }
 
     EndMicroseconds += MicrosecondsSince(start);
@@ -705,7 +707,7 @@ bool MatchLog::HandleSelftestCommand(ChatHandler* handler, char const* /*args*/)
         side.TeamId = 10 + static_cast<uint32>(index);
         side.TeamRatingBefore = 1500;
         side.TeamRatingAfter = index == 0 ? 1516 : 1484;
-        side.MmrBefore = 1500;
+        side.MmrBefore = index == 0 ? 1500 : 1540;
         side.MmrAfter = index == 0 ? 1516 : 1484;
         PvpTestBotRecord bot;
         bot.Guid = 1000 + index;
@@ -731,6 +733,8 @@ bool MatchLog::HandleSelftestCommand(ChatHandler* handler, char const* /*args*/)
               Contains(line, "\"mmrChange\":-16"),
           "ratings, personal ratings and the MMR change are written");
     check(Contains(line, "\"casts\":{\"interrupt\":0,\"defensive\":0,\"dispel\":3"), "the casts are written");
+    check(Contains(line, "\"ratingDelta\":0,\"mmrDelta\":40,\"skillDelta\":null}"),
+          "the rating and MMR deltas are written, the skill delta is null without skills");
     check(Contains(line, "\"winner\":\"Team \\\"A\\\"\""), "a quote in a team name is escaped");
 
     // A harness record that was never merged: ratings and the MMR change are null
@@ -746,6 +750,7 @@ bool MatchLog::HandleSelftestCommand(ChatHandler* handler, char const* /*args*/)
     check(WellFormed(harnessLine), "the harness record is well-formed JSON");
     check(harness.Id == "m-selftest-1" && !harness.MatchId.empty() && harness.Source == "harness",
           "a harness record keeps its id and gains a match id");
+    check(Contains(harnessLine, "\"ratingDelta\":null,\"mmrDelta\":null"), "an unmerged harness record has no deltas");
     check(Contains(harnessLine, "\"teamRatingBefore\":null") && Contains(harnessLine, "\"mmrChange\":null") &&
               Contains(harnessLine, "\"ratingsKnown\":false") && Contains(harnessLine, "\"personalBefore\":null"),
           "unknown ratings are null");

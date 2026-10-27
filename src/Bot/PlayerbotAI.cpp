@@ -1623,6 +1623,15 @@ void PlayerbotAI::DoNextAction(bool min)
         return;
     }
 
+    // Playerbots.ArenaOnly.Enable: a bot that went into or out of a battleground without a reset gets the other
+    // strategy set (O(1): two flags)
+    if (arenaOnlyState != ArenaOnlyState::Off && !bot->IsBeingTeleported() &&
+        (arenaOnlyState == ArenaOnlyState::Waiting) == bot->InBattleground())
+    {
+        ResetStrategies();
+        return;
+    }
+
     // Clear targets if in combat but sticking with old data
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && bot->IsInCombat())
     {

@@ -7,11 +7,13 @@
 #include "RandomPlayerbotMgr.h"
 #include "PlayerbotsDatabase.h"
 #include "AiFactory.h"
+#include "ArenaTeam.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
 #include "Cell.h"
 #include "CellImpl.h"
 #include "ChannelMgr.h"
+#include "Chat.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "DatabaseEnv.h"
@@ -46,6 +48,7 @@
 #include "World.h"
 #include "WorldSessionMgr.h"
 #include <algorithm>
+#include <array>
 #include <boost/thread/thread.hpp>
 #include <cstdlib>
 #include <ctime>
@@ -1208,17 +1211,16 @@ void RandomPlayerbotMgr::CheckBgQueue()
         // Check both bgInstanceCount / bgInstances.size
         // to help counter against potentional inconsistencies.
         // Playerbots.RandomBotAutoJoinRatedArenaQueueSlots: up to that many matches' worth of captains may queue until
-        // the next check (1: one match at a time), never more than the count still allows
+        // the next check (1: one match at a time), never more than the count still allows.
+        // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free team queues (RatedArenaCaptainMayQueue)
         uint32 const ratedQueueSlots = sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaQueueSlots;
+        bool const ratedQueueUncapped = sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped;
         auto updateRatedArenaInstanceCount = [&](uint32 queueType, uint32 bracket, uint32 minCount)
         {
             BattlegroundInfo& info = BattlegroundData[queueType][bracket];
             uint32 const running =
                 std::max(info.ratedArenaInstanceCount, static_cast<uint32>(info.ratedArenaInstances.size()));
-            if (running >= minCount)
-                return;
-
-            uint32 const open = std::min(ratedQueueSlots, minCount - running);
+            uint32 const open = RatedArenaQueueOpening(ratedQueueSlots, minCount, running, ratedQueueUncapped);
             info.activeRatedArenaQueue = std::max(info.activeRatedArenaQueue, open);
         };
 
@@ -1473,6 +1475,12 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     if (!player->IsInWorld())
         return false;
 
+    // Playerbots.ArenaOnly.SpreadContinents: a waiting bot stands on its home continent (at login and after a match;
+    // grouped team members too)
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && sPlayerbotAIConfig.ArenaOnlySpreadContinents &&
+        PlaceArenaOnlyHome(player))
+        return true;
+
     if (player->GetGroup() || player->HasUnitState(UNIT_STATE_IN_FLIGHT))
         return false;
 
@@ -1537,7 +1545,22 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     if (bot->InBattlegroundQueue())
         return false;
 
-     uint32 botId = bot->GetGUID().GetCounter();
+    uint32 botId = bot->GetGUID().GetCounter();
+
+    // Playerbots.ArenaOnly.Enable: no upkeep outside matches (no randomize, refresh or teleport for the level); a new
+    // character below the minimum level still gets its first randomize
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && bot->GetLevel() >= sPlayerbotAIConfig.RandomBotMinLevel)
+    {
+        // A bot that died outside a match comes back where it stands
+        if (bot->isDead())
+        {
+            bot->ResurrectPlayer(1.0f);
+            bot->SpawnCorpseBones();
+            return true;
+        }
+
+        return false;
+    }
 
     // if death revive
     if (bot->isDead())
@@ -3431,4 +3454,219 @@ ObjectGuid RandomPlayerbotMgr::GetBattleMasterGUID(Player* bot, BattlegroundType
     }
 
     return battleMasterGUID;
+}
+
+namespace
+{
+// Playerbots.ArenaOnly.SpreadContinents: three safe spots per continent and faction (the faction's cities and towns or
+// neutral ones, positions from game_tele): [continent][0 alliance, 1 horde][spot]
+struct ArenaOnlySpot
+{
+    uint32 MapId;
+    float X;
+    float Y;
+    float Z;
+    float O;
+};
+
+constexpr uint32 ArenaOnlyContinentMaps[4] = {0, 1, 530, 571};
+constexpr ArenaOnlySpot ArenaOnlySpots[4][2][3] = {
+    // Eastern Kingdoms: Stormwind, Ironforge, Booty Bay / Undercity, Grom'gol, Booty Bay
+    {{{0, -8833.38f, 628.63f, 94.01f, 1.065f},
+      {0, -4918.88f, -940.41f, 501.56f, 5.423f},
+      {0, -14297.2f, 530.99f, 8.78f, 3.989f}},
+     {{0, 1584.14f, 240.31f, -52.15f, 0.042f},
+      {0, -12388.9f, 172.58f, 2.83f, 1.918f},
+      {0, -14297.2f, 530.99f, 8.78f, 3.989f}}},
+    // Kalimdor: Darnassus, Gadgetzan, Everlook / Orgrimmar, Thunder Bluff, Ratchet
+    {{{1, 9949.56f, 2284.21f, 1341.4f, 1.596f},
+      {1, -7177.15f, -3785.34f, 8.37f, 6.102f},
+      {1, 6725.69f, -4619.44f, 720.91f, 4.668f}},
+     {{1, 1629.85f, -4373.64f, 31.56f, 3.698f},
+      {1, -1277.37f, 124.8f, 131.29f, 5.223f},
+      {1, -956.66f, -3754.71f, 5.33f, 0.997f}}},
+    // Outland: Shattrath, Area 52, Honor Hold / Shattrath, Area 52, Thrallmar
+    {{{530, -1838.16f, 5301.79f, -12.43f, 5.952f},
+      {530, 3043.33f, 3681.33f, 143.07f, 5.075f},
+      {530, -748.21f, 2681.52f, 100.35f, 5.748f}},
+     {{530, -1838.16f, 5301.79f, -12.43f, 5.952f},
+      {530, 3043.33f, 3681.33f, 143.07f, 5.075f},
+      {530, 156.25f, 2673.45f, 85.16f, 0.382f}}},
+    // Northrend: Dalaran, Valiance Keep, Valgarde / Dalaran, Warsong Hold, Vengeance Landing
+    {{{571, 5807.98f, 588.49f, 660.94f, 1.666f},
+      {571, 2213.95f, 5273.15f, 11.26f, 5.893f},
+      {571, 564.4f, -4944.94f, 18.6f, 5.365f}},
+     {{571, 5807.98f, 588.49f, 660.94f, 1.666f},
+      {571, 2741.29f, 6097.16f, 76.91f, 0.732f},
+      {571, 1942.86f, -6167.11f, 23.72f, 2.643f}}},
+};
+}  // namespace
+
+uint32 RandomPlayerbotMgr::ArenaOnlyHomeKey(Player* bot)
+{
+    for (uint8 slot = ARENA_SLOT_2v2; slot <= ARENA_SLOT_5v5; ++slot)
+    {
+        if (uint32 const teamId = bot->GetArenaTeamId(slot))
+            return teamId;
+    }
+
+    return bot->GetGUID().GetCounter();
+}
+
+WorldLocation RandomPlayerbotMgr::ArenaOnlyHomeSpot(uint32 key, bool horde)
+{
+    ArenaOnlySpot const& spot = ArenaOnlySpots[ArenaOnlyContinent(key)][horde ? 1 : 0][(key / 4) % 3];
+    return WorldLocation(spot.MapId, spot.X, spot.Y, spot.Z, spot.O);
+}
+
+bool RandomPlayerbotMgr::PlaceArenaOnlyHome(Player* bot)
+{
+    if (bot->InBattleground() || bot->InBattlegroundQueue() || bot->IsBeingTeleported() || bot->IsInFlight() ||
+        !bot->IsAlive() || bot->IsInCombat())
+        return false;
+
+    WorldLocation const home = ArenaOnlyHomeSpot(ArenaOnlyHomeKey(bot), bot->GetTeamId() == TEAM_HORDE);
+    if (bot->GetMapId() == home.GetMapId())
+        return false;
+
+    LOG_DEBUG("playerbots", "Bot {} <{}>: arena only, waits on map {}", bot->GetGUID().GetCounter(), bot->GetName(),
+              home.GetMapId());
+    bot->TeleportTo(home);
+    return true;
+}
+
+uint32 RandomPlayerbotMgr::RatedArenaQueueOpening(uint32 slots, uint32 count, uint32 running, bool uncapped)
+{
+    // A count of 0 keeps the arena type off; uncapped, any count only turns it on
+    if (!count)
+        return 0;
+
+    if (uncapped)
+        return 1;
+
+    return running >= count ? 0 : std::min(slots, count - running);
+}
+
+bool RandomPlayerbotMgr::RatedArenaCaptainMayQueue(uint32 queuedPlayers, uint32 bracketSize, uint32 opening,
+                                                   uint32 running, bool uncapped)
+{
+    if (uncapped)
+        return opening != 0;
+
+    return queuedPlayers < bracketSize * (opening + running);
+}
+
+bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char const* /*args*/)
+{
+    // Console, world thread: one pass over the random bots
+    uint32 bots = 0;
+    uint32 inArena = 0;
+    uint32 inBattleground = 0;
+    uint32 queued = 0;
+    uint32 idle = 0;
+    uint32 teleporting = 0;
+    std::array<uint32, 5> waitingByMap{};  // maps 0, 1, 530, 571, other: queued and idle bots
+    for (auto const& [guid, bot] : sRandomPlayerbotMgr.playerBots)
+    {
+        if (!bot)
+            continue;
+
+        ++bots;
+        if (!bot->IsInWorld() || bot->IsBeingTeleported())
+        {
+            ++teleporting;
+            continue;
+        }
+
+        if (bot->InBattleground())
+        {
+            ++(bot->InArena() ? inArena : inBattleground);
+            continue;
+        }
+
+        ++(bot->InBattlegroundQueue() ? queued : idle);
+        size_t index = 4;
+        for (size_t i = 0; i < 4; ++i)
+        {
+            if (bot->GetMapId() == ArenaOnlyContinentMaps[i])
+                index = i;
+        }
+
+        ++waitingByMap[index];
+    }
+
+    handler->PSendSysMessage("ARENAONLY: enable {}, spread {}, uncapped queue {}", sPlayerbotAIConfig.ArenaOnlyEnable,
+                             sPlayerbotAIConfig.ArenaOnlySpreadContinents,
+                             sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped);
+    handler->PSendSysMessage(
+        "ARENAONLY: bots {}: in arena {}, in battleground {}, queued {}, idle {}, teleporting {}; waiting by map: "
+        "0 {}, 1 {}, 530 {}, 571 {}, other {}",
+        bots, inArena, inBattleground, queued, idle, teleporting, waitingByMap[0], waitingByMap[1], waitingByMap[2],
+        waitingByMap[3], waitingByMap[4]);
+    return true;
+}
+
+bool RandomPlayerbotMgr::HandleArenaOnlySelftestCommand(ChatHandler* handler, char const* /*args*/)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+        {
+            ++failures;
+            handler->PSendSysMessage("ARENAONLY selftest FAIL: {}", what);
+        }
+    };
+
+    // The continents: 4000 team ids split evenly, each continent's teams evenly over its three spots, every spot on
+    // its continent's map
+    std::array<uint32, 4> perContinent{};
+    std::array<std::array<uint32, 3>, 4> perSpot{};
+    bool mapsRight = true;
+    for (uint32 key = 1; key <= 4000; ++key)
+    {
+        uint32 const continent = ArenaOnlyContinent(key);
+        ++perContinent[continent];
+        ++perSpot[continent][(key / 4) % 3];
+        for (bool horde : {false, true})
+            mapsRight = mapsRight && ArenaOnlyHomeSpot(key, horde).GetMapId() == ArenaOnlyContinentMaps[continent];
+    }
+
+    check(perContinent[0] == 1000 && perContinent[1] == 1000 && perContinent[2] == 1000 && perContinent[3] == 1000,
+          Acore::StringFormat("4000 teams: {} / {} / {} / {} per continent", perContinent[0], perContinent[1],
+                              perContinent[2], perContinent[3]));
+    bool spotsEven = true;
+    for (auto const& spots : perSpot)
+    {
+        auto const [low, high] = std::minmax_element(spots.begin(), spots.end());
+        spotsEven = spotsEven && *high - *low <= 1;
+    }
+
+    check(spotsEven, "each continent's teams spread over its three spots within 1");
+    check(mapsRight, "every spot lies on its continent's map");
+
+    // The queue rule: capped as before, uncapped every free team
+    check(RatedArenaQueueOpening(1, 250, 10, false) == 1 && RatedArenaQueueOpening(250, 250, 10, false) == 240 &&
+              RatedArenaQueueOpening(250, 250, 250, false) == 0 && RatedArenaQueueOpening(250, 0, 0, false) == 0,
+          "capped: the opening is min(slots, count - running), 0 at the count");
+    check(RatedArenaQueueOpening(1, 2, 500, true) == 1 && RatedArenaQueueOpening(1, 0, 0, true) == 0,
+          "uncapped: open whenever the count is above 0, closed at 0");
+    check(!RatedArenaCaptainMayQueue(8, 4, 1, 1, false) && RatedArenaCaptainMayQueue(4, 4, 1, 1, false),
+          "capped: a captain queues while fewer than bracket x (opening + running) are queued");
+    check(RatedArenaCaptainMayQueue(100000, 4, 1, 0, true) && !RatedArenaCaptainMayQueue(0, 4, 0, 0, true),
+          "uncapped: every captain queues while the queue is open");
+
+    // The rating seed: 1500 at the median, linear in the percentile, clamped
+    check(RandomPlayerbotFactory::SeedRating(0.5, 800.0, 0.0) == 1500 &&
+              RandomPlayerbotFactory::SeedRating(0.0, 800.0, 0.0) == 1100 &&
+              RandomPlayerbotFactory::SeedRating(1.0, 800.0, 0.0) == 1900 &&
+              RandomPlayerbotFactory::SeedRating(0.5, 800.0, 37.4) == 1537,
+          "seed: 1500 + spread x (p - 0.5) + noise");
+    check(RandomPlayerbotFactory::SeedRating(0.0, 800.0, -5000.0) == 0 &&
+              RandomPlayerbotFactory::SeedRating(1.0, 3000.0, 5000.0) == 4000,
+          "seed: clamped to 0-4000");
+    handler->PSendSysMessage("ARENAONLY selftest: {} checks, {} failed", checks, failures);
+    return failures == 0;
 }

@@ -19,6 +19,7 @@
 #include "Talentspec.h"
 #include "ThreadCheck.h"
 #include "TravelMgr.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <iostream>
@@ -412,6 +413,8 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinBGRatedArena5v5Count", 0);
     RandomBotAutoJoinRatedArenaQueueSlots =
         std::max(1, sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", 1));
+    RandomBotAutoJoinRatedArenaUncapped =
+        sConfigMgr->GetOption<bool>("Playerbots.RandomBotAutoJoinRatedArenaUncapped", false);
     RandomBotArenaGroupOnWorldThread =
         sConfigMgr->GetOption<bool>("Playerbots.RandomBotArenaGroupOnWorldThread", false);
     LogInGroupOnly = sConfigMgr->GetOption<bool>("Playerbots.LogInGroupOnly", true);
@@ -837,6 +840,19 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
     SkillNoticeActive = SkillEnable && (SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
                                         SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0);
+    {
+        std::string distribution = sConfigMgr->GetOption<std::string>("Playerbots.Skill.Distribution", "normal");
+        std::transform(distribution.begin(), distribution.end(), distribution.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (distribution != "normal" && distribution != "uniform")
+            LOG_ERROR("server.loading", "Playerbots.Skill.Distribution = {}: unknown, normal is used", distribution);
+
+        SkillDistributionUniform = distribution == "uniform";
+        SkillMean = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Mean", 50.0f), 1.0f, 99.0f);
+        SkillSd = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Sd", 15.0f), 0.1f, 100.0f);
+        SkillMin = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Min", 1.0f), 1.0f, 99.0f);
+        SkillMax = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Max", 99.0f), SkillMin, 99.0f);
+    }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
@@ -959,6 +975,34 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotArenaTeam3v3Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam3v3Count", 10);
     RandomBotArenaTeam5v5Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam5v5Count", 5);
     DeleteRandomBotArenaTeams = sConfigMgr->GetOption<bool>("Playerbots.DeleteRandomBotArenaTeams", false);
+    ArenaTeamSeedEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Seed.Enable", false);
+    ArenaTeamSeedSpread =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.Seed.Spread", 800.0f), 0.0f, 3000.0f);
+    ArenaTeamSeedNoiseSd =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.Seed.NoiseSd", 100.0f), 0.0f, 1000.0f);
+    ArenaOnlyEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.Enable", false);
+    ArenaOnlySpreadContinents = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.SpreadContinents", true);
+    RandomBotTestNamePrefix = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotTestNamePrefix", "");
+    if (!RandomBotTestNamePrefix.empty())
+    {
+        // The core's name check takes letters only (no digits) and a name of at most 12: room for 3 counter letters
+        bool const letters = std::all_of(RandomBotTestNamePrefix.begin(), RandomBotTestNamePrefix.end(),
+                                         [](unsigned char c) { return std::isalpha(c) != 0; });
+        if (!letters || RandomBotTestNamePrefix.size() < 2 || RandomBotTestNamePrefix.size() > 9)
+        {
+            LOG_ERROR("server.loading",
+                      "Playerbots.RandomBotTestNamePrefix = {}: 2-9 letters only; the name pool is used",
+                      RandomBotTestNamePrefix);
+            RandomBotTestNamePrefix.clear();
+        }
+        else
+        {
+            std::transform(RandomBotTestNamePrefix.begin(), RandomBotTestNamePrefix.end(),
+                           RandomBotTestNamePrefix.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            RandomBotTestNamePrefix[0] = static_cast<char>(std::toupper(RandomBotTestNamePrefix[0]));
+        }
+    }
     RandomBotArenaTeamMaxRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMaxRating", 2000);
     RandomBotArenaTeamMinRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMinRating", 1000);
     RandomBotArenaTeamRatingMode =
@@ -1040,6 +1084,14 @@ bool PlayerbotAIConfig::Initialize()
         RandomBotAutoJoinBGRatedArena2v2Count = 0;
         RandomBotAutoJoinBGRatedArena3v3Count = 0;
         RandomBotAutoJoinBGRatedArena5v5Count = 0;
+        // Test-run options: never on the server the players play on
+        if (ArenaTeamSeedEnable || ArenaOnlyEnable || RandomBotAutoJoinRatedArenaUncapped)
+            LOG_INFO("server.loading",
+                     "Playerbots.Ladder.Role = 1: ArenaTeam.Seed, ArenaOnly and the uncapped rated queue are off");
+
+        ArenaTeamSeedEnable = false;
+        ArenaOnlyEnable = false;
+        RandomBotAutoJoinRatedArenaUncapped = false;
     }
 
     if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
