@@ -8,6 +8,7 @@
 
 #include <string>
 
+#include "NaturalReaction.h"
 #include "Playerbots.h"
 #include "SplitMix64.h"
 #include "Timer.h"
@@ -203,12 +204,15 @@ float SkillMultiplier::GetValue(Action* action)
         return 1.0f;
 
     // Delay switching, never engaging: without a live target the assist actions are how a bot starts to fight
-    if (category == SkillNoticeCategory::TargetSwitch && !IsTargetSwitch(action))
+    Unit* switchTarget = nullptr;
+    if (category == SkillNoticeCategory::TargetSwitch && !IsTargetSwitch(action, switchTarget))
         return 1.0f;
 
     SkillNoticeCounters& counters = botAI->GetSkillNoticeCounters();
     size_t const index = static_cast<size_t>(category) - 1;
-    if (HasNoticed(category))
+    bool const noticed =
+        sPlayerbotAIConfig.NaturalReactionActive ? HasReacted(category, action, switchTarget) : HasNoticed(category);
+    if (noticed)
     {
         ++counters.allowed[index];
         return 1.0f;
@@ -230,13 +234,13 @@ SkillNoticeCategory SkillMultiplier::GetCategory(Action* action)
     return category;
 }
 
-bool SkillMultiplier::IsTargetSwitch(Action* action)
+bool SkillMultiplier::IsTargetSwitch(Action* action, Unit*& target)
 {
     Unit* const current = AI_VALUE(Unit*, "current target");
     if (!current || !current->IsAlive() || !current->IsInWorld())
         return false;
 
-    Unit* const target = action->GetTarget();
+    target = action->GetTarget();
     return target && target != current;
 }
 
@@ -260,6 +264,49 @@ bool SkillMultiplier::HasNoticed(SkillNoticeCategory category) const
         return false;
 
     return delayMs == 0 || elapsed >= (hash >> 16) % delayMs;
+}
+
+bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, Unit* target)
+{
+    size_t const index = static_cast<size_t>(category) - 1;
+    ReactionEvent& event = reactionEvents[index];
+    uint32 const now = getMSTime();
+    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
+    if (ReactionEventStarts(event, now, sPlayerbotAIConfig.SkillNoticeWindowMs))
+    {
+        // Once per event: the context, the target (a target switch brings its own) and the view cone
+        reactionNatural[index] =
+            ScopeAllows(sPlayerbotAIConfig.NaturalReactionContexts, PlayerbotAI::ProbeTacticContext(bot));
+        if (!target && category != SkillNoticeCategory::TargetSwitch)
+            target = action->GetTarget();
+
+        bool const behind = reactionNatural[index] && target && target != bot && bot->IsHostileTo(target) &&
+                            !bot->HasInArc(params.ConeDegrees * static_cast<float>(M_PI) / 180.0f, target);
+        StartReactionEvent(event, reactionFocus, botAI->GetReactionState(), params, bot->GetGUID().GetCounter(),
+                           static_cast<uint8>(category), botAI->GetSkillNoticeMissPercent(), behind, now);
+        if (reactionNatural[index] && event.Missed)
+            LOG_TRACE("playerbots.reaction", "reaction cat {} skill {} ready {} pass -1 behind {} switch {}",
+                      static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, event.Behind ? 1 : 0,
+                      event.Switched ? 1 : 0);
+    }
+
+    // Outside the configured contexts (PvE by default) D4's uniform delay applies
+    if (!reactionNatural[index])
+    {
+        event.LastQueryMs = now;
+        return HasNoticed(category);
+    }
+
+    bool const wasNoticed = event.Noticed;
+    if (!ReactionEventPasses(event, reactionFocus, static_cast<uint8>(category), now))
+        return false;
+
+    if (!wasNoticed)
+        LOG_TRACE("playerbots.reaction", "reaction cat {} skill {} ready {} pass {} behind {} switch {}",
+                  static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, now - event.StartMs,
+                  event.Behind ? 1 : 0, event.Switched ? 1 : 0);
+
+    return true;
 }
 
 void SkillStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

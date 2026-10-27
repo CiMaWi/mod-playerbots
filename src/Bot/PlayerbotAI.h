@@ -660,6 +660,9 @@ public:
     uint32 GetSkillNoticeMissPercent() const { return skillNoticeMissPercent; }
     uint32 GetSkillNoticeDelayMs() const { return skillNoticeDelayMs; }
     SkillNoticeCounters& GetSkillNoticeCounters() { return skillNoticeCounters; }
+    // Natural reaction (Playerbots.Natural.Reaction.*, NaturalReaction.h): ln(median) and spread of the bot's reaction
+    // time, cached by SetPvpSkill for every skilled bot (read only while the option is on)
+    ReactionState const& GetReactionState() const { return reactionState; }
     // PvP test harness: while a match runs, the actions of the notice categories that executed (cast successfully),
     // one slot per category in the order of SkillNoticeCounters. Counting costs nothing outside a match: one flag.
     // Turning it on zeroes the counts.
@@ -801,6 +804,7 @@ protected:
     uint32 skillNoticeMissPercent = 0;
     uint32 skillNoticeDelayMs = 0;
     SkillNoticeCounters skillNoticeCounters;
+    ReactionState reactionState;
     TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
     bool pvpTestCounting = false;
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};

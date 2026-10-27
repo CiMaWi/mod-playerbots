@@ -496,8 +496,8 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->addStrategy("boost", false);
     }
 
-    // Skill knob 2, noticing: only when configured, so the default engine has no extra multiplier
-    if (sPlayerbotAIConfig.SkillNoticeActive)
+    // Skill knob 2, noticing, and natural reaction: only when configured, so the default engine has no extra multiplier
+    if (sPlayerbotAIConfig.SkillNoticeActive || sPlayerbotAIConfig.NaturalReactionActive)
         engine->addStrategy("skill", false);
 
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and

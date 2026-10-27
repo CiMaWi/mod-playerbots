@@ -1564,6 +1564,41 @@ Playerbots.Natural.Trace.IntervalMs = 100
 # Rows kept per traced unit (100-10000000); then a truncated row and the rest dropped. Default: 200000 (5.5 h)
 Playerbots.Natural.Trace.MaxRowsPerUnit = 200000
 
+# Natural reaction times and attention. Needs Playerbots.Skill.Enable = 1. With 1, the skill multiplier of the notice
+# categories (interrupts, defensive cooldowns, dispels, crowd control, crowd-control breaks, target switches; see
+# Playerbots.Skill.Notice*) waits a human reaction time instead of the uniform notice delay, counted from the event's
+# start (the first time the bot considers the action after a quiet gap): log-normal with the median and log-space
+# sigma lerped from skill 1 to skill 99 (along Playerbots.Skill.CurveExponent), at least MinMs, drawn once per event
+# from a hash (no roll per tick). An event whose hostile target stands outside the bot's view cone (ConeDegrees wide)
+# adds BehindPenaltyMin..MaxMs, and an event of another category than the one the bot last noticed (within
+# FocusTimeoutMs) adds SwitchCostMin..MaxMs (one focus at a time). Playerbots.Skill.NoticeMissPercent* still misses
+# whole events (for NoticeWindowMs). Contexts: where it applies (Arena, Battleground, World = open-world PvP, Pve,
+# All); elsewhere the uniform notice delay stays. Bots with a game-client master follow
+# Playerbots.Skill.ExemptRealMasterBots.
+# The medians follow the plan's estimate (about 220 ms at skill 99, about 600 ms at skill 20); sigma 0.25 is the
+# spread of a simple visual reaction (about 6 % of the draws at skill 99 are raised to the minimum), 0.45 that of a
+# choice under load. On a running server the options change after .reload config (re-reads the file) followed by
+# .playerbots rndbot reload (re-reads the playerbots options; .reload config alone does not); changed medians and
+# sigmas reach a logged-in bot at its next skill load. A bot whose engine was built while neither this option nor
+# D4's noticing (Playerbots.Skill.Notice*) was on has no "skill" strategy: Enable takes effect for it only when its
+# engine is rebuilt (its next login). .playerbots tactics show <bot> lists the bot's values (GM only),
+# .playerbots tactics selftest reaction checks the maths. Medians 50-10000 ms, sigmas 0-2, penalties and times
+# 0-10000 ms, cone 10-360 degrees.
+# Default: 0 (off: the uniform notice delay, as before)
+Playerbots.Natural.Reaction.Enable = 0
+Playerbots.Natural.Reaction.MedianMsAtSkill1 = 690
+Playerbots.Natural.Reaction.MedianMsAtSkill99 = 220
+Playerbots.Natural.Reaction.SigmaAtSkill1 = 0.45
+Playerbots.Natural.Reaction.SigmaAtSkill99 = 0.25
+Playerbots.Natural.Reaction.MinMs = 150
+Playerbots.Natural.Reaction.BehindPenaltyMinMs = 150
+Playerbots.Natural.Reaction.BehindPenaltyMaxMs = 400
+Playerbots.Natural.Reaction.SwitchCostMinMs = 100
+Playerbots.Natural.Reaction.SwitchCostMaxMs = 300
+Playerbots.Natural.Reaction.ConeDegrees = 200
+Playerbots.Natural.Reaction.FocusTimeoutMs = 2000
+Playerbots.Natural.Reaction.Contexts = "Arena,Battleground,World"
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600
@@ -1799,7 +1834,7 @@ Playerbots.Skill.StyleSpread = 0
 # With 1, a tactic acts only when it is in the bot's tactic mask (the tactics whose own Enable is 1; the PvP test
 # harness overrides the mask per side with tacticsA= / tacticsB=) and the bot's current context is in its Scope.
 # Every bot uses the enabled tactics, the bots in a real player's group included.
-# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate]
+# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate|reaction]
 Playerbots.Tactics.Enable = 0
 
 # Per tactic (all keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,

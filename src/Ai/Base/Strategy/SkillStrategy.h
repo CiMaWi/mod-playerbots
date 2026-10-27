@@ -7,14 +7,17 @@
 #ifndef PLAYERBOTS_SKILLSTRATEGY_H
 #define PLAYERBOTS_SKILLSTRATEGY_H
 
+#include <array>
 #include <string>
 #include <unordered_map>
 
 #include "Multiplier.h"
+#include "NaturalReaction.h"
 #include "Strategy.h"
 
 class Action;
 class PlayerbotAI;
+class Unit;
 
 // Skill knob 2, noticing (Playerbots.Skill.Notice*). The categories the hidden skill slows down; the order matches the
 // counters in PlayerbotAI::SkillNoticeCounters and the names in SkillNoticeCategoryName.
@@ -35,7 +38,8 @@ SkillNoticeCategory SkillNoticeCategoryOf(std::string const& actionName);
 
 // Returns 0 for an action of a notice category until the bot has noticed it in the current window. The notice time
 // and the missed windows come from a hash of guid, category and window, so the result is stable within a window and
-// costs no roll per tick.
+// costs no roll per tick. With Playerbots.Natural.Reaction.Enable (in its Contexts) the delay is a human reaction time
+// from the event's start instead (NaturalReaction.h): one event per category, the bot's focus, a view-cone penalty.
 class SkillMultiplier : public Multiplier
 {
 public:
@@ -45,11 +49,18 @@ public:
 
 private:
     SkillNoticeCategory GetCategory(Action* action);
-    bool IsTargetSwitch(Action* action);
+    bool IsTargetSwitch(Action* action, Unit*& target);
     bool HasNoticed(SkillNoticeCategory category) const;
+    bool HasReacted(SkillNoticeCategory category, Action* action, Unit* target);
 
     // Per bot: the actions of a bot's context live as long as the bot, so the pointer is a stable key
     std::unordered_map<Action*, SkillNoticeCategory> categories;
+    // Natural reaction, per bot (touched only by the bot's own update): the current event per category, whether that
+    // event's context uses the natural path, and the bot's focus
+    static constexpr size_t ReactionCategories = static_cast<size_t>(SkillNoticeCategory::TargetSwitch);
+    std::array<ReactionEvent, ReactionCategories> reactionEvents{};
+    std::array<bool, ReactionCategories> reactionNatural{};
+    ReactionFocus reactionFocus;
 };
 
 class SkillStrategy : public Strategy

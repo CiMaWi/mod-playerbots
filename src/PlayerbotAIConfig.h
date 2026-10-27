@@ -8,6 +8,7 @@
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
 #include "DBCEnums.h"
+#include "NaturalReaction.h"
 #include "SharedDefines.h"
 #include "TacticGate.h"
 #include "Tactics.h"
@@ -480,6 +481,12 @@ public:
     bool SkillExemptRealMasterBots;
     // Playerbots.Skill.CurveExponent, KnowledgeSpread, Effort*, StyleSpread: the tactic gate's skill parameters
     TacticGateParams SkillGate;
+    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Active needs
+    // Playerbots.Skill.Enable; Contexts is a tactic scope mask (default the PvP contexts)
+    bool NaturalReactionEnable;
+    bool NaturalReactionActive;
+    uint8 NaturalReactionContexts;
+    ReactionParams NaturalReaction;
     // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
     bool ArenaOnlyEnable;
     bool ArenaOnlySpreadContinents;

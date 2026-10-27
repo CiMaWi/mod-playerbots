@@ -876,6 +876,40 @@ bool PlayerbotAIConfig::Initialize()
         SkillGate.EffortSpread = percent("Playerbots.Skill.EffortSpread", 0, 50);
         SkillGate.StyleSpread = percent("Playerbots.Skill.StyleSpread", 0, 50);
     }
+    {
+        NaturalReactionEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Reaction.Enable", false);
+        NaturalReactionActive = SkillEnable && NaturalReactionEnable;
+        auto const ms = [](std::string const& key, uint32 fallback)
+        { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, 10000); };
+        auto const real = [](std::string const& key, float fallback, float low, float high)
+        { return std::clamp(sConfigMgr->GetOption<float>(key, fallback), low, high); };
+        ReactionParams& reaction = NaturalReaction;
+        reaction.MedianMsAtSkill1 = real("Playerbots.Natural.Reaction.MedianMsAtSkill1", 690.0f, 50.0f, 10000.0f);
+        reaction.MedianMsAtSkill99 = real("Playerbots.Natural.Reaction.MedianMsAtSkill99", 220.0f, 50.0f, 10000.0f);
+        reaction.SigmaAtSkill1 = real("Playerbots.Natural.Reaction.SigmaAtSkill1", 0.45f, 0.0f, 2.0f);
+        reaction.SigmaAtSkill99 = real("Playerbots.Natural.Reaction.SigmaAtSkill99", 0.25f, 0.0f, 2.0f);
+        reaction.MinMs = ms("Playerbots.Natural.Reaction.MinMs", 150);
+        reaction.BehindMinMs = ms("Playerbots.Natural.Reaction.BehindPenaltyMinMs", 150);
+        reaction.BehindMaxMs =
+            std::max(reaction.BehindMinMs, ms("Playerbots.Natural.Reaction.BehindPenaltyMaxMs", 400));
+        reaction.SwitchMinMs = ms("Playerbots.Natural.Reaction.SwitchCostMinMs", 100);
+        reaction.SwitchMaxMs = std::max(reaction.SwitchMinMs, ms("Playerbots.Natural.Reaction.SwitchCostMaxMs", 300));
+        reaction.ConeDegrees = real("Playerbots.Natural.Reaction.ConeDegrees", 200.0f, 10.0f, 360.0f);
+        reaction.FocusTimeoutMs = ms("Playerbots.Natural.Reaction.FocusTimeoutMs", 2000);
+        uint8 const pvp =
+            static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground) |
+                               TacticContextBit(TacticContext::OpenWorldPvp));
+        std::string const contexts =
+            sConfigMgr->GetOption<std::string>("Playerbots.Natural.Reaction.Contexts", "Arena,Battleground,World");
+        std::string error;
+        NaturalReactionContexts = pvp;
+        if (!ParseTacticScope(contexts, NaturalReactionContexts, error))
+        {
+            LOG_ERROR("server.loading", "Playerbots.Natural.Reaction.Contexts: {}; Arena,Battleground,World is used",
+                      error);
+            NaturalReactionContexts = pvp;
+        }
+    }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)

@@ -6,6 +6,7 @@
 
 #include "Tactics.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -15,6 +16,7 @@
 #include "BotProfileMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
+#include "NaturalReaction.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -533,6 +535,185 @@ void RunGateSelftest(ChatHandler* handler)
     handler->PSendSysMessage("TACTICS selftest gate: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
+
+// Pure checks of the natural reaction (NaturalReaction.h) with the configured numbers on synthetic hashes, skills and
+// times; no bots
+void RunReactionSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    auto const check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (ok)
+            return;
+
+        ++failures;
+        handler->PSendSysMessage("TACTICS selftest reaction FAILED: {}", what);
+    };
+    auto const within = [](double value, double expected, double tolerance)
+    { return std::fabs(value - expected) <= tolerance * std::fabs(expected); };
+
+    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
+    float const exponent = sPlayerbotAIConfig.SkillGate.CurveExponent;
+    constexpr uint32 Draws = 10000;
+    constexpr uint32 MissWindowMs = 1500;
+
+    // The probit against known quantiles, and increasing
+    check(std::fabs(Probit(0.5)) < 1e-9 && std::fabs(Probit(0.975) - 1.959963985) < 1e-6 &&
+              std::fabs(Probit(0.025) + 1.959963985) < 1e-6 && std::fabs(Probit(0.001) + 3.090232306) < 1e-6,
+          "probit quantiles");
+    bool increasing = true;
+    for (uint32 step = 2; step < 1000; ++step)
+        increasing = increasing && Probit(step / 1000.0) > Probit((step - 1) / 1000.0);
+
+    check(increasing, "probit not increasing");
+    check(UnitFromHash(0) > 0.0 && UnitFromHash(~0ULL) < 1.0, "unit from hash leaves (0, 1)");
+
+    // 10 000 events per skill: the median of the draws is the configured median and the spread of their logarithms
+    // the configured sigma (+-5 %); the minimum holds; a hash always gives the same time
+    for (uint8 skill : {1, 20, 50, 80, 99})
+    {
+        ReactionState const state = ComputeReactionState(params, skill, exponent);
+        float const position = SkillPosition(skill);
+        double const median = SkillLerp(params.MedianMsAtSkill1, params.MedianMsAtSkill99, position, exponent);
+        double const sigma = SkillLerp(params.SigmaAtSkill1, params.SigmaAtSkill99, position, exponent);
+        std::vector<double> raw;
+        raw.reserve(Draws);
+        double sum = 0.0;
+        double sumSquares = 0.0;
+        uint32 belowMin = 0;
+        uint32 raised = 0;
+        bool stable = true;
+        for (uint32 draw = 0; draw < Draws; ++draw)
+        {
+            uint64 const hash = ReactionEventHash(1000 + draw, static_cast<uint8>(1 + draw % 6), draw * 7919);
+            double const value = ReactionRawMs(state, hash);
+            raw.push_back(value);
+            sum += std::log(value);
+            sumSquares += std::log(value) * std::log(value);
+            uint32 const clamped = ReactionMs(state, params.MinMs, hash);
+            belowMin += clamped < params.MinMs ? 1 : 0;
+            raised += value < params.MinMs ? 1 : 0;
+            stable = stable && clamped == ReactionMs(state, params.MinMs, hash);
+        }
+
+        std::nth_element(raw.begin(), raw.begin() + Draws / 2, raw.end());
+        double const measuredMedian = raw[Draws / 2];
+        double const mean = sum / Draws;
+        double const measuredSigma = std::sqrt(std::max(0.0, sumSquares / Draws - mean * mean));
+        check(within(measuredMedian, median, 0.05),
+              Acore::StringFormat("skill {}: median {:.1f} ms, configured {:.1f}", skill, measuredMedian, median));
+        check(sigma == 0.0 ? measuredSigma < 1e-6 : within(measuredSigma, sigma, 0.05),
+              Acore::StringFormat("skill {}: sigma {:.4f}, configured {:.4f}", skill, measuredSigma, sigma));
+        check(belowMin == 0 && stable, Acore::StringFormat("skill {}: {} draws under the minimum, stable {}", skill,
+                                                           belowMin, stable ? "yes" : "no"));
+        handler->PSendSysMessage(
+            "TACTICS selftest reaction: skill {}: median {:.1f} ms (configured {:.1f}), sigma "
+            "{:.4f} ({:.4f}), raised to the minimum {:.1f} %",
+            skill, measuredMedian, median, measuredSigma, sigma, raised * 100.0 / Draws);
+    }
+
+    // Behind adds its penalty and a change of focus its cost, each within its range
+    ReactionState const middle = ComputeReactionState(params, 50, exponent);
+    bool behindOk = true;
+    bool switchOk = true;
+    double behindSum = 0.0;
+    double switchSum = 0.0;
+    for (uint32 draw = 0; draw < Draws; ++draw)
+    {
+        uint64 const hash = SplitMix64(draw ^ ReactionSalt::Event);
+        uint32 const plain = EventReactionMs(middle, params, hash, false, false);
+        uint32 const behind = EventReactionMs(middle, params, hash, true, false) - plain;
+        uint32 const switched = EventReactionMs(middle, params, hash, false, true) - plain;
+        behindOk = behindOk && behind >= params.BehindMinMs && behind <= params.BehindMaxMs;
+        switchOk = switchOk && switched >= params.SwitchMinMs && switched <= params.SwitchMaxMs;
+        behindSum += behind;
+        switchSum += switched;
+    }
+
+    double const behindMid = (params.BehindMinMs + params.BehindMaxMs) / 2.0;
+    double const switchMid = (params.SwitchMinMs + params.SwitchMaxMs) / 2.0;
+    check(behindOk && (behindMid == 0.0 || within(behindSum / Draws, behindMid, 0.05)),
+          Acore::StringFormat("behind penalty mean {:.1f} ms, expected {:.1f}", behindSum / Draws, behindMid));
+    check(switchOk && (switchMid == 0.0 || within(switchSum / Draws, switchMid, 0.05)),
+          Acore::StringFormat("switch cost mean {:.1f} ms, expected {:.1f}", switchSum / Draws, switchMid));
+
+    // The event: blocked until its reaction time, then it passes and takes the focus; a quiet gap after the notice
+    // starts the next event
+    constexpr uint64 Guid = 4242;
+    ReactionFocus focus;
+    ReactionEvent event;
+    StartReactionEvent(event, focus, middle, params, Guid, 1, 0, false, 10000);
+    uint32 const ready = event.ReadyAfterMs;
+    check(ready == EventReactionMs(middle, params, ReactionEventHash(Guid, 1, 10000), false, false),
+          "the event's reaction time is not the plain draw");
+    check(!ReactionEventPasses(event, focus, 1, 10000 + ready - 1) && focus.Category == 0,
+          "passes before its reaction time");
+    check(ReactionEventPasses(event, focus, 1, 10000 + ready) && focus.Category == 1, "blocked after its time");
+    uint32 const passedAt = 10000 + ready;
+    check(!ReactionEventStarts(event, passedAt + REACTION_NOTICED_GAP_MS, MissWindowMs) &&
+              ReactionEventStarts(event, passedAt + REACTION_NOTICED_GAP_MS + 1, MissWindowMs),
+          "a noticed event does not end after its quiet gap");
+    check(ReactionEventPasses(event, focus, 1, passedAt + 300) && focus.AtMs == passedAt,
+          "a later pass of a noticed event moves the focus stamp");
+
+    // A trigger checked once a second keeps its pending event and passes at the first query after the time
+    ReactionEvent sparse;
+    ReactionFocus none;
+    StartReactionEvent(sparse, none, middle, params, Guid, 2, 0, false, 50000);
+    uint32 now = 50000;
+    bool restarted = false;
+    while (!ReactionEventPasses(sparse, none, 2, now) && now < 80000)
+    {
+        now += 1000;
+        restarted = restarted || ReactionEventStarts(sparse, now, MissWindowMs);
+    }
+
+    check(!restarted && sparse.Noticed && now - 50000 < sparse.ReadyAfterMs + 1000,
+          Acore::StringFormat("a query a second: passed after {} ms, reaction {} ms, restarted {}", now - 50000,
+                              sparse.ReadyAfterMs, restarted ? "yes" : "no"));
+
+    // Focus: another category within FocusTimeoutMs pays the switch cost, later not; behind adds its penalty
+    uint32 const soon = passedAt + 100;
+    ReactionEvent other;
+    StartReactionEvent(other, focus, middle, params, Guid, 3, 0, false, soon);
+    check(params.FocusTimeoutMs <= 100 ||
+              other.ReadyAfterMs == EventReactionMs(middle, params, ReactionEventHash(Guid, 3, soon), false, true),
+          "a change of focus does not pay the switch cost");
+    uint32 const late = passedAt + params.FocusTimeoutMs;
+    StartReactionEvent(other, focus, middle, params, Guid, 3, 0, false, late);
+    uint32 const plainLate = EventReactionMs(middle, params, ReactionEventHash(Guid, 3, late), false, false);
+    check(other.ReadyAfterMs == plainLate, "the switch cost outlives FocusTimeoutMs");
+    StartReactionEvent(other, focus, middle, params, Guid, 3, 0, true, late);
+    check(other.ReadyAfterMs >= plainLate + params.BehindMinMs && other.ReadyAfterMs <= plainLate + params.BehindMaxMs,
+          "an event behind the bot does not add its penalty");
+
+    // Misses: D4's chance, per event; a missed event never passes and starts again after the window
+    uint32 missed = 0;
+    for (uint32 draw = 0; draw < Draws; ++draw)
+    {
+        ReactionEvent trial;
+        StartReactionEvent(trial, none, middle, params, Guid + draw, 4, 30, false, draw * 3);
+        missed += trial.Missed ? 1 : 0;
+    }
+
+    check(within(missed * 100.0 / Draws, 30.0, 0.05),
+          Acore::StringFormat("miss share {:.2f} % at 30 %", missed * 100.0 / Draws));
+    ReactionEvent lost;
+    StartReactionEvent(lost, none, middle, params, Guid, 4, 95, false, 0);
+    for (uint32 start = 1; !lost.Missed && start < 100; ++start)
+        StartReactionEvent(lost, none, middle, params, Guid, 4, 95, false, start);
+
+    uint32 const lostAt = lost.StartMs;
+    check(lost.Missed && !ReactionEventPasses(lost, none, 4, lostAt + MissWindowMs - 100) &&
+              !ReactionEventStarts(lost, lostAt + MissWindowMs - 1, MissWindowMs) &&
+              ReactionEventStarts(lost, lostAt + MissWindowMs, MissWindowMs),
+          "a missed event passes, or does not start again after its window");
+
+    handler->PSendSysMessage("TACTICS selftest reaction: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
 }  // namespace
 
 char const* TacticName(TacticId id)
@@ -728,6 +909,10 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         full ? "all" : FormatTacticMask(gate.KnownMask), full ? SKILL_GATE_FULL : gate.Effort,
         exempt ? 1.0f : botAI->GetEffectiveSkillReactFactor(), exempt ? 0u : botAI->GetSkillNoticeMissPercent(),
         exempt ? 0u : botAI->GetSkillNoticeDelayMs());
+    ReactionState const& reaction = botAI->GetReactionState();
+    handler->PSendSysMessage("  natural reaction: {} (contexts {}); median {:.0f} ms, sigma {:.3f}",
+                             config.NaturalReactionActive ? "on" : "off",
+                             FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
     handler->PSendSysMessage("  cached: effort {}, style aggression {} / caution {} / patience {}", gate.Effort,
                              botAI->GetSkillStyle(SkillStyleTrait::Aggression),
                              botAI->GetSkillStyle(SkillStyleTrait::Caution),
@@ -801,9 +986,9 @@ bool TacticCommands::HandleStatsCommand(ChatHandler* handler, char const* args)
 bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* args)
 {
     std::string const name = Lower(Trim(args ? args : ""));
-    if (!name.empty() && name != "scope" && name != "gate")
+    if (!name.empty() && name != "scope" && name != "gate" && name != "reaction")
     {
-        handler->PSendSysMessage("No tactics selftest '{}'. Known: scope, gate", name);
+        handler->PSendSysMessage("No tactics selftest '{}'. Known: scope, gate, reaction", name);
         return false;
     }
 
@@ -812,6 +997,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "gate")
         RunGateSelftest(handler);
+
+    if (name.empty() || name == "reaction")
+        RunReactionSelftest(handler);
 
     return true;
 }

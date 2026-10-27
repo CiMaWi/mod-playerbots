@@ -6846,6 +6846,9 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     // The tactic gate from the guid and the skill (skill 0: full ability); the hashes never see the percentile
     tacticGate = ComputeTacticGate(sPlayerbotAIConfig.SkillGate, sPlayerbotAIConfig.TacticConfig, skill,
                                    bot ? bot->GetGUID().GetCounter() : 0);
+    // Cached whatever Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots
+    reactionState =
+        ComputeReactionState(sPlayerbotAIConfig.NaturalReaction, skill, sPlayerbotAIConfig.SkillGate.CurveExponent);
     if (skill == 0)
         return;
 
