@@ -31,6 +31,7 @@
 #include "MatchTrace.h"
 #include "MotionMaster.h"
 #include "MoveSplineInit.h"
+#include "NaturalTrace.h"
 #include "NewRpgStrategy.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -269,6 +270,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
         return;
+
+    // G0e: the natural tracer's pre-gate point, on its own clock (one relaxed load while nothing is traced)
+    if (NaturalTrace::Any())
+        NaturalTrace::Sample(bot);
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
@@ -1498,6 +1503,9 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
 
 void PlayerbotAI::SpellInterrupted(uint32 spellid)
 {
+    if (NaturalTrace::Any())
+        NaturalTrace::OnInterrupted(bot, spellid);
+
     for (uint8 type = CURRENT_MELEE_SPELL; type <= CURRENT_CHANNELED_SPELL; type++)
     {
         Spell* spell = bot->GetCurrentSpell((CurrentSpellTypes)type);
@@ -4045,6 +4053,10 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     if (counting)
         CountPvpTestCast(spellId, drGroup, atImmune);
+
+    // G0e: a cast with a cast time begins (an instant one was cast inside prepare: its finish row is enough)
+    if (NaturalTrace::Any())
+        NaturalTrace::OnBotCastStart(bot, spell, target);
 
     return true;
 }

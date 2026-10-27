@@ -427,6 +427,13 @@ public:
     uint32 MatchLogTraceEvery;
     uint32 MatchLogTraceMaxEvents;
     uint32 MatchLogTraceMaxBytes;
+    bool NaturalTraceEnable;
+    uint32 NaturalTraceMaxUnits;
+    uint32 NaturalTraceSampleEvery;
+    bool NaturalTraceOrganic;
+    std::string NaturalTraceDir;
+    uint32 NaturalTraceIntervalMs;
+    uint32 NaturalTraceMaxRowsPerUnit;
     uint32 LadderDepartTimeoutSeconds;
     uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;

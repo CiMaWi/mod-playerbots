@@ -13,6 +13,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -112,7 +113,8 @@ struct PvpTestMatchRecord
 
 // Appends one JSON line per match to <LogsDir>/pvptest/matches-<YYYYMMDD>.jsonl. The world thread builds the line;
 // a writer thread (started with the first record) owns the file and touches nothing but strings. WriteLine is the
-// generic part (M10): any line for <LogsDir>/pvptest/<prefix>-<YYYYMMDD>.jsonl, e.g. the match traces.
+// generic part (M10): any line for <LogsDir>/pvptest/<prefix>-<YYYYMMDD>.jsonl, e.g. the match traces, or (G0e) for
+// <directory>/<prefix>-<YYYYMMDD>.jsonl, e.g. the natural traces.
 class PvpTestRecordWriter
 {
 public:
@@ -128,8 +130,9 @@ public:
     void Write(PvpTestMatchRecord const& record);
     // Any thread: queues one line (text ends with a newline) for <prefix>-<date>.jsonl, no I/O. With make, the text is
     // made by make on the writer thread instead (a big line from plain values; make owns them and touches no game
-    // object)
-    void WriteLine(std::string prefix, std::string date, std::string text, std::function<std::string()> make = {});
+    // object). A non-empty directory (ending in a slash) replaces <LogsDir>/pvptest/; the writer creates it.
+    void WriteLine(std::string prefix, std::string date, std::string text, std::function<std::string()> make = {},
+                   std::string directory = {});
     // Flushes the queue and joins the writer thread (server shutdown)
     void Shutdown();
     // Any thread: records waiting for the writer, the most that ever waited, written to the file, lost
@@ -162,9 +165,10 @@ private:
         std::string Date;
         std::string Text;
         std::function<std::string()> Make;
+        std::string Directory;
     };
 
-    // Appends a line to its file; _fileMutex is held
+    // Appends a line to its file (in line.Directory when set, else in directory); _fileMutex is held
     bool Append(std::string const& directory, Line& line);
 
     void WriterLoop(std::string directory);
@@ -175,6 +179,8 @@ private:
     std::mutex _fileMutex;
     std::condition_variable _wake;
     std::vector<Line> _queue;
+    // The line directories created so far; _fileMutex is held
+    std::set<std::string> _createdDirectories;
     bool _stop = false;
     std::thread _writer;
     std::atomic<size_t> _queueHigh{0};

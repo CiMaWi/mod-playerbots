@@ -23,6 +23,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MatchLog.h"
+#include "NaturalTrace.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
@@ -842,7 +843,8 @@ bool MatchTrace::HandleSelftestCommand(ChatHandler* handler, char const* /*args*
 }
 
 // The hooks: each returns after one test while no trace runs (LiveCount 0, always with TraceEvery 0), and in an
-// untraced arena after its mark, before the PerfMonitor op and the lock
+// untraced arena after its mark, before the PerfMonitor op and the lock. The spell hooks also feed the natural tracer
+// (G0e), after its own one test.
 class MatchTraceSpellScript : public AllSpellScript
 {
 public:
@@ -855,6 +857,9 @@ public:
     // A cast with a cast time begins (an instant one is cast before this hook: its finish row is enough)
     void OnSpellPrepare(Spell* spell, Unit* caster, SpellInfo const* spellInfo) override
     {
+        if (NaturalTrace::Any())
+            NaturalTrace::OnSpellPrepare(spell, caster, spellInfo);
+
         uint32 const key = ArenaKeyOf(caster);
         if (!key || spell->IsTriggered() || spell->GetCastTime() <= 0)
             return;
@@ -864,6 +869,9 @@ public:
 
     void OnSpellCast(Spell* spell, Unit* caster, SpellInfo const* spellInfo, bool /*skipCheck*/) override
     {
+        if (NaturalTrace::Any())
+            NaturalTrace::OnSpellCast(spell, caster, spellInfo);
+
         uint32 const key = ArenaKeyOf(caster);
         if (!key || spell->IsTriggered() || spell->IsAutoRepeat())
             return;
@@ -873,6 +881,9 @@ public:
 
     void OnSpellCastCancel(Spell* spell, Unit* caster, SpellInfo const* spellInfo, bool bySelf) override
     {
+        if (NaturalTrace::Any())
+            NaturalTrace::OnSpellCastCancel(spell, caster, spellInfo, bySelf);
+
         uint32 const key = ArenaKeyOf(caster);
         if (!key || spell->IsTriggered())
             return;

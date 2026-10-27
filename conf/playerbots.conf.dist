@@ -1516,6 +1516,54 @@ Playerbots.MatchLog.TraceEvery = 0
 Playerbots.MatchLog.TraceMaxEvents = 20000
 Playerbots.MatchLog.TraceMaxBytes = 4194304
 
+# Natural tracer (G0e; 1 = on, 0 = off): a traced unit leaves a row every 100 ms (IntervalMs) and event rows, so the
+# naturalness of bots (turns, reaction times, paths, cast timing) is measured from data. Traced are: the bots of a
+# harness match started with trace=1 (.playerbots pvptest arena ... trace=1, or plan start ... trace=1), the players
+# of organic arena matches (with Organic = 1; needs Playerbots.MatchLog.Enable = 1), and players switched on by a GM
+# (.playerbots natural trace <player> on|off). Rows are buffered per unit and written by a writer thread to
+# <Dir>/trace-<YYYYMMDD>.jsonl, one JSON object per line: "t" ms since the unit's trace start, "k" kind, "u" player
+# guid counter, "m" match id (joins the match record of matches-<date>.jsonl; skill is never written; "" for a GM
+# trace), then by kind:
+#   start: src (harness, organic, gm), side (A, B or null), cls (class id), bot (true/false), iv (interval ms)
+#   pos (at most one per interval slot, taken at the unit's first update in the slot; a missed slot is not
+#     back-filled): x, y, z, o (facing), mf (movement flags), mov (moving), spl (spline active), run (run speed),
+#     tg (target guid counter, 0 none), vi (victim), hp (health %), cs (current spell, channel first, 0 none), st
+#     (its state), ce (elapsed ms of a cast, null for none or a channel), cr (remaining ms)
+#   target (a target change, at the update it was seen): tg
+#   cast_start (a cast with a cast time begins; a bot's from its CastSpell, a player's from the spell prepare): s
+#     (spell), tg, ct (cast time ms)
+#   cast_finish: s, tg; cancel: s, self (true = cancelled by the caster); interrupt (a bot's cast was interrupted): s
+#   mv (a real player's movement packet, as received): op (opcode), mf, x, y, z, o
+#   truncated (MaxRowsPerUnit reached; later rows are dropped); end: rows (kept), dropped
+# Bots are sampled at the top of their AI update before any gate, other players after their update. With 0 (or no
+# traced unit) every hook returns after one test. .playerbots natural status shows the counters, .playerbots natural
+# selftest checks the sampler, .playerbots natural sample <N|off|config> overrides SampleEvery at runtime (off also
+# ends every running trace). PerfMonitor rows: NaturalTraceSample, NaturalTraceEvent, NaturalTraceStart.
+# A .reload config from 1 to 0 only stops new traces: running ones go on until their match ends, the unit logs out
+# or .playerbots natural sample off ends them.
+# Default: 0 (off)
+Playerbots.Natural.Trace.Enable = 0
+
+# Most units traced at once (1-1000); an organic match is traced whole or not at all. Default: 8
+Playerbots.Natural.Trace.MaxUnits = 8
+
+# One match in N is traced (chosen by the FNV-1a hash of its match id, as Playerbots.MatchLog.TraceEvery): harness
+# matches with trace=1 and, with Organic = 1, organic arena matches. 1 = every such match, 0 = none. Default: 1
+Playerbots.Natural.Trace.SampleEvery = 1
+
+# 1 = organic arena matches chosen by SampleEvery are traced too (all their players); .playerbots natural organic
+# <on|off|config> overrides it at runtime. Default: 0
+Playerbots.Natural.Trace.Organic = 0
+
+# The directory of the trace files; empty = <LogsDir>/natural. Created when missing. Default: ""
+Playerbots.Natural.Trace.Dir = ""
+
+# The sample interval in ms (50-1000). Default: 100
+Playerbots.Natural.Trace.IntervalMs = 100
+
+# Rows kept per traced unit (100-10000000); then a truncated row and the rest dropped. Default: 200000 (5.5 h)
+Playerbots.Natural.Trace.MaxRowsPerUnit = 200000
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600

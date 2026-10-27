@@ -16,6 +16,7 @@
 #include "MatchLog.h"
 #include "MatchTrace.h"
 #include "Matchmaker.h"
+#include "NaturalTrace.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
 #include "PlayerbotAIConfig.h"
@@ -138,6 +139,14 @@ public:
             {"botstate", HandleArenaOnlyBotStateCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsNaturalCommandTable = {
+            {"trace", NaturalTrace::HandleTraceCommand, SEC_GAMEMASTER, Console::Yes},
+            {"sample", NaturalTrace::HandleSampleCommand, SEC_GAMEMASTER, Console::Yes},
+            {"organic", NaturalTrace::HandleOrganicCommand, SEC_GAMEMASTER, Console::Yes},
+            {"status", NaturalTrace::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", NaturalTrace::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -157,6 +166,7 @@ public:
             {"matchlog", playerbotsMatchLogCommandTable},
             {"tactics", playerbotsTacticsCommandTable},
             {"arenaonly", playerbotsArenaOnlyCommandTable},
+            {"natural", playerbotsNaturalCommandTable},
         };
 
         static ChatCommandTable commandTable = {

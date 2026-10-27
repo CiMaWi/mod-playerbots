@@ -48,6 +48,8 @@ struct PvpTestArenaParams
     // G0c: the tactic mask edit of each side ("+x,-y" on the config mask, "" = no tactic), unset = the config mask
     std::optional<std::string> TacticsA;
     std::optional<std::string> TacticsB;
+    // G0e: trace=1: the bots leave a natural trace (when Playerbots.Natural.Trace.SampleEvery chooses the match)
+    bool Trace = false;
 };
 
 // One forced arena match between two bot sides, ticked from the world thread. Stages: Resolve (in the command) ->
@@ -176,6 +178,8 @@ struct PvpTestPlan
     // tacticsA= / tacticsB=: the same edits for every match of the plan
     std::optional<std::string> TacticsA;
     std::optional<std::string> TacticsB;
+    // trace=1: every match of the plan asks for a natural trace (G0e)
+    bool Trace = false;
     std::string WaitReason;  // why the last draw gave no roster (a comp short of bots), empty when it did
     ObjectGuid Issuer;
     uint32 Launched = 0;

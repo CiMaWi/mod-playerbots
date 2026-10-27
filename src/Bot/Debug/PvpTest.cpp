@@ -31,6 +31,7 @@
 #include "GroupMgr.h"
 #include "Log.h"
 #include "MatchLog.h"
+#include "NaturalTrace.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -77,13 +78,13 @@ std::array<ArenaMap, 5> const ArenaMaps = {{
 constexpr char const* PlanUsage =
     "Usage: .playerbots pvptest plan start total=<n> [concurrency=<n>] [seed=<base>] [map=na|be|rl|ds|rv|random] "
     "[pool=random|teams:<teamA>;<teamB>;...|bots:<name>,<name>,...|comps:<class>/<spec>+<class>/<spec>[;...]] "
-    "[skill=<hi>:<lo>] [tacticsA=<+name,-name>] [tacticsB=<+name,-name>] (quote a token that contains spaces; "
-    "tactics edits start from the config mask, an empty value means no tactic)";
+    "[skill=<hi>:<lo>] [tacticsA=<+name,-name>] [tacticsB=<+name,-name>] [trace=0|1] (quote a token that "
+    "contains spaces; tactics edits start from the config mask, an empty value means no tactic)";
 
 constexpr char const* Usage =
     "Usage: .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] "
-    "[seed=<n>] [skillA=<1-99>] [skillB=<1-99>] [tacticsA=<+name,-name>] [tacticsB=<+name,-name>] (quote team "
-    "names with spaces; tactics edits start from the config mask, an empty value means no tactic)";
+    "[seed=<n>] [skillA=<1-99>] [skillB=<1-99>] [tacticsA=<+name,-name>] [tacticsB=<+name,-name>] [trace=0|1] "
+    "(quote team names with spaces; tactics edits start from the config mask, an empty value means no tactic)";
 
 std::string DescribeSide(PvpTestSide const& side)
 {
@@ -641,6 +642,9 @@ bool PvpTestArenaJob::StartArena(std::string& error)
 // Class, race, level, spec and gear score of the bots while all of them are online
 void PvpTestArenaJob::CaptureRoster()
 {
+    // G0e: trace=1 traces the bots from here (before they enter the arena) until the match ends or is torn down
+    bool const trace = _params.Trace && NaturalTrace::Selected(_record.MatchId);
+    uint32 traced = 0;
     for (size_t index = 0; index < _record.Sides.size(); ++index)
     {
         // G0a: the skill forced on this side, set once here before it is read into the record and counting starts
@@ -674,8 +678,15 @@ void PvpTestArenaJob::CaptureRoster()
 
                 botAI->SetPvpTestCounting(true);
             }
+
+            if (trace && NaturalTrace::Begin(player, _record.MatchId, index == 0 ? 'A' : 'B', "harness"))
+                ++traced;
         }
     }
+
+    if (_params.Trace)
+        LOG_INFO("playerbots", "PVPTEST arena {} vs {}: natural trace of match {}: {} bots traced", _sideA.Label,
+                 _sideB.Label, _record.MatchId, traced);
 }
 
 // Counting on zeroes the executed casts, so the count starts with the fight; off when the match is torn down
@@ -911,6 +922,9 @@ void PvpTestArenaJob::FinishTearDown(bool timedOut)
 
     SetCounting(false);
     RestoreSkills();
+    if (NaturalTrace::Any())
+        NaturalTrace::EndMatch(_record.MatchId);
+
     for (ObjectGuid const& guid : AllMembers())
     {
         Player* player = ObjectAccessor::FindConnectedPlayer(guid);
@@ -1603,6 +1617,7 @@ bool PvpTestMgr::LaunchPlanMatch(std::string& error)
 
     params.TacticsA = _plan->TacticsA;
     params.TacticsB = _plan->TacticsB;
+    params.Trace = _plan->Trace;
     params.PlanId = _plan->Id;
     params.PlanIndex = _plan->Launched + 1;
     params.MatchId = Acore::StringFormat("m-{}-{}", _plan->Id, params.PlanIndex);
@@ -1742,6 +1757,13 @@ bool PvpTestMgr::HandleArenaCommand(ChatHandler* handler, char const* args)
             std::string tacticsError;
             if (!ParseTactics(value, key == "tacticsa" ? params.TacticsA : params.TacticsB, tacticsError))
                 return CommandFail(handler, Acore::StringFormat("Bad option '{}': {}", token, tacticsError));
+        }
+        else if (key == "trace" && (value == "0" || value == "1"))
+        {
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+                return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
+
+            params.Trace = value == "1";
         }
         else
             return CommandFail(handler, Acore::StringFormat("Bad option '{}'. {}", token, Usage));
@@ -1893,6 +1915,13 @@ bool PvpTestMgr::HandlePlanStartCommand(ChatHandler* handler, char const* args)
             std::string tacticsError;
             if (!ParseTactics(value, key == "tacticsa" ? plan->TacticsA : plan->TacticsB, tacticsError))
                 return CommandFail(handler, Acore::StringFormat("Bad option '{}': {}", token, tacticsError));
+        }
+        else if (key == "trace" && (value == "0" || value == "1"))
+        {
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+                return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
+
+            plan->Trace = value == "1";
         }
         else
             return CommandFail(handler, Acore::StringFormat("Bad option '{}'. {}", token, PlanUsage));

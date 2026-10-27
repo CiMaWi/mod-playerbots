@@ -284,7 +284,16 @@ bool PvpTestRecordWriter::Append(std::string const& directory, Line& line)
     if (line.Make)
         line.Text = line.Make();
 
-    std::ofstream file(directory + line.Prefix + "-" + line.Date + ".jsonl", std::ios::out | std::ios::app);
+    if (!line.Directory.empty() && _createdDirectories.insert(line.Directory).second)
+    {
+        std::error_code error;
+        std::filesystem::create_directories(line.Directory, error);
+        if (error)
+            LOG_ERROR("playerbots", "PVPTEST: cannot create {}", line.Directory);
+    }
+
+    std::string const& target = line.Directory.empty() ? directory : line.Directory;
+    std::ofstream file(target + line.Prefix + "-" + line.Date + ".jsonl", std::ios::out | std::ios::app);
     if (!file)
     {
         ++_failed;
@@ -297,9 +306,9 @@ bool PvpTestRecordWriter::Append(std::string const& directory, Line& line)
 }
 
 void PvpTestRecordWriter::WriteLine(std::string prefix, std::string date, std::string text,
-                                    std::function<std::string()> make)
+                                    std::function<std::string()> make, std::string directory)
 {
-    Line line{std::move(prefix), std::move(date), std::move(text), std::move(make)};
+    Line line{std::move(prefix), std::move(date), std::move(text), std::move(make), std::move(directory)};
     {
         std::lock_guard<std::mutex> guard(_mutex);
         if (_stop)

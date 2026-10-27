@@ -23,6 +23,7 @@
 #include "Chat.h"
 #include "Log.h"
 #include "MatchTrace.h"
+#include "NaturalTrace.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -479,6 +480,7 @@ void MatchLog::OnArenaStart(Battleground* bg)
     // The id is known from the start (M10: the trace is chosen by it); a harness match has the id of its claim
     capture.Record.MatchId = capture.Counted ? NewMatchId() : claimedId;
     MatchTrace::Begin(instanceId, capture.Record.MatchId);
+    NaturalTrace::OnArenaStart(bg, capture.Record.MatchId);
     {
         std::lock_guard<std::mutex> guard(RegistryLock);
         Prune(Captures, MaxCaptures - 1);
@@ -584,6 +586,8 @@ void MatchLog::OnEnd(Battleground* bg, TeamId winnerTeam)
     ++Ended;
     // The trace of this match (if it has one) closes with the record's facts; its line is queued on the next update
     MatchTrace::End(instanceId, record);
+    if (NaturalTrace::Any())
+        NaturalTrace::EndMatch(record.MatchId);
     if (claimed)
     {
         // The harness job writes the record (it also covers failed and stopped matches); it merges these fields in

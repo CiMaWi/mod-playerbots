@@ -26,6 +26,7 @@
 #include "LadderMgr.h"
 #include "MatchLog.h"
 #include "Matchmaker.h"
+#include "NaturalTrace.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -209,6 +210,8 @@ public:
         }
 
         sRandomPlayerbotMgr.OnPlayerLogout(player);
+        if (NaturalTrace::Any())
+            NaturalTrace::OnLogout(player);
     }
 
     void OnPlayerCreatureKillCredit(Player* player, Creature* killed) override
@@ -279,6 +282,11 @@ public:
         if (botAI != nullptr)
         {
             botAI->UpdateAI(diff);
+        }
+        // G0e: a traced real player (or the headless test player) is sampled after its update
+        else if (NaturalTrace::Any())
+        {
+            NaturalTrace::Sample(player);
         }
 
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
@@ -601,6 +609,8 @@ public:
         TestPlayerMgr::Instance().Shutdown();
         CensusMgr::Instance().Shutdown();
         AcquaintanceMgr::Instance().Shutdown();
+        // The natural traces end before the writer they share with the pvptest records stops
+        NaturalTrace::Shutdown();
         PvpTestMgr::Instance().Shutdown();
         LOG_INFO("playerbots", "Logging out all bots...");
         sRandomPlayerbotMgr.LogoutAllBots();
@@ -686,6 +696,7 @@ void AddSC_acquaintance();
 void AddSC_match_log();
 void AddSC_match_trace();
 void AddSC_matchmaker();
+void AddSC_natural_trace();
 
 void AddPlayerbotsScripts()
 {
@@ -716,4 +727,5 @@ void AddPlayerbotsScripts()
     AddSC_match_log();
     AddSC_match_trace();
     AddSC_matchmaker();
+    AddSC_natural_trace();
 }
