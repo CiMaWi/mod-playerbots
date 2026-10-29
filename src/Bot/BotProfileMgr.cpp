@@ -561,5 +561,9 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
                                  botAI->GetSkillNoticeMissPercent(), botAI->GetSkillNoticeDelayMs(), verdicts);
     }
 
+    // The attributes drawn from the skill (Playerbots.Skill.Attributes.*; at the defaults every ability is the skill)
+    if (botAI)
+        handler->PSendSysMessage("Attributes: {}", FormatBotAttributes(botAI->GetAttributes()));
+
     return true;
 }

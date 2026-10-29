@@ -12,6 +12,7 @@
 #include <mutex>
 #include <stack>
 
+#include "BotAttributes.h"
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
@@ -723,6 +724,15 @@ public:
     // Effort 0-100 (100 = tries everything) and style traits 0-100 (50 = neutral), hidden like the skill
     uint8 GetSkillEffort() { return HasFullSkillAbility() ? SKILL_GATE_FULL : tacticGate.Effort; }
     uint8 GetSkillStyle(SkillStyleTrait trait) const { return tacticGate.Style[static_cast<uint32>(trait)]; }
+    // Attributes (Playerbots.Skill.Attributes.*, BotAttributes.h): eight abilities on the skill's 1-99 scale and four
+    // traits (0-100, 50 neutral) drawn from the skill and the guid hash, cached by SetPvpSkill (abilities 0 and traits
+    // 50 at skill 0). With the defaults every ability is the skill. Hidden like the skill: GM commands, records only.
+    BotAttributeValues const& GetAttributes() const { return attributes; }
+    uint8 GetAttribute(BotAttribute attribute) const { return attributes.Get(attribute); }
+    // Lab copies (G0j-b): the guid whose hashes draw the attributes and the tactic gate (0 = the bot's own). Set on the
+    // world thread, then SetPvpSkill with the template's skill.
+    uint32 GetAttributeTemplate() const { return attributeTemplate; }
+    void SetAttributeTemplate(uint32 templateGuid) { attributeTemplate = templateGuid; }
     // A tactic fired: counted per tactic and context for .playerbots tactics stats
     void NoteTacticUse(TacticId id) const { NoteTacticActivation(id, GetTacticContext()); }
     // Debug snapshots for .playerbots tactics show (world thread): the last "fight enemies" result, and the strategy
@@ -823,6 +833,8 @@ protected:
     bool stretchOff = false;
     uint32 lastUpdateDiff = 0;
     TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
+    BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
+    uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
     PvpTestCcCounters pvpTestCc;

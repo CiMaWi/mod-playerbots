@@ -884,6 +884,64 @@ bool PlayerbotAIConfig::Initialize()
         SkillGate.StyleSpread = percent("Playerbots.Skill.StyleSpread", 0, 50);
     }
     {
+        // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload
+        std::string const prefix = "Playerbots.Skill.Attributes.";
+        BotAttributeParams& attributes = SkillAttributes;
+        attributes = BotAttributeParams();
+        for (uint32 index = 0; index < BOT_ATTRIBUTE_COUNT; ++index)
+        {
+            std::string const name = BOT_ATTRIBUTE_DEFINITIONS[index].Name;
+            float const loading = IsBotPersonality(index) ? 0.0f : 1.0f;
+            attributes.Loading[index] =
+                std::clamp(sConfigMgr->GetOption<float>(prefix + "Loading." + name, loading, false), 0.0f, 1.0f);
+            attributes.Spread[index] =
+                std::clamp(sConfigMgr->GetOption<float>(prefix + "Spread." + name, 0.0f, false), 0.0f, 3.0f);
+        }
+
+        // Correlations of the own parts as named pairs, either order: Playerbots.Skill.Attributes.Corr.Wisdom-Teamwork
+        auto const lower = [](std::string text)
+        {
+            std::transform(text.begin(), text.end(), text.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return text;
+        };
+        auto const find = [&lower](std::string const& name)
+        {
+            for (uint32 index = 0; index < BOT_ATTRIBUTE_COUNT; ++index)
+            {
+                if (lower(BOT_ATTRIBUTE_DEFINITIONS[index].Name) == lower(name))
+                    return static_cast<int32>(index);
+            }
+
+            return -1;
+        };
+        std::string const corrPrefix = prefix + "Corr.";
+        for (std::string const& key : sConfigMgr->GetKeysByString(corrPrefix))
+        {
+            std::string const pair = key.substr(corrPrefix.size());
+            size_t const dash = pair.find('-');
+            int32 const first = dash == std::string::npos ? -1 : find(pair.substr(0, dash));
+            int32 const second = dash == std::string::npos ? -1 : find(pair.substr(dash + 1));
+            if (first < 0 || second < 0 || first == second)
+            {
+                LOG_ERROR("server.loading", "{}: not a pair of two attribute names, ignored", key);
+                continue;
+            }
+
+            double const value = std::clamp(sConfigMgr->GetOption<float>(key, 0.0f, false), -0.99f, 0.99f);
+            attributes.Correlation[first][second] = value;
+            attributes.Correlation[second][first] = value;
+        }
+
+        if (!FactorAttributeMatrix(attributes.Correlation, attributes.Factor))
+        {
+            LOG_ERROR("server.loading",
+                      "Playerbots.Skill.Attributes.Corr.*: the correlation matrix is not positive definite; the "
+                      "attributes' own parts are drawn uncorrelated (identity matrix)");
+            attributes.Correlation = IdentityAttributeMatrix();
+        }
+    }
+    {
         NaturalReactionEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Reaction.Enable", false);
         NaturalReactionActive = SkillEnable && NaturalReactionEnable;
         auto const ms = [](std::string const& key, uint32 fallback)

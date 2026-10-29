@@ -6861,28 +6861,37 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     skillNoticeMissPercent = 0;
     skillNoticeDelayMs = 0;
     skillNoticeCounters = SkillNoticeCounters();
-    // The tactic gate from the guid and the skill (skill 0: full ability); the hashes never see the percentile
-    tacticGate = ComputeTacticGate(sPlayerbotAIConfig.SkillGate, sPlayerbotAIConfig.TacticConfig, skill,
-                                   bot ? bot->GetGUID().GetCounter() : 0);
-    // Cached whatever Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots
-    reactionState =
-        ComputeReactionState(sPlayerbotAIConfig.NaturalReaction, skill, sPlayerbotAIConfig.SkillGate.CurveExponent);
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    // The hashes' guid: the bot's own, or a lab copy's template (G0j-b); they never see the percentile
+    uint64 const guid = attributeTemplate ? attributeTemplate : (bot ? bot->GetGUID().GetCounter() : 0);
+    // The attributes from the skill and the guid (BotAttributes.h; with the defaults every ability is the skill). No
+    // growth yet (DT.14): the stored skill is also the first roll.
+    SkillDistributionParams const distribution{config.SkillDistributionUniform, config.SkillMean, config.SkillSd,
+                                               config.SkillMin, config.SkillMax};
+    attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, skill, guid);
+    // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
+    tacticGate = ComputeTacticGate(config.SkillGate, config.TacticConfig,
+                                   AttributeGateInputs(config.SkillAttributes, attributes, skill), guid);
+    // Speed carries the reaction draw, D3's stretch and D4's notice delay; Focus D4's miss share. Cached whatever
+    // Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots.
+    uint8 const speed = attributes.Get(BotAttribute::Speed);
+    reactionState = ComputeReactionState(config.NaturalReaction, speed, config.SkillGate.CurveExponent);
     if (skill == 0)
         return;
 
-    // 0 at skill 1, 1 at skill 99, bent by Playerbots.Skill.CurveExponent (1.0: the straight line, as before)
-    float const position = SkillPosition(skill);
-    float const exponent = sPlayerbotAIConfig.SkillGate.CurveExponent;
-    if (sPlayerbotAIConfig.SkillReactActive)
-        skillReactFactor = SkillLerp(sPlayerbotAIConfig.SkillReactFactorLow, sPlayerbotAIConfig.SkillReactFactorHigh,
-                                     position, exponent);
+    // 0 at 1, 1 at 99, bent by Playerbots.Skill.CurveExponent (1.0: the straight line, as before)
+    float const speedPosition = SkillPosition(speed);
+    float const focusPosition = SkillPosition(attributes.Get(BotAttribute::Focus));
+    float const exponent = config.SkillGate.CurveExponent;
+    if (config.SkillReactActive)
+        skillReactFactor = SkillLerp(config.SkillReactFactorLow, config.SkillReactFactorHigh, speedPosition, exponent);
 
-    if (sPlayerbotAIConfig.SkillNoticeActive)
+    if (config.SkillNoticeActive)
     {
-        skillNoticeMissPercent = SkillLerpRounded(sPlayerbotAIConfig.SkillNoticeMissPercentLow,
-                                                  sPlayerbotAIConfig.SkillNoticeMissPercentHigh, position, exponent);
-        skillNoticeDelayMs = SkillLerpRounded(sPlayerbotAIConfig.SkillNoticeDelayMsLow,
-                                              sPlayerbotAIConfig.SkillNoticeDelayMsHigh, position, exponent);
+        skillNoticeMissPercent = SkillLerpRounded(config.SkillNoticeMissPercentLow, config.SkillNoticeMissPercentHigh,
+                                                  focusPosition, exponent);
+        skillNoticeDelayMs =
+            SkillLerpRounded(config.SkillNoticeDelayMsLow, config.SkillNoticeDelayMsHigh, speedPosition, exponent);
     }
 }
 

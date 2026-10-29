@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_PLAYERBOTAICONFIG_H
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
+#include "BotAttributes.h"
 #include "DBCEnums.h"
 #include "NaturalReaction.h"
 #include "SharedDefines.h"
@@ -483,6 +484,9 @@ public:
     bool SkillExemptRealMasterBots;
     // Playerbots.Skill.CurveExponent, KnowledgeSpread, Effort*, StyleSpread: the tactic gate's skill parameters
     TacticGateParams SkillGate;
+    // Playerbots.Skill.Attributes.*: loadings, spreads and the correlation matrix (factorised at load) of the attribute
+    // model (BotAttributes.h); the defaults make every ability the skill and every trait neutral
+    BotAttributeParams SkillAttributes;
     // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Active needs
     // Playerbots.Skill.Enable; Contexts is a tactic scope mask (default the PvP contexts)
     bool NaturalReactionEnable;

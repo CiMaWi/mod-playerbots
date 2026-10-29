@@ -64,6 +64,20 @@ struct TacticGateState
     std::array<uint8, SKILL_STYLE_TRAIT_COUNT> Style{};
 };
 
+// What the gate reads of a bot (G0j, BotAttributes.h's AttributeGateInputs): the skill (0 = full ability), the
+// knowledge, discipline and grit attributes, whether EffortSpread's jitter applies, and the style traits whose bit is
+// set in StyleMask (the others come from G0g's StyleSpread draw). With the attribute defaults all three are the skill.
+struct TacticGateInputs
+{
+    uint8 Skill = 0;
+    uint8 Knowledge = 0;
+    uint8 Discipline = 0;
+    uint8 Grit = 0;
+    bool EffortJitter = true;
+    uint8 StyleMask = 0;
+    std::array<uint8, SKILL_STYLE_TRAIT_COUNT> Style{};
+};
+
 // 0 at skill 1, 1 at skill 99 (callers treat skill 0 as full ability before they ask)
 inline float SkillPosition(uint8 skill) { return (static_cast<float>(std::clamp<uint8>(skill, 1, 99)) - 1.0f) / 98.0f; }
 
@@ -142,16 +156,17 @@ inline bool TacticUsedInWindow(uint64 guid, TacticId id, uint32 chancePercent, u
     return hash % 100 < chancePercent;
 }
 
-// How hard the bot tries, 0-100: lerped over skill, moved per bot by -EffortSpread..+EffortSpread
-inline uint8 SkillEffort(TacticGateParams const& params, uint8 skill, uint64 guid)
+// How hard the bot tries, 0-100: lerped over skill (or grit), moved per bot by -EffortSpread..+EffortSpread unless
+// the grit attribute carries the spread (jitter false)
+inline uint8 SkillEffort(TacticGateParams const& params, uint8 skill, uint64 guid, bool jitter = true)
 {
     if (skill == 0)
         return SKILL_GATE_FULL;
 
     int32 const base = static_cast<int32>(
         SkillLerpRounded(params.EffortAtSkill1, params.EffortAtSkill99, SkillPosition(skill), params.CurveExponent));
-    int32 const jitter = SkillGateJitter(SplitMix64(guid ^ TacticGateSalt::Effort), params.EffortSpread);
-    return static_cast<uint8>(std::clamp<int32>(base + jitter, 0, SKILL_GATE_FULL));
+    int32 const moved = jitter ? SkillGateJitter(SplitMix64(guid ^ TacticGateSalt::Effort), params.EffortSpread) : 0;
+    return static_cast<uint8>(std::clamp<int32>(base + moved, 0, SKILL_GATE_FULL));
 }
 
 // A style trait, 50 +- StyleSpread: from the guid only, never from the skill or the percentile
@@ -162,27 +177,49 @@ inline uint8 SkillStyle(uint32 spread, uint64 guid, SkillStyleTrait trait)
         std::clamp<int32>(SKILL_STYLE_NEUTRAL + SkillGateJitter(hash, spread), 0, SKILL_GATE_FULL));
 }
 
-// The whole gate of one bot (SetPvpSkill caches it)
+// The whole gate of one bot from its attributes (SetPvpSkill caches it): knowledge against the jittered threshold,
+// discipline for the use chance, grit for the effort
 inline TacticGateState ComputeTacticGate(TacticGateParams const& params,
-                                         std::array<TacticSettings, TACTIC_COUNT> const& tactics, uint8 skill,
-                                         uint64 guid)
+                                         std::array<TacticSettings, TACTIC_COUNT> const& tactics,
+                                         TacticGateInputs const& inputs, uint64 guid)
 {
+    uint8 const skill = inputs.Skill;
     TacticGateState state;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
     {
         TacticId const id = static_cast<TacticId>(index);
         state.KnownFrom[index] = TacticKnownFrom(tactics[index].KnownFromSkill, params.KnowledgeSpread, guid, id);
-        state.UseChance[index] = TacticUseChance(tactics[index], skill, params.CurveExponent);
-        if (skill == 0 || skill >= state.KnownFrom[index])
+        state.UseChance[index] =
+            TacticUseChance(tactics[index], skill == 0 ? 0 : inputs.Discipline, params.CurveExponent);
+        if (skill == 0 || inputs.Knowledge >= state.KnownFrom[index])
             state.KnownMask |= TacticBit(id);
     }
 
-    state.Effort = SkillEffort(params, skill, guid);
+    state.Effort = SkillEffort(params, skill == 0 ? 0 : inputs.Grit, guid, inputs.EffortJitter);
     for (uint32 index = 0; index < SKILL_STYLE_TRAIT_COUNT; ++index)
-        state.Style[index] = skill == 0 ? SKILL_STYLE_NEUTRAL
-                                        : SkillStyle(params.StyleSpread, guid, static_cast<SkillStyleTrait>(index));
+    {
+        if (skill == 0)
+            state.Style[index] = SKILL_STYLE_NEUTRAL;
+        else if (inputs.StyleMask & (1u << index))
+            state.Style[index] = inputs.Style[index];
+        else
+            state.Style[index] = SkillStyle(params.StyleSpread, guid, static_cast<SkillStyleTrait>(index));
+    }
 
     return state;
+}
+
+// The same from the skill alone (every attribute the skill: G0g's gate)
+inline TacticGateState ComputeTacticGate(TacticGateParams const& params,
+                                         std::array<TacticSettings, TACTIC_COUNT> const& tactics, uint8 skill,
+                                         uint64 guid)
+{
+    TacticGateInputs inputs;
+    inputs.Skill = skill;
+    inputs.Knowledge = skill;
+    inputs.Discipline = skill;
+    inputs.Grit = skill;
+    return ComputeTacticGate(params, tactics, inputs, guid);
 }
 
 // TacticActive after the enable and scope test (G0c): full ability (skill 0, an exempt bot, PvE with

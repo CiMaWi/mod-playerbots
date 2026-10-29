@@ -1890,11 +1890,71 @@ Playerbots.Skill.EffortAtSkill99 = 100
 Playerbots.Skill.EffortSpread = 0
 Playerbots.Skill.StyleSpread = 0
 
+# Attributes (G0j): the hidden skill is a bot's latent general ability, and each bot draws eight abilities and four
+# personality traits from it (hidden: only .playerbots skill <bot> and .playerbots tactics show <bot> list them). In
+# normal scores an attribute is z = Loading x z_skill + Spread x sqrt(1 - Loading^2) x e, where z_skill is the skill's
+# score through Playerbots.Skill.Distribution and e the attribute's own part: a standard normal from the guid hash,
+# drawn at each skill load (login, .playerbots skill set; no per-tick cost), correlated with the other own parts by the
+# Corr entries. An ability goes back onto the 1-99 scale through the same distribution; a trait is
+# 50 + 50 x clamp(Spread x z / 3, -1, 1) (Spread 1: three standard deviations reach 0 or 100).
+#   Abilities (1-99) and what reads them: Speed the natural reaction's draw (Playerbots.Natural.Reaction), the
+#     reaction factor (ReactFactorAtSkill*) and the notice delay (NoticeDelayMsAtSkill*); Focus the notice miss
+#     chance (NoticeMissPercentAtSkill*); Knowledge the tactics' KnownFromSkill test (KnowledgeSpread's jitter stays
+#     on top); Discipline the tactics' use chance; Grit the effort (EffortAtSkill*; EffortSpread applies only while
+#     Grit's Loading is 1); Wisdom, Foresight and Dexterity are read by later tactics.
+#   Traits (0-100, 50 neutral): Aggression, Caution, Patience (the style traits: StyleSpread's uniform draw applies
+#     only while the trait's Spread is 0; a Spread above 0 replaces it with the normal draw above) and Teamwork
+#     (read by later tactics).
+#   Loading.<Name>: 0-1, the attribute's correlation with the skill when its Spread is 1. Default 1 for the abilities
+#     (the ability is the skill itself, exactly: its own part has weight 0, so the Corr entries do not touch it) and
+#     0 for the traits.
+#   Spread.<Name>: 0-3, the weight of the own part (1: the attribute spreads like the skill). Default 0: an ability
+#     with a Loading below 1 then only moves toward the mean (Loading x z_skill); a trait stays at 50.
+#   Corr.<A>-<B>: the correlation of two own parts, -0.99 to 0.99, either order, any pair (default 0). The matrix is
+#     factorised (Cholesky) at load; a matrix that is not positive definite is refused with an error line and the own
+#     parts are drawn uncorrelated. The entries below are the proposed links; at the default Loadings and Spreads
+#     they change nothing.
+#   Learnable (DT.14, for practice later, G6b): Knowledge, Wisdom, Foresight and Teamwork at the full rate,
+#     Dexterity at half; Speed, Focus, Discipline, Grit and the traits fixed. No growth yet.
+# Proposed starting values (not the defaults; G6a tunes them): Loading 0.8 for Knowledge, Wisdom and Foresight, 0.7
+# Teamwork, 0.6 Focus, Discipline and Grit, 0.5 Speed and Dexterity, 0 the traits; every Spread 1.
+# .reload config then .playerbots rndbot reload change them; a logged-in bot draws again at its next skill load.
+# .playerbots tactics selftest attributes checks the model.
+Playerbots.Skill.Attributes.Loading.Speed = 1.0
+Playerbots.Skill.Attributes.Loading.Wisdom = 1.0
+Playerbots.Skill.Attributes.Loading.Focus = 1.0
+Playerbots.Skill.Attributes.Loading.Dexterity = 1.0
+Playerbots.Skill.Attributes.Loading.Foresight = 1.0
+Playerbots.Skill.Attributes.Loading.Knowledge = 1.0
+Playerbots.Skill.Attributes.Loading.Discipline = 1.0
+Playerbots.Skill.Attributes.Loading.Grit = 1.0
+Playerbots.Skill.Attributes.Loading.Aggression = 0.0
+Playerbots.Skill.Attributes.Loading.Caution = 0.0
+Playerbots.Skill.Attributes.Loading.Patience = 0.0
+Playerbots.Skill.Attributes.Loading.Teamwork = 0.0
+Playerbots.Skill.Attributes.Spread.Speed = 0.0
+Playerbots.Skill.Attributes.Spread.Wisdom = 0.0
+Playerbots.Skill.Attributes.Spread.Focus = 0.0
+Playerbots.Skill.Attributes.Spread.Dexterity = 0.0
+Playerbots.Skill.Attributes.Spread.Foresight = 0.0
+Playerbots.Skill.Attributes.Spread.Knowledge = 0.0
+Playerbots.Skill.Attributes.Spread.Discipline = 0.0
+Playerbots.Skill.Attributes.Spread.Grit = 0.0
+Playerbots.Skill.Attributes.Spread.Aggression = 0.0
+Playerbots.Skill.Attributes.Spread.Caution = 0.0
+Playerbots.Skill.Attributes.Spread.Patience = 0.0
+Playerbots.Skill.Attributes.Spread.Teamwork = 0.0
+Playerbots.Skill.Attributes.Corr.Wisdom-Teamwork = 0.3
+Playerbots.Skill.Attributes.Corr.Wisdom-Patience = 0.3
+Playerbots.Skill.Attributes.Corr.Speed-Dexterity = 0.3
+Playerbots.Skill.Attributes.Corr.Focus-Discipline = 0.3
+Playerbots.Skill.Attributes.Corr.Aggression-Caution = -0.2
+
 # Bot tactics. With 0 (default) no tactic runs, nothing is probed per update and the bots' strategies are today's.
 # With 1, a tactic acts only when it is in the bot's tactic mask (the tactics whose own Enable is 1; the PvP test
 # harness overrides the mask per side with tacticsA= / tacticsB=) and the bot's current context is in its Scope.
 # Every bot uses the enabled tactics, the bots in a real player's group included.
-# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate|reaction]
+# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate|reaction|attributes]
 Playerbots.Tactics.Enable = 0
 
 # Per tactic (all keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,
