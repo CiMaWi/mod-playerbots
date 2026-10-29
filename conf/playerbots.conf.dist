@@ -1903,6 +1903,15 @@ Playerbots.PvpGear.Buy.BatchPerTick = 5
 # Default: 0 (off: the bots fight in their PvE gear)
 Playerbots.PvpGear.Wear = 0
 
+# Ladder bots keep their PvP loadout on between matches, as on an arena server (needs Playerbots.PvpGear.Wear). For
+# servers that host only matches (a lab, Playerbots.ArenaOnly.Enable): the loadout goes on at the bot's login and
+# stays on, so no world-thread swap runs at every arena entry and leave. Inside a match the bot wears the same items
+# as with 0. Ignored on the main server (Playerbots.Ladder.Role = 1), where the bots wear their PvE gear between
+# matches; on an arena server (Role 2) the loadout stays on anyway. A bot that logs out keeps the loadout on (its
+# playerbots_pvp_worn rows); with this option at 0 its next login takes it off.
+# Default: 0 (the loadout comes off at every leave)
+Playerbots.PvpGear.WearBetweenMatches = 0
+
 # Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table
 # playerbots_bot_profile. All profiles are loaded with one query at startup; a bot login reads memory only, new rows

@@ -33,6 +33,7 @@
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "PerfMonitor.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
@@ -538,6 +539,14 @@ public:
 
 class PlayerbotsWorldScript : public WorldScript
 {
+    // One call of the world hook under its own PerfMonitor row (a no-op scope when the monitor is off)
+    template <typename Call>
+    static void TimeHookCall(std::string_view name, Call&& call)
+    {
+        PerfMonitorScope const scope(sPerfMonitor.acquire(PERF_MON_TOTAL, name));
+        call();
+    }
+
 public:
     PlayerbotsWorldScript() : WorldScript("PlayerbotsWorldScript", {
         WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED,
@@ -589,21 +598,39 @@ public:
         PlayerbotThreadCheck::SetWorldThread();  // Thread checks (Playerbots.DebugThreadChecks) compare against this
         // Opt-in world-thread busy share (Playerbots.PerfMonWorldThread); returns at once when off
         WorldThreadMonitor::Instance().BeginHook();
-        ActivityBudget::Instance().Update();  // Smart scale percentile; returns at once when off
-        PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
-        sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
-        TestPlayerMgr::Instance().Update(diff);  // Headless test player; returns at once when there is none
-        CensusMgr::Instance().Update(diff);  // Opt-in world census; returns at once when off
-        AcquaintanceMgr::Instance().Update(diff);  // Opt-in; drains the hook events, writes in batches
-        ArenaTeamFormation::Instance().Update(diff);  // Opt-in; bot arena team rosters, every UpdateSeconds
-        PvpTestMgr::Instance().Update(diff);  // Opt-in PvP test jobs; returns at once when none runs
-        LadderMgr::Instance().Update(diff);  // Opt-in arena team moves; returns at once when none is pending
-        Matchmaker::Instance().Update(diff);  // Opt-in answers to real players' arena queues; idle without one
-        PvpGearMgr::Instance().Update(diff);  // Deferred PvP gear unwears, opt-in buying; returns at once when idle
-        PlayerbotWorldThreadProcessor::instance().Update(diff);
-        // Cached LFG state per bot, read on map threads
-        PlayerbotsMgr::instance().RefreshLfgStates(diff);
-        sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
+        {
+            // Playerbots.PerfMonEnabled: one PerfMonitor row per call ("WorldHook ...", totals per world tick), so
+            // the pmon dump splits the serial world-thread cost; without the monitor the scopes do nothing
+            PerfMonitorScope const hookScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldHook total"));
+            // Smart scale percentile; returns at once when off
+            TimeHookCall("WorldHook ActivityBudget", [] { ActivityBudget::Instance().Update(); });
+            // Headless sessions whose login holder is in flight
+            TimeHookCall("WorldHook PendingLogins", [] { PlayerbotHolder::UpdatePendingLogins(); });
+            // Per-bot packet queues, world thread only
+            TimeHookCall("WorldHook UpdateSessions", [] { sRandomPlayerbotMgr.UpdateSessions(); });
+            // Headless test player; returns at once when there is none
+            TimeHookCall("WorldHook TestPlayer", [diff] { TestPlayerMgr::Instance().Update(diff); });
+            // Opt-in world census; returns at once when off
+            TimeHookCall("WorldHook Census", [diff] { CensusMgr::Instance().Update(diff); });
+            // Opt-in; drains the hook events, writes in batches
+            TimeHookCall("WorldHook Acquaintance", [diff] { AcquaintanceMgr::Instance().Update(diff); });
+            // Opt-in; bot arena team rosters, every UpdateSeconds
+            TimeHookCall("WorldHook ArenaTeamFormation", [diff] { ArenaTeamFormation::Instance().Update(diff); });
+            // Opt-in PvP test jobs; returns at once when none runs
+            TimeHookCall("WorldHook PvpTest", [diff] { PvpTestMgr::Instance().Update(diff); });
+            // Opt-in arena team moves; returns at once when none is pending
+            TimeHookCall("WorldHook Ladder", [diff] { LadderMgr::Instance().Update(diff); });
+            // Opt-in answers to real players' arena queues; idle without one
+            TimeHookCall("WorldHook Matchmaker", [diff] { Matchmaker::Instance().Update(diff); });
+            // Deferred PvP gear unwears, opt-in buying; returns at once when idle
+            TimeHookCall("WorldHook PvpGear", [diff] { PvpGearMgr::Instance().Update(diff); });
+            // Queued world-thread operations (arena group formation, PvP gear swaps, ...)
+            TimeHookCall("WorldHook Operations", [diff] { PlayerbotWorldThreadProcessor::instance().Update(diff); });
+            // Cached LFG state per bot, read on map threads
+            TimeHookCall("WorldHook LfgStates", [diff] { PlayerbotsMgr::instance().RefreshLfgStates(diff); });
+            // World thread only
+            TimeHookCall("WorldHook UpdateAI", [diff] { sRandomPlayerbotMgr.UpdateAI(diff); });
+        }
         WorldThreadMonitor::Instance().EndHook();
     }
 

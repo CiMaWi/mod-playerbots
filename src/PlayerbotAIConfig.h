@@ -457,6 +457,7 @@ public:
     std::string PvpGearTierOrder;
     std::string PvpGearBaseTier;
     bool PvpGearWear;
+    bool PvpGearWearBetweenMatches;
     bool PvpGearBuyEnable;
     std::string PvpGearBuySlotPriority;
     bool PvpGearBuySaveTowardBetter;

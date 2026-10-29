@@ -829,6 +829,7 @@ bool PlayerbotAIConfig::Initialize()
                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
     PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
     PvpGearWear = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Wear", false);
+    PvpGearWearBetweenMatches = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.WearBetweenMatches", false);
     PvpGearBuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
     PvpGearBuySlotPriority = sConfigMgr->GetOption<std::string>(
