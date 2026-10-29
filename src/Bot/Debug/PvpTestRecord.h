@@ -54,6 +54,8 @@ struct PvpTestBotRecord
     int32 PersonalAfter = -1;
     bool MmrChangeKnown = false;
     int32 MmrChange = 0;
+    // G0j-b (additive): the template's guid when the bot played as a lab copy (LabCopyMgr), 0 = none, written as null
+    uint32 CopyOf = 0;
 };
 
 struct PvpTestSideRecord

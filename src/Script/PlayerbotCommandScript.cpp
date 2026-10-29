@@ -12,6 +12,7 @@
 #include "BotProfileMgr.h"
 #include "Chat.h"
 #include "GuildTaskMgr.h"
+#include "LabCopies.h"
 #include "LadderMgr.h"
 #include "MatchLog.h"
 #include "MatchTrace.h"
@@ -132,6 +133,14 @@ public:
             {"selftest", TacticCommands::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsAttributesCommandTable = {
+            {"pin", LabCopyMgr::HandlePinCommand, SEC_GAMEMASTER, Console::Yes},
+            {"unpin", LabCopyMgr::HandleUnpinCommand, SEC_GAMEMASTER, Console::Yes},
+            {"show", LabCopyMgr::HandleShowCommand, SEC_GAMEMASTER, Console::Yes},
+            {"reapply", LabCopyMgr::HandleReapplyCommand, SEC_GAMEMASTER, Console::Yes},
+            {"logout", LabCopyMgr::HandleLogoutCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsArenaOnlyCommandTable = {
             {"status", RandomPlayerbotMgr::HandleArenaOnlyStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", RandomPlayerbotMgr::HandleArenaOnlySelftestCommand, SEC_GAMEMASTER, Console::Yes},
@@ -165,6 +174,7 @@ public:
             {"pvpgear", playerbotsPvpGearCommandTable},
             {"matchlog", playerbotsMatchLogCommandTable},
             {"tactics", playerbotsTacticsCommandTable},
+            {"attributes", playerbotsAttributesCommandTable},
             {"arenaonly", playerbotsArenaOnlyCommandTable},
             {"natural", playerbotsNaturalCommandTable},
         };

@@ -1069,12 +1069,27 @@ void RunAttributesSelftest(ChatHandler* handler)
           Acore::StringFormat("model on at skill 50: {} of 1000 bots differ from the skill, in range {}", varied,
                               inRange ? "yes" : "no"));
 
-    // The trait map: 50 + 50 * clamp(spread * z / 3, -1, 1), exactly 50 at spread 0
+    // The trait map: 50 + 50 * clamp(z / 3, -1, 1) (the score holds the spread), exactly 50 at spread 0
     check(PersonalityFromScore(1.0f, 0.0) == 50 && PersonalityFromScore(1.0f, 3.0) == 100 &&
               PersonalityFromScore(1.0f, -3.0) == 0 && PersonalityFromScore(1.0f, 1.5) == 75 &&
               PersonalityFromScore(1.0f, 9.0) == 100 && PersonalityFromScore(0.0f, 2.5) == 50 &&
-              PersonalityFromScore(2.0f, 0.75) == 75,
-          "the trait map is not 50 + 50 * clamp(spread * z / 3, -1, 1)");
+              PersonalityFromScore(2.0f, 1.5) == 75,
+          "the trait map is not 50 + 50 * clamp(z / 3, -1, 1)");
+
+    // A trait's spread weights its own part once, as an ability's: spread 2 gives 50 + 50 * clamp(2 e / 3, -1, 1)
+    BotAttributeParams wideTraits;
+    wideTraits.Spread[at(BotAttribute::Aggression)] = 2.0f;
+    uint32 spreadOff = 0;
+    for (uint64 guid = FirstGuid; guid < FirstGuid + 1000; ++guid)
+    {
+        double const own = AttributeOwnParts(IdentityAttributeMatrix(), guid)[at(BotAttribute::Aggression)];
+        long const expected = std::lround(50.0 + 50.0 * std::clamp(2.0 * own / 3.0, -1.0, 1.0));
+        if (ComputeBotAttributes(wideTraits, distributions[0], 50, 50, guid).Get(BotAttribute::Aggression) != expected)
+            ++spreadOff;
+    }
+
+    check(spreadOff == 0,
+          Acore::StringFormat("{} of 1000 traits at spread 2 do not weight the own part once", spreadOff));
 
     // The map back to 1-99 inverts the skill's score (normal and uniform)
     uint32 roundTrips = 0;

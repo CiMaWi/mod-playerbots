@@ -1896,7 +1896,7 @@ Playerbots.Skill.StyleSpread = 0
 # score through Playerbots.Skill.Distribution and e the attribute's own part: a standard normal from the guid hash,
 # drawn at each skill load (login, .playerbots skill set; no per-tick cost), correlated with the other own parts by the
 # Corr entries. An ability goes back onto the 1-99 scale through the same distribution; a trait is
-# 50 + 50 x clamp(Spread x z / 3, -1, 1) (Spread 1: three standard deviations reach 0 or 100).
+# 50 + 50 x clamp(z / 3, -1, 1), its Spread inside z once (Spread 1: three standard deviations reach 0 or 100).
 #   Abilities (1-99) and what reads them: Speed the natural reaction's draw (Playerbots.Natural.Reaction), the
 #     reaction factor (ReactFactorAtSkill*) and the notice delay (NoticeDelayMsAtSkill*); Focus the notice miss
 #     chance (NoticeMissPercentAtSkill*); Knowledge the tactics' KnownFromSkill test (KnowledgeSpread's jitter stays
@@ -1918,8 +1918,13 @@ Playerbots.Skill.StyleSpread = 0
 #     Dexterity at half; Speed, Focus, Discipline, Grit and the traits fixed. No growth yet.
 # Proposed starting values (not the defaults; G6a tunes them): Loading 0.8 for Knowledge, Wisdom and Foresight, 0.7
 # Teamwork, 0.6 Focus, Discipline and Grit, 0.5 Speed and Dexterity, 0 the traits; every Spread 1.
-# .reload config then .playerbots rndbot reload change them; a logged-in bot draws again at its next skill load.
-# .playerbots tactics selftest attributes checks the model.
+# .reload config then .playerbots rndbot reload change them; a logged-in bot draws again at its next skill load or
+# at .playerbots attributes reapply [<bot>|all]. .playerbots tactics selftest attributes checks the model.
+# Lab copies (G0j-b, GM only, in memory, only where Playerbots.Ladder.ServerId is lab*): .playerbots attributes pin
+# <template> <bot>[,<bot>...] gives bots of the template's class, race and level its skill, attributes, talents and
+# stored PvP loadout (unpin <bot>[,...]|all, the copy's logout and the server shutdown put its own back; show [<bot>];
+# logout <bot> logs a random bot out); pvptest arena copyA=<template> / copyB=<template> does it for a match, and the
+# match records carry copyOf (the template's guid). A crash while pinned leaves the template's talents on the copy.
 Playerbots.Skill.Attributes.Loading.Speed = 1.0
 Playerbots.Skill.Attributes.Loading.Wisdom = 1.0
 Playerbots.Skill.Attributes.Loading.Focus = 1.0

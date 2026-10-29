@@ -17,6 +17,7 @@
 #include "Define.h"
 #include "Group.h"
 #include "GuildMgr.h"
+#include "LabCopies.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -416,6 +417,8 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
         if (!sRandomPlayerbotMgr.IsRandomBot(bot) && bot->isTaxiCheater())
             bot->SetTaxiCheater(false);
 
+        // G0j-b: a lab copy gets its own talents back before the save (O(1), nothing to do without copies)
+        LabCopyMgr::Instance().OnLogout(bot);
         bot->SaveToDB(false, false);
 
         WorldSession* botWorldSessionPtr = bot->GetSession();
@@ -484,6 +487,7 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 
         LOG_DEBUG("playerbots", "Bot {} logged out", bot->GetName().c_str());
 
+        LabCopyMgr::Instance().OnLogout(bot);
         bot->SaveToDB(false, false);
 
         RemoveFromPlayerbotsMap(guid);  // deletes bot player ptr inside this WorldSession PlayerBotMap

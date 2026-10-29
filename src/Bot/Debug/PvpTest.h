@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_PVPTEST_H
 #define _PLAYERBOT_PVPTEST_H
 
+#include <array>
 #include <deque>
 #include <memory>
 #include <optional>
@@ -50,6 +51,10 @@ struct PvpTestArenaParams
     std::optional<std::string> TacticsB;
     // G0e: trace=1: the bots leave a natural trace (when Playerbots.Natural.Trace.SampleEvery chooses the match)
     bool Trace = false;
+    // G0j-b: copyA= / copyB=: the side's bots play as lab copies of this template (LabCopyMgr; its guid, 0 = none),
+    // pinned at the gather and unpinned at the tear-down
+    uint32 CopyA = 0;
+    uint32 CopyB = 0;
 };
 
 // One forced arena match between two bot sides, ticked from the world thread. Stages: Resolve (in the command) ->
@@ -103,6 +108,9 @@ private:
     void CaptureScores(Battleground const* arena);
     void SetCounting(bool on);
     void RestoreSkills();
+    bool GatherTemplates(std::vector<std::string>& waiting);
+    bool ApplyCopies(std::string& error);
+    void RestoreCopies();
     void UpdateMonitor(bool slowTick);
     void SendAcceptFallback();
     void UpdateTearDown();
@@ -122,6 +130,10 @@ private:
     bool _acceptFallbackSent = false;
     // G0a: forced skills were set on the bots (by CaptureRoster) and are restored from the profiles at tear-down
     bool _skillsApplied = false;
+    // G0j-b: the templates' logins asked for, the copies were pinned, and those this job pinned (it unpins them)
+    std::array<bool, 2> _templateLoginRequested{};
+    bool _copiesApplied = false;
+    std::vector<uint32> _copiesPinned;
     uint32 _instanceId = 0;
     BattlegroundTypeId _bgTypeId = BATTLEGROUND_TYPE_NONE;
     BattlegroundQueueTypeId _queueTypeId = BATTLEGROUND_QUEUE_NONE;

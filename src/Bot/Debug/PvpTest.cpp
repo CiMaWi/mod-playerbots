@@ -29,6 +29,8 @@
 #include "DatabaseEnv.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "LabCopies.h"
+#include "LadderMgr.h"
 #include "Log.h"
 #include "MatchLog.h"
 #include "NaturalTrace.h"
@@ -84,7 +86,8 @@ constexpr char const* PlanUsage =
 constexpr char const* Usage =
     "Usage: .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] "
     "[seed=<n>] [skillA=<1-99>] [skillB=<1-99>] [tacticsA=<+name,-name>] [tacticsB=<+name,-name>] [trace=0|1] "
-    "(quote team names with spaces; tactics edits start from the config mask, an empty value means no tactic)";
+    "[copyA=<template>] [copyB=<template>] (quote team names with spaces; tactics edits start from the config mask, "
+    "an empty value means no tactic; copyX: the side plays as lab copies of the template, which gives the skill)";
 
 std::string DescribeSide(PvpTestSide const& side)
 {
@@ -458,6 +461,9 @@ void PvpTestArenaJob::UpdateGather()
         }
     }
 
+    if (!GatherTemplates(waiting))
+        return;  // a template failed the job
+
     if (!waiting.empty())
     {
         if (_stageMs >= GatherTimeoutMs)
@@ -470,6 +476,17 @@ void PvpTestArenaJob::UpdateGather()
         }
 
         return;
+    }
+
+    // G0j-b: the copies are pinned while every bot is out of the arena (talents change only outside)
+    if (!_copiesApplied && (_params.CopyA || _params.CopyB))
+    {
+        std::string error;
+        if (!ApplyCopies(error))
+        {
+            Fail(error);
+            return;
+        }
     }
 
     // Groups and the arena in the same tick, so the bots' AI cannot leave the new groups in between
@@ -676,6 +693,7 @@ void PvpTestArenaJob::CaptureRoster()
                 if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
                     bot.Skill = botAI->GetPvpSkill();
 
+                bot.CopyOf = botAI->GetAttributeTemplate();
                 botAI->SetPvpTestCounting(true);
             }
 
@@ -907,6 +925,113 @@ void PvpTestArenaJob::RestoreSkills()
     _skillsApplied = false;
 }
 
+// G0j-b: a copy template must be online for its talents and loadout (logged in once, waited for like a member, and
+// logged out at the tear-down); false when it failed the job (hosted away)
+bool PvpTestArenaJob::GatherTemplates(std::vector<std::string>& waiting)
+{
+    for (size_t index = 0; index < _templateLoginRequested.size(); ++index)
+    {
+        uint32 const templateGuid = index == 0 ? _params.CopyA : _params.CopyB;
+        if (templateGuid && LadderMgr::Instance().IsAway(templateGuid))
+        {
+            Fail(Acore::StringFormat("copy template guid {} is not hosted on this server (its ladder team is away)",
+                                     templateGuid));
+            return false;
+        }
+
+        ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(templateGuid);
+        Player* player = templateGuid ? ObjectAccessor::FindConnectedPlayer(guid) : nullptr;
+        if (!templateGuid || (player && player->IsInWorld()))
+            continue;
+
+        if (!_templateLoginRequested[index])
+        {
+            _templateLoginRequested[index] = true;
+            sRandomPlayerbotMgr.AddPlayerBot(guid, 0);
+        }
+
+        waiting.push_back(Acore::StringFormat("copy template guid {}", templateGuid));
+    }
+
+    return true;
+}
+
+// G0j-b: every member of a side with a template becomes its copy (the template itself plays as itself; a copy
+// pinned by a command stays pinned after the match)
+bool PvpTestArenaJob::ApplyCopies(std::string& error)
+{
+    LabCopyMgr& copies = LabCopyMgr::Instance();
+    for (PvpTestSide const* side : {&_sideA, &_sideB})
+    {
+        uint32 const templateGuid = side == &_sideA ? _params.CopyA : _params.CopyB;
+        if (!templateGuid)
+            continue;
+
+        Player* templatePlayer =
+            ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(templateGuid));
+        if (!templatePlayer)
+        {
+            error = Acore::StringFormat("copy template guid {} is offline", templateGuid);
+            return false;
+        }
+
+        for (size_t index = 0; index < side->Members.size(); ++index)
+        {
+            uint32 const guid = side->Members[index].GetCounter();
+            Player* player = ObjectAccessor::FindConnectedPlayer(side->Members[index]);
+            PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
+            // Already this template's copy only when the online AI says so too (not a record a logout left behind)
+            if (guid == templateGuid ||
+                (botAI && botAI->GetAttributeTemplate() == templateGuid && copies.TemplateOf(guid) == templateGuid))
+                continue;
+
+            std::string pinError;
+            std::string detail;
+            if (!player || !copies.Pin(templatePlayer, player, pinError, detail))
+            {
+                error = Acore::StringFormat("{} cannot copy {}: {}", side->Names[index], templatePlayer->GetName(),
+                                            player ? pinError : std::string("offline"));
+                return false;
+            }
+
+            _copiesPinned.push_back(guid);
+        }
+    }
+
+    _copiesApplied = true;
+    LOG_INFO("playerbots", "PVPTEST arena {} vs {}: {} lab copies pinned", _sideA.Label, _sideB.Label,
+             _copiesPinned.size());
+    return true;
+}
+
+void PvpTestArenaJob::RestoreCopies()
+{
+    for (uint32 guid : _copiesPinned)
+    {
+        std::string error;
+        std::string detail;
+        if (!LabCopyMgr::Instance().Unpin(guid, error, detail))
+            LOG_WARN("playerbots", "PVPTEST arena {} vs {}: unpin of copy guid {}: {}", _sideA.Label, _sideB.Label,
+                     guid, error);
+    }
+
+    _copiesPinned.clear();
+
+    // The templates this job logged in go again (not one that plays in the match)
+    std::vector<ObjectGuid> const members = AllMembers();
+    for (size_t index = 0; index < _templateLoginRequested.size(); ++index)
+    {
+        uint32 const templateGuid = index == 0 ? _params.CopyA : _params.CopyB;
+        ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(templateGuid);
+        if (!_templateLoginRequested[index] || std::find(members.begin(), members.end(), guid) != members.end())
+            continue;
+
+        _templateLoginRequested[index] = false;
+        if (sRandomPlayerbotMgr.GetPlayerBot(guid))
+            sRandomPlayerbotMgr.LogoutPlayerBot(guid);
+    }
+}
+
 void PvpTestArenaJob::FinishTearDown(bool timedOut)
 {
     for (PvpTestSide* side : {&_sideA, &_sideB})
@@ -922,6 +1047,7 @@ void PvpTestArenaJob::FinishTearDown(bool timedOut)
 
     SetCounting(false);
     RestoreSkills();
+    RestoreCopies();
     if (NaturalTrace::Any())
         NaturalTrace::EndMatch(_record.MatchId);
 
@@ -1765,12 +1891,29 @@ bool PvpTestMgr::HandleArenaCommand(ChatHandler* handler, char const* args)
 
             params.Trace = value == "1";
         }
+        else if ((key == "copya" || key == "copyb") && !value.empty())
+        {
+            std::string name = value;
+            ObjectGuid const guid =
+                normalizePlayerName(name) ? sCharacterCache->GetCharacterGuidByName(name) : ObjectGuid::Empty;
+            if (guid.IsEmpty())
+                return CommandFail(handler,
+                                   Acore::StringFormat("Bad option '{}': no character named '{}'", token, value));
+
+            (key == "copya" ? params.CopyA : params.CopyB) = guid.GetCounter();
+        }
         else
             return CommandFail(handler, Acore::StringFormat("Bad option '{}'. {}", token, Usage));
     }
 
     if (sides.size() != 2)
         return CommandFail(handler, Usage);
+
+    if ((params.CopyA && params.SkillA) || (params.CopyB && params.SkillB))
+        return CommandFail(handler, "copyA / copyB give the template's skill: leave skillA / skillB out");
+
+    if ((params.CopyA || params.CopyB) && !LabCopyMgr::IsLabServer())
+        return CommandFail(handler, "copyA / copyB only on a lab (Playerbots.Ladder.ServerId lab*)");
 
     params.SideA = sides[0];
     params.SideB = sides[1];

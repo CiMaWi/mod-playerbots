@@ -212,6 +212,7 @@ PvpTestBotRecord MakeBot(Player* player, bool count)
         if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
             bot.Skill = botAI->GetPvpSkill();
 
+        bot.CopyOf = botAI->GetAttributeTemplate();
         if (count)
             botAI->SetPvpTestCounting(true);
     }

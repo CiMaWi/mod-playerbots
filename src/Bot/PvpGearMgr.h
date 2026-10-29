@@ -110,8 +110,12 @@ public:
     static bool IsLadderBot(Player* bot);
     // A random bot at the maximum level (show and check build a loadout preview for one that is not a ladder bot)
     static bool IsMaxLevelRandomBot(Player* bot);
-    // The stored loadout, or nullptr
+    // The stored loadout (a lab copy's: the template's, see PinLoadout), or nullptr
     Loadout const* Find(uint32 guid) const;
+    // G0j-b lab copies (LabCopyMgr, world thread): the template's stored loadout in place of the copy's own, in
+    // memory only (never written, never reloaded); false when the template has none
+    bool PinLoadout(uint32 copyGuid, uint32 templateGuid);
+    void UnpinLoadout(uint32 copyGuid) { _pinnedLoadouts.erase(copyGuid); }
 
     // Wearing (PvpGearWear.cpp). One playerbots_pvp_worn row per swapped slot
     struct WornSlot
@@ -325,6 +329,8 @@ private:
     std::vector<std::vector<CatalogueItem>> _tiers;
     std::unordered_map<uint32, CatalogueItem const*> _byEntry;  // into _tiers, which is not changed after Load
     std::unordered_map<uint32, Loadout> _loadouts;
+    // Lab copies' loadouts, by the copy's guid (world thread)
+    std::unordered_map<uint32, Loadout> _pinnedLoadouts;
     mutable std::shared_mutex _wornLock;  // the guards read on map threads, the world thread writes
     std::unordered_map<uint32, Worn> _worn;
     std::vector<std::pair<uint32, uint32>> _retry;  // guid, attempts (world thread)

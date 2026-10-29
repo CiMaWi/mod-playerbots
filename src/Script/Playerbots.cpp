@@ -23,6 +23,7 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "LabCopies.h"
 #include "LadderMgr.h"
 #include "MatchLog.h"
 #include "Matchmaker.h"
@@ -212,6 +213,9 @@ public:
         sRandomPlayerbotMgr.OnPlayerLogout(player);
         if (NaturalTrace::Any())
             NaturalTrace::OnLogout(player);
+
+        // G0j-b: a lab copy logged out by another path than LogoutPlayerBot, before the logout's save
+        LabCopyMgr::Instance().OnLogout(player);
     }
 
     void OnPlayerCreatureKillCredit(Player* player, Creature* killed) override
@@ -612,6 +616,10 @@ public:
         // The natural traces end before the writer they share with the pvptest records stops
         NaturalTrace::Shutdown();
         PvpTestMgr::Instance().Shutdown();
+        // G0j-b: the lab copies get their own talents back before the bots' logout saves
+        if (LabCopyMgr::Instance().Any())
+            LabCopyMgr::Instance().UnpinAll();
+
         LOG_INFO("playerbots", "Logging out all bots...");
         sRandomPlayerbotMgr.LogoutAllBots();
         PlayerbotHolder::ClearPendingLogins();

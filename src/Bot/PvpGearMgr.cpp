@@ -676,8 +676,29 @@ bool PvpGearMgr::IsLadderBot(Player* bot)
 
 PvpGearMgr::Loadout const* PvpGearMgr::Find(uint32 guid) const
 {
+    if (!_pinnedLoadouts.empty())
+    {
+        auto const pinned = _pinnedLoadouts.find(guid);
+        if (pinned != _pinnedLoadouts.end())
+            return &pinned->second;
+    }
+
     auto const it = _loadouts.find(guid);
     return it == _loadouts.end() ? nullptr : &it->second;
+}
+
+bool PvpGearMgr::PinLoadout(uint32 copyGuid, uint32 templateGuid)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::PinLoadout");
+    auto const it = _loadouts.find(templateGuid);
+    if (it == _loadouts.end())
+    {
+        _pinnedLoadouts.erase(copyGuid);
+        return false;
+    }
+
+    _pinnedLoadouts[copyGuid] = it->second;
+    return true;
 }
 
 PvpGearMgr::CatalogueItem const* PvpGearMgr::FindItem(uint32 entry) const

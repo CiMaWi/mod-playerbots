@@ -23,7 +23,7 @@
 // where z_skill is the skill's score through Playerbots.Skill.Distribution (its percentile through the probit) and the
 // own parts e_a are standard normals from the guid hash, correlated by a small matrix (its Cholesky factor, made at
 // config load). An ability goes back onto the 1-99 scale through the same distribution, so every lerp that takes the
-// skill takes an ability; a trait is 50 + 50 * clamp(z_a / 3, -1, 1) scaled by its spread (0-100, 50 neutral).
+// skill takes an ability; a trait is 50 + 50 * clamp(z_a / 3, -1, 1) (0-100, 50 neutral; its spread is in z_a).
 // Defaults reproduce the skill: ability loadings 1 (the ability is the skill, exactly; the matrix has no effect) and
 // trait spreads 0 (neutral 50). Pure functions: no bots, no config singleton, so .playerbots tactics selftest
 // attributes drives them with synthetic guids and skills. PlayerbotAI::SetPvpSkill caches the values once per skill
@@ -265,14 +265,14 @@ inline uint8 SkillFromScore(SkillDistributionParams const& distribution, double 
     return static_cast<uint8>(std::clamp<long>(std::lround(value), 1, 99));
 }
 
-// A trait from its score: 50 + 50 * clamp(spread * z / 3, -1, 1), so at spread 1 three standard deviations reach 0 or
-// 100; exactly 50 at spread 0
+// A trait from its score: 50 + 50 * clamp(z / 3, -1, 1). The score holds the spread already (Spread x own part, as
+// for an ability), so at spread 1 three standard deviations reach 0 or 100; exactly 50 at spread 0
 inline uint8 PersonalityFromScore(float spread, double score)
 {
     if (spread <= 0.0f)
         return SKILL_STYLE_NEUTRAL;
 
-    double const position = std::clamp(spread * score / 3.0, -1.0, 1.0);
+    double const position = std::clamp(score / 3.0, -1.0, 1.0);
     return static_cast<uint8>(std::lround(SKILL_STYLE_NEUTRAL + SKILL_STYLE_NEUTRAL * position));
 }
 

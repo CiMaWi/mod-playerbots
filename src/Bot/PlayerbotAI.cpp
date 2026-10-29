@@ -6862,6 +6862,9 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     skillNoticeDelayMs = 0;
     skillNoticeCounters = SkillNoticeCounters();
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    // Called before the bot's first update (login) or on the world thread (GM commands, the harness, lab pins and
+    // reapply): MapMgr::Update waits for the map threads before the commands and world scripts run, so no map thread
+    // reads these values while they change one after another.
     // The hashes' guid: the bot's own, or a lab copy's template (G0j-b); they never see the percentile
     uint64 const guid = attributeTemplate ? attributeTemplate : (bot ? bot->GetGUID().GetCounter() : 0);
     // The attributes from the skill and the guid (BotAttributes.h; with the defaults every ability is the skill). No
