@@ -19,6 +19,31 @@
 #include "PositionValue.h"
 #include "RandomPlayerbotFactory.h"
 
+namespace
+{
+// The core's group join (Group::CanJoinBattlegroundQueue) drops the whole request, with no answer a bot reads, while a
+// member is still in a battleground (its last match), already in this arena queue or without a free queue slot: the
+// captain of a standing group then waits for its next "bg join check" instead. Returns the first such member
+Player* BusyArenaGroupMember(Player* captain, ArenaType type)
+{
+    Group* group = captain->GetGroup();
+    if (!group)
+        return nullptr;
+
+    BattlegroundQueueTypeId const queueTypeId = BattlegroundMgr::BGQueueTypeId(BATTLEGROUND_AA, type);
+    for (Group::MemberSlot const& slot : group->GetMemberSlots())
+    {
+        Player* member = ObjectAccessor::FindConnectedPlayer(slot.guid);
+        if (member && member != captain &&
+            (member->InBattleground() || !member->HasFreeBattlegroundQueueId() ||
+             member->InBattlegroundQueueForBattlegroundQueueType(queueTypeId)))
+            return member;
+    }
+
+    return nullptr;
+}
+}  // namespace
+
 bool BGJoinAction::Execute(Event /*event*/)
 {
     uint32 queueType = AI_VALUE(uint32, "bg type");
@@ -86,10 +111,18 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     // Playerbots.ArenaTeam.RepickEachQueue: a roster larger than the team size gets a fresh random pair once the
     // standing group has played its match
     bool repick = false;
+    // a standing group queues as it is only once no member is busy (else "team not ready", retried on the next check)
+    auto const standingGroupReady = [this, type]()
+    {
+        Player* busy = BusyArenaGroupMember(bot, type);
+        RandomPlayerbotMgr::NoteArenaGroupReady(bot, busy);
+        return !busy;
+    };
+
     if (groupOnWorldThread && LeadsCompleteArenaTeamGroup(bot, arenateam, (uint32)arenateam->GetType()))
     {
         if (!ArenaTeamFormation::Instance().ShouldRepick(bot, arenateam))
-            return true;
+            return standingGroupReady();
 
         repick = true;
     }
@@ -165,7 +198,7 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     {
         // Too few online and idle members for a fresh pick: the standing group is complete and queues as it is
         if (repick)
-            return true;
+            return standingGroupReady();
 
         LOG_INFO("playerbots", "Team #{} <{}> has not enough members for match", arenateam->GetId(),
                  arenateam->GetName().c_str());
@@ -506,6 +539,9 @@ bool BGJoinAction::JoinQueue(uint32 type)
     {
         botAI->GetAiObjectContext()->GetValue<uint32>("bg type")->Set(0);
         LOG_DEBUG("playerbots", "Bot {} could not find Battlemaster to join", bot->GetGUID().ToString().c_str());
+        if (sPlayerbotAIConfig.ArenaOnlyEnable)
+            RandomPlayerbotMgr::NoteArenaOnlyNoBattlemaster();
+
         return false;
     }
 

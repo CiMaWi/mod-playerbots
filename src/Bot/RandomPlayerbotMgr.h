@@ -165,8 +165,21 @@ public:
     // and one rated join attempt of a captain (sent: the queue packet went out; else the team was not ready)
     static void NoteArenaOnlyIdle(uint32 ms);
     static void NoteArenaOnlyJoin(bool sent);
+    // Any thread, a captain of a standing arena group: busyMember set = its join held back for a member still in a
+    // battleground or queue (counted, the wait timed, the first 200 logged under ArenaOnly); null = the group queues
+    static void NoteArenaGroupReady(Player* captain, Player* busyMember);
+    // Playerbots.ArenaOnly.Enable, any thread: an arena join found no battlemaster loaded on the captain's map
+    static void NoteArenaOnlyNoBattlemaster();
     // Playerbots.ArenaOnly.Enable, any thread: an invite accepted by BGStatusCheckAction without the status round trip
     static void NoteArenaOnlyInviteAccepted();
+    // Playerbots.ArenaOnly.Enable, the bot's own thread: a random bot has its match strategies only while it stands on
+    // its battleground's own map; with a battleground id but elsewhere (accepted, not ported) it still waits
+    static bool ArenaOnlyOnMatchMap(Player* bot);
+    // Playerbots.ArenaOnly.Enable, map thread (Player::RewardHonor, out-of-arena honorable kill of a random bot): logs
+    // the bot's state, counts it and takes the gain back (honor 0, the two kill counts lowered again)
+    static void NoteArenaOnlyHonorKill(Player* player, Player* victim, float& honor);
+    // .playerbots arenaonly force honor | bg: forced checks of the two guards above (console, world thread)
+    static bool HandleArenaOnlyForceCommand(ChatHandler* handler, char const* args);
     void ChangeStrategy(Player* player);
     void ChangeStrategyOnce(Player* player);
     uint32 GetValue(Player* bot, std::string const& type);

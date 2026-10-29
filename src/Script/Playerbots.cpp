@@ -28,12 +28,12 @@
 #include "MatchLog.h"
 #include "Matchmaker.h"
 #include "NaturalTrace.h"
+#include "PerfMonitor.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
-#include "PerfMonitor.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
@@ -157,8 +157,20 @@ public:
         PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
         PLAYERHOOK_ON_GIVE_EXP,
         PLAYERHOOK_ON_BEFORE_TELEPORT,
-        PLAYERHOOK_ON_MONEY_CHANGED
+        PLAYERHOOK_ON_MONEY_CHANGED,
+        PLAYERHOOK_ON_VICTIM_REWARD_AFTER
     }) {}
+
+    void OnPlayerVictimRewardAfter(Player* player, Player* victim, uint32& /*killerTitle*/, int32& /*victimRank*/,
+                                   float& honor) override
+    {
+        // Playerbots.ArenaOnly.Enable: the core's out-of-arena honorable kill; a test bot gains nothing outside its
+        // matches (M17d-b: logged with the bot's state, counted in "arenaonly status", the gain taken back)
+        if (!sPlayerbotAIConfig.ArenaOnlyEnable || !sRandomPlayerbotMgr.IsRandomBot(player))
+            return;
+
+        RandomPlayerbotMgr::NoteArenaOnlyHonorKill(player, victim, honor);
+    }
 
     void OnPlayerMoneyChanged(Player* player, int32& amount) override
     {

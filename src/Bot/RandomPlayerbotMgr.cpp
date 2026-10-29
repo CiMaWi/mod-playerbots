@@ -8,6 +8,7 @@
 #include "PlayerbotsDatabase.h"
 #include "AiFactory.h"
 #include "ArenaTeam.h"
+#include "ArenaTeamMgr.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
 #include "Cell.h"
@@ -53,8 +54,10 @@
 #include <cstdlib>
 #include <ctime>
 #include <iomanip>
+#include <mutex>
 #include <random>
 #include <set>
+#include <unordered_map>
 #include <utility>
 
 struct GuidClassRaceInfo
@@ -3577,6 +3580,29 @@ std::array<std::atomic<uint64>, 6> arenaOnlyIdleBuckets{};
 std::atomic<uint64> arenaOnlyJoinsSent{0};
 std::atomic<uint64> arenaOnlyJoinsNotReady{0};
 std::atomic<uint64> arenaOnlyInvitesAccepted{0};
+std::atomic<uint64> arenaOnlyHonorKills{0};
+std::atomic<uint64> arenaOnlyNoBattlemaster{0};
+// Captains of a standing arena group (any server): joins held back for a busy member, and the waits they made (first
+// held join -> the group queues), keyed by captain
+std::atomic<uint64> arenaPartnerBusy{0};
+std::atomic<uint64> arenaPartnerWaits{0};
+std::atomic<uint64> arenaPartnerWaitMsTotal{0};
+std::atomic<uint32> arenaPartnerWaitMsMax{0};
+std::array<std::atomic<uint64>, 6> arenaPartnerWaitBuckets{};
+std::atomic<uint32> arenaPartnerBusyLogged{0};
+std::mutex arenaPartnerBusyLock;
+std::unordered_map<ObjectGuid::LowType, uint32> arenaPartnerBusySince;
+// .playerbots arenaonly force join (console, world thread only): the captain, its partner given a battleground id of
+// no battleground, and the held-join count before
+ObjectGuid arenaOnlyForcedCaptain;
+ObjectGuid arenaOnlyForcedPartner;
+uint64 arenaOnlyForcedBusyBefore = 0;
+// .playerbots arenaonly force bg (console, world thread only): the bot given a battleground id of no battleground,
+// and its strategy lists before
+constexpr uint32 ArenaOnlyForcedBattlegroundId = 0xFFFFFFF0;
+ObjectGuid arenaOnlyForcedBot;
+std::vector<std::string> arenaOnlyForcedCombat;
+std::vector<std::string> arenaOnlyForcedNonCombat;
 }  // namespace
 
 void RandomPlayerbotMgr::NoteArenaOnlyIdle(uint32 ms)
@@ -3597,6 +3623,292 @@ void RandomPlayerbotMgr::NoteArenaOnlyIdle(uint32 ms)
 void RandomPlayerbotMgr::NoteArenaOnlyJoin(bool sent) { ++(sent ? arenaOnlyJoinsSent : arenaOnlyJoinsNotReady); }
 
 void RandomPlayerbotMgr::NoteArenaOnlyInviteAccepted() { ++arenaOnlyInvitesAccepted; }
+
+void RandomPlayerbotMgr::NoteArenaOnlyNoBattlemaster() { ++arenaOnlyNoBattlemaster; }
+
+void RandomPlayerbotMgr::NoteArenaGroupReady(Player* captain, Player* busyMember)
+{
+    uint32 const now = getMSTime();
+    ObjectGuid::LowType const key = captain->GetGUID().GetCounter();
+    if (busyMember)
+    {
+        ++arenaPartnerBusy;
+        bool first = false;
+        {
+            std::lock_guard<std::mutex> guard(arenaPartnerBusyLock);
+            first = arenaPartnerBusySince.emplace(key, now).second;
+        }
+
+        // the member may stand on another map: only plain fields are read
+        if (!first || !sPlayerbotAIConfig.ArenaOnlyEnable || arenaPartnerBusyLogged.fetch_add(1) >= 200)
+            return;
+
+        LOG_INFO(
+            "playerbots",
+            "ARENA partner busy: captain {} holds its join for {}: map {} instance {}, battleground id {} type {}, "
+            "queued {}, free queue slot {}, alive {}, teleporting {}, in world {} (first 200 of a start)",
+            captain->GetName(), busyMember->GetName(), busyMember->GetMapId(), busyMember->GetInstanceId(),
+            busyMember->GetBattlegroundId(), uint32(busyMember->GetBattlegroundTypeId()),
+            busyMember->InBattlegroundQueue(), busyMember->HasFreeBattlegroundQueueId(), busyMember->IsAlive(),
+            busyMember->IsBeingTeleported(), busyMember->IsInWorld());
+        return;
+    }
+
+    uint32 since = 0;
+    {
+        std::lock_guard<std::mutex> guard(arenaPartnerBusyLock);
+        auto const it = arenaPartnerBusySince.find(key);
+        if (it == arenaPartnerBusySince.end())
+            return;
+
+        since = it->second;
+        arenaPartnerBusySince.erase(it);
+    }
+
+    uint32 const ms = getMSTimeDiff(since, now);
+    ++arenaPartnerWaits;
+    arenaPartnerWaitMsTotal += ms;
+    uint32 max = arenaPartnerWaitMsMax.load();
+    while (ms > max && !arenaPartnerWaitMsMax.compare_exchange_weak(max, ms))
+        max = arenaPartnerWaitMsMax.load();
+
+    size_t bucket = 0;
+    while (bucket < 5 && ms >= ArenaOnlyIdleBucketSeconds[bucket] * IN_MILLISECONDS)
+        ++bucket;
+
+    ++arenaPartnerWaitBuckets[bucket];
+}
+
+bool RandomPlayerbotMgr::ArenaOnlyOnMatchMap(Player* bot)
+{
+    if (!bot->InBattleground() || !bot->IsInWorld())
+        return false;
+
+    // A battleground's map has the battleground's instance id (MapInstanced::CreateBattleground)
+    Map* map = bot->FindMap();
+    return map && map->IsBattlegroundOrArena() && map->GetInstanceId() == bot->GetBattlegroundId();
+}
+
+void RandomPlayerbotMgr::NoteArenaOnlyHonorKill(Player* player, Player* victim, float& honor)
+{
+    // Map thread: an atomic and one log line per kill (rare); the state shows which path paid the honor
+    ++arenaOnlyHonorKills;
+    Battleground* bg = player->GetBattleground(true);
+    Map* map = player->FindMap();
+    Map* victimMap = victim->FindMap();
+    LOG_INFO("playerbots",
+             "ARENAONLY honor kill: bot {} <{}> victim {} <{}>, honor {} taken back; bot map {} instance {} "
+             "(battleground map {}), zone {}, area {}, battleground id {} type {} (found {}, its type {}, status {}, "
+             "its map {}), in arena {}, on match map {}, teleporting {}, dead {}, pet {}; victim map {} instance {}, "
+             "battleground id {}, in arena {}",
+             player->GetGUID().GetCounter(), player->GetName(), victim->GetGUID().GetCounter(), victim->GetName(),
+             static_cast<uint32>(honor), player->GetMapId(), map ? map->GetInstanceId() : 0,
+             map && map->IsBattlegroundOrArena(), player->GetZoneId(), player->GetAreaId(), player->GetBattlegroundId(),
+             static_cast<uint32>(player->GetBattlegroundTypeId()), bg != nullptr,
+             bg ? static_cast<uint32>(bg->GetBgTypeID()) : 0, bg ? static_cast<uint32>(bg->GetStatus()) : 0,
+             bg && bg->FindBgMap(), player->InArena(), ArenaOnlyOnMatchMap(player), player->IsBeingTeleported(),
+             player->isDead(), player->GetPet() != nullptr, victim->GetMapId(),
+             victimMap ? victimMap->GetInstanceId() : 0, victim->GetBattlegroundId(), victim->InArena());
+
+    // The hook runs after the kill counts went up and before the honor is added
+    honor = 0.0f;
+    player->ApplyModUInt32Value(PLAYER_FIELD_KILLS, 1, false);
+    player->ApplyModUInt32Value(PLAYER_FIELD_LIFETIME_HONORABLE_KILLS, 1, false);
+}
+
+bool RandomPlayerbotMgr::HandleArenaOnlyForceCommand(ChatHandler* handler, char const* args)
+{
+    // Console, world thread (the map threads are idle), M17d-b's forced checks on live bots. "honor": a waiting
+    // Alliance bot is credited a kill of a waiting Horde bot of its level through the core's honor path; its honor and
+    // kill counts must stay and the counter rise. "bg": the first call gives a waiting bot a battleground id of no
+    // battleground (an accepted invite without the port), the second (a few seconds later) checks that its updates
+    // kept the waiting strategies and clears the id. Lab diagnostics: refused unless Playerbots.ArenaOnly.Enable is on
+    if (!sPlayerbotAIConfig.ArenaOnlyEnable)
+    {
+        handler->PSendSysMessage("ARENAONLY force: refused, Playerbots.ArenaOnly.Enable is off");
+        return true;
+    }
+
+    auto const waiting = [](Player* bot)
+    {
+        return bot && bot->IsInWorld() && bot->IsAlive() && !bot->IsBeingTeleported() && !bot->InBattleground() &&
+               !bot->InBattlegroundQueue() && GET_PLAYERBOT_AI(bot);
+    };
+
+    std::string const mode = args ? args : "";
+    if (mode == "honor")
+    {
+        Player* killer = nullptr;
+        Player* victim = nullptr;
+        for (auto const& [guid, bot] : sRandomPlayerbotMgr.playerBots)
+        {
+            if (waiting(bot) && !bot->HasNoPVPCreditAura() && bot->GetTeamId() == TEAM_ALLIANCE)
+            {
+                killer = bot;
+                break;
+            }
+        }
+
+        for (auto const& [guid, bot] : sRandomPlayerbotMgr.playerBots)
+        {
+            if (killer && waiting(bot) && !bot->HasNoPVPCreditAura() && bot->GetTeamId() == TEAM_HORDE &&
+                bot->GetLevel() == killer->GetLevel())
+            {
+                victim = bot;
+                break;
+            }
+        }
+
+        if (!killer || !victim)
+        {
+            handler->PSendSysMessage("ARENAONLY force honor: no waiting Alliance and Horde bots of one level found");
+            return true;
+        }
+
+        uint32 const honorBefore = killer->GetHonorPoints();
+        uint32 const lifetimeBefore = killer->GetUInt32Value(PLAYER_FIELD_LIFETIME_HONORABLE_KILLS);
+        uint32 const todayBefore = killer->GetUInt32Value(PLAYER_FIELD_KILLS);
+        uint64 const countBefore = arenaOnlyHonorKills.load();
+        killer->RewardHonor(victim, 1);
+        uint32 const honorAfter = killer->GetHonorPoints();
+        uint32 const lifetimeAfter = killer->GetUInt32Value(PLAYER_FIELD_LIFETIME_HONORABLE_KILLS);
+        uint32 const todayAfter = killer->GetUInt32Value(PLAYER_FIELD_KILLS);
+        bool const pass = honorAfter == honorBefore && lifetimeAfter == lifetimeBefore && todayAfter == todayBefore &&
+                          arenaOnlyHonorKills.load() == countBefore + 1;
+        handler->PSendSysMessage(
+            "ARENAONLY force honor: {} - bot {} credited a kill of {}: honor {} -> {}, lifetime kills {} -> {}, "
+            "today {} -> {}, counted {}",
+            pass ? "PASS" : "FAIL", killer->GetName(), victim->GetName(), honorBefore, honorAfter, lifetimeBefore,
+            lifetimeAfter, todayBefore, todayAfter, arenaOnlyHonorKills.load() - countBefore);
+        return true;
+    }
+
+    if (mode == "bg" && arenaOnlyForcedBot.IsEmpty())
+    {
+        for (auto const& [guid, bot] : sRandomPlayerbotMgr.playerBots)
+        {
+            if (!waiting(bot))
+                continue;
+
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            arenaOnlyForcedCombat = botAI->GetStrategies(BOT_STATE_COMBAT);
+            arenaOnlyForcedNonCombat = botAI->GetStrategies(BOT_STATE_NON_COMBAT);
+            bot->SetBattlegroundId(ArenaOnlyForcedBattlegroundId, BATTLEGROUND_NA, PLAYER_MAX_BATTLEGROUND_QUEUES,
+                                   false, false, bot->GetTeamId());
+            arenaOnlyForcedBot = bot->GetGUID();
+            handler->PSendSysMessage(
+                "ARENAONLY force bg: bot {} on map {} has battleground id {} (no such battleground), strategies {} "
+                "combat, {} non-combat; run \"force bg\" again in a few seconds",
+                bot->GetName(), bot->GetMapId(), ArenaOnlyForcedBattlegroundId, arenaOnlyForcedCombat.size(),
+                arenaOnlyForcedNonCombat.size());
+            return true;
+        }
+
+        handler->PSendSysMessage("ARENAONLY force bg: no waiting random bot found");
+        return true;
+    }
+
+    if (mode == "bg")
+    {
+        Player* bot = ObjectAccessor::FindConnectedPlayer(arenaOnlyForcedBot);
+        arenaOnlyForcedBot.Clear();
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI)
+        {
+            handler->PSendSysMessage("ARENAONLY force bg: the forced bot is gone");
+            return true;
+        }
+
+        bool const idKept = bot->GetBattlegroundId() == ArenaOnlyForcedBattlegroundId;
+        bool const onMatchMap = ArenaOnlyOnMatchMap(bot);
+        bool const strategiesKept = botAI->GetStrategies(BOT_STATE_COMBAT) == arenaOnlyForcedCombat &&
+                                    botAI->GetStrategies(BOT_STATE_NON_COMBAT) == arenaOnlyForcedNonCombat;
+        if (idKept)
+            bot->SetBattlegroundId(0, BATTLEGROUND_TYPE_NONE, PLAYER_MAX_BATTLEGROUND_QUEUES, false, false,
+                                   TEAM_NEUTRAL);
+
+        handler->PSendSysMessage(
+            "ARENAONLY force bg: {} - bot {}: id kept {}, on match map {}, waiting strategies kept {}; id cleared",
+            idKept && !onMatchMap && strategiesKept ? "PASS" : "FAIL", bot->GetName(), idKept, onMatchMap,
+            strategiesKept);
+        return true;
+    }
+
+    // "join": the first call gives the partner of a waiting captain with a standing group a battleground id of no
+    // battleground (a member still in its last match); the second (a few seconds later) checks that the captain held
+    // its join (count up, not queued) and clears the id
+    if (mode == "join" && arenaOnlyForcedCaptain.IsEmpty())
+    {
+        for (auto const& [guid, bot] : sRandomPlayerbotMgr.playerBots)
+        {
+            if (!waiting(bot) || !bot->GetGroup() || bot->GetGroup()->GetLeaderGUID() != bot->GetGUID())
+                continue;
+
+            for (ArenaType const type : {ARENA_TYPE_2v2, ARENA_TYPE_3v3, ARENA_TYPE_5v5})
+            {
+                ArenaTeam* team = sArenaTeamMgr->GetArenaTeamByCaptain(bot->GetGUID(), type);
+                if (!team || !LeadsCompleteArenaTeamGroup(bot, team, type))
+                    continue;
+
+                Player* partner = nullptr;
+                for (Group::MemberSlot const& slot : bot->GetGroup()->GetMemberSlots())
+                {
+                    Player* member = ObjectAccessor::FindConnectedPlayer(slot.guid);
+                    if (member && member != bot && waiting(member))
+                        partner = member;
+                }
+
+                if (!partner)
+                    continue;
+
+                partner->SetBattlegroundId(ArenaOnlyForcedBattlegroundId, BATTLEGROUND_NA,
+                                           PLAYER_MAX_BATTLEGROUND_QUEUES, false, false, partner->GetTeamId());
+                arenaOnlyForcedCaptain = bot->GetGUID();
+                arenaOnlyForcedPartner = partner->GetGUID();
+                arenaOnlyForcedBusyBefore = arenaPartnerBusy.load();
+                handler->PSendSysMessage(
+                    "ARENAONLY force join: captain {} of team #{} ({}v{}), partner {} has battleground id {} (no such "
+                    "battleground); run \"force join\" again in a few seconds",
+                    bot->GetName(), team->GetId(), uint32(type), uint32(type), partner->GetName(),
+                    ArenaOnlyForcedBattlegroundId);
+                return true;
+            }
+        }
+
+        handler->PSendSysMessage(
+            "ARENAONLY force join: no waiting captain with a standing group and a waiting partner found; try again");
+        return true;
+    }
+
+    if (mode == "join")
+    {
+        Player* captain = ObjectAccessor::FindConnectedPlayer(arenaOnlyForcedCaptain);
+        Player* partner = ObjectAccessor::FindConnectedPlayer(arenaOnlyForcedPartner);
+        arenaOnlyForcedCaptain.Clear();
+        arenaOnlyForcedPartner.Clear();
+        bool const idKept = partner && partner->GetBattlegroundId() == ArenaOnlyForcedBattlegroundId;
+        if (idKept)
+            partner->SetBattlegroundId(0, BATTLEGROUND_TYPE_NONE, PLAYER_MAX_BATTLEGROUND_QUEUES, false, false,
+                                       TEAM_NEUTRAL);
+
+        if (!captain || !partner)
+        {
+            handler->PSendSysMessage("ARENAONLY force join: the captain or the partner is gone");
+            return true;
+        }
+
+        uint64 const held = arenaPartnerBusy.load() - arenaOnlyForcedBusyBefore;
+        bool const captainQueued = captain->InBattlegroundQueue();
+        handler->PSendSysMessage(
+            "ARENAONLY force join: {} - captain {}: joins held {} (all captains), captain queued {}, partner id kept "
+            "{}; id cleared",
+            held && !captainQueued && idKept ? "PASS" : "FAIL", captain->GetName(), held, captainQueued, idKept);
+        return true;
+    }
+
+    handler->PSendSysMessage("ARENAONLY force: use \"force honor\", \"force bg\" (twice) or \"force join\" (twice)");
+    return true;
+}
 
 bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char const* /*args*/)
 {
@@ -3653,6 +3965,17 @@ bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char
         arenaOnlyIdleBuckets[0].load(), arenaOnlyIdleBuckets[1].load(), arenaOnlyIdleBuckets[2].load(),
         arenaOnlyIdleBuckets[3].load(), arenaOnlyIdleBuckets[4].load(), arenaOnlyIdleBuckets[5].load(),
         arenaOnlyJoinsSent.load(), arenaOnlyJoinsNotReady.load(), arenaOnlyInvitesAccepted.load());
+    handler->PSendSysMessage(
+        "ARENAONLY: honorable kills outside an arena {} (gain taken back; one \"ARENAONLY honor kill\" log line each)",
+        arenaOnlyHonorKills.load());
+    uint64 const waits = arenaPartnerWaits.load();
+    handler->PSendSysMessage(
+        "ARENAONLY: joins held for a busy partner {} (the core would drop them), waits {}, mean {} ms, max {} ms, "
+        "under 5/10/20/40/80 s and over {}/{}/{}/{}/{}/{}; arena joins without a battlemaster on the map {}",
+        arenaPartnerBusy.load(), waits, waits ? arenaPartnerWaitMsTotal.load() / waits : 0,
+        arenaPartnerWaitMsMax.load(), arenaPartnerWaitBuckets[0].load(), arenaPartnerWaitBuckets[1].load(),
+        arenaPartnerWaitBuckets[2].load(), arenaPartnerWaitBuckets[3].load(), arenaPartnerWaitBuckets[4].load(),
+        arenaPartnerWaitBuckets[5].load(), arenaOnlyNoBattlemaster.load());
     return true;
 }
 

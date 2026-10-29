@@ -501,8 +501,10 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->addStrategy("skill", false);
 
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
-    // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && !player->InBattleground() && sRandomPlayerbotMgr.IsRandomBot(player))
+    // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands. "In" = on the
+    // battleground's own map: an accepted invite whose port has not happened leaves the bot waiting
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
+        sRandomPlayerbotMgr.IsRandomBot(player))
     {
         engine->removeAllStrategies();
         engine->addStrategiesNoInit("default", "chat", nullptr);
@@ -731,7 +733,8 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     ArenaOnlyState arenaOnly = ArenaOnlyState::Off;
     if (sPlayerbotAIConfig.ArenaOnlyEnable && sRandomPlayerbotMgr.IsRandomBot(player))
     {
-        arenaOnly = player->InBattleground() ? ArenaOnlyState::InBattleground : ArenaOnlyState::Waiting;
+        arenaOnly =
+            RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) ? ArenaOnlyState::InBattleground : ArenaOnlyState::Waiting;
         if (arenaOnly == ArenaOnlyState::Waiting)
         {
             nonCombatEngine->removeAllStrategies();
@@ -762,7 +765,8 @@ void AiFactory::AddDefaultDeadStrategies(Player* player, PlayerbotAI* const faca
 
     // Playerbots.ArenaOnly.Enable: a random bot that died outside a battleground stays where it fell (no release,
     // graveyard or corpse run); RandomPlayerbotMgr::ProcessBot revives it in place
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && !player->InBattleground() && sRandomPlayerbotMgr.IsRandomBot(player))
+    if (sPlayerbotAIConfig.ArenaOnlyEnable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
+        sRandomPlayerbotMgr.IsRandomBot(player))
     {
         deadEngine->removeAllStrategies();
         deadEngine->addStrategiesNoInit("default", "chat", nullptr);

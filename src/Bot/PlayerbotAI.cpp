@@ -1935,10 +1935,22 @@ void PlayerbotAI::DoNextAction(bool min)
 
     // Playerbots.ArenaOnly.Enable: a bot that went into or out of a battleground without a reset gets the other
     // strategy set (O(1): two flags); the time from leaving one (back in the world) to the next queue is its idle cycle
-    // (arenaOnlyLeftAt: UINT32_MAX while in a battleground; the leave path may reset the strategies itself)
+    // (arenaOnlyLeftAt: UINT32_MAX while in a battleground; the leave path may reset the strategies itself). "In" =
+    // on the battleground's own map (M17d-b): a bot with an accepted invite that is still elsewhere keeps waiting, and
+    // a waiting bot and its pet drop any target they have (nothing fights at the home spot)
     if (arenaOnlyState != ArenaOnlyState::Off && !bot->IsBeingTeleported())
     {
-        if (bot->InBattleground())
+        bool const onMatchMap = RandomPlayerbotMgr::ArenaOnlyOnMatchMap(bot);
+        if (!onMatchMap)
+        {
+            if (bot->GetVictim())
+                bot->AttackStop();
+
+            if (Pet* pet = bot->GetPet(); pet && pet->GetVictim())
+                pet->AttackStop();
+        }
+
+        if (onMatchMap)
             arenaOnlyLeftAt = std::numeric_limits<uint32>::max();
         else if (arenaOnlyLeftAt == std::numeric_limits<uint32>::max())
             arenaOnlyLeftAt = std::clamp<uint32>(getMSTime(), 1, std::numeric_limits<uint32>::max() - 1);
@@ -1948,7 +1960,7 @@ void PlayerbotAI::DoNextAction(bool min)
             arenaOnlyLeftAt = 0;
         }
 
-        if ((arenaOnlyState == ArenaOnlyState::Waiting) == bot->InBattleground())
+        if ((arenaOnlyState == ArenaOnlyState::Waiting) == onMatchMap)
         {
             ResetStrategies();
             return;

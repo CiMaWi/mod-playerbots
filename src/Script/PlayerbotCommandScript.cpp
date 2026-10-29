@@ -146,6 +146,7 @@ public:
             {"selftest", RandomPlayerbotMgr::HandleArenaOnlySelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"kill", HandleArenaOnlyKillCommand, SEC_GAMEMASTER, Console::Yes},
             {"botstate", HandleArenaOnlyBotStateCommand, SEC_GAMEMASTER, Console::Yes},
+            {"force", RandomPlayerbotMgr::HandleArenaOnlyForceCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsNaturalCommandTable = {
