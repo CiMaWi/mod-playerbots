@@ -2058,7 +2058,7 @@ Playerbots.Skill.Attributes.Corr.Aggression-Caution = -0.2
 # With 1, a tactic acts only when it is in the bot's tactic mask (the tactics whose own Enable is 1; the PvP test
 # harness overrides the mask per side with tacticsA= / tacticsB=) and the bot's current context is in its Scope.
 # Every bot uses the enabled tactics, the bots in a real player's group included.
-# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate|reaction|attributes]
+# GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate|reaction|attributes|focus]
 Playerbots.Tactics.Enable = 0
 
 # Per tactic (all keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,
@@ -2094,6 +2094,71 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Hold.KnownFromSkill = 0
 # Playerbots.Tactics.Hold.UseChanceAtSkill1 = 100
 # Playerbots.Tactics.Hold.UseChanceAtSkill99 = 100
+
+# Target hold and team plan: the numbers of the Hold and Plan tactics (all keys optional, the defaults below; read only
+# where those tactics are enabled). The defaults are proposals, not tuned yet (G6a tunes them). An ...AtSkill1 /
+# ...AtSkill99 pair is lerped over the bot's Wisdom (judgement; the re-mark delay over its Speed) along
+# Playerbots.Skill.CurveExponent; with the attribute defaults that is the skill, and skill 0 takes the skill-99 value.
+# The personality traits move some values (neutral 50 moves nothing): Patience lengthens both holds (up to x1.25),
+# Aggression raises both execute thresholds (up to 10 points: an earlier execute), Caution widens the swap off a
+# defensive (up to 15 points), Teamwork raises the chance to follow the partner (up to x1.5), shortens the follow delay
+# (down to x0.7) and raises the margin a bot other than the planner needs to re-mark (up to x1.5).
+#
+# Hold (one bot's target, every context in Playerbots.Tactics.Hold.Scope): a bot keeps its target for HoldMs, then
+# switches only to a candidate that scores HysteresisPct points better (a point is one percent of health; a switch's
+# reaction cost adds a point per 100 ms). It always switches when the target dies, leaves range, is out of its sight
+# for longer than LosLostMs or turns immune. A candidate at or below ExecPct % health (its target above it, no
+# defensive up) overrides the hold with ExecChance % per 3 s window. Low skill shows tunnel vision (long hold, a
+# hysteresis of 100 that health alone never reaches, no execute): it switches only for death, range and immunity.
+# Without marks, FollowChance % (one answer per 10 s window) is the chance to take the partner's target once the
+# partner has had it for FollowDelayMs: none at low skill, sometimes and late at mid skill.
+# Playerbots.Tactics.Hold.HoldMsAtSkill1 = 20000
+# Playerbots.Tactics.Hold.HoldMsAtSkill99 = 1500
+# Playerbots.Tactics.Hold.HysteresisPctAtSkill1 = 100
+# Playerbots.Tactics.Hold.HysteresisPctAtSkill99 = 8
+# Playerbots.Tactics.Hold.ExecPctAtSkill1 = 15
+# Playerbots.Tactics.Hold.ExecPctAtSkill99 = 25
+# Playerbots.Tactics.Hold.ExecChanceAtSkill1 = 0
+# Playerbots.Tactics.Hold.ExecChanceAtSkill99 = 90
+# Playerbots.Tactics.Hold.FollowChanceAtSkill1 = 0
+# Playerbots.Tactics.Hold.FollowChanceAtSkill99 = 80
+# Playerbots.Tactics.Hold.FollowDelayMsAtSkill1 = 4000
+# Playerbots.Tactics.Hold.FollowDelayMsAtSkill99 = 1000
+# Playerbots.Tactics.Hold.LosLostMs = 1500
+#
+# Focus (the team plan, arenas): the group's target icons carry the plan, skull = kill target, moon = crowd-control
+# target (moon only when the team can control). The planner is the team's alive bot with the higher skill (ties: the
+# lower guid) at or above Playerbots.Tactics.Plan.KnownFromSkill (the Plan tactic's gate key above; 40 is the proposal
+# when the plan is on; there is no Focus.KnownFromSkill); with a real player in the group he marks and no bot plans.
+# The planner re-plans every PlanIntervalMs and keeps the kill target for HoldMs; after the hold another enemy must
+# score HysteresisPct points better (health, healer, range and sight of the team's bots, defensives, trinket, physical
+# immunity for a physical team, stun or fear). It switches at once when the kill target dies, turns immune to
+# everything, falls into the team's breakable crowd control (never a kill target) or is out of every own bot's sight
+# for longer than LosLostMs; an enemy at or below ExecPct % health (no defensive up) overrides the hold with
+# ExecChance % per 3 s window; a kill target with a defensive up is left for an enemy within DefensiveSwapPct points
+# of its health. Marks are set at the start and change only on events (the kill target dies or turns immune, a big
+# opening), at most once per MinRemarkSeconds, RemarkDelayMs after the event (a human delay), never within
+# HumanMarkRespectSeconds of a real player's mark. Any other bot, in a real player's group too, re-marks only when its
+# own judgement beats the marked target by StrongMargin score points, so rarely.
+# Playerbots.Tactics.Focus.PlanIntervalMsAtSkill1 = 2300
+# Playerbots.Tactics.Focus.PlanIntervalMsAtSkill99 = 300
+# Playerbots.Tactics.Focus.HoldMsAtSkill1 = 5300
+# Playerbots.Tactics.Focus.HoldMsAtSkill99 = 2000
+# Playerbots.Tactics.Focus.HysteresisPctAtSkill1 = 28
+# Playerbots.Tactics.Focus.HysteresisPctAtSkill99 = 8
+# Playerbots.Tactics.Focus.ExecPctAtSkill1 = 15
+# Playerbots.Tactics.Focus.ExecPctAtSkill99 = 25
+# Playerbots.Tactics.Focus.ExecChanceAtSkill1 = 30
+# Playerbots.Tactics.Focus.ExecChanceAtSkill99 = 90
+# Playerbots.Tactics.Focus.RemarkDelayMsAtSkill1 = 2500
+# Playerbots.Tactics.Focus.RemarkDelayMsAtSkill99 = 800
+# Playerbots.Tactics.Focus.StrongMarginAtSkill1 = 50
+# Playerbots.Tactics.Focus.StrongMarginAtSkill99 = 30
+# Playerbots.Tactics.Focus.MinRemarkSeconds = 8
+# Playerbots.Tactics.Focus.HumanMarkRespectSeconds = 10
+# Playerbots.Tactics.Focus.LosLostMs = 1500
+# Playerbots.Tactics.Focus.DefensiveSwapPct = 25
+# (Ranges: ms keys 0-120000, percents 0-100, StrongMargin 0-255, seconds 0-600; larger values are capped.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

@@ -1099,6 +1099,50 @@ bool PlayerbotAIConfig::Initialize()
             TacticsConfigMask |= TacticBit(static_cast<TacticId>(index));
     }
 
+    // Playerbots.Tactics.Hold.* and .Focus.* (optional): the target hold's and the team plan's numbers, the defaults in
+    // FocusConfig; nothing reads them before G1b
+    TacticFocus = FocusConfig{};
+    constexpr uint32 MaxFocusMs = 120000;
+    constexpr uint32 MaxFocusPct = 100;
+    constexpr uint32 MaxFocusMargin = 255;
+    constexpr uint32 MaxFocusSeconds = 600;
+    auto const focusNumber = [](char const* key, uint32& value, uint32 maximum)
+    {
+        value = std::min<uint32>(sConfigMgr->GetOption<uint32>(std::string("Playerbots.Tactics.") + key, value, false),
+                                 maximum);
+    };
+    focusNumber("Hold.HoldMsAtSkill1", TacticFocus.HoldMsAtSkill1, MaxFocusMs);
+    focusNumber("Hold.HoldMsAtSkill99", TacticFocus.HoldMsAtSkill99, MaxFocusMs);
+    focusNumber("Hold.HysteresisPctAtSkill1", TacticFocus.HoldHysteresisPctAtSkill1, MaxFocusPct);
+    focusNumber("Hold.HysteresisPctAtSkill99", TacticFocus.HoldHysteresisPctAtSkill99, MaxFocusPct);
+    focusNumber("Hold.ExecPctAtSkill1", TacticFocus.HoldExecPctAtSkill1, MaxFocusPct);
+    focusNumber("Hold.ExecPctAtSkill99", TacticFocus.HoldExecPctAtSkill99, MaxFocusPct);
+    focusNumber("Hold.ExecChanceAtSkill1", TacticFocus.HoldExecChanceAtSkill1, MaxFocusPct);
+    focusNumber("Hold.ExecChanceAtSkill99", TacticFocus.HoldExecChanceAtSkill99, MaxFocusPct);
+    focusNumber("Hold.FollowChanceAtSkill1", TacticFocus.HoldFollowChanceAtSkill1, MaxFocusPct);
+    focusNumber("Hold.FollowChanceAtSkill99", TacticFocus.HoldFollowChanceAtSkill99, MaxFocusPct);
+    focusNumber("Hold.FollowDelayMsAtSkill1", TacticFocus.HoldFollowDelayMsAtSkill1, MaxFocusMs);
+    focusNumber("Hold.FollowDelayMsAtSkill99", TacticFocus.HoldFollowDelayMsAtSkill99, MaxFocusMs);
+    focusNumber("Hold.LosLostMs", TacticFocus.HoldLosLostMs, MaxFocusMs);
+    focusNumber("Focus.PlanIntervalMsAtSkill1", TacticFocus.FocusPlanIntervalMsAtSkill1, MaxFocusMs);
+    focusNumber("Focus.PlanIntervalMsAtSkill99", TacticFocus.FocusPlanIntervalMsAtSkill99, MaxFocusMs);
+    focusNumber("Focus.HoldMsAtSkill1", TacticFocus.FocusHoldMsAtSkill1, MaxFocusMs);
+    focusNumber("Focus.HoldMsAtSkill99", TacticFocus.FocusHoldMsAtSkill99, MaxFocusMs);
+    focusNumber("Focus.HysteresisPctAtSkill1", TacticFocus.FocusHysteresisPctAtSkill1, MaxFocusPct);
+    focusNumber("Focus.HysteresisPctAtSkill99", TacticFocus.FocusHysteresisPctAtSkill99, MaxFocusPct);
+    focusNumber("Focus.ExecPctAtSkill1", TacticFocus.FocusExecPctAtSkill1, MaxFocusPct);
+    focusNumber("Focus.ExecPctAtSkill99", TacticFocus.FocusExecPctAtSkill99, MaxFocusPct);
+    focusNumber("Focus.ExecChanceAtSkill1", TacticFocus.FocusExecChanceAtSkill1, MaxFocusPct);
+    focusNumber("Focus.ExecChanceAtSkill99", TacticFocus.FocusExecChanceAtSkill99, MaxFocusPct);
+    focusNumber("Focus.RemarkDelayMsAtSkill1", TacticFocus.FocusRemarkDelayMsAtSkill1, MaxFocusMs);
+    focusNumber("Focus.RemarkDelayMsAtSkill99", TacticFocus.FocusRemarkDelayMsAtSkill99, MaxFocusMs);
+    focusNumber("Focus.StrongMarginAtSkill1", TacticFocus.FocusStrongMarginAtSkill1, MaxFocusMargin);
+    focusNumber("Focus.StrongMarginAtSkill99", TacticFocus.FocusStrongMarginAtSkill99, MaxFocusMargin);
+    focusNumber("Focus.MinRemarkSeconds", TacticFocus.FocusMinRemarkSeconds, MaxFocusSeconds);
+    focusNumber("Focus.HumanMarkRespectSeconds", TacticFocus.FocusHumanMarkRespectSeconds, MaxFocusSeconds);
+    focusNumber("Focus.LosLostMs", TacticFocus.FocusLosLostMs, MaxFocusMs);
+    focusNumber("Focus.DefensiveSwapPct", TacticFocus.FocusDefensiveSwapPct, MaxFocusPct);
+
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);

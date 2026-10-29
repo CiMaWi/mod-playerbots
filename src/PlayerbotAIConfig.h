@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_PLAYERBOTAICONFIG_H
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
+#include "ArenaFocusConfig.h"
 #include "BotAttributes.h"
 #include "DBCEnums.h"
 #include "NaturalReaction.h"
@@ -511,6 +512,8 @@ public:
     bool TacticsEnable;
     std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
     uint32 TacticsConfigMask;
+    // Playerbots.Tactics.Hold.* and .Focus.*: the numbers of the target hold and the team plan (ArenaFocus.h)
+    FocusConfig TacticFocus;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;
