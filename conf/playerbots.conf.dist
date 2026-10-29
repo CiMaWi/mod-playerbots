@@ -1636,6 +1636,87 @@ Playerbots.Natural.Reaction.PingMs = 60
 Playerbots.Natural.Reaction.DisplayMs = 30
 Playerbots.Natural.Reaction.ServerTickMs = -1
 
+# Reaction types (G0h3, with Playerbots.Natural.Reaction.Enable in its Contexts): each part has its own Enable
+# (default 0: the reaction as above) and prices at attribute 1 and 99 (Playerbots.Skill.Attributes.*; with their
+# defaults every ability is the skill), lerped along Playerbots.Skill.CurveExponent. Every cost lies inside the
+# reaction (the trace's ready), so the end-to-end target keeps its sum. The playerbots.reaction trace lines add type
+# (0 simple, 1 choice, 2 anticipated), options, load (other events pending), ease (0 common, 1 rare, 2 focus target,
+# 3 new target), think (ms) and cost (choice + load + ease + think, ms).
+# Choice (Wisdom): Hick's law, MsPerDoubling per doubling of the real options (one option: none; at most MaxOptions,
+#   1-64). Counted from what the bot has already built: a target switch and crowd control from its attackers list;
+#   an interrupt and a dispel are one option (no count without a new scan). 0-2000 ms.
+# Load (Focus): per other pending event (at most MaxEvents, 1-5) MsPerEvent more and MissPercentPerEvent (0-100) more
+#   miss share; an event that outranks every pending one (interrupt, defensive, cc break, dispel, crowd control, target
+#   switch) keeps TopProtect (0-1) of both off.
+# Ease (Dexterity): the price of the answer's button: Common (interrupts, dispels, crowd control) < Rare (defensive
+#   cooldowns, cc breaks, strangulate, mass dispel) < Focus (an action on the focus target, G4e; below FocusDexterity,
+#   1-99, a new target's price) < NewTarget (a target switch, or an action on an enemy other than the bot's target).
+#   Each price is raised to 1 ms above the one before at both ends if needed, so the order holds at every Dexterity.
+# Think (Wisdom): a decision's time, the Shortcut (the first event seen, no judgement: today's interrupt) or the Deep
+#   check (charged by later tactics, which take it DeepPercent, 0-100, of the time); PatienceWaitMs (Patience trait 0
+#   and 100, straight line) is how long a bot waits for a better moment (read by later tactics).
+# Anticipate (Foresight): an interrupt the opponent memory predicts (the enemy cast the same spell the time before)
+#   saves Share (0-0.95) of the draw, never below MinMs; it is no choice. Needs Memory.Enable for the memory to fill.
+# Queue (Speed; G0h3-b): a bot whose own cast or GCD ends before its next check checks MinMs-MaxMs after the end
+#   instead (never later), as a human mashing the button.
+# Reeval (G0h3-b, the user's notes of 2026-10-30): Enable stops the bot's own cast (MinOwnRemainingMs or more left) for a
+#   kick of an enemy cast of at least ImportantCastMs that the own cast would end too late for; BusySkip drops a kick a
+#   bot busy with its own cast or GCD would land only within BusyMarginMs of the enemy cast's end or after it.
+# Memory (G0h3-b, DT.12): per bot and match, the casts the bot saw each enemy (at most 8) begin and cancel; the fake
+#   rate counts from MinCasts (1-100) casts; a cast gone within EndToleranceMs of its bar's end finished.
+# Movement (G0h3-b): avoid aoe as a reaction, from the ground effect's start.
+# Times 0-10000 ms. On a running server .reload config then .playerbots rndbot reload switch the parts; changed
+# prices reach a logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's prices.
+# Default: every part 0; the prices below
+Playerbots.Natural.Reaction.Choice.Enable = 0
+Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill1 = 120
+Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill99 = 50
+Playerbots.Natural.Reaction.Choice.MaxOptions = 8
+Playerbots.Natural.Reaction.Load.Enable = 0
+Playerbots.Natural.Reaction.Load.MsPerEventAtSkill1 = 200
+Playerbots.Natural.Reaction.Load.MsPerEventAtSkill99 = 80
+Playerbots.Natural.Reaction.Load.MissPercentPerEventAtSkill1 = 10
+Playerbots.Natural.Reaction.Load.MissPercentPerEventAtSkill99 = 2
+Playerbots.Natural.Reaction.Load.TopProtectAtSkill1 = 0
+Playerbots.Natural.Reaction.Load.TopProtectAtSkill99 = 0.8
+Playerbots.Natural.Reaction.Load.MaxEvents = 3
+Playerbots.Natural.Reaction.Ease.Enable = 0
+Playerbots.Natural.Reaction.Ease.CommonMsAtSkill1 = 0
+Playerbots.Natural.Reaction.Ease.CommonMsAtSkill99 = 0
+Playerbots.Natural.Reaction.Ease.RareMsAtSkill1 = 250
+Playerbots.Natural.Reaction.Ease.RareMsAtSkill99 = 80
+Playerbots.Natural.Reaction.Ease.FocusMsAtSkill1 = 350
+Playerbots.Natural.Reaction.Ease.FocusMsAtSkill99 = 120
+Playerbots.Natural.Reaction.Ease.NewTargetMsAtSkill1 = 450
+Playerbots.Natural.Reaction.Ease.NewTargetMsAtSkill99 = 180
+Playerbots.Natural.Reaction.Ease.FocusDexterity = 40
+Playerbots.Natural.Reaction.Think.Enable = 0
+Playerbots.Natural.Reaction.Think.ShortcutMsAtSkill1 = 40
+Playerbots.Natural.Reaction.Think.ShortcutMsAtSkill99 = 20
+Playerbots.Natural.Reaction.Think.DeepMsAtSkill1 = 400
+Playerbots.Natural.Reaction.Think.DeepMsAtSkill99 = 150
+Playerbots.Natural.Reaction.Think.DeepPercentAtSkill1 = 0
+Playerbots.Natural.Reaction.Think.DeepPercentAtSkill99 = 100
+Playerbots.Natural.Reaction.Think.PatienceWaitMsAt0 = 0
+Playerbots.Natural.Reaction.Think.PatienceWaitMsAt100 = 1500
+Playerbots.Natural.Reaction.Anticipate.Enable = 0
+Playerbots.Natural.Reaction.Anticipate.ShareAtSkill1 = 0.1
+Playerbots.Natural.Reaction.Anticipate.ShareAtSkill99 = 0.5
+Playerbots.Natural.Reaction.Queue.Enable = 0
+Playerbots.Natural.Reaction.Queue.MinMsAtSkill1 = 60
+Playerbots.Natural.Reaction.Queue.MaxMsAtSkill1 = 250
+Playerbots.Natural.Reaction.Queue.MinMsAtSkill99 = 10
+Playerbots.Natural.Reaction.Queue.MaxMsAtSkill99 = 80
+Playerbots.Natural.Reaction.Reeval.Enable = 0
+Playerbots.Natural.Reaction.Reeval.ImportantCastMs = 1500
+Playerbots.Natural.Reaction.Reeval.MinOwnRemainingMs = 300
+Playerbots.Natural.Reaction.Reeval.BusySkip = 0
+Playerbots.Natural.Reaction.Reeval.BusyMarginMs = 100
+Playerbots.Natural.Reaction.Memory.Enable = 0
+Playerbots.Natural.Reaction.Memory.MinCasts = 3
+Playerbots.Natural.Reaction.Memory.EndToleranceMs = 150
+Playerbots.Natural.Reaction.Movement.Enable = 0
+
 # Natural cadence: bots in Contexts check their AI at least every CheckMs (20-1000) in combat in a started match
 # (battleground and arena gates open; open-world PvP fights when World is listed) instead of upstream's combat
 # interval (2.5 x Playerbots.ReactDelay in battlegrounds and arenas with Playerbots.FastReactInBG), and upstream's

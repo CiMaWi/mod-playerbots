@@ -966,6 +966,74 @@ bool PlayerbotAIConfig::Initialize()
         reaction.DisplayMs = ms("Playerbots.Natural.Reaction.DisplayMs", 30);
         reaction.ServerTickMs =
             std::clamp(sConfigMgr->GetOption<int32>("Playerbots.Natural.Reaction.ServerTickMs", -1), -1, 1000);
+        // G0h3's parts (NaturalReaction.h), each off by default
+        auto const flag = [](std::string const& key) { return sConfigMgr->GetOption<bool>(key, false); };
+        auto const count = [](std::string const& key, uint32 fallback, uint32 low, uint32 high)
+        { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), low, high); };
+        std::string const part = "Playerbots.Natural.Reaction.";
+        ReactionChoiceParams& choice = reaction.Choice;
+        choice.Enable = flag(part + "Choice.Enable");
+        choice.MsPerDoublingAt1 = real(part + "Choice.MsPerDoublingAtSkill1", 120.0f, 0.0f, 2000.0f);
+        choice.MsPerDoublingAt99 = real(part + "Choice.MsPerDoublingAtSkill99", 50.0f, 0.0f, 2000.0f);
+        choice.MaxOptions = count(part + "Choice.MaxOptions", 8, 1, 64);
+        ReactionLoadParams& load = reaction.Load;
+        load.Enable = flag(part + "Load.Enable");
+        load.MsPerEventAt1 = ms(part + "Load.MsPerEventAtSkill1", 200);
+        load.MsPerEventAt99 = ms(part + "Load.MsPerEventAtSkill99", 80);
+        load.MissPercentPerEventAt1 = count(part + "Load.MissPercentPerEventAtSkill1", 10, 0, 100);
+        load.MissPercentPerEventAt99 = count(part + "Load.MissPercentPerEventAtSkill99", 2, 0, 100);
+        load.TopProtectAt1 = real(part + "Load.TopProtectAtSkill1", 0.0f, 0.0f, 1.0f);
+        load.TopProtectAt99 = real(part + "Load.TopProtectAtSkill99", 0.8f, 0.0f, 1.0f);
+        load.MaxEvents = count(part + "Load.MaxEvents", 3, 1, 5);
+        ReactionEaseParams& ease = reaction.Ease;
+        ease.Enable = flag(part + "Ease.Enable");
+        static char const* const easeNames[REACTION_EASE_COUNT] = {"Common", "Rare", "Focus", "NewTarget"};
+        ReactionEaseParams const easeDefaults;
+        for (uint32 index = 0; index < REACTION_EASE_COUNT; ++index)
+        {
+            std::string const prefix = part + "Ease." + easeNames[index] + "MsAtSkill";
+            ease.MsAt1[index] = ms(prefix + "1", easeDefaults.MsAt1[index]);
+            ease.MsAt99[index] = ms(prefix + "99", easeDefaults.MsAt99[index]);
+            // Strictly rising at both ends, so at every Dexterity
+            if (index == 0)
+                continue;
+
+            ease.MsAt1[index] = std::max(ease.MsAt1[index], ease.MsAt1[index - 1] + 1);
+            ease.MsAt99[index] = std::max(ease.MsAt99[index], ease.MsAt99[index - 1] + 1);
+        }
+
+        ease.FocusDexterity = static_cast<uint8>(count(part + "Ease.FocusDexterity", 40, 1, 99));
+        ReactionThinkParams& think = reaction.Think;
+        think.Enable = flag(part + "Think.Enable");
+        think.ShortcutMsAt1 = ms(part + "Think.ShortcutMsAtSkill1", 40);
+        think.ShortcutMsAt99 = ms(part + "Think.ShortcutMsAtSkill99", 20);
+        think.DeepMsAt1 = ms(part + "Think.DeepMsAtSkill1", 400);
+        think.DeepMsAt99 = ms(part + "Think.DeepMsAtSkill99", 150);
+        think.DeepPercentAt1 = count(part + "Think.DeepPercentAtSkill1", 0, 0, 100);
+        think.DeepPercentAt99 = count(part + "Think.DeepPercentAtSkill99", 100, 0, 100);
+        think.PatienceWaitMsAt0 = ms(part + "Think.PatienceWaitMsAt0", 0);
+        think.PatienceWaitMsAt100 = ms(part + "Think.PatienceWaitMsAt100", 1500);
+        ReactionAnticipateParams& anticipate = reaction.Anticipate;
+        anticipate.Enable = flag(part + "Anticipate.Enable");
+        anticipate.ShareAt1 = real(part + "Anticipate.ShareAtSkill1", 0.1f, 0.0f, 0.95f);
+        anticipate.ShareAt99 = real(part + "Anticipate.ShareAtSkill99", 0.5f, 0.0f, 0.95f);
+        ReactionQueueParams& queue = reaction.Queue;
+        queue.Enable = flag(part + "Queue.Enable");
+        queue.MinMsAt1 = ms(part + "Queue.MinMsAtSkill1", 60);
+        queue.MaxMsAt1 = std::max(queue.MinMsAt1, ms(part + "Queue.MaxMsAtSkill1", 250));
+        queue.MinMsAt99 = ms(part + "Queue.MinMsAtSkill99", 10);
+        queue.MaxMsAt99 = std::max(queue.MinMsAt99, ms(part + "Queue.MaxMsAtSkill99", 80));
+        ReactionReevalParams& reeval = reaction.Reeval;
+        reeval.Enable = flag(part + "Reeval.Enable");
+        reeval.ImportantCastMs = ms(part + "Reeval.ImportantCastMs", 1500);
+        reeval.MinOwnRemainingMs = ms(part + "Reeval.MinOwnRemainingMs", 300);
+        reeval.BusySkip = flag(part + "Reeval.BusySkip");
+        reeval.BusyMarginMs = ms(part + "Reeval.BusyMarginMs", 100);
+        ReactionMemoryParams& memory = reaction.Memory;
+        memory.Enable = flag(part + "Memory.Enable");
+        memory.MinCasts = count(part + "Memory.MinCasts", 3, 1, 100);
+        memory.EndToleranceMs = ms(part + "Memory.EndToleranceMs", 150);
+        reaction.MovementEnable = flag(part + "Movement.Enable");
         // Arena and battleground only by default: the model's arm cost measurably more per tick (G0h2-b)
         uint8 const reactionMatches =
             static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));

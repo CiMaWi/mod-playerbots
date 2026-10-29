@@ -167,6 +167,54 @@ SkillNoticeCategory LookupCategory(std::string const& name)
 
     return SkillNoticeCategory::None;
 }
+
+// The ease of an action's button (G0h3): by its category (defensive cooldowns and crowd-control breaks are rare
+// buttons, a target switch acts on a new target), with the long-cooldown exceptions by name
+ReactionEase LookupEase(std::string const& name, SkillNoticeCategory category)
+{
+    static std::unordered_map<std::string, ReactionEase> const overrides = {
+        {"strangulate", ReactionEase::Rare},
+        {"strangulate on enemy healer", ReactionEase::Rare},
+        {"mass dispel", ReactionEase::Rare},
+    };
+    auto const it = overrides.find(name);
+    if (it != overrides.end())
+        return it->second;
+
+    switch (category)
+    {
+        case SkillNoticeCategory::Defensive:
+        case SkillNoticeCategory::CrowdControlBreak:
+            return ReactionEase::Rare;
+        case SkillNoticeCategory::TargetSwitch:
+            return ReactionEase::NewTarget;
+        default:
+            return ReactionEase::Common;
+    }
+}
+
+// What matters most when events pile up (the load's top event): interrupt, defensive, crowd-control break, dispel,
+// crowd control, target switch
+uint8 ReactionImportance(SkillNoticeCategory category)
+{
+    switch (category)
+    {
+        case SkillNoticeCategory::Interrupt:
+            return 6;
+        case SkillNoticeCategory::Defensive:
+            return 5;
+        case SkillNoticeCategory::CrowdControlBreak:
+            return 4;
+        case SkillNoticeCategory::Dispel:
+            return 3;
+        case SkillNoticeCategory::CrowdControl:
+            return 2;
+        case SkillNoticeCategory::TargetSwitch:
+            return 1;
+        default:
+            return 0;
+    }
+}
 }  // namespace
 
 char const* SkillNoticeCategoryName(SkillNoticeCategory category)
@@ -198,7 +246,8 @@ float SkillMultiplier::GetValue(Action* action)
     if (action == nullptr || botAI->GetPvpSkill() == 0)
         return 1.0f;
 
-    SkillNoticeCategory const category = GetCategory(action);
+    ActionClass const& actionClass = GetClass(action);
+    SkillNoticeCategory const category = actionClass.Category;
     if (category == SkillNoticeCategory::None)
         return 1.0f;
 
@@ -215,8 +264,9 @@ float SkillMultiplier::GetValue(Action* action)
 
     SkillNoticeCounters& counters = botAI->GetSkillNoticeCounters();
     size_t const index = static_cast<size_t>(category) - 1;
-    bool const noticed =
-        sPlayerbotAIConfig.NaturalReactionActive ? HasReacted(category, action, switchTarget) : HasNoticed(category);
+    bool const noticed = sPlayerbotAIConfig.NaturalReactionActive
+                             ? HasReacted(category, actionClass.Ease, action, switchTarget)
+                             : HasNoticed(category);
     if (noticed)
     {
         ++counters.allowed[index];
@@ -227,16 +277,18 @@ float SkillMultiplier::GetValue(Action* action)
     return 0.0f;
 }
 
-SkillNoticeCategory SkillMultiplier::GetCategory(Action* action)
+SkillMultiplier::ActionClass const& SkillMultiplier::GetClass(Action* action)
 {
     auto const it = categories.find(action);
     if (it != categories.end())
         return it->second;
 
     // getName() builds a string; resolved once per action and bot
-    SkillNoticeCategory const category = LookupCategory(action->getName());
-    categories.emplace(action, category);
-    return category;
+    std::string const name = action->getName();
+    ActionClass actionClass;
+    actionClass.Category = LookupCategory(name);
+    actionClass.Ease = LookupEase(name, actionClass.Category);
+    return categories.emplace(action, actionClass).first->second;
 }
 
 bool SkillMultiplier::IsTargetSwitch(Action* action, Unit*& target)
@@ -352,7 +404,66 @@ uint32 VisibleEventAgeMs(Player* bot, SkillNoticeCategory category, Unit* target
 }
 }  // namespace
 
-bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, Unit* target)
+ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, ReactionEase ease, Unit* target,
+                                                 uint32 nowMs)
+{
+    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
+    ReactionEventInputs inputs;
+    // Choice: a switch and crowd control weigh the attackers the bot has already listed (no new scan); casts worth a
+    // kick and party members to dispel have no count without one, so they are one option
+    if (params.Choice.Enable &&
+        (category == SkillNoticeCategory::TargetSwitch || category == SkillNoticeCategory::CrowdControl))
+        inputs.Options = std::max<uint32>(1, static_cast<uint32>(AI_VALUE_LAZY(GuidVector, "attackers").size()));
+
+    if (params.Load.Enable)
+    {
+        size_t const index = static_cast<size_t>(category) - 1;
+        uint8 const rank = ReactionImportance(category);
+        inputs.LoadTop = true;
+        for (size_t other = 0; other < ReactionCategories; ++other)
+        {
+            if (other == index || !reactionNatural[other] || !ReactionEventPending(reactionEvents[other], nowMs))
+                continue;
+
+            ++inputs.Load;
+            if (ReactionImportance(static_cast<SkillNoticeCategory>(other + 1)) >= rank)
+                inputs.LoadTop = false;
+        }
+    }
+
+    if (params.Ease.Enable)
+    {
+        inputs.Ease = ease;
+        // An action on an enemy that is not the bot's target acts on a new target; on a friend the button's ease stays
+        if (ease != ReactionEase::NewTarget && target && target != bot && bot->IsHostileTo(target) &&
+            AI_VALUE(Unit*, "current target") != target)
+            inputs.Ease = ReactionEase::NewTarget;
+    }
+
+    if (category != SkillNoticeCategory::Interrupt)
+        return inputs;
+
+    // Today's interrupt kicks the first cast it sees, without judging the spell: the shortcut
+    inputs.Thinks = true;
+    inputs.Depth = ReactionThinkDepth::Shortcut;
+    if (params.Anticipate.Enable && target)
+    {
+        Spell* spell = target->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (!spell)
+            spell = target->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+
+        if (spell && spell->GetSpellInfo())
+        {
+            uint32 const endMs = nowMs + static_cast<uint32>(std::max(0, spell->GetCastTimeRemaining()));
+            inputs.Predicted = botAI->GetOpponentMemory().Predicts(
+                target->GetGUID().GetCounter(), spell->GetSpellInfo()->Id, endMs, params.Memory.EndToleranceMs);
+        }
+    }
+
+    return inputs;
+}
+
+bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease, Action* action, Unit* target)
 {
     PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::HasReacted"));
     size_t const index = static_cast<size_t>(category) - 1;
@@ -370,8 +481,11 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, U
 
         bool const behind = reactionNatural[index] && target && target != bot && bot->IsHostileTo(target) &&
                             !bot->HasInArc(params.ConeDegrees * static_cast<float>(M_PI) / 180.0f, target);
+        ReactionEventInputs const inputs =
+            reactionNatural[index] ? EventInputs(category, ease, target, now) : ReactionEventInputs();
         StartReactionEvent(event, reactionFocus, botAI->GetReactionState(), params, bot->GetGUID().GetCounter(),
-                           static_cast<uint8>(category), botAI->GetSkillNoticeMissPercent(), behind, now);
+                           static_cast<uint8>(category), botAI->GetSkillNoticeMissPercent(), behind, now,
+                           botAI->GetReactionTypes(), inputs);
         // End to end only where the faster check runs: at upstream's combat interval (250 ms in battlegrounds and
         // arenas, 500 ms elsewhere, x the skill's stretch, plus up to 200 ms of stagger) the learnt latency would eat
         // most of the draw
@@ -387,10 +501,12 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, U
         if (reactionNatural[index] && event.Missed)
             LOG_TRACE("playerbots.reaction",
                       "reaction cat {} skill {} ready {} pass -1 behind {} switch {} stamp {} src {} target {} e2e -1 "
-                      "lat {} at {}",
+                      "lat {} at {} type {} options {} load {} ease {} think {} cost {}",
                       static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, event.Behind ? 1 : 0,
                       event.Switched ? 1 : 0, event.StampAgeMs, static_cast<uint32>(event.StampSource), event.TargetMs,
-                      static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now);
+                      static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now, static_cast<uint32>(event.Type),
+                      static_cast<uint32>(event.Options), static_cast<uint32>(event.Load),
+                      static_cast<uint32>(event.Ease), event.ThinkMs, event.CostMs);
     }
 
     // Outside the configured contexts (PvE by default) D4's uniform delay applies
@@ -414,11 +530,13 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, U
             std::min(reactionFocus.LatencyMs, static_cast<float>(sPlayerbotAIConfig.NaturalCadenceCheckMs));
         LOG_TRACE("playerbots.reaction",
                   "reaction cat {} skill {} ready {} pass {} behind {} switch {} stamp {} src {} target {} e2e {} lat "
-                  "{} at {}",
+                  "{} at {} type {} options {} load {} ease {} think {} cost {}",
                   static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, now - event.StartMs,
                   event.Behind ? 1 : 0, event.Switched ? 1 : 0, event.StampAgeMs,
                   static_cast<uint32>(event.StampSource), event.TargetMs, now - event.StartMs + event.StampAgeMs,
-                  static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now);
+                  static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now, static_cast<uint32>(event.Type),
+                  static_cast<uint32>(event.Options), static_cast<uint32>(event.Load), static_cast<uint32>(event.Ease),
+                  event.ThinkMs, event.CostMs);
     }
 
     return true;

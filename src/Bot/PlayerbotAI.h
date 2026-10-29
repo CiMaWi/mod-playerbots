@@ -676,6 +676,13 @@ public:
     // Natural reaction (Playerbots.Natural.Reaction.*, NaturalReaction.h): ln(median) and spread of the bot's reaction
     // time, cached by SetPvpSkill for every skilled bot (read only while the option is on)
     ReactionState const& GetReactionState() const { return reactionState; }
+    // G0h3's reaction types: the choice, load, ease, think, anticipation and queue prices from the bot's attributes,
+    // cached by SetPvpSkill (all 0 at skill 0)
+    ReactionTypeState const& GetReactionTypes() const { return reactionTypes; }
+    // What the bot saw its enemies cast and cancel in the current match (DT.12; bounded), and its own cast and GCD
+    // ends for the queue-like follow-up and the busy-bot rules (G0h3-b). The bot's own update only.
+    OpponentMemory& GetOpponentMemory() { return opponentMemory; }
+    ReactionBusyState& GetReactionBusy() { return reactionBusy; }
     // PvP test harness: while a match runs, the actions of the notice categories that executed (cast successfully),
     // one slot per category in the order of SkillNoticeCounters. Counting costs nothing outside a match: one flag.
     // Turning it on zeroes the counts.
@@ -827,6 +834,9 @@ protected:
     uint32 skillNoticeDelayMs = 0;
     SkillNoticeCounters skillNoticeCounters;
     ReactionState reactionState;
+    ReactionTypeState reactionTypes;
+    OpponentMemory opponentMemory;
+    ReactionBusyState reactionBusy;
     bool timingScope = false;
     bool timingCombat = false;
     bool cadenceCombat = false;

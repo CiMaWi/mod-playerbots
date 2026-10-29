@@ -8,6 +8,7 @@
 #define _PLAYERBOT_NATURALREACTION_H
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "Common.h"
@@ -26,6 +27,126 @@
 // check at or after the target minus its own check latency, learnt from how far its passes miss their targets (at a
 // steady interval: its mean check overshoot), so its action lands on the target on average. No check is woken for
 // it: the check interval (Playerbots.Natural.Cadence.*) is the model's resolution.
+// Reaction types (G0h3, each part behind its own Enable): a choice costs a Hick's-law price per doubling of the real
+// options (Wisdom), a predicted event (the opponent memory's) a shorter draw (Foresight), other pending events a load
+// penalty and a miss share (Focus, which keeps them off the most important one), a hard button its ease price
+// (Dexterity) and a decision its thinking time (Wisdom: shortcut or deep check). All of it lies inside the event's
+// reaction (ReadyAfterMs), so the end-to-end target keeps its sum. SetPvpSkill caches the prices per bot in a
+// ReactionTypeState. Also here for G0h3-b: the queue-like follow-up after the bot's own cast or GCD, the busy bot's
+// interrupt rules (DT.11 addendum, 2026-10-30) and the per-match OpponentMemory.
+
+// The structure of a reaction: one known answer, a choice between real options, or an event the bot predicted
+enum class ReactionType : uint8
+{
+    Simple = 0,
+    Choice,
+    Anticipated
+};
+
+// How hard the answer is to give: a common button, a rare one (defensive cooldowns, crowd-control breaks), an action
+// on the focus target (G4e) or on a new target (a unit other than the bot's target)
+enum class ReactionEase : uint8
+{
+    Common = 0,
+    Rare,
+    Focus,
+    NewTarget,
+    Count
+};
+
+constexpr uint32 REACTION_EASE_COUNT = static_cast<uint32>(ReactionEase::Count);
+
+// The weak bot's shortcut (it answers the first event it sees) or the skilled bot's deep check (it judges first)
+enum class ReactionThinkDepth : uint8
+{
+    Shortcut = 0,
+    Deep
+};
+
+// G0h3's parts, each with its Enable (0: G0h2's reaction) and its prices at attribute 1 and 99 (lerped along
+// Playerbots.Skill.CurveExponent)
+struct ReactionChoiceParams  // Wisdom
+{
+    bool Enable = false;
+    float MsPerDoublingAt1 = 120.0f;
+    float MsPerDoublingAt99 = 50.0f;
+    uint32 MaxOptions = 8;
+};
+
+struct ReactionLoadParams  // Focus
+{
+    bool Enable = false;
+    uint32 MsPerEventAt1 = 200;
+    uint32 MsPerEventAt99 = 80;
+    uint32 MissPercentPerEventAt1 = 10;
+    uint32 MissPercentPerEventAt99 = 2;
+    // The share of the penalty and the miss share kept off an event that outranks every pending one
+    float TopProtectAt1 = 0.0f;
+    float TopProtectAt99 = 0.8f;
+    uint32 MaxEvents = 3;
+};
+
+struct ReactionEaseParams  // Dexterity
+{
+    bool Enable = false;
+    // By ReactionEase, strictly rising at both ends (so at every Dexterity)
+    std::array<uint32, REACTION_EASE_COUNT> MsAt1 = {0, 250, 350, 450};
+    std::array<uint32, REACTION_EASE_COUNT> MsAt99 = {0, 80, 120, 180};
+    // Below this Dexterity an action on the focus target costs a new target's price
+    uint8 FocusDexterity = 40;
+};
+
+struct ReactionThinkParams  // Wisdom (depth and cost), Patience (waiting)
+{
+    bool Enable = false;
+    uint32 ShortcutMsAt1 = 40;
+    uint32 ShortcutMsAt99 = 20;
+    uint32 DeepMsAt1 = 400;
+    uint32 DeepMsAt99 = 150;
+    uint32 DeepPercentAt1 = 0;
+    uint32 DeepPercentAt99 = 100;
+    // How long a bot waits for a better moment at the Patience trait 0 and 100 (straight line)
+    uint32 PatienceWaitMsAt0 = 0;
+    uint32 PatienceWaitMsAt100 = 1500;
+};
+
+struct ReactionAnticipateParams  // Foresight
+{
+    bool Enable = false;
+    // The share of the draw a predicted event saves (never below MinMs)
+    float ShareAt1 = 0.1f;
+    float ShareAt99 = 0.5f;
+};
+
+struct ReactionQueueParams  // Speed (G0h3-b)
+{
+    bool Enable = false;
+    uint32 MinMsAt1 = 60;
+    uint32 MaxMsAt1 = 250;
+    uint32 MinMsAt99 = 10;
+    uint32 MaxMsAt99 = 80;
+};
+
+// The busy bot (G0h3-b; the user's DT.11 addendum, 2026-10-30)
+struct ReactionReevalParams
+{
+    // Stop the bot's own cast for a kick of an important enemy cast (at least ImportantCastMs: a stand-in for G5b's
+    // judgement) when the own cast has MinOwnRemainingMs left and would end too late for the kick
+    bool Enable = false;
+    uint32 ImportantCastMs = 1500;
+    uint32 MinOwnRemainingMs = 300;
+    // No kick that a bot busy with its own cast or GCD could land only within BusyMarginMs of the enemy cast's end
+    bool BusySkip = false;
+    uint32 BusyMarginMs = 100;
+};
+
+struct ReactionMemoryParams  // G0h3-b
+{
+    bool Enable = false;
+    // The fake-cast rate counts from MinCasts casts seen; a cast gone within EndToleranceMs of its bar's end finished
+    uint32 MinCasts = 3;
+    uint32 EndToleranceMs = 150;
+};
 
 struct ReactionParams
 {
@@ -48,6 +169,16 @@ struct ReactionParams
     uint32 PingMs = 60;
     uint32 DisplayMs = 30;
     int32 ServerTickMs = -1;
+    // G0h3's parts; MovementEnable: avoid aoe as a reaction (G0h3-b)
+    ReactionChoiceParams Choice;
+    ReactionLoadParams Load;
+    ReactionEaseParams Ease;
+    ReactionThinkParams Think;
+    ReactionAnticipateParams Anticipate;
+    ReactionQueueParams Queue;
+    ReactionReevalParams Reeval;
+    ReactionMemoryParams Memory;
+    bool MovementEnable = false;
 };
 
 // Per bot, cached by SetPvpSkill: ln(median) and sigma of the reaction time at the bot's skill
@@ -55,6 +186,48 @@ struct ReactionState
 {
     float Mu = 0.0f;
     float Sigma = 0.0f;
+};
+
+// Per bot, cached by SetPvpSkill from its attributes: the prices of G0h3's parts (all 0 at skill 0: full ability).
+// The parts' Enable is read at each event, so .reload config and .playerbots rndbot reload switch them for logged-in
+// bots; changed prices reach a bot at its next skill load.
+struct ReactionTypeState
+{
+    float HickMsPerDoubling = 0.0f;
+    uint32 LoadMsPerEvent = 0;
+    uint32 LoadMissPercentPerEvent = 0;
+    float LoadTopProtect = 0.0f;
+    std::array<uint32, REACTION_EASE_COUNT> EaseMs{};
+    uint32 ThinkShortcutMs = 0;
+    uint32 ThinkDeepMs = 0;
+    uint32 ThinkDeepPercent = 0;
+    uint32 PatienceWaitMs = 0;
+    float AnticipateShare = 0.0f;
+    uint32 QueueMinMs = 0;
+    uint32 QueueMaxMs = 0;
+};
+
+// The attributes the prices come from (abilities 1-99, the Patience trait 0-100)
+struct ReactionTypeInputs
+{
+    uint8 Speed = 99;
+    uint8 Wisdom = 99;
+    uint8 Focus = 99;
+    uint8 Dexterity = 99;
+    uint8 Foresight = 99;
+    uint8 Patience = 50;
+};
+
+// One event's inputs to the parts, from what the bot's logic has already built (the defaults: G0h2's event)
+struct ReactionEventInputs
+{
+    uint32 Options = 1;    // the real options the answer is chosen from
+    uint32 Load = 0;       // other events pending
+    bool LoadTop = false;  // this event outranks every pending one
+    ReactionEase Ease = ReactionEase::Common;
+    bool Thinks = false;  // the answer takes a decision
+    ReactionThinkDepth Depth = ReactionThinkDepth::Shortcut;
+    bool Predicted = false;  // the opponent memory predicts the event
 };
 
 // Where an event's server time came from
@@ -83,6 +256,12 @@ struct ReactionEvent
     bool Behind = false;     // the behind penalty applies
     bool Switched = false;   // the switch cost applies
     bool Corrected = false;  // the target lies after the first query: the pass's miss trains the bot's latency
+    uint32 CostMs = 0;       // G0h3's choice, load, ease and think costs, inside ReadyAfterMs
+    uint32 ThinkMs = 0;      // the think part of CostMs
+    uint8 Type = 0;          // ReactionType
+    uint8 Options = 1;
+    uint8 Load = 0;
+    uint8 Ease = 0;  // ReactionEase
 };
 
 // One per bot: the category the bot attends to (0 = none) and when it last acted on it, and the bot's check latency
@@ -113,6 +292,8 @@ constexpr uint64 Event = 0x6A09E667F3BCC909ULL;
 constexpr uint64 Miss = 0xBB67AE8584CAA73BULL;
 constexpr uint64 Behind = 0x3C6EF372FE94F82CULL;
 constexpr uint64 Switch = 0xA54FF53A5F1D36F2ULL;
+constexpr uint64 Think = 0x510E527FADE682D1ULL;
+constexpr uint64 Queue = 0x9B05688C2B3E6C1FULL;
 }  // namespace ReactionSalt
 
 // The inverse of the standard normal CDF (Acklam's rational approximation, relative error below 1.2e-9)
@@ -165,6 +346,46 @@ inline ReactionState ComputeReactionState(ReactionParams const& params, uint8 sk
     return state;
 }
 
+// G0h3's prices at the bot's attributes (the parts' Enable aside: read at each event)
+inline ReactionTypeState ComputeReactionTypeState(ReactionParams const& params, ReactionTypeInputs const& inputs,
+                                                  float curveExponent)
+{
+    auto const at = [curveExponent](float atSkill1, float atSkill99, uint8 attribute)
+    { return SkillLerp(atSkill1, atSkill99, SkillPosition(attribute), curveExponent); };
+    auto const atRounded = [curveExponent](uint32 atSkill1, uint32 atSkill99, uint8 attribute)
+    { return SkillLerpRounded(atSkill1, atSkill99, SkillPosition(attribute), curveExponent); };
+
+    ReactionTypeState state;
+    state.HickMsPerDoubling =
+        std::max(0.0f, at(params.Choice.MsPerDoublingAt1, params.Choice.MsPerDoublingAt99, inputs.Wisdom));
+    state.LoadMsPerEvent = atRounded(params.Load.MsPerEventAt1, params.Load.MsPerEventAt99, inputs.Focus);
+    state.LoadMissPercentPerEvent =
+        atRounded(params.Load.MissPercentPerEventAt1, params.Load.MissPercentPerEventAt99, inputs.Focus);
+    state.LoadTopProtect =
+        std::clamp(at(params.Load.TopProtectAt1, params.Load.TopProtectAt99, inputs.Focus), 0.0f, 1.0f);
+    for (uint32 ease = 0; ease < REACTION_EASE_COUNT; ++ease)
+        state.EaseMs[ease] = atRounded(params.Ease.MsAt1[ease], params.Ease.MsAt99[ease], inputs.Dexterity);
+
+    if (inputs.Dexterity < params.Ease.FocusDexterity)
+        state.EaseMs[static_cast<uint32>(ReactionEase::Focus)] =
+            state.EaseMs[static_cast<uint32>(ReactionEase::NewTarget)];
+
+    state.ThinkShortcutMs = atRounded(params.Think.ShortcutMsAt1, params.Think.ShortcutMsAt99, inputs.Wisdom);
+    state.ThinkDeepMs = atRounded(params.Think.DeepMsAt1, params.Think.DeepMsAt99, inputs.Wisdom);
+    state.ThinkDeepPercent =
+        std::min(100u, atRounded(params.Think.DeepPercentAt1, params.Think.DeepPercentAt99, inputs.Wisdom));
+    float const patience = static_cast<float>(std::min<uint8>(inputs.Patience, 100)) / 100.0f;
+    state.PatienceWaitMs = static_cast<uint32>(
+        params.Think.PatienceWaitMsAt0 +
+        (static_cast<float>(params.Think.PatienceWaitMsAt100) - params.Think.PatienceWaitMsAt0) * patience + 0.5f);
+    state.AnticipateShare =
+        std::clamp(at(params.Anticipate.ShareAt1, params.Anticipate.ShareAt99, inputs.Foresight), 0.0f, 0.95f);
+    state.QueueMinMs = atRounded(params.Queue.MinMsAt1, params.Queue.MinMsAt99, inputs.Speed);
+    state.QueueMaxMs =
+        std::max(state.QueueMinMs, atRounded(params.Queue.MaxMsAt1, params.Queue.MaxMsAt99, inputs.Speed));
+    return state;
+}
+
 // The log-normal draw before the minimum (its median is exp(Mu))
 inline double ReactionRawMs(ReactionState const& state, uint64 hash)
 {
@@ -208,6 +429,59 @@ inline uint32 EventReactionMs(ReactionState const& state, ReactionParams const& 
     return ready;
 }
 
+// Hick's law: the price per doubling of the real options (one option: none), at most maxOptions counted
+inline uint32 HickCostMs(ReactionTypeState const& state, uint32 options, uint32 maxOptions)
+{
+    uint32 const counted = std::min(options, std::max(maxOptions, 1u));
+    if (counted < 2)
+        return 0;
+
+    return static_cast<uint32>(state.HickMsPerDoubling * std::log2(static_cast<float>(counted)) + 0.5f);
+}
+
+// The load of other pending events: a penalty and a miss share per event; an event that outranks every pending one
+// keeps the protected share of both off
+inline uint32 LoadPenaltyMs(ReactionTypeState const& state, uint32 load, bool top)
+{
+    float const kept = top ? 1.0f - state.LoadTopProtect : 1.0f;
+    return static_cast<uint32>(static_cast<float>(state.LoadMsPerEvent * load) * kept + 0.5f);
+}
+
+inline uint32 LoadMissPercent(ReactionTypeState const& state, uint32 load, bool top)
+{
+    float const kept = top ? 1.0f - state.LoadTopProtect : 1.0f;
+    return static_cast<uint32>(static_cast<float>(state.LoadMissPercentPerEvent * load) * kept + 0.5f);
+}
+
+inline uint32 EaseCostMs(ReactionTypeState const& state, ReactionEase ease)
+{
+    return state.EaseMs[std::min(static_cast<uint32>(ease), REACTION_EASE_COUNT - 1)];
+}
+
+// The time one decision takes: the shortcut (the first event seen, no judgement) or the deep check
+inline uint32 ThinkCostMs(ReactionTypeState const& state, ReactionThinkDepth depth)
+{
+    return depth == ReactionThinkDepth::Deep ? state.ThinkDeepMs : state.ThinkShortcutMs;
+}
+
+// The depth a bot of this Wisdom takes for one decision (the tactics' deep paths ask it; G0h3 has none and charges
+// the interrupt's shortcut)
+inline ReactionThinkDepth ChooseThinkDepth(ReactionTypeState const& state, uint64 hash)
+{
+    return SplitMix64(hash ^ ReactionSalt::Think) % 100 < state.ThinkDeepPercent ? ReactionThinkDepth::Deep
+                                                                                 : ReactionThinkDepth::Shortcut;
+}
+
+// A predicted event's draw: the Foresight share of it saved, never below minMs nor above the draw
+inline uint32 AnticipatedMs(uint32 drawMs, float share, uint32 minMs)
+{
+    if (share <= 0.0f)
+        return drawMs;
+
+    uint32 const shortened = static_cast<uint32>(static_cast<float>(drawMs) * (1.0f - share) + 0.5f);
+    return std::min(drawMs, std::max(minMs, shortened));
+}
+
 // The hash of one event: guid, category and start time
 inline uint64 ReactionEventHash(uint64 guid, uint8 category, uint32 startMs)
 {
@@ -226,20 +500,46 @@ inline bool ReactionEventStarts(ReactionEvent const& event, uint32 nowMs, uint32
     return event.Missed && nowMs - event.StartMs >= missWindowMs;
 }
 
-// Begins an event: one draw, the penalties and the miss decision (missPercent: D4's per-window chance, per event)
+// The event waits for its answer (begun, not noticed, not missed, still asked within the pending gap): it loads the
+// bot's other events
+inline bool ReactionEventPending(ReactionEvent const& event, uint32 nowMs)
+{
+    return event.Active && !event.Noticed && !event.Missed && nowMs - event.LastQueryMs <= REACTION_PENDING_GAP_MS;
+}
+
+// Begins an event: one draw, the penalties and the miss decision (missPercent: D4's per-window chance, per event).
+// With the bot's G0h3 prices (types) the parts that are on add their costs and the load its miss share; a predicted
+// event (Anticipate) is no choice. The defaults give G0h2's event.
 inline void StartReactionEvent(ReactionEvent& event, ReactionFocus const& focus, ReactionState const& state,
                                ReactionParams const& params, uint64 guid, uint8 category, uint32 missPercent,
-                               bool behind, uint32 nowMs)
+                               bool behind, uint32 nowMs, ReactionTypeState const& types = ReactionTypeState(),
+                               ReactionEventInputs const& inputs = ReactionEventInputs())
 {
     uint64 const hash = ReactionEventHash(guid, category, nowMs);
+    bool const predicted = params.Anticipate.Enable && inputs.Predicted && types.AnticipateShare > 0.0f;
+    bool const choice = !predicted && params.Choice.Enable && inputs.Options >= 2;
+    uint32 const load = params.Load.Enable ? std::min(inputs.Load, params.Load.MaxEvents) : 0;
+    ReactionEase const ease = params.Ease.Enable ? inputs.Ease : ReactionEase::Common;
+    event.ThinkMs = params.Think.Enable && inputs.Thinks ? ThinkCostMs(types, inputs.Depth) : 0;
+    event.CostMs = (choice ? HickCostMs(types, inputs.Options, params.Choice.MaxOptions) : 0) +
+                   LoadPenaltyMs(types, load, inputs.LoadTop) + (params.Ease.Enable ? EaseCostMs(types, ease) : 0) +
+                   event.ThinkMs;
+    event.Type = static_cast<uint8>(predicted ? ReactionType::Anticipated
+                                              : (choice ? ReactionType::Choice : ReactionType::Simple));
+    event.Options = static_cast<uint8>(std::min<uint32>(inputs.Options, 255));
+    event.Load = static_cast<uint8>(load);
+    event.Ease = static_cast<uint8>(ease);
+    uint32 const missShare = std::min<uint32>(100, missPercent + LoadMissPercent(types, load, inputs.LoadTop));
     event.StartMs = nowMs;
     event.LastQueryMs = nowMs;
     event.Active = true;
     event.Noticed = false;
-    event.Missed = missPercent != 0 && SplitMix64(hash ^ ReactionSalt::Miss) % 100 < missPercent;
+    event.Missed = missShare != 0 && SplitMix64(hash ^ ReactionSalt::Miss) % 100 < missShare;
     event.Behind = behind;
     event.Switched = ReactionFocusElsewhere(focus, params, category, nowMs);
-    event.ReadyAfterMs = EventReactionMs(state, params, hash, event.Behind, event.Switched);
+    uint32 const draw = ReactionMs(state, params.MinMs, hash);
+    uint32 const saved = predicted ? draw - AnticipatedMs(draw, types.AnticipateShare, params.MinMs) : 0;
+    event.ReadyAfterMs = EventReactionMs(state, params, hash, event.Behind, event.Switched) - saved + event.CostMs;
     event.StampAgeMs = 0;
     event.TargetMs = event.ReadyAfterMs;
     event.DueAfterMs = event.ReadyAfterMs;
@@ -331,5 +631,193 @@ inline bool ReactionEventPasses(ReactionEvent& event, ReactionFocus& focus, uint
 
     return true;
 }
+
+// A tactic that ran its deep check charges the time to the running event before its notice (G5b on): the reaction,
+// the target and the pass move by it (thinking starts when the bot looks)
+inline void AddReactionThinkMs(ReactionEvent& event, uint32 thinkMs)
+{
+    if (!event.Active || event.Noticed || thinkMs == 0)
+        return;
+
+    event.ThinkMs += thinkMs;
+    event.CostMs += thinkMs;
+    event.ReadyAfterMs += thinkMs;
+    event.TargetMs += thinkMs;
+    event.DueAfterMs += thinkMs;
+}
+
+// The queue-like follow-up (G0h3-b): the bot's own cast or GCD ends remainingMs from now; its next check comes drawMs
+// after that end when this is before its regular check (checkMs), else at the regular check. Never later, so no check
+// within the GCD is lost (the kicks, breaks and defensives off the GCD keep theirs).
+inline uint32 QueueCheckDelayMs(uint32 remainingMs, uint32 checkMs, uint32 drawMs)
+{
+    if (remainingMs >= checkMs)
+        return checkMs;
+
+    return std::min(checkMs, remainingMs + drawMs);
+}
+
+// The follow-up's draw (Speed): a human mashing the button
+inline uint32 QueueDrawMs(ReactionTypeState const& state, uint64 hash)
+{
+    return UniformFromHash(SplitMix64(hash ^ ReactionSalt::Queue), state.QueueMinMs, state.QueueMaxMs);
+}
+
+// User note 1 (G0h3-b): the bot stops its own cast for a kick of an important enemy cast when finishing its own would
+// leave the kick too late (the own cast ends within BusyMarginMs of the enemy's end, or after it)
+inline bool StopOwnCastForKick(ReactionReevalParams const& params, uint32 enemyCastMs, uint32 enemyRemainingMs,
+                               uint32 ownRemainingMs)
+{
+    return params.Enable && enemyCastMs >= params.ImportantCastMs && ownRemainingMs >= params.MinOwnRemainingMs &&
+           ownRemainingMs + params.BusyMarginMs >= enemyRemainingMs;
+}
+
+// User note 2 (G0h3-b): a bot that was busy (its own cast or GCD) does not kick a cast its answer would reach only
+// within BusyMarginMs of the cast's end or after it (readyInMs: the answer's due time or the busy time's end, from now)
+inline bool InterruptOutOfReach(ReactionReevalParams const& params, bool wasBusy, uint32 readyInMs,
+                                uint32 enemyRemainingMs)
+{
+    return params.BusySkip && wasBusy && readyInMs + params.BusyMarginMs >= enemyRemainingMs;
+}
+
+// Per bot (G0h3-b, its own update only): the ends of the bot's own cast and GCD as it last saw them, and the busy
+// path's counts
+struct ReactionBusyState
+{
+    uint32 CastEndMs = 0;
+    uint32 GcdEndMs = 0;
+    uint32 QueuedChecks = 0;
+    uint32 StoppedCasts = 0;
+    uint32 SkippedBusy = 0;
+};
+
+// The opponent memory (G0h3-b; DT.12): per bot and match, what the bot saw each enemy cast, bounded to
+// OPPONENT_MEMORY_SLOTS enemies (the one seen longest ago gives its slot up). Guid counters only, never a unit.
+constexpr uint32 OPPONENT_MEMORY_SLOTS = 8;
+
+struct OpponentMemorySlot
+{
+    uint32 Guid = 0;         // 0: free
+    uint32 SpellId = 0;      // the last cast seen
+    uint32 PrevSpellId = 0;  // the cast seen before it
+    uint32 ViewEndMs = 0;    // the end of the cast bar in view (0: none)
+    uint32 LastSeenMs = 0;
+    uint16 CastsSeen = 0;
+    uint16 CancelsSeen = 0;
+};
+
+struct OpponentMemory
+{
+    std::array<OpponentMemorySlot, OPPONENT_MEMORY_SLOTS> Slots{};
+    uint32 MatchId = 0;  // the match it belongs to (0: none)
+
+    void Clear(uint32 matchId = 0)
+    {
+        Slots = {};
+        MatchId = matchId;
+    }
+
+    uint32 IndexOf(uint32 guid) const
+    {
+        for (uint32 index = 0; guid != 0 && index < OPPONENT_MEMORY_SLOTS; ++index)
+            if (Slots[index].Guid == guid)
+                return index;
+
+        return OPPONENT_MEMORY_SLOTS;
+    }
+
+    OpponentMemorySlot const* Find(uint32 guid) const
+    {
+        uint32 const index = IndexOf(guid);
+        return index < OPPONENT_MEMORY_SLOTS ? &Slots[index] : nullptr;
+    }
+
+    // The enemy's slot: its own, a free one, or the one seen longest ago
+    OpponentMemorySlot& Touch(uint32 guid, uint32 nowMs)
+    {
+        uint32 index = IndexOf(guid);
+        if (index == OPPONENT_MEMORY_SLOTS)
+        {
+            index = 0;
+            for (uint32 other = 1; other < OPPONENT_MEMORY_SLOTS && Slots[index].Guid != 0; ++other)
+                if (Slots[other].Guid == 0 || nowMs - Slots[other].LastSeenMs > nowMs - Slots[index].LastSeenMs)
+                    index = other;
+
+            Slots[index] = OpponentMemorySlot();
+            Slots[index].Guid = guid;
+        }
+
+        Slots[index].LastSeenMs = nowMs;
+        return Slots[index];
+    }
+
+    static bool SameEnd(uint32 endMs, uint32 otherEndMs, uint32 toleranceMs)
+    {
+        return (endMs > otherEndMs ? endMs - otherEndMs : otherEndMs - endMs) <= toleranceMs;
+    }
+
+    // The cast in view ends: gone more than toleranceMs before its bar's end and not interrupted (a player sees the
+    // interrupt) it was cancelled
+    static void CloseCast(OpponentMemorySlot& slot, uint32 nowMs, uint32 toleranceMs, bool interrupted)
+    {
+        if (!interrupted && static_cast<int32>(slot.ViewEndMs - nowMs) > static_cast<int32>(toleranceMs) &&
+            slot.CancelsSeen < UINT16_MAX)
+            ++slot.CancelsSeen;
+
+        slot.ViewEndMs = 0;
+    }
+
+    // A cast in view (its spell and its bar's end): the same cast again changes nothing, a new one first closes the
+    // one in view
+    void NoteCast(uint32 guid, uint32 spellId, uint32 endMs, uint32 nowMs, uint32 toleranceMs)
+    {
+        OpponentMemorySlot& slot = Touch(guid, nowMs);
+        if (slot.ViewEndMs != 0 && slot.SpellId == spellId && SameEnd(slot.ViewEndMs, endMs, toleranceMs))
+            return;
+
+        if (slot.ViewEndMs != 0)
+            CloseCast(slot, nowMs, toleranceMs, false);
+
+        slot.PrevSpellId = slot.SpellId;
+        slot.SpellId = spellId;
+        slot.ViewEndMs = std::max(endMs, 1u);
+        if (slot.CastsSeen < UINT16_MAX)
+            ++slot.CastsSeen;
+    }
+
+    // The enemy shows no cast any more
+    void NoteCastGone(uint32 guid, uint32 nowMs, uint32 toleranceMs, bool interrupted)
+    {
+        uint32 const index = IndexOf(guid);
+        if (index == OPPONENT_MEMORY_SLOTS || Slots[index].ViewEndMs == 0)
+            return;
+
+        Slots[index].LastSeenMs = nowMs;
+        CloseCast(Slots[index], nowMs, toleranceMs, interrupted);
+    }
+
+    // The enemy's cast of spellId (its bar ending at endMs) was predicted: it cast the same spell the time before.
+    // The cast in view counts as this one, so asking before or after noting it gives the same answer.
+    bool Predicts(uint32 guid, uint32 spellId, uint32 endMs, uint32 toleranceMs) const
+    {
+        OpponentMemorySlot const* slot = Find(guid);
+        if (!slot || spellId == 0)
+            return false;
+
+        bool const inView =
+            slot->ViewEndMs != 0 && slot->SpellId == spellId && SameEnd(slot->ViewEndMs, endMs, toleranceMs);
+        return (inView ? slot->PrevSpellId : slot->SpellId) == spellId;
+    }
+
+    // Cancels seen per casts seen, from minCasts casts on (0 before)
+    float FakeRate(uint32 guid, uint32 minCasts) const
+    {
+        OpponentMemorySlot const* slot = Find(guid);
+        if (!slot || slot->CastsSeen == 0 || slot->CastsSeen < minCasts)
+            return 0.0f;
+
+        return static_cast<float>(slot->CancelsSeen) / slot->CastsSeen;
+    }
+};
 
 #endif

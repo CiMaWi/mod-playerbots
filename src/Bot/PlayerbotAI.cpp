@@ -6861,6 +6861,7 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     skillNoticeMissPercent = 0;
     skillNoticeDelayMs = 0;
     skillNoticeCounters = SkillNoticeCounters();
+    reactionTypes = ReactionTypeState();
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     // Called before the bot's first update (login) or on the world thread (GM commands, the harness, lab pins and
     // reapply): MapMgr::Update waits for the map threads before the commands and world scripts run, so no map thread
@@ -6886,6 +6887,15 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     float const speedPosition = SkillPosition(speed);
     float const focusPosition = SkillPosition(attributes.Get(BotAttribute::Focus));
     float const exponent = config.SkillGate.CurveExponent;
+    // G0h3's prices from Speed, Wisdom, Focus, Dexterity, Foresight and Patience, also with the parts off
+    ReactionTypeInputs typeInputs;
+    typeInputs.Speed = speed;
+    typeInputs.Wisdom = attributes.Get(BotAttribute::Wisdom);
+    typeInputs.Focus = attributes.Get(BotAttribute::Focus);
+    typeInputs.Dexterity = attributes.Get(BotAttribute::Dexterity);
+    typeInputs.Foresight = attributes.Get(BotAttribute::Foresight);
+    typeInputs.Patience = attributes.Get(BotAttribute::Patience);
+    reactionTypes = ComputeReactionTypeState(config.NaturalReaction, typeInputs, exponent);
     if (config.SkillReactActive)
         skillReactFactor = SkillLerp(config.SkillReactFactorLow, config.SkillReactFactorHigh, speedPosition, exponent);
 

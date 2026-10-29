@@ -850,6 +850,351 @@ void RunReactionSelftest(ChatHandler* handler)
     check(ReactionCheckIntervalMs(1000, false, 100) == 1000 && ReactionCheckIntervalMs(1, false, 20) == 1,
           "a reaction trigger without the cadence does not keep its own interval");
 
+    // G0h3's reaction types, on copies of the configured prices with every part off (G0h2's event) and on
+    {
+        ReactionParams off = params;
+        off.Choice.Enable = false;
+        off.Load.Enable = false;
+        off.Ease.Enable = false;
+        off.Think.Enable = false;
+        off.Anticipate.Enable = false;
+        ReactionParams on = off;
+        on.Choice.Enable = true;
+        on.Load.Enable = true;
+        on.Ease.Enable = true;
+        on.Think.Enable = true;
+        on.Anticipate.Enable = true;
+        auto const pricesAt = [&](uint8 attribute)
+        {
+            ReactionTypeInputs inputs;
+            inputs.Speed = attribute;
+            inputs.Wisdom = attribute;
+            inputs.Focus = attribute;
+            inputs.Dexterity = attribute;
+            inputs.Foresight = attribute;
+            return ComputeReactionTypeState(on, inputs, exponent);
+        };
+        ReactionTypeState const low = pricesAt(1);
+        ReactionTypeState const mid = pricesAt(50);
+        ReactionTypeState const high = pricesAt(99);
+        ReactionFocus const fresh;
+        auto const eventHash = [](uint32 draw)
+        { return ReactionEventHash(Guid + draw, static_cast<uint8>(1 + draw % 6), 200000 + draw * 13); };
+        auto const startAt = [&](ReactionParams const& with, ReactionTypeState const& prices,
+                                 ReactionEventInputs const& inputs, uint32 draw, uint32 missPercent)
+        {
+            ReactionEvent event;
+            StartReactionEvent(event, fresh, middle, with, Guid + draw, static_cast<uint8>(1 + draw % 6), missPercent,
+                               false, 200000 + draw * 13, prices, inputs);
+            return event;
+        };
+        uint32 const commonMs = EaseCostMs(mid, ReactionEase::Common);
+
+        // The parts off ignore every input, and the default inputs add nothing but the common button's price
+        ReactionEventInputs heavy;
+        heavy.Options = 8;
+        heavy.Load = 2;
+        heavy.Ease = ReactionEase::NewTarget;
+        heavy.Thinks = true;
+        heavy.Predicted = true;
+        bool unchanged = true;
+        for (uint32 draw = 0; draw < Draws; ++draw)
+        {
+            uint64 const hash = eventHash(draw);
+            ReactionEvent const before = startAt(off, ReactionTypeState(), ReactionEventInputs(), draw, 20);
+            ReactionEvent const ignored = startAt(off, mid, heavy, draw, 20);
+            ReactionEvent const plainOn = startAt(on, mid, ReactionEventInputs(), draw, 20);
+            unchanged = unchanged && before.ReadyAfterMs == EventReactionMs(middle, off, hash, false, false) &&
+                        before.Missed == (SplitMix64(hash ^ ReactionSalt::Miss) % 100 < 20) && before.CostMs == 0 &&
+                        ignored.ReadyAfterMs == before.ReadyAfterMs && ignored.Missed == before.Missed &&
+                        ignored.CostMs == 0 && plainOn.ReadyAfterMs == before.ReadyAfterMs + commonMs &&
+                        plainOn.Type == static_cast<uint8>(ReactionType::Simple);
+        }
+
+        check(unchanged, "with the parts off, or the default inputs, the event is not G0h2's");
+
+        // Choice: every doubling of the options adds the price (+-5 %, at least 1 ms of rounding), less at high Wisdom
+        uint32 const maxOptions = on.Choice.MaxOptions;
+        auto const hickOk = [&](ReactionTypeState const& prices)
+        {
+            bool ok = HickCostMs(prices, 0, maxOptions) == 0 && HickCostMs(prices, 1, maxOptions) == 0 &&
+                      HickCostMs(prices, maxOptions * 2, maxOptions) == HickCostMs(prices, maxOptions, maxOptions);
+            for (uint32 options = 1; options * 2 <= maxOptions; options *= 2)
+            {
+                double const added = static_cast<double>(HickCostMs(prices, options * 2, maxOptions)) -
+                                     HickCostMs(prices, options, maxOptions);
+                ok = ok && std::fabs(added - prices.HickMsPerDoubling) <=
+                               std::max(1.0, 0.05 * static_cast<double>(prices.HickMsPerDoubling));
+            }
+
+            return ok;
+        };
+        check(hickOk(low) && hickOk(mid) && hickOk(high) &&
+                  (low.HickMsPerDoubling == 0.0f || high.HickMsPerDoubling < low.HickMsPerDoubling),
+              Acore::StringFormat("doubling the options does not add {:.1f} / {:.1f} / {:.1f} ms at Wisdom 1 / 50 / 99 "
+                                  "(+-5 %), or not less at high Wisdom",
+                                  low.HickMsPerDoubling, mid.HickMsPerDoubling, high.HickMsPerDoubling));
+        ReactionEventInputs four;
+        four.Options = 4;
+        ReactionEvent const single = startAt(on, mid, ReactionEventInputs(), 7, 0);
+        ReactionEvent const chosen = startAt(on, mid, four, 7, 0);
+        check(chosen.Type == static_cast<uint8>(ReactionType::Choice) && chosen.Options == 4 &&
+                  single.Type == static_cast<uint8>(ReactionType::Simple) &&
+                  chosen.ReadyAfterMs - single.ReadyAfterMs == HickCostMs(mid, 4, maxOptions),
+              "a choice of four options does not add Hick's cost to the reaction");
+
+        // Load: a second pending event is answered slower and missed more (at a 10 % base), less so at high Focus,
+        // and the top event keeps the protected share off
+        struct LoadResult
+        {
+            double AddedMs = 0.0;
+            double AddedMissPercent = 0.0;
+            double TopAddedMs = 0.0;
+        };
+        auto const loadAt = [&](ReactionTypeState const& prices)
+        {
+            ReactionEventInputs loaded;
+            loaded.Load = 1;
+            ReactionEventInputs top = loaded;
+            top.LoadTop = true;
+            double alone = 0.0;
+            double withLoad = 0.0;
+            double withTop = 0.0;
+            uint32 missedAlone = 0;
+            uint32 missedLoaded = 0;
+            for (uint32 draw = 0; draw < Draws; ++draw)
+            {
+                ReactionEvent const first = startAt(on, prices, ReactionEventInputs(), draw, 10);
+                ReactionEvent const second = startAt(on, prices, loaded, draw, 10);
+                alone += first.ReadyAfterMs;
+                withLoad += second.ReadyAfterMs;
+                withTop += startAt(on, prices, top, draw, 10).ReadyAfterMs;
+                missedAlone += first.Missed ? 1 : 0;
+                missedLoaded += second.Missed ? 1 : 0;
+            }
+
+            LoadResult result;
+            result.AddedMs = (withLoad - alone) / Draws;
+            result.AddedMissPercent = (static_cast<double>(missedLoaded) - missedAlone) * 100.0 / Draws;
+            result.TopAddedMs = (withTop - alone) / Draws;
+            return result;
+        };
+        LoadResult const loadLow = loadAt(low);
+        LoadResult const loadHigh = loadAt(high);
+        auto const loadMatches = [](LoadResult const& result, ReactionTypeState const& prices)
+        {
+            return result.AddedMs > 0.0 && std::fabs(result.AddedMs - prices.LoadMsPerEvent) < 0.5 &&
+                   result.AddedMissPercent > 0.0 &&
+                   std::fabs(result.AddedMissPercent - prices.LoadMissPercentPerEvent) <= 1.0;
+        };
+        check(loadMatches(loadLow, low) && loadMatches(loadHigh, high),
+              Acore::StringFormat("a second pending event adds {:.1f} ms and {:.2f} % misses at Focus 1 (configured {} "
+                                  "ms, {} %), {:.1f} ms and {:.2f} % at Focus 99 ({} ms, {} %)",
+                                  loadLow.AddedMs, loadLow.AddedMissPercent, low.LoadMsPerEvent,
+                                  low.LoadMissPercentPerEvent, loadHigh.AddedMs, loadHigh.AddedMissPercent,
+                                  high.LoadMsPerEvent, high.LoadMissPercentPerEvent));
+        check(loadHigh.AddedMs < loadLow.AddedMs && loadHigh.AddedMissPercent < loadLow.AddedMissPercent &&
+                  (high.LoadTopProtect == 0.0f || loadHigh.TopAddedMs < loadHigh.AddedMs),
+              Acore::StringFormat("the load is not lighter at high Focus, or the top event not protected (top +{:.1f} "
+                                  "ms)",
+                                  loadHigh.TopAddedMs));
+        handler->PSendSysMessage(
+            "TACTICS selftest reaction: load +{:.0f} ms / +{:.1f} % misses per event at Focus 1, +{:.0f} / +{:.1f} at "
+            "99 (top event +{:.0f} ms)",
+            loadLow.AddedMs, loadLow.AddedMissPercent, loadHigh.AddedMs, loadHigh.AddedMissPercent,
+            loadHigh.TopAddedMs);
+
+        // Ease: common < rare < focus target < new target at every Dexterity (the focus target at a new target's
+        // price below FocusDexterity), and the price lands in the reaction
+        bool easeOrder = true;
+        for (uint8 dexterity : {1, 20, 39, 40, 41, 60, 80, 99})
+        {
+            ReactionTypeInputs inputs;
+            inputs.Dexterity = dexterity;
+            ReactionTypeState const prices = ComputeReactionTypeState(on, inputs, exponent);
+            uint32 const common = EaseCostMs(prices, ReactionEase::Common);
+            uint32 const rare = EaseCostMs(prices, ReactionEase::Rare);
+            uint32 const focusTarget = EaseCostMs(prices, ReactionEase::Focus);
+            uint32 const newTarget = EaseCostMs(prices, ReactionEase::NewTarget);
+            bool const focusKnown = dexterity >= on.Ease.FocusDexterity;
+            easeOrder = easeOrder && common < rare && rare < focusTarget &&
+                        (focusKnown ? focusTarget < newTarget : focusTarget == newTarget);
+        }
+
+        ReactionEventInputs rareButton;
+        rareButton.Ease = ReactionEase::Rare;
+        check(easeOrder && startAt(on, mid, rareButton, 7, 0).ReadyAfterMs - single.ReadyAfterMs ==
+                               EaseCostMs(mid, ReactionEase::Rare) - commonMs,
+              "the ease order is not common < rare < focus target < new target at every Dexterity, or a rare "
+              "button's price is not in the reaction");
+
+        // Anticipation: a predicted cast saves the configured share of the draw (Foresight 50, +-5 %), never below
+        // the minimum, and is no choice
+        ReactionEventInputs predicted;
+        predicted.Predicted = true;
+        predicted.Options = 4;
+        bool anticipatedOk = true;
+        double drawSum = 0.0;
+        double shortenedSum = 0.0;
+        for (uint32 draw = 0; draw < Draws; ++draw)
+        {
+            uint32 const full = ReactionMs(middle, on.MinMs, eventHash(draw));
+            ReactionEvent const plainEvent = startAt(on, mid, ReactionEventInputs(), draw, 0);
+            ReactionEvent const ahead = startAt(on, mid, predicted, draw, 0);
+            uint32 const shortened = ahead.ReadyAfterMs - (plainEvent.ReadyAfterMs - full);
+            anticipatedOk = anticipatedOk && ahead.Type == static_cast<uint8>(ReactionType::Anticipated) &&
+                            ahead.ReadyAfterMs <= plainEvent.ReadyAfterMs && shortened >= on.MinMs;
+            if (full * (1.0 - mid.AnticipateShare) >= on.MinMs + 1.0)
+            {
+                drawSum += full;
+                shortenedSum += shortened;
+            }
+        }
+
+        double const saved = drawSum > 0.0 ? 1.0 - shortenedSum / drawSum : 0.0;
+        check(anticipatedOk && within(saved, mid.AnticipateShare, 0.05),
+              Acore::StringFormat("a predicted cast saves {:.3f} of the draw, configured {:.3f} (Foresight 50)", saved,
+                                  mid.AnticipateShare));
+
+        // Thinking: the shortcut's cost lands in the reaction, a deep check charged later moves the pass, the deep
+        // share follows Wisdom, the wait Patience
+        ReactionEventInputs thinking;
+        thinking.Thinks = true;
+        ReactionEvent const quick = startAt(on, mid, thinking, 11, 0);
+        ReactionEvent const unthinking = startAt(on, mid, ReactionEventInputs(), 11, 0);
+        ReactionEvent deep = quick;
+        AddReactionThinkMs(deep, mid.ThinkDeepMs);
+        ReactionEvent noticed = quick;
+        noticed.Noticed = true;
+        AddReactionThinkMs(noticed, 100);
+        check(quick.ThinkMs == mid.ThinkShortcutMs &&
+                  quick.ReadyAfterMs - unthinking.ReadyAfterMs == mid.ThinkShortcutMs &&
+                  deep.ReadyAfterMs == quick.ReadyAfterMs + mid.ThinkDeepMs &&
+                  deep.TargetMs == quick.TargetMs + mid.ThinkDeepMs &&
+                  deep.DueAfterMs == quick.DueAfterMs + mid.ThinkDeepMs && noticed.ReadyAfterMs == quick.ReadyAfterMs &&
+                  mid.ThinkShortcutMs < mid.ThinkDeepMs,
+              "the think cost does not land in the reaction, or a deep check does not move the pass");
+        uint32 deepChosen = 0;
+        for (uint32 draw = 0; draw < Draws; ++draw)
+            deepChosen += ChooseThinkDepth(mid, SplitMix64(draw * 7 + 3)) == ReactionThinkDepth::Deep ? 1 : 0;
+
+        ReactionTypeInputs restless;
+        restless.Patience = 0;
+        ReactionTypeInputs patient;
+        patient.Patience = 100;
+        check(std::fabs(deepChosen * 100.0 / Draws - mid.ThinkDeepPercent) <= 1.5 &&
+                  low.ThinkDeepPercent <= high.ThinkDeepPercent &&
+                  ComputeReactionTypeState(on, restless, exponent).PatienceWaitMs == on.Think.PatienceWaitMsAt0 &&
+                  ComputeReactionTypeState(on, patient, exponent).PatienceWaitMs == on.Think.PatienceWaitMsAt100,
+              Acore::StringFormat("deep checks {:.1f} % at Wisdom 50 (configured {} %), or the wait not from Patience",
+                                  deepChosen * 100.0 / Draws, mid.ThinkDeepPercent));
+
+        // The queue-like follow-up: after an own cast or GCD that ends before the next check, the check lands within
+        // the draw of the end (exactly at it when that is before the regular check), never later than the regular one
+        bool queueOk = true;
+        for (ReactionTypeState const* prices : {&low, &high})
+        {
+            for (uint32 draw = 0; draw < Draws; ++draw)
+            {
+                uint64 const hash = SplitMix64(draw * 31 + 5);
+                uint32 const drawMs = QueueDrawMs(*prices, hash);
+                uint32 const remaining = static_cast<uint32>((hash >> 40) % 300);
+                uint32 const delay = QueueCheckDelayMs(remaining, 100, drawMs);
+                bool const endsFirst = remaining < 100;
+                queueOk = queueOk && drawMs >= prices->QueueMinMs && drawMs <= prices->QueueMaxMs && delay <= 100 &&
+                          (endsFirst ? delay >= remaining && delay - remaining <= drawMs &&
+                                           (remaining + drawMs > 100 || delay == remaining + drawMs)
+                                     : delay == 100);
+            }
+        }
+
+        check(queueOk, Acore::StringFormat("the follow-up check does not land within its draw of the end ({}-{} ms at "
+                                           "Speed 1, {}-{} ms at 99) or comes after the regular check",
+                                           low.QueueMinMs, low.QueueMaxMs, high.QueueMinMs, high.QueueMaxMs));
+
+        // The opponent memory: the fake rate after the casts and cancels seen (an interrupt is no cancel, the same
+        // cast seen twice one cast), a repeated spell predicted, bounded to its slots, cleared for the next match
+        uint32 const tolerance = params.Memory.EndToleranceMs;
+        uint32 const casts = std::max(10u, params.Memory.MinCasts);
+        OpponentMemory memory;
+        memory.Clear(77);
+        uint32 clock = 300000;
+        uint32 cancels = 0;
+        bool memoryOk = memory.MatchId == 77 && memory.Find(7) == nullptr;
+        for (uint32 cast = 0; cast < casts; ++cast)
+        {
+            uint32 const end = clock + 2000;
+            memoryOk = memoryOk && memory.Predicts(7, 100, end, tolerance) == (cast > 0);
+            memory.NoteCast(7, 100, end, clock, tolerance);
+            memory.NoteCast(7, 100, end, clock + 100, tolerance);
+            memoryOk = memoryOk && memory.Predicts(7, 100, end, tolerance) == (cast > 0) &&
+                       (memory.FakeRate(7, params.Memory.MinCasts) == 0.0f) ==
+                           (cast + 1 < params.Memory.MinCasts || cancels == 0);
+            if (cast % 3 == 0)
+            {
+                memory.NoteCastGone(7, clock + 500, tolerance, false);
+                ++cancels;
+            }
+            else if (cast % 5 == 4)
+                memory.NoteCastGone(7, clock + 600, tolerance, true);
+            else
+                memory.NoteCastGone(7, end + 50, tolerance, false);
+
+            clock = end + 1000;
+        }
+
+        OpponentMemorySlot const* seen = memory.Find(7);
+        float const rate = memory.FakeRate(7, params.Memory.MinCasts);
+        memoryOk = memoryOk && seen && seen->CastsSeen == casts && seen->CancelsSeen == cancels &&
+                   std::fabs(rate - static_cast<float>(cancels) / casts) < 1e-6f;
+        // A new cast before the end of the one in view: that one was cancelled, and another spell is not predicted
+        memory.NoteCast(9, 200, clock + 2000, clock, tolerance);
+        memory.NoteCast(9, 300, clock + 2300, clock + 300, tolerance);
+        OpponentMemorySlot const* switched = memory.Find(9);
+        memoryOk = memoryOk && switched && switched->CastsSeen == 2 && switched->CancelsSeen == 1 &&
+                   !memory.Predicts(9, 300, clock + 2300, tolerance);
+        for (uint32 enemy = 1; enemy < OPPONENT_MEMORY_SLOTS; ++enemy)
+            memory.NoteCast(1000 + enemy, 100, clock + 5000, clock + 1000 + enemy, tolerance);
+
+        memoryOk = memoryOk && memory.Find(7) == nullptr && memory.Find(9) && memory.Find(1001) &&
+                   memory.Find(1000 + OPPONENT_MEMORY_SLOTS - 1);
+        memory.Clear(78);
+        memoryOk = memoryOk && memory.MatchId == 78 && memory.Find(9) == nullptr && memory.Find(1001) == nullptr;
+        check(memoryOk, Acore::StringFormat("the opponent memory: fake rate {:.3f} after {} cancels in {} casts, "
+                                            "expected {:.3f}; or a repeat, the bound or the clear failed",
+                                            rate, cancels, casts, static_cast<float>(cancels) / casts));
+
+        // The busy bot: its own cast stops for a kick of an important cast only when it would end too late; no kick a
+        // busy bot reaches only within the margin of the cast's end; both off by their flags
+        ReactionReevalParams rules = params.Reeval;
+        rules.Enable = true;
+        rules.BusySkip = true;
+        uint32 const important = rules.ImportantCastMs;
+        uint32 const margin = rules.BusyMarginMs;
+        uint32 const ownLeft = std::max(rules.MinOwnRemainingMs, 1000u);
+        ReactionReevalParams rulesOff = rules;
+        rulesOff.Enable = false;
+        rulesOff.BusySkip = false;
+        check(StopOwnCastForKick(rules, important, ownLeft, ownLeft) &&
+                  !StopOwnCastForKick(rules, important, ownLeft + margin + 1, ownLeft) &&
+                  (important == 0 || !StopOwnCastForKick(rules, important - 1, ownLeft, ownLeft)) &&
+                  (rules.MinOwnRemainingMs == 0 ||
+                   !StopOwnCastForKick(rules, important, 1, rules.MinOwnRemainingMs - 1)) &&
+                  !StopOwnCastForKick(rulesOff, important, ownLeft, ownLeft),
+              "the own cast is not stopped for an important kick it would make too late, or is stopped otherwise");
+        check(InterruptOutOfReach(rules, true, 2000, 2000 + margin) &&
+                  !InterruptOutOfReach(rules, true, 1999, 2000 + margin) &&
+                  !InterruptOutOfReach(rules, false, 2000, 2000 + margin) &&
+                  !InterruptOutOfReach(rulesOff, true, 2000, 2000 + margin),
+              "a busy bot's kick out of reach is not dropped, or one in reach is");
+        handler->PSendSysMessage(
+            "TACTICS selftest reaction: types at attribute 50: choice {:.0f} ms per doubling, load {} ms / {} %, ease "
+            "{}/{}/{}/{} ms, think {}/{} ms (deep {} %), anticipate {:.2f}, queue {}-{} ms",
+            mid.HickMsPerDoubling, mid.LoadMsPerEvent, mid.LoadMissPercentPerEvent, mid.EaseMs[0], mid.EaseMs[1],
+            mid.EaseMs[2], mid.EaseMs[3], mid.ThinkShortcutMs, mid.ThinkDeepMs, mid.ThinkDeepPercent,
+            mid.AnticipateShare, mid.QueueMinMs, mid.QueueMaxMs);
+    }
+
     handler->PSendSysMessage("TACTICS selftest reaction: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -1351,6 +1696,19 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         botAI->IsSkillStretchOff() ? "off" : "on", timing.EndToEnd ? "on" : "off", timing.PingMs, timing.DisplayMs,
         timing.ServerTickMs < 0 ? std::string("half the map update")
                                 : Acore::StringFormat("{} ms", timing.ServerTickMs));
+    ReactionTypeState const& prices = botAI->GetReactionTypes();
+    auto const onOff = [](bool on) { return on ? "on" : "off"; };
+    handler->PSendSysMessage(
+        "  reaction types: choice {} ({:.0f} ms per doubling), load {} ({} ms, {} % per event, top {:.2f}), ease {} "
+        "({}/{}/{}/{} ms), think {} ({}/{} ms, deep {} %, wait {} ms), anticipate {} ({:.2f}), queue {} ({}-{} ms), "
+        "reeval {}, busy skip {}, memory {}, movement {}",
+        onOff(timing.Choice.Enable), prices.HickMsPerDoubling, onOff(timing.Load.Enable), prices.LoadMsPerEvent,
+        prices.LoadMissPercentPerEvent, prices.LoadTopProtect, onOff(timing.Ease.Enable), prices.EaseMs[0],
+        prices.EaseMs[1], prices.EaseMs[2], prices.EaseMs[3], onOff(timing.Think.Enable), prices.ThinkShortcutMs,
+        prices.ThinkDeepMs, prices.ThinkDeepPercent, prices.PatienceWaitMs, onOff(timing.Anticipate.Enable),
+        prices.AnticipateShare, onOff(timing.Queue.Enable), prices.QueueMinMs, prices.QueueMaxMs,
+        onOff(timing.Reeval.Enable), onOff(timing.Reeval.BusySkip), onOff(timing.Memory.Enable),
+        onOff(timing.MovementEnable));
     handler->PSendSysMessage("  cached: effort {}, style aggression {} / caution {} / patience {}", gate.Effort,
                              botAI->GetSkillStyle(SkillStyleTrait::Aggression),
                              botAI->GetSkillStyle(SkillStyleTrait::Caution),
