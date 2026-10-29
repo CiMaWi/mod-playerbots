@@ -9,12 +9,15 @@
 #include <algorithm>
 #include <string>
 
+#include "GenericSpellActions.h"
 #include "NaturalReaction.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "Spell.h"
+#include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "SplitMix64.h"
 #include "Timer.h"
 
@@ -22,6 +25,8 @@ namespace
 {
 constexpr uint64 PhaseSalt = 0x3C6EF372FE94F82BULL;
 constexpr uint64 NoticeSalt = 0xA54FF53A5F1D36F1ULL;
+// The busy path's stop for a kick (G0h3-b) belongs to a kick query within this long
+constexpr uint32 KickStopWindowMs = 500;
 
 static_assert(static_cast<size_t>(SkillNoticeCategory::TargetSwitch) == SkillNoticeCounters::Categories,
               "SkillNoticeCounters needs one slot per notice category");
@@ -150,6 +155,8 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"tank assist", C::TargetSwitch},
         {"attack enemy player", C::TargetSwitch},
         {"attack enemy flag carrier", C::TargetSwitch},
+        // Out of a ground effect (G0h3-b; a reaction only, Playerbots.Natural.Reaction.Movement.Enable)
+        {"avoid aoe", C::Movement},
     };
     return table;
 }
@@ -193,15 +200,17 @@ ReactionEase LookupEase(std::string const& name, SkillNoticeCategory category)
     }
 }
 
-// What matters most when events pile up (the load's top event): interrupt, defensive, crowd-control break, dispel,
-// crowd control, target switch
+// What matters most when events pile up (the load's top event): interrupt, defensive, out of a ground effect,
+// crowd-control break, dispel, crowd control, target switch
 uint8 ReactionImportance(SkillNoticeCategory category)
 {
     switch (category)
     {
         case SkillNoticeCategory::Interrupt:
-            return 6;
+            return 7;
         case SkillNoticeCategory::Defensive:
+            return 6;
+        case SkillNoticeCategory::Movement:
             return 5;
         case SkillNoticeCategory::CrowdControlBreak:
             return 4;
@@ -233,6 +242,8 @@ char const* SkillNoticeCategoryName(SkillNoticeCategory category)
             return "cc break";
         case SkillNoticeCategory::TargetSwitch:
             return "target switch";
+        case SkillNoticeCategory::Movement:
+            return "movement";
         default:
             return "none";
     }
@@ -251,6 +262,11 @@ float SkillMultiplier::GetValue(Action* action)
     if (category == SkillNoticeCategory::None)
         return 1.0f;
 
+    // avoid aoe is a reaction only (G0h3-b): through the natural model with its Movement part, else at once
+    bool const movement = category == SkillNoticeCategory::Movement;
+    if (movement && (!sPlayerbotAIConfig.NaturalReactionActive || !sPlayerbotAIConfig.NaturalReaction.MovementEnable))
+        return 1.0f;
+
     if (botAI->IsSkillExempt())
         return 1.0f;
 
@@ -261,6 +277,9 @@ float SkillMultiplier::GetValue(Action* action)
     Unit* switchTarget = nullptr;
     if (category == SkillNoticeCategory::TargetSwitch && !IsTargetSwitch(action, switchTarget))
         return 1.0f;
+
+    if (movement)
+        return HasReacted(category, actionClass.Ease, action, nullptr) ? 1.0f : 0.0f;
 
     SkillNoticeCounters& counters = botAI->GetSkillNoticeCounters();
     size_t const index = static_cast<size_t>(category) - 1;
@@ -386,6 +405,32 @@ uint32 AuraAgeMs(Player* bot, Unit* unit, bool dispellable, ReactionStampSource&
     return static_cast<uint32>(newest);
 }
 
+// The age of the newest ground effect hurting the bot (a periodic damage aura of a dynamic object, whose duration is
+// the effect's), 0 without one: a trap or a trigger NPC has no visible start
+uint32 GroundEffectAgeMs(Player* bot, ReactionStampSource& source)
+{
+    bool found = false;
+    int32 newest = 0;
+    for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_DAMAGE))
+    {
+        Aura const* aura = effect->GetBase();
+        if (aura->GetType() != DYNOBJ_AURA_TYPE || aura->GetMaxDuration() <= 0)
+            continue;
+
+        int32 const elapsed = std::max(0, aura->GetMaxDuration() - aura->GetDuration());
+        if (!found || elapsed < newest)
+            newest = elapsed;
+
+        found = true;
+    }
+
+    if (!found)
+        return 0;
+
+    source = ReactionStampSource::Aura;
+    return static_cast<uint32>(newest);
+}
+
 // How long before now the event the action answers began, from what a player in the bot's seat sees (DT.12)
 uint32 VisibleEventAgeMs(Player* bot, SkillNoticeCategory category, Unit* target, ReactionStampSource& source)
 {
@@ -397,6 +442,8 @@ uint32 VisibleEventAgeMs(Player* bot, SkillNoticeCategory category, Unit* target
             return AuraAgeMs(bot, target, true, source);
         case SkillNoticeCategory::CrowdControlBreak:
             return AuraAgeMs(bot, bot, false, source);
+        case SkillNoticeCategory::Movement:
+            return GroundEffectAgeMs(bot, source);
         default:
             // Defensive cooldowns, crowd control and target switches have no visible start: the first query
             return 0;
@@ -454,9 +501,15 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
 
         if (spell && spell->GetSpellInfo())
         {
-            uint32 const endMs = nowMs + static_cast<uint32>(std::max(0, spell->GetCastTimeRemaining()));
-            inputs.Predicted = botAI->GetOpponentMemory().Predicts(
-                target->GetGUID().GetCounter(), spell->GetSpellInfo()->Id, endMs, params.Memory.EndToleranceMs);
+            // The bar the memory has in view (a pushback moves its end) or the one seen now
+            OpponentMemory const& memory = botAI->GetOpponentMemory();
+            uint32 const guid = target->GetGUID().GetCounter();
+            uint32 const spellId = spell->GetSpellInfo()->Id;
+            OpponentMemorySlot const* slot = memory.Find(guid);
+            uint32 const endMs = slot && slot->ViewEndMs != 0 && slot->SpellId == spellId
+                                     ? slot->ViewEndMs
+                                     : nowMs + static_cast<uint32>(std::max(0, spell->GetCastTimeRemaining()));
+            inputs.Predicted = memory.Predicts(guid, spellId, endMs, params.Memory.EndToleranceMs);
         }
     }
 
@@ -470,6 +523,12 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
     ReactionEvent& event = reactionEvents[index];
     uint32 const now = getMSTime();
     ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
+    // A kick skipped as out of reach (user note 2) waits for the next enemy cast, not for the miss window
+    ReactionBusyState& busy = botAI->GetReactionBusy();
+    if (event.Active && event.Busy == static_cast<uint8>(ReactionBusyAnswer::Skipped) &&
+        static_cast<int32>(now - busy.SkipEndMs) >= 0)
+        event.Active = false;
+
     if (ReactionEventStarts(event, now, sPlayerbotAIConfig.SkillNoticeWindowMs))
     {
         PerfMonitorScope startScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::EventStart"));
@@ -498,22 +557,28 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
             StampReactionEvent(event, reactionFocus, params, age, source, tick);
         }
 
+        if (reactionNatural[index])
+            MeetBusy(event, category, action, target, now, true);
+
         if (reactionNatural[index] && event.Missed)
             LOG_TRACE("playerbots.reaction",
                       "reaction cat {} skill {} ready {} pass -1 behind {} switch {} stamp {} src {} target {} e2e -1 "
-                      "lat {} at {} type {} options {} load {} ease {} think {} cost {}",
+                      "lat {} at {} type {} options {} load {} ease {} think {} cost {} busy {} own {}",
                       static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, event.Behind ? 1 : 0,
                       event.Switched ? 1 : 0, event.StampAgeMs, static_cast<uint32>(event.StampSource), event.TargetMs,
                       static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now, static_cast<uint32>(event.Type),
                       static_cast<uint32>(event.Options), static_cast<uint32>(event.Load),
-                      static_cast<uint32>(event.Ease), event.ThinkMs, event.CostMs);
+                      static_cast<uint32>(event.Ease), event.ThinkMs, event.CostMs, static_cast<uint32>(event.Busy),
+                      event.OwnMs);
     }
+    else if (category == SkillNoticeCategory::Interrupt && reactionNatural[index] && busy.KickStopMs != 0)
+        MeetBusy(event, category, action, target ? target : action->GetTarget(), now, false);
 
-    // Outside the configured contexts (PvE by default) D4's uniform delay applies
+    // Outside the configured contexts (PvE by default) D4's uniform delay applies (a movement goes at once)
     if (!reactionNatural[index])
     {
         event.LastQueryMs = now;
-        return HasNoticed(category);
+        return category == SkillNoticeCategory::Movement || HasNoticed(category);
     }
 
     // An overshoot beyond two check delays is a pause of the bot's own (a cast), not its check latency
@@ -530,16 +595,89 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
             std::min(reactionFocus.LatencyMs, static_cast<float>(sPlayerbotAIConfig.NaturalCadenceCheckMs));
         LOG_TRACE("playerbots.reaction",
                   "reaction cat {} skill {} ready {} pass {} behind {} switch {} stamp {} src {} target {} e2e {} lat "
-                  "{} at {} type {} options {} load {} ease {} think {} cost {}",
+                  "{} at {} type {} options {} load {} ease {} think {} cost {} busy {} own {}",
                   static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, now - event.StartMs,
                   event.Behind ? 1 : 0, event.Switched ? 1 : 0, event.StampAgeMs,
                   static_cast<uint32>(event.StampSource), event.TargetMs, now - event.StartMs + event.StampAgeMs,
                   static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now, static_cast<uint32>(event.Type),
                   static_cast<uint32>(event.Options), static_cast<uint32>(event.Load), static_cast<uint32>(event.Ease),
-                  event.ThinkMs, event.CostMs);
+                  event.ThinkMs, event.CostMs, static_cast<uint32>(event.Busy), event.OwnMs);
     }
 
     return true;
+}
+
+void SkillMultiplier::MeetBusy(ReactionEvent& event, SkillNoticeCategory category, Action* action, Unit* target,
+                               uint32 nowMs, bool starting)
+{
+    ReactionBusyState& busy = botAI->GetReactionBusy();
+    if (starting)
+    {
+        // The bot's own cast between the event's server time and its first query: the time it did not look
+        uint32 const eventMs = nowMs - event.StampAgeMs;
+        uint32 const from = static_cast<int32>(busy.CastStartMs - eventMs) > 0 ? busy.CastStartMs : eventMs;
+        uint32 const to = static_cast<int32>(busy.CastEndMs - nowMs) < 0 ? busy.CastEndMs : nowMs;
+        event.OwnMs = static_cast<int32>(to - from) > 0 ? to - from : 0;
+    }
+
+    if (category != SkillNoticeCategory::Interrupt)
+        return;
+
+    // User note 1: the busy path stopped the own cast for this kick; that was the reaction, so the pass is due now
+    if (busy.KickStopMs != 0)
+    {
+        bool const recent = nowMs - busy.KickStopMs <= KickStopWindowMs;
+        bool const forThis =
+            recent && !event.Noticed && target && target->GetGUID().GetCounter() == busy.KickTargetGuid;
+        if (forThis || !recent)
+            busy.KickStopMs = 0;
+
+        if (forThis)
+        {
+            event.Missed = false;
+            event.Corrected = false;
+            event.DueAfterMs = nowMs - event.StartMs;
+            event.Busy = static_cast<uint8>(ReactionBusyAnswer::StoppedOwnCast);
+            return;
+        }
+    }
+
+    ReactionReevalParams const& rules = sPlayerbotAIConfig.NaturalReaction.Reeval;
+    if (!starting || !rules.BusySkip || event.Missed || !target)
+        return;
+
+    // User note 2 (a channel is worth cutting late): no kick a busy bot reaches only at the cast's end
+    Spell* const cast = target->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!cast || cast->getState() != SPELL_STATE_PREPARING || cast->GetCastTime() <= 0)
+        return;
+
+    // Busy: its own cast kept it from looking, or the kick waits for its cooldown or the GCD; skipped only when that
+    // is what makes the kick late (user note 2: busy with a long cast or a cooldown), not its reaction alone
+    uint32 waitMs = 0;
+    if (CastSpellAction* const kick = dynamic_cast<CastSpellAction*>(action))
+    {
+        uint32 const spellId = AI_VALUE2(uint32, "spell id", kick->getSpell());
+        SpellInfo const* const info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        if (info)
+        {
+            waitMs = bot->GetSpellCooldownDelay(spellId);
+            if (info->StartRecoveryCategory != 0 && static_cast<int32>(busy.GcdEndMs - nowMs) > 0 &&
+                bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+                waitMs = std::max(waitMs, busy.GcdEndMs - nowMs);
+        }
+    }
+
+    uint32 const enemyLeft = static_cast<uint32>(std::clamp(cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
+    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
+    bool const stamped = params.EndToEnd && botAI->IsNaturalCadenceActive();
+    int32 const freeMs = BusyFreeDueMs(event, static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), stamped);
+    if (!InterruptOutOfReach(rules, std::max(event.DueAfterMs, waitMs), freeMs, enemyLeft))
+        return;
+
+    event.Missed = true;
+    event.Busy = static_cast<uint8>(ReactionBusyAnswer::Skipped);
+    busy.SkipEndMs = nowMs + enemyLeft;
+    ++busy.SkippedBusy;
 }
 
 void SkillStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

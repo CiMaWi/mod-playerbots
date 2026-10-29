@@ -1641,7 +1641,7 @@ Playerbots.Natural.Reaction.ServerTickMs = -1
 # defaults every ability is the skill), lerped along Playerbots.Skill.CurveExponent. Every cost lies inside the
 # reaction (the trace's ready), so the end-to-end target keeps its sum. The playerbots.reaction trace lines add type
 # (0 simple, 1 choice, 2 anticipated), options, load (other events pending), ease (0 common, 1 rare, 2 focus target,
-# 3 new target), think (ms) and cost (choice + load + ease + think, ms).
+# 3 new target), think (ms), cost (choice + load + ease + think, ms), busy and own (see Reeval).
 # Choice (Wisdom): Hick's law, MsPerDoubling per doubling of the real options (one option: none; at most MaxOptions,
 #   1-64). Counted from what the bot has already built: a target switch and crowd control from its attackers list;
 #   an interrupt and a dispel are one option (no count without a new scan). 0-2000 ms.
@@ -1657,14 +1657,23 @@ Playerbots.Natural.Reaction.ServerTickMs = -1
 #   and 100, straight line) is how long a bot waits for a better moment (read by later tactics).
 # Anticipate (Foresight): an interrupt the opponent memory predicts (the enemy cast the same spell the time before)
 #   saves Share (0-0.95) of the draw, never below MinMs; it is no choice. Needs Memory.Enable for the memory to fill.
-# Queue (Speed; G0h3-b): a bot whose own cast or GCD ends before its next check checks MinMs-MaxMs after the end
-#   instead (never later), as a human mashing the button.
-# Reeval (G0h3-b, the user's notes of 2026-10-30): Enable stops the bot's own cast (MinOwnRemainingMs or more left) for a
-#   kick of an enemy cast of at least ImportantCastMs that the own cast would end too late for; BusySkip drops a kick a
-#   bot busy with its own cast or GCD would land only within BusyMarginMs of the enemy cast's end or after it.
-# Memory (G0h3-b, DT.12): per bot and match, the casts the bot saw each enemy (at most 8) begin and cancel; the fake
-#   rate counts from MinCasts (1-100) casts; a cast gone within EndToleranceMs of its bar's end finished.
-# Movement (G0h3-b): avoid aoe as a reaction, from the ground effect's start.
+# Queue (Speed): a bot whose own cast or GCD ends before its next check checks MinMs-MaxMs after the end instead
+#   (never later; its own timer, no wake-up), as a human mashing the button.
+# Reeval (the user's notes of 2026-10-30): Enable stops the bot's own cast (MinOwnRemainingMs or more left) for a kick
+#   of its target's cast of at least ImportantCastMs (a stand-in for judging the spell) that the own cast would end
+#   too late for, once its reaction to the cast bar is over (draw and shortcut think cost, end to end from the bar's
+#   start) and its interrupt is ready; the kick follows in the same check. Once per enemy cast; after a stop the kick
+#   did not follow (its trigger or a higher action picked something else) none for 30 s. An opt-in stand-in until
+#   G5b's judgement: it never weighs the own cast (a heal on a dying partner is stopped too). BusySkip drops a kick
+#   that a bot busy with its own cast, the kick's cooldown or the GCD would land only within BusyMarginMs of the
+#   cast's end or after it, when being busy is what makes it late (one late from its reaction alone is tried).
+#   The trace's busy field: 1 stopped its own cast for the kick, 2 skipped; own: ms of own cast within the event.
+# Memory (DT.12): per bot and match (cleared when it ends), the cast bars the bot sees on its target and attackers
+#   (at most 8 enemies) at its own checks; a bar gone before its end without a visible interrupt (school lock,
+#   silence, stun, fear, death) is a cancel. The fake rate counts from MinCasts (1-100) casts; a bar gone within
+#   EndToleranceMs of its end finished. Anticipate reads it.
+# Movement: avoid aoe as a reaction, stamped with the ground effect's start (a trap or trigger NPC: the first look);
+#   only bots with the avoid aoe strategy have it (Playerbots.AutoAvoidAoe, bots with a real master).
 # Times 0-10000 ms. On a running server .reload config then .playerbots rndbot reload switch the parts; changed
 # prices reach a logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's prices.
 # Default: every part 0; the prices below

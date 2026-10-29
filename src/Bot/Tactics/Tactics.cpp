@@ -864,6 +864,15 @@ void RunReactionSelftest(ChatHandler* handler)
         on.Ease.Enable = true;
         on.Think.Enable = true;
         on.Anticipate.Enable = true;
+        // The load and anticipation checks need prices: fixed ones (the dist's), so a configured 0 cannot void them
+        on.Load.MsPerEventAt1 = 200;
+        on.Load.MsPerEventAt99 = 80;
+        on.Load.MissPercentPerEventAt1 = 10;
+        on.Load.MissPercentPerEventAt99 = 2;
+        on.Load.TopProtectAt1 = 0.0f;
+        on.Load.TopProtectAt99 = 0.8f;
+        on.Anticipate.ShareAt1 = 0.1f;
+        on.Anticipate.ShareAt99 = 0.5f;
         auto const pricesAt = [&](uint8 attribute)
         {
             ReactionTypeInputs inputs;
@@ -1182,11 +1191,81 @@ void RunReactionSelftest(ChatHandler* handler)
                    !StopOwnCastForKick(rules, important, 1, rules.MinOwnRemainingMs - 1)) &&
                   !StopOwnCastForKick(rulesOff, important, ownLeft, ownLeft),
               "the own cast is not stopped for an important kick it would make too late, or is stopped otherwise");
-        check(InterruptOutOfReach(rules, true, 2000, 2000 + margin) &&
-                  !InterruptOutOfReach(rules, true, 1999, 2000 + margin) &&
-                  !InterruptOutOfReach(rules, false, 2000, 2000 + margin) &&
-                  !InterruptOutOfReach(rulesOff, true, 2000, 2000 + margin),
-              "a busy bot's kick out of reach is not dropped, or one in reach is");
+        check(InterruptOutOfReach(rules, 2000, 1000, 2000 + margin) &&
+                  InterruptOutOfReach(rules, 2000, -500, 2000 + margin) &&
+                  !InterruptOutOfReach(rules, 1999, 1000, 2000 + margin) &&
+                  !InterruptOutOfReach(rules, 2000, 2000, 2000 + margin) &&
+                  !InterruptOutOfReach(rulesOff, 2000, 1000, 2000 + margin),
+              "a kick made late by being busy is not dropped, or one in reach or late from its reaction alone is");
+
+        // Without the busy time: stamped, the unclipped due no earlier than the own cast's start; unstamped, the due
+        // OwnMs earlier; no own cast, the due itself
+        ReactionEvent busyEvent;
+        busyEvent.TargetMs = 900;
+        busyEvent.StampAgeMs = 1200;
+        busyEvent.DueAfterMs = 0;
+        busyEvent.OwnMs = 200;
+        ReactionEvent freeEvent = busyEvent;
+        freeEvent.StampAgeMs = 300;
+        freeEvent.DueAfterMs = 550;
+        freeEvent.OwnMs = 0;
+        ReactionEvent unstampedEvent;
+        unstampedEvent.DueAfterMs = 700;
+        unstampedEvent.OwnMs = 300;
+        check(BusyFreeDueMs(busyEvent, 50, true) == -200 && BusyFreeDueMs(freeEvent, 50, true) == 550 &&
+                  BusyFreeDueMs(freeEvent, 50, false) == 550 && BusyFreeDueMs(unstampedEvent, 50, false) == 400,
+              "the kick's due without the busy time is not the stamped or the unstamped one");
+
+        // One stop per enemy cast: a bot whose kick never follows and that starts its next own cast at once, checked
+        // every 100 ms through a 3 s enemy cast with a pushback, stops once; none in the backoff after that wasted
+        // stop, one again after it; a followed stop leaves the next cast its own
+        ReactionBusyState watch;
+        uint32 stops = 0;
+        uint32 const castStart = 10000;
+        uint32 const castMs = 3000;
+        for (uint32 now = castStart; now < castStart + castMs; now += 100)
+        {
+            uint32 const end = castStart + castMs + (now >= castStart + 1000 ? 250 : 0);
+            if (!watch.Watches(7, 116, end, castMs / 2))
+                watch.Watch(7, 116, end, castStart + 600);
+
+            if (watch.StopDue(now))
+            {
+                watch.NoteStop(now, 7, 2139);
+                watch.NoteStopUnfollowed(now);
+                ++stops;
+            }
+        }
+
+        uint32 const inBackoff = castStart + castMs + 500;
+        watch.Watch(7, 116, inBackoff + castMs, inBackoff + 600);
+        bool const backedOff = !watch.StopDue(inBackoff + 600) && !watch.StopDue(inBackoff + castMs);
+        uint32 const after = castStart + 600 + REACTION_STOP_BACKOFF_MS;
+        watch.Watch(7, 116, after + castMs, after);
+        bool const again = watch.StopDue(after);
+        watch.NoteStop(after, 7, 2139);
+        bool const spent = !watch.StopDue(after + 100);
+        watch.Watch(8, 116, after + 2 * castMs, after + castMs);
+        check(
+            stops == 1 && backedOff && again && spent && watch.StopDue(after + castMs) && watch.UnfollowedStops == 1,
+            Acore::StringFormat("the busy stop is not once per enemy cast: {} stops in one cast, backoff {}, after it "
+                                "{}, spent {}",
+                                stops, backedOff ? "held" : "broken", again ? "due" : "not due", spent ? "yes" : "no"));
+
+        // An unanswered event loads the others while its trigger asks, up to the pending gap after its last query;
+        // a noticed or missed one does not
+        ReactionEvent waiting;
+        waiting.Active = true;
+        waiting.StartMs = 1000;
+        waiting.LastQueryMs = 1000;
+        ReactionEvent answered = waiting;
+        answered.Noticed = true;
+        ReactionEvent lost = waiting;
+        lost.Missed = true;
+        check(ReactionEventPending(waiting, 1000 + REACTION_PENDING_GAP_MS) &&
+                  !ReactionEventPending(waiting, 1001 + REACTION_PENDING_GAP_MS) &&
+                  !ReactionEventPending(answered, 1000) && !ReactionEventPending(lost, 1000),
+              "an unanswered event does not count as pending for exactly the pending gap");
         handler->PSendSysMessage(
             "TACTICS selftest reaction: types at attribute 50: choice {:.0f} ms per doubling, load {} ms / {} %, ease "
             "{}/{}/{}/{} ms, think {}/{} ms (deep {} %), anticipate {:.2f}, queue {}-{} ms",

@@ -259,6 +259,189 @@ PlayerbotAI::~PlayerbotAI()
         PlayerbotsMgr::instance().RemovePlayerBotData(bot->GetGUID(), true);
 }
 
+namespace
+{
+constexpr uint64 BusyWatchSalt = 0x510E527FADE682D1ULL;
+
+// The GCD a spell starts (Spell::TriggerGlobalCooldown without the spell mods)
+uint32 NaturalGcdMs(Player* bot, SpellInfo const* info)
+{
+    int32 gcd = static_cast<int32>(info->StartRecoveryTime);
+    if (gcd < 1000 || gcd > 1500)
+        return static_cast<uint32>(std::max(0, gcd));
+
+    if (info->StartRecoveryCategory == 133 && gcd == 1500 && info->DmgClass != SPELL_DAMAGE_CLASS_MELEE &&
+        info->DmgClass != SPELL_DAMAGE_CLASS_RANGED && !info->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT) &&
+        !info->HasAttribute(SPELL_ATTR0_IS_ABILITY))
+        gcd = static_cast<int32>(gcd * bot->GetFloatValue(UNIT_MOD_CAST_SPEED));
+
+    return static_cast<uint32>(std::clamp(gcd, 1000, 1500));
+}
+
+// The bot's own interrupt by class (the interrupt triggers' spells; a warlock's is its pet's and needs no stop)
+char const* OwnInterruptName(uint8 playerClass)
+{
+    switch (playerClass)
+    {
+        case CLASS_MAGE:
+            return "counterspell";
+        case CLASS_SHAMAN:
+            return "wind shear";
+        case CLASS_ROGUE:
+            return "kick";
+        case CLASS_DEATH_KNIGHT:
+            return "mind freeze";
+        case CLASS_HUNTER:
+            return "silencing shot";
+        case CLASS_PALADIN:
+            return "hammer of justice";
+        case CLASS_DRUID:
+            return "bash";
+        default:
+            return nullptr;
+    }
+}
+
+// User note 1 (G0h3-b): a casting bot sees its target's cast bar like any player. Once its reaction is over (its draw
+// and the shortcut's think cost, end to end from the bar's start) it stops its own cast for a ready kick of an
+// important cast that its own cast would end too late for; the engine's kick follows in the same check. One stop
+// per enemy cast (the trigger that picks the kick may not fire: a mage kicks only an enemy healer, a resto shaman's
+// heal outranks its wind shear), and none within REACTION_STOP_BACKOFF_MS after a stop the kick did not follow.
+bool StopOwnCastForKickDue(PlayerbotAI* botAI, Player* bot, uint32 ownLeftMs, uint32 nowMs)
+{
+    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
+    AiObjectContext* const context = botAI->GetAiObjectContext();
+    Unit* const enemy = context->GetValue<Unit*>("current target")->Get();
+    if (!enemy || !enemy->IsInWorld() || !enemy->IsAlive() || !bot->IsHostileTo(enemy))
+        return false;
+
+    Spell* const cast = enemy->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!cast || cast->getState() != SPELL_STATE_PREPARING || cast->GetCastTime() <= 0 || !cast->GetSpellInfo())
+        return false;
+
+    uint32 const castMs = static_cast<uint32>(cast->GetCastTime());
+    uint32 const enemyLeft = static_cast<uint32>(std::clamp(cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
+    if (!StopOwnCastForKick(params.Reeval, castMs, enemyLeft, ownLeftMs))
+        return false;
+
+    // One decision per enemy cast, due from the bar's start (a pushback moves the end within half the cast)
+    ReactionBusyState& busy = botAI->GetReactionBusy();
+    uint32 const enemyGuid = enemy->GetGUID().GetCounter();
+    uint32 const spellId = cast->GetSpellInfo()->Id;
+    uint32 const endMs = nowMs + enemyLeft;
+    if (!busy.Watches(enemyGuid, spellId, endMs, castMs / 2))
+    {
+        uint64 const guid = bot->GetGUID().GetCounter();
+        uint32 ready = ReactionMs(botAI->GetReactionState(), params.MinMs,
+                                  SplitMix64((guid << 32) ^ enemyGuid ^ endMs ^ BusyWatchSalt));
+        if (params.Think.Enable)
+            ready += botAI->GetReactionTypes().ThinkShortcutMs;
+
+        uint32 const tick =
+            params.ServerTickMs >= 0 ? static_cast<uint32>(params.ServerTickMs) : botAI->GetLastUpdateDiff() / 2;
+        busy.Watch(enemyGuid, spellId, endMs, nowMs - (castMs - enemyLeft) + EndToEndTargetMs(params, ready, tick));
+    }
+
+    if (!busy.StopDue(nowMs))
+        return false;
+
+    char const* const kickName = OwnInterruptName(bot->getClass());
+    uint32 const kickId = kickName ? context->GetValue<uint32>("spell id", kickName)->Get() : 0;
+    if (!kickId || !botAI->IsInterruptableSpellCasting(enemy, kickName) || !botAI->CanCastSpell(kickId, enemy, true))
+        return false;
+
+    LOG_TRACE("playerbots.reaction", "busy stop skill {} spell {} cast {} left {} own {} late {} at {}",
+              botAI->GetPvpSkill(), spellId, castMs, enemyLeft, ownLeftMs, nowMs - busy.WatchDueMs, nowMs);
+    busy.NoteStop(nowMs, enemyGuid, kickId);
+    if (PerfMonitor::IsEnabled())
+        PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::StoppedOwnCast"));
+
+    return true;
+}
+
+// The opponent memory (G0h3-b, DT.12): at the bot's own checks in a started match, the cast bars of its target and
+// of its attackers (as many as the memory holds); a bar gone before its end without a visible interrupt (a school
+// lock, a silence, a stun or fear, death) was cancelled. Cleared when the match changes or ends.
+void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowMs)
+{
+    OpponentMemory& memory = botAI->GetOpponentMemory();
+    Battleground* const battleground = bot->GetBattleground();
+    uint32 const matchId =
+        battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
+    if (matchId != memory.MatchId)
+    {
+        if (memory.MatchId != 0)
+        {
+            uint32 enemies = 0;
+            uint32 casts = 0;
+            uint32 cancels = 0;
+            for (OpponentMemorySlot const& slot : memory.Slots)
+            {
+                if (slot.Guid == 0)
+                    continue;
+
+                ++enemies;
+                casts += slot.CastsSeen;
+                cancels += slot.CancelsSeen;
+            }
+
+            LOG_TRACE("playerbots.reaction", "memory clear match {} skill {} enemies {} casts {} cancels {} at {}",
+                      memory.MatchId, botAI->GetPvpSkill(), enemies, casts, cancels, nowMs);
+        }
+
+        memory.Clear(matchId);
+    }
+
+    if (!observe || matchId == 0)
+        return;
+
+    uint32 const tolerance = sPlayerbotAIConfig.NaturalReaction.Memory.EndToleranceMs;
+    AiObjectContext* const context = botAI->GetAiObjectContext();
+    uint32 seen = 0;
+    auto const look = [&](Unit* unit)
+    {
+        if (!unit || !unit->IsInWorld() || !unit->IsPlayer() || !bot->IsHostileTo(unit))
+            return;
+
+        ++seen;
+        uint32 const guid = unit->GetGUID().GetCounter();
+        OpponentMemorySlot const* const slot = memory.Find(guid);
+        Spell* const spell = unit->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (spell && spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0 && spell->GetSpellInfo())
+        {
+            uint32 const left = static_cast<uint32>(std::clamp(spell->GetCastTimeRemaining(), 0, spell->GetCastTime()));
+            uint32 const elapsed = static_cast<uint32>(spell->GetCastTime()) - left;
+            uint32 const spellId = spell->GetSpellInfo()->Id;
+            // The bar seen before (begun before the last look), maybe pushed back: the same cast
+            bool const same =
+                slot && slot->ViewEndMs != 0 && slot->SpellId == spellId && elapsed >= nowMs - slot->LastSeenMs;
+            memory.NoteCast(guid, spellId, same ? slot->ViewEndMs : nowMs + left, nowMs, tolerance);
+            return;
+        }
+
+        if (!slot || slot->ViewEndMs == 0)
+            return;
+
+        Player* const player = unit->ToPlayer();
+        bool const interrupted =
+            !unit->IsAlive() || unit->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING) ||
+            unit->HasUnitFlag(UNIT_FLAG_SILENCED) || (player && player->HasSpellCooldown(slot->SpellId));
+        memory.NoteCastGone(guid, nowMs, tolerance, interrupted);
+    };
+
+    Unit* const target = context->GetValue<Unit*>("current target")->Get();
+    look(target);
+    for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->LazyGet())
+    {
+        if (seen >= OPPONENT_MEMORY_SLOTS)
+            break;
+
+        if (!target || guid != target->GetGUID())
+            look(botAI->GetUnit(guid));
+    }
+}
+}  // namespace
+
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
     // Handle the AI check delay
@@ -330,6 +513,46 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         return;
 
     RefreshNaturalTiming();
+
+    // G0h3-b where the natural reaction runs (its contexts, combat in a started match, a skill): the opponent memory,
+    // the busy bot and the queue-like follow-up
+    uint32 const nowMs = getMSTime();
+    ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
+    bool const busyModel = stretchOff && cadenceCombat && pvpSkill != 0;
+    if (reaction.Memory.Enable)
+    {
+        if (PerfMonitor::IsEnabled())
+        {
+            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
+            ObserveOpponents(this, bot, busyModel, nowMs);
+        }
+        else
+            ObserveOpponents(this, bot, busyModel, nowMs);
+    }
+
+    bool stoppedForKick = false;
+
+    // The next check its draw after the end of the own cast or GCD when that comes before the regular check (the
+    // bot's own timer, its stagger left out), else the regular check
+    auto const yieldQueued = [this, nowMs](uint32 remainingMs)
+    {
+        uint32 const checkMs = GetReactDelay();
+        uint64 const guid = bot->GetGUID().GetCounter();
+        uint32 const regular = checkMs + CheckStaggerMs(guid, checkStaggerMs);
+        uint32 const draw = QueueDrawMs(reactionTypes, SplitMix64((guid << 32) ^ (nowMs + remainingMs)));
+        uint32 const delay = QueueCheckDelayMs(remainingMs, regular, draw);
+        if (delay >= regular)
+        {
+            YieldThread(bot, checkMs);
+            return;
+        }
+
+        nextAICheckDelay = delay;
+        lastCheckDelay = delay;
+        ++reactionBusy.QueuedChecks;
+        if (PerfMonitor::IsEnabled())
+            PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::QueuedCheck"));
+    };
 
     // Handle a spell that is still in its preparing phase (including channeled spells).
     Spell* currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
@@ -409,12 +632,46 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                     ServerFacade::instance().SetFacingTo(bot, spellTarget);
                 }
 
-                // Wait for spell cast
-                YieldThread(bot, GetReactDelay());
-                return;
+                // The own cast as the bot sees it; stopped for a kick (user note 1) the engine runs in this check
+                uint32 const ownLeft = static_cast<uint32>(std::max(0, currentSpell->GetCastTimeRemaining()));
+                reactionBusy.CastStartMs =
+                    nowMs - static_cast<uint32>(std::max(0, currentSpell->GetCastTime() - static_cast<int32>(ownLeft)));
+                reactionBusy.CastEndMs = nowMs + ownLeft;
+                if (busyModel && reaction.Reeval.Enable)
+                {
+                    if (PerfMonitor::IsEnabled())
+                    {
+                        PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::BusyStop"));
+                        stoppedForKick = StopOwnCastForKickDue(this, bot, ownLeft, nowMs);
+                    }
+                    else
+                        stoppedForKick = StopOwnCastForKickDue(this, bot, ownLeft, nowMs);
+                }
+
+                if (stoppedForKick)
+                {
+                    bot->InterruptSpell(currentSpell->GetCurrentContainer());
+                    reactionBusy.CastEndMs = nowMs;
+                }
+                else
+                {
+                    // Wait for spell cast
+                    if (busyModel && reaction.Queue.Enable)
+                        yieldQueued(ownLeft);
+                    else
+                        YieldThread(bot, GetReactDelay());
+
+                    return;
+                }
             }
         }
     }
+
+    // An own cast gone before its predicted end (interrupted by the enemy, or for a full-health target) ended by this
+    // check at the latest, so its overlap with a later event is not overstated
+    if (busyModel && static_cast<int32>(reactionBusy.CastEndMs - nowMs) > 0 &&
+        (!currentSpell || currentSpell->getState() != SPELL_STATE_PREPARING))
+        reactionBusy.CastEndMs = nowMs;
 
     if (spellInterruptRequested)
     {
@@ -468,6 +725,31 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     }
     else
         UpdateAIInternal(elapsed, minimal);
+
+    // A stop the engine's kick did not follow (its trigger or target picked another action): no stop for a while
+    if (stoppedForKick && !bot->HasSpellCooldown(reactionBusy.KickSpellId))
+    {
+        reactionBusy.NoteStopUnfollowed(nowMs);
+        LOG_TRACE("playerbots.reaction", "busy stop unfollowed skill {} kick {} at {}", GetPvpSkill(),
+                  reactionBusy.KickSpellId, nowMs);
+        if (PerfMonitor::IsEnabled())
+            PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::UnfollowedStop"));
+    }
+
+    // The GCD of the spell the bot cast last (its end noted once, when it begins): the queue's follow-up
+    if (busyModel && reaction.Queue.Enable && nextAICheckDelay == 0)
+    {
+        LastSpellCast const& last = aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get();
+        SpellInfo const* const info = last.id ? sSpellMgr->GetSpellInfo(last.id) : nullptr;
+        if (info && info->StartRecoveryCategory != 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+        {
+            if (static_cast<int32>(reactionBusy.GcdEndMs - nowMs) <= 0)
+                reactionBusy.GcdEndMs = nowMs + NaturalGcdMs(bot, info);
+
+            yieldQueued(reactionBusy.GcdEndMs - nowMs);
+            return;
+        }
+    }
 
     YieldThread(bot, GetReactDelay());
 }
@@ -7064,7 +7346,8 @@ uint8 PlayerbotAI::BeginExecutedCount(Action* action, ObjectGuid& previousTarget
     else
         category = SkillNoticeCategoryOf(action->getName());
 
-    if (category == SkillNoticeCategory::None)
+    // A movement (avoid aoe) is a reaction only, with no executed count
+    if (category == SkillNoticeCategory::None || category == SkillNoticeCategory::Movement)
         return 0;
 
     if (category == SkillNoticeCategory::TargetSwitch)

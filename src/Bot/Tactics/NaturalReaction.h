@@ -131,11 +131,12 @@ struct ReactionQueueParams  // Speed (G0h3-b)
 struct ReactionReevalParams
 {
     // Stop the bot's own cast for a kick of an important enemy cast (at least ImportantCastMs: a stand-in for G5b's
-    // judgement) when the own cast has MinOwnRemainingMs left and would end too late for the kick
+    // judgement) when the own cast has MinOwnRemainingMs left and would end too late for the kick; once per enemy cast
     bool Enable = false;
     uint32 ImportantCastMs = 1500;
     uint32 MinOwnRemainingMs = 300;
-    // No kick that a bot busy with its own cast or GCD could land only within BusyMarginMs of the enemy cast's end
+    // No kick that a bot busy with its own cast or GCD could land only within BusyMarginMs of the enemy cast's end,
+    // when being busy is what makes it late
     bool BusySkip = false;
     uint32 BusyMarginMs = 100;
 };
@@ -261,7 +262,17 @@ struct ReactionEvent
     uint8 Type = 0;          // ReactionType
     uint8 Options = 1;
     uint8 Load = 0;
-    uint8 Ease = 0;  // ReactionEase
+    uint8 Ease = 0;    // ReactionEase
+    uint8 Busy = 0;    // ReactionBusyAnswer (G0h3-b)
+    uint32 OwnMs = 0;  // the bot's own cast within the event's time before its first query (G0h3-b)
+};
+
+// How a busy bot met an event (G0h3-b, the trace's busy field)
+enum class ReactionBusyAnswer : uint8
+{
+    None = 0,
+    StoppedOwnCast,  // it stopped its own cast for the kick (user note 1)
+    Skipped          // its kick could land only at the cast's end or after it (user note 2)
 };
 
 // One per bot: the category the bot attends to (0 = none) and when it last acted on it, and the bot's check latency
@@ -537,8 +548,15 @@ inline void StartReactionEvent(ReactionEvent& event, ReactionFocus const& focus,
     event.Missed = missShare != 0 && SplitMix64(hash ^ ReactionSalt::Miss) % 100 < missShare;
     event.Behind = behind;
     event.Switched = ReactionFocusElsewhere(focus, params, category, nowMs);
-    uint32 const draw = ReactionMs(state, params.MinMs, hash);
-    uint32 const saved = predicted ? draw - AnticipatedMs(draw, types.AnticipateShare, params.MinMs) : 0;
+    uint32 saved = 0;
+    if (predicted)
+    {
+        uint32 const draw = ReactionMs(state, params.MinMs, hash);
+        saved = draw - AnticipatedMs(draw, types.AnticipateShare, params.MinMs);
+    }
+
+    event.Busy = static_cast<uint8>(ReactionBusyAnswer::None);
+    event.OwnMs = 0;
     event.ReadyAfterMs = EventReactionMs(state, params, hash, event.Behind, event.Switched) - saved + event.CostMs;
     event.StampAgeMs = 0;
     event.TargetMs = event.ReadyAfterMs;
@@ -672,23 +690,96 @@ inline bool StopOwnCastForKick(ReactionReevalParams const& params, uint32 enemyC
            ownRemainingMs + params.BusyMarginMs >= enemyRemainingMs;
 }
 
-// User note 2 (G0h3-b): a bot that was busy (its own cast or GCD) does not kick a cast its answer would reach only
-// within BusyMarginMs of the cast's end or after it (readyInMs: the answer's due time or the busy time's end, from now)
-inline bool InterruptOutOfReach(ReactionReevalParams const& params, bool wasBusy, uint32 readyInMs,
+// User note 2 (G0h3-b): a bot busy with its own cast, the kick's cooldown or the GCD does not kick a cast its answer
+// reaches only within BusyMarginMs of the cast's end or after it, when being busy is what makes it late: readyInMs is
+// the answer's due time from now as the bot meets it, freeInMs the one it would have had without being busy (below 0:
+// already passed). A kick late from its reaction alone is not skipped.
+inline bool InterruptOutOfReach(ReactionReevalParams const& params, uint32 readyInMs, int32 freeInMs,
                                 uint32 enemyRemainingMs)
 {
-    return params.BusySkip && wasBusy && readyInMs + params.BusyMarginMs >= enemyRemainingMs;
+    int64 const reach = static_cast<int64>(enemyRemainingMs) - static_cast<int64>(params.BusyMarginMs);
+    return params.BusySkip && static_cast<int64>(readyInMs) >= reach && static_cast<int64>(freeInMs) < reach;
 }
 
-// Per bot (G0h3-b, its own update only): the ends of the bot's own cast and GCD as it last saw them, and the busy
-// path's counts
+// The kick's due time from now without the own cast that kept the bot from looking (event.OwnMs before now) or a
+// wait: stamped (end to end), the target stays at the event's server time, so the unclipped due, no earlier than
+// the own cast's start; unstamped, the draw counts from the first query, which would have come OwnMs earlier
+inline int32 BusyFreeDueMs(ReactionEvent const& event, uint32 latencyMs, bool stamped)
+{
+    int32 const own = static_cast<int32>(event.OwnMs);
+    if (!stamped)
+        return static_cast<int32>(event.DueAfterMs) - own;
+
+    int32 const due = static_cast<int32>(event.TargetMs) - static_cast<int32>(event.StampAgeMs + latencyMs);
+    return std::max(due, -own);
+}
+
+// After a stop for a kick the engine did not cast (it chose another action or target), no stop for this long
+constexpr uint32 REACTION_STOP_BACKOFF_MS = 30000;
+
+// Per bot (G0h3-b, its own update only): the bot's own cast and GCD as it last saw them, the enemy cast it watches
+// while casting (its due time from the cast's start), a stop for a kick and a skipped kick, and the busy path's counts
 struct ReactionBusyState
 {
+    uint32 CastStartMs = 0;
     uint32 CastEndMs = 0;
     uint32 GcdEndMs = 0;
+    uint32 WatchGuid = 0;
+    uint32 WatchSpellId = 0;
+    uint32 WatchEndMs = 0;
+    uint32 WatchDueMs = 0;
+    bool WatchSpent = false;   // the watched cast had its stop
+    uint32 NoStopUntilMs = 0;  // 0: none
+    uint32 KickStopMs = 0;
+    uint32 KickTargetGuid = 0;
+    uint32 KickSpellId = 0;
+    uint32 SkipEndMs = 0;
     uint32 QueuedChecks = 0;
     uint32 StoppedCasts = 0;
+    uint32 UnfollowedStops = 0;
     uint32 SkippedBusy = 0;
+
+    // The enemy cast watched: the same while its bar keeps the spell and its end moves within toleranceMs (pushback)
+    bool Watches(uint32 guid, uint32 spellId, uint32 endMs, uint32 toleranceMs) const
+    {
+        uint32 const moved = endMs > WatchEndMs ? endMs - WatchEndMs : WatchEndMs - endMs;
+        return WatchGuid == guid && WatchSpellId == spellId && moved <= toleranceMs;
+    }
+
+    void Watch(uint32 guid, uint32 spellId, uint32 endMs, uint32 dueMs)
+    {
+        WatchGuid = guid;
+        WatchSpellId = spellId;
+        WatchEndMs = endMs;
+        WatchDueMs = dueMs;
+        WatchSpent = false;
+    }
+
+    // One stop per enemy cast, from its due time, none within the backoff after a stop the kick did not follow (a
+    // re-armed watch would stop every later own cast during the same enemy cast)
+    bool StopDue(uint32 nowMs) const
+    {
+        return WatchGuid != 0 && !WatchSpent && static_cast<int32>(nowMs - WatchDueMs) >= 0 &&
+               (NoStopUntilMs == 0 || static_cast<int32>(nowMs - NoStopUntilMs) >= 0);
+    }
+
+    void NoteStop(uint32 nowMs, uint32 targetGuid, uint32 kickSpellId)
+    {
+        KickStopMs = nowMs;
+        KickTargetGuid = targetGuid;
+        KickSpellId = kickSpellId;
+        WatchSpent = true;
+        NoStopUntilMs = 0;
+        ++StoppedCasts;
+    }
+
+    // The engine's check after the stop did not cast the kick: no stop for the backoff
+    void NoteStopUnfollowed(uint32 nowMs)
+    {
+        KickStopMs = 0;
+        NoStopUntilMs = std::max(1u, nowMs + REACTION_STOP_BACKOFF_MS);
+        ++UnfollowedStops;
+    }
 };
 
 // The opponent memory (G0h3-b; DT.12): per bot and match, what the bot saw each enemy cast, bounded to

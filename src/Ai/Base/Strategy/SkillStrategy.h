@@ -29,7 +29,9 @@ enum class SkillNoticeCategory : uint8
     Dispel,
     CrowdControl,
     CrowdControlBreak,
-    TargetSwitch
+    TargetSwitch,
+    // A reaction only (G0h3-b: avoid aoe, Playerbots.Natural.Reaction.Movement.Enable): no notice counter, no D4 delay
+    Movement
 };
 
 char const* SkillNoticeCategoryName(SkillNoticeCategory category);
@@ -61,12 +63,15 @@ private:
     bool HasReacted(SkillNoticeCategory category, ReactionEase ease, Action* action, Unit* target);
     // G0h3's inputs of an event at its start, from values the bot has already built
     ReactionEventInputs EventInputs(SkillNoticeCategory category, ReactionEase ease, Unit* target, uint32 nowMs);
+    // G0h3-b at an event's start: the bot's own cast within it, and for a kick a stop for it or the busy skip
+    void MeetBusy(ReactionEvent& event, SkillNoticeCategory category, Action* action, Unit* target, uint32 nowMs,
+                  bool starting);
 
     // Per bot: the actions of a bot's context live as long as the bot, so the pointer is a stable key
     std::unordered_map<Action*, ActionClass> categories;
     // Natural reaction, per bot (touched only by the bot's own update): the current event per category, whether that
     // event's context uses the natural path, and the bot's focus
-    static constexpr size_t ReactionCategories = static_cast<size_t>(SkillNoticeCategory::TargetSwitch);
+    static constexpr size_t ReactionCategories = static_cast<size_t>(SkillNoticeCategory::Movement);
     std::array<ReactionEvent, ReactionCategories> reactionEvents{};
     std::array<bool, ReactionCategories> reactionNatural{};
     ReactionFocus reactionFocus;
