@@ -5,7 +5,10 @@
  */
 
 #include "PartyMemberToDispel.h"
+
+#include "NaturalReaction.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 
 class PartyMemberToDispelPredicate : public FindPlayerPredicate, public PlayerbotAIAware
 {
@@ -20,6 +23,17 @@ public:
 private:
     uint32 dispelType;
 };
+
+Unit* PartyMemberToDispel::Get()
+{
+    // A cached value older than the cadence's interval is computed again; without the cadence nothing changes
+    if (lastCheckTime && botAI->IsNaturalCadenceActive() &&
+        getMSTime() - lastCheckTime >=
+            ReactionCheckIntervalMs(checkInterval, true, sPlayerbotAIConfig.NaturalCadenceCheckMs))
+        lastCheckTime = 0;
+
+    return PartyMemberValue::Get();
+}
 
 Unit* PartyMemberToDispel::Calculate()
 {

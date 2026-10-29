@@ -489,6 +489,13 @@ public:
     bool NaturalReactionActive;
     uint8 NaturalReactionContexts;
     ReactionParams NaturalReaction;
+    // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
+    // started match (NaturalReaction.h). NearRealPlayerYards is read but inert: no cached proximity flag exists yet.
+    bool NaturalCadenceEnable;
+    uint32 NaturalCadenceCheckMs;
+    uint32 NaturalCadenceStaggerMs;
+    uint8 NaturalCadenceContexts;
+    float NaturalCadenceNearRealPlayerYards;
     // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
     bool ArenaOnlyEnable;
     bool ArenaOnlySpreadContinents;

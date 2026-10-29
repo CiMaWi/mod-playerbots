@@ -7,6 +7,7 @@
 #include "PlayerbotAI.h"
 #include "ActivityBudget.h"
 #include "AiFactory.h"
+#include "Battleground.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
@@ -271,6 +272,14 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
         return;
 
+    // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
+    lastUpdateDiff = elapsed;
+    if (timingCombat)
+    {
+        if (PerformanceData* const row = sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Time (combat)"))
+            row->Record(static_cast<uint64_t>(elapsed) * 1000);
+    }
+
     // G0e: the natural tracer's pre-gate point, on its own clock (one relaxed load while nothing is traced)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
@@ -319,6 +328,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     if (!CanUpdateAI())
         return;
+
+    RefreshNaturalTiming();
 
     // Handle a spell that is still in its preparing phase (including channeled spells).
     Spell* currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
@@ -450,7 +461,14 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     UpdateAIGroupMaster();
 
     // Update internal AI
-    UpdateAIInternal(elapsed, minimal);
+    if (timingScope && PerfMonitor::IsEnabled())
+    {
+        PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::UpdateAIInternal (scope)"));
+        UpdateAIInternal(elapsed, minimal);
+    }
+    else
+        UpdateAIInternal(elapsed, minimal);
+
     YieldThread(bot, GetReactDelay());
 }
 
@@ -7062,9 +7080,47 @@ bool PlayerbotAI::IsPlayerInPvpFight(Player* player)
            player->GetCombatManager().HasPvPCombat();
 }
 
+void PlayerbotAI::RefreshNaturalTiming()
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    bool const measured = PerfMonitor::IsEnabled();
+    if (!config.NaturalCadenceEnable && !measured)
+    {
+        // Off: upstream's check interval and stagger, the stretch everywhere
+        timingScope = false;
+        timingCombat = false;
+        cadenceCombat = false;
+        stretchOff = false;
+        checkStaggerMs = UPSTREAM_CHECK_STAGGER_MS;
+        return;
+    }
+
+    TacticContext const context = ProbeTacticContext(bot);
+    timingScope = ScopeAllows(config.NaturalCadenceContexts, context);
+    timingCombat = timingScope && (bot->IsInCombat() || currentState == BOT_STATE_COMBAT);
+    if (timingCombat && (bot->InBattleground() || bot->InArena()))
+    {
+        // A match counts once its gates are open
+        Battleground* const battleground = bot->GetBattleground();
+        timingCombat = battleground && battleground->GetStatus() == STATUS_IN_PROGRESS;
+    }
+
+    cadenceCombat = config.NaturalCadenceEnable && timingCombat;
+    stretchOff = config.NaturalCadenceEnable && timingScope && config.NaturalReactionActive &&
+                 ScopeAllows(config.NaturalReactionContexts, context);
+    checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
+    if (!measured || !timingScope)
+        return;
+
+    PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Checks (scope)"));
+    if (timingCombat)
+        PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Checks (combat)"));
+}
+
 float PlayerbotAI::GetEffectiveSkillReactFactor() const
 {
-    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive)
+    // Where the natural cadence and reaction both run, the reaction model carries the skill
+    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive || stretchOff)
         return 1.0f;
     if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
         return 1.0f;
@@ -7073,7 +7129,11 @@ float PlayerbotAI::GetEffectiveSkillReactFactor() const
 
 uint32 PlayerbotAI::GetReactDelay()
 {
-    uint32 const delay = ComputeReactDelay();
+    uint32 delay = ComputeReactDelay();
+    // The natural cadence's faster check in combat in a started match, never slower than before
+    if (cadenceCombat)
+        delay = std::min(delay, sPlayerbotAIConfig.NaturalCadenceCheckMs);
+
     float const factor = GetEffectiveSkillReactFactor();
     // The reaction engine's reset delay (ReactionEngine.cpp) has always scaled every bot, exempt or not
     if (factor == 1.0f || IsSkillExempt())

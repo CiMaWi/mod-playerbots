@@ -21,6 +21,9 @@ public:
     {
     }
 
+    // At the natural cadence's interval while its faster check runs (the dispel trigger's target), else once a second
+    Unit* Get() override;
+
 protected:
     Unit* Calculate() override;
 };

@@ -21,6 +21,11 @@
 // Pure functions: no bots, no config singleton, so .playerbots tactics selftest reaction drives them with synthetic
 // hashes, skills and times. PlayerbotAI::SetPvpSkill caches a ReactionState per bot; SkillMultiplier keeps one
 // ReactionEvent per notice category and the bot's ReactionFocus. Hidden like the skill: only GM commands show them.
+// End to end (EndToEnd): the target counts from the event's server time (a cast bar's start, an aura's application)
+// and adds the modelled round trip, the display and the server ticks of a human's answer; the bot passes at its first
+// check at or after the target minus its own check latency, learnt from how far its passes miss their targets (at a
+// steady interval: its mean check overshoot), so its action lands on the target on average. No check is woken for
+// it: the check interval (Playerbots.Natural.Cadence.*) is the model's resolution.
 
 struct ReactionParams
 {
@@ -37,6 +42,12 @@ struct ReactionParams
     uint32 SwitchMaxMs = 300;
     float ConeDegrees = 200.0f;
     uint32 FocusTimeoutMs = 2000;
+    // End to end: PingMs is the modelled round trip (half to see the event, half for the answer to reach the server),
+    // DisplayMs the client's frame and display delay, ServerTickMs the server ticks (-1: half the bot's map update)
+    bool EndToEnd = false;
+    uint32 PingMs = 60;
+    uint32 DisplayMs = 30;
+    int32 ServerTickMs = -1;
 };
 
 // Per bot, cached by SetPvpSkill: ln(median) and sigma of the reaction time at the bot's skill
@@ -46,25 +57,42 @@ struct ReactionState
     float Sigma = 0.0f;
 };
 
+// Where an event's server time came from
+enum class ReactionStampSource : uint8
+{
+    FirstQuery = 0,  // no visible start: the bot's first query
+    CastBar,         // an enemy cast: now minus the elapsed part of its cast bar
+    Aura,            // an aura: now minus the elapsed part of its duration
+    Stale            // a cast bar or aura older than REACTION_MAX_STAMP_AGE_MS: the bot's first query
+};
+
 // One per bot and notice category: the event the category's action answers. An event begins at the first query
-// after a quiet gap; the reaction time counts from there.
+// after a quiet gap; the reaction time counts from there, with EndToEnd from the event's server time.
 struct ReactionEvent
 {
     uint32 StartMs = 0;
     uint32 LastQueryMs = 0;
     uint32 ReadyAfterMs = 0;  // reaction time plus penalties, from StartMs
+    uint32 StampAgeMs = 0;    // the event's server time this long before StartMs (0 without EndToEnd)
+    uint32 TargetMs = 0;      // end-to-end target from the server time (ReadyAfterMs without EndToEnd)
+    uint32 DueAfterMs = 0;    // the pass from StartMs: target minus stamp age and the bot's latency, at least 0
+    uint8 StampSource = 0;    // ReactionStampSource
     bool Active = false;
     bool Noticed = false;
     bool Missed = false;
-    bool Behind = false;    // the behind penalty applies
-    bool Switched = false;  // the switch cost applies
+    bool Behind = false;     // the behind penalty applies
+    bool Switched = false;   // the switch cost applies
+    bool Corrected = false;  // the target lies after the first query: the pass's miss trains the bot's latency
 };
 
-// One per bot: the category the bot attends to (0 = none) and when it last acted on it
+// One per bot: the category the bot attends to (0 = none) and when it last acted on it, and the bot's check latency
+// (EndToEnd only)
 struct ReactionFocus
 {
     uint8 Category = 0;
     uint32 AtMs = 0;
+    float LatencyMs = 0.0f;
+    bool LatencySeeded = false;
 };
 
 // A noticed event ends after this quiet gap (two AI updates of the slowest bot); a pending one only after the longer
@@ -72,6 +100,12 @@ struct ReactionFocus
 constexpr uint32 REACTION_NOTICED_GAP_MS = 600;
 constexpr uint32 REACTION_PENDING_GAP_MS = 2500;
 constexpr uint32 REACTION_MAX_MS = 60000;
+// An event's server time older than this at the first query counts from the first query (the bot turns to it now)
+constexpr uint32 REACTION_MAX_STAMP_AGE_MS = 3000;
+// The weight of one overshoot in the bot's running latency mean
+constexpr float REACTION_LATENCY_WEIGHT = 0.125f;
+// Upstream's stagger of a bot's next AI check (PR #2250): 0-200 ms from the guid
+constexpr uint32 UPSTREAM_CHECK_STAGGER_MS = 200;
 
 namespace ReactionSalt
 {
@@ -206,13 +240,77 @@ inline void StartReactionEvent(ReactionEvent& event, ReactionFocus const& focus,
     event.Behind = behind;
     event.Switched = ReactionFocusElsewhere(focus, params, category, nowMs);
     event.ReadyAfterMs = EventReactionMs(state, params, hash, event.Behind, event.Switched);
+    event.StampAgeMs = 0;
+    event.TargetMs = event.ReadyAfterMs;
+    event.DueAfterMs = event.ReadyAfterMs;
+    event.StampSource = static_cast<uint8>(ReactionStampSource::FirstQuery);
+    event.Corrected = false;
+}
+
+// The end-to-end target: the event's reaction plus the modelled round trip, the display and the server ticks
+inline uint32 EndToEndTargetMs(ReactionParams const& params, uint32 readyMs, uint32 tickMs)
+{
+    if (!params.EndToEnd)
+        return readyMs;
+
+    return readyMs + params.PingMs + params.DisplayMs + tickMs;
+}
+
+// With EndToEnd, right after StartReactionEvent: the event happened stampAgeMs before its first query (too old: at
+// the first query, source Stale). The pass is due at the target minus the stamp age and the bot's latency, never
+// before the first query; a bot that first looks after that (busy, or a cast seen late) passes at once
+inline void StampReactionEvent(ReactionEvent& event, ReactionFocus const& focus, ReactionParams const& params,
+                               uint32 stampAgeMs, ReactionStampSource source, uint32 tickMs)
+{
+    if (!params.EndToEnd)
+        return;
+
+    if (stampAgeMs > REACTION_MAX_STAMP_AGE_MS)
+    {
+        stampAgeMs = 0;
+        source = ReactionStampSource::Stale;
+    }
+
+    event.StampAgeMs = stampAgeMs;
+    event.StampSource = static_cast<uint8>(source);
+    event.TargetMs = EndToEndTargetMs(params, event.ReadyAfterMs, tickMs);
+    uint32 const spent = stampAgeMs + static_cast<uint32>(focus.LatencyMs + 0.5f);
+    event.Corrected = event.TargetMs > stampAgeMs;
+    event.DueAfterMs = event.TargetMs > spent ? event.TargetMs - spent : 0;
+}
+
+// A pass missed its target by missMs (late > 0): the latency moves by a share of it (the first miss wholly), never
+// below 0, so at a steady check interval it settles on the mean overshoot. A miss above capMs (a pause such as the
+// bot's own cast, not its check interval) is left out (capMs 0: none).
+inline void NoteReactionLatency(ReactionFocus& focus, int32 missMs, uint32 capMs)
+{
+    if (capMs != 0 && missMs > static_cast<int32>(capMs))
+        return;
+
+    float const miss = static_cast<float>(missMs);
+    focus.LatencyMs = std::max(0.0f, focus.LatencyMs + (focus.LatencySeeded ? miss * REACTION_LATENCY_WEIGHT : miss));
+    focus.LatencySeeded = true;
+}
+
+// The check interval of a reaction trigger or value (cure, dispel): at most the natural cadence's while its faster
+// check runs, so the first look and the later queries of the answer follow the cadence; else its own (1: every check)
+inline uint32 ReactionCheckIntervalMs(uint32 intervalMs, bool cadenceActive, uint32 cadenceCheckMs)
+{
+    return cadenceActive && cadenceCheckMs < intervalMs ? cadenceCheckMs : intervalMs;
+}
+
+// The stagger of a bot's next AI check from its guid (upstream's guid % 201 at UPSTREAM_CHECK_STAGGER_MS)
+inline uint32 CheckStaggerMs(uint64 guid, uint32 staggerMs)
+{
+    return static_cast<uint32>(guid % (static_cast<uint64>(staggerMs) + 1));
 }
 
 // A query of the event's action: passes once the reaction time is over (never for a missed event). The notice (the
 // first pass) moves the focus to the category; later passes do not keep it there, because the engine asks the
 // multipliers for every queued action, executed or not, so a category whose trigger stays active would hold the
-// focus for good and make every other event pay the switch cost
-inline bool ReactionEventPasses(ReactionEvent& event, ReactionFocus& focus, uint8 category, uint32 nowMs)
+// focus for good and make every other event pay the switch cost. A corrected event's notice trains the latency.
+inline bool ReactionEventPasses(ReactionEvent& event, ReactionFocus& focus, uint8 category, uint32 nowMs,
+                                uint32 latencyCapMs = 0)
 {
     event.LastQueryMs = nowMs;
     if (event.Missed)
@@ -220,12 +318,15 @@ inline bool ReactionEventPasses(ReactionEvent& event, ReactionFocus& focus, uint
 
     if (!event.Noticed)
     {
-        if (nowMs - event.StartMs < event.ReadyAfterMs)
+        uint32 const waited = nowMs - event.StartMs;
+        if (waited < event.DueAfterMs)
             return false;
 
         event.Noticed = true;
         focus.Category = category;
         focus.AtMs = nowMs;
+        if (event.Corrected)
+            NoteReactionLatency(focus, static_cast<int32>(waited + event.StampAgeMs - event.TargetMs), latencyCapMs);
     }
 
     return true;

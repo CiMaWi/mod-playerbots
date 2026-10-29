@@ -903,18 +903,42 @@ bool PlayerbotAIConfig::Initialize()
         reaction.SwitchMaxMs = std::max(reaction.SwitchMinMs, ms("Playerbots.Natural.Reaction.SwitchCostMaxMs", 300));
         reaction.ConeDegrees = real("Playerbots.Natural.Reaction.ConeDegrees", 200.0f, 10.0f, 360.0f);
         reaction.FocusTimeoutMs = ms("Playerbots.Natural.Reaction.FocusTimeoutMs", 2000);
-        uint8 const pvp =
-            static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground) |
-                               TacticContextBit(TacticContext::OpenWorldPvp));
+        reaction.EndToEnd = sConfigMgr->GetOption<bool>("Playerbots.Natural.Reaction.EndToEnd", false);
+        reaction.PingMs = ms("Playerbots.Natural.Reaction.PingMs", 60);
+        reaction.DisplayMs = ms("Playerbots.Natural.Reaction.DisplayMs", 30);
+        reaction.ServerTickMs =
+            std::clamp(sConfigMgr->GetOption<int32>("Playerbots.Natural.Reaction.ServerTickMs", -1), -1, 1000);
+        // Arena and battleground only by default: the model's arm cost measurably more per tick (G0h2-b)
+        uint8 const reactionMatches =
+            static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
         std::string const contexts =
-            sConfigMgr->GetOption<std::string>("Playerbots.Natural.Reaction.Contexts", "Arena,Battleground,World");
+            sConfigMgr->GetOption<std::string>("Playerbots.Natural.Reaction.Contexts", "Arena,Battleground");
         std::string error;
-        NaturalReactionContexts = pvp;
+        NaturalReactionContexts = reactionMatches;
         if (!ParseTacticScope(contexts, NaturalReactionContexts, error))
         {
-            LOG_ERROR("server.loading", "Playerbots.Natural.Reaction.Contexts: {}; Arena,Battleground,World is used",
-                      error);
-            NaturalReactionContexts = pvp;
+            LOG_ERROR("server.loading", "Playerbots.Natural.Reaction.Contexts: {}; Arena,Battleground is used", error);
+            NaturalReactionContexts = reactionMatches;
+        }
+
+        NaturalCadenceEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.Enable", false);
+        NaturalCadenceCheckMs =
+            std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);
+        NaturalCadenceStaggerMs = std::clamp<uint32>(
+            sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.StaggerMs", 20), 0, UPSTREAM_CHECK_STAGGER_MS);
+        NaturalCadenceNearRealPlayerYards = std::clamp(
+            sConfigMgr->GetOption<float>("Playerbots.Natural.Cadence.NearRealPlayerYards", 0.0f), 0.0f, 500.0f);
+        uint8 const matches =
+            static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
+        std::string const cadenceContexts =
+            sConfigMgr->GetOption<std::string>("Playerbots.Natural.Cadence.Contexts", "Arena,Battleground");
+        std::string cadenceError;
+        NaturalCadenceContexts = matches;
+        if (!ParseTacticScope(cadenceContexts, NaturalCadenceContexts, cadenceError))
+        {
+            LOG_ERROR("server.loading", "Playerbots.Natural.Cadence.Contexts: {}; Arena,Battleground is used",
+                      cadenceError);
+            NaturalCadenceContexts = matches;
         }
     }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);

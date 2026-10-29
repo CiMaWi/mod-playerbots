@@ -5,9 +5,12 @@
  */
 
 #include "Trigger.h"
+
 #include "AiObjectContext.h"
 #include "Event.h"
+#include "NaturalReaction.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 
 Trigger::Trigger(PlayerbotAI* botAI, std::string const name, int32 checkInterval)
     : AiNamedObject(botAI, name),
@@ -41,7 +44,11 @@ bool Trigger::needCheck(uint32 now)
     if (checkInterval < 2)
         return true;
 
-    if (!lastCheckTime || now - lastCheckTime >= uint32(checkInterval))
+    // A reaction trigger checks at the natural cadence's faster interval while it runs (the bool first: O(1))
+    uint32 const interval =
+        ReactionCheckIntervalMs(uint32(checkInterval), botAI->IsNaturalCadenceActive() && IsReactionTrigger(),
+                                sPlayerbotAIConfig.NaturalCadenceCheckMs);
+    if (!lastCheckTime || now - lastCheckTime >= interval)
     {
         lastCheckTime = now;
         return true;

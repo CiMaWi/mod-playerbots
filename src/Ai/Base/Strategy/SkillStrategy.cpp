@@ -6,10 +6,15 @@
 
 #include "SkillStrategy.h"
 
+#include <algorithm>
 #include <string>
 
 #include "NaturalReaction.h"
+#include "PerfMonitor.h"
 #include "Playerbots.h"
+#include "Spell.h"
+#include "SpellAuras.h"
+#include "SpellInfo.h"
 #include "SplitMix64.h"
 #include "Timer.h"
 
@@ -266,14 +271,97 @@ bool SkillMultiplier::HasNoticed(SkillNoticeCategory category) const
     return delayMs == 0 || elapsed >= (hash >> 16) % delayMs;
 }
 
+namespace
+{
+// The elapsed part of the caster's cast bar (a channel's of its base duration: a hasted channel looks a little
+// older), 0 without a cast
+uint32 CastBarAgeMs(Unit* caster, ReactionStampSource& source)
+{
+    if (!caster)
+        return 0;
+
+    Spell* const spell = caster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (spell && spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0)
+    {
+        source = ReactionStampSource::CastBar;
+        return static_cast<uint32>(std::max(0, spell->GetCastTime() - spell->GetCastTimeRemaining()));
+    }
+
+    Spell* const channel = caster->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    int32 const duration = channel ? channel->GetSpellInfo()->GetDuration() : 0;
+    if (channel && channel->getState() == SPELL_STATE_CASTING && duration > 0)
+    {
+        source = ReactionStampSource::CastBar;
+        return static_cast<uint32>(std::max(0, duration - channel->GetCastTimeRemaining()));
+    }
+
+    return 0;
+}
+
+// The elapsed part of the newest timed aura on the unit of the other side's kind: a debuff on a friend (on the bot
+// for a crowd-control break), a buff on an enemy; for a dispel only dispellable ones. The newest is the latest stamp,
+// so a wrong pick makes the bot later, never earlier. 0 without one.
+uint32 AuraAgeMs(Player* bot, Unit* unit, bool dispellable, ReactionStampSource& source)
+{
+    if (!unit)
+        return 0;
+
+    bool const friendly = unit == bot || bot->IsFriendlyTo(unit);
+    bool found = false;
+    int32 newest = 0;
+    for (auto const& entry : unit->GetAppliedAuras())
+    {
+        AuraApplication const* application = entry.second;
+        Aura const* aura = application->GetBase();
+        int32 const maxDuration = aura->GetMaxDuration();
+        if (maxDuration <= 0 || application->IsPositive() == friendly)
+            continue;
+
+        if (dispellable && aura->GetSpellInfo()->Dispel == DISPEL_NONE)
+            continue;
+
+        int32 const elapsed = std::max(0, maxDuration - aura->GetDuration());
+        if (!found || elapsed < newest)
+            newest = elapsed;
+
+        found = true;
+    }
+
+    if (!found)
+        return 0;
+
+    source = ReactionStampSource::Aura;
+    return static_cast<uint32>(newest);
+}
+
+// How long before now the event the action answers began, from what a player in the bot's seat sees (DT.12)
+uint32 VisibleEventAgeMs(Player* bot, SkillNoticeCategory category, Unit* target, ReactionStampSource& source)
+{
+    switch (category)
+    {
+        case SkillNoticeCategory::Interrupt:
+            return CastBarAgeMs(target, source);
+        case SkillNoticeCategory::Dispel:
+            return AuraAgeMs(bot, target, true, source);
+        case SkillNoticeCategory::CrowdControlBreak:
+            return AuraAgeMs(bot, bot, false, source);
+        default:
+            // Defensive cooldowns, crowd control and target switches have no visible start: the first query
+            return 0;
+    }
+}
+}  // namespace
+
 bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, Unit* target)
 {
+    PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::HasReacted"));
     size_t const index = static_cast<size_t>(category) - 1;
     ReactionEvent& event = reactionEvents[index];
     uint32 const now = getMSTime();
     ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
     if (ReactionEventStarts(event, now, sPlayerbotAIConfig.SkillNoticeWindowMs))
     {
+        PerfMonitorScope startScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::EventStart"));
         // Once per event: the context, the target (a target switch brings its own) and the view cone
         reactionNatural[index] =
             ScopeAllows(sPlayerbotAIConfig.NaturalReactionContexts, PlayerbotAI::ProbeTacticContext(bot));
@@ -284,10 +372,25 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, U
                             !bot->HasInArc(params.ConeDegrees * static_cast<float>(M_PI) / 180.0f, target);
         StartReactionEvent(event, reactionFocus, botAI->GetReactionState(), params, bot->GetGUID().GetCounter(),
                            static_cast<uint8>(category), botAI->GetSkillNoticeMissPercent(), behind, now);
+        // End to end only where the faster check runs: at upstream's combat interval (250 ms in battlegrounds and
+        // arenas, 500 ms elsewhere, x the skill's stretch, plus up to 200 ms of stagger) the learnt latency would eat
+        // most of the draw
+        if (reactionNatural[index] && params.EndToEnd && botAI->IsNaturalCadenceActive())
+        {
+            ReactionStampSource source = ReactionStampSource::FirstQuery;
+            uint32 const age = VisibleEventAgeMs(bot, category, target, source);
+            uint32 const tick =
+                params.ServerTickMs >= 0 ? static_cast<uint32>(params.ServerTickMs) : botAI->GetLastUpdateDiff() / 2;
+            StampReactionEvent(event, reactionFocus, params, age, source, tick);
+        }
+
         if (reactionNatural[index] && event.Missed)
-            LOG_TRACE("playerbots.reaction", "reaction cat {} skill {} ready {} pass -1 behind {} switch {}",
+            LOG_TRACE("playerbots.reaction",
+                      "reaction cat {} skill {} ready {} pass -1 behind {} switch {} stamp {} src {} target {} e2e -1 "
+                      "lat {} at {}",
                       static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, event.Behind ? 1 : 0,
-                      event.Switched ? 1 : 0);
+                      event.Switched ? 1 : 0, event.StampAgeMs, static_cast<uint32>(event.StampSource), event.TargetMs,
+                      static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now);
     }
 
     // Outside the configured contexts (PvE by default) D4's uniform delay applies
@@ -297,14 +400,26 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, Action* action, U
         return HasNoticed(category);
     }
 
+    // An overshoot beyond two check delays is a pause of the bot's own (a cast), not its check latency
     bool const wasNoticed = event.Noticed;
-    if (!ReactionEventPasses(event, reactionFocus, static_cast<uint8>(category), now))
+    if (!ReactionEventPasses(event, reactionFocus, static_cast<uint8>(category), now, 2 * botAI->GetLastCheckDelay()))
         return false;
 
+    // pass counts from the first query, e2e from the event's server time to the engine's pass (the action follows in
+    // the same update)
     if (!wasNoticed)
-        LOG_TRACE("playerbots.reaction", "reaction cat {} skill {} ready {} pass {} behind {} switch {}",
+    {
+        // The latency never exceeds the faster check's interval, so a pass loses at most that much of its draw
+        reactionFocus.LatencyMs =
+            std::min(reactionFocus.LatencyMs, static_cast<float>(sPlayerbotAIConfig.NaturalCadenceCheckMs));
+        LOG_TRACE("playerbots.reaction",
+                  "reaction cat {} skill {} ready {} pass {} behind {} switch {} stamp {} src {} target {} e2e {} lat "
+                  "{} at {}",
                   static_cast<uint32>(category), botAI->GetPvpSkill(), event.ReadyAfterMs, now - event.StartMs,
-                  event.Behind ? 1 : 0, event.Switched ? 1 : 0);
+                  event.Behind ? 1 : 0, event.Switched ? 1 : 0, event.StampAgeMs,
+                  static_cast<uint32>(event.StampSource), event.TargetMs, now - event.StartMs + event.StampAgeMs,
+                  static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), now);
+    }
 
     return true;
 }

@@ -312,6 +312,8 @@ bool PvpTestRecordWriter::AppendBinary(std::string const& path, Line& line)
 {
     std::error_code error;
     std::uintmax_t const size = std::filesystem::file_size(path, error);
+    // A missing file starts empty; an existing file whose size cannot be read has an unknown size
+    bool const sizeKnown = !error || error == std::errc::no_such_file_or_directory;
     bool const fresh = error || !size;
     std::ios::openmode const mode = std::ios::out | std::ios::app | std::ios::binary;
     std::ofstream file(path, mode);
@@ -338,6 +340,11 @@ bool PvpTestRecordWriter::AppendBinary(std::string const& path, Line& line)
     file.flush();
     if (!file)
     {
+        // A partial block would leave every later block of the file undecodable: cut it back to its size before
+        // (an unknown size: left as it is, the file may hold earlier blocks)
+        file.close();
+        if (sizeKnown)
+            std::filesystem::resize_file(path, fresh ? 0 : size, error);
         ++_failed;
         return false;
     }

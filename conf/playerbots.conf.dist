@@ -1567,12 +1567,14 @@ Playerbots.Natural.Trace.MaxRowsPerUnit = 200000
 
 # The format of the trace files (G0i): jsonl = <Dir>/trace-<YYYYMMDD>.jsonl as above; binary = one file per traced
 # match, <Dir>/<instance>/<YYYY-MM-DD>/<match id>.ntr (instance = Playerbots.Ladder.ServerId, main when empty; the day
-# is the UTC day of the match's first trace start, so a match across midnight stays in one file; a GM trace is one
-# file per session, gm-<guid counter>-<unix seconds>.ntr). A binary file is little endian: a versioned header (match
-# id, instance, source, interval, a field table of the row kinds and fields above), then one block of rows per
-# flushed batch of a unit (a pos row 49 bytes, about a quarter of its JSON); readers decode by the file's own field
-# table. The writer thread creates the folders and opens a file per batch (no handle kept). Read at each trace start:
-# a .reload config switches new traces only. An unknown value is logged and jsonl is used. Default: jsonl
+# is the UTC day of the match's first trace start, so a match across midnight stays in one file while its traces
+# overlap: a unit traced after every other trace of its match ended takes the day of its own start, after midnight a
+# second file in the new day's folder; a GM trace is one file per session, gm-<guid counter>-<unix seconds>.ntr). A
+# binary file is little endian: a versioned header (match id, instance, source, interval, a field table of the row
+# kinds and fields above), then one block of rows per flushed batch of a unit (a pos row 49 bytes, about a quarter of
+# its JSON); readers decode by the file's own field table. The writer thread creates the folders and opens a file per
+# batch (no handle kept); a failed write is cut back to the file's size before it. Read at each trace start: a
+# .reload config switches new traces only. An unknown value is logged and jsonl is used. Default: jsonl
 Playerbots.Natural.Trace.Format = "jsonl"
 
 # Natural reaction times and attention. Needs Playerbots.Skill.Enable = 1. With 1, the skill multiplier of the notice
@@ -1583,9 +1585,10 @@ Playerbots.Natural.Trace.Format = "jsonl"
 # from a hash (no roll per tick). An event whose hostile target stands outside the bot's view cone (ConeDegrees wide)
 # adds BehindPenaltyMin..MaxMs, and an event of another category than the one the bot last noticed (within
 # FocusTimeoutMs) adds SwitchCostMin..MaxMs (one focus at a time). Playerbots.Skill.NoticeMissPercent* still misses
-# whole events (for NoticeWindowMs). Contexts: where it applies (Arena, Battleground, World = open-world PvP, Pve,
-# All); elsewhere the uniform notice delay stays. Bots with a game-client master follow
-# Playerbots.Skill.ExemptRealMasterBots.
+# whole events (for NoticeWindowMs). Contexts: where it applies (Arena, Battleground, World = open-world PvP, Pve, All);
+# elsewhere the uniform notice delay stays. The default leaves out World: in G0h2-b's lab run the model's arm cost
+# measurably more per tick (mostly the faster checks it comes with), so open-world PvP keeps the cheap uniform delay.
+# Bots with a game-client master follow Playerbots.Skill.ExemptRealMasterBots.
 # The medians follow the plan's estimate (about 220 ms at skill 99, about 600 ms at skill 20); sigma 0.25 is the
 # spread of a simple visual reaction (about 6 % of the draws at skill 99 are raised to the minimum), 0.45 that of a
 # choice under load. On a running server the options change after .reload config (re-reads the file) followed by
@@ -1595,7 +1598,7 @@ Playerbots.Natural.Trace.Format = "jsonl"
 # engine is rebuilt (its next login). .playerbots tactics show <bot> lists the bot's values (GM only),
 # .playerbots tactics selftest reaction checks the maths. Medians 50-10000 ms, sigmas 0-2, penalties and times
 # 0-10000 ms, cone 10-360 degrees.
-# Default: 0 (off: the uniform notice delay, as before)
+# Default: 0 (off: the uniform notice delay, as before), Contexts "Arena,Battleground"
 Playerbots.Natural.Reaction.Enable = 0
 Playerbots.Natural.Reaction.MedianMsAtSkill1 = 690
 Playerbots.Natural.Reaction.MedianMsAtSkill99 = 220
@@ -1608,7 +1611,53 @@ Playerbots.Natural.Reaction.SwitchCostMinMs = 100
 Playerbots.Natural.Reaction.SwitchCostMaxMs = 300
 Playerbots.Natural.Reaction.ConeDegrees = 200
 Playerbots.Natural.Reaction.FocusTimeoutMs = 2000
-Playerbots.Natural.Reaction.Contexts = "Arena,Battleground,World"
+Playerbots.Natural.Reaction.Contexts = "Arena,Battleground"
+
+# End to end (with Playerbots.Natural.Reaction.Enable): the reaction counts from the event's server time instead of the
+# bot's first look at it, taken from what a player in its seat sees: an enemy cast from its cast bar (a channel from its
+# base duration, so a hasted channel looks a little older), a debuff to dispel and a crowd control to break from the
+# aura's duration and time left (the newest such aura: a wrong pick is late, never early). Defensive cooldowns, crowd
+# control and target switches have no visible start and count from the first look, and so does a start more than 3 s
+# old. The target is the reaction plus PingMs (the modelled round trip: half to see the event, half for the answer to
+# reach the server), DisplayMs (the client's frame and display) and ServerTickMs (the server's ticks; -1 = half the
+# bot's last map update). The bot passes at its first AI check at or after the target minus its own check latency
+# (learnt from how far its passes miss their targets; at a steady interval its mean overshoot), so its action lands on
+# the target on average; a bot that first looks after that (busy, or a cast seen late) acts at once. No check is woken
+# for it. It acts only where Playerbots.Natural.Cadence's faster check runs (Cadence.Enable, its Contexts, in combat in
+# a started match), and the latency is capped at Cadence.CheckMs: at upstream's slower interval the latency would eat
+# most of the draw, so elsewhere the reaction counts from the first look as without it. The engine's pass stands for the
+# server's action (the bot's spell is handled in the same update). The playerbots.reaction trace lines add stamp (ms
+# from the server time to the first look), src (0 first look, 1 cast bar, 2 aura, 3 a cast bar or aura older than
+# 3 s: first look), target, e2e (server time to the pass; -1 missed), lat (the latency mean) and at (the pass's server
+# ms). Ping and display 0-10000 ms, ServerTickMs -1 to 1000.
+# Default: 0 (off: from the first look, as before), PingMs 60, DisplayMs 30, ServerTickMs -1
+Playerbots.Natural.Reaction.EndToEnd = 0
+Playerbots.Natural.Reaction.PingMs = 60
+Playerbots.Natural.Reaction.DisplayMs = 30
+Playerbots.Natural.Reaction.ServerTickMs = -1
+
+# Natural cadence: bots in Contexts check their AI at least every CheckMs (20-1000) in combat in a started match
+# (battleground and arena gates open; open-world PvP fights when World is listed) instead of upstream's combat
+# interval (2.5 x Playerbots.ReactDelay in battlegrounds and arenas with Playerbots.FastReactInBG), and upstream's
+# per-bot stagger of 0-200 ms (guid % 201) becomes guid % (StaggerMs + 1) there (0-200). Out of combat, and for every
+# bot outside Contexts, the interval and the stagger stay. Where this and Playerbots.Natural.Reaction both run (both
+# contexts), the skill's stretch of the check interval (Playerbots.Skill.React*) is off (factor 1) and the reaction
+# model carries the skill; elsewhere the stretch stays as the cheap fallback. No check is woken for a reaction that
+# comes due. While it runs, the cure and dispel triggers and the party dispel value look at least every CheckMs
+# (else once a second). NearRealPlayerYards (0 = off) is reserved for open-world bots near a real player: the bots
+# cache no proximity flag yet, so it has no effect. Contexts as in Playerbots.Natural.Reaction.Contexts. With
+# Playerbots.PerfMonEnabled the rows NaturalTiming::Checks (scope) and NaturalTiming::Checks (combat) (counts in the
+# blocks column), NaturalTiming::Time (combat) (the bot time in combat in scope, not a cost: checks per second per
+# bot = Checks (combat) / its total in seconds), NaturalTiming::UpdateAIInternal (scope), NaturalReaction::HasReacted
+# and NaturalReaction::EventStart show the cost; the NaturalTiming rows also while Enable is 0. On a running server
+# .reload config then .playerbots rndbot reload change it.
+# Default: 0 (off: upstream's interval and stagger, the stretch everywhere), CheckMs 100, StaggerMs 20,
+# Contexts "Arena,Battleground", NearRealPlayerYards 0
+Playerbots.Natural.Cadence.Enable = 0
+Playerbots.Natural.Cadence.CheckMs = 100
+Playerbots.Natural.Cadence.StaggerMs = 20
+Playerbots.Natural.Cadence.Contexts = "Arena,Battleground"
+Playerbots.Natural.Cadence.NearRealPlayerYards = 0
 
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600

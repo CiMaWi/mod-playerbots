@@ -29,6 +29,9 @@ public:
     virtual bool IsActive() { return false; }
     virtual bool IsBuffTrigger() { return false; }
     virtual bool IsDebuffTrigger() { return false; }
+    // Answers an event the natural reaction times (cure, dispel): while the natural cadence's faster check runs,
+    // needCheck uses at most its interval
+    virtual bool IsReactionTrigger() { return false; }
     virtual bool IsChatCommand() { return false; }
     virtual std::vector<NextAction> getHandlers() { return {}; }
     void Update() {}

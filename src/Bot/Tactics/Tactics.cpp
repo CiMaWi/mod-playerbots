@@ -711,6 +711,144 @@ void RunReactionSelftest(ChatHandler* handler)
               ReactionEventStarts(lost, lostAt + MissWindowMs, MissWindowMs),
           "a missed event passes, or does not start again after its window");
 
+    // End to end: the target sum, never a pass before the event's server time, the latency correction on check streams
+    ReactionParams endToEnd = params;
+    endToEnd.EndToEnd = true;
+    ReactionParams firstQuery = params;
+    firstQuery.EndToEnd = false;
+    constexpr uint32 TickMs = 25;
+    ReactionFocus timing;
+    ReactionEvent timed;
+    StartReactionEvent(timed, timing, middle, endToEnd, Guid, 1, 0, false, 70000);
+    StampReactionEvent(timed, timing, endToEnd, 120, ReactionStampSource::CastBar, TickMs);
+    uint32 const sum = timed.ReadyAfterMs + endToEnd.PingMs + endToEnd.DisplayMs + TickMs;
+    check(timed.TargetMs == sum && timed.StampAgeMs == 120 && timed.DueAfterMs == (sum > 120 ? sum - 120 : 0),
+          Acore::StringFormat("end-to-end target {} ms due after {} ms; expected reaction {} + ping {} + display {} + "
+                              "ticks {} = {}, 120 ms of it gone",
+                              timed.TargetMs, timed.DueAfterMs, timed.ReadyAfterMs, endToEnd.PingMs, endToEnd.DisplayMs,
+                              TickMs, sum));
+    check((timed.DueAfterMs == 0 || !ReactionEventPasses(timed, timing, 1, 70000 + timed.DueAfterMs - 1)) &&
+              ReactionEventPasses(timed, timing, 1, 70000 + timed.DueAfterMs),
+          "an end-to-end event does not pass at its due time");
+    ReactionEvent plain;
+    StartReactionEvent(plain, timing, middle, firstQuery, Guid, 2, 0, false, 70000);
+    StampReactionEvent(plain, timing, firstQuery, 120, ReactionStampSource::CastBar, TickMs);
+    check(plain.TargetMs == plain.ReadyAfterMs && plain.DueAfterMs == plain.ReadyAfterMs && plain.StampAgeMs == 0,
+          "without EndToEnd the event does not count from its first query");
+    ReactionEvent stale;
+    StartReactionEvent(stale, timing, middle, endToEnd, Guid, 2, 0, false, 70000);
+    StampReactionEvent(stale, timing, endToEnd, REACTION_MAX_STAMP_AGE_MS + 1, ReactionStampSource::Aura, TickMs);
+    check(stale.StampAgeMs == 0 && stale.StampSource == static_cast<uint8>(ReactionStampSource::Stale),
+          "a server time older than the stamp age limit is kept");
+
+    // No pass before the event's server time: a latency beyond the target passes at the first query and the early
+    // pass lowers it; an event first seen after its target passes at once and leaves the latency alone
+    ReactionFocus slow;
+    slow.LatencyMs = 5000.0f;
+    slow.LatencySeeded = true;
+    ReactionEvent eager;
+    StartReactionEvent(eager, slow, middle, endToEnd, Guid, 3, 0, false, 80000);
+    StampReactionEvent(eager, slow, endToEnd, 0, ReactionStampSource::CastBar, TickMs);
+    check(eager.DueAfterMs == 0 && eager.Corrected && ReactionEventPasses(eager, slow, 3, 80000) &&
+              slow.LatencyMs < 5000.0f,
+          "a latency beyond the target moves the pass before the first query, or the early pass keeps it");
+    float const kept = slow.LatencyMs;
+    ReactionEvent seenLate;
+    StartReactionEvent(seenLate, slow, middle, endToEnd, Guid, 4, 0, false, 90000);
+    StampReactionEvent(seenLate, slow, endToEnd, REACTION_MAX_STAMP_AGE_MS, ReactionStampSource::CastBar, TickMs);
+    check(seenLate.TargetMs > REACTION_MAX_STAMP_AGE_MS ||
+              (!seenLate.Corrected && seenLate.DueAfterMs == 0 && ReactionEventPasses(seenLate, slow, 4, 90000) &&
+               slow.LatencyMs == kept),
+          "an event first seen after its target waits, or its pass trains the latency");
+
+    // Check streams: the first check after a server event within one interval, then one every interval plus a
+    // jitter; after a warm-up the pass lands on the target on average (the bot's latency is learnt)
+    struct StreamResult
+    {
+        double MeanErrorMs = 0.0;
+        float LatencyMs = 0.0f;
+        uint32 Early = 0;
+    };
+    auto const stream = [&](uint32 intervalMs, uint32 jitterMs, bool pauses, uint64 seed)
+    {
+        constexpr uint32 Events = 400;
+        constexpr uint32 Warmup = 100;
+        constexpr uint32 PauseMs = 2000;
+        StreamResult result;
+        ReactionFocus learner;
+        double errorSum = 0.0;
+        double latencySum = 0.0;
+        uint32 counted = 0;
+        uint32 clock = 100000;
+        for (uint32 index = 0; index < Events; ++index)
+        {
+            uint64 const hash = SplitMix64(seed + index);
+            uint32 const stamp = clock;
+            uint32 now = stamp + static_cast<uint32>(hash % intervalMs);
+            ReactionEvent trial;
+            StartReactionEvent(trial, learner, middle, endToEnd, seed, 1, 0, false, now);
+            StampReactionEvent(trial, learner, endToEnd, now - stamp, ReactionStampSource::CastBar, TickMs);
+            // Every tenth event of a pausing stream waits out a cast of the bot's own before its next check
+            bool const paused = pauses && index % 10 == 5;
+            for (uint32 step = 0;
+                 step < 1000 && !ReactionEventPasses(trial, learner, 1, now, 2 * (intervalMs + jitterMs)); ++step)
+                now += paused && step == 0 ? PauseMs
+                                           : intervalMs + static_cast<uint32>(SplitMix64(hash ^ step) % (jitterMs + 1));
+
+            if (static_cast<int32>(now - stamp) < 0)
+                ++result.Early;
+
+            if (index >= Warmup && !paused)
+            {
+                errorSum += static_cast<double>(now - stamp) - trial.TargetMs;
+                latencySum += learner.LatencyMs;
+                ++counted;
+            }
+
+            clock = now + 3000;
+        }
+
+        result.MeanErrorMs = errorSum / counted;
+        result.LatencyMs = static_cast<float>(latencySum / counted);
+        return result;
+    };
+    struct StreamCase
+    {
+        uint32 IntervalMs;
+        uint32 JitterMs;
+        bool Pauses;
+    };
+    // The cadence (100 ms, a 20 ms stagger, 25 ms ticks), with the bot's own casts, and today's 250 ms + 0-200 ms
+    for (StreamCase const& streamCase :
+         {StreamCase{100, 25, false}, StreamCase{120, 25, true}, StreamCase{450, 50, false}})
+    {
+        StreamResult const result =
+            stream(streamCase.IntervalMs, streamCase.JitterMs, streamCase.Pauses, 7000 + streamCase.IntervalMs);
+        double const meanGap = streamCase.IntervalMs + streamCase.JitterMs / 2.0;
+        check(
+            result.Early == 0 && std::fabs(result.MeanErrorMs) <= 0.1 * meanGap && result.LatencyMs >= 0.25 * meanGap &&
+                result.LatencyMs <= 0.75 * meanGap,
+            Acore::StringFormat("check stream {} ms + 0-{} ms{}: mean pass - target {:.1f} ms, mean latency {:.1f} ms, "
+                                "{} passes before the server time",
+                                streamCase.IntervalMs, streamCase.JitterMs, streamCase.Pauses ? " with casts" : "",
+                                result.MeanErrorMs, result.LatencyMs, result.Early));
+    }
+
+    // The cadence's stagger: upstream's guid % 201 at 200, at most StaggerMs
+    bool staggerOk = true;
+    for (uint64 const guid : {1ULL, 200ULL, 201ULL, 4242ULL, 987654321ULL})
+        staggerOk = staggerOk && CheckStaggerMs(guid, UPSTREAM_CHECK_STAGGER_MS) == guid % 201 &&
+                    CheckStaggerMs(guid, 20) <= 20 && CheckStaggerMs(guid, 0) == 0;
+
+    check(staggerOk, "the check stagger is not upstream's guid % 201 at 200, or exceeds StaggerMs");
+
+    // The cure and dispel triggers and the party dispel value: the cadence's interval while it runs, when faster
+    check(ReactionCheckIntervalMs(1000, true, 100) == 100 && ReactionCheckIntervalMs(50, true, 100) == 50 &&
+              ReactionCheckIntervalMs(1, true, 100) == 1,
+          "a reaction trigger under the cadence does not check at min(its interval, CheckMs)");
+    check(ReactionCheckIntervalMs(1000, false, 100) == 1000 && ReactionCheckIntervalMs(1, false, 20) == 1,
+          "a reaction trigger without the cadence does not keep its own interval");
+
     handler->PSendSysMessage("TACTICS selftest reaction: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -913,6 +1051,16 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage("  natural reaction: {} (contexts {}); median {:.0f} ms, sigma {:.3f}",
                              config.NaturalReactionActive ? "on" : "off",
                              FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
+    ReactionParams const& timing = config.NaturalReaction;
+    handler->PSendSysMessage(
+        "  natural timing: cadence {} (contexts {}), check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
+        "check {}, stretch {}; end to end {} (with the faster check; ping {} ms, display {} ms, ticks {})",
+        config.NaturalCadenceEnable ? "on" : "off", FormatTacticScope(config.NaturalCadenceContexts),
+        config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs, botAI->IsInNaturalTimingScope() ? "yes" : "no",
+        botAI->IsInNaturalTimingCombat() ? "yes" : "no", botAI->IsNaturalCadenceActive() ? "yes" : "no",
+        botAI->IsSkillStretchOff() ? "off" : "on", timing.EndToEnd ? "on" : "off", timing.PingMs, timing.DisplayMs,
+        timing.ServerTickMs < 0 ? std::string("half the map update")
+                                : Acore::StringFormat("{} ms", timing.ServerTickMs));
     handler->PSendSysMessage("  cached: effort {}, style aggression {} / caution {} / patience {}", gate.Effort,
                              botAI->GetSkillStyle(SkillStyleTrait::Aggression),
                              botAI->GetSkillStyle(SkillStyleTrait::Caution),

@@ -22,6 +22,8 @@ public:
 
     std::string const GetTargetName() override { return "self target"; }
     bool IsActive() override;
+    // A dispel is a timed reaction (G0h2): at the natural cadence's interval while it runs, else once a second
+    bool IsReactionTrigger() override { return true; }
 
 protected:
     uint32 dispelType;

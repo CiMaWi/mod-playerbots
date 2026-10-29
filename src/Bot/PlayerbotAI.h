@@ -649,7 +649,19 @@ public:
     void SetArenaOnlyState(ArenaOnlyState state) { arenaOnlyState = state; }
     // Reaction-delay factor from the hidden skill (Playerbots.Skill.React*), cached by SetPvpSkill. 1.0 when the
     // skill system or the factor range is off, and in PvE fights when Playerbots.Skill.FullAbilityInPvE is on.
+    // Also 1.0 where the natural cadence and the natural reaction both run (the model replaces the stretch).
     float GetEffectiveSkillReactFactor() const;
+    // Natural timing (Playerbots.Natural.Cadence.*), refreshed at each AI check: the bot is in the cadence's contexts
+    // (also tracked while the cadence is off and PerfMon on, for its rows), in combat in a started match there, and
+    // the cadence's faster check applies
+    bool IsInNaturalTimingScope() const { return timingScope; }
+    bool IsInNaturalTimingCombat() const { return timingCombat; }
+    bool IsNaturalCadenceActive() const { return cadenceCombat; }
+    bool IsSkillStretchOff() const { return stretchOff; }
+    // The bot's last map update diff (ms): the natural reaction's server ticks are half of it
+    uint32 GetLastUpdateDiff() const { return lastUpdateDiff; }
+    // At each AI check, by the bot's own update; O(1): the context probe and the match status
+    void RefreshNaturalTiming();
     // PvP fight: battleground, arena, duel or PvP combat. Everything else counts as PvE for the skill knobs.
     bool IsPvpFight() const;
     // The same test for any player (situation budgets classify the real players with it). World thread or the
@@ -805,6 +817,11 @@ protected:
     uint32 skillNoticeDelayMs = 0;
     SkillNoticeCounters skillNoticeCounters;
     ReactionState reactionState;
+    bool timingScope = false;
+    bool timingCombat = false;
+    bool cadenceCombat = false;
+    bool stretchOff = false;
+    uint32 lastUpdateDiff = 0;
     TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
     bool pvpTestCounting = false;
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};

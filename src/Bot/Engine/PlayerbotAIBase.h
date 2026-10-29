@@ -28,9 +28,14 @@ public:
     void SetActionDuration(uint32 duration);
     void ResetActionDuration();
     bool IsActionDurationActive() const { return nextAICheckDelay > 0; }
+    // The delay YieldThread last set, its stagger included
+    uint32 GetLastCheckDelay() const { return lastCheckDelay; }
 
 protected:
     uint32 nextAICheckDelay;
+    // YieldThread's stagger from the guid (Playerbots.Natural.Cadence.StaggerMs narrows it for bots in its scope)
+    uint32 checkStaggerMs = UPSTREAM_CHECK_STAGGER_MS;
+    uint32 lastCheckDelay = 0;
     class PerfMonitorOperation* totalPmo = nullptr;
 
 private:
