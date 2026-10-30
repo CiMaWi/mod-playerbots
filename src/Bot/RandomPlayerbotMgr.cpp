@@ -3590,8 +3590,18 @@ std::atomic<uint64> arenaPartnerWaitMsTotal{0};
 std::atomic<uint32> arenaPartnerWaitMsMax{0};
 std::array<std::atomic<uint64>, 6> arenaPartnerWaitBuckets{};
 std::atomic<uint32> arenaPartnerBusyLogged{0};
+// Releases dropped as stale: the captain's last held join lies more than ArenaPartnerHoldGapMs back (its group
+// dissolved or re-formed through the non-standing path meanwhile), so the time since its first hold is no wait
+std::atomic<uint64> arenaPartnerStale{0};
+// A held captain retries every bg join check (about 2 s); a longer gap between two holds means a new hold
+constexpr uint32 ArenaPartnerHoldGapMs = 60 * IN_MILLISECONDS;
+struct ArenaPartnerHold
+{
+    uint32 first;
+    uint32 last;
+};
 std::mutex arenaPartnerBusyLock;
-std::unordered_map<ObjectGuid::LowType, uint32> arenaPartnerBusySince;
+std::unordered_map<ObjectGuid::LowType, ArenaPartnerHold> arenaPartnerBusySince;
 // .playerbots arenaonly force join (console, world thread only): the captain, its partner given a battleground id of
 // no battleground, and the held-join count before
 ObjectGuid arenaOnlyForcedCaptain;
@@ -3636,7 +3646,19 @@ void RandomPlayerbotMgr::NoteArenaGroupReady(Player* captain, Player* busyMember
         bool first = false;
         {
             std::lock_guard<std::mutex> guard(arenaPartnerBusyLock);
-            first = arenaPartnerBusySince.emplace(key, now).second;
+            auto const [it, added] = arenaPartnerBusySince.try_emplace(key, ArenaPartnerHold{now, now});
+            first = added;
+            if (!added)
+            {
+                // an old entry of a hold that ended without the group queueing: this is a new hold
+                if (getMSTimeDiff(it->second.last, now) > ArenaPartnerHoldGapMs)
+                {
+                    it->second.first = now;
+                    first = true;
+                }
+
+                it->second.last = now;
+            }
         }
 
         // the member may stand on another map: only plain fields are read
@@ -3661,8 +3683,15 @@ void RandomPlayerbotMgr::NoteArenaGroupReady(Player* captain, Player* busyMember
         if (it == arenaPartnerBusySince.end())
             return;
 
-        since = it->second;
+        ArenaPartnerHold const hold = it->second;
         arenaPartnerBusySince.erase(it);
+        if (getMSTimeDiff(hold.last, now) > ArenaPartnerHoldGapMs)
+        {
+            ++arenaPartnerStale;
+            return;
+        }
+
+        since = hold.first;
     }
 
     uint32 const ms = getMSTimeDiff(since, now);
@@ -3971,11 +4000,12 @@ bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char
     uint64 const waits = arenaPartnerWaits.load();
     handler->PSendSysMessage(
         "ARENAONLY: joins held for a busy partner {} (the core would drop them), waits {}, mean {} ms, max {} ms, "
-        "under 5/10/20/40/80 s and over {}/{}/{}/{}/{}/{}; arena joins without a battlemaster on the map {}",
+        "under 5/10/20/40/80 s and over {}/{}/{}/{}/{}/{}, stale holds dropped {}; arena joins without a battlemaster "
+        "on the map {}",
         arenaPartnerBusy.load(), waits, waits ? arenaPartnerWaitMsTotal.load() / waits : 0,
         arenaPartnerWaitMsMax.load(), arenaPartnerWaitBuckets[0].load(), arenaPartnerWaitBuckets[1].load(),
         arenaPartnerWaitBuckets[2].load(), arenaPartnerWaitBuckets[3].load(), arenaPartnerWaitBuckets[4].load(),
-        arenaPartnerWaitBuckets[5].load(), arenaOnlyNoBattlemaster.load());
+        arenaPartnerWaitBuckets[5].load(), arenaPartnerStale.load(), arenaOnlyNoBattlemaster.load());
     return true;
 }
 
