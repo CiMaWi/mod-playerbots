@@ -208,6 +208,7 @@ constexpr uint64 DrMiss = 0x428A2F98D728AE22ULL;
 constexpr uint64 WrongTarget = 0x7137449123EF65CDULL;
 constexpr uint64 OwnBreak = 0xB5C0FBCFEC4D3B2FULL;
 constexpr uint64 WastedBreak = 0xE9B5DBA58189DBBCULL;
+constexpr uint64 ChainAfter = 0x3956C25BF348B538ULL;
 }  // namespace CcSalt
 
 // The shared roll: one answer per seed, salt and window of windowMs (each seed's windows start at its own phase), the
@@ -564,10 +565,24 @@ struct CcChainView
     bool AuraOnTarget = false;        // a CC aura of the team on it
     uint32 RemainingMs = 0;           // the aura's remaining duration
     bool PartnerCastPending = false;  // the partner's cast bar on the target shows a CC
+    // G4c-d: the team's cyclone keeps the target immune until its end: the chain lands AfterMs after the end instead
+    // of the lead before it (a CC landing inside it is lost)
+    bool ImmuneUntilEnd = false;
+    uint32 AfterMs = 0;
+    uint32 ReactMs = 0;  // G4c-d: the bot's own delay from the chain's moment to its cast: it starts that much sooner
 };
 
+// The remaining time of the team's CC at which a chaining bot starts: its CC (castMs) lands leadMs before the end, or
+// AfterMs after it on an aura that keeps the target immune; ReactMs sooner (G4c-d)
+inline uint32 CcChainStartAtMs(CcChainView const& view, uint32 castMs, uint32 leadMs)
+{
+    uint32 const before = castMs + view.ReactMs + (view.ImmuneUntilEnd ? 0 : leadMs);
+    uint32 const after = view.ImmuneUntilEnd ? view.AfterMs : 0;
+    return before > after ? before - after : 0;
+}
+
 // Whether the bot starts its CC now: never over the partner's pending cast; at once when no CC is on the target; a
-// chaining bot starts castMs + leadMs before the aura's end, so its CC lands leadMs before the current one ends
+// chaining bot starts at CcChainStartAtMs before the aura's end, so its CC lands leadMs before the current one ends
 inline bool ChainDue(CcChainView const& view, uint32 castMs, uint32 leadMs, bool chains)
 {
     if (view.PartnerCastPending)
@@ -576,27 +591,51 @@ inline bool ChainDue(CcChainView const& view, uint32 castMs, uint32 leadMs, bool
     if (!view.AuraOnTarget)
         return true;
 
-    return chains && view.RemainingMs <= castMs + leadMs;
+    return chains && view.RemainingMs <= CcChainStartAtMs(view, castMs, leadMs);
 }
 
 // How long a chaining bot that is not due yet waits (ChainDue false with the aura on and no pending cast), 0 when
 // it is due or waits on something else: cc ready wakes then instead of a whole refresh later (G4c)
 inline uint32 CcChainWaitMs(CcChainView const& view, uint32 castMs, uint32 leadMs)
 {
-    if (view.PartnerCastPending || !view.AuraOnTarget || view.RemainingMs <= castMs + leadMs)
+    uint32 const startAtMs = CcChainStartAtMs(view, castMs, leadMs);
+    if (view.PartnerCastPending || !view.AuraOnTarget || view.RemainingMs <= startAtMs)
         return 0;
 
-    return view.RemainingMs - castMs - leadMs;
+    return view.RemainingMs - startAtMs;
+}
+
+// G4c-d: a cast started now that lands before immuneEndMs (the team's cyclone's end plus AfterMs; 0 = none) is lost:
+// the bot holds it (a short cast or an instant whose reaction passed early)
+inline bool CcLandsInImmunity(uint32 nowMs, uint32 castMs, uint32 immuneEndMs)
+{
+    return immuneEndMs && static_cast<int32>(nowMs + castMs - immuneEndMs) < 0;
+}
+
+// G4c-d busy guard: a cast, channel or global cooldown of busyMs started now ends after the chain's moment dueAtMs
+// (a moment passed counts as now)
+inline bool CcChainBlocksCast(uint32 nowMs, uint32 dueAtMs, uint32 busyMs)
+{
+    int32 const leftMs = static_cast<int32>(dueAtMs - nowMs);
+    return busyMs > static_cast<uint32>(std::max<int32>(leftMs, 0));
+}
+
+// G4c-d: the bot's own delay from a chain's moment to its cast (its reaction and cadence), learned from its chains:
+// the first sample wholly, then a quarter of each
+inline uint32 CcLearnChainReactMs(uint32 currentMs, uint32 sampleMs, bool learned)
+{
+    return learned ? (currentMs * 3 + sampleMs + 2) / 4 : sampleMs;
 }
 
 // G4c-b: the chain's end as a chaining bot expects it. The aura's remaining time; with the opponent memory sooner when
 // the team's CC on this enemy was seen dispelled dispelMeanMs after landing on average (0 = not known): the next CC
 // then lands marginMs before that moment. elapsedMs = how long the aura is up. 0 = due now. Once the remembered
-// dispel moment has passed without a dispel (G4c-c, G4c-b review NOTE 1), the aura's end counts again, so an absent
+// dispel moment has passed by marginMs without a dispel (G4c-c, G4c-b review NOTE 1; G4c-d: mean + margin, so the
+// due window from mean - margin is wide enough for the bot's reaction), the aura's end counts again, so an absent
 // dispel does not make the chain land on top of a CC with seconds left.
 inline uint32 CcChainRemainingMs(uint32 remainingMs, uint32 elapsedMs, uint32 dispelMeanMs, uint32 marginMs)
 {
-    if (!dispelMeanMs || elapsedMs > dispelMeanMs)
+    if (!dispelMeanMs || elapsedMs > dispelMeanMs + marginMs)
         return remainingMs;
 
     uint32 const dispelAtMs = dispelMeanMs > marginMs ? dispelMeanMs - marginMs : 0;

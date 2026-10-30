@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <string_view>
 
 #include "ArenaCc.h"
@@ -73,6 +74,45 @@ bool CcBreaksOwnNow(PlayerbotAI* botAI, CcBotState const& state, uint32 nowMs)
 bool CcImmuneAll(Unit const* unit)
 {
     return unit->IsImmunedToDamage(SPELL_SCHOOL_MASK_NORMAL) && unit->IsImmunedToDamage(SPELL_SCHOOL_MASK_MAGIC);
+}
+
+// G4c-d F1: every school and damage immunity on the unit comes from a cyclone (no bubble or ice block besides), so
+// the immunity ends with it; the caller asks only on a unit immune to all (CcImmuneAll)
+bool CcFromCyclone(uint32 spellId)
+{
+    SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+    return info && GetDiminishingReturnsGroupForSpell(info, false) == DIMINISHING_CYCLONE;
+}
+
+bool CcImmuneOnlyByCyclone(Unit const* unit)
+{
+    for (uint32 const kind : {static_cast<uint32>(IMMUNITY_SCHOOL), static_cast<uint32>(IMMUNITY_DAMAGE)})
+    {
+        for (auto const& [mask, spellId] : unit->m_spellImmune[kind])
+        {
+            if (!CcFromCyclone(spellId))
+                return false;
+        }
+    }
+
+    return true;
+}
+
+// G4c-d review: the bot's real cast time of a row (haste: Icy Veins, gear), not the table's DBC base time
+uint32 CcCastMsNow(Player* bot, CcBotState const& state, int8 row)
+{
+    SpellInfo const* const info = sSpellMgr->GetSpellInfo(state.KnownSpell[row]);
+    return info ? info->CalcCastTime(bot) : state.Spells[row].CastMs;
+}
+
+// G4c-d F3: the bot's expected delay from a chain's moment to its cast: what it learned of its chains, else the
+// reaction model's median at its skill
+uint32 CcChainReactMs(PlayerbotAI* botAI, CcBotState const& state)
+{
+    if (state.ChainReactLearned)
+        return state.ChainReactMs;
+
+    return static_cast<uint32>(std::exp(botAI->GetReactionState().Mu) + 0.5f);
 }
 
 // The table again when the level or the talents changed (a learned rank, a talent CC) and every CC_TABLE_REFRESH_MS
@@ -325,9 +365,11 @@ void CcForEachObserver(Unit* unit, Player* caster, Fn const& fn)
 // tactics force dr's casts are not chains (CcSetForcedCasts)
 std::atomic<bool> ccForcedCasts{false};
 
-// G4c: a loss-of-control CC of the team landing on the enemy. The caster's gap to the team's previous one on it (a
-// chain: that one still up or ended within CC_CHAIN_WINDOW_MS) is counted while the harness counts and traced for the
-// spread (Logger.playerbots=6); then every team bot's clock takes the new end.
+// G4c: a loss-of-control CC of the team landing on the enemy. The caster's gap to the team's previous one on it (that
+// one still up or ended within CC_CHAIN_WINDOW_MS) is counted while the harness counts and traced for the spread
+// (Logger.playerbots=6): as a chain only for the landing of the caster's own team cc cast that it picked as a chain
+// (G4c-d F2), else as a re-CC (a freed target CC'd again, a rotation, racial or pet stun); then every team bot's
+// clock takes the new end.
 void CcNoteChainLanding(Unit* unit, Player* caster, Aura const* aura, uint8 group, uint32 nowMs, uint32 durationMs)
 {
     uint64 const enemy = unit->GetGUID().GetRawValue();
@@ -335,21 +377,45 @@ void CcNoteChainLanding(Unit* unit, Player* caster, Aura const* aura, uint8 grou
     if (casterAI && casterAI->TacticEnabledHere(TacticId::Cc) && !ccForcedCasts.load(std::memory_order_relaxed))
     {
         CcBotState& state = casterAI->GetCcState();
+        bool const own = state.CastAuraSpell && state.CastAuraSpell == aura->GetId() &&
+                         getMSTimeDiff(state.CastAtMs, nowMs) <= CC_CHAIN_LANDING_MS;
+        bool const planned = own && state.CastWasChain;
+        bool const busy = planned && state.CastWasBusy;
+        if (own)
+            state.CastAuraSpell = 0;
+
         int32 signedGapMs = 0;
         uint8 previousGroup = 0;
         if (state.Chain.Gap(enemy, nowMs, CC_CHAIN_WINDOW_MS, signedGapMs, previousGroup))
         {
-            ++state.ChainsLanded;
-            state.LastChainGapMs = signedGapMs;
-            casterAI->CountTactic(TacticCounter::ChainGapMs,
-                                  static_cast<uint32>(signedGapMs < 0 ? -signedGapMs : signedGapMs));
-            casterAI->CountTactic(TacticCounter::Chains);
-            LOG_TRACE("playerbots",
-                      "CC chain: {} (skill {}, lead {} ms) {} ({}) on {} after {}, gap {} ms, lasts {} ms, at {} ms",
-                      caster->GetName(), casterAI->GetPvpSkill(), state.Params.ChainLeadMs,
-                      aura->GetSpellInfo()->SpellName[0], PVPTEST_DR_GROUP_NAMES[group % PVPTEST_DR_GROUP_COUNT],
-                      unit->GetName(), PVPTEST_DR_GROUP_NAMES[previousGroup % PVPTEST_DR_GROUP_COUNT], signedGapMs,
-                      durationMs, nowMs);
+            uint32 const gapMs = static_cast<uint32>(signedGapMs < 0 ? -signedGapMs : signedGapMs);
+            if (planned)
+            {
+                ++state.ChainsLanded;
+                state.LastChainGapMs = signedGapMs;
+                casterAI->CountTactic(TacticCounter::ChainGapMs, gapMs);
+                casterAI->CountTactic(TacticCounter::Chains);
+                if (signedGapMs < 0)
+                    casterAI->CountTactic(TacticCounter::ChainEarlyMs, gapMs);
+
+                if (busy)
+                    casterAI->CountTactic(TacticCounter::ChainBusy);
+            }
+            else
+            {
+                ++state.ReCcsLanded;
+                casterAI->CountTactic(TacticCounter::ReCcGapMs, gapMs);
+                casterAI->CountTactic(TacticCounter::ReCcs);
+            }
+
+            LOG_TRACE(
+                "playerbots",
+                "CC {}: {} (skill {}, lead {} ms) {} ({}) on {} after {}, gap {} ms, lasts {} ms, at {} ms, react "
+                "{} ms, busy {}",
+                planned ? "chain" : "re-cc", caster->GetName(), casterAI->GetPvpSkill(), state.Params.ChainLeadMs,
+                aura->GetSpellInfo()->SpellName[0], PVPTEST_DR_GROUP_NAMES[group % PVPTEST_DR_GROUP_COUNT],
+                unit->GetName(), PVPTEST_DR_GROUP_NAMES[previousGroup % PVPTEST_DR_GROUP_COUNT], signedGapMs,
+                durationMs, nowMs, state.ChainReactMs, busy ? "yes" : "no");
         }
     }
 
@@ -637,13 +703,21 @@ public:
 
 // A cone's arc for the AoE guard: wider than the spells' (the guard errs on the side of not casting)
 constexpr float CcGuardConeArc = static_cast<float>(M_PI);
+constexpr uint32 CC_AREA_RETRY_MS = 10000;  // a cast action whose spell the bot does not know: asked again after this
+
+// The spell id of a cast action (0: no cast action, or a spell the bot does not know yet)
+uint32 CcActionSpellId(PlayerbotAI* botAI, Action* action, bool& castAction)
+{
+    CastSpellAction* const cast = dynamic_cast<CastSpellAction*>(action);
+    castAction = cast != nullptr;
+    return cast ? botAI->GetAiObjectContext()->GetValue<uint32>("spell id", cast->getSpell())->Get() : 0;
+}
 
 // G4c-b AoE guard (Avoid.AoeGuardEnable): mutes a spell action whose damage area (CcResolveSpellArea: around the bot,
 // at the action's target, a cone or a chain; its radius + Avoid.AoeGuardMarginYards) covers an enemy the bot keeps out
-// (the OwnCc list: the skill model and the own-break window apply). The area is resolved once per action; an action
-// without one ends at that lookup. In "pvp cc", so the engine asks it before "skill" (no reaction for a muted action).
-constexpr uint32 CC_AREA_RETRY_MS = 10000;  // a cast action whose spell the bot does not know: asked again after this
-
+// (the OwnCc list: the skill model and the own-break window apply). The area is resolved once per action, and only
+// while the list holds an enemy (G4c-d); an action without one ends at that lookup. In "pvp cc", so the engine asks it
+// before "skill" (no reaction for a muted action); added with its switch only (G4c-d).
 class OwnCcAoeGuardMultiplier : public Multiplier
 {
 public:
@@ -655,12 +729,12 @@ public:
         if (!config.AvoidAoeGuardEnable || action == nullptr)
             return 1.0f;
 
-        CcSpellArea const* const area = AreaOf(action);
-        if (!area || area->Centre == CcAreaCentre::None)
-            return 1.0f;
-
         std::vector<ObjectGuid> const& held = CcOwnExclusions(botAI);
         if (held.empty())
+            return 1.0f;
+
+        CcSpellArea const* const area = AreaOf(action);
+        if (!area || area->Centre == CcAreaCentre::None)
             return 1.0f;
 
         Player* const bot = botAI->GetBot();
@@ -695,11 +769,11 @@ private:
         if (unknown != unknownSinceMs.end() && getMSTimeDiff(unknown->second, nowMs) < CC_AREA_RETRY_MS)
             return nullptr;
 
-        CastSpellAction* const cast = dynamic_cast<CastSpellAction*>(action);
-        if (!cast)
+        bool castAction = false;
+        uint32 const spellId = CcActionSpellId(botAI, action, castAction);
+        if (!castAction)
             return &areas.emplace(action, CcSpellArea{}).first->second;
 
-        uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", cast->getSpell())->Get();
         if (!spellId)
         {
             unknownSinceMs[action] = nowMs;
@@ -712,6 +786,75 @@ private:
 
     // Per bot: the actions of a bot's context live as long as the bot, so the pointer is a stable key
     std::unordered_map<Action*, CcSpellArea> areas;
+    std::unordered_map<Action*, uint32> unknownSinceMs;  // the lookup that found no spell id
+};
+
+// G4c-d F4 busy guard (Cc.ChainEnable): a chaining bot waiting for its chain's moment (cc ready's ChainDueAtMs, for
+// CC_CHAIN_GUARD_KEEP_MS after its last look) starts no cast, channel or global cooldown of its own that ends after
+// that moment; helpful spells (a heal) go. The team cc action is no cast action. The spell's busy time is read once
+// per action. In "pvp cc", so the engine asks it before "skill"; added with its switch only.
+class CcChainGuardMultiplier : public Multiplier
+{
+public:
+    CcChainGuardMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "cc chain guard") {}
+
+    float GetValue(Action* action) override
+    {
+        CcBotState& state = botAI->GetCcState();
+        if (!state.ChainGuardUntilMs || action == nullptr)
+            return 1.0f;
+
+        uint32 const nowMs = getMSTime();
+        if (!FocusBefore(nowMs, state.ChainGuardUntilMs))
+        {
+            state.ChainGuardUntilMs = 0;
+            return 1.0f;
+        }
+
+        uint32 const busyMs = BusyOf(action, nowMs);
+        if (!busyMs || !CcChainBlocksCast(nowMs, state.ChainDueAtMs, busyMs))
+            return 1.0f;
+
+        ++state.ChainGuardMutes;
+        return 0.0f;
+    }
+
+private:
+    // How long the action's spell keeps the bot from casting: its cast time, channel or global cooldown; 0 for no
+    // cast action, a helpful spell, or (asked again CC_AREA_RETRY_MS later) a spell the bot does not know
+    uint32 BusyOf(Action* action, uint32 nowMs)
+    {
+        auto const it = busyMs.find(action);
+        if (it != busyMs.end())
+            return it->second;
+
+        auto const unknown = unknownSinceMs.find(action);
+        if (unknown != unknownSinceMs.end() && getMSTimeDiff(unknown->second, nowMs) < CC_AREA_RETRY_MS)
+            return 0;
+
+        bool castAction = false;
+        uint32 const spellId = CcActionSpellId(botAI, action, castAction);
+        if (castAction && !spellId)
+        {
+            unknownSinceMs[action] = nowMs;
+            return 0;
+        }
+
+        unknownSinceMs.erase(action);
+        SpellInfo const* const info = castAction ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        uint32 busy = 0;
+        if (info && !info->IsPositive())
+        {
+            busy = std::max(info->CalcCastTime(), info->StartRecoveryTime);
+            if (info->IsChanneled())
+                busy = std::max<uint32>(busy, static_cast<uint32>(std::max(info->GetDuration(), 0)));
+        }
+
+        return busyMs.emplace(action, busy).first->second;
+    }
+
+    // Per bot: the actions of a bot's context live as long as the bot, so the pointer is a stable key
+    std::unordered_map<Action*, uint32> busyMs;
     std::unordered_map<Action*, uint32> unknownSinceMs;  // the lookup that found no spell id
 };
 
@@ -749,6 +892,49 @@ void CcCallOffPets(Player* bot, CcBotState& state)
 }
 }  // namespace
 
+bool CcImmuneBesidesCyclone(Unit const* target, SpellInfo const* spellInfo)
+{
+    auto const& allowList = target->m_spellImmune[IMMUNITY_ALLOW_ID];
+    if (!allowList.empty() && !allowList.count(spellInfo->Id))
+        return true;
+
+    for (auto const& [id, spellId] : target->m_spellImmune[IMMUNITY_ID])
+    {
+        if (id == spellInfo->Id && !CcFromCyclone(spellId))
+            return true;
+    }
+
+    for (auto const& [dispel, spellId] : target->m_spellImmune[IMMUNITY_DISPEL])
+    {
+        if (spellInfo->Dispel && dispel == spellInfo->Dispel && !CcFromCyclone(spellId))
+            return true;
+    }
+
+    if (!spellInfo->HasAttribute(SPELL_ATTR0_CU_BYPASS_MECHANIC_IMMUNITY))
+    {
+        uint64 const mechanics = spellInfo->GetAllEffectsMechanicMask();
+        for (auto const& [mechanic, spellId] : target->m_spellImmune[IMMUNITY_MECHANIC])
+        {
+            if (mechanic < 64 && (mechanics & (1ULL << mechanic)) && !CcFromCyclone(spellId))
+                return true;
+        }
+    }
+
+    for (auto const& [aura, spellId] : target->m_spellImmune[IMMUNITY_STATE])
+    {
+        if (CcFromCyclone(spellId))
+            continue;
+
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (spellInfo->Effects[i].IsEffect() && spellInfo->Effects[i].ApplyAuraName == aura)
+                return true;
+        }
+    }
+
+    return false;
+}
+
 float TacticCcMultiplier::GetValue(Action* action)
 {
     // Most actions end at the cached lookup
@@ -774,7 +960,14 @@ bool TacticCcMultiplier::IsOldCcAction(Action* action)
 void PvpCcStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     multipliers.push_back(new TacticCcMultiplier(botAI));
-    multipliers.push_back(new OwnCcAoeGuardMultiplier(botAI));
+    // G4c-d: the guards only with their switches (G4c-c review C2: the AoE guard cost as much as tactic cc); a switch
+    // turned on later reaches a bot when its engine is built again
+    CcConfig const& config = sPlayerbotAIConfig.TacticCc;
+    if (config.AvoidAoeGuardEnable)
+        multipliers.push_back(new OwnCcAoeGuardMultiplier(botAI));
+
+    if (config.CcChainEnable)
+        multipliers.push_back(new CcChainGuardMultiplier(botAI));
 }
 
 void TacticCcStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -973,9 +1166,20 @@ bool CcReadyTrigger::IsActive()
 
     state.PickUntilMs = nowMs + CC_READY_REFRESH_MS;
     state.PickRow = CC_NO_ROW;
+    state.PickIsChain = false;
     Player* const bot = botAI->GetBot();
+    bool const guarding = state.ChainGuardUntilMs && FocusBefore(nowMs, state.ChainGuardUntilMs);
     if (!bot->IsAlive() || bot->IsNonMeleeSpellCast(false) || !botAI->TacticActive(TacticId::Cc))
     {
+        // G4c-d F4: a cast of the bot's own still running at the chain's moment delays the chain (counted at its
+        // landing, tactics.chainBusy); the guard stays while it runs
+        if (guarding && bot->IsAlive() && bot->IsNonMeleeSpellCast(false))
+        {
+            state.ChainGuardUntilMs = nowMs + CC_CHAIN_GUARD_KEEP_MS;
+            if (!FocusBefore(nowMs, state.ChainDueAtMs))
+                state.ChainBusySeen = true;
+        }
+
         state.ReadySinceMs = 0;
         return false;
     }
@@ -1002,9 +1206,14 @@ bool CcReadyTrigger::IsActive()
         target = current;
 
     // No CC on a target immune to all (cyclone, banish, a bubble); a root on it is seen in PickCc (no root on top,
-    // the loss-of-control rows still go)
+    // the loss-of-control rows still go). G4c-d F1: a chaining bot goes on through its team's own cyclone (nothing
+    // else keeps the target immune) and lands just after its end.
     ready = CcComboRowsOn(bot, state, ready, comboMask, target);
-    if (!ready || CcImmuneAll(target) || CcTeamBehind(bot, params))
+    CcConfig const& config = sPlayerbotAIConfig.TacticCc;
+    bool const chains = params.Chains && config.CcChainEnable != 0;
+    bool const immuneAll = CcImmuneAll(target);
+    bool const throughCyclone = immuneAll && chains && CcImmuneOnlyByCyclone(target);
+    if (!ready || (immuneAll && !throughCyclone) || CcTeamBehind(bot, params))
     {
         state.ReadySinceMs = 0;
         return false;
@@ -1013,11 +1222,9 @@ bool CcReadyTrigger::IsActive()
     // A controlled target: only a chaining bot (G4c, Cc.ChainEnable) goes on, and only on its team's CC (the visible
     // aura that ends last: its remaining time and DR group); anyone else's control, or no chains, waits as in G4b. A
     // teammate's CC on his cast bar at the target counts as pending.
-    CcConfig const& config = sPlayerbotAIConfig.TacticCc;
-    bool const chains = params.Chains && config.CcChainEnable != 0;
     CcChainView view;
     uint8 activeGroup = 0;
-    if (CcUnitControlled(target))
+    if (CcUnitControlled(target) || throughCyclone)
     {
         uint32 elapsedMs = 0;
         view.AuraOnTarget = chains && CcTeamControlAura(target, bot, view.RemainingMs, elapsedMs, activeGroup);
@@ -1027,8 +1234,19 @@ bool CcReadyTrigger::IsActive()
             return false;
         }
 
-        // G4c-b: the opponent memory moves the chain's moment before the dispel this enemy's CC got so far
-        if (config.CcOpponentMemoryEnable)
+        // G4c-d F3: the bot starts its expected delay sooner; F1: after the cyclone's end by a margin with noise
+        // (per bot and end)
+        view.ReactMs = CcChainReactMs(botAI, state);
+        view.ImmuneUntilEnd = throughCyclone;
+        if (throughCyclone)
+            view.AfterMs = CC_CHAIN_AFTER_MIN_MS +
+                           static_cast<uint32>(SplitMix64(bot->GetGUID().GetRawValue() ^ CcSalt::ChainAfter ^
+                                                          ((nowMs + view.RemainingMs) / CC_READY_REFRESH_MS)) %
+                                               (CC_CHAIN_AFTER_SPREAD_MS + 1));
+
+        // G4c-b: the opponent memory moves the chain's moment before the dispel this enemy's CC got so far (not a
+        // cyclone's: it ends the immunity only at its end)
+        if (config.CcOpponentMemoryEnable && !throughCyclone)
             view.RemainingMs =
                 CcChainRemainingMs(view.RemainingMs, elapsedMs,
                                    state.Opponents.DispelMeanMs(bot->GetInstanceId(), target->GetGUID().GetRawValue(),
@@ -1074,12 +1292,23 @@ bool CcReadyTrigger::IsActive()
 
     // The chain's moment: the CC lands ChainLeadMs before the team's CC ends; the answer is asked again at that
     // moment rather than a whole refresh later (the engine's cadence and the reaction model add the spread, DT.11)
-    if (chains && !ChainDue(view, state.Spells[row].CastMs, params.ChainLeadMs, true))
+    uint32 const castMs = CcCastMsNow(bot, state, row);
+    if (chains && !ChainDue(view, castMs, params.ChainLeadMs, true))
     {
         ++state.ChainWaits;
-        uint32 const waitMs = CcChainWaitMs(view, state.Spells[row].CastMs, params.ChainLeadMs);
+        uint32 const waitMs = CcChainWaitMs(view, castMs, params.ChainLeadMs);
         if (waitMs && waitMs < CC_READY_REFRESH_MS)
             state.PickUntilMs = nowMs + waitMs;
+
+        // G4c-d F4: until the moment the busy guard holds the bot's casts that would end after it
+        if (waitMs)
+        {
+            if (!guarding)
+                state.ChainBusySeen = false;
+
+            state.ChainDueAtMs = nowMs + waitMs;
+            state.ChainGuardUntilMs = nowMs + CC_CHAIN_GUARD_KEEP_MS;
+        }
 
         return false;
     }
@@ -1087,7 +1316,28 @@ bool CcReadyTrigger::IsActive()
     if (!bot->IsWithinLOSInMap(target))
         return false;
 
+    // G4c-d: a chain due now: the guard holds the bot's other casts until it goes, the moment is kept for the delay
+    // the bot learns, and on the team's cyclone the cast waits until it lands after the end (TeamCcAction::isPossible)
+    state.ChainImmuneEndMs = 0;
+    if (view.AuraOnTarget)
+    {
+        if (!guarding)
+            state.ChainBusySeen = false;
+
+        state.ChainDueAtMs = nowMs;
+        state.ChainGuardUntilMs = nowMs + CC_CHAIN_GUARD_KEEP_MS;
+        if (!state.ChainDueSinceMs || getMSTimeDiff(state.ChainDueSinceMs, nowMs) > CC_CHAIN_REACT_CAP_MS)
+        {
+            state.ChainDueSinceMs = nowMs;
+            state.ChainHeldImmune = false;
+        }
+
+        if (view.ImmuneUntilEnd)
+            state.ChainImmuneEndMs = nowMs + view.RemainingMs + view.AfterMs;
+    }
+
     state.PickRow = row;
+    state.PickIsChain = view.AuraOnTarget;
     state.PickTarget = target->GetGUID();
     state.PickCcTarget = ccTarget->GetGUID();
     return true;
@@ -1107,6 +1357,14 @@ bool TeamCcAction::isPossible()
     if (state.PickRow == CC_NO_ROW)
         return false;
 
+    // G4c-d F1: a chain onto the team's cyclone goes only when it lands after its end (the hasted cast time)
+    if (state.ChainImmuneEndMs &&
+        CcLandsInImmunity(getMSTime(), CcCastMsNow(botAI->GetBot(), state, state.PickRow), state.ChainImmuneEndMs))
+    {
+        state.ChainHeldImmune = true;
+        return false;
+    }
+
     Unit* const target = GetTarget();
     uint32 const spellId = state.KnownSpell[state.PickRow];
     return target && spellId && botAI->CanCastSpell(spellId, target, true);
@@ -1116,8 +1374,10 @@ bool TeamCcAction::Execute(Event /*event*/)
 {
     CcBotState& state = botAI->GetCcState();
     int8 const row = state.PickRow;
+    bool const pickedChain = state.PickIsChain;
     Unit* const target = GetTarget();
     state.PickRow = CC_NO_ROW;
+    state.PickIsChain = false;
     state.PickUntilMs = 0;
     if (row == CC_NO_ROW || !target)
         return false;
@@ -1130,6 +1390,27 @@ bool TeamCcAction::Execute(Event /*event*/)
         return false;
     }
 
+    // G4c-d F2/F3: the cast's aura (only its landing counts as the chain the bot picked: noted at the pick) and the
+    // delay from the chain's moment, learned unless a cast of the bot's own or the cyclone held it
+    uint32 const nowMs = getMSTime();
+    bool const chain = pickedChain;
+    if (chain && state.ChainDueSinceMs && getMSTimeDiff(state.ChainDueSinceMs, nowMs) <= CC_CHAIN_REACT_CAP_MS &&
+        !state.ChainBusySeen && !state.ChainHeldImmune)
+    {
+        state.ChainReactMs = CcLearnChainReactMs(state.ChainReactMs, getMSTimeDiff(state.ChainDueSinceMs, nowMs),
+                                                 state.ChainReactLearned);
+        state.ChainReactLearned = true;
+    }
+
+    state.CastAuraSpell = state.Spells[row].AuraSpellId ? state.Spells[row].AuraSpellId : state.KnownSpell[row];
+    state.CastAtMs = nowMs;
+    state.CastWasChain = chain;
+    state.CastWasBusy = chain && state.ChainBusySeen;
+    state.ChainDueSinceMs = 0;
+    state.ChainGuardUntilMs = 0;
+    state.ChainImmuneEndMs = 0;
+    state.ChainBusySeen = false;
+    state.ChainHeldImmune = false;
     state.ReadySinceMs = 0;
     ++state.Casts;
     botAI->NoteTacticUse(TacticId::Cc);

@@ -20,14 +20,19 @@
 // table, the ready mask and the trigger's last answer. Touched by the bot's own update and by the aura hooks on the
 // bot's map thread; the GM commands read and force it on the world thread while the maps wait (C3). GUIDs only.
 
-constexpr uint32 CC_READY_REFRESH_MS = 250;    // the ready mask and the trigger's answer live this long
-constexpr uint32 CC_TABLE_REFRESH_MS = 60000;  // the table is also rebuilt this often (a respec at the same level)
-constexpr uint32 CC_TARGET_KEEP_MS = 3000;     // a CC target outside a moon is kept this long, so it does not flip
-constexpr uint32 CC_FAILED_BACKOFF_MS = 1500;  // a row whose cast failed waits this long
-constexpr uint32 CC_FORCE_MS = 10000;          // tactics force cc (G4b-b)
-constexpr uint32 CC_EXCLUDE_REFRESH_MS = 250;  // the OwnCc exclusion list lives this long (G4b-b)
-constexpr uint8 CC_KILL_WINDOW_PCT = 50;       // the bot's target at or below it opens the kill window (CcHolds)
-constexpr uint32 CC_CHAIN_WINDOW_MS = 3000;    // a team CC landing at most this long after the last one ended chains
+constexpr uint32 CC_READY_REFRESH_MS = 250;     // the ready mask and the trigger's answer live this long
+constexpr uint32 CC_TABLE_REFRESH_MS = 60000;   // the table is also rebuilt this often (a respec at the same level)
+constexpr uint32 CC_TARGET_KEEP_MS = 3000;      // a CC target outside a moon is kept this long, so it does not flip
+constexpr uint32 CC_FAILED_BACKOFF_MS = 1500;   // a row whose cast failed waits this long
+constexpr uint32 CC_FORCE_MS = 10000;           // tactics force cc (G4b-b)
+constexpr uint32 CC_EXCLUDE_REFRESH_MS = 250;   // the OwnCc exclusion list lives this long (G4b-b)
+constexpr uint8 CC_KILL_WINDOW_PCT = 50;        // the bot's target at or below it opens the kill window (CcHolds)
+constexpr uint32 CC_CHAIN_WINDOW_MS = 3000;     // a team CC landing at most this long after the last one ended chains
+constexpr uint32 CC_CHAIN_LANDING_MS = 5000;    // G4c-d: the bot's team cc aura landing this soon after its cast is it
+constexpr uint32 CC_CHAIN_REACT_CAP_MS = 2000;  // G4c-d: a chain's delay from its moment to the cast: longer is stale
+constexpr uint32 CC_CHAIN_GUARD_KEEP_MS = 500;  // G4c-d: the busy guard lasts this long after cc ready's last look
+constexpr uint32 CC_CHAIN_AFTER_MIN_MS = 50;    // G4c-d: a chain onto the team's cyclone lands this long after its end
+constexpr uint32 CC_CHAIN_AFTER_SPREAD_MS = 100;  // plus up to this (noise per chain)
 
 struct CcBotState
 {
@@ -52,6 +57,7 @@ struct CcBotState
     // cc ready's answer until PickUntilMs: the row, the unit it goes on and the planned CC target (they differ on a
     // wrong-target window)
     int8 PickRow = CC_NO_ROW;
+    bool PickIsChain = false;  // the pick is a chain (the team's CC on the target): only its landing counts as one
     ObjectGuid PickTarget;
     ObjectGuid PickCcTarget;
     uint32 PickUntilMs = 0;
@@ -73,6 +79,26 @@ struct CcBotState
     uint32 ChainsLanded = 0;
     int32 LastChainGapMs = 0;
     uint32 ChainWaits = 0;  // cc ready answers that waited for the chain's moment
+    // G4c-d chain timing: the bot's learned delay from a chain's moment to its cast (CcLearnChainReactMs; the
+    // reaction model's median until the first sample), the moment its chain pick became due, the moment cc ready
+    // waits for and how long the busy guard (cc chain guard) holds no cast that ends after it, the end of the team's
+    // cyclone (plus AfterMs) the pick lands after; whether a cast of its own delayed the chain or the cyclone held it
+    uint32 ChainReactMs = 0;
+    bool ChainReactLearned = false;
+    uint32 ChainDueSinceMs = 0;
+    uint32 ChainDueAtMs = 0;
+    uint32 ChainGuardUntilMs = 0;
+    uint32 ChainImmuneEndMs = 0;
+    bool ChainBusySeen = false;
+    bool ChainHeldImmune = false;
+    uint32 ChainGuardMutes = 0;  // action evaluations the busy guard muted (tactics show)
+    // G4c-d: the bot's last team cc cast (its aura spell, start, and whether it was a chain pick and was delayed by a
+    // cast of the bot's own): only its landing counts as a chain (tactics.chains); other landings are re-CCs
+    uint32 CastAuraSpell = 0;
+    uint32 CastAtMs = 0;
+    bool CastWasChain = false;
+    bool CastWasBusy = false;
+    uint32 ReCcsLanded = 0;
     // G4c-b: what the bot saw of each enemy's dispels and trinkets of the team's CC this match (the aura hooks of the
     // team's bots on the map, Cc.OpponentMemoryEnable); the pets and guardians called off a kept-out enemy
     CcOpponentMemory Opponents;
@@ -82,5 +108,13 @@ struct CcBotState
 // Whether an enemy stays out of the bot's targets (OwnCc): a forced CC always; a team breakable CC unless the bot's
 // own-break window (CcBreaksOwn, low skill) lets it break it
 inline bool CcKeepsOut(bool heldByTeam, bool forced, bool breaksOwn) { return forced || (heldByTeam && !breaksOwn); }
+
+class SpellInfo;
+class Unit;
+
+// G4c-d review: whether the target is immune to the spell by anything besides its cyclone's immunities (a spell id,
+// dispel type, mechanic or aura state immunity: Berserker Rage, Lichborne, Icebound Fortitude); the chain through
+// the team's cyclone (PlayerbotAI::CanCastSpell) still refuses then. CcTacticStrategy.cpp
+bool CcImmuneBesidesCyclone(Unit const* target, SpellInfo const* spellInfo);
 
 #endif

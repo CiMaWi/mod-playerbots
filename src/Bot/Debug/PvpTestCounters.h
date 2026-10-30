@@ -54,21 +54,28 @@ enum class TacticCounter : uint8
     ImmuneSwapMs,  // G1b: ms from the skull seen immune to the new skull (summed)
     HoldSwitch,    // G1b: switches the hold allowed (any verdict, G1b-c) and the bot took
     CcOnTarget,    // G4b: CC casts (a CC DR group) that went on the planned CC target (arena: moon; else the kept one)
-    ChainGapMs,    // G4c: |landing - end of the team's previous loss-of-control CC| of the bot's chained CC (summed)
-    Chains,        // G4c: those landings (the mean gap is chainGapMs / chains)
+    ChainGapMs,    // G4c: |landing - end of the team's previous loss-of-control CC| of a CC the bot picked as a chain
+    Chains,        // G4c: those landings (the mean gap is chainGapMs / chains; G4c-d: picked chains only)
     CcHeldMs,      // G4c: ms the bot's loss-of-control CC stayed on enemy players (the CC uptime)
     OwnBreakAoe,   // G4c-b: own breaks by an area, cone or chain spell
     OwnBreakDot,   // G4c-b: own breaks by a periodic damage tick
     OwnBreakPet,   // G4c-b: own breaks by the bot's pet
     OppTrinkets,   // G4c-b: enemy trinkets (early CC ends) the bot's opponent memory learned
     OppDispels,    // G4c-b: enemy dispels of the team's CC the bot's opponent memory learned
+    ChainEarlyMs,  // G4c-d: the overlap of those chains (landing before the end), summed: the signed gap sum is
+                   // chainGapMs - 2 * chainEarlyMs
+    ChainBusy,     // G4c-d: chains whose bot was still casting at the chain's moment
+    ReCcs,         // G4c-d: the bot's other loss-of-control landings that follow the team's CC (a re-CC of a freed
+                   // target, a rotation, racial or pet stun)
+    ReCcGapMs,     // G4c-d: their |gap|, summed
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
 constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
-    "focusSame", "focusDiff", "planSwitch",  "immuneSwapMs", "holdSwitch",  "ccOnTarget",  "chainGapMs",
-    "chains",    "ccHeldMs",  "ownBreakAoe", "ownBreakDot",  "ownBreakPet", "oppTrinkets", "oppDispels"};
+    "focusSame",   "focusDiff",  "planSwitch",   "immuneSwapMs", "holdSwitch",  "ccOnTarget",
+    "chainGapMs",  "chains",     "ccHeldMs",     "ownBreakAoe",  "ownBreakDot", "ownBreakPet",
+    "oppTrinkets", "oppDispels", "chainEarlyMs", "chainBusy",    "reCcs",       "reCcGapMs"};
 
 #endif

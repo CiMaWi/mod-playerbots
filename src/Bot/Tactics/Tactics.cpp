@@ -3085,11 +3085,13 @@ void RunCcSelftest(ChatHandler* handler)
     }
 
     // 25b. G4c-c (G4c-b review NOTE 1): a dispel that does not come this time; past the remembered dispel moment the
-    // aura's end counts again, so the chain waits for it (lead before the end) instead of casting at once
+    // aura's end counts again, so the chain waits for it (lead before the end) instead of casting at once. G4c-d: the
+    // moment is the mean plus the margin, so the due window (mean - margin to mean + margin) outlasts a reaction
     {
         CcParams const high = params(80);
         uint32 const atMean = CcChainRemainingMs(6500, 1500, 1500, 300);
-        uint32 const absent = CcChainRemainingMs(6400, 1600, 1500, 300);
+        uint32 const inMargin = CcChainRemainingMs(6400, 1700, 1500, 300);
+        uint32 const absent = CcChainRemainingMs(6400, 1900, 1500, 300);
         CcChainView chainView;
         chainView.AuraOnTarget = true;
         chainView.RemainingMs = absent;
@@ -3097,10 +3099,46 @@ void RunCcSelftest(ChatHandler* handler)
                                CcChainWaitMs(chainView, 1500, high.ChainLeadMs) == absent - 1500 - high.ChainLeadMs;
         chainView.RemainingMs = 1500 + high.ChainLeadMs;
         bool const dueAtEnd = ChainDue(chainView, 1500, high.ChainLeadMs, true);
-        check(atMean == 0 && absent == 6400 && castWaits && dueAtEnd,
-              Acore::StringFormat("chain by memory, dispel absent: at the mean {}, past it {}; a 1.5 s cast waits {}, "
-                                  "due lead before the end {}",
-                                  atMean, absent, castWaits, dueAtEnd));
+        check(atMean == 0 && inMargin == 0 && absent == 6400 && castWaits && dueAtEnd,
+              Acore::StringFormat("chain by memory, dispel absent: at the mean {}, within the margin after it {}, "
+                                  "past it {}; a 1.5 s cast waits {}, due lead before the end {}",
+                                  atMean, inMargin, absent, castWaits, dueAtEnd));
+    }
+
+    // 25c. G4c-d: a chain onto the team's cyclone lands AfterMs after its end (a 1.5 s cast starts castMs - AfterMs
+    // before it, an instant only once it is over; CcLandsInImmunity holds a cast that would land inside it); the
+    // bot's learned delay (ReactMs) moves the moment sooner; the busy guard holds a cast or global cooldown that ends
+    // after the moment; the delay is learned wholly from the first chain, then by a quarter
+    {
+        CcChainView view;
+        view.AuraOnTarget = true;
+        view.ImmuneUntilEnd = true;
+        view.AfterMs = 100;
+        view.RemainingMs = 2000;
+        bool const cycloneWaits = !ChainDue(view, 1500, 242, true) && CcChainWaitMs(view, 1500, 242) == 600;
+        view.RemainingMs = 1400;
+        bool const cycloneDue = ChainDue(view, 1500, 242, true);
+        view.RemainingMs = 1;
+        bool const instantWaits = !ChainDue(view, 0, 242, true) && CcChainWaitMs(view, 0, 242) == 1;
+        bool const held =
+            CcLandsInImmunity(1000, 0, 1100) && !CcLandsInImmunity(1000, 1500, 2400) && !CcLandsInImmunity(1000, 0, 0);
+        view.ImmuneUntilEnd = false;
+        view.ReactMs = 700;
+        view.RemainingMs = 1500 + 700 + 242;
+        bool const reactDue = ChainDue(view, 1500, 242, true);
+        view.RemainingMs += 1;
+        bool const reactWaits = !ChainDue(view, 1500, 242, true) && CcChainWaitMs(view, 1500, 242) == 1;
+        bool const guard = CcChainBlocksCast(1000, 1000, 1500) && CcChainBlocksCast(2000, 1000, 1) &&
+                           !CcChainBlocksCast(1000, 2600, 1500) && CcChainBlocksCast(1000, 2499, 1500) &&
+                           !CcChainBlocksCast(1000, 1000, 0);
+        uint32 const first = CcLearnChainReactMs(300, 800, false);
+        uint32 const next = CcLearnChainReactMs(800, 400, true);
+        check(cycloneWaits && cycloneDue && instantWaits && held && reactDue && reactWaits && guard && first == 800 &&
+                  next == 700,
+              Acore::StringFormat("chain timing: cyclone waits {}, due {}, instant waits {}, held in immunity {}; "
+                                  "reaction allowance due {}, waits {}; busy guard {}; learned delay {} then {}",
+                                  cycloneWaits, cycloneDue, instantWaits, held, reactDue, reactWaits, guard, first,
+                                  next));
     }
 
     // 26. G4c-b AoE guard: the areas read from the spell store (around the caster, at the target, a cone, a chain;
@@ -3467,11 +3505,25 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         cc.Params.DrAware ? "yes" : "no", cc.Params.Chains ? "yes" : "no", cc.Params.WrongTargetPct,
         cc.Params.OwnBreakPct, cc.Params.HoldMs, ccRows, iconName(cc.CcTarget),
         cc.PickRow != CC_NO_ROW ? CC_OPTIONS[cc.PickRow].Action : "none", iconName(cc.PickTarget), cc.Casts);
-    handler->PSendSysMessage("  cc chain: {}, lead {} ms, waits {}, chained {}, last gap {} ms",
-                             !cc.Params.Chains                           ? "no (skill)"
-                             : sPlayerbotAIConfig.TacticCc.CcChainEnable ? "on"
-                                                                         : "off (Cc.ChainEnable 0)",
-                             cc.Params.ChainLeadMs, cc.ChainWaits, cc.ChainsLanded, cc.LastChainGapMs);
+    handler->PSendSysMessage(
+        "  cc chain: {}, lead {} ms, waits {}, chained {}, last gap {} ms, re-cc {}, react {} ms ({}), guard mutes {}",
+        !cc.Params.Chains                           ? "no (skill)"
+        : sPlayerbotAIConfig.TacticCc.CcChainEnable ? "on"
+                                                    : "off (Cc.ChainEnable 0)",
+        cc.Params.ChainLeadMs, cc.ChainWaits, cc.ChainsLanded, cc.LastChainGapMs, cc.ReCcsLanded, cc.ChainReactMs,
+        cc.ChainReactLearned ? "learned" : "not yet", cc.ChainGuardMutes);
+    // G4c-d (G4c-c review 4b): the pick's group on its target as the bot's memory and the core count it
+    Unit* const pickUnit =
+        cc.PickRow != CC_NO_ROW && !cc.PickTarget.IsEmpty() ? botAI->GetUnit(cc.PickTarget) : nullptr;
+    if (pickUnit)
+    {
+        uint8 const pickGroup = cc.Spells[cc.PickRow].Group;
+        handler->PSendSysMessage(
+            "  cc pick levels: {} ({}) on {}: memory {}, core {}", CC_OPTIONS[cc.PickRow].Action,
+            PVPTEST_DR_GROUP_NAMES[pickGroup % PVPTEST_DR_GROUP_COUNT], iconName(cc.PickTarget),
+            static_cast<uint32>(cc.Memory.Level(cc.PickTarget.GetRawValue(), pickGroup, nowMs)),
+            static_cast<uint32>(pickUnit->GetDiminishing(static_cast<DiminishingGroup>(pickGroup))));
+    }
     // G4c-b: the own-break guards and the opponent memory of the CC target (this match)
     CcConfig const& ccConfig = sPlayerbotAIConfig.TacticCc;
     CcOpponentMemory::Slot const* const seen =

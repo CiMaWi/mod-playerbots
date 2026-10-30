@@ -3840,9 +3840,15 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
     if (!itemTarget)
     {
         // Exception for Deep Freeze (44572) - allow cast for damage on immune targets (e.g., bosses)
+        // G4c-d: and the team cc chain onto the team's own cyclone, timed to land after its end (CcLandsInImmunity),
+        // unless an immunity besides the cyclone's blocks it (the state is read only here, never made)
         if (target->IsImmunedToSpell(spellInfo))
         {
-            if (spellid != 44572)  // Deep Freeze
+            bool const chainThroughCyclone = ccState && ccState->ChainImmuneEndMs && ccState->PickRow != CC_NO_ROW &&
+                                             ccState->PickTarget == target->GetGUID() &&
+                                             ccState->KnownSpell[ccState->PickRow] == spellid &&
+                                             !CcImmuneBesidesCyclone(target, spellInfo);
+            if (spellid != 44572 && !chainThroughCyclone)  // Deep Freeze
             {
                 if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
                     LOG_DEBUG("playerbots", "target is immuned to spell - target name: {}, spellid: {}, bot name: {}",
