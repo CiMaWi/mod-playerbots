@@ -28,6 +28,7 @@
 #include "DropQuestAction.h"
 #include "EmoteAction.h"
 #include "FishingAction.h"
+#include "FocusStrategy.h"
 #include "FollowActions.h"
 #include "GenericSpellActions.h"
 #include "GiveItemAction.h"
@@ -122,6 +123,7 @@ public:
         creators["drink"] = &ActionContext::drink;
         creators["tank assist"] = &ActionContext::tank_assist;
         creators["dps assist"] = &ActionContext::dps_assist;
+        creators["arena plan"] = &ActionContext::arena_plan;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
@@ -353,6 +355,7 @@ private:
     static Action* loot(PlayerbotAI* botAI) { return new LootAction(botAI); }
     static Action* release_loot(PlayerbotAI* botAI) { return new ReleaseLootAction(botAI); }
     static Action* dps_assist(PlayerbotAI* botAI) { return new DpsAssistAction(botAI); }
+    static Action* arena_plan(PlayerbotAI* botAI) { return new ArenaPlanAction(botAI); }
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }

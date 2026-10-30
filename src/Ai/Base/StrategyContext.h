@@ -20,6 +20,7 @@
 #include "DpsAssistStrategy.h"
 #include "DuelStrategy.h"
 #include "EmoteStrategy.h"
+#include "FocusStrategy.h"
 #include "FocusTargetStrategy.h"
 #include "FollowMasterStrategy.h"
 #include "ForceRebuff.h"
@@ -83,6 +84,8 @@ public:
         creators["react"] = &StrategyContext::react;
         creators["cast time"] = &StrategyContext::cast_time;
         creators["skill"] = &StrategyContext::skill;
+        creators["pvp hold"] = &StrategyContext::pvp_hold;
+        creators["arena focus"] = &StrategyContext::arena_focus;
         creators["threat"] = &StrategyContext::threat;
         creators["focus"] = &StrategyContext::focus;
         creators["tell target"] = &StrategyContext::tell_target;
@@ -147,6 +150,8 @@ private:
     static Strategy* focus(PlayerbotAI* botAI) { return new FocusStrategy(botAI); }
     static Strategy* cast_time(PlayerbotAI* botAI) { return new CastTimeStrategy(botAI); }
     static Strategy* skill(PlayerbotAI* botAI) { return new SkillStrategy(botAI); }
+    static Strategy* pvp_hold(PlayerbotAI* botAI) { return new PvpHoldStrategy(botAI); }
+    static Strategy* arena_focus(PlayerbotAI* botAI) { return new ArenaFocusStrategy(botAI); }
     static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }
     static Strategy* react(PlayerbotAI* botAI) { return new ReactionStrategy(botAI); }
     static Strategy* kite(PlayerbotAI* botAI) { return new KiteStrategy(botAI); }

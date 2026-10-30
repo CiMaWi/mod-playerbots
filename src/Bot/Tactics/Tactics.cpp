@@ -18,6 +18,8 @@
 #include "BotProfileMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
+#include "FocusState.h"
+#include "Group.h"
 #include "NaturalReaction.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -27,6 +29,7 @@
 #include "Playerbots.h"
 #include "StringConvert.h"
 #include "TacticGate.h"
+#include "ThreadCheck.h"
 #include "Timer.h"
 
 namespace
@@ -1824,7 +1827,7 @@ void RunFocusSelftest(ChatHandler* handler)
     check(HoldDecision(dead, 1000, low1, Seed).Reason == HoldReason::Dead &&
               HoldDecision(away, 1000, low1, Seed).Reason == HoldReason::OutOfRange &&
               HoldDecision(immune, 1000, low1, Seed).Reason == HoldReason::Immune &&
-              HoldDecision(hidden, 1000, low1, Seed).Reason == HoldReason::OutOfRange &&
+              HoldDecision(hidden, 1000, low1, Seed).Reason == HoldReason::LosLost &&
               !HoldDecision(glance, 1000, low1, Seed).Allow,
           "a skill-1 hold does not leave a dead, far, immune or lost (2.0 s; not 1.0 s) target");
     HoldParams const high = top.Hold;
@@ -1909,6 +1912,28 @@ void RunFocusSelftest(ChatHandler* handler)
     check(ElectPlanner(bots.data(), 2, 40) == 1, "skill 0 (full ability) does not plan");
     bots[0].RealPlayer = true;
     check(ElectPlanner(bots.data(), 2, 0) == FOCUS_NONE, "a bot plans in a real player's team");
+
+    // G1a review NOTE 1: the score rule never takes an enemy no own bot has seen for longer than LosLostMs
+    std::array<EnemyInfo, 2> unseen{enemy(60, false), enemy(20, false)};
+    unseen[1].LosCount = 0;
+    unseen[1].LosLostMs = team.LosLostMs + 500;
+    check(Decide(unseen.data(), 2, start, 1000 + hold, team, Seed).Kill == 0,
+          "the score rule takes an enemy out of every own bot's sight");
+
+    // NOTE 3: the plan's reasons as remark events; a switch by score alone never marks
+    std::array<RemarkEvent, static_cast<size_t>(PlanReason::Count)> const events = {
+        RemarkEvent::None,       RemarkEvent::None,    RemarkEvent::Start,   RemarkEvent::KillDead,
+        RemarkEvent::KillImmune, RemarkEvent::Opening, RemarkEvent::Opening, RemarkEvent::Opening,
+        RemarkEvent::Opening,    RemarkEvent::None,    RemarkEvent::None,    RemarkEvent::None};
+    bool mapped = true;
+    for (size_t index = 0; index < events.size(); ++index)
+        mapped = mapped && EventOfPlanReason(static_cast<PlanReason>(index)) == events[index];
+
+    check(mapped, "a plan reason maps to the wrong remark event (score must map to none)");
+
+    // NOTE 2: addon-level knowledge from AddonKnowledgeFromSkill (Knowledge), always at skill 0
+    check(FocusAddonKnowledge(0, 0, 40) && FocusAddonKnowledge(50, 40, 40) && !FocusAddonKnowledge(50, 39, 40),
+          "addon-level knowledge does not start at the threshold, or skill 0 lacks it");
 
     handler->PSendSysMessage("TACTICS selftest focus: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
@@ -2146,6 +2171,67 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         attributeTemplate ? Acore::StringFormat(", from template guid {}", attributeTemplate) : std::string(),
         FormatBotAttributes(botAI->GetAttributes()));
 
+    // The target hold and the team plan (G1b, FocusState.h)
+    FocusBotState& focus = botAI->GetFocusState();
+    HoldParams const& holdParams = focus.Params.Hold;
+    TeamParams const& teamParams = focus.Params.Team;
+    handler->PSendSysMessage(
+        "  focus hold: {} ms, hysteresis {}, execute {} % at {} %, follow {} % after {} ms, sight {} ms",
+        holdParams.HoldMs, holdParams.HysteresisPct, holdParams.ExecChance, holdParams.ExecPct, holdParams.FollowChance,
+        holdParams.FollowDelayMs, holdParams.LosLostMs);
+    handler->PSendSysMessage(
+        "  focus plan: every {} ms, hold {} ms, hysteresis {}, execute {} % at {} %, defensive swap {}, margin {}, "
+        "remark delay {} ms, min {} ms, human mark respect {} ms, sight {} ms; addon knowledge {}",
+        teamParams.PlanIntervalMs, teamParams.HoldMs, teamParams.HysteresisPct, teamParams.ExecChance,
+        teamParams.ExecPct, teamParams.DefensiveSwapPct, teamParams.StrongMargin, teamParams.RemarkDelayMs,
+        teamParams.MinRemarkMs, teamParams.HumanMarkRespectMs, teamParams.LosLostMs,
+        focus.AddonKnowledge ? "yes" : "no");
+    uint32 const nowMs = getMSTime();
+    FocusHoldState const& holdState = focus.Hold;
+    std::string verdicts;
+    for (uint8 index = 0; index < FOCUS_HOLD_VERDICTS; ++index)
+    {
+        if (holdState.Verdicts[index])
+            verdicts += Acore::StringFormat("{}{} {}", verdicts.empty() ? "" : ", ", FocusVerdictName(index),
+                                            holdState.Verdicts[index]);
+    }
+
+    handler->PSendSysMessage(
+        "  hold: target {} for {} ms, last answer {}; answers [{}]; switches {}",
+        holdState.HeldGuid.IsEmpty() ? std::string("none") : GuidName(holdState.HeldGuid),
+        holdState.HeldGuid.IsEmpty() ? 0u : getMSTimeDiff(holdState.HeldSinceMs, nowMs),
+        holdState.LastVerdict < FOCUS_HOLD_VERDICTS ? FocusVerdictName(holdState.LastVerdict) : "none", verdicts,
+        holdState.Switches);
+    FocusMatchState const& match = focus.Match;
+    auto const enemyName = [&match](int8 index)
+    {
+        return index >= 0 && index < static_cast<int8>(match.EnemyCount) ? GuidName(match.Enemies[index].Guid)
+                                                                         : std::string("none");
+    };
+    auto const iconName = [](ObjectGuid guid) { return guid.IsEmpty() ? std::string("none") : GuidName(guid); };
+    std::string remarks;
+    for (uint8 index = 0; index < FOCUS_REMARK_REASONS; ++index)
+    {
+        if (match.Remarks[index])
+            remarks += Acore::StringFormat("{}{} {}", remarks.empty() ? "" : ", ",
+                                           RemarkReasonName(static_cast<RemarkReason>(index)), match.Remarks[index]);
+    }
+
+    handler->PSendSysMessage(
+        "  plan: match {} ({}), team cc {} physical {}; kill {} cc {} ({}, held {} ms more); skull {} moon {}; "
+        "pending {} ({} ms ago); remarks [{}]; switches {}, marks {}, margin re-marks {}, marks counted as a real "
+        "player's {}",
+        match.MatchId, match.Planner ? "planner" : "not the planner", match.Team.CcCapable ? "yes" : "no",
+        match.Team.PhysicalTeam ? "yes" : "no", enemyName(match.Plan.Kill), enemyName(match.Plan.Cc),
+        PlanReasonName(match.Plan.Reason),
+        FocusBefore(nowMs, match.Plan.HeldUntilMs) ? match.Plan.HeldUntilMs - nowMs : 0, iconName(match.SeenSkull),
+        iconName(match.SeenMoon), RemarkEventName(match.PendingEvent),
+        match.PendingEvent == RemarkEvent::None ? 0u : getMSTimeDiff(match.EventAtMs, nowMs), remarks,
+        match.PlanSwitches, match.MarkWrites, match.MarginRemarks, match.HumanMarksSeen);
+    if (FocusForcedImmune(focus, focus.ForcedImmuneGuid, nowMs))
+        handler->PSendSysMessage("  forced immune: {} for {} ms more", GuidName(focus.ForcedImmuneGuid),
+                                 focus.ForcedImmuneUntilMs - nowMs);
+
     std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX> enemies;
     uint32 const enemyCount = botAI->GetFightEnemiesSnapshot(enemies);
     std::string enemyNames;
@@ -2236,5 +2322,69 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "focus")
         RunFocusSelftest(handler);
 
+    return true;
+}
+
+// World thread while the map threads wait (as SetPvpSkill): the team's bots get the forced immunity at once, as they
+// would all see an immunity aura on the enemy; nothing else changes
+bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleForceCommand");
+    std::istringstream in(args ? args : "");
+    std::string verb;
+    std::string target;
+    in >> verb >> target;
+    if (Lower(verb) != "immune" || target.empty())
+    {
+        handler->PSendSysMessage("Usage: .playerbots tactics force immune <bot name or guid>");
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::string name;
+    PlayerbotAI* botAI = FindBot(handler, target, name);
+    if (!botAI)
+        return false;
+
+    Player* const bot = botAI->GetBot();
+    Group* const group = bot->GetGroup();
+    ObjectGuid const skull = group ? group->GetTargetIcon(FOCUS_ICON_SKULL) : ObjectGuid::Empty;
+    ObjectGuid const enemy = skull.IsEmpty() ? bot->GetTarget() : skull;
+    if (enemy.IsEmpty())
+    {
+        handler->PSendSysMessage("TACTICS force immune: {} has no skull and no target.", name);
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 const nowMs = getMSTime();
+    uint32 forced = 0;
+    auto const force = [&](PlayerbotAI* ai)
+    {
+        FocusBotState& state = ai->GetFocusState();
+        state.ForcedImmuneGuid = enemy;
+        state.ForcedImmuneAtMs = nowMs;
+        state.ForcedImmuneUntilMs = nowMs + FOCUS_FORCE_IMMUNE_MS;
+        ++forced;
+    };
+
+    if (!group)
+        force(botAI);
+    else
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* const member = ref->GetSource();
+            PlayerbotAI* const memberAI = member && member->IsInMap(bot) ? GET_PLAYERBOT_AI(member) : nullptr;
+            if (memberAI)
+                force(memberAI);
+        }
+    }
+
+    handler->PSendSysMessage(
+        "TACTICS force immune: {} ({}) counts as immune to everything for {} ms for {} bots of "
+        "{}'s team; at {} ms",
+        GuidName(enemy), skull.IsEmpty() ? "the bot's target" : "the skull", FOCUS_FORCE_IMMUNE_MS, forced, name,
+        nowMs);
     return true;
 }

@@ -28,8 +28,8 @@ constexpr uint8 FOCUS_MAX_TEAM = 5;
 constexpr int8 FOCUS_NONE = -1;
 constexpr int32 FOCUS_FULL_HEALTH = 100;
 constexpr uint8 FOCUS_FULL_ABILITY_SKILL = 100;  // skill 0 (system off) ranks above every rolled skill
-constexpr uint32 FOCUS_SWITCH_COST_MS_PER_POINT =
-    100;                                          // a switch's reaction cost raises the hysteresis by 1 per 100 ms
+// A switch's reaction cost raises the hysteresis by 1 per 100 ms
+constexpr uint32 FOCUS_SWITCH_COST_MS_PER_POINT = 100;
 constexpr uint32 FOCUS_EXECUTE_WINDOW_MS = 3000;  // one execute answer per bot and window
 constexpr uint32 FOCUS_FOLLOW_WINDOW_MS = 10000;  // one follow answer per bot and window
 
@@ -183,7 +183,8 @@ enum class HoldReason : uint8
 {
     NoTarget,    // allow: nothing held
     Dead,        // allow
-    OutOfRange,  // allow: out of range, or out of sight for longer than LosLostMs
+    OutOfRange,  // allow: out of range
+    LosLost,     // allow: out of sight for longer than LosLostMs
     Immune,      // allow
     Execute,     // allow: the candidate is in execute range, the hold overridden
     Free,        // allow: the hold is over and the candidate is better by the hysteresis and the switch cost
@@ -224,8 +225,11 @@ inline HoldResult HoldDecision(HoldInput const& input, uint32 nowMs, HoldParams 
     if (!input.TargetAlive || input.TargetHpPct == 0)
         return {true, HoldReason::Dead};
 
-    if (!input.TargetInRange || input.TargetLosLostMs > params.LosLostMs)
+    if (!input.TargetInRange)
         return {true, HoldReason::OutOfRange};
+
+    if (input.TargetLosLostMs > params.LosLostMs)
+        return {true, HoldReason::LosLost};
 
     if (input.TargetImmune)
         return {true, HoldReason::Immune};
@@ -267,13 +271,15 @@ struct EnemyInfo
     bool ImmunePhys = false;
     bool CcBreakable = false;  // held in the team's breakable crowd control
     bool StunnedOrFeared = false;
-    bool DefensiveUp = false;
-    bool DefensiveUsed = false;  // spent, on cooldown
-    bool TrinketUsed = false;
-    uint8 LosCount = 0;      // own bots with line of sight
-    uint8 InRangeCount = 0;  // own bots in range
-    uint8 DrLevel = 0;       // diminishing returns of the team's crowd control on it (0 until the CC step feeds it)
-    uint32 LosLostMs = 0;    // how long no own bot has seen it (0 = in sight)
+    bool DefensiveUp = false;  // a defensive aura on it now: plain sight, always fed
+    // Addon-level knowledge (DT.12): fed only by a planner at or above Playerbots.Tactics.Focus.AddonKnowledgeFromSkill
+    // (FocusAddonKnowledge), from what the team saw in this match; false / 0 below it
+    bool DefensiveUsed = false;  // seen up this match and gone now: spent, on cooldown
+    bool TrinketUsed = false;    // seen used this match (no visible source yet: stays false until the CC step)
+    uint8 LosCount = 0;          // own bots with line of sight
+    uint8 InRangeCount = 0;      // own bots in range
+    uint8 DrLevel = 0;     // diminishing returns of the team's crowd control on it (addon-level; 0 until the CC step)
+    uint32 LosLostMs = 0;  // how long no own bot has seen it (0 = in sight)
 };
 
 enum class PlanReason : uint8
@@ -436,8 +442,8 @@ inline PlanState Decide(EnemyInfo const* enemies, uint8 count, PlanState const& 
             switchTo(defensive, PlanReason::Defensive);
         else if (FocusBefore(nowMs, prev.HeldUntilMs))
             next.Reason = PlanReason::Held;
-        else if (other != FOCUS_NONE && scores[other] >= scores[kill] + params.HysteresisPct +
-                                                             static_cast<int32>(FocusSwitchCostPoints(switchCostMs)))
+        else if (otherSeen && scores[other] >= scores[kill] + params.HysteresisPct +
+                                                   static_cast<int32>(FocusSwitchCostPoints(switchCostMs)))
             switchTo(other, PlanReason::Score);
         else
             next.Reason = PlanReason::Hysteresis;
@@ -445,6 +451,13 @@ inline PlanState Decide(EnemyInfo const* enemies, uint8 count, PlanState const& 
 
     next.Cc = FocusChooseCc(enemies, size, next.Kill, params);
     return next;
+}
+
+// Whether a planner feeds the addon-level fields of EnemyInfo (DT.12): skill 0 (full ability) or its Knowledge at or
+// above fromSkill (Playerbots.Tactics.Focus.AddonKnowledgeFromSkill)
+inline bool FocusAddonKnowledge(uint8 skill, uint8 knowledge, uint32 fromSkill)
+{
+    return skill == 0 || knowledge >= fromSkill;
 }
 
 // Who sets the marks
@@ -545,6 +558,64 @@ inline RemarkResult RemarkDecision(RemarkInput const& input, uint32 nowMs, TeamP
         return {false, RemarkReason::Delay};
 
     return {true, RemarkReason::Allow};
+}
+
+// The event a plan's reason is for RemarkDecision (G1a review NOTE 3). Start is the first marks; a dead or immune kill
+// target is its own event; a switch for a control, a lost target, an execute or a defensive is an opening. A switch
+// by score alone is no event: it changes the planner's choice, never the marks (marks change only on clear events,
+// DT.1), as do the kept reasons. The caller treats a Start after the match's first marks as a re-pick (KillDead).
+inline RemarkEvent EventOfPlanReason(PlanReason reason)
+{
+    switch (reason)
+    {
+        case PlanReason::Start:
+            return RemarkEvent::Start;
+        case PlanReason::Dead:
+            return RemarkEvent::KillDead;
+        case PlanReason::Immune:
+            return RemarkEvent::KillImmune;
+        case PlanReason::Controlled:
+        case PlanReason::Lost:
+        case PlanReason::Execute:
+        case PlanReason::Defensive:
+            return RemarkEvent::Opening;
+        default:
+            return RemarkEvent::None;
+    }
+}
+
+// Names for .playerbots tactics show
+inline char const* HoldReasonName(HoldReason reason)
+{
+    static constexpr std::array<char const*, static_cast<size_t>(HoldReason::Count)> names = {
+        "no target", "dead", "out of range", "los lost", "immune", "execute", "free", "hold active", "hysteresis"};
+    size_t const index = static_cast<size_t>(reason);
+    return index < names.size() ? names[index] : "none";
+}
+
+inline char const* PlanReasonName(PlanReason reason)
+{
+    static constexpr std::array<char const*, static_cast<size_t>(PlanReason::Count)> names = {
+        "none", "no target", "start",     "dead",  "immune", "controlled",
+        "lost", "execute",   "defensive", "score", "held",   "hysteresis"};
+    size_t const index = static_cast<size_t>(reason);
+    return index < names.size() ? names[index] : "none";
+}
+
+inline char const* RemarkEventName(RemarkEvent event)
+{
+    static constexpr std::array<char const*, static_cast<size_t>(RemarkEvent::Count)> names = {
+        "none", "start", "kill dead", "kill immune", "opening"};
+    size_t const index = static_cast<size_t>(event);
+    return index < names.size() ? names[index] : "none";
+}
+
+inline char const* RemarkReasonName(RemarkReason reason)
+{
+    static constexpr std::array<char const*, static_cast<size_t>(RemarkReason::Count)> names = {
+        "allow", "no event", "human mark", "too soon", "margin", "delay"};
+    size_t const index = static_cast<size_t>(reason);
+    return index < names.size() ? names[index] : "none";
 }
 
 #endif

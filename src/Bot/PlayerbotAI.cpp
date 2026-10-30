@@ -20,6 +20,7 @@
 #include "Engine.h"
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
+#include "FocusState.h"
 #include "GameObjectData.h"
 #include "GameTime.h"
 #include "GuildMgr.h"
@@ -7174,6 +7175,12 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     // Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots.
     uint8 const speed = attributes.Get(BotAttribute::Speed);
     reactionState = ComputeReactionState(config.NaturalReaction, speed, config.SkillGate.CurveExponent);
+    // The hold's and the team plan's numbers (G1b), cached whatever Playerbots.Tactics.Hold/Plan.Enable say; skill 0
+    // gives the skill-99 values
+    FocusBotState& focus = GetFocusState();
+    focus.Params = ComputeFocusParams(skill, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
+    focus.AddonKnowledge = FocusAddonKnowledge(skill, attributes.Get(BotAttribute::Knowledge),
+                                               config.TacticFocus.FocusAddonKnowledgeFromSkill);
     if (skill == 0)
         return;
 
@@ -7200,6 +7207,14 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
         skillNoticeDelayMs =
             SkillLerpRounded(config.SkillNoticeDelayMsLow, config.SkillNoticeDelayMsHigh, speedPosition, exponent);
     }
+}
+
+FocusBotState& PlayerbotAI::GetFocusState()
+{
+    if (!focusState)
+        focusState = std::make_unique<FocusBotState>();
+
+    return *focusState;
 }
 
 bool PlayerbotAI::HasFullSkillAbility()

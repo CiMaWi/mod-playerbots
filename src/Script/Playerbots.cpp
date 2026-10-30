@@ -17,6 +17,7 @@
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
+#include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
 #include <mysqld_error.h>
 #include "AllMapScript.h"
@@ -706,6 +707,7 @@ public:
     void OnBattlegroundEnd(Battleground* bg, TeamId winnerTeam) override
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
+        FocusClearArenaMarks(bg);         // Map thread: the team plan's skull and moon go (Playerbots.Tactics.Enable)
         MatchLog::OnEnd(bg, winnerTeam);  // Map thread: an arena's record (Playerbots.MatchLog.Enable)
         PvpGearMgr::QueueMatchEnd(bg);  // Map thread: a rated arena's players get a buy check on the world thread
     }

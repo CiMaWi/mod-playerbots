@@ -47,6 +47,8 @@ struct FocusConfig
     uint32 FocusHumanMarkRespectSeconds = 10;
     uint32 FocusLosLostMs = 1500;
     uint32 FocusDefensiveSwapPct = 25;
+    // The planner's Knowledge from which its snapshot carries addon-level knowledge (DT.12: defensives seen spent)
+    uint32 FocusAddonKnowledgeFromSkill = 40;
 };
 
 #endif

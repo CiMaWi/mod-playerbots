@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <stack>
 
@@ -41,6 +42,7 @@ class Creature;
 class Engine;
 class ExternalEventHelper;
 class Group;
+struct FocusBotState;
 class ReactionEngine;
 class Gameobject;
 class Item;
@@ -695,10 +697,10 @@ public:
     std::array<uint32, PVPTEST_TACTIC_COUNT> const& GetPvpTestTactics() const { return pvpTestTactics; }
     void CountPvpTestReceivedCc(uint32 drGroup);
     void CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune);
-    void CountTactic(TacticCounter counter)
+    void CountTactic(TacticCounter counter, uint32 amount = 1)
     {
         if (pvpTestCounting)
-            ++pvpTestTactics[static_cast<uint32>(counter)];
+            pvpTestTactics[static_cast<uint32>(counter)] += amount;
     }
     // Tactics (Tactics.h): one bit per TacticId. The mask comes from config at login (ResetTacticMask); the PvP
     // harness overrides it per side for a match, and turning counting off gives the config mask back. Written on the
@@ -742,6 +744,9 @@ public:
     void SetAttributeTemplate(uint32 templateGuid) { attributeTemplate = templateGuid; }
     // A tactic fired: counted per tactic and context for .playerbots tactics stats
     void NoteTacticUse(TacticId id) const { NoteTacticActivation(id, GetTacticContext()); }
+    // Target hold and team plan (FocusState.h, G1b): the cached FocusParams and the hold's and the plan's state.
+    // Touched by the bot's own update; the GM commands read and force it on the world thread while the maps wait.
+    FocusBotState& GetFocusState();
     // Debug snapshots for .playerbots tactics show (world thread): the last "fight enemies" result, and the strategy
     // lists, taken at the bot's next update after a request
     void SetFightEnemiesSnapshot(GuidVector const& enemies);
@@ -843,6 +848,7 @@ protected:
     bool stretchOff = false;
     uint32 lastUpdateDiff = 0;
     TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
+    std::unique_ptr<FocusBotState> focusState;  // made at first use (GetFocusState); complete in PlayerbotAI.cpp
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;

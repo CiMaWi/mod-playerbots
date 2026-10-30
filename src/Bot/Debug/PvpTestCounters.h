@@ -47,11 +47,17 @@ struct PvpTestCcCounters
 // in the same place of the name table.
 enum class TacticCounter : uint8
 {
+    FocusSame,     // G1b: per plan-interval sample, the bot's target is the skull (or, without marks, a partner's)
+    FocusDiff,     // G1b: the same sample, another target
+    PlanSwitch,    // G1b: a new skull after the match's first marks
+    ImmuneSwapMs,  // G1b: ms from the skull seen immune to the new skull (summed)
+    HoldSwitch,    // G1b: switches the hold allowed (free or execute) and the bot took
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
-constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {};
+constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {"focusSame", "focusDiff", "planSwitch",
+                                                                                "immuneSwapMs", "holdSwitch"};
 
 #endif

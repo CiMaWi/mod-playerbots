@@ -2158,7 +2158,12 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Focus.HumanMarkRespectSeconds = 10
 # Playerbots.Tactics.Focus.LosLostMs = 1500
 # Playerbots.Tactics.Focus.DefensiveSwapPct = 25
-# (Ranges: ms keys 0-120000, percents 0-100, StrongMargin 0-255, seconds 0-600; larger values are capped.)
+# The planner's snapshot of an enemy is what its team sees (health, auras, cast bars, sight); from
+# AddonKnowledgeFromSkill (the planner's Knowledge, the skill with the attribute defaults; skill 0 always) it also
+# remembers what an addon would: a defensive seen used this match counts as spent.
+# Playerbots.Tactics.Focus.AddonKnowledgeFromSkill = 40
+# (Ranges: ms keys 0-120000, percents 0-100, StrongMargin 0-255, seconds 0-600, AddonKnowledgeFromSkill 0-99; larger
+# values are capped.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

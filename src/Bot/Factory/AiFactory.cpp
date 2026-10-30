@@ -500,6 +500,18 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     if (sPlayerbotAIConfig.SkillNoticeActive || sPlayerbotAIConfig.NaturalReactionActive)
         engine->addStrategy("skill", false);
 
+    // Target hold and team plan (G1b): only with the tactic system on and the Hold or Plan tactic enabled, or the PvP
+    // harness on (it forces tactic masks per side); the multiplier and the triggers test their tactic per match
+    PlayerbotAIConfig const& tactics = sPlayerbotAIConfig;
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Hold)].Enable ||
+         tactics.TacticConfig[static_cast<uint32>(TacticId::Plan)].Enable || tactics.PvpTestEnable))
+    {
+        engine->addStrategy("pvp hold", false);
+        if (player->InArena())
+            engine->addStrategy("arena focus", false);
+    }
+
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
     // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands. "In" = on the
     // battleground's own map: an accepted invite whose port has not happened leaves the bot waiting

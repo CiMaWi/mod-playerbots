@@ -10,6 +10,7 @@
 #include "BotStateTriggers.h"
 #include "CureTriggers.h"
 #include "FishingTriggers.h"
+#include "FocusStrategy.h"
 #include "GenericTriggers.h"
 #include "GuildTriggers.h"
 #include "HealthTriggers.h"
@@ -92,6 +93,8 @@ public:
         creators["no target"] = &TriggerContext::NoTarget;
         creators["target in sight"] = &TriggerContext::TargetInSight;
         creators["not dps target active"] = &TriggerContext::not_dps_target_active;
+        creators["plan due"] = &TriggerContext::plan_due;
+        creators["focus mark"] = &TriggerContext::focus_mark;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
         creators["enemy player near"] = &TriggerContext::enemy_player_near;
 
@@ -341,6 +344,8 @@ private:
     static Trigger* NoTarget(PlayerbotAI* botAI) { return new NoTargetTrigger(botAI); }
     static Trigger* TargetInSight(PlayerbotAI* botAI) { return new TargetInSightTrigger(botAI); }
     static Trigger* not_dps_target_active(PlayerbotAI* botAI) { return new NotDpsTargetActiveTrigger(botAI); }
+    static Trigger* plan_due(PlayerbotAI* botAI) { return new PlanDueTrigger(botAI); }
+    static Trigger* focus_mark(PlayerbotAI* botAI) { return new FocusMarkTrigger(botAI); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }
     static Trigger* enemy_player_near(PlayerbotAI* botAI) { return new EnemyPlayerNear(botAI); }
     static Trigger* Random(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "random", 20); }

@@ -154,6 +154,9 @@ public:
     static bool HandleShowCommand(ChatHandler* handler, char const* args);
     static bool HandleStatsCommand(ChatHandler* handler, char const* args);
     static bool HandleSelftestCommand(ChatHandler* handler, char const* args);
+    // .playerbots tactics force immune <bot>: the skull (else the bot's target) counts as immune to everything for
+    // the bot's team for FOCUS_FORCE_IMMUNE_MS (G1b's forced check)
+    static bool HandleForceCommand(ChatHandler* handler, char const* args);
 };
 
 #endif

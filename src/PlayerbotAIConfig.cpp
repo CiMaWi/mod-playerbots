@@ -1100,12 +1100,13 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     // Playerbots.Tactics.Hold.* and .Focus.* (optional): the target hold's and the team plan's numbers, the defaults in
-    // FocusConfig; nothing reads them before G1b
+    // FocusConfig; read by the pvp hold and arena focus strategies (FocusStrategy.cpp)
     TacticFocus = FocusConfig{};
     constexpr uint32 MaxFocusMs = 120000;
     constexpr uint32 MaxFocusPct = 100;
     constexpr uint32 MaxFocusMargin = 255;
     constexpr uint32 MaxFocusSeconds = 600;
+    constexpr uint32 MaxFocusSkill = 99;
     auto const focusNumber = [](char const* key, uint32& value, uint32 maximum)
     {
         value = std::min<uint32>(sConfigMgr->GetOption<uint32>(std::string("Playerbots.Tactics.") + key, value, false),
@@ -1142,6 +1143,7 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Focus.HumanMarkRespectSeconds", TacticFocus.FocusHumanMarkRespectSeconds, MaxFocusSeconds);
     focusNumber("Focus.LosLostMs", TacticFocus.FocusLosLostMs, MaxFocusMs);
     focusNumber("Focus.DefensiveSwapPct", TacticFocus.FocusDefensiveSwapPct, MaxFocusPct);
+    focusNumber("Focus.AddonKnowledgeFromSkill", TacticFocus.FocusAddonKnowledgeFromSkill, MaxFocusSkill);
 
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
