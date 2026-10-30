@@ -591,10 +591,12 @@ inline uint32 CcChainWaitMs(CcChainView const& view, uint32 castMs, uint32 leadM
 
 // G4c-b: the chain's end as a chaining bot expects it. The aura's remaining time; with the opponent memory sooner when
 // the team's CC on this enemy was seen dispelled dispelMeanMs after landing on average (0 = not known): the next CC
-// then lands marginMs before that moment. elapsedMs = how long the aura is up. 0 = due now.
+// then lands marginMs before that moment. elapsedMs = how long the aura is up. 0 = due now. Once the remembered
+// dispel moment has passed without a dispel (G4c-c, G4c-b review NOTE 1), the aura's end counts again, so an absent
+// dispel does not make the chain land on top of a CC with seconds left.
 inline uint32 CcChainRemainingMs(uint32 remainingMs, uint32 elapsedMs, uint32 dispelMeanMs, uint32 marginMs)
 {
-    if (!dispelMeanMs)
+    if (!dispelMeanMs || elapsedMs > dispelMeanMs)
         return remainingMs;
 
     uint32 const dispelAtMs = dispelMeanMs > marginMs ? dispelMeanMs - marginMs : 0;

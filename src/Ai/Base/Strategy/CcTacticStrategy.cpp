@@ -642,6 +642,8 @@ constexpr float CcGuardConeArc = static_cast<float>(M_PI);
 // at the action's target, a cone or a chain; its radius + Avoid.AoeGuardMarginYards) covers an enemy the bot keeps out
 // (the OwnCc list: the skill model and the own-break window apply). The area is resolved once per action; an action
 // without one ends at that lookup. In "pvp cc", so the engine asks it before "skill" (no reaction for a muted action).
+constexpr uint32 CC_AREA_RETRY_MS = 10000;  // a cast action whose spell the bot does not know: asked again after this
+
 class OwnCcAoeGuardMultiplier : public Multiplier
 {
 public:
@@ -681,12 +683,17 @@ public:
 
 private:
     // The action's spell (a cast action) and its area in the spell store; nullptr while the bot does not know the
-    // spell (asked again: a rank learned later)
+    // spell (asked again CC_AREA_RETRY_MS later, a rank learned later; G4c-b review NOTE 2: no lookup per evaluation)
     CcSpellArea const* AreaOf(Action* action)
     {
         auto const it = areas.find(action);
         if (it != areas.end())
             return &it->second;
+
+        uint32 const nowMs = getMSTime();
+        auto const unknown = unknownSinceMs.find(action);
+        if (unknown != unknownSinceMs.end() && getMSTimeDiff(unknown->second, nowMs) < CC_AREA_RETRY_MS)
+            return nullptr;
 
         CastSpellAction* const cast = dynamic_cast<CastSpellAction*>(action);
         if (!cast)
@@ -694,13 +701,18 @@ private:
 
         uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", cast->getSpell())->Get();
         if (!spellId)
+        {
+            unknownSinceMs[action] = nowMs;
             return nullptr;
+        }
 
+        unknownSinceMs.erase(action);
         return &areas.emplace(action, CcResolveSpellArea(sSpellMgr->GetSpellInfo(spellId))).first->second;
     }
 
     // Per bot: the actions of a bot's context live as long as the bot, so the pointer is a stable key
     std::unordered_map<Action*, CcSpellArea> areas;
+    std::unordered_map<Action*, uint32> unknownSinceMs;  // the lookup that found no spell id
 };
 
 // G4c-b pet call-off (Avoid.PetCallOffEnable): the bot's pets and guardians stop attacking, and stop a cast at, an

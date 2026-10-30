@@ -3064,13 +3064,14 @@ void RunCcSelftest(ChatHandler* handler)
     }
 
     // 25. G4c-b the chain's moment by the memory: the dispel's mean less the margin, counted from the landing; the
-    // aura's end when that comes sooner or nothing is known; due at once when the dispel is overdue
+    // aura's end when that comes sooner or nothing is known; due at once between that moment and the dispel's mean
+    // (the aura's end again once the dispel is overdue: 25b)
     {
         CcParams const high = params(80);
         uint32 const unknown = CcChainRemainingMs(8000, 500, 0, 300);
         uint32 const early = CcChainRemainingMs(8000, 500, 1500, 300);
         uint32 const late = CcChainRemainingMs(600, 500, 9000, 300);
-        uint32 const overdue = CcChainRemainingMs(8000, 2000, 1500, 300);
+        uint32 const overdue = CcChainRemainingMs(8000, 1300, 1500, 300);
         CcChainView chainView;
         chainView.AuraOnTarget = true;
         chainView.RemainingMs = early;
@@ -3081,6 +3082,25 @@ void RunCcSelftest(ChatHandler* handler)
               Acore::StringFormat("chain by memory: unknown {}, early {}, late {}, overdue {}; a 1.5 s cast due {}, an "
                                   "instant waits {}",
                                   unknown, early, late, overdue, castDue, instantWaits));
+    }
+
+    // 25b. G4c-c (G4c-b review NOTE 1): a dispel that does not come this time; past the remembered dispel moment the
+    // aura's end counts again, so the chain waits for it (lead before the end) instead of casting at once
+    {
+        CcParams const high = params(80);
+        uint32 const atMean = CcChainRemainingMs(6500, 1500, 1500, 300);
+        uint32 const absent = CcChainRemainingMs(6400, 1600, 1500, 300);
+        CcChainView chainView;
+        chainView.AuraOnTarget = true;
+        chainView.RemainingMs = absent;
+        bool const castWaits = !ChainDue(chainView, 1500, high.ChainLeadMs, true) &&
+                               CcChainWaitMs(chainView, 1500, high.ChainLeadMs) == absent - 1500 - high.ChainLeadMs;
+        chainView.RemainingMs = 1500 + high.ChainLeadMs;
+        bool const dueAtEnd = ChainDue(chainView, 1500, high.ChainLeadMs, true);
+        check(atMean == 0 && absent == 6400 && castWaits && dueAtEnd,
+              Acore::StringFormat("chain by memory, dispel absent: at the mean {}, past it {}; a 1.5 s cast waits {}, "
+                                  "due lead before the end {}",
+                                  atMean, absent, castWaits, dueAtEnd));
     }
 
     // 26. G4c-b AoE guard: the areas read from the spell store (around the caster, at the target, a cone, a chain;
