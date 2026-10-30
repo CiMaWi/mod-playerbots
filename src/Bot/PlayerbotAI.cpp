@@ -11,6 +11,7 @@
 #include "Battleground.h"
 #include "BudgetValues.h"
 #include "CcState.h"
+#include "CcTacticStrategy.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
@@ -7278,7 +7279,8 @@ void PlayerbotAI::SetPvpTestCounting(bool on)
         return;
     }
 
-    // A tactic mask the harness forced lasts for the match only
+    // A tactic mask the harness forced lasts for the match only, Avoid.EnsureTrinket's trinket too (G5a)
+    CcRestoreTrinket(this);
     ResetTacticMask();
 }
 
@@ -7356,12 +7358,17 @@ void PlayerbotAI::CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune
             ++pvpTestCc.AtImmune;
     }
 
-    // The trinket and the racials have no DR group; no action casts the trinket yet
+    // The trinket and the racials have no DR group; "pvp trinket" (G5a, an item use) counts its use here too
     if (spellId == SPELL_PVP_TRINKET)
         ++pvpTestCc.Trinket;
     else if (spellId == SPELL_EVERY_MAN_FOR_HIMSELF || spellId == SPELL_WILL_OF_THE_FORSAKEN ||
              spellId == SPELL_ESCAPE_ARTIST)
         ++pvpTestCc.RacialBreak;
+    else
+        return;
+
+    // G5a: tactics.breakWasted and breakMs of a break the Trinket tactic answered
+    CcNoteBreakCast(this, spellId);
 }
 
 void PlayerbotAI::CountPvpTestReceivedCc(uint32 drGroup)

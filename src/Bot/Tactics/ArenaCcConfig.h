@@ -38,9 +38,16 @@ struct CcConfig
     uint32 AvoidOwnBreakNeverFromSkill = 65;  // Focus: from it a bot never breaks its team's CC (G4b)
     uint32 AvoidWastedBreakPctAtSkill1 = 70;  // the bot breaks a CC that does not matter (Wisdom)
     uint32 AvoidWastedBreakPctAtSkill99 = 0;
-    uint32 AvoidIgnoreRootsFromSkill = 65;  // Wisdom: from it a bot never breaks a root, snare or silence
-    uint32 AvoidMinLeftMs = 2500;           // a CC matters with this much or more left
-    uint32 AvoidLowHealthPct = 40;          // the bot or its partner at or below it is low
+    uint32 AvoidIgnoreRootsFromSkill = 65;       // Wisdom: from it a bot never breaks a root, snare or silence
+    uint32 AvoidWastedBreakNeverFromSkill = 65;  // G5a, Wisdom: from it a bot breaks only a CC that matters
+    uint32 AvoidMinLeftMs = 2500;                // a CC matters with this much or more left
+    uint32 AvoidLowHealthPct = 40;               // the bot or its partner at or below it is low
+    // G5a: Caution 100 adds this to LowHealthPct for the bot's own breaks, Caution 0 takes it off (cautious bots break
+    // earlier; 0 = every bot at LowHealthPct)
+    uint32 AvoidCautiousLowHealthPct = 0;
+    // G5a, harness matches only: 1 = a bot without a PvP trinket wears one for the match (Human and Undead keep their
+    // racial), 2 = no bot uses its PvP trinket (the fallback cell); 0 = as geared. .playerbots tactics ensuretrinket
+    uint32 AvoidEnsureTrinket = 0;
     // G4c-b own-break guards of OwnCc (1 = on; 0 = G4b-b's behaviour)
     uint32 AvoidAoeGuardEnable = 0;       // no area, cone or chain spell whose reach covers a held enemy
     uint32 AvoidAoeGuardMarginYards = 2;  // added to the spell's radius (the enemy's movement and size)

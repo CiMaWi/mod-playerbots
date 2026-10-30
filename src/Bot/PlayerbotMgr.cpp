@@ -8,6 +8,7 @@
 #include "PlayerbotsDatabase.h"
 #include "BotProfileMgr.h"
 #include "BroadcastHelper.h"
+#include "CcTacticStrategy.h"
 #include "ChannelMgr.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
@@ -419,6 +420,9 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 
         // G0j-b: a lab copy gets its own talents back before the save (O(1), nothing to do without copies)
         LabCopyMgr::Instance().OnLogout(bot);
+        // G5a: Avoid.EnsureTrinket's trinket comes off before this save too, not only before LogoutPlayer's (a dead
+        // bot keeps it until the battleground leave's resurrect, or its next login by the item's mark)
+        CcRestoreTrinket(botAI);
         bot->SaveToDB(false, false);
 
         WorldSession* botWorldSessionPtr = bot->GetSession();
@@ -593,6 +597,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     if (sPlayerbotAIConfig.SkillEnable)
         botAI->SetPvpSkill(BotProfileMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter()));
     botAI->ResetTacticMask();
+    // G5a: Avoid.EnsureTrinket's trinket left by a crash or a save before its restore comes off first (its mark)
+    CcCleanEnsuredTrinket(botAI);
     // PvP gear left on by a stop during a match comes off (also with PvP gear off); a ladder bot without a PvP
     // loadout gets the base tier (memory, async write)
     PvpGearMgr::Instance().OnBotLogin(bot);

@@ -2243,6 +2243,23 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Avoid.MinLeftMs = 2500
 # Playerbots.Tactics.Avoid.LowHealthPct = 40
 #
+# Trinket and Dispel (G5a; Playerbots.Tactics.Trinket.Enable / Dispel.Enable): a bot that knows the Trinket tactic
+# breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use trinket" then never
+# spends it as a boost) or a racial (every man for himself, will of the forsaken, escape artist), the trinket first;
+# below the tactic's known skill it does not tell a CC that matters and breaks any CC with WastedBreakPct. From
+# WastedBreakNeverFromSkill (Wisdom) a bot breaks only a CC that matters. CautiousLowHealthPct moves the low-health
+# line of a bot's own breaks by its Caution (Caution 100: LowHealthPct + CautiousLowHealthPct, Caution 0: minus it;
+# 0 = every bot at LowHealthPct). A cleanser (priest, paladin, shaman) that knows the Dispel tactic frees a party
+# member (itself first) from a loss of control or a root its class removes ("dispel cc on party") before its other
+# cleanses. EnsureTrinket (harness matches only): 1 gives a bot without a PvP trinket one at the fight start (after
+# the PvP gear's wear; not Human or Undead: their racial shares its cooldown) and takes it back at the end, the leave
+# or the logout (a crash: at the next login, by the item's mark), 2 withholds every bot's PvP trinket (the racial and
+# dispel fallbacks), 0 leaves the gear as it is; .playerbots tactics ensuretrinket 0|1|2 switches it on a running
+# server (the next fight start takes it).
+# Playerbots.Tactics.Avoid.WastedBreakNeverFromSkill = 65
+# Playerbots.Tactics.Avoid.CautiousLowHealthPct = 0
+# Playerbots.Tactics.Avoid.EnsureTrinket = 0
+#
 # OwnCc's own-break guards (G4c-b; 1 = on, 0 = G4b's behaviour): AoeGuardEnable mutes an area, cone or chain spell
 # whose reach (its radius + AoeGuardMarginYards) covers an enemy the bot keeps out; DotGuardEnable casts no CC that
 # damage breaks on a target the team's periodic damage hits; PetCallOffEnable calls the bot's pet off a kept-out
@@ -2254,7 +2271,7 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Avoid.PetCallOffEnable = 0
 # Playerbots.Tactics.Avoid.ExcludeFightEnemies = 0
 # (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability), switches 0-1,
-# OpponentMinEvents 0-20, AoeGuardMarginYards 0-20; larger values are capped.)
+# OpponentMinEvents 0-20, AoeGuardMarginYards 0-20, EnsureTrinket 0-2; larger values are capped.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

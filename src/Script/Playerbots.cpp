@@ -11,6 +11,7 @@
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "BotProfileMgr.h"
+#include "CcTacticStrategy.h"
 #include "Channel.h"
 #include "CheckMountStateAction.h"
 #include "Config.h"
@@ -230,6 +231,11 @@ public:
 
         // G0j-b: a lab copy logged out by another path than LogoutPlayerBot, before the logout's save
         LabCopyMgr::Instance().OnLogout(player);
+
+        // G5a: Avoid.EnsureTrinket's trinket comes off before the logout's save (a dead bot: after the battleground
+        // leave's resurrect, or at its next login by the item's mark)
+        if (PlayerbotAI* const ensuredAI = GET_PLAYERBOT_AI(player))
+            CcRestoreTrinket(ensuredAI);
     }
 
     void OnPlayerCreatureKillCredit(Player* player, Creature* killed) override
@@ -719,6 +725,10 @@ public:
     void OnBattlegroundRemovePlayerAtLeave(Battleground* bg, Player* player) override
     {
         MatchLog::OnLeave(bg, player);  // Map thread: an arena bot stops counting and keeps its casts
+        // G5a: Avoid.EnsureTrinket's trinket comes off (the leave has resurrected a dead bot) before PvP gear's unwear
+        if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player))
+            CcRestoreTrinket(botAI);
+
         PvpGearMgr::QueueUnwear(player);
     }
 };

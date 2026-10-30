@@ -17,6 +17,7 @@
 #include "AttackersValue.h"
 #include "AvailableLootValue.h"
 #include "BudgetValues.h"
+#include "CcTacticStrategy.h"
 #include "CcTargetValue.h"
 #include "ChatValue.h"
 #include "CollisionValue.h"
@@ -155,6 +156,7 @@ public:
         creators["rti cc target"] = &ValueContext::rti_cc_target;
         creators["duel target"] = &ValueContext::duel_target;
         creators["party member to dispel"] = &ValueContext::party_member_to_dispel;
+        creators["party member cc to dispel"] = &ValueContext::party_member_cc_to_dispel;
         creators["party member to protect"] = &ValueContext::party_member_to_protect;
         creators["party member snared target"] = &ValueContext::party_member_snared_target;
         creators["health"] = &ValueContext::health;
@@ -458,6 +460,7 @@ private:
     static UntypedValue* healer_low_mana(PlayerbotAI* botAI) { return new HealerLowMana(botAI); }
     static UntypedValue* party_member_to_resurrect(PlayerbotAI* botAI) { return new PartyMemberToResurrect(botAI); }
     static UntypedValue* party_member_to_dispel(PlayerbotAI* botAI) { return new PartyMemberToDispel(botAI); }
+    static UntypedValue* party_member_cc_to_dispel(PlayerbotAI* botAI) { return new PartyMemberCcToDispelValue(botAI); }
     static UntypedValue* party_member_to_protect(PlayerbotAI* botAI) { return new PartyMemberToProtect(botAI); }
     static UntypedValue* party_member_snared_target(PlayerbotAI* botAI) { return new PartyMemberSnaredTargetValue(botAI); }
     static UntypedValue* current_target(PlayerbotAI* botAI) { return new CurrentTargetValue(botAI); }

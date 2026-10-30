@@ -33,6 +33,11 @@ constexpr uint32 CC_CHAIN_REACT_CAP_MS = 2000;  // G4c-d: a chain's delay from i
 constexpr uint32 CC_CHAIN_GUARD_KEEP_MS = 500;  // G4c-d: the busy guard lasts this long after cc ready's last look
 constexpr uint32 CC_CHAIN_AFTER_MIN_MS = 50;    // G4c-d: a chain onto the team's cyclone lands this long after its end
 constexpr uint32 CC_CHAIN_AFTER_SPREAD_MS = 100;  // plus up to this (noise per chain)
+constexpr uint32 CC_BREAK_REFRESH_MS = 250;       // G5a: cc matters' answer lives this long
+constexpr uint32 CC_DISPEL_REFRESH_MS = 250;      // G5a: dispel cc on party's pick lives this long
+constexpr uint32 CC_DISPEL_MIN_LEFT_MS = 700;     // G5a: a CC with less left is not dispelled (DispelAuraDuration)
+constexpr uint32 CC_FORCE_STUN_SPELL = 10308;     // G5a tactics force stun: hammer of justice rank 4 (6 s, magic)
+constexpr uint32 CC_DISPEL_CONFIRM_MS = 1000;     // G5a review: a dispel's CC going this long after the cast counts
 
 struct CcBotState
 {
@@ -103,6 +108,36 @@ struct CcBotState
     // team's bots on the map, Cc.OpponentMemoryEnable); the pets and guardians called off a kept-out enemy
     CcOpponentMemory Opponents;
     uint32 PetCallOffs = 0;
+    // G5a Trinket: cc matters' answer until BreakUntilMs: the breaker (None: no CC on the bot to break now), whether
+    // the CC mattered (CcMatters; else a wasted break), its kind, aura spell, age and time left; the bot's breaks and
+    // wasted ones, the last break's CC age (tactics show)
+    CcBreaker BreakWith = CcBreaker::None;
+    bool BreakMatters = false;
+    CcKind BreakKind = CcKind::Stun;
+    uint32 BreakAuraSpell = 0;
+    uint32 BreakAuraAgeMs = 0;
+    uint32 BreakLeftMs = 0;
+    uint32 BreakUntilMs = 0;
+    uint32 Breaks = 0;
+    uint32 WastedBreaks = 0;
+    uint32 LastBreakAgeMs = 0;
+    // G5a Dispel: dispel cc on party's pick until DispelUntilMs: the party member (self first), the CC aura's spell,
+    // the spell that removes it; the bot's dispels of a partner's CC and the last one's CC age (tactics show)
+    ObjectGuid DispelTarget;
+    uint32 DispelAuraSpell = 0;
+    char const* DispelSpell = nullptr;
+    uint32 DispelUntilMs = 0;
+    uint32 Dispels = 0;
+    uint32 LastDispelAgeMs = 0;
+    // The last cast, until its CC goes by a dispel (CcNoteDispelRemoval counts and logs it there) or a later cast
+    CcPendingDispel PendingDispel;
+    // Avoid.EnsureTrinket (harness matches, the world thread at the fight start): the PvP trinket the bot was given
+    // and the one it replaced in that slot (both back by CcRestoreTrinket: counting stops, the battleground leave, the
+    // logout; a dead bot waits until it is alive); or the PvP trinket withheld for the match (2)
+    ObjectGuid EnsuredTrinket;
+    ObjectGuid EnsuredReplaced;
+    uint8 EnsuredSlot = 0;
+    bool TrinketWithheld = false;
 };
 
 // Whether an enemy stays out of the bot's targets (OwnCc): a forced CC always; a team breakable CC unless the bot's

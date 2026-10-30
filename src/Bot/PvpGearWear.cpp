@@ -17,6 +17,8 @@
 #include <mutex>
 
 #include "Battleground.h"
+#include "CcState.h"
+#include "CcTacticStrategy.h"
 #include "DatabaseEnv.h"
 #include "Item.h"
 #include "ItemTemplate.h"
@@ -29,6 +31,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotOperations.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "PvpGearMgr.h"
 #include "StringFormat.h"
@@ -322,6 +325,15 @@ bool PvpGearMgr::Wear(Player* bot, char const* reason)
     bool const inMatch = bg && bg->GetStatus() != STATUS_WAIT_LEAVE;
     if ((WearsAlways() ? LadderMgr::Instance().IsAway(guid) : !inMatch) || !IsLadderBot(bot))
         return false;
+
+    // G5a: Avoid.EnsureTrinket's given trinket would pass for the PvE item (a mid-match wear: a season reset, a
+    // purchase), so it comes off first; the bot is alive here, so the restore does not defer (G5a review 2)
+    if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot))
+    {
+        CcBotState const& cc = botAI->GetCcState();
+        if (!cc.EnsuredTrinket.IsEmpty() || !cc.EnsuredReplaced.IsEmpty())
+            CcRestoreTrinket(botAI);
+    }
 
     EnsureLoadout(bot);  // a bot that joined its arena team after its login gets the base tier now
     Loadout const* loadout = Find(guid);

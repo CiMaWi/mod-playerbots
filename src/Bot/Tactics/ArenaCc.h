@@ -403,6 +403,15 @@ private:
     std::array<Enemy, CC_MEMORY_ENEMIES> Enemies{};
 };
 
+// "Cautious bots break earlier" (G5a): the low-health line of the bot's own breaks, LowHealthPct moved by
+// Avoid.CautiousLowHealthPct x (Caution - 50) / 50 (Caution 50 or a shift of 0: LowHealthPct)
+inline uint8 CcBreakLowHealthPct(uint8 lowHealthPct, uint8 caution, uint32 cautiousShiftPct)
+{
+    int32 const shift = static_cast<int32>(std::min<uint32>(cautiousShiftPct, 100)) *
+                        (static_cast<int32>(std::min<uint8>(caution, 100)) - 50) / 50;
+    return static_cast<uint8>(std::clamp<int32>(static_cast<int32>(lowHealthPct) + shift, 0, 100));
+}
+
 // One bot's CC numbers, cached once per skill load (G4b). Knowledge gives DR awareness, chains and the memory's misses;
 // Foresight the chain lead; Wisdom the target and break judgement; Focus the own breaks (none from
 // Avoid.OwnBreakNeverFromSkill); Patience the hold; effort
@@ -423,6 +432,7 @@ struct CcParams
     bool IgnoresRoots = false;
     uint32 MinLeftMs = 0;
     uint8 LowHealthPct = 0;
+    uint8 BreakLowHealthPct = 0;  // G5a: LowHealthPct moved by the bot's Caution (CcBreakLowHealthPct)
 
     bool operator==(CcParams const&) const = default;
 };
@@ -458,11 +468,16 @@ inline CcParams ComputeCcParams(uint8 skill, BotAttributeValues const& attribute
         ability(BotAttribute::Focus) >= config.AvoidOwnBreakNeverFromSkill
             ? 0
             : percent(lerp(config.AvoidOwnBreakPctAtSkill1, config.AvoidOwnBreakPctAtSkill99, BotAttribute::Focus));
-    params.WastedBreakPct =
-        percent(lerp(config.AvoidWastedBreakPctAtSkill1, config.AvoidWastedBreakPctAtSkill99, BotAttribute::Wisdom));
+    params.WastedBreakPct = ability(BotAttribute::Wisdom) >= config.AvoidWastedBreakNeverFromSkill
+                                ? 0
+                                : percent(lerp(config.AvoidWastedBreakPctAtSkill1, config.AvoidWastedBreakPctAtSkill99,
+                                               BotAttribute::Wisdom));
     params.IgnoresRoots = ability(BotAttribute::Wisdom) >= config.AvoidIgnoreRootsFromSkill;
     params.MinLeftMs = config.AvoidMinLeftMs;
     params.LowHealthPct = percent(config.AvoidLowHealthPct);
+    params.BreakLowHealthPct =
+        CcBreakLowHealthPct(params.LowHealthPct, full ? SKILL_STYLE_NEUTRAL : attributes.Get(BotAttribute::Caution),
+                            config.AvoidCautiousLowHealthPct);
     return params;
 }
 
@@ -758,6 +773,8 @@ private:
 
 constexpr uint16 CC_OPPONENT_MAX_EVENTS = 1000;  // events counted per enemy and match (the mean's sum stays in range)
 constexpr uint32 CC_OPPONENT_MAX_MS = 60000;     // a dispel delay is counted up to this
+constexpr uint32 CC_OPPONENT_TRINKET_SAME_MS = 1000;  // G5a: a trinket seen by its aura and by the CC it removed is one
+constexpr uint32 CC_OPPONENT_TRINKET_COOLDOWN_MS = 120000;  // G5a: the PvP trinket's (and the racials') cooldown
 
 // G4c-b opponent memory (PLAN 3.15 G0h3's items owned by G4c; DT.12): what one bot saw of each enemy's answers to its
 // team's loss-of-control CC this match, from how the aura left (the aura hooks): dispelled (by its healer; the time
@@ -786,14 +803,26 @@ public:
         slot->DispelSumMs += std::min(afterMs, CC_OPPONENT_MAX_MS);
     }
 
-    void Trinketed(uint32 matchKey, uint64 enemy, uint32 nowMs)
+    // A trinket use seen (G5a: its immunity aura landing, or the team's CC it removed); false when it is one already
+    // known (both seen within CC_OPPONENT_TRINKET_SAME_MS) or the slot is full
+    bool Trinketed(uint32 matchKey, uint64 enemy, uint32 nowMs)
     {
         Slot* const slot = Touch(matchKey, enemy, nowMs);
-        if (!slot || slot->Trinkets >= CC_OPPONENT_MAX_EVENTS)
-            return;
+        if (!slot || slot->Trinkets >= CC_OPPONENT_MAX_EVENTS ||
+            (slot->Trinkets && nowMs - slot->LastTrinketMs < CC_OPPONENT_TRINKET_SAME_MS))
+            return false;
 
         ++slot->Trinkets;
         slot->LastTrinketMs = nowMs;
+        return true;
+    }
+
+    // G5a: when the enemy's trinket is expected ready again (its last use seen this match plus the cooldown); 0 = no
+    // use seen
+    uint32 TrinketReadyMs(uint32 matchKey, uint64 enemy) const
+    {
+        Slot const* const slot = Find(matchKey, enemy);
+        return slot && slot->Trinkets ? slot->LastTrinketMs + CC_OPPONENT_TRINKET_COOLDOWN_MS : 0;
     }
 
     // The mean delay of the enemy's dispels of the team's CC this match, 0 below minEvents of them (at least one)
@@ -954,6 +983,230 @@ inline bool ShouldBreakCc(CcBreakView const& view, CcParams const& params, uint6
         return false;
 
     return RollWindow(seed, CcSalt::WastedBreak, params.WastedBreakPct, CC_BREAK_WINDOW_MS, nowMs);
+}
+
+// G5a: below the Trinket tactic's known skill a bot does not tell a CC that matters: it breaks any CC on the
+// wasted-break roll (it trinkets the first CC, or forgets it), the roots aside from IgnoreRootsFromSkill
+inline bool ShouldBreakCcUnknowing(CcBreakView const& view, CcParams const& params, uint64 seed, uint32 nowMs)
+{
+    if (params.IgnoresRoots && !CcKindLosesControl(view.Kind))
+        return false;
+
+    return RollWindow(seed, CcSalt::WastedBreak, params.WastedBreakPct, CC_BREAK_WINDOW_MS, nowMs);
+}
+
+// G5a: the aura types a CC aura is read by (CcKindOfAura's auraBits), set by the caller from the aura's effects
+constexpr uint32 CC_AURA_STUN = 1u << 0;
+constexpr uint32 CC_AURA_FEAR = 1u << 1;
+constexpr uint32 CC_AURA_CONFUSE = 1u << 2;
+constexpr uint32 CC_AURA_CHARM = 1u << 3;
+constexpr uint32 CC_AURA_ROOT = 1u << 4;
+constexpr uint32 CC_AURA_SNARE = 1u << 5;
+constexpr uint32 CC_AURA_SILENCE = 1u << 6;
+constexpr uint32 CC_AURA_CYCLONE = 1u << 7;  // the cyclone itself (it has no mechanic)
+
+constexpr uint64 CcMechanicBit(uint32 mechanic) { return 1ULL << mechanic; }
+
+// What a CC aura on a unit is (G5a: the bot's own CC it breaks, a partner's it dispels), from its mechanics (the
+// spell's and its effects', SpellInfo::GetAllEffectsMechanicMask) and aura types; false: no CC
+inline bool CcKindOfAura(uint64 mechanics, uint32 auraBits, CcKind& kind)
+{
+    auto const has = [mechanics](uint32 mechanic) { return (mechanics & CcMechanicBit(mechanic)) != 0; };
+    if (auraBits & CC_AURA_CYCLONE)
+        kind = CcKind::Cyclone;
+    else if (has(MECHANIC_BANISH))
+        kind = CcKind::Banish;
+    else if (has(MECHANIC_SLEEP))
+        kind = CcKind::Sleep;
+    else if (has(MECHANIC_HORROR))
+        kind = CcKind::Horror;
+    else if (has(MECHANIC_POLYMORPH) || has(MECHANIC_SAPPED) || has(MECHANIC_SHACKLE) || has(MECHANIC_KNOCKOUT) ||
+             (has(MECHANIC_FREEZE) && (auraBits & CC_AURA_STUN)))
+        kind = CcKind::Incapacitate;
+    else if (has(MECHANIC_DISORIENTED) || (auraBits & CC_AURA_CONFUSE))
+        kind = CcKind::Disorient;
+    else if (has(MECHANIC_FEAR) || has(MECHANIC_CHARM) || has(MECHANIC_TURN) ||
+             (auraBits & (CC_AURA_FEAR | CC_AURA_CHARM)))
+        kind = CcKind::Fear;
+    else if (has(MECHANIC_STUN) || (auraBits & CC_AURA_STUN))
+        kind = CcKind::Stun;
+    else if (has(MECHANIC_ROOT) || has(MECHANIC_FREEZE) || (auraBits & CC_AURA_ROOT))
+        kind = CcKind::Root;
+    else if (has(MECHANIC_SNARE) || has(MECHANIC_DAZE) || (auraBits & CC_AURA_SNARE))
+        kind = CcKind::Snare;
+    else if (has(MECHANIC_SILENCE) || (auraBits & CC_AURA_SILENCE))
+        kind = CcKind::Silence;
+    else
+        return false;
+
+    return true;
+}
+
+// G5a: what breaks a CC on the bot. The PvP trinket (42292) and every man for himself (59752) free the core's
+// IMMUNE_TO_MOVEMENT_IMPAIRMENT_AND_LOSS_CONTROL_MASK (SpellInfo.cpp, their mechanic immunity), will of the forsaken
+// (7744) charm, fear and sleep (its three effects), escape artist (20589, a script) roots and snares. A CC without
+// such a mechanic is not broken (cyclone carries MECHANIC_BANISH in this core's Spell.dbc: the trinket frees it).
+enum class CcBreaker : uint8
+{
+    None,
+    Trinket,
+    EveryMan,
+    Forsaken,
+    EscapeArtist
+};
+
+constexpr uint64 CcBreakerMechanics(CcBreaker breaker)
+{
+    switch (breaker)
+    {
+        case CcBreaker::Trinket:
+        case CcBreaker::EveryMan:
+            return IMMUNE_TO_MOVEMENT_IMPAIRMENT_AND_LOSS_CONTROL_MASK;
+        case CcBreaker::Forsaken:
+            return CcMechanicBit(MECHANIC_CHARM) | CcMechanicBit(MECHANIC_FEAR) | CcMechanicBit(MECHANIC_SLEEP);
+        case CcBreaker::EscapeArtist:
+            return CcMechanicBit(MECHANIC_ROOT) | CcMechanicBit(MECHANIC_SNARE);
+        default:
+            return 0;
+    }
+}
+
+// The action names (the trinket's is G5a's "pvp trinket", the racials' those of RacialsStrategy)
+constexpr char const* CcBreakerAction(CcBreaker breaker)
+{
+    switch (breaker)
+    {
+        case CcBreaker::Trinket:
+            return "pvp trinket";
+        case CcBreaker::EveryMan:
+            return "every man for himself";
+        case CcBreaker::Forsaken:
+            return "will of the forsaken";
+        case CcBreaker::EscapeArtist:
+            return "escape artist";
+        default:
+            return "none";
+    }
+}
+
+// The breakers the bot has ready now (worn or known, off cooldown; the trinket not withheld by Avoid.EnsureTrinket 2)
+struct CcBreakOptions
+{
+    bool Trinket = false;
+    bool EveryMan = false;
+    bool Forsaken = false;
+    bool EscapeArtist = false;
+};
+
+// The breaker that frees the CC's mechanics: the trinket first (it ranks above the racials, DT.3), then the racials
+inline CcBreaker PickCcBreaker(uint64 mechanics, CcBreakOptions const& ready)
+{
+    std::array<std::pair<CcBreaker, bool>, 4> const order = {{{CcBreaker::Trinket, ready.Trinket},
+                                                              {CcBreaker::EveryMan, ready.EveryMan},
+                                                              {CcBreaker::Forsaken, ready.Forsaken},
+                                                              {CcBreaker::EscapeArtist, ready.EscapeArtist}}};
+    for (auto const& [breaker, isReady] : order)
+    {
+        if (isReady && (mechanics & CcBreakerMechanics(breaker)))
+            return breaker;
+    }
+
+    return CcBreaker::None;
+}
+
+// G5a dispel cc on party: a CC worth a cleanser's global cooldown is a loss of control or a root (snares and
+// silences stay with the class's plain cleanses)
+constexpr bool CcDispelWorth(CcKind kind) { return CcKindLosesControl(kind) || kind == CcKind::Root; }
+
+// One party member's worst CC the bot's class removes (Has false: none)
+struct CcDispelCandidate
+{
+    bool Has = false;
+    CcKind Kind = CcKind::Root;
+};
+
+// The members are offered self first, then the partners in group order: a later one replaces the best so far only
+// with a loss of control against a root
+inline bool CcDispelBetter(CcDispelCandidate const& candidate, CcDispelCandidate const& best)
+{
+    if (!candidate.Has || !CcDispelWorth(candidate.Kind))
+        return false;
+
+    if (!best.Has)
+        return true;
+
+    return CcKindLosesControl(candidate.Kind) && !CcKindLosesControl(best.Kind);
+}
+
+// The cleanser spells a bot knows (G5a)
+struct CcCleanserSpells
+{
+    bool DispelMagic = false;
+    bool Cleanse = false;
+    bool Purify = false;
+    bool CleanseSpirit = false;
+    bool CureToxins = false;
+};
+
+// The spell a cleanser frees a CC of the dispel type with (nullptr: none of its spells removes it): priest dispel
+// magic (magic); paladin cleanse (magic, poison, disease) or purify (poison, disease); shaman cleanse spirit (curse,
+// poison, disease: hex is a curse in this core) or cure toxins (poison, disease). Wyvern sting is a poison.
+inline char const* CcDispelSpellFor(uint8 classId, uint32 dispelType, CcCleanserSpells const& known)
+{
+    bool const magic = dispelType == DISPEL_MAGIC;
+    bool const toxin = dispelType == DISPEL_POISON || dispelType == DISPEL_DISEASE;
+    switch (classId)
+    {
+        case CLASS_PRIEST:
+            return magic && known.DispelMagic ? "dispel magic" : nullptr;
+        case CLASS_PALADIN:
+            if (known.Cleanse && (magic || toxin))
+                return "cleanse";
+
+            return toxin && known.Purify ? "purify" : nullptr;
+        case CLASS_SHAMAN:
+            if (known.CleanseSpirit && (dispelType == DISPEL_CURSE || toxin))
+                return "cleanse spirit";
+
+            return toxin && known.CureToxins ? "cure toxins" : nullptr;
+        default:
+            return nullptr;
+    }
+}
+
+// G5a review: Avoid.EnsureTrinket's slot for the given PvP trinket (0: the first trinket slot, 1: the second). An
+// empty slot first, then one whose item no PvP gear row tracks (Playerbots.PvpGear.Wear's rows must find their items
+// in their slots), the second slot last (its loadout item goes to the bags for the fight and back after it)
+constexpr uint8 CcEnsureTrinketSlot(bool firstEmpty, bool firstWorn, bool secondEmpty, bool secondWorn)
+{
+    if (secondEmpty)
+        return 1;
+
+    if (firstEmpty)
+        return 0;
+
+    if (!secondWorn)
+        return 1;
+
+    return firstWorn ? 1 : 0;
+}
+
+// G5a review: a cast of dispel cc on party, waiting for its CC to go (the dispel removes a random debuff of its type,
+// so the CC may stay): the member (raw guid), the CC aura's spell, the cast's time and spell
+struct CcPendingDispel
+{
+    uint64 Target = 0;
+    uint32 AuraSpell = 0;
+    uint32 CastMs = 0;
+    char const* Spell = nullptr;
+};
+
+// The CC aura left the member by a dispel (AURA_REMOVE_BY_ENEMY_SPELL) within windowMs of the cast it was for
+inline bool CcDispelFreed(CcPendingDispel const& pending, uint64 target, uint32 auraSpell, bool byDispel, uint32 nowMs,
+                          uint32 windowMs)
+{
+    return byDispel && pending.AuraSpell && pending.Target == target && pending.AuraSpell == auraSpell &&
+           nowMs - pending.CastMs <= windowMs;
 }
 
 #endif

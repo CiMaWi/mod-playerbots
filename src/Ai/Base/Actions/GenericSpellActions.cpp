@@ -6,6 +6,7 @@
 
 #include "GenericSpellActions.h"
 #include "Chat.h"
+#include "CcTacticStrategy.h"
 #include "Event.h"
 #include "GenericBuffUtils.h"
 #include "Group.h"
@@ -525,6 +526,10 @@ bool UseTrinketAction::UseTrinket(Item* item)
     if (bot->CanUseItem(item) != EQUIP_ERR_OK || bot->IsNonMeleeSpellCast(true))
         return false;
 
+    // G5a (DT.3): where the Trinket tactic acts, the PvP trinket waits for the CC that matters ("pvp trinket")
+    if (botAI->TacticEnabledHere(TacticId::Trinket) && CcIsPvpTrinket(item->GetTemplate()))
+        return false;
+
     uint8 bagIndex = item->GetBagSlot();
     uint8 slot = item->GetSlot();
     uint8 cast_count = 1;
@@ -641,6 +646,9 @@ bool UseTrinketAction::UseTrinket(Item* item)
 
     // HandleUseItemOpcode can destroy the trinket on its last charge.
     uint32 const itemId = item->GetEntry();
+    // G5a: the PvP trinket's proof reads these lines (Logger.playerbots=6)
+    LOG_TRACE("playerbots", "Use trinket: {} uses {} ({}), spell {}", bot->GetName(), item->GetTemplate()->Name1,
+              itemId, spellId);
     bot->GetSession()->HandleUseItemOpcode(packet);
 
     uint32 const now = getMSTime();

@@ -160,6 +160,9 @@ public:
     // .playerbots tactics moon [0|1|2]: prints or sets Playerbots.Tactics.Focus.MoonMode on the running server (a
     // team's plan and hold take it at their next match start; a restart or rndbot reload restores the conf value)
     static bool HandleMoonCommand(ChatHandler* handler, char const* args);
+    // .playerbots tactics ensuretrinket [0|1|2]: prints or sets Playerbots.Tactics.Avoid.EnsureTrinket on the running
+    // server (G5a; the next harness match start takes it)
+    static bool HandleEnsureTrinketCommand(ChatHandler* handler, char const* args);
 };
 
 #endif

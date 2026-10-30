@@ -24,6 +24,7 @@
 #include "Chat.h"
 #include "FocusState.h"
 #include "Group.h"
+#include "Item.h"
 #include "NaturalReaction.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -3188,6 +3189,211 @@ void RunCcSelftest(ChatHandler* handler)
         handler->PSendSysMessage("TACTICS selftest cc: aoe guard radii [{}]", radii);
     }
 
+    // 9. G5a: the aura -> kind table, the breaker pick, the cautious shift, the wasted and unknowing breaks, the dispel
+    // pick, the cleansers' spells and the opponent memory's trinket uses (43 checks)
+    {
+        auto const m = [](uint32 mechanic) { return CcMechanicBit(mechanic); };
+        struct KindCase
+        {
+            char const* Name;
+            uint64 Mechanics;
+            uint32 Bits;
+            bool Has;
+            CcKind Kind;
+        };
+        std::array<KindCase, 14> const kinds = {{
+            {"polymorph", m(MECHANIC_POLYMORPH), CC_AURA_CONFUSE, true, CcKind::Incapacitate},
+            {"sap", m(MECHANIC_SAPPED), CC_AURA_STUN, true, CcKind::Incapacitate},
+            {"freezing trap", m(MECHANIC_FREEZE), CC_AURA_STUN, true, CcKind::Incapacitate},
+            {"blind", m(MECHANIC_DISORIENTED), CC_AURA_CONFUSE, true, CcKind::Disorient},
+            {"fear", m(MECHANIC_FEAR), CC_AURA_FEAR, true, CcKind::Fear},
+            {"seduction", m(MECHANIC_CHARM), CC_AURA_STUN, true, CcKind::Fear},
+            {"death coil", m(MECHANIC_HORROR), CC_AURA_FEAR, true, CcKind::Horror},
+            {"hammer of justice", m(MECHANIC_STUN), CC_AURA_STUN, true, CcKind::Stun},
+            {"wyvern sting", m(MECHANIC_SLEEP), CC_AURA_STUN, true, CcKind::Sleep},
+            {"cyclone", 0, CC_AURA_CYCLONE | CC_AURA_STUN, true, CcKind::Cyclone},
+            {"frost nova", m(MECHANIC_FREEZE), CC_AURA_ROOT, true, CcKind::Root},
+            {"hamstring", m(MECHANIC_SNARE), CC_AURA_SNARE, true, CcKind::Snare},
+            {"silence", m(MECHANIC_SILENCE), CC_AURA_SILENCE, true, CcKind::Silence},
+            {"a bleed", m(MECHANIC_BLEED), 0, false, CcKind::Root},
+        }};
+        for (KindCase const& kindCase : kinds)
+        {
+            CcKind kind = CcKind::Root;
+            bool const has = CcKindOfAura(kindCase.Mechanics, kindCase.Bits, kind);
+            check(has == kindCase.Has && (!has || kind == kindCase.Kind),
+                  Acore::StringFormat("aura kind of {}: has {}, kind {}", kindCase.Name, has ? "yes" : "no",
+                                      static_cast<uint32>(kind)));
+        }
+
+        CcBreakOptions all;
+        all.Trinket = all.EveryMan = all.Forsaken = all.EscapeArtist = true;
+        CcBreakOptions human;
+        human.EveryMan = true;
+        CcBreakOptions undead;
+        undead.Forsaken = true;
+        CcBreakOptions gnome;
+        gnome.EscapeArtist = true;
+        uint64 const stun = m(MECHANIC_STUN);
+        uint64 const fear = m(MECHANIC_FEAR);
+        uint64 const root = m(MECHANIC_ROOT);
+        check(PickCcBreaker(stun, all) == CcBreaker::Trinket, "the trinket does not rank above the racials");
+        check(PickCcBreaker(stun, human) == CcBreaker::EveryMan, "a human without a trinket keeps its racial");
+        check(PickCcBreaker(stun, undead) == CcBreaker::None, "will of the forsaken breaks a stun");
+        check(PickCcBreaker(fear, undead) == CcBreaker::Forsaken, "will of the forsaken does not break a fear");
+        check(PickCcBreaker(root, gnome) == CcBreaker::EscapeArtist && PickCcBreaker(stun, gnome) == CcBreaker::None,
+              "escape artist breaks other than roots");
+        check(PickCcBreaker(0, all) == CcBreaker::None, "a CC without a mechanic is broken");
+
+        CcParams const low = params(20);
+        CcParams const high = params(80);
+        check(CcBreakLowHealthPct(40, 100, 20) == 60 && CcBreakLowHealthPct(40, 0, 20) == 20 &&
+                  CcBreakLowHealthPct(40, 50, 20) == 40,
+              "cautious shift is not 60 / 20 / 40 at Caution 100 / 0 / 50");
+        check(CcBreakLowHealthPct(40, 100, 0) == 40, "a shift of 0 moves the line");
+        check(CcBreakLowHealthPct(90, 100, 20) == 100 && CcBreakLowHealthPct(10, 0, 20) == 0, "the line leaves 0-100");
+        check(high.BreakLowHealthPct == high.LowHealthPct, "the dist's shift 0 moves the break line");
+        CcParams cautious = high;
+        cautious.BreakLowHealthPct = CcBreakLowHealthPct(high.LowHealthPct, 100, 20);
+        CcBreakView at45;
+        at45.Kind = CcKind::Stun;
+        at45.RemainingMs = 4000;
+        at45.SelfLow = 45 <= cautious.BreakLowHealthPct;
+        bool const cautiousBreaks = CcMatters(at45, cautious);
+        at45.SelfLow = 45 <= high.BreakLowHealthPct;
+        bool const neutralBreaks = CcMatters(at45, high);
+        check(cautiousBreaks && !neutralBreaks, "the cautious bot does not break earlier (stun at 45 % health)");
+
+        constexpr uint32 Windows = 4000;
+        uint32 wastedLow = 0;
+        uint32 wastedHigh = 0;
+        uint32 unknowingLow = 0;
+        bool stable = true;
+        for (uint32 window = 0; window < Windows; ++window)
+        {
+            uint32 const now = window * CC_BREAK_WINDOW_MS;
+            CcBreakView idle;
+            idle.Kind = CcKind::Stun;
+            idle.RemainingMs = 4000;
+            bool const lowBreaks = ShouldBreakCc(idle, low, Seed, now);
+            wastedLow += lowBreaks ? 1 : 0;
+            wastedHigh += ShouldBreakCc(idle, high, Seed, now) ? 1 : 0;
+            stable = stable && lowBreaks == ShouldBreakCc(idle, low, Seed, now);
+            CcBreakView mattering = idle;
+            mattering.SelfLow = true;
+            unknowingLow += ShouldBreakCcUnknowing(mattering, low, Seed, now) ? 1 : 0;
+        }
+
+        check(wastedHigh == 0 && high.WastedBreakPct == 0,
+              Acore::StringFormat("skill 80 wasted {} breaks (from WastedBreakNeverFromSkill none)", wastedHigh));
+        check(low.WastedBreakPct > 0 && withinRate(wastedLow, Windows, low.WastedBreakPct, 4),
+              Acore::StringFormat("skill 20 wasted {} of {} breaks (expected about {} %)", wastedLow, Windows,
+                                  low.WastedBreakPct));
+        check(withinRate(unknowingLow, Windows, low.WastedBreakPct, 4),
+              Acore::StringFormat("an unknowing bot broke {} of {} CCs that matter (expected about {} %)", unknowingLow,
+                                  Windows, low.WastedBreakPct));
+        check(stable, "the break answer is not the same for the same window");
+
+        auto const pick = [](std::vector<CcDispelCandidate> const& members)
+        {
+            int32 chosen = -1;
+            CcDispelCandidate best;
+            for (size_t index = 0; index < members.size(); ++index)
+            {
+                if (CcDispelBetter(members[index], best))
+                {
+                    best = members[index];
+                    chosen = static_cast<int32>(index);
+                }
+            }
+
+            return chosen;
+        };
+        CcDispelCandidate const none;
+        CcDispelCandidate const rooted{true, CcKind::Root};
+        CcDispelCandidate const polied{true, CcKind::Incapacitate};
+        CcDispelCandidate const feared{true, CcKind::Fear};
+        CcDispelCandidate const snared{true, CcKind::Snare};
+        CcDispelCandidate const stunned{true, CcKind::Stun};
+        check(pick({rooted, none}) == 0, "the bot's own root is not dispelled");
+        check(pick({rooted, polied}) == 1, "the bot's root before a partner's polymorph");
+        check(pick({none, polied, feared}) == 1, "not the first partner's loss of control");
+        check(pick({none, snared}) == -1, "a snare is dispelled");
+        check(pick({none, none}) == -1, "nothing to dispel gives a pick");
+        check(pick({none, rooted, stunned}) == 2, "a root before a stun");
+
+        CcCleanserSpells priest;
+        priest.DispelMagic = true;
+        CcCleanserSpells paladin;
+        paladin.Cleanse = true;
+        CcCleanserSpells purifier;
+        purifier.Purify = true;
+        CcCleanserSpells shaman;
+        shaman.CleanseSpirit = true;
+        auto const is = [](char const* spell, std::string_view name)
+        { return spell && std::string_view(spell) == name; };
+        check(is(CcDispelSpellFor(CLASS_PRIEST, DISPEL_MAGIC, priest), "dispel magic") &&
+                  !CcDispelSpellFor(CLASS_PRIEST, DISPEL_CURSE, priest),
+              "priest: polymorph no or hex yes");
+        check(is(CcDispelSpellFor(CLASS_SHAMAN, DISPEL_CURSE, shaman), "cleanse spirit") &&
+                  !CcDispelSpellFor(CLASS_SHAMAN, DISPEL_MAGIC, shaman),
+              "shaman: hex no or polymorph yes");
+        check(is(CcDispelSpellFor(CLASS_PALADIN, DISPEL_MAGIC, paladin), "cleanse") &&
+                  is(CcDispelSpellFor(CLASS_PALADIN, DISPEL_POISON, paladin), "cleanse") &&
+                  is(CcDispelSpellFor(CLASS_PALADIN, DISPEL_POISON, purifier), "purify") &&
+                  !CcDispelSpellFor(CLASS_PALADIN, DISPEL_MAGIC, purifier),
+              "paladin: cleanse or purify table");
+        check(!CcDispelSpellFor(CLASS_PRIEST, DISPEL_POISON, priest) &&
+                  !CcDispelSpellFor(CLASS_MAGE, DISPEL_MAGIC, priest) &&
+                  !CcDispelSpellFor(CLASS_SHAMAN, DISPEL_NONE, shaman),
+              "a priest frees wyvern sting, or a mage or an undispellable CC is freed");
+
+        constexpr uint32 TrinketMatch = 77;
+        CcOpponentMemory memory;
+        bool const first = memory.Trinketed(TrinketMatch, Enemy, 1000);
+        bool const again = memory.Trinketed(TrinketMatch, Enemy, 1500);
+        check(first && !again, "the trinket seen by its aura and by the CC it removed is two uses");
+        bool const later = memory.Trinketed(TrinketMatch, Enemy, 125000);
+        CcOpponentMemory::Slot const* const slot = memory.Find(TrinketMatch, Enemy);
+        check(later && slot && slot->Trinkets == 2, "a trinket two minutes later is not counted");
+        check(memory.TrinketReadyMs(TrinketMatch, Enemy) == 125000 + CC_OPPONENT_TRINKET_COOLDOWN_MS &&
+                  memory.TrinketReadyMs(TrinketMatch, Enemy + 1) == 0,
+              "trinket ready estimate");
+        memory.Trinketed(TrinketMatch + 1, Enemy + 1, 130000);
+        check(!memory.Find(TrinketMatch, Enemy), "a new match keeps the last match's trinkets");
+    }
+
+    // 10. G5a review: Avoid.EnsureTrinket's slot beside PvP gear's worn rows, and a dispel counted when its CC goes
+    // (13 checks)
+    {
+        check(CcEnsureTrinketSlot(true, false, true, false) == 1, "two empty slots: not the second");
+        check(CcEnsureTrinketSlot(true, false, false, false) == 0, "an empty first slot is not taken first");
+        check(CcEnsureTrinketSlot(false, false, false, false) == 1, "two untracked trinkets: not the second");
+        check(CcEnsureTrinketSlot(false, false, false, true) == 0,
+              "a tracked second trinket is moved before an untracked");
+        check(CcEnsureTrinketSlot(false, true, false, true) == 1, "two tracked trinkets: not the second");
+        check(CcEnsureTrinketSlot(false, true, true, false) == 1, "an empty second slot is not taken first");
+
+        CcPendingDispel pending;
+        pending.Target = Enemy;
+        pending.AuraSpell = 118;
+        pending.CastMs = 1000;
+        pending.Spell = "dispel magic";
+        check(CcDispelFreed(pending, Enemy, 118, true, 1500, CC_DISPEL_CONFIRM_MS), "the dispelled CC is not counted");
+        check(!CcDispelFreed(pending, Enemy, 118, false, 1500, CC_DISPEL_CONFIRM_MS), "an expiry counts as a dispel");
+        check(!CcDispelFreed(pending, Enemy, 12826, true, 1500, CC_DISPEL_CONFIRM_MS),
+              "another debuff dispelled counts the CC");
+        check(!CcDispelFreed(pending, Enemy + 1, 118, true, 1500, CC_DISPEL_CONFIRM_MS), "another member's CC counts");
+        check(CcDispelFreed(pending, Enemy, 118, true, 1000 + CC_DISPEL_CONFIRM_MS, CC_DISPEL_CONFIRM_MS) &&
+                  !CcDispelFreed(pending, Enemy, 118, true, 1001 + CC_DISPEL_CONFIRM_MS, CC_DISPEL_CONFIRM_MS),
+              "the confirm window's end");
+        check(!CcDispelFreed(CcPendingDispel(), 0, 0, true, 0, CC_DISPEL_CONFIRM_MS), "no cast counts a dispel");
+        CcPendingDispel wrapped = pending;
+        wrapped.CastMs = 0xFFFFFF00u;
+        check(CcDispelFreed(wrapped, Enemy, 118, true, 0x100u, CC_DISPEL_CONFIRM_MS),
+              "the clock's wrap loses the dispel");
+    }
+
     handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -3536,6 +3742,27 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         cc.PetCallOffs, onOff(ccConfig.AvoidExcludeFightEnemies), onOff(ccConfig.CcOpponentMemoryEnable),
         seen ? seen->Dispels : 0, seen && seen->Dispels ? seen->DispelSumMs / seen->Dispels : 0,
         seen ? seen->Trinkets : 0);
+    // G5a: the Trinket and Dispel tactics (CC avoidance)
+    bool wornTrinket = false;
+    for (uint8 const slot : {EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2})
+    {
+        Item* const item = botAI->GetBot()->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        wornTrinket = wornTrinket || (item && CcIsPvpTrinket(item->GetTemplate()));
+    }
+
+    uint32 const trinketReady = cc.CcTarget.IsEmpty() ? 0
+                                                      : cc.Opponents.TrinketReadyMs(botAI->GetBot()->GetInstanceId(),
+                                                                                    cc.CcTarget.GetRawValue());
+    handler->PSendSysMessage(
+        "  avoid: trinket tactic {}, pvp trinket {}{}, answer {}{}, breaks {} (wasted {}, last {} ms after the CC), "
+        "low line {} %, ensure {}; dispel tactic {}, pick {} ({}), partners freed {} (last {} ms after the CC); cc "
+        "target's trinket ready at {} ms (now {} ms)",
+        onOff(botAI->TacticEnabledHere(TacticId::Trinket)), wornTrinket ? "worn" : "none",
+        cc.TrinketWithheld ? " (withheld)" : "", CcBreakerAction(cc.BreakWith),
+        cc.BreakWith == CcBreaker::None ? "" : (cc.BreakMatters ? " (matters)" : " (wasted)"), cc.Breaks,
+        cc.WastedBreaks, cc.LastBreakAgeMs, cc.Params.BreakLowHealthPct, ccConfig.AvoidEnsureTrinket,
+        onOff(botAI->TacticEnabledHere(TacticId::Dispel)), iconName(cc.DispelTarget),
+        cc.DispelSpell ? cc.DispelSpell : "none", cc.Dispels, cc.LastDispelAgeMs, trinketReady, nowMs);
 
     // OwnCc (G4b-b): what the bot keeps out of its targets now, the forced CC, its swing (G4b's forced proof)
     std::string keptOut;
@@ -3650,6 +3877,52 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     return true;
 }
 
+// tactics force stun / force health (G5a's forced check of the Trinket tactic), on the world thread while the maps
+// wait: a real stun aura on the bot (CC_FORCE_STUN_SPELL, cast by its skull or target when there is one, else by
+// itself), or its health set to a share of its maximum
+static bool ForceBreakCheck(ChatHandler* handler, PlayerbotAI* botAI, std::string const& name, std::string const& kind,
+                            std::string const& percentText)
+{
+    Player* const bot = botAI->GetBot();
+    uint32 const nowMs = getMSTime();
+    if (kind == "health")
+    {
+        uint32 const percent = Acore::StringTo<uint32>(percentText).value_or(0);
+        if (!percent || percent > 100)
+        {
+            handler->PSendSysMessage("Usage: .playerbots tactics force health <bot name or guid> <percent 1-100>");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        bot->SetHealth(std::max<uint32>(1, static_cast<uint32>(uint64(bot->GetMaxHealth()) * percent / 100)));
+        handler->PSendSysMessage("TACTICS force health: {} at {} % ({} of {}); at {} ms", name, percent,
+                                 bot->GetHealth(), bot->GetMaxHealth(), nowMs);
+        return true;
+    }
+
+    Group* const group = bot->GetGroup();
+    ObjectGuid const skull = group ? group->GetTargetIcon(FOCUS_ICON_SKULL) : ObjectGuid::Empty;
+    ObjectGuid const enemyGuid = skull.IsEmpty() ? bot->GetTarget() : skull;
+    Unit* const enemy = enemyGuid.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*bot, enemyGuid);
+    Unit* const caster = enemy && enemy->IsAlive() && enemy->IsInMap(bot) ? enemy : bot;
+    Aura* const aura = caster->AddAura(CC_FORCE_STUN_SPELL, bot);
+    if (!aura)
+    {
+        handler->PSendSysMessage("TACTICS force stun: spell {} did not land on {}", CC_FORCE_STUN_SPELL, name);
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    handler->PSendSysMessage(
+        "TACTICS force stun: {} stunned by {} ({} {}, {} ms) at {} ms, health {:.0f} %; trinket tactic {} here, "
+        "answer within {} ms plus the reaction",
+        name, caster->GetName(), aura->GetSpellInfo()->SpellName[0], CC_FORCE_STUN_SPELL, aura->GetDuration(), nowMs,
+        bot->GetHealthPct(), botAI->TacticEnabledHere(TacticId::Trinket) ? "enabled" : "not enabled",
+        CC_BREAK_REFRESH_MS);
+    return true;
+}
+
 // World thread while the map threads wait (as SetPvpSkill): the team's bots get the forced immunity at once, as they
 // would all see an immunity aura on the enemy; nothing else changes
 bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
@@ -3662,11 +3935,11 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
     std::string levelText;
     in >> verb >> target >> groupText >> levelText;
     std::string const kind = Lower(verb);
-    if ((kind != "immune" && kind != "cc" && kind != "dr") || target.empty())
+    if ((kind != "immune" && kind != "cc" && kind != "dr" && kind != "stun" && kind != "health") || target.empty())
     {
         handler->PSendSysMessage(
-            "Usage: .playerbots tactics force immune|cc <bot name or guid>, or force dr <bot name or guid> <DR group> "
-            "<level 1-3>");
+            "Usage: .playerbots tactics force immune|cc|stun <bot name or guid>, force health <bot name or guid> "
+            "<percent 1-100>, or force dr <bot name or guid> <DR group> <level 1-3>");
         handler->SetSentErrorMessage(true);
         return false;
     }
@@ -3675,6 +3948,10 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
     PlayerbotAI* botAI = FindBot(handler, target, name);
     if (!botAI)
         return false;
+
+    // force stun / force health (G5a): the bot alone, no skull needed
+    if (kind == "stun" || kind == "health")
+        return ForceBreakCheck(handler, botAI, name, kind, groupText);
 
     Player* const bot = botAI->GetBot();
     Group* const group = bot->GetGroup();
@@ -3770,6 +4047,36 @@ bool TacticCommands::HandleMoonCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "TACTICS moon: Playerbots.Tactics.Focus.MoonMode {} -> {}; teams take it at their next match start (a match "
         "in progress keeps its mode); a restart or .playerbots rndbot reload restores the conf value",
+        before, mode);
+    return true;
+}
+
+bool TacticCommands::HandleEnsureTrinketCommand(ChatHandler* handler, char const* args)
+{
+    // The world thread while the maps wait: a harness fight start reads it (CcEnsureTrinket)
+    PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleEnsureTrinketCommand");
+    uint32& mode = sPlayerbotAIConfig.TacticCc.AvoidEnsureTrinket;
+    std::string const value = Trim(args ? args : "");
+    if (value.empty())
+    {
+        handler->PSendSysMessage("TACTICS ensuretrinket: Playerbots.Tactics.Avoid.EnsureTrinket {}", mode);
+        return true;
+    }
+
+    if (value != "0" && value != "1" && value != "2")
+    {
+        handler->PSendSysMessage(
+            "Usage: .playerbots tactics ensuretrinket [0|1|2] (0 as geared, 1 a PvP trinket for a bot without one, 2 "
+            "no PvP trinket used)");
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 const before = mode;
+    mode = static_cast<uint32>(value[0] - '0');
+    handler->PSendSysMessage(
+        "TACTICS ensuretrinket: Playerbots.Tactics.Avoid.EnsureTrinket {} -> {}; the next harness fight start takes "
+        "it (a match in progress keeps its trinkets); a restart or .playerbots rndbot reload restores the conf value",
         before, mode);
     return true;
 }

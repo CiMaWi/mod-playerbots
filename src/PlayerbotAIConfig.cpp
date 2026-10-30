@@ -1180,6 +1180,11 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Avoid.IgnoreRootsFromSkill", TacticCc.AvoidIgnoreRootsFromSkill, MaxCcSkill);
     focusNumber("Avoid.MinLeftMs", TacticCc.AvoidMinLeftMs, MaxFocusMs);
     focusNumber("Avoid.LowHealthPct", TacticCc.AvoidLowHealthPct, MaxFocusPct);
+    // G5a: the Trinket and Dispel tactics' numbers
+    constexpr uint32 MaxEnsureTrinket = 2;
+    focusNumber("Avoid.WastedBreakNeverFromSkill", TacticCc.AvoidWastedBreakNeverFromSkill, MaxCcSkill);
+    focusNumber("Avoid.CautiousLowHealthPct", TacticCc.AvoidCautiousLowHealthPct, MaxFocusPct);
+    focusNumber("Avoid.EnsureTrinket", TacticCc.AvoidEnsureTrinket, MaxEnsureTrinket);
     // G4c-b: OwnCc's own-break guards
     constexpr uint32 MaxCcMarginYards = 20;
     focusNumber("Avoid.AoeGuardEnable", TacticCc.AvoidAoeGuardEnable, MaxCcSwitch);

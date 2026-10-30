@@ -127,6 +127,8 @@ public:
         creators["arena plan"] = &ActionContext::arena_plan;
         creators["team cc"] = &ActionContext::team_cc;
         creators["cc retarget"] = &ActionContext::cc_retarget;
+        creators["pvp trinket"] = &ActionContext::pvp_trinket;
+        creators["dispel cc on party"] = &ActionContext::dispel_cc_on_party;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
@@ -361,6 +363,8 @@ private:
     static Action* arena_plan(PlayerbotAI* botAI) { return new ArenaPlanAction(botAI); }
     static Action* team_cc(PlayerbotAI* botAI) { return new TeamCcAction(botAI); }
     static Action* cc_retarget(PlayerbotAI* botAI) { return new CcRetargetAction(botAI); }
+    static Action* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketAction(botAI); }
+    static Action* dispel_cc_on_party(PlayerbotAI* botAI) { return new DispelCcOnPartyAction(botAI); }
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }

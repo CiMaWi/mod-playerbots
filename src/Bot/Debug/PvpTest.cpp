@@ -23,6 +23,7 @@
 #include "BattlegroundMgr.h"
 #include "BattlegroundQueue.h"
 #include "BotProfileMgr.h"
+#include "CcTacticStrategy.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -708,6 +709,29 @@ void PvpTestArenaJob::CaptureRoster()
 }
 
 // Counting on zeroes the executed casts, so the count starts with the fight; off when the match is torn down
+// G5a Avoid.EnsureTrinket at the fight start: after PvP gear's wear at the arena entry (G5a review), so the two do not
+// fight over a trinket slot; a given trinket's gear score change goes into the record (two gear scores per bot given
+// one). Undone when counting stops (PlayerbotAI::SetPvpTestCounting), at the leave or before a logout's save
+void PvpTestArenaJob::EnsureTrinkets()
+{
+    uint32 const mode = sPlayerbotAIConfig.TacticCc.AvoidEnsureTrinket;
+    for (PvpTestSideRecord& side : _record.Sides)
+    {
+        for (PvpTestBotRecord& bot : side.Bots)
+        {
+            Player* const player = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(bot.Guid));
+            PlayerbotAI* const botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
+            if (!botAI)
+                continue;
+
+            uint32 const before = mode == 1 ? botAI->GetEquipGearScore(player) : 0;
+            if (CcEnsureTrinket(botAI, mode))
+                bot.GearScore = static_cast<uint32>(
+                    std::max<int64>(0, int64(bot.GearScore) + int64(botAI->GetEquipGearScore(player)) - int64(before)));
+        }
+    }
+}
+
 void PvpTestArenaJob::SetCounting(bool on)
 {
     for (ObjectGuid const& guid : AllMembers())
@@ -796,6 +820,7 @@ void PvpTestArenaJob::UpdateMonitor(bool slowTick)
     {
         _fightStarted = true;
         _fightStartMs = _totalMs;
+        EnsureTrinkets();
         SetCounting(true);
     }
 

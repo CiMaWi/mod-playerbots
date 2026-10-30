@@ -703,6 +703,15 @@ public:
         if (pvpTestCounting)
             ++pvpTestCc.OwnBreaks;
     }
+    // G5a: the bot dispelled a partner's CC that had been on it ageMs (dispel cc on party)
+    void CountPvpTestPartnerDispel(uint32 ageMs)
+    {
+        if (!pvpTestCounting)
+            return;
+
+        ++pvpTestCc.PartnerDispel;
+        pvpTestTactics[static_cast<uint32>(TacticCounter::PartnerDispelMs)] += ageMs;
+    }
     void CountTactic(TacticCounter counter, uint32 amount = 1)
     {
         if (pvpTestCounting)

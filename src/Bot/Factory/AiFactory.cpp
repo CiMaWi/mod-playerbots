@@ -523,6 +523,22 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->addStrategy("pvp cc", false);
     }
 
+    // CC avoidance (G5a): "tactic trinket" (cc matters -> pvp trinket and the racials) and "pvp trinket" (mutes the
+    // racials' old triggers where the Trinket tactic acts) with the Trinket tactic enabled or the harness on; "tactic
+    // dispel" (dispel cc on party) for the cleansers with the Dispel tactic enabled or the harness on. The trigger and
+    // the multiplier test the tactic's mask and scope at run time.
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Trinket)].Enable || tactics.PvpTestEnable))
+    {
+        engine->addStrategy("tactic trinket", false);
+        engine->addStrategy("pvp trinket", false);
+    }
+
+    uint8 const cleanser = player->getClass();
+    if (tactics.TacticsEnable && (cleanser == CLASS_PRIEST || cleanser == CLASS_PALADIN || cleanser == CLASS_SHAMAN) &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || tactics.PvpTestEnable))
+        engine->addStrategy("tactic dispel", false);
+
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
     // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands. "In" = on the
     // battleground's own map: an accepted invite whose port has not happened leaves the bot waiting

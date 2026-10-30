@@ -89,6 +89,9 @@ public:
         creators["arena focus"] = &StrategyContext::arena_focus;
         creators["tactic cc"] = &StrategyContext::tactic_cc;
         creators["pvp cc"] = &StrategyContext::pvp_cc;
+        creators["tactic trinket"] = &StrategyContext::tactic_trinket;
+        creators["pvp trinket"] = &StrategyContext::pvp_trinket;
+        creators["tactic dispel"] = &StrategyContext::tactic_dispel;
         creators["threat"] = &StrategyContext::threat;
         creators["focus"] = &StrategyContext::focus;
         creators["tell target"] = &StrategyContext::tell_target;
@@ -157,6 +160,9 @@ private:
     static Strategy* arena_focus(PlayerbotAI* botAI) { return new ArenaFocusStrategy(botAI); }
     static Strategy* tactic_cc(PlayerbotAI* botAI) { return new TacticCcStrategy(botAI); }
     static Strategy* pvp_cc(PlayerbotAI* botAI) { return new PvpCcStrategy(botAI); }
+    static Strategy* tactic_trinket(PlayerbotAI* botAI) { return new TacticTrinketStrategy(botAI); }
+    static Strategy* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketStrategy(botAI); }
+    static Strategy* tactic_dispel(PlayerbotAI* botAI) { return new TacticDispelStrategy(botAI); }
     static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }
     static Strategy* react(PlayerbotAI* botAI) { return new ReactionStrategy(botAI); }
     static Strategy* kite(PlayerbotAI* botAI) { return new KiteStrategy(botAI); }

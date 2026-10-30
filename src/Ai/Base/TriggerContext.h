@@ -98,6 +98,8 @@ public:
         creators["focus mark"] = &TriggerContext::focus_mark;
         creators["cc ready"] = &TriggerContext::cc_ready;
         creators["own cc target"] = &TriggerContext::own_cc_target;
+        creators["cc matters"] = &TriggerContext::cc_matters;
+        creators["dispel cc on party"] = &TriggerContext::dispel_cc_on_party;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
         creators["enemy player near"] = &TriggerContext::enemy_player_near;
 
@@ -351,6 +353,8 @@ private:
     static Trigger* focus_mark(PlayerbotAI* botAI) { return new FocusMarkTrigger(botAI); }
     static Trigger* cc_ready(PlayerbotAI* botAI) { return new CcReadyTrigger(botAI); }
     static Trigger* own_cc_target(PlayerbotAI* botAI) { return new OwnCcTargetTrigger(botAI); }
+    static Trigger* cc_matters(PlayerbotAI* botAI) { return new CcMattersTrigger(botAI); }
+    static Trigger* dispel_cc_on_party(PlayerbotAI* botAI) { return new DispelCcOnPartyTrigger(botAI); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }
     static Trigger* enemy_player_near(PlayerbotAI* botAI) { return new EnemyPlayerNear(botAI); }
     static Trigger* Random(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "random", 20); }

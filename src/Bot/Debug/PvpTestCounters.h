@@ -37,7 +37,8 @@ struct PvpTestCcCounters
     uint32 AtImmune = 0;
     // Damage of the bot or its pet on an enemy in a breakable CC of its team, one per CC aura (G4b)
     uint32 OwnBreaks = 0;
-    // Filled by later steps (G5), written as 0 until then
+    // G5a: the bot's PvP trinket uses and racial breaks (every man for himself, will of the forsaken, escape artist),
+    // and its dispels of a partner's CC (dispel cc on party); LostEarly is written as 0 until a later step
     uint32 Trinket = 0;
     uint32 RacialBreak = 0;
     uint32 PartnerDispel = 0;
@@ -68,14 +69,19 @@ enum class TacticCounter : uint8
     ReCcs,         // G4c-d: the bot's other loss-of-control landings that follow the team's CC (a re-CC of a freed
                    // target, a rotation, racial or pet stun)
     ReCcGapMs,     // G4c-d: their |gap|, summed
+    BreakWasted,   // G5a: the bot's breaks of a CC on it (pvp trinket, racials) that did not matter (CcMatters false:
+                   // the wasted-break roll of a low skill)
+    BreakMs,       // G5a: the CC's age (ms since it landed) at those breaks and the ones that mattered, summed (the
+                   // mean is breakMs / (cc.trinket + cc.racialBreak))
+    PartnerDispelMs,  // G5a: the CC's age at the bot's dispels of a partner's CC (cc.partnerDispel), summed
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
 constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
-    "focusSame",   "focusDiff",  "planSwitch",   "immuneSwapMs", "holdSwitch",  "ccOnTarget",
-    "chainGapMs",  "chains",     "ccHeldMs",     "ownBreakAoe",  "ownBreakDot", "ownBreakPet",
-    "oppTrinkets", "oppDispels", "chainEarlyMs", "chainBusy",    "reCcs",       "reCcGapMs"};
+    "focusSame",    "focusDiff", "planSwitch",  "immuneSwapMs", "holdSwitch",  "ccOnTarget",  "chainGapMs",
+    "chains",       "ccHeldMs",  "ownBreakAoe", "ownBreakDot",  "ownBreakPet", "oppTrinkets", "oppDispels",
+    "chainEarlyMs", "chainBusy", "reCcs",       "reCcGapMs",    "breakWasted", "breakMs",     "partnerDispelMs"};
 
 #endif

@@ -106,6 +106,7 @@ private:
     bool StartArena(std::string& error);
     void CaptureRoster();
     void CaptureScores(Battleground const* arena);
+    void EnsureTrinkets();
     void SetCounting(bool on);
     void RestoreSkills();
     bool GatherTemplates(std::vector<std::string>& waiting);

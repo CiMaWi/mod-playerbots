@@ -10,21 +10,28 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <functional>
+#include <limits>
 #include <string_view>
 
 #include "ArenaCc.h"
 #include "ArenaCcSpells.h"
+#include "Bag.h"
 #include "Battleground.h"
 #include "CcState.h"
 #include "FocusState.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
+#include "Item.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
+#include "Opcodes.h"
 #include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include "PvpTestCounters.h"
 #include "ScriptMgr.h"
 #include "Spell.h"
@@ -34,6 +41,8 @@
 #include "SpellMgr.h"
 #include "Tactics.h"
 #include "Timer.h"
+#include "WorldPacket.h"
+#include "WorldSession.h"
 
 namespace
 {
@@ -573,18 +582,130 @@ void CcNoteOpponentAnswer(Unit* unit, Player* caster, Aura const* aura, AuraRemo
     CcForEachObserver(unit, caster,
                       [&](Player* member, CcBotState& state)
                       {
+                          // G5a: a trinket its immunity aura already showed (CcNoteEnemyTrinket) is not counted again
+                          bool learned = true;
                           if (dispel)
                               state.Opponents.Dispelled(matchKey, enemy, afterMs, nowMs);
                           else
-                              state.Opponents.Trinketed(matchKey, enemy, nowMs);
+                              learned = state.Opponents.Trinketed(matchKey, enemy, nowMs);
 
                           PlayerbotAI* const memberAI = GET_PLAYERBOT_AI(member);
-                          if (memberAI && memberAI->IsPvpTestCounting())
+                          if (learned && memberAI && memberAI->IsPvpTestCounting())
                               memberAI->CountTactic(dispel ? TacticCounter::OppDispels : TacticCounter::OppTrinkets);
                       });
     LOG_TRACE("playerbots", "CC answer: {} {} {} ({}) after {} ms, at {} ms", unit->GetName(),
               dispel ? "dispelled" : "trinketed", aura->GetSpellInfo()->SpellName[0], caster->GetName(), afterMs,
               nowMs);
+}
+
+// G5a review: a CC that a group bot's dispel cc on party was cast for left the unit by a dispel within
+// CC_DISPEL_CONFIRM_MS: that bot counts it (cc.partnerDispel, tactics.partnerDispelMs for a partner) and logs it. The
+// unit's own bot first (a root on itself), then its group's bots on its map (the same map thread)
+void CcNoteDispelRemoval(Unit* unit, Aura const* aura)
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    Player* const player = unit->ToPlayer();
+    if (!player || !config.TacticsEnable ||
+        !(config.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || config.PvpTestEnable))
+        return;
+
+    uint32 const nowMs = getMSTime();
+    uint64 const target = unit->GetGUID().GetRawValue();
+    auto const confirm = [&](Player* member)
+    {
+        PlayerbotAI* const memberAI = GET_PLAYERBOT_AI(member);
+        if (!memberAI)
+            return false;
+
+        CcBotState& state = memberAI->GetCcState();
+        if (!CcDispelFreed(state.PendingDispel, target, aura->GetId(), true, nowMs, CC_DISPEL_CONFIRM_MS))
+            return false;
+
+        uint32 const ageMs =
+            static_cast<uint32>(std::max<int32>(aura->GetMaxDuration() - std::max<int32>(aura->GetDuration(), 0), 0));
+        if (member != player)
+        {
+            ++state.Dispels;
+            state.LastDispelAgeMs = ageMs;
+            memberAI->CountPvpTestPartnerDispel(ageMs);
+        }
+
+        LOG_TRACE("playerbots", "Dispel CC: {} freed {} {} ({}) after {} ms with {} cast {} ms before, at {} ms",
+                  member->GetName(), member == player ? std::string("itself") : player->GetName(),
+                  aura->GetSpellInfo()->SpellName[0], aura->GetId(), ageMs,
+                  state.PendingDispel.Spell ? state.PendingDispel.Spell : "?", nowMs - state.PendingDispel.CastMs,
+                  nowMs);
+        state.PendingDispel = CcPendingDispel();
+        return true;
+    };
+
+    if (confirm(player))
+        return;
+
+    Group* const group = player->GetGroup();
+    if (!group)
+        return;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* const member = ref->GetSource();
+        if (member && member != player && member->IsInMap(player) && confirm(member))
+            return;
+    }
+}
+
+// G5a: the spells of a CC break (the PvP trinkets, every man for himself, will of the forsaken: a self-cast mechanic
+// immunity; escape artist: a script)
+constexpr uint32 SPELL_PVP_TRINKET = 42292;
+constexpr uint32 SPELL_PVP_TRINKET_OTHER = 65547;
+constexpr uint32 SPELL_EVERY_MAN = 59752;
+constexpr uint32 SPELL_FORSAKEN = 7744;
+constexpr uint32 SPELL_ESCAPE_ARTIST = 20589;
+
+constexpr bool CcTrinketUseSpell(uint32 spellId)
+{
+    return spellId == SPELL_PVP_TRINKET || spellId == SPELL_PVP_TRINKET_OTHER || spellId == SPELL_EVERY_MAN ||
+           spellId == SPELL_FORSAKEN;
+}
+
+// G5a opponent memory (Cc.OpponentMemoryEnable): an enemy player's trinket use seen by its immunity aura landing
+// (DT.12: the combat log shows it), whether or not a CC of the team was on it. Every hostile bot on the battleground
+// or arena map with the Cc tactic and DR awareness remembers it (Trinkets, LastTrinketMs: TrinketReadyMs); the same
+// use seen again by the CC it removed counts once (CcOpponentMemory::Trinketed). The open world keeps the removal
+// source only (no walk over a continent's players).
+void CcNoteEnemyTrinket(Unit* unit, Aura const* aura)
+{
+    if (!unit->IsPlayer() || aura->GetCasterGUID() != unit->GetGUID())
+        return;
+
+    Map* const map = unit->GetMap();
+    if (!map || !map->IsBattlegroundOrArena())
+        return;
+
+    uint64 const enemy = unit->GetGUID().GetRawValue();
+    uint32 const matchKey = unit->GetInstanceId();
+    uint32 const nowMs = getMSTime();
+    uint32 seenBy = 0;
+    Map::PlayerList const& players = map->GetPlayers();
+    for (Map::PlayerList::const_iterator itr = players.begin(); itr != players.end(); ++itr)
+    {
+        Player* const member = itr->GetSource();
+        PlayerbotAI* const memberAI =
+            member && member != unit && member->IsHostileTo(unit) ? GET_PLAYERBOT_AI(member) : nullptr;
+        if (!memberAI || !memberAI->TacticEnabledHere(TacticId::Cc))
+            continue;
+
+        CcBotState& state = memberAI->GetCcState();
+        if (!state.Params.DrAware || !state.Opponents.Trinketed(matchKey, enemy, nowMs))
+            continue;
+
+        ++seenBy;
+        memberAI->CountTactic(TacticCounter::OppTrinkets);
+    }
+
+    LOG_TRACE("playerbots", "CC answer: {} used {} ({}), seen by {} bots, ready again at {} ms, at {} ms",
+              unit->GetName(), aura->GetSpellInfo()->SpellName[0], aura->GetId(), seenBy,
+              nowMs + CC_OPPONENT_TRINKET_COOLDOWN_MS, nowMs);
 }
 
 class CcTacticUnitScript : public UnitScript
@@ -627,6 +748,15 @@ public:
         if (!CcFeedOn())
             return;
 
+        // G5a: an enemy's trinket use, seen by its immunity aura (a spell id test first; no DR group)
+        if (CcTrinketUseSpell(aura->GetId()))
+        {
+            if (sPlayerbotAIConfig.TacticCc.CcOpponentMemoryEnable)
+                CcNoteEnemyTrinket(unit, aura);
+
+            return;
+        }
+
         Player* caster = nullptr;
         DiminishingGroup const group = CcObservedGroup(unit, aura, caster);
         int32 const durationMs = aura->GetDuration();
@@ -654,6 +784,10 @@ public:
     {
         Aura const* const aura = aurApp->GetBase();
         bool const byDamage = CcConsumeOwnBreak(unit, aura, mode);
+        // G5a review: a CC that dispel cc on party was cast for goes by a dispel (counted there, not at the cast)
+        if (mode == AURA_REMOVE_BY_ENEMY_SPELL)
+            CcNoteDispelRemoval(unit, aura);
+
         // An expiry feeds only the harness's ccHeldMs (G4c-a review NOTE 3: without the harness G4b's cost)
         if (!CcFeedOn() || (mode == AURA_REMOVE_BY_EXPIRE && !sPlayerbotAIConfig.PvpTestEnable))
             return;
@@ -1416,5 +1550,661 @@ bool TeamCcAction::Execute(Event /*event*/)
     botAI->NoteTacticUse(TacticId::Cc);
     return true;
 }
+
+// ---- G5a: CC avoidance (the Trinket and Dispel tactics) -----------------------------------------------------------
+
+namespace
+{
+// Above the racials (+ 1: the old racial triggers' relevance, and the racials' share of cc matters, DT.3)
+constexpr float PvpTrinketRelevance = ACTION_EMERGENCY + 2.0f;
+constexpr float RacialBreakRelevance = ACTION_EMERGENCY + 1.0f;
+// Above the class cleanses (priest 40/41, paladin ACTION_DISPEL + 1/2, shaman 23/24) and the heals, below the breaks
+constexpr float DispelCcRelevance = ACTION_EMERGENCY;
+constexpr float CcDispelRangeYards = 30.0f;   // dispel magic, cleanse, cleanse spirit, cure toxins
+constexpr float CcPartnerRangeYards = 40.0f;  // a partner further away does not make the bot's CC matter
+
+// The CC aura types read on a unit and their CcKindOfAura bits
+constexpr std::array<std::pair<AuraType, uint32>, 9> CcAuraTypes = {{{SPELL_AURA_MOD_STUN, CC_AURA_STUN},
+                                                                     {SPELL_AURA_MOD_FEAR, CC_AURA_FEAR},
+                                                                     {SPELL_AURA_MOD_CONFUSE, CC_AURA_CONFUSE},
+                                                                     {SPELL_AURA_MOD_CHARM, CC_AURA_CHARM},
+                                                                     {SPELL_AURA_AOE_CHARM, CC_AURA_CHARM},
+                                                                     {SPELL_AURA_MOD_ROOT, CC_AURA_ROOT},
+                                                                     {SPELL_AURA_MOD_DECREASE_SPEED, CC_AURA_SNARE},
+                                                                     {SPELL_AURA_MOD_SILENCE, CC_AURA_SILENCE},
+                                                                     {SPELL_AURA_MOD_PACIFY_SILENCE, CC_AURA_SILENCE}}};
+
+// A harmful CC aura on a unit as CcKindOfAura reads it
+struct CcAuraSeen
+{
+    Aura const* Base = nullptr;
+    CcKind Kind = CcKind::Root;
+    uint64 Mechanics = 0;
+    uint32 LeftMs = 0;
+    uint32 AgeMs = 0;
+};
+
+uint32 CcAuraBits(SpellInfo const* info)
+{
+    uint32 bits = CcFromCyclone(info->Id) ? CC_AURA_CYCLONE : 0;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (!info->Effects[i].IsAura())
+            continue;
+
+        for (auto const& entry : CcAuraTypes)
+        {
+            if (info->Effects[i].ApplyAuraName == entry.first)
+                bits |= entry.second;
+        }
+    }
+
+    return bits;
+}
+
+// The unit's harmful CC auras, read by aura type (no walk over all its auras); an aura with two CC effects comes twice
+template <typename Fn>
+void CcForEachCcAura(Unit const* unit, Fn const& fn)
+{
+    for (auto const& entry : CcAuraTypes)
+    {
+        for (AuraEffect const* effect : unit->GetAuraEffectsByType(entry.first))
+        {
+            Aura const* const aura = effect->GetBase();
+            SpellInfo const* const info = aura->GetSpellInfo();
+            if (info->IsPositive())
+                continue;
+
+            CcAuraSeen seen;
+            seen.Base = aura;
+            seen.Mechanics = info->GetAllEffectsMechanicMask();
+            if (!CcKindOfAura(seen.Mechanics, CcAuraBits(info), seen.Kind))
+                continue;
+
+            int32 const leftMs = aura->GetDuration();
+            seen.LeftMs = leftMs < 0 ? std::numeric_limits<uint32>::max() : static_cast<uint32>(leftMs);
+            seen.AgeMs = static_cast<uint32>(std::max<int32>(aura->GetMaxDuration() - std::max<int32>(leftMs, 0), 0));
+            fn(seen);
+        }
+    }
+}
+
+// Known at the bot's skill (the gate's KnownFrom; full ability knows every tactic), whatever this window's use roll
+bool CcTrinketKnown(PlayerbotAI* botAI)
+{
+    return (botAI->GetTacticGate().KnownMask & TacticBit(TacticId::Trinket)) != 0 || botAI->HasFullSkillAbility();
+}
+
+// The worn PvP trinket (either trinket slot), or nullptr
+Item* CcWornPvpTrinket(Player* bot)
+{
+    for (uint8 const slot : {EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2})
+    {
+        Item* const item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (item && CcIsPvpTrinket(item->GetTemplate()))
+            return item;
+    }
+
+    return nullptr;
+}
+
+bool CcTrinketReady(Player* bot, CcBotState const& state)
+{
+    if (state.TrinketWithheld || bot->HasSpellCooldown(SPELL_PVP_TRINKET))
+        return false;
+
+    Item* const item = CcWornPvpTrinket(bot);
+    return item && bot->CanUseItem(item) == EQUIP_ERR_OK;
+}
+
+bool CcRacialReady(Player* bot, uint32 spellId) { return bot->HasSpell(spellId) && !bot->HasSpellCooldown(spellId); }
+
+// A partner (another group member on the bot's map, alive, within CcPartnerRangeYards) at or below the line
+bool CcPartnerLow(Player* bot, uint8 lowHealthPct)
+{
+    Group* const group = bot->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* const member = ref->GetSource();
+        if (member && member != bot && member->IsAlive() && member->IsInMap(bot) &&
+            member->GetHealthPct() <= lowHealthPct && bot->IsWithinDistInMap(member, CcPartnerRangeYards))
+            return true;
+    }
+
+    return false;
+}
+
+// The bot's worst CC: a loss of control before the rest, then the most time left
+bool CcWorstOnSelf(Player* bot, CcAuraSeen& worst)
+{
+    bool found = false;
+    CcForEachCcAura(bot,
+                    [&](CcAuraSeen const& seen)
+                    {
+                        bool const loses = CcKindLosesControl(seen.Kind);
+                        bool const worstLoses = found && CcKindLosesControl(worst.Kind);
+                        if (!found || (loses && !worstLoses) || (loses == worstLoses && seen.LeftMs > worst.LeftMs))
+                        {
+                            worst = seen;
+                            found = true;
+                        }
+                    });
+    return found;
+}
+
+// dispel cc on party's pick (CcDispelPick's refresh): self first (only a root: a loss of control keeps the bot from
+// casting), then the partners in group order (CcDispelBetter: a loss of control before a root), a CC the class's
+// spells remove with CC_DISPEL_MIN_LEFT_MS or more left, a partner in range and sight
+void CcRefreshDispelPick(PlayerbotAI* botAI, CcBotState& state, uint32 nowMs)
+{
+    state.DispelUntilMs = nowMs + CC_DISPEL_REFRESH_MS;
+    state.DispelTarget.Clear();
+    state.DispelAuraSpell = 0;
+    state.DispelSpell = nullptr;
+    Player* const bot = botAI->GetBot();
+    if (!bot->IsAlive() || bot->IsNonMeleeSpellCast(false) || bot->HasUnitState(UNIT_STATE_CONTROLLED) ||
+        !botAI->TacticActive(TacticId::Dispel))
+        return;
+
+    uint8 const classId = bot->getClass();
+    CcCleanserSpells known;
+    switch (classId)
+    {
+        case CLASS_PRIEST:
+            known.DispelMagic = botAI->HasSpell("dispel magic");
+            break;
+        case CLASS_PALADIN:
+            known.Cleanse = botAI->HasSpell("cleanse");
+            known.Purify = botAI->HasSpell("purify");
+            break;
+        case CLASS_SHAMAN:
+            known.CleanseSpirit = botAI->HasSpell("cleanse spirit");
+            known.CureToxins = botAI->HasSpell("cure toxins");
+            break;
+        default:
+            return;
+    }
+
+    CcDispelCandidate best;
+    auto const offer = [&](Unit* unit, bool rootsOnly)
+    {
+        CcDispelCandidate candidate;
+        uint32 auraSpell = 0;
+        char const* cast = nullptr;
+        CcForEachCcAura(unit,
+                        [&](CcAuraSeen const& seen)
+                        {
+                            if (seen.LeftMs < CC_DISPEL_MIN_LEFT_MS || (rootsOnly && CcKindLosesControl(seen.Kind)))
+                                return;
+
+                            char const* const spell =
+                                CcDispelSpellFor(classId, seen.Base->GetSpellInfo()->Dispel, known);
+                            CcDispelCandidate const mine{spell != nullptr, seen.Kind};
+                            if (CcDispelBetter(mine, candidate))
+                            {
+                                candidate = mine;
+                                auraSpell = seen.Base->GetId();
+                                cast = spell;
+                            }
+                        });
+        if (!CcDispelBetter(candidate, best) ||
+            (unit != bot && (!bot->IsWithinDistInMap(unit, CcDispelRangeYards) || !bot->IsWithinLOSInMap(unit))))
+            return;
+
+        best = candidate;
+        state.DispelTarget = unit->GetGUID();
+        state.DispelAuraSpell = auraSpell;
+        state.DispelSpell = cast;
+    };
+
+    offer(bot, true);
+    Group* const group = bot->GetGroup();
+    if (!group)
+        return;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* const member = ref->GetSource();
+        if (member && member != bot && member->IsAlive() && member->IsInMap(bot))
+            offer(member, false);
+    }
+}
+
+// The PvP trinkets of the item store (Avoid.EnsureTrinket's supply), the highest item level first; built once, on
+// the world thread at the first harness match start that asks
+std::vector<uint32> const& CcPvpTrinketItems()
+{
+    static std::vector<uint32> const items = []()
+    {
+        std::vector<std::pair<uint32, uint32>> found;
+        for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+        {
+            if (proto.InventoryType == INVTYPE_TRINKET && CcIsPvpTrinket(&proto))
+                found.emplace_back(proto.ItemLevel, id);
+        }
+
+        std::sort(found.begin(), found.end(), std::greater<>());
+        std::vector<uint32> ids;
+        for (auto const& entry : found)
+            ids.push_back(entry.second);
+
+        return ids;
+    }();
+    return items;
+}
+}  // namespace
+
+bool CcIsPvpTrinket(ItemTemplate const* proto)
+{
+    if (!proto)
+        return false;
+
+    for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+    {
+        if (proto->Spells[i].SpellId == static_cast<int32>(SPELL_PVP_TRINKET))
+            return true;
+    }
+
+    return false;
+}
+
+CcBreaker CcBreakAnswer(PlayerbotAI* botAI)
+{
+    if (!botAI->TacticEnabledHere(TacticId::Trinket))
+        return CcBreaker::None;
+
+    CcBotState& state = botAI->GetCcState();
+    uint32 const nowMs = getMSTime();
+    if (FocusBefore(nowMs, state.BreakUntilMs))
+        return state.BreakWith;
+
+    state.BreakUntilMs = nowMs + CC_BREAK_REFRESH_MS;
+    state.BreakWith = CcBreaker::None;
+    state.BreakAuraSpell = 0;
+    // A bot that knows the tactic and forgot it this window (the gate's use roll) does nothing; below the known skill
+    // a bot breaks without telling what matters (ShouldBreakCcUnknowing)
+    Player* const bot = botAI->GetBot();
+    bool const known = CcTrinketKnown(botAI);
+    CcAuraSeen worst;
+    if (!bot->IsAlive() || (known && !botAI->TacticActive(TacticId::Trinket)) || !CcWorstOnSelf(bot, worst))
+        return CcBreaker::None;
+
+    CcParams const& params = state.Params;
+    CcBreakView view;
+    view.Kind = worst.Kind;
+    view.RemainingMs = worst.LeftMs;
+    view.SelfLow = bot->GetHealthPct() <= params.BreakLowHealthPct;
+    view.PartnerLow = !view.SelfLow && CcPartnerLow(bot, params.BreakLowHealthPct);
+    view.Burst = false;  // G5d's "under burst" feeds it
+    uint64 const seed = bot->GetGUID().GetCounter();
+    if (!(known ? ShouldBreakCc(view, params, seed, nowMs) : ShouldBreakCcUnknowing(view, params, seed, nowMs)))
+        return CcBreaker::None;
+
+    CcBreakOptions ready;
+    ready.Trinket = CcTrinketReady(bot, state);
+    ready.EveryMan = CcRacialReady(bot, SPELL_EVERY_MAN);
+    ready.Forsaken = CcRacialReady(bot, SPELL_FORSAKEN);
+    ready.EscapeArtist = CcRacialReady(bot, SPELL_ESCAPE_ARTIST);
+    state.BreakWith = PickCcBreaker(worst.Mechanics, ready);
+    state.BreakMatters = known && CcMatters(view, params);
+    state.BreakKind = worst.Kind;
+    state.BreakAuraSpell = worst.Base->GetId();
+    state.BreakAuraAgeMs = worst.AgeMs;
+    state.BreakLeftMs = worst.LeftMs;
+    return state.BreakWith;
+}
+
+void CcNoteBreakCast(PlayerbotAI* botAI, uint32 spellId)
+{
+    // A break the tactic answered (a racial of the old triggers outside its scope is not counted)
+    CcBotState& state = botAI->GetCcState();
+    if (!botAI->TacticEnabledHere(TacticId::Trinket) || state.BreakWith == CcBreaker::None || !state.BreakAuraSpell)
+        return;
+
+    uint32 const nowMs = getMSTime();
+    uint32 const answeredMs = state.BreakUntilMs - CC_BREAK_REFRESH_MS;
+    uint32 const ageMs = state.BreakAuraAgeMs + (FocusBefore(answeredMs, nowMs) ? nowMs - answeredMs : 0);
+    ++state.Breaks;
+    state.LastBreakAgeMs = ageMs;
+    if (!state.BreakMatters)
+    {
+        ++state.WastedBreaks;
+        botAI->CountTactic(TacticCounter::BreakWasted);
+    }
+
+    botAI->CountTactic(TacticCounter::BreakMs, ageMs);
+    Player* const bot = botAI->GetBot();
+    SpellInfo const* const auraInfo = sSpellMgr->GetSpellInfo(state.BreakAuraSpell);
+    LOG_TRACE("playerbots",
+              "CC break: {} {} ({}) broke {} ({}, kind {}) after {} ms, {} ms left, {}, health {:.0f} %, at {} ms",
+              bot->GetName(), CcBreakerAction(state.BreakWith), spellId, auraInfo ? auraInfo->SpellName[0] : "?",
+              state.BreakAuraSpell, static_cast<uint32>(state.BreakKind), ageMs, state.BreakLeftMs,
+              state.BreakMatters ? "mattered" : "wasted", bot->GetHealthPct(), nowMs);
+    state.BreakWith = CcBreaker::None;
+    state.BreakAuraSpell = 0;
+    state.BreakUntilMs = 0;
+}
+
+Unit* CcDispelPick(PlayerbotAI* botAI)
+{
+    if (!botAI->TacticEnabledHere(TacticId::Dispel))
+        return nullptr;
+
+    CcBotState& state = botAI->GetCcState();
+    uint32 const nowMs = getMSTime();
+    if (!FocusBefore(nowMs, state.DispelUntilMs))
+        CcRefreshDispelPick(botAI, state, nowMs);
+
+    if (state.DispelTarget.IsEmpty())
+        return nullptr;
+
+    Unit* const unit = botAI->GetUnit(state.DispelTarget);
+    return unit && unit->IsInWorld() && unit->IsAlive() ? unit : nullptr;
+}
+
+namespace
+{
+// The given trinket goes, the item it replaced back into its slot when that is free (the restore, the login cleanup;
+// as Player::SwapItem moves an item from a bag into an equipment slot, no combat check: the bot's own item)
+void CcPutBackTrinket(Player* bot, Item* given, Item* replaced, uint8 slot)
+{
+    if (given)
+        bot->DestroyItem(given->GetBagSlot(), given->GetSlot(), true);
+
+    if (!replaced || replaced->IsEquipped() || slot >= EQUIPMENT_SLOT_END ||
+        bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+        return;
+
+    bot->RemoveItem(replaced->GetBagSlot(), replaced->GetSlot(), true);
+    bot->EquipItem((static_cast<uint16>(INVENTORY_SLOT_BAG_0) << 8) | slot, replaced, true);
+}
+
+// A trinket Avoid.EnsureTrinket gave (CcEnsureTrinket's mark: a PvP trinket whose creator is the bot itself)
+bool CcEnsuredMark(Player* bot, Item* item)
+{
+    return item && CcIsPvpTrinket(item->GetTemplate()) && item->GetGuidValue(ITEM_FIELD_CREATOR) == bot->GetGUID();
+}
+}  // namespace
+
+bool CcEnsureTrinket(PlayerbotAI* botAI, uint32 mode)
+{
+    CcRestoreTrinket(botAI);  // a leftover of an earlier match
+    CcBotState& state = botAI->GetCcState();
+    if (mode == 2)
+    {
+        state.TrinketWithheld = true;
+        return false;
+    }
+
+    // A dead bot's leftover (restored once it is alive) keeps its slot
+    Player* const bot = botAI->GetBot();
+    if (mode != 1 || !bot->IsAlive() || !state.EnsuredTrinket.IsEmpty() || CcWornPvpTrinket(bot) ||
+        bot->getRace() == RACE_HUMAN || bot->getRace() == RACE_UNDEAD_PLAYER)
+        return false;
+
+    // The highest item level the bot can wear and use (G5a review: level, class, race, faction; none that needs a
+    // reputation or an honor rank, which CanUseItem(ItemTemplate) does not test)
+    uint32 itemId = 0;
+    for (uint32 const id : CcPvpTrinketItems())
+    {
+        ItemTemplate const* const proto = sObjectMgr->GetItemTemplate(id);
+        if (proto && proto->RequiredLevel <= bot->GetLevel() && !proto->RequiredReputationFaction &&
+            !proto->RequiredHonorRank && bot->CanUseItem(proto) == EQUIP_ERR_OK)
+        {
+            itemId = id;
+            break;
+        }
+    }
+
+    if (!itemId)
+    {
+        LOG_DEBUG("playerbots", "Avoid.EnsureTrinket: no PvP trinket {} can wear", bot->GetName());
+        return false;
+    }
+
+    // G5a review: PvP gear's wear (at the arena entry, before this) tracks its loadout items by slot; a slot without
+    // one is taken first (CcEnsureTrinketSlot), a tracked item comes back before PvP gear looks again (the leave)
+    PvpGearMgr const& gear = PvpGearMgr::Instance();
+    Item* const first = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_TRINKET1);
+    Item* const second = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_TRINKET2);
+    uint8 const slot = CcEnsureTrinketSlot(!first, gear.IsWornItem(bot, first), !second, gear.IsWornItem(bot, second))
+                           ? EQUIPMENT_SLOT_TRINKET2
+                           : EQUIPMENT_SLOT_TRINKET1;
+    Item* const old = slot == EQUIPMENT_SLOT_TRINKET1 ? first : second;
+    if (old)
+    {
+        ItemPosCountVec dest;
+        if (bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, old, false) != EQUIP_ERR_OK)
+        {
+            LOG_DEBUG("playerbots", "Avoid.EnsureTrinket: {} has no bag room for its trinket", bot->GetName());
+            return false;
+        }
+
+        state.EnsuredReplaced = old->GetGUID();
+        bot->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+        bot->StoreItem(dest, old, true);
+    }
+
+    state.EnsuredSlot = slot;
+    Item* const given = bot->EquipNewItem((static_cast<uint16>(INVENTORY_SLOT_BAG_0) << 8) | slot, itemId, true);
+    if (!given)
+    {
+        CcRestoreTrinket(botAI);
+        return false;
+    }
+
+    // The mark a save keeps (a crash, a save before the restore): CcCleanEnsuredTrinket finds it at the login. The
+    // creator is the bot (no PvP trinket is crafted), the gift creator field holds the replaced item's guid (no gift
+    // flag: nothing reads it as a gift)
+    given->SetGuidValue(ITEM_FIELD_CREATOR, bot->GetGUID());
+    given->SetGuidValue(ITEM_FIELD_GIFTCREATOR,
+                        ObjectGuid::Create<HighGuid::Player>(old ? old->GetGUID().GetCounter() : 0));
+    // The equip cooldown (30 s, Player::ApplyEquipCooldown; the arena entry's cooldown reset ran before it): the
+    // trinket is ready at the fight start
+    bot->RemoveSpellCooldown(SPELL_PVP_TRINKET, true);
+    state.EnsuredTrinket = given->GetGUID();
+    LOG_DEBUG("playerbots", "Avoid.EnsureTrinket: {} wears {} ({}) for the match in slot {}", bot->GetName(),
+              given->GetTemplate()->Name1, itemId, slot);
+    return true;
+}
+
+void CcRestoreTrinket(PlayerbotAI* botAI)
+{
+    CcBotState& state = botAI->GetCcState();
+    state.TrinketWithheld = false;
+    if (state.EnsuredTrinket.IsEmpty() && state.EnsuredReplaced.IsEmpty())
+        return;
+
+    // An item equipped by a dead player misses its stats (Player::EquipItem): a later call (the battleground leave
+    // resurrects first; the logout's save keeps the mark for the login)
+    Player* const bot = botAI->GetBot();
+    if (!bot->IsAlive())
+        return;
+
+    CcPutBackTrinket(bot, bot->GetItemByGuid(state.EnsuredTrinket), bot->GetItemByGuid(state.EnsuredReplaced),
+                     state.EnsuredSlot);
+    state.EnsuredTrinket.Clear();
+    state.EnsuredReplaced.Clear();
+}
+
+void CcCleanEnsuredTrinket(PlayerbotAI* botAI)
+{
+    // The trinket slots, the backpack and the bags (once per login, about a hundred slots)
+    Player* const bot = botAI->GetBot();
+    std::vector<Item*> marked;
+    auto const look = [&](Item* item)
+    {
+        if (CcEnsuredMark(bot, item))
+            marked.push_back(item);
+    };
+    look(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_TRINKET1));
+    look(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_TRINKET2));
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        look(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* const bag = bot->GetBagByPos(bagSlot);
+        for (uint32 slot = 0; bag && slot < bag->GetBagSize(); ++slot)
+            look(bag->GetItemByPos(static_cast<uint8>(slot)));
+    }
+
+    // Each goes through the restore; a dead bot keeps the first one in its state until it is alive
+    CcBotState& state = botAI->GetCcState();
+    for (Item* const given : marked)
+    {
+        uint32 const replacedCounter = given->GetGuidValue(ITEM_FIELD_GIFTCREATOR).GetCounter();
+        Item* const replaced =
+            replacedCounter ? bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(replacedCounter)) : nullptr;
+        uint8 slot = given->IsEquipped() ? given->GetSlot() : static_cast<uint8>(EQUIPMENT_SLOT_END);
+        for (uint8 const trinketSlot : {EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2})
+        {
+            if (slot == EQUIPMENT_SLOT_END && !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, trinketSlot))
+                slot = trinketSlot;
+        }
+
+        LOG_INFO("playerbots", "Avoid.EnsureTrinket: {} logs in with a match's trinket {} (slot {}), item {} back",
+                 bot->GetName(), given->GetEntry(), slot, replaced ? replaced->GetEntry() : 0);
+        state.EnsuredTrinket = given->GetGUID();
+        state.EnsuredReplaced = replaced ? replaced->GetGUID() : ObjectGuid::Empty;
+        state.EnsuredSlot = slot;
+        CcRestoreTrinket(botAI);
+        if (!state.EnsuredTrinket.IsEmpty())
+            break;
+    }
+}
+
+float TacticTrinketMultiplier::GetValue(Action* action)
+{
+    // Most actions end at the cached lookup
+    if (action == nullptr)
+        return 1.0f;
+
+    CcBreaker const racial = RacialOf(action);
+    if (racial == CcBreaker::None || !botAI->TacticEnabledHere(TacticId::Trinket))
+        return 1.0f;
+
+    return CcBreakAnswer(botAI) == racial ? 1.0f : 0.0f;
+}
+
+CcBreaker TacticTrinketMultiplier::RacialOf(Action* action)
+{
+    auto const it = racialActions.find(action);
+    if (it != racialActions.end())
+        return it->second;
+
+    // getName() builds a string; resolved once per action and bot
+    std::string const name = action->getName();
+    CcBreaker racial = CcBreaker::None;
+    for (CcBreaker const breaker : {CcBreaker::EveryMan, CcBreaker::Forsaken, CcBreaker::EscapeArtist})
+    {
+        if (name == CcBreakerAction(breaker))
+            racial = breaker;
+    }
+
+    return racialActions.emplace(action, racial).first->second;
+}
+
+void PvpTrinketStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
+{
+    multipliers.push_back(new TacticTrinketMultiplier(botAI));
+}
+
+void TacticTrinketStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+{
+    Player* const bot = botAI->GetBot();
+    std::vector<NextAction> actions = {NextAction("pvp trinket", PvpTrinketRelevance)};
+    for (CcBreaker const breaker : {CcBreaker::EveryMan, CcBreaker::Forsaken, CcBreaker::EscapeArtist})
+    {
+        uint32 const spellId = breaker == CcBreaker::EveryMan   ? SPELL_EVERY_MAN
+                               : breaker == CcBreaker::Forsaken ? SPELL_FORSAKEN
+                                                                : SPELL_ESCAPE_ARTIST;
+        if (bot->HasSpell(spellId))
+            actions.push_back(NextAction(CcBreakerAction(breaker), RacialBreakRelevance));
+    }
+
+    triggers.push_back(new TriggerNode("cc matters", actions));
+}
+
+bool CcMattersTrigger::IsActive() { return CcBreakAnswer(botAI) != CcBreaker::None; }
+
+bool PvpTrinketAction::isUseful() { return CcBreakAnswer(botAI) == CcBreaker::Trinket; }
+
+bool PvpTrinketAction::Execute(Event /*event*/)
+{
+    CcBotState& state = botAI->GetCcState();
+    Item* const item = state.TrinketWithheld ? nullptr : CcWornPvpTrinket(bot);
+    if (!item)
+        return false;
+
+    // As UseTrinketAction::UseTrinket: the client's item use, on the bot itself
+    uint8 const castCount = 1;
+    uint32 const glyphIndex = 0;
+    uint8 const castFlags = 0;
+    uint32 const targetFlag = TARGET_FLAG_NONE;
+    WorldPacket packet(CMSG_USE_ITEM);
+    packet << item->GetBagSlot() << item->GetSlot() << castCount << SPELL_PVP_TRINKET << item->GetGUID() << glyphIndex
+           << castFlags;
+    packet << targetFlag << bot->GetPackGUID();
+    bot->GetSession()->HandleUseItemOpcode(packet);
+    // A failed use keeps the cached answer (G5a review: no refresh every tick while it fails; it lives
+    // CC_BREAK_REFRESH_MS)
+    if (!bot->HasSpellCooldown(SPELL_PVP_TRINKET) && !bot->HasAura(SPELL_PVP_TRINKET))
+        return false;
+
+    botAI->NoteTacticUse(TacticId::Trinket);
+    // cc.trinket (then CcNoteBreakCast) while the harness counts; the item use is no PlayerbotAI::CastSpell
+    if (botAI->IsPvpTestCounting())
+        botAI->CountPvpTestCast(SPELL_PVP_TRINKET, 0, false);
+    else
+        CcNoteBreakCast(botAI, SPELL_PVP_TRINKET);
+
+    return true;
+}
+
+void TacticDispelStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+{
+    triggers.push_back(new TriggerNode("dispel cc on party", {NextAction("dispel cc on party", DispelCcRelevance)}));
+}
+
+bool DispelCcOnPartyTrigger::IsActive() { return CcDispelPick(botAI) != nullptr; }
+
+Unit* DispelCcOnPartyAction::GetTarget() { return CcDispelPick(botAI); }
+
+bool DispelCcOnPartyAction::isUseful() { return CcDispelPick(botAI) != nullptr; }
+
+bool DispelCcOnPartyAction::Execute(Event /*event*/)
+{
+    CcBotState& state = botAI->GetCcState();
+    Unit* const target = CcDispelPick(botAI);
+    char const* const spell = state.DispelSpell;
+    uint32 const auraSpell = state.DispelAuraSpell;
+    if (!target || !spell)
+        return false;
+
+    // Counted and logged when the CC goes by the dispel (CcNoteDispelRemoval), not here: dispel magic removes a random
+    // magic debuff, so the CC may stay. Filled before the cast: an instant dispel removes the aura inside CastSpell
+    // (Spell::prepare casts at once, handle_immediate) (G5a review 2)
+    state.PendingDispel.Target = target->GetGUID().GetRawValue();
+    state.PendingDispel.AuraSpell = auraSpell;
+    state.PendingDispel.CastMs = getMSTime();
+    state.PendingDispel.Spell = spell;
+
+    // A failed cast keeps the cached pick (G5a review: no refresh every tick while it fails, GCD or silence)
+    if (!botAI->CastSpell(spell, target))
+    {
+        state.PendingDispel = CcPendingDispel();
+        return false;
+    }
+
+    state.DispelUntilMs = 0;  // asked again after the cast
+    botAI->NoteTacticUse(TacticId::Dispel);
+    return true;
+}
+
+Unit* PartyMemberCcToDispelValue::Calculate() { return CcDispelPick(botAI); }
 
 void AddCcTacticScripts() { new CcTacticUnitScript(); }
