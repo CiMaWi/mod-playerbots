@@ -1145,6 +1145,29 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Focus.DefensiveSwapPct", TacticFocus.FocusDefensiveSwapPct, MaxFocusPct);
     focusNumber("Focus.AddonKnowledgeFromSkill", TacticFocus.FocusAddonKnowledgeFromSkill, MaxFocusSkill);
 
+    // Playerbots.Tactics.Cc.* and .Avoid.* (optional): crowd control's and its avoidance's numbers, the defaults in
+    // CcConfig; read by the Cc, OwnCc and Trinket tactics (G4b, G5a; inert until then)
+    TacticCc = CcConfig{};
+    constexpr uint32 MaxCcSkill = 100;
+    focusNumber("Cc.DrAwareFromSkill", TacticCc.CcDrAwareFromSkill, MaxCcSkill);
+    focusNumber("Cc.ChainsFromSkill", TacticCc.CcChainsFromSkill, MaxCcSkill);
+    focusNumber("Cc.MinExpectedMs", TacticCc.CcMinExpectedMs, MaxFocusMs);
+    focusNumber("Cc.DrMissPctAtSkill1", TacticCc.CcDrMissPctAtSkill1, MaxFocusPct);
+    focusNumber("Cc.DrMissPctAtSkill99", TacticCc.CcDrMissPctAtSkill99, MaxFocusPct);
+    focusNumber("Cc.ChainLeadMsAtSkill1", TacticCc.CcChainLeadMsAtSkill1, MaxFocusMs);
+    focusNumber("Cc.ChainLeadMsAtSkill99", TacticCc.CcChainLeadMsAtSkill99, MaxFocusMs);
+    focusNumber("Cc.WrongTargetPctAtSkill1", TacticCc.CcWrongTargetPctAtSkill1, MaxFocusPct);
+    focusNumber("Cc.WrongTargetPctAtSkill99", TacticCc.CcWrongTargetPctAtSkill99, MaxFocusPct);
+    focusNumber("Cc.PatientHoldMs", TacticCc.CcPatientHoldMs, MaxFocusMs);
+    focusNumber("Cc.BehindStopPct", TacticCc.CcBehindStopPct, MaxFocusPct);
+    focusNumber("Avoid.OwnBreakPctAtSkill1", TacticCc.AvoidOwnBreakPctAtSkill1, MaxFocusPct);
+    focusNumber("Avoid.OwnBreakPctAtSkill99", TacticCc.AvoidOwnBreakPctAtSkill99, MaxFocusPct);
+    focusNumber("Avoid.WastedBreakPctAtSkill1", TacticCc.AvoidWastedBreakPctAtSkill1, MaxFocusPct);
+    focusNumber("Avoid.WastedBreakPctAtSkill99", TacticCc.AvoidWastedBreakPctAtSkill99, MaxFocusPct);
+    focusNumber("Avoid.IgnoreRootsFromSkill", TacticCc.AvoidIgnoreRootsFromSkill, MaxCcSkill);
+    focusNumber("Avoid.MinLeftMs", TacticCc.AvoidMinLeftMs, MaxFocusMs);
+    focusNumber("Avoid.LowHealthPct", TacticCc.AvoidLowHealthPct, MaxFocusPct);
+
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);

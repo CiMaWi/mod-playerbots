@@ -2165,6 +2165,49 @@ Playerbots.Tactics.Enable = 0
 # (Ranges: ms keys 0-120000, percents 0-100, StrongMargin 0-255, seconds 0-600, AddonKnowledgeFromSkill 0-99; larger
 # values are capped.)
 
+# Crowd control and its avoidance: the numbers of the Cc, OwnCc and Trinket tactics (all keys optional, the defaults
+# below; nothing reads them yet: the actions come in later steps). The defaults are proposals, not tuned yet. An
+# ...AtSkill1 / ...AtSkill99 pair is lerped over one attribute of the bot along Playerbots.Skill.CurveExponent (with the
+# attribute defaults that is the skill; skill 0 takes the skill-99 value and passes every ...FromSkill threshold).
+# When a bot knows crowd control at all is Playerbots.Tactics.Cc.KnownFromSkill (the gate key above; 30 is the
+# proposal when the tactic is on).
+#
+# Cc: from DrAwareFromSkill (Knowledge) a bot remembers the CC it saw land on each enemy, like a DR addon (never the
+# server's own counters): it casts nothing its memory says lands immune or for less than MinExpectedMs (the third CC
+# of a group, a quarter of its duration), and not the DR group already on the target. Below it the bot casts into DR.
+# DrMissPct is the share of CC seen landing on a started count that the memory misses (Knowledge). From
+# ChainsFromSkill (Knowledge) a bot chains: it starts its CC so that it lands ChainLeadMs before the one on the target
+# ends (Foresight); below it, it waits until the target is free. WrongTargetPct: the CC goes on whoever is near instead
+# of the CC target (Wisdom; one answer per bot and 10 s). A patient bot (the Patience trait above 50) holds its CC up
+# to PatientHoldMs x its patience for the kill window; a bot whose effort is below 50 stops controlling when its team
+# is BehindStopPct health points behind.
+# Playerbots.Tactics.Cc.DrAwareFromSkill = 40
+# Playerbots.Tactics.Cc.ChainsFromSkill = 65
+# Playerbots.Tactics.Cc.MinExpectedMs = 3000
+# Playerbots.Tactics.Cc.DrMissPctAtSkill1 = 40
+# Playerbots.Tactics.Cc.DrMissPctAtSkill99 = 0
+# Playerbots.Tactics.Cc.ChainLeadMsAtSkill1 = 0
+# Playerbots.Tactics.Cc.ChainLeadMsAtSkill99 = 300
+# Playerbots.Tactics.Cc.WrongTargetPctAtSkill1 = 50
+# Playerbots.Tactics.Cc.WrongTargetPctAtSkill99 = 0
+# Playerbots.Tactics.Cc.PatientHoldMs = 3000
+# Playerbots.Tactics.Cc.BehindStopPct = 30
+#
+# Avoid: OwnBreakPct is the share of the bot's damage that breaks its team's breakable CC (Focus). A bot breaks a CC on
+# itself (trinket, racials) when it matters: a stun, fear, horror, incapacitate, disorient, sleep or cyclone with
+# MinLeftMs or more left while the bot or its partner is at or below LowHealthPct % health or being burst; any other
+# CC it breaks with WastedBreakPct (Wisdom; one answer per bot and 10 s), except that from IgnoreRootsFromSkill
+# (Wisdom) it never breaks a root, snare or silence.
+# Playerbots.Tactics.Avoid.OwnBreakPctAtSkill1 = 60
+# Playerbots.Tactics.Avoid.OwnBreakPctAtSkill99 = 5
+# Playerbots.Tactics.Avoid.WastedBreakPctAtSkill1 = 70
+# Playerbots.Tactics.Avoid.WastedBreakPctAtSkill99 = 0
+# Playerbots.Tactics.Avoid.IgnoreRootsFromSkill = 65
+# Playerbots.Tactics.Avoid.MinLeftMs = 2500
+# Playerbots.Tactics.Avoid.LowHealthPct = 40
+# (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability); larger values are
+# capped.)
+
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).
 # When the server slows down, fewer bots are kept active to reduce load.

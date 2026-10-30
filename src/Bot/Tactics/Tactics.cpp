@@ -13,6 +13,8 @@
 #include <sstream>
 #include <vector>
 
+#include "ArenaCc.h"
+#include "ArenaCcSpells.h"
 #include "ArenaFocus.h"
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
@@ -27,6 +29,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PvpTestCounters.h"
 #include "StringConvert.h"
 #include "TacticGate.h"
 #include "ThreadCheck.h"
@@ -1938,6 +1941,658 @@ void RunFocusSelftest(ChatHandler* handler)
     handler->PSendSysMessage("TACTICS selftest focus: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
+
+// The core's DR rules for one player target of player casters (Unit::GetDiminishing, IncrDiminishing,
+// ApplyDiminishingAura and ApplyDiminishingToDuration's table, Spell::DoSpellHitOnUnit's order: the level is read, the
+// count raised, then the duration cut), written apart from DrMemory so that the selftest proves the memory against
+// them without a live unit (G4b's lab run checks the core itself through the atImmune counter)
+struct CcReferenceDr
+{
+    std::array<bool, CC_DR_GROUP_COUNT> Exists{};
+    std::array<uint8, CC_DR_GROUP_COUNT> HitCount{};
+    std::array<bool, CC_DR_GROUP_COUNT> Active{};     // an aura of the group is up (stack > 0)
+    std::array<uint32, CC_DR_GROUP_COUNT> EndMs{};    // when the group's aura is removed, while Active
+    std::array<uint32, CC_DR_GROUP_COUNT> HitTime{};  // when the group's last aura was removed
+
+    void Advance(uint32 nowMs)
+    {
+        for (uint8 group = 0; group < CC_DR_GROUP_COUNT; ++group)
+        {
+            if (Active[group] && nowMs >= EndMs[group])
+            {
+                Active[group] = false;
+                HitTime[group] = EndMs[group];
+            }
+        }
+    }
+
+    uint8 Level(uint8 group, uint32 nowMs)
+    {
+        Advance(nowMs);
+        if (!Exists[group] || !HitCount[group])
+            return 0;
+
+        if (!Active[group] && nowMs - HitTime[group] > CC_DR_RESET_MS)
+        {
+            HitCount[group] = 0;
+            return 0;
+        }
+
+        return HitCount[group];
+    }
+
+    // The duration the CC lands for, 0 when the target is immune
+    uint32 Land(CcSpellData const& spell, uint32 nowMs)
+    {
+        constexpr std::array<float, CC_DR_LEVEL_IMMUNE + 1> Mods = {1.0f, 0.5f, 0.25f, 0.0f};
+        uint8 const group = spell.Group;
+        uint8 const level = Level(group, nowMs);
+        bool const counts = spell.DrType == DRTYPE_ALL || spell.DrType == DRTYPE_PLAYER;
+        if (counts && !Exists[group])
+        {
+            Exists[group] = true;
+            HitCount[group] = 1;
+            HitTime[group] = nowMs;
+        }
+        else if (counts && HitCount[group] < CC_DR_LEVEL_IMMUNE)
+            ++HitCount[group];
+
+        int32 duration = static_cast<int32>(spell.BaseMs);
+        if (spell.PvpCapMs > 0 && duration > static_cast<int32>(spell.PvpCapMs))
+            duration = static_cast<int32>(spell.PvpCapMs);
+
+        float const mod = counts ? Mods[std::min<uint8>(level, CC_DR_LEVEL_IMMUNE)] : 1.0f;
+        duration = static_cast<int32>(duration * mod);
+        if (duration <= 0)
+            return 0;
+
+        uint32 const endMs = nowMs + static_cast<uint32>(duration);
+        EndMs[group] = Active[group] ? std::max(EndMs[group], endMs) : endMs;
+        Active[group] = true;
+        return static_cast<uint32>(duration);
+    }
+
+    // The group's aura removed early (damage, trinket, dispel)
+    void EndEarly(uint8 group, uint32 atMs)
+    {
+        if (Active[group] && atMs < EndMs[group])
+            EndMs[group] = atMs;
+    }
+
+    // The CC aura a bot sees on the target: the group whose aura ends last, 0 for none
+    void Visible(uint32 nowMs, uint8& group, uint32& endMs)
+    {
+        Advance(nowMs);
+        group = 0;
+        endMs = 0;
+        for (uint8 index = 1; index < CC_DR_GROUP_COUNT; ++index)
+        {
+            if (Active[index] && (!group || EndMs[index] > endMs))
+            {
+                group = index;
+                endMs = EndMs[index];
+            }
+        }
+    }
+};
+
+void RunCcSelftest(ChatHandler* handler)
+{
+    static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
+    static_assert(CC_DR_GROUP_COUNT == DIMINISHING_DRAGONS_BREATH + 1, "the core's DiminishingGroup changed");
+    static_assert(CC_DR_LEVEL_IMMUNE == DIMINISHING_LEVEL_IMMUNE, "the core's DR levels changed");
+
+    uint32 checks = 0;
+    uint32 failures = 0;
+    auto const check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (ok)
+            return;
+
+        ++failures;
+        handler->PSendSysMessage("TACTICS selftest cc FAILED: {}", what);
+    };
+    // |hits / total - percent| <= tolerance points
+    auto const withinRate = [](uint32 hits, uint32 total, uint32 percent, uint32 tolerance)
+    {
+        int64 const difference = static_cast<int64>(hits) * 100 - static_cast<int64>(percent) * total;
+        return (difference < 0 ? -difference : difference) <= static_cast<int64>(tolerance) * total;
+    };
+
+    constexpr uint64 Seed = 4343;
+    constexpr uint64 Enemy = 7001;
+    constexpr float Linear = 1.0f;
+    constexpr uint8 Disorient = DIMINISHING_DISORIENT;
+    constexpr uint8 Fear = DIMINISHING_FEAR;
+    constexpr uint8 Stun = DIMINISHING_CONTROLLED_STUN;
+    CcConfig const config{};
+    // The attribute defaults: every ability the skill (0 at skill 0), every trait 50
+    auto const plain = [](uint8 skill)
+    {
+        BotAttributeValues values;
+        for (uint32 index = 0; index < BOT_ATTRIBUTE_COUNT; ++index)
+            values.Value[index] = index < BOT_ABILITY_COUNT ? skill : 50;
+
+        return values;
+    };
+    auto const params = [&](uint8 skill)
+    { return ComputeCcParams(skill, plain(skill), SKILL_GATE_FULL, Linear, config); };
+    auto const groupName = [](uint8 group)
+    { return group < PVPTEST_DR_GROUP_COUNT ? PVPTEST_DR_GROUP_NAMES[group] : "?"; };
+    auto const makeSpell = [](uint8 group, uint8 drType, uint32 baseMs, uint32 capMs, uint32 castMs, float rangeYards)
+    {
+        CcSpellData spell;
+        spell.AuraSpellId = 1;
+        spell.Group = group;
+        spell.DrType = drType;
+        spell.BaseMs = baseMs;
+        spell.PvpCapMs = capMs;
+        spell.CastMs = castMs;
+        spell.RangeYards = rangeYards;
+        spell.Valid = true;
+        return spell;
+    };
+    auto const print = [&](std::string const& label, uint32 spellId, CcSpellData const& spell, bool rowBreaks)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        char const* spellName = info && info->SpellName[0] ? info->SpellName[0] : "?";
+        handler->PSendSysMessage(
+            "TACTICS selftest cc: {} (spell {} {}) -> group {} ({}), aura {}, base {} ms, cap {} ms, cast {} ms, range "
+            "{:.0f} yd, damage breaks: row {} core {}",
+            label, spellId, spellName, groupName(spell.Group), spell.Group, spell.AuraSpellId, spell.BaseMs,
+            spell.PvpCapMs, spell.CastMs, spell.RangeYards, rowBreaks, spell.DamageInterrupts);
+    };
+
+    constexpr int8 Polymorph = CcOptionIndex("polymorph");
+    constexpr int8 FearOption = CcOptionIndex("fear on cc");
+    constexpr int8 Shackle = CcOptionIndex("shackle undead");
+    constexpr int8 Sap = CcOptionIndex("sap");
+    constexpr int8 Scream = CcOptionIndex("psychic scream");
+    constexpr int8 Repentance = CcOptionIndex("repentance");
+    static_assert(Polymorph != CC_NONE && FearOption != CC_NONE && Shackle != CC_NONE && Sap != CC_NONE &&
+                      Scream != CC_NONE && Repentance != CC_NONE,
+                  "the selftest's rows are in CC_OPTIONS");
+
+    // 1. Every row's DR group, base duration, PvP cap, cast time and range from the core; hex as a probe (no action
+    // until G4d). The plan's facts: the groups of repentance, freezing trap (its trap object's spell) and hex.
+    CcSpellTable const& spells = GetCcSpellTable();
+    bool allValid = true;
+    bool allControl = true;
+    for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+    {
+        CcOption const& option = CC_OPTIONS[index];
+        print(option.Action, option.SpellId, spells[index], option.BreaksOnDamage);
+        allValid = allValid && spells[index].Valid;
+        allControl = allControl && IsPvpTestCcGroup(spells[index].Group);
+    }
+
+    constexpr uint32 HexSpellId = 51514;
+    print("hex (probe, no action)", HexSpellId, ResolveCcSpell(HexSpellId), true);
+    check(allValid, "an option's spell is missing from the spell store");
+    check(allControl, "an option's spell has no crowd-control DR group in the core");
+    check(spells[Polymorph].Group != spells[FearOption].Group, "polymorph and fear share a DR group");
+    check(spells[Polymorph].PvpCapMs == 10000 && spells[Repentance].PvpCapMs == 6000 &&
+              ExpectedMs(spells[Polymorph], 0, true) == std::min<uint32>(spells[Polymorph].BaseMs, 10000),
+          "the PvP caps are not polymorph 10 s and repentance 6 s");
+
+    // 2. Durations by level: the PvP cap on a player, then 1, 1/2, 1/4, immune; no cap and no count on a creature for
+    // a player-only group; a group of every target counts on a creature; a limit-only group is capped, never cut
+    CcSpellData const longFear = makeSpell(Fear, DRTYPE_PLAYER, 20000, 10000, 1500, 20.0f);
+    check(ExpectedMs(longFear, 0, true) == 10000 && ExpectedMs(longFear, 1, true) == 5000 &&
+              ExpectedMs(longFear, 2, true) == 2500 && ExpectedMs(longFear, 3, true) == 0,
+          "durations by level on a player are not 10000/5000/2500/0");
+    check(ExpectedMs(longFear, 2, false) == 20000, "a player-only group is capped or cut on a creature");
+    CcSpellData const stunAll = makeSpell(Stun, DRTYPE_ALL, 6000, 10000, 0, 5.0f);
+    check(ExpectedMs(stunAll, 1, false) == 3000 && ExpectedMs(stunAll, 3, false) == 0 &&
+              ExpectedMs(stunAll, 0, true) == 6000,
+          "a stun's DR does not count on a creature");
+    CcSpellData const limitOnly = makeSpell(DIMINISHING_LIMITONLY, DRTYPE_NONE, 20000, 10000, 0, 30.0f);
+    check(ExpectedMs(limitOnly, 2, true) == 10000, "a limit-only group is not capped or is cut");
+
+    // 3. PickCc on a synthetic table
+    CcSpellTable synthetic{};
+    synthetic[Polymorph] = makeSpell(Disorient, DRTYPE_PLAYER, 50000, 10000, 1500, 30.0f);
+    synthetic[FearOption] = makeSpell(Fear, DRTYPE_PLAYER, 20000, 10000, 1500, 20.0f);
+    synthetic[Shackle] = makeSpell(Disorient, DRTYPE_PLAYER, 50000, 10000, 1500, 30.0f);
+    synthetic[Sap] = makeSpell(Disorient, DRTYPE_PLAYER, 45000, 10000, 0, 10.0f);
+    synthetic[Scream] = makeSpell(Fear, DRTYPE_PLAYER, 8000, 10000, 0, 0.0f);
+    CcParams const aware = params(99);
+    CcParams const unaware = params(20);
+    CcPickInput input;
+    input.ReadyMask = CcOptionBit(Polymorph);
+    input.DistanceYards = 10.0f;
+    input.Levels[Disorient] = CC_DR_LEVEL_IMMUNE;
+    check(PickCc(input, synthetic, aware) == CC_NONE, "a DR-aware bot casts into IMMUNE");
+    check(PickCc(input, synthetic, unaware) == Polymorph, "a bot without DR awareness knows the target is immune");
+    input.ReadyMask |= CcOptionBit(FearOption);
+    check(PickCc(input, synthetic, aware) == FearOption, "a DR-aware bot does not take the other group at IMMUNE");
+    input.Levels[Disorient] = 1;
+    bool fresher = PickCc(input, synthetic, aware) == FearOption;
+    input.Levels[Disorient] = 0;
+    input.Levels[Fear] = 1;
+    fresher = fresher && PickCc(input, synthetic, aware) == Polymorph;
+    check(fresher, "a DR-aware bot does not prefer the group with less DR");
+    input.Levels = {};
+    input.ActiveGroup = Fear;
+    bool alternates = PickCc(input, synthetic, aware) == Polymorph;
+    input.ActiveGroup = Disorient;
+    alternates = alternates && PickCc(input, synthetic, aware) == FearOption;
+    input.ReadyMask = CcOptionBit(Polymorph);
+    alternates =
+        alternates && PickCc(input, synthetic, aware) == CC_NONE && PickCc(input, synthetic, unaware) == Polymorph;
+    check(alternates, "a DR-aware bot casts the DR group already on the target");
+    input.ActiveGroup = 0;
+    input.Levels[Disorient] = 2;
+    check(PickCc(input, synthetic, aware) == CC_NONE && PickCc(input, synthetic, unaware) == Polymorph,
+          "a DR-aware bot casts a third CC of a group (a quarter of its duration)");
+    CcPickInput undead;
+    undead.ReadyMask = CcOptionBit(Shackle);
+    undead.DistanceYards = 10.0f;
+    bool playerOnly = PickCc(undead, synthetic, aware) == CC_NONE;
+    undead.TargetIsPlayer = false;
+    playerOnly = playerOnly && PickCc(undead, synthetic, aware) == Shackle;
+    check(playerOnly, "a creature-only CC is cast on a player, or not on the creature");
+    CcPickInput opener;
+    opener.ReadyMask = CcOptionBit(Sap);
+    opener.DistanceYards = 5.0f;
+    bool stealth = PickCc(opener, synthetic, aware) == CC_NONE;
+    opener.Stealthed = true;
+    stealth = stealth && PickCc(opener, synthetic, aware) == CC_NONE;
+    opener.TargetInCombat = false;
+    stealth = stealth && PickCc(opener, synthetic, aware) == Sap;
+    check(stealth, "sap is cast without stealth or on a target in combat");
+    CcPickInput reach;
+    reach.ReadyMask = CcOptionBit(FearOption);
+    reach.DistanceYards = 25.0f;
+    bool ranged = PickCc(reach, synthetic, aware) == CC_NONE;
+    reach.DistanceYards = 15.0f;
+    ranged = ranged && PickCc(reach, synthetic, aware) == FearOption;
+    reach.ReadyMask = CcOptionBit(Scream);
+    reach.DistanceYards = 9.0f;
+    ranged = ranged && PickCc(reach, synthetic, aware) == CC_NONE;
+    reach.DistanceYards = 7.0f;
+    ranged = ranged && PickCc(reach, synthetic, aware) == Scream;
+    check(ranged, "a CC out of its range or reach is picked, or one in range is not");
+
+    // 4. ChainDue: at once on a free target, never over the partner's cast, castMs + leadMs before the end
+    CcChainView view;
+    bool chain = ChainDue(view, 1500, 300, false);
+    view.PartnerCastPending = true;
+    chain = chain && !ChainDue(view, 1500, 300, true);
+    view.PartnerCastPending = false;
+    view.AuraOnTarget = true;
+    view.RemainingMs = 1801;
+    chain = chain && !ChainDue(view, 1500, 300, true);
+    view.RemainingMs = 1800;
+    chain = chain && ChainDue(view, 1500, 300, true) && !ChainDue(view, 1500, 300, false);
+    check(chain, "ChainDue does not start castMs + leadMs before the end, or chains over the partner's cast");
+
+    // 5. Two bots at skill 99 control one healer for 60 s in 100 ms ticks: the mage's polymorph and the warlock's fear,
+    // each bot with its own memory of the CC it saw land, the world as the core's rules
+    {
+        constexpr uint64 Healer = 9001;
+        constexpr uint32 Tick = 100;
+        constexpr uint32 Length = 60000;
+        struct TimelineBot
+        {
+            uint64 Guid = 0;
+            int8 Option = CC_NONE;
+            DrMemory Memory;
+            bool Casting = false;
+            uint32 LandMs = 0;
+        };
+        std::array<TimelineBot, 2> bots;
+        bots[0].Guid = 101;
+        bots[0].Option = Polymorph;
+        bots[1].Guid = 102;
+        bots[1].Option = FearOption;
+        CcReferenceDr world;
+        uint32 landings = 0;
+        uint32 chained = 0;
+        bool immune = false;
+        bool third = false;
+        bool gap = false;
+        bool sameGroup = false;
+        bool memoryWrong = false;
+        for (uint32 now = 0; now <= Length; now += Tick)
+        {
+            for (TimelineBot& bot : bots)
+            {
+                if (!bot.Casting || now < bot.LandMs)
+                    continue;
+
+                bot.Casting = false;
+                CcSpellData const& spell = synthetic[bot.Option];
+                uint8 activeGroup = 0;
+                uint32 activeEnd = 0;
+                world.Visible(now, activeGroup, activeEnd);
+                if (activeGroup)
+                {
+                    ++chained;
+                    gap = gap || activeEnd - now > aware.ChainLeadMs;
+                    sameGroup = sameGroup || activeGroup == spell.Group;
+                }
+
+                uint8 const level = world.Level(spell.Group, now);
+                for (TimelineBot const& observer : bots)
+                    memoryWrong = memoryWrong || observer.Memory.Level(Healer, spell.Group, now) != level;
+
+                third = third || level >= 2;
+                uint32 const duration = world.Land(spell, now);
+                immune = immune || !duration;
+                if (!duration)
+                    continue;
+
+                ++landings;
+                for (TimelineBot& observer : bots)
+                    observer.Memory.Observe(Healer, spell.Group, now, duration, aware.DrMissPct, observer.Guid);
+            }
+
+            for (size_t index = 0; index < bots.size(); ++index)
+            {
+                TimelineBot& bot = bots[index];
+                if (bot.Casting)
+                    continue;
+
+                CcPickInput pick;
+                pick.ReadyMask = CcOptionBit(bot.Option);
+                pick.DistanceYards = 10.0f;
+                uint32 activeEnd = 0;
+                world.Visible(now, pick.ActiveGroup, activeEnd);
+                pick.Levels = bot.Memory.Levels(Healer, now);
+                int8 const option = PickCc(pick, synthetic, aware);
+                if (option == CC_NONE)
+                    continue;
+
+                CcChainView seen;
+                seen.AuraOnTarget = pick.ActiveGroup != 0;
+                seen.RemainingMs = seen.AuraOnTarget ? activeEnd - now : 0;
+                seen.PartnerCastPending = bots[1 - index].Casting;
+                if (!ChainDue(seen, synthetic[option].CastMs, aware.ChainLeadMs, aware.Chains))
+                    continue;
+
+                immune = immune || pick.Levels[synthetic[option].Group] >= CC_DR_LEVEL_IMMUNE;
+                bot.Casting = true;
+                bot.LandMs = now + synthetic[option].CastMs;
+            }
+        }
+
+        check(landings == 6 && chained == 4,
+              Acore::StringFormat("the two-bot timeline landed {} CC, {} of them chained (expected 6 and 4)", landings,
+                                  chained));
+        check(!immune, "a bot cast at a target its memory or the core holds immune");
+        check(!gap, "a chained CC landed more than the lead before the current one's end");
+        check(!sameGroup, "a chain did not alternate DR groups");
+        check(!third, "a third CC of a group landed before the 15 s reset");
+        check(!memoryWrong, "a bot's memory differed from the core's DR at a landing");
+    }
+
+    // 6. The memory itself: the strict 15 s reset after the end, an early end, the cap at immune, the oldest enemy
+    // making room
+    {
+        DrMemory memory;
+        memory.Observe(Enemy, Disorient, 0, 1000, 0, Seed);
+        check(memory.Level(Enemy, Disorient, 16000) == 1 && memory.Level(Enemy, Disorient, 16001) == 0 &&
+                  memory.Level(Enemy, Fear, 0) == 0,
+              "the memory does not reset strictly 15 s after the aura's end");
+        memory.Clear();
+        memory.Observe(Enemy, Fear, 0, 10000, 0, Seed);
+        memory.Ended(Enemy, Fear, 2000);
+        check(memory.Level(Enemy, Fear, 17000) == 1 && memory.Level(Enemy, Fear, 17001) == 0,
+              "an early end does not move the memory's reset");
+        memory.Clear();
+        for (uint32 hit = 0; hit < 4; ++hit)
+            memory.Observe(Enemy, Stun, hit * 100, 1000, 0, Seed);
+
+        check(memory.Level(Enemy, Stun, 500) == CC_DR_LEVEL_IMMUNE &&
+                  memory.Levels(Enemy, 500)[Stun] == CC_DR_LEVEL_IMMUNE,
+              "the memory does not stop at immune");
+        memory.Clear();
+        for (uint64 enemy = 1; enemy <= CC_MEMORY_ENEMIES + 1; ++enemy)
+            memory.Observe(enemy, Disorient, static_cast<uint32>(enemy) * 10, 5000, 0, Seed);
+
+        check(memory.Level(1, Disorient, 100) == 0 && memory.Level(2, Disorient, 100) == 1 &&
+                  memory.Level(CC_MEMORY_ENEMIES + 1, Disorient, 100) == 1 && memory.Level(99, Disorient, 100) == 0,
+              "the memory's oldest enemy does not make room");
+    }
+
+    // 7. Synthetic timelines (400 x 24 CC of three groups, early ends): at skill 99 the memory matches the core's DR
+    // at every CC; at skill 50 it misses DrMissPct of the CC that land on a started count
+    {
+        std::array<CcSpellData, 3> const kinds = {makeSpell(Disorient, DRTYPE_PLAYER, 50000, 10000, 1500, 30.0f),
+                                                  makeSpell(Fear, DRTYPE_PLAYER, 20000, 10000, 1500, 20.0f),
+                                                  makeSpell(Stun, DRTYPE_ALL, 6000, 10000, 0, 5.0f)};
+        struct TimelineResult
+        {
+            uint32 Events = 0;
+            uint32 Mismatches = 0;
+            uint32 Eligible = 0;
+            uint32 Missed = 0;
+        };
+        auto const run = [&](CcParams const& bot)
+        {
+            TimelineResult result;
+            for (uint32 timeline = 0; timeline < 400; ++timeline)
+            {
+                uint64 const enemy = 50000 + timeline;
+                CcReferenceDr world;
+                DrMemory memory;
+                std::array<uint32, CC_DR_GROUP_COUNT> pendingEnd{};
+                uint32 now = 1000;
+                for (uint32 event = 0; event < 24; ++event)
+                {
+                    uint64 const roll = SplitMix64((static_cast<uint64>(timeline) << 32) ^ event ^ Seed);
+                    now += static_cast<uint32>(roll % 200) * 100;
+                    for (uint8 group = 0; group < CC_DR_GROUP_COUNT; ++group)
+                    {
+                        if (pendingEnd[group] && pendingEnd[group] <= now)
+                        {
+                            memory.Ended(enemy, group, pendingEnd[group]);
+                            pendingEnd[group] = 0;
+                        }
+                    }
+
+                    CcSpellData const& spell = kinds[(roll >> 16) % kinds.size()];
+                    world.Advance(now);
+                    if (world.Active[spell.Group])
+                        continue;
+
+                    ++result.Events;
+                    uint8 const believed = memory.Level(enemy, spell.Group, now);
+                    uint8 const level = world.Level(spell.Group, now);
+                    result.Mismatches += believed != level ? 1 : 0;
+                    uint32 const duration = world.Land(spell, now);
+                    if (!duration)
+                        continue;
+
+                    bool const counted = memory.Observe(enemy, spell.Group, now, duration, bot.DrMissPct, Seed);
+                    if (believed > 0)
+                    {
+                        ++result.Eligible;
+                        result.Missed += counted ? 0 : 1;
+                    }
+
+                    if ((roll >> 32) % 100 < 25)
+                    {
+                        uint32 const endMs = now + duration * static_cast<uint32>((roll >> 40) % 90 + 10) / 100;
+                        world.EndEarly(spell.Group, endMs);
+                        pendingEnd[spell.Group] = endMs;
+                    }
+                }
+            }
+
+            return result;
+        };
+
+        TimelineResult const expert = run(aware);
+        check(expert.Events > 5000 && expert.Mismatches == 0,
+              Acore::StringFormat("at skill 99 the memory differs from the core's DR at {} of {} CC", expert.Mismatches,
+                                  expert.Events));
+        CcParams const middle = params(50);
+        TimelineResult const average = run(middle);
+        check(average.Eligible >= 500 && withinRate(average.Missed, average.Eligible, middle.DrMissPct, 4),
+              Acore::StringFormat("at skill 50 the memory missed {} of {} CC on a started count (expected about {} %)",
+                                  average.Missed, average.Eligible, middle.DrMissPct));
+        check(average.Mismatches > 0, "at skill 50 the memory never errs");
+    }
+
+    // 8. ShouldBreakCc at skills 20 and 80: a root, snare or silence never at 80; a stun with the partner low always;
+    // the wasted breaks at their rates
+    {
+        CcParams const low = params(20);
+        CcParams const high = params(80);
+        constexpr uint32 Windows = 4000;
+        constexpr std::array<CcKind, 3> Minor = {CcKind::Root, CcKind::Snare, CcKind::Silence};
+        uint32 minorHigh = 0;
+        uint32 rootLow = 0;
+        uint32 stunPartner = 0;
+        uint32 stunWastedHigh = 0;
+        for (uint32 window = 0; window < Windows; ++window)
+        {
+            uint32 const now = window * CC_BREAK_WINDOW_MS;
+            CcBreakView minor;
+            minor.SelfLow = true;
+            minor.PartnerLow = true;
+            minor.Burst = true;
+            for (CcKind kind : Minor)
+            {
+                minor.Kind = kind;
+                minor.RemainingMs = 8000;
+                minorHigh += ShouldBreakCc(minor, high, Seed, now) ? 1 : 0;
+                minor.RemainingMs = 1000;
+                minorHigh += ShouldBreakCc(minor, high, Seed, now) ? 1 : 0;
+            }
+
+            CcBreakView root;
+            root.Kind = CcKind::Root;
+            root.RemainingMs = 8000;
+            rootLow += ShouldBreakCc(root, low, Seed, now) ? 1 : 0;
+            CcBreakView stun;
+            stun.Kind = CcKind::Stun;
+            stun.RemainingMs = 4000;
+            stun.PartnerLow = true;
+            stunPartner += ShouldBreakCc(stun, low, Seed, now) && ShouldBreakCc(stun, high, Seed, now) ? 1 : 0;
+            stun.PartnerLow = false;
+            stunWastedHigh += ShouldBreakCc(stun, high, Seed, now) ? 1 : 0;
+        }
+
+        check(minorHigh == 0, Acore::StringFormat("skill 80 broke a root, snare or silence {} times", minorHigh));
+        check(stunPartner == Windows, "a stun with the partner low is not broken at skill 20 or 80");
+        CcBreakView late;
+        late.Kind = CcKind::Stun;
+        late.RemainingMs = 2000;
+        late.PartnerLow = true;
+        check(!CcMatters(late, high), "a stun with less than MinLeftMs left matters");
+        check(
+            withinRate(stunWastedHigh, Windows, high.WastedBreakPct, 4),
+            Acore::StringFormat("skill 80 wasted {} of {} breaks on a stun that does not matter (expected about {} %)",
+                                stunWastedHigh, Windows, high.WastedBreakPct));
+        check(withinRate(rootLow, Windows, low.WastedBreakPct, 4),
+              Acore::StringFormat("skill 20 broke {} of {} roots (expected about {} %)", rootLow, Windows,
+                                  low.WastedBreakPct));
+    }
+
+    // 9. Roll rates: never, always, the chance per window, the same answer within a window and for the same input,
+    // independent salts; the wrong-target and own-break shares over skill
+    {
+        constexpr uint32 Windows = 5000;
+        constexpr uint32 WindowMs = 1000;
+        uint32 always = 0;
+        uint32 never = 0;
+        uint32 some = 0;
+        uint32 both = 0;
+        bool stable = true;
+        uint64 const mixed = SplitMix64(Seed ^ CcSalt::DrMiss);
+        for (uint32 window = 0; window < Windows; ++window)
+        {
+            uint32 const now = window * WindowMs;
+            always += RollWindow(Seed, CcSalt::DrMiss, 100, WindowMs, now) ? 1 : 0;
+            never += RollWindow(Seed, CcSalt::DrMiss, 0, WindowMs, now) ? 1 : 0;
+            bool const hit = RollWindow(Seed, CcSalt::DrMiss, 37, WindowMs, now);
+            some += hit ? 1 : 0;
+            both += hit && RollWindow(Seed, CcSalt::WastedBreak, 37, WindowMs, now) ? 1 : 0;
+            bool const sameWindow = TacticUseWindow(mixed, WindowMs, now) == TacticUseWindow(mixed, WindowMs, now + 1);
+            stable = stable && hit == RollWindow(Seed, CcSalt::DrMiss, 37, WindowMs, now) &&
+                     (!sameWindow || hit == RollWindow(Seed, CcSalt::DrMiss, 37, WindowMs, now + 1));
+        }
+
+        check(always == Windows && never == 0, "RollWindow at 100 % misses or at 0 % hits");
+        check(withinRate(some, Windows, 37, 3), Acore::StringFormat("RollWindow at 37 % hit {} of {}", some, Windows));
+        check(stable, "RollWindow answers differently for the same input or within one window");
+        check(withinRate(both, Windows, 14, 3), "two salts' rolls are not independent");
+        CcParams const novice = params(1);
+        uint32 wrongNovice = 0;
+        uint32 wrongExpert = 0;
+        uint32 ownNovice = 0;
+        uint32 ownExpert = 0;
+        for (uint32 window = 0; window < Windows; ++window)
+        {
+            uint32 const now = window * CC_BREAK_WINDOW_MS;
+            wrongNovice += CcWrongTarget(novice, Seed, now) ? 1 : 0;
+            wrongExpert += CcWrongTarget(aware, Seed, now) ? 1 : 0;
+            ownNovice += CcBreaksOwn(novice, Seed, now) ? 1 : 0;
+            ownExpert += CcBreaksOwn(aware, Seed, now) ? 1 : 0;
+        }
+
+        check(novice.WrongTargetPct == 50 && withinRate(wrongNovice, Windows, 50, 4) && wrongExpert == 0,
+              Acore::StringFormat("wrong-target share {} of {} at skill 1, {} at skill 99", wrongNovice, Windows,
+                                  wrongExpert));
+        check(
+            novice.OwnBreakPct == 60 && withinRate(ownNovice, Windows, 60, 4) &&
+                withinRate(ownExpert, Windows, aware.OwnBreakPct, 3),
+            Acore::StringFormat("own-break share {} of {} at skill 1, {} at skill 99", ownNovice, Windows, ownExpert));
+    }
+
+    // 10. The parameters over skill and attributes
+    {
+        CcParams const full = ComputeCcParams(0, BotAttributeValues{}, SKILL_GATE_FULL, Linear, config);
+        check(full.DrAware && full.Chains && full.DrMissPct == 0 && full.IgnoresRoots && full.ChainLeadMs == 300 &&
+                  full.WrongTargetPct == 0 && full.WastedBreakPct == 0 && !full.StopsWhenBehind && full.HoldMs == 0,
+              "skill 0 is not full ability");
+        CcParams const thirty = params(30);
+        CcParams const fifty = params(50);
+        check(!thirty.DrAware && !thirty.Chains && fifty.DrAware && !fifty.Chains && fifty.DrMissPct == 20 &&
+                  params(70).Chains && !fifty.IgnoresRoots && params(70).IgnoresRoots,
+              "DR awareness from 40, chains from 65 or roots ignored from 65 do not hold");
+        CcParams const lazy = ComputeCcParams(50, plain(50), 30, Linear, config);
+        check(lazy.StopsWhenBehind && CcStopsBehind(lazy, 40, 70) && !CcStopsBehind(lazy, 40, 69) &&
+                  !CcStopsBehind(fifty, 40, 90),
+              "a low-effort bot does not stop controlling when behind, or a full-effort bot does");
+        BotAttributeValues patient = plain(50);
+        patient.Value[static_cast<uint32>(BotAttribute::Patience)] = 100;
+        CcParams const holder = ComputeCcParams(50, patient, SKILL_GATE_FULL, Linear, config);
+        check(holder.HoldMs == config.CcPatientHoldMs && fifty.HoldMs == 0 && CcHolds(holder, 2999, false) &&
+                  !CcHolds(holder, 3000, false) && !CcHolds(holder, 0, true),
+              "a patient bot does not hold its CC for the kill window, or a neutral one does");
+    }
+
+    // 11. The option table: the classes with a CC usable on players (the moon mark), one row per action
+    {
+        bool classes = true;
+        for (uint8 playerClass :
+             {CLASS_MAGE, CLASS_DRUID, CLASS_HUNTER, CLASS_WARLOCK, CLASS_ROGUE, CLASS_PRIEST, CLASS_PALADIN})
+            classes = classes && CcClassHasOption(playerClass);
+
+        for (uint8 playerClass : {CLASS_WARRIOR, CLASS_SHAMAN, CLASS_DEATH_KNIGHT})
+            classes = classes && !CcClassHasOption(playerClass);
+
+        check(classes, "the classes with a CC usable on players are not the seven of today's actions");
+        uint32 rogueRows = 0;
+        bool rows = true;
+        for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+        {
+            rogueRows += (CcClassMask(CLASS_ROGUE) & CcOptionBit(index)) ? 1 : 0;
+            rows = rows && CcOptionIndex(CC_OPTIONS[index].Action) == static_cast<int8>(index) &&
+                   CC_OPTIONS[index].PlayerClass >= CLASS_WARRIOR && CC_OPTIONS[index].PlayerClass <= CLASS_DRUID;
+        }
+
+        check(rows && rogueRows == 5, "an option row repeats an action or has no class, or the rogue has not 5 rows");
+    }
+
+    handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
 }  // namespace
 
 char const* TacticName(TacticId id)
@@ -2301,9 +2956,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 {
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
-        name != "focus")
+        name != "focus" && name != "cc")
     {
-        handler->PSendSysMessage("No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus", name);
+        handler->PSendSysMessage("No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc", name);
         return false;
     }
 
@@ -2321,6 +2976,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "focus")
         RunFocusSelftest(handler);
+
+    if (name.empty() || name == "cc")
+        RunCcSelftest(handler);
 
     return true;
 }

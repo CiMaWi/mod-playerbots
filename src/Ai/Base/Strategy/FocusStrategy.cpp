@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 
+#include "ArenaCc.h"
 #include "ArenaFocus.h"
 #include "Battleground.h"
 #include "FocusState.h"
@@ -101,24 +102,8 @@ bool FocusHealerClass(uint8 playerClass)
            playerClass == CLASS_SHAMAN;
 }
 
-// A class with a crowd-control option the bots use today (polymorph, cyclone/hibernate/roots, freezing trap,
-// fear/banish, blind, psychic scream/shackle, repentance/hammer); G4a widens the test
-bool FocusCanControl(uint8 playerClass)
-{
-    switch (playerClass)
-    {
-        case CLASS_MAGE:
-        case CLASS_DRUID:
-        case CLASS_HUNTER:
-        case CLASS_WARLOCK:
-        case CLASS_ROGUE:
-        case CLASS_PRIEST:
-        case CLASS_PALADIN:
-            return true;
-        default:
-            return false;
-    }
-}
+// A class with a crowd-control option usable on players (the CC policy's option table, ArenaCc.h)
+bool FocusCanControl(uint8 playerClass) { return CcClassHasOption(playerClass); }
 
 bool FocusPhysical(Player* player) { return PlayerbotAI::IsMelee(player) || player->getClass() == CLASS_HUNTER; }
 
