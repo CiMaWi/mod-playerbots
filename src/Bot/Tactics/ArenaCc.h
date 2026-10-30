@@ -577,6 +577,129 @@ inline bool ChainDue(CcChainView const& view, uint32 castMs, uint32 leadMs, bool
     return chains && view.RemainingMs <= castMs + leadMs;
 }
 
+// How long a chaining bot that is not due yet waits (ChainDue false with the aura on and no pending cast), 0 when
+// it is due or waits on something else: cc ready wakes then instead of a whole refresh later (G4c)
+inline uint32 CcChainWaitMs(CcChainView const& view, uint32 castMs, uint32 leadMs)
+{
+    if (view.PartnerCastPending || !view.AuraOnTarget || view.RemainingMs <= castMs + leadMs)
+        return 0;
+
+    return view.RemainingMs - castMs - leadMs;
+}
+
+// The DR groups whose CC takes control away (the chains' groups, CcKindLosesControl's kinds): every CC group but
+// roots, disarm, silence, banish (the target is immune) and the rest (DiminishingGroup values)
+constexpr bool CcGroupLosesControl(uint8 group)
+{
+    switch (group)
+    {
+        case DIMINISHING_OPENING_STUN:
+        case DIMINISHING_CONTROLLED_STUN:
+        case DIMINISHING_CYCLONE:
+        case DIMINISHING_DISORIENT:
+        case DIMINISHING_FEAR:
+        case DIMINISHING_HORROR:
+        case DIMINISHING_MIND_CONTROL:
+        case DIMINISHING_STUN:
+        case DIMINISHING_SCATTER_SHOT:
+        case DIMINISHING_SLEEP:
+        case DIMINISHING_DRAGONS_BREATH:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// When the team's loss-of-control CC on each enemy ends, as one bot saw it land and leave (G4c: the chain gap
+// counter tactics.chainGapMs). The latest end of the team's CC on the enemy; a fixed array, the oldest enemy makes
+// room.
+class CcChainClock
+{
+public:
+    // A team CC landing now follows the previous one (signedGapMs = now - its end: negative on top of it, positive
+    // after it) when that one is still up or ended at most windowMs ago
+    bool Gap(uint64 enemy, uint32 nowMs, uint32 windowMs, int32& signedGapMs, uint8& previousGroup) const
+    {
+        for (Slot const& slot : Slots)
+        {
+            if (slot.Guid != enemy || !enemy)
+                continue;
+
+            signedGapMs = static_cast<int32>(nowMs - slot.EndMs);
+            previousGroup = slot.Group;
+            return signedGapMs <= static_cast<int32>(windowMs);
+        }
+
+        return false;
+    }
+
+    // A team CC of the group seen landing for durationMs: the enemy stays controlled until the later end
+    void Land(uint64 enemy, uint8 group, uint32 nowMs, uint32 durationMs)
+    {
+        if (!enemy)
+            return;
+
+        Slot& slot = Find(enemy, nowMs);
+        uint32 const endMs = nowMs + durationMs;
+        if (static_cast<int32>(slot.EndMs - nowMs) <= 0 || static_cast<int32>(endMs - slot.EndMs) > 0)
+        {
+            slot.EndMs = endMs;
+            slot.Group = group;
+        }
+    }
+
+    // A team CC seen ending early (damage, dispel, trinket): the control ends now, or with the team's other CC still
+    // up for otherLeftMs
+    void Ended(uint64 enemy, uint32 nowMs, uint32 otherLeftMs)
+    {
+        uint32 const endMs = nowMs + otherLeftMs;
+        for (Slot& slot : Slots)
+        {
+            if (slot.Guid == enemy && enemy && static_cast<int32>(slot.EndMs - endMs) > 0)
+                slot.EndMs = endMs;
+        }
+    }
+
+    void Clear() { Slots = {}; }
+
+private:
+    struct Slot
+    {
+        uint64 Guid = 0;  // 0 = free
+        uint32 SeenMs = 0;
+        uint32 EndMs = 0;
+        uint8 Group = 0;  // the DR group of the CC that ends last
+    };
+
+    Slot& Find(uint64 enemy, uint32 nowMs)
+    {
+        Slot* target = &Slots[0];
+        for (Slot& slot : Slots)
+        {
+            if (slot.Guid == enemy)
+            {
+                target = &slot;
+                break;
+            }
+
+            if (!slot.Guid || (target->Guid &&
+                               static_cast<uint32>(nowMs - slot.SeenMs) > static_cast<uint32>(nowMs - target->SeenMs)))
+                target = &slot;
+        }
+
+        if (target->Guid != enemy)
+        {
+            *target = Slot{};
+            target->Guid = enemy;
+        }
+
+        target->SeenMs = nowMs;
+        return *target;
+    }
+
+    std::array<Slot, CC_MEMORY_ENEMIES> Slots{};
+};
+
 // The rolls of the shares, one answer per bot and CC_BREAK_WINDOW_MS: the CC goes on whoever is near instead of the CC
 // target; the bot's damage breaks its team's CC
 inline bool CcWrongTarget(CcParams const& params, uint64 seed, uint32 nowMs)

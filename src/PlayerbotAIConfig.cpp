@@ -1165,6 +1165,13 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Cc.WrongTargetPctAtSkill99", TacticCc.CcWrongTargetPctAtSkill99, MaxFocusPct);
     focusNumber("Cc.PatientHoldMs", TacticCc.CcPatientHoldMs, MaxFocusMs);
     focusNumber("Cc.BehindStopPct", TacticCc.CcBehindStopPct, MaxFocusPct);
+    // G4c: chains and the opponent memory; 0/1 switches
+    constexpr uint32 MaxCcSwitch = 1;
+    constexpr uint32 MaxCcEvents = 20;
+    focusNumber("Cc.ChainEnable", TacticCc.CcChainEnable, MaxCcSwitch);
+    focusNumber("Cc.OpponentMemoryEnable", TacticCc.CcOpponentMemoryEnable, MaxCcSwitch);
+    focusNumber("Cc.OpponentMinEvents", TacticCc.CcOpponentMinEvents, MaxCcEvents);
+    focusNumber("Cc.DispelMarginMs", TacticCc.CcDispelMarginMs, MaxFocusMs);
     focusNumber("Avoid.OwnBreakPctAtSkill1", TacticCc.AvoidOwnBreakPctAtSkill1, MaxFocusPct);
     focusNumber("Avoid.OwnBreakPctAtSkill99", TacticCc.AvoidOwnBreakPctAtSkill99, MaxFocusPct);
     focusNumber("Avoid.OwnBreakNeverFromSkill", TacticCc.AvoidOwnBreakNeverFromSkill, MaxCcSkill);
@@ -1173,6 +1180,13 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Avoid.IgnoreRootsFromSkill", TacticCc.AvoidIgnoreRootsFromSkill, MaxCcSkill);
     focusNumber("Avoid.MinLeftMs", TacticCc.AvoidMinLeftMs, MaxFocusMs);
     focusNumber("Avoid.LowHealthPct", TacticCc.AvoidLowHealthPct, MaxFocusPct);
+    // G4c-b: OwnCc's own-break guards
+    constexpr uint32 MaxCcMarginYards = 20;
+    focusNumber("Avoid.AoeGuardEnable", TacticCc.AvoidAoeGuardEnable, MaxCcSwitch);
+    focusNumber("Avoid.AoeGuardMarginYards", TacticCc.AvoidAoeGuardMarginYards, MaxCcMarginYards);
+    focusNumber("Avoid.DotGuardEnable", TacticCc.AvoidDotGuardEnable, MaxCcSwitch);
+    focusNumber("Avoid.PetCallOffEnable", TacticCc.AvoidPetCallOffEnable, MaxCcSwitch);
+    focusNumber("Avoid.ExcludeFightEnemies", TacticCc.AvoidExcludeFightEnemies, MaxCcSwitch);
 
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);

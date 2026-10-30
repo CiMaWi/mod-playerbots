@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <string_view>
 
 #include "ArenaCc.h"
@@ -271,9 +272,9 @@ bool CcFeedOn()
 
 // The bots that see a CC land on or leave the unit (DT.12: the combat log of their own fight): the caster and the
 // bots of its group on the unit's map (the same map thread: their state is safe to write, C3) with the Cc tactic
-// enabled here and DR awareness (below it the bot believes every CC lands in full: PickCc ignores the levels)
+// enabled here
 template <typename Fn>
-void CcForEachObserver(Unit* unit, Player* caster, Fn const& fn)
+void CcForEachTeamBot(Unit* unit, Player* caster, Fn const& fn)
 {
     auto const visit = [&](Player* member)
     {
@@ -281,12 +282,8 @@ void CcForEachObserver(Unit* unit, Player* caster, Fn const& fn)
             return;
 
         PlayerbotAI* const memberAI = GET_PLAYERBOT_AI(member);
-        if (!memberAI || !memberAI->TacticEnabledHere(TacticId::Cc))
-            return;
-
-        CcBotState& state = memberAI->GetCcState();
-        if (state.Params.DrAware)
-            fn(member, state);
+        if (memberAI && memberAI->TacticEnabledHere(TacticId::Cc))
+            fn(member, memberAI->GetCcState());
     };
 
     Group* const group = caster->GetGroup();
@@ -298,6 +295,70 @@ void CcForEachObserver(Unit* unit, Player* caster, Fn const& fn)
 
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         visit(ref->GetSource());
+}
+
+// Those of them with DR awareness feed their DR memory (below it the bot believes every CC lands in full: PickCc
+// ignores the levels)
+template <typename Fn>
+void CcForEachObserver(Unit* unit, Player* caster, Fn const& fn)
+{
+    CcForEachTeamBot(unit, caster,
+                     [&](Player* member, CcBotState& state)
+                     {
+                         if (state.Params.DrAware)
+                             fn(member, state);
+                     });
+}
+
+// tactics force dr's casts are not chains (CcSetForcedCasts)
+std::atomic<bool> ccForcedCasts{false};
+
+// G4c: a loss-of-control CC of the team landing on the enemy. The caster's gap to the team's previous one on it (a
+// chain: that one still up or ended within CC_CHAIN_WINDOW_MS) is counted while the harness counts and traced for the
+// spread (Logger.playerbots=6); then every team bot's clock takes the new end.
+void CcNoteChainLanding(Unit* unit, Player* caster, Aura const* aura, uint8 group, uint32 nowMs, uint32 durationMs)
+{
+    uint64 const enemy = unit->GetGUID().GetRawValue();
+    PlayerbotAI* const casterAI = GET_PLAYERBOT_AI(caster);
+    if (casterAI && casterAI->TacticEnabledHere(TacticId::Cc) && !ccForcedCasts.load(std::memory_order_relaxed))
+    {
+        CcBotState& state = casterAI->GetCcState();
+        int32 signedGapMs = 0;
+        uint8 previousGroup = 0;
+        if (state.Chain.Gap(enemy, nowMs, CC_CHAIN_WINDOW_MS, signedGapMs, previousGroup))
+        {
+            ++state.ChainsLanded;
+            state.LastChainGapMs = signedGapMs;
+            casterAI->CountTactic(TacticCounter::ChainGapMs,
+                                  static_cast<uint32>(signedGapMs < 0 ? -signedGapMs : signedGapMs));
+            casterAI->CountTactic(TacticCounter::Chains);
+            LOG_TRACE("playerbots",
+                      "CC chain: {} (skill {}, lead {} ms) {} ({}) on {} after {}, gap {} ms, lasts {} ms, at {} ms",
+                      caster->GetName(), casterAI->GetPvpSkill(), state.Params.ChainLeadMs,
+                      aura->GetSpellInfo()->SpellName[0], PVPTEST_DR_GROUP_NAMES[group % PVPTEST_DR_GROUP_COUNT],
+                      unit->GetName(), PVPTEST_DR_GROUP_NAMES[previousGroup % PVPTEST_DR_GROUP_COUNT], signedGapMs,
+                      durationMs, nowMs);
+        }
+    }
+
+    CcForEachTeamBot(unit, caster,
+                     [&](Player* /*member*/, CcBotState& state) { state.Chain.Land(enemy, group, nowMs, durationMs); });
+}
+
+// tactics.ccHeldMs (G4c, the CC uptime): how long the caster's loss of control held on an enemy player, whatever
+// ended it (the aura's DR'd and capped duration less what was left)
+void CcCountHeld(Unit const* unit, Player* caster, Aura const* aura)
+{
+    if (!sPlayerbotAIConfig.PvpTestEnable || !unit->IsPlayer())
+        return;
+
+    PlayerbotAI* const casterAI = GET_PLAYERBOT_AI(caster);
+    int32 const maxMs = aura->GetMaxDuration();
+    if (!casterAI || !casterAI->IsPvpTestCounting() || maxMs <= 0)
+        return;
+
+    casterAI->CountTactic(TacticCounter::CcHeldMs,
+                          static_cast<uint32>(maxMs - std::clamp<int32>(aura->GetDuration(), 0, maxMs)));
 }
 
 // A CC aura of a hostile player (or his pet) on a player or a player's pet: its DR group, else DIMINISHING_NONE
@@ -427,35 +488,56 @@ public:
                                                    static_cast<uint32>(durationMs), state.Params.DrMissPct,
                                                    member->GetGUID().GetCounter());
                           });
+        if (CcGroupLosesControl(static_cast<uint8>(group)))
+            CcNoteChainLanding(unit, caster, aura, static_cast<uint8>(group), nowMs, static_cast<uint32>(durationMs));
     }
 
     // Removed before its end (damage, dispel, trinket, death): the reset counts from now, or from the end of another
-    // aura of the group still on the unit
+    // aura of the group still on the unit; the team's control ends now, or with its other loss-of-control CC there
     void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode) override
     {
-        CcConsumeOwnBreak(unit, aurApp->GetBase(), mode);
-        if (mode == AURA_REMOVE_BY_EXPIRE || !CcFeedOn())
+        Aura const* const aura = aurApp->GetBase();
+        CcConsumeOwnBreak(unit, aura, mode);
+        if (!CcFeedOn())
             return;
 
-        Aura const* const aura = aurApp->GetBase();
         Player* caster = nullptr;
         DiminishingGroup const group = CcObservedGroup(unit, aura, caster);
         if (group == DIMINISHING_NONE)
             return;
 
+        bool const control = CcGroupLosesControl(static_cast<uint8>(group));
+        if (control)
+            CcCountHeld(unit, caster, aura);
+
+        if (mode == AURA_REMOVE_BY_EXPIRE)
+            return;
+
         uint32 otherLeftMs = 0;
+        uint32 teamControlLeftMs = 0;
         for (auto const& [spellId, application] : unit->GetAppliedAuras())
         {
             Aura const* const other = application->GetBase();
-            if (other != aura && GetDiminishingReturnsGroupForSpell(other->GetSpellInfo(), false) == group)
-                otherLeftMs =
-                    std::max<uint32>(otherLeftMs, static_cast<uint32>(std::max<int32>(other->GetDuration(), 0)));
+            if (other == aura)
+                continue;
+
+            DiminishingGroup const otherGroup = GetDiminishingReturnsGroupForSpell(other->GetSpellInfo(), false);
+            uint32 const leftMs = static_cast<uint32>(std::max<int32>(other->GetDuration(), 0));
+            if (otherGroup == group)
+                otherLeftMs = std::max(otherLeftMs, leftMs);
+
+            if (control && leftMs > teamControlLeftMs && CcGroupLosesControl(static_cast<uint8>(otherGroup)) &&
+                CcTeamCaster(other->GetCaster(), caster))
+                teamControlLeftMs = leftMs;
         }
 
         uint64 const enemy = unit->GetGUID().GetRawValue();
         uint32 const nowMs = getMSTime();
         CcForEachObserver(unit, caster, [&](Player* /*member*/, CcBotState& state)
                           { state.Memory.Ended(enemy, static_cast<uint8>(group), nowMs, otherLeftMs); });
+        if (control)
+            CcForEachTeamBot(unit, caster, [&](Player* /*member*/, CcBotState& state)
+                             { state.Chain.Ended(enemy, nowMs, teamControlLeftMs); });
     }
 };
 }  // namespace
@@ -551,6 +633,8 @@ std::vector<ObjectGuid> const& CcOwnExclusions(PlayerbotAI* botAI)
     consider(group ? group->GetTargetIcon(FOCUS_ICON_SKULL) : ObjectGuid::Empty);
     return state.Excluded;
 }
+
+void CcSetForcedCasts(bool on) { ccForcedCasts.store(on, std::memory_order_relaxed); }
 
 void CcCountOwnBreak(Unit* attacker, Unit* victim)
 {
@@ -673,22 +757,41 @@ bool CcReadyTrigger::IsActive()
         current->IsAlive() && bot->IsValidAttackTarget(current))
         target = current;
 
-    // No CC on a controlled target (G4c chains) or one immune to all (cyclone, banish, a bubble); a root on it is
-    // seen in PickCc (no root on top, the loss-of-control rows still go)
+    // No CC on a target immune to all (cyclone, banish, a bubble); a root on it is seen in PickCc (no root on top,
+    // the loss-of-control rows still go)
     ready = CcComboRowsOn(bot, state, ready, comboMask, target);
-    if (!ready || CcUnitControlled(target) || CcImmuneAll(target) || CcTeamBehind(bot, params))
+    if (!ready || CcImmuneAll(target) || CcTeamBehind(bot, params))
     {
         state.ReadySinceMs = 0;
         return false;
     }
 
-    // A patient bot holds a ready CC for the kill window: its own target low
+    // A controlled target: only a chaining bot (G4c, Cc.ChainEnable) goes on, and only on its team's CC (the visible
+    // aura that ends last: its remaining time and DR group); anyone else's control, or no chains, waits as in G4b. A
+    // teammate's CC on his cast bar at the target counts as pending.
+    bool const chains = params.Chains && sPlayerbotAIConfig.TacticCc.CcChainEnable != 0;
+    CcChainView view;
+    uint8 activeGroup = 0;
+    if (CcUnitControlled(target))
+    {
+        view.AuraOnTarget = chains && CcTeamControlAura(target, bot, view.RemainingMs, activeGroup);
+        if (!view.AuraOnTarget)
+        {
+            state.ReadySinceMs = 0;
+            return false;
+        }
+    }
+
+    if (chains)
+        view.PartnerCastPending = CcTeamCastingCcAt(bot, target->GetGUID());
+
+    // A patient bot holds a ready CC for the kill window: its own target low; a chain under way is not held
     if (!state.ReadySinceMs)
         state.ReadySinceMs = nowMs;
 
     bool const killWindow =
         current && current != target && current->IsAlive() && current->GetHealthPct() <= CC_KILL_WINDOW_PCT;
-    if (CcHolds(params, nowMs - state.ReadySinceMs, killWindow) || CcHealerNeeded(bot))
+    if ((!view.AuraOnTarget && CcHolds(params, nowMs - state.ReadySinceMs, killWindow)) || CcHealerNeeded(bot))
         return false;
 
     CcPickInput input;
@@ -701,11 +804,28 @@ bool CcReadyTrigger::IsActive()
     input.TargetInCombat = target->IsInCombat();
     input.Rooted = target->HasUnitState(UNIT_STATE_ROOT);
     input.ControlOnly = onMoon && target == ccTarget;
+    input.ActiveGroup = activeGroup;
     if (params.DrAware)
         input.Levels = state.Memory.Levels(target->GetGUID().GetRawValue(), nowMs);
 
+    // A chaining bot whose memory leaves no group that lands (immune, too short) has no row and waits
     int8 const row = PickCc(input, state.Spells, params);
-    if (row == CC_NO_ROW || !bot->IsWithinLOSInMap(target))
+    if (row == CC_NO_ROW)
+        return false;
+
+    // The chain's moment: the CC lands ChainLeadMs before the team's CC ends; the answer is asked again at that
+    // moment rather than a whole refresh later (the engine's cadence and the reaction model add the spread, DT.11)
+    if (chains && !ChainDue(view, state.Spells[row].CastMs, params.ChainLeadMs, true))
+    {
+        ++state.ChainWaits;
+        uint32 const waitMs = CcChainWaitMs(view, state.Spells[row].CastMs, params.ChainLeadMs);
+        if (waitMs && waitMs < CC_READY_REFRESH_MS)
+            state.PickUntilMs = nowMs + waitMs;
+
+        return false;
+    }
+
+    if (!bot->IsWithinLOSInMap(target))
         return false;
 
     state.PickRow = row;

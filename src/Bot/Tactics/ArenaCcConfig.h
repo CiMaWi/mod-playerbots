@@ -26,6 +26,12 @@ struct CcConfig
     uint32 CcWrongTargetPctAtSkill99 = 0;
     uint32 CcPatientHoldMs = 3000;  // a patient bot (Patience 100) holds its CC this long for the kill window
     uint32 CcBehindStopPct = 30;    // a low-effort bot stops controlling this many health points behind
+    // G4c: 1 = a chaining bot casts on the team's CC, timed to its end (0: no CC on a controlled target, as G4b)
+    uint32 CcChainEnable = 0;
+    // G4c-b: 1 = chains time by the enemy healer's dispel speed seen this match (the opponent memory)
+    uint32 CcOpponentMemoryEnable = 0;
+    uint32 CcOpponentMinEvents = 2;  // dispels (or trinkets) of an enemy seen before the memory is used
+    uint32 CcDispelMarginMs = 300;   // the next CC lands this long before the remembered dispel
     // Avoid: the bot's own CC kept (OwnCc) and the enemy's broken (Trinket)
     uint32 AvoidOwnBreakPctAtSkill1 = 60;  // the bot's damage breaks its team's CC (Focus)
     uint32 AvoidOwnBreakPctAtSkill99 = 5;
@@ -35,6 +41,12 @@ struct CcConfig
     uint32 AvoidIgnoreRootsFromSkill = 65;  // Wisdom: from it a bot never breaks a root, snare or silence
     uint32 AvoidMinLeftMs = 2500;           // a CC matters with this much or more left
     uint32 AvoidLowHealthPct = 40;          // the bot or its partner at or below it is low
+    // G4c-b own-break guards of OwnCc (1 = on; 0 = G4b-b's behaviour)
+    uint32 AvoidAoeGuardEnable = 0;       // no area, cone or chain spell whose reach covers a held enemy
+    uint32 AvoidAoeGuardMarginYards = 2;  // added to the spell's radius (the enemy's movement and size)
+    uint32 AvoidDotGuardEnable = 0;       // no damage-breakable CC on a target the team's periodic damage hits
+    uint32 AvoidPetCallOffEnable = 0;     // the bot's pet stops attacking a held enemy
+    uint32 AvoidExcludeFightEnemies = 0;  // the held enemies of "fight enemies" are kept out too (review NOTE 7)
 };
 
 #endif

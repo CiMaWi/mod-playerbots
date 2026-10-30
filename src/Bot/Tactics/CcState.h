@@ -27,6 +27,7 @@ constexpr uint32 CC_FAILED_BACKOFF_MS = 1500;  // a row whose cast failed waits 
 constexpr uint32 CC_FORCE_MS = 10000;          // tactics force cc (G4b-b)
 constexpr uint32 CC_EXCLUDE_REFRESH_MS = 250;  // the OwnCc exclusion list lives this long (G4b-b)
 constexpr uint8 CC_KILL_WINDOW_PCT = 50;       // the bot's target at or below it opens the kill window (CcHolds)
+constexpr uint32 CC_CHAIN_WINDOW_MS = 3000;    // a team CC landing at most this long after the last one ended chains
 
 struct CcBotState
 {
@@ -66,6 +67,12 @@ struct CcBotState
     // cc.ownBreaks: the team CC aura the bot's damage last hit (one count per aura; compared, never dereferenced)
     void const* OwnBreakAura = nullptr;
     time_t OwnBreakApplyTime = 0;
+    // G4c chains: when the team's CC on each enemy ends (the aura hooks of the team's bots on the map), the bot's
+    // chained landings and the last one's signed gap (tactics show; the harness counts chainGapMs and chains)
+    CcChainClock Chain;
+    uint32 ChainsLanded = 0;
+    int32 LastChainGapMs = 0;
+    uint32 ChainWaits = 0;  // cc ready answers that waited for the chain's moment
 };
 
 // Whether an enemy stays out of the bot's targets (OwnCc): a forced CC always; a team breakable CC unless the bot's

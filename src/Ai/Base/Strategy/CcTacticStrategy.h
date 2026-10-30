@@ -68,9 +68,10 @@ public:
     void AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type) override;
 };
 
-// The Cc tactic is active (gate), the bot is not casting, a row is ready, the CC target is alive, not controlled and
-// not immune, the patient hold and the low-effort stop let it, PickCc has a row and the target is in sight. The
-// answer is cached for CC_READY_REFRESH_MS (CcBotState), so a tick costs one flag test and a time compare.
+// The Cc tactic is active (gate), the bot is not casting, a row is ready, the CC target is alive, not immune and not
+// controlled (a chaining bot, G4c: or held by its team's CC, the chain due), the patient hold and the low-effort stop
+// let it, PickCc has a row and the target is in sight. The answer is cached for CC_READY_REFRESH_MS (CcBotState;
+// shorter when a chain is due sooner), so a tick costs one flag test and a time compare.
 class CcReadyTrigger : public Trigger
 {
 public:
@@ -120,6 +121,10 @@ bool CcTargetKeptOut(PlayerbotAI* botAI, Unit const* target);
 
 // cc.ownBreaks: the bot's (or its pet's) damage hit an enemy in a breakable CC of its team (the harness counts it)
 void CcCountOwnBreak(Unit* attacker, Unit* victim);
+
+// tactics force dr (G4c): while on, a team CC landing is not counted as a chain (the forced casts land at once, one
+// after another); set on the world thread while the maps wait
+void CcSetForcedCasts(bool on);
 
 // The DR memory's feed (unit hooks: a CC aura landing on and leaving a player or a player's pet), registered by
 // Playerbots.cpp

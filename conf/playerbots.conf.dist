@@ -2217,6 +2217,17 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Cc.PatientHoldMs = 3000
 # Playerbots.Tactics.Cc.BehindStopPct = 30
 #
+# Chains (G4c): with ChainEnable = 1 a bot from ChainsFromSkill also casts on a target its team holds in a loss of
+# control: a CC of another DR group than the one on it (the memory says which still lands), started so that it lands
+# ChainLeadMs before the team's CC ends (the visible aura), never over a teammate's CC on his cast bar; a bot whose
+# memory says the rest lands immune waits. 0 keeps G4b's rule (no CC on a controlled target). With
+# OpponentMemoryEnable = 1 (G4c-b) a chaining bot also remembers per enemy how soon it dispels or trinkets the team's
+# CC this match and, after OpponentMinEvents of them, lands the next CC DispelMarginMs before the expected dispel.
+# Playerbots.Tactics.Cc.ChainEnable = 0
+# Playerbots.Tactics.Cc.OpponentMemoryEnable = 0
+# Playerbots.Tactics.Cc.OpponentMinEvents = 2
+# Playerbots.Tactics.Cc.DispelMarginMs = 300
+#
 # Avoid: OwnBreakPct is the share of the bot's damage that breaks its team's breakable CC (Focus); from
 # OwnBreakNeverFromSkill (Focus) a bot never breaks it (100: every bot below full ability can). A bot breaks a CC on
 # itself (trinket, racials) when it matters: a stun, fear, horror, incapacitate, disorient, sleep or cyclone with
@@ -2231,8 +2242,19 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Avoid.IgnoreRootsFromSkill = 65
 # Playerbots.Tactics.Avoid.MinLeftMs = 2500
 # Playerbots.Tactics.Avoid.LowHealthPct = 40
-# (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability); larger values are
-# capped.)
+#
+# OwnCc's own-break guards (G4c-b; 1 = on, 0 = G4b's behaviour): AoeGuardEnable mutes an area, cone or chain spell
+# whose reach (its radius + AoeGuardMarginYards) covers an enemy the bot keeps out; DotGuardEnable casts no CC that
+# damage breaks on a target the team's periodic damage hits; PetCallOffEnable calls the bot's pet off a kept-out
+# enemy; ExcludeFightEnemies also keeps out the team's CC'd enemies of "fight enemies" (not only the bot's attackers,
+# its target and the skull).
+# Playerbots.Tactics.Avoid.AoeGuardEnable = 0
+# Playerbots.Tactics.Avoid.AoeGuardMarginYards = 2
+# Playerbots.Tactics.Avoid.DotGuardEnable = 0
+# Playerbots.Tactics.Avoid.PetCallOffEnable = 0
+# Playerbots.Tactics.Avoid.ExcludeFightEnemies = 0
+# (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability), switches 0-1,
+# OpponentMinEvents 0-20, AoeGuardMarginYards 0-20; larger values are capped.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

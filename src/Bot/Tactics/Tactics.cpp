@@ -19,6 +19,7 @@
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
 #include "CcState.h"
+#include "CcTacticStrategy.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "FocusState.h"
@@ -31,6 +32,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpTestCounters.h"
+#include "SpellAuras.h"
 #include "StringConvert.h"
 #include "TacticGate.h"
 #include "ThreadCheck.h"
@@ -2049,6 +2051,114 @@ struct CcReferenceDr
     }
 };
 
+// tactics force dr's group: a DR group name of PvpTestCounters.h (any case) that counts as CC, else DIMINISHING_NONE
+uint8 CcDrGroupByName(std::string const& text)
+{
+    std::string const wanted = Lower(text);
+    for (uint8 group = 0; group < PVPTEST_DR_GROUP_COUNT; ++group)
+    {
+        if (IsPvpTestCcGroup(group) && Lower(PVPTEST_DR_GROUP_NAMES[group]) == wanted)
+            return group;
+    }
+
+    return DIMINISHING_NONE;
+}
+
+std::string CcDrGroupList()
+{
+    std::string names;
+    for (uint8 group = 0; group < PVPTEST_DR_GROUP_COUNT; ++group)
+    {
+        if (IsPvpTestCcGroup(group))
+            names += (names.empty() ? "" : ", ") + std::string(PVPTEST_DR_GROUP_NAMES[group]);
+    }
+
+    return names;
+}
+
+// tactics force dr (G4c): the bot casts the group's CC (CcForceDrRow, rank 1) on the enemy `level` times, triggered
+// (no cast time, cost or cooldown), each one landing anew (its aura of the bot removed first), so the core's DR and
+// the team's memories (the aura hooks) count them as any CC; the last one stays up. The world thread while the maps
+// wait; the landings are not chains (CcSetForcedCasts).
+bool ForceCcDr(ChatHandler* handler, PlayerbotAI* botAI, std::string const& name, ObjectGuid enemy, char const* source,
+               std::string const& groupText, std::string const& levelText)
+{
+    uint8 const drGroup = CcDrGroupByName(groupText);
+    uint32 const level = Acore::StringTo<uint32>(levelText).value_or(0);
+    if (!drGroup || level < 1 || level > CC_DR_LEVEL_IMMUNE)
+    {
+        handler->PSendSysMessage("Usage: .playerbots tactics force dr <bot name or guid> <group> <1-{}>; groups: {}",
+                                 static_cast<uint32>(CC_DR_LEVEL_IMMUNE), CcDrGroupList());
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    Player* const bot = botAI->GetBot();
+    Unit* const target = botAI->GetUnit(enemy);
+    if (!target || !target->IsInMap(bot) || !target->IsAlive())
+    {
+        handler->PSendSysMessage("TACTICS force dr: {} ({}) is not alive on {}'s map.", GuidName(enemy), source, name);
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    int8 const row = CcForceDrRow(drGroup, target->IsPlayer(), static_cast<uint8>(target->GetCreatureType()));
+    if (row == CC_NO_ROW)
+    {
+        handler->PSendSysMessage("TACTICS force dr: no CC row of group {} lands on {}.",
+                                 PVPTEST_DR_GROUP_NAMES[drGroup], GuidName(enemy));
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 const spellId = GetCcSpellTable()[row].AuraSpellId;
+    std::string casts;
+    CcSetForcedCasts(true);
+    for (uint32 cast = 0; cast < level; ++cast)
+    {
+        if (cast)
+            target->RemoveAurasDueToSpell(spellId, bot->GetGUID());
+
+        SpellCastResult const result = bot->CastSpell(target, spellId, true);
+        Aura const* const aura = target->GetAura(spellId, bot->GetGUID());
+        casts += (casts.empty() ? "" : ", ") +
+                 (aura ? Acore::StringFormat("{} ms", aura->GetDuration())
+                       : Acore::StringFormat("none (cast result {})", static_cast<uint32>(result)));
+    }
+
+    CcSetForcedCasts(false);
+
+    // What each bot of the team believes now (its own memory) against the core's count
+    uint32 const nowMs = getMSTime();
+    std::string memories;
+    auto const note = [&](Player* member)
+    {
+        PlayerbotAI* const memberAI = member && member->IsInMap(bot) ? GET_PLAYERBOT_AI(member) : nullptr;
+        if (!memberAI)
+            return;
+
+        CcBotState const& state = memberAI->GetCcState();
+        memories += Acore::StringFormat("{}{} {}{}", memories.empty() ? "" : ", ", member->GetName(),
+                                        static_cast<uint32>(state.Memory.Level(enemy.GetRawValue(), drGroup, nowMs)),
+                                        state.Params.DrAware ? "" : " (not DR aware)");
+    };
+
+    Group* const group = bot->GetGroup();
+    if (!group)
+        note(bot);
+    else
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            note(ref->GetSource());
+    }
+
+    handler->PSendSysMessage(
+        "TACTICS force dr: {} cast {} ({}) {} times on {} ({}): [{}]; core level {}; memories [{}]; at {} ms", name,
+        CC_OPTIONS[row].Action, spellId, level, GuidName(enemy), source, casts,
+        static_cast<uint32>(target->GetDiminishing(static_cast<DiminishingGroup>(drGroup))), memories, nowMs);
+    return true;
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -2767,6 +2877,126 @@ void RunCcSelftest(ChatHandler* handler)
                                   highBreaks ? "breaks" : "never", low.OwnBreakPct, lowWindows));
     }
 
+    // 18. G4c chain clock: the gap to the team's previous CC on the enemy (negative on top of it, positive after it,
+    // a chain up to CC_CHAIN_WINDOW_MS after its end), the later end kept, an early end, the oldest enemy replaced
+    {
+        CcChainClock clock;
+        int32 gap = 0;
+        uint8 previous = 0;
+        bool none = !clock.Gap(Enemy, 1000, CC_CHAIN_WINDOW_MS, gap, previous);
+        clock.Land(Enemy, Disorient, 1000, 8000);
+        bool const onTop =
+            clock.Gap(Enemy, 8760, CC_CHAIN_WINDOW_MS, gap, previous) && gap == -240 && previous == Disorient;
+        bool const after = clock.Gap(Enemy, 9000 + CC_CHAIN_WINDOW_MS, CC_CHAIN_WINDOW_MS, gap, previous) &&
+                           gap == static_cast<int32>(CC_CHAIN_WINDOW_MS);
+        bool const late = !clock.Gap(Enemy, 9001 + CC_CHAIN_WINDOW_MS, CC_CHAIN_WINDOW_MS, gap, previous);
+        clock.Land(Enemy, Fear, 2000, 2000);
+        bool const kept =
+            clock.Gap(Enemy, 9000, CC_CHAIN_WINDOW_MS, gap, previous) && gap == 0 && previous == Disorient;
+        clock.Ended(Enemy, 5000, 0);
+        bool const early = clock.Gap(Enemy, 5500, CC_CHAIN_WINDOW_MS, gap, previous) && gap == 500;
+        clock.Land(Enemy, Fear, 5500, 4000);
+        bool const next = clock.Gap(Enemy, 9300, CC_CHAIN_WINDOW_MS, gap, previous) && gap == -200 && previous == Fear;
+        for (uint64 other = 1; other <= CC_MEMORY_ENEMIES; ++other)
+            clock.Land(Enemy + other, Stun, 6000 + static_cast<uint32>(other), 1000);
+
+        none = none && !clock.Gap(Enemy, 7000, CC_CHAIN_WINDOW_MS, gap, previous) &&
+               clock.Gap(Enemy + CC_MEMORY_ENEMIES, 7000, CC_CHAIN_WINDOW_MS, gap, previous);
+        check(none && onTop && after && late && kept && early && next,
+              Acore::StringFormat("chain clock: none {} on top {} after {} late {} kept {} early {} next {}", none,
+                                  onTop, after, late, kept, early, next));
+    }
+
+    // 19. G4c: the wake before a chain's moment (0 when due, or waiting on the partner's cast)
+    {
+        CcChainView wait;
+        wait.AuraOnTarget = true;
+        wait.RemainingMs = 1000;
+        bool const early = CcChainWaitMs(wait, 0, 240) == 760 && CcChainWaitMs(wait, 1500, 240) == 0;
+        wait.PartnerCastPending = true;
+        bool const partner = CcChainWaitMs(wait, 0, 240) == 0;
+        wait.PartnerCastPending = false;
+        wait.AuraOnTarget = false;
+        check(early && partner && CcChainWaitMs(wait, 0, 240) == 0,
+              "the chain's wake is not remaining - cast - lead, or wakes while due or on the partner's cast");
+    }
+
+    // 20. G4c: the loss-of-control groups match the rows' kinds (the chains' auras, ccHeldMs)
+    {
+        CcSpellTable const& table = GetCcSpellTable();
+        std::string mismatches;
+        for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+        {
+            if (table[index].Valid &&
+                CcKindLosesControl(CC_OPTIONS[index].Kind) != CcGroupLosesControl(table[index].Group))
+                mismatches += Acore::StringFormat("{}{} ({})", mismatches.empty() ? "" : ", ", CC_OPTIONS[index].Action,
+                                                  groupName(table[index].Group));
+        }
+
+        check(mismatches.empty() && !CcGroupLosesControl(DIMINISHING_CONTROLLED_ROOT) &&
+                  !CcGroupLosesControl(DIMINISHING_SILENCE) && !CcGroupLosesControl(DIMINISHING_NONE) &&
+                  CcGroupLosesControl(DIMINISHING_CYCLONE),
+              Acore::StringFormat("loss-of-control groups and row kinds differ: {}", mismatches));
+    }
+
+    // 21. G4c tactics force dr: the group names, the row cast for a group (no stealth, no combo points, usable on a
+    // player)
+    {
+        constexpr int8 Hammer = CcOptionIndex("hammer of justice");
+        constexpr int8 CycloneRow = CcOptionIndex("cyclone on cc");
+        static_assert(Hammer != CC_NO_ROW && CycloneRow != CC_NO_ROW, "the selftest's rows are in CC_OPTIONS");
+        bool const names = CcDrGroupByName("fear") == Fear && CcDrGroupByName("FEAR") == Fear &&
+                           CcDrGroupByName("controlledstun") == Stun && CcDrGroupByName("charge") == DIMINISHING_NONE &&
+                           CcDrGroupByName("bogus") == DIMINISHING_NONE;
+        int8 const fearRow = CcForceDrRow(Fear, true, 0);
+        int8 const disorientRow = CcForceDrRow(Disorient, true, 0);
+        int8 const stunRow = CcForceDrRow(Stun, true, 0);
+        int8 const cycloneRow = CcForceDrRow(DIMINISHING_CYCLONE, true, 0);
+        int8 const openingRow = CcForceDrRow(DIMINISHING_OPENING_STUN, true, 0);
+        auto const rowName = [](int8 row) { return row == CC_NO_ROW ? "none" : CC_OPTIONS[row].Action; };
+        check(names && fearRow == FearOption && disorientRow == Polymorph && stunRow == Hammer &&
+                  cycloneRow == CycloneRow && openingRow == CC_NO_ROW,
+              Acore::StringFormat("force dr: names {}, fear {}, disorient {}, controlled stun {}, cyclone {}, opening "
+                                  "stun {}",
+                                  names, rowName(fearRow), rowName(disorientRow), rowName(stunRow), rowName(cycloneRow),
+                                  rowName(openingRow)));
+    }
+
+    // 22. G4c the chain's choice at skill 80 (chains) and 20 (none): polymorph on the target, the next CC is fear (the
+    // other group), started castMs + lead before the end; with fear immune in the memory no row (the bot waits);
+    // without chains nothing goes on the controlled target
+    {
+        CcParams const high = params(80);
+        CcParams const low = params(20);
+        CcSpellTable table{};
+        table[Polymorph] = makeSpell(Disorient, DRTYPE_PLAYER, 10000, 10000, 1500, 30.0f);
+        table[FearOption] = makeSpell(Fear, DRTYPE_PLAYER, 10000, 10000, 1500, 20.0f);
+        CcPickInput input;
+        input.ReadyMask = CcOptionBit(Polymorph) | CcOptionBit(FearOption);
+        input.DistanceYards = 10.0f;
+        input.ActiveGroup = Disorient;
+        int8 const next = PickCc(input, table, high);
+        CcChainView chainView;
+        chainView.AuraOnTarget = true;
+        chainView.RemainingMs = 1500 + high.ChainLeadMs + 1;
+        bool const notYet = !ChainDue(chainView, 1500, high.ChainLeadMs, high.Chains) &&
+                            CcChainWaitMs(chainView, 1500, high.ChainLeadMs) == 1;
+        chainView.RemainingMs = 1500 + high.ChainLeadMs;
+        bool const due = ChainDue(chainView, 1500, high.ChainLeadMs, high.Chains);
+        input.Levels[Fear] = CC_DR_LEVEL_IMMUNE;
+        int8 const immune = PickCc(input, table, high);
+        bool const lowWaits = !low.Chains && !ChainDue(chainView, 1500, low.ChainLeadMs, low.Chains);
+        check(high.Chains && next == FearOption && notYet && due && immune == CC_NO_ROW && lowWaits,
+              Acore::StringFormat("chain at 80 (lead {} ms): next {}, not yet {}, due {}, fear immune -> {}; at 20 "
+                                  "chains {}",
+                                  high.ChainLeadMs, next == CC_NO_ROW ? "none" : CC_OPTIONS[next].Action, notYet, due,
+                                  immune == CC_NO_ROW ? "none" : CC_OPTIONS[immune].Action, low.Chains));
+        handler->PSendSysMessage(
+            "TACTICS selftest cc: chain lead {} ms at skill 80, {} ms at skill 99; chains from "
+            "skill {}",
+            high.ChainLeadMs, params(99).ChainLeadMs, config.CcChainsFromSkill);
+    }
+
     handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -3084,6 +3314,11 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         cc.Params.DrAware ? "yes" : "no", cc.Params.Chains ? "yes" : "no", cc.Params.WrongTargetPct,
         cc.Params.OwnBreakPct, cc.Params.HoldMs, ccRows, iconName(cc.CcTarget),
         cc.PickRow != CC_NO_ROW ? CC_OPTIONS[cc.PickRow].Action : "none", iconName(cc.PickTarget), cc.Casts);
+    handler->PSendSysMessage("  cc chain: {}, lead {} ms, waits {}, chained {}, last gap {} ms",
+                             !cc.Params.Chains                           ? "no (skill)"
+                             : sPlayerbotAIConfig.TacticCc.CcChainEnable ? "on"
+                                                                         : "off (Cc.ChainEnable 0)",
+                             cc.Params.ChainLeadMs, cc.ChainWaits, cc.ChainsLanded, cc.LastChainGapMs);
 
     // OwnCc (G4b-b): what the bot keeps out of its targets now, the forced CC, its swing (G4b's forced proof)
     std::string keptOut;
@@ -3206,11 +3441,15 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
     std::istringstream in(args ? args : "");
     std::string verb;
     std::string target;
-    in >> verb >> target;
+    std::string groupText;
+    std::string levelText;
+    in >> verb >> target >> groupText >> levelText;
     std::string const kind = Lower(verb);
-    if ((kind != "immune" && kind != "cc") || target.empty())
+    if ((kind != "immune" && kind != "cc" && kind != "dr") || target.empty())
     {
-        handler->PSendSysMessage("Usage: .playerbots tactics force immune|cc <bot name or guid>");
+        handler->PSendSysMessage(
+            "Usage: .playerbots tactics force immune|cc <bot name or guid>, or force dr <bot name or guid> <DR group> "
+            "<level 1-3>");
         handler->SetSentErrorMessage(true);
         return false;
     }
@@ -3230,6 +3469,11 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
         handler->SetSentErrorMessage(true);
         return false;
     }
+
+    // force dr (G4c): real casts on the enemy, the DR level the core and the team's memories reach
+    if (kind == "dr")
+        return ForceCcDr(handler, botAI, name, enemy, skull.IsEmpty() ? "the bot's target" : "the skull", groupText,
+                         levelText);
 
     uint32 const nowMs = getMSTime();
     uint32 forced = 0;

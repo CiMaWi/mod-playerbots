@@ -15,6 +15,8 @@
 #include "Group.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "PvpTestCounters.h"
+#include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "SpellDefines.h"
@@ -70,13 +72,20 @@ inline CcSpellData ResolveCcSpell(uint32 spellId)
     return data;
 }
 
+// The caster is the bot, its pet or (a pet of) a member of its group
+inline bool CcTeamCaster(Unit const* caster, Player const* bot)
+{
+    Player const* const owner = caster ? caster->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    Group const* const group = bot->GetGroup();
+    return owner && (owner == bot || (group && owner->GetGroup() == group));
+}
+
 // A CC aura on the unit that damage breaks (Unit::HasBreakableByDamageCrowdControlAura's aura types and test) cast by
 // the bot, its pet or a member of its group, else nullptr (G4b-b: OwnCc and cc.ownBreaks). The unit's own map thread.
 inline Aura const* CcTeamBreakableAura(Unit const* unit, Player const* bot)
 {
     static constexpr std::array<AuraType, 5> Types = {SPELL_AURA_MOD_CONFUSE, SPELL_AURA_MOD_FEAR, SPELL_AURA_MOD_STUN,
                                                       SPELL_AURA_MOD_ROOT, SPELL_AURA_TRANSFORM};
-    Group const* const group = bot->GetGroup();
     for (AuraType const type : Types)
     {
         for (AuraEffect const* effect : unit->GetAuraEffectsByType(type))
@@ -84,14 +93,63 @@ inline Aura const* CcTeamBreakableAura(Unit const* unit, Player const* bot)
             if (!(effect->GetSpellInfo()->AuraInterruptFlags & AURA_INTERRUPT_FLAG_TAKE_DAMAGE))
                 continue;
 
-            Unit const* const caster = effect->GetCaster();
-            Player const* const owner = caster ? caster->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
-            if (owner && (owner == bot || (group && owner->GetGroup() == group)))
+            if (CcTeamCaster(effect->GetCaster(), bot))
                 return effect->GetBase();
         }
     }
 
     return nullptr;
+}
+
+// The team's loss-of-control CC on the unit as a player sees it (G4c chains: the visible auras, by spell): the one
+// that ends last, its remaining ms and DR group; false when none of the team's (an enemy's or a neutral stun, or no
+// CC). A walk over the unit's auras: cc ready calls it once per refresh, only on a controlled CC target.
+inline bool CcTeamControlAura(Unit const* unit, Player const* bot, uint32& remainingMs, uint8& group)
+{
+    bool found = false;
+    remainingMs = 0;
+    group = 0;
+    for (auto const& [spellId, application] : unit->GetAppliedAuras())
+    {
+        Aura const* const aura = application->GetBase();
+        uint8 const auraGroup = static_cast<uint8>(GetDiminishingReturnsGroupForSpell(aura->GetSpellInfo(), false));
+        int32 const leftMs = aura->GetDuration();
+        if (!CcGroupLosesControl(auraGroup) || leftMs <= 0 || (found && static_cast<uint32>(leftMs) <= remainingMs) ||
+            !CcTeamCaster(aura->GetCaster(), bot))
+            continue;
+
+        found = true;
+        remainingMs = static_cast<uint32>(leftMs);
+        group = auraGroup;
+    }
+
+    return found;
+}
+
+// A teammate's cast bar shows a CC (a CC DR group) aimed at the target: pending, so nobody casts over it (DT.1, as
+// FocusStrategy's FocusTeamCastingCcAt for the moon). The bot itself is not asked.
+inline bool CcTeamCastingCcAt(Player const* bot, ObjectGuid target)
+{
+    Group const* const group = bot->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player const* const member = ref->GetSource();
+        if (!member || member == bot || !member->IsInMap(bot))
+            continue;
+
+        Spell const* const spell = member->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (!spell || !spell->GetSpellInfo() || spell->m_targets.GetUnitTargetGUID() != target)
+            continue;
+
+        SpellInfo const* const aura = GetCcAuraSpell(spell->GetSpellInfo());
+        if (IsPvpTestCcGroup(static_cast<uint32>(GetDiminishingReturnsGroupForSpell(aura, false))))
+            return true;
+    }
+
+    return false;
 }
 
 inline CcSpellTable const& GetCcSpellTable()
@@ -140,8 +198,28 @@ inline uint32 BuildCcBotTable(uint8 playerClass, Knows const& knows, std::array<
     return knownMask;
 }
 
+// tactics force dr (G4c): the row whose rank-1 aura counts under the DR group and that a triggered cast can land on
+// the target (usable on it, no stealth, no combo points), CC_NO_ROW for none
+inline int8 CcForceDrRow(uint8 group, bool targetIsPlayer, uint8 creatureType)
+{
+    CcSpellTable const& table = GetCcSpellTable();
+    for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+    {
+        CcOption const& option = CC_OPTIONS[index];
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(option.SpellId);
+        if (!table[index].Valid || table[index].Group != group || option.NeedsStealth || !info ||
+            info->NeedsComboPoints() || !CcOptionUsableOn(option, targetIsPlayer, creatureType))
+            continue;
+
+        return static_cast<int8>(index);
+    }
+
+    return CC_NO_ROW;
+}
+
 // The unit is controlled as a player sees it (stunned, incapacitated, asleep, cyclone, banished, feared,
-// polymorphed): no CC of the team goes on top of it (G4c chains), and the moon counts as held (G1b-c)
+// polymorphed): no CC of the team goes on top of it unless the team's own CC and the bot chains (G4c), and the moon
+// counts as held (G1b-c)
 inline bool CcUnitControlled(Unit const* unit) { return unit->HasUnitState(UNIT_STATE_CONTROLLED); }
 
 #endif

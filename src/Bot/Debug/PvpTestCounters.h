@@ -54,12 +54,21 @@ enum class TacticCounter : uint8
     ImmuneSwapMs,  // G1b: ms from the skull seen immune to the new skull (summed)
     HoldSwitch,    // G1b: switches the hold allowed (any verdict, G1b-c) and the bot took
     CcOnTarget,    // G4b: CC casts (a CC DR group) that went on the planned CC target (arena: moon; else the kept one)
+    ChainGapMs,    // G4c: |landing - end of the team's previous loss-of-control CC| of the bot's chained CC (summed)
+    Chains,        // G4c: those landings (the mean gap is chainGapMs / chains)
+    CcHeldMs,      // G4c: ms the bot's loss-of-control CC stayed on enemy players (the CC uptime)
+    OwnBreakAoe,   // G4c-b: own breaks by an area, cone or chain spell
+    OwnBreakDot,   // G4c-b: own breaks by a periodic damage tick
+    OwnBreakPet,   // G4c-b: own breaks by the bot's pet
+    OppTrinkets,   // G4c-b: enemy trinkets (early CC ends) the bot's opponent memory learned
+    OppDispels,    // G4c-b: enemy dispels of the team's CC the bot's opponent memory learned
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
 constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
-    "focusSame", "focusDiff", "planSwitch", "immuneSwapMs", "holdSwitch", "ccOnTarget"};
+    "focusSame", "focusDiff", "planSwitch",  "immuneSwapMs", "holdSwitch",  "ccOnTarget",  "chainGapMs",
+    "chains",    "ccHeldMs",  "ownBreakAoe", "ownBreakDot",  "ownBreakPet", "oppTrinkets", "oppDispels"};
 
 #endif
