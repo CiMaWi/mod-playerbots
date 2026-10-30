@@ -7212,7 +7212,14 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
 FocusBotState& PlayerbotAI::GetFocusState()
 {
     if (!focusState)
+    {
+        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones, the skill-99 values
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         focusState = std::make_unique<FocusBotState>();
+        focusState->Params = ComputeFocusParams(0, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
+        focusState->AddonKnowledge = FocusAddonKnowledge(0, attributes.Get(BotAttribute::Knowledge),
+                                                         config.TacticFocus.FocusAddonKnowledgeFromSkill);
+    }
 
     return *focusState;
 }

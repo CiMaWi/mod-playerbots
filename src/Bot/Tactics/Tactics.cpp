@@ -2110,8 +2110,8 @@ void RunCcSelftest(ChatHandler* handler)
     constexpr int8 Sap = CcOptionIndex("sap");
     constexpr int8 Scream = CcOptionIndex("psychic scream");
     constexpr int8 Repentance = CcOptionIndex("repentance");
-    static_assert(Polymorph != CC_NONE && FearOption != CC_NONE && Shackle != CC_NONE && Sap != CC_NONE &&
-                      Scream != CC_NONE && Repentance != CC_NONE,
+    static_assert(Polymorph != CC_NO_ROW && FearOption != CC_NO_ROW && Shackle != CC_NO_ROW && Sap != CC_NO_ROW &&
+                      Scream != CC_NO_ROW && Repentance != CC_NO_ROW,
                   "the selftest's rows are in CC_OPTIONS");
 
     // 1. Every row's DR group, base duration, PvP cap, cast time and range from the core; hex as a probe (no action
@@ -2163,7 +2163,7 @@ void RunCcSelftest(ChatHandler* handler)
     input.ReadyMask = CcOptionBit(Polymorph);
     input.DistanceYards = 10.0f;
     input.Levels[Disorient] = CC_DR_LEVEL_IMMUNE;
-    check(PickCc(input, synthetic, aware) == CC_NONE, "a DR-aware bot casts into IMMUNE");
+    check(PickCc(input, synthetic, aware) == CC_NO_ROW, "a DR-aware bot casts into IMMUNE");
     check(PickCc(input, synthetic, unaware) == Polymorph, "a bot without DR awareness knows the target is immune");
     input.ReadyMask |= CcOptionBit(FearOption);
     check(PickCc(input, synthetic, aware) == FearOption, "a DR-aware bot does not take the other group at IMMUNE");
@@ -2180,37 +2180,37 @@ void RunCcSelftest(ChatHandler* handler)
     alternates = alternates && PickCc(input, synthetic, aware) == FearOption;
     input.ReadyMask = CcOptionBit(Polymorph);
     alternates =
-        alternates && PickCc(input, synthetic, aware) == CC_NONE && PickCc(input, synthetic, unaware) == Polymorph;
+        alternates && PickCc(input, synthetic, aware) == CC_NO_ROW && PickCc(input, synthetic, unaware) == Polymorph;
     check(alternates, "a DR-aware bot casts the DR group already on the target");
     input.ActiveGroup = 0;
     input.Levels[Disorient] = 2;
-    check(PickCc(input, synthetic, aware) == CC_NONE && PickCc(input, synthetic, unaware) == Polymorph,
+    check(PickCc(input, synthetic, aware) == CC_NO_ROW && PickCc(input, synthetic, unaware) == Polymorph,
           "a DR-aware bot casts a third CC of a group (a quarter of its duration)");
     CcPickInput undead;
     undead.ReadyMask = CcOptionBit(Shackle);
     undead.DistanceYards = 10.0f;
-    bool playerOnly = PickCc(undead, synthetic, aware) == CC_NONE;
+    bool playerOnly = PickCc(undead, synthetic, aware) == CC_NO_ROW;
     undead.TargetIsPlayer = false;
     playerOnly = playerOnly && PickCc(undead, synthetic, aware) == Shackle;
     check(playerOnly, "a creature-only CC is cast on a player, or not on the creature");
     CcPickInput opener;
     opener.ReadyMask = CcOptionBit(Sap);
     opener.DistanceYards = 5.0f;
-    bool stealth = PickCc(opener, synthetic, aware) == CC_NONE;
+    bool stealth = PickCc(opener, synthetic, aware) == CC_NO_ROW;
     opener.Stealthed = true;
-    stealth = stealth && PickCc(opener, synthetic, aware) == CC_NONE;
+    stealth = stealth && PickCc(opener, synthetic, aware) == CC_NO_ROW;
     opener.TargetInCombat = false;
     stealth = stealth && PickCc(opener, synthetic, aware) == Sap;
     check(stealth, "sap is cast without stealth or on a target in combat");
     CcPickInput reach;
     reach.ReadyMask = CcOptionBit(FearOption);
     reach.DistanceYards = 25.0f;
-    bool ranged = PickCc(reach, synthetic, aware) == CC_NONE;
+    bool ranged = PickCc(reach, synthetic, aware) == CC_NO_ROW;
     reach.DistanceYards = 15.0f;
     ranged = ranged && PickCc(reach, synthetic, aware) == FearOption;
     reach.ReadyMask = CcOptionBit(Scream);
     reach.DistanceYards = 9.0f;
-    ranged = ranged && PickCc(reach, synthetic, aware) == CC_NONE;
+    ranged = ranged && PickCc(reach, synthetic, aware) == CC_NO_ROW;
     reach.DistanceYards = 7.0f;
     ranged = ranged && PickCc(reach, synthetic, aware) == Scream;
     check(ranged, "a CC out of its range or reach is picked, or one in range is not");
@@ -2237,7 +2237,7 @@ void RunCcSelftest(ChatHandler* handler)
         struct TimelineBot
         {
             uint64 Guid = 0;
-            int8 Option = CC_NONE;
+            int8 Option = CC_NO_ROW;
             DrMemory Memory;
             bool Casting = false;
             uint32 LandMs = 0;
@@ -2302,7 +2302,7 @@ void RunCcSelftest(ChatHandler* handler)
                 world.Visible(now, pick.ActiveGroup, activeEnd);
                 pick.Levels = bot.Memory.Levels(Healer, now);
                 int8 const option = PickCc(pick, synthetic, aware);
-                if (option == CC_NONE)
+                if (option == CC_NO_ROW)
                     continue;
 
                 CcChainView seen;
@@ -2886,6 +2886,10 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     if (FocusForcedImmune(focus, focus.ForcedImmuneGuid, nowMs))
         handler->PSendSysMessage("  forced immune: {} for {} ms more", GuidName(focus.ForcedImmuneGuid),
                                  focus.ForcedImmuneUntilMs - nowMs);
+
+    // getMSTime stamps, comparable with the force's: G1b's forced proof polls these
+    handler->PSendSysMessage("  timing: now {} ms, current target {}, last mark at {} ms", nowMs,
+                             iconName(botAI->GetBot()->GetTarget()), match.LastMarkMs);
 
     std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX> enemies;
     uint32 const enemyCount = botAI->GetFightEnemiesSnapshot(enemies);

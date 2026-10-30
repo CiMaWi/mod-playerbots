@@ -10,7 +10,7 @@
 #include <algorithm>
 
 #include "ArenaCc.h"
-#include "GameObjectData.h"
+#include "GameObject.h"
 #include "ObjectMgr.h"
 #include "SpellDefines.h"
 #include "SpellInfo.h"

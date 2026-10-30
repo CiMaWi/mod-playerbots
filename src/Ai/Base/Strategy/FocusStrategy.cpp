@@ -264,7 +264,8 @@ float TacticHoldMultiplier::GetValue(Action* action)
         for (GroupReference* ref = group->GetFirstMember(); ref && !partnerOn; ref = ref->next())
         {
             Player* const member = ref->GetSource();
-            partnerOn = member && member != bot && member->IsAlive() && member->GetTarget() == candidateGuid;
+            partnerOn = member && member != bot && member->IsInMap(bot) && member->IsAlive() &&
+                        member->GetTarget() == candidateGuid;
         }
 
         if (partnerOn)
@@ -293,7 +294,9 @@ float TacticHoldMultiplier::Answer(ObjectGuid candidate, uint8 verdict, bool all
         if (verdict < FOCUS_HOLD_VERDICTS)
             ++hold.Verdicts[verdict];
 
-        botAI->NoteTacticUse(TacticId::Hold);
+        // tactics stats: the hold acts when it keeps the target; a switch it lets pass would happen without it
+        if (!allow)
+            botAI->NoteTacticUse(TacticId::Hold);
     }
 
     if (!allow)

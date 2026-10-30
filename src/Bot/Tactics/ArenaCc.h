@@ -32,7 +32,7 @@ constexpr uint8 CC_DR_LEVEL_IMMUNE = 3;   // DIMINISHING_LEVEL_IMMUNE: after thr
 constexpr uint32 CC_DR_RESET_MS = 15000;  // the count resets this long after the group's last aura ended
 constexpr uint8 CC_MEMORY_ENEMIES = 5;    // enemies one bot remembers (an arena team; in a battleground the latest)
 constexpr uint8 CC_MEMORY_GROUPS = 4;     // DR groups remembered per enemy
-constexpr int8 CC_NONE = -1;
+constexpr int8 CC_NO_ROW = -1;
 constexpr uint8 CC_FULL_ABILITY = 100;        // skill 0 (the skill system off) passes every threshold
 constexpr uint8 CC_LOW_EFFORT = 50;           // below it a bot stops controlling when behind
 constexpr uint8 CC_TRAP_REACH_YARDS = 5;      // a trap goes down at the hunter's feet: the target must be near
@@ -115,7 +115,7 @@ static_assert(CC_OPTION_COUNT <= 32, "the ready mask is a uint32");
 
 constexpr uint32 CcOptionBit(uint8 index) { return 1u << index; }
 
-// The row of an action, CC_NONE when no row has it
+// The row of an action, CC_NO_ROW when no row has it
 constexpr int8 CcOptionIndex(std::string_view action)
 {
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -124,7 +124,7 @@ constexpr int8 CcOptionIndex(std::string_view action)
             return static_cast<int8>(index);
     }
 
-    return CC_NONE;
+    return CC_NO_ROW;
 }
 
 // The rows of a class (G4b's ready mask starts from it)
@@ -469,12 +469,12 @@ inline bool CcOptionReaches(CcOption const& option, CcSpellData const& spell, fl
     return distanceYards <= reach;
 }
 
-// The CC to cast, CC_NONE for none: the usable row that lasts longest. A DR-aware bot also skips what its memory says
+// The CC to cast, CC_NO_ROW for none: the usable row that lasts longest. A DR-aware bot also skips what its memory says
 // lands immune or shorter than MinExpectedMs and the group of the CC already on the target (a chain alternates
 // groups); a bot without DR awareness casts into DR, believing every CC lands in full.
 inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParams const& params)
 {
-    int8 best = CC_NONE;
+    int8 best = CC_NO_ROW;
     uint32 bestMs = 0;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
     {
@@ -501,7 +501,7 @@ inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParam
         if (params.DrAware && (!expectedMs || expectedMs < params.MinExpectedMs))
             continue;
 
-        if (best == CC_NONE || expectedMs > bestMs)
+        if (best == CC_NO_ROW || expectedMs > bestMs)
         {
             best = static_cast<int8>(index);
             bestMs = expectedMs;
