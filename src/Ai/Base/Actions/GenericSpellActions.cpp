@@ -5,6 +5,7 @@
  */
 
 #include "GenericSpellActions.h"
+#include "ArenaCcSpells.h"
 #include "Chat.h"
 #include "CcTacticStrategy.h"
 #include "Event.h"
@@ -678,6 +679,17 @@ bool CastDebuffSpellAction::isUseful()
     if (!target || !target->IsAlive() || !target->IsInWorld())
         return false;
 
-    return CastAuraSpellAction::isUseful() &&
-           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
+    if (!CastAuraSpellAction::isUseful())
+        return false;
+
+    // G4d: a CC (freezing trap, wyvern sting) on a player's unit controls it whatever its health; the life time is
+    // for damage over time and for PvE crowd control
+    if (target->GetCharmerOrOwnerPlayerOrPlayerItself())
+    {
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", spell));
+        if (info && IsPvpTestCcGroup(GetDiminishingReturnsGroupForSpell(GetCcAuraSpell(info), false)))
+            return true;
+    }
+
+    return (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
 }

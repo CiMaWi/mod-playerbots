@@ -47,14 +47,14 @@ struct CcBotState
     // rebuilt when the level or the free talent points change, and every CC_TABLE_REFRESH_MS
     std::array<uint32, CC_OPTION_COUNT> KnownSpell{};
     CcSpellTable Spells{};
-    uint32 KnownMask = 0;
+    CcRowMask KnownMask = 0;
     bool TableBuilt = false;
     uint8 TableLevel = 0;
     uint32 TableTalentPoints = 0;
     uint32 TableBuiltMs = 0;
     // Known, off cooldown, combo points for a finisher; FailedMask's rows wait until FailedUntilMs
-    uint32 ReadyMask = 0;
-    uint32 FailedMask = 0;
+    CcRowMask ReadyMask = 0;
+    CcRowMask FailedMask = 0;
     uint32 FailedUntilMs = 0;
     // The CC target outside a moon (battleground, world, an arena without one): the strongest other enemy
     ObjectGuid CcTarget;

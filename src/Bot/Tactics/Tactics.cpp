@@ -2246,8 +2246,8 @@ void RunCcSelftest(ChatHandler* handler)
                       Scream != CC_NO_ROW && Repentance != CC_NO_ROW,
                   "the selftest's rows are in CC_OPTIONS");
 
-    // 1. Every row's DR group, base duration, PvP cap, cast time and range from the core; hex as a probe (no action
-    // until G4d). The plan's facts: the groups of repentance, freezing trap (its trap object's spell) and hex.
+    // 1. Every row's DR group, base duration, PvP cap, cast time and range from the core. The plan's facts: the groups
+    // of repentance, freezing trap (its trap object's spell) and hex (a row since G4d; its groups are checked in 27).
     CcSpellTable const& spells = GetCcSpellTable();
     bool allValid = true;
     bool allControl = true;
@@ -2259,8 +2259,6 @@ void RunCcSelftest(ChatHandler* handler)
         allControl = allControl && IsPvpTestCcGroup(spells[index].Group);
     }
 
-    constexpr uint32 HexSpellId = 51514;
-    print("hex (probe, no action)", HexSpellId, ResolveCcSpell(HexSpellId), true);
     check(allValid, "an option's spell is missing from the spell store");
     check(allControl, "an option's spell has no crowd-control DR group in the core");
     check(spells[Polymorph].Group != spells[FearOption].Group, "polymorph and fear share a DR group");
@@ -2709,10 +2707,11 @@ void RunCcSelftest(ChatHandler* handler)
              {CLASS_MAGE, CLASS_DRUID, CLASS_HUNTER, CLASS_WARLOCK, CLASS_ROGUE, CLASS_PRIEST, CLASS_PALADIN})
             classes = classes && CcClassHasOption(playerClass);
 
+        // G4d: the warrior, the shaman and the death knight have a row now (their teams get the moon mark)
         for (uint8 playerClass : {CLASS_WARRIOR, CLASS_SHAMAN, CLASS_DEATH_KNIGHT})
-            classes = classes && !CcClassHasOption(playerClass);
+            classes = classes && CcClassHasOption(playerClass);
 
-        check(classes, "the classes with a CC usable on players are not the seven of today's actions");
+        check(classes, "a class has no CC usable on players (G4d: all ten have one)");
         uint32 rogueRows = 0;
         bool rows = true;
         for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -2745,7 +2744,7 @@ void RunCcSelftest(ChatHandler* handler)
                                   spells[Hammer].BaseMs, lastRank.BaseMs, last));
         std::array<uint32, CC_OPTION_COUNT> known{};
         CcSpellTable table{};
-        uint32 const knownMask = BuildCcBotTable(CLASS_PALADIN, knowsAll, known, table);
+        CcRowMask const knownMask = BuildCcBotTable(CLASS_PALADIN, knowsAll, known, table);
         check(knownMask == CcClassMask(CLASS_PALADIN) && known[Hammer] == last && table[Hammer].BaseMs == 6000 &&
                   !known[Polymorph] && !table[Polymorph].Valid &&
                   BuildCcBotTable(CLASS_PALADIN, knowsNone, known, table) == 0,
@@ -3392,6 +3391,119 @@ void RunCcSelftest(ChatHandler* handler)
         wrapped.CastMs = 0xFFFFFF00u;
         check(CcDispelFreed(wrapped, Enemy, 118, true, 0x100u, CC_DISPEL_CONFIRM_MS),
               "the clock's wrap loses the dispel");
+    }
+
+    // 27. G4d: the twelve rows that had none (their classes and the core's DR groups), hungering cold's aura (a
+    // database script casts it), bash and maim only in their forms, the self-centred reach, the 64-bit row masks and
+    // tactics force dr's horror and scatter shot rows
+    {
+        struct NewRow
+        {
+            char const* Action;
+            uint8 PlayerClass;
+            uint8 Group;
+        };
+        static constexpr std::array<NewRow, 12> NewRows = {{
+            {"hex", CLASS_SHAMAN, DIMINISHING_DISORIENT},
+            {"howl of terror", CLASS_WARLOCK, DIMINISHING_FEAR},
+            {"death coil", CLASS_WARLOCK, DIMINISHING_HORROR},
+            {"shadowfury", CLASS_WARLOCK, DIMINISHING_CONTROLLED_STUN},
+            {"psychic horror", CLASS_PRIEST, DIMINISHING_HORROR},
+            {"scatter shot", CLASS_HUNTER, DIMINISHING_SCATTER_SHOT},
+            {"wyvern sting", CLASS_HUNTER, DIMINISHING_DISORIENT},
+            {"intimidating shout", CLASS_WARRIOR, DIMINISHING_FEAR},
+            {"concussion blow", CLASS_WARRIOR, DIMINISHING_CONTROLLED_STUN},
+            {"hungering cold", CLASS_DEATH_KNIGHT, DIMINISHING_DISORIENT},
+            {"bash", CLASS_DRUID, DIMINISHING_CONTROLLED_STUN},
+            {"maim", CLASS_DRUID, DIMINISHING_CONTROLLED_STUN},
+        }};
+        bool present = CC_OPTION_COUNT == 30;
+        std::string missing;
+        std::string groups;
+        for (NewRow const& expected : NewRows)
+        {
+            int8 const row = CcOptionIndex(expected.Action);
+            if (row == CC_NO_ROW || CC_OPTIONS[row].PlayerClass != expected.PlayerClass)
+            {
+                present = false;
+                missing += Acore::StringFormat("{}{}", missing.empty() ? "" : ", ", expected.Action);
+                continue;
+            }
+
+            if (!spells[row].Valid || spells[row].Group != expected.Group)
+                groups += Acore::StringFormat("{}{} {} ({} expected)", groups.empty() ? "" : ", ", expected.Action,
+                                              groupName(spells[row].Group), groupName(expected.Group));
+        }
+
+        check(present, Acore::StringFormat("not 30 rows, or a G4d row is missing or in another class: {}", missing));
+        check(groups.empty(), Acore::StringFormat("a G4d row's DR group differs from the plan's: {}", groups));
+
+        constexpr int8 Hex = CcOptionIndex("hex");
+        constexpr int8 Howl = CcOptionIndex("howl of terror");
+        constexpr int8 Coil = CcOptionIndex("death coil");
+        constexpr int8 Scatter = CcOptionIndex("scatter shot");
+        constexpr int8 Cold = CcOptionIndex("hungering cold");
+        constexpr int8 Bash = CcOptionIndex("bash");
+        constexpr int8 Maim = CcOptionIndex("maim");
+        static_assert(Hex != CC_NO_ROW && Howl != CC_NO_ROW && Coil != CC_NO_ROW && Scatter != CC_NO_ROW &&
+                          Cold != CC_NO_ROW && Bash != CC_NO_ROW && Maim != CC_NO_ROW,
+                      "the selftest's G4d rows are in CC_OPTIONS");
+        check(spells[Cold].AuraSpellId == 51209 && spells[Cold].BaseMs == 10000 &&
+                  GetCcAuraSpell(sSpellMgr->GetSpellInfo(CC_OPTIONS[Cold].SpellId)) == sSpellMgr->GetSpellInfo(51209),
+              Acore::StringFormat("hungering cold's aura is spell {} for {} ms (51209 for 10000 expected)",
+                                  spells[Cold].AuraSpellId, spells[Cold].BaseMs));
+
+        SpellInfo const* const hex = sSpellMgr->GetSpellInfo(CC_OPTIONS[Hex].SpellId);
+        SpellInfo const* const bash = sSpellMgr->GetSpellInfo(CC_OPTIONS[Bash].SpellId);
+        SpellInfo const* const maim = sSpellMgr->GetSpellInfo(CC_OPTIONS[Maim].SpellId);
+        check(hex && bash && maim && !hex->Stances && bash->Stances && maim->Stances &&
+                  bash->CheckShapeshift(FORM_NONE) != SPELL_CAST_OK &&
+                  bash->CheckShapeshift(FORM_CAT) != SPELL_CAST_OK &&
+                  bash->CheckShapeshift(FORM_DIREBEAR) == SPELL_CAST_OK &&
+                  maim->CheckShapeshift(FORM_NONE) != SPELL_CAST_OK &&
+                  maim->CheckShapeshift(FORM_DIREBEAR) != SPELL_CAST_OK &&
+                  maim->CheckShapeshift(FORM_CAT) == SPELL_CAST_OK,
+              "bash is not ready only in bear form, or maim only in cat form, or hex needs a form");
+
+        check(CC_OPTIONS[Howl].ReachYards == CC_HOWL_REACH_YARDS &&
+                  CC_OPTIONS[Cold].ReachYards == CC_COLD_REACH_YARDS &&
+                  CcOptionReaches(CC_OPTIONS[Howl], spells[Howl], 9.5f) &&
+                  !CcOptionReaches(CC_OPTIONS[Howl], spells[Howl], 10.5f) &&
+                  CcOptionReaches(CC_OPTIONS[Cold], spells[Cold], 9.5f) &&
+                  !CcOptionReaches(CC_OPTIONS[Cold], spells[Cold], 10.5f),
+              "howl of terror or hungering cold does not reach 10 yd around the caster");
+
+        check(sizeof(CcRowMask) == 8 && CcOptionBit(63) == (CcRowMask(1) << 63) &&
+                  (CcClassMask(CLASS_DRUID) & CcOptionBit(Bash)) && (CcClassMask(CLASS_DRUID) & CcOptionBit(Maim)) &&
+                  !(CcClassMask(CLASS_WARRIOR) & CcOptionBit(Bash)) &&
+                  (CcClassMask(CLASS_DEATH_KNIGHT) & CcOptionBit(Cold)),
+              "the row masks are not 64 bits wide, or a class mask misses its G4d rows");
+
+        int8 const horrorRow = CcForceDrRow(DIMINISHING_HORROR, true, 0);
+        int8 const scatterRow = CcForceDrRow(DIMINISHING_SCATTER_SHOT, true, 0);
+        check(horrorRow == Coil && scatterRow == Scatter,
+              Acore::StringFormat("force dr: horror {}, scatter shot {} (death coil, scatter shot expected)",
+                                  horrorRow == CC_NO_ROW ? "none" : CC_OPTIONS[horrorRow].Action,
+                                  scatterRow == CC_NO_ROW ? "none" : CC_OPTIONS[scatterRow].Action));
+    }
+
+    // 28. G4d fix: the mute list matches the names Action::getName() returns (the spell for a crowd control action;
+    // the hunter's "scare beast on cc" and "freezing trap"), not the creator names; a plain "entangling roots" or
+    // "hibernate" action (no crowd control class) and a creator name stay out
+    {
+        bool const spells = CcOldActionName("polymorph", true) && CcOldActionName("cyclone", true) &&
+                            CcOldActionName("hibernate", true) && CcOldActionName("entangling roots", true) &&
+                            CcOldActionName("fear", true) && CcOldActionName("banish", true);
+        check(spells, "a crowd control spell action of the old cc strategies is not muted");
+        check(CcOldActionName("scare beast on cc", false) && CcOldActionName("freezing trap", false),
+              "the hunter's scare beast or freezing trap action is not muted");
+        check(!CcOldActionName("entangling roots", false) && !CcOldActionName("hibernate", false) &&
+                  !CcOldActionName("fear", false) && !CcOldActionName("polymorph", false),
+              "a spell-named action that is no crowd control class is muted");
+        check(!CcOldActionName("cyclone on cc", true) && !CcOldActionName("fear on cc", true) &&
+                  !CcOldActionName("scare beast on cc", true) && !CcOldActionName("sap", true) &&
+                  !CcOldActionName("repentance", true) && !CcOldActionName("shackle undead", true),
+              "a creator name or a rotation CC (sap, repentance, shackle) is muted");
     }
 
     handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,

@@ -8,6 +8,7 @@
 #define PLAYERBOTS_CCTACTICSTRATEGY_H
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -70,6 +71,11 @@ public:
     bool HasTargetExclusions() const override { return true; }
     void AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type) override;
 };
+
+// The action name (Action::getName()) is one of the old "cc" strategies' actions that the Cc tactic mutes;
+// crowdControlAction: the action is a CastCrowdControlSpellAction (named by its spell), else the hunter's two (named
+// "scare beast on cc" and "freezing trap"). Pure, for the selftest.
+bool CcOldActionName(std::string_view name, bool crowdControlAction);
 
 // The Cc tactic is active (gate), the bot is not casting, a row is ready, the CC target is alive, not immune and not
 // controlled (a chaining bot, G4c: or held by its team's CC, the chain due), the patient hold and the low-effort stop

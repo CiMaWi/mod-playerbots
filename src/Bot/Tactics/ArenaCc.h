@@ -37,6 +37,8 @@ constexpr uint8 CC_FULL_ABILITY = 100;        // skill 0 (the skill system off) 
 constexpr uint8 CC_LOW_EFFORT = 50;           // below it a bot stops controlling when behind
 constexpr uint8 CC_TRAP_REACH_YARDS = 5;      // a trap goes down at the hunter's feet: the target must be near
 constexpr uint8 CC_SCREAM_REACH_YARDS = 8;    // psychic scream's radius around the priest
+constexpr uint8 CC_HOWL_REACH_YARDS = 10;     // G4d: howl of terror's radius around the warlock
+constexpr uint8 CC_COLD_REACH_YARDS = 10;     // G4d: hungering cold's radius around the death knight
 constexpr uint32 CC_MISS_WINDOW_MS = 1000;    // one memory answer per enemy, group and second
 constexpr uint32 CC_BREAK_WINDOW_MS = 10000;  // one break, own-break or wrong-target answer per bot and window
 
@@ -52,8 +54,8 @@ constexpr uint32 CC_UNDEAD_DEMON = CC_UNDEAD | CcCreatureTypeBit(CREATURE_TYPE_D
 // What a CC does to its target: the loss-of-control kinds are worth a trinket, roots, snares and silences are not
 enum class CcKind : uint8
 {
-    Incapacitate,  // polymorph, sap, gouge, repentance, freezing trap, shackle
-    Disorient,     // blind
+    Incapacitate,  // polymorph, sap, gouge, repentance, freezing trap, shackle, hex, hungering cold
+    Disorient,     // blind, scatter shot
     Fear,
     Horror,
     Stun,
@@ -97,9 +99,10 @@ struct CcOption
     uint32 CreatureTypeMask;      // the creature types it works on (CcCreatureTypeBit), 0 = any; a player is none
 };
 
-// The CC that has actions today (DT.4: G4d adds hex, howl of terror, death coil, shadowfury, scatter shot, ...).
-// Intimidating shout has an action too, but stays out until G4d (a warrior team gets no moon mark before then).
-constexpr std::array<CcOption, 18> CC_OPTIONS = {{
+// The CC rows (G4d, DT.4: every class has one now, so a warrior, shaman or death knight team gets the moon mark too).
+// The talent CC (shadowfury, psychic horror, scatter shot, wyvern sting, concussion blow, hungering cold) is a row of
+// a bot only when it knows the spell (BuildCcBotTable); bash and maim only in their form (CcReadyRows).
+constexpr std::array<CcOption, 30> CC_OPTIONS = {{
     {"polymorph", CLASS_MAGE, 118, CcKind::Incapacitate, 0, true, true, false, false, 0},
     {"cyclone on cc", CLASS_DRUID, 33786, CcKind::Cyclone, 0, false, true, false, false, 0},
     {"hibernate on cc", CLASS_DRUID, 2637, CcKind::Sleep, 0, true, false, false, false, CC_BEAST_DRAGONKIN},
@@ -118,12 +121,28 @@ constexpr std::array<CcOption, 18> CC_OPTIONS = {{
     {"turn undead", CLASS_PALADIN, 10326, CcKind::Fear, 0, true, false, false, false, CC_UNDEAD_DEMON},
     {"psychic scream", CLASS_PRIEST, 8122, CcKind::Fear, CC_SCREAM_REACH_YARDS, true, true, false, false, 0},
     {"shackle undead", CLASS_PRIEST, 9484, CcKind::Incapacitate, 0, false, false, false, false, CC_UNDEAD},
+    {"hex", CLASS_SHAMAN, 51514, CcKind::Incapacitate, 0, true, true, false, false, 0},
+    {"howl of terror", CLASS_WARLOCK, 5484, CcKind::Fear, CC_HOWL_REACH_YARDS, true, true, false, false, 0},
+    {"death coil", CLASS_WARLOCK, 6789, CcKind::Horror, 0, false, true, false, false, 0},
+    {"shadowfury", CLASS_WARLOCK, 30283, CcKind::Stun, 0, false, true, false, false, 0},
+    {"psychic horror", CLASS_PRIEST, 64044, CcKind::Horror, 0, false, true, false, false, 0},
+    {"scatter shot", CLASS_HUNTER, 19503, CcKind::Disorient, 0, true, true, false, false, 0},
+    {"wyvern sting", CLASS_HUNTER, 19386, CcKind::Sleep, 0, true, true, false, false, 0},
+    {"intimidating shout", CLASS_WARRIOR, 5246, CcKind::Fear, 0, true, true, false, false, 0},
+    {"concussion blow", CLASS_WARRIOR, 12809, CcKind::Stun, 0, false, true, false, false, 0},
+    {"hungering cold", CLASS_DEATH_KNIGHT, 49203, CcKind::Incapacitate, CC_COLD_REACH_YARDS, true, true, false, false,
+     0},
+    {"bash", CLASS_DRUID, 5211, CcKind::Stun, 0, false, true, false, false, 0},
+    {"maim", CLASS_DRUID, 22570, CcKind::Stun, 0, false, true, false, false, 0},
 }};
 
-constexpr uint8 CC_OPTION_COUNT = static_cast<uint8>(CC_OPTIONS.size());
-static_assert(CC_OPTION_COUNT <= 32, "the ready mask is a uint32");
+// The rows as bits (the known, ready and failed masks): room for 64 rows (G4d widened it; G5c/G4e add rows freely)
+using CcRowMask = uint64;
 
-constexpr uint32 CcOptionBit(uint8 index) { return 1u << index; }
+constexpr uint8 CC_OPTION_COUNT = static_cast<uint8>(CC_OPTIONS.size());
+static_assert(CC_OPTION_COUNT <= 64, "the row masks are a uint64 (CcRowMask)");
+
+constexpr CcRowMask CcOptionBit(uint8 index) { return CcRowMask(1) << index; }
 
 // The row of an action, CC_NO_ROW when no row has it
 constexpr int8 CcOptionIndex(std::string_view action)
@@ -138,9 +157,9 @@ constexpr int8 CcOptionIndex(std::string_view action)
 }
 
 // The rows of a class (G4b's ready mask starts from it)
-constexpr uint32 CcClassMask(uint8 playerClass)
+constexpr CcRowMask CcClassMask(uint8 playerClass)
 {
-    uint32 mask = 0;
+    CcRowMask mask = 0;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
     {
         if (CC_OPTIONS[index].PlayerClass == playerClass)
@@ -485,7 +504,7 @@ inline CcParams ComputeCcParams(uint8 skill, BotAttributeValues const& attribute
 // target, the CC aura on it now (visible, by spell id) and its own memory of the target (DrMemory::Levels)
 struct CcPickInput
 {
-    uint32 ReadyMask = 0;        // CcOptionBit per row
+    CcRowMask ReadyMask = 0;     // CcOptionBit per row
     bool TargetIsPlayer = true;  // a player: only the rows UsableOnPlayers
     bool DrAsPlayer = true;      // the target or its owner is a player (a pet): the PvP cap and player-only DR apply
     uint8 CreatureType = 0;      // CREATURE_TYPE_* of a creature target (a row's CreatureTypeMask)

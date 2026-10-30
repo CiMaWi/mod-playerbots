@@ -12,6 +12,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <span>
 #include <string_view>
 
 #include "ArenaCc.h"
@@ -60,9 +61,15 @@ constexpr float CcRetargetRelevance = ACTION_HIGH + 28.0f;
 // The old "cc" strategies' actions (mage, druid, warlock, hunter; AiFactory adds "cc" for these classes). Rogue,
 // paladin and priest CC (blind, sap, repentance, hammer of justice, psychic scream, ...) belong to class rotations and
 // stay; "team cc" casts them on the CC target.
-constexpr std::array<std::string_view, 8> OldCcActions = {
-    "polymorph",  "cyclone on cc", "hibernate on cc",   "entangling roots on cc",
-    "fear on cc", "banish on cc",  "scare beast on cc", "freezing trap on cc"};
+// G4d fix: Action::getName() is the action's own name, not its creator's name. The CastCrowdControlSpellAction
+// classes (CastPolymorphAction, CastCycloneCcAction, CastHibernateCcAction, CastEntanglingRootsCcAction,
+// CastFearOnCcAction, CastBanishOnCcAction) are named by their spell; the hunter's CastScareBeastCcAction is named
+// "scare beast on cc" and CastFreezingTrap (made by both "freezing trap" and "freezing trap on cc") "freezing trap".
+// The druid's plain CastHibernateAction and CastEntanglingRootsAction (balance, kiting) share the spell names of the
+// cc ones but are no CastCrowdControlSpellAction: they stay (CcOldActionName, IsOldCcAction)
+constexpr std::array<std::string_view, 6> OldCcSpellActions = {"polymorph",        "cyclone", "hibernate",
+                                                               "entangling roots", "fear",    "banish"};
+constexpr std::array<std::string_view, 2> OldCcOtherActions = {"scare beast on cc", "freezing trap"};
 
 // Known at the bot's skill (the gate's KnownFrom; full ability knows every tactic), whatever this window's use roll
 bool CcKnownAtSkill(PlayerbotAI* botAI)
@@ -142,22 +149,23 @@ void CcRefreshTable(Player* bot, CcBotState& state, uint32 nowMs)
 }
 
 // The rows the bot can start now: known, off cooldown, not waiting after a failed cast, a finisher with combo points
-// on some target (comboMask; CcComboRowsOn keeps it only with points on the CC target)
-uint32 CcReadyRows(Player* bot, CcBotState& state, uint32 nowMs, uint32& comboMask)
+// on some target (comboMask; CcComboRowsOn keeps it only with points on the CC target), a form spell in its form (G4d:
+// bash in bear form, maim in cat form; the bot does not shift for a CC, and a failed cast would back the row off)
+CcRowMask CcReadyRows(Player* bot, CcBotState& state, uint32 nowMs, CcRowMask& comboMask)
 {
     comboMask = 0;
     if (state.FailedMask && !FocusBefore(nowMs, state.FailedUntilMs))
         state.FailedMask = 0;
 
-    uint32 mask = 0;
+    CcRowMask mask = 0;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
     {
-        uint32 const bit = CcOptionBit(index);
+        CcRowMask const bit = CcOptionBit(index);
         if (!(state.KnownMask & bit) || (state.FailedMask & bit) || bot->HasSpellCooldown(state.KnownSpell[index]))
             continue;
 
         SpellInfo const* const info = sSpellMgr->GetSpellInfo(state.KnownSpell[index]);
-        if (!info)
+        if (!info || (info->Stances && info->CheckShapeshift(bot->GetShapeshiftForm()) != SPELL_CAST_OK))
             continue;
 
         if (info->NeedsComboPoints())
@@ -176,7 +184,7 @@ uint32 CcReadyRows(Player* bot, CcBotState& state, uint32 nowMs, uint32& comboMa
 
 // The finishers stay ready only with combo points on the target (they belong to one target, Unit::GetComboPoints);
 // their duration by those points (G4a NOTE 1, G4b-a review NOTE 2)
-uint32 CcComboRowsOn(Player* bot, CcBotState& state, uint32 ready, uint32 comboMask, Unit* target)
+CcRowMask CcComboRowsOn(Player* bot, CcBotState& state, CcRowMask ready, CcRowMask comboMask, Unit* target)
 {
     if (!(ready & comboMask))
         return ready;
@@ -184,7 +192,7 @@ uint32 CcComboRowsOn(Player* bot, CcBotState& state, uint32 ready, uint32 comboM
     uint8 const points = bot->GetComboPoints(target);
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
     {
-        uint32 const bit = CcOptionBit(index);
+        CcRowMask const bit = CcOptionBit(index);
         if (!(ready & comboMask & bit))
             continue;
 
@@ -222,7 +230,7 @@ bool CcHealerNeeded(Player* bot)
     return false;
 }
 
-float CcLongestReach(CcBotState const& state, uint32 ready)
+float CcLongestReach(CcBotState const& state, CcRowMask ready)
 {
     float reach = 0.0f;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -1026,6 +1034,13 @@ void CcCallOffPets(Player* bot, CcBotState& state)
 }
 }  // namespace
 
+bool CcOldActionName(std::string_view name, bool crowdControlAction)
+{
+    auto const& names = crowdControlAction ? std::span<std::string_view const>(OldCcSpellActions)
+                                           : std::span<std::string_view const>(OldCcOtherActions);
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+
 bool CcImmuneBesidesCyclone(Unit const* target, SpellInfo const* spellInfo)
 {
     auto const& allowList = target->m_spellImmune[IMMUNITY_ALLOW_ID];
@@ -1066,6 +1081,19 @@ bool CcImmuneBesidesCyclone(Unit const* target, SpellInfo const* spellInfo)
         }
     }
 
+    // G4c-d re-review NOTE 5: an immunity to an effect type (Unit::IsImmunedToSpellEffect's effect list)
+    for (auto const& [effect, spellId] : target->m_spellImmune[IMMUNITY_EFFECT])
+    {
+        if (CcFromCyclone(spellId))
+            continue;
+
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (spellInfo->Effects[i].IsEffect() && spellInfo->Effects[i].Effect == effect)
+                return true;
+        }
+    }
+
     return false;
 }
 
@@ -1087,7 +1115,7 @@ bool TacticCcMultiplier::IsOldCcAction(Action* action)
 
     // getName() builds a string; resolved once per action and bot
     std::string const name = action->getName();
-    bool const old = std::find(OldCcActions.begin(), OldCcActions.end(), std::string_view(name)) != OldCcActions.end();
+    bool const old = CcOldActionName(name, dynamic_cast<CastCrowdControlSpellAction*>(action) != nullptr);
     return oldCcActions.emplace(action, old).first->second;
 }
 
@@ -1319,8 +1347,8 @@ bool CcReadyTrigger::IsActive()
     }
 
     CcRefreshTable(bot, state, nowMs);
-    uint32 comboMask = 0;
-    uint32 ready = CcReadyRows(bot, state, nowMs, comboMask);
+    CcRowMask comboMask = 0;
+    CcRowMask ready = CcReadyRows(bot, state, nowMs, comboMask);
     state.ReadyMask = ready;
     bool onMoon = false;
     Unit* const ccTarget =
@@ -1423,6 +1451,15 @@ bool CcReadyTrigger::IsActive()
     int8 const row = PickCc(input, state.Spells, params);
     if (row == CC_NO_ROW)
         return false;
+
+    // G4c-d re-review NOTE 4: through the team's cyclone only when nothing else keeps the target immune to the row
+    // (a cycloned warrior in berserker rage: no pick, so the busy guard does not hold the bot's casts for nothing)
+    if (throughCyclone)
+    {
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(state.KnownSpell[row]);
+        if (!info || CcImmuneBesidesCyclone(target, info))
+            return false;
+    }
 
     // The chain's moment: the CC lands ChainLeadMs before the team's CC ends; the answer is asked again at that
     // moment rather than a whole refresh later (the engine's cadence and the reaction model add the spread, DT.11)
@@ -1528,6 +1565,18 @@ bool TeamCcAction::Execute(Event /*event*/)
     // delay from the chain's moment, learned unless a cast of the bot's own or the cyclone held it
     uint32 const nowMs = getMSTime();
     bool const chain = pickedChain;
+    // G4d: one line per cast (the run counts the casts per spell; the records' cc.cast counts per DR group)
+    if (sLog->ShouldLog("playerbots", LogLevel::LOG_LEVEL_TRACE))
+    {
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(state.KnownSpell[row]);
+        uint8 const group = state.Spells[row].Group;
+        LOG_TRACE("playerbots", "CC cast: {} {} ({}, row {} {}) on {} group {} ({}){}, ok at {} ms", bot->GetName(),
+                  info && info->SpellName[0] ? info->SpellName[0] : "?", state.KnownSpell[row], CC_OPTIONS[row].Action,
+                  CC_OPTIONS[row].SpellId, target->GetName(),
+                  group < PVPTEST_DR_GROUP_COUNT ? PVPTEST_DR_GROUP_NAMES[group] : "?", group, chain ? " chain" : "",
+                  nowMs);
+    }
+
     if (chain && state.ChainDueSinceMs && getMSTimeDiff(state.ChainDueSinceMs, nowMs) <= CC_CHAIN_REACT_CAP_MS &&
         !state.ChainBusySeen && !state.ChainHeldImmune)
     {

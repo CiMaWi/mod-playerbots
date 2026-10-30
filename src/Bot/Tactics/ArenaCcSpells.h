@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <utility>
 
 #include "ArenaCc.h"
 #include "GameObject.h"
@@ -28,11 +29,28 @@
 // table on its first call (a function-local static, thread-safe, after the spell store has loaded: every caller is a
 // bot update or a GM command). Only the spells' static data; never a unit's DR counters (DT.12).
 
+// G4d: a CC whose aura a world database script casts (spell_scripts), not an effect of the spell: the cast, its aura
+constexpr std::array<std::pair<uint32, uint32>, 1> CC_SCRIPTED_AURAS = {{
+    {49203, 51209},  // hungering cold: a dummy at the death knight, the script casts the freeze (10 s, 10 yd)
+}};
+
 // The DR group a cast counts under (as PlayerbotAI.cpp's GetPvpTestCastGroup). A trap is cast as a summon spell
 // without a group of its own; its CC is the spell the trap's game object casts when it springs.
 inline SpellInfo const* GetCcAuraSpell(SpellInfo const* spellInfo)
 {
-    if (!spellInfo || GetDiminishingReturnsGroupForSpell(spellInfo, false) != DIMINISHING_NONE)
+    if (!spellInfo)
+        return spellInfo;
+
+    for (auto const& [castId, auraId] : CC_SCRIPTED_AURAS)
+    {
+        if (spellInfo->Id != castId)
+            continue;
+
+        if (SpellInfo const* const aura = sSpellMgr->GetSpellInfo(auraId))
+            return aura;
+    }
+
+    if (GetDiminishingReturnsGroupForSpell(spellInfo, false) != DIMINISHING_NONE)
         return spellInfo;
 
     for (SpellEffectInfo const& effect : spellInfo->Effects)
@@ -342,11 +360,11 @@ inline uint32 CcHighestKnownRank(uint32 firstRankId, Knows const& knows)
 // One bot's table (CcState.h): per row of its class the highest rank it knows and that rank's numbers. Only on a bot
 // update (the spell store is loaded); the caller caches it and rebuilds when the bot's level or talents change.
 template <typename Knows>
-inline uint32 BuildCcBotTable(uint8 playerClass, Knows const& knows, std::array<uint32, CC_OPTION_COUNT>& knownSpell,
-                              CcSpellTable& table)
+inline CcRowMask BuildCcBotTable(uint8 playerClass, Knows const& knows, std::array<uint32, CC_OPTION_COUNT>& knownSpell,
+                                 CcSpellTable& table)
 {
-    uint32 knownMask = 0;
-    uint32 const classMask = CcClassMask(playerClass);
+    CcRowMask knownMask = 0;
+    CcRowMask const classMask = CcClassMask(playerClass);
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
     {
         knownSpell[index] = (classMask & CcOptionBit(index)) ? CcHighestKnownRank(CC_OPTIONS[index].SpellId, knows) : 0;
