@@ -51,7 +51,7 @@ enum class TacticCounter : uint8
     FocusDiff,     // G1b: the same sample, another target
     PlanSwitch,    // G1b: a new skull after the match's first marks
     ImmuneSwapMs,  // G1b: ms from the skull seen immune to the new skull (summed)
-    HoldSwitch,    // G1b: switches the hold allowed (free or execute) and the bot took
+    HoldSwitch,    // G1b: switches the hold allowed (any verdict, G1b-c) and the bot took
     Count
 };
 

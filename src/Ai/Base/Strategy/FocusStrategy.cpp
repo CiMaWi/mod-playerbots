@@ -11,6 +11,7 @@
 #include <cmath>
 
 #include "ArenaCc.h"
+#include "ArenaCcSpells.h"
 #include "ArenaFocus.h"
 #include "Battleground.h"
 #include "FocusState.h"
@@ -20,6 +21,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PvpTestCounters.h"
 #include "SharedDefines.h"
 #include "SkillStrategy.h"
 #include "Spell.h"
@@ -176,6 +178,34 @@ uint32 PlanIntervalMs(FocusBotState const& state)
 {
     return std::max(state.Params.Team.PlanIntervalMs, FOCUS_MIN_PLAN_INTERVAL_MS);
 }
+
+// A crowd control on a teammate's cast bar aimed at the target (what a player sees of his partner, DT.1)
+bool FocusTeamCastingCcAt(std::array<Player*, FOCUS_MAX_TEAM> const& members, uint8 memberCount, ObjectGuid target)
+{
+    for (uint8 index = 0; index < memberCount; ++index)
+    {
+        Spell const* const spell = members[index]->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (!spell || !spell->GetSpellInfo() || spell->m_targets.GetUnitTargetGUID() != target)
+            continue;
+
+        SpellInfo const* const aura = GetCcAuraSpell(spell->GetSpellInfo());
+        if (IsPvpTestCcGroup(static_cast<uint32>(GetDiminishingReturnsGroupForSpell(aura, false))))
+            return true;
+    }
+
+    return false;
+}
+
+// The moon mode of the bot's match as its plan pass took it at the start (so `tactics moon` and the plan switch
+// together, from the next match), else as configured now
+uint8 FocusMatchMoonMode(Player* bot, FocusMatchState const& match)
+{
+    Battleground* const bg = bot->GetBattleground();
+    if (bg && match.TeamReady && match.MatchId == bg->GetInstanceID())
+        return match.MoonMode;
+
+    return static_cast<uint8>(sPlayerbotAIConfig.TacticFocus.FocusMoonMode);
+}
 }  // namespace
 
 float TacticHoldMultiplier::GetValue(Action* action)
@@ -199,13 +229,14 @@ float TacticHoldMultiplier::GetValue(Action* action)
     ObjectGuid const currentGuid = current->GetGUID();
     ObjectGuid const candidateGuid = candidate->GetGUID();
 
-    // The target as taken: HeldSinceMs from the allowed switch that led to it, else from now
+    // The target as taken: HeldSinceMs from the allowed switch that led to it, else from now. tactics.holdSwitch
+    // counts every switch the hold allowed and the bot took, whatever the verdict (G1b-c: with marks in a 2v2 a
+    // free switch can never pass, so counting free and execute only read 0)
     if (hold.HeldGuid != currentGuid)
     {
         bool const switched = hold.PendingGuid == currentGuid;
         hold.HeldSinceMs = switched ? hold.PendingAtMs : nowMs;
-        if (switched && (hold.PendingVerdict == static_cast<uint8>(HoldReason::Free) ||
-                         hold.PendingVerdict == static_cast<uint8>(HoldReason::Execute)))
+        if (switched)
         {
             ++hold.Switches;
             botAI->CountTactic(TacticCounter::HoldSwitch);
@@ -254,7 +285,10 @@ float TacticHoldMultiplier::GetValue(Action* action)
     input.SwitchCostMs = EaseCostMs(botAI->GetReactionTypes(), ReactionEase::NewTarget);
     HoldResult const result = HoldDecision(input, nowMs, params, bot->GetGUID().GetCounter());
 
-    if (result.Allow && result.Reason == HoldReason::Free && currentGuid == skull)
+    // Off the skull only for a hard reason; in moon mode 2 also to a moon nobody controls (G1b-c)
+    if (result.Allow && result.Reason == HoldReason::Free && currentGuid == skull &&
+        FocusMarkHolds(FocusMatchMoonMode(bot, state.Match), candidateGuid == group->GetTargetIcon(FOCUS_ICON_MOON),
+                       CcUnitControlled(candidate)))
         return Answer(candidateGuid, FOCUS_VERDICT_MARK_HELD, false, nowMs);
 
     if (!result.Allow && skull.IsEmpty() && group && group->GetMembersCount() <= FOCUS_MAX_TEAM)
@@ -485,15 +519,20 @@ bool ArenaPlanAction::Execute(Event /*event*/)
 
     if (!match.TeamReady)
     {
-        // The planner's own numbers with what its team can do, once per match (the gates are open: all are in)
+        // The planner's own numbers with what its team can do, once per match (the gates are open: all are in); the
+        // moon mode as configured now (a .reload config applies from the next match)
         match.Team = state.Params.Team;
         uint8 physical = 0;
+        bool classCanControl = match.Team.CcCapable;
         for (uint8 index = 0; index < memberCount; ++index)
         {
-            match.Team.CcCapable = match.Team.CcCapable || FocusCanControl(members[index]->getClass());
+            classCanControl = classCanControl || FocusCanControl(members[index]->getClass());
             physical += FocusPhysical(members[index]) ? 1 : 0;
         }
 
+        match.MoonMode = static_cast<uint8>(config.TacticFocus.FocusMoonMode);
+        match.MoonCapable = FocusMoonCapable(match.MoonMode, classCanControl, botAI->TacticEnabledHere(TacticId::Cc));
+        match.Team.CcCapable = match.MoonCapable;
         match.Team.PhysicalTeam = physical * 2 > memberCount;
         match.TeamReady = true;
     }
@@ -564,6 +603,38 @@ bool ArenaPlanAction::Execute(Event /*event*/)
         info.LosLostMs = info.LosCount ? 0 : nowMs - memory.LastSeenMs;
     }
 
+    // Moon mode 2 (G1b-c): the moon this bot wrote stays while a CC lands on it or a teammate's cast bar shows one at
+    // it; MoonGraceMs without either releases it (the team's damage may go there again) for MoonRetryMs
+    ObjectGuid planMoon = moon;
+    if (match.MoonMode == FOCUS_MOON_USED)
+    {
+        match.Team.CcCapable = match.MoonCapable && !FocusBefore(nowMs, match.MoonBlockedUntilMs);
+        if (!moon.IsEmpty() && moon == match.WrittenMoon)
+        {
+            if (moon != match.MoonGuid)
+            {
+                match.MoonGuid = moon;
+                match.MoonLastLandMs = nowMs;
+            }
+
+            int8 const index = FocusIndexOf(match, moon);
+            if (index != FOCUS_NONE &&
+                (CcUnitControlled(foes[index]) || FocusTeamCastingCcAt(members, memberCount, moon)))
+                match.MoonLastLandMs = nowMs;
+            else if (!FocusMoonKept(match.MoonLastLandMs, nowMs, config.TacticFocus.FocusMoonGraceMs))
+            {
+                WriteIcon(group, FOCUS_ICON_MOON, bot->GetGUID(), ObjectGuid::Empty);
+                match.WrittenMoon = group->GetTargetIcon(FOCUS_ICON_MOON);
+                match.SeenMoon = match.WrittenMoon;
+                match.MoonGuid = ObjectGuid::Empty;
+                match.MoonBlockedUntilMs = nowMs + config.TacticFocus.FocusMoonRetryMs;
+                match.Team.CcCapable = false;
+                ++match.MoonReleases;
+                planMoon = ObjectGuid::Empty;
+            }
+        }
+    }
+
     // The plan as marked: the icons are the truth (another planner, a real player, a planner that died)
     PlanState prev = match.Plan;
     if (skull != match.PlanKillGuid)
@@ -573,7 +644,7 @@ bool ArenaPlanAction::Execute(Event /*event*/)
     }
 
     prev.Kill = FocusIndexOf(match, skull);
-    prev.Cc = FocusIndexOf(match, moon);
+    prev.Cc = FocusIndexOf(match, planMoon);
     if (prev.Kill != FOCUS_NONE && enemies[prev.Kill].ImmuneAll && match.ImmuneGuid != skull)
     {
         match.ImmuneGuid = skull;

@@ -2165,11 +2165,27 @@ Playerbots.Tactics.Enable = 0
 # AddonKnowledgeFromSkill (the planner's Knowledge, the skill with the attribute defaults; skill 0 always) it also
 # remembers what an addon would: a defensive seen used this match counts as spent.
 # Playerbots.Tactics.Focus.AddonKnowledgeFromSkill = 40
-# (Ranges: ms keys 0-120000, percents 0-100, StrongMargin 0-255, seconds 0-600, AddonKnowledgeFromSkill 0-99; larger
-# values are capped.)
+# The moon: MoonMode 1 marks one whenever the team has a class with a crowd-control option (G1b's rule); 0 never
+# marks one; 2 marks one only for a team that plays crowd control (the planner's Cc tactic enabled here) and keeps it
+# only while a CC lands on it or a teammate's cast bar shows one at it: MoonGraceMs after the mark or the last such
+# sight the planner clears it (the team's damage may go there again) and sets none for MoonRetryMs. In mode 2 the
+# target hold also lets a bot leave the skull for a moon that is not controlled. The mode is read at each match's
+# start; ".playerbots tactics moon <0|1|2>" switches it on a running server from the next match (a restart or
+# ".playerbots rndbot reload" restores this value; ".reload config" alone does not re-read it).
+# Playerbots.Tactics.Focus.MoonMode = 1
+# Playerbots.Tactics.Focus.MoonGraceMs = 5000
+# Playerbots.Tactics.Focus.MoonRetryMs = 10000
+# (Ranges: ms keys 0-120000, percents 0-100, StrongMargin 0-255, seconds 0-600, AddonKnowledgeFromSkill 0-99, MoonMode
+# 0-2; larger values are capped.)
 
 # Crowd control and its avoidance: the numbers of the Cc, OwnCc and Trinket tactics (all keys optional, the defaults
-# below; nothing reads them yet: the actions come in later steps). The defaults are proposals, not tuned yet. An
+# below; the Cc tactic reads them from G4b, OwnCc and Trinket in later steps). The defaults are proposals, not tuned
+# yet. With the Cc tactic enabled and known at the bot's skill (arena, battleground, open-world PvP), the strategy
+# "tactic cc" casts the bot's longest-lasting usable CC (its highest known rank; a loss of control before a root, no
+# root on a rooted target or on the moon; a healer waits while a teammate is below CriticalHealth) on the team's CC
+# target: the moon in an arena, else the strongest enemy other than its own target and the skull; the old "cc"
+# strategy's actions are
+# muted there ("pvp cc"); outside the scope, or below Cc.KnownFromSkill, "cc" acts as before. An
 # ...AtSkill1 / ...AtSkill99 pair is lerped over one attribute of the bot along Playerbots.Skill.CurveExponent (with the
 # attribute defaults that is the skill; skill 0 takes the skill-99 value and passes every ...FromSkill threshold).
 # When a bot knows crowd control at all is Playerbots.Tactics.Cc.KnownFromSkill (the gate key above; 30 is the
@@ -2196,13 +2212,15 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Cc.PatientHoldMs = 3000
 # Playerbots.Tactics.Cc.BehindStopPct = 30
 #
-# Avoid: OwnBreakPct is the share of the bot's damage that breaks its team's breakable CC (Focus). A bot breaks a CC on
+# Avoid: OwnBreakPct is the share of the bot's damage that breaks its team's breakable CC (Focus); from
+# OwnBreakNeverFromSkill (Focus) a bot never breaks it (100: every bot below full ability can). A bot breaks a CC on
 # itself (trinket, racials) when it matters: a stun, fear, horror, incapacitate, disorient, sleep or cyclone with
 # MinLeftMs or more left while the bot or its partner is at or below LowHealthPct % health or being burst; any other
 # CC it breaks with WastedBreakPct (Wisdom; one answer per bot and 10 s), except that from IgnoreRootsFromSkill
 # (Wisdom) it never breaks a root, snare or silence.
 # Playerbots.Tactics.Avoid.OwnBreakPctAtSkill1 = 60
 # Playerbots.Tactics.Avoid.OwnBreakPctAtSkill99 = 5
+# Playerbots.Tactics.Avoid.OwnBreakNeverFromSkill = 65
 # Playerbots.Tactics.Avoid.WastedBreakPctAtSkill1 = 70
 # Playerbots.Tactics.Avoid.WastedBreakPctAtSkill99 = 0
 # Playerbots.Tactics.Avoid.IgnoreRootsFromSkill = 65

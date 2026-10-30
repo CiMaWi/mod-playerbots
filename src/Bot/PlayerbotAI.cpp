@@ -7,8 +7,10 @@
 #include "PlayerbotAI.h"
 #include "ActivityBudget.h"
 #include "AiFactory.h"
+#include "ArenaCcSpells.h"
 #include "Battleground.h"
 #include "BudgetValues.h"
+#include "CcState.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
@@ -4031,27 +4033,10 @@ bool PlayerbotAI::CastSpell(std::string const name, Unit* target, Item* itemTarg
 namespace
 {
 // The DR group a cast counts under. A trap is cast as a summon spell without a group of its own (the spell only puts
-// the trap down); its crowd control is the spell the trap's game object casts when it springs.
+// the trap down); its crowd control is the spell the trap's game object casts when it springs (ArenaCcSpells.h).
 uint32 GetPvpTestCastGroup(SpellInfo const* spellInfo)
 {
-    uint32 const group = GetDiminishingReturnsGroupForSpell(spellInfo, false);
-    if (group != DIMINISHING_NONE)
-        return group;
-
-    for (SpellEffectInfo const& effect : spellInfo->Effects)
-    {
-        if (effect.Effect != SPELL_EFFECT_SUMMON_OBJECT_WILD && effect.Effect != SPELL_EFFECT_SUMMON_OBJECT_SLOT1)
-            continue;
-
-        GameObjectTemplate const* trap = sObjectMgr->GetGameObjectTemplate(effect.MiscValue);
-        if (!trap || trap->type != GAMEOBJECT_TYPE_TRAP)
-            continue;
-
-        if (SpellInfo const* trapSpell = sSpellMgr->GetSpellInfo(trap->trap.spellId))
-            return GetDiminishingReturnsGroupForSpell(trapSpell, false);
-    }
-
-    return DIMINISHING_NONE;
+    return GetDiminishingReturnsGroupForSpell(GetCcAuraSpell(spellInfo), false);
 }
 }  // namespace
 
@@ -7181,6 +7166,9 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     focus.Params = ComputeFocusParams(skill, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
     focus.AddonKnowledge = FocusAddonKnowledge(skill, attributes.Get(BotAttribute::Knowledge),
                                                config.TacticFocus.FocusAddonKnowledgeFromSkill);
+    // Crowd control's numbers (G4b, G4a NOTE 8), cached whatever Playerbots.Tactics.Cc/OwnCc.Enable say
+    GetCcState().Params =
+        ComputeCcParams(skill, attributes, tacticGate.Effort, config.SkillGate.CurveExponent, config.TacticCc);
     if (skill == 0)
         return;
 
@@ -7222,6 +7210,20 @@ FocusBotState& PlayerbotAI::GetFocusState()
     }
 
     return *focusState;
+}
+
+CcBotState& PlayerbotAI::GetCcState()
+{
+    if (!ccState)
+    {
+        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones (full ability)
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+        ccState = std::make_unique<CcBotState>();
+        ccState->Params =
+            ComputeCcParams(0, attributes, SKILL_GATE_FULL, config.SkillGate.CurveExponent, config.TacticCc);
+    }
+
+    return *ccState;
 }
 
 bool PlayerbotAI::HasFullSkillAbility()

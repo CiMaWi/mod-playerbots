@@ -49,6 +49,12 @@ struct FocusConfig
     uint32 FocusDefensiveSwapPct = 25;
     // The planner's Knowledge from which its snapshot carries addon-level knowledge (DT.12: defensives seen spent)
     uint32 FocusAddonKnowledgeFromSkill = 40;
+    // The moon mark (G1b-c, ArenaFocus.h FOCUS_MOON_*): 1 = G1b's (whenever a class can control), 0 = never, 2 = only
+    // for a team that plays the Cc tactic, released MoonGraceMs after it was set or last controlled without a CC
+    // landing or cast at it, not set again for MoonRetryMs
+    uint32 FocusMoonMode = 1;
+    uint32 FocusMoonGraceMs = 5000;
+    uint32 FocusMoonRetryMs = 10000;
 };
 
 #endif

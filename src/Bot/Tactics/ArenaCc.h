@@ -24,8 +24,8 @@
 // (ChainDue) and when a bot breaks a CC on itself (ShouldBreakCc). Pure functions of plain values a human in the seat
 // sees (auras with durations, cast bars, the combat log): no bots, no config singleton, no allocation. Their rolls
 // hash the caller's seed (a guid) per window (RollWindow), so the same input gives the same answer. The core's data of
-// each row (DR group, base duration, PvP cap, cast time, range) come once per spell from ArenaCcSpells.h. Nothing
-// calls this yet (G4b: tactic cc, cc ready, team cc; G5a: pvp trinket); .playerbots tactics selftest cc drives it.
+// each row (DR group, duration of the rank the bot knows, PvP cap, cast time, range) come from ArenaCcSpells.h. G4b's
+// CcTacticStrategy (tactic cc, cc ready, team cc) calls it (G5a: pvp trinket); .playerbots tactics selftest cc too.
 
 constexpr uint8 CC_DR_GROUP_COUNT = 21;   // the core's DiminishingGroup values, 0-20 (PvpTestCounters.h's names)
 constexpr uint8 CC_DR_LEVEL_IMMUNE = 3;   // DIMINISHING_LEVEL_IMMUNE: after three CC of a group the target is immune
@@ -39,6 +39,15 @@ constexpr uint8 CC_TRAP_REACH_YARDS = 5;      // a trap goes down at the hunter'
 constexpr uint8 CC_SCREAM_REACH_YARDS = 8;    // psychic scream's radius around the priest
 constexpr uint32 CC_MISS_WINDOW_MS = 1000;    // one memory answer per enemy, group and second
 constexpr uint32 CC_BREAK_WINDOW_MS = 10000;  // one break, own-break or wrong-target answer per bot and window
+
+// Creature types (CREATURE_TYPE_*) as CcOption::CreatureTypeMask bits, like the core's CREATURE_TYPEMASK_*
+constexpr uint32 CcCreatureTypeBit(uint32 creatureType) { return creatureType ? 1u << (creatureType - 1) : 0u; }
+constexpr uint32 CC_BEAST = CcCreatureTypeBit(CREATURE_TYPE_BEAST);
+constexpr uint32 CC_BEAST_DRAGONKIN = CC_BEAST | CcCreatureTypeBit(CREATURE_TYPE_DRAGONKIN);
+constexpr uint32 CC_DEMON_ELEMENTAL =
+    CcCreatureTypeBit(CREATURE_TYPE_DEMON) | CcCreatureTypeBit(CREATURE_TYPE_ELEMENTAL);
+constexpr uint32 CC_UNDEAD = CcCreatureTypeBit(CREATURE_TYPE_UNDEAD);
+constexpr uint32 CC_UNDEAD_DEMON = CC_UNDEAD | CcCreatureTypeBit(CREATURE_TYPE_DEMON);
 
 // What a CC does to its target: the loss-of-control kinds are worth a trinket, roots, snares and silences are not
 enum class CcKind : uint8
@@ -85,29 +94,30 @@ struct CcOption
     bool UsableOnPlayers;  // false: only creature types players lack (undead, beasts, demons, elementals, dragonkin)
     bool NeedsStealth;     // sap, cheap shot
     bool NeedsTargetOutOfCombat;  // sap
+    uint32 CreatureTypeMask;      // the creature types it works on (CcCreatureTypeBit), 0 = any; a player is none
 };
 
 // The CC that has actions today (DT.4: G4d adds hex, howl of terror, death coil, shadowfury, scatter shot, ...).
 // Intimidating shout has an action too, but stays out until G4d (a warrior team gets no moon mark before then).
 constexpr std::array<CcOption, 18> CC_OPTIONS = {{
-    {"polymorph", CLASS_MAGE, 118, CcKind::Incapacitate, 0, true, true, false, false},
-    {"cyclone on cc", CLASS_DRUID, 33786, CcKind::Cyclone, 0, false, true, false, false},
-    {"hibernate on cc", CLASS_DRUID, 2637, CcKind::Sleep, 0, true, false, false, false},
-    {"entangling roots on cc", CLASS_DRUID, 339, CcKind::Root, 0, true, true, false, false},
-    {"fear on cc", CLASS_WARLOCK, 5782, CcKind::Fear, 0, true, true, false, false},
-    {"banish on cc", CLASS_WARLOCK, 710, CcKind::Banish, 0, false, false, false, false},
-    {"freezing trap", CLASS_HUNTER, 1499, CcKind::Incapacitate, CC_TRAP_REACH_YARDS, true, true, false, false},
-    {"scare beast on cc", CLASS_HUNTER, 1513, CcKind::Fear, 0, true, false, false, false},
-    {"sap", CLASS_ROGUE, 6770, CcKind::Incapacitate, 0, true, true, true, true},
-    {"blind", CLASS_ROGUE, 2094, CcKind::Disorient, 0, true, true, false, false},
-    {"gouge", CLASS_ROGUE, 1776, CcKind::Incapacitate, 0, true, true, false, false},
-    {"kidney shot", CLASS_ROGUE, 408, CcKind::Stun, 0, false, true, false, false},
-    {"cheap shot", CLASS_ROGUE, 1833, CcKind::Stun, 0, false, true, true, false},
-    {"repentance", CLASS_PALADIN, 20066, CcKind::Incapacitate, 0, true, true, false, false},
-    {"hammer of justice", CLASS_PALADIN, 853, CcKind::Stun, 0, false, true, false, false},
-    {"turn undead", CLASS_PALADIN, 10326, CcKind::Fear, 0, true, false, false, false},
-    {"psychic scream", CLASS_PRIEST, 8122, CcKind::Fear, CC_SCREAM_REACH_YARDS, true, true, false, false},
-    {"shackle undead", CLASS_PRIEST, 9484, CcKind::Incapacitate, 0, false, false, false, false},
+    {"polymorph", CLASS_MAGE, 118, CcKind::Incapacitate, 0, true, true, false, false, 0},
+    {"cyclone on cc", CLASS_DRUID, 33786, CcKind::Cyclone, 0, false, true, false, false, 0},
+    {"hibernate on cc", CLASS_DRUID, 2637, CcKind::Sleep, 0, true, false, false, false, CC_BEAST_DRAGONKIN},
+    {"entangling roots on cc", CLASS_DRUID, 339, CcKind::Root, 0, true, true, false, false, 0},
+    {"fear on cc", CLASS_WARLOCK, 5782, CcKind::Fear, 0, true, true, false, false, 0},
+    {"banish on cc", CLASS_WARLOCK, 710, CcKind::Banish, 0, false, false, false, false, CC_DEMON_ELEMENTAL},
+    {"freezing trap", CLASS_HUNTER, 1499, CcKind::Incapacitate, CC_TRAP_REACH_YARDS, true, true, false, false, 0},
+    {"scare beast on cc", CLASS_HUNTER, 1513, CcKind::Fear, 0, true, false, false, false, CC_BEAST},
+    {"sap", CLASS_ROGUE, 6770, CcKind::Incapacitate, 0, true, true, true, true, 0},
+    {"blind", CLASS_ROGUE, 2094, CcKind::Disorient, 0, true, true, false, false, 0},
+    {"gouge", CLASS_ROGUE, 1776, CcKind::Incapacitate, 0, true, true, false, false, 0},
+    {"kidney shot", CLASS_ROGUE, 408, CcKind::Stun, 0, false, true, false, false, 0},
+    {"cheap shot", CLASS_ROGUE, 1833, CcKind::Stun, 0, false, true, true, false, 0},
+    {"repentance", CLASS_PALADIN, 20066, CcKind::Incapacitate, 0, true, true, false, false, 0},
+    {"hammer of justice", CLASS_PALADIN, 853, CcKind::Stun, 0, false, true, false, false, 0},
+    {"turn undead", CLASS_PALADIN, 10326, CcKind::Fear, 0, true, false, false, false, CC_UNDEAD_DEMON},
+    {"psychic scream", CLASS_PRIEST, 8122, CcKind::Fear, CC_SCREAM_REACH_YARDS, true, true, false, false, 0},
+    {"shackle undead", CLASS_PRIEST, 9484, CcKind::Incapacitate, 0, false, false, false, false, CC_UNDEAD},
 }};
 
 constexpr uint8 CC_OPTION_COUNT = static_cast<uint8>(CC_OPTIONS.size());
@@ -158,7 +168,7 @@ struct CcSpellData
     uint32 AuraSpellId = 0;      // the spell whose aura lands (a trap's: the trap object's spell)
     uint8 Group = 0;             // DiminishingGroup
     uint8 DrType = DRTYPE_NONE;  // DiminishingReturnsType
-    uint32 BaseMs = 0;           // the aura's longest duration, first rank
+    uint32 BaseMs = 0;           // the aura's longest duration at the row's rank (a bot's table: its highest known)
     uint32 PvpCapMs = 0;         // GetDiminishingReturnsLimitDuration: a player target of a player caster (0 = none)
     uint32 CastMs = 0;
     float RangeYards = 0.0f;
@@ -169,21 +179,21 @@ struct CcSpellData
 using CcSpellTable = std::array<CcSpellData, CC_OPTION_COUNT>;
 
 // Whether the group's count applies to this target (Unit::ApplyDiminishingToDuration): DRTYPE_ALL on everyone,
-// DRTYPE_PLAYER on players (a bot's CC always has a player source)
-inline bool CcDiminishes(uint8 drType, bool playerTarget)
+// DRTYPE_PLAYER on a target whose owner is a player (a player or a player's pet; a bot's CC has a player source)
+inline bool CcDiminishes(uint8 drType, bool drAsPlayer)
 {
-    return drType == DRTYPE_ALL || (drType == DRTYPE_PLAYER && playerTarget);
+    return drType == DRTYPE_ALL || (drType == DRTYPE_PLAYER && drAsPlayer);
 }
 
 // How long the next CC of the spell lasts at DR level 0-3 (the CC of its group since the last reset): the PvP cap on a
-// player target, then 1, 1/2, 1/4 or immune (0)
-inline uint32 ExpectedMs(CcSpellData const& spell, uint8 level, bool playerTarget)
+// target owned by a player (drAsPlayer: a player or a player's pet), then 1, 1/2, 1/4 or immune (0)
+inline uint32 ExpectedMs(CcSpellData const& spell, uint8 level, bool drAsPlayer)
 {
     uint32 duration = spell.BaseMs;
-    if (playerTarget && spell.PvpCapMs > 0 && duration > spell.PvpCapMs)
+    if (drAsPlayer && spell.PvpCapMs > 0 && duration > spell.PvpCapMs)
         duration = spell.PvpCapMs;
 
-    if (!CcDiminishes(spell.DrType, playerTarget))
+    if (!CcDiminishes(spell.DrType, drAsPlayer))
         return duration;
 
     if (level >= CC_DR_LEVEL_IMMUNE)
@@ -281,9 +291,11 @@ public:
         return true;
     }
 
-    // The group's aura seen ending early (damage, trinket, dispel): the reset counts from now
-    void Ended(uint64 enemy, uint8 group, uint32 nowMs)
+    // The group's aura seen ending early (damage, trinket, dispel): the reset counts from now, or from the end of
+    // another aura of the group still up for otherLeftMs (two CC of one group overlapping: Observe kept the later end)
+    void Ended(uint64 enemy, uint8 group, uint32 nowMs, uint32 otherLeftMs = 0)
     {
+        uint32 const endMs = nowMs + otherLeftMs;
         for (Enemy& slot : Enemies)
         {
             if (slot.Guid != enemy || !enemy)
@@ -291,8 +303,8 @@ public:
 
             for (Entry& entry : slot.Groups)
             {
-                if (entry.Group == group && group && static_cast<int32>(entry.EndMs - nowMs) > 0)
-                    entry.EndMs = nowMs;
+                if (entry.Group == group && group && static_cast<int32>(entry.EndMs - endMs) > 0)
+                    entry.EndMs = endMs;
             }
         }
     }
@@ -391,7 +403,8 @@ private:
 };
 
 // One bot's CC numbers, cached once per skill load (G4b). Knowledge gives DR awareness, chains and the memory's misses;
-// Foresight the chain lead; Wisdom the target and break judgement; Focus the own breaks; Patience the hold; effort
+// Foresight the chain lead; Wisdom the target and break judgement; Focus the own breaks (none from
+// Avoid.OwnBreakNeverFromSkill); Patience the hold; effort
 // (the gate's, from Grit) the stop when behind. Skill 0 is full ability: every threshold passed, the skill-99 values.
 struct CcParams
 {
@@ -441,7 +454,9 @@ inline CcParams ComputeCcParams(uint8 skill, BotAttributeValues const& attribute
     params.StopsWhenBehind = !full && effort < CC_LOW_EFFORT;
     params.BehindStopPct = percent(config.CcBehindStopPct);
     params.OwnBreakPct =
-        percent(lerp(config.AvoidOwnBreakPctAtSkill1, config.AvoidOwnBreakPctAtSkill99, BotAttribute::Focus));
+        ability(BotAttribute::Focus) >= config.AvoidOwnBreakNeverFromSkill
+            ? 0
+            : percent(lerp(config.AvoidOwnBreakPctAtSkill1, config.AvoidOwnBreakPctAtSkill99, BotAttribute::Focus));
     params.WastedBreakPct =
         percent(lerp(config.AvoidWastedBreakPctAtSkill1, config.AvoidWastedBreakPctAtSkill99, BotAttribute::Wisdom));
     params.IgnoresRoots = ability(BotAttribute::Wisdom) >= config.AvoidIgnoreRootsFromSkill;
@@ -450,18 +465,31 @@ inline CcParams ComputeCcParams(uint8 skill, BotAttributeValues const& attribute
     return params;
 }
 
-// What a bot sees when it chooses its CC: the rows it can cast now (G4b: known, off cooldown, enough power), the
+// What a bot sees when it chooses its CC: the rows it can cast now (G4b: known, off cooldown, combo points), the
 // target, the CC aura on it now (visible, by spell id) and its own memory of the target (DrMemory::Levels)
 struct CcPickInput
 {
-    uint32 ReadyMask = 0;  // CcOptionBit per row
-    bool TargetIsPlayer = true;
+    uint32 ReadyMask = 0;        // CcOptionBit per row
+    bool TargetIsPlayer = true;  // a player: only the rows UsableOnPlayers
+    bool DrAsPlayer = true;      // the target or its owner is a player (a pet): the PvP cap and player-only DR apply
+    uint8 CreatureType = 0;      // CREATURE_TYPE_* of a creature target (a row's CreatureTypeMask)
     float DistanceYards = 0.0f;  // as the spell's range check measures it
     bool Stealthed = false;
     bool TargetInCombat = true;
-    uint8 ActiveGroup = 0;  // DR group of the CC aura on the target now (the one that ends last), 0 = none
+    uint8 ActiveGroup = 0;     // DR group of the CC aura on the target now (the one that ends last), 0 = none
+    bool Rooted = false;       // the target is rooted now (visible): no root on top of it
+    bool ControlOnly = false;  // the arena moon: only a CC that takes control away (a root is not the moon's CC)
     std::array<uint8, CC_DR_GROUP_COUNT> Levels{};
 };
+
+// A player takes the rows usable on players; a creature (a pet too) the rows whose creature types include its own
+inline bool CcOptionUsableOn(CcOption const& option, bool targetIsPlayer, uint8 creatureType)
+{
+    if (targetIsPlayer)
+        return option.UsableOnPlayers;
+
+    return !option.CreatureTypeMask || (option.CreatureTypeMask & CcCreatureTypeBit(creatureType)) != 0;
+}
 
 inline bool CcOptionReaches(CcOption const& option, CcSpellData const& spell, float distanceYards)
 {
@@ -469,9 +497,19 @@ inline bool CcOptionReaches(CcOption const& option, CcSpellData const& spell, fl
     return distanceYards <= reach;
 }
 
-// The CC to cast, CC_NO_ROW for none: the usable row that lasts longest. A DR-aware bot also skips what its memory says
-// lands immune or shorter than MinExpectedMs and the group of the CC already on the target (a chain alternates
-// groups); a bot without DR awareness casts into DR, believing every CC lands in full.
+// A finisher's duration by the combo points on its target: WorldObject::CalcSpellDuration's formula, which counts the
+// points on the caster's combo target (the kill target, as a rule; G4b-a review NOTE 2)
+inline uint32 CcComboDurationMs(int32 minMs, int32 maxMs, uint8 points)
+{
+    int32 const durationMs = points && minMs != -1 && minMs != maxMs ? minMs + (maxMs - minMs) * points / 5 : minMs;
+    return static_cast<uint32>(std::max<int32>(durationMs, 0));
+}
+
+// The CC to cast, CC_NO_ROW for none: the usable row that lasts longest, a loss of control before a root whatever their
+// lengths (a root on a player lasts 10 s, cyclone 6 s; G4b-a review B1); no root on a rooted target, none on the moon.
+// A DR-aware bot also skips what its memory says lands immune or shorter than MinExpectedMs and the group of the CC
+// already on the target (a chain alternates groups); a bot without DR awareness casts into DR, believing every CC
+// lands in full.
 inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParams const& params)
 {
     int8 best = CC_NO_ROW;
@@ -483,9 +521,14 @@ inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParam
 
         CcOption const& option = CC_OPTIONS[index];
         CcSpellData const& spell = spells[index];
-        if (!spell.Valid || spell.Group >= CC_DR_GROUP_COUNT || (input.TargetIsPlayer && !option.UsableOnPlayers) ||
+        if (!spell.Valid || spell.Group >= CC_DR_GROUP_COUNT ||
+            !CcOptionUsableOn(option, input.TargetIsPlayer, input.CreatureType) ||
             (option.NeedsStealth && !input.Stealthed) || (option.NeedsTargetOutOfCombat && input.TargetInCombat) ||
             !CcOptionReaches(option, spell, input.DistanceYards))
+            continue;
+
+        bool const control = CcKindLosesControl(option.Kind);
+        if ((input.Rooted && option.Kind == CcKind::Root) || (input.ControlOnly && !control))
             continue;
 
         uint8 level = 0;
@@ -497,11 +540,12 @@ inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParam
             level = input.Levels[spell.Group];
         }
 
-        uint32 const expectedMs = ExpectedMs(spell, level, input.TargetIsPlayer);
+        uint32 const expectedMs = ExpectedMs(spell, level, input.DrAsPlayer);
         if (params.DrAware && (!expectedMs || expectedMs < params.MinExpectedMs))
             continue;
 
-        if (best == CC_NO_ROW || expectedMs > bestMs)
+        bool const bestControl = best != CC_NO_ROW && CcKindLosesControl(CC_OPTIONS[best].Kind);
+        if (best == CC_NO_ROW || (control && !bestControl) || (control == bestControl && expectedMs > bestMs))
         {
             best = static_cast<int8>(index);
             bestMs = expectedMs;

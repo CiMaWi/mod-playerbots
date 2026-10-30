@@ -18,6 +18,7 @@
 #include "ArenaFocus.h"
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
+#include "CcState.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "FocusState.h"
@@ -1938,6 +1939,18 @@ void RunFocusSelftest(ChatHandler* handler)
     check(FocusAddonKnowledge(0, 0, 40) && FocusAddonKnowledge(50, 40, 40) && !FocusAddonKnowledge(50, 39, 40),
           "addon-level knowledge does not start at the threshold, or skill 0 lacks it");
 
+    // G1b-c: the moon by mode (0 never, 1 a class that can control, 2 a team that also plays CC), kept while its CC
+    // lands, and the skull's hold off a moon nobody controls only in mode 2
+    check(!FocusMoonCapable(FOCUS_MOON_OFF, true, true) && FocusMoonCapable(FOCUS_MOON_ALWAYS, true, false) &&
+              !FocusMoonCapable(FOCUS_MOON_ALWAYS, false, true) && FocusMoonCapable(FOCUS_MOON_USED, true, true) &&
+              !FocusMoonCapable(FOCUS_MOON_USED, true, false),
+          "the moon by mode is not: never, a class that can control, a team that plays crowd control");
+    check(FocusMoonKept(Now, Now + 5000, 5000) && !FocusMoonKept(Now, Now + 5001, 5000),
+          "a moon without a CC landing is not released after the grace, or is released before");
+    check(FocusMarkHolds(FOCUS_MOON_ALWAYS, true, false) && FocusMarkHolds(FOCUS_MOON_USED, false, false) &&
+              FocusMarkHolds(FOCUS_MOON_USED, true, true) && !FocusMarkHolds(FOCUS_MOON_USED, true, false),
+          "the skull's hold keeps a bot off a moon nobody controls in mode 2, or lets it go in mode 1");
+
     handler->PSendSysMessage("TACTICS selftest focus: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -2191,8 +2204,11 @@ void RunCcSelftest(ChatHandler* handler)
     undead.DistanceYards = 10.0f;
     bool playerOnly = PickCc(undead, synthetic, aware) == CC_NO_ROW;
     undead.TargetIsPlayer = false;
+    undead.CreatureType = CREATURE_TYPE_BEAST;
+    playerOnly = playerOnly && PickCc(undead, synthetic, aware) == CC_NO_ROW;
+    undead.CreatureType = CREATURE_TYPE_UNDEAD;
     playerOnly = playerOnly && PickCc(undead, synthetic, aware) == Shackle;
-    check(playerOnly, "a creature-only CC is cast on a player, or not on the creature");
+    check(playerOnly, "a creature-only CC is cast on a player or a beast, or not on an undead creature");
     CcPickInput opener;
     opener.ReadyMask = CcOptionBit(Sap);
     opener.DistanceYards = 5.0f;
@@ -2590,6 +2606,141 @@ void RunCcSelftest(ChatHandler* handler)
         check(rows && rogueRows == 5, "an option row repeats an action or has no class, or the rogue has not 5 rows");
     }
 
+    // 12. G4b: a bot's table from the highest rank it knows (G4a NOTE 1: hammer of justice 3 s at rank 1, 6 s at its
+    // last rank, 4 s when it knows two), no row without the spell
+    {
+        constexpr int8 Hammer = CcOptionIndex("hammer of justice");
+        static_assert(Hammer != CC_NO_ROW, "hammer of justice is in CC_OPTIONS");
+        auto const knowsAll = [](uint32) { return true; };
+        auto const knowsNone = [](uint32) { return false; };
+        uint32 const first = CC_OPTIONS[Hammer].SpellId;
+        uint32 const second = sSpellMgr->GetNextSpellInChain(first);
+        auto const knowsTwo = [&](uint32 spellId) { return spellId == first || spellId == second; };
+        uint32 const last = CcHighestKnownRank(first, knowsAll);
+        CcSpellData const lastRank = ResolveCcSpell(last);
+        print("hammer of justice, last rank", last, lastRank, CC_OPTIONS[Hammer].BreaksOnDamage);
+        check(spells[Hammer].BaseMs == 3000 && lastRank.BaseMs == 6000 && second &&
+                  CcHighestKnownRank(first, knowsTwo) == second && ResolveCcSpell(second).BaseMs == 4000 &&
+                  CcHighestKnownRank(first, knowsNone) == 0,
+              Acore::StringFormat("hammer of justice by rank: {} ms at rank 1, {} ms at spell {} (6000 expected)",
+                                  spells[Hammer].BaseMs, lastRank.BaseMs, last));
+        std::array<uint32, CC_OPTION_COUNT> known{};
+        CcSpellTable table{};
+        uint32 const knownMask = BuildCcBotTable(CLASS_PALADIN, knowsAll, known, table);
+        check(knownMask == CcClassMask(CLASS_PALADIN) && known[Hammer] == last && table[Hammer].BaseMs == 6000 &&
+                  !known[Polymorph] && !table[Polymorph].Valid &&
+                  BuildCcBotTable(CLASS_PALADIN, knowsNone, known, table) == 0,
+              "a paladin's table is not its rows at their last ranks, or has another class's row");
+    }
+
+    // 13. G4a NOTE 2: TargetIsPlayer (the rows usable on players) apart from DrAsPlayer (the PvP cap and the
+    // player-only DR on a player's pet), and the creature-only rows by creature type
+    {
+        constexpr int8 Hibernate = CcOptionIndex("hibernate on cc");
+        constexpr int8 Banish = CcOptionIndex("banish on cc");
+        static_assert(Hibernate != CC_NO_ROW && Banish != CC_NO_ROW, "hibernate and banish are in CC_OPTIONS");
+        CcSpellTable pets{};
+        pets[Hibernate] = makeSpell(DIMINISHING_SLEEP, DRTYPE_PLAYER, 40000, 10000, 1500, 30.0f);
+        pets[Banish] = makeSpell(DIMINISHING_BANISH, DRTYPE_PLAYER, 30000, 6000, 1500, 30.0f);
+        pets[Polymorph] = makeSpell(Disorient, DRTYPE_PLAYER, 50000, 10000, 1500, 30.0f);
+        auto const picks = [&](CcPickInput input, int8 row)
+        {
+            input.ReadyMask = CcOptionBit(static_cast<uint8>(row));
+            return PickCc(input, pets, aware) == row;
+        };
+        CcPickInput beastPet;
+        beastPet.TargetIsPlayer = false;
+        beastPet.CreatureType = CREATURE_TYPE_BEAST;
+        beastPet.DistanceYards = 10.0f;
+        CcPickInput demonPet = beastPet;
+        demonPet.CreatureType = CREATURE_TYPE_DEMON;
+        CcPickInput player;
+        player.DistanceYards = 10.0f;
+        check(picks(beastPet, Hibernate) && !picks(beastPet, Banish) && picks(beastPet, Polymorph) &&
+                  picks(demonPet, Banish) && !picks(demonPet, Hibernate) && !picks(player, Hibernate) &&
+                  !picks(player, Banish) && picks(player, Polymorph),
+              "hibernate is not for beasts, banish not for demons, or either is cast on a player");
+        CcPickInput wildBeast = beastPet;
+        wildBeast.DrAsPlayer = false;
+        check(ExpectedMs(pets[Hibernate], 1, beastPet.DrAsPlayer) == 5000 &&
+                  ExpectedMs(pets[Hibernate], 1, wildBeast.DrAsPlayer) == 40000,
+              "a player's pet is not capped and counted like a player, or a wild beast is");
+    }
+
+    // 14. G4a NOTE 3: two CC of one group overlapping keep the later end and count twice; one of them ending early
+    // moves the end to the other's, the second to now
+    {
+        DrMemory overlap;
+        overlap.Observe(Enemy, Stun, 0, 10000, 0, Seed);
+        overlap.Observe(Enemy, Stun, 1000, 4000, 0, Seed);
+        check(overlap.Level(Enemy, Stun, 1000) == 2 && overlap.Level(Enemy, Stun, 25000) == 2 &&
+                  overlap.Level(Enemy, Stun, 25001) == 0,
+              "a second CC of a group under the first does not count, or moves the end earlier");
+        overlap.Ended(Enemy, Stun, 2000, 3000);
+        bool const toOther = overlap.Level(Enemy, Stun, 20000) == 2 && overlap.Level(Enemy, Stun, 20001) == 0;
+        overlap.Ended(Enemy, Stun, 3000);
+        check(toOther && overlap.Level(Enemy, Stun, 18000) == 2 && overlap.Level(Enemy, Stun, 18001) == 0,
+              "one of two overlapping CC ending early does not reset from the other's end, or the last from now");
+    }
+
+    // 15. Avoid.OwnBreakNeverFromSkill (Focus, 65): no own breaks from it (skill 80 in the matrix), the falling share
+    // below it, the skill-99 share when it is 100
+    {
+        CcConfig breaksAlways = config;
+        breaksAlways.AvoidOwnBreakNeverFromSkill = 100;
+        check(params(64).OwnBreakPct > 0 && params(20).OwnBreakPct > params(64).OwnBreakPct &&
+                  params(65).OwnBreakPct == 0 && params(80).OwnBreakPct == 0 &&
+                  ComputeCcParams(0, BotAttributeValues{}, SKILL_GATE_FULL, Linear, config).OwnBreakPct == 0 &&
+                  ComputeCcParams(99, plain(99), SKILL_GATE_FULL, Linear, breaksAlways).OwnBreakPct == 5,
+              Acore::StringFormat("own-break shares at skill 20/64/65/80: {}/{}/{}/{}", params(20).OwnBreakPct,
+                                  params(64).OwnBreakPct, params(65).OwnBreakPct, params(80).OwnBreakPct));
+    }
+
+    // 16. G4b-a review B1: a loss of control before a root whatever their lengths (roots 10 s on a player, cyclone
+    // 6 s), no root on a rooted target, none on the moon (ControlOnly), DR-aware or not; NOTE 2: a finisher's
+    // duration by the combo points on its target
+    {
+        constexpr int8 Roots = CcOptionIndex("entangling roots on cc");
+        constexpr int8 Cyclone = CcOptionIndex("cyclone on cc");
+        constexpr int8 Kidney = CcOptionIndex("kidney shot");
+        static_assert(Roots != CC_NO_ROW && Cyclone != CC_NO_ROW && Kidney != CC_NO_ROW,
+                      "roots, cyclone and kidney shot are in CC_OPTIONS");
+        CcSpellTable druid{};
+        druid[Roots] = makeSpell(DIMINISHING_CONTROLLED_ROOT, DRTYPE_PLAYER, 27000, 10000, 1500, 30.0f);
+        druid[Cyclone] = makeSpell(DIMINISHING_CYCLONE, DRTYPE_PLAYER, 6000, 10000, 1500, 20.0f);
+        CcPickInput both;
+        both.ReadyMask = CcOptionBit(Roots) | CcOptionBit(Cyclone);
+        both.DistanceYards = 10.0f;
+        CcPickInput rootsOnly = both;
+        rootsOnly.ReadyMask = CcOptionBit(Roots);
+        check(PickCc(both, druid, aware) == Cyclone && PickCc(both, druid, unaware) == Cyclone &&
+                  PickCc(rootsOnly, druid, unaware) == Roots && PickCc(rootsOnly, druid, aware) == Roots,
+              "a root goes before cyclone, or a root alone is not cast");
+        CcPickInput rooted = both;
+        rooted.Rooted = true;
+        CcPickInput rootedOnly = rootsOnly;
+        rootedOnly.Rooted = true;
+        check(PickCc(rooted, druid, unaware) == Cyclone && PickCc(rooted, druid, aware) == Cyclone &&
+                  PickCc(rootedOnly, druid, unaware) == CC_NO_ROW && PickCc(rootedOnly, druid, aware) == CC_NO_ROW,
+              "a root goes on a rooted target, or cyclone does not");
+        CcPickInput moon = both;
+        moon.ControlOnly = true;
+        CcPickInput moonRoots = rootsOnly;
+        moonRoots.ControlOnly = true;
+        check(PickCc(moon, druid, unaware) == Cyclone && PickCc(moonRoots, druid, unaware) == CC_NO_ROW &&
+                  PickCc(moonRoots, druid, aware) == CC_NO_ROW,
+              "a root is cast as the moon's CC");
+        SpellInfo const* const kidney = sSpellMgr->GetSpellInfo(CC_OPTIONS[Kidney].SpellId);
+        bool const kidneyFull = kidney && kidney->GetMaxDuration() > 0 &&
+                                CcComboDurationMs(kidney->GetDuration(), kidney->GetMaxDuration(), 5) ==
+                                    static_cast<uint32>(kidney->GetMaxDuration());
+        check(CcComboDurationMs(0, 5000, 1) == 1000 && CcComboDurationMs(0, 5000, 5) == 5000 &&
+                  CcComboDurationMs(6000, 6000, 3) == 6000 && CcComboDurationMs(-1, 5000, 2) == 0 &&
+                  CcComboDurationMs(1000, 5000, 0) == 1000 && kidneyFull,
+              Acore::StringFormat("a finisher's duration by combo points is off (kidney shot {} to {} ms)",
+                                  kidney ? kidney->GetDuration() : 0, kidney ? kidney->GetMaxDuration() : 0));
+    }
+
     handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -2887,6 +3038,27 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         handler->PSendSysMessage("  forced immune: {} for {} ms more", GuidName(focus.ForcedImmuneGuid),
                                  focus.ForcedImmuneUntilMs - nowMs);
 
+    // G1b-c's moon and G4b's crowd control (the bot's own state; nothing of it is shared with the team, DT.1)
+    handler->PSendSysMessage("  moon: mode {}, capable {}, releases {}, blocked {} ms more", match.MoonMode,
+                             match.MoonCapable ? "yes" : "no", match.MoonReleases,
+                             FocusBefore(nowMs, match.MoonBlockedUntilMs) ? match.MoonBlockedUntilMs - nowMs : 0);
+    CcBotState const& cc = botAI->GetCcState();
+    std::string ccRows;
+    for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+    {
+        if (cc.KnownMask & CcOptionBit(index))
+            ccRows += Acore::StringFormat("{}{} {}{} ({} ms)", ccRows.empty() ? "" : ", ", CC_OPTIONS[index].Action,
+                                          cc.KnownSpell[index], (cc.ReadyMask & CcOptionBit(index)) ? " ready" : "",
+                                          cc.Spells[index].BaseMs);
+    }
+
+    handler->PSendSysMessage(
+        "  cc: dr aware {}, chains {}, wrong target {} %, own break {} %, hold {} ms; rows [{}]; target {}; last pick "
+        "{} on {}; casts {}",
+        cc.Params.DrAware ? "yes" : "no", cc.Params.Chains ? "yes" : "no", cc.Params.WrongTargetPct,
+        cc.Params.OwnBreakPct, cc.Params.HoldMs, ccRows, iconName(cc.CcTarget),
+        cc.PickRow != CC_NO_ROW ? CC_OPTIONS[cc.PickRow].Action : "none", iconName(cc.PickTarget), cc.Casts);
+
     // getMSTime stamps, comparable with the force's: G1b's forced proof polls these
     handler->PSendSysMessage("  timing: now {} ms, current target {}, last mark at {} ms", nowMs,
                              iconName(botAI->GetBot()->GetTarget()), match.LastMarkMs);
@@ -3048,5 +3220,34 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
         "{}'s team; at {} ms",
         GuidName(enemy), skull.IsEmpty() ? "the bot's target" : "the skull", FOCUS_FORCE_IMMUNE_MS, forced, name,
         nowMs);
+    return true;
+}
+
+bool TacticCommands::HandleMoonCommand(ChatHandler* handler, char const* args)
+{
+    // The world thread while the maps wait: the plan passes read the value at a match start, the hold of a match
+    // without a plan pass yet live (FocusStrategy.cpp FocusMatchMoonMode)
+    PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleMoonCommand");
+    uint32& mode = sPlayerbotAIConfig.TacticFocus.FocusMoonMode;
+    std::string const value = Trim(args ? args : "");
+    if (value.empty())
+    {
+        handler->PSendSysMessage("TACTICS moon: Playerbots.Tactics.Focus.MoonMode {}", mode);
+        return true;
+    }
+
+    if (value != "0" && value != "1" && value != "2")
+    {
+        handler->PSendSysMessage("Usage: .playerbots tactics moon [0|1|2] (0 no moon, 1 G1b, 2 only for a CC team)");
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 const before = mode;
+    mode = static_cast<uint32>(value[0] - '0');
+    handler->PSendSysMessage(
+        "TACTICS moon: Playerbots.Tactics.Focus.MoonMode {} -> {}; teams take it at their next match start (a match "
+        "in progress keeps its mode); a restart or .playerbots rndbot reload restores the conf value",
+        before, mode);
     return true;
 }

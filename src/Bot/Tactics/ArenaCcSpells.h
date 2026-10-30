@@ -8,6 +8,7 @@
 #define _PLAYERBOT_ARENACCSPELLS_H
 
 #include <algorithm>
+#include <array>
 
 #include "ArenaCc.h"
 #include "GameObject.h"
@@ -15,6 +16,7 @@
 #include "SpellDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "Unit.h"
 
 // The core's numbers of the CC option rows (ArenaCc.h), read from the spell store once: GetCcSpellTable builds the
 // table on its first call (a function-local static, thread-safe, after the spell store has loaded: every caller is a
@@ -76,5 +78,42 @@ inline CcSpellTable const& GetCcSpellTable()
     }();
     return table;
 }
+
+// The highest rank of a row's spell chain that knows(id) says the bot has, 0 for none (G4a NOTE 1: the table above
+// is rank 1; hammer of justice lasts 3 s there and 6 s at its last rank). Walks down from the chain's last rank.
+template <typename Knows>
+inline uint32 CcHighestKnownRank(uint32 firstRankId, Knows const& knows)
+{
+    for (uint32 id = sSpellMgr->GetLastSpellInChain(firstRankId); id; id = sSpellMgr->GetPrevSpellInChain(id))
+    {
+        if (knows(id))
+            return id;
+    }
+
+    return 0;
+}
+
+// One bot's table (CcState.h): per row of its class the highest rank it knows and that rank's numbers. Only on a bot
+// update (the spell store is loaded); the caller caches it and rebuilds when the bot's level or talents change.
+template <typename Knows>
+inline uint32 BuildCcBotTable(uint8 playerClass, Knows const& knows, std::array<uint32, CC_OPTION_COUNT>& knownSpell,
+                              CcSpellTable& table)
+{
+    uint32 knownMask = 0;
+    uint32 const classMask = CcClassMask(playerClass);
+    for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+    {
+        knownSpell[index] = (classMask & CcOptionBit(index)) ? CcHighestKnownRank(CC_OPTIONS[index].SpellId, knows) : 0;
+        table[index] = knownSpell[index] ? ResolveCcSpell(knownSpell[index]) : CcSpellData();
+        if (knownSpell[index] && table[index].Valid)
+            knownMask |= CcOptionBit(index);
+    }
+
+    return knownMask;
+}
+
+// The unit is controlled as a player sees it (stunned, incapacitated, asleep, cyclone, banished, feared,
+// polymorphed): no CC of the team goes on top of it (G4c chains), and the moon counts as held (G1b-c)
+inline bool CcUnitControlled(Unit const* unit) { return unit->HasUnitState(UNIT_STATE_CONTROLLED); }
 
 #endif

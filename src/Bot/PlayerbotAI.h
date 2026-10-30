@@ -42,6 +42,7 @@ class Creature;
 class Engine;
 class ExternalEventHelper;
 class Group;
+struct CcBotState;
 struct FocusBotState;
 class ReactionEngine;
 class Gameobject;
@@ -747,6 +748,9 @@ public:
     // Target hold and team plan (FocusState.h, G1b): the cached FocusParams and the hold's and the plan's state.
     // Touched by the bot's own update; the GM commands read and force it on the world thread while the maps wait.
     FocusBotState& GetFocusState();
+    // Crowd control (CcState.h, G4b): the cached CcParams, the DR memory, the rank-resolved table and the trigger's
+    // answer. The bot's own update and the aura hooks on its map thread; the GM commands on the world thread.
+    CcBotState& GetCcState();
     // Debug snapshots for .playerbots tactics show (world thread): the last "fight enemies" result, and the strategy
     // lists, taken at the bot's next update after a request
     void SetFightEnemiesSnapshot(GuidVector const& enemies);
@@ -849,6 +853,7 @@ protected:
     uint32 lastUpdateDiff = 0;
     TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
     std::unique_ptr<FocusBotState> focusState;  // made at first use (GetFocusState); complete in PlayerbotAI.cpp
+    std::unique_ptr<CcBotState> ccState;        // made at first use (GetCcState); complete in PlayerbotAI.cpp
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;

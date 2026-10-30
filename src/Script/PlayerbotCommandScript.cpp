@@ -132,6 +132,7 @@ public:
             {"stats", TacticCommands::HandleStatsCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", TacticCommands::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"force", TacticCommands::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
+            {"moon", TacticCommands::HandleMoonCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsAttributesCommandTable = {

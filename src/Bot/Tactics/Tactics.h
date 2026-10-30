@@ -157,6 +157,9 @@ public:
     // .playerbots tactics force immune <bot>: the skull (else the bot's target) counts as immune to everything for
     // the bot's team for FOCUS_FORCE_IMMUNE_MS (G1b's forced check)
     static bool HandleForceCommand(ChatHandler* handler, char const* args);
+    // .playerbots tactics moon [0|1|2]: prints or sets Playerbots.Tactics.Focus.MoonMode on the running server (a
+    // team's plan and hold take it at their next match start; a restart or rndbot reload restores the conf value)
+    static bool HandleMoonCommand(ChatHandler* handler, char const* args);
 };
 
 #endif

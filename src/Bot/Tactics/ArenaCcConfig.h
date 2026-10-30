@@ -29,6 +29,7 @@ struct CcConfig
     // Avoid: the bot's own CC kept (OwnCc) and the enemy's broken (Trinket)
     uint32 AvoidOwnBreakPctAtSkill1 = 60;  // the bot's damage breaks its team's CC (Focus)
     uint32 AvoidOwnBreakPctAtSkill99 = 5;
+    uint32 AvoidOwnBreakNeverFromSkill = 65;  // Focus: from it a bot never breaks its team's CC (G4b)
     uint32 AvoidWastedBreakPctAtSkill1 = 70;  // the bot breaks a CC that does not matter (Wisdom)
     uint32 AvoidWastedBreakPctAtSkill99 = 0;
     uint32 AvoidIgnoreRootsFromSkill = 65;  // Wisdom: from it a bot never breaks a root, snare or silence

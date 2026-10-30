@@ -16,6 +16,7 @@
 #include "BuyAction.h"
 #include "CancelChannelAction.h"
 #include "CastCustomSpellAction.h"
+#include "CcTacticStrategy.h"
 #include "ChangeStrategyAction.h"
 #include "ChangeTalentsAction.h"
 #include "CheckMailAction.h"
@@ -124,6 +125,7 @@ public:
         creators["tank assist"] = &ActionContext::tank_assist;
         creators["dps assist"] = &ActionContext::dps_assist;
         creators["arena plan"] = &ActionContext::arena_plan;
+        creators["team cc"] = &ActionContext::team_cc;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
@@ -356,6 +358,7 @@ private:
     static Action* release_loot(PlayerbotAI* botAI) { return new ReleaseLootAction(botAI); }
     static Action* dps_assist(PlayerbotAI* botAI) { return new DpsAssistAction(botAI); }
     static Action* arena_plan(PlayerbotAI* botAI) { return new ArenaPlanAction(botAI); }
+    static Action* team_cc(PlayerbotAI* botAI) { return new TeamCcAction(botAI); }
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }

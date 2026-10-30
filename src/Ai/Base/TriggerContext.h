@@ -8,6 +8,7 @@
 #define PLAYERBOTS_TRIGGERCONTEXT_H
 
 #include "BotStateTriggers.h"
+#include "CcTacticStrategy.h"
 #include "CureTriggers.h"
 #include "FishingTriggers.h"
 #include "FocusStrategy.h"
@@ -95,6 +96,7 @@ public:
         creators["not dps target active"] = &TriggerContext::not_dps_target_active;
         creators["plan due"] = &TriggerContext::plan_due;
         creators["focus mark"] = &TriggerContext::focus_mark;
+        creators["cc ready"] = &TriggerContext::cc_ready;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
         creators["enemy player near"] = &TriggerContext::enemy_player_near;
 
@@ -346,6 +348,7 @@ private:
     static Trigger* not_dps_target_active(PlayerbotAI* botAI) { return new NotDpsTargetActiveTrigger(botAI); }
     static Trigger* plan_due(PlayerbotAI* botAI) { return new PlanDueTrigger(botAI); }
     static Trigger* focus_mark(PlayerbotAI* botAI) { return new FocusMarkTrigger(botAI); }
+    static Trigger* cc_ready(PlayerbotAI* botAI) { return new CcReadyTrigger(botAI); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }
     static Trigger* enemy_player_near(PlayerbotAI* botAI) { return new EnemyPlayerNear(botAI); }
     static Trigger* Random(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "random", 20); }

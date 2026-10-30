@@ -146,6 +146,7 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"hammer of justice on enemy healer", C::CrowdControl},
         {"hammer of justice on snare target", C::CrowdControl},
         {"shockwave on snare target", C::CrowdControl},
+        {"team cc", C::CrowdControl},  // the Cc tactic's (G4b)
         // Breaking crowd control (the racials; no action uses a PvP trinket item, "use trinket" is a damage boost)
         {"every man for himself", C::CrowdControlBreak},
         {"will of the forsaken", C::CrowdControlBreak},

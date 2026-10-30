@@ -1144,6 +1144,11 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Focus.LosLostMs", TacticFocus.FocusLosLostMs, MaxFocusMs);
     focusNumber("Focus.DefensiveSwapPct", TacticFocus.FocusDefensiveSwapPct, MaxFocusPct);
     focusNumber("Focus.AddonKnowledgeFromSkill", TacticFocus.FocusAddonKnowledgeFromSkill, MaxFocusSkill);
+    // G1b-c: 0 no moon, 1 G1b's moon, 2 the moon only while the team's CC lands (ArenaFocus.h FOCUS_MOON_*)
+    constexpr uint32 MaxMoonMode = 2;
+    focusNumber("Focus.MoonMode", TacticFocus.FocusMoonMode, MaxMoonMode);
+    focusNumber("Focus.MoonGraceMs", TacticFocus.FocusMoonGraceMs, MaxFocusMs);
+    focusNumber("Focus.MoonRetryMs", TacticFocus.FocusMoonRetryMs, MaxFocusMs);
 
     // Playerbots.Tactics.Cc.* and .Avoid.* (optional): crowd control's and its avoidance's numbers, the defaults in
     // CcConfig; read by the Cc, OwnCc and Trinket tactics (G4b, G5a; inert until then)
@@ -1162,6 +1167,7 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Cc.BehindStopPct", TacticCc.CcBehindStopPct, MaxFocusPct);
     focusNumber("Avoid.OwnBreakPctAtSkill1", TacticCc.AvoidOwnBreakPctAtSkill1, MaxFocusPct);
     focusNumber("Avoid.OwnBreakPctAtSkill99", TacticCc.AvoidOwnBreakPctAtSkill99, MaxFocusPct);
+    focusNumber("Avoid.OwnBreakNeverFromSkill", TacticCc.AvoidOwnBreakNeverFromSkill, MaxCcSkill);
     focusNumber("Avoid.WastedBreakPctAtSkill1", TacticCc.AvoidWastedBreakPctAtSkill1, MaxFocusPct);
     focusNumber("Avoid.WastedBreakPctAtSkill99", TacticCc.AvoidWastedBreakPctAtSkill99, MaxFocusPct);
     focusNumber("Avoid.IgnoreRootsFromSkill", TacticCc.AvoidIgnoreRootsFromSkill, MaxCcSkill);

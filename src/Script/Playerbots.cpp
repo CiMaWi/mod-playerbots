@@ -733,6 +733,7 @@ public:
 void AddPlayerbotsSecureLoginScripts();
 void AddPlayerbotsSelfBotAfkScripts();
 void AddPvpTestFightScripts();
+void AddCcTacticScripts();
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -762,6 +763,7 @@ void AddPlayerbotsScripts()
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
     AddPvpTestFightScripts();
+    AddCcTacticScripts();
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();
     AddSC_MagtheridonBotScripts();

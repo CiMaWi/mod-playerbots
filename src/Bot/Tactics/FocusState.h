@@ -63,7 +63,7 @@ struct FocusHoldState
     ObjectGuid LastCandidate;  // the counts below change once per candidate and answer, not per update
     uint8 LastVerdict = FOCUS_HOLD_VERDICTS;
     std::array<uint32, FOCUS_HOLD_VERDICTS> Verdicts{};
-    uint32 Switches = 0;  // allowed by the hold (Free, Execute) and taken: tactics.holdSwitch
+    uint32 Switches = 0;  // allowed by the hold (any verdict, G1b-c) and taken: tactics.holdSwitch
 };
 
 // What the team has seen of one enemy in this match
@@ -110,6 +110,14 @@ struct FocusMatchState
     uint32 MarkWrites = 0;
     uint32 MarginRemarks = 0;   // marks a bot other than the planner wrote (strong disagreement)
     uint32 HumanMarksSeen = 0;  // mark changes counted as a real player's
+    // The moon (G1b-c): the mode read at the match's start, whether the team may have one, and in mode 2 the moon
+    // this bot wrote, when a CC last landed on it or was cast at it, and until when a released moon stays off
+    uint8 MoonMode = FOCUS_MOON_ALWAYS;
+    bool MoonCapable = false;
+    ObjectGuid MoonGuid;
+    uint32 MoonLastLandMs = 0;
+    uint32 MoonBlockedUntilMs = 0;
+    uint32 MoonReleases = 0;
 };
 
 struct FocusBotState

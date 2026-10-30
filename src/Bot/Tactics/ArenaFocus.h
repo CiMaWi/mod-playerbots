@@ -379,6 +379,29 @@ inline int8 FocusChooseCc(EnemyInfo const* enemies, uint8 count, int8 kill, Team
     return best;
 }
 
+// The moon mark (Playerbots.Tactics.Focus.MoonMode, G1b-c). G1b-b's lab run: a moon that nobody controls is an enemy
+// every target finder skips and the hold keeps the team off (MARK_HELD), so the healer went untouched.
+constexpr uint8 FOCUS_MOON_OFF = 0;     // never a moon
+constexpr uint8 FOCUS_MOON_ALWAYS = 1;  // G1b: whenever the team has a class with a CC option
+constexpr uint8 FOCUS_MOON_USED = 2;    // only a team that plays CC (the Cc tactic), and only while its CC lands
+
+// Whether the team gets a moon: the classes can control, and in mode 2 the team plays crowd control (the planner's
+// own Cc tactic: what a team agrees before the match, DT.1)
+inline bool FocusMoonCapable(uint8 mode, bool classCanControl, bool teamPlaysCc)
+{
+    return mode != FOCUS_MOON_OFF && classCanControl && (mode != FOCUS_MOON_USED || teamPlaysCc);
+}
+
+// Mode 2: the moon stays while a CC lands on it or a teammate's cast bar shows one at it (lastLandMs, set to the
+// moon's mark time first); graceMs without either releases it
+inline bool FocusMoonKept(uint32 lastLandMs, uint32 nowMs, uint32 graceMs) { return nowMs - lastLandMs <= graceMs; }
+
+// The hold refuses a free switch off the skull (MARK_HELD); in mode 2 not one to the moon while it is not controlled
+inline bool FocusMarkHolds(uint8 mode, bool candidateIsMoon, bool moonControlled)
+{
+    return mode != FOCUS_MOON_USED || !candidateIsMoon || moonControlled;
+}
+
 // The plan for this window: keep prev.Kill until prev.HeldUntilMs unless it died, turned immune, fell into the team's
 // breakable crowd control or was lost from sight (each a switch in the same call), another enemy is in execute range
 // (with ExecChance per window) or it has a defensive up while another is within DefensiveSwapPct health; after the hold

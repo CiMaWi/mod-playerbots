@@ -11,6 +11,7 @@
 #include "AttackEnemyPlayersStrategy.h"
 #include "BattlegroundStrategy.h"
 #include "CastTimeStrategy.h"
+#include "CcTacticStrategy.h"
 #include "ChatCommandHandlerStrategy.h"
 #include "CombatStrategy.h"
 #include "ConserveManaStrategy.h"
@@ -86,6 +87,8 @@ public:
         creators["skill"] = &StrategyContext::skill;
         creators["pvp hold"] = &StrategyContext::pvp_hold;
         creators["arena focus"] = &StrategyContext::arena_focus;
+        creators["tactic cc"] = &StrategyContext::tactic_cc;
+        creators["pvp cc"] = &StrategyContext::pvp_cc;
         creators["threat"] = &StrategyContext::threat;
         creators["focus"] = &StrategyContext::focus;
         creators["tell target"] = &StrategyContext::tell_target;
@@ -152,6 +155,8 @@ private:
     static Strategy* skill(PlayerbotAI* botAI) { return new SkillStrategy(botAI); }
     static Strategy* pvp_hold(PlayerbotAI* botAI) { return new PvpHoldStrategy(botAI); }
     static Strategy* arena_focus(PlayerbotAI* botAI) { return new ArenaFocusStrategy(botAI); }
+    static Strategy* tactic_cc(PlayerbotAI* botAI) { return new TacticCcStrategy(botAI); }
+    static Strategy* pvp_cc(PlayerbotAI* botAI) { return new PvpCcStrategy(botAI); }
     static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }
     static Strategy* react(PlayerbotAI* botAI) { return new ReactionStrategy(botAI); }
     static Strategy* kite(PlayerbotAI* botAI) { return new KiteStrategy(botAI); }

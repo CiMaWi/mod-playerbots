@@ -512,6 +512,17 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
             engine->addStrategy("arena focus", false);
     }
 
+    // Crowd control (G4b): "tactic cc" (cc ready -> team cc) and "pvp cc" (mutes the old "cc" actions where the Cc
+    // tactic acts; "cc" itself stays in the engine) in every context, with the Cc or OwnCc tactic enabled or the
+    // harness on; the trigger and the multiplier test the tactic's mask and scope at run time
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Cc)].Enable ||
+         tactics.TacticConfig[static_cast<uint32>(TacticId::OwnCc)].Enable || tactics.PvpTestEnable))
+    {
+        engine->addStrategy("tactic cc", false);
+        engine->addStrategy("pvp cc", false);
+    }
+
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
     // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands. "In" = on the
     // battleground's own map: an accepted invite whose port has not happened leaves the bot waiting
