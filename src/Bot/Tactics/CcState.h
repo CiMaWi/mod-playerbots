@@ -73,6 +73,10 @@ struct CcBotState
     uint32 ChainsLanded = 0;
     int32 LastChainGapMs = 0;
     uint32 ChainWaits = 0;  // cc ready answers that waited for the chain's moment
+    // G4c-b: what the bot saw of each enemy's dispels and trinkets of the team's CC this match (the aura hooks of the
+    // team's bots on the map, Cc.OpponentMemoryEnable); the pets and guardians called off a kept-out enemy
+    CcOpponentMemory Opponents;
+    uint32 PetCallOffs = 0;
 };
 
 // Whether an enemy stays out of the bot's targets (OwnCc): a forced CC always; a team breakable CC unless the bot's

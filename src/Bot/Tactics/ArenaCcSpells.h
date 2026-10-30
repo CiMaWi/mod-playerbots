@@ -80,34 +80,193 @@ inline bool CcTeamCaster(Unit const* caster, Player const* bot)
     return owner && (owner == bot || (group && owner->GetGroup() == group));
 }
 
-// A CC aura on the unit that damage breaks (Unit::HasBreakableByDamageCrowdControlAura's aura types and test) cast by
-// the bot, its pet or a member of its group, else nullptr (G4b-b: OwnCc and cc.ownBreaks). The unit's own map thread.
-inline Aura const* CcTeamBreakableAura(Unit const* unit, Player const* bot)
+constexpr uint8 CC_PENDING_AURAS = 4;  // team breakable auras one damage event remembers (G4b-b review NOTE 6)
+
+// The CC auras on the unit that damage breaks (Unit::HasBreakableByDamageCrowdControlAura's aura types and test) cast
+// by the bot, its pet or a member of its group: up to most of them into auras, in type order; the count (G4b-b: OwnCc
+// and cc.ownBreaks). The unit's own map thread.
+inline uint8 CcTeamBreakableAuras(Unit const* unit, Player const* bot, std::array<Aura const*, CC_PENDING_AURAS>& auras,
+                                  uint8 most = CC_PENDING_AURAS)
 {
     static constexpr std::array<AuraType, 5> Types = {SPELL_AURA_MOD_CONFUSE, SPELL_AURA_MOD_FEAR, SPELL_AURA_MOD_STUN,
                                                       SPELL_AURA_MOD_ROOT, SPELL_AURA_TRANSFORM};
+    uint8 const limit = std::min(most, CC_PENDING_AURAS);
+    uint8 count = 0;
     for (AuraType const type : Types)
     {
         for (AuraEffect const* effect : unit->GetAuraEffectsByType(type))
         {
-            if (!(effect->GetSpellInfo()->AuraInterruptFlags & AURA_INTERRUPT_FLAG_TAKE_DAMAGE))
+            if (!(effect->GetSpellInfo()->AuraInterruptFlags & AURA_INTERRUPT_FLAG_TAKE_DAMAGE) ||
+                !CcTeamCaster(effect->GetCaster(), bot))
                 continue;
 
-            if (CcTeamCaster(effect->GetCaster(), bot))
-                return effect->GetBase();
+            Aura const* const aura = effect->GetBase();
+            if (std::find(auras.begin(), auras.begin() + count, aura) != auras.begin() + count)
+                continue;
+
+            auras[count++] = aura;
+            if (count >= limit)
+                return count;
         }
     }
 
-    return nullptr;
+    return count;
+}
+
+// The first of them, else nullptr
+inline Aura const* CcTeamBreakableAura(Unit const* unit, Player const* bot)
+{
+    std::array<Aura const*, CC_PENDING_AURAS> auras{};
+    return CcTeamBreakableAuras(unit, bot, auras, 1) ? auras[0] : nullptr;
+}
+
+// G4c-b DotGuard: the team's periodic damage (a DoT, a ground effect's ticks) is on the unit, as a player sees its
+// debuffs; once per cc ready refresh, only on the target
+inline bool CcTeamDotOn(Unit const* unit, Player const* bot)
+{
+    static constexpr std::array<AuraType, 3> Types = {SPELL_AURA_PERIODIC_DAMAGE, SPELL_AURA_PERIODIC_DAMAGE_PERCENT,
+                                                      SPELL_AURA_PERIODIC_LEECH};
+    for (AuraType const type : Types)
+    {
+        for (AuraEffect const* effect : unit->GetAuraEffectsByType(type))
+        {
+            if (CcTeamCaster(effect->GetCaster(), bot))
+                return true;
+        }
+    }
+
+    return false;
+}
+
+// G4c-b opponent memory: a mechanic immunity the unit cast on itself just now (the PvP trinket, every man for himself,
+// will of the forsaken: the core removes the CC while it applies, AURA_REMOVE_BY_DEFAULT; the effect is registered
+// before its handler runs). Its full duration tells a fresh one from an older self immunity (berserker rage).
+inline bool CcSelfTrinketOn(Unit const* unit)
+{
+    for (AuraEffect const* effect : unit->GetAuraEffectsByType(SPELL_AURA_MECHANIC_IMMUNITY))
+    {
+        Aura const* const aura = effect->GetBase();
+        if (effect->GetCasterGUID() == unit->GetGUID() && aura->GetDuration() == aura->GetMaxDuration())
+            return true;
+    }
+
+    return false;
+}
+
+namespace CcAreaDetail
+{
+// Damage on the spell's targets: a direct effect, or an aura that ticks damage
+inline bool EffectDamages(SpellEffectInfo const& effect)
+{
+    switch (effect.Effect)
+    {
+        case SPELL_EFFECT_SCHOOL_DAMAGE:
+        case SPELL_EFFECT_ENVIRONMENTAL_DAMAGE:
+        case SPELL_EFFECT_HEALTH_LEECH:
+        case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+        case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+        case SPELL_EFFECT_WEAPON_DAMAGE:
+        case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+            return true;
+        default:
+            break;
+    }
+
+    return effect.IsAura() && (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                               effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT ||
+                               effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH);
+}
+
+// The effect's area on enemies: a cone, an area around the source (the caster) or the destination (the target, or the
+// caster's feet for TARGET_DEST_CASTER), a persistent area at the destination; else none
+inline CcAreaCentre EffectCentre(SpellEffectInfo const& effect)
+{
+    bool const atCaster = effect.TargetA.GetTarget() == TARGET_DEST_CASTER;
+    if (effect.Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA)
+        return atCaster ? CcAreaCentre::Caster : CcAreaCentre::Target;
+
+    for (SpellImplicitTargetInfo const& target : {effect.TargetA, effect.TargetB})
+    {
+        if (target.GetCheckType() != TARGET_CHECK_ENEMY)
+            continue;
+
+        if (target.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE)
+            return CcAreaCentre::Cone;
+
+        if (target.GetSelectionCategory() != TARGET_SELECT_CATEGORY_AREA)
+            continue;
+
+        SpellTargetReferenceTypes const reference = target.GetReferenceType();
+        if (reference == TARGET_REFERENCE_TYPE_SRC || reference == TARGET_REFERENCE_TYPE_CASTER || atCaster)
+            return CcAreaCentre::Caster;
+
+        return CcAreaCentre::Target;
+    }
+
+    return CcAreaCentre::None;
+}
+
+// Spell::SearchChainTargets' jump radius
+inline float ChainJumpYards(SpellInfo const* info)
+{
+    constexpr float RangedJumpYards = 7.5f;
+    constexpr float JumpYards = 10.0f;
+    if (info->JumpDistance > 0.0f)
+        return info->JumpDistance;
+
+    return info->DmgClass == SPELL_DAMAGE_CLASS_RANGED ? RangedJumpYards : JumpYards;
+}
+}  // namespace CcAreaDetail
+
+// G4c-b AoE guard: the area of a damage spell (an area, cone or chain effect that damages; a channel or ground effect
+// through the spell it triggers, one level): the first such effect's centre with its largest radius. Static data: the
+// caller caches it per action; the radius is the spell's base (talents add a little: the guard's margin).
+inline CcSpellArea CcResolveSpellArea(SpellInfo const* info, bool followTrigger = true)
+{
+    CcSpellArea area;
+    if (!info)
+        return area;
+
+    for (SpellEffectInfo const& effect : info->Effects)
+    {
+        CcSpellArea found;
+        if (CcAreaDetail::EffectDamages(effect))
+        {
+            found.Centre = CcAreaDetail::EffectCentre(effect);
+            found.RadiusYards = effect.CalcRadius();
+            if (found.Centre == CcAreaCentre::None && effect.ChainTarget > 1 &&
+                effect.TargetA.GetCheckType() == TARGET_CHECK_ENEMY)
+            {
+                found.Centre = CcAreaCentre::Chain;
+                found.RadiusYards = CcAreaDetail::ChainJumpYards(info);
+            }
+        }
+        else if (followTrigger && effect.TriggerSpell &&
+                 (effect.Effect == SPELL_EFFECT_TRIGGER_SPELL || effect.Effect == SPELL_EFFECT_TRIGGER_MISSILE ||
+                  (effect.IsAura() && effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL)))
+            found = CcResolveSpellArea(sSpellMgr->GetSpellInfo(effect.TriggerSpell), false);
+
+        if (found.Centre == CcAreaCentre::None)
+            continue;
+
+        if (area.Centre == CcAreaCentre::None)
+            area = found;
+        else if (found.Centre == area.Centre)
+            area.RadiusYards = std::max(area.RadiusYards, found.RadiusYards);
+    }
+
+    return area;
 }
 
 // The team's loss-of-control CC on the unit as a player sees it (G4c chains: the visible auras, by spell): the one
-// that ends last, its remaining ms and DR group; false when none of the team's (an enemy's or a neutral stun, or no
-// CC). A walk over the unit's auras: cc ready calls it once per refresh, only on a controlled CC target.
-inline bool CcTeamControlAura(Unit const* unit, Player const* bot, uint32& remainingMs, uint8& group)
+// that ends last, its remaining ms, how long it is up (G4c-b: the opponent memory's dispel timing) and DR group; false
+// when none of the team's (an enemy's or a neutral stun, or no CC). A walk over the unit's auras: cc ready calls it
+// once per refresh, only on a controlled CC target.
+inline bool CcTeamControlAura(Unit const* unit, Player const* bot, uint32& remainingMs, uint32& elapsedMs, uint8& group)
 {
     bool found = false;
     remainingMs = 0;
+    elapsedMs = 0;
     group = 0;
     for (auto const& [spellId, application] : unit->GetAppliedAuras())
     {
@@ -120,6 +279,7 @@ inline bool CcTeamControlAura(Unit const* unit, Player const* bot, uint32& remai
 
         found = true;
         remainingMs = static_cast<uint32>(leftMs);
+        elapsedMs = static_cast<uint32>(std::max<int32>(aura->GetMaxDuration() - leftMs, 0));
         group = auraGroup;
     }
 

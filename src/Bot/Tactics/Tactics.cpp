@@ -2102,6 +2102,14 @@ bool ForceCcDr(ChatHandler* handler, PlayerbotAI* botAI, std::string const& name
         return false;
     }
 
+    // G4c-a review NOTE 2: real casts go only on an enemy (not the GM or a teammate)
+    if (!bot->IsValidAttackTarget(target))
+    {
+        handler->PSendSysMessage("TACTICS force dr: {} ({}) is no enemy {} may attack.", GuidName(enemy), source, name);
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
     int8 const row = CcForceDrRow(drGroup, target->IsPlayer(), static_cast<uint8>(target->GetCreatureType()));
     if (row == CC_NO_ROW)
     {
@@ -2997,6 +3005,131 @@ void RunCcSelftest(ChatHandler* handler)
             high.ChainLeadMs, params(99).ChainLeadMs, config.CcChainsFromSkill);
     }
 
+    // 23. G4c-b DotGuard: with the team's periodic damage on the target no CC that damage breaks (polymorph), a stun
+    // still goes; G4c-a review NOTE 1: a chain (ControlOnly) takes no root
+    {
+        constexpr int8 Hammer = CcOptionIndex("hammer of justice");
+        constexpr int8 Roots = CcOptionIndex("entangling roots on cc");
+        static_assert(Hammer != CC_NO_ROW && Roots != CC_NO_ROW, "the selftest's rows are in CC_OPTIONS");
+        CcParams const high = params(80);
+        CcSpellTable table{};
+        table[Polymorph] = makeSpell(Disorient, DRTYPE_PLAYER, 10000, 10000, 1500, 30.0f);
+        table[Hammer] = makeSpell(Stun, DRTYPE_PLAYER, 6000, 6000, 0, 10.0f);
+        table[Roots] = makeSpell(DIMINISHING_CONTROLLED_ROOT, DRTYPE_PLAYER, 10000, 10000, 1500, 30.0f);
+        CcPickInput input;
+        input.ReadyMask = CcOptionBit(Polymorph) | CcOptionBit(Hammer);
+        input.DistanceYards = 5.0f;
+        int8 const clean = PickCc(input, table, high);
+        input.TeamDotOn = true;
+        int8 const dot = PickCc(input, table, high);
+        input.ReadyMask = CcOptionBit(Polymorph);
+        int8 const dotOnly = PickCc(input, table, high);
+        CcPickInput chain;
+        chain.ReadyMask = CcOptionBit(Polymorph) | CcOptionBit(Roots);
+        chain.DistanceYards = 10.0f;
+        chain.ActiveGroup = Disorient;
+        int8 const rootFree = PickCc(chain, table, high);
+        chain.ControlOnly = true;
+        int8 const rootChain = PickCc(chain, table, high);
+        auto const rowName = [](int8 row) { return row == CC_NO_ROW ? "none" : CC_OPTIONS[row].Action; };
+        check(
+            clean == Polymorph && dot == Hammer && dotOnly == CC_NO_ROW && rootFree == Roots && rootChain == CC_NO_ROW,
+            Acore::StringFormat("dot guard: clean {}, dot {}, dot with polymorph only {}; chain: root free {}, root "
+                                "in a chain {}",
+                                rowName(clean), rowName(dot), rowName(dotOnly), rowName(rootFree), rowName(rootChain)));
+    }
+
+    // 24. G4c-b opponent memory: the dispel mean from OpponentMinEvents dispels, per enemy; trinkets counted; a new
+    // match forgets the old one
+    {
+        constexpr uint32 Match = 11;
+        CcOpponentMemory memory;
+        memory.Dispelled(Match, Enemy, 1000, 100);
+        uint32 const one = memory.DispelMeanMs(Match, Enemy, 2);
+        memory.Dispelled(Match, Enemy, 2000, 200);
+        uint32 const two = memory.DispelMeanMs(Match, Enemy, 2);
+        uint32 const other = memory.DispelMeanMs(Match, Enemy + 1, 1);
+        memory.Trinketed(Match, Enemy + 1, 300);
+        CcOpponentMemory::Slot const* const trinket = memory.Find(Match, Enemy + 1);
+        bool const trinketSeen =
+            trinket && trinket->Trinkets == 1 && trinket->LastTrinketMs == 300 && !trinket->Dispels;
+        uint32 const otherMatch = memory.DispelMeanMs(Match + 1, Enemy, 1);
+        memory.Trinketed(Match + 1, Enemy + 2, 400);
+        uint32 const cleared = memory.DispelMeanMs(Match, Enemy, 1);
+        bool const next = memory.Find(Match + 1, Enemy + 2) && !memory.Find(Match + 1, Enemy);
+        check(one == 0 && two == 1500 && other == 0 && trinketSeen && otherMatch == 0 && cleared == 0 && next,
+              Acore::StringFormat("opponent memory: after one dispel {}, after two {}, other enemy {}, trinket seen "
+                                  "{}, other match {}, after the match changed {}, new match kept {}",
+                                  one, two, other, trinketSeen, otherMatch, cleared, next));
+    }
+
+    // 25. G4c-b the chain's moment by the memory: the dispel's mean less the margin, counted from the landing; the
+    // aura's end when that comes sooner or nothing is known; due at once when the dispel is overdue
+    {
+        CcParams const high = params(80);
+        uint32 const unknown = CcChainRemainingMs(8000, 500, 0, 300);
+        uint32 const early = CcChainRemainingMs(8000, 500, 1500, 300);
+        uint32 const late = CcChainRemainingMs(600, 500, 9000, 300);
+        uint32 const overdue = CcChainRemainingMs(8000, 2000, 1500, 300);
+        CcChainView chainView;
+        chainView.AuraOnTarget = true;
+        chainView.RemainingMs = early;
+        bool const castDue = ChainDue(chainView, 1500, high.ChainLeadMs, true);
+        bool const instantWaits = !ChainDue(chainView, 0, high.ChainLeadMs, true) &&
+                                  CcChainWaitMs(chainView, 0, high.ChainLeadMs) == early - high.ChainLeadMs;
+        check(unknown == 8000 && early == 700 && late == 600 && overdue == 0 && castDue && instantWaits,
+              Acore::StringFormat("chain by memory: unknown {}, early {}, late {}, overdue {}; a 1.5 s cast due {}, an "
+                                  "instant waits {}",
+                                  unknown, early, late, overdue, castDue, instantWaits));
+    }
+
+    // 26. G4c-b AoE guard: the areas read from the spell store (around the caster, at the target, a cone, a chain;
+    // none for a single target or a DoT) and the cover test with the margin
+    {
+        struct AreaCase
+        {
+            uint32 SpellId;
+            CcAreaCentre Centre;
+        };
+        constexpr std::array<AreaCase, 10> Cases = {{{10, CcAreaCentre::Target},
+                                                     {2120, CcAreaCentre::Target},
+                                                     {16914, CcAreaCentre::Target},
+                                                     {48045, CcAreaCentre::Target},
+                                                     {1449, CcAreaCentre::Caster},
+                                                     {26573, CcAreaCentre::Caster},
+                                                     {120, CcAreaCentre::Cone},
+                                                     {845, CcAreaCentre::Chain},
+                                                     {118, CcAreaCentre::None},
+                                                     {8921, CcAreaCentre::None}}};
+        std::string wrong;
+        std::string radii;
+        for (AreaCase const& area : Cases)
+        {
+            CcSpellArea const found = CcResolveSpellArea(sSpellMgr->GetSpellInfo(area.SpellId));
+            bool const ok =
+                found.Centre == area.Centre && (area.Centre == CcAreaCentre::None || found.RadiusYards > 0.0f);
+            if (!ok)
+                wrong += Acore::StringFormat("{}{} centre {} radius {:.1f}", wrong.empty() ? "" : ", ", area.SpellId,
+                                             static_cast<uint32>(found.Centre), found.RadiusYards);
+
+            if (area.Centre != CcAreaCentre::None)
+                radii +=
+                    Acore::StringFormat("{}{} {:.1f} yd", radii.empty() ? "" : ", ", area.SpellId, found.RadiusYards);
+        }
+
+        check(wrong.empty(), "aoe guard areas: " + wrong);
+        CcSpellArea const nova{CcAreaCentre::Caster, 10.0f};
+        CcSpellArea const cone{CcAreaCentre::Cone, 10.0f};
+        CcSpellArea const blizzard{CcAreaCentre::Target, 8.0f};
+        bool const covers =
+            CcAreaCovers(nova, 2.0f, 11.5f, 30.0f, false) && !CcAreaCovers(nova, 2.0f, 12.5f, 0.0f, true) &&
+            CcAreaCovers(cone, 2.0f, 5.0f, 30.0f, true) && !CcAreaCovers(cone, 2.0f, 5.0f, 30.0f, false) &&
+            CcAreaCovers(blizzard, 2.0f, 40.0f, 9.5f, false) && !CcAreaCovers(blizzard, 2.0f, 1.0f, 10.5f, true) &&
+            !CcAreaCovers(CcSpellArea{}, 2.0f, 0.0f, 0.0f, true);
+        check(covers, "aoe guard cover test");
+        handler->PSendSysMessage("TACTICS selftest cc: aoe guard radii [{}]", radii);
+    }
+
     handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -3319,6 +3452,18 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
                              : sPlayerbotAIConfig.TacticCc.CcChainEnable ? "on"
                                                                          : "off (Cc.ChainEnable 0)",
                              cc.Params.ChainLeadMs, cc.ChainWaits, cc.ChainsLanded, cc.LastChainGapMs);
+    // G4c-b: the own-break guards and the opponent memory of the CC target (this match)
+    CcConfig const& ccConfig = sPlayerbotAIConfig.TacticCc;
+    CcOpponentMemory::Slot const* const seen =
+        cc.CcTarget.IsEmpty() ? nullptr
+                              : cc.Opponents.Find(botAI->GetBot()->GetInstanceId(), cc.CcTarget.GetRawValue());
+    handler->PSendSysMessage(
+        "  cc guards: aoe {}, dot {}, pet call-off {} ({} called off), fight enemies {}; opponent memory {}: cc target "
+        "dispels {} (mean {} ms), trinkets {}",
+        onOff(ccConfig.AvoidAoeGuardEnable), onOff(ccConfig.AvoidDotGuardEnable), onOff(ccConfig.AvoidPetCallOffEnable),
+        cc.PetCallOffs, onOff(ccConfig.AvoidExcludeFightEnemies), onOff(ccConfig.CcOpponentMemoryEnable),
+        seen ? seen->Dispels : 0, seen && seen->Dispels ? seen->DispelSumMs / seen->Dispels : 0,
+        seen ? seen->Trinkets : 0);
 
     // OwnCc (G4b-b): what the bot keeps out of its targets now, the forced CC, its swing (G4b's forced proof)
     std::string keptOut;

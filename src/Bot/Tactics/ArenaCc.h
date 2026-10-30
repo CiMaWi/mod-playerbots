@@ -478,7 +478,8 @@ struct CcPickInput
     bool TargetInCombat = true;
     uint8 ActiveGroup = 0;     // DR group of the CC aura on the target now (the one that ends last), 0 = none
     bool Rooted = false;       // the target is rooted now (visible): no root on top of it
-    bool ControlOnly = false;  // the arena moon: only a CC that takes control away (a root is not the moon's CC)
+    bool ControlOnly = false;  // the arena moon or a chain: only a CC that takes control away (not a root)
+    bool TeamDotOn = false;    // G4c-b DotGuard: the team's periodic damage hits the target (no CC damage breaks)
     std::array<uint8, CC_DR_GROUP_COUNT> Levels{};
 };
 
@@ -506,10 +507,10 @@ inline uint32 CcComboDurationMs(int32 minMs, int32 maxMs, uint8 points)
 }
 
 // The CC to cast, CC_NO_ROW for none: the usable row that lasts longest, a loss of control before a root whatever their
-// lengths (a root on a player lasts 10 s, cyclone 6 s; G4b-a review B1); no root on a rooted target, none on the moon.
-// A DR-aware bot also skips what its memory says lands immune or shorter than MinExpectedMs and the group of the CC
-// already on the target (a chain alternates groups); a bot without DR awareness casts into DR, believing every CC
-// lands in full.
+// lengths (a root on a player lasts 10 s, cyclone 6 s; G4b-a review B1); no root on a rooted target, none on the moon,
+// none that damage breaks on a target the team's periodic damage hits (TeamDotOn: the DoT would break it). A DR-aware
+// bot also skips what its memory says lands immune or shorter than MinExpectedMs and the group of the CC already on
+// the target (a chain alternates groups); a bot without DR awareness casts into DR, believing every CC lands in full.
 inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParams const& params)
 {
     int8 best = CC_NO_ROW;
@@ -528,7 +529,8 @@ inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParam
             continue;
 
         bool const control = CcKindLosesControl(option.Kind);
-        if ((input.Rooted && option.Kind == CcKind::Root) || (input.ControlOnly && !control))
+        if ((input.Rooted && option.Kind == CcKind::Root) || (input.ControlOnly && !control) ||
+            (input.TeamDotOn && (option.BreaksOnDamage || spell.DamageInterrupts)))
             continue;
 
         uint8 level = 0;
@@ -585,6 +587,19 @@ inline uint32 CcChainWaitMs(CcChainView const& view, uint32 castMs, uint32 leadM
         return 0;
 
     return view.RemainingMs - castMs - leadMs;
+}
+
+// G4c-b: the chain's end as a chaining bot expects it. The aura's remaining time; with the opponent memory sooner when
+// the team's CC on this enemy was seen dispelled dispelMeanMs after landing on average (0 = not known): the next CC
+// then lands marginMs before that moment. elapsedMs = how long the aura is up. 0 = due now.
+inline uint32 CcChainRemainingMs(uint32 remainingMs, uint32 elapsedMs, uint32 dispelMeanMs, uint32 marginMs)
+{
+    if (!dispelMeanMs)
+        return remainingMs;
+
+    uint32 const dispelAtMs = dispelMeanMs > marginMs ? dispelMeanMs - marginMs : 0;
+    uint32 const dispelLeftMs = dispelAtMs > elapsedMs ? dispelAtMs - elapsedMs : 0;
+    return std::min(remainingMs, dispelLeftMs);
 }
 
 // The DR groups whose CC takes control away (the chains' groups, CcKindLosesControl's kinds): every CC group but
@@ -699,6 +714,151 @@ private:
 
     std::array<Slot, CC_MEMORY_ENEMIES> Slots{};
 };
+
+constexpr uint16 CC_OPPONENT_MAX_EVENTS = 1000;  // events counted per enemy and match (the mean's sum stays in range)
+constexpr uint32 CC_OPPONENT_MAX_MS = 60000;     // a dispel delay is counted up to this
+
+// G4c-b opponent memory (PLAN 3.15 G0h3's items owned by G4c; DT.12): what one bot saw of each enemy's answers to its
+// team's loss-of-control CC this match, from how the aura left (the aura hooks): dispelled (by its healer; the time
+// from landing) or trinketed (a self-cast mechanic immunity removed it). Per enemy guid, a fixed array (the oldest
+// enemy makes room); everything is forgotten when the match key (the map's instance id) changes.
+class CcOpponentMemory
+{
+public:
+    struct Slot
+    {
+        uint64 Guid = 0;  // 0 = free
+        uint32 SeenMs = 0;
+        uint16 Dispels = 0;
+        uint32 DispelSumMs = 0;  // the dispels' delays from landing
+        uint16 Trinkets = 0;
+        uint32 LastTrinketMs = 0;
+    };
+
+    void Dispelled(uint32 matchKey, uint64 enemy, uint32 afterMs, uint32 nowMs)
+    {
+        Slot* const slot = Touch(matchKey, enemy, nowMs);
+        if (!slot || slot->Dispels >= CC_OPPONENT_MAX_EVENTS)
+            return;
+
+        ++slot->Dispels;
+        slot->DispelSumMs += std::min(afterMs, CC_OPPONENT_MAX_MS);
+    }
+
+    void Trinketed(uint32 matchKey, uint64 enemy, uint32 nowMs)
+    {
+        Slot* const slot = Touch(matchKey, enemy, nowMs);
+        if (!slot || slot->Trinkets >= CC_OPPONENT_MAX_EVENTS)
+            return;
+
+        ++slot->Trinkets;
+        slot->LastTrinketMs = nowMs;
+    }
+
+    // The mean delay of the enemy's dispels of the team's CC this match, 0 below minEvents of them (at least one)
+    uint32 DispelMeanMs(uint32 matchKey, uint64 enemy, uint32 minEvents) const
+    {
+        Slot const* const slot = Find(matchKey, enemy);
+        if (!slot || !slot->Dispels || slot->Dispels < minEvents)
+            return 0;
+
+        return slot->DispelSumMs / slot->Dispels;
+    }
+
+    Slot const* Find(uint32 matchKey, uint64 enemy) const
+    {
+        if (matchKey != MatchKey || !enemy)
+            return nullptr;
+
+        for (Slot const& slot : Slots)
+        {
+            if (slot.Guid == enemy)
+                return &slot;
+        }
+
+        return nullptr;
+    }
+
+    void Clear()
+    {
+        Slots = {};
+        MatchKey = 0;
+    }
+
+private:
+    Slot* Touch(uint32 matchKey, uint64 enemy, uint32 nowMs)
+    {
+        if (!enemy)
+            return nullptr;
+
+        if (matchKey != MatchKey)
+            Clear();
+
+        MatchKey = matchKey;
+        Slot* target = &Slots[0];
+        for (Slot& slot : Slots)
+        {
+            if (slot.Guid == enemy)
+            {
+                target = &slot;
+                break;
+            }
+
+            if (!slot.Guid || (target->Guid &&
+                               static_cast<uint32>(nowMs - slot.SeenMs) > static_cast<uint32>(nowMs - target->SeenMs)))
+                target = &slot;
+        }
+
+        if (target->Guid != enemy)
+        {
+            *target = Slot{};
+            target->Guid = enemy;
+        }
+
+        target->SeenMs = nowMs;
+        return target;
+    }
+
+    std::array<Slot, CC_MEMORY_ENEMIES> Slots{};
+    uint32 MatchKey = 0;
+};
+
+// G4c-b AoE guard: where a damage spell's area is centred (ArenaCcSpells.h CcResolveSpellArea reads it from the spell
+// store) and how far it reaches
+enum class CcAreaCentre : uint8
+{
+    None,    // one target
+    Caster,  // around the caster (arcane explosion, frost nova, consecration, whirlwind)
+    Target,  // at the target or where it stands (blizzard, flamestrike, hurricane, mind sear)
+    Cone,    // in front of the caster (cone of cold, dragon's breath)
+    Chain    // jumps from the target (cleave, multi-shot, chain lightning)
+};
+
+struct CcSpellArea
+{
+    CcAreaCentre Centre = CcAreaCentre::None;
+    float RadiusYards = 0.0f;
+};
+
+// Whether a held enemy is in the area: its distance from the caster and from the spell's target, and whether it is in
+// front of the caster (a cone); marginYards for its movement and size
+inline bool CcAreaCovers(CcSpellArea const& area, float marginYards, float fromCasterYards, float fromTargetYards,
+                         bool inFront)
+{
+    float const reach = area.RadiusYards + marginYards;
+    switch (area.Centre)
+    {
+        case CcAreaCentre::Caster:
+            return fromCasterYards <= reach;
+        case CcAreaCentre::Cone:
+            return inFront && fromCasterYards <= reach;
+        case CcAreaCentre::Target:
+        case CcAreaCentre::Chain:
+            return fromTargetYards <= reach;
+        default:
+            return false;
+    }
+}
 
 // The rolls of the shares, one answer per bot and CC_BREAK_WINDOW_MS: the CC goes on whoever is near instead of the CC
 // target; the bot's damage breaks its team's CC
