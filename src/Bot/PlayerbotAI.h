@@ -698,6 +698,11 @@ public:
     std::array<uint32, PVPTEST_TACTIC_COUNT> const& GetPvpTestTactics() const { return pvpTestTactics; }
     void CountPvpTestReceivedCc(uint32 drGroup);
     void CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune);
+    void CountPvpTestOwnBreak()
+    {
+        if (pvpTestCounting)
+            ++pvpTestCc.OwnBreaks;
+    }
     void CountTactic(TacticCounter counter, uint32 amount = 1)
     {
         if (pvpTestCounting)

@@ -4350,7 +4350,22 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     forceRebuff.NoteCast(spellInfo);
 
     if (counting)
+    {
         CountPvpTestCast(spellId, drGroup, atImmune);
+        // tactics.ccOnTarget (G4b): the planned CC target is the group's moon in an arena, else the bot's kept one
+        if (IsPvpTestCcGroup(drGroup) && target != bot)
+        {
+            Group* const group = bot->GetGroup();
+            ObjectGuid planned = group && GetTacticContext() == TacticContext::Arena
+                                     ? group->GetTargetIcon(FOCUS_ICON_MOON)
+                                     : ObjectGuid::Empty;
+            if (planned.IsEmpty() && ccState)
+                planned = ccState->CcTarget;
+
+            if (!planned.IsEmpty() && planned == target->GetGUID())
+                CountTactic(TacticCounter::CcOnTarget);
+        }
+    }
 
     // G0e: a cast with a cast time begins (an instant one was cast inside prepare: its finish row is enough)
     if (NaturalTrace::Any())

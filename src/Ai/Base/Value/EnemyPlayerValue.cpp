@@ -8,6 +8,8 @@
 #include "CombatManager.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "Strategy.h"
+#include "TargetValue.h"
 #include "Vehicle.h"
 
 bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
@@ -54,6 +56,10 @@ Unit* EnemyPlayerValue::Calculate()
             controllingVehicle = true;
     }
 
+    // An enemy the team holds in a breakable CC is left alone (OwnCc, G4b; empty without it); a flag carrier is not:
+    // the objective first
+    GuidSet const exclusions = GatherStrategyTargetExclusions(botAI, TargetValueExclusionType::DpsTarget);
+
     // 1. Check units we are currently in PvP combat with.
     std::vector<Unit*> targets;
     Unit* pVictim = bot->GetVictim();
@@ -68,6 +74,9 @@ Unit* EnemyPlayerValue::Calculate()
         if ((bot->GetTeamId() == TEAM_HORDE && pTarget->HasAura(23333)) ||
             (bot->GetTeamId() == TEAM_ALLIANCE && pTarget->HasAura(23335)))
             return pTarget;
+
+        if (exclusions.count(pTarget->GetGUID()))
+            continue;
 
         targets.push_back(pTarget);
     }
@@ -109,6 +118,9 @@ Unit* EnemyPlayerValue::Calculate()
                 return pTarget;
         }
 
+        if (exclusions.count(pTarget->GetGUID()))
+            continue;
+
         // Aggro weak enemies from further away.
         // If controlling mobile vehicle only agro close enemies (otherwise will never reach objective)
         uint32 const aggroDistance = passenger                                                        ? 30.0f
@@ -140,6 +152,7 @@ Unit* EnemyPlayerValue::Calculate()
                 if (Unit* pAttacker = pMember->getAttackerForHelper())
                     if (pAttacker->IsPlayer() && bot->IsWithinDist(pAttacker, maxAggroDistance * 2.0f) &&
                         bot->IsWithinLOSInMap(pAttacker) && pAttacker != pVictim &&
+                        !exclusions.count(pAttacker->GetGUID()) &&
                         (bot->InBattleground() ? bot->CanSeeOrDetect(pAttacker) : pAttacker->CanSeeOrDetect(bot)))
                         return pAttacker;
             }

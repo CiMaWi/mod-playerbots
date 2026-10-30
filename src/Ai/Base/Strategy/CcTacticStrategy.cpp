@@ -16,12 +16,14 @@
 #include "CcState.h"
 #include "FocusState.h"
 #include "Group.h"
+#include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpTestCounters.h"
 #include "ScriptMgr.h"
+#include "Spell.h"
 #include "SpellAuraDefines.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -37,6 +39,10 @@ namespace
 // while a teammate is below CriticalHealth (CcHealerNeeded; G4b-a review NOTE 4). A relevance below 30 for healers
 // would put the CC under every heal of the rotation, so a healer would never control.
 constexpr float TeamCcRelevance = ACTION_HIGH + 22.0f;
+
+// Above "team cc" and the rotations, below the plan's mark follow (+ 30): a held enemy is dropped before the next
+// cast at it
+constexpr float CcRetargetRelevance = ACTION_HIGH + 28.0f;
 
 // The old "cc" strategies' actions (mage, druid, warlock, hunter; AiFactory adds "cc" for these classes). Rogue,
 // paladin and priest CC (blind, sap, repentance, hammer of justice, psychic scream, ...) belong to class rotations and
@@ -310,10 +316,94 @@ DiminishingGroup CcObservedGroup(Unit* unit, Aura const* aura, Player*& casterPl
     return group;
 }
 
+// The last damage event of this map thread that hit an enemy in a team breakable CC (G4b-b). The break is counted
+// in OnAuraRemove, only when that damage really removed the aura: the core spares the aura's own spell (frost nova's
+// damage, a root's ticks) and spells with SPELL_ATTR4_DAMAGE_DOESNT_BREAK_AURAS, Unit.cpp DealDamage.
+struct CcPendingBreak
+{
+    Player* Source = nullptr;
+    Unit const* Victim = nullptr;
+    Aura const* BrokenAura = nullptr;
+    uint32 AtMs = 0;
+    // For the break's log line: the damage's spell (0 melee), whether a pet dealt it, what the bot aimed at
+    SpellInfo const* DamageSpell = nullptr;
+    bool ByPet = false;
+    bool OnTarget = false;
+    bool KeptOut = false;
+};
+
+thread_local CcPendingBreak ccPendingBreak;
+// The spell of the damage being dealt on this thread (ModifySpellDamageTaken / ModifyPeriodicDamageAurasTick set it,
+// ModifyMeleeDamage clears it); read only for a pending break's log line
+thread_local SpellInfo const* ccDamageSpell = nullptr;
+
+void CcConsumeOwnBreak(Unit const* unit, Aura const* aura, AuraRemoveMode mode)
+{
+    if (ccPendingBreak.BrokenAura != aura || ccPendingBreak.Victim != unit)
+        return;
+
+    CcPendingBreak const pending = ccPendingBreak;
+    ccPendingBreak = CcPendingBreak{};
+    // RemoveAurasWithInterruptFlags removes with the default mode, in the same DealDamage call as the hook
+    if (mode != AURA_REMOVE_BY_DEFAULT || getMSTimeDiff(pending.AtMs, getMSTime()) > 1)
+        return;
+
+    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(pending.Source);
+    if (!botAI || !botAI->IsPvpTestCounting())
+        return;
+
+    CcBotState& state = botAI->GetCcState();
+    if (state.OwnBreakAura == aura && state.OwnBreakApplyTime == aura->GetApplyTime())
+        return;
+
+    state.OwnBreakAura = aura;
+    state.OwnBreakApplyTime = aura->GetApplyTime();
+    botAI->CountPvpTestOwnBreak();
+    Unit const* const caster = aura->GetCaster();
+    // Diagnostic only, at trace level (Logger.playerbots=6): the dist's level 5 keeps it out of the default logs
+    LOG_TRACE("playerbots",
+              "CC own break: {} broke {} ({}) on {} by {} {} ({}), aura {} ms old, bot target {}, kept out {}, "
+              "cache {} ms",
+              pending.Source->GetName(), aura->GetSpellInfo()->SpellName[0], caster ? caster->GetName() : "?",
+              unit->GetName(), pending.ByPet ? "pet" : "self",
+              pending.DamageSpell ? pending.DamageSpell->SpellName[0] : "melee",
+              pending.DamageSpell ? pending.DamageSpell->Id : 0, aura->GetMaxDuration() - aura->GetDuration(),
+              pending.OnTarget ? "yes" : "no", pending.KeptOut ? "yes" : "no",
+              FocusBefore(pending.AtMs, state.ExcludedUntilMs)
+                  ? static_cast<int32>(CC_EXCLUDE_REFRESH_MS - (state.ExcludedUntilMs - pending.AtMs))
+                  : -1);
+}
+
 class CcTacticUnitScript : public UnitScript
 {
 public:
-    CcTacticUnitScript() : UnitScript("CcTacticUnitScript", true, {UNITHOOK_ON_AURA_APPLY, UNITHOOK_ON_AURA_REMOVE}) {}
+    CcTacticUnitScript()
+        : UnitScript("CcTacticUnitScript", true,
+                     {UNITHOOK_ON_AURA_APPLY, UNITHOOK_ON_AURA_REMOVE, UNITHOOK_ON_DAMAGE,
+                      UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK, UNITHOOK_MODIFY_MELEE_DAMAGE,
+                      UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN})
+    {
+    }
+
+    void OnDamage(Unit* attacker, Unit* victim, uint32& /*damage*/) override { CcCountOwnBreak(attacker, victim); }
+
+    // One store each; only the own-break log line reads it
+    void ModifyPeriodicDamageAurasTick(Unit* /*target*/, Unit* /*attacker*/, uint32& /*damage*/,
+                                       SpellInfo const* spellInfo) override
+    {
+        ccDamageSpell = spellInfo;
+    }
+
+    void ModifyMeleeDamage(Unit* /*target*/, Unit* /*attacker*/, uint32& /*damage*/) override
+    {
+        ccDamageSpell = nullptr;
+    }
+
+    void ModifySpellDamageTaken(Unit* /*target*/, Unit* /*attacker*/, int32& /*damage*/,
+                                SpellInfo const* spellInfo) override
+    {
+        ccDamageSpell = spellInfo;
+    }
 
     // Fires for every aura of every unit: the config flags, then the aura's DR group, before anything else
     void OnAuraApply(Unit* unit, Aura* aura) override
@@ -343,6 +433,7 @@ public:
     // aura of the group still on the unit
     void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode) override
     {
+        CcConsumeOwnBreak(unit, aurApp->GetBase(), mode);
         if (mode == AURA_REMOVE_BY_EXPIRE || !CcFeedOn())
             return;
 
@@ -399,6 +490,147 @@ void PvpCcStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 void TacticCcStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     triggers.push_back(new TriggerNode("cc ready", {NextAction("team cc", TeamCcRelevance)}));
+    triggers.push_back(new TriggerNode("own cc target", {NextAction("cc retarget", CcRetargetRelevance)}));
+}
+
+void TacticCcStrategy::AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type)
+{
+    if (type == TargetValueExclusionType::TankTarget)
+        return;
+
+    for (ObjectGuid const& guid : CcOwnExclusions(botAI))
+        exclusions.insert(guid);
+}
+
+std::vector<ObjectGuid> const& CcOwnExclusions(PlayerbotAI* botAI)
+{
+    CcBotState& state = botAI->GetCcState();
+    uint32 const nowMs = getMSTime();
+    if (FocusBefore(nowMs, state.ExcludedUntilMs))
+        return state.Excluded;
+
+    state.ExcludedUntilMs = nowMs + CC_EXCLUDE_REFRESH_MS;
+    state.Excluded.clear();
+    if (!botAI->TacticEnabledHere(TacticId::OwnCc))
+        return state.Excluded;
+
+    Player* const bot = botAI->GetBot();
+    bool const forced = !state.ForcedCcGuid.IsEmpty() && FocusBefore(nowMs, state.ForcedCcUntilMs);
+    if (forced)
+        state.Excluded.push_back(state.ForcedCcGuid);
+    else
+        state.ForcedCcGuid = ObjectGuid::Empty;
+
+    // Below the tactic's known skill the bot does not look for its team's CC (it breaks it); above it the own-break
+    // window of low skill lets it break it now and then (CcParams::OwnBreakPct, 0 from OwnBreakNeverFromSkill)
+    bool const known =
+        (botAI->GetTacticGate().KnownMask & TacticBit(TacticId::OwnCc)) != 0 || botAI->HasFullSkillAbility();
+    bool const breaksOwn = !known || CcBreaksOwn(state.Params, bot->GetGUID().GetCounter(), nowMs);
+    if (breaksOwn)
+        return state.Excluded;
+
+    // What the bot fights: its attackers, its target and the skull (what the target picks read)
+    AiObjectContext* const context = botAI->GetAiObjectContext();
+    Unit* const current = context->GetValue<Unit*>("current target")->Get();
+    Group* const group = bot->GetGroup();
+    auto const consider = [&](ObjectGuid const& guid)
+    {
+        if (guid.IsEmpty() || std::find(state.Excluded.begin(), state.Excluded.end(), guid) != state.Excluded.end())
+            return;
+
+        Unit* const unit = botAI->GetUnit(guid);
+        if (unit && unit->IsInMap(bot) && unit->IsAlive() &&
+            CcKeepsOut(CcTeamBreakableAura(unit, bot) != nullptr, false, breaksOwn))
+            state.Excluded.push_back(guid);
+    };
+
+    for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->Get())
+        consider(guid);
+
+    consider(current ? current->GetGUID() : ObjectGuid::Empty);
+    consider(group ? group->GetTargetIcon(FOCUS_ICON_SKULL) : ObjectGuid::Empty);
+    return state.Excluded;
+}
+
+void CcCountOwnBreak(Unit* attacker, Unit* victim)
+{
+    // Every damage event of every unit: the harness switch, then a player source, then the aura lists. A damage
+    // event that is not a counting bot's clears the pending break, so its removal is never charged to a bot
+    ccPendingBreak.BrokenAura = nullptr;
+    if (!sPlayerbotAIConfig.PvpTestEnable || !attacker || !victim || attacker == victim)
+        return;
+
+    Unit* const source = attacker->GetCharmerOrOwnerOrSelf();
+    Player* const player = source ? source->ToPlayer() : nullptr;
+    if (!player || source == victim)
+        return;
+
+    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player);
+    if (!botAI || !botAI->IsPvpTestCounting())
+        return;
+
+    // Counted only if this damage removes the aura (CcConsumeOwnBreak in OnAuraRemove)
+    Aura const* const aura = CcTeamBreakableAura(victim, player);
+    if (!aura)
+    {
+        ccPendingBreak = CcPendingBreak{};
+        return;
+    }
+
+    std::vector<ObjectGuid> const& excluded = botAI->GetCcState().Excluded;
+    ccPendingBreak = CcPendingBreak{player,
+                                    victim,
+                                    aura,
+                                    getMSTime(),
+                                    ccDamageSpell,
+                                    attacker != player,
+                                    player->GetTarget() == victim->GetGUID() || player->GetVictim() == victim,
+                                    std::find(excluded.begin(), excluded.end(), victim->GetGUID()) != excluded.end()};
+}
+
+bool CcTargetKeptOut(PlayerbotAI* botAI, Unit const* target)
+{
+    if (!target)
+        return false;
+
+    std::vector<ObjectGuid> const& excluded = CcOwnExclusions(botAI);
+    return std::find(excluded.begin(), excluded.end(), target->GetGUID()) != excluded.end();
+}
+
+bool OwnCcTargetTrigger::IsActive()
+{
+    return botAI->TacticEnabledHere(TacticId::OwnCc) && CcTargetKeptOut(botAI, AI_VALUE(Unit*, "current target"));
+}
+
+bool CcRetargetAction::isUseful() { return CcTargetKeptOut(botAI, AI_VALUE(Unit*, "current target")); }
+
+bool CcRetargetAction::Execute(Event /*event*/)
+{
+    Unit* const current = AI_VALUE(Unit*, "current target");
+    if (!current)
+        return false;
+
+    ObjectGuid const guid = current->GetGUID();
+    for (CurrentSpellTypes const type : {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL})
+    {
+        Spell* const spell = bot->GetCurrentSpell(type);
+        if (spell && spell->m_targets.GetUnitTargetGUID() == guid)
+            bot->InterruptSpell(type);
+    }
+
+    if (bot->GetVictim() == current)
+        bot->AttackStop();
+
+    Pet* const pet = bot->GetPet();
+    if (pet && pet->GetVictim() == current)
+        pet->AttackStop();
+
+    context->GetValue<Unit*>("current target")->Set(nullptr);
+    bot->SetSelection(ObjectGuid::Empty);
+    // The target picks run again at once, without the held enemy
+    context->GetValue<Unit*>("dps target")->Reset();
+    context->GetValue<Unit*>("enemy player target")->Reset();
+    return true;
 }
 
 bool CcReadyTrigger::IsActive()

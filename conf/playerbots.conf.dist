@@ -2097,6 +2097,11 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Plan.Enable = 0
 # Playerbots.Tactics.Plan.Scope = Arena,Battleground
 # Playerbots.Tactics.Plan.KnownFromSkill = 0
+# Playerbots.Tactics.Cc.Enable = 0
+# Playerbots.Tactics.Cc.Scope = Arena,Battleground,World
+# Playerbots.Tactics.Cc.KnownFromSkill = 0
+# Playerbots.Tactics.OwnCc.Enable = 0
+# Playerbots.Tactics.OwnCc.Scope = All
 
 # Target hold and team plan: the numbers of the Hold and Plan tactics (all keys optional, the defaults below; read only
 # where those tactics are enabled). The defaults are proposals, not tuned yet (G6a tunes them). An ...AtSkill1 /

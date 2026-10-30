@@ -155,6 +155,7 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"dps assist", C::TargetSwitch},
         {"tank assist", C::TargetSwitch},
         {"attack enemy player", C::TargetSwitch},
+        {"cc retarget", C::TargetSwitch},  // OwnCc drops a target its team holds in CC (G4b)
         {"attack enemy flag carrier", C::TargetSwitch},
         // Out of a ground effect (G0h3-b; a reaction only, Playerbots.Natural.Reaction.Movement.Enable)
         {"avoid aoe", C::Movement},

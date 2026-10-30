@@ -35,8 +35,9 @@ struct PvpTestCcCounters
     std::array<uint32, PVPTEST_DR_GROUP_COUNT> Received{};
     // CC casts on a player target the core's DR state already held at immunity
     uint32 AtImmune = 0;
-    // Filled by later steps (G4/G5), written as 0 until then
+    // Damage of the bot or its pet on an enemy in a breakable CC of its team, one per CC aura (G4b)
     uint32 OwnBreaks = 0;
+    // Filled by later steps (G5), written as 0 until then
     uint32 Trinket = 0;
     uint32 RacialBreak = 0;
     uint32 PartnerDispel = 0;
@@ -52,12 +53,13 @@ enum class TacticCounter : uint8
     PlanSwitch,    // G1b: a new skull after the match's first marks
     ImmuneSwapMs,  // G1b: ms from the skull seen immune to the new skull (summed)
     HoldSwitch,    // G1b: switches the hold allowed (any verdict, G1b-c) and the bot took
+    CcOnTarget,    // G4b: CC casts (a CC DR group) that went on the planned CC target (arena: moon; else the kept one)
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
-constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {"focusSame", "focusDiff", "planSwitch",
-                                                                                "immuneSwapMs", "holdSwitch"};
+constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
+    "focusSame", "focusDiff", "planSwitch", "immuneSwapMs", "holdSwitch", "ccOnTarget"};
 
 #endif

@@ -14,6 +14,7 @@
 #include "ArenaCcSpells.h"
 #include "ArenaFocus.h"
 #include "Battleground.h"
+#include "CcTacticStrategy.h"
 #include "FocusState.h"
 #include "Group.h"
 #include "NaturalReaction.h"
@@ -272,7 +273,8 @@ float TacticHoldMultiplier::GetValue(Action* action)
     input.HasTarget = true;
     input.TargetAlive = true;
     input.TargetInRange = bot->IsWithinDistInMap(current, sPlayerbotAIConfig.SpellDistance);
-    input.TargetImmune = FocusTargetImmune(current, bot, state, nowMs);
+    // A target the team holds in a breakable CC (OwnCc, or forced) is left as an immune one: "cc retarget" drops it
+    input.TargetImmune = FocusTargetImmune(current, bot, state, nowMs) || CcTargetKeptOut(botAI, current);
     input.TargetLosLostMs = nowMs - hold.LastSeenMs;
     input.TargetHpPct = FocusHealthPct(current);
     input.HeldSinceMs = hold.HeldSinceMs;

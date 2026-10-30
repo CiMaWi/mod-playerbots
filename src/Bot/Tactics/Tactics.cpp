@@ -2741,6 +2741,32 @@ void RunCcSelftest(ChatHandler* handler)
                                   kidney ? kidney->GetDuration() : 0, kidney ? kidney->GetMaxDuration() : 0));
     }
 
+    // 17. G4b-b own CC: a team breakable CC keeps the enemy out of the targets unless the own-break window breaks it;
+    // a forced one whatever the window; at or above OwnBreakNeverFromSkill the window never opens
+    {
+        check(CcKeepsOut(true, false, false) && !CcKeepsOut(true, false, true) && !CcKeepsOut(false, false, false),
+              "a team CC is kept out unless the own-break window breaks it");
+        check(CcKeepsOut(false, true, true) && CcKeepsOut(true, true, true) && CcKeepsOut(false, true, false),
+              "a forced CC is kept out whatever the own-break window");
+        CcConfig ownConfig = config;
+        ownConfig.AvoidOwnBreakNeverFromSkill = 65;
+        ownConfig.AvoidOwnBreakPctAtSkill1 = 60;
+        ownConfig.AvoidOwnBreakPctAtSkill99 = 5;
+        CcParams const high = ComputeCcParams(80, plain(80), SKILL_GATE_FULL, Linear, ownConfig);
+        CcParams const low = ComputeCcParams(20, plain(20), SKILL_GATE_FULL, Linear, ownConfig);
+        bool highBreaks = false;
+        uint32 lowWindows = 0;
+        for (uint32 window = 0; window < 200; ++window)
+        {
+            highBreaks |= CcBreaksOwn(high, 4242, window * CC_BREAK_WINDOW_MS);
+            lowWindows += CcBreaksOwn(low, 4242, window * CC_BREAK_WINDOW_MS) ? 1 : 0;
+        }
+
+        check(high.OwnBreakPct == 0 && !highBreaks && low.OwnBreakPct > 0 && lowWindows > 0,
+              Acore::StringFormat("own breaks: skill 80 {} % ({}), skill 20 {} % ({} of 200 windows)", high.OwnBreakPct,
+                                  highBreaks ? "breaks" : "never", low.OwnBreakPct, lowWindows));
+    }
+
     handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
@@ -3059,6 +3085,19 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         cc.Params.OwnBreakPct, cc.Params.HoldMs, ccRows, iconName(cc.CcTarget),
         cc.PickRow != CC_NO_ROW ? CC_OPTIONS[cc.PickRow].Action : "none", iconName(cc.PickTarget), cc.Casts);
 
+    // OwnCc (G4b-b): what the bot keeps out of its targets now, the forced CC, its swing (G4b's forced proof)
+    std::string keptOut;
+    for (ObjectGuid const& guid : cc.Excluded)
+        keptOut += (keptOut.empty() ? "" : ", ") + GuidName(guid);
+
+    Unit* const victim = botAI->GetBot()->GetVictim();
+    handler->PSendSysMessage(
+        "  own cc: kept out [{}] ({} ms old), forced {} ({} ms more), swing {}, at {} ms", keptOut,
+        FocusBefore(nowMs, cc.ExcludedUntilMs) ? CC_EXCLUDE_REFRESH_MS - (cc.ExcludedUntilMs - nowMs)
+                                               : CC_EXCLUDE_REFRESH_MS,
+        iconName(cc.ForcedCcGuid), FocusBefore(nowMs, cc.ForcedCcUntilMs) ? cc.ForcedCcUntilMs - nowMs : 0,
+        victim ? GuidName(victim->GetGUID()) : std::string("none"), nowMs);
+
     // getMSTime stamps, comparable with the force's: G1b's forced proof polls these
     handler->PSendSysMessage("  timing: now {} ms, current target {}, last mark at {} ms", nowMs,
                              iconName(botAI->GetBot()->GetTarget()), match.LastMarkMs);
@@ -3168,9 +3207,10 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
     std::string verb;
     std::string target;
     in >> verb >> target;
-    if (Lower(verb) != "immune" || target.empty())
+    std::string const kind = Lower(verb);
+    if ((kind != "immune" && kind != "cc") || target.empty())
     {
-        handler->PSendSysMessage("Usage: .playerbots tactics force immune <bot name or guid>");
+        handler->PSendSysMessage("Usage: .playerbots tactics force immune|cc <bot name or guid>");
         handler->SetSentErrorMessage(true);
         return false;
     }
@@ -3186,15 +3226,28 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
     ObjectGuid const enemy = skull.IsEmpty() ? bot->GetTarget() : skull;
     if (enemy.IsEmpty())
     {
-        handler->PSendSysMessage("TACTICS force immune: {} has no skull and no target.", name);
+        handler->PSendSysMessage("TACTICS force {}: {} has no skull and no target.", kind, name);
         handler->SetSentErrorMessage(true);
         return false;
     }
 
     uint32 const nowMs = getMSTime();
     uint32 forced = 0;
+    bool const cc = kind == "cc";
     auto const force = [&](PlayerbotAI* ai)
     {
+        // force cc (G4b): the enemy counts as held in a breakable CC of the team (OwnCc keeps it out of the targets,
+        // whatever the own-break window); no CC is cast
+        if (cc)
+        {
+            CcBotState& ccState = ai->GetCcState();
+            ccState.ForcedCcGuid = enemy;
+            ccState.ForcedCcUntilMs = nowMs + CC_FORCE_MS;
+            ccState.ExcludedUntilMs = 0;
+            ++forced;
+            return;
+        }
+
         FocusBotState& state = ai->GetFocusState();
         state.ForcedImmuneGuid = enemy;
         state.ForcedImmuneAtMs = nowMs;
@@ -3213,6 +3266,14 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
             if (memberAI)
                 force(memberAI);
         }
+    }
+
+    if (cc)
+    {
+        handler->PSendSysMessage(
+            "TACTICS force cc: {} ({}) counts as held in a team CC for {} ms for {} bots of {}'s team; at {} ms",
+            GuidName(enemy), skull.IsEmpty() ? "the bot's target" : "the skull", CC_FORCE_MS, forced, name, nowMs);
+        return true;
     }
 
     handler->PSendSysMessage(

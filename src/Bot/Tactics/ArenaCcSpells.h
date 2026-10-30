@@ -12,7 +12,11 @@
 
 #include "ArenaCc.h"
 #include "GameObject.h"
+#include "Group.h"
 #include "ObjectMgr.h"
+#include "Player.h"
+#include "SpellAuraEffects.h"
+#include "SpellAuras.h"
 #include "SpellDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -64,6 +68,30 @@ inline CcSpellData ResolveCcSpell(uint32 spellId)
     data.DamageInterrupts = (aura->AuraInterruptFlags & AURA_INTERRUPT_FLAG_TAKE_DAMAGE) != 0;
     data.Valid = true;
     return data;
+}
+
+// A CC aura on the unit that damage breaks (Unit::HasBreakableByDamageCrowdControlAura's aura types and test) cast by
+// the bot, its pet or a member of its group, else nullptr (G4b-b: OwnCc and cc.ownBreaks). The unit's own map thread.
+inline Aura const* CcTeamBreakableAura(Unit const* unit, Player const* bot)
+{
+    static constexpr std::array<AuraType, 5> Types = {SPELL_AURA_MOD_CONFUSE, SPELL_AURA_MOD_FEAR, SPELL_AURA_MOD_STUN,
+                                                      SPELL_AURA_MOD_ROOT, SPELL_AURA_TRANSFORM};
+    Group const* const group = bot->GetGroup();
+    for (AuraType const type : Types)
+    {
+        for (AuraEffect const* effect : unit->GetAuraEffectsByType(type))
+        {
+            if (!(effect->GetSpellInfo()->AuraInterruptFlags & AURA_INTERRUPT_FLAG_TAKE_DAMAGE))
+                continue;
+
+            Unit const* const caster = effect->GetCaster();
+            Player const* const owner = caster ? caster->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+            if (owner && (owner == bot || (group && owner->GetGroup() == group)))
+                return effect->GetBase();
+        }
+    }
+
+    return nullptr;
 }
 
 inline CcSpellTable const& GetCcSpellTable()

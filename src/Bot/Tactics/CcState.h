@@ -8,6 +8,8 @@
 #define _PLAYERBOT_CCSTATE_H
 
 #include <array>
+#include <ctime>
+#include <vector>
 
 #include "ArenaCc.h"
 #include "Common.h"
@@ -23,6 +25,7 @@ constexpr uint32 CC_TABLE_REFRESH_MS = 60000;  // the table is also rebuilt this
 constexpr uint32 CC_TARGET_KEEP_MS = 3000;     // a CC target outside a moon is kept this long, so it does not flip
 constexpr uint32 CC_FAILED_BACKOFF_MS = 1500;  // a row whose cast failed waits this long
 constexpr uint32 CC_FORCE_MS = 10000;          // tactics force cc (G4b-b)
+constexpr uint32 CC_EXCLUDE_REFRESH_MS = 250;  // the OwnCc exclusion list lives this long (G4b-b)
 constexpr uint8 CC_KILL_WINDOW_PCT = 50;       // the bot's target at or below it opens the kill window (CcHolds)
 
 struct CcBotState
@@ -56,6 +59,17 @@ struct CcBotState
     // tactics force cc (G4b-b): this enemy counts as held in a team breakable CC until ForcedCcUntilMs
     ObjectGuid ForcedCcGuid;
     uint32 ForcedCcUntilMs = 0;
+    // OwnCc (G4b-b): the enemies the bot keeps out of its dps, debuff and AoE targets (the team's breakable CC on
+    // them, or forced) until ExcludedUntilMs; the bot's own update only
+    std::vector<ObjectGuid> Excluded;
+    uint32 ExcludedUntilMs = 0;
+    // cc.ownBreaks: the team CC aura the bot's damage last hit (one count per aura; compared, never dereferenced)
+    void const* OwnBreakAura = nullptr;
+    time_t OwnBreakApplyTime = 0;
 };
+
+// Whether an enemy stays out of the bot's targets (OwnCc): a forced CC always; a team breakable CC unless the bot's
+// own-break window (CcBreaksOwn, low skill) lets it break it
+inline bool CcKeepsOut(bool heldByTeam, bool forced, bool breaksOwn) { return forced || (heldByTeam && !breaksOwn); }
 
 #endif

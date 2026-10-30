@@ -13,6 +13,7 @@
 
 #include "Action.h"
 #include "Multiplier.h"
+#include "ObjectGuid.h"
 #include "Strategy.h"
 #include "Trigger.h"
 
@@ -61,6 +62,10 @@ public:
 
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
     std::string const getName() override { return "tactic cc"; }
+    // OwnCc (G4b-b): the team's breakable-CC'd enemies (and a forced one) stay out of the dps, debuff and AoE targets
+    // in every context (scope All); the list is cached per bot (CcBotState::Excluded), so a call is a time compare
+    bool HasTargetExclusions() const override { return true; }
+    void AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type) override;
 };
 
 // The Cc tactic is active (gate), the bot is not casting, a row is ready, the CC target is alive, not controlled and
@@ -86,6 +91,35 @@ public:
     bool isPossible() override;
     Unit* GetTarget() override;
 };
+
+// OwnCc: the bot's current target is held in a team breakable CC (or forced), the bot's own-break window aside
+class OwnCcTargetTrigger : public Trigger
+{
+public:
+    OwnCcTargetTrigger(PlayerbotAI* botAI) : Trigger(botAI, "own cc target") {}
+
+    bool IsActive() override;
+};
+
+// Drops that target (a cast or channel at it, the swing, the pet's attack) so the next target pick, which leaves it
+// out, takes another (a TargetSwitch of the skill strategy's table: the notice and reaction model applies, DT.11)
+class CcRetargetAction : public Action
+{
+public:
+    CcRetargetAction(PlayerbotAI* botAI) : Action(botAI, "cc retarget") {}
+
+    bool Execute(Event event) override;
+    bool isUseful() override;
+};
+
+// The OwnCc list of the bot (refreshed at most every CC_EXCLUDE_REFRESH_MS; empty with OwnCc not enabled here)
+std::vector<ObjectGuid> const& CcOwnExclusions(PlayerbotAI* botAI);
+
+// The target is in that list: the bot keeps out of it (the hold lets the bot leave it as it leaves an immune one)
+bool CcTargetKeptOut(PlayerbotAI* botAI, Unit const* target);
+
+// cc.ownBreaks: the bot's (or its pet's) damage hit an enemy in a breakable CC of its team (the harness counts it)
+void CcCountOwnBreak(Unit* attacker, Unit* victim);
 
 // The DR memory's feed (unit hooks: a CC aura landing on and leaving a player or a player's pet), registered by
 // Playerbots.cpp
