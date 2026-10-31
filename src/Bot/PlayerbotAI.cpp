@@ -4506,6 +4506,28 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     if (counting)
     {
         CountPvpTestCast(spellId, drGroup, atImmune);
+        // G4d-c: a cast into the core's DR immunity (cc.atImmune), beside the CC cast lines: what the bot's memory
+        // held of the group (none: never seen or its slot went to another group) against the core's level
+        if (atImmune && sLog->ShouldLog("playerbots", LogLevel::LOG_LEVEL_TRACE))
+        {
+            uint32 const nowMs = getMSTime();
+            uint8 memoryLevel = 0;
+            uint32 sinceSeenMs = 0;
+            int32 endsInMs = 0;
+            bool const held =
+                ccState && ccState->Memory.Recall(target->GetGUID().GetRawValue(), static_cast<uint8>(drGroup), nowMs,
+                                                  memoryLevel, sinceSeenMs, endsInMs);
+            LOG_TRACE("playerbots",
+                      "CC immune: {} {} ({}) on {} group {} ({}) by {}, memory {} (seen {} ms ago, aura end {} ms; "
+                      "aware {}, miss {}%), core {}, at {} ms",
+                      bot->GetName(), spellInfo->SpellName[0] ? spellInfo->SpellName[0] : "?", spellId,
+                      target->GetName(), drGroup < PVPTEST_DR_GROUP_COUNT ? PVPTEST_DR_GROUP_NAMES[drGroup] : "?",
+                      drGroup, ccState && ccState->TeamCcCasting ? "team cc" : "other",
+                      held ? std::to_string(memoryLevel) : std::string("none"), held ? sinceSeenMs : 0,
+                      held ? endsInMs : 0, ccState && ccState->Params.DrAware ? 1 : 0,
+                      ccState ? ccState->Params.DrMissPct : 0, static_cast<uint32>(DIMINISHING_LEVEL_IMMUNE), nowMs);
+        }
+
         CountInterruptHit(this, target, interruptHit, getMSTime());
         // tactics.ccOnTarget (G4b): the planned CC target is the group's moon in an arena, else the bot's kept one
         if (IsPvpTestCcGroup(drGroup) && target != bot)

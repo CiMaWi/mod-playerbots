@@ -138,10 +138,12 @@ public:
     float GetValue(Action* action) override;
 
 private:
-    CcBreaker RacialOf(Action* action);
+    void Resolve();
 
-    // Per bot, as TacticCcMultiplier's
-    std::unordered_map<Action*, CcBreaker> racialActions;
+    // Per bot (G4d-c): the race's racial break and its action instance, resolved once
+    bool resolved = false;
+    CcBreaker racial = CcBreaker::None;
+    Action* racialAction = nullptr;
 };
 
 class PvpTrinketStrategy : public Strategy

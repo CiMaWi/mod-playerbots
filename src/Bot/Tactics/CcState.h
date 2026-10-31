@@ -103,6 +103,7 @@ struct CcBotState
     uint32 CastAtMs = 0;
     bool CastWasChain = false;
     bool CastWasBusy = false;
+    bool TeamCcCasting = false;  // G4d-c: inside team cc's CastSpell (the CC immune line names the tactic's casts)
     uint32 ReCcsLanded = 0;
     // G4c-b: what the bot saw of each enemy's dispels and trinkets of the team's CC this match (the aura hooks of the
     // team's bots on the map, Cc.OpponentMemoryEnable); the pets and guardians called off a kept-out enemy

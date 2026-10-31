@@ -2600,6 +2600,28 @@ void RunCcSelftest(ChatHandler* handler)
     reach.DistanceYards = 7.0f;
     ranged = ranged && PickCc(reach, synthetic, aware) == Scream;
     check(ranged, "a CC out of its range or reach is picked, or one in range is not");
+    // G4d-c: howl of terror before fear (one DR group) only in its reach and when it is instant or reaches a second
+    // enemy; fear otherwise (it lasts longer)
+    constexpr int8 HowlRow = CcOptionIndex("howl of terror");
+    static_assert(HowlRow != CC_NO_ROW && (CC_SELF_AOE_ROWS & CcOptionBit(static_cast<uint8>(HowlRow))),
+                  "the selftest's howl row is a self-centred row");
+    synthetic[HowlRow] = makeSpell(Fear, DRTYPE_PLAYER, 8000, 10000, 1500, 0.0f);
+    CcPickInput howl;
+    howl.ReadyMask = CcOptionBit(FearOption) | CcOptionBit(HowlRow);
+    howl.DistanceYards = 5.0f;
+    howl.AoeEnemies = 1;
+    bool howls = PickCc(howl, synthetic, aware) == FearOption;
+    howl.AoeEnemies = 2;
+    howls = howls && PickCc(howl, synthetic, aware) == HowlRow && PickCc(howl, synthetic, unaware) == HowlRow;
+    howl.DistanceYards = 15.0f;
+    howls = howls && PickCc(howl, synthetic, aware) == FearOption;
+    howl.DistanceYards = 5.0f;
+    howl.AoeEnemies = 1;
+    howl.InstantMask = CcOptionBit(HowlRow);
+    howls = howls && PickCc(howl, synthetic, aware) == HowlRow;
+    howl.ReadyMask = CcOptionBit(FearOption) | CcOptionBit(Polymorph);
+    howls = howls && PickCc(howl, synthetic, aware) == Polymorph;
+    check(howls, "howl of terror is not picked before fear when instant or near two enemies, or is picked otherwise");
 
     // 4. ChainDue: at once on a free target, never over the partner's cast, castMs + leadMs before the end
     CcChainView view;
@@ -2741,6 +2763,33 @@ void RunCcSelftest(ChatHandler* handler)
         check(memory.Level(1, Disorient, 100) == 0 && memory.Level(2, Disorient, 100) == 1 &&
                   memory.Level(CC_MEMORY_ENEMIES + 1, Disorient, 100) == 1 && memory.Level(99, Disorient, 100) == 0,
               "the memory's oldest enemy does not make room");
+
+        // G4d-c: an enemy under six groups at once (a druid and a frost mage: cyclone, polymorph, both roots, stun,
+        // silence) keeps every started count; with four slots the earliest ending one went and its next CC hit
+        // immunity
+        memory.Clear();
+        constexpr uint8 Cyclone = DIMINISHING_CYCLONE;
+        constexpr uint8 ControlledRoot = DIMINISHING_CONTROLLED_ROOT;
+        constexpr uint8 Silence = DIMINISHING_SILENCE;
+        std::array<uint8, 6> const sixGroups = {Disorient, Fear, Stun, Cyclone, ControlledRoot, Silence};
+        uint32 at = 0;
+        for (uint8 const group : sixGroups)
+        {
+            at += 100;
+            memory.Observe(Enemy, group, at, 1000, 0, Seed);
+        }
+
+        bool kept = true;
+        uint8 recalled = 0;
+        uint32 recallSeenMs = 0;
+        int32 recallEndsMs = 0;
+        for (uint8 const group : sixGroups)
+            kept = kept && memory.Level(Enemy, group, 2000) == 1;
+
+        kept = kept && memory.Recall(Enemy, DIMINISHING_CYCLONE, 2000, recalled, recallSeenMs, recallEndsMs) &&
+               recalled == 1 && recallSeenMs == 1600 && recallEndsMs == -600 &&
+               !memory.Recall(Enemy, DIMINISHING_HORROR, 2000, recalled, recallSeenMs, recallEndsMs);
+        check(kept, "the memory forgets a started DR count of an enemy under six groups, or recalls it wrongly");
     }
 
     // 7. Synthetic timelines (400 x 24 CC of three groups, early ends): at skill 99 the memory matches the core's DR

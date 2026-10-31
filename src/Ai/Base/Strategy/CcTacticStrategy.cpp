@@ -304,6 +304,21 @@ Unit* CcFindTarget(PlayerbotAI* botAI, Player* bot, CcBotState& state, uint32 no
     return best;
 }
 
+// G4d-c: the enemies (players and their pets) of "fight enemies" within yards of the bot, at most 255
+uint8 CcEnemiesNear(PlayerbotAI* botAI, Player* bot, float yards)
+{
+    uint8 count = 0;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
+    {
+        Unit* const unit = botAI->GetUnit(guid);
+        if (unit && unit->IsInMap(bot) && unit->IsAlive() && unit->GetCharmerOrOwnerPlayerOrPlayerItself() &&
+            bot->IsWithinDistInMap(unit, yards) && count < UINT8_MAX)
+            ++count;
+    }
+
+    return count;
+}
+
 // A low-effort bot stops controlling when its arena team is behind (the arena frames' health; elsewhere never)
 bool CcTeamBehind(Player* bot, CcParams const& params)
 {
@@ -1450,6 +1465,19 @@ bool CcReadyTrigger::IsActive()
     if (params.DrAware)
         input.Levels = state.Memory.Levels(target->GetGUID().GetRawValue(), nowMs);
 
+    // G4d-c: a ready self-centred row (howl of terror) goes before its group's other rows when it is instant now or
+    // reaches a second enemy (PickCc); asked only while one is ready
+    if (CcRowMask const selfAoe = ready & CC_SELF_AOE_ROWS)
+    {
+        input.AoeEnemies = CcEnemiesNear(botAI, bot, CC_SELF_AOE_COUNT_YARDS);
+        for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+        {
+            CcRowMask const bit = CcOptionBit(index);
+            if ((selfAoe & bit) && (!state.Spells[index].CastMs || !CcCastMsNow(bot, state, static_cast<int8>(index))))
+                input.InstantMask |= bit;
+        }
+    }
+
     // A chaining bot whose memory leaves no group that lands (immune, too short) has no row and waits
     int8 const row = PickCc(input, state.Spells, params);
     if (row == CC_NO_ROW)
@@ -1556,8 +1584,12 @@ bool TeamCcAction::Execute(Event /*event*/)
     if (row == CC_NO_ROW || !target)
         return false;
 
-    // The trap row casts the trap spell (it goes down at the hunter's feet; the row's reach is 5 yd)
-    if (!botAI->CastSpell(state.KnownSpell[row], target))
+    // The trap row casts the trap spell (it goes down at the hunter's feet; the row's reach is 5 yd). G4d-c: the CC
+    // immune line (PlayerbotAI::CastSpell) names a cast of this action as the tactic's
+    state.TeamCcCasting = true;
+    bool const cast = botAI->CastSpell(state.KnownSpell[row], target);
+    state.TeamCcCasting = false;
+    if (!cast)
     {
         state.FailedMask |= CcOptionBit(static_cast<uint8>(row));
         state.FailedUntilMs = getMSTime() + CC_FAILED_BACKOFF_MS;
@@ -2131,33 +2163,38 @@ void CcCleanEnsuredTrinket(PlayerbotAI* botAI)
 
 float TacticTrinketMultiplier::GetValue(Action* action)
 {
-    // Most actions end at the cached lookup
-    if (action == nullptr)
-        return 1.0f;
+    // G4d-c: one pointer test per action (G4d-b: a map lookup per action evaluation, 1.26 us per bot tick)
+    if (!resolved)
+        Resolve();
 
-    CcBreaker const racial = RacialOf(action);
-    if (racial == CcBreaker::None || !botAI->TacticEnabledHere(TacticId::Trinket))
+    if (action == nullptr || action != racialAction || !botAI->TacticEnabledHere(TacticId::Trinket))
         return 1.0f;
 
     return CcBreakAnswer(botAI) == racial ? 1.0f : 0.0f;
 }
 
-CcBreaker TacticTrinketMultiplier::RacialOf(Action* action)
+// The race's one racial break (human, undead, gnome; none for the others) and its action, the instance the engine
+// evaluates (the context makes each action once per bot); resolved at the first evaluation
+void TacticTrinketMultiplier::Resolve()
 {
-    auto const it = racialActions.find(action);
-    if (it != racialActions.end())
-        return it->second;
-
-    // getName() builds a string; resolved once per action and bot
-    std::string const name = action->getName();
-    CcBreaker racial = CcBreaker::None;
-    for (CcBreaker const breaker : {CcBreaker::EveryMan, CcBreaker::Forsaken, CcBreaker::EscapeArtist})
+    resolved = true;
+    switch (botAI->GetBot()->getRace())
     {
-        if (name == CcBreakerAction(breaker))
-            racial = breaker;
+        case RACE_HUMAN:
+            racial = CcBreaker::EveryMan;
+            break;
+        case RACE_UNDEAD_PLAYER:
+            racial = CcBreaker::Forsaken;
+            break;
+        case RACE_GNOME:
+            racial = CcBreaker::EscapeArtist;
+            break;
+        default:
+            racial = CcBreaker::None;
+            return;
     }
 
-    return racialActions.emplace(action, racial).first->second;
+    racialAction = botAI->GetAiObjectContext()->GetAction(CcBreakerAction(racial));
 }
 
 void PvpTrinketStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

@@ -683,8 +683,10 @@ bool CastDebuffSpellAction::isUseful()
         return false;
 
     // G4d: a CC that takes control (freezing trap, wyvern sting) on a player's unit controls it whatever its health;
-    // the life time is for damage over time, roots, silences and PvE crowd control
-    if (target->GetCharmerOrOwnerPlayerOrPlayerItself())
+    // the life time is for damage over time, roots, silences and PvE crowd control. G4d-c: only where the Cc tactic
+    // acts (Playerbots.Tactics.Enable, Tactics.Cc.Scope); elsewhere, and with the tactics off (the default), the life
+    // time applies to every debuff as before G4d
+    if (target->GetCharmerOrOwnerPlayerOrPlayerItself() && botAI->TacticEnabledHere(TacticId::Cc))
     {
         SpellInfo const* const info = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", spell));
         if (info &&

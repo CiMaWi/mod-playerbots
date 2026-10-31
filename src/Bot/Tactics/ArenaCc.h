@@ -31,7 +31,7 @@ constexpr uint8 CC_DR_GROUP_COUNT = 21;   // the core's DiminishingGroup values,
 constexpr uint8 CC_DR_LEVEL_IMMUNE = 3;   // DIMINISHING_LEVEL_IMMUNE: after three CC of a group the target is immune
 constexpr uint32 CC_DR_RESET_MS = 15000;  // the count resets this long after the group's last aura ended
 constexpr uint8 CC_MEMORY_ENEMIES = 5;    // enemies one bot remembers (an arena team; in a battleground the latest)
-constexpr uint8 CC_MEMORY_GROUPS = 4;     // DR groups remembered per enemy
+constexpr uint8 CC_MEMORY_GROUPS = 8;     // DR groups remembered per enemy (G4d-c: 4 made room for a started count)
 constexpr int8 CC_NO_ROW = -1;
 constexpr uint8 CC_FULL_ABILITY = 100;        // skill 0 (the skill system off) passes every threshold
 constexpr uint8 CC_LOW_EFFORT = 50;           // below it a bot stops controlling when behind
@@ -155,6 +155,13 @@ constexpr int8 CcOptionIndex(std::string_view action)
 
     return CC_NO_ROW;
 }
+
+// G4d-c: the self-centred area rows (every enemy within the reach around the caster); the freezing trap's 5 yd reach
+// is a placed single-target CC and not one of them
+constexpr CcRowMask CC_SELF_AOE_ROWS = CcOptionBit(static_cast<uint8>(CcOptionIndex("psychic scream"))) |
+                                       CcOptionBit(static_cast<uint8>(CcOptionIndex("howl of terror"))) |
+                                       CcOptionBit(static_cast<uint8>(CcOptionIndex("hungering cold")));
+constexpr uint8 CC_SELF_AOE_COUNT_YARDS = 10;  // the enemies a self-centred row reaches: howl's and cold's radius
 
 // The rows of a class (G4b's ready mask starts from it)
 constexpr CcRowMask CcClassMask(uint8 playerClass)
@@ -297,6 +304,7 @@ public:
         Entry& entry = Find(enemy, group, nowMs);
         uint8 const level = EntryLevel(entry, nowMs);
         uint32 const endMs = nowMs + durationMs;
+        entry.SeenMs = nowMs;
         if (level == 0 || static_cast<int32>(endMs - entry.EndMs) > 0)
             entry.EndMs = endMs;
 
@@ -331,12 +339,38 @@ public:
 
     void Clear() { Enemies = {}; }
 
+    // G4d-c (the CC immune line): the enemy's entry of the group; false when the memory holds none (never seen, or
+    // its slot went to another group). The level, ms since the group's last CC was seen landing (a missed one too)
+    // and ms until its aura ends (negative: ended that long ago)
+    bool Recall(uint64 enemy, uint8 group, uint32 nowMs, uint8& level, uint32& sinceSeenMs, int32& endsInMs) const
+    {
+        for (Enemy const& slot : Enemies)
+        {
+            if (slot.Guid != enemy || !enemy)
+                continue;
+
+            for (Entry const& entry : slot.Groups)
+            {
+                if (entry.Group != group || !group)
+                    continue;
+
+                level = EntryLevel(entry, nowMs);
+                sinceSeenMs = nowMs - entry.SeenMs;
+                endsInMs = static_cast<int32>(entry.EndMs - nowMs);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 private:
     struct Entry
     {
-        uint8 Group = 0;   // 0 = free
-        uint8 Count = 0;   // CC of the group seen since the last reset, at most 3
-        uint32 EndMs = 0;  // when the group's last seen aura ends or ended
+        uint8 Group = 0;    // 0 = free
+        uint8 Count = 0;    // CC of the group seen since the last reset, at most 3
+        uint32 EndMs = 0;   // when the group's last seen aura ends or ended
+        uint32 SeenMs = 0;  // G4d-c: when the group's last CC was seen landing
     };
 
     struct Enemy
@@ -516,6 +550,10 @@ struct CcPickInput
     bool ControlOnly = false;  // the arena moon or a chain: only a CC that takes control away (not a root)
     bool TeamDotOn = false;    // G4c-b DotGuard: the team's periodic damage hits the target (no CC damage breaks)
     std::array<uint8, CC_DR_GROUP_COUNT> Levels{};
+    // G4d-c: the self-centred rows (CC_SELF_AOE_ROWS) instant now (Improved Howl of Terror), and the enemies (players
+    // and their pets, the target too) within CC_SELF_AOE_COUNT_YARDS of the bot; filled only when such a row is ready
+    CcRowMask InstantMask = 0;
+    uint8 AoeEnemies = 0;
 };
 
 // A player takes the rows usable on players; a creature (a pet too) the rows whose creature types include its own
@@ -546,13 +584,20 @@ inline uint32 CcComboDurationMs(int32 minMs, int32 maxMs, uint8 points)
 // none that damage breaks on a target the team's periodic damage hits (TeamDotOn: the DoT would break it). A DR-aware
 // bot also skips what its memory says lands immune or shorter than MinExpectedMs and the group of the CC already on
 // the target (a chain alternates groups); a bot without DR awareness casts into DR, believing every CC lands in full.
+// G4d-c: within one DR group a usable self-centred row that is instant now or reaches a second enemy goes before the
+// group's other rows (howl of terror before fear: the same DR, no cast or more enemies; fear lasts longer and won
+// every pick before, so no warlock ever howled)
 inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParams const& params)
 {
-    int8 best = CC_NO_ROW;
-    uint32 bestMs = 0;
+    // Pass 1: the usable rows, their expected durations and the groups a preferred self-centred row holds
+    std::array<uint32, CC_OPTION_COUNT> expected{};
+    CcRowMask usable = 0;
+    CcRowMask preferred = 0;
+    uint32 preferredGroups = 0;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
     {
-        if (!(input.ReadyMask & CcOptionBit(index)))
+        CcRowMask const bit = CcOptionBit(index);
+        if (!(input.ReadyMask & bit))
             continue;
 
         CcOption const& option = CC_OPTIONS[index];
@@ -581,6 +626,26 @@ inline int8 PickCc(CcPickInput const& input, CcSpellTable const& spells, CcParam
         if (params.DrAware && (!expectedMs || expectedMs < params.MinExpectedMs))
             continue;
 
+        usable |= bit;
+        expected[index] = expectedMs;
+        if ((CC_SELF_AOE_ROWS & bit) && ((input.InstantMask & bit) || input.AoeEnemies >= 2))
+        {
+            preferred |= bit;
+            preferredGroups |= 1u << spell.Group;
+        }
+    }
+
+    // Pass 2: the pick among them
+    int8 best = CC_NO_ROW;
+    uint32 bestMs = 0;
+    for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
+    {
+        CcRowMask const bit = CcOptionBit(index);
+        if (!(usable & bit) || ((preferredGroups & (1u << spells[index].Group)) && !(preferred & bit)))
+            continue;
+
+        bool const control = CcKindLosesControl(CC_OPTIONS[index].Kind);
+        uint32 const expectedMs = expected[index];
         bool const bestControl = best != CC_NO_ROW && CcKindLosesControl(CC_OPTIONS[best].Kind);
         if (best == CC_NO_ROW || (control && !bestControl) || (control == bestControl && expectedMs > bestMs))
         {
