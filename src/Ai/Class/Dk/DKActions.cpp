@@ -28,7 +28,7 @@ bool CastStrangulateAction::isUseful()
 
 bool CastStrangulateOnEnemyHealerAction::isUseful()
 {
-    return StrangulateIsWorthIt(botAI, GetTarget()) && CastSpellAction::isUseful();
+    return StrangulateIsWorthIt(botAI, GetTarget()) && CastSpellOnEnemyHealerAction::isUseful();
 }
 
 std::vector<NextAction> CastDeathchillAction::getPrerequisites()

@@ -237,15 +237,50 @@ bool CastShatteringThrowAction::isPossible()
 
 namespace
 {
-// The kick can follow the swap: pummel known and ready, and the rage it costs still there after the stance change
-// (the stance change keeps only Tactical Mastery's share of the rage; an Arms warrior has 15 of its 10 needed)
+// No swap into Berserker stance within this many seconds after the battle stance trigger swapped back: every swap
+// sheds the rage above Tactical Mastery's share, so a kick target that keeps starting casts must not flip the stance
+constexpr time_t PUMMEL_RESWAP_GUARD_SECONDS = 5;
+
+// Rage a stance change keeps, as the core's shapeshift handler computes it: Tactical Mastery's share (talent spells of
+// the warrior family with icon 139), 0 without the talent. The talent map is small and this runs only while a kick
+// trigger fires outside Berserker stance.
+uint32 RageKeptThroughStanceChange(Player* bot)
+{
+    uint32 kept = 0;
+    for (auto const& [spellId, talent] : bot->GetTalentMap())
+    {
+        if (talent->State == PLAYERSPELL_REMOVED || !talent->IsInSpec(bot->GetActiveSpec()))
+            continue;
+
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+        if (info && info->SpellFamilyName == SPELLFAMILY_WARRIOR && info->SpellIconID == 139)
+            kept += bot->CalculateSpellDamage(bot, info, 0) * 10;
+    }
+
+    return kept;
+}
+
+// The kick can follow the swap: pummel known and ready, the rage it costs still there after the stance change
+// (min(rage, Tactical Mastery's share)), and no swap-back within the re-swap guard
 bool PummelSwapPossible(PlayerbotAI* botAI)
 {
     Player* const bot = botAI->GetBot();
-    uint32 const pummel = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "pummel")->Get();
+    AiObjectContext* const context = botAI->GetAiObjectContext();
+    uint32 const pummel = context->GetValue<uint32>("spell id", "pummel")->Get();
     SpellInfo const* const info = pummel ? sSpellMgr->GetSpellInfo(pummel) : nullptr;
-    return info && !bot->HasSpellCooldown(pummel) && bot->GetPower(POWER_RAGE) >= info->ManaCost &&
-           botAI->CanCastSpell("berserker stance", bot);
+    if (!info || bot->HasSpellCooldown(pummel))
+        return false;
+
+    if (std::min(bot->GetPower(POWER_RAGE), RageKeptThroughStanceChange(bot)) < info->ManaCost)
+        return false;
+
+    // Both stance casts go through PlayerbotAI::CastSpell(name), which stamps "last spell cast time" (seconds)
+    time_t const swappedIn = context->GetValue<time_t>("last spell cast time", "berserker stance")->Get();
+    time_t const swappedBack = context->GetValue<time_t>("last spell cast time", "battle stance")->Get();
+    if (swappedIn && swappedBack >= swappedIn && time(nullptr) - swappedBack < PUMMEL_RESWAP_GUARD_SECONDS)
+        return false;
+
+    return botAI->CanCastSpell("berserker stance", bot);
 }
 
 bool InBerserkerStance(Player* bot) { return bot->GetShapeshiftForm() == FORM_BERSERKERSTANCE; }
