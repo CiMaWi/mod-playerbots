@@ -872,6 +872,70 @@ inline void RunHoldSelftest(Check&& check, Say&& say, uint64 modelSeed = 1)
     check(state.KickReadyMs(25000) == 0 && state.KickReadyMs(30000) == 0 && state.KickReadyMs(31500) == 1500,
           "the kick is ready for 0 ms during its cooldown, then counts up");
 
+    // 9. The game side's state (G5c-c-b): the match start, the kick spells, the health trend
+    state.NoteHeld(40000);
+    check(state.StartMatch(7, 50000) == InterruptHoldEnd::Vain && !state.Hold.Active && state.MatchId == 7 &&
+              state.KickReady(50000) && !state.HasKickSpell(),
+          "a new match ends the open episode and the kick is ready since its start");
+    constexpr uint32 MindFreeze = 47528;
+    constexpr uint32 Strangulate = 47476;
+    state.AddKickSpell(MindFreeze, 50000);
+    state.AddKickSpell(Strangulate, 50000);
+    state.NoteKickSpell(Strangulate, 51000, 120000);
+    bool const backupReady = state.KickReady(52000) && state.KickReadyAtMs == 50000;
+    state.NoteKickSpell(MindFreeze, 53000, 10000);
+    check(backupReady && !state.KickReady(62999) && state.KickReady(63000) && state.KickReadyMs(64000) == 1000,
+          "a ready backup kick keeps the kick ready; with both used it is ready when the first comes back");
+    state.NoteHeld(70000);
+    check(state.EndMatch() == InterruptHoldEnd::Vain && !state.Hold.Active && !state.MatchStarted && state.MatchId == 0,
+          "the harness's counting turning on or off ends the open episode and the match");
+
+    // The spell book's kicks that count: only those the bot casts at an enemy (an uncast one stays a ready backup)
+    InterruptKickFacts pummel;
+    pummel.Aimed = true;
+    pummel.ItemFits = true;
+    pummel.Warrior = InterruptWarriorSpec::Arms;
+    InterruptKickFacts shieldBash = pummel;
+    shieldBash.NeedsShield = true;
+    shieldBash.ItemFits = false;
+    InterruptKickFacts armsSwap = pummel;
+    armsSwap.ArmsSwap = true;
+    check(!CastsKickSpell(shieldBash) && !CastsKickSpell(pummel) && CastsKickSpell(armsSwap),
+          "an Arms warrior without a shield: Shield Bash never, Pummel only through the stance swap");
+    InterruptKickFacts torrent;
+    torrent.ItemFits = true;
+    InterruptKickFacts kick = torrent;
+    kick.Aimed = true;
+    check(!CastsKickSpell(torrent) && CastsKickSpell(kick),
+          "a blood elf: Arcane Torrent (not aimed) is no kick, Kick is");
+    InterruptKickFacts protBash = shieldBash;
+    protBash.Warrior = InterruptWarriorSpec::Protection;
+    InterruptKickFacts protShield = protBash;
+    protShield.ItemFits = true;
+    InterruptKickFacts protPummel = pummel;
+    protPummel.Warrior = InterruptWarriorSpec::Protection;
+    InterruptKickFacts furyPummel = pummel;
+    furyPummel.Warrior = InterruptWarriorSpec::Fury;
+    check(CastsKickSpell(protShield) && !CastsKickSpell(protBash) && !CastsKickSpell(protPummel) &&
+              CastsKickSpell(furyPummel),
+          "Protection: Shield Bash with a shield worn, never Pummel; Fury: Pummel");
+    InterruptEnemyTrack track;
+    for (uint32 step = 0; step <= 4; ++step)
+        track.Note(static_cast<uint8>(100 - 5 * step), 1000 + 500 * step);
+
+    float const loss = track.LossPctPerS(80, 3000);
+    check(loss > 9.99f && loss < 10.01f && track.LossPctPerS(100, 3000) == 0.0f &&
+              track.LossPctPerS(80, 1400) == 0.0f && track.LossPctPerS(80, 9000) == 0.0f,
+          "the trend: the loss over the window's sample, 0 when health rose, without a sample old enough or too old");
+    for (uint32 guid = 1; guid <= HOLD_TREND_UNITS; ++guid)
+        state.Track(guid, 1000 * guid).Note(50, 1000 * guid);
+
+    state.Track(3, 9000).Note(40, 9000);
+    InterruptEnemyTrack const& newcomer = state.Track(99, 9500);
+    check(state.FindTrack(1) == nullptr && state.FindTrack(3) && state.FindTrack(3)->Samples == 2 &&
+              newcomer.Guid == 99 && newcomer.Samples == 0,
+          "an enemy beyond the tracks takes the one sampled longest ago");
+
     // The fight model (the lab's numbers): bars per healer kit, skill band and Patience
     auto const run = [&](HealerKit kit, Policy mode, uint8 skill, uint8 patience, uint8 steadyHpPct)
     {

@@ -100,6 +100,26 @@ inline InterruptUse InterruptUseOf(SpellInfo const* info)
     return stun ? InterruptUse::Stun : InterruptUse::None;
 }
 
+// G5c-c: a kick aimed at one enemy: its interrupt or silence effect hits the spell's enemy target (Kick, Pummel,
+// Shield Bash, Counterspell, Mind Freeze, Strangulate, Silence, Silencing Shot, Wind Shear). Arcane Torrent silences
+// around the caster and is cast as a self buff (RacialsStrategy), never at an enemy: no
+inline bool InterruptKickAimed(SpellInfo const* info)
+{
+    if (!info)
+        return false;
+
+    for (SpellEffectInfo const& effect : info->GetEffects())
+    {
+        bool const kick = effect.Effect == SPELL_EFFECT_INTERRUPT_CAST ||
+                          (effect.IsAura() && (effect.ApplyAuraName == SPELL_AURA_MOD_SILENCE ||
+                                               effect.ApplyAuraName == SPELL_AURA_MOD_PACIFY_SILENCE));
+        if (kick && effect.TargetA.GetTarget() == TARGET_UNIT_TARGET_ENEMY)
+            return true;
+    }
+
+    return false;
+}
+
 // The enemy's cast bar as a player sees it: a cast with a cast time or a channel with a duration
 struct InterruptBar
 {
@@ -154,6 +174,24 @@ inline bool InterruptHealerClass(uint8 playerClass)
 {
     return playerClass == CLASS_PRIEST || playerClass == CLASS_DRUID || playerClass == CLASS_SHAMAN ||
            playerClass == CLASS_PALADIN;
+}
+
+// G5c-c: the cast time a bot expects of a healer class's next cast heal before it has seen one (the class's usual
+// heal: Flash Heal, Regrowth, Chain Heal, Flash of Light; 0: no healer class)
+constexpr uint32 InterruptHealerCastPriorMs(uint8 playerClass)
+{
+    switch (playerClass)
+    {
+        case CLASS_PRIEST:
+        case CLASS_PALADIN:
+            return 1500;
+        case CLASS_DRUID:
+            return 2000;
+        case CLASS_SHAMAN:
+            return 2500;
+        default:
+            return 0;
+    }
 }
 
 #endif

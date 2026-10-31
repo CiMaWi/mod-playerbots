@@ -2233,6 +2233,31 @@ void RunInterruptSelftest(ChatHandler* handler)
               Acore::StringFormat("spell {} interrupts as {}", spellId, static_cast<uint32>(expected)));
     }
 
+    // G5c-c: the kicks aimed at one enemy (the kick spells a match registers); Arcane Torrent (every rank) is none
+    constexpr std::array<std::pair<uint32, bool>, 12> Aimed = {{{1766, true},
+                                                                {6552, true},
+                                                                {72, true},
+                                                                {2139, true},
+                                                                {47528, true},
+                                                                {47476, true},
+                                                                {15487, true},
+                                                                {34490, true},
+                                                                {57994, true},
+                                                                {28730, false},
+                                                                {25046, false},
+                                                                {50613, false}}};
+    for (auto const& [spellId, expected] : Aimed)
+    {
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+        check(info && InterruptUseOf(info) == InterruptUse::Kick && InterruptKickAimed(info) == expected,
+              Acore::StringFormat("spell {} is a kick aimed at one enemy: {}", spellId, expected ? "yes" : "no"));
+    }
+
+    SpellInfo const* const shieldBash = sSpellMgr->GetSpellInfo(72);
+    check(shieldBash && shieldBash->EquippedItemClass == ITEM_CLASS_ARMOR &&
+              (shieldBash->EquippedItemSubClassMask & (1 << ITEM_SUBCLASS_ARMOR_SHIELD)) != 0,
+          "Shield Bash needs a shield (an Arms warrior without one never registers it)");
+
     // Score: a heal on a low friend > a CC > a heal > damage > other (none)
     constexpr uint8 Urgent = 30;
     check(Int::Score(Int::Kind::Heal, 20, Urgent) > Int::Score(Int::Kind::Cc, 100, Urgent),
@@ -4107,6 +4132,22 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             decisions.Decided[static_cast<uint32>(ArenaInterrupt::Kind::Damage)],
             decisions.Decided[static_cast<uint32>(ArenaInterrupt::Kind::Other)], decisions.Shortcuts, decisions.Skips,
             decisions.Kicks);
+        // G5c-c: the hold policy's numbers at the bot's Knowledge and Patience, the window's reaction, the episodes
+        uint32 const windowMs =
+            ArenaInterrupt::HoldReactionMs(reaction, botAI->GetReactionTypes(), ReactionEase::Common,
+                                           timing.EndToEnd ? timing.PingMs + timing.DisplayMs : 0, timing.MinMs);
+        bool const kickReady = decisions.KickReady(nowMs);
+        handler->PSendSysMessage(
+            "  interrupt hold: policy {}; use {:.2f}, attention {:.0f} ms; know {:.2f}, dilution {:.2f}, trend {:.0f} "
+            "ms, longest hold {} ms, window reaction {} ms; held {}, episodes {} (paid {}, vain {}, missed {}, expired "
+            "{}){}; kick {} {} ms, kick spells {}",
+            interrupt.Hold.Enable ? 1 : 0, interrupt.UseShare, interrupt.AttentionMs, interrupt.Hold.KnowShare,
+            interrupt.Hold.KnowDilution, interrupt.Hold.TrendMs, interrupt.Hold.MaxHoldMs, windowMs, decisions.Holds,
+            decisions.HoldEpisodes, decisions.HoldsPaid, decisions.HoldsVain, decisions.HoldsMissed,
+            decisions.HoldsExpired, decisions.Hold.Active ? ", one open" : "", kickReady ? "ready for" : "ready in",
+            kickReady ? decisions.KickReadyMs(nowMs) : decisions.KickReadyAtMs - nowMs,
+            std::count_if(decisions.KickSpells.begin(), decisions.KickSpells.end(),
+                          [](InterruptKickSpell const& kick) { return kick.SpellId != 0; }));
     }
     FocusMatchState const& match = focus.Match;
     auto const enemyName = [&match](int8 index)

@@ -473,6 +473,148 @@ void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowM
             look(botAI->GetUnit(guid));
     }
 }
+
+// G5c-c: whether the Interrupt tactic follows the bot's kick and the enemies (HoldPolicy 1 or the attention gap); off
+// at the conf.dist defaults, so G5b's path stays as it was
+bool InterruptFollows(InterruptConfig const& config)
+{
+    return config.HoldPolicy != 0 || config.AttentionMsAtSkill1 != 0 || config.AttentionMsAtSkill99 != 0;
+}
+
+uint8 InterruptHpPct(Unit const* unit)
+{
+    return static_cast<uint8>(std::clamp(static_cast<int32>(unit->GetHealthPct() + 0.5f), 0, 100));
+}
+
+// The end of a hold episode: tactics.intHoldPaid and intHoldVain (harness matches only; count false for the match's
+// end, which may come after the harness took the record) and its trace line
+void NoteInterruptHoldEnd(PlayerbotAI* botAI, InterruptHoldEnd end, uint32 heldMs, char const* cause, uint32 nowMs,
+                          bool count = true)
+{
+    if (end == InterruptHoldEnd::None)
+        return;
+
+    if (count && end == InterruptHoldEnd::Paid)
+        botAI->CountTactic(TacticCounter::IntHoldPaid);
+    else if (count && end == InterruptHoldEnd::Vain)
+        botAI->CountTactic(TacticCounter::IntHoldVain);
+
+    LOG_TRACE("playerbots.reaction", "interrupt hold end {} by {} skill {} held {} at {}", InterruptHoldEndName(end),
+              cause, botAI->GetPvpSkill(), heldMs, nowMs);
+}
+
+// The bot's spec for its warrior kicks (InterruptKickFacts)
+InterruptWarriorSpec InterruptWarriorSpecOf(Player* bot)
+{
+    if (bot->getClass() != CLASS_WARRIOR)
+        return InterruptWarriorSpec::None;
+
+    switch (AiFactory::GetPlayerSpecTab(bot))
+    {
+        case WARRIOR_TAB_ARMS:
+            return InterruptWarriorSpec::Arms;
+        case WARRIOR_TAB_FURY:
+            return InterruptWarriorSpec::Fury;
+        default:
+            return InterruptWarriorSpec::Protection;
+    }
+}
+
+// A new match (or the bot's first fight): the open episode ends (not counted), the kick spells come from the bot's
+// spell book (once per match, with the gear worn at the start), ready as their cooldowns say: only kicks the bot casts
+// at an enemy (CastsKickSpell: aimed at one enemy, the item requirement met, the warrior spec's kick)
+void StartInterruptMatch(PlayerbotAI* botAI, Player* bot, InterruptBotState& state, uint32 matchId, uint32 nowMs)
+{
+    uint32 const heldMs = state.Hold.HeldMs(nowMs);
+    NoteInterruptHoldEnd(botAI, state.StartMatch(matchId, nowMs), heldMs, "match", nowMs, false);
+    uint8 const spec = bot->GetActiveSpec();
+    InterruptKickFacts facts;
+    facts.Warrior = InterruptWarriorSpecOf(bot);
+    facts.ArmsSwap = facts.Warrior == InterruptWarriorSpec::Arms &&
+                     sPlayerbotAIConfig.TacticInterrupt.ArmsPummel != 0 &&
+                     botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "berserker stance")->Get() != 0;
+    for (auto const& [spellId, spell] : bot->GetSpellMap())
+    {
+        if (!spell || spell->State == PLAYERSPELL_REMOVED || !spell->Active || !spell->IsInSpec(spec))
+            continue;
+
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->IsPassive() || InterruptUseOf(info) != InterruptUse::Kick)
+            continue;
+
+        facts.Aimed = InterruptKickAimed(info);
+        facts.ItemFits = bot->HasItemFitToSpellRequirements(info);
+        facts.NeedsShield = info->EquippedItemClass == ITEM_CLASS_ARMOR &&
+                            (info->EquippedItemSubClassMask & (1 << ITEM_SUBCLASS_ARMOR_SHIELD)) != 0;
+        if (CastsKickSpell(facts))
+            state.AddKickSpell(spellId, nowMs + bot->GetSpellCooldownDelay(spellId));
+    }
+}
+
+// G5c-c: at the bot's checks while the Interrupt tactic follows (InterruptFollows): the match (StartInterruptMatch at
+// a new one) and, under HoldPolicy 1 in a fight, every HOLD_TREND_SAMPLE_MS the enemy players' health bars and their
+// cast heal bars (at most HOLD_TREND_UNITS units, one Classify per cast)
+void FollowInterruptFight(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
+{
+    InterruptConfig const& config = sPlayerbotAIConfig.TacticInterrupt;
+    if (!botAI->TacticEnabledHere(TacticId::Interrupt))
+        return;
+
+    InterruptBotState& state = botAI->GetInterruptState();
+    Battleground* const battleground = bot->GetBattleground();
+    uint32 const matchId =
+        battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
+    if (!state.MatchStarted || matchId != state.MatchId)
+    {
+        if (PerfMonitor::IsEnabled())
+        {
+            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "ArenaInterrupt::StartMatch"));
+            StartInterruptMatch(botAI, bot, state, matchId, nowMs);
+        }
+        else
+            StartInterruptMatch(botAI, bot, state, matchId, nowMs);
+    }
+
+    if (config.HoldPolicy == 0 || !state.HasKickSpell() || !bot->IsInCombat() ||
+        nowMs - state.TrendSampleMs < HOLD_TREND_SAMPLE_MS)
+        return;
+
+    PerfMonitorScope scope(
+        PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "ArenaInterrupt::TrendSample") : nullptr);
+    state.TrendSampleMs = nowMs;
+    uint32 units = 0;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
+    {
+        if (units >= HOLD_TREND_UNITS)
+            break;
+
+        Unit* const unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld() || !unit->IsAlive() || !unit->IsPlayer())
+            continue;
+
+        ++units;
+        InterruptEnemyTrack& track = state.Track(guid.GetCounter(), nowMs);
+        track.Note(InterruptHpPct(unit), nowMs);
+        InterruptBar bar;
+        if (!ReadInterruptBar(unit, bar))
+            continue;
+
+        uint32 const startMs = nowMs - bar.ElapsedMs;
+        uint32 const gap = startMs > track.BarStartMs ? startMs - track.BarStartMs : track.BarStartMs - startMs;
+        if (bar.Info->Id == track.BarSpellId && gap <= bar.CastMs / 2)
+            continue;
+
+        track.BarSpellId = bar.Info->Id;
+        track.BarStartMs = startMs;
+        if (ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) != ArenaInterrupt::Kind::Heal)
+            continue;
+
+        track.HealSpellId = bar.Info->Id;
+        track.HealCastMs = bar.CastMs;
+        track.HealStartMs = startMs;
+        state.NoteHoldHealBar();
+    }
+}
 }  // namespace
 
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
@@ -562,6 +704,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         else
             ObserveOpponents(this, bot, busyModel, nowMs);
     }
+
+    // G5c-c: the Interrupt tactic's match and the enemies' health trend, only while it follows the kick
+    if (InterruptFollows(sPlayerbotAIConfig.TacticInterrupt))
+        FollowInterruptFight(this, bot, nowMs);
 
     bool stoppedForKick = false;
 
@@ -4184,6 +4330,24 @@ void CountInterruptHit(PlayerbotAI* botAI, Unit* target, InterruptHit const& hit
               hit.SpellId, ArenaInterrupt::KindName(hit.CastKind), hit.ElapsedMs, hit.CastMs, bound, nowMs);
 }
 
+// G5c-c: the bot's kick is used (its cooldown, InterruptBotState::NoteKickSpell); a heal it stops pays the open hold
+// episode
+void NoteInterruptKick(PlayerbotAI* botAI, Player* bot, SpellInfo const* spellInfo, InterruptHit const& hit,
+                       uint32 nowMs)
+{
+    InterruptBotState& state = botAI->GetInterruptState();
+    uint32 cooldownMs = bot->GetSpellCooldownDelay(spellInfo->Id);
+    if (cooldownMs == 0)
+        cooldownMs = std::max(spellInfo->RecoveryTime, spellInfo->CategoryRecoveryTime);
+
+    state.NoteKickSpell(spellInfo->Id, nowMs, cooldownMs);
+    if (hit.Bar && hit.CastKind == ArenaInterrupt::Kind::Heal)
+    {
+        uint32 const heldMs = state.Hold.HeldMs(nowMs);
+        NoteInterruptHoldEnd(botAI, state.NoteHoldHealKick(), heldMs, "kick", nowMs);
+    }
+}
+
 // The DR group a cast counts under. A trap is cast as a summon spell without a group of its own (the spell only puts
 // the trap down); its crowd control is the spell the trap's game object casts when it springs (ArenaCcSpells.h).
 uint32 GetPvpTestCastGroup(SpellInfo const* spellInfo)
@@ -4398,9 +4562,14 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     uint32 drGroup = 0;
     bool atImmune = false;
     InterruptHit interruptHit;
+    // G5c-c: the kick's cooldown and a heal it stops, while the Interrupt tactic follows the kick
+    bool const followsKick =
+        target != bot && InterruptFollows(sPlayerbotAIConfig.TacticInterrupt) && TacticEnabledHere(TacticId::Interrupt);
+    if (counting || followsKick)
+        interruptHit = ReadInterruptHit(bot, spellInfo, target);
+
     if (counting)
     {
-        interruptHit = ReadInterruptHit(bot, spellInfo, target);
         drGroup = GetPvpTestCastGroup(spellInfo);
         atImmune = IsPvpTestCcGroup(drGroup) && target != bot && target->IsPlayer() &&
                    target->GetDiminishing(static_cast<DiminishingGroup>(drGroup)) == DIMINISHING_LEVEL_IMMUNE;
@@ -4502,6 +4671,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     }
 
     forceRebuff.NoteCast(spellInfo);
+
+    if (followsKick && interruptHit.Use == InterruptUse::Kick)
+        NoteInterruptKick(this, bot, spellInfo, interruptHit, getMSTime());
 
     if (counting)
     {
@@ -7470,6 +7642,145 @@ bool InterruptHealerInReach(PlayerbotAI* botAI, Player* bot, Unit* caster, bool 
 
     return healer;
 }
+
+// G5c-c: an instant heal or absorb of the healer on one of the units (auras with a duration are public, DT.12), put on
+// within seenMs, that the bot recognises (KnowsSpell); a heal over time of a cast heal (Regrowth) is no instant
+bool InterruptInstantCover(std::array<Unit*, TACTIC_FIGHT_ENEMIES_MAX> const& units, uint32 count, ObjectGuid healer,
+                           ArenaInterrupt::InterruptHoldParams const& numbers, uint64 botGuid, uint32 seenMs)
+{
+    constexpr std::array<AuraType, 3> Types = {SPELL_AURA_PERIODIC_HEAL, SPELL_AURA_OBS_MOD_HEALTH,
+                                               SPELL_AURA_SCHOOL_ABSORB};
+    for (uint32 index = 0; index < count; ++index)
+    {
+        for (AuraType const type : Types)
+        {
+            for (AuraEffect const* effect : units[index]->GetAuraEffectsByType(type))
+            {
+                if (effect->GetCasterGUID() != healer)
+                    continue;
+
+                Aura const* const aura = effect->GetBase();
+                SpellInfo const* const info = aura->GetSpellInfo();
+                int32 const maxMs = aura->GetMaxDuration();
+                if (maxMs <= 0 || info->CalcCastTime() > 0 ||
+                    static_cast<uint32>(std::max(0, maxMs - aura->GetDuration())) > seenMs)
+                    continue;
+
+                if (ArenaInterrupt::KnowsSpell(numbers, botGuid, info->Id))
+                    return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// G5c-c (HoldPolicy 1): what the bot sees for the hold on a damage cast, in one pass over the fight's enemies (at most
+// TACTIC_FIGHT_ENEMIES_MAX units, once per enemy cast; health bars are public): the lowest projected health of the
+// caster's team and its trend (the sampler's tracks), and the first healer other than the caster in reach and sight
+// that the bot has seen healing (a cast heal's bar now or followed, a heal in the opponent memory, or an instant heal
+// of its own the bot recognises), its instant cover and the cast time the bot believes its next cast heal takes. The
+// sight test only for a candidate healer. Returns the enemies casting.
+uint8 FillInterruptHold(PlayerbotAI* botAI, Player* bot, Unit* caster, ArenaInterrupt::Params const& params,
+                        InterruptBotState const& state, uint32 nowMs, ArenaInterrupt::InterruptHoldInput& hold)
+{
+    InterruptConfig const& config = sPlayerbotAIConfig.TacticInterrupt;
+    ArenaInterrupt::InterruptHoldParams const& numbers = params.Hold;
+    uint64 const botGuid = bot->GetGUID().GetCounter();
+    std::array<Unit*, TACTIC_FIGHT_ENEMIES_MAX> units{};
+    uint32 count = 0;
+    uint8 casting = 0;
+    uint32 lowest = 101;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
+    {
+        if (count >= TACTIC_FIGHT_ENEMIES_MAX)
+            break;
+
+        Unit* const unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld() || !unit->IsAlive())
+            continue;
+
+        units[count++] = unit;
+        InterruptBar bar;
+        if (ReadInterruptBar(unit, bar))
+            ++casting;
+
+        if (!unit->IsPlayer())
+            continue;
+
+        uint8 const hpPct = InterruptHpPct(unit);
+        InterruptEnemyTrack const* const track = state.FindTrack(guid.GetCounter());
+        float const loss = track ? track->LossPctPerS(hpPct, nowMs) : 0.0f;
+        uint8 const projected = ArenaInterrupt::HoldProjectedHpPct(numbers, hpPct, loss);
+        if (projected < lowest || (projected == lowest && hpPct < hold.FriendHpPct))
+        {
+            lowest = projected;
+            hold.FriendHpPct = hpPct;
+            hold.FriendLossPctPerS = loss;
+        }
+    }
+
+    OpponentMemory const& memory = botAI->GetOpponentMemory();
+    for (uint32 index = 0; index < count; ++index)
+    {
+        Unit* const unit = units[index];
+        if (unit == caster || !unit->IsPlayer() || !InterruptHealerClass(unit->getClass()) || CcUnitControlled(unit) ||
+            !bot->IsWithinDistInMap(unit, sPlayerbotAIConfig.SpellDistance))
+            continue;
+
+        // The cast heal seen last: its bar now, the sampler's, else the opponent memory's (its start unknown)
+        uint32 const guid = unit->GetGUID().GetCounter();
+        uint32 healSpell = 0;
+        uint32 healCastMs = 0;
+        uint32 healStartMs = 0;
+        bool startKnown = false;
+        InterruptBar bar;
+        InterruptEnemyTrack const* const track = state.FindTrack(guid);
+        if (ReadInterruptBar(unit, bar) &&
+            ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) == ArenaInterrupt::Kind::Heal)
+        {
+            healSpell = bar.Info->Id;
+            healCastMs = bar.CastMs;
+            healStartMs = nowMs - bar.ElapsedMs;
+            startKnown = true;
+        }
+        else if (track && track->HealSpellId != 0)
+        {
+            healSpell = track->HealSpellId;
+            healCastMs = track->HealCastMs;
+            healStartMs = track->HealStartMs;
+            startKnown = true;
+        }
+        else if (OpponentMemorySlot const* const slot = memory.Find(guid))
+        {
+            for (uint32 const spellId : {slot->SpellId, slot->PrevSpellId})
+            {
+                SpellInfo const* const info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+                if (info && ArenaInterrupt::Classify(InterruptSpellFactsOf(info)) == ArenaInterrupt::Kind::Heal)
+                {
+                    healSpell = spellId;
+                    healCastMs = info->CalcCastTime();
+                    break;
+                }
+            }
+        }
+
+        bool const cover =
+            InterruptInstantCover(units, count, unit->GetGUID(), numbers, botGuid, config.HoldInstantSeenMs);
+        if ((healSpell == 0 && !cover) || !bot->IsWithinLOSInMap(unit))
+            continue;
+
+        bool const known = healSpell != 0 && ArenaInterrupt::KnowsSpell(numbers, botGuid, healSpell);
+        hold.HealerSeen = true;
+        hold.InstantCover = cover;
+        hold.RecentCastHeal = startKnown && known && nowMs - healStartMs <= config.HoldRecentCastHealMs;
+        hold.HealCastMs = ArenaInterrupt::BelievedHealCastMs(numbers, known, healCastMs,
+                                                             InterruptHealerCastPriorMs(unit->getClass()));
+        break;
+    }
+
+    return casting;
+}
 }  // namespace
 
 bool PlayerbotAI::DecideInterrupt(Unit* enemy)
@@ -7487,6 +7798,12 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
     {
         // One decision per cast: the draw comes from the event's hash (G0h), so it holds across checks
         PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+        // G5c-c: while the tactic follows the kick (HoldPolicy 1, the attention gap) a cast is judged only once the
+        // bot's kick is ready, so a cast first seen during the cooldown is judged when the kick returns
+        bool const follows = InterruptFollows(config.TacticInterrupt);
+        if (follows && !state.KickReady(nowMs))
+            return false;
+
         slot = &state.Take(nowMs);
         slot->Guid = enemyGuid;
         slot->SpellId = bar.Info->Id;
@@ -7494,27 +7811,62 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
         uint64 const hash = ReactionEventHash(bot->GetGUID().GetCounter(),
                                               static_cast<uint8>(SkillNoticeCategory::Interrupt), startMs) ^
                             enemyGuid;
+        ArenaInterrupt::Params const params = ArenaInterrupt::ComputeParams(
+            pvpSkill, attributes.Get(BotAttribute::Patience), attributes.Get(BotAttribute::Knowledge),
+            config.SkillGate.CurveExponent, config.TacticInterrupt);
         ArenaInterrupt::Input input;
         input.CastMs = bar.CastMs;
         input.Deep = ArenaInterrupt::UsesDeep(TacticActive(TacticId::Interrupt), HasFullSkillAbility(),
                                               config.NaturalReaction.Think.Enable, reactionTypes, hash);
+        if (follows)
+        {
+            input.ReadyMs = state.KickReadyMs(nowMs);
+            input.ReadyHash = ArenaInterrupt::AttentionHash(bot->GetGUID().GetCounter(), state.KickReadyAtMs);
+        }
+
+        bool const holding = params.Hold.Enable;
+        if (holding)
+        {
+            uint32 const heldMs = state.Hold.HeldMs(nowMs);
+            NoteInterruptHoldEnd(this, state.ResetHold(nowMs, params.Hold.ResetMs), heldMs, "reset", nowMs);
+        }
+
         bool healer = false;
         if (input.Deep)
         {
             input.CastKind = ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info));
             input.TargetHpPct = InterruptBarTargetHpPct(enemy, bar);
             input.FakeRate = opponentMemory.FakeRate(enemyGuid, config.TacticInterrupt.CancelMinCasts);
-            bool const wantHealer =
-                input.CastKind == ArenaInterrupt::Kind::Damage && config.TacticInterrupt.HoldForHealer != 0;
             uint8 casting = 0;
-            healer = InterruptHealerInReach(this, bot, enemy, wantHealer, casting);
-            input.HealerInRange = healer;
+            if (holding && input.CastKind == ArenaInterrupt::Kind::Damage)
+            {
+                PerfMonitorScope scope(PerfMonitor::IsEnabled()
+                                           ? sPerfMonitor.acquire(PERF_MON_TOTAL, "ArenaInterrupt::HoldScan")
+                                           : nullptr);
+                ArenaInterrupt::InterruptHoldInput& hold = input.Hold;
+                casting = FillInterruptHold(this, bot, enemy, params, state, nowMs, hold);
+                ReactionParams const& reaction = config.NaturalReaction;
+                hold.ReactionMs = ArenaInterrupt::HoldReactionMs(
+                    reactionState, reactionTypes, ReactionEase::Common,
+                    reaction.EndToEnd ? reaction.PingMs + reaction.DisplayMs : 0, reaction.MinMs);
+                hold.HeldMs = state.Hold.HeldMs(nowMs);
+                hold.Expired = state.Hold.Expired;
+                healer = hold.HealerSeen;
+            }
+            else
+            {
+                bool const wantHealer = !holding && input.CastKind == ArenaInterrupt::Kind::Damage &&
+                                        config.TacticInterrupt.HoldForHealer != 0;
+                healer = InterruptHealerInReach(this, bot, enemy, wantHealer, casting);
+                input.HealerInRange = healer;
+            }
+
+            if (holding && input.CastKind == ArenaInterrupt::Kind::Heal)
+                state.NoteHoldHealBar();
+
             slot->Casting = std::max<uint8>(1, casting);
         }
 
-        ArenaInterrupt::Params const params = ArenaInterrupt::ComputeParams(
-            pvpSkill, attributes.Get(BotAttribute::Patience), attributes.Get(BotAttribute::Knowledge),
-            config.SkillGate.CurveExponent, config.TacticInterrupt);
         slot->Deep = input.Deep;
         slot->CastKind = input.CastKind;
         slot->Decision = ArenaInterrupt::Decide(input, params, hash);
@@ -7526,13 +7878,40 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
         if (!slot->Decision.Kick)
             ++state.Skips;
 
+        // G5c-c: the hold episode and tactics.intHold, intHoldExpired, intHoldEpisodes
+        if (holding)
+        {
+            uint32 const episodes = state.HoldEpisodes;
+            if (slot->Decision.Why == ArenaInterrupt::Reason::Held)
+            {
+                state.NoteHeld(nowMs);
+                CountTactic(TacticCounter::IntHold);
+            }
+            else if (slot->Decision.Why == ArenaInterrupt::Reason::HoldExpired && state.NoteHoldExpired(nowMs))
+                CountTactic(TacticCounter::IntHoldExpired);
+
+            if (state.HoldEpisodes != episodes)
+                CountTactic(TacticCounter::IntHoldEpisodes);
+        }
+
+        // G5c-c's fields come after G5b's (the analysis joins by position): the use draw, the attention gap and how
+        // long the kick was ready (-1: not followed), then the hold's inputs and parts (their defaults unless judged)
+        ArenaInterrupt::Decision const& decision = slot->Decision;
+        ArenaInterrupt::InterruptHoldInput const& hold = input.Hold;
         LOG_TRACE("playerbots.reaction",
                   "interrupt decide skill {} enemy {} spell {} cast {} elapsed {} depth {} kind {} kick {} commit {} "
-                  "share {:.2f} why {} healer {} fake {:.2f} casting {} at {}",
+                  "share {:.2f} why {} healer {} fake {:.2f} casting {} at {} use {:.2f} gap {} ready {} hp {} loss "
+                  "{:.1f} proj {} high {:.2f} need {:.2f} recent {} cover {} healcast {} react {} reach {} motive "
+                  "{:.2f} held {} expired {}",
                   pvpSkill, enemyGuid, slot->SpellId, bar.CastMs, bar.ElapsedMs, input.Deep ? "deep" : "shortcut",
-                  input.Deep ? ArenaInterrupt::KindName(input.CastKind) : "-", slot->Decision.Kick ? 1 : 0,
-                  slot->Decision.CommitMs, slot->Decision.Share, ArenaInterrupt::ReasonName(slot->Decision.Why),
-                  healer ? 1 : 0, input.FakeRate, slot->Casting, nowMs);
+                  input.Deep ? ArenaInterrupt::KindName(input.CastKind) : "-", decision.Kick ? 1 : 0, decision.CommitMs,
+                  decision.Share, ArenaInterrupt::ReasonName(decision.Why), healer ? 1 : 0, input.FakeRate,
+                  slot->Casting, nowMs, decision.UseDraw, decision.AttentionGapMs,
+                  input.ReadyMs == ArenaInterrupt::ATTENTION_UNKNOWN_MS ? -1 : static_cast<int64>(input.ReadyMs),
+                  hold.FriendHpPct, hold.FriendLossPctPerS, decision.Hold.ProjectedHpPct, decision.Hold.HpHigh,
+                  decision.Hold.Need, hold.RecentCastHeal ? 1 : 0, hold.InstantCover ? 1 : 0, hold.HealCastMs,
+                  hold.ReactionMs, decision.Hold.Reachable ? 1 : 0, decision.Hold.Motivation, hold.HeldMs,
+                  hold.Expired ? 1 : 0);
     }
 
     slot->SeenMs = nowMs;
@@ -7573,6 +7952,15 @@ bool PlayerbotAI::TacticActive(TacticId id)
 
 void PlayerbotAI::SetPvpTestCounting(bool on)
 {
+    // G5c-c: an open hold episode never spans two records (a forced Interrupt mask ends here, so the match end's own
+    // close may never run); not counted
+    if (interruptState)
+    {
+        uint32 const nowMs = getMSTime();
+        uint32 const heldMs = interruptState->Hold.HeldMs(nowMs);
+        NoteInterruptHoldEnd(this, interruptState->EndMatch(), heldMs, "match", nowMs, false);
+    }
+
     pvpTestCounting = on;
     if (on)
     {

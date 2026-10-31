@@ -207,7 +207,9 @@ constexpr uint32 HOLD_TREND_WINDOW_MS = 2000;
 struct InterruptHoldInput
 {
     bool HealerSeen = false;  // an enemy healer other than the caster, in reach and sight
-    uint8 FriendHpPct = 100;  // the lowest health of the caster's team in reach and sight
+    // the current health of the caster's team mate with the lowest projected health (HoldProjectedHpPct with its loss;
+    // health bars are public, so no reach or sight test)
+    uint8 FriendHpPct = 100;
     // that friend's net health loss over the last HOLD_TREND_WINDOW_MS, in points per second (0: none or unknown)
     float FriendLossPctPerS = 0.0f;
     bool RecentCastHeal = false;  // the healer started a cast heal it knows (KnowsSpell) within HoldRecentCastHealMs
@@ -547,6 +549,124 @@ enum class InterruptHoldEnd : uint8
     Missed
 };
 
+inline char const* InterruptHoldEndName(InterruptHoldEnd end)
+{
+    switch (end)
+    {
+        case InterruptHoldEnd::Paid:
+            return "paid";
+        case InterruptHoldEnd::Vain:
+            return "vain";
+        case InterruptHoldEnd::Missed:
+            return "missed";
+        default:
+            return "none";
+    }
+}
+
+// G5c-c: what the bot follows of an enemy in a fight (HoldPolicy 1, PlayerbotAI's sampler every HOLD_TREND_SAMPLE_MS):
+// its health bar over the trend window and the last cast heal bar it showed. Guid counters only.
+constexpr uint32 HOLD_TREND_SAMPLE_MS = 500;
+constexpr uint32 HOLD_TREND_SAMPLES = ArenaInterrupt::HOLD_TREND_WINDOW_MS / HOLD_TREND_SAMPLE_MS + 2;
+constexpr uint32 HOLD_TREND_UNITS = 5;
+
+struct InterruptEnemyTrack
+{
+    uint32 Guid = 0;  // 0: free
+    std::array<uint8, HOLD_TREND_SAMPLES> HpPct{};
+    std::array<uint32, HOLD_TREND_SAMPLES> AtMs{};
+    uint8 Samples = 0;
+    uint8 Next = 0;
+    uint32 LastMs = 0;      // the newest sample
+    uint32 BarSpellId = 0;  // the last bar classified (one Classify per cast)
+    uint32 BarStartMs = 0;
+    uint32 HealSpellId = 0;  // the last cast heal bar seen (0: none)
+    uint32 HealCastMs = 0;
+    uint32 HealStartMs = 0;
+
+    void Note(uint8 hpPct, uint32 nowMs)
+    {
+        HpPct[Next] = hpPct;
+        AtMs[Next] = nowMs;
+        Next = static_cast<uint8>((Next + 1) % HOLD_TREND_SAMPLES);
+        Samples = static_cast<uint8>(std::min<uint32>(Samples + 1u, HOLD_TREND_SAMPLES));
+        LastMs = nowMs;
+    }
+
+    // The net health loss in points per second from the sample nearest HOLD_TREND_WINDOW_MS ago (at least half the
+    // window old, at most two samples beyond it) to hpPct now; 0 when the health rose or no sample fits
+    float LossPctPerS(uint8 hpPct, uint32 nowMs) const
+    {
+        constexpr uint32 Window = ArenaInterrupt::HOLD_TREND_WINDOW_MS;
+        float loss = 0.0f;
+        uint32 bestGap = Window;
+        for (uint32 index = 0; index < Samples; ++index)
+        {
+            uint32 const age = nowMs - AtMs[index];
+            if (age < Window / 2 || age > Window + 2 * HOLD_TREND_SAMPLE_MS)
+                continue;
+
+            uint32 const gap = age > Window ? age - Window : Window - age;
+            if (gap >= bestGap)
+                continue;
+
+            bestGap = gap;
+            loss = (static_cast<float>(HpPct[index]) - static_cast<float>(hpPct)) * 1000.0f / static_cast<float>(age);
+        }
+
+        return std::max(0.0f, loss);
+    }
+};
+
+// One of the bot's kick spells (an interrupt effect or a silence) and when it is ready again
+constexpr uint32 INTERRUPT_KICK_SPELLS = 4;
+
+struct InterruptKickSpell
+{
+    uint32 SpellId = 0;  // 0: free
+    uint32 ReadyAtMs = 0;
+};
+
+// The warrior's spec for its two kicks (None: not a warrior)
+enum class InterruptWarriorSpec : uint8
+{
+    None,
+    Arms,
+    Fury,
+    Protection
+};
+
+// What decides whether a kick spell of the bot's spell book (InterruptUseOf == Kick) is one the bot casts at an enemy,
+// so its cooldown counts for KickReadyAtMs (a kick never cast would stay a ready backup all match)
+struct InterruptKickFacts
+{
+    bool Aimed = false;        // its interrupt or silence hits the one enemy targeted (Arcane Torrent's is around the
+                               // caster, cast as a self buff: no)
+    bool ItemFits = false;     // its item requirement met by the gear worn now (Shield Bash: a shield)
+    bool NeedsShield = false;  // a shield kick (Shield Bash), else a warrior's is Pummel
+    InterruptWarriorSpec Warrior = InterruptWarriorSpec::None;
+    bool ArmsSwap = false;  // Arms swaps to Berserker Stance for Pummel (Interrupt.ArmsPummel, the stance known)
+};
+
+// The warriors' strategies: Protection casts Shield Bash, Fury Pummel, Arms Pummel only through the stance swap
+inline bool CastsKickSpell(InterruptKickFacts const& facts)
+{
+    if (!facts.Aimed || !facts.ItemFits)
+        return false;
+
+    switch (facts.Warrior)
+    {
+        case InterruptWarriorSpec::Protection:
+            return facts.NeedsShield;
+        case InterruptWarriorSpec::Fury:
+            return !facts.NeedsShield;
+        case InterruptWarriorSpec::Arms:
+            return !facts.NeedsShield && facts.ArmsSwap;
+        default:
+            return true;
+    }
+}
+
 struct InterruptBotState
 {
     std::array<InterruptCastSlot, INTERRUPT_SLOTS> Slots{};
@@ -564,6 +684,113 @@ struct InterruptBotState
     uint32 HoldsVain = 0;
     uint32 HoldsMissed = 0;
     uint32 KickReadyAtMs = 0;  // G5c-c: when the bot's kick came (or comes) off cooldown; the fight's start at first
+    // G5c-c (HoldPolicy 1 or the attention gap): the match followed, the bot's kick spells, the enemies' tracks
+    bool MatchStarted = false;
+    uint32 MatchId = 0;  // the battleground's instance while it is in progress (0: none)
+    std::array<InterruptKickSpell, INTERRUPT_KICK_SPELLS> KickSpells{};
+    std::array<InterruptEnemyTrack, HOLD_TREND_UNITS> Enemies{};
+    uint32 TrendSampleMs = 0;  // the sampler's last run
+
+    // A new match (or the first fight): the open episode ends (returned), the kick is ready since nowMs until
+    // AddKickSpell says otherwise, the enemies are forgotten
+    InterruptHoldEnd StartMatch(uint32 matchId, uint32 nowMs)
+    {
+        InterruptHoldEnd const end = EndHold();
+        MatchStarted = true;
+        MatchId = matchId;
+        KickSpells = {};
+        Enemies = {};
+        TrendSampleMs = 0;
+        KickReadyAtMs = nowMs;
+        return end;
+    }
+
+    // The harness's counting turned on or off (a forced tactic mask ends with it): the open episode ends (returned) and
+    // the next check starts the match anew, so no episode spans two records
+    InterruptHoldEnd EndMatch()
+    {
+        InterruptHoldEnd const end = EndHold();
+        MatchStarted = false;
+        MatchId = 0;
+        return end;
+    }
+
+    // One of the bot's kick spells, ready at readyAtMs (at the match's start)
+    void AddKickSpell(uint32 spellId, uint32 readyAtMs)
+    {
+        for (InterruptKickSpell& kick : KickSpells)
+        {
+            if (kick.SpellId != 0 && kick.SpellId != spellId)
+                continue;
+
+            kick.SpellId = spellId;
+            kick.ReadyAtMs = readyAtMs;
+            break;
+        }
+
+        KickReadyAtMs = EarliestKickReadyMs(readyAtMs);
+    }
+
+    // A kick spell cast now, ready again after cooldownMs. The bot's kick counts as ready when the first of its kick
+    // spells is: a backup that is ready (DK strangulate beside mind freeze) keeps it ready
+    void NoteKickSpell(uint32 spellId, uint32 nowMs, uint32 cooldownMs)
+    {
+        InterruptKickSpell* slot = &KickSpells.back();
+        for (InterruptKickSpell& kick : KickSpells)
+        {
+            if (kick.SpellId == spellId || kick.SpellId == 0)
+            {
+                slot = &kick;
+                break;
+            }
+        }
+
+        slot->SpellId = spellId;
+        slot->ReadyAtMs = nowMs + cooldownMs;
+        KickReadyAtMs = EarliestKickReadyMs(slot->ReadyAtMs);
+    }
+
+    uint32 EarliestKickReadyMs(uint32 readyAtMs) const
+    {
+        uint32 earliest = readyAtMs;
+        for (InterruptKickSpell const& kick : KickSpells)
+            if (kick.SpellId != 0 && static_cast<int32>(kick.ReadyAtMs - earliest) < 0)
+                earliest = kick.ReadyAtMs;
+
+        return earliest;
+    }
+
+    bool HasKickSpell() const { return KickSpells.front().SpellId != 0; }
+
+    bool KickReady(uint32 nowMs) const { return static_cast<int32>(nowMs - KickReadyAtMs) >= 0; }
+
+    InterruptEnemyTrack const* FindTrack(uint32 guid) const
+    {
+        for (InterruptEnemyTrack const& track : Enemies)
+            if (track.Guid != 0 && track.Guid == guid)
+                return &track;
+
+        return nullptr;
+    }
+
+    // The enemy's track: its own, a free one, or the one sampled longest ago (cleared)
+    InterruptEnemyTrack& Track(uint32 guid, uint32 nowMs)
+    {
+        uint32 index = 0;
+        for (uint32 other = 0; other < HOLD_TREND_UNITS; ++other)
+        {
+            if (Enemies[other].Guid == guid)
+                return Enemies[other];
+
+            if (Enemies[index].Guid != 0 &&
+                (Enemies[other].Guid == 0 || nowMs - Enemies[other].LastMs > nowMs - Enemies[index].LastMs))
+                index = other;
+        }
+
+        Enemies[index] = InterruptEnemyTrack();
+        Enemies[index].Guid = guid;
+        return Enemies[index];
+    }
 
     // A damage cast held: opens an episode at the first (true: a new one)
     bool NoteHeld(uint32 nowMs)
