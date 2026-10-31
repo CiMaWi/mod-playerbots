@@ -3453,6 +3453,14 @@ void RunCcSelftest(ChatHandler* handler)
               Acore::StringFormat("hungering cold's aura is spell {} for {} ms (51209 for 10000 expected)",
                                   spells[Cold].AuraSpellId, spells[Cold].BaseMs));
 
+        // G4d-a review NOTE 1: the shout's target gets only 20511 (the core's script), so its own landing matches
+        constexpr int8 Shout = CcOptionIndex("intimidating shout");
+        static_assert(Shout != CC_NO_ROW, "the selftest's shout row is in CC_OPTIONS");
+        check(spells[Shout].AuraSpellId == 20511 && spells[Shout].BaseMs == 8000 &&
+                  spells[Shout].Group == DIMINISHING_FEAR && spells[Shout].DamageInterrupts,
+              Acore::StringFormat("shout's aura is spell {} for {} ms, group {} (20511, 8000, fear expected)",
+                                  spells[Shout].AuraSpellId, spells[Shout].BaseMs, spells[Shout].Group));
+
         SpellInfo const* const hex = sSpellMgr->GetSpellInfo(CC_OPTIONS[Hex].SpellId);
         SpellInfo const* const bash = sSpellMgr->GetSpellInfo(CC_OPTIONS[Bash].SpellId);
         SpellInfo const* const maim = sSpellMgr->GetSpellInfo(CC_OPTIONS[Maim].SpellId);

@@ -29,9 +29,11 @@
 // table on its first call (a function-local static, thread-safe, after the spell store has loaded: every caller is a
 // bot update or a GM command). Only the spells' static data; never a unit's DR counters (DT.12).
 
-// G4d: a CC whose aura a world database script casts (spell_scripts), not an effect of the spell: the cast, its aura
-constexpr std::array<std::pair<uint32, uint32>, 1> CC_SCRIPTED_AURAS = {{
+// G4d: a CC whose aura on the target is another spell's, cast by a script, not an effect of the spell: the cast, its
+// aura (the row's aura, duration and the cc.cast group)
+constexpr std::array<std::pair<uint32, uint32>, 2> CC_SCRIPTED_AURAS = {{
     {49203, 51209},  // hungering cold: a dummy at the death knight, the script casts the freeze (10 s, 10 yd)
+    {5246, 20511},   // intimidating shout: spell_warr_intimidating_shout leaves its target only 20511 (8 s, fear)
 }};
 
 // The DR group a cast counts under (as PlayerbotAI.cpp's GetPvpTestCastGroup). A trap is cast as a summon spell

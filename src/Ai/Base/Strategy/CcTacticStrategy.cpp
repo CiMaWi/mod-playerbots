@@ -149,8 +149,11 @@ void CcRefreshTable(Player* bot, CcBotState& state, uint32 nowMs)
 }
 
 // The rows the bot can start now: known, off cooldown, not waiting after a failed cast, a finisher with combo points
-// on some target (comboMask; CcComboRowsOn keeps it only with points on the CC target), a form spell in its form (G4d:
-// bash in bear form, maim in cat form; the bot does not shift for a CC, and a failed cast would back the row off)
+// on some target (comboMask; CcComboRowsOn keeps it only with points on the CC target), a spell with Stances only in a
+// form the core accepts (G4d: bash in bear form, maim in cat form; the bot does not shift for a CC, and a failed cast
+// would back the row off). The test holds for every such row: sap and cheap shot need stealth (PickCc's NeedsStealth
+// already asked for it; Shadow Dance's IGNORE_SHAPESHIFT is not honoured), hibernate is not ready in a feral form;
+// psychic scream and shackle undead carry ALLOW_WHILE_NOT_SHAPESHIFTED and stay ready
 CcRowMask CcReadyRows(Player* bot, CcBotState& state, uint32 nowMs, CcRowMask& comboMask)
 {
     comboMask = 0;

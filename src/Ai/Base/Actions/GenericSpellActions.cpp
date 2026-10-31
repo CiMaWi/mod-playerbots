@@ -682,12 +682,13 @@ bool CastDebuffSpellAction::isUseful()
     if (!CastAuraSpellAction::isUseful())
         return false;
 
-    // G4d: a CC (freezing trap, wyvern sting) on a player's unit controls it whatever its health; the life time is
-    // for damage over time and for PvE crowd control
+    // G4d: a CC that takes control (freezing trap, wyvern sting) on a player's unit controls it whatever its health;
+    // the life time is for damage over time, roots, silences and PvE crowd control
     if (target->GetCharmerOrOwnerPlayerOrPlayerItself())
     {
         SpellInfo const* const info = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", spell));
-        if (info && IsPvpTestCcGroup(GetDiminishingReturnsGroupForSpell(GetCcAuraSpell(info), false)))
+        if (info &&
+            CcGroupLosesControl(static_cast<uint8>(GetDiminishingReturnsGroupForSpell(GetCcAuraSpell(info), false))))
             return true;
     }
 
