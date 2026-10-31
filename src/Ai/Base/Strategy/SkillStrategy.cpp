@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <string>
 
+#include "ArenaInterrupt.h"
 #include "GenericSpellActions.h"
 #include "NaturalReaction.h"
 #include "PerfMonitor.h"
@@ -496,9 +497,21 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
     if (category != SkillNoticeCategory::Interrupt)
         return inputs;
 
-    // Today's interrupt kicks the first cast it sees, without judging the spell: the shortcut
+    // Without the Interrupt tactic a kick goes at the first cast the bot sees, without judging the spell: the shortcut.
+    // With it (G5b) a bot that judged the cast pays the deep check and, with several enemies casting, the choice.
     inputs.Thinks = true;
     inputs.Depth = ReactionThinkDepth::Shortcut;
+    if (target && botAI->TacticEnabledHere(TacticId::Interrupt))
+    {
+        InterruptCastSlot const* const decided = botAI->GetInterruptState().Latest(target->GetGUID().GetCounter());
+        if (decided && decided->Deep)
+        {
+            inputs.Depth = ReactionThinkDepth::Deep;
+            if (params.Choice.Enable)
+                inputs.Options = std::max<uint32>(1, decided->Casting);
+        }
+    }
+
     if (params.Anticipate.Enable && target)
     {
         Spell* spell = target->GetCurrentSpell(CURRENT_GENERIC_SPELL);

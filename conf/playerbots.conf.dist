@@ -2272,6 +2272,37 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Avoid.ExcludeFightEnemies = 0
 # (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability), switches 0-1,
 # OpponentMinEvents 0-20, AoeGuardMarginYards 0-20, EnsureTrinket 0-2; larger values are capped.)
+#
+# Interrupt (G5b; Playerbots.Tactics.Interrupt.Enable, scope All: PvE too). Off (the default), every interrupt
+# trigger kicks the first interruptible cast it sees, and "X on enemy healer" the first helpful cast of an attacker
+# other than the target. On, a bot below Interrupt.KnownFromSkill, or one whose Wisdom takes the shortcut (G0h3's
+# think depth, Playerbots.Natural.Reaction.Think*), still does so; a bot that judges the cast kicks crowd control at
+# once (CcSharePct of the bar), a heal late (HealSharePct, lerped by skill; a heal on a friend at or below UrgentHpPct
+# % health as a CC), a damage cast at DamageSharePct but not while an enemy healer (a healer class seen healing) is in
+# reach and sight (HoldForHealer 1), and nothing else. The commit share gets a log-normal noise (SigmaPct, per cent of
+# sigma, lerped by skill), CancelSharePct times the caster's fake rate (cancels seen per cast, from CancelMinCasts
+# casts seen; the opponent memory, Playerbots.Natural.Reaction.Memory*) and, for heals and damage, PatienceSharePct
+# by the Patience trait (100: +, 0: -, 50: none); never above MaxSharePct. With Playerbots.Natural.Reaction.EndToEnd 1
+# the kick lands at the later of the commit point and the reaction model's due time, both from the bar's start (a bar
+# older than 3 s counts from the first query); without it the model counts from the first query, which is the commit
+# point, and the kick lands at the commit point plus the reaction time. "X on enemy healer" takes the best cast of the
+# fight's enemies other than the target (a heal on a low friend, a CC, a heal, damage), kept HealerCacheMs ms.
+# Playerbots.Tactics.Interrupt.Enable = 0
+# Playerbots.Tactics.Interrupt.KnownFromSkill = 0
+# Playerbots.Tactics.Interrupt.HealSharePctAtSkill1 = 30
+# Playerbots.Tactics.Interrupt.HealSharePctAtSkill99 = 70
+# Playerbots.Tactics.Interrupt.DamageSharePct = 50
+# Playerbots.Tactics.Interrupt.CcSharePct = 0
+# Playerbots.Tactics.Interrupt.MaxSharePct = 90
+# Playerbots.Tactics.Interrupt.SigmaPctAtSkill1 = 40
+# Playerbots.Tactics.Interrupt.SigmaPctAtSkill99 = 15
+# Playerbots.Tactics.Interrupt.UrgentHpPct = 30
+# Playerbots.Tactics.Interrupt.CancelSharePct = 15
+# Playerbots.Tactics.Interrupt.CancelMinCasts = 3
+# Playerbots.Tactics.Interrupt.PatienceSharePct = 10
+# Playerbots.Tactics.Interrupt.HoldForHealer = 1
+# Playerbots.Tactics.Interrupt.HealerCacheMs = 200
+# (Ranges: percents 0-100, CancelMinCasts 0-20, HoldForHealer 0-1, HealerCacheMs 0-5000.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

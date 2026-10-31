@@ -367,7 +367,15 @@ bool ItemCountTrigger::IsActive() { return AI_VALUE2(uint32, "item count", item)
 
 bool InterruptSpellTrigger::IsActive()
 {
-    return SpellTrigger::IsActive() && botAI->IsInterruptableSpellCasting(GetTarget(), getName());
+    if (!SpellTrigger::IsActive())
+        return false;
+
+    Unit* const target = GetTarget();
+    if (!botAI->IsInterruptableSpellCasting(target, getName()))
+        return false;
+
+    // G5b: with the Interrupt tactic on here, the kick waits for the bot's decision on the cast (ArenaInterrupt.h)
+    return !botAI->TacticEnabledHere(TacticId::Interrupt) || botAI->DecideInterrupt(target);
 }
 
 bool DeflectSpellTrigger::IsActive()

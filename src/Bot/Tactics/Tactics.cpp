@@ -16,6 +16,8 @@
 #include "ArenaCc.h"
 #include "ArenaCcSpells.h"
 #include "ArenaFocus.h"
+#include "ArenaInterrupt.h"
+#include "ArenaInterruptSpells.h"
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
 #include "CcState.h"
@@ -2168,6 +2170,257 @@ bool ForceCcDr(ChatHandler* handler, PlayerbotAI* botAI, std::string const& name
     return true;
 }
 
+// G5b: the Interrupt tactic's pure policy (ArenaInterrupt.h) and its spell facts (ArenaInterruptSpells.h, DBC)
+void RunInterruptSelftest(ChatHandler* handler)
+{
+    namespace Int = ArenaInterrupt;
+    uint32 checks = 0;
+    uint32 failures = 0;
+    auto const check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (ok)
+            return;
+
+        ++failures;
+        handler->PSendSysMessage("TACTICS selftest interrupt FAILED: {}", what);
+    };
+
+    // Classify: a CC beats a heal, a heal beats damage
+    Int::SpellFacts facts;
+    check(Int::Classify(facts) == Int::Kind::Other, "a cast with no heal, CC or damage is other");
+    facts.Damages = true;
+    check(Int::Classify(facts) == Int::Kind::Damage, "damage is damage");
+    facts.Heals = true;
+    check(Int::Classify(facts) == Int::Kind::Heal, "a heal that also damages is a heal");
+    facts.Controls = true;
+    check(Int::Classify(facts) == Int::Kind::Cc, "a CC beats a heal");
+    Int::SpellFacts damagingCc;
+    damagingCc.Controls = true;
+    damagingCc.Damages = true;
+    check(Int::Classify(damagingCc) == Int::Kind::Cc, "a damaging CC is a CC");
+
+    // Real spells from the DBC: polymorph, fireball, flash heal, greater heal, cyclone, fear, regrowth, frostbolt (a
+    // snare is no CC)
+    constexpr std::array<std::pair<uint32, Int::Kind>, 8> Spells = {{{118, Int::Kind::Cc},
+                                                                     {133, Int::Kind::Damage},
+                                                                     {2061, Int::Kind::Heal},
+                                                                     {2060, Int::Kind::Heal},
+                                                                     {33786, Int::Kind::Cc},
+                                                                     {5782, Int::Kind::Cc},
+                                                                     {8936, Int::Kind::Heal},
+                                                                     {116, Int::Kind::Damage}}};
+    for (auto const& [spellId, expected] : Spells)
+    {
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+        Int::Kind const kind = info ? Int::Classify(InterruptSpellFactsOf(info)) : Int::Kind::Other;
+        check(info && kind == expected,
+              Acore::StringFormat("spell {} ({}) is {}, not {}", spellId, info ? info->SpellName[0] : "missing",
+                                  Int::KindName(expected), Int::KindName(kind)));
+    }
+
+    // The bot's own interrupts: kick, pummel, counterspell kick; kidney shot stuns; fireball does neither
+    constexpr std::array<std::pair<uint32, InterruptUse>, 5> Uses = {{{1766, InterruptUse::Kick},
+                                                                      {6552, InterruptUse::Kick},
+                                                                      {2139, InterruptUse::Kick},
+                                                                      {408, InterruptUse::Stun},
+                                                                      {133, InterruptUse::None}}};
+    for (auto const& [spellId, expected] : Uses)
+    {
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+        check(info && InterruptUseOf(info) == expected,
+              Acore::StringFormat("spell {} interrupts as {}", spellId, static_cast<uint32>(expected)));
+    }
+
+    // Score: a heal on a low friend > a CC > a heal > damage > other (none)
+    constexpr uint8 Urgent = 30;
+    check(Int::Score(Int::Kind::Heal, 20, Urgent) > Int::Score(Int::Kind::Cc, 100, Urgent),
+          "a heal on a low friend outranks a CC");
+    check(Int::Score(Int::Kind::Cc, 100, Urgent) > Int::Score(Int::Kind::Heal, 80, Urgent), "a CC outranks a heal");
+    check(Int::Score(Int::Kind::Heal, 80, Urgent) > Int::Score(Int::Kind::Damage, 100, Urgent),
+          "a heal outranks damage");
+    check(Int::Score(Int::Kind::Damage, 100, Urgent) > 0 && Int::Score(Int::Kind::Other, 100, Urgent) == 0,
+          "damage scores, other does not");
+
+    // The deep path: known, then full ability or the think part off, else Wisdom's deep percent
+    ReactionTypeState types;
+    types.ThinkDeepPercent = 0;
+    check(!Int::UsesDeep(false, true, true, types, 1), "a bot that does not know the tactic takes the shortcut");
+    check(Int::UsesDeep(true, true, true, types, 1), "full ability judges");
+    check(Int::UsesDeep(true, false, false, types, 1), "with the think part off a knowing bot judges");
+    check(!Int::UsesDeep(true, false, true, types, 1), "deep percent 0 takes the shortcut");
+    types.ThinkDeepPercent = 100;
+    check(Int::UsesDeep(true, false, true, types, 1), "deep percent 100 judges");
+
+    // The numbers at the conf.dist defaults; skill 0 has the skill-99 ones
+    InterruptConfig const config{};
+    constexpr float Exponent = 1.0f;
+    constexpr uint8 Neutral = 50;
+    constexpr uint8 KnownFromSkill = 50;  // the lab overlay's Playerbots.Tactics.Interrupt.KnownFromSkill
+    Int::Params const p99 = Int::ComputeParams(99, Neutral, Exponent, config);
+    Int::Params const p0 = Int::ComputeParams(0, Neutral, Exponent, config);
+    check(p0.HealShare == p99.HealShare && p0.Sigma == p99.Sigma, "skill 0 has the skill-99 numbers");
+    check(std::fabs(p99.HealShare - config.HealSharePctAtSkill99 / 100.0f) < 0.001f && p99.PatienceShare == 0.0f,
+          "skill 99, Patience 50: the heal share is HealSharePctAtSkill99, no patience share");
+
+    auto const kicksAt = [](Int::Decision const& decision, uint32 elapsedMs)
+    { return decision.Kick && elapsedMs >= decision.CommitMs; };
+    constexpr uint64 Hash = 0x5EEDULL;
+    constexpr uint32 HealMs = 2500;
+    Int::Input heal;
+    heal.CastKind = Int::Kind::Heal;
+    heal.CastMs = HealMs;
+    heal.TargetHpPct = 70;
+    heal.Deep = 99 >= KnownFromSkill;
+    Int::Decision const skilled = Int::Decide(heal, p99, Hash);
+    check(skilled.Kick && !kicksAt(skilled, HealMs / 5),
+          Acore::StringFormat("a heal at 20 % waits at skill 99 (commit at {} ms)", skilled.CommitMs));
+    check(skilled.Why == Int::Reason::Heal, "the skilled kick on a heal is a heal decision");
+    Int::Input weak = heal;
+    weak.Deep = 40 >= KnownFromSkill;
+    Int::Decision const shortcut = Int::Decide(weak, Int::ComputeParams(40, Neutral, Exponent, config), Hash);
+    check(kicksAt(shortcut, HealMs / 5) && shortcut.Why == Int::Reason::Shortcut,
+          "a heal at 20 % is kicked at once at skill 40 (the shortcut)");
+    check(kicksAt(shortcut, 0), "the shortcut kicks from the bar's start (the reaction model times it)");
+
+    Int::Input poly;
+    poly.Deep = true;
+    poly.CastKind = Int::Kind::Cc;
+    poly.CastMs = 1500;
+    check(kicksAt(Int::Decide(poly, p99, Hash), 0), "a polymorph at 0 % is kicked");
+
+    Int::Input fireball;
+    fireball.Deep = true;
+    fireball.CastKind = Int::Kind::Damage;
+    fireball.CastMs = 3000;
+    fireball.HealerInRange = true;
+    Int::Decision const held = Int::Decide(fireball, p99, Hash);
+    check(!held.Kick && held.Why == Int::Reason::HoldForHealer, "a fireball is skipped while a healer is in range");
+    Int::Params noHold = p99;
+    noHold.HoldForHealer = false;
+    check(Int::Decide(fireball, noHold, Hash).Kick, "with HoldForHealer 0 the fireball is kicked");
+    fireball.HealerInRange = false;
+    Int::Decision const unheld = Int::Decide(fireball, p99, Hash);
+    check(unheld.Kick && !kicksAt(unheld, 0) && kicksAt(unheld, 2700),
+          Acore::StringFormat("a fireball without a healer in range is kicked at its share (commit at {} ms)",
+                              unheld.CommitMs));
+
+    Int::Input urgent = heal;
+    urgent.TargetHpPct = 20;
+    Int::Decision const urgentKick = Int::Decide(urgent, p99, Hash);
+    check(kicksAt(urgentKick, HealMs / 10) && urgentKick.Why == Int::Reason::UrgentHeal,
+          "a heal on a friend at 20 % health is kicked at once");
+    Int::Input other;
+    other.Deep = true;
+    other.CastMs = 1500;
+    check(!Int::Decide(other, p99, Hash).Kick, "an other cast gets no kick from a judging bot");
+
+    // Commit shares spread around the configured value (skill 99, Patience 50); skill 50 commits earlier, a patient
+    // bot later
+    constexpr uint32 Draws = 400;
+    auto const meanShare = [&](Int::Input const& input, Int::Params const& params, double* sd, float* low, float* high)
+    {
+        double sum = 0.0;
+        double sumSquares = 0.0;
+        for (uint32 draw = 0; draw < Draws; ++draw)
+        {
+            float const share = Int::Decide(input, params, SplitMix64(1000 + draw)).Share;
+            sum += share;
+            sumSquares += static_cast<double>(share) * share;
+            if (low)
+                *low = std::min(*low, share);
+
+            if (high)
+                *high = std::max(*high, share);
+        }
+
+        double const mean = sum / Draws;
+        if (sd)
+            *sd = std::sqrt(std::max(0.0, sumSquares / Draws - mean * mean));
+
+        return mean;
+    };
+    double sd = 0.0;
+    float low = 1.0f;
+    float high = 0.0f;
+    double const mean = meanShare(heal, p99, &sd, &low, &high);
+    handler->PSendSysMessage(
+        "TACTICS selftest interrupt: heal commit share over {} draws: mean {:.3f}, sd {:.3f}, {:.3f} to {:.3f} "
+        "(configured {:.2f})",
+        Draws, mean, sd, low, high, p99.HealShare);
+    check(std::fabs(mean - p99.HealShare) < 0.03, "the commit shares centre on the configured heal share");
+    check(sd > 0.03, "the commit shares spread");
+    check(high > low && high <= p99.MaxShare + 1e-6f, "the commit shares are not constant and stay below MaxShare");
+    double const mean50 = meanShare(heal, Int::ComputeParams(50, Neutral, Exponent, config), nullptr, nullptr, nullptr);
+    check(mean50 < mean - 0.1, Acore::StringFormat("skill 50 commits earlier ({:.3f})", mean50));
+    double const meanPatient =
+        meanShare(heal, Int::ComputeParams(99, 100, Exponent, config), nullptr, nullptr, nullptr);
+    check(meanPatient > mean + 0.05, Acore::StringFormat("a patient bot commits later ({:.3f})", meanPatient));
+
+    // Three cancels seen from a caster raise a skilled kicker's commit share for that caster
+    OpponentMemory memory;
+    memory.Clear(1);
+    constexpr uint32 Faker = 77;
+    constexpr uint32 Honest = 78;
+    constexpr uint32 GreaterHeal = 2060;
+    constexpr uint32 Tolerance = 100;
+    uint32 nowMs = 10000;
+    for (uint32 cast = 0; cast < 3; ++cast)
+    {
+        memory.NoteCast(Faker, GreaterHeal, nowMs + HealMs, nowMs, Tolerance);
+        memory.NoteCast(Honest, GreaterHeal, nowMs + HealMs, nowMs, Tolerance);
+        memory.NoteCastGone(Faker, nowMs + 500, Tolerance, false);
+        nowMs += HealMs;
+        memory.NoteCastGone(Honest, nowMs, Tolerance, false);
+        nowMs += 1000;
+    }
+
+    OpponentMemorySlot const* const fakerSlot = memory.Find(Faker);
+    check(fakerSlot && fakerSlot->CancelsSeen == 3 && fakerSlot->CastsSeen == 3,
+          "the memory saw three cancels in three casts");
+    check(
+        memory.FakeRate(Faker, config.CancelMinCasts) == 1.0f && memory.FakeRate(Honest, config.CancelMinCasts) == 0.0f,
+        "fake rate 1 for the faker, 0 for the honest caster");
+    Int::Input fakerHeal = heal;
+    fakerHeal.FakeRate = memory.FakeRate(Faker, config.CancelMinCasts);
+    double const meanFaker = meanShare(fakerHeal, p99, nullptr, nullptr, nullptr);
+    uint32 earlier = 0;
+    for (uint32 draw = 0; draw < Draws; ++draw)
+    {
+        if (Int::Decide(fakerHeal, p99, SplitMix64(1000 + draw)).Share <
+            Int::Decide(heal, p99, SplitMix64(1000 + draw)).Share)
+            ++earlier;
+    }
+
+    check(meanFaker > mean + 0.05,
+          Acore::StringFormat("a skilled kicker waits longer on the faker ({:.3f})", meanFaker));
+    check(earlier == 0, Acore::StringFormat("no draw commits earlier on the faker ({} did)", earlier));
+
+    // The decision slots: a pushed-back bar is the same cast, the newest per enemy, the slot asked longest ago goes
+    InterruptBotState state;
+    InterruptCastSlot& first = state.Take(100);
+    first.Guid = 5;
+    first.SpellId = GreaterHeal;
+    first.StartMs = 100;
+    first.SeenMs = 100;
+    check(state.Find(5, GreaterHeal, 400, HealMs / 2) == &first, "a pushed-back bar is the same cast");
+    check(state.Find(5, GreaterHeal, 3000, HealMs / 2) == nullptr, "a new bar of the same spell is a new cast");
+    InterruptCastSlot& second = state.Take(200);
+    second.Guid = 5;
+    second.SpellId = GreaterHeal;
+    second.StartMs = 3000;
+    second.SeenMs = 200;
+    check(state.Latest(5) == &second, "the enemy's newest decision is its latest cast");
+    state.Take(300).Guid = 6;
+    state.Slots[2].SeenMs = 300;
+    state.Take(400).Guid = 7;
+    state.Slots[3].SeenMs = 400;
+    check(&state.Take(5000) == &state.Slots[0], "a full table gives up the slot asked longest ago");
+
+    handler->PSendSysMessage("TACTICS selftest interrupt: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS",
+                             checks, failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -3776,11 +4029,30 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     }
 
     handler->PSendSysMessage(
-        "  hold: target {} for {} ms, last answer {}; answers [{}]; switches {}",
+        "  hold: target {} for {} ms, last answer {}; answers [{}]; switches {}; skull out of reach {} ms",
         holdState.HeldGuid.IsEmpty() ? std::string("none") : GuidName(holdState.HeldGuid),
         holdState.HeldGuid.IsEmpty() ? 0u : getMSTimeDiff(holdState.HeldSinceMs, nowMs),
         holdState.LastVerdict < FOCUS_HOLD_VERDICTS ? FocusVerdictName(holdState.LastVerdict) : "none", verdicts,
-        holdState.Switches);
+        holdState.Switches, holdState.SkullOutOfReachMs);
+    // The Interrupt tactic (G5b): the numbers at the bot's skill and Patience, and its decisions so far
+    {
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+        ArenaInterrupt::Params const interrupt =
+            ArenaInterrupt::ComputeParams(botAI->GetPvpSkill(), botAI->GetAttribute(BotAttribute::Patience),
+                                          config.SkillGate.CurveExponent, config.TacticInterrupt);
+        InterruptBotState const& decisions = botAI->GetInterruptState();
+        handler->PSendSysMessage(
+            "  interrupt: {}; heal share {:.2f}, damage {:.2f}, cc {:.2f}, sigma {:.2f}, patience {:+.2f}; judged heal "
+            "{} "
+            "cc {} damage {} other {}, shortcuts {}, skipped {}, kicks let go {}",
+            botAI->TacticEnabledHere(TacticId::Interrupt) ? "on here" : "off here", interrupt.HealShare,
+            interrupt.DamageShare, interrupt.CcShare, interrupt.Sigma, interrupt.PatienceShare,
+            decisions.Decided[static_cast<uint32>(ArenaInterrupt::Kind::Heal)],
+            decisions.Decided[static_cast<uint32>(ArenaInterrupt::Kind::Cc)],
+            decisions.Decided[static_cast<uint32>(ArenaInterrupt::Kind::Damage)],
+            decisions.Decided[static_cast<uint32>(ArenaInterrupt::Kind::Other)], decisions.Shortcuts, decisions.Skips,
+            decisions.Kicks);
+    }
     FocusMatchState const& match = focus.Match;
     auto const enemyName = [&match](int8 index)
     {
@@ -3970,9 +4242,10 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 {
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
-        name != "focus" && name != "cc")
+        name != "focus" && name != "cc" && name != "interrupt")
     {
-        handler->PSendSysMessage("No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc", name);
+        handler->PSendSysMessage(
+            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt", name);
         return false;
     }
 
@@ -3993,6 +4266,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "cc")
         RunCcSelftest(handler);
+
+    if (name.empty() || name == "interrupt")
+        RunInterruptSelftest(handler);
 
     return true;
 }

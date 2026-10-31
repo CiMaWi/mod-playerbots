@@ -23,6 +23,7 @@ constexpr uint8 FOCUS_ICON_SKULL = 7;               // RtiTargetValue::GetRtiInd
 constexpr uint32 FOCUS_FORCE_IMMUNE_MS = 10000;     // tactics force immune: how long the enemy counts as immune
 constexpr uint32 FOCUS_MIN_PLAN_INTERVAL_MS = 100;  // floor of the plan cadence (a config of 0 plans every 100 ms)
 constexpr uint32 FOCUS_SIGHT_CHECK_MS = 250;        // the hold's line-of-sight check on its target, at most this often
+constexpr uint32 FOCUS_REACH_SAMPLE_MAX_MS = 500;   // G1b-d: the longest gap one skull-reach sample counts
 
 // The hold multiplier's answers: the HoldReason values, then the team plan's own
 constexpr uint8 FOCUS_HOLD_REASONS = static_cast<uint8>(HoldReason::Count);
@@ -64,6 +65,10 @@ struct FocusHoldState
     uint8 LastVerdict = FOCUS_HOLD_VERDICTS;
     std::array<uint32, FOCUS_HOLD_VERDICTS> Verdicts{};
     uint32 Switches = 0;  // allowed by the hold (any verdict, G1b-c) and taken: tactics.holdSwitch
+    // G1b-d: the last skull-reach sample and the ms on a skull out of range or sight while the candidate was in reach
+    // (tactics.skullOutOfReachMs)
+    uint32 ReachSampleMs = 0;
+    uint32 SkullOutOfReachMs = 0;
 };
 
 // What the team has seen of one enemy in this match

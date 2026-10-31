@@ -73,7 +73,17 @@ enum class TacticCounter : uint8
                    // the wasted-break roll of a low skill)
     BreakMs,       // G5a: the CC's age (ms since it landed) at those breaks and the ones that mattered, summed (the
                    // mean is breakMs / (cc.trinket + cc.racialBreak))
-    PartnerDispelMs,  // G5a: the CC's age at the bot's dispels of a partner's CC (cc.partnerDispel), summed
+    PartnerDispelMs,    // G5a: the CC's age at the bot's dispels of a partner's CC (cc.partnerDispel), summed
+    IntHeal,            // G5b: the bot's interrupts (a kick, a silence, a stun on a cast bar) of a heal
+    IntCc,              // G5b: of a crowd control cast
+    IntDamage,          // G5b: of a damage cast
+    IntLate,            // G5b: heal interrupts at or after ArenaInterrupt::LATE_SHARE_PCT of the bar
+    IntWasted,          // G5b: kicks at an enemy with no cast bar left (a fake or a finished cast), and damage
+                        // interrupts while another enemy in spell range and sight cast a heal
+    IntHealDone,        // G5b: enemy heals the bot saw finish (the opponent memory's casts seen to their end), counted
+                        // once per heal by the lowest-guid bot of the group alive in the map
+    SkullOutOfReachMs,  // G1b-d: ms the bot's target was the skull and out of its reach (melee range for a melee bot,
+                        // spell range else) or out of sight, while Hold is active
     Count
 };
 
@@ -82,6 +92,7 @@ constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count
 constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
     "focusSame",    "focusDiff", "planSwitch",  "immuneSwapMs", "holdSwitch",  "ccOnTarget",  "chainGapMs",
     "chains",       "ccHeldMs",  "ownBreakAoe", "ownBreakDot",  "ownBreakPet", "oppTrinkets", "oppDispels",
-    "chainEarlyMs", "chainBusy", "reCcs",       "reCcGapMs",    "breakWasted", "breakMs",     "partnerDispelMs"};
+    "chainEarlyMs", "chainBusy", "reCcs",       "reCcGapMs",    "breakWasted", "breakMs",     "partnerDispelMs",
+    "intHeal",      "intCc",     "intDamage",   "intLate",      "intWasted",   "intHealDone", "skullOutOfReachMs"};
 
 #endif

@@ -7,7 +7,10 @@
 #ifndef PLAYERBOTS_ENEMYHEALERTARGETVALUE_H
 #define PLAYERBOTS_ENEMYHEALERTARGETVALUE_H
 
+#include <string>
+
 #include "NamedObjectContext.h"
+#include "ObjectGuid.h"
 #include "Value.h"
 
 class PlayerbotAI;
@@ -20,6 +23,13 @@ public:
 
 protected:
     Unit* Calculate() override;
+
+private:
+    // G5b: the best interrupt target of the fight's enemies (ArenaInterrupt::Score), kept Interrupt.HealerCacheMs
+    Unit* BestInterruptTarget(std::string const& spell);
+
+    ObjectGuid bestGuid;
+    uint32 bestUntilMs = 0;
 };
 
 #endif

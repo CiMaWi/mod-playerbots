@@ -44,6 +44,7 @@ class ExternalEventHelper;
 class Group;
 struct CcBotState;
 struct FocusBotState;
+struct InterruptBotState;
 class ReactionEngine;
 class Gameobject;
 class Item;
@@ -765,6 +766,11 @@ public:
     // Crowd control (CcState.h, G4b): the cached CcParams, the DR memory, the rank-resolved table and the trigger's
     // answer. The bot's own update and the aura hooks on its map thread; the GM commands on the world thread.
     CcBotState& GetCcState();
+    // Interrupts (ArenaInterrupt.h, G5b): the bot's decisions on the enemy casts in view. The bot's own update.
+    InterruptBotState& GetInterruptState();
+    // The Interrupt tactic's hook (enabled here): true when the bot's kick may go at the enemy's cast now. One
+    // decision per cast (the shortcut or the judging path), its commit point from the bar's start.
+    bool DecideInterrupt(Unit* enemy);
     // Debug snapshots for .playerbots tactics show (world thread): the last "fight enemies" result, and the strategy
     // lists, taken at the bot's next update after a request
     void SetFightEnemiesSnapshot(GuidVector const& enemies);
@@ -868,6 +874,7 @@ protected:
     TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
     std::unique_ptr<FocusBotState> focusState;  // made at first use (GetFocusState); complete in PlayerbotAI.cpp
     std::unique_ptr<CcBotState> ccState;        // made at first use (GetCcState); complete in PlayerbotAI.cpp
+    std::unique_ptr<InterruptBotState> interruptState;  // made at first use (GetInterruptState); complete in the .cpp
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;

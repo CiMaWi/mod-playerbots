@@ -207,12 +207,47 @@ uint8 FocusMatchMoonMode(Player* bot, FocusMatchState const& match)
 
     return static_cast<uint8>(sPlayerbotAIConfig.TacticFocus.FocusMoonMode);
 }
+
+// G1b-d (theory 1): the time on a skull the bot cannot hit (outside its reach, melee range for a melee bot and spell
+// range else, or out of sight), whatever the hold weighs; at most every FOCUS_SIGHT_CHECK_MS while Hold is on, a skull
+// is marked and the bot's target is the skull, each sample counting the gap since the last one (at most
+// FOCUS_REACH_SAMPLE_MAX_MS)
+void SampleSkullReach(PlayerbotAI* botAI)
+{
+    FocusHoldState& hold = botAI->GetFocusState().Hold;
+    uint32 const nowMs = getMSTime();
+    if (!botAI->TacticEnabledHere(TacticId::Hold) || FocusBefore(nowMs, hold.ReachSampleMs + FOCUS_SIGHT_CHECK_MS))
+        return;
+
+    Player* const bot = botAI->GetBot();
+    Group* const group = bot->GetGroup();
+    ObjectGuid const skull = group ? group->GetTargetIcon(FOCUS_ICON_SKULL) : ObjectGuid::Empty;
+    Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    if (skull.IsEmpty() || !current || current->GetGUID() != skull || !current->IsAlive() || !current->IsInWorld() ||
+        !botAI->TacticActive(TacticId::Hold))
+        return;
+
+    uint32 const gap =
+        hold.ReachSampleMs == 0 ? 0 : std::min<uint32>(nowMs - hold.ReachSampleMs, FOCUS_REACH_SAMPLE_MAX_MS);
+    hold.ReachSampleMs = nowMs;
+    bool const inReach = PlayerbotAI::IsMelee(bot) ? bot->IsWithinMeleeRange(current)
+                                                   : bot->IsWithinDistInMap(current, sPlayerbotAIConfig.SpellDistance);
+    if (gap != 0 && (!inReach || !bot->IsWithinLOSInMap(current)))
+    {
+        hold.SkullOutOfReachMs += gap;
+        botAI->CountTactic(TacticCounter::SkullOutOfReachMs, gap);
+    }
+}
 }  // namespace
 
 float TacticHoldMultiplier::GetValue(Action* action)
 {
     // Cheap exits first: most actions end at the cached lookup; never block engaging (no live target)
-    if (action == nullptr || !IsSwitchAction(action) || botAI->GetTacticContext() == TacticContext::Pve)
+    if (action == nullptr || botAI->GetTacticContext() == TacticContext::Pve)
+        return 1.0f;
+
+    SampleSkullReach(botAI);
+    if (!IsSwitchAction(action))
         return 1.0f;
 
     Unit* const current = AI_VALUE(Unit*, "current target");
@@ -332,7 +367,24 @@ float TacticHoldMultiplier::Answer(ObjectGuid candidate, uint8 verdict, bool all
 
         // tactics stats: the hold acts when it keeps the target; a switch it lets pass would happen without it
         if (!allow)
+        {
             botAI->NoteTacticUse(TacticId::Hold);
+            // G1b-d: the refusal's reason, once per refused candidate and answer (trace level: no cost below it)
+            Player* const bot = botAI->GetBot();
+            Unit* const current = AI_VALUE(Unit*, "current target");
+            Unit* const other = botAI->GetUnit(candidate);
+            Battleground* const bg = bot->GetBattleground();
+            float const reach = sPlayerbotAIConfig.SpellDistance;
+            LOG_TRACE("playerbots.focus",
+                      "hold refused bot {} match {} skill {} cand {} cur {} reason {} heldMs {} curHp {} candHp {} "
+                      "curInRange {} curLosMs {} candInRange {} at {}",
+                      bot->GetName(), bg ? bg->GetInstanceID() : 0, botAI->GetPvpSkill(), candidate.GetCounter(),
+                      hold.HeldGuid.GetCounter(), FocusVerdictName(verdict), nowMs - hold.HeldSinceMs,
+                      current ? static_cast<uint32>(FocusHealthPct(current)) : 0,
+                      other ? static_cast<uint32>(FocusHealthPct(other)) : 0,
+                      current && bot->IsWithinDistInMap(current, reach) ? 1 : 0, nowMs - hold.LastSeenMs,
+                      other && bot->IsWithinDistInMap(other, reach) ? 1 : 0, nowMs);
+        }
     }
 
     if (!allow)

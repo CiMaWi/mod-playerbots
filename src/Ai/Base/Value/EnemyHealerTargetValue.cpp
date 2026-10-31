@@ -5,12 +5,22 @@
  */
 
 #include "EnemyHealerTargetValue.h"
+
+#include <algorithm>
+
+#include "ArenaInterrupt.h"
+#include "ArenaInterruptSpells.h"
+#include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "Timer.h"
 
 Unit* EnemyHealerTargetValue::Calculate()
 {
     std::string const spell = qualifier;
+    // G5b: a bot that knows the Interrupt tactic weighs the casts of the fight's enemies; else the first helpful cast
+    if (botAI->TacticEnabledHere(TacticId::Interrupt) && botAI->TacticActive(TacticId::Interrupt))
+        return BestInterruptTarget(spell);
 
     GuidVector attackers = botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get();
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
@@ -36,4 +46,47 @@ Unit* EnemyHealerTargetValue::Calculate()
     }
 
     return nullptr;
+}
+
+Unit* EnemyHealerTargetValue::BestInterruptTarget(std::string const& spell)
+{
+    Unit* const target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    uint32 const nowMs = getMSTime();
+    InterruptConfig const& config = sPlayerbotAIConfig.TacticInterrupt;
+    if (static_cast<int32>(nowMs - bestUntilMs) >= 0)
+    {
+        // At most TACTIC_FIGHT_ENEMIES_MAX units, every HealerCacheMs; the target's casts are the plain trigger's
+        bestUntilMs = nowMs + std::max<uint32>(1, config.HealerCacheMs);
+        bestGuid = ObjectGuid::Empty;
+        uint32 bestScore = 0;
+        float const range = botAI->GetRange("spell");
+        for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
+        {
+            Unit* const unit = botAI->GetUnit(guid);
+            if (!unit || unit == target || ServerFacade::instance().GetDistance2d(bot, unit) > range)
+                continue;
+
+            InterruptBar bar;
+            if (!ReadInterruptBar(unit, bar) || !botAI->IsInterruptableSpellCasting(unit, spell))
+                continue;
+
+            uint32 const score =
+                ArenaInterrupt::Score(ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)),
+                                      InterruptBarTargetHpPct(unit, bar), static_cast<uint8>(config.UrgentHpPct));
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestGuid = guid;
+            }
+        }
+    }
+
+    if (bestGuid.IsEmpty())
+        return nullptr;
+
+    Unit* const unit = botAI->GetUnit(bestGuid);
+    if (!unit || unit == target || !botAI->IsInterruptableSpellCasting(unit, spell))
+        return nullptr;
+
+    return botAI->DecideInterrupt(unit) ? unit : nullptr;
 }

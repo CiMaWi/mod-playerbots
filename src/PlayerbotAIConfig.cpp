@@ -1193,6 +1193,25 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Avoid.PetCallOffEnable", TacticCc.AvoidPetCallOffEnable, MaxCcSwitch);
     focusNumber("Avoid.ExcludeFightEnemies", TacticCc.AvoidExcludeFightEnemies, MaxCcSwitch);
 
+    // Playerbots.Tactics.Interrupt.* (optional, G5b): the Interrupt tactic's numbers, the defaults in InterruptConfig;
+    // read by the interrupt triggers and "enemy healer target" while Playerbots.Tactics.Interrupt.Enable is 1
+    TacticInterrupt = InterruptConfig{};
+    constexpr uint32 MaxInterruptCasts = 20;
+    constexpr uint32 MaxInterruptCacheMs = 5000;
+    focusNumber("Interrupt.HealSharePctAtSkill1", TacticInterrupt.HealSharePctAtSkill1, MaxFocusPct);
+    focusNumber("Interrupt.HealSharePctAtSkill99", TacticInterrupt.HealSharePctAtSkill99, MaxFocusPct);
+    focusNumber("Interrupt.DamageSharePct", TacticInterrupt.DamageSharePct, MaxFocusPct);
+    focusNumber("Interrupt.CcSharePct", TacticInterrupt.CcSharePct, MaxFocusPct);
+    focusNumber("Interrupt.MaxSharePct", TacticInterrupt.MaxSharePct, MaxFocusPct);
+    focusNumber("Interrupt.SigmaPctAtSkill1", TacticInterrupt.SigmaPctAtSkill1, MaxFocusPct);
+    focusNumber("Interrupt.SigmaPctAtSkill99", TacticInterrupt.SigmaPctAtSkill99, MaxFocusPct);
+    focusNumber("Interrupt.UrgentHpPct", TacticInterrupt.UrgentHpPct, MaxFocusPct);
+    focusNumber("Interrupt.CancelSharePct", TacticInterrupt.CancelSharePct, MaxFocusPct);
+    focusNumber("Interrupt.CancelMinCasts", TacticInterrupt.CancelMinCasts, MaxInterruptCasts);
+    focusNumber("Interrupt.PatienceSharePct", TacticInterrupt.PatienceSharePct, MaxFocusPct);
+    focusNumber("Interrupt.HoldForHealer", TacticInterrupt.HoldForHealer, MaxCcSwitch);
+    focusNumber("Interrupt.HealerCacheMs", TacticInterrupt.HealerCacheMs, MaxInterruptCacheMs);
+
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);

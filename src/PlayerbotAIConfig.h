@@ -9,6 +9,7 @@
 
 #include "ArenaCcConfig.h"
 #include "ArenaFocusConfig.h"
+#include "ArenaInterruptConfig.h"
 #include "BotAttributes.h"
 #include "DBCEnums.h"
 #include "NaturalReaction.h"
@@ -516,6 +517,8 @@ public:
     // Playerbots.Tactics.Hold.* and .Focus.*: the numbers of the target hold and the team plan (ArenaFocus.h)
     FocusConfig TacticFocus;
     CcConfig TacticCc;
+    // Playerbots.Tactics.Interrupt.*: the Interrupt tactic's numbers (ArenaInterrupt.h, G5b)
+    InterruptConfig TacticInterrupt;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;
