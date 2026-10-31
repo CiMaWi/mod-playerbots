@@ -17,6 +17,7 @@
 #include "ArenaCcSpells.h"
 #include "ArenaFocus.h"
 #include "ArenaInterrupt.h"
+#include "ArenaInterruptSim.h"
 #include "ArenaInterruptSpells.h"
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
@@ -2257,8 +2258,8 @@ void RunInterruptSelftest(ChatHandler* handler)
     constexpr float Exponent = 1.0f;
     constexpr uint8 Neutral = 50;
     constexpr uint8 KnownFromSkill = 50;  // the lab overlay's Playerbots.Tactics.Interrupt.KnownFromSkill
-    Int::Params const p99 = Int::ComputeParams(99, Neutral, Exponent, config);
-    Int::Params const p0 = Int::ComputeParams(0, Neutral, Exponent, config);
+    Int::Params const p99 = Int::ComputeParams(99, Neutral, 99, Exponent, config);
+    Int::Params const p0 = Int::ComputeParams(0, Neutral, 0, Exponent, config);
     check(p0.HealShare == p99.HealShare && p0.Sigma == p99.Sigma, "skill 0 has the skill-99 numbers");
     check(std::fabs(p99.HealShare - config.HealSharePctAtSkill99 / 100.0f) < 0.001f && p99.PatienceShare == 0.0f,
           "skill 99, Patience 50: the heal share is HealSharePctAtSkill99, no patience share");
@@ -2278,7 +2279,7 @@ void RunInterruptSelftest(ChatHandler* handler)
     check(skilled.Why == Int::Reason::Heal, "the skilled kick on a heal is a heal decision");
     Int::Input weak = heal;
     weak.Deep = 40 >= KnownFromSkill;
-    Int::Decision const shortcut = Int::Decide(weak, Int::ComputeParams(40, Neutral, Exponent, config), Hash);
+    Int::Decision const shortcut = Int::Decide(weak, Int::ComputeParams(40, Neutral, 40, Exponent, config), Hash);
     check(kicksAt(shortcut, HealMs / 5) && shortcut.Why == Int::Reason::Shortcut,
           "a heal at 20 % is kicked at once at skill 40 (the shortcut)");
     check(kicksAt(shortcut, 0), "the shortcut kicks from the bar's start (the reaction model times it)");
@@ -2351,10 +2352,11 @@ void RunInterruptSelftest(ChatHandler* handler)
     check(std::fabs(mean - p99.HealShare) < 0.03, "the commit shares centre on the configured heal share");
     check(sd > 0.03, "the commit shares spread");
     check(high > low && high <= p99.MaxShare + 1e-6f, "the commit shares are not constant and stay below MaxShare");
-    double const mean50 = meanShare(heal, Int::ComputeParams(50, Neutral, Exponent, config), nullptr, nullptr, nullptr);
+    double const mean50 =
+        meanShare(heal, Int::ComputeParams(50, Neutral, 50, Exponent, config), nullptr, nullptr, nullptr);
     check(mean50 < mean - 0.1, Acore::StringFormat("skill 50 commits earlier ({:.3f})", mean50));
     double const meanPatient =
-        meanShare(heal, Int::ComputeParams(99, 100, Exponent, config), nullptr, nullptr, nullptr);
+        meanShare(heal, Int::ComputeParams(99, 100, 99, Exponent, config), nullptr, nullptr, nullptr);
     check(meanPatient > mean + 0.05, Acore::StringFormat("a patient bot commits later ({:.3f})", meanPatient));
 
     // Three cancels seen from a caster raise a skilled kicker's commit share for that caster
@@ -2416,6 +2418,10 @@ void RunInterruptSelftest(ChatHandler* handler)
     state.Take(400).Guid = 7;
     state.Slots[3].SeenMs = 400;
     check(&state.Take(5000) == &state.Slots[0], "a full table gives up the slot asked longest ago");
+
+    // G5c-c: the hold policy and its fight model (ArenaInterruptSim.h)
+    ArenaInterruptSim::RunHoldSelftest(check, [handler](std::string const& line)
+                                       { handler->PSendSysMessage("TACTICS selftest interrupt: {}", line); });
 
     handler->PSendSysMessage("TACTICS selftest interrupt: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS",
                              checks, failures);
@@ -4086,9 +4092,9 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     // The Interrupt tactic (G5b): the numbers at the bot's skill and Patience, and its decisions so far
     {
         PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        ArenaInterrupt::Params const interrupt =
-            ArenaInterrupt::ComputeParams(botAI->GetPvpSkill(), botAI->GetAttribute(BotAttribute::Patience),
-                                          config.SkillGate.CurveExponent, config.TacticInterrupt);
+        ArenaInterrupt::Params const interrupt = ArenaInterrupt::ComputeParams(
+            botAI->GetPvpSkill(), botAI->GetAttribute(BotAttribute::Patience),
+            botAI->GetAttribute(BotAttribute::Knowledge), config.SkillGate.CurveExponent, config.TacticInterrupt);
         InterruptBotState const& decisions = botAI->GetInterruptState();
         handler->PSendSysMessage(
             "  interrupt: {}; heal share {:.2f}, damage {:.2f}, cc {:.2f}, sigma {:.2f}, patience {:+.2f}; judged heal "

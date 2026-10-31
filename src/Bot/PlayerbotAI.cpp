@@ -7513,7 +7513,8 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
         }
 
         ArenaInterrupt::Params const params = ArenaInterrupt::ComputeParams(
-            pvpSkill, attributes.Get(BotAttribute::Patience), config.SkillGate.CurveExponent, config.TacticInterrupt);
+            pvpSkill, attributes.Get(BotAttribute::Patience), attributes.Get(BotAttribute::Knowledge),
+            config.SkillGate.CurveExponent, config.TacticInterrupt);
         slot->Deep = input.Deep;
         slot->CastKind = input.CastKind;
         slot->Decision = ArenaInterrupt::Decide(input, params, hash);

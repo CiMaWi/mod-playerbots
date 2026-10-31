@@ -2081,6 +2081,7 @@ Playerbots.Tactics.Enable = 0
 #   Drink       Arena,Battleground         drinking
 #   Natural     All                        natural reaction, facing, tracking, paths (PvE: in sight of a real player)
 #   Jump        Arena                      tactical jumps
+#   FocusTarget Arena,Battleground,World   kicks and crowd control on a focus target, the own target kept (G4e)
 # The skill gate (needs Playerbots.Skill.Enable = 1): Playerbots.Tactics.<Name>.KnownFromSkill, 0-100 (default 0 =
 # every bot knows it; 100 = no bot), the skill from which a bot knows the tactic, moved per bot by
 # Playerbots.Skill.KnowledgeSpread; below it the bot never uses the tactic. Playerbots.Tactics.<Name>.UseChanceAtSkill1
@@ -2303,6 +2304,57 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Interrupt.HoldForHealer = 1
 # Playerbots.Tactics.Interrupt.HealerCacheMs = 200
 #
+# The use draw (G5c-c): per cast, a bot notices it with UsePctAtSkill1..99 % (lerped by skill; the rest it lets go,
+# "unnoticed"), on the shortcut and the judging path alike. 100 and 100 (the defaults): every cast, as before.
+# Playerbots.Tactics.Interrupt.UsePctAtSkill1 = 100
+# Playerbots.Tactics.Interrupt.UsePctAtSkill99 = 100
+# The attention gap (G5c-c): once its kick is ready, a bot notices interruptible casts only after a gap, drawn per
+# ready window (exponential, at most 3 means) with the mean AttentionMsAtSkill1..99 ms, lerped by skill on a convex
+# curve (the gap shrinks fast with skill: at 30000 and 0 the mean is about 19 s at skill 20, 7.5 s at 50, 1.1 s at
+# 80). A cast it does not notice it lets go ("unnoticed"); this keeps weak bots from kicking at every cooldown.
+# 0 and 0 (the defaults): no gap, as before.
+# Playerbots.Tactics.Interrupt.AttentionMsAtSkill1 = 0
+# Playerbots.Tactics.Interrupt.AttentionMsAtSkill99 = 0
+#
+# The hold policy (G5c-c). HoldPolicy 0 (the default): the HoldForHealer rule above. HoldPolicy 1: a judging bot holds
+# its kick on a damage cast only while a cast heal of an enemy healer in reach and sight is likely and its window
+# reachable. Pressure decides the need for a cast heal: 0 with every enemy at or above HoldHpHighPct % health, full at
+# or below HoldHpLowPct, linear between. Seen within HoldRecentCastHealMs starting a cast heal the bot recognises, the
+# healer evidently uses them: HoldHpHighPct counts HoldRecentHpShiftPct points higher and its instants are no cover;
+# else instant heals or absorbs of the healer the bot recognises, seen within HoldInstantSeenMs, lower HoldHpHighPct
+# by HoldInstantCoverPct % of the way down to HoldHpLowPct (at or below HoldHpLowPct the need stays full: an instant
+# does not save a nearly dead friend). The window is reachable when the bot's reaction to the heal it waits for (the
+# reaction median, ping and display, the button and the deep check, shortened by Foresight) lands HoldWindowMarginMs
+# before the heal's end; the heal's cast time is the last one seen, else the class's usual one, else
+# HoldAssumedCastMs. A bot knows a spell (its cast time, that it heals, that it is instant) with
+# HoldKnowPctAtKnowledge1..99 % (one draw per bot and spell) and its motivation is scaled by
+# HoldMotivationPctAtKnowledge1..99 %; it holds with that motivation (one draw per cast) for at most
+# HoldMsAtPatience0..100 ms per episode (by the Patience trait), then kicks damage again; the episode ends HoldResetMs
+# after its last held cast (or after it ran out), and the bot may hold again. The trend: the need is read from the
+# health the bot expects when its kick is back, the lowest enemy's health minus its net loss per second over the last
+# 2 s times HoldTrendHorizonMs (about the kick's cooldown; a burst that takes the enemy into cast heal range within it
+# counts now, so the kick is not spent on a damage cast just before the heal), times HoldTrendPctAtKnowledge1..99 %
+# (a bot that knows less reads the trend less far ahead). 0: the current health only.
+# Playerbots.Tactics.Interrupt.HoldPolicy = 0
+# Playerbots.Tactics.Interrupt.HoldKnowPctAtKnowledge1 = 40
+# Playerbots.Tactics.Interrupt.HoldKnowPctAtKnowledge99 = 100
+# Playerbots.Tactics.Interrupt.HoldAssumedCastMs = 2000
+# Playerbots.Tactics.Interrupt.HoldInstantSeenMs = 8000
+# Playerbots.Tactics.Interrupt.HoldHpHighPct = 80
+# Playerbots.Tactics.Interrupt.HoldHpLowPct = 40
+# Playerbots.Tactics.Interrupt.HoldRecentCastHealMs = 6000
+# Playerbots.Tactics.Interrupt.HoldRecentHpShiftPct = 10
+# Playerbots.Tactics.Interrupt.HoldInstantCoverPct = 80
+# Playerbots.Tactics.Interrupt.HoldWindowMarginMs = 300
+# Playerbots.Tactics.Interrupt.HoldMotivationPctAtKnowledge1 = 30
+# Playerbots.Tactics.Interrupt.HoldMotivationPctAtKnowledge99 = 100
+# Playerbots.Tactics.Interrupt.HoldMsAtPatience0 = 1000
+# Playerbots.Tactics.Interrupt.HoldMsAtPatience100 = 6000
+# Playerbots.Tactics.Interrupt.HoldResetMs = 6000
+# Playerbots.Tactics.Interrupt.HoldTrendHorizonMs = 10000
+# Playerbots.Tactics.Interrupt.HoldTrendPctAtKnowledge1 = 50
+# Playerbots.Tactics.Interrupt.HoldTrendPctAtKnowledge99 = 100
+#
 # With the Interrupt tactic enabled (or the PvP harness on), the strategy "tactic interrupt" adds the class kicks the
 # specs' own strategies lack, all through the decision above: the mage's counterspell on the current target, the death
 # knight's strangulate (30 yards; mind freeze is 5, so strangulate is the long-range kick and the backup while mind
@@ -2312,7 +2364,19 @@ Playerbots.Tactics.Enable = 0
 # the cost of the stance change's rage and one tick. 0 (the default): an Arms warrior never interrupts. Read when the
 # bot's engine is built (login or strategy reset), not on a config reload.
 # Playerbots.Tactics.Interrupt.ArmsPummel = 0
-# (Ranges: percents 0-100, CancelMinCasts 0-20, HoldForHealer 0-1, HealerCacheMs 0-5000.)
+# (Ranges: percents 0-100, CancelMinCasts 0-20, HoldForHealer and HoldPolicy 0-1, HealerCacheMs 0-5000,
+# HoldAssumedCastMs 0-10000, HoldWindowMarginMs 0-2000, AttentionMs and the other Hold ms keys 0-60000.)
+#
+# Focus target (G4e; Playerbots.Tactics.FocusTarget.Enable, scope Arena,Battleground,World). On, a bot from
+# Playerbots.Natural.Reaction.Ease.FocusDexterity keeps a focus target (in an arena the moon, taken over the enemy
+# healer with MoonPctAtTeamwork1..99 % by Teamwork; else the enemy healer or the CC target) and kicks or controls it
+# at the focus ease, its own target kept; an interrupt on the focus scores KickBonus over other casts of its kind.
+# Below the threshold the action is priced as a new target. Off (the default): no focus target.
+# Playerbots.Tactics.FocusTarget.Enable = 0
+# Playerbots.Tactics.FocusTarget.MoonPctAtTeamwork1 = 50
+# Playerbots.Tactics.FocusTarget.MoonPctAtTeamwork99 = 100
+# Playerbots.Tactics.FocusTarget.KickBonus = 50
+# (Ranges: percents 0-100, KickBonus 0-255.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

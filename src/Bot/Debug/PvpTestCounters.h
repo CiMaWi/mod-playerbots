@@ -84,15 +84,25 @@ enum class TacticCounter : uint8
                         // once per heal by the lowest-guid bot of the group alive in the map
     SkullOutOfReachMs,  // G1b-d: ms the bot's target was the skull and out of its reach (melee range for a melee bot,
                         // spell range else) or out of sight, while Hold is active
+    IntHold,            // G5c-c: damage casts the bot let go for an expected cast heal (HoldPolicy 1)
+    IntHoldEpisodes,    // G5c-c: hold episodes (from the first held cast to its reset, a heal kick or the match end)
+    IntHoldPaid,        // G5c-c: episodes that ended with a heal kicked
+    IntHoldVain,        // G5c-c: episodes that ended with no heal bar of the healer seen (instants only or none)
+    IntHoldExpired,     // G5c-c: episodes that ran past the bot's longest hold (its damage casts kicked again)
+    FocusKick,          // G4e: interrupts on the bot's focus target (not its target)
+    FocusCc,            // G4e: crowd control on the bot's focus target (not its target)
+    SwitchKick,         // G4e: interrupts on an enemy that was neither the bot's target nor its focus
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
 constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
-    "focusSame",    "focusDiff", "planSwitch",  "immuneSwapMs", "holdSwitch",  "ccOnTarget",  "chainGapMs",
-    "chains",       "ccHeldMs",  "ownBreakAoe", "ownBreakDot",  "ownBreakPet", "oppTrinkets", "oppDispels",
-    "chainEarlyMs", "chainBusy", "reCcs",       "reCcGapMs",    "breakWasted", "breakMs",     "partnerDispelMs",
-    "intHeal",      "intCc",     "intDamage",   "intLate",      "intWasted",   "intHealDone", "skullOutOfReachMs"};
+    "focusSame",   "focusDiff",   "planSwitch",      "immuneSwapMs",      "holdSwitch",  "ccOnTarget",
+    "chainGapMs",  "chains",      "ccHeldMs",        "ownBreakAoe",       "ownBreakDot", "ownBreakPet",
+    "oppTrinkets", "oppDispels",  "chainEarlyMs",    "chainBusy",         "reCcs",       "reCcGapMs",
+    "breakWasted", "breakMs",     "partnerDispelMs", "intHeal",           "intCc",       "intDamage",
+    "intLate",     "intWasted",   "intHealDone",     "skullOutOfReachMs", "intHold",     "intHoldEpisodes",
+    "intHoldPaid", "intHoldVain", "intHoldExpired",  "focusKick",         "focusCc",     "switchKick"};
 
 #endif

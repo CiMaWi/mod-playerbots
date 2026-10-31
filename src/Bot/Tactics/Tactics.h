@@ -36,6 +36,7 @@ enum class TacticId : uint8
     Drink,
     Natural,
     Jump,
+    FocusTarget,
     Count
 };
 
@@ -92,6 +93,7 @@ constexpr std::array<TacticDefinition, TACTIC_COUNT> TACTIC_DEFINITIONS = {{
     {"drink", "Drink", TACTIC_SCOPE_ARENA | TACTIC_SCOPE_BATTLEGROUND},
     {"natural", "Natural", TACTIC_SCOPE_ALL},
     {"jump", "Jump", TACTIC_SCOPE_ARENA},
+    {"focustarget", "FocusTarget", TACTIC_SCOPE_ARENA | TACTIC_SCOPE_BATTLEGROUND | TACTIC_SCOPE_WORLD},
 }};
 
 // Read once at config load (PlayerbotAIConfig::TacticConfig, indexed by TacticId). Later steps add their numbers here.

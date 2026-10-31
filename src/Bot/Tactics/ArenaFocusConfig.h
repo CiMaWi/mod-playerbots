@@ -55,6 +55,11 @@ struct FocusConfig
     uint32 FocusMoonMode = 1;
     uint32 FocusMoonGraceMs = 5000;
     uint32 FocusMoonRetryMs = 10000;
+    // The focus target (G4e, Playerbots.Tactics.FocusTarget.*): the chance the picker takes the plan's moon over the
+    // enemy healer, lerped by Teamwork, and the score an interrupt on the focus gains over other casts of its kind
+    uint32 FocusTargetMoonPctAtTeamwork1 = 50;
+    uint32 FocusTargetMoonPctAtTeamwork99 = 100;
+    uint32 FocusTargetKickBonus = 50;
 };
 
 #endif

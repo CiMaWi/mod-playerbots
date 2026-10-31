@@ -1212,6 +1212,38 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Interrupt.HoldForHealer", TacticInterrupt.HoldForHealer, MaxCcSwitch);
     focusNumber("Interrupt.HealerCacheMs", TacticInterrupt.HealerCacheMs, MaxInterruptCacheMs);
     focusNumber("Interrupt.ArmsPummel", TacticInterrupt.ArmsPummel, MaxCcSwitch);
+    // G5c-c: the use draw and the hold policy
+    constexpr uint32 MaxHoldMs = 60000;
+    constexpr uint32 MaxHoldCastMs = 10000;
+    constexpr uint32 MaxHoldMarginMs = 2000;
+    focusNumber("Interrupt.UsePctAtSkill1", TacticInterrupt.UsePctAtSkill1, MaxFocusPct);
+    focusNumber("Interrupt.UsePctAtSkill99", TacticInterrupt.UsePctAtSkill99, MaxFocusPct);
+    focusNumber("Interrupt.AttentionMsAtSkill1", TacticInterrupt.AttentionMsAtSkill1, MaxHoldMs);
+    focusNumber("Interrupt.AttentionMsAtSkill99", TacticInterrupt.AttentionMsAtSkill99, MaxHoldMs);
+    focusNumber("Interrupt.HoldPolicy", TacticInterrupt.HoldPolicy, MaxCcSwitch);
+    focusNumber("Interrupt.HoldKnowPctAtKnowledge1", TacticInterrupt.HoldKnowPctAtKnowledge1, MaxFocusPct);
+    focusNumber("Interrupt.HoldKnowPctAtKnowledge99", TacticInterrupt.HoldKnowPctAtKnowledge99, MaxFocusPct);
+    focusNumber("Interrupt.HoldAssumedCastMs", TacticInterrupt.HoldAssumedCastMs, MaxHoldCastMs);
+    focusNumber("Interrupt.HoldInstantSeenMs", TacticInterrupt.HoldInstantSeenMs, MaxHoldMs);
+    focusNumber("Interrupt.HoldHpHighPct", TacticInterrupt.HoldHpHighPct, MaxFocusPct);
+    focusNumber("Interrupt.HoldHpLowPct", TacticInterrupt.HoldHpLowPct, MaxFocusPct);
+    focusNumber("Interrupt.HoldRecentCastHealMs", TacticInterrupt.HoldRecentCastHealMs, MaxHoldMs);
+    focusNumber("Interrupt.HoldRecentHpShiftPct", TacticInterrupt.HoldRecentHpShiftPct, MaxFocusPct);
+    focusNumber("Interrupt.HoldInstantCoverPct", TacticInterrupt.HoldInstantCoverPct, MaxFocusPct);
+    focusNumber("Interrupt.HoldWindowMarginMs", TacticInterrupt.HoldWindowMarginMs, MaxHoldMarginMs);
+    focusNumber("Interrupt.HoldMotivationPctAtKnowledge1", TacticInterrupt.HoldMotivationPctAtKnowledge1, MaxFocusPct);
+    focusNumber("Interrupt.HoldMotivationPctAtKnowledge99", TacticInterrupt.HoldMotivationPctAtKnowledge99,
+                MaxFocusPct);
+    focusNumber("Interrupt.HoldMsAtPatience0", TacticInterrupt.HoldMsAtPatience0, MaxHoldMs);
+    focusNumber("Interrupt.HoldMsAtPatience100", TacticInterrupt.HoldMsAtPatience100, MaxHoldMs);
+    focusNumber("Interrupt.HoldResetMs", TacticInterrupt.HoldResetMs, MaxHoldMs);
+    focusNumber("Interrupt.HoldTrendHorizonMs", TacticInterrupt.HoldTrendHorizonMs, MaxHoldMs);
+    focusNumber("Interrupt.HoldTrendPctAtKnowledge1", TacticInterrupt.HoldTrendPctAtKnowledge1, MaxFocusPct);
+    focusNumber("Interrupt.HoldTrendPctAtKnowledge99", TacticInterrupt.HoldTrendPctAtKnowledge99, MaxFocusPct);
+    // G4e: the focus target (Playerbots.Tactics.FocusTarget.*)
+    focusNumber("FocusTarget.MoonPctAtTeamwork1", TacticFocus.FocusTargetMoonPctAtTeamwork1, MaxFocusPct);
+    focusNumber("FocusTarget.MoonPctAtTeamwork99", TacticFocus.FocusTargetMoonPctAtTeamwork99, MaxFocusPct);
+    focusNumber("FocusTarget.KickBonus", TacticFocus.FocusTargetKickBonus, MaxFocusMargin);
 
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
