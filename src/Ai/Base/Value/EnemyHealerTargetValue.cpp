@@ -10,6 +10,7 @@
 
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSpells.h"
+#include "FocusState.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -60,6 +61,9 @@ Unit* EnemyHealerTargetValue::BestInterruptTarget(std::string const& spell)
         bestGuid = ObjectGuid::Empty;
         uint32 bestScore = 0;
         float const range = botAI->GetRange("spell");
+        // G4e: a cast on the bot's focus target scores FocusTargetKickBonus over the others of its kind
+        FocusTargetState const& focus = botAI->GetFocusState().Target;
+        uint32 const focusBonus = sPlayerbotAIConfig.TacticFocus.FocusTargetKickBonus;
         for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
         {
             Unit* const unit = botAI->GetUnit(guid);
@@ -70,9 +74,10 @@ Unit* EnemyHealerTargetValue::BestInterruptTarget(std::string const& spell)
             if (!ReadInterruptBar(unit, bar) || !botAI->IsInterruptableSpellCasting(unit, spell))
                 continue;
 
-            uint32 const score =
+            uint32 const score = FocusKickScore(
                 ArenaInterrupt::Score(ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)),
-                                      InterruptBarTargetHpPct(unit, bar), static_cast<uint8>(config.UrgentHpPct));
+                                      InterruptBarTargetHpPct(unit, bar), static_cast<uint8>(config.UrgentHpPct)),
+                focus.Is(guid), focusBonus);
             if (score > bestScore)
             {
                 bestScore = score;
@@ -89,4 +94,14 @@ Unit* EnemyHealerTargetValue::BestInterruptTarget(std::string const& spell)
         return nullptr;
 
     return botAI->DecideInterrupt(unit) ? unit : nullptr;
+}
+
+Unit* FocusTargetValue::Calculate()
+{
+    FocusTargetState const& focus = botAI->GetFocusState().Target;
+    if (!focus.Pick.Guid)
+        return nullptr;
+
+    Unit* const unit = botAI->GetUnit(ObjectGuid(focus.Pick.Guid));
+    return unit && unit->IsInWorld() && unit->IsAlive() ? unit : nullptr;
 }

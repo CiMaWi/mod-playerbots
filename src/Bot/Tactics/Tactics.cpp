@@ -7,6 +7,7 @@
 #include "Tactics.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -1956,6 +1957,9 @@ void RunFocusSelftest(ChatHandler* handler)
     check(FocusMarkHolds(FOCUS_MOON_ALWAYS, true, false) && FocusMarkHolds(FOCUS_MOON_USED, false, false) &&
               FocusMarkHolds(FOCUS_MOON_USED, true, true) && !FocusMarkHolds(FOCUS_MOON_USED, true, false),
           "the skull's hold keeps a bot off a moon nobody controls in mode 2, or lets it go in mode 1");
+
+    // G4e: the focus target (ArenaFocusTarget.h)
+    ArenaFocusTargetTest::RunFocusTargetSelftest(check);
 
     handler->PSendSysMessage("TACTICS selftest focus: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
@@ -4183,6 +4187,24 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage("  moon: mode {}, capable {}, releases {}, blocked {} ms more", match.MoonMode,
                              match.MoonCapable ? "yes" : "no", match.MoonReleases,
                              FocusBefore(nowMs, match.MoonBlockedUntilMs) ? match.MoonBlockedUntilMs - nowMs : 0);
+    // G4e: the focus target (the Dexterity gate, the moon's share by Teamwork, the pick and the actions on it)
+    {
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+        FocusTargetState const& target = focus.Target;
+        uint8 const dexterity = botAI->GetAttribute(BotAttribute::Dexterity);
+        uint8 const threshold = config.NaturalReaction.Ease.FocusDexterity;
+        uint8 const teamwork = botAI->GetPvpSkill() == 0 ? 99 : botAI->GetAttribute(BotAttribute::Teamwork);
+        handler->PSendSysMessage(
+            "  focus target: {}, capable {} (dexterity {}, threshold {}), moon share {:.2f}; focus {} ({}) for {} ms, "
+            "picks {}; kicks {}, cc {} on it, switch kicks {}",
+            botAI->TacticEnabledHere(TacticId::FocusTarget) ? "on here" : "off here",
+            FocusTargetCapable(botAI->GetPvpSkill(), dexterity, threshold) ? "yes" : "no", dexterity, threshold,
+            FocusMoonShare(teamwork, config.TacticFocus.FocusTargetMoonPctAtTeamwork1,
+                           config.TacticFocus.FocusTargetMoonPctAtTeamwork99),
+            target.Pick.Guid ? GuidName(ObjectGuid(target.Pick.Guid)) : std::string("none"),
+            FocusSourceName(target.Pick.Source), target.Pick.Guid ? getMSTimeDiff(target.Pick.SinceMs, nowMs) : 0u,
+            target.Pick.Picks, target.Kicks, target.Ccs, target.SwitchKicks);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4570,5 +4592,69 @@ bool TacticCommands::HandleEnsureTrinketCommand(ChatHandler* handler, char const
         "TACTICS ensuretrinket: Playerbots.Tactics.Avoid.EnsureTrinket {} -> {}; the next harness fight start takes "
         "it (a match in progress keeps its trinkets); a restart or .playerbots rndbot reload restores the conf value",
         before, mode);
+    return true;
+}
+
+bool TacticCommands::HandleInterruptCommand(ChatHandler* handler, char const* args)
+{
+    // The world thread while the maps wait: DecideInterrupt reads the keys at every decision (ComputeParams), the
+    // interrupt follower at every update (InterruptFollows); switch between matches, as an open hold episode is not
+    // closed here
+    PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleInterruptCommand");
+    InterruptConfig& config = sPlayerbotAIConfig.TacticInterrupt;
+    struct Key
+    {
+        char const* Name;
+        uint32& Value;
+        uint32 Maximum;
+    };
+    std::array<Key, 6> const keys = {{{"HoldPolicy", config.HoldPolicy, 1},
+                                      {"HoldForHealer", config.HoldForHealer, 1},
+                                      {"UsePctAtSkill1", config.UsePctAtSkill1, 100},
+                                      {"UsePctAtSkill99", config.UsePctAtSkill99, 100},
+                                      {"AttentionMsAtSkill1", config.AttentionMsAtSkill1, 60000},
+                                      {"AttentionMsAtSkill99", config.AttentionMsAtSkill99, 60000}}};
+    std::string all;
+    for (Key const& key : keys)
+        all += " " + std::string(key.Name) + " " + std::to_string(key.Value);
+
+    std::istringstream words(Trim(args ? args : ""));
+    std::string name;
+    std::string value;
+    words >> name >> value;
+    if (name.empty())
+    {
+        handler->PSendSysMessage("TACTICS interrupt:{}", all);
+        return true;
+    }
+
+    auto const lower = [](std::string text)
+    {
+        std::transform(text.begin(), text.end(), text.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    };
+    Key const* found = nullptr;
+    for (Key const& key : keys)
+        if (lower(key.Name) == lower(name))
+            found = &key;
+
+    std::optional<uint32> const number = Acore::StringTo<uint32>(value);
+    if (!found || !number || *number > found->Maximum)
+    {
+        handler->PSendSysMessage(
+            "Usage: .playerbots tactics interrupt [<key> <value>] (keys and values now:{}; "
+            "HoldPolicy and HoldForHealer 0-1, UsePct 0-100, AttentionMs 0-60000)",
+            all);
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 const before = found->Value;
+    found->Value = *number;
+    handler->PSendSysMessage(
+        "TACTICS interrupt: Playerbots.Tactics.Interrupt.{} {} -> {}; the next interrupt decision takes it; a restart "
+        "or .playerbots rndbot reload restores the conf value",
+        found->Name, before, found->Value);
     return true;
 }

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "ArenaInterrupt.h"
+#include "FocusState.h"
 #include "GenericSpellActions.h"
 #include "NaturalReaction.h"
 #include "PerfMonitor.h"
@@ -490,10 +491,11 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
     if (params.Ease.Enable)
     {
         inputs.Ease = ease;
-        // An action on an enemy that is not the bot's target acts on a new target; on a friend the button's ease stays
+        // An action on an enemy that is not the bot's target acts on a new target, on its focus target (G4e) at the
+        // focus ease; on a friend the button's ease stays
         if (ease != ReactionEase::NewTarget && target && target != bot && bot->IsHostileTo(target) &&
             AI_VALUE(Unit*, "current target") != target)
-            inputs.Ease = ReactionEase::NewTarget;
+            inputs.Ease = FocusActionEase(ease, true, botAI->GetFocusState().Target.Is(target->GetGUID()));
     }
 
     if (category != SkillNoticeCategory::Interrupt)

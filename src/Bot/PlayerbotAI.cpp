@@ -615,6 +615,133 @@ void FollowInterruptFight(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
         state.NoteHoldHealBar();
     }
 }
+
+// G4e: an enemy the bot has seen heal (a heal bar now, or a heal among its last casts in the opponent memory; DT.12)
+bool FocusSeenHealing(PlayerbotAI* botAI, Unit* unit)
+{
+    InterruptBar bar;
+    if (ReadInterruptBar(unit, bar) &&
+        ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) == ArenaInterrupt::Kind::Heal)
+        return true;
+
+    auto const healSpell = [](uint32 spellId)
+    {
+        return spellId != 0 && ArenaInterrupt::Classify(InterruptSpellFactsOf(sSpellMgr->GetSpellInfo(spellId))) ==
+                                   ArenaInterrupt::Kind::Heal;
+    };
+    OpponentMemorySlot const* const slot = botAI->GetOpponentMemory().Find(unit->GetGUID().GetCounter());
+    return slot && (healSpell(slot->SpellId) || healSpell(slot->PrevSpellId));
+}
+
+// A focus candidate (G4e is PvP: players only, no creature): in the bot's map, alive, attackable and not its own target
+bool FocusCandidate(Player* bot, Unit* unit, ObjectGuid own)
+{
+    return unit && unit->IsPlayer() && unit->IsInWorld() && unit->IsInMap(bot) && unit->IsAlive() &&
+           unit->GetGUID() != own && bot->IsValidAttackTarget(unit);
+}
+
+// G4e: the focus target at the bot's checks while the FocusTarget tactic is on here (or a focus is left): cleared at
+// a new match and while the tactic or the Dexterity gate fails; picked again at once when the moon, the own target or
+// the CC target changes or the focus is gone, else every FOCUS_TARGET_PICK_MS (the healer scan: the fight's enemies,
+// at most TACTIC_FIGHT_ENEMIES_MAX units)
+void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
+{
+    // Every call (the change check too; the picks are tactics show's `picks` and the `focus pick` lines)
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "FocusTarget::Pick")
+                                                    : nullptr);
+    FocusTargetState& focus = botAI->GetFocusState().Target;
+    Battleground* const battleground = bot->GetBattleground();
+    uint32 const matchId =
+        battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
+    if (matchId != focus.Pick.MatchId)
+    {
+        focus.Pick.StartMatch(matchId);
+        focus.NextPickMs = nowMs;
+    }
+
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    uint8 const skill = botAI->GetPvpSkill();
+    if (!botAI->TacticActive(TacticId::FocusTarget) ||
+        !FocusTargetCapable(skill, botAI->GetAttribute(BotAttribute::Dexterity),
+                            config.NaturalReaction.Ease.FocusDexterity))
+    {
+        focus.Pick.Set(0, FocusSource::None, nowMs);
+        return;
+    }
+
+    Group* const group = bot->GetGroup();
+    ObjectGuid const moon = group && botAI->GetTacticContext() == TacticContext::Arena
+                                ? group->GetTargetIcon(FOCUS_ICON_MOON)
+                                : ObjectGuid::Empty;
+    Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    ObjectGuid const own = current ? current->GetGUID() : ObjectGuid::Empty;
+    CcBotState const& cc = botAI->GetCcState();
+    ObjectGuid const ccTarget = FocusBefore(nowMs, cc.CcTargetUntilMs) ? cc.CcTarget : ObjectGuid::Empty;
+    Unit* const kept = focus.Pick.Guid ? botAI->GetUnit(ObjectGuid(focus.Pick.Guid)) : nullptr;
+    if (FocusBefore(nowMs, focus.NextPickMs) && moon == focus.SeenMoon && own == focus.SeenOwn &&
+        ccTarget == focus.SeenCc && (!focus.Pick.Guid || FocusCandidate(bot, kept, own)))
+        return;
+
+    focus.NextPickMs = nowMs + FOCUS_TARGET_PICK_MS;
+    focus.SeenMoon = moon;
+    focus.SeenOwn = own;
+    focus.SeenCc = ccTarget;
+
+    // The healer: the kept focus while it still is one, else the first healer-class player of the fight seen healing
+    // (once seen, for the rest of the match)
+    Unit* healer = nullptr;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
+    {
+        Unit* const unit = botAI->GetUnit(guid);
+        if (!FocusCandidate(bot, unit, own) || !InterruptHealerClass(unit->getClass()))
+            continue;
+
+        if (!focus.Pick.Healers.Has(guid.GetRawValue()))
+        {
+            if (!FocusSeenHealing(botAI, unit))
+                continue;
+
+            focus.Pick.Healers.Add(guid.GetRawValue());
+        }
+
+        if (!healer || unit == kept)
+            healer = unit;
+
+        if (unit == kept)
+            break;
+    }
+
+    Unit* const moonUnit = moon.IsEmpty() ? nullptr : botAI->GetUnit(moon);
+    Unit* const ccUnit = ccTarget.IsEmpty() ? nullptr : botAI->GetUnit(ccTarget);
+    FocusPickInput input;
+    input.Moon = FocusCandidate(bot, moonUnit, own);
+    input.Healer = healer != nullptr;
+    input.Cc = FocusCandidate(bot, ccUnit, own);
+    if (input.Moon && input.Healer)
+    {
+        // Teamwork: the plan's moon over the healer, one draw per match and moon (skill 0: Teamwork 99)
+        uint8 const teamwork = skill == 0 ? 99 : botAI->GetAttribute(BotAttribute::Teamwork);
+        uint64 const hash =
+            SplitMix64(bot->GetGUID().GetCounter()) ^ (static_cast<uint64>(matchId) << 32) ^ moon.GetCounter();
+        input.TakesMoon = FocusTakesMoon(FocusMoonShare(teamwork, config.TacticFocus.FocusTargetMoonPctAtTeamwork1,
+                                                        config.TacticFocus.FocusTargetMoonPctAtTeamwork99),
+                                         hash);
+    }
+
+    FocusSource const source = PickFocusSource(input);
+    Unit* pick = nullptr;
+    if (source == FocusSource::Moon)
+        pick = moonUnit;
+    else if (source == FocusSource::Healer)
+        pick = healer;
+    else if (source == FocusSource::Cc)
+        pick = ccUnit;
+
+    if (focus.Pick.Set(pick ? pick->GetGUID().GetRawValue() : 0, source, nowMs))
+        LOG_TRACE("playerbots.reaction", "focus pick skill {} source {} enemy {} own {} moon {} at {}", skill,
+                  FocusSourceName(source), pick ? pick->GetGUID().GetCounter() : 0, own.GetCounter(), moon.GetCounter(),
+                  nowMs);
+}
 }  // namespace
 
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
@@ -708,6 +835,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G5c-c: the Interrupt tactic's match and the enemies' health trend, only while it follows the kick
     if (InterruptFollows(sPlayerbotAIConfig.TacticInterrupt))
         FollowInterruptFight(this, bot, nowMs);
+
+    // G4e: the focus target, while the FocusTarget tactic is on here or a focus is left to clear
+    if (TacticEnabledHere(TacticId::FocusTarget) || (focusState && focusState->Target.Pick.Guid != 0))
+        FollowFocusTarget(this, bot, nowMs);
 
     bool stoppedForKick = false;
 
@@ -4354,6 +4485,50 @@ uint32 GetPvpTestCastGroup(SpellInfo const* spellInfo)
 {
     return GetDiminishingReturnsGroupForSpell(GetCcAuraSpell(spellInfo), false);
 }
+
+// G4e: a kick or a CC on an enemy other than the bot's target: on its focus target (tactics.focusKick, focusCc) or a
+// switch kick (tactics.switchKick; any bot, so the arm without the tactic counts too); counted while the harness
+// counts, kept for tactics show, one trace line each (the own target and the selection before and after the cast; the
+// class by the own target before it)
+void NoteFocusAct(PlayerbotAI* botAI, Player* bot, SpellInfo const* spellInfo, Unit* target, ObjectGuid selectionBefore,
+                  ObjectGuid ownBefore, bool counting, uint32 drGroup)
+{
+    if (!bot->IsHostileTo(target))
+        return;
+
+    bool const kick = InterruptUseOf(spellInfo) == InterruptUse::Kick;
+    bool const cc = !kick && IsPvpTestCcGroup(counting ? drGroup : GetPvpTestCastGroup(spellInfo));
+    if (!kick && !cc)
+        return;
+
+    Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    ObjectGuid const ownAfter = current ? current->GetGUID() : ObjectGuid::Empty;
+    FocusTargetState& focus = botAI->GetFocusState().Target;
+    FocusAct const act = ClassifyFocusAct(target->GetGUID().GetRawValue(), ownBefore.GetRawValue(), focus.Pick.Guid);
+    if (act == FocusAct::None || (act == FocusAct::Switch && !kick))
+        return;
+
+    if (act == FocusAct::Focus)
+    {
+        ++(kick ? focus.Kicks : focus.Ccs);
+        if (counting)
+            botAI->CountTactic(kick ? TacticCounter::FocusKick : TacticCounter::FocusCc);
+    }
+    else
+    {
+        ++focus.SwitchKicks;
+        if (counting)
+            botAI->CountTactic(TacticCounter::SwitchKick);
+    }
+
+    LOG_TRACE("playerbots.reaction",
+              "focus act {} kind {} skill {} enemy {} spell {} source {} own before {} after {} sel before {} after {} "
+              "at {}",
+              act == FocusAct::Focus ? "focus" : "switch", kick ? "kick" : "cc", botAI->GetPvpSkill(),
+              target->GetGUID().GetCounter(), spellInfo->Id,
+              act == FocusAct::Focus ? FocusSourceName(focus.Pick.Source) : "-", ownBefore.GetCounter(),
+              ownAfter.GetCounter(), selectionBefore.GetCounter(), bot->GetTarget().GetCounter(), getMSTime());
+}
 }  // namespace
 
 bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
@@ -4431,6 +4606,27 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     }
 
     ObjectGuid oldSel = bot->GetSelectedUnit() ? bot->GetSelectedUnit()->GetGUID() : ObjectGuid();
+    // G4e: the own target before the cast (the focus act line, while the harness counts or the tactic is on here),
+    // and an action on the focus target (never the own target), which gives the selection back after the cast, a
+    // failed one too (FocusSelectionAfterCast)
+    bool const notesFocus = target != bot && (pvpTestCounting || TacticEnabledHere(TacticId::FocusTarget));
+    bool const onFocus = focusState && focusState->Target.Is(target->GetGUID());
+    ObjectGuid ownBefore;
+    if (notesFocus || onFocus)
+    {
+        Unit* const current = aiObjectContext->GetValue<Unit*>("current target")->Get();
+        ownBefore = current ? current->GetGUID() : ObjectGuid::Empty;
+    }
+
+    bool const focusAct = onFocus && ClassifyFocusAct(target->GetGUID().GetRawValue(), ownBefore.GetRawValue(),
+                                                      focusState->Target.Pick.Guid) == FocusAct::Focus;
+    auto const restoreFocusSelection = [this, &oldSel, target, focusAct]()
+    {
+        if (focusAct)
+            bot->SetSelection(
+                ObjectGuid(FocusSelectionAfterCast(oldSel.GetRawValue(), target->GetGUID().GetRawValue(), true)));
+    };
+
     bot->SetSelection(target->GetGUID());
     WorldObject* faceTo = target;
     if (!bot->HasInArc(CAST_ANGLE_IN_FRONT, faceTo) && (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
@@ -4442,6 +4638,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     if (failWithDelay)
     {
         SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
+        restoreFocusSelection();
         return false;
     }
 
@@ -4544,6 +4741,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
         spell->cancel();
         delete spell;
+        restoreFocusSelection();
         return false;
     }
 
@@ -4636,6 +4834,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
             TellMasterNoFacing(out);
         }
 
+        restoreFocusSelection();
         return false;
     }
     // if (spellInfo->Effects[0].Effect == SPELL_EFFECT_OPEN_LOCK || spellInfo->Effects[0].Effect ==
@@ -4660,8 +4859,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     aiObjectContext->GetValue<PositionMap&>("position")->Get()["random"].Reset();
 
-    if (oldSel)
-        bot->SetSelection(oldSel);
+    if (oldSel || focusAct)
+        bot->SetSelection(
+            ObjectGuid(FocusSelectionAfterCast(oldSel.GetRawValue(), target->GetGUID().GetRawValue(), focusAct)));
 
     if (HasStrategy("debug spell", BOT_STATE_NON_COMBAT))
     {
@@ -4715,6 +4915,10 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
                 CountTactic(TacticCounter::CcOnTarget);
         }
     }
+
+    // G4e: focus and switch actions (the harness's counters, tactics show, the trace line)
+    if (notesFocus)
+        NoteFocusAct(this, bot, spellInfo, target, oldSel, ownBefore, counting, drGroup);
 
     // G0e: a cast with a cast time begins (an instant one was cast inside prepare: its finish row is enough)
     if (NaturalTrace::Any())
@@ -7902,7 +8106,7 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
                   "interrupt decide skill {} enemy {} spell {} cast {} elapsed {} depth {} kind {} kick {} commit {} "
                   "share {:.2f} why {} healer {} fake {:.2f} casting {} at {} use {:.2f} gap {} ready {} hp {} loss "
                   "{:.1f} proj {} high {:.2f} need {:.2f} recent {} cover {} healcast {} react {} reach {} motive "
-                  "{:.2f} held {} expired {}",
+                  "{:.2f} held {} expired {} focus {}",
                   pvpSkill, enemyGuid, slot->SpellId, bar.CastMs, bar.ElapsedMs, input.Deep ? "deep" : "shortcut",
                   input.Deep ? ArenaInterrupt::KindName(input.CastKind) : "-", decision.Kick ? 1 : 0, decision.CommitMs,
                   decision.Share, ArenaInterrupt::ReasonName(decision.Why), healer ? 1 : 0, input.FakeRate,
@@ -7911,7 +8115,7 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
                   hold.FriendHpPct, hold.FriendLossPctPerS, decision.Hold.ProjectedHpPct, decision.Hold.HpHigh,
                   decision.Hold.Need, hold.RecentCastHeal ? 1 : 0, hold.InstantCover ? 1 : 0, hold.HealCastMs,
                   hold.ReactionMs, decision.Hold.Reachable ? 1 : 0, decision.Hold.Motivation, hold.HeldMs,
-                  hold.Expired ? 1 : 0);
+                  hold.Expired ? 1 : 0, focusState && focusState->Target.Is(enemy->GetGUID()) ? 1 : 0);
     }
 
     slot->SeenMs = nowMs;

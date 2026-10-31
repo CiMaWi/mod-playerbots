@@ -10,6 +10,7 @@
 #include <array>
 
 #include "ArenaFocus.h"
+#include "ArenaFocusTarget.h"
 #include "Common.h"
 #include "ObjectGuid.h"
 
@@ -125,12 +126,29 @@ struct FocusMatchState
     uint32 MoonReleases = 0;
 };
 
+// G4e: the focus target (ArenaFocusTarget.h), picked at the bot's checks (PlayerbotAI.cpp's FollowFocusTarget) while
+// the FocusTarget tactic is active and its Dexterity reaches the threshold; none otherwise, so a reader compares guids
+struct FocusTargetState
+{
+    FocusTargetPick Pick;
+    uint32 NextPickMs = 0;
+    ObjectGuid SeenMoon;  // the inputs of the last pick: a change picks again at once
+    ObjectGuid SeenOwn;
+    ObjectGuid SeenCc;
+    uint32 Kicks = 0;  // tactics show: kicks and CC on the focus, kicks on another enemy than the own target
+    uint32 Ccs = 0;
+    uint32 SwitchKicks = 0;
+
+    bool Is(ObjectGuid guid) const { return Pick.Guid != 0 && guid.GetRawValue() == Pick.Guid; }
+};
+
 struct FocusBotState
 {
     FocusParams Params;           // cached by PlayerbotAI::SetPvpSkill (ComputeFocusParams)
     bool AddonKnowledge = false;  // FocusAddonKnowledge at SetPvpSkill
     FocusHoldState Hold;
     FocusMatchState Match;
+    FocusTargetState Target;
     // tactics force immune: this enemy counts as immune to everything until ForcedImmuneUntilMs
     ObjectGuid ForcedImmuneGuid;
     uint32 ForcedImmuneAtMs = 0;

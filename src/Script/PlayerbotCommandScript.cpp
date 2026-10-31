@@ -134,6 +134,7 @@ public:
             {"force", TacticCommands::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
             {"moon", TacticCommands::HandleMoonCommand, SEC_GAMEMASTER, Console::Yes},
             {"ensuretrinket", TacticCommands::HandleEnsureTrinketCommand, SEC_GAMEMASTER, Console::Yes},
+            {"interrupt", TacticCommands::HandleInterruptCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsAttributesCommandTable = {

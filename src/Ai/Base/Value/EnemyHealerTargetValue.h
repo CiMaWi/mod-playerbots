@@ -32,4 +32,15 @@ private:
     uint32 bestUntilMs = 0;
 };
 
+// G4e: the bot's focus target (FocusBotState::Target, picked at its checks), resolved from its guid at every read;
+// none while the FocusTarget tactic is off
+class FocusTargetValue : public UnitCalculatedValue
+{
+public:
+    FocusTargetValue(PlayerbotAI* botAI) : UnitCalculatedValue(botAI, "focus target") {}
+
+protected:
+    Unit* Calculate() override;
+};
+
 #endif

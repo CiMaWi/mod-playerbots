@@ -165,6 +165,10 @@ public:
     // .playerbots tactics ensuretrinket [0|1|2]: prints or sets Playerbots.Tactics.Avoid.EnsureTrinket on the running
     // server (G5a; the next harness match start takes it)
     static bool HandleEnsureTrinketCommand(ChatHandler* handler, char const* args);
+    // .playerbots tactics interrupt [<key> <value>]: prints or sets the interrupt policy keys HoldPolicy,
+    // HoldForHealer, UsePctAtSkill1/99 and AttentionMsAtSkill1/99 on the running server (G5c-c-run's policy A/B on one
+    // server; the next interrupt decision takes them; a restart or rndbot reload restores the conf values)
+    static bool HandleInterruptCommand(ChatHandler* handler, char const* args);
 };
 
 #endif

@@ -225,6 +225,7 @@ public:
         creators["repair cost"] = &ValueContext::repair_cost;
         creators["train cost"] = &ValueContext::train_cost;
         creators["enemy healer target"] = &ValueContext::enemy_healer_target;
+        creators["focus target"] = &ValueContext::focus_target;
         creators["snare target"] = &ValueContext::snare_target;
         creators["formation"] = &ValueContext::formation;
         creators["stance"] = &ValueContext::stance;
@@ -491,6 +492,7 @@ private:
     static UntypedValue* repair_cost(PlayerbotAI* botAI) { return new RepairCostValue(botAI); }
     static UntypedValue* train_cost(PlayerbotAI* botAI) { return new TrainCostValue(botAI); }
     static UntypedValue* enemy_healer_target(PlayerbotAI* botAI) { return new EnemyHealerTargetValue(botAI); }
+    static UntypedValue* focus_target(PlayerbotAI* botAI) { return new FocusTargetValue(botAI); }
     static UntypedValue* snare_target(PlayerbotAI* botAI) { return new SnareTargetValue(botAI); }
     static UntypedValue* speed(PlayerbotAI* botAI) { return new SpeedValue(botAI); }
     static UntypedValue* last_said(PlayerbotAI* botAI) { return new LastSaidValue(botAI); }
