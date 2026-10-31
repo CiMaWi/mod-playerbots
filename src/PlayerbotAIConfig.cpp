@@ -1211,6 +1211,7 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Interrupt.PatienceSharePct", TacticInterrupt.PatienceSharePct, MaxFocusPct);
     focusNumber("Interrupt.HoldForHealer", TacticInterrupt.HoldForHealer, MaxCcSwitch);
     focusNumber("Interrupt.HealerCacheMs", TacticInterrupt.HealerCacheMs, MaxInterruptCacheMs);
+    focusNumber("Interrupt.ArmsPummel", TacticInterrupt.ArmsPummel, MaxCcSwitch);
 
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);

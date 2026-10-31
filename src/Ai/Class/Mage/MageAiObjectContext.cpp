@@ -15,6 +15,7 @@
 #include "NamedObjectContext.h"
 #include "Playerbots.h"
 #include "PullStrategy.h"
+#include "TacticInterruptTrigger.h"
 
 class MageStrategyFactoryInternal : public NamedObjectContext<Strategy>
 {
@@ -94,6 +95,7 @@ public:
         creators["remove curse"] = &MageTriggerFactoryInternal::remove_curse;
         creators["remove curse on party"] = &MageTriggerFactoryInternal::remove_curse_on_party;
         creators["counterspell"] = &MageTriggerFactoryInternal::counterspell;
+        creators["tactic interrupt counterspell"] = &MageTriggerFactoryInternal::tactic_interrupt_counterspell;
         creators["polymorph"] = &MageTriggerFactoryInternal::polymorph;
         creators["spellsteal"] = &MageTriggerFactoryInternal::spellsteal;
         creators["hot streak"] = &MageTriggerFactoryInternal::hot_streak;
@@ -148,6 +150,10 @@ private:
     static Trigger* remove_curse(PlayerbotAI* botAI) { return new RemoveCurseTrigger(botAI); }
     static Trigger* remove_curse_on_party(PlayerbotAI* botAI) { return new PartyMemberRemoveCurseTrigger(botAI); }
     static Trigger* counterspell(PlayerbotAI* botAI) { return new CounterspellInterruptSpellTrigger(botAI); }
+    static Trigger* tactic_interrupt_counterspell(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new CounterspellInterruptSpellTrigger(botAI));
+    }
     static Trigger* polymorph(PlayerbotAI* botAI) { return new PolymorphTrigger(botAI); }
     static Trigger* spellsteal(PlayerbotAI* botAI) { return new SpellstealTrigger(botAI); }
     static Trigger* living_bomb(PlayerbotAI* botAI) { return new LivingBombTrigger(botAI); }

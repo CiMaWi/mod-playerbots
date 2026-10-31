@@ -7,6 +7,8 @@
 #include "WarriorActions.h"
 #include "AiFactory.h"
 #include "Playerbots.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 
 namespace
 {
@@ -231,4 +233,47 @@ bool CastShatteringThrowAction::isPossible()
 
     // If the minimal checks above pass, simply return true.
     return true;
+}
+
+namespace
+{
+// The kick can follow the swap: pummel known and ready, and the rage it costs still there after the stance change
+// (the stance change keeps only Tactical Mastery's share of the rage; an Arms warrior has 15 of its 10 needed)
+bool PummelSwapPossible(PlayerbotAI* botAI)
+{
+    Player* const bot = botAI->GetBot();
+    uint32 const pummel = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "pummel")->Get();
+    SpellInfo const* const info = pummel ? sSpellMgr->GetSpellInfo(pummel) : nullptr;
+    return info && !bot->HasSpellCooldown(pummel) && bot->GetPower(POWER_RAGE) >= info->ManaCost &&
+           botAI->CanCastSpell("berserker stance", bot);
+}
+
+bool InBerserkerStance(Player* bot) { return bot->GetShapeshiftForm() == FORM_BERSERKERSTANCE; }
+}  // namespace
+
+bool CastPummelSwapAction::isPossible()
+{
+    return InBerserkerStance(bot) ? CastPummelAction::isPossible() : PummelSwapPossible(botAI);
+}
+
+bool CastPummelSwapAction::Execute(Event event)
+{
+    return InBerserkerStance(bot) ? CastPummelAction::Execute(event) : botAI->CastSpell("berserker stance", bot);
+}
+
+bool CastPummelSwapOnEnemyHealerAction::isUseful()
+{
+    Unit* const target = GetTarget();
+    return target && bot->IsWithinMeleeRange(target) && CastPummelOnEnemyHealerAction::isUseful();
+}
+
+bool CastPummelSwapOnEnemyHealerAction::isPossible()
+{
+    return InBerserkerStance(bot) ? CastPummelOnEnemyHealerAction::isPossible() : PummelSwapPossible(botAI);
+}
+
+bool CastPummelSwapOnEnemyHealerAction::Execute(Event event)
+{
+    return InBerserkerStance(bot) ? CastPummelOnEnemyHealerAction::Execute(event)
+                                  : botAI->CastSpell("berserker stance", bot);
 }

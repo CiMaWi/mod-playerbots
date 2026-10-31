@@ -13,6 +13,7 @@
 #include "GenericDKNonCombatStrategy.h"
 #include "GenericTriggers.h"
 #include "Playerbots.h"
+#include "TacticInterruptTrigger.h"
 #include "UnholyDKStrategy.h"
 
 class DeathKnightStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -75,6 +76,9 @@ public:
         creators["mind freeze on enemy healer"] = &DeathKnightTriggerFactoryInternal::mind_freeze_on_enemy_healer;
         creators["strangulate"] = &DeathKnightTriggerFactoryInternal::strangulate;
         creators["strangulate on enemy healer"] = &DeathKnightTriggerFactoryInternal::strangulate_on_enemy_healer;
+        creators["tactic interrupt strangulate"] = &DeathKnightTriggerFactoryInternal::tactic_interrupt_strangulate;
+        creators["tactic interrupt strangulate on enemy healer"] =
+            &DeathKnightTriggerFactoryInternal::tactic_interrupt_strangulate_on_enemy_healer;
         creators["blood tap"] = &DeathKnightTriggerFactoryInternal::blood_tap;
         creators["raise dead"] = &DeathKnightTriggerFactoryInternal::raise_dead;
         creators["chains of ice"] = &DeathKnightTriggerFactoryInternal::chains_of_ice;
@@ -124,6 +128,14 @@ private:
     static Trigger* strangulate_on_enemy_healer(PlayerbotAI* botAI)
     {
         return new StrangulateOnEnemyHealerTrigger(botAI);
+    }
+    static Trigger* tactic_interrupt_strangulate(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new StrangulateInterruptSpellTrigger(botAI));
+    }
+    static Trigger* tactic_interrupt_strangulate_on_enemy_healer(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new StrangulateOnEnemyHealerTrigger(botAI));
     }
     static Trigger* blood_tap(PlayerbotAI* botAI) { return new BloodTapTrigger(botAI); }
     static Trigger* raise_dead(PlayerbotAI* botAI) { return new RaiseDeadTrigger(botAI); }
@@ -191,6 +203,7 @@ public:
         creators["blood tap"] = &DeathKnightAiObjectContextInternal::blood_tap;
         creators["pestilence"] = &DeathKnightAiObjectContextInternal::pestilence;
         creators["strangulate"] = &DeathKnightAiObjectContextInternal::strangulate;
+        creators["strangulate on enemy healer"] = &DeathKnightAiObjectContextInternal::strangulate_on_enemy_healer;
         creators["blood boil"] = &DeathKnightAiObjectContextInternal::blood_boil;
         creators["heart strike"] = &DeathKnightAiObjectContextInternal::heart_strike;
         creators["mark of_blood"] = &DeathKnightAiObjectContextInternal::mark_of_blood;
@@ -261,6 +274,10 @@ private:
     static Action* mind_freeze_on_enemy_healer(PlayerbotAI* botAI)
     {
         return new CastMindFreezeOnEnemyHealerAction(botAI);
+    }
+    static Action* strangulate_on_enemy_healer(PlayerbotAI* botAI)
+    {
+        return new CastStrangulateOnEnemyHealerAction(botAI);
     }
 };
 

@@ -91,6 +91,31 @@ public:
 MELEE_ACTION(CastWhirlwindAction, "whirlwind");
 MELEE_ACTION(CastPummelAction, "pummel");
 ENEMY_HEALER_ACTION(CastPummelOnEnemyHealerAction, "pummel");
+
+// Pummel for an Arms warrior (G5c, Playerbots.Tactics.Interrupt.ArmsPummel): it works in Berserker stance only, so
+// outside it the action swaps into the stance first (no kick that tick, the next tick's trigger finds the stance and
+// pummels; the battle stance trigger swaps back once nothing is left to kick). Possible only while the kick can follow:
+// the stance spell castable, pummel known and off cooldown, rage for it after the swap.
+class CastPummelSwapAction : public CastPummelAction
+{
+public:
+    CastPummelSwapAction(PlayerbotAI* botAI) : CastPummelAction(botAI) {}
+
+    std::string const getName() override { return "pummel swap"; }
+    bool isPossible() override;
+    bool Execute(Event event) override;
+};
+
+class CastPummelSwapOnEnemyHealerAction : public CastPummelOnEnemyHealerAction
+{
+public:
+    CastPummelSwapOnEnemyHealerAction(PlayerbotAI* botAI) : CastPummelOnEnemyHealerAction(botAI) {}
+
+    std::string const getName() override { return "pummel swap on enemy healer"; }
+    bool isUseful() override;
+    bool isPossible() override;
+    bool Execute(Event event) override;
+};
 // fury 2.4.3
 MELEE_ACTION(CastVictoryRushAction, "victory rush");
 // fury 3.3.5

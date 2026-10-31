@@ -317,16 +317,28 @@ public:
     CastMindFreezeAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "mind freeze") {}
 };
 
-class CastStrangulateAction : public CastMeleeSpellAction
+// Strangulate reaches 30 yards, Mind Freeze 5 (melee): as an interrupt it is the long-range kick (G5c), kept for a
+// target mind freeze cannot reach, or for one it cannot kick right now (its cooldown is 2 minutes, mind freeze 10 s)
+class CastStrangulateAction : public CastSpellAction
 {
 public:
-    CastStrangulateAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "strangulate") {}
+    CastStrangulateAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "strangulate") {}
+
+    bool isUseful() override;
 };
 
 class CastMindFreezeOnEnemyHealerAction : public CastSpellOnEnemyHealerAction
 {
 public:
     CastMindFreezeOnEnemyHealerAction(PlayerbotAI* botAI) : CastSpellOnEnemyHealerAction(botAI, "mind freeze") {}
+};
+
+class CastStrangulateOnEnemyHealerAction : public CastSpellOnEnemyHealerAction
+{
+public:
+    CastStrangulateOnEnemyHealerAction(PlayerbotAI* botAI) : CastSpellOnEnemyHealerAction(botAI, "strangulate") {}
+
+    bool isUseful() override;
 };
 
 class CastRuneTapAction : public CastMeleeSpellAction

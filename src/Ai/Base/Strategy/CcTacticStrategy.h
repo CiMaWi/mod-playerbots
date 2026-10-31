@@ -165,6 +165,20 @@ public:
     std::string const getName() override { return "tactic trinket"; }
 };
 
+// The class interrupts the specs' own strategies lack (G5c, DT.4): mage counterspell on the current target, DK
+// strangulate (long range, beside mind freeze), priest silence and hunter silencing shot where the spec's strategy
+// does not wire them, and for an Arms warrior pummel with a stance swap (Playerbots.Tactics.Interrupt.ArmsPummel).
+// The triggers are TacticInterruptTrigger wrappers (act only where the Interrupt tactic is on) of the class's own
+// interrupt triggers, so they take part in G5b's decision; the nodes are chosen once here, by class and known spell.
+class TacticInterruptStrategy : public Strategy
+{
+public:
+    TacticInterruptStrategy(PlayerbotAI* botAI) : Strategy(botAI) {}
+
+    void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    std::string const getName() override { return "tactic interrupt"; }
+};
+
 // The Trinket tactic is active (gate), a CC is on the bot, ShouldBreakCc says break (it matters: MinLeftMs or more
 // left while the bot or its partner is at or below its low-health line; else the wasted-break roll of low skill) and
 // a breaker that frees its mechanics is ready (CcBreakAnswer, cached CC_BREAK_REFRESH_MS)

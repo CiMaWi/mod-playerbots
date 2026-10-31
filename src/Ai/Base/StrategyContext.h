@@ -90,6 +90,7 @@ public:
         creators["tactic cc"] = &StrategyContext::tactic_cc;
         creators["pvp cc"] = &StrategyContext::pvp_cc;
         creators["tactic trinket"] = &StrategyContext::tactic_trinket;
+        creators["tactic interrupt"] = &StrategyContext::tactic_interrupt;
         creators["pvp trinket"] = &StrategyContext::pvp_trinket;
         creators["tactic dispel"] = &StrategyContext::tactic_dispel;
         creators["threat"] = &StrategyContext::threat;
@@ -161,6 +162,7 @@ private:
     static Strategy* tactic_cc(PlayerbotAI* botAI) { return new TacticCcStrategy(botAI); }
     static Strategy* pvp_cc(PlayerbotAI* botAI) { return new PvpCcStrategy(botAI); }
     static Strategy* tactic_trinket(PlayerbotAI* botAI) { return new TacticTrinketStrategy(botAI); }
+    static Strategy* tactic_interrupt(PlayerbotAI* botAI) { return new TacticInterruptStrategy(botAI); }
     static Strategy* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketStrategy(botAI); }
     static Strategy* tactic_dispel(PlayerbotAI* botAI) { return new TacticDispelStrategy(botAI); }
     static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }

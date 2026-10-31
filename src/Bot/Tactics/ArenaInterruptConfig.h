@@ -28,6 +28,7 @@ struct InterruptConfig
     uint32 PatienceSharePct = 10;  // Patience 100 adds it, Patience 0 takes it off (50: neutral)
     uint32 HoldForHealer = 1;      // 1 = no kick on a damage cast while an enemy healer is in reach
     uint32 HealerCacheMs = 200;    // "enemy healer target": how long its best target is kept
+    uint32 ArmsPummel = 0;         // 1 = an Arms warrior swaps into Berserker stance to pummel (G5c)
 };
 
 #endif

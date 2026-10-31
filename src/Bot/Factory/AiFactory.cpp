@@ -534,6 +534,12 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->addStrategy("pvp trinket", false);
     }
 
+    // Interrupt gaps (G5c): "tactic interrupt" (the class interrupts the specs' strategies lack) with the Interrupt
+    // tactic enabled or the harness on; its triggers test the tactic's mask and scope at run time
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Interrupt)].Enable || tactics.PvpTestEnable))
+        engine->addStrategy("tactic interrupt", false);
+
     uint8 const cleanser = player->getClass();
     if (tactics.TacticsEnable && (cleanser == CLASS_PRIEST || cleanser == CLASS_PALADIN || cleanser == CLASS_SHAMAN) &&
         (tactics.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || tactics.PvpTestEnable))

@@ -2302,6 +2302,16 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Interrupt.PatienceSharePct = 10
 # Playerbots.Tactics.Interrupt.HoldForHealer = 1
 # Playerbots.Tactics.Interrupt.HealerCacheMs = 200
+#
+# With the Interrupt tactic enabled (or the PvP harness on), the strategy "tactic interrupt" adds the class kicks the
+# specs' own strategies lack, all through the decision above: the mage's counterspell on the current target, the death
+# knight's strangulate (30 yards; mind freeze is 5, so strangulate is the long-range kick and the backup while mind
+# freeze is not ready), a priest's silence outside Shadow and a hunter's silencing shot outside Marksmanship, for
+# every spec that knows the spell. An Arms warrior has no kick in Battle stance (pummel needs Berserker stance):
+# ArmsPummel 1 lets it swap into Berserker stance for a kick worth taking (the battle stance trigger swaps back), at
+# the cost of the stance change's rage and one tick. 0 (the default): an Arms warrior never interrupts. Read when the
+# bot's engine is built (login or strategy reset), not on a config reload.
+# Playerbots.Tactics.Interrupt.ArmsPummel = 0
 # (Ranges: percents 0-100, CancelMinCasts 0-20, HoldForHealer 0-1, HealerCacheMs 0-5000.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.

@@ -11,6 +11,26 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 
+namespace
+{
+// Strangulate as an interrupt (G5c): the target is out of mind freeze's melee range, or mind freeze cannot be cast now
+bool StrangulateIsWorthIt(PlayerbotAI* botAI, Unit* target)
+{
+    Player* const bot = botAI->GetBot();
+    return target && (!bot->IsWithinMeleeRange(target) || !botAI->CanCastSpell("mind freeze", target));
+}
+}  // namespace
+
+bool CastStrangulateAction::isUseful()
+{
+    return StrangulateIsWorthIt(botAI, GetTarget()) && CastSpellAction::isUseful();
+}
+
+bool CastStrangulateOnEnemyHealerAction::isUseful()
+{
+    return StrangulateIsWorthIt(botAI, GetTarget()) && CastSpellAction::isUseful();
+}
+
 std::vector<NextAction> CastDeathchillAction::getPrerequisites()
 {
     return NextAction::merge({ NextAction("frost presence") },

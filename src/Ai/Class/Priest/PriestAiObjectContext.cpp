@@ -15,6 +15,7 @@
 #include "PriestTriggers.h"
 #include "PullStrategy.h"
 #include "ShadowPriestStrategy.h"
+#include "TacticInterruptTrigger.h"
 
 class PriestStrategyFactoryInternal : public NamedObjectContext<Strategy>
 {
@@ -105,6 +106,9 @@ public:
         creators["chastise"] = &PriestTriggerFactoryInternal::chastise;
         creators["silence"] = &PriestTriggerFactoryInternal::silence;
         creators["silence on enemy healer"] = &PriestTriggerFactoryInternal::silence_on_enemy_healer;
+        creators["tactic interrupt silence"] = &PriestTriggerFactoryInternal::tactic_interrupt_silence;
+        creators["tactic interrupt silence on enemy healer"] =
+            &PriestTriggerFactoryInternal::tactic_interrupt_silence_on_enemy_healer;
         creators["shadowfiend"] = &PriestTriggerFactoryInternal::shadowfiend;
         creators["mind sear channel check"] = &PriestTriggerFactoryInternal::mind_sear_channel_check;
     }
@@ -146,6 +150,14 @@ private:
     static Trigger* shadowfiend(PlayerbotAI* botAI) { return new ShadowfiendTrigger(botAI); }
     static Trigger* silence_on_enemy_healer(PlayerbotAI* botAI) { return new SilenceEnemyHealerTrigger(botAI); }
     static Trigger* silence(PlayerbotAI* botAI) { return new SilenceTrigger(botAI); }
+    static Trigger* tactic_interrupt_silence(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new SilenceTrigger(botAI));
+    }
+    static Trigger* tactic_interrupt_silence_on_enemy_healer(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new SilenceEnemyHealerTrigger(botAI));
+    }
     static Trigger* chastise(PlayerbotAI* botAI) { return new ChastiseTrigger(botAI); }
     static Trigger* binding_heal(PlayerbotAI* botAI) { return new BindingHealTrigger(botAI); }
     static Trigger* mind_sear_channel_check(PlayerbotAI* botAI) { return new MindSearChannelCheckTrigger(botAI); }

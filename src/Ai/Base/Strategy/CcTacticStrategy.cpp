@@ -15,6 +15,7 @@
 #include <span>
 #include <string_view>
 
+#include "AiFactory.h"
 #include "ArenaCc.h"
 #include "ArenaCcSpells.h"
 #include "Bag.h"
@@ -2216,6 +2217,57 @@ void TacticTrinketStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     }
 
     triggers.push_back(new TriggerNode("cc matters", actions));
+}
+
+void TacticInterruptStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+{
+    Player* const bot = botAI->GetBot();
+    auto const knows = [this](char const* spell)
+    { return botAI->GetAiObjectContext()->GetValue<uint32>("spell id", spell)->Get() != 0; };
+    auto const add = [&triggers](char const* trigger, char const* action, float relevance)
+    { triggers.push_back(new TriggerNode(trigger, {NextAction(action, relevance)})); };
+
+    // The spec index (talent tab) of the spec strategies that wire their own kick (ShadowPriestStrategy: silence and
+    // silence on enemy healer; MarksmanshipHunterStrategy: silencing shot), which is never doubled here
+    uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
+    switch (bot->getClass())
+    {
+        case CLASS_MAGE:
+            // GenericMageStrategy wires counterspell on enemy healer only
+            if (knows("counterspell"))
+                add("tactic interrupt counterspell", "counterspell", ACTION_INTERRUPT + 1);
+            break;
+        case CLASS_DEATH_KNIGHT:
+            // Mind freeze (melee range) is wired in GenericDKStrategy: strangulate (30 yards) takes the rest
+            if (knows("strangulate"))
+            {
+                add("tactic interrupt strangulate", "strangulate", ACTION_INTERRUPT);
+                add("tactic interrupt strangulate on enemy healer", "strangulate on enemy healer", ACTION_INTERRUPT);
+            }
+            break;
+        case CLASS_PRIEST:
+            if (tab != PRIEST_TAB_SHADOW && knows("silence"))
+            {
+                add("tactic interrupt silence", "silence", ACTION_INTERRUPT + 1);
+                add("tactic interrupt silence on enemy healer", "silence on enemy healer", ACTION_INTERRUPT);
+            }
+            break;
+        case CLASS_HUNTER:
+            if (tab != HUNTER_TAB_MARKSMANSHIP && knows("silencing shot"))
+                add("tactic interrupt silencing shot", "silencing shot", ACTION_INTERRUPT);
+            break;
+        case CLASS_WARRIOR:
+            // Fury and Protection wire pummel or shield bash themselves; Arms (Battle stance, no shield) needs the swap
+            if (tab == WARRIOR_TAB_ARMS && sPlayerbotAIConfig.TacticInterrupt.ArmsPummel != 0 && knows("pummel") &&
+                knows("berserker stance"))
+            {
+                add("tactic interrupt pummel", "pummel swap", ACTION_INTERRUPT);
+                add("tactic interrupt pummel on enemy healer", "pummel swap on enemy healer", ACTION_INTERRUPT);
+            }
+            break;
+        default:
+            break;
+    }
 }
 
 bool CcMattersTrigger::IsActive() { return CcBreakAnswer(botAI) != CcBreaker::None; }

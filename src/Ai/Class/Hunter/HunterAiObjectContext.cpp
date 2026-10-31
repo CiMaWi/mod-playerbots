@@ -15,6 +15,7 @@
 #include "NamedObjectContext.h"
 #include "Playerbots.h"
 #include "SurvivalHunterStrategy.h"
+#include "TacticInterruptTrigger.h"
 
 class HunterStrategyFactoryInternal : public NamedObjectContext<Strategy>
 {
@@ -92,6 +93,7 @@ public:
         creators["explosive shot"] = &HunterTriggerFactoryInternal::explosive_shot;
         creators["lock and load"] = &HunterTriggerFactoryInternal::lock_and_load;
         creators["silencing shot"] = &HunterTriggerFactoryInternal::silencing_shot;
+        creators["tactic interrupt silencing shot"] = &HunterTriggerFactoryInternal::tactic_interrupt_silencing_shot;
         creators["intimidation"] = &HunterTriggerFactoryInternal::intimidation;
         creators["volley channel check"] = &HunterTriggerFactoryInternal::volley_channel_check;
     }
@@ -128,6 +130,10 @@ private:
     static Trigger* explosive_shot(PlayerbotAI* botAI) { return new ExplosiveShotTrigger(botAI); }
     static Trigger* lock_and_load(PlayerbotAI* botAI) { return new LockAndLoadTrigger(botAI); }
     static Trigger* silencing_shot(PlayerbotAI* botAI) { return new SilencingShotTrigger(botAI); }
+    static Trigger* tactic_interrupt_silencing_shot(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new SilencingShotTrigger(botAI));
+    }
     static Trigger* intimidation(PlayerbotAI* botAI) { return new IntimidationTrigger(botAI); }
     static Trigger* volley_channel_check(PlayerbotAI* botAI) { return new VolleyChannelCheckTrigger(botAI); }
 };

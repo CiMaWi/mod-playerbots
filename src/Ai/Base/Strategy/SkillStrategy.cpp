@@ -47,6 +47,8 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"kidney shot", C::Interrupt},
         {"pummel", C::Interrupt},
         {"pummel on enemy healer", C::Interrupt},
+        {"pummel swap", C::Interrupt},
+        {"pummel swap on enemy healer", C::Interrupt},
         {"shield bash", C::Interrupt},
         {"shield bash on enemy healer", C::Interrupt},
         {"wind shear", C::Interrupt},

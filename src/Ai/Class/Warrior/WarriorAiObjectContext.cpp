@@ -11,6 +11,7 @@
 #include "NamedObjectContext.h"
 #include "Playerbots.h"
 #include "TankWarriorStrategy.h"
+#include "TacticInterruptTrigger.h"
 #include "WarriorActions.h"
 #include "WarriorPullStrategy.h"
 #include "WarriorTriggers.h"
@@ -83,6 +84,9 @@ public:
         creators["berserker rage"] = &WarriorTriggerFactoryInternal::berserker_rage;
         creators["pummel on enemy healer"] = &WarriorTriggerFactoryInternal::pummel_on_enemy_healer;
         creators["pummel"] = &WarriorTriggerFactoryInternal::pummel;
+        creators["tactic interrupt pummel"] = &WarriorTriggerFactoryInternal::tactic_interrupt_pummel;
+        creators["tactic interrupt pummel on enemy healer"] =
+            &WarriorTriggerFactoryInternal::tactic_interrupt_pummel_on_enemy_healer;
         creators["intercept on enemy healer"] = &WarriorTriggerFactoryInternal::intercept_on_enemy_healer;
         creators["intercept"] = &WarriorTriggerFactoryInternal::intercept;
         creators["taunt on snare target"] = &WarriorTriggerFactoryInternal::taunt_on_snare_target;
@@ -152,6 +156,14 @@ private:
         return new InterceptInterruptEnemyHealerSpellTrigger(botAI);
     }
     static Trigger* pummel(PlayerbotAI* botAI) { return new PummelInterruptSpellTrigger(botAI); }
+    static Trigger* tactic_interrupt_pummel(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new PummelInterruptSpellTrigger(botAI));
+    }
+    static Trigger* tactic_interrupt_pummel_on_enemy_healer(PlayerbotAI* botAI)
+    {
+        return new TacticInterruptTrigger(botAI, new PummelInterruptEnemyHealerSpellTrigger(botAI));
+    }
     static Trigger* pummel_on_enemy_healer(PlayerbotAI* botAI)
     {
         return new PummelInterruptEnemyHealerSpellTrigger(botAI);
@@ -226,6 +238,8 @@ public:
         creators["whirlwind"] = &WarriorAiObjectContextInternal::whirlwind;
         creators["pummel"] = &WarriorAiObjectContextInternal::pummel;
         creators["pummel on enemy healer"] = &WarriorAiObjectContextInternal::pummel_on_enemy_healer;
+        creators["pummel swap"] = &WarriorAiObjectContextInternal::pummel_swap;
+        creators["pummel swap on enemy healer"] = &WarriorAiObjectContextInternal::pummel_swap_on_enemy_healer;
         creators["recklessness"] = &WarriorAiObjectContextInternal::recklessness;
         creators["piercing howl"] = &WarriorAiObjectContextInternal::piercing_howl;
         creators["rampage"] = &WarriorAiObjectContextInternal::rampage;
@@ -302,6 +316,11 @@ private:
     static Action* whirlwind(PlayerbotAI* botAI) { return new CastWhirlwindAction(botAI); }
     static Action* pummel(PlayerbotAI* botAI) { return new CastPummelAction(botAI); }
     static Action* pummel_on_enemy_healer(PlayerbotAI* botAI) { return new CastPummelOnEnemyHealerAction(botAI); }
+    static Action* pummel_swap(PlayerbotAI* botAI) { return new CastPummelSwapAction(botAI); }
+    static Action* pummel_swap_on_enemy_healer(PlayerbotAI* botAI)
+    {
+        return new CastPummelSwapOnEnemyHealerAction(botAI);
+    }
     static Action* piercing_howl(PlayerbotAI* botAI) { return new CastPiercingHowlAction(botAI); }
     static Action* rampage(PlayerbotAI* botAI) { return new CastRampageAction(botAI); }
     static Action* intervene(PlayerbotAI* botAI) { return new CastInterveneAction(botAI); }
