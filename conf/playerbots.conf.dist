@@ -1750,19 +1750,25 @@ Playerbots.Natural.Cadence.Contexts = "Arena,Battleground"
 Playerbots.Natural.Cadence.NearRealPlayerYards = 0
 
 # Natural facing and turning (G2a): in Contexts (a tactic scope; PvP fights only unless OutsidePvpInSight) a bot that
-# turns to its target no longer snaps to it at once: a turn is a minimum-jerk flick (angle(t) = from + d * (10u^3 -
-# 15u^4 + 6u^5), u = t / duration), its duration from the angle and the bot's skill (MsFor180AtSkill1..99 for 180
-# degrees, at least MinMs), an aim error drawn once per turn (log-normal, ErrorDegAtSkill1..99 degrees, spread
-# ErrorSigmaPct), an optional correction sub-flick CorrectionDelayMinMs..MaxMs later (chance CorrectionPctAtSkill1..99,
-# leaving CorrectionResidualPct of the error), and a low-skill bot sometimes turns at a constant KeyboardDegPerS
-# (chance KeyboardPctAtSkill1..99). Casts and swings still wait for the core's facing arcs, so a cast needing facing
-# fails and is retried every CastRetryMs until the arc holds. The server orientation is written every step; a movement
-# packet follows only on a change of more than PacketMinDeg and at least PacketMinMs after the last one. Mode 1:
-# heartbeat packets (default); Mode 2: one facing spline per turn of at least SplineMinDeg (smaller turns are an
-# orientation only). OutsidePvpInSight 1: also out of PvP, for a bot with a real player within InSightYards (the
-# answer is kept InSightCacheMs). Scripted raid and dungeon facing is untouched. Needs the Natural tactic enabled for
-# the bot (Playerbots.Tactics.Natural.Enable) like the other natural layers. With Playerbots.PerfMonEnabled the row
-# NaturalTurn::Step shows the cost. Default: off (the instant snap).
+# turns to its target at the four combat facing points (attack start, the facing action, a cast's start and a cast in
+# progress) no longer snaps to it at once: a turn is a minimum-jerk flick (angle(t) = from + d * (10u^3 - 15u^4 +
+# 6u^5), u = t / duration), its duration from the angle and the bot's Dexterity (MsFor180AtSkill1..99 for 180 degrees,
+# at least MinMs, about 15 % spread), an aim error drawn once per turn (log-normal, ErrorDegAtSkill1..99 degrees,
+# spread ErrorSigmaPct, less for a narrow turn), an optional correction sub-flick CorrectionDelayMinMs..MaxMs later
+# (chance CorrectionPctAtSkill1..99, leaving CorrectionResidualPct of the error), and a low-skill bot sometimes turns
+# at a constant KeyboardDegPerS (chance KeyboardPctAtSkill1..99). A cast needing facing waits while its target is
+# outside the core's 180-degree arc (the bot tries again after CastRetryMs); swings wait for the core's own arc. The
+# server orientation is written at every map update; a heartbeat packet follows only on a change of more than
+# PacketMinDeg at least PacketMinMs after the last one, and the turn's end goes out as soon as that rate allows.
+# Mode 1: heartbeat packets (default); Mode 2: one facing spline per leg of at least SplineMinDeg (smaller legs use the
+# heartbeat rule). A moving bot keeps the snap (its path sets its facing). OutsidePvpInSight 1: also out of PvP and
+# out of dungeons and raids, for a bot with a real player within InSightYards (the answer is kept InSightCacheMs).
+# Scripted raid and dungeon facing is untouched. Needs the Natural tactic enabled for the bot
+# (Playerbots.Tactics.Natural.Enable) like the other natural layers. .playerbots tactics selftest turn checks the
+# curve; tactics show prints a "turn:" line; harness counters tactics.turnFlicks, turnWaitMs, faceFails. With
+# Playerbots.PerfMonEnabled the rows NaturalTurn::Step (the pre-gate cost), NaturalTurn::Face, NaturalTurn::Packet
+# (heartbeats sent by turns) and NaturalTurn::Snap (snaps at the four points while it is off for the bot) show the
+# cost and the packet counts. Default: off (the instant snap).
 # Playerbots.Natural.Facing.Enable = 0
 # Playerbots.Natural.Facing.Contexts = "Arena,Battleground,World"
 # Playerbots.Natural.Facing.OutsidePvpInSight = 0

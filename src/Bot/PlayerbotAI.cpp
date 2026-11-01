@@ -975,12 +975,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                     return;
                 }
 
-                // Ensure bot is facing target if necessary
+                // Ensure bot is facing target if necessary (G2a: the natural turn where it applies, else the snap)
                 if (spellTarget && !bot->HasInArc(CAST_ANGLE_IN_FRONT, spellTarget) &&
                     (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
-                {
-                    ServerFacade::instance().SetFacingTo(bot, spellTarget);
-                }
+                    FaceTarget(spellTarget);
 
                 // The own cast as the bot sees it; stopped for a kick (user note 1) the engine runs in this check
                 uint32 const ownLeft = static_cast<uint32>(std::max(0, currentSpell->GetCastTimeRemaining()));
@@ -1882,6 +1880,12 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
 
     if (!bot || !bot->IsInWorld() || bot->IsDuringRemoveFromWorld())
         return;
+
+    // G2a: a cast the core refused for the facing arc (tactics.faceFails; the snap and the natural facing alike).
+    // SMSG_CAST_FAILED: cast count (uint8), spell id (uint32), result (uint8).
+    if (pvpTestCounting && packet.GetOpcode() == SMSG_CAST_FAILED && packet.size() > 5 &&
+        packet.read<uint8>(5) == SPELL_FAILED_UNIT_NOT_INFRONT)
+        CountTactic(TacticCounter::FaceFails);
 
     switch (packet.GetOpcode())
     {
@@ -4877,8 +4881,32 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     WorldObject* faceTo = target;
     if (!bot->HasInArc(CAST_ANGLE_IN_FRONT, faceTo) && (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
     {
-        ServerFacade::instance().SetFacingTo(bot, faceTo);
+        // G2a: under the natural facing the bot turns, and the cast waits while the target is outside the core's
+        // 180-degree arc (the engine tries again after CastRetryMs); else the snap, as before
+        if (!FaceTarget(faceTo))
+        {
+            TurnBotState& turn = GetTurnState();
+            if (turn.CastWaitSinceMs == 0)
+                turn.CastWaitSinceMs = std::max(getMSTime(), 1u);
+
+            SetNextCheckDelay(sPlayerbotAIConfig.NaturalFacing.CastRetryMs);
+            restoreFocusSelection();
+            return false;
+        }
         // failWithDelay = true;
+    }
+
+    // G2a: a cast that waited for the bot's turn goes ahead (tactics.turnWaitMs; casts that need the facing only)
+    if (turnState && turnState->CastWaitSinceMs != 0 && (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
+    {
+        uint32 const waitMs = TurnCastWaitMs(turnState->CastWaitSinceMs, getMSTime());
+        turnState->CastWaitSinceMs = 0;
+        if (waitMs != 0)
+        {
+            ++turnState->CastWaits;
+            turnState->CastWaitMs += waitMs;
+            CountTactic(TacticCounter::TurnWaitMs, waitMs);
+        }
     }
 
     if (failWithDelay)
@@ -7992,6 +8020,8 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
                                                         config.SkillGate.CurveExponent, config.TacticDefensive);
     // The Fake tactic's numbers (G5e), cached whatever its Enable says; skill 0 gives skill 99's
     GetFakeState().Params = ComputeFakeParams(skill, attributes, config.TacticFake);
+    // The natural facing's numbers (G2a), cached whatever Natural.Facing.Enable says; skill 0 gives skill 99's
+    GetTurnState().Params = ComputeTurnParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
     if (skill == 0)
         return;
 
@@ -8086,7 +8116,13 @@ FakeBotState& PlayerbotAI::GetFakeState()
 TurnBotState& PlayerbotAI::GetTurnState()
 {
     if (!turnState)
+    {
+        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         turnState = std::make_unique<TurnBotState>();
+        turnState->Params =
+            ComputeTurnParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
+    }
 
     return *turnState;
 }
@@ -8099,9 +8135,82 @@ TrackBotState& PlayerbotAI::GetTrackState()
     return *trackState;
 }
 
-// The pre-gate stepper (G5e; G2a adds its turn): UpdateAI calls it on every Player::Update while naturalPreGate, before
-// the AI check delay and CanUpdateAI, so a fake's cancel lands within half a map tick of its instant whatever
-// nextAICheckDelay is. naturalPreGate stays on while anything is pending.
+// G2a: whether the bot turns naturally now (NaturalTurn.h)
+bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs)
+{
+    TurnConfig const& config = sPlayerbotAIConfig.NaturalFacing;
+    if (!config.Enable || !botAI->TacticEnabledHere(TacticId::Natural))
+        return false;
+
+    TacticContext const context = botAI->GetTacticContext();
+    if (config.Contexts & TacticContextBit(context))
+        return true;
+
+    // Out of PvP only in a real player's sight, and never in a dungeon or raid (their scripted facing stays exact)
+    Player* const bot = botAI->GetBot();
+    Map* const map = bot ? bot->GetMap() : nullptr;
+    if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
+        return false;
+
+    TurnBotState& state = botAI->GetTurnState();
+    if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
+    {
+        state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
+        state.InSightCheckedMs = std::max(nowMs, 1u);
+    }
+
+    return state.InSight;
+}
+
+namespace
+{
+// G2a: one step of the bot's turn at the pre-gate point. A moving, controlled or dead bot ends it (a moving bot faces
+// its path); the correction looks its target up again (same map). True while the turn has work left.
+bool StepNaturalTurn(Player* bot, TurnBotState& state, uint32 nowMs)
+{
+    if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !bot->IsAlive())
+    {
+        state.Stop();
+        return false;
+    }
+
+    bool haveTarget = false;
+    float targetRad = 0.0f;
+    if (TurnNeedsTarget(state, nowMs))
+    {
+        WorldObject* const target = ObjectAccessor::GetWorldObject(*bot, ObjectGuid(state.TargetGuid));
+        if (target && target != bot && target->IsInWorld() && target->GetMapId() == bot->GetMapId())
+        {
+            haveTarget = true;
+            targetRad = bot->GetAngle(target);
+        }
+    }
+
+    TurnStepOut const out = StepTurn(state, nowMs, bot->GetOrientation(), haveTarget, targetRad);
+    if (out.Write)
+        bot->SetOrientation(out.Orientation);
+
+    // As the snap: no packet while rooted
+    if (!bot->IsRooted())
+    {
+        if (out.Spline)
+            bot->SetFacingTo(out.SplineRad);
+
+        if (out.Packet)
+        {
+            PerfMonitorScope scope(
+                PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Packet") : nullptr);
+            bot->SendMovementFlagUpdate(true);
+        }
+    }
+
+    return state.Active();
+}
+}  // namespace
+
+// The pre-gate stepper (G5e's fake cast, G2a's turn): UpdateAI calls it on every Player::Update while naturalPreGate,
+// before the AI check delay and CanUpdateAI, so a fake's cancel lands within half a map tick of its instant whatever
+// nextAICheckDelay is, and a turn moves every update. naturalPreGate stays on while anything is pending.
 void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
 {
     bool pending = false;
@@ -8116,14 +8225,66 @@ void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
             nextAICheckDelay = std::min(nextAICheckDelay, GetReactDelay());
     }
 
+    // G2a: the turn's step (the server orientation every update, heartbeats by the packet rule)
+    if (turnState && turnState->Active())
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Step")
+                                                        : nullptr);
+        pending = StepNaturalTurn(bot, *turnState, nowMs) || pending;
+    }
+
     naturalPreGate = pending;
 }
 
-// 13e-0 scaffold: no turn state yet, so this is today's instant snap; G2a replaces it
+// G2a: face the target the natural way where NaturalFacingHere says so, else the instant snap (as before; also for a
+// moving bot, whose path sets its facing). A turn under way to the same object goes on; anything else starts a new
+// one from the bot's orientation now. True when the target is inside the core's 180-degree spell arc (Spell.cpp
+// CheckCast), so a cast may go ahead while the turn finishes.
 bool PlayerbotAI::FaceTarget(WorldObject* target)
 {
-    ServerFacade::instance().SetFacingTo(bot, target);
-    return true;
+    if (!target)
+        return false;
+
+    uint32 const nowMs = getMSTime();
+    if (bot->isMoving() || !NaturalFacingHere(this, nowMs))
+    {
+        if (turnState)
+        {
+            turnState->Stop();
+            ++turnState->Snaps;
+        }
+
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Snap")
+                                                        : nullptr);
+        ServerFacade::instance().SetFacingTo(bot, target);
+        return true;
+    }
+
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Face")
+                                                    : nullptr);
+    TurnBotState& state = GetTurnState();
+    uint64 const targetGuid = target->GetGUID().GetRawValue();
+    if (!state.Turning() || state.TargetGuid != targetGuid)
+    {
+        TurnRefreshRules(state.Params, sPlayerbotAIConfig.NaturalFacing);
+        float const targetRad = bot->GetAngle(target);
+        TurnPlan const plan = PlanTurn(state.Params, bot->GetOrientation(), targetRad, nowMs,
+                                       TurnHash(bot->GetGUID().GetCounter(), nowMs, state.Turns));
+        state.Begin(plan, targetGuid, nowMs);
+        if (plan.Leg.Spline && !bot->IsRooted())
+            bot->SetFacingTo(plan.Leg.Goal());
+
+        naturalPreGate = true;
+        CountTactic(TacticCounter::TurnFlicks);
+        LOG_TRACE("playerbots",
+                  "Turn: {} turns {} deg to {} in {} ms ({}), error {:.1f} deg, correction in {} ms (0: none), "
+                  "skill {}, at {} ms",
+                  bot->GetName(), state.LastTurnDeg, target->GetName(), plan.Leg.DurMs,
+                  plan.Leg.Keyboard ? "keyboard" : (plan.Leg.Spline ? "spline" : "flick"), state.LastErrorDeg,
+                  plan.Correct ? plan.CorrectDelayMs : 0u, GetPvpSkill(), nowMs);
+    }
+
+    return bot->HasInArc(static_cast<float>(M_PI), target);
 }
 
 namespace

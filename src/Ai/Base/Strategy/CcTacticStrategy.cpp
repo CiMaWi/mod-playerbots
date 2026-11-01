@@ -2620,8 +2620,9 @@ void DefensiveNoteLethalHit(Unit* victim, uint32 damage)
 
     Player* const bot = victim->ToPlayer();
     PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
-    // A duel stops at 1 health (Unit::DealDamage); cheat god never reaches OnDamage
-    if (!botAI || !botAI->IsPvpTestCounting() || bot->duel)
+    // Neither dies: a duel stops at 1 health, and cheat god returns after OnDamage without the damage (both in
+    // Unit::DealDamage)
+    if (!botAI || !botAI->IsPvpTestCounting() || bot->duel || bot->GetCommandStatus(CHEAT_GOD))
         return;
 
     DefensiveBotState& state = botAI->GetDefensiveState();

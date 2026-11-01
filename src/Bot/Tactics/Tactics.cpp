@@ -32,6 +32,7 @@
 #include "Item.h"
 #include "NaturalCast.h"
 #include "NaturalReaction.h"
+#include "NaturalTurn.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -2498,6 +2499,26 @@ void RunFakeSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G2a: the natural facing's pure parts (NaturalTurn.h; the offline harness runs the same checks)
+void RunTurnSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunTurnChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest turn FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest turn: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4281,6 +4302,20 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             fake.KicksSeen, FakeVerdictName(fake.LastVerdict), fake.LastCancelPct, fake.LastErrorMs,
             fake.LastFakeMs ? getMSTimeDiff(fake.LastFakeMs, nowMs) : 0u, fake.Pending() ? "yes" : "no");
     }
+    // G2a: the natural facing (its numbers, what the bot turned, sent and waited)
+    {
+        TurnBotState const& turn = botAI->GetTurnState();
+        TurnParams const& params = turn.Params;
+        handler->PSendSysMessage(
+            "  turn: {}, mode {}, 180 in {} ms, error {:.1f} deg, correction {} %, keyboard {} %; turns {} (keyboard "
+            "{}), corrections {}, packets {}, splines {}, snaps {}, abandoned {}, cast waits {} ({} ms); last {} deg "
+            "in {} ms, error {:.1f} deg, {} ms ago; turning {}",
+            NaturalFacingHere(botAI, nowMs) ? "on here" : "off here", params.Mode, params.MsFor180, params.ErrorDeg,
+            params.CorrectionPct, params.KeyboardPct, turn.Turns, turn.KeyboardTurns, turn.Corrections, turn.Packets,
+            turn.Splines, turn.Snaps, turn.Abandons, turn.CastWaits, turn.CastWaitMs, turn.LastTurnDeg,
+            turn.LastTurnDurMs, turn.LastErrorDeg, turn.LastTurnMs ? getMSTimeDiff(turn.LastTurnMs, nowMs) : 0u,
+            turn.Active() ? "yes" : "no");
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4436,10 +4471,13 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 {
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
-        name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake")
+        name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake" &&
+        name != "turn")
     {
         handler->PSendSysMessage(
-            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, fake",
+            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, "
+            "fake, "
+            "turn",
             name);
         return false;
     }
@@ -4470,6 +4508,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "fake")
         RunFakeSelftest(handler);
+
+    if (name.empty() || name == "turn")
+        RunTurnSelftest(handler);
 
     return true;
 }

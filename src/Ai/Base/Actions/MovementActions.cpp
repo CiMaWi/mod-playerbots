@@ -2627,7 +2627,7 @@ bool SetFacingTargetAction::Execute(Event /*event*/)
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
         return true;
 
-    ServerFacade::instance().SetFacingTo(bot, target);
+    botAI->FaceTarget(target);  // G2a: the natural turn where it applies, else the snap
     botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
     return true;
 }

@@ -186,8 +186,9 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
         bot->StopMoving();
     }
 
+    // G2a: the natural turn where it applies (the swing waits for the core's arc), else the snap
     if (botAI->CanMove() && !bot->HasInArc(CAST_ANGLE_IN_FRONT, target))
-        ServerFacade::instance().SetFacingTo(bot, target);
+        botAI->FaceTarget(target);
 
     botAI->ChangeEngine(BOT_STATE_COMBAT);
 
