@@ -456,6 +456,14 @@ private:
     std::array<Enemy, CC_MEMORY_ENEMIES> Enemies{};
 };
 
+// G6d-a: a bot of a class in the mask (1 << (class - 1), Avoid.*GuardExemptClasses) skips that own-break guard. A DoT
+// class (affliction warlock, shadow priest) has its periodic damage on every enemy, so the DoT guard would take its
+// fear away whenever it keeps its team's CC, which a skilled bot does more often than a weak one
+inline bool CcGuardExempt(uint32 classMask, uint8 classId)
+{
+    return classId >= 1 && classId <= 32 && (classMask & (1u << (classId - 1))) != 0;
+}
+
 // "Cautious bots break earlier" (G5a): the low-health line of the bot's own breaks, LowHealthPct moved by
 // Avoid.CautiousLowHealthPct x (Caution - 50) / 50 (Caution 50 or a shift of 0: LowHealthPct)
 inline uint8 CcBreakLowHealthPct(uint8 lowHealthPct, uint8 caution, uint32 cautiousShiftPct)

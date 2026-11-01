@@ -1148,9 +1148,10 @@ void PvpCcStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     multipliers.push_back(new TacticCcMultiplier(botAI));
     // G4c-d: the guards only with their switches (G4c-c review C2: the AoE guard cost as much as tactic cc); a switch
-    // turned on later reaches a bot when its engine is built again
+    // turned on later reaches a bot when its engine is built again; G6d-a: a class of Avoid.AoeGuardExemptClasses has
+    // no AoE guard
     CcConfig const& config = sPlayerbotAIConfig.TacticCc;
-    if (config.AvoidAoeGuardEnable)
+    if (config.AvoidAoeGuardEnable && !CcGuardExempt(config.AvoidAoeGuardExemptClasses, botAI->GetBot()->getClass()))
         multipliers.push_back(new OwnCcAoeGuardMultiplier(botAI));
 
     if (config.CcChainEnable)
@@ -1466,9 +1467,10 @@ bool CcReadyTrigger::IsActive()
     input.ControlOnly = (onMoon && target == ccTarget) || view.AuraOnTarget;
     input.ActiveGroup = activeGroup;
     // G4c-b DotGuard: no CC that damage breaks on a target the team's periodic damage hits (a bot that keeps its
-    // team's CC)
-    input.TeamDotOn = config.AvoidDotGuardEnable && botAI->TacticEnabledHere(TacticId::OwnCc) &&
-                      !CcBreaksOwnNow(botAI, state, nowMs) && CcTeamDotOn(target, bot);
+    // team's CC); G6d-a: not for a class of Avoid.DotGuardExemptClasses
+    input.TeamDotOn =
+        config.AvoidDotGuardEnable && !CcGuardExempt(config.AvoidDotGuardExemptClasses, bot->getClass()) &&
+        botAI->TacticEnabledHere(TacticId::OwnCc) && !CcBreaksOwnNow(botAI, state, nowMs) && CcTeamDotOn(target, bot);
     if (params.DrAware)
         input.Levels = state.Memory.Levels(target->GetGUID().GetRawValue(), nowMs);
 

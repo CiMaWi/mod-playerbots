@@ -4313,7 +4313,8 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         config.NaturalCadenceEnable ? "on" : "off", FormatTacticScope(config.NaturalCadenceContexts),
         config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs, botAI->IsInNaturalTimingScope() ? "yes" : "no",
         botAI->IsInNaturalTimingCombat() ? "yes" : "no", botAI->IsNaturalCadenceActive() ? "yes" : "no",
-        botAI->IsSkillStretchOff() ? "off" : "on", timing.EndToEnd ? "on" : "off", timing.PingMs, timing.DisplayMs,
+        SkillStretchApplies(botAI->IsSkillStretchOff(), config.NaturalCadenceSkillStretch) ? "on" : "off",
+        timing.EndToEnd ? "on" : "off", timing.PingMs, timing.DisplayMs,
         timing.ServerTickMs < 0 ? std::string("half the map update")
                                 : Acore::StringFormat("{} ms", timing.ServerTickMs));
     ReactionTypeState const& prices = botAI->GetReactionTypes();
@@ -4651,12 +4652,12 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         cc.CcTarget.IsEmpty() ? nullptr
                               : cc.Opponents.Find(botAI->GetBot()->GetInstanceId(), cc.CcTarget.GetRawValue());
     handler->PSendSysMessage(
-        "  cc guards: aoe {}, dot {}, pet call-off {} ({} called off), fight enemies {}; opponent memory {}: cc target "
-        "dispels {} (mean {} ms), trinkets {}",
-        onOff(ccConfig.AvoidAoeGuardEnable), onOff(ccConfig.AvoidDotGuardEnable), onOff(ccConfig.AvoidPetCallOffEnable),
-        cc.PetCallOffs, onOff(ccConfig.AvoidExcludeFightEnemies), onOff(ccConfig.CcOpponentMemoryEnable),
-        seen ? seen->Dispels : 0, seen && seen->Dispels ? seen->DispelSumMs / seen->Dispels : 0,
-        seen ? seen->Trinkets : 0);
+        "  cc guards: aoe {} (exempt classes {}), dot {} (exempt classes {}), pet call-off {} ({} called off), fight "
+        "enemies {}; opponent memory {}: cc target dispels {} (mean {} ms), trinkets {}",
+        onOff(ccConfig.AvoidAoeGuardEnable), ccConfig.AvoidAoeGuardExemptClasses, onOff(ccConfig.AvoidDotGuardEnable),
+        ccConfig.AvoidDotGuardExemptClasses, onOff(ccConfig.AvoidPetCallOffEnable), cc.PetCallOffs,
+        onOff(ccConfig.AvoidExcludeFightEnemies), onOff(ccConfig.CcOpponentMemoryEnable), seen ? seen->Dispels : 0,
+        seen && seen->Dispels ? seen->DispelSumMs / seen->Dispels : 0, seen ? seen->Trinkets : 0);
     // G5a: the Trinket and Dispel tactics (CC avoidance)
     bool wornTrinket = false;
     for (uint8 const slot : {EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2})

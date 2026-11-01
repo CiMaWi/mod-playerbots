@@ -52,6 +52,9 @@ struct CcConfig
     uint32 AvoidAoeGuardEnable = 0;       // no area, cone or chain spell whose reach covers a held enemy
     uint32 AvoidAoeGuardMarginYards = 2;  // added to the spell's radius (the enemy's movement and size)
     uint32 AvoidDotGuardEnable = 0;       // no damage-breakable CC on a target the team's periodic damage hits
+    // G6d-a: the classes (a class mask, 1 << (class - 1)) whose bots skip a guard (0: every bot keeps it)
+    uint32 AvoidAoeGuardExemptClasses = 0;
+    uint32 AvoidDotGuardExemptClasses = 0;
     uint32 AvoidPetCallOffEnable = 0;     // the bot's pet stops attacking a held enemy
     uint32 AvoidExcludeFightEnemies = 0;  // the held enemies of "fight enemies" are kept out too (review NOTE 7)
 };

@@ -9207,8 +9207,10 @@ void PlayerbotAI::RefreshNaturalTiming()
 
 float PlayerbotAI::GetEffectiveSkillReactFactor() const
 {
-    // Where the natural cadence and reaction both run, the reaction model carries the skill
-    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive || stretchOff)
+    // Where the natural cadence and reaction both run, the reaction model carries the skill, unless
+    // Natural.Cadence.SkillStretch keeps the stretch (G6d-a)
+    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive ||
+        !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadenceSkillStretch))
         return 1.0f;
     if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
         return 1.0f;
@@ -9259,16 +9261,11 @@ void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason
 
 uint32 PlayerbotAI::GetReactDelay()
 {
-    uint32 delay = ComputeReactDelay();
-    // The natural cadence's faster check in combat in a started match, never slower than before
-    if (cadenceCombat)
-        delay = std::min(delay, sPlayerbotAIConfig.NaturalCadenceCheckMs);
-
-    float const factor = GetEffectiveSkillReactFactor();
-    // The reaction engine's reset delay (ReactionEngine.cpp) has always scaled every bot, exempt or not
-    if (factor == 1.0f || IsSkillExempt())
-        return delay;
-    return std::max<uint32>(1u, static_cast<uint32>(delay * factor));
+    // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
+    // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
+    // (ReactionEngine.cpp) has always scaled every bot, exempt or not
+    float const factor = IsSkillExempt() ? 1.0f : GetEffectiveSkillReactFactor();
+    return StretchedReactDelayMs(ComputeReactDelay(), cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs, factor);
 }
 
 uint32 PlayerbotAI::ComputeReactDelay()

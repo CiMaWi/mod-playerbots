@@ -1086,6 +1086,7 @@ bool PlayerbotAIConfig::Initialize()
         }
 
         NaturalCadenceEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.Enable", false);
+        NaturalCadenceSkillStretch = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.SkillStretch", false);
         NaturalCadenceCheckMs =
             std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);
         NaturalCadenceStaggerMs = std::clamp<uint32>(
@@ -1347,6 +1348,12 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Avoid.AoeGuardEnable", TacticCc.AvoidAoeGuardEnable, MaxCcSwitch);
     focusNumber("Avoid.AoeGuardMarginYards", TacticCc.AvoidAoeGuardMarginYards, MaxCcMarginYards);
     focusNumber("Avoid.DotGuardEnable", TacticCc.AvoidDotGuardEnable, MaxCcSwitch);
+    // G6d-a: the classes that skip a guard, a class mask (the 11 classes: bits 0-10; other bits are dropped)
+    constexpr uint32 CcClassMaskAll = (1u << 11) - 1u;
+    focusNumber("Avoid.AoeGuardExemptClasses", TacticCc.AvoidAoeGuardExemptClasses, UINT32_MAX);
+    focusNumber("Avoid.DotGuardExemptClasses", TacticCc.AvoidDotGuardExemptClasses, UINT32_MAX);
+    TacticCc.AvoidAoeGuardExemptClasses &= CcClassMaskAll;
+    TacticCc.AvoidDotGuardExemptClasses &= CcClassMaskAll;
     focusNumber("Avoid.PetCallOffEnable", TacticCc.AvoidPetCallOffEnable, MaxCcSwitch);
     focusNumber("Avoid.ExcludeFightEnemies", TacticCc.AvoidExcludeFightEnemies, MaxCcSwitch);
 

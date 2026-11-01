@@ -1744,13 +1744,18 @@ Playerbots.Natural.Reaction.Positioning.Enable = 0
 # bot = Checks (combat) / its total in seconds), NaturalTiming::UpdateAIInternal (scope), NaturalReaction::HasReacted
 # and NaturalReaction::EventStart show the cost; the NaturalTiming rows also while Enable is 0. On a running server
 # .reload config then .playerbots rndbot reload change it.
+# SkillStretch (G6d-a) 1 keeps the skill's stretch where the cadence and the reaction model both run: the cadence's
+# CheckMs is then multiplied by the bot's factor (Playerbots.Skill.ReactFactorAtSkill1 .. AtSkill99, e.g. 3.0 .. 0.5:
+# 300 ms at skill 1, 50 ms at skill 99 with CheckMs 100), as is the reaction engine's reset delay, on top of the
+# reaction model; 0 leaves the factor 1 there.
 # Default: 0 (off: upstream's interval and stagger, the stretch everywhere), CheckMs 100, StaggerMs 20,
-# Contexts "Arena,Battleground", NearRealPlayerYards 0
+# Contexts "Arena,Battleground", NearRealPlayerYards 0, SkillStretch 0
 Playerbots.Natural.Cadence.Enable = 0
 Playerbots.Natural.Cadence.CheckMs = 100
 Playerbots.Natural.Cadence.StaggerMs = 20
 Playerbots.Natural.Cadence.Contexts = "Arena,Battleground"
 Playerbots.Natural.Cadence.NearRealPlayerYards = 0
+Playerbots.Natural.Cadence.SkillStretch = 0
 
 # Natural facing and turning (G2a): in Contexts (a tactic scope; PvP fights only unless OutsidePvpInSight) a bot that
 # turns to its target at the four combat facing points (attack start, the facing action, a cast's start and a cast in
@@ -2256,6 +2261,15 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Cc.KnownFromSkill = 0
 # Playerbots.Tactics.OwnCc.Enable = 0
 # Playerbots.Tactics.OwnCc.Scope = All
+# Playerbots.Tactics.Trinket.Enable = 0
+# Playerbots.Tactics.Trinket.Scope = Arena,Battleground,World
+# Playerbots.Tactics.Trinket.KnownFromSkill = 0
+# Playerbots.Tactics.Dispel.Enable = 0
+# Playerbots.Tactics.Dispel.Scope = All
+# Playerbots.Tactics.Dispel.KnownFromSkill = 0
+# Playerbots.Tactics.Kite.Enable = 0
+# Playerbots.Tactics.Drink.Enable = 0
+# Playerbots.Tactics.Jump.Enable = 0
 # Playerbots.Tactics.Natural.Enable = 0
 
 # Target hold and team plan: the numbers of the Hold and Plan tactics (all keys optional, the defaults below; read only
@@ -2419,10 +2433,15 @@ Playerbots.Tactics.Enable = 0
 # whose reach (its radius + AoeGuardMarginYards) covers an enemy the bot keeps out; DotGuardEnable casts no CC that
 # damage breaks on a target the team's periodic damage hits; PetCallOffEnable calls the bot's pet off a kept-out
 # enemy; ExcludeFightEnemies also keeps out the team's CC'd enemies of "fight enemies" (not only the bot's attackers,
-# its target and the skull).
+# its target and the skull). AoeGuardExemptClasses and DotGuardExemptClasses (G6d-a) are class masks (the sum of
+# 1 << (class - 1): warrior 1, paladin 2, hunter 4, rogue 8, priest 16, death knight 32, shaman 64, mage 128,
+# warlock 256, druid 1024) whose bots skip that guard, e.g. 272 (priest and warlock): their periodic damage is on every
+# enemy, so the DoT guard takes their fear away whenever they keep their team's CC; 0 = every bot keeps the guard.
 # Playerbots.Tactics.Avoid.AoeGuardEnable = 0
 # Playerbots.Tactics.Avoid.AoeGuardMarginYards = 2
+# Playerbots.Tactics.Avoid.AoeGuardExemptClasses = 0
 # Playerbots.Tactics.Avoid.DotGuardEnable = 0
+# Playerbots.Tactics.Avoid.DotGuardExemptClasses = 0
 # Playerbots.Tactics.Avoid.PetCallOffEnable = 0
 # Playerbots.Tactics.Avoid.ExcludeFightEnemies = 0
 # (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability), switches 0-1,

@@ -517,6 +517,10 @@ public:
     uint32 NaturalCadenceStaggerMs;
     uint8 NaturalCadenceContexts;
     float NaturalCadenceNearRealPlayerYards;
+    // Playerbots.Natural.Cadence.SkillStretch (G6d-a): the skill's stretch (Skill.React*) stays where the cadence and
+    // the reaction model both run, so it scales the cadence's check interval (0: factor 1 there, the reaction model
+    // carries the skill)
+    bool NaturalCadenceSkillStretch;
     // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
     bool ArenaOnlyEnable;
     bool ArenaOnlySpreadContinents;

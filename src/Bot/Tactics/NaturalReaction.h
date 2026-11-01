@@ -620,6 +620,26 @@ inline uint32 ReactionCheckIntervalMs(uint32 intervalMs, bool cadenceActive, uin
     return cadenceActive && cadenceCheckMs < intervalMs ? cadenceCheckMs : intervalMs;
 }
 
+// G6d-a: the skill's stretch (Skill.React*) applies unless the reaction model carries the skill under the cadence
+// (stretchOff); Playerbots.Natural.Cadence.SkillStretch keeps it there too
+inline bool SkillStretchApplies(bool stretchOff, bool cadenceSkillStretch)
+{
+    return !stretchOff || cadenceSkillStretch;
+}
+
+// A bot's next AI check: the cadence's faster interval in its combat (never slower than before), then the skill's
+// stretch (factor 1: unchanged; at least 1 ms)
+inline uint32 StretchedReactDelayMs(uint32 delayMs, bool cadenceCombat, uint32 cadenceCheckMs, float factor)
+{
+    if (cadenceCombat)
+        delayMs = std::min(delayMs, cadenceCheckMs);
+
+    if (factor == 1.0f)
+        return delayMs;
+
+    return std::max<uint32>(1u, static_cast<uint32>(delayMs * factor));
+}
+
 // The stagger of a bot's next AI check from its guid (upstream's guid % 201 at UPSTREAM_CHECK_STAGGER_MS)
 inline uint32 CheckStaggerMs(uint64 guid, uint32 staggerMs)
 {
