@@ -24,6 +24,7 @@
 #include "ArenaInterruptSim.h"
 #include "ArenaInterruptSpells.h"
 #include "ArenaJump.h"
+#include "ArenaKite.h"
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
 #include "CcState.h"
@@ -2667,6 +2668,26 @@ void RunDrinkSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G3a: the Kite tactic's pure parts (ArenaKite.h; the offline harness runs the same checks)
+void RunKiteSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunKiteChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest kite FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest kite: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4550,6 +4571,24 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             drink.PartnersAlive ? "alive" : "one dead", drink.PartnerMinHpPct, drink.Starts, drink.PrepStarts,
             drink.Broken, drink.NoItem);
     }
+    // G3a: the Kite tactic (its gate, the melee and the episode, what it did)
+    {
+        KiteBotState const& kite = botAI->GetKiteState();
+        KiteParams const& params = kite.Params;
+        handler->PSendSysMessage(
+            "  kite: {}, known {}, memory {}, gives up after {} ms; melee on it {} ({:.1f} yd), nearest melee {}; "
+            "episode {}{} ({} ms), episodes {} (given up {}), last verdict {}; steps {} (snares {}, pillars {}, "
+            "jumps {}, partner {}, away {}), stays {}, guarded {}, refused {}; LOS breaks seen {}, memory picks {}; "
+            "last {} {} ms ago",
+            botAI->TacticEnabledHere(TacticId::Kite) ? "on here" : "off here", params.Known ? "yes" : "no",
+            params.Memory ? "yes" : "no", params.GiveUpMs, kite.ChaserGuid ? "yes" : "no", kite.ChaserYards,
+            kite.NearestMeleeYards < KITE_NO_MELEE ? Acore::StringFormat("{:.0f} yd", kite.NearestMeleeYards) : "none",
+            kite.EpisodeStartMs ? "running" : "none", kite.GaveUp ? ", given up" : "",
+            kite.EpisodeStartMs ? getMSTimeDiff(kite.EpisodeStartMs, nowMs) : 0u, kite.Episodes, kite.GiveUps,
+            KiteWhyName(kite.LastWhy), kite.Steps, kite.Snares, kite.Pillars, kite.Jumps, kite.Partner, kite.Away,
+            kite.Stays, kite.Guarded, kite.Refused, kite.LosBreaksSeen, kite.MemoryAvoided, KiteMoveName(kite.LastMove),
+            kite.LastMoveMs ? getMSTimeDiff(kite.LastMoveMs, nowMs) : 0u);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4767,9 +4806,8 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "drink")
         RunDrinkSelftest(handler);
 
-    // 13g-0: the pure parts of G3a do not exist yet (its step fills this)
-    if (name == "kite")
-        handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed)", name);
+    if (name.empty() || name == "kite")
+        RunKiteSelftest(handler);
 
     return true;
 }

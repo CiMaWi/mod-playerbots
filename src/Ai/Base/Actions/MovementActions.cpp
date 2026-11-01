@@ -2213,7 +2213,12 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
 
 bool FleeAction::Execute(Event /*event*/)
 {
-    return MoveAway(AI_VALUE(Unit*, "current target"), sPlayerbotAIConfig.FleeDistance, true);
+    if (!MoveAway(AI_VALUE(Unit*, "current target"), sPlayerbotAIConfig.FleeDistance, true))
+        return false;
+
+    // G3a: fleeRuns (both arms of a counted match; the Kite tactic zeroes flee for a bot that knows it, DT.3)
+    botAI->CountTactic(TacticCounter::FleeRuns);
+    return true;
 }
 
 bool FleeAction::isUseful()
