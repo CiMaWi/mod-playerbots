@@ -320,9 +320,18 @@ PathShape ShapeNaturalPath(std::vector<PathVec> const& path, PathParams const& p
                       : PathOffsetDraw(params.OffsetYards, config.OffsetSigmaPct,
                                        SplitMix64(seed ^ (PATH_ANCHOR_SALT * k)));
     };
-    std::vector<PathVec> out;
-    out.reserve(nodes.size());
-    out.push_back(nodes.front().At);
+    // The path as kept: a moved point remembers the node it came from (a moved spacing point has no original)
+    struct Kept
+    {
+        PathVec At;
+        PathVec From;
+        bool Moved;
+        bool Added;
+    };
+
+    std::vector<Kept> kept;
+    kept.reserve(nodes.size());
+    kept.push_back(Kept{nodes.front().At, nodes.front().At, false, false});
     for (size_t index = 1; index + 1 < nodes.size(); ++index)
     {
         PathNode const& node = nodes[index];
@@ -344,7 +353,7 @@ PathShape ShapeNaturalPath(std::vector<PathVec> const& path, PathParams const& p
         if (std::fabs(offset) < PATH_MIN_MOVE_YARDS || length < 0.01f)
         {
             if (!node.Added)
-                out.push_back(node.At);
+                kept.push_back(Kept{node.At, node.At, false, false});
 
             continue;
         }
@@ -352,16 +361,48 @@ PathShape ShapeNaturalPath(std::vector<PathVec> const& path, PathParams const& p
         PathVec moved{node.At.X - dy / length * offset, node.At.Y + dx / length * offset, node.At.Z};
         if (valid(node.At, moved))
         {
-            out.push_back(moved);
+            kept.push_back(Kept{moved, node.At, true, node.Added});
             ++shape.Offsets;
             continue;
         }
 
         ++shape.Dropped;
         if (!node.Added)
-            out.push_back(node.At);
+            kept.push_back(Kept{node.At, node.At, false, false});
     }
-    out.push_back(nodes.back().At);
+    kept.push_back(Kept{nodes.back().At, nodes.back().At, false, false});
+
+    // Every leg that touches a moved point must be open ground (the check of a moved point covers the leg to it from
+    // its node only): a blocked leg drops its later moved point (the node it came from stays, a spacing point goes),
+    // then the legs are looked at again
+    for (bool again = true; again;)
+    {
+        again = false;
+        for (size_t index = 1; index < kept.size(); ++index)
+        {
+            if (!(kept[index - 1].Moved || kept[index].Moved) || clear(kept[index - 1].At, kept[index].At))
+                continue;
+
+            size_t const drop = kept[index].Moved ? index : index - 1;
+            --shape.Offsets;
+            ++shape.Dropped;
+            if (kept[drop].Added)
+                kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(drop));
+            else
+            {
+                kept[drop].At = kept[drop].From;
+                kept[drop].Moved = false;
+            }
+
+            again = true;
+            break;
+        }
+    }
+
+    std::vector<PathVec> out;
+    out.reserve(kept.size());
+    for (Kept const& point : kept)
+        out.push_back(point.At);
 
     // Curves on open ground: no sharp turn in the path, a clear ray between every two points, every sample checked
     if (curves && out.size() >= 3 && PathMaxTurnDeg(path) <= PATH_CURVE_MAX_TURN_DEG)
@@ -780,6 +821,32 @@ void RunPathChecks(Check&& check)
         PathShape const shape = ShapeNaturalPath(corner, p1, config, 9, false, never, open);
         check(!shape.Changed && shape.Points.size() == corner.size() && shape.Dropped > 0,
               "refused path points stay where the mmap put them");
+    }
+
+    // A pillar between two moved points: the leg is blocked, the later point is dropped (also with curves off)
+    {
+        float const lateral = PATH_MIN_MOVE_YARDS * 0.5f;
+        auto const pillar = [lateral](PathVec const& a, PathVec const& b)
+        { return !(std::fabs(a.Y) > lateral && std::fabs(b.Y) > lateral); };
+        bool twoMoved = false;
+        bool blocked = false;
+        bool clean = true;
+        bool counted = true;
+        for (uint64 seed = 1; seed <= 100; ++seed)
+        {
+            PathShape const unblocked = ShapeNaturalPath(run, p1, config, seed, false, always, open);
+            for (size_t index = 1; index < unblocked.Points.size(); ++index)
+                twoMoved = twoMoved || !pillar(unblocked.Points[index - 1], unblocked.Points[index]);
+
+            PathShape const shape = ShapeNaturalPath(run, p1, config, seed, false, always, pillar);
+            blocked = blocked || shape.Offsets < unblocked.Offsets;
+            counted = counted && shape.Offsets + shape.Dropped == unblocked.Offsets + unblocked.Dropped;
+            for (size_t index = 1; index < shape.Points.size(); ++index)
+                clean = clean && pillar(shape.Points[index - 1], shape.Points[index]);
+        }
+
+        check(twoMoved && blocked, "the pillar test meets two moved points in a row and drops one");
+        check(clean && counted, "no kept leg between two moved points crosses the pillar; dropped points are counted");
     }
 
     // Curves

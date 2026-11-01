@@ -214,6 +214,21 @@ bool NaturalRayClear(Player* bot, PathVec const& a, PathVec const& b, float lift
                                           LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2);
 }
 
+// The bot's first look at a started arena match (per check, from FollowNaturalPath; the hop reads it): Ring of Valor's
+// wait runs from here, so it does not wait for the first due hop
+void NaturalArenaSeen(Player* bot, PathBotState& state, uint32 nowMs)
+{
+    if (!bot->InArena())
+        return;
+
+    Battleground* bg = bot->GetBattleground();
+    if (bg && bg->GetStatus() == STATUS_IN_PROGRESS && state.ArenaInstance != bg->GetInstanceID())
+    {
+        state.ArenaInstance = bg->GetInstanceID();
+        state.ArenaSinceMs = nowMs;
+    }
+}
+
 // No hop before an arena starts, in Dalaran Sewers while the waterfall warns or is on, or in Ring of Valor's first
 // Tactics.Pillar.RvIdleMs (from the bot's first look at the started match: late rather than early)
 bool NaturalHopArenaOk(Player* bot, PathBotState& state, uint32 nowMs)
@@ -225,11 +240,7 @@ bool NaturalHopArenaOk(Player* bot, PathBotState& state, uint32 nowMs)
     if (bg->GetStatus() != STATUS_IN_PROGRESS)
         return false;
 
-    if (state.ArenaInstance != bg->GetInstanceID())
-    {
-        state.ArenaInstance = bg->GetInstanceID();
-        state.ArenaSinceMs = nowMs;
-    }
+    NaturalArenaSeen(bot, state, nowMs);
 
     if (bg->GetMapId() == PATH_MAP_RING_OF_VALOR)
         return getMSTimeDiff(state.ArenaSinceMs, nowMs) >= sPlayerbotAIConfig.TacticPillar.RvIdleMs;
@@ -385,14 +396,21 @@ void FollowNaturalPath(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
     PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
     PathBotState& state = botAI->GetPathState();
-    if (state.Walking && !bot->isMoving())
+    // The walk flag goes when the walked leg is over, or when another action took the bot over (a follow or a chase
+    // replaces the point move) before MoveTo could clear it
+    if (state.Walking &&
+        (!bot->isMoving() || bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE))
         EndNaturalWalk(botAI, bot);
 
+    NaturalArenaSeen(bot, state, nowMs);
     bool const casting = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) || bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
     if (casting)
         state.LastCastMs = std::max(nowMs, 1u);
 
-    if (!config.StrafeEnable || !state.Params.Strafe || casting || !bot->IsInCombat() || bot->isMoving() ||
+    // Auto Shot and wand shooting keep a spell slot of their own: no strafe in the middle of them (the hop gap is
+    // about real casts only)
+    bool const shooting = casting || bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+    if (!config.StrafeEnable || !state.Params.Strafe || shooting || !bot->IsInCombat() || bot->isMoving() ||
         !botAI->CanMove() || !PlayerbotAI::IsRanged(bot) || !NaturalPathHere(botAI, nowMs))
         return;
 
@@ -402,7 +420,7 @@ void FollowNaturalPath(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
         return;
 
     uint64 const guid = bot->GetGUID().GetCounter();
-    if (!PathStrafeAllowed(state.Params, casting, false, bot->GetExactDist2d(target),
+    if (!PathStrafeAllowed(state.Params, shooting, false, bot->GetExactDist2d(target),
                            sPlayerbotAIConfig.SpellDistance) ||
         !PathDueNow(state.NextStrafeMs, nowMs, state.Params.StrafeEveryMs, PathHash(guid, nowMs, 3)))
         return;
