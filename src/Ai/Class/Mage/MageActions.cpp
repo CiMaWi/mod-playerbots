@@ -5,6 +5,7 @@
  */
 
 #include "MageActions.h"
+#include "NaturalTurn.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -154,6 +155,10 @@ bool CastBlinkBackAction::Execute(Event event)
     if (!target)
         return false;
 
-    bot->SetOrientation(bot->GetAngle(target) + M_PI);
+    // G2a: where the bot turns naturally it turns its back on the target first and blinks once the flick is over (the
+    // check counts as acted), else the instant write as before
+    if (!NaturalTurnForCast(botAI, target, static_cast<float>(M_PI)))
+        return true;
+
     return CastSpellAction::Execute(event);
 }

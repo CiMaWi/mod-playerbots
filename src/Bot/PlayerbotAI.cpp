@@ -497,6 +497,25 @@ void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowM
     }
 }
 
+// G2b: the tracking ring's feed at the bot's own checks while it fights where it tracks naturally (TrackFeed): the
+// current target's true position, as ReachCombatTo's own TrackObserve. Fed only by chase calls, a chase after a pause
+// (an in-range cast, a held move) found the ring stale, started it again and ran to the target's true position. Cost
+// per check in a fight: NaturalTrackHere (cached), one value read and a compare; a ring push at most once per sample
+// gap (50 to 111 ms); nothing out of combat or with Natural.Track.Enable 0.
+void FeedNaturalTrack(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
+{
+    if (!bot->IsInCombat() || !NaturalTrackHere(botAI, nowMs))
+        return;
+
+    Unit* const target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    if (!target || target == bot || !target->IsInWorld() || !target->IsAlive() || !target->IsInMap(bot) ||
+        bot->IsFriendlyTo(target))
+        return;
+
+    TrackFeed(botAI->GetTrackState(), sPlayerbotAIConfig.NaturalTrack, target->GetGUID().GetRawValue(), nowMs,
+              target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+}
+
 // G5c-c: whether the Interrupt tactic follows the bot's kick and the enemies (HoldPolicy 1 or the attention gap); off
 // at the conf.dist defaults, so G5b's path stays as it was
 bool InterruptFollows(InterruptConfig const& config)
@@ -857,6 +876,14 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         }
         else
             ObserveOpponents(this, bot, busyModel, nowMs);
+    }
+
+    // G2b: the tracking ring follows the bot's target at every check of a fight, not only at its chase calls
+    if (sPlayerbotAIConfig.NaturalTrack.Enable)
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalMove::Feed")
+                                                        : nullptr);
+        FeedNaturalTrack(this, bot, nowMs);
     }
 
     // G5c-c: the Interrupt tactic's match and the enemies' health trend, only while it follows the kick
@@ -5261,7 +5288,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
 
     ObjectGuid oldSel = bot->GetSelectedUnit() ? bot->GetSelectedUnit()->GetGUID() : ObjectGuid();
 
-    if (!bot->isMoving())
+    // G2a: a ground-targeted cast needs no facing (the core checks the arc for a unit target only); where the bot
+    // turns naturally it does not snap to the point (a player drops the circle without turning), else as before
+    if (!bot->isMoving() && !NaturalFacingHere(this, getMSTime()))
         bot->SetFacingTo(bot->GetAngle(x, y));
 
     if (failWithDelay)
@@ -8327,6 +8356,49 @@ bool PlayerbotAI::FaceTarget(WorldObject* target)
     }
 
     return bot->HasInArc(static_cast<float>(M_PI), target);
+}
+
+// G2a: a direction turn before a cast that goes the way the bot faces (NaturalTurn.h TurnDirectionNext). Where
+// NaturalFacingHere says so and the bot stands in control, a natural turn to the target's angle plus offsetRad (no
+// correction: a direction, not an object) and false until its flick is over, so the caller waits; else the instant
+// orientation write as before (no packet) and true.
+bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
+{
+    Player* const bot = botAI->GetBot();
+    uint32 const nowMs = getMSTime();
+    if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !NaturalFacingHere(botAI, nowMs))
+    {
+        bot->SetOrientation(bot->GetAngle(target) + offsetRad);
+        return true;
+    }
+
+    TurnBotState& state = botAI->GetTurnState();
+    uint64 const key = target->GetGUID().GetRawValue();
+    float const goalRad = TurnWrap(bot->GetAngle(target) + offsetRad);
+    TurnDirectionStep const step = TurnDirectionNext(state, key, bot->GetOrientation(), goalRad, nowMs);
+    if (step != TurnDirectionStep::Turn)
+        return step == TurnDirectionStep::Ready;
+
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Direction")
+                                                    : nullptr);
+    TurnRefreshRules(state.Params, sPlayerbotAIConfig.NaturalFacing);
+    TurnPlan plan = PlanTurn(state.Params, bot->GetOrientation(), goalRad, nowMs,
+                             TurnHash(bot->GetGUID().GetCounter(), nowMs, state.Turns));
+    plan.Correct = false;
+    state.Begin(plan, 0, nowMs);
+    state.DirectionKey = key;
+    if (plan.Leg.Spline && !bot->IsRooted())
+        bot->SetFacingTo(plan.Leg.Goal());
+
+    botAI->SetNaturalPreGate(true);
+    botAI->CountTactic(TacticCounter::TurnFlicks);
+    LOG_TRACE(
+        "playerbots",
+        "Turn: {} turns {} deg to {} deg off {} in {} ms ({}), error {:.1f} deg, no correction, skill {}, at {} ms",
+        bot->GetName(), state.LastTurnDeg, static_cast<int32>(offsetRad / TURN_RAD_PER_DEG + 0.5f), target->GetName(),
+        plan.Leg.DurMs, plan.Leg.Keyboard ? "keyboard" : (plan.Leg.Spline ? "spline" : "flick"), state.LastErrorDeg,
+        botAI->GetPvpSkill(), nowMs);
+    return false;
 }
 
 namespace

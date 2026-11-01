@@ -2423,18 +2423,16 @@ uint32 DefensiveHealthPct(Unit const* unit)
     return static_cast<uint32>(std::clamp(std::ceil(unit->GetHealthPct()), 1.0f, 100.0f));
 }
 
-// The unit an enemy aims at as a player sees it: its victim (melee, wand, shots), else its cast bar's target
+// The unit an enemy aims at as a player sees it: its cast bar's target while it casts at a unit (a healer healing
+// its partner or itself aims at no one of ours, whoever its melee victim is), else its victim (melee, wand, shots)
 Unit* DefensiveAimedAt(Unit* enemy)
 {
-    if (Unit* const victim = enemy->GetVictim())
-        return victim;
-
     for (CurrentSpellTypes const type : {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL})
         if (Spell* const spell = enemy->GetCurrentSpell(type))
             if (Unit* const target = spell->m_targets.GetUnitTarget())
                 return target;
 
-    return nullptr;
+    return enemy->GetVictim();
 }
 
 // A disc priest with Protect active keeps pain suppression (3 min cooldown) for a living partner: on itself only at

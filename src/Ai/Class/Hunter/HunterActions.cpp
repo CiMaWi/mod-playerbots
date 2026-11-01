@@ -7,6 +7,7 @@
 #include "HunterActions.h"
 #include "Event.h"
 #include "GenericSpellActions.h"
+#include "NaturalTurn.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 
@@ -80,8 +81,12 @@ bool CastDisengageAction::Execute(Event event)
     if (!target)
         return false;
 
-    // can cast spell check passed in isUseful()
-    bot->SetOrientation(bot->GetAngle(target));
+    // can cast spell check passed in isUseful(); the leap goes the way the bot's back faces. G2a: where the bot turns
+    // naturally it turns to the target first and leaps once the flick is over (the check counts as acted), else the
+    // instant write as before
+    if (!NaturalTurnForCast(botAI, target, 0.0f))
+        return true;
+
     return CastSpellAction::Execute(event);
 }
 

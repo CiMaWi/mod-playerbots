@@ -132,7 +132,7 @@ bool CastCustomSpellAction::Execute(Event event)
 
     if (target != bot && !bot->HasInArc(CAST_ANGLE_IN_FRONT, target, sPlayerbotAIConfig.SightDistance))
     {
-        ServerFacade::instance().SetFacingTo(bot, target);
+        botAI->FaceTarget(target);  // G2a: the natural turn where it applies, else the snap
         botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
 
         msg << "cast " << text;

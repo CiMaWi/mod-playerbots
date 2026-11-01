@@ -39,6 +39,8 @@ constexpr float TURN_ERROR_FULL_DEG = 90.0f;   // a turn this wide or wider carr
 constexpr float TURN_ERROR_MIN_SHARE = 0.25f;  // the share of the error a tiny turn still carries
 constexpr float TURN_SAME_RAD = 0.01f;         // orientations closer than this (about 0.6 degrees) are the same
 constexpr uint32 TURN_WAIT_MAX_MS = 2000;      // a cast wait longer than this is not counted (the bot went on)
+constexpr float TURN_DIRECTION_READY_DEG = 10.0f;  // a direction turn: the bot already faces it within this
+constexpr float TURN_DIRECTION_DONE_DEG = 50.0f;   // ... or its flick ended within this (the error cap and a margin)
 constexpr uint32 TURN_MODE_SPLINE = 2;
 constexpr uint32 TURN_PERCENT = 100;
 constexpr uint32 TURN_SELFTEST_DRAWS = 4000;  // turns drawn per skill in RunTurnChecks
@@ -276,7 +278,8 @@ struct TurnBotState
     TurnParams Params;
     TurnPhase Phase = TurnPhase::Idle;
     TurnLeg Leg;
-    uint64 TargetGuid = 0;  // the object faced (raw guid), looked up again for the correction
+    uint64 TargetGuid = 0;    // the object faced (raw guid), looked up again for the correction
+    uint64 DirectionKey = 0;  // a direction turn's target (raw guid; TargetGuid 0 then: no correction)
     uint64 Hash = 0;
     float ErrorRad = 0.0f;
     bool Correct = false;
@@ -342,6 +345,7 @@ struct TurnBotState
         Phase = TurnPhase::Flick;
         Leg = plan.Leg;
         TargetGuid = targetGuid;
+        DirectionKey = 0;
         Hash = plan.Hash;
         ErrorRad = plan.ErrorRad;
         Correct = plan.Correct;
@@ -366,6 +370,36 @@ struct TurnBotState
         ++Splines;
     }
 };
+
+// A direction turn (PlayerbotAI.cpp NaturalTurnForCast): a turn to a direction relative to a target before a cast
+// that goes the way the bot faces (disengage faces the target, blink turns its back on it). Ready: the cast may go now
+// (the bot faces the direction within TURN_DIRECTION_READY_DEG, or the flick of this target's direction turn is over
+// and left it within TURN_DIRECTION_DONE_DEG, its aim error); Wait: that flick goes on; Turn: a new turn is due (none
+// yet, another turn, or this one abandoned or ended far off).
+enum class TurnDirectionStep : uint8
+{
+    Ready,
+    Wait,
+    Turn,
+};
+
+inline TurnDirectionStep TurnDirectionNext(TurnBotState const& state, uint64 key, float actualRad, float goalRad,
+                                           uint32 nowMs)
+{
+    float const left = std::fabs(TurnDelta(actualRad, goalRad));
+    if (left <= TURN_DIRECTION_READY_DEG * TURN_RAD_PER_DEG)
+        return TurnDirectionStep::Ready;
+
+    bool const mine = state.TargetGuid == 0 && state.DirectionKey == key && state.LastTurnMs != 0 &&
+                      nowMs - state.LastTurnMs <= TURN_MAX_LEG_MS;
+    if (mine && state.Phase == TurnPhase::Flick)
+        return TurnDirectionStep::Wait;
+
+    if (mine && left <= TURN_DIRECTION_DONE_DEG * TURN_RAD_PER_DEG)
+        return TurnDirectionStep::Ready;
+
+    return TurnDirectionStep::Turn;
+}
 
 // The correction is due and needs the target's orientation from the bot now
 inline bool TurnNeedsTarget(TurnBotState const& state, uint32 nowMs)
@@ -731,6 +765,41 @@ void RunTurnChecks(Check&& check)
 
         check(!state.Active() && state.Corrections == 0, "without its target the correction is dropped");
     }
+    // A direction turn (blink back: the back to target 7 at 0 degrees, the bot facing it): Turn, Wait while its
+    // flick runs, Ready after it; another target's turn, an abandoned one or a stale one is no help
+    {
+        TurnBotState state;
+        state.Params = p1;
+        float const goal = TURN_PI;
+        bool const first = TurnDirectionNext(state, 7, 0.0f, goal, 1000) == TurnDirectionStep::Turn;
+        TurnPlan plan = PlanTurn(p1, 0.0f, goal, 1000, 31);
+        plan.Correct = false;
+        state.Begin(plan, 0, 1000);
+        state.DirectionKey = 7;
+        bool const waits = TurnDirectionNext(state, 7, 0.0f, goal, 1000) == TurnDirectionStep::Wait;
+        bool const otherTurns = TurnDirectionNext(state, 8, 0.0f, goal, 1000) == TurnDirectionStep::Turn;
+        float orientation = 0.0f;
+        uint32 nowMs = 1000;
+        while (state.Active() && nowMs < 5000)
+        {
+            nowMs += 20;
+            TurnStepOut const out = StepTurn(state, nowMs, orientation, false, 0.0f);
+            if (out.Write)
+                orientation = out.Orientation;
+        }
+
+        bool const ready = TurnDirectionNext(state, 7, orientation, goal, nowMs) == TurnDirectionStep::Ready;
+        bool const farOff = TurnDirectionNext(state, 7, goal + TURN_PI / 2.0f, goal, nowMs) == TurnDirectionStep::Turn;
+        bool const stale =
+            TurnDirectionNext(state, 7, orientation, goal, nowMs + TURN_MAX_LEG_MS + 1) == TurnDirectionStep::Turn ||
+            std::fabs(TurnDelta(orientation, goal)) <= TURN_DIRECTION_READY_DEG * degree;
+        bool const facing =
+            TurnDirectionNext(TurnBotState{}, 9, goal + 5.0f * degree, goal, 1000) == TurnDirectionStep::Ready;
+        state.Begin(plan, 3, nowMs);
+        bool const cleared = state.DirectionKey == 0;
+        check(first && waits && otherTurns && ready && farOff && stale && facing && cleared,
+              "a direction turn waits for its flick, then the cast goes; another, far-off or stale turn turns anew");
+    }
 }
 
 // The game side (PlayerbotAI.cpp): whether the bot turns naturally now (the option, the Natural tactic here, a PvP
@@ -738,5 +807,10 @@ void RunTurnChecks(Check&& check)
 // OutsidePvpInSight, cached for InSightCacheMs). The bot's own update, or the world thread while the maps wait.
 class PlayerbotAI;
 bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs);
+
+// The game side of a direction turn (TurnDirectionNext): true when the cast may go now (also the instant write where
+// the bot does not turn naturally), false while the natural turn runs (the caller waits)
+class Unit;
+bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad);
 
 #endif

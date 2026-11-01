@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <string>
+#include <utility>
 
 #include "BotAttributes.h"
 #include "Common.h"
@@ -21,7 +22,8 @@
 
 // Natural chasing and tracking (G2b), the pure parts. Where ReachCombatTo ran to the target's exact position, with
 // Playerbots.Natural.Track.Enable, the Natural tactic and a PvP context the chaser runs to a lagged, predicted point:
-// every call puts the target's true position into a ring (one sample per gap, RingSamples of them); the chaser sees
+// every call, and every check of the bot in a fight (TrackFeed), puts the target's true position into a ring (one
+// sample per gap, RingSamples of them), so a chase after a pause has its history; the chaser sees
 // only the target as it was lag ms ago (log-normal around a median that falls with Speed) and predicts where it is
 // now by Foresight: below VelocityFromSkill it runs to where it last saw the target; from there it extrapolates the
 // velocity with a gain (a share of the true velocity, drawn per call); from TurnRateFromSkill it bends the
@@ -614,6 +616,21 @@ inline void TrackObserve(TrackBotState& state, TrackConfig const& config, uint64
     state.Ring.Push(TrackSample{nowMs, x, y, z}, config.RingSamples);
 }
 
+// The ring's feed at the bot's own checks in a fight (PlayerbotAI.cpp FeedNaturalTrack): the current target's true
+// position, so a chase after a pause (an in-range cast, a held move) sees the target as it was lag ms ago, not where
+// it is now (a ring fed only by chase calls was stale then and started again on one sample of age 0). It never starts
+// the ring again over another target's live ring (a chase to a CC or kick target keeps its history); a stale or empty
+// ring takes the current target. False: not fed.
+inline bool TrackFeed(TrackBotState& state, TrackConfig const& config, uint64 targetGuid, uint32 nowMs, float x,
+                      float y, float z)
+{
+    if (state.TargetGuid != targetGuid && state.Ring.Count > 0 && nowMs - state.Ring.At(0).Ms <= TRACK_STALE_MS)
+        return false;
+
+    TrackObserve(state, config, targetGuid, nowMs, x, y, z);
+    return true;
+}
+
 // StuckMs: a chaser out of its reach that for stuckMs neither closed TRACK_CLOSE_YARDS on the target nor ran
 // TRACK_MOVED_YARDS itself aims at the target's true position for TRACK_TRUE_AIM_MS, then tracks again. A chase at an
 // equal distance (the chaser runs) and a bot within reach (a caster holding its range) are no stuck chasers; a target
@@ -771,6 +788,47 @@ void RunTrackChecks(Check&& check)
         TrackObserve(state, config, 2, 1000 + 2 * gap + TRACK_STALE_MS + 1, 1.0f, 0.0f, 0.0f);
         check(held && pushed && newTarget && state.Ring.Count == 1 && state.Restarts == 3,
               "one sample per gap; a new target and a stale ring start again");
+    }
+
+    // The feed (TrackFeed): a chase, a pause of 1500 ms without chase calls (an in-range cast), a chase again. Fed
+    // only by chase calls the ring is stale then and the chaser runs to the true position; fed at every check (100
+    // ms) it sees the target at least its lag ago. The feed leaves another target's live ring alone.
+    {
+        TrackParams const p80 = paramsAt(80);
+        auto const after = [&](bool feed)
+        {
+            TrackBotState state;
+            state.Params = p80;
+            for (uint32 ms = 1000; ms <= 4000; ms += 100)
+            {
+                float const x = TRACK_SELFTEST_RUN * static_cast<float>(ms);
+                if (ms <= 1500 || ms == 3000)
+                    TrackObserve(state, config, 1, ms, x, 0.0f, 0.0f);
+                else if (feed)
+                    TrackFeed(state, config, 1, ms, x, 0.0f, 0.0f);
+
+                if (ms == 3000)
+                    return std::make_pair(TrackPredict(state.Ring, state.Params, config, ms, TrackHash(5, ms, 0)),
+                                          state.Restarts);
+            }
+
+            return std::make_pair(TrackPrediction{}, 0u);
+        };
+        auto const [unfed, unfedRestarts] = after(false);
+        auto const [fed, fedRestarts] = after(true);
+        check(unfed.SeenAgeMs == 0 && unfedRestarts == 2,
+              "fed only by chase calls, a chase after a pause starts the ring again and sees the true position");
+        check(fed.SeenAgeMs >= fed.LagMs && fed.SeenAgeMs > 0 && fedRestarts == 1 && fed.Mode != TrackMode::LastSeen,
+              "fed at every check, a chase after a pause sees the target its lag ago and predicts from there");
+
+        TrackBotState state;
+        state.Params = p80;
+        TrackObserve(state, config, 2, 1000, 0.0f, 0.0f, 0.0f);
+        bool const kept = !TrackFeed(state, config, 1, 1000 + TRACK_STALE_MS, 5.0f, 0.0f, 0.0f) &&
+                          state.TargetGuid == 2 && state.Restarts == 1;
+        bool const taken = TrackFeed(state, config, 1, 1000 + TRACK_STALE_MS + 1, 5.0f, 0.0f, 0.0f) &&
+                           state.TargetGuid == 1 && state.Restarts == 2;
+        check(kept && taken, "the feed keeps another target's live ring and takes a stale one");
     }
 
     // The simulated chases: the target's true path, a call every 100 ms with each chaser's own phase
