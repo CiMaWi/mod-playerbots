@@ -795,6 +795,13 @@ struct OpponentMemorySlot
     uint32 LastSeenMs = 0;
     uint16 CastsSeen = 0;
     uint16 CancelsSeen = 0;
+    // G5d: the health (per cent, 1-100; 0: none) at which the enemy was first seen with a defensive cooldown up, and
+    // when. Overwritten by a later sighting only after it expired (a new burst window, not each tick).
+    uint8 DefHpPct = 0;
+    uint32 DefSeenMs = 0;
+    // G5e: the last kick the enemy was seen to use (its spell and when; 0: none)
+    uint32 KickSpellId = 0;
+    uint32 KickSeenMs = 0;
 };
 
 struct OpponentMemory
@@ -908,6 +915,72 @@ struct OpponentMemory
             return 0.0f;
 
         return static_cast<float>(slot->CancelsSeen) / slot->CastsSeen;
+    }
+
+    // G5d: the enemy was seen with a defensive cooldown up at hpPct health. The first sighting is kept until it
+    // expires (expireMs); a clock of 0 is stored as 1 so that 0 stays "none".
+    void NoteDefensive(uint32 guid, uint32 hpPct, uint32 nowMs, uint32 expireMs)
+    {
+        OpponentMemorySlot& slot = Touch(guid, nowMs);
+        if (slot.DefHpPct != 0 && nowMs - slot.DefSeenMs <= expireMs)
+            return;
+
+        slot.DefHpPct = static_cast<uint8>(std::clamp(hpPct, 1u, 100u));
+        slot.DefSeenMs = std::max(nowMs, 1u);
+    }
+
+    // The health the enemy used its defensive at (0: unknown or expired)
+    uint32 DefensiveHpPct(uint32 guid, uint32 nowMs, uint32 expireMs) const
+    {
+        OpponentMemorySlot const* slot = Find(guid);
+        if (!slot || slot->DefHpPct == 0 || nowMs - slot->DefSeenMs > expireMs)
+            return 0;
+
+        return slot->DefHpPct;
+    }
+
+    // G5e: the enemy was seen to use a kick
+    void NoteKick(uint32 guid, uint32 spellId, uint32 nowMs)
+    {
+        OpponentMemorySlot& slot = Touch(guid, nowMs);
+        slot.KickSpellId = spellId;
+        slot.KickSeenMs = std::max(nowMs, 1u);
+    }
+
+    // The enemy was seen to use a kick within windowMs
+    bool KickSeenWithin(uint32 guid, uint32 nowMs, uint32 windowMs) const
+    {
+        OpponentMemorySlot const* slot = Find(guid);
+        return slot && slot->KickSeenMs != 0 && nowMs - slot->KickSeenMs <= windowMs;
+    }
+
+    // Any enemy was seen to use a kick within windowMs
+    bool AnyKickSeenWithin(uint32 nowMs, uint32 windowMs) const
+    {
+        for (OpponentMemorySlot const& slot : Slots)
+            if (slot.Guid != 0 && slot.KickSeenMs != 0 && nowMs - slot.KickSeenMs <= windowMs)
+                return true;
+
+        return false;
+    }
+
+    // Forget what is older than its memory: defensives after defExpireMs, kicks after kickExpireMs
+    void Expire(uint32 nowMs, uint32 defExpireMs, uint32 kickExpireMs)
+    {
+        for (OpponentMemorySlot& slot : Slots)
+        {
+            if (slot.DefHpPct != 0 && nowMs - slot.DefSeenMs > defExpireMs)
+            {
+                slot.DefHpPct = 0;
+                slot.DefSeenMs = 0;
+            }
+
+            if (slot.KickSeenMs != 0 && nowMs - slot.KickSeenMs > kickExpireMs)
+            {
+                slot.KickSpellId = 0;
+                slot.KickSeenMs = 0;
+            }
+        }
     }
 };
 

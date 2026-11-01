@@ -8,6 +8,7 @@
 #include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "ArenaCcSpells.h"
+#include "ArenaDefensive.h"
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSpells.h"
 #include "Battleground.h"
@@ -38,7 +39,10 @@
 #include "MatchTrace.h"
 #include "MotionMaster.h"
 #include "MoveSplineInit.h"
+#include "NaturalCast.h"
+#include "NaturalMove.h"
 #include "NaturalTrace.h"
+#include "NaturalTurn.h"
 #include "NewRpgStrategy.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -768,6 +772,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G0e: the natural tracer's pre-gate point, on its own clock (one relaxed load while nothing is traced)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
+
+    // G5e and G2a: the natural pre-gate stepper (a fake cast's cancel instant, a turn's steps); one bool test idle
+    if (naturalPreGate)
+        StepNaturalPreGate(getMSTime());
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
@@ -7800,6 +7808,48 @@ InterruptBotState& PlayerbotAI::GetInterruptState()
         interruptState = std::make_unique<InterruptBotState>();
 
     return *interruptState;
+}
+
+DefensiveBotState& PlayerbotAI::GetDefensiveState()
+{
+    if (!defensiveState)
+        defensiveState = std::make_unique<DefensiveBotState>();
+
+    return *defensiveState;
+}
+
+FakeBotState& PlayerbotAI::GetFakeState()
+{
+    if (!fakeState)
+        fakeState = std::make_unique<FakeBotState>();
+
+    return *fakeState;
+}
+
+TurnBotState& PlayerbotAI::GetTurnState()
+{
+    if (!turnState)
+        turnState = std::make_unique<TurnBotState>();
+
+    return *turnState;
+}
+
+TrackBotState& PlayerbotAI::GetTrackState()
+{
+    if (!trackState)
+        trackState = std::make_unique<TrackBotState>();
+
+    return *trackState;
+}
+
+// 13e-0 scaffold: nothing to step yet (naturalPreGate stays false); G5e and G2a fill it
+void PlayerbotAI::StepNaturalPreGate(uint32 /*nowMs*/) {}
+
+// 13e-0 scaffold: no turn state yet, so this is today's instant snap; G2a replaces it
+bool PlayerbotAI::FaceTarget(WorldObject* target)
+{
+    ServerFacade::instance().SetFacingTo(bot, target);
+    return true;
 }
 
 namespace

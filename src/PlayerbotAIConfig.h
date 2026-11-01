@@ -8,11 +8,15 @@
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
 #include "ArenaCcConfig.h"
+#include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "BotAttributes.h"
 #include "DBCEnums.h"
+#include "NaturalCastConfig.h"
+#include "NaturalMoveConfig.h"
 #include "NaturalReaction.h"
+#include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
 #include "TacticGate.h"
 #include "Tactics.h"
@@ -519,6 +523,14 @@ public:
     CcConfig TacticCc;
     // Playerbots.Tactics.Interrupt.*: the Interrupt tactic's numbers (ArenaInterrupt.h, G5b)
     InterruptConfig TacticInterrupt;
+    // Playerbots.Tactics.Defensive.* (G5d) and .Fake.* (G5e): the numbers of those tactics (ArenaDefensive.h,
+    // NaturalCast.h)
+    DefensiveConfig TacticDefensive;
+    FakeConfig TacticFake;
+    // Playerbots.Natural.Facing.* (G2a) and .Track.* (G2b): natural turning and chasing in PvP (NaturalTurn.h,
+    // NaturalMove.h); Enable 0 keeps the instant facing snap and the exact chase point
+    TurnConfig NaturalFacing;
+    TrackConfig NaturalTrack;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;

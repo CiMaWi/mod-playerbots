@@ -1749,6 +1749,82 @@ Playerbots.Natural.Cadence.StaggerMs = 20
 Playerbots.Natural.Cadence.Contexts = "Arena,Battleground"
 Playerbots.Natural.Cadence.NearRealPlayerYards = 0
 
+# Natural facing and turning (G2a): in Contexts (a tactic scope; PvP fights only unless OutsidePvpInSight) a bot that
+# turns to its target no longer snaps to it at once: a turn is a minimum-jerk flick (angle(t) = from + d * (10u^3 -
+# 15u^4 + 6u^5), u = t / duration), its duration from the angle and the bot's skill (MsFor180AtSkill1..99 for 180
+# degrees, at least MinMs), an aim error drawn once per turn (log-normal, ErrorDegAtSkill1..99 degrees, spread
+# ErrorSigmaPct), an optional correction sub-flick CorrectionDelayMinMs..MaxMs later (chance CorrectionPctAtSkill1..99,
+# leaving CorrectionResidualPct of the error), and a low-skill bot sometimes turns at a constant KeyboardDegPerS
+# (chance KeyboardPctAtSkill1..99). Casts and swings still wait for the core's facing arcs, so a cast needing facing
+# fails and is retried every CastRetryMs until the arc holds. The server orientation is written every step; a movement
+# packet follows only on a change of more than PacketMinDeg and at least PacketMinMs after the last one. Mode 1:
+# heartbeat packets (default); Mode 2: one facing spline per turn of at least SplineMinDeg (smaller turns are an
+# orientation only). OutsidePvpInSight 1: also out of PvP, for a bot with a real player within InSightYards (the
+# answer is kept InSightCacheMs). Scripted raid and dungeon facing is untouched. Needs the Natural tactic enabled for
+# the bot (Playerbots.Tactics.Natural.Enable) like the other natural layers. With Playerbots.PerfMonEnabled the row
+# NaturalTurn::Step shows the cost. Default: off (the instant snap).
+# Playerbots.Natural.Facing.Enable = 0
+# Playerbots.Natural.Facing.Contexts = "Arena,Battleground,World"
+# Playerbots.Natural.Facing.OutsidePvpInSight = 0
+# Playerbots.Natural.Facing.InSightYards = 60
+# Playerbots.Natural.Facing.InSightCacheMs = 1000
+# Playerbots.Natural.Facing.Mode = 1
+# Playerbots.Natural.Facing.MsFor180AtSkill1 = 450
+# Playerbots.Natural.Facing.MsFor180AtSkill99 = 90
+# Playerbots.Natural.Facing.MinMs = 40
+# Playerbots.Natural.Facing.ErrorDegAtSkill1 = 14
+# Playerbots.Natural.Facing.ErrorDegAtSkill99 = 2
+# Playerbots.Natural.Facing.ErrorSigmaPct = 40
+# Playerbots.Natural.Facing.CorrectionPctAtSkill1 = 70
+# Playerbots.Natural.Facing.CorrectionPctAtSkill99 = 35
+# Playerbots.Natural.Facing.CorrectionDelayMinMs = 120
+# Playerbots.Natural.Facing.CorrectionDelayMaxMs = 250
+# Playerbots.Natural.Facing.CorrectionResidualPct = 25
+# Playerbots.Natural.Facing.KeyboardPctAtSkill1 = 35
+# Playerbots.Natural.Facing.KeyboardPctAtSkill99 = 0
+# Playerbots.Natural.Facing.KeyboardDegPerS = 180
+# Playerbots.Natural.Facing.PacketMinDeg = 8
+# Playerbots.Natural.Facing.PacketMinMs = 80
+# Playerbots.Natural.Facing.SplineMinDeg = 25
+# Playerbots.Natural.Facing.CastRetryMs = 50
+# (Ranges: Mode 1-2, percents 0-100, degrees 0-360, ms 0-60000, InSightYards 0-500, KeyboardDegPerS 0-60000.)
+
+# Natural chasing and tracking (G2b): in Contexts (as above) a bot chasing a target sees it as it was Lag ms ago (a
+# ring of the target's past positions, one sample per SampleMs, RingSamples of them), the lag log-normal around
+# LagMsAtSkill1..99 (spread LagSigmaPct) and predicts where it is now by skill: below VelocityFromSkill it runs to
+# where it last saw the target; from there it extrapolates the velocity with a gain of GainPctAtSkill1..99 per cent of
+# the true velocity (spread GainSigmaPct); from TurnRateFromSkill it also reads the turn rate and from PatternFromSkill
+# turns and patterns over HistoryMsAtSkill1..99 ms of history. A heading change of JukeDeg degrees between two samples
+# is a juke no level predicts. The predicted point is at most MaxLeadYards from the lagged one; a target that moved
+# less than MinMoveYards is standing; a chaser that closed nothing for StuckMs aims at the true position. SkipLeadRule
+# 1: the old 3-yard lead rule of ReachCombatTo is skipped. Facing aims at the same point (with Facing.Enable).
+# OutsidePvpInSight as in Facing. With Playerbots.PerfMonEnabled the row NaturalMove::Track shows the cost.
+# Default: off (the exact target position).
+# Playerbots.Natural.Track.Enable = 0
+# Playerbots.Natural.Track.Contexts = "Arena,Battleground,World"
+# Playerbots.Natural.Track.OutsidePvpInSight = 0
+# Playerbots.Natural.Track.InSightYards = 60
+# Playerbots.Natural.Track.InSightCacheMs = 1000
+# Playerbots.Natural.Track.LagMsAtSkill1 = 500
+# Playerbots.Natural.Track.LagMsAtSkill99 = 110
+# Playerbots.Natural.Track.LagSigmaPct = 25
+# Playerbots.Natural.Track.VelocityFromSkill = 35
+# Playerbots.Natural.Track.PatternFromSkill = 65
+# Playerbots.Natural.Track.TurnRateFromSkill = 50
+# Playerbots.Natural.Track.GainPctAtSkill1 = 0
+# Playerbots.Natural.Track.GainPctAtSkill99 = 90
+# Playerbots.Natural.Track.GainSigmaPct = 20
+# Playerbots.Natural.Track.HistoryMsAtSkill1 = 0
+# Playerbots.Natural.Track.HistoryMsAtSkill99 = 1500
+# Playerbots.Natural.Track.RingSamples = 16
+# Playerbots.Natural.Track.SampleMs = 50
+# Playerbots.Natural.Track.MaxLeadYards = 6
+# Playerbots.Natural.Track.SkipLeadRule = 1
+# Playerbots.Natural.Track.MinMoveYards = 1
+# Playerbots.Natural.Track.JukeDeg = 60
+# Playerbots.Natural.Track.StuckMs = 3000
+# (Ranges: skills 0-100, RingSamples 4-32, percents 0-100, degrees 0-360, ms 0-60000, yards 0-500, SkipLeadRule 0-1.)
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600
@@ -2377,6 +2453,85 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.FocusTarget.MoonPctAtTeamwork99 = 100
 # Playerbots.Tactics.FocusTarget.KickBonus = 50
 # (Ranges: percents 0-100, KickBonus 0-255.)
+#
+# Defensives on burst and the partner protected (G5d; Playerbots.Tactics.Defensive.Enable, scope All, and
+# Playerbots.Tactics.Protect.Enable, scope Arena,Battleground,World). With Defensive on, the strategy "tactic
+# defensive" presses the class's self-defensives (mage ice block, paladin divine shield, rogue cloak or evasion, death
+# knight icebound fortitude, hunter deterrence, druid barkskin or survival instincts, disc priest pain suppression,
+# shadow priest dispersion, protection warrior shield wall; healthstones and potions with PotionEnable) when health is
+# at or below HpPctAtSkill1..99 per cent AND (the bot is under burst OR focused). Burst: health lost within
+# BurstWindowMs of at least BurstLossPctAtSkill1..99 per cent, from a ring of 8 health samples taken every SampleMs.
+# Focused: at least FocusedMinEnemies enemy players whose victim or cast target is the bot (what the combat log and the
+# cast bars show); a focused bot presses FocusedHpBonusPct points earlier. A low-skill bot presses only at
+# CriticalHpPct, or at the gates opening with the chance OpenerPctAtSkill1..99; low effort waits LateMsAtEffort0..100
+# ms after the trigger holds; Caution moves the threshold by up to CautionShiftPct points; two presses are at least
+# MinGapMs apart. With Protect on, PartyMemberToProtect returns a partner (PvP scope only: blessing of protection drops
+# a tank's threat) attacked within Protect.AttackedWithinMs by an enemy within Protect.DistanceYards, whose health is at
+# or below Protect.HpPctAtSkill1..99 per cent; the existing protect actions (blessing of protection, pain suppression,
+# intervene) use it, at least Protect.MinGapMs apart. Opponent memory (Foresight; from skill Opponent.FromSkill): the
+# bot remembers the health at which each enemy used its defensives (forgotten after Opponent.ExpireMs) and times its
+# burst Opponent.LeadPctAtForesight99 points above it at Foresight 99, when it has seen at least Opponent.MinEvents
+# such uses; Opponent.Enable 0 turns the memory off.
+# Playerbots.Tactics.Defensive.BurstWindowMs = 2000
+# Playerbots.Tactics.Defensive.BurstLossPctAtSkill1 = 55
+# Playerbots.Tactics.Defensive.BurstLossPctAtSkill99 = 30
+# Playerbots.Tactics.Defensive.SampleMs = 250
+# Playerbots.Tactics.Defensive.FocusedMinEnemies = 2
+# Playerbots.Tactics.Defensive.HpPctAtSkill1 = 25
+# Playerbots.Tactics.Defensive.HpPctAtSkill99 = 60
+# Playerbots.Tactics.Defensive.FocusedHpBonusPct = 15
+# Playerbots.Tactics.Defensive.CriticalHpPct = 20
+# Playerbots.Tactics.Defensive.OpenerPctAtSkill1 = 40
+# Playerbots.Tactics.Defensive.OpenerPctAtSkill99 = 0
+# Playerbots.Tactics.Defensive.LateMsAtEffort0 = 1200
+# Playerbots.Tactics.Defensive.LateMsAtEffort100 = 0
+# Playerbots.Tactics.Defensive.CautionShiftPct = 10
+# Playerbots.Tactics.Defensive.MinGapMs = 1500
+# Playerbots.Tactics.Defensive.PotionEnable = 1
+# Playerbots.Tactics.Defensive.PotionHpPct = 35
+# Playerbots.Tactics.Defensive.Protect.HpPctAtSkill1 = 20
+# Playerbots.Tactics.Defensive.Protect.HpPctAtSkill99 = 40
+# Playerbots.Tactics.Defensive.Protect.AttackedWithinMs = 3000
+# Playerbots.Tactics.Defensive.Protect.DistanceYards = 30
+# Playerbots.Tactics.Defensive.Protect.MinGapMs = 2000
+# Playerbots.Tactics.Defensive.Opponent.Enable = 1
+# Playerbots.Tactics.Defensive.Opponent.LeadPctAtForesight99 = 20
+# Playerbots.Tactics.Defensive.Opponent.MinEvents = 1
+# Playerbots.Tactics.Defensive.Opponent.FromSkill = 40
+# Playerbots.Tactics.Defensive.Opponent.ExpireMs = 120000
+# (Ranges: percents 0-100, ms 0-120000, FocusedMinEnemies 0-8, Protect.DistanceYards 0-100, PotionEnable and
+# Opponent.Enable 0-1, Opponent.MinEvents 0-20, Opponent.FromSkill 0-100.)
+#
+# Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World). With it on, a bot from
+# KnownFromSkill that starts a cast of at least MinCastMs sees whether an enemy player could kick it (its class has a
+# kick, it is within KickerRangeYards plus KickerRangeSlackYards, and it faces the bot or targets it when
+# KickerNeedFacing is 1) and has seen no kick used within KickSeenMs (bots from KickMemoryFromSkill remember the kicks
+# they saw used); it then fakes with the chance ChancePctAtSkill70..99 per cent and cancels the cast at a drawn point
+# of the bar (CancelPctAtPatience0..100 per cent of the cast time, log-normal spread CancelSigmaPct; never earlier than
+# CancelMinMs into the cast and never within CancelMinLeftMs of its end). The next fake is at least
+# RepeatMsAtPatience0..100 ms later (jitter RepeatJitterPct per cent), at most MaxPerMinute a minute. A kick used
+# within BaitedWindowMs after the cancel counts as baited (counters fakes and kicksBaited). Nothing tells a kicker it
+# faces a fake; its own memory of seen cancels is all it has (Playerbots.Tactics.Interrupt).
+# Playerbots.Tactics.Fake.KnownFromSkill = 70
+# Playerbots.Tactics.Fake.MinCastMs = 1500
+# Playerbots.Tactics.Fake.CancelPctAtPatience0 = 35
+# Playerbots.Tactics.Fake.CancelPctAtPatience100 = 75
+# Playerbots.Tactics.Fake.CancelSigmaPct = 15
+# Playerbots.Tactics.Fake.CancelMinMs = 300
+# Playerbots.Tactics.Fake.CancelMinLeftMs = 250
+# Playerbots.Tactics.Fake.RepeatMsAtPatience0 = 4000
+# Playerbots.Tactics.Fake.RepeatMsAtPatience100 = 10000
+# Playerbots.Tactics.Fake.RepeatJitterPct = 30
+# Playerbots.Tactics.Fake.MaxPerMinute = 6
+# Playerbots.Tactics.Fake.KickerRangeYards = 30
+# Playerbots.Tactics.Fake.KickerRangeSlackYards = 3
+# Playerbots.Tactics.Fake.KickerNeedFacing = 1
+# Playerbots.Tactics.Fake.KickSeenMs = 8000
+# Playerbots.Tactics.Fake.KickMemoryFromSkill = 40
+# Playerbots.Tactics.Fake.ChancePctAtSkill70 = 40
+# Playerbots.Tactics.Fake.ChancePctAtSkill99 = 90
+# Playerbots.Tactics.Fake.BaitedWindowMs = 300
+# (Ranges: skills 0-100, percents 0-100, ms 0-120000, MaxPerMinute 0-600, yards 0-100, KickerNeedFacing 0-1.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

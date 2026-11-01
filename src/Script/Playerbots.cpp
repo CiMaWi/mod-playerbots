@@ -160,8 +160,12 @@ public:
         PLAYERHOOK_ON_GIVE_EXP,
         PLAYERHOOK_ON_BEFORE_TELEPORT,
         PLAYERHOOK_ON_MONEY_CHANGED,
-        PLAYERHOOK_ON_VICTIM_REWARD_AFTER
+        PLAYERHOOK_ON_VICTIM_REWARD_AFTER,
+        PLAYERHOOK_ON_SPELL_CAST
     }) {}
+
+    // G5e: the kick memory and kicksBaited are filled here (the caster's map thread). 13e-0 scaffold: no body yet.
+    void OnPlayerSpellCast(Player* /*player*/, Spell* /*spell*/, bool /*skipCheck*/) override {}
 
     void OnPlayerVictimRewardAfter(Player* player, Player* victim, uint32& /*killerTitle*/, int32& /*victimRank*/,
                                    float& honor) override

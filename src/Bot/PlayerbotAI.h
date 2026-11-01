@@ -43,8 +43,12 @@ class Engine;
 class ExternalEventHelper;
 class Group;
 struct CcBotState;
+struct DefensiveBotState;
+struct FakeBotState;
 struct FocusBotState;
 struct InterruptBotState;
+struct TrackBotState;
+struct TurnBotState;
 class ReactionEngine;
 class Gameobject;
 class Item;
@@ -768,6 +772,21 @@ public:
     CcBotState& GetCcState();
     // Interrupts (ArenaInterrupt.h, G5b): the bot's decisions on the enemy casts in view. The bot's own update.
     InterruptBotState& GetInterruptState();
+    // Defensives on burst (ArenaDefensive.h, G5d), fake casts (NaturalCast.h, G5e), natural turning (NaturalTurn.h,
+    // G2a) and tracking (NaturalMove.h, G2b): each bot's state, made at first use. The bot's own update (and the
+    // aura or spell hooks on its map thread); the GM commands on the world thread while the maps wait.
+    DefensiveBotState& GetDefensiveState();
+    FakeBotState& GetFakeState();
+    TurnBotState& GetTurnState();
+    TrackBotState& GetTrackState();
+    // The natural pre-gate stepper (G5e's cancel instant, G2a's turn steps): called from UpdateAI before the AI
+    // gates on every Player::Update while SetNaturalPreGate(true), else one bool test. nowMs = getMSTime().
+    void StepNaturalPreGate(uint32 nowMs);
+    void SetNaturalPreGate(bool on) { naturalPreGate = on; }
+    bool IsNaturalPreGate() const { return naturalPreGate; }
+    // Face the target the way the bot's turn state allows (G2a): true when the bot's facing holds towards it. With
+    // the natural facing off this is the instant snap (ServerFacade::SetFacingTo) and always true.
+    bool FaceTarget(WorldObject* target);
     // The Interrupt tactic's hook (enabled here): true when the bot's kick may go at the enemy's cast now. One
     // decision per cast (the shortcut or the judging path), its commit point from the bar's start.
     bool DecideInterrupt(Unit* enemy);
@@ -875,6 +894,11 @@ protected:
     std::unique_ptr<FocusBotState> focusState;  // made at first use (GetFocusState); complete in PlayerbotAI.cpp
     std::unique_ptr<CcBotState> ccState;        // made at first use (GetCcState); complete in PlayerbotAI.cpp
     std::unique_ptr<InterruptBotState> interruptState;  // made at first use (GetInterruptState); complete in the .cpp
+    std::unique_ptr<DefensiveBotState> defensiveState;  // the same (GetDefensiveState)
+    std::unique_ptr<FakeBotState> fakeState;            // the same (GetFakeState)
+    std::unique_ptr<TurnBotState> turnState;            // the same (GetTurnState)
+    std::unique_ptr<TrackBotState> trackState;          // the same (GetTrackState)
+    bool naturalPreGate = false;  // true while a pre-gate stepper has work (a turn, a fake cast); one bool test else
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;

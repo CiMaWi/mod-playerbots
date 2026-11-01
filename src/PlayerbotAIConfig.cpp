@@ -1067,6 +1067,90 @@ bool PlayerbotAIConfig::Initialize()
                       cadenceError);
             NaturalCadenceContexts = matches;
         }
+
+        // G2a and G2b: the natural facing and tracking (Playerbots.Natural.Facing.* and .Track.*), optional keys
+        // whose defaults (TurnConfig, TrackConfig) are the conf.dist values; Enable 0 reproduces today's behaviour
+        constexpr uint32 MaxNaturalMs = 60000;
+        constexpr uint32 MaxNaturalPct = 100;
+        constexpr uint32 MaxNaturalDeg = 360;
+        constexpr uint32 MaxNaturalYards = 500;
+        constexpr uint32 MaxNaturalSkill = 100;
+        constexpr uint32 MaxNaturalSwitch = 1;
+        auto const naturalNumber = [](char const* part, char const* key, uint32& value, uint32 maximum)
+        {
+            value = std::min<uint32>(
+                sConfigMgr->GetOption<uint32>(std::string("Playerbots.Natural.") + part + "." + key, value, false),
+                maximum);
+        };
+        auto const naturalFlag = [](char const* part, char const* key, bool& value)
+        { value = sConfigMgr->GetOption<bool>(std::string("Playerbots.Natural.") + part + "." + key, value, false); };
+        auto const naturalContexts = [](char const* part, uint8& mask)
+        {
+            uint8 const fallback = mask;
+            std::string const key = std::string("Playerbots.Natural.") + part + ".Contexts";
+            std::string const text = sConfigMgr->GetOption<std::string>(key, "Arena,Battleground,World", false);
+            std::string contextsError;
+            if (!ParseTacticScope(text, mask, contextsError))
+            {
+                LOG_ERROR("server.loading", "{}: {}; Arena,Battleground,World is used", key, contextsError);
+                mask = fallback;
+            }
+        };
+
+        NaturalFacing = TurnConfig{};
+        naturalFlag("Facing", "Enable", NaturalFacing.Enable);
+        naturalContexts("Facing", NaturalFacing.Contexts);
+        naturalFlag("Facing", "OutsidePvpInSight", NaturalFacing.OutsidePvpInSight);
+        naturalNumber("Facing", "InSightYards", NaturalFacing.InSightYards, MaxNaturalYards);
+        naturalNumber("Facing", "InSightCacheMs", NaturalFacing.InSightCacheMs, MaxNaturalMs);
+        naturalNumber("Facing", "Mode", NaturalFacing.Mode, 2);
+        NaturalFacing.Mode = std::max(NaturalFacing.Mode, 1u);
+        naturalNumber("Facing", "MsFor180AtSkill1", NaturalFacing.MsFor180AtSkill1, MaxNaturalMs);
+        naturalNumber("Facing", "MsFor180AtSkill99", NaturalFacing.MsFor180AtSkill99, MaxNaturalMs);
+        naturalNumber("Facing", "MinMs", NaturalFacing.MinMs, MaxNaturalMs);
+        naturalNumber("Facing", "ErrorDegAtSkill1", NaturalFacing.ErrorDegAtSkill1, MaxNaturalDeg);
+        naturalNumber("Facing", "ErrorDegAtSkill99", NaturalFacing.ErrorDegAtSkill99, MaxNaturalDeg);
+        naturalNumber("Facing", "ErrorSigmaPct", NaturalFacing.ErrorSigmaPct, MaxNaturalPct);
+        naturalNumber("Facing", "CorrectionPctAtSkill1", NaturalFacing.CorrectionPctAtSkill1, MaxNaturalPct);
+        naturalNumber("Facing", "CorrectionPctAtSkill99", NaturalFacing.CorrectionPctAtSkill99, MaxNaturalPct);
+        naturalNumber("Facing", "CorrectionDelayMinMs", NaturalFacing.CorrectionDelayMinMs, MaxNaturalMs);
+        naturalNumber("Facing", "CorrectionDelayMaxMs", NaturalFacing.CorrectionDelayMaxMs, MaxNaturalMs);
+        NaturalFacing.CorrectionDelayMaxMs =
+            std::max(NaturalFacing.CorrectionDelayMaxMs, NaturalFacing.CorrectionDelayMinMs);
+        naturalNumber("Facing", "CorrectionResidualPct", NaturalFacing.CorrectionResidualPct, MaxNaturalPct);
+        naturalNumber("Facing", "KeyboardPctAtSkill1", NaturalFacing.KeyboardPctAtSkill1, MaxNaturalPct);
+        naturalNumber("Facing", "KeyboardPctAtSkill99", NaturalFacing.KeyboardPctAtSkill99, MaxNaturalPct);
+        naturalNumber("Facing", "KeyboardDegPerS", NaturalFacing.KeyboardDegPerS, MaxNaturalMs);
+        naturalNumber("Facing", "PacketMinDeg", NaturalFacing.PacketMinDeg, MaxNaturalDeg);
+        naturalNumber("Facing", "PacketMinMs", NaturalFacing.PacketMinMs, MaxNaturalMs);
+        naturalNumber("Facing", "SplineMinDeg", NaturalFacing.SplineMinDeg, MaxNaturalDeg);
+        naturalNumber("Facing", "CastRetryMs", NaturalFacing.CastRetryMs, MaxNaturalMs);
+
+        NaturalTrack = TrackConfig{};
+        naturalFlag("Track", "Enable", NaturalTrack.Enable);
+        naturalContexts("Track", NaturalTrack.Contexts);
+        naturalFlag("Track", "OutsidePvpInSight", NaturalTrack.OutsidePvpInSight);
+        naturalNumber("Track", "InSightYards", NaturalTrack.InSightYards, MaxNaturalYards);
+        naturalNumber("Track", "InSightCacheMs", NaturalTrack.InSightCacheMs, MaxNaturalMs);
+        naturalNumber("Track", "LagMsAtSkill1", NaturalTrack.LagMsAtSkill1, MaxNaturalMs);
+        naturalNumber("Track", "LagMsAtSkill99", NaturalTrack.LagMsAtSkill99, MaxNaturalMs);
+        naturalNumber("Track", "LagSigmaPct", NaturalTrack.LagSigmaPct, MaxNaturalPct);
+        naturalNumber("Track", "VelocityFromSkill", NaturalTrack.VelocityFromSkill, MaxNaturalSkill);
+        naturalNumber("Track", "PatternFromSkill", NaturalTrack.PatternFromSkill, MaxNaturalSkill);
+        naturalNumber("Track", "TurnRateFromSkill", NaturalTrack.TurnRateFromSkill, MaxNaturalSkill);
+        naturalNumber("Track", "GainPctAtSkill1", NaturalTrack.GainPctAtSkill1, MaxNaturalPct);
+        naturalNumber("Track", "GainPctAtSkill99", NaturalTrack.GainPctAtSkill99, MaxNaturalPct);
+        naturalNumber("Track", "GainSigmaPct", NaturalTrack.GainSigmaPct, MaxNaturalPct);
+        naturalNumber("Track", "HistoryMsAtSkill1", NaturalTrack.HistoryMsAtSkill1, MaxNaturalMs);
+        naturalNumber("Track", "HistoryMsAtSkill99", NaturalTrack.HistoryMsAtSkill99, MaxNaturalMs);
+        naturalNumber("Track", "RingSamples", NaturalTrack.RingSamples, MaxTrackRingSamples);
+        NaturalTrack.RingSamples = std::max(NaturalTrack.RingSamples, MinTrackRingSamples);
+        naturalNumber("Track", "SampleMs", NaturalTrack.SampleMs, MaxNaturalMs);
+        naturalNumber("Track", "MaxLeadYards", NaturalTrack.MaxLeadYards, MaxNaturalYards);
+        naturalNumber("Track", "SkipLeadRule", NaturalTrack.SkipLeadRule, MaxNaturalSwitch);
+        naturalNumber("Track", "MinMoveYards", NaturalTrack.MinMoveYards, MaxNaturalYards);
+        naturalNumber("Track", "JukeDeg", NaturalTrack.JukeDeg, MaxNaturalDeg);
+        naturalNumber("Track", "StuckMs", NaturalTrack.StuckMs, MaxNaturalMs);
     }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
@@ -1244,6 +1328,60 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("FocusTarget.MoonPctAtTeamwork1", TacticFocus.FocusTargetMoonPctAtTeamwork1, MaxFocusPct);
     focusNumber("FocusTarget.MoonPctAtTeamwork99", TacticFocus.FocusTargetMoonPctAtTeamwork99, MaxFocusPct);
     focusNumber("FocusTarget.KickBonus", TacticFocus.FocusTargetKickBonus, MaxFocusMargin);
+
+    // G5d: the Defensive and Protect tactics (Playerbots.Tactics.Defensive.*), the defaults in DefensiveConfig
+    TacticDefensive = DefensiveConfig{};
+    constexpr uint32 MaxDefensiveYards = 100;
+    constexpr uint32 MaxDefensiveEnemies = 8;
+    focusNumber("Defensive.BurstWindowMs", TacticDefensive.BurstWindowMs, MaxFocusMs);
+    focusNumber("Defensive.BurstLossPctAtSkill1", TacticDefensive.BurstLossPctAtSkill1, MaxFocusPct);
+    focusNumber("Defensive.BurstLossPctAtSkill99", TacticDefensive.BurstLossPctAtSkill99, MaxFocusPct);
+    focusNumber("Defensive.SampleMs", TacticDefensive.SampleMs, MaxFocusMs);
+    focusNumber("Defensive.FocusedMinEnemies", TacticDefensive.FocusedMinEnemies, MaxDefensiveEnemies);
+    focusNumber("Defensive.HpPctAtSkill1", TacticDefensive.HpPctAtSkill1, MaxFocusPct);
+    focusNumber("Defensive.HpPctAtSkill99", TacticDefensive.HpPctAtSkill99, MaxFocusPct);
+    focusNumber("Defensive.FocusedHpBonusPct", TacticDefensive.FocusedHpBonusPct, MaxFocusPct);
+    focusNumber("Defensive.CriticalHpPct", TacticDefensive.CriticalHpPct, MaxFocusPct);
+    focusNumber("Defensive.OpenerPctAtSkill1", TacticDefensive.OpenerPctAtSkill1, MaxFocusPct);
+    focusNumber("Defensive.OpenerPctAtSkill99", TacticDefensive.OpenerPctAtSkill99, MaxFocusPct);
+    focusNumber("Defensive.LateMsAtEffort0", TacticDefensive.LateMsAtEffort0, MaxFocusMs);
+    focusNumber("Defensive.LateMsAtEffort100", TacticDefensive.LateMsAtEffort100, MaxFocusMs);
+    focusNumber("Defensive.CautionShiftPct", TacticDefensive.CautionShiftPct, MaxFocusPct);
+    focusNumber("Defensive.MinGapMs", TacticDefensive.MinGapMs, MaxFocusMs);
+    focusNumber("Defensive.PotionEnable", TacticDefensive.PotionEnable, MaxCcSwitch);
+    focusNumber("Defensive.PotionHpPct", TacticDefensive.PotionHpPct, MaxFocusPct);
+    focusNumber("Defensive.Protect.HpPctAtSkill1", TacticDefensive.ProtectHpPctAtSkill1, MaxFocusPct);
+    focusNumber("Defensive.Protect.HpPctAtSkill99", TacticDefensive.ProtectHpPctAtSkill99, MaxFocusPct);
+    focusNumber("Defensive.Protect.AttackedWithinMs", TacticDefensive.ProtectAttackedWithinMs, MaxFocusMs);
+    focusNumber("Defensive.Protect.DistanceYards", TacticDefensive.ProtectDistanceYards, MaxDefensiveYards);
+    focusNumber("Defensive.Protect.MinGapMs", TacticDefensive.ProtectMinGapMs, MaxFocusMs);
+    focusNumber("Defensive.Opponent.Enable", TacticDefensive.OpponentEnable, MaxCcSwitch);
+    focusNumber("Defensive.Opponent.LeadPctAtForesight99", TacticDefensive.OpponentLeadPctAtForesight99, MaxFocusPct);
+    focusNumber("Defensive.Opponent.MinEvents", TacticDefensive.OpponentMinEvents, MaxCcEvents);
+    focusNumber("Defensive.Opponent.FromSkill", TacticDefensive.OpponentFromSkill, MaxCcSkill);
+    focusNumber("Defensive.Opponent.ExpireMs", TacticDefensive.OpponentExpireMs, MaxFocusMs);
+
+    // G5e: the Fake tactic (Playerbots.Tactics.Fake.*), the defaults in FakeConfig
+    TacticFake = FakeConfig{};
+    focusNumber("Fake.KnownFromSkill", TacticFake.KnownFromSkill, MaxCcSkill);
+    focusNumber("Fake.MinCastMs", TacticFake.MinCastMs, MaxFocusMs);
+    focusNumber("Fake.CancelPctAtPatience0", TacticFake.CancelPctAtPatience0, MaxFocusPct);
+    focusNumber("Fake.CancelPctAtPatience100", TacticFake.CancelPctAtPatience100, MaxFocusPct);
+    focusNumber("Fake.CancelSigmaPct", TacticFake.CancelSigmaPct, MaxFocusPct);
+    focusNumber("Fake.CancelMinMs", TacticFake.CancelMinMs, MaxFocusMs);
+    focusNumber("Fake.CancelMinLeftMs", TacticFake.CancelMinLeftMs, MaxFocusMs);
+    focusNumber("Fake.RepeatMsAtPatience0", TacticFake.RepeatMsAtPatience0, MaxFocusMs);
+    focusNumber("Fake.RepeatMsAtPatience100", TacticFake.RepeatMsAtPatience100, MaxFocusMs);
+    focusNumber("Fake.RepeatJitterPct", TacticFake.RepeatJitterPct, MaxFocusPct);
+    focusNumber("Fake.MaxPerMinute", TacticFake.MaxPerMinute, MaxFocusSeconds);
+    focusNumber("Fake.KickerRangeYards", TacticFake.KickerRangeYards, MaxDefensiveYards);
+    focusNumber("Fake.KickerRangeSlackYards", TacticFake.KickerRangeSlackYards, MaxDefensiveYards);
+    focusNumber("Fake.KickerNeedFacing", TacticFake.KickerNeedFacing, MaxCcSwitch);
+    focusNumber("Fake.KickSeenMs", TacticFake.KickSeenMs, MaxFocusMs);
+    focusNumber("Fake.KickMemoryFromSkill", TacticFake.KickMemoryFromSkill, MaxCcSkill);
+    focusNumber("Fake.ChancePctAtSkill70", TacticFake.ChancePctAtSkill70, MaxFocusPct);
+    focusNumber("Fake.ChancePctAtSkill99", TacticFake.ChancePctAtSkill99, MaxFocusPct);
+    focusNumber("Fake.BaitedWindowMs", TacticFake.BaitedWindowMs, MaxFocusMs);
 
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);

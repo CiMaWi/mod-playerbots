@@ -92,6 +92,18 @@ enum class TacticCounter : uint8
     FocusKick,          // G4e: interrupts on the bot's focus target (not its target)
     FocusCc,            // G4e: crowd control on the bot's focus target (not its target)
     SwitchKick,         // G4e: interrupts on an enemy that was neither the bot's target nor its focus
+    DefSelf,            // G5d: self-defensive cooldowns pressed by the Defensive tactic
+    DefPartner,         // G5d: defensives pressed on a partner (blessing of protection, pain suppression, ...)
+    DefBurst,           // G5d: bursts the sampler detected
+    DeathsDefReady,     // G5d: the bot died with a self-defensive ready (known, not on cooldown)
+    Fakes,              // G5e: casts the bot cancelled on purpose as a bait
+    KicksBaited,        // G5e: an enemy kick within the baited window after a fake cancel
+    KickSeen,           // G5e: enemy kicks seen used (the kick memory)
+    TurnFlicks,         // G2a: natural turn flicks started
+    TurnWaitMs,         // G2a: ms a cast or swing waited for the bot's facing arc to hold
+    FaceFails,          // G2a: casts that failed for the facing arc
+    TrackChases,        // G2b: chase destinations set from the lagged, predicted point
+    TrackLagMs,         // G2b: the lag applied, summed over the chases (mean = trackLagMs / trackChases)
     Count
 };
 
@@ -103,6 +115,8 @@ constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
     "oppTrinkets", "oppDispels",  "chainEarlyMs",    "chainBusy",         "reCcs",       "reCcGapMs",
     "breakWasted", "breakMs",     "partnerDispelMs", "intHeal",           "intCc",       "intDamage",
     "intLate",     "intWasted",   "intHealDone",     "skullOutOfReachMs", "intHold",     "intHoldEpisodes",
-    "intHoldPaid", "intHoldVain", "intHoldExpired",  "focusKick",         "focusCc",     "switchKick"};
+    "intHoldPaid", "intHoldVain", "intHoldExpired",  "focusKick",         "focusCc",     "switchKick",
+    "defSelf",     "defPartner",  "defBurst",        "deathsDefReady",    "fakes",       "kicksBaited",
+    "kickSeen",    "turnFlicks",  "turnWaitMs",      "faceFails",         "trackChases", "trackLagMs"};
 
 #endif
