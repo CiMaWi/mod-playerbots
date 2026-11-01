@@ -4726,14 +4726,22 @@ FakeStep StepFakeCast(PlayerbotAI* botAI, Player* bot, FakeBotState& state, uint
 }
 }  // namespace
 
+namespace
+{
+// G5e review note 1: set once any bot's tactic mask holds Fake (SetTacticMask: the config mask at login or reload, a
+// forced mask), never cleared; until then a kick needs no search for bots that note it
+std::atomic<bool> fakeTacticSeen{false};
+}  // namespace
+
 // G5e (NaturalCast.h): a kick aimed at one enemy, cast by any player (OnPlayerSpellCast, the caster's map thread). The
-// filter comes first (the tactics on, a kick, a player target on the caster's map); then the players around the target
-// on that map (the same thread) that are the caster's enemies and bots with the Fake tactic on here note it in their
-// own kick memory, and the target counts tactics.kicksBaited when the kick came within BaitedWindowMs of its fake
-// cancel. No unit pointer is kept; nothing of the caster's AI is read but its skill for the trace line.
+// filter comes first (the tactics on, the Fake tactic in some bot's mask, a kick, a player target on the caster's
+// map); then the players around the target on that map (the same thread) that are hostile to the caster and bots
+// with the Fake tactic on here note it in their own kick memory, and the target counts tactics.kicksBaited when the
+// kick came within BaitedWindowMs of its fake cancel. No unit pointer is kept; nothing of the caster's AI is read but
+// its skill for the trace line.
 void NoteFakeKickCast(Player* caster, Spell* spell)
 {
-    if (!sPlayerbotAIConfig.TacticsEnable || !caster || !spell)
+    if (!sPlayerbotAIConfig.TacticsEnable || !fakeTacticSeen.load(std::memory_order_relaxed) || !caster || !spell)
         return;
 
     SpellInfo const* const info = spell->GetSpellInfo();
@@ -4753,7 +4761,7 @@ void NoteFakeKickCast(Player* caster, Spell* spell)
     Cell::VisitObjects(target, searcher, FAKE_KICK_SEEN_YARDS);
     for (Player* const seer : seers)
     {
-        if (seer == caster || seer->IsInSameRaidWith(caster))
+        if (seer == caster || !seer->IsHostileTo(caster))
             continue;
 
         PlayerbotAI* const botAI = GET_PLAYERBOT_AI(seer);
@@ -8701,6 +8709,9 @@ void PlayerbotAI::SetPvpTestCounting(bool on)
 
 void PlayerbotAI::SetTacticMask(uint32 mask, bool forced)
 {
+    if (mask & TacticBit(TacticId::Fake))
+        fakeTacticSeen.store(true, std::memory_order_relaxed);
+
     tacticMask.store(mask & TACTIC_ALL_MASK, std::memory_order_relaxed);
     tacticMaskForced.store(forced, std::memory_order_relaxed);
 }
