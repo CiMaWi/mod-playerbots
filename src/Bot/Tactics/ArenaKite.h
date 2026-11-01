@@ -69,8 +69,9 @@ constexpr uint8 KITE_CLASS_DRUID = 11;
 
 // The class snares (or peels) a kiting bot tries first, in its order: instants only (the bot is moving), the spell
 // names the bots' spell lookup knows. OnSelf: cast on the bot itself (an area round it or a buff); Facing: a cone in
-// front, the melee must be in front of the bot. Classes without a row (warrior, rogue, death knight) are melee and do
-// not kite; a priest without the Mind Flay talent's snare uses Psychic Scream, a paladin Hammer of Justice as a peel.
+// front, the melee must be in front of the bot. Only snares and roots: crowd control (Psychic Scream, Hammer of
+// Justice, Death Coil) is the crowd-control tactic's, not a kite's. Classes without a row (warrior, rogue, death
+// knight, priest, paladin) kite by steps alone.
 struct KiteSnareRow
 {
     uint8 ClassId;
@@ -79,17 +80,16 @@ struct KiteSnareRow
     bool Facing;
 };
 
-inline constexpr std::array<KiteSnareRow, 12> KITE_SNARES = {{
+inline constexpr std::array<KiteSnareRow, 9> KITE_SNARES = {{
     {KITE_CLASS_MAGE, "frost nova", true, false},  // roots everything within 10 yd
     {KITE_CLASS_MAGE, "cone of cold", false, true},
     {KITE_CLASS_SHAMAN, "frost shock", false, false},
+    // slows every enemy within 10 yd; it takes the shaman's earth totem slot, so it can replace a Tremor Totem (kept:
+    // the kite is the shaman's escape, a Tremor Totem is only a fear/charm/sleep answer)
     {KITE_CLASS_SHAMAN, "earthbind totem", true, false},
     {KITE_CLASS_DRUID, "nature's grasp", true, false},  // roots the next attacker
     {KITE_CLASS_DRUID, "typhoon", false, true},         // Balance: knocks back and dazes
     {KITE_CLASS_WARLOCK, "curse of exhaustion", false, false},
-    {KITE_CLASS_WARLOCK, "death coil", false, false},  // a 3 s horror
-    {KITE_CLASS_PRIEST, "psychic scream", true, false},
-    {KITE_CLASS_PALADIN, "hammer of justice", false, false},
     {KITE_CLASS_HUNTER, "concussive shot", false, false},
     {KITE_CLASS_HUNTER, "wing clip", false, false},
 }};
@@ -292,6 +292,8 @@ struct KiteBotState
     float NearestMeleeYards = KITE_NO_MELEE;
     uint32 EnemyCcMs = 0;  // a crowd control seen on an enemy last (0: none)
     std::array<KiteWatch, KITE_MEMORY_SLOTS> Watch{};
+    CoverVec LookSelf;  // where the bot stood at the last look at the watches
+    bool LookSelfSet = false;
     // the episode
     uint32 EpisodeStartMs = 0;  // the first sense of the running episode (0: none)
     uint32 MeleeSeenMs = 0;
@@ -331,6 +333,8 @@ inline void KiteResetMatch(KiteBotState& state)
     state.NearestMeleeYards = KITE_NO_MELEE;
     state.EnemyCcMs = 0;
     state.Watch = {};
+    state.LookSelf = CoverVec();
+    state.LookSelfSet = false;
     state.EpisodeStartMs = 0;
     state.MeleeSeenMs = 0;
     state.GaveUp = false;
@@ -594,12 +598,14 @@ enum class KiteLook : uint8
     Drop
 };
 
-inline KiteLook KiteJudgeLook(KiteWatch const& watch, CoverVec const& nowAt, bool visible)
+// A bot that moved itself since the last look (botMoved: more than KITE_BREAK_MOVED_YARDS) may have walked out of the
+// line itself: no verdict, the watch is dropped
+inline KiteLook KiteJudgeLook(KiteWatch const& watch, CoverVec const& nowAt, bool visible, bool botMoved = false)
 {
     if (visible)
         return KiteLook::Keep;
 
-    if (watch.Seen && CoverDist2d(watch.At, nowAt) >= KITE_BREAK_MOVED_YARDS)
+    if (!botMoved && watch.Seen && CoverDist2d(watch.At, nowAt) >= KITE_BREAK_MOVED_YARDS)
         return KiteLook::Break;
 
     return KiteLook::Drop;
@@ -866,11 +872,20 @@ void RunKiteChecks(Check&& check)
     // The snare rows
     check(!KiteClassHasSnare(1) && !KiteClassHasSnare(4) && !KiteClassHasSnare(6),
           "warrior, rogue and death knight have no snare row");
-    check(KiteClassHasSnare(KITE_CLASS_MAGE) && KiteClassHasSnare(KITE_CLASS_PRIEST) &&
-              KiteClassHasSnare(KITE_CLASS_DRUID) && KiteClassHasSnare(KITE_CLASS_SHAMAN) &&
-              KiteClassHasSnare(KITE_CLASS_WARLOCK) && KiteClassHasSnare(KITE_CLASS_PALADIN) &&
+    check(KiteClassHasSnare(KITE_CLASS_MAGE) && KiteClassHasSnare(KITE_CLASS_DRUID) &&
+              KiteClassHasSnare(KITE_CLASS_SHAMAN) && KiteClassHasSnare(KITE_CLASS_WARLOCK) &&
               KiteClassHasSnare(KITE_CLASS_HUNTER),
-          "every kiting class has a row");
+          "mage, druid, shaman, warlock and hunter have a row");
+    check(!KiteClassHasSnare(KITE_CLASS_PRIEST) && !KiteClassHasSnare(KITE_CLASS_PALADIN),
+          "priest and paladin have none (no crowd control rows)");
+    bool snaresOnly = true;
+    for (KiteSnareRow const& row : KITE_SNARES)
+    {
+        std::string const spell = row.Spell;
+        snaresOnly = snaresOnly && spell != "psychic scream" && spell != "hammer of justice" && spell != "death coil";
+    }
+
+    check(snaresOnly, "no crowd control spell among the rows");
     int32 const nova = KitePickSnare(KITE_CLASS_MAGE, [](KiteSnareRow const&) { return true; });
     check(nova >= 0 && std::string(KITE_SNARES[nova].Spell) == "frost nova" && KITE_SNARES[nova].OnSelf,
           "a mage tries Frost Nova first");
@@ -963,7 +978,10 @@ void RunKiteChecks(Check&& check)
     check(KiteJudgeLook(watch, {1.0f, 8.0f, 10.0f}, true) == KiteLook::Keep, "still seen: keep");
     check(KiteJudgeLook(watch, {0.0f, 5.0f, 10.0f}, false) == KiteLook::Break, "moved out of sight: its LOS break");
     check(KiteJudgeLook(watch, {0.5f, 8.0f, 10.0f}, false) == KiteLook::Drop,
-          "out of sight without moving (the bot moved): no break");
+          "out of sight without the enemy moving: no break");
+    check(KiteJudgeLook(watch, {0.0f, 5.0f, 10.0f}, false, true) == KiteLook::Drop,
+          "out of sight but the bot moved itself since the look: no verdict");
+    check(KiteJudgeLook(watch, {1.0f, 8.0f, 10.0f}, true, true) == KiteLook::Keep, "seen, the bot moved: keep");
     watch.Seen = false;
     check(KiteJudgeLook(watch, {0.0f, 3.0f, 10.0f}, false) == KiteLook::Drop, "never seen: no break");
     check(KiteAfterCcMs(0, 5000) == KITE_AFTER_CC_UNKNOWN && KiteAfterCcMs(4000, 5000) == 1000 &&

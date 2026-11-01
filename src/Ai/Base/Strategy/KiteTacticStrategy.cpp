@@ -110,6 +110,10 @@ void WatchLosBreaks(PlayerbotAI* botAI, Player* bot, Battleground* bg, KiteBotSt
     ArenaCoverTable const* table = FindArenaCoverTable(bot->GetMapId());
     uint32 const gates = table ? ArenaCoverActiveGates(bg) : 0;
     CoverVec const self = KitePositionOf(bot);
+    // a bot that moved itself since the last look may have walked out of the line: no verdict on the enemy's LOS break
+    bool const botMoved = state.LookSelfSet && CoverDist2d(state.LookSelf, self) > KITE_BREAK_MOVED_YARDS;
+    state.LookSelf = self;
+    state.LookSelfSet = true;
     for (KiteWatch& watch : state.Watch)
     {
         if (!watch.Guid)
@@ -124,7 +128,7 @@ void WatchLosBreaks(PlayerbotAI* botAI, Player* bot, Battleground* bg, KiteBotSt
 
         CoverVec const at = KitePositionOf(unit);
         bool const visible = bot->IsWithinLOSInMap(unit, VMAP::ModelIgnoreFlags::M2);
-        KiteLook const look = KiteJudgeLook(watch, at, visible);
+        KiteLook const look = KiteJudgeLook(watch, at, visible, botMoved);
         if (look == KiteLook::Keep)
         {
             watch.At = at;
@@ -364,12 +368,10 @@ float TacticKiteMultiplier::GetValue(Action* action)
     if (!action || !botAI->TacticEnabledHere(TacticId::Kite) || !dynamic_cast<FleeAction*>(action))
         return 1.0f;
 
-    if (!bot->GetBattleground())
-    {
-        Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
-        if (!target || !target->ToPlayer())
-            return 1.0f;
-    }
+    // only a flee from a player (battlegrounds too: an NPC boss keeps the old flee)
+    Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    if (!target || !target->ToPlayer())
+        return 1.0f;
 
     KiteBotState& state = botAI->GetKiteState();
     KiteBattleground(bot, state);
@@ -439,7 +441,9 @@ bool KiteStepAction::Execute(Event /*event*/)
     gate.Known = state.Params.Known;
     gate.HealHold = KiteHealHoldNow(bot);
     gate.StepDue = KiteStepDue(config, state, nowMs);
-    gate.Guarded = LosRelocGuard(los.Relocs, nowMs, PillarGuardParams(sPlayerbotAIConfig.TacticLos)) != LosGuard::Ok;
+    bool const relocGuarded =
+        LosRelocGuard(los.Relocs, nowMs, PillarGuardParams(sPlayerbotAIConfig.TacticLos)) != LosGuard::Ok;
+    gate.Guarded = relocGuarded || !botAI->CanMove();  // a rooted bot skips the path work (a snare cast still goes)
     gate.SnareFirst = config.SnareFirst != 0;
 
     int32 snareRow = -1;
@@ -512,13 +516,13 @@ bool KiteStepAction::Execute(Event /*event*/)
     };
 
     KiteMove const move = KitePick(gate, can);
-    if (gate.StepDue && gate.Guarded && !state.Guarding)
+    if (gate.StepDue && relocGuarded && !state.Guarding)
     {
         state.Guarding = true;
         ++state.Guarded;
         botAI->CountTactic(TacticCounter::RelocGuards);
     }
-    else if (!gate.Guarded)
+    else if (!relocGuarded)
         state.Guarding = false;
 
     state.LastMove = move;
