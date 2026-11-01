@@ -172,6 +172,10 @@ public:
     // .playerbots tactics cover scan: scans the arena the GM or the harness bot stands in for its pillars (G2d; 13f-0:
     // prints that it is not implemented yet)
     static bool HandleCoverCommand(ChatHandler* handler, char const* args);
+    // .playerbots tactics jump scan [bot] and .playerbots tactics jump test <map> <id|all> [n] [bot] (G2g; 13g-0:
+    // print that they are not implemented yet)
+    static bool HandleJumpScanCommand(ChatHandler* handler, char const* args);
+    static bool HandleJumpTestCommand(ChatHandler* handler, char const* args);
 };
 
 #endif

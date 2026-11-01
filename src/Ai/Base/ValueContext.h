@@ -26,6 +26,7 @@
 #include "CurrentTargetValue.h"
 #include "DistanceValue.h"
 #include "DpsTargetValue.h"
+#include "DrinkTacticStrategy.h"
 #include "DuelTargetValue.h"
 #include "EnemyHealerTargetValue.h"
 #include "EnemyPlayerValue.h"
@@ -46,6 +47,7 @@
 #include "ItemCountValue.h"
 #include "ItemForSpellValue.h"
 #include "ItemUsageValue.h"
+#include "KiteTacticStrategy.h"
 #include "LastMovementValue.h"
 #include "LastSaidValue.h"
 #include "LastSpellCastTimeValue.h"
@@ -339,6 +341,8 @@ public:
         creators["cover plan"] = &ValueContext::cover_plan;
         creators["los state"] = &ValueContext::los_state;
         creators["pillar state"] = &ValueContext::pillar_state;
+        creators["kite state"] = &ValueContext::kite_state;
+        creators["drink state"] = &ValueContext::drink_state;
     }
 
 private:
@@ -602,6 +606,8 @@ private:
     static UntypedValue* cover_plan(PlayerbotAI* botAI) { return new CoverPlanValue(botAI); }
     static UntypedValue* los_state(PlayerbotAI* botAI) { return new LosStateValue(botAI); }
     static UntypedValue* pillar_state(PlayerbotAI* botAI) { return new PillarStateValue(botAI); }
+    static UntypedValue* kite_state(PlayerbotAI* botAI) { return new KiteStateValue(botAI); }
+    static UntypedValue* drink_state(PlayerbotAI* botAI) { return new DrinkStateValue(botAI); }
 };
 
 #endif

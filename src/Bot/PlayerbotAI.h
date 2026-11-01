@@ -45,9 +45,12 @@ class Group;
 struct CcBotState;
 struct CoverBotState;
 struct DefensiveBotState;
+struct DrinkBotState;
 struct FakeBotState;
 struct FocusBotState;
 struct InterruptBotState;
+struct JumpBotState;
+struct KiteBotState;
 struct PathBotState;
 struct TrackBotState;
 struct TurnBotState;
@@ -785,6 +788,15 @@ public:
     // Natural paths (NaturalPath.h, G2c) and the Los and Pillar tactics' cover state (ArenaCover.h, G2e, G2f): the same
     PathBotState& GetPathState();
     CoverBotState& GetCoverState();
+    // The Kite, Drink and Jump tactics' state (ArenaKite.h, ArenaDrink.h, ArenaJump.h; G3a, G3b, G2g): the same
+    KiteBotState& GetKiteState();
+    DrinkBotState& GetDrinkState();
+    JumpBotState& GetJumpState();
+    // The jump test (G2g, `tactics jump test`): while set, UpdateAI runs StepJumpTest instead of the engines (a frozen
+    // test bot); one bool test else
+    void StepJumpTest(uint32 nowMs);
+    void SetJumpTest(bool on) { jumpTest = on; }
+    bool IsJumpTest() const { return jumpTest; }
     // The natural pre-gate stepper (G5e's cancel instant, G2a's turn steps): called from UpdateAI before the AI
     // gates on every Player::Update while SetNaturalPreGate(true), else one bool test. nowMs = getMSTime().
     void StepNaturalPreGate(uint32 nowMs);
@@ -907,6 +919,10 @@ protected:
     std::unique_ptr<TrackBotState> trackState;          // the same (GetTrackState)
     std::unique_ptr<PathBotState> pathState;            // the same (GetPathState)
     std::unique_ptr<CoverBotState> coverState;          // the same (GetCoverState)
+    std::unique_ptr<KiteBotState> kiteState;            // the same (GetKiteState)
+    std::unique_ptr<DrinkBotState> drinkState;          // the same (GetDrinkState)
+    std::unique_ptr<JumpBotState> jumpState;            // the same (GetJumpState)
+    bool jumpTest = false;        // true while the jump test drives the bot (StepJumpTest); one bool test else
     bool naturalPreGate = false;  // true while a pre-gate stepper has work (a turn, a fake cast); one bool test else
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;

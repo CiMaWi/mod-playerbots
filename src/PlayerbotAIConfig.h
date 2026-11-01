@@ -12,6 +12,7 @@
 #include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
+#include "ArenaKiteConfig.h"
 #include "BotAttributes.h"
 #include "DBCEnums.h"
 #include "NaturalCastConfig.h"
@@ -538,6 +539,11 @@ public:
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
     LosConfig TacticLos;
     PillarConfig TacticPillar;
+    // Playerbots.Tactics.Kite.* (G3a), .Drink.* (G3b) and .Jump.* (G2g): the numbers of those tactics
+    // (ArenaKiteConfig.h)
+    KiteConfig TacticKite;
+    DrinkConfig TacticDrink;
+    JumpConfig TacticJump;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;

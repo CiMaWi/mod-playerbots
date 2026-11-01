@@ -4646,11 +4646,12 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
         name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake" &&
-        name != "turn" && name != "track" && name != "path" && name != "cover" && name != "los" && name != "pillar")
+        name != "turn" && name != "track" && name != "path" && name != "cover" && name != "los" && name != "pillar" &&
+        name != "kite" && name != "drink" && name != "jump")
     {
         handler->PSendSysMessage(
             "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, "
-            "fake, turn, track, path, cover, los, pillar",
+            "fake, turn, track, path, cover, los, pillar, kite, drink, jump",
             name);
         return false;
     }
@@ -4699,6 +4700,10 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "pillar")
         RunPillarSelftest(handler);
+
+    // 13g-0: the pure parts of G3a, G3b and G2g do not exist yet (their steps fill these)
+    if (name == "kite" || name == "drink" || name == "jump")
+        handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed)", name);
 
     return true;
 }
@@ -4992,4 +4997,19 @@ bool TacticCommands::HandleCoverCommand(ChatHandler* handler, char const* args)
     }
 
     return RunArenaCoverScan(handler, player);
+}
+
+bool TacticCommands::HandleJumpScanCommand(ChatHandler* handler, char const* /*args*/)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleJumpScanCommand");
+    handler->PSendSysMessage("TACTICS jump scan: not implemented yet (G2g). Usage: tactics jump scan [bot]");
+    return false;
+}
+
+bool TacticCommands::HandleJumpTestCommand(ChatHandler* handler, char const* /*args*/)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleJumpTestCommand");
+    handler->PSendSysMessage(
+        "TACTICS jump test: not implemented yet (G2g). Usage: tactics jump test <map> <id|all> [n] [bot]");
+    return false;
 }

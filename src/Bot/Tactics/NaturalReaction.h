@@ -810,6 +810,14 @@ struct OpponentMemorySlot
     // G5e: the last kick the enemy was seen to use (its spell and when; 0: none)
     uint32 KickSpellId = 0;
     uint32 KickSeenMs = 0;
+    // 13g-0 (G3a): where and when the enemy broke line of sight this match: the last break (0: none), how many, the
+    // cover table's pillar index (-1: none), the side of the line bot-enemy (-1 left, 0 unknown, 1 right) and the ms
+    // after the last crowd control seen on the enemy or its team (0xFFFF: unknown)
+    uint32 LosBreakMs = 0;
+    uint16 LosBreaks = 0;
+    int8 LosBreakPillar = -1;
+    int8 LosBreakSide = 0;
+    uint16 LosBreakAfterCcMs = 0xFFFF;
 };
 
 struct OpponentMemory
@@ -982,6 +990,26 @@ struct OpponentMemory
                 return true;
 
         return false;
+    }
+
+    // 13g-0 (G3a): the enemy was seen to break line of sight behind a pillar (index into the cover table, -1: none)
+    void NoteLosBreak(uint32 guid, int32 pillar, int32 side, uint32 afterCcMs, uint32 nowMs)
+    {
+        OpponentMemorySlot& slot = Touch(guid, nowMs);
+        slot.LosBreakMs = std::max(nowMs, 1u);
+        if (slot.LosBreaks < 0xFFFF)
+            ++slot.LosBreaks;
+
+        slot.LosBreakPillar = static_cast<int8>(std::clamp(pillar, -1, 127));
+        slot.LosBreakSide = static_cast<int8>(std::clamp(side, -1, 1));
+        slot.LosBreakAfterCcMs = static_cast<uint16>(std::min(afterCcMs, 0xFFFEu));
+    }
+
+    // The enemy broke line of sight within windowMs
+    bool LosBreakRecent(uint32 guid, uint32 nowMs, uint32 windowMs) const
+    {
+        OpponentMemorySlot const* slot = Find(guid);
+        return slot && slot->LosBreakMs != 0 && nowMs - slot->LosBreakMs <= windowMs;
     }
 
     // Forget what is older than its memory: defensives after defExpireMs, kicks after kickExpireMs

@@ -20,6 +20,7 @@
 #include "DebugStrategy.h"
 #include "DefensiveTacticStrategy.h"
 #include "DpsAssistStrategy.h"
+#include "DrinkTacticStrategy.h"
 #include "DuelStrategy.h"
 #include "EmoteStrategy.h"
 #include "FocusStrategy.h"
@@ -31,6 +32,7 @@
 #include "GuardStrategy.h"
 #include "GuildStrategy.h"
 #include "KiteStrategy.h"
+#include "KiteTacticStrategy.h"
 #include "LfgStrategy.h"
 #include "LootNonCombatStrategy.h"
 #include "LosTacticStrategy.h"
@@ -96,6 +98,8 @@ public:
         creators["tactic defensive"] = &StrategyContext::tactic_defensive;
         creators["tactic los"] = &StrategyContext::tactic_los;
         creators["tactic pillar"] = &StrategyContext::tactic_pillar;
+        creators["tactic kite"] = &StrategyContext::tactic_kite;
+        creators["tactic drink"] = &StrategyContext::tactic_drink;
         creators["pvp trinket"] = &StrategyContext::pvp_trinket;
         creators["tactic dispel"] = &StrategyContext::tactic_dispel;
         creators["threat"] = &StrategyContext::threat;
@@ -171,6 +175,8 @@ private:
     static Strategy* tactic_defensive(PlayerbotAI* botAI) { return new TacticDefensiveStrategy(botAI); }
     static Strategy* tactic_los(PlayerbotAI* botAI) { return new TacticLosStrategy(botAI); }
     static Strategy* tactic_pillar(PlayerbotAI* botAI) { return new TacticPillarStrategy(botAI); }
+    static Strategy* tactic_kite(PlayerbotAI* botAI) { return new TacticKiteStrategy(botAI); }
+    static Strategy* tactic_drink(PlayerbotAI* botAI) { return new TacticDrinkStrategy(botAI); }
     static Strategy* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketStrategy(botAI); }
     static Strategy* tactic_dispel(PlayerbotAI* botAI) { return new TacticDispelStrategy(botAI); }
     static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }

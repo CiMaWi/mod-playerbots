@@ -115,21 +115,105 @@ enum class TacticCounter : uint8
     CastsLosBroken,     // G2f: enemy casts that failed for the lost LOS
     PillarSteps,        // G2f: pillar hops made
     RelocGuards,        // G2e/G2f: relocations the guards refused (hold time, relocations per window)
+    KiteSteps,          // G3a: kite steps issued
+    MeleeDistX10,       // G3a: sum of the distance x10 from a healer/caster to the nearest melee on it (1 sample/s)
+    MeleeDistN,         // G3a: those samples
+    MeleeNearMs,        // G3a: ms a melee was within the melee distance
+    KiteSnares,         // G3a: kite steps that were a snare
+    KitePillars,        // G3a: kite steps that were a pillar step
+    KitePartner,        // G3a: kite steps towards the partner
+    KiteJumps,          // G3a: kite steps that were a jump
+    FleeRuns,           // G3a: FleeAction executions of a bot in a counted match
+    Drinks,             // G3b: drinks started
+    PrepDrinks,         // G3b: of them in preparation
+    DrinkBroken,        // G3b: drinks broken (enemy, combat, partner low)
+    DrinkNoItem,        // G3b: a drink wanted, none to use
+    Jumps,              // G2g: tactical jumps made
+    JumpsEscape,        // G2g: of them to escape
+    JumpsChase,         // G2g: of them to chase
+    JumpsRefused,       // G2g: jumps refused by the guards
+    JumpFalls,          // G2g: landings below the spot's floor - 2 yd
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
-constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
-    "focusSame",        "focusDiff",   "planSwitch",      "immuneSwapMs",      "holdSwitch",  "ccOnTarget",
-    "chainGapMs",       "chains",      "ccHeldMs",        "ownBreakAoe",       "ownBreakDot", "ownBreakPet",
-    "oppTrinkets",      "oppDispels",  "chainEarlyMs",    "chainBusy",         "reCcs",       "reCcGapMs",
-    "breakWasted",      "breakMs",     "partnerDispelMs", "intHeal",           "intCc",       "intDamage",
-    "intLate",          "intWasted",   "intHealDone",     "skullOutOfReachMs", "intHold",     "intHoldEpisodes",
-    "intHoldPaid",      "intHoldVain", "intHoldExpired",  "focusKick",         "focusCc",     "switchKick",
-    "defSelf",          "defPartner",  "defBurst",        "deathsDefReady",    "fakes",       "kicksBaited",
-    "kickSeen",         "turnFlicks",  "turnWaitMs",      "faceFails",         "trackChases", "trackLagMs",
-    "pathOffsets",      "pathStrafes", "pathHops",        "pathHopsRefused",   "losRegains",  "losTimeouts",
-    "partnerLosLostMs", "losBreaks",   "castsLosBroken",  "pillarSteps",       "relocGuards"};
+constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {"focusSame",
+                                                                                "focusDiff",
+                                                                                "planSwitch",
+                                                                                "immuneSwapMs",
+                                                                                "holdSwitch",
+                                                                                "ccOnTarget",
+                                                                                "chainGapMs",
+                                                                                "chains",
+                                                                                "ccHeldMs",
+                                                                                "ownBreakAoe",
+                                                                                "ownBreakDot",
+                                                                                "ownBreakPet",
+                                                                                "oppTrinkets",
+                                                                                "oppDispels",
+                                                                                "chainEarlyMs",
+                                                                                "chainBusy",
+                                                                                "reCcs",
+                                                                                "reCcGapMs",
+                                                                                "breakWasted",
+                                                                                "breakMs",
+                                                                                "partnerDispelMs",
+                                                                                "intHeal",
+                                                                                "intCc",
+                                                                                "intDamage",
+                                                                                "intLate",
+                                                                                "intWasted",
+                                                                                "intHealDone",
+                                                                                "skullOutOfReachMs",
+                                                                                "intHold",
+                                                                                "intHoldEpisodes",
+                                                                                "intHoldPaid",
+                                                                                "intHoldVain",
+                                                                                "intHoldExpired",
+                                                                                "focusKick",
+                                                                                "focusCc",
+                                                                                "switchKick",
+                                                                                "defSelf",
+                                                                                "defPartner",
+                                                                                "defBurst",
+                                                                                "deathsDefReady",
+                                                                                "fakes",
+                                                                                "kicksBaited",
+                                                                                "kickSeen",
+                                                                                "turnFlicks",
+                                                                                "turnWaitMs",
+                                                                                "faceFails",
+                                                                                "trackChases",
+                                                                                "trackLagMs",
+                                                                                "pathOffsets",
+                                                                                "pathStrafes",
+                                                                                "pathHops",
+                                                                                "pathHopsRefused",
+                                                                                "losRegains",
+                                                                                "losTimeouts",
+                                                                                "partnerLosLostMs",
+                                                                                "losBreaks",
+                                                                                "castsLosBroken",
+                                                                                "pillarSteps",
+                                                                                "relocGuards",
+                                                                                "kiteSteps",
+                                                                                "meleeDistX10",
+                                                                                "meleeDistN",
+                                                                                "meleeNearMs",
+                                                                                "kiteSnares",
+                                                                                "kitePillars",
+                                                                                "kitePartner",
+                                                                                "kiteJumps",
+                                                                                "fleeRuns",
+                                                                                "drinks",
+                                                                                "prepDrinks",
+                                                                                "drinkBroken",
+                                                                                "drinkNoItem",
+                                                                                "jumps",
+                                                                                "jumpsEscape",
+                                                                                "jumpsChase",
+                                                                                "jumpsRefused",
+                                                                                "jumpFalls"};
 
 #endif

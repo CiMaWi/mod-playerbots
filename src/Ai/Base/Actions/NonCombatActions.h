@@ -19,6 +19,10 @@ public:
     bool Execute(Event event) override;
     bool isUseful() override;
     bool isPossible() override;
+
+protected:
+    // The tactic drinks (G3b: prep drink, safe drink) are DrinkActions under their own names
+    DrinkAction(PlayerbotAI* botAI, std::string const name) : UseItemAction(botAI, name) {}
 };
 
 class EatAction : public UseItemAction

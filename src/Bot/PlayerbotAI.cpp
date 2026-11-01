@@ -10,8 +10,11 @@
 #include "ArenaCcSpells.h"
 #include "ArenaCover.h"
 #include "ArenaDefensive.h"
+#include "ArenaDrink.h"
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSpells.h"
+#include "ArenaJump.h"
+#include "ArenaKite.h"
 #include "Battleground.h"
 #include "BudgetValues.h"
 #include "CcState.h"
@@ -816,6 +819,13 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G5e and G2a: the natural pre-gate stepper (a fake cast's cancel instant, a turn's steps); one bool test idle
     if (naturalPreGate)
         StepNaturalPreGate(getMSTime());
+
+    // G2g: the jump test drives a frozen test bot (no engine runs); one bool test idle
+    if (jumpTest)
+    {
+        StepJumpTest(getMSTime());
+        return;
+    }
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
@@ -8272,6 +8282,33 @@ CoverBotState& PlayerbotAI::GetCoverState()
 
     return *coverState;
 }
+
+KiteBotState& PlayerbotAI::GetKiteState()
+{
+    if (!kiteState)
+        kiteState = std::make_unique<KiteBotState>();
+
+    return *kiteState;
+}
+
+DrinkBotState& PlayerbotAI::GetDrinkState()
+{
+    if (!drinkState)
+        drinkState = std::make_unique<DrinkBotState>();
+
+    return *drinkState;
+}
+
+JumpBotState& PlayerbotAI::GetJumpState()
+{
+    if (!jumpState)
+        jumpState = std::make_unique<JumpBotState>();
+
+    return *jumpState;
+}
+
+// G2g: one step of the jump test (13g-0: nothing to step yet; G2g-a fills it)
+void PlayerbotAI::StepJumpTest(uint32 /*nowMs*/) { jumpTest = false; }
 
 // G2a: whether the bot turns naturally now (NaturalTurn.h)
 bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs)

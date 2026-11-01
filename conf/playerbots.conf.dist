@@ -2663,6 +2663,60 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Pillar.RvIdleMs = 21000
 # (Ranges: skills 0-99, percents 0-100, ms 0-120000, rays and relocations 0-1000, yards 0-1000.)
 
+# Kiting, drinking and jumps (G3a, G3b, G2g; 13g-0: the numbers are read, the tactics do nothing yet).
+# Playerbots.Tactics.Kite.Enable (scope Arena,Battleground,World), Playerbots.Tactics.Drink.Enable (scope
+# Arena,Battleground) and Playerbots.Tactics.Jump.Enable (scope Arena) are the tactic table's switches (default 0).
+# Kite: a healer or caster with an enemy melee on it (within MeleeYards, targeting it) kites: the class snare first
+# (SnareFirst), then a pillar step (PillarMaxYards), a tested jump spot (JumpMinSavedYards) or a StepYards step towards
+# a partner at least PartnerMinYards away, at most every StepIntervalMs. A bot below EffortMin gives up after
+# GiveUpMsAtEffort0, one at effort 100 after GiveUpMsAtEffort100; an episode ends after EpisodeMs. From
+# MemoryFromSkill the bot reads where enemies broke line of sight in the last MemoryWindowMs. Below KnownFromSkill
+# (PanicBelowSkill) the old flee stays.
+# Drink: before the gates open (more than PrepMinLeftMs left, mana below PrepBelowPct, effort at least PrepEffortMin),
+# and in a safe window (out of combat, mana below SafeBelowPct, healers SafeBelowPctHealer, no enemy within
+# EnemyYards or in sight, none seen for QuietMs, the partner above PartnerMinHpPct, effort at least EffortMin); an
+# enemy within BreakEnemyYards stands the bot up. A bot without drinks logs at most every NoDrinkLogMs.
+# Jump: only measured spots; aggression at least ChaseFromAggression jumps down to chase, caution at least
+# EscapeFromCaution to escape; MinSavedYards the way a jump must save; LandingTolX10 the landing tolerance in tenths
+# of a yard; Test*: the numbers of `.playerbots tactics jump test`.
+# Playerbots.Tactics.Kite.KnownFromSkill = 40
+# Playerbots.Tactics.Kite.EffortMin = 20
+# Playerbots.Tactics.Kite.MeleeYards = 8
+# Playerbots.Tactics.Kite.StepYards = 9
+# Playerbots.Tactics.Kite.StepIntervalMs = 1500
+# Playerbots.Tactics.Kite.EpisodeMs = 20000
+# Playerbots.Tactics.Kite.GiveUpMsAtEffort0 = 3000
+# Playerbots.Tactics.Kite.GiveUpMsAtEffort100 = 12000
+# Playerbots.Tactics.Kite.SnareFirst = 1
+# Playerbots.Tactics.Kite.PillarMaxYards = 12
+# Playerbots.Tactics.Kite.PartnerMinYards = 12
+# Playerbots.Tactics.Kite.JumpMinSavedYards = 6
+# Playerbots.Tactics.Kite.MemoryFromSkill = 60
+# Playerbots.Tactics.Kite.MemoryWindowMs = 15000
+# Playerbots.Tactics.Kite.PanicBelowSkill = 40
+# Playerbots.Tactics.Drink.KnownFromSkill = 45
+# Playerbots.Tactics.Drink.EffortMin = 30
+# Playerbots.Tactics.Drink.PrepEffortMin = 10
+# Playerbots.Tactics.Drink.PrepBelowPct = 95
+# Playerbots.Tactics.Drink.PrepMinLeftMs = 12000
+# Playerbots.Tactics.Drink.SafeBelowPct = 60
+# Playerbots.Tactics.Drink.SafeBelowPctHealer = 70
+# Playerbots.Tactics.Drink.EnemyYards = 30
+# Playerbots.Tactics.Drink.QuietMs = 2000
+# Playerbots.Tactics.Drink.PartnerMinHpPct = 50
+# Playerbots.Tactics.Drink.BreakEnemyYards = 20
+# Playerbots.Tactics.Drink.NoDrinkLogMs = 60000
+# Playerbots.Tactics.Jump.KnownFromSkill = 70
+# Playerbots.Tactics.Jump.ChaseFromAggression = 60
+# Playerbots.Tactics.Jump.EscapeFromCaution = 40
+# Playerbots.Tactics.Jump.MinSavedYards = 6
+# Playerbots.Tactics.Jump.LandingTolX10 = 20
+# Playerbots.Tactics.Jump.TestJumps = 10
+# Playerbots.Tactics.Jump.TestWalkTimeoutMs = 12000
+# Playerbots.Tactics.Jump.TestAirTimeoutMs = 6000
+# Playerbots.Tactics.Jump.TestSettleMs = 1500
+# Playerbots.Tactics.Jump.TestMaxStuckMs = 8000
+
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).
 # When the server slows down, fewer bots are kept active to reduce load.

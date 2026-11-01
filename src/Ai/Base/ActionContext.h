@@ -27,6 +27,7 @@
 #include "DefensiveTacticStrategy.h"
 #include "DelayAction.h"
 #include "DestroyItemAction.h"
+#include "DrinkTacticStrategy.h"
 #include "DropQuestAction.h"
 #include "EmoteAction.h"
 #include "FishingAction.h"
@@ -40,6 +41,7 @@
 #include "GuildManagementActions.h"
 #include "ImbueAction.h"
 #include "InviteToGroupAction.h"
+#include "KiteTacticStrategy.h"
 #include "LeaveGroupAction.h"
 #include "LootAction.h"
 #include "LootRollAction.h"
@@ -135,6 +137,9 @@ public:
         creators["regain los"] = &ActionContext::regain_los;
         creators["break los"] = &ActionContext::break_los;
         creators["pillar step"] = &ActionContext::pillar_step;
+        creators["kite step"] = &ActionContext::kite_step;
+        creators["prep drink"] = &ActionContext::prep_drink;
+        creators["safe drink"] = &ActionContext::safe_drink;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
@@ -375,6 +380,9 @@ private:
     static Action* regain_los(PlayerbotAI* botAI) { return new RegainLosAction(botAI); }
     static Action* break_los(PlayerbotAI* botAI) { return new BreakLosAction(botAI); }
     static Action* pillar_step(PlayerbotAI* botAI) { return new PillarStepAction(botAI); }
+    static Action* kite_step(PlayerbotAI* botAI) { return new KiteStepAction(botAI); }
+    static Action* prep_drink(PlayerbotAI* botAI) { return new PrepDrinkAction(botAI); }
+    static Action* safe_drink(PlayerbotAI* botAI) { return new SafeDrinkAction(botAI); }
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }

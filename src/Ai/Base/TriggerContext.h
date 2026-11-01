@@ -11,11 +11,13 @@
 #include "CcTacticStrategy.h"
 #include "CureTriggers.h"
 #include "DefensiveTacticStrategy.h"
+#include "DrinkTacticStrategy.h"
 #include "FishingTriggers.h"
 #include "FocusStrategy.h"
 #include "GenericTriggers.h"
 #include "GuildTriggers.h"
 #include "HealthTriggers.h"
+#include "KiteTacticStrategy.h"
 #include "LfgTriggers.h"
 #include "LootTriggers.h"
 #include "LosTacticStrategy.h"
@@ -108,6 +110,9 @@ public:
         creators["partner out of los"] = &TriggerContext::partner_out_of_los;
         creators["cast at me"] = &TriggerContext::cast_at_me;
         creators["pillar step"] = &TriggerContext::pillar_step;
+        creators["melee on me"] = &TriggerContext::melee_on_me;
+        creators["prep drink"] = &TriggerContext::prep_drink;
+        creators["safe to drink"] = &TriggerContext::safe_to_drink;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
         creators["enemy player near"] = &TriggerContext::enemy_player_near;
 
@@ -369,6 +374,9 @@ private:
     static Trigger* partner_out_of_los(PlayerbotAI* botAI) { return new PartnerOutOfLosTrigger(botAI); }
     static Trigger* cast_at_me(PlayerbotAI* botAI) { return new CastAtMeTrigger(botAI); }
     static Trigger* pillar_step(PlayerbotAI* botAI) { return new PillarStepTrigger(botAI); }
+    static Trigger* melee_on_me(PlayerbotAI* botAI) { return new MeleeOnMeTrigger(botAI); }
+    static Trigger* prep_drink(PlayerbotAI* botAI) { return new PrepDrinkTrigger(botAI); }
+    static Trigger* safe_to_drink(PlayerbotAI* botAI) { return new SafeToDrinkTrigger(botAI); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }
     static Trigger* enemy_player_near(PlayerbotAI* botAI) { return new EnemyPlayerNear(botAI); }
     static Trigger* Random(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "random", 20); }

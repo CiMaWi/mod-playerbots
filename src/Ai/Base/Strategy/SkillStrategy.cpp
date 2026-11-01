@@ -171,6 +171,8 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"regain los", C::Positioning},
         {"break los", C::Positioning},
         {"pillar step", C::Positioning},
+        // A kite episode's first step is a reaction to the melee (G3a)
+        {"kite step", C::Positioning},
     };
     return table;
 }

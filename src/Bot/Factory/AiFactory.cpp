@@ -557,6 +557,17 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         (tactics.TacticConfig[static_cast<uint32>(TacticId::Pillar)].Enable || tactics.PvpTestEnable))
         engine->addStrategy("tactic pillar", false);
 
+    // Kiting (G3a) and drinking (G3b; the combat engine for the safe-window break, the battleground non-combat engine
+    // below for the drinks): the triggers test the tactic's mask, scope and gate at run time (13g-0: stubs that never
+    // act)
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Kite)].Enable || tactics.PvpTestEnable))
+        engine->addStrategy("tactic kite", false);
+
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Drink)].Enable || tactics.PvpTestEnable))
+        engine->addStrategy("tactic drink", false);
+
     uint8 const cleanser = player->getClass();
     if (tactics.TacticsEnable && (cleanser == CLASS_PRIEST || cleanser == CLASS_PALADIN || cleanser == CLASS_SHAMAN) &&
         (tactics.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || tactics.PvpTestEnable))
@@ -758,6 +769,12 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
         nonCombatEngine->removeStrategy("travel", false);
         nonCombatEngine->removeStrategy("rpg", false);
         nonCombatEngine->removeStrategy("grind", false);
+
+        // G3b: the prep drink and the safe-window drink (13g-0: stub triggers that never fire)
+        PlayerbotAIConfig const& tactics = sPlayerbotAIConfig;
+        if (tactics.TacticsEnable &&
+            (tactics.TacticConfig[static_cast<uint32>(TacticId::Drink)].Enable || tactics.PvpTestEnable))
+            nonCombatEngine->addStrategy("tactic drink", false);
 
         BattlegroundTypeId bgType = player->GetBattlegroundTypeId();
         if (bgType == BATTLEGROUND_RB)

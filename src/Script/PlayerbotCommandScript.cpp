@@ -131,6 +131,11 @@ public:
             {"scan", TacticCommands::HandleCoverCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsTacticsJumpCommandTable = {
+            {"scan", TacticCommands::HandleJumpScanCommand, SEC_GAMEMASTER, Console::Yes},
+            {"test", TacticCommands::HandleJumpTestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsTacticsCommandTable = {
             {"show", TacticCommands::HandleShowCommand, SEC_GAMEMASTER, Console::Yes},
             {"stats", TacticCommands::HandleStatsCommand, SEC_GAMEMASTER, Console::Yes},
@@ -140,6 +145,7 @@ public:
             {"ensuretrinket", TacticCommands::HandleEnsureTrinketCommand, SEC_GAMEMASTER, Console::Yes},
             {"interrupt", TacticCommands::HandleInterruptCommand, SEC_GAMEMASTER, Console::Yes},
             {"cover", playerbotsTacticsCoverCommandTable},
+            {"jump", playerbotsTacticsJumpCommandTable},
         };
 
         static ChatCommandTable playerbotsAttributesCommandTable = {
