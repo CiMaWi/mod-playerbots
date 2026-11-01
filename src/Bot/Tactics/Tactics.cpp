@@ -16,6 +16,7 @@
 
 #include "ArenaCc.h"
 #include "ArenaCcSpells.h"
+#include "ArenaCover.h"
 #include "ArenaDefensive.h"
 #include "ArenaFocus.h"
 #include "ArenaInterrupt.h"
@@ -46,6 +47,7 @@
 #include "TacticGate.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
+#include "WorldSession.h"
 
 namespace
 {
@@ -2540,6 +2542,26 @@ void RunTrackSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G2d: the arena cover's pure parts (ArenaCover.h; the offline harness runs the same checks)
+void RunCoverSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunCoverChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest cover FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest cover: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4551,8 +4573,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "track")
         RunTrackSelftest(handler);
 
-    // 13f-0 stubs: the checks come with G2c (path), G2d (cover), G2e (los) and G2f (pillar)
-    for (char const* stub : {"path", "cover", "los", "pillar"})
+    if (name.empty() || name == "cover")
+        RunCoverSelftest(handler);
+
+    // 13f-0 stubs: the checks come with G2c (path), G2e (los) and G2f (pillar)
+    for (char const* stub : {"path", "los", "pillar"})
         if (name.empty() || name == stub)
             handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed; not written yet)", stub);
 
@@ -4827,9 +4852,25 @@ bool TacticCommands::HandleInterruptCommand(ChatHandler* handler, char const* ar
     return true;
 }
 
-bool TacticCommands::HandleCoverCommand(ChatHandler* handler, char const* /*args*/)
+bool TacticCommands::HandleCoverCommand(ChatHandler* handler, char const* args)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleCoverCommand");
-    handler->PSendSysMessage("TACTICS cover scan: not implemented yet (G2d)");
-    return true;
+    // the world thread runs commands between the map updates, so the scan reads a map no map thread updates now
+    std::string const name = Trim(args ? args : "");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = ObjectAccessor::FindPlayerByName(name);
+    else if (handler->GetSession())
+        player = handler->GetSession()->GetPlayer();
+
+    if (!player)
+    {
+        handler->PSendSysMessage(
+            "TACTICS cover scan: no player {} in the world (usage: tactics cover scan [name], the "
+            "name of a player or bot inside an arena)",
+            name);
+        return false;
+    }
+
+    return RunArenaCoverScan(handler, player);
 }
