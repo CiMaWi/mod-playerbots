@@ -18,6 +18,7 @@
 #include "ArenaCcSpells.h"
 #include "ArenaCover.h"
 #include "ArenaDefensive.h"
+#include "ArenaDrink.h"
 #include "ArenaFocus.h"
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSim.h"
@@ -2646,6 +2647,26 @@ void RunJumpSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G3b: the Drink tactic's pure parts (ArenaDrink.h; the offline harness runs the same checks)
+void RunDrinkSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunDrinkChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest drink FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest drink: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4511,6 +4532,24 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             pillar.StepsRefused, pillar.LastMoveMs ? getMSTimeDiff(pillar.LastMoveMs, nowMs) : 0u,
             pillar.LastSinceGatesMs);
     }
+    // G3b: the Drink tactic (its gate, the drink running, the last verdict and sense, what it did)
+    {
+        DrinkBotState const& drink = botAI->GetAiObjectContext()->GetValue<DrinkBotState&>("drink state")->Get();
+        DrinkParams const& params = drink.Params;
+        handler->PSendSysMessage(
+            "  drink: {}, known {}, prep {}, safe {}; drinking {}{} ({} ms); last verdict {} (break {}); sense {} ms "
+            "ago: nearest enemy {} yd, in LOS {}, enemy seen {} ms ago, partners {} (lowest {} %); drinks {} (prep "
+            "{}), broken {}, no item {}",
+            botAI->TacticEnabledHere(TacticId::Drink) ? "on here" : "off here", params.Known ? "yes" : "no",
+            params.PrepOk ? "yes" : "no", params.SafeOk ? "yes" : "no", drink.StartMs ? "yes" : "no",
+            drink.StartMs && drink.Prep ? " (prep)" : "", drink.StartMs ? getMSTimeDiff(drink.StartMs, nowMs) : 0u,
+            DrinkWhyName(drink.LastWhy), DrinkBreakWhyName(drink.LastBreak),
+            drink.SenseMs ? getMSTimeDiff(drink.SenseMs, nowMs) : 0u,
+            drink.EnemyYards < DRINK_NO_ENEMY_YARDS ? Acore::StringFormat("{:.0f}", drink.EnemyYards) : "none",
+            drink.EnemyInLos ? "yes" : "no", drink.EnemySeenMs ? getMSTimeDiff(drink.EnemySeenMs, nowMs) : 0u,
+            drink.PartnersAlive ? "alive" : "one dead", drink.PartnerMinHpPct, drink.Starts, drink.PrepStarts,
+            drink.Broken, drink.NoItem);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4725,8 +4764,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "jump")
         RunJumpSelftest(handler);
 
-    // 13g-0: the pure parts of G3a and G3b do not exist yet (their steps fill these)
-    if (name == "kite" || name == "drink")
+    if (name.empty() || name == "drink")
+        RunDrinkSelftest(handler);
+
+    // 13g-0: the pure parts of G3a do not exist yet (its step fills this)
+    if (name == "kite")
         handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed)", name);
 
     return true;

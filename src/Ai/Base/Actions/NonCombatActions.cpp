@@ -89,7 +89,9 @@ bool DrinkAction::isPossible()
         return false;
     }
 
-    return botAI->HasCheat(BotCheatMask::food) || UseItemAction::isPossible();
+    // The item is the "drink" item whatever this action is called (G3b: the prep drink and the safe drink are
+    // DrinkActions under their own names; for the old action getName() is "drink" too)
+    return botAI->HasCheat(BotCheatMask::food) || AI_VALUE2(uint32, "item count", "drink") > 0;
 }
 
 bool EatAction::Execute(Event event)

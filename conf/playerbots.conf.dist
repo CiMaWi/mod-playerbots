@@ -2663,7 +2663,7 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Pillar.RvIdleMs = 21000
 # (Ranges: skills 0-99, percents 0-100, ms 0-120000, rays and relocations 0-1000, yards 0-1000.)
 
-# Kiting, drinking and jumps (G3a, G3b, G2g; 13g-0: the numbers are read, the tactics do nothing yet).
+# Kiting, drinking and jumps (G3a, G3b, G2g; the Drink tactic works (G3b), Kite and Jump read their numbers only so far).
 # Playerbots.Tactics.Kite.Enable (scope Arena,Battleground,World), Playerbots.Tactics.Drink.Enable (scope
 # Arena,Battleground) and Playerbots.Tactics.Jump.Enable (scope Arena) are the tactic table's switches (default 0).
 # Kite: a healer or caster with an enemy melee on it (within MeleeYards, targeting it) kites: the class snare first
@@ -2675,7 +2675,9 @@ Playerbots.Tactics.Enable = 0
 # Drink: before the gates open (more than PrepMinLeftMs left, mana below PrepBelowPct, effort at least PrepEffortMin),
 # and in a safe window (out of combat, mana below SafeBelowPct, healers SafeBelowPctHealer, no enemy within
 # EnemyYards or in sight, none seen for QuietMs, the partner above PartnerMinHpPct, effort at least EffortMin); an
-# enemy within BreakEnemyYards stands the bot up. A bot without drinks logs at most every NoDrinkLogMs.
+# enemy within BreakEnemyYards stands the bot up. A bot without drinks logs at most every NoDrinkLogMs. With the tactic
+# on, a bot that knows it (KnownFromSkill) in an arena or battleground drinks only by these rules: the old food rule's
+# drink (mana below HighMana, no look at enemies) is off for it there; below KnownFromSkill the old rule runs unchanged.
 # Jump: only measured spots; aggression at least ChaseFromAggression jumps down to chase, caution at least
 # EscapeFromCaution to escape; MinSavedYards the way a jump must save; LandingTolX10 the landing tolerance in tenths
 # of a yard; Test*: the numbers of `.playerbots tactics jump test`.
