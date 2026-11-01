@@ -14,6 +14,7 @@
 #include "ArenaCover.h"
 #include "LosTactic.h"
 #include "MovementActions.h"
+#include "PillarTactic.h"
 #include "Strategy.h"
 #include "Trigger.h"
 #include "Value.h"
@@ -136,6 +137,16 @@ public:
 
 private:
     LosBotState data = LosBotState();
+};
+
+// The Pillar tactic's per-bot state (PillarTactic.h: the bar looked at, the watched cast, the pending move, the counts)
+class PillarStateValue : public ManualSetValue<PillarBotState&>
+{
+public:
+    PillarStateValue(PlayerbotAI* botAI) : ManualSetValue<PillarBotState&>(botAI, data, "pillar state") {}
+
+private:
+    PillarBotState data = PillarBotState();
 };
 
 #endif

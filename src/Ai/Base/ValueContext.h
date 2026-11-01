@@ -338,6 +338,7 @@ public:
         creators["combat start time"] = &ValueContext::combat_start_time;
         creators["cover plan"] = &ValueContext::cover_plan;
         creators["los state"] = &ValueContext::los_state;
+        creators["pillar state"] = &ValueContext::pillar_state;
     }
 
 private:
@@ -600,6 +601,7 @@ private:
     static UntypedValue* combat_start_time(PlayerbotAI* botAI) { return new CombatStartTimeValue(botAI); }
     static UntypedValue* cover_plan(PlayerbotAI* botAI) { return new CoverPlanValue(botAI); }
     static UntypedValue* los_state(PlayerbotAI* botAI) { return new LosStateValue(botAI); }
+    static UntypedValue* pillar_state(PlayerbotAI* botAI) { return new PillarStateValue(botAI); }
 };
 
 #endif

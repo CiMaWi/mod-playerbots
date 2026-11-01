@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <vector>
 
+#include "ArenaCc.h"
 #include "BattleGroundTactics.h"
 #include "Battleground.h"
 #include "GridTerrainData.h"
@@ -24,10 +25,12 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Spell.h"
+#include "SpellInfo.h"
 #include "Timer.h"
 #include "World.h"
 
-// G2e: the Los tactic's game side (the policy in LosTactic.h, the cover in ArenaCover.h). G2f fills the pillar parts.
+// G2e: the Los tactic's game side (the policy in LosTactic.h, the cover in ArenaCover.h); G2f: the Pillar tactic's
+// (the policy in PillarTactic.h).
 
 namespace
 {
@@ -404,6 +407,259 @@ bool FindPathRegain(Player* bot, Unit* see, bool enemyTarget, uint32 maxRays, Co
 
     return false;
 }
+
+// G2f: the Pillar tactic
+
+constexpr uint32 PILLAR_FALLBACK_WALKS = 3;  // the fallback checks ground and path of at most this many hidden points
+
+PillarBotState& PillarState(PlayerbotAI* botAI)
+{
+    return botAI->GetAiObjectContext()->GetValue<PillarBotState&>("pillar state")->Get();
+}
+
+// The numbers, read again at most every PILLAR_PARAMS_MS
+PillarParams const& BotPillarParams(PlayerbotAI* botAI, PillarBotState& state, uint32 nowMs)
+{
+    if (state.ParamsMs && nowMs - state.ParamsMs < PILLAR_PARAMS_MS)
+        return state.Params;
+
+    PillarGateInputs in;
+    in.Skill = botAI->GetPvpSkill();
+    in.FullAbility = in.Skill == 0 || botAI->HasFullSkillAbility();
+    in.Knowledge = botAI->GetAttribute(BotAttribute::Knowledge);
+    in.Caution = botAI->GetAttribute(BotAttribute::Caution);
+    state.Params = ComputePillarParams(sPlayerbotAIConfig.TacticPillar, in);
+    state.ParamsMs = std::max(nowMs, 1u);
+    return state.Params;
+}
+
+// The arena the pillar play runs in now: none outside arenas, while dead, before the gates and in Ring of Valor's first
+// RvIdleMs (LosIdleHere: the battleground's clock, as the Los tactic); another arena drops the bar and the watch
+Battleground* PillarArenaHere(PlayerbotAI* botAI, Player* bot, PillarBotState& state)
+{
+    Battleground* bg = ArenaOf(bot);
+    uint32 const instance = bg ? bg->GetInstanceID() : 0;
+    if (state.Instance != instance)
+    {
+        state.Instance = instance;
+        PillarResetMatch(state);
+    }
+
+    if (!bg || !bot->IsAlive() || LosIdleHere(bot, LosState(botAI)))
+        return nullptr;
+
+    return bg;
+}
+
+uint32 PillarSinceGatesMs(Battleground* bg)
+{
+    return LosSinceGatesMs(bg->GetStartTime(), sWorld->getIntConfig(CONFIG_ARENA_PREP_TIME) * IN_MILLISECONDS);
+}
+
+// An enemy cast bar on the bot
+struct PillarBar
+{
+    Player* Caster = nullptr;
+    SpellInfo const* Info = nullptr;
+    uint32 CastMs = 0;
+    uint32 ElapsedMs = 0;
+    bool Cc = false;
+};
+
+// The hard cast at the bot with the least time left: an enemy player's bar (a cast time; channels are not re-checked
+// for LOS) whose unit target is the bot, as the enemy frames show it (DT.12)
+bool HardCastAtBot(Player* bot, Battleground* bg, uint32 hardCastMs, PillarBar& bar)
+{
+    for (auto const& [guid, listed] : bg->GetPlayers())
+    {
+        Player* enemy = ObjectAccessor::GetPlayer(*bot, guid);
+        if (!enemy || !enemy->IsAlive() || enemy->GetBgTeamId() == bot->GetBgTeamId())
+            continue;
+
+        Spell* cast = enemy->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        SpellInfo const* info = cast ? cast->GetSpellInfo() : nullptr;
+        if (!info || cast->getState() != SPELL_STATE_PREPARING || cast->GetCastTime() <= 0 ||
+            cast->m_targets.GetUnitTargetGUID() != bot->GetGUID())
+            continue;
+
+        CcKind kind = CcKind::Snare;
+        bool const cc = CcKindOfAura(info->GetAllEffectsMechanicMask(), 0, kind) && kind != CcKind::Snare;
+        bool const ignoresLos = info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) ||
+                                info->HasAttribute(SPELL_ATTR5_ALWAYS_AOE_LINE_OF_SIGHT);
+        uint32 const castMs = static_cast<uint32>(cast->GetCastTime());
+        if (!PillarHardCast(castMs, cc, ignoresLos, hardCastMs))
+            continue;
+
+        uint32 const elapsedMs =
+            static_cast<uint32>(std::clamp(cast->GetCastTime() - cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
+        if (bar.Caster && castMs - elapsedMs >= bar.CastMs - bar.ElapsedMs)
+            continue;
+
+        bar.Caster = enemy;
+        bar.Info = info;
+        bar.CastMs = castMs;
+        bar.ElapsedMs = elapsedMs;
+        bar.Cc = cc;
+    }
+
+    return bar.Caster != nullptr;
+}
+
+// The cast the bot broke LOS from, judged by one ray when its bar should have ended (the core's completion check asks
+// the same line: Spell::CheckCast, M2 ignored); castsLosBroken counts the known breaks' casts
+void JudgePillarWatch(PlayerbotAI* botAI, Player* bot, PillarBotState& state, uint32 nowMs)
+{
+    PillarWatch& watch = state.Watch;
+    if (!PillarWatchDue(watch, nowMs))
+        return;
+
+    Unit* caster = ObjectAccessor::GetUnit(*bot, ObjectGuid(watch.Caster));
+    PillarCastNow castNow = PillarCastNow::Gone;
+    uint32 remainingMs = 0;
+    bool sees = false;
+    if (caster && caster->IsAlive() && caster->IsInWorld() && caster->GetMap() == bot->GetMap())
+    {
+        castNow = PillarCastNow::Ended;
+        Spell* cast = caster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        // the same bar pushed back (begun before the watched end), not a new cast of the same spell
+        if (cast && cast->getState() == SPELL_STATE_PREPARING && cast->GetSpellInfo() &&
+            cast->GetSpellInfo()->Id == watch.Spell && cast->m_targets.GetUnitTargetGUID() == bot->GetGUID() &&
+            cast->GetCastTime() - cast->GetCastTimeRemaining() > static_cast<int32>(nowMs - watch.EndMs))
+        {
+            castNow = PillarCastNow::Casting;
+            remainingMs = static_cast<uint32>(std::max(cast->GetCastTimeRemaining(), 0));
+        }
+        else
+            sees = caster->IsWithinLOSInMap(bot, VMAP::ModelIgnoreFlags::M2);
+    }
+
+    bool const known = watch.Known;
+    uint32 const spell = watch.Spell;
+    PillarVerdict const verdict = PillarJudgeWatch(watch, castNow, remainingMs, sees, nowMs);
+    if (verdict == PillarVerdict::Broken)
+    {
+        ++state.Broken;
+        if (known)
+            botAI->CountTactic(TacticCounter::CastsLosBroken);
+
+        LOG_TRACE("playerbots", "Pillar: {} out of sight when {}'s spell {} ended (cast broken), skill {}, at {} ms",
+                  bot->GetName(), caster ? caster->GetName() : "?", spell, botAI->GetPvpSkill(), nowMs);
+    }
+    else if (verdict == PillarVerdict::Landed)
+        ++state.Landed;
+    else if (verdict == PillarVerdict::Lost)
+        ++state.Lost;
+}
+
+// The ground at a point within LOS_FLOOR_DZ of its Z and an mmap path to it of at most maxYards that never crosses
+// Dalaran's waterfall (the straight line neither: the spline may cut a corner)
+bool PillarWalkable(Player* bot, CoverVec const& point, float maxYards, CoverVec& at, float& pathYards)
+{
+    Map* map = bot->GetMap();
+    float const z = map->GetHeight(bot->GetPhaseMask(), point.X, point.Y, point.Z + LOS_FLOOR_DZ + 1.0f, true,
+                                   2.0f * LOS_FLOOR_DZ + 1.0f);
+    if (z <= INVALID_HEIGHT + 1.0f || std::fabs(z - point.Z) > LOS_FLOOR_DZ)
+        return false;
+
+    CoverVec const ground{point.X, point.Y, z};
+    uint32 const mapId = bot->GetMapId();
+    if (PillarCrossesWaterfall(mapId, PositionOf(bot), ground))
+        return false;
+
+    PathGenerator path(bot);
+    path.CalculatePath(point.X, point.Y, z, false);
+    if (!(path.GetPathType() & PATHFIND_NORMAL))
+        return false;
+
+    Movement::PointsArray const& points = path.GetPath();
+    float const yards = PathYards(points);
+    if (yards > maxYards)
+        return false;
+
+    for (size_t index = 1; index < points.size(); ++index)
+    {
+        if (PillarCrossesWaterfall(mapId, {points[index - 1].x, points[index - 1].y, points[index - 1].z},
+                                   {points[index].x, points[index].y, points[index].z}))
+            return false;
+    }
+
+    at = ground;
+    pathYards = yards;
+    return true;
+}
+
+// The break's point: a pillar ring point hidden from the caster within stepYards (FindCoverPoint), else a point round
+// the bot that a live ray from the caster shows hidden (Lordaeron's tomb, walls); ground and path checked
+bool FindBreakPoint(Player* bot, Battleground* bg, Unit* caster, float stepYards, uint32 maxRays, CoverVec& at,
+                    int32& pillar, float& pathYards, uint32& rays)
+{
+    Map* map = bot->GetMap();
+    uint32 const phaseMask = bot->GetPhaseMask();
+    auto const los = [map, phaseMask](CoverVec const& a, CoverVec const& b)
+    { return ArenaCoverLos(map, phaseMask, a, b); };
+    CoverVec const self = PositionOf(bot);
+    CoverVec const casterAt = PositionOf(caster);
+    float const maxPath = stepYards * LOS_PATH_FACTOR;
+    ArenaCoverTable const* table = FindArenaCoverTable(bot->GetMapId());
+    if (table && table->Count)
+    {
+        CoverSearchParams search;
+        search.RequireHidden = true;
+        search.RingGap = PILLAR_RING_GAP;
+        search.MaxRays = maxRays;
+        CoverSearchResult const found =
+            FindCoverPoint(*table, ArenaCoverActiveGates(bg), self, casterAt, nullptr, stepYards, los, search);
+        rays += found.Rays;
+        if (found.Found && PillarWalkable(bot, found.Point, maxPath, at, pathYards))
+        {
+            pillar = found.Pillar;
+            return true;
+        }
+    }
+
+    uint32 walks = 0;
+    for (CoverVec const& point : PillarFallbackPoints(self, casterAt, stepYards))
+    {
+        if (rays >= maxRays || walks >= PILLAR_FALLBACK_WALKS)
+            break;
+
+        ++rays;
+        if (los(CoverEye(casterAt, COVER_EYE_YARDS), CoverEye(point, COVER_EYE_YARDS)))
+            continue;
+
+        ++walks;
+        if (PillarWalkable(bot, point, maxPath, at, pathYards))
+        {
+            pillar = -1;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The enemy melee player nearest the bot within PILLAR_CHASER_YARDS that has the bot as its target (the target frame)
+Player* MeleeChaser(Player* bot, Battleground* bg)
+{
+    Player* best = nullptr;
+    float bestYards = PILLAR_CHASER_YARDS;
+    for (auto const& [guid, listed] : bg->GetPlayers())
+    {
+        Player* enemy = ObjectAccessor::GetPlayer(*bot, guid);
+        if (!enemy || !enemy->IsAlive() || enemy->GetBgTeamId() == bot->GetBgTeamId() || PlayerbotAI::IsRanged(enemy) ||
+            enemy->GetTarget() != bot->GetGUID())
+            continue;
+
+        float const yards = bot->GetDistance(enemy);
+        if (yards < bestYards)
+        {
+            bestYards = yards;
+            best = enemy;
+        }
+    }
+
+    return best;
+}
 }  // namespace
 
 void TacticLosStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -463,9 +719,137 @@ bool PartnerOutOfLosTrigger::IsActive()
     return LosTriggerDue(botAI, bot, LosWant::Partner, enabled);
 }
 
-bool CastAtMeTrigger::IsActive() { return false; }
+// "cast at me": a hard cast at the bot (an enemy's bar, PillarHardCast) that it hides from (known, or the random
+// draw below it) and whose bar has the walk plus the margin left (PillarBreakWhen); the bot's own cast finishes first
+// unless the bar is crowd control; the guards (shared with the Los tactic) and the search interval. The interrupts
+// rank above "break los", so a bot that can kick the bar kicks it instead. O(1) when the tactic is off.
+bool CastAtMeTrigger::IsActive()
+{
+    if (!botAI->TacticEnabledHere(TacticId::Pillar))
+        return false;
 
-bool PillarStepTrigger::IsActive() { return false; }
+    uint32 const nowMs = getMSTime();
+    PillarBotState& state = PillarState(botAI);
+    Battleground* bg = PillarArenaHere(botAI, bot, state);
+    if (!bg)
+        return false;
+
+    JudgePillarWatch(botAI, bot, state, nowMs);
+    PillarParams const& params = BotPillarParams(botAI, state, nowMs);
+    PillarBar bar;
+    if (!HardCastAtBot(bot, bg, params.HardCastMs, bar))
+        return false;
+
+    uint64 const casterGuid = bar.Caster->GetGUID().GetRawValue();
+    PillarCastSeen& seen = state.Cast;
+    if (!PillarSameCast(seen, casterGuid, bar.Info->Id, bar.ElapsedMs, nowMs))
+    {
+        uint32 const serial = seen.Serial + 1;
+        seen = PillarCastSeen();
+        seen.Serial = serial;
+        seen.Caster = casterGuid;
+        seen.Spell = bar.Info->Id;
+        seen.Hide = params.Known || PillarRandomHide(params.RandomHidePct, bot->GetGUID().GetRawValue(), seen.Serial);
+        ++state.CastsSeen;
+    }
+
+    seen.ElapsedMs = bar.ElapsedMs;
+    seen.SeenMs = std::max(nowMs, 1u);
+    if (seen.Handled || !seen.Hide)
+        return false;
+
+    if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) || (!bar.Cc && bot->IsNonMeleeSpellCast(false)))
+        return false;
+
+    uint32 const remainingMs = bar.CastMs - bar.ElapsedMs;
+    float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    uint32 const travelMs = static_cast<uint32>(params.StepYards / speed * IN_MILLISECONDS);
+    PillarWhen const when = PillarBreakWhen(params, remainingMs, travelMs, params.Known);
+    if (when == PillarWhen::TooLate)
+    {
+        seen.Handled = true;
+        ++state.TooLate;
+        return false;
+    }
+
+    if (when == PillarWhen::Wait || (params.Known && !botAI->TacticActive(TacticId::Pillar)))
+        return false;
+
+    LosParams const guards = PillarGuardParams(sPlayerbotAIConfig.TacticLos);
+    uint32 const lastSearchMs = botAI->GetCoverState().LastSearchMs;
+    if (lastSearchMs && nowMs - lastSearchMs < guards.SearchIntervalMs)
+        return false;
+
+    if (LosRelocGuard(LosState(botAI).Relocs, nowMs, guards) != LosGuard::Ok)
+    {
+        if (!seen.Guarded)
+        {
+            seen.Guarded = true;
+            ++state.Guarded;
+            botAI->CountTactic(TacticCounter::RelocGuards);
+        }
+
+        return false;
+    }
+
+    state.Due = static_cast<uint8>(PillarDue::Break);
+    state.DueMs = std::max(nowMs, 1u);
+    state.DueCaster = casterGuid;
+    return true;
+}
+
+// "pillar step": a ranged bot that knows the tactic, standing and not casting next to an active pillar (table rows)
+// with an enemy melee on it, steps round the pillar (PickPillarStep; Ring of Valor the far side only). The hold
+// paces the loop (a step at most every HoldMs: waited out silently); relocGuards counts the window's refusals.
+bool PillarStepTrigger::IsActive()
+{
+    if (!botAI->TacticEnabledHere(TacticId::Pillar) || !PlayerbotAI::IsRanged(bot))
+        return false;
+
+    uint32 const nowMs = getMSTime();
+    PillarBotState& state = PillarState(botAI);
+    Battleground* bg = PillarArenaHere(botAI, bot, state);
+    ArenaCoverTable const* table = bg ? FindArenaCoverTable(bot->GetMapId()) : nullptr;
+    if (!table || !table->Count || !BotPillarParams(botAI, state, nowMs).Known || bot->isMoving() ||
+        bot->IsNonMeleeSpellCast(false))
+        return false;
+
+    Player* chaser = MeleeChaser(bot, bg);
+    PillarStepPick pick;
+    if (chaser)
+        pick = PickPillarStep(*table, ArenaCoverActiveGates(bg), PositionOf(bot), PositionOf(chaser),
+                              state.Params.StepYards, bot->GetMapId() == COVER_MAP_RING_OF_VALOR);
+
+    if (!pick.Found)
+    {
+        state.StepGuarding = false;
+        return false;
+    }
+
+    if (!botAI->TacticActive(TacticId::Pillar))
+        return false;
+
+    LosGuard const guard =
+        LosRelocGuard(LosState(botAI).Relocs, nowMs, PillarGuardParams(sPlayerbotAIConfig.TacticLos));
+    if (guard != LosGuard::Ok)
+    {
+        if (guard == LosGuard::Window && !state.StepGuarding)
+        {
+            state.StepGuarding = true;
+            ++state.Guarded;
+            botAI->CountTactic(TacticCounter::RelocGuards);
+        }
+
+        return false;
+    }
+
+    state.StepGuarding = false;
+    state.Due = static_cast<uint8>(PillarDue::Step);
+    state.DueMs = std::max(nowMs, 1u);
+    state.DueChaser = chaser->GetGUID().GetRawValue();
+    state.DueStep = pick;
+    return true;
+}
 
 bool RegainLosAction::isUseful()
 {
@@ -557,10 +941,139 @@ bool RegainLosAction::Execute(Event /*event*/)
     return true;
 }
 
-bool BreakLosAction::isUseful() { return false; }
+bool BreakLosAction::isUseful()
+{
+    PillarBotState const& state = PillarState(botAI);
+    return static_cast<PillarDue>(state.Due) == PillarDue::Break && getMSTime() - state.DueMs < LOS_DUE_MS &&
+           bot->IsAlive() && !bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+}
 
-bool BreakLosAction::Execute(Event /*event*/) { return false; }
+// Out of the caster's sight before its bar ends: the point (pillar or fallback), reached in time, then the watch
+bool BreakLosAction::Execute(Event /*event*/)
+{
+    uint32 const nowMs = getMSTime();
+    PillarBotState& state = PillarState(botAI);
+    state.Due = static_cast<uint8>(PillarDue::None);
+    state.Cast.Handled = true;
+    Battleground* bg = ArenaOf(bot);
+    PillarBar bar;
+    if (!bg || !HardCastAtBot(bot, bg, state.Params.HardCastMs, bar) ||
+        bar.Caster->GetGUID().GetRawValue() != state.DueCaster)
+        return false;
 
-bool PillarStepAction::isUseful() { return false; }
+    PillarParams const& params = state.Params;
+    uint32 const remainingMs = bar.CastMs - bar.ElapsedMs;
+    botAI->GetCoverState().LastSearchMs = std::max(nowMs, 1u);
+    uint32 rays = 0;
+    CoverVec at;
+    int32 pillar = -1;
+    float pathYards = 0.0f;
+    bool found = false;
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Cover::Search")
+                                                        : nullptr);
+        found = FindBreakPoint(bot, bg, bar.Caster, params.StepYards,
+                               PillarGuardParams(sPlayerbotAIConfig.TacticLos).MaxRays, at, pillar, pathYards, rays);
+    }
 
-bool PillarStepAction::Execute(Event /*event*/) { return false; }
+    if (!found)
+    {
+        ++state.NoPoint;
+        LOG_TRACE("playerbots", "Pillar: {} found no point hidden from {} ({} rays), skill {}, at {} ms",
+                  bot->GetName(), bar.Caster->GetName(), rays, botAI->GetPvpSkill(), nowMs);
+        return false;
+    }
+
+    float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    if (!PillarArrivesInTime(remainingMs, static_cast<uint32>(pathYards / speed * IN_MILLISECONDS)))
+    {
+        ++state.TooLate;
+        return false;
+    }
+
+    // a crowd control bar: the bot's own cast gives way (the trigger let it finish any other)
+    if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        bot->InterruptSpell(CURRENT_GENERIC_SPELL, false);
+
+    if (!MoveTo(bot->GetMapId(), at.X, at.Y, at.Z, false, false, false, false, MovementPriority::MOVEMENT_FORCED, true))
+        return false;
+
+    LosState(botAI).Relocs.Note(nowMs);
+    CoverPlan plan;
+    plan.UpdatedMs = std::max(nowMs, 1u);
+    plan.Valid = true;
+    plan.MapId = bot->GetMapId();
+    plan.Pillar = pillar;
+    plan.Point = at;
+    plan.WantHidden = true;
+    plan.EnemyGuid = state.DueCaster;
+    SET_AI_VALUE(CoverPlan, "cover plan", plan);
+
+    state.Watch.Active = true;
+    state.Watch.Known = params.Known;
+    state.Watch.Caster = state.DueCaster;
+    state.Watch.Spell = bar.Info->Id;
+    state.Watch.EndMs = nowMs + remainingMs;
+    state.Watch.FirstEndMs = state.Watch.EndMs;
+    state.LastMoveMs = std::max(nowMs, 1u);
+    state.LastSinceGatesMs = PillarSinceGatesMs(bg);
+    state.FallbackPoints += pillar < 0 ? 1 : 0;
+    if (params.Known)
+    {
+        ++state.Breaks;
+        botAI->CountTactic(TacticCounter::LosBreaks);
+        botAI->NoteTacticUse(TacticId::Pillar);
+    }
+    else
+        ++state.RandomHides;
+
+    LOG_TRACE("playerbots",
+              "Pillar: {} breaks LOS from {}'s spell {} ({} ms left{}) at ({:.1f}, {:.1f}, {:.1f}), {} {}, {:.1f} yd, "
+              "{} rays, {}, map {}, {} ms after the gates, skill {}, at {} ms",
+              bot->GetName(), bar.Caster->GetName(), bar.Info->Id, remainingMs, bar.Cc ? ", crowd control" : "", at.X,
+              at.Y, at.Z, pillar >= 0 ? "pillar" : "fallback", pillar, pathYards, rays,
+              params.Known ? "known" : "random", bot->GetMapId(), state.LastSinceGatesMs, botAI->GetPvpSkill(), nowMs);
+    return true;
+}
+
+bool PillarStepAction::isUseful()
+{
+    PillarBotState const& state = PillarState(botAI);
+    return static_cast<PillarDue>(state.Due) == PillarDue::Step && getMSTime() - state.DueMs < LOS_DUE_MS &&
+           bot->IsAlive() && !bot->IsNonMeleeSpellCast(false);
+}
+
+// One hop round the pillar (ground and path checked again, never across the waterfall)
+bool PillarStepAction::Execute(Event /*event*/)
+{
+    uint32 const nowMs = getMSTime();
+    PillarBotState& state = PillarState(botAI);
+    state.Due = static_cast<uint8>(PillarDue::None);
+    Battleground* bg = ArenaOf(bot);
+    PillarStepPick const pick = state.DueStep;
+    CoverVec at;
+    float pathYards = 0.0f;
+    if (!bg || !pick.Found || !PillarWalkable(bot, pick.Point, state.Params.StepYards * LOS_PATH_FACTOR, at, pathYards))
+    {
+        ++state.StepsRefused;
+        return false;
+    }
+
+    if (!MoveTo(bot->GetMapId(), at.X, at.Y, at.Z, false, false, false, false, MovementPriority::MOVEMENT_FORCED, true))
+        return false;
+
+    LosState(botAI).Relocs.Note(nowMs);
+    ++state.Steps;
+    state.LastMoveMs = std::max(nowMs, 1u);
+    state.LastSinceGatesMs = PillarSinceGatesMs(bg);
+    botAI->CountTactic(TacticCounter::PillarSteps);
+    botAI->NoteTacticUse(TacticId::Pillar);
+    Unit* chaser = ObjectAccessor::GetUnit(*bot, ObjectGuid(state.DueChaser));
+    LOG_TRACE(
+        "playerbots",
+        "Pillar: {} steps round pillar {} from {} to ({:.1f}, {:.1f}, {:.1f}), {:.1f} yd, map {}, {} ms after the "
+        "gates, skill {}, at {} ms",
+        bot->GetName(), pick.Pillar, chaser ? chaser->GetName() : "?", at.X, at.Y, at.Z, pathYards, bot->GetMapId(),
+        state.LastSinceGatesMs, botAI->GetPvpSkill(), nowMs);
+    return true;
+}

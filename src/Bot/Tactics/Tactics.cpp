@@ -39,6 +39,7 @@
 #include "NaturalTurn.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PillarTactic.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -2604,6 +2605,26 @@ void RunLosSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G2f: the Pillar tactic's pure parts (PillarTactic.h; the offline harness runs the same checks)
+void RunPillarSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunPillarChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest pillar FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest pillar: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4454,6 +4475,21 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             los.Searches, los.CoverPoints, los.PathPoints, los.NoPoint, los.SearchRays, los.LastSearchRays,
             los.PartnerLostMs);
     }
+    // G2f: the Pillar tactic (its numbers, the bar looked at, what it did)
+    {
+        PillarBotState const& pillar = botAI->GetAiObjectContext()->GetValue<PillarBotState&>("pillar state")->Get();
+        PillarParams const& params = pillar.Params;
+        handler->PSendSysMessage(
+            "  pillar: {}, known {}, random hide {} %, early {} ms, hard from {} ms, step {:.0f} yd; casts seen {}, "
+            "breaks {} (random {}, fallback points {}), too late {}, no point {}, guarded {}; watched casts broken {} "
+            "(landed {}, not judged {}{}); steps {} (refused {}); last move {} ms ago, {} ms after the gates",
+            botAI->TacticEnabledHere(TacticId::Pillar) ? "on here" : "off here", params.Known ? "yes" : "no",
+            params.RandomHidePct, params.EarlyMs, params.HardCastMs, params.StepYards, pillar.CastsSeen, pillar.Breaks,
+            pillar.RandomHides, pillar.FallbackPoints, pillar.TooLate, pillar.NoPoint, pillar.Guarded, pillar.Broken,
+            pillar.Landed, pillar.Lost, pillar.Watch.Active ? ", one watched now" : "", pillar.Steps,
+            pillar.StepsRefused, pillar.LastMoveMs ? getMSTimeDiff(pillar.LastMoveMs, nowMs) : 0u,
+            pillar.LastSinceGatesMs);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4661,9 +4697,8 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "los")
         RunLosSelftest(handler);
 
-    // 13f-0 stub: the checks come with G2f (pillar)
     if (name.empty() || name == "pillar")
-        handler->PSendSysMessage("TACTICS selftest pillar: PASS (0 checks, 0 failed; not written yet)");
+        RunPillarSelftest(handler);
 
     return true;
 }
