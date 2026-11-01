@@ -5,6 +5,8 @@
  */
 
 #include "MovementActions.h"
+#include "Battleground.h"
+#include "BattlegroundDS.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "FleeManager.h"
@@ -13,9 +15,11 @@
 #include "LootObjectStack.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "MoveSplineInit.h"
 #include "MoveSplineInitArgs.h"
 #include "MovementGenerator.h"
 #include "NaturalMove.h"
+#include "NaturalPath.h"
 #include "NaturalTurn.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
@@ -169,6 +173,278 @@ bool MovementAction::MoveToLOS(WorldObject* target, bool ranged)
     return false;
 }
 
+namespace
+{
+constexpr uint32 NATURAL_HOP_RETRY_MS = 1000;      // a refused hop is tried again this soon (not at every move)
+constexpr float NATURAL_MOVED_BACK_YARDS = 0.25f;  // a moved point the navmesh ray stops this short of is refused
+
+// G2c (NaturalPath.h): the ground under a point (false: none), searched from a little above it
+bool NaturalGround(Unit* bot, float x, float y, float zHint, float& z)
+{
+    z = bot->GetMapHeight(x, y, zHint + PATH_MAX_DZ);
+    return z > INVALID_HEIGHT;
+}
+
+// A moved point: the collision check from the point it came from (a navmesh ray that stops short of it, at a wall or
+// the mesh's edge, refuses it; game objects too), the ground under it within PATH_MAX_DZ (the point takes the
+// navmesh height), no edge within PATH_OFFSET_EDGE_YARDS (4 probes)
+bool NaturalPointValid(Player* bot, PathVec const& from, PathVec& to)
+{
+    float x = to.X;
+    float y = to.Y;
+    float z = to.Z;
+    if (!bot->GetMap()->CheckCollisionAndGetValidCoords(bot, from.X, from.Y, from.Z, x, y, z) ||
+        PathDistance2d(PathVec{x, y, z}, to) > NATURAL_MOVED_BACK_YARDS || std::fabs(z - from.Z) > PATH_MAX_DZ)
+        return false;
+
+    float ground = 0.0f;
+    if (!NaturalGround(bot, x, y, z, ground) || std::fabs(ground - z) > PATH_MAX_DZ)
+        return false;
+
+    to = PathVec{x, y, z};
+    return PathEdgeClear(to, PATH_OFFSET_EDGE_YARDS, 4, 1, PATH_EDGE_DROP,
+                         [bot](float hx, float hy, float hz, float& out)
+                         { return NaturalGround(bot, hx, hy, hz, out); });
+}
+
+// A ray between two points, lift yards above them (as the spell check: static and game-object LOS)
+bool NaturalRayClear(Player* bot, PathVec const& a, PathVec const& b, float lift)
+{
+    return bot->GetMap()->isInLineOfSight(a.X, a.Y, a.Z + lift, b.X, b.Y, b.Z + lift, bot->GetPhaseMask(),
+                                          LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2);
+}
+
+// No hop before an arena starts, in Dalaran Sewers while the waterfall warns or is on, or in Ring of Valor's first
+// Tactics.Pillar.RvIdleMs (from the bot's first look at the started match: late rather than early)
+bool NaturalHopArenaOk(Player* bot, PathBotState& state, uint32 nowMs)
+{
+    Battleground* bg = bot->InArena() ? bot->GetBattleground() : nullptr;
+    if (!bg)
+        return true;
+
+    if (bg->GetStatus() != STATUS_IN_PROGRESS)
+        return false;
+
+    if (state.ArenaInstance != bg->GetInstanceID())
+    {
+        state.ArenaInstance = bg->GetInstanceID();
+        state.ArenaSinceMs = nowMs;
+    }
+
+    if (bg->GetMapId() == PATH_MAP_RING_OF_VALOR)
+        return getMSTimeDiff(state.ArenaSinceMs, nowMs) >= sPlayerbotAIConfig.TacticPillar.RvIdleMs;
+
+    if (bg->GetMapId() == PATH_MAP_DALARAN_SEWERS)
+        for (uint32 water : {BG_DS_OBJECT_WATER_1, BG_DS_OBJECT_WATER_2})
+            if (GameObject* fall = bg->GetBGObject(water))
+                if (fall->GetGoState() == GO_STATE_READY)
+                    return false;
+
+    return true;
+}
+
+// The walk flag a walked leg left (the next spline would keep it)
+void EndNaturalWalk(PlayerbotAI* botAI, Player* bot)
+{
+    PathBotState& state = botAI->GetPathState();
+    if (!state.Walking)
+        return;
+
+    state.Walking = false;
+    bot->RemoveUnitMovementFlag(MOVEMENTFLAG_WALKING);
+}
+
+// G2c: MoveTo's natural path where NaturalPathHere says so: a walked short leg out of combat, a hop along a run in a
+// fight (the chase or the kite repeats its move after the landing), or the wandering (and curved) path, sent through
+// MoveSplinePath; false sends the straight mmap path as before
+bool NaturalPathMove(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, Movement::PointsArray const& found,
+                     uint32 mapId, float x, float y, float z, float distance, MovementPriority priority, bool lessDelay)
+{
+    uint32 const nowMs = getMSTime();
+    if (!NaturalPathHere(botAI, nowMs))
+        return false;
+
+    PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
+    PathBotState& state = botAI->GetPathState();
+    MotionMaster& mm = *bot->GetMotionMaster();
+    LastMovement& lastMove = context->GetValue<LastMovement&>("last movement")->Get();
+    uint64 const guid = bot->GetGUID().GetCounter();
+    bool const inCombat = bot->IsInCombat();
+    auto const delayMs = [&](float yards, float speed)
+    {
+        float delay = IN_MILLISECONDS * yards / std::max(speed, 0.1f);
+        if (lessDelay)
+            delay -= botAI->GetReactDelay();
+
+        return std::min(std::max(delay, 0.0f), static_cast<float>(sPlayerbotAIConfig.MaxWaitForMove));
+    };
+
+    if (PathWalkLeg(config, inCombat, distance))
+    {
+        mm.Clear();
+        mm.MovePoint(0, x, y, z, FORCED_MOVEMENT_WALK, 0.0f, 0.0f, true, false);
+        state.Walking = true;
+        ++state.Walks;
+        lastMove.Set(mapId, x, y, z, bot->GetOrientation(), delayMs(distance, bot->GetSpeed(MOVE_WALK)), priority);
+        return true;
+    }
+
+    // The path as found, from the bot to the destination (else the straight move)
+    if (found.size() < 2 || bot->GetExactDist2d(found.front().x, found.front().y) > PATH_FRONT_YARDS ||
+        std::hypot(found.back().x - x, found.back().y - y) > PATH_FRONT_YARDS)
+        return false;
+
+    std::vector<PathVec> path;
+    path.reserve(found.size());
+    for (G3D::Vector3 const& point : found)
+        path.push_back(PathVec{point.x, point.y, point.z});
+
+    path.front() = PathVec{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    path.back() = PathVec{x, y, z};
+    auto const height = [bot](float hx, float hy, float hz, float& out) { return NaturalGround(bot, hx, hy, hz, out); };
+
+    if (config.HopsEnable && inCombat && state.Params.Hops && PathHopCastGapOk(state.LastCastMs, nowMs) &&
+        PathDueNow(state.NextHopMs, nowMs, state.Params.HopEveryMs, PathHash(guid, nowMs, 1)))
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalPath::Hop")
+                                                        : nullptr);
+        PathHop hop;
+        if (NaturalHopArenaOk(bot, state, nowMs))
+            hop =
+                PlanNaturalHop(path, bot->GetSpeed(MOVE_RUN), config, height,
+                               [bot](PathVec const& a, PathVec const& b) { return NaturalRayClear(bot, a, b, 0.0f); });
+        else
+            hop.Why = PathHopWhy::Arena;
+
+        state.LastHopWhy = hop.Why;
+        if (hop.Ok())
+        {
+            mm.Clear();
+            mm.MoveJump(hop.Land.X, hop.Land.Y, hop.Land.Z, hop.SpeedXY, hop.SpeedZ);
+            lastMove.Set(mapId, hop.Land.X, hop.Land.Y, hop.Land.Z, bot->GetOrientation(),
+                         static_cast<float>(hop.AirMs), priority);
+            state.NextHopMs = PathNextDueMs(nowMs, state.Params.HopEveryMs, PathHash(guid, nowMs, 2));
+            ++state.Hops;
+            botAI->CountTactic(TacticCounter::PathHops);
+            LOG_TRACE("playerbots", "NaturalPath: {} hops {:.1f} yd ({} ms in the air), at {} ms", bot->GetName(),
+                      hop.Yards, hop.AirMs, nowMs);
+            return true;
+        }
+
+        if (hop.Why != PathHopWhy::Short)
+        {
+            state.NextHopMs = std::max(nowMs + NATURAL_HOP_RETRY_MS, 1u);
+            ++state.HopsRefused;
+            botAI->CountTactic(TacticCounter::PathHopsRefused);
+        }
+    }
+
+    if (!config.OffsetsEnable && !config.CurvesEnable)
+        return false;
+
+    PathShape shape;
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalPath::Shape")
+                                                        : nullptr);
+        shape = ShapeNaturalPath(
+            path, state.Params, config, PathSeed(guid, nowMs, x, y), config.CurvesEnable,
+            [bot](PathVec const& from, PathVec& to) { return NaturalPointValid(bot, from, to); },
+            [bot](PathVec const& a, PathVec const& b)
+            { return NaturalRayClear(bot, a, b, bot->GetCollisionHeight()); });
+    }
+
+    state.Dropped += shape.Dropped;
+    if (!shape.Changed)
+        return false;
+
+    Movement::PointsArray points;
+    points.reserve(shape.Points.size());
+    for (PathVec const& point : shape.Points)
+        points.emplace_back(point.X, point.Y, point.Z);
+
+    mm.Clear();
+    mm.MoveSplinePath(&points);
+    lastMove.Set(mapId, x, y, z, bot->GetOrientation(), delayMs(PathLength2d(shape.Points), bot->GetSpeed(MOVE_RUN)),
+                 priority);
+    ++state.Paths;
+    state.OffsetPoints += shape.Offsets;
+    state.Curves += shape.Curved ? 1 : 0;
+    state.LastShapeMs = nowMs;
+    if (shape.Offsets)
+        botAI->CountTactic(TacticCounter::PathOffsets, shape.Offsets);
+
+    return true;
+}
+}  // namespace
+
+// G2c: per check after the bot's action, while Natural.Path.Enable and a Strafe, Hops or Walk flag are on: a walked
+// leg's walk flag goes once the bot stops, a cast is noted for the hops' 3 s gap, and a ranged bot in a fight that is
+// neither casting nor moving steps 2-4 yards sideways facing its target when a strafe is due (a raw spline with a
+// facing; any move or cast the next check chooses replaces it). Cost when nothing is due: a few flag tests.
+void FollowNaturalPath(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
+{
+    PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
+    PathBotState& state = botAI->GetPathState();
+    if (state.Walking && !bot->isMoving())
+        EndNaturalWalk(botAI, bot);
+
+    bool const casting = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) || bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    if (casting)
+        state.LastCastMs = std::max(nowMs, 1u);
+
+    if (!config.StrafeEnable || !state.Params.Strafe || casting || !bot->IsInCombat() || bot->isMoving() ||
+        !botAI->CanMove() || !PlayerbotAI::IsRanged(bot) || !NaturalPathHere(botAI, nowMs))
+        return;
+
+    Unit* const target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    if (!target || target == bot || !target->IsInWorld() || !target->IsInMap(bot) || !target->IsAlive() ||
+        bot->IsFriendlyTo(target))
+        return;
+
+    uint64 const guid = bot->GetGUID().GetCounter();
+    if (!PathStrafeAllowed(state.Params, casting, false, bot->GetExactDist2d(target),
+                           sPlayerbotAIConfig.SpellDistance) ||
+        !PathDueNow(state.NextStrafeMs, nowMs, state.Params.StrafeEveryMs, PathHash(guid, nowMs, 3)))
+        return;
+
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalPath::Strafe")
+                                                    : nullptr);
+    PathVec const self{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    PathStrafe const strafe =
+        PlanNaturalStrafe(self, PathVec{target->GetPositionX(), target->GetPositionY(), target->GetPositionZ()}, config,
+                          state.LastStrafeSide, PathHash(guid, nowMs, 4));
+    PathVec end = strafe.End;
+    bool const ok = strafe.Yards > 0.0f && NaturalPointValid(bot, self, end) &&
+                    PathEdgeClear(end, PATH_STRAFE_EDGE_YARDS, PATH_EDGE_DIRECTIONS, 1, PATH_EDGE_DROP,
+                                  [bot](float hx, float hy, float hz, float& out)
+                                  { return NaturalGround(bot, hx, hy, hz, out); }) &&
+                    target->IsWithinLOS(end.X, end.Y, end.Z + bot->GetCollisionHeight());
+    // A refused strafe is tried again after half an interval
+    state.NextStrafeMs = PathNextDueMs(nowMs, ok ? state.Params.StrafeEveryMs : state.Params.StrafeEveryMs / 2,
+                                       PathHash(guid, nowMs, 5));
+    if (!ok)
+    {
+        ++state.StrafesRefused;
+        return;
+    }
+
+    bot->GetMotionMaster()->Clear();
+    Movement::MoveSplineInit init(bot);
+    init.MoveTo(end.X, end.Y, end.Z, false, false);
+    init.SetFacing(target);
+    init.Launch();
+    state.LastStrafeSide = strafe.Side;
+    ++state.Strafes;
+    botAI->CountTactic(TacticCounter::PathStrafes);
+    // Held as a wander move: every other move replaces it at once
+    LastMovement& lastMove = botAI->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get();
+    lastMove.Set(bot->GetMapId(), end.X, end.Y, end.Z, bot->GetOrientation(),
+                 IN_MILLISECONDS * strafe.Yards / std::max(bot->GetSpeed(MOVE_RUN), 0.1f),
+                 MovementPriority::MOVEMENT_WANDER);
+    LOG_TRACE("playerbots", "NaturalPath: {} strafes {:.1f} yd ({}) facing {}, at {} ms", bot->GetName(), strafe.Yards,
+              strafe.Side > 0 ? "left" : "right", target->GetName(), nowMs);
+}
+
 bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle*/, bool /*react*/, bool normal_only,
                             bool exact_waypoint, MovementPriority priority, bool lessDelay, bool backwards)
 {
@@ -185,6 +461,10 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     {
         return false;
     }
+
+    // G2c: a walked leg's walk flag goes before any other move (NaturalPath.h)
+    if (sPlayerbotAIConfig.NaturalPath.WalkEnable)
+        EndNaturalWalk(botAI, bot);
 
     bool generatePath = !bot->IsFlying() && !bot->isSwimming();
     bool disableMoveSplinePath =
@@ -250,6 +530,11 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
                 bot->SetStandState(UNIT_STAND_STATE_STAND);
 
             // bot->CastStop();
+
+            // G2c: the natural path (a walked leg, a hop or the wandering path) where NaturalPathHere says so
+            if (!backwards && sPlayerbotAIConfig.NaturalPath.Enable &&
+                NaturalPathMove(botAI, bot, context, path, mapId, x, y, modifiedZ, distance, priority, lessDelay))
+                return true;
 
             DoMovePoint(bot, x, y, modifiedZ, generatePath, backwards);
             float delay = IN_MILLISECONDS * MoveDelay(distance, backwards);

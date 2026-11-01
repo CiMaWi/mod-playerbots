@@ -1327,6 +1327,13 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     DoNextAction(minimal);
 
+    // G2c: after the action, the strafes between casts, the hops' cast clock and the end of a walked leg (only with
+    // Natural.Path.Enable and a Strafe, Hops or Walk flag; NaturalPath.h)
+    PathConfig const& naturalPath = sPlayerbotAIConfig.NaturalPath;
+    if (!minimal && naturalPath.Enable &&
+        (naturalPath.StrafeEnable || naturalPath.HopsEnable || naturalPath.WalkEnable))
+        FollowNaturalPath(this, bot, getMSTime());
+
     if (pmo)
         pmo->finish();
 }
@@ -8096,6 +8103,8 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     GetTurnState().Params = ComputeTurnParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
     // The natural tracking's numbers (G2b), cached whatever Natural.Track.Enable says; skill 0 gives skill 99's
     GetTrackState().Params = ComputeTrackParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
+    // The natural paths' numbers (G2c), cached whatever Natural.Path.Enable says; skill 0 gives skill 99's
+    GetPathState().Params = ComputePathParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalPath);
     if (skill == 0)
         return;
 
@@ -8218,7 +8227,12 @@ TrackBotState& PlayerbotAI::GetTrackState()
 PathBotState& PlayerbotAI::GetPathState()
 {
     if (!pathState)
+    {
+        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         pathState = std::make_unique<PathBotState>();
+        pathState->Params = ComputePathParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalPath);
+    }
 
     return *pathState;
 }

@@ -33,6 +33,7 @@
 #include "Item.h"
 #include "NaturalCast.h"
 #include "NaturalMove.h"
+#include "NaturalPath.h"
 #include "NaturalReaction.h"
 #include "NaturalTurn.h"
 #include "ObjectAccessor.h"
@@ -2542,6 +2543,26 @@ void RunTrackSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G2c: the natural paths' pure parts (NaturalPath.h; the offline harness runs the same checks)
+void RunPathSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunPathChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest path FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest path: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 // G2d: the arena cover's pure parts (ArenaCover.h; the offline harness runs the same checks)
 void RunCoverSelftest(ChatHandler* handler)
 {
@@ -4375,6 +4396,22 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             track.Capped, track.Unsticks, track.Restarts, TrackModeName(track.LastMode), track.LastLagMs,
             track.LastLeadYards, track.LastOffYards, track.LastMs ? getMSTimeDiff(track.LastMs, nowMs) : 0u);
     }
+    // G2c: the natural paths (its numbers, what the bot walked)
+    {
+        PathBotState const& path = botAI->GetPathState();
+        PathParams const& params = path.Params;
+        PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
+        handler->PSendSysMessage(
+            "  path: {}, offset {:.2f} yd, curves {}, strafes {} (every {} ms), hops {} (every {} ms), walk {}; paths "
+            "{} (offset points {}, refused {}, curved {}), strafes {} (refused {}), hops {} (refused {}, last {}), "
+            "walks {}; last shaped {} ms ago",
+            NaturalPathHere(botAI, nowMs) ? "on here" : "off here", config.OffsetsEnable ? params.OffsetYards : 0.0f,
+            config.CurvesEnable ? "on" : "off", config.StrafeEnable && params.Strafe ? "yes" : "no",
+            params.StrafeEveryMs, config.HopsEnable && params.Hops ? "yes" : "no", params.HopEveryMs,
+            config.WalkEnable ? "on" : "off", path.Paths, path.OffsetPoints, path.Dropped, path.Curves, path.Strafes,
+            path.StrafesRefused, path.Hops, path.HopsRefused, PathHopWhyName(path.LastHopWhy), path.Walks,
+            path.LastShapeMs ? getMSTimeDiff(path.LastShapeMs, nowMs) : 0u);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4573,11 +4610,14 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "track")
         RunTrackSelftest(handler);
 
+    if (name.empty() || name == "path")
+        RunPathSelftest(handler);
+
     if (name.empty() || name == "cover")
         RunCoverSelftest(handler);
 
-    // 13f-0 stubs: the checks come with G2c (path), G2e (los) and G2f (pillar)
-    for (char const* stub : {"path", "los", "pillar"})
+    // 13f-0 stubs: the checks come with G2e (los) and G2f (pillar)
+    for (char const* stub : {"los", "pillar"})
         if (name.empty() || name == stub)
             handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed; not written yet)", stub);
 
