@@ -2368,6 +2368,7 @@ constexpr uint32 SpellIceBlock = 45438;
 constexpr uint32 SpellDivineShield = 642;
 constexpr uint32 SpellHypothermia = 41425;  // no ice block while it lasts
 constexpr uint32 SpellForbearance = 25771;  // no divine shield while it lasts
+constexpr uint32 SpellPainSuppression = 33206;
 // The focused scan reads at most this many entries of the bot's attackers (players, pets and NPCs alike)
 constexpr uint32 DefensiveFocusMaxReads = 12;
 
@@ -2436,14 +2437,37 @@ Unit* DefensiveAimedAt(Unit* enemy)
     return nullptr;
 }
 
-// A self-defensive is ready: known, off cooldown and not blocked by hypothermia or forbearance (also the check at a
-// death: hypothermia and forbearance are read before the death removes them)
-bool SelfDefensiveReady(PlayerbotAI* botAI, Player* bot)
+// A disc priest with Protect active keeps pain suppression (3 min cooldown) for a living partner: on itself only at
+// the critical reason, never on focused, burst or the opener
+bool SelfDefensiveHeldForPartner(PlayerbotAI* botAI, Player* bot, uint32 spellId, DefensiveReason reason)
+{
+    if (spellId != SpellPainSuppression || reason == DefensiveReason::Critical ||
+        !botAI->TacticActive(TacticId::Protect))
+        return false;
+
+    Group* const group = bot->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* const member = ref->GetSource();
+        if (member && member != bot && member->IsAlive() && member->IsInMap(bot))
+            return true;
+    }
+
+    return false;
+}
+
+// A self-defensive is ready for the reason: known, off cooldown, not blocked by hypothermia or forbearance and not
+// held for a partner (also the check at a death, with the critical reason: hypothermia and forbearance are read
+// before the death removes them)
+bool SelfDefensiveReady(PlayerbotAI* botAI, Player* bot, DefensiveReason reason)
 {
     for (char const* name : SelfDefensiveSpells(bot))
     {
         uint32 const spellId = DefensiveSpellId(botAI, name);
-        if (!spellId || bot->HasSpellCooldown(spellId))
+        if (!spellId || bot->HasSpellCooldown(spellId) || SelfDefensiveHeldForPartner(botAI, bot, spellId, reason))
             continue;
 
         if ((spellId == SpellIceBlock && bot->HasAura(SpellHypothermia)) ||
@@ -2491,10 +2515,12 @@ bool BurstTrigger::IsActive()
     return true;
 }
 
-// Not while a defensive is up or every self-defensive is on cooldown (no failing press on every tick)
+// Not while a defensive is up or every self-defensive is on cooldown or held for a partner (no failing press on every
+// tick)
 bool SelfDefensiveAction::isUseful()
 {
-    return bot->IsAlive() && !DefensiveAuraUp(bot) && SelfDefensiveReady(botAI, bot);
+    return bot->IsAlive() && !DefensiveAuraUp(bot) &&
+           SelfDefensiveReady(botAI, bot, botAI->GetDefensiveState().LastReason);
 }
 
 bool SelfDefensiveAction::Execute(Event /*event*/)
@@ -2504,7 +2530,8 @@ bool SelfDefensiveAction::Execute(Event /*event*/)
     for (char const* name : SelfDefensiveSpells(bot))
     {
         uint32 const spellId = DefensiveSpellId(botAI, name);
-        if (!spellId || !botAI->CanCastSpell(spellId, bot) || !botAI->CastSpell(spellId, bot))
+        if (!spellId || SelfDefensiveHeldForPartner(botAI, bot, spellId, state.LastReason) ||
+            !botAI->CanCastSpell(spellId, bot) || !botAI->CastSpell(spellId, bot))
             continue;
 
         uint32 const hpPct = DefensiveHealthPct(bot);
@@ -2538,7 +2565,8 @@ void FollowDefensive(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
     // lethal hit; this is the fallback for a death no damage hook saw (an instakill), once per death. A priest in
     // spirit of redemption counts as dead (the arena counted the kill).
     bool const alive = bot->IsAlive() && !bot->HasSpiritOfRedemptionAura();
-    if (state.Death.OnCheck(state.WasAlive, alive) && botAI->IsPvpTestCounting() && SelfDefensiveReady(botAI, bot))
+    if (state.Death.OnCheck(state.WasAlive, alive) && botAI->IsPvpTestCounting() &&
+        SelfDefensiveReady(botAI, bot, DefensiveReason::Critical))
     {
         botAI->CountTactic(TacticCounter::DeathsDefReady);
         LOG_TRACE("playerbots",
@@ -2626,7 +2654,7 @@ void DefensiveNoteLethalHit(Unit* victim, uint32 damage)
         return;
 
     DefensiveBotState& state = botAI->GetDefensiveState();
-    if (!state.Death.OnLethalHit() || !SelfDefensiveReady(botAI, bot))
+    if (!state.Death.OnLethalHit() || !SelfDefensiveReady(botAI, bot, DefensiveReason::Critical))
         return;
 
     botAI->CountTactic(TacticCounter::DeathsDefReady);
@@ -2729,8 +2757,8 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
 
 Unit* DefensivePartnerToProtect(PlayerbotAI* botAI)
 {
-    // DT.3: in PvP only (the Protect tactic's scope); elsewhere nobody, as before (blessing of protection drops a
-    // tank's threat)
+    // DT.3: in PvP only (the Protect tactic's scope); elsewhere nobody, as before (hand of protection drops a tank's
+    // threat)
     if (!botAI->TacticActive(TacticId::Protect))
         return nullptr;
 
@@ -2752,6 +2780,10 @@ Unit* DefensivePartnerToProtect(PlayerbotAI* botAI)
         Player* const partner = victim ? victim->ToPlayer() : nullptr;
         if (!partner || partner == bot || !partner->IsAlive() || !partner->IsInMap(bot) ||
             !bot->IsInSameRaidWith(partner) || unit->GetExactDist2d(partner) > distance)
+            continue;
+
+        // A partner behind its own defensive (ice block, cloak, a save already on it) needs none from the bot
+        if (DefensiveAuraUp(partner))
             continue;
 
         uint32 const hpPct = DefensiveHealthPct(partner);

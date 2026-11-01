@@ -373,7 +373,8 @@ public:
     bool isUseful() override;
 };
 
-PROTECT_ACTION(CastBlessingOfProtectionProtectAction, "blessing of protection");
+// 3.3.5 names spells 1022, 5599 and 10278 "Hand of Protection" (the key "blessing of protection on party" stays)
+PROTECT_ACTION(CastBlessingOfProtectionProtectAction, "hand of protection");
 
 class CastDivinePleaAction : public CastBuffSpellAction
 {

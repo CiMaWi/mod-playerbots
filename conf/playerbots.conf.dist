@@ -2190,6 +2190,7 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Cc.KnownFromSkill = 0
 # Playerbots.Tactics.OwnCc.Enable = 0
 # Playerbots.Tactics.OwnCc.Scope = All
+# Playerbots.Tactics.Natural.Enable = 0
 
 # Target hold and team plan: the numbers of the Hold and Plan tactics (all keys optional, the defaults below; read only
 # where those tactics are enabled). The defaults are proposals, not tuned yet (G6a tunes them). An ...AtSkill1 /
@@ -2477,16 +2478,20 @@ Playerbots.Tactics.Enable = 0
 # earlier. A low-skill bot presses only at CriticalHpPct, or at the gates opening with the chance
 # OpenerPctAtSkill1..99; low effort waits LateMsAtEffort0..100 ms after the trigger holds; Caution moves the threshold
 # by up to CautionShiftPct points; two presses are at least MinGapMs apart; no press while a defensive is up or every
-# self-defensive is on cooldown. With Protect on, PartyMemberToProtect returns a partner (PvP scope only: blessing of
+# self-defensive is on cooldown. With Protect on, PartyMemberToProtect returns a partner (PvP scope only: hand of
 # protection drops a tank's threat) that an enemy within Protect.DistanceYards attacks now (its victim or cast target),
-# whose health is at or below Protect.HpPctAtSkill1..99 per cent; the existing protect actions (blessing of
-# protection, pain suppression, intervene) use it with their own cooldowns. Opponent memory (Foresight; from skill
+# whose health is at or below Protect.HpPctAtSkill1..99 per cent and who has no defensive of its own up; the existing
+# protect actions (hand of protection, pain suppression, intervene) use it with their own cooldowns. A disc priest
+# with Protect on and a living partner keeps pain suppression for the partner: on itself only at CriticalHpPct (the
+# Defensive tactic's opener, burst and focused presses skip it). Opponent memory (Foresight; from skill
 # Opponent.FromSkill): the bot remembers the health at which each enemy was seen with a defensive up. It holds its
 # burst while an enemy's defensive is up; within Opponent.ExpireMs of that sighting the defensive counts as spent (the
 # burst goes at once); after Opponent.ExpireMs it may be back: the bot holds its burst until the enemy is at most
 # Opponent.LeadPctAtForesight99 points (at Foresight 99) above the remembered health, and a new sighting replaces the
 # remembered one. Opponent.Enable 0 turns the memory off. Protect.AttackedWithinMs, Protect.MinGapMs and
 # Opponent.MinEvents are read but not used yet.
+# Playerbots.Tactics.Defensive.Enable = 0
+# Playerbots.Tactics.Protect.Enable = 0
 # Playerbots.Tactics.Defensive.BurstWindowMs = 2000
 # Playerbots.Tactics.Defensive.BurstLossPctAtSkill1 = 55
 # Playerbots.Tactics.Defensive.BurstLossPctAtSkill99 = 30
@@ -2530,6 +2535,7 @@ Playerbots.Tactics.Enable = 0
 # most MaxPerMinute a minute. A kick at the bot within BaitedWindowMs after the cancel counts as baited (counters
 # fakes, kicksBaited, kickSeen). Nothing tells a kicker it faces a fake; its own memory of seen cancels is all it has
 # (Playerbots.Tactics.Interrupt).
+# Playerbots.Tactics.Fake.Enable = 0
 # Playerbots.Tactics.Fake.KnownFromSkill = 70
 # Playerbots.Tactics.Fake.MinCastMs = 1500
 # Playerbots.Tactics.Fake.CancelPctAtPatience0 = 35
