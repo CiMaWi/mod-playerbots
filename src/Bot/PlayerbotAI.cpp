@@ -8307,8 +8307,7 @@ JumpBotState& PlayerbotAI::GetJumpState()
     return *jumpState;
 }
 
-// G2g: one step of the jump test (13g-0: nothing to step yet; G2g-a fills it)
-void PlayerbotAI::StepJumpTest(uint32 /*nowMs*/) { jumpTest = false; }
+// G2g: PlayerbotAI::StepJumpTest (the jump test's step) is in ArenaJump.cpp, beside the commands that arm it
 
 // G2a: whether the bot turns naturally now (NaturalTurn.h)
 bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs)

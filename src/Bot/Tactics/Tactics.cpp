@@ -22,6 +22,7 @@
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSim.h"
 #include "ArenaInterruptSpells.h"
+#include "ArenaJump.h"
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
 #include "CcState.h"
@@ -2625,6 +2626,26 @@ void RunPillarSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G2g: the jump spots' pure parts (ArenaJump.h; the offline harness runs the same checks)
+void RunJumpSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunJumpChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest jump FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest jump: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4701,8 +4722,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "pillar")
         RunPillarSelftest(handler);
 
-    // 13g-0: the pure parts of G3a, G3b and G2g do not exist yet (their steps fill these)
-    if (name == "kite" || name == "drink" || name == "jump")
+    if (name.empty() || name == "jump")
+        RunJumpSelftest(handler);
+
+    // 13g-0: the pure parts of G3a and G3b do not exist yet (their steps fill these)
+    if (name == "kite" || name == "drink")
         handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed)", name);
 
     return true;
@@ -4999,17 +5023,32 @@ bool TacticCommands::HandleCoverCommand(ChatHandler* handler, char const* args)
     return RunArenaCoverScan(handler, player);
 }
 
-bool TacticCommands::HandleJumpScanCommand(ChatHandler* handler, char const* /*args*/)
+bool TacticCommands::HandleJumpScanCommand(ChatHandler* handler, char const* args)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleJumpScanCommand");
-    handler->PSendSysMessage("TACTICS jump scan: not implemented yet (G2g). Usage: tactics jump scan [bot]");
-    return false;
+    // the world thread runs commands between the map updates, so the scan reads a map no map thread updates now
+    std::string const name = Trim(args ? args : "");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = ObjectAccessor::FindPlayerByName(name);
+    else if (handler->GetSession())
+        player = handler->GetSession()->GetPlayer();
+
+    if (!player)
+    {
+        handler->PSendSysMessage(
+            "TACTICS jump scan: no player {} in the world (usage: tactics jump scan [name], the name of a player "
+            "or bot inside an arena)",
+            name);
+        return false;
+    }
+
+    return RunArenaJumpScan(handler, player);
 }
 
-bool TacticCommands::HandleJumpTestCommand(ChatHandler* handler, char const* /*args*/)
+bool TacticCommands::HandleJumpTestCommand(ChatHandler* handler, char const* args)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleJumpTestCommand");
-    handler->PSendSysMessage(
-        "TACTICS jump test: not implemented yet (G2g). Usage: tactics jump test <map> <id|all> [n] [bot]");
-    return false;
+    // arms the bot's test here (world thread, between the map updates); the bot's map thread steps it
+    return RunArenaJumpTest(handler, args);
 }
