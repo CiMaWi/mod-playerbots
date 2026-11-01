@@ -4893,9 +4893,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         // 180-degree arc (the engine tries again after CastRetryMs); else the snap, as before
         if (!FaceTarget(faceTo))
         {
-            TurnBotState& turn = GetTurnState();
-            if (turn.CastWaitSinceMs == 0)
-                turn.CastWaitSinceMs = std::max(getMSTime(), 1u);
+            GetTurnState().NoteCastWait(target->GetGUID().GetRawValue(), getMSTime());
 
             SetNextCheckDelay(sPlayerbotAIConfig.NaturalFacing.CastRetryMs);
             restoreFocusSelection();
@@ -4907,8 +4905,8 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     // G2a: a cast that waited for the bot's turn goes ahead (tactics.turnWaitMs; casts that need the facing only)
     if (turnState && turnState->CastWaitSinceMs != 0 && (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
     {
-        uint32 const waitMs = TurnCastWaitMs(turnState->CastWaitSinceMs, getMSTime());
-        turnState->CastWaitSinceMs = 0;
+        // the span ends here whatever it was (a wait at another target, or one the bot gave up, counts nothing)
+        uint32 const waitMs = turnState->TakeCastWait(target->GetGUID().GetRawValue(), getMSTime());
         if (waitMs != 0)
         {
             ++turnState->CastWaits;
@@ -8281,15 +8279,16 @@ void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
 
 // G2a: face the target the natural way where NaturalFacingHere says so, else the instant snap (as before; also for a
 // moving bot, whose path sets its facing). A turn under way to the same object goes on; anything else starts a new
-// one from the bot's orientation now. True when the target is inside the core's 180-degree spell arc (Spell.cpp
-// CheckCast), so a cast may go ahead while the turn finishes.
+// one from the bot's orientation now. A bot without control (stunned, feared in place) gets the snap too: the stepper
+// stops a turn there, and a refused cast would only be retried every CastRetryMs. True when the target is inside the
+// core's 180-degree spell arc (Spell.cpp CheckCast), so a cast may go ahead while the turn finishes.
 bool PlayerbotAI::FaceTarget(WorldObject* target)
 {
     if (!target)
         return false;
 
     uint32 const nowMs = getMSTime();
-    if (bot->isMoving() || !NaturalFacingHere(this, nowMs))
+    if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !NaturalFacingHere(this, nowMs))
     {
         if (turnState)
         {

@@ -287,6 +287,7 @@ struct TurnBotState
     uint32 SentMs = 0;
     bool FinalPending = false;    // a leg's end not yet sent (the packet rate held it back)
     uint32 CastWaitSinceMs = 0;   // a cast waits for the arc since (0: none)
+    uint64 CastWaitTarget = 0;    // ... at this target (raw guid)
     uint32 InSightCheckedMs = 0;  // OutsidePvpInSight's cached answer
     bool InSight = false;
     // What the bot did (tactics show)
@@ -306,6 +307,26 @@ struct TurnBotState
 
     bool Active() const { return Phase != TurnPhase::Idle || FinalPending; }
     bool Turning() const { return Phase == TurnPhase::Flick || Phase == TurnPhase::Correction; }
+
+    // A cast waits for the arc at this target: starts the span, or starts it again when the old one is another
+    // target's or too old to be this cast's (the bot gave the cast up)
+    void NoteCastWait(uint64 targetGuid, uint32 nowMs)
+    {
+        if (CastWaitSinceMs == 0 || CastWaitTarget != targetGuid || nowMs - CastWaitSinceMs > TURN_WAIT_MAX_MS)
+        {
+            CastWaitSinceMs = std::max(nowMs, 1u);
+            CastWaitTarget = targetGuid;
+        }
+    }
+
+    // The cast goes ahead: the span to count (0: none, another target's or too old); the span ends either way
+    uint32 TakeCastWait(uint64 targetGuid, uint32 nowMs)
+    {
+        uint32 const waitMs = CastWaitTarget == targetGuid ? TurnCastWaitMs(CastWaitSinceMs, nowMs) : 0;
+        CastWaitSinceMs = 0;
+        CastWaitTarget = 0;
+        return waitMs;
+    }
 
     void Stop()
     {
@@ -568,6 +589,21 @@ void RunTurnChecks(Check&& check)
           "a heartbeat needs more than 8 degrees and 80 ms");
     check(TurnCastWaitMs(0, 5000) == 0 && TurnCastWaitMs(4000, 4300) == 300 && TurnCastWaitMs(1000, 4000) == 0,
           "a cast wait counts up to 2 s");
+    {
+        TurnBotState waits;
+        waits.NoteCastWait(7, 1000);
+        waits.NoteCastWait(7, 1200);
+        check(waits.TakeCastWait(7, 1500) == 500 && waits.CastWaitSinceMs == 0, "a cast wait keeps its first start");
+        waits.NoteCastWait(7, 1000);
+        waits.NoteCastWait(7, 4000);
+        check(waits.TakeCastWait(7, 4300) == 300, "a wait the bot gave up (older than 2 s) starts again");
+        waits.NoteCastWait(7, 1000);
+        waits.NoteCastWait(9, 1100);
+        check(waits.TakeCastWait(9, 1300) == 200, "a wait at another target starts again");
+        waits.NoteCastWait(7, 1000);
+        check(waits.TakeCastWait(9, 1100) == 0 && waits.CastWaitSinceMs == 0,
+              "a cast at another target counts no wait");
+    }
 
     // Whole turns stepped at a map tick: plan, step, hold, correct, send
     struct Run
