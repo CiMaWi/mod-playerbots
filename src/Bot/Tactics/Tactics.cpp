@@ -31,6 +31,7 @@
 #include "Group.h"
 #include "Item.h"
 #include "NaturalCast.h"
+#include "NaturalMove.h"
 #include "NaturalReaction.h"
 #include "NaturalTurn.h"
 #include "ObjectAccessor.h"
@@ -2519,6 +2520,26 @@ void RunTurnSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G2b: the natural tracking's pure parts (NaturalMove.h; the offline harness runs the same checks)
+void RunTrackSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunTrackChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest track FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest track: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4316,6 +4337,22 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             turn.LastTurnDurMs, turn.LastErrorDeg, turn.LastTurnMs ? getMSTimeDiff(turn.LastTurnMs, nowMs) : 0u,
             turn.Active() ? "yes" : "no");
     }
+    // G2b: the natural tracking (its numbers, how the bot chased)
+    {
+        TrackBotState const& track = botAI->GetTrackState();
+        TrackParams const& params = track.Params;
+        auto const mode = [&track](TrackMode which) { return track.Modes[static_cast<uint32>(which)]; };
+        handler->PSendSysMessage(
+            "  track: {}, lag {} ms, {}, gain {:.2f}, history {} ms, sample gap {} ms; chases {} (mean age {} ms; last "
+            "seen {}, standing {}, velocity {}, arc {}, juke {}, pattern {}), capped {}, unstuck {}, restarts {}; last "
+            "{} ({} ms old, lead {:.1f} yd, {:.1f} yd off, {} ms ago)",
+            NaturalTrackHere(botAI, nowMs) ? "on here" : "off here", params.LagMs, TrackLevelName(params.Level()),
+            params.Gain, params.HistoryMs, TrackSampleGapMs(params, sPlayerbotAIConfig.NaturalTrack), track.Chases,
+            track.Chases ? track.LagMsSum / track.Chases : 0u, mode(TrackMode::LastSeen), mode(TrackMode::Standing),
+            mode(TrackMode::Velocity), mode(TrackMode::Arc), mode(TrackMode::Juke), mode(TrackMode::Pattern),
+            track.Capped, track.Unsticks, track.Restarts, TrackModeName(track.LastMode), track.LastLagMs,
+            track.LastLeadYards, track.LastOffYards, track.LastMs ? getMSTimeDiff(track.LastMs, nowMs) : 0u);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4472,12 +4509,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
         name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake" &&
-        name != "turn")
+        name != "turn" && name != "track")
     {
         handler->PSendSysMessage(
             "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, "
-            "fake, "
-            "turn",
+            "fake, turn, track",
             name);
         return false;
     }
@@ -4511,6 +4547,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "turn")
         RunTurnSelftest(handler);
+
+    if (name.empty() || name == "track")
+        RunTrackSelftest(handler);
 
     return true;
 }

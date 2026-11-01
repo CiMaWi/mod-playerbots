@@ -15,9 +15,11 @@
 #include "MotionMaster.h"
 #include "MoveSplineInitArgs.h"
 #include "MovementGenerator.h"
+#include "NaturalMove.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
 #include "PathGenerator.h"
+#include "PerfMonitor.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
@@ -787,6 +789,47 @@ bool MovementAction::MoveTo(WorldObject* target, float distance, MovementPriorit
     return MoveTo(target->GetMapId(), dx, dy, dz, false, false, false, false, priority);
 }
 
+namespace
+{
+// G2b (NaturalMove.h): the point a chaser runs to where NaturalTrackHere says so. Every call puts the target's true
+// position into the bot's ring; the point is the target as the bot saw it, predicted by its Foresight, moved back to
+// the seen point when a wall lies between the two (as the old lead rule). False (the true position) while the bot is
+// stuck (StuckMs) or has nothing seen yet.
+bool TrackChasePoint(PlayerbotAI* botAI, Player* bot, Unit* target, uint32 nowMs, float& x, float& y, float& z,
+                     TrackPrediction& prediction)
+{
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalMove::Track")
+                                                    : nullptr);
+    TrackConfig const& config = sPlayerbotAIConfig.NaturalTrack;
+    TrackBotState& state = botAI->GetTrackState();
+    TrackObserve(state, config, target->GetGUID().GetRawValue(), nowMs, x, y, z);
+    if (TrackAimTrue(state, bot->GetExactDist(target), nowMs, config.StuckMs))
+        return false;
+
+    prediction = TrackPredict(state.Ring, state.Params, config, nowMs,
+                              TrackHash(bot->GetGUID().GetCounter(), nowMs, state.Calls++));
+    if (prediction.Mode == TrackMode::None)
+        return false;
+
+    float px = prediction.Point.X;
+    float py = prediction.Point.Y;
+    float pz = prediction.Point.Z;
+    if (TrackDistance2d(prediction.Point, prediction.Seen) > TRACK_SAME_YARDS &&
+        !target->GetMap()->CheckCollisionAndGetValidCoords(target, prediction.Seen.X, prediction.Seen.Y,
+                                                           prediction.Seen.Z, px, py, pz))
+    {
+        px = prediction.Seen.X;
+        py = prediction.Seen.Y;
+        pz = prediction.Seen.Z;
+    }
+
+    x = px;
+    y = py;
+    z = pz;
+    return true;
+}
+}  // namespace
+
 bool MovementAction::ReachCombatTo(Unit* target, float distance)
 {
     if (!IsMovingAllowed(target))
@@ -796,6 +839,15 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     float ty = target->GetPositionY();
     float tz = target->GetPositionZ();
 
+    // G2b: with the natural tracking the lagged, predicted point, and no 3-yard lead (SkipLeadRule)
+    uint32 const nowMs = getMSTime();
+    TrackPrediction prediction;
+    bool const tracked = sPlayerbotAIConfig.NaturalTrack.Enable && NaturalTrackHere(botAI, nowMs) &&
+                         TrackChasePoint(botAI, bot, target, nowMs, tx, ty, tz, prediction);
+    float const baseX = tx;
+    float const baseY = ty;
+    float const baseZ = tz;
+
     float targetOrientation = target->GetOrientation();
 
     float deltaAngle = Position::NormalizeOrientation(targetOrientation - target->GetAngle(bot));
@@ -803,17 +855,17 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         deltaAngle -= 2.0f * M_PI;  // -PI..PI
     // if target is moving forward and moving far away, predict the position
     bool behind = fabs(deltaAngle) > M_PI_2;
-    if (target->HasUnitMovementFlag(MOVEMENTFLAG_FORWARD) && behind)
+    if (target->HasUnitMovementFlag(MOVEMENTFLAG_FORWARD) && behind &&
+        (!tracked || !sPlayerbotAIConfig.NaturalTrack.SkipLeadRule))
     {
         float predictDis = std::min(3.0f, target->GetObjectSize() * 2);
         tx += cos(target->GetOrientation()) * predictDis;
         ty += sin(target->GetOrientation()) * predictDis;
-        if (!target->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
-                                                               target->GetPositionZ(), tx, ty, tz))
+        if (!target->GetMap()->CheckCollisionAndGetValidCoords(target, baseX, baseY, baseZ, tx, ty, tz))
         {
-            tx = target->GetPositionX();
-            ty = target->GetPositionY();
-            tz = target->GetPositionZ();
+            tx = baseX;
+            ty = baseY;
+            tz = baseZ;
         }
     }
     float combatDistance = bot->GetCombatReach() + target->GetCombatReach();
@@ -840,8 +892,23 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
 
     path.ShortenPathUntilDist(G3D::Vector3(tx, ty, tz), shortenTo);
     G3D::Vector3 endPos = path.GetPath().back();
-    return MoveTo(target->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, false,
-                  MovementPriority::MOVEMENT_COMBAT, true);
+    bool const moved = MoveTo(target->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, false,
+                              MovementPriority::MOVEMENT_COMBAT, true);
+    if (moved && tracked)
+    {
+        float const offYards = std::hypot(tx - target->GetPositionX(), ty - target->GetPositionY());
+        botAI->GetTrackState().NoteChase(prediction, offYards, nowMs);
+        botAI->CountTactic(TacticCounter::TrackChases);
+        botAI->CountTactic(TacticCounter::TrackLagMs, prediction.SeenAgeMs);
+        LOG_TRACE("playerbots",
+                  "Track: {} chases {} ({}), saw it {} ms ago (lag {} ms), lead {:.1f} yd, {:.1f} yd off its true "
+                  "position, skill {}, at {} ms",
+                  bot->GetName(), target->GetName(), TrackModeName(prediction.Mode), prediction.SeenAgeMs,
+                  prediction.LagMs, TrackDistance2d(prediction.Point, prediction.Seen), offYards, botAI->GetPvpSkill(),
+                  nowMs);
+    }
+
+    return moved;
 }
 
 float MovementAction::GetFollowAngle()

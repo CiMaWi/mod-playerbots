@@ -8022,6 +8022,8 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     GetFakeState().Params = ComputeFakeParams(skill, attributes, config.TacticFake);
     // The natural facing's numbers (G2a), cached whatever Natural.Facing.Enable says; skill 0 gives skill 99's
     GetTurnState().Params = ComputeTurnParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
+    // The natural tracking's numbers (G2b), cached whatever Natural.Track.Enable says; skill 0 gives skill 99's
+    GetTrackState().Params = ComputeTrackParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
     if (skill == 0)
         return;
 
@@ -8130,7 +8132,13 @@ TurnBotState& PlayerbotAI::GetTurnState()
 TrackBotState& PlayerbotAI::GetTrackState()
 {
     if (!trackState)
+    {
+        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         trackState = std::make_unique<TrackBotState>();
+        trackState->Params =
+            ComputeTrackParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
+    }
 
     return *trackState;
 }
@@ -8153,6 +8161,33 @@ bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs)
         return false;
 
     TurnBotState& state = botAI->GetTurnState();
+    if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
+    {
+        state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
+        state.InSightCheckedMs = std::max(nowMs, 1u);
+    }
+
+    return state.InSight;
+}
+
+// G2b: whether the bot tracks naturally now (NaturalMove.h); as NaturalFacingHere with the Track options
+bool NaturalTrackHere(PlayerbotAI* botAI, uint32 nowMs)
+{
+    TrackConfig const& config = sPlayerbotAIConfig.NaturalTrack;
+    if (!config.Enable || !botAI->TacticEnabledHere(TacticId::Natural))
+        return false;
+
+    TacticContext const context = botAI->GetTacticContext();
+    if (config.Contexts & TacticContextBit(context))
+        return true;
+
+    // Out of PvP only in a real player's sight, and never in a dungeon or raid (their scripted chases stay exact)
+    Player* const bot = botAI->GetBot();
+    Map* const map = bot ? bot->GetMap() : nullptr;
+    if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
+        return false;
+
+    TrackBotState& state = botAI->GetTrackState();
     if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
     {
         state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
