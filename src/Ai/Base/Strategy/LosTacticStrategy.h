@@ -12,6 +12,8 @@
 
 #include "Action.h"
 #include "ArenaCover.h"
+#include "LosTactic.h"
+#include "MovementActions.h"
 #include "Strategy.h"
 #include "Trigger.h"
 #include "Value.h"
@@ -44,7 +46,7 @@ public:
     std::string const getName() override { return "tactic pillar"; }
 };
 
-// Parks ArenaTactics' walk-into-target for a ranged bot that regains LOS (G2e); not added to the strategy until then
+// Parks ArenaTactics' walk-into-target for a ranged bot that knows the regain (G2e, LosParksArenaTactics)
 class TacticLosMultiplier : public Multiplier
 {
 public:
@@ -90,30 +92,30 @@ public:
 };
 
 // Moves to a point that sees the target or the partner again (the cover plan)
-class RegainLosAction : public Action
+class RegainLosAction : public MovementAction
 {
 public:
-    RegainLosAction(PlayerbotAI* botAI) : Action(botAI, "regain los") {}
+    RegainLosAction(PlayerbotAI* botAI) : MovementAction(botAI, "regain los") {}
 
     bool isUseful() override;
     bool Execute(Event event) override;
 };
 
 // Steps behind cover from an enemy cast at the bot
-class BreakLosAction : public Action
+class BreakLosAction : public MovementAction
 {
 public:
-    BreakLosAction(PlayerbotAI* botAI) : Action(botAI, "break los") {}
+    BreakLosAction(PlayerbotAI* botAI) : MovementAction(botAI, "break los") {}
 
     bool isUseful() override;
     bool Execute(Event event) override;
 };
 
 // One hop round a pillar (at most StepYards)
-class PillarStepAction : public Action
+class PillarStepAction : public MovementAction
 {
 public:
-    PillarStepAction(PlayerbotAI* botAI) : Action(botAI, "pillar step") {}
+    PillarStepAction(PlayerbotAI* botAI) : MovementAction(botAI, "pillar step") {}
 
     bool isUseful() override;
     bool Execute(Event event) override;
@@ -124,6 +126,16 @@ class CoverPlanValue : public ManualSetValue<CoverPlan>
 {
 public:
     CoverPlanValue(PlayerbotAI* botAI) : ManualSetValue<CoverPlan>(botAI, CoverPlan(), "cover plan") {}
+};
+
+// The Los tactic's per-bot state (LosTactic.h: the sight refresh, the episode, the relocation guards, the counts)
+class LosStateValue : public ManualSetValue<LosBotState&>
+{
+public:
+    LosStateValue(PlayerbotAI* botAI) : ManualSetValue<LosBotState&>(botAI, data, "los state") {}
+
+private:
+    LosBotState data = LosBotState();
 };
 
 #endif

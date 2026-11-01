@@ -31,6 +31,7 @@
 #include "FocusState.h"
 #include "Group.h"
 #include "Item.h"
+#include "LosTactic.h"
 #include "NaturalCast.h"
 #include "NaturalMove.h"
 #include "NaturalPath.h"
@@ -2583,6 +2584,26 @@ void RunCoverSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G2e: the Los tactic's pure parts (LosTactic.h; the offline harness runs the same checks)
+void RunLosSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunLosChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest los FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest los: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4412,6 +4433,26 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             path.StrafesRefused, path.Hops, path.HopsRefused, PathHopWhyName(path.LastHopWhy), path.Walks,
             path.LastShapeMs ? getMSTimeDiff(path.LastShapeMs, nowMs) : 0u);
     }
+    // G2e: the Los tactic (its numbers, the episode, the held point, what it did)
+    {
+        LosBotState const& los = botAI->GetAiObjectContext()->GetValue<LosBotState&>("los state")->Get();
+        CoverPlan const plan = botAI->GetAiObjectContext()->GetValue<CoverPlan>("cover plan")->Get();
+        LosParams const& params = los.Params;
+        handler->PSendSysMessage(
+            "  los: {}, known {}, late {} ms, into open {} %, hides from caster {}, healer stays {}; lost {} ({} ms, "
+            "episode {}, wait {} ms{}{}), regaining {} ms, point {} ({} pillar {}, {:.1f} yd away, hidden {}); "
+            "regains {} (regained {}, timeouts {}), guarded {}, searches {} (cover {}, path {}, none {}; rays {}, last "
+            "{}), partner lost {} ms",
+            botAI->TacticEnabledHere(TacticId::Los) ? "on here" : "off here", params.Known ? "yes" : "no",
+            params.LateMs, params.IntoOpenPct, params.HidesFromCaster ? "yes" : "no", params.HealerStays ? "yes" : "no",
+            LosWantName(los.Want), los.LostSinceMs ? getMSTimeDiff(los.LostSinceMs, nowMs) : 0u, los.Episode,
+            los.EpisodeLateMs, los.EpisodeIntoOpen ? ", into the open" : "", los.GaveUp ? ", given up" : "",
+            los.RegainStartMs ? getMSTimeDiff(los.RegainStartMs, nowMs) : 0u, plan.Valid ? "held" : "none",
+            plan.Pillar >= 0 ? "cover" : "path", plan.Pillar,
+            plan.Valid ? botAI->GetBot()->GetExactDist2d(plan.Point.X, plan.Point.Y) : 0.0f,
+            plan.WantHidden ? "yes" : "no", los.Regains, los.Regained, los.Timeouts, los.Guarded, los.Searches,
+            los.CoverPoints, los.PathPoints, los.NoPoint, los.SearchRays, los.LastSearchRays, los.PartnerLostMs);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4616,10 +4657,12 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (name.empty() || name == "cover")
         RunCoverSelftest(handler);
 
-    // 13f-0 stubs: the checks come with G2e (los) and G2f (pillar)
-    for (char const* stub : {"los", "pillar"})
-        if (name.empty() || name == stub)
-            handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed; not written yet)", stub);
+    if (name.empty() || name == "los")
+        RunLosSelftest(handler);
+
+    // 13f-0 stub: the checks come with G2f (pillar)
+    if (name.empty() || name == "pillar")
+        handler->PSendSysMessage("TACTICS selftest pillar: PASS (0 checks, 0 failed; not written yet)");
 
     return true;
 }

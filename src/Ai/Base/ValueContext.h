@@ -337,6 +337,7 @@ public:
         creators["wait for attack time"] = &ValueContext::wait_for_attack_time;
         creators["combat start time"] = &ValueContext::combat_start_time;
         creators["cover plan"] = &ValueContext::cover_plan;
+        creators["los state"] = &ValueContext::los_state;
     }
 
 private:
@@ -598,6 +599,7 @@ private:
     static UntypedValue* wait_for_attack_time(PlayerbotAI* botAI) { return new WaitForAttackTimeValue(botAI); }
     static UntypedValue* combat_start_time(PlayerbotAI* botAI) { return new CombatStartTimeValue(botAI); }
     static UntypedValue* cover_plan(PlayerbotAI* botAI) { return new CoverPlanValue(botAI); }
+    static UntypedValue* los_state(PlayerbotAI* botAI) { return new LosStateValue(botAI); }
 };
 
 #endif
