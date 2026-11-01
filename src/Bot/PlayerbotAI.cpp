@@ -5210,6 +5210,15 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     if (followsKick && interruptHit.Use == InterruptUse::Kick)
         NoteInterruptKick(this, bot, spellInfo, interruptHit, getMSTime());
 
+    // 13e-decide fix (Interrupt.SeeCancelLag): the bot pressed an interrupt at the enemy's cast; the ended bar it still
+    // sees is then no bait (no second interrupt on it, InterruptSpellTrigger)
+    if (interruptState && target && target != bot && sPlayerbotAIConfig.TacticInterrupt.SeeCancelLag &&
+        InterruptUseOf(spellInfo) != InterruptUse::None)
+    {
+        if (InterruptCastSlot* const slot = interruptState->Latest(target->GetGUID().GetCounter()))
+            slot->PressedMs = std::max(getMSTime(), 1u);
+    }
+
     if (counting)
     {
         CountPvpTestCast(spellId, drGroup, atImmune);
@@ -8398,14 +8407,19 @@ bool PlayerbotAI::FaceTarget(WorldObject* target, TurnSnapSite site)
 
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Snap")
                                                         : nullptr);
-        // G2a measurement (13e-decide): why and from where the bot snapped, so a run can attribute instant 180s
-        TurnSnapWhy const why = bot->isMoving()                              ? TurnSnapWhy::Moving
-                                : bot->HasUnitState(UNIT_STATE_LOST_CONTROL) ? TurnSnapWhy::NoControl
-                                                                             : TurnSnapWhy::NotHere;
+        // G2a measurement (13e-decide): why and from where the bot snapped, so a run can attribute instant 180s. The
+        // why is the branch's cause: natural facing off here snaps whatever else holds, else moving, else no control
+        // (read only for the trace line: LOG_TRACE's arguments are lazy)
+        auto const why = [this, nowMs]()
+        {
+            return !NaturalFacingHere(this, nowMs) ? TurnSnapWhy::NotHere
+                   : bot->isMoving()               ? TurnSnapWhy::Moving
+                                                   : TurnSnapWhy::NoControl;
+        };
         LOG_TRACE("playerbots", "Turn: {} snaps {} deg to {} ({}, {}), at {} ms", bot->GetName(),
                   static_cast<int32>(
                       std::fabs(TurnDelta(bot->GetOrientation(), bot->GetAngle(target))) / TURN_RAD_PER_DEG + 0.5f),
-                  target->GetName(), TurnSnapWhyName(why), TurnSnapSiteName(site), nowMs);
+                  target->GetName(), TurnSnapWhyName(why()), TurnSnapSiteName(site), nowMs);
         ServerFacade::instance().SetFacingTo(bot, target);
         return true;
     }

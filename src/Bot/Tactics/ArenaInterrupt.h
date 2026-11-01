@@ -379,11 +379,13 @@ inline uint32 BelievedHealCastMs(InterruptHoldParams const& hold, bool seenKnown
 // 13e-decide (Interrupt.SeeCancelLag): the kicker saw the bar live last at lastSeenMs; it still sees it at nowMs while
 // its reaction to the end (seeLagMs) has not passed and the bar as seen has not run out (a bar that ran out finished,
 // nobody kicks it). With the kick decided and its commit point reached, the press lands on the ended bar: a fake's
-// cancel shortly before the commit point baits it.
+// cancel shortly before the commit point baits it. A bar ended by an interrupt (interrupted: this bot pressed one at
+// the cast, or the enemy shows its mark: school locked, silenced, stunned, feared or polymorphed) is not seen: the bot
+// saw the interrupt land, so no second interrupt goes on the dead bar.
 inline bool SeesEndedBar(uint32 nowMs, uint32 lastSeenMs, uint32 startMs, uint32 castMs, uint32 commitMs,
-                         uint32 seeLagMs, bool kick)
+                         uint32 seeLagMs, bool kick, bool interrupted)
 {
-    if (!kick || seeLagMs == 0 || lastSeenMs == 0 || nowMs - lastSeenMs > seeLagMs)
+    if (!kick || interrupted || seeLagMs == 0 || lastSeenMs == 0 || nowMs - lastSeenMs > seeLagMs)
         return false;
 
     uint32 const elapsedMs = nowMs - startMs;
@@ -537,6 +539,7 @@ struct InterruptCastSlot
     uint32 ActiveAtMs = 0;  // the first check that let the kick go (0: not yet)
     uint32 CastMs = 0;      // the bar's length at the decision
     uint32 SeeLagMs = 0;    // 13e-decide (Interrupt.SeeCancelLag): the bar stays in view this long after it ends
+    uint32 PressedMs = 0;   // 13e-decide fix: the bot cast an interrupt at the enemy since (0: none; SeeCancelLag only)
     uint8 Casting = 1;      // enemies casting at the decision (the choice's options)
     bool Deep = false;
     ArenaInterrupt::Kind CastKind = ArenaInterrupt::Kind::Other;

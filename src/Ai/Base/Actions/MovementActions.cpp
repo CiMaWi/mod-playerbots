@@ -906,6 +906,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     // last tracked move (the destination hold, IsWaitingForLastMove) once that move is RefreshMs old and the point
     // moved more than TRACK_REFRESH_YARDS; every other move keeps the hold
     bool refreshed = false;
+    float heldDelay = 0.0f;
     if (tracked && IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
@@ -914,6 +915,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
             TrackRefreshDue(nowMs, lastMove.msTime, lastMove.lastMoveShort.GetExactDist(endPos.x, endPos.y, endPos.z),
                             sPlayerbotAIConfig.NaturalTrack.RefreshMs))
         {
+            heldDelay = lastMove.lastdelayTime;
             lastMove.lastdelayTime = 0.0f;
             refreshed = true;
         }
@@ -921,6 +923,14 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
 
     bool const moved = MoveTo(target->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
+    // The refresh issued nothing: the old tracked move keeps its hold (the last movement is still that move)
+    if (refreshed && !moved)
+    {
+        LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
+        if (lastMove.msTime == botAI->GetTrackState().IssueMs)
+            lastMove.lastdelayTime = heldDelay;
+    }
+
     if (moved && tracked)
     {
         TrackBotState& track = botAI->GetTrackState();

@@ -1039,15 +1039,24 @@ inline void RunHoldSelftest(Check&& check, Say&& say, uint64 modelSeed = 1)
           "model: the hold policy's worst shortfall from the best policy is below no hold's and the rule's");
 
     // 13e-decide (Interrupt.SeeCancelLag): an ended bar stays in the kicker's view for its reaction delay
-    check(SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, true) && !SeesEndedBar(1451, 1200, 0, 2000, 1000, 250, true),
+    check(SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, true, false) &&
+              !SeesEndedBar(1451, 1200, 0, 2000, 1000, 250, true, false),
           "see lag: an ended bar stays in view for the reaction delay after its last live sighting");
-    check(!SeesEndedBar(1300, 1200, 0, 2000, 1000, 0, true) && !SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, false),
+    check(!SeesEndedBar(1300, 1200, 0, 2000, 1000, 0, true, false) &&
+              !SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, false, false),
           "see lag: off (lag 0) or no kick decided, no press on an ended bar");
-    check(!SeesEndedBar(900, 850, 0, 2000, 1000, 250, true) && !SeesEndedBar(2050, 1950, 0, 2000, 1000, 250, true),
+    check(!SeesEndedBar(900, 850, 0, 2000, 1000, 250, true, false) &&
+              !SeesEndedBar(2050, 1950, 0, 2000, 1000, 250, true, false),
           "see lag: before the commit point, or past the bar's own end (it finished), no press");
-    check(SeesEndedBar(1000, 850, 0, 2000, 1000, 300, true) && !SeesEndedBar(1400, 1050, 0, 2000, 1400, 300, true),
+    check(SeesEndedBar(1000, 850, 0, 2000, 1000, 300, true, false) &&
+              !SeesEndedBar(1400, 1050, 0, 2000, 1400, 300, true, false),
           "see lag: a damage bait cancelled at 45 % lands the 50 % press (baited); a heal bait cut at 54 % stays clear "
           "of the 70 % commit with 300 ms lag");
+    // 13e-decide fix: a bar ended by an interrupt (this bot's or a teammate's) is seen as interrupted, never pressed on
+    check(SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, true, false) &&
+              !SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, true, true) &&
+              !SeesEndedBar(1000, 850, 0, 2000, 1000, 300, true, true),
+          "see lag: a bar ended by a landed interrupt is not seen (no second interrupt on the dead bar)");
 }
 }  // namespace ArenaInterruptSim
 

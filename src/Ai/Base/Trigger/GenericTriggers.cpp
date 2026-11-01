@@ -373,7 +373,45 @@ namespace
 // 13e-decide (Playerbots.Tactics.Interrupt.SeeCancelLag): the kicker still sees the bar of a cast that just ended (its
 // reaction to the end has not passed, ArenaInterrupt::SeesEndedBar), so a kick it committed goes on the ended bar (a
 // fake's cancel baits it, the kick is spent)
-bool InterruptSeesEndedBar(PlayerbotAI* botAI, Unit* target)
+
+// The bar ended by an interrupt the bot saw land: its own press at the cast, or the enemy's mark of one (the cast's
+// school locked out, silenced, stunned, feared or polymorphed; anyone's kick, stun or silence)
+bool InterruptEndedBarInterrupted(Unit* target, InterruptCastSlot const& slot)
+{
+    if (slot.PressedMs != 0 || target->HasUnitFlag(UNIT_FLAG_SILENCED) || target->HasUnitState(UNIT_STATE_CONTROLLED))
+        return true;
+
+    Player const* const player = target->ToPlayer();
+    return player && player->HasSpellCooldown(slot.SpellId);
+}
+
+// IsInterruptableSpellCasting's check of the bot's own spell (known, the target not immune to its interrupt) without
+// the live bar
+bool InterruptSpellUsable(PlayerbotAI* botAI, Unit* target, std::string const& spell)
+{
+    uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", spell)->Get();
+    SpellInfo const* const info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!info)
+        return false;
+
+    if ((info->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT) &&
+        info->PreventionType == SPELL_PREVENTION_TYPE_SILENCE)
+        return true;
+
+    for (uint8 i = EFFECT_0; i <= EFFECT_2; ++i)
+    {
+        if (info->Effects[i].Effect == SPELL_EFFECT_INTERRUPT_CAST && !target->IsImmunedToSpellEffect(info, i))
+            return true;
+
+        if (info->Effects[i].Effect == SPELL_EFFECT_APPLY_AURA &&
+            info->Effects[i].ApplyAuraName == SPELL_AURA_MOD_SILENCE)
+            return true;
+    }
+
+    return false;
+}
+
+bool InterruptSeesEndedBar(PlayerbotAI* botAI, Unit* target, std::string const& spell)
 {
     if (!sPlayerbotAIConfig.TacticInterrupt.SeeCancelLag || !target || !target->IsInWorld() || !target->IsAlive() ||
         target->IsNonMeleeSpellCast(true))
@@ -382,8 +420,11 @@ bool InterruptSeesEndedBar(PlayerbotAI* botAI, Unit* target)
     InterruptBotState& state = botAI->GetInterruptState();
     InterruptCastSlot* const slot = state.Latest(target->GetGUID().GetCounter());
     uint32 const nowMs = getMSTime();
-    if (!slot || !ArenaInterrupt::SeesEndedBar(nowMs, slot->SeenMs, slot->StartMs, slot->CastMs,
-                                               slot->Decision.CommitMs, slot->SeeLagMs, slot->Decision.Kick))
+    if (!slot ||
+        !ArenaInterrupt::SeesEndedBar(nowMs, slot->SeenMs, slot->StartMs, slot->CastMs, slot->Decision.CommitMs,
+                                      slot->SeeLagMs, slot->Decision.Kick,
+                                      InterruptEndedBarInterrupted(target, *slot)) ||
+        !InterruptSpellUsable(botAI, target, spell))
         return false;
 
     if (slot->ActiveAtMs == 0)
@@ -407,7 +448,7 @@ bool InterruptSpellTrigger::IsActive()
 
     Unit* const target = GetTarget();
     if (!botAI->IsInterruptableSpellCasting(target, getName()))
-        return botAI->TacticEnabledHere(TacticId::Interrupt) && InterruptSeesEndedBar(botAI, target);
+        return botAI->TacticEnabledHere(TacticId::Interrupt) && InterruptSeesEndedBar(botAI, target, getName());
 
     // G5b: with the Interrupt tactic on here, the kick waits for the bot's decision on the cast (ArenaInterrupt.h)
     return !botAI->TacticEnabledHere(TacticId::Interrupt) || botAI->DecideInterrupt(target);

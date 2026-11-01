@@ -27,7 +27,7 @@
 // Protect tactic's scope, DT.3) below a skill-lerped health line. The opponent memory keeps the health at which each
 // enemy was first seen with a defensive up and when it last saw a major one (13e-decide); a bot with enough Foresight
 // holds its burst cooldowns while a defensive that stops its damage is up and, while the enemy has such a defensive
-// believed ready (not seen used within Opponent.ExpireMs), until the enemy uses it (capped, never at low health). The
+// believed ready (not seen used within its cooldown), until the enemy uses it (capped, never at low health). The
 // game side is DefensiveTacticStrategy.h (CcTacticStrategy.cpp); the numbers are DefensiveConfig's.
 
 // Defensive auras a player sees on an enemy's buff bar (FocusStrategy's list) and the immunities
@@ -395,7 +395,7 @@ inline bool PartnerNeedsProtect(uint32 hpPct, bool attacked, bool tank, Defensiv
 
 // Burst cooldowns against an enemy player (BoostTrigger), 13e-decide reading B: held while a defensive that stops the
 // attacker's damage is up (DefensiveStopHolds; minor reductions never hold), and while the enemy owns such a defensive
-// believed ready (not seen up within Opponent.ExpireMs) until it uses it: at most BurstHoldMaxMs from the first such
+// believed ready (not seen up within its cooldown) until it uses it: at most BurstHoldMaxMs from the first such
 // hold since its last use, and never with the enemy at or below BurstHoldFloorPct. Seen used recently: spent, the burst
 // goes now.
 enum class BurstHold : uint8
@@ -425,6 +425,9 @@ struct BurstHoldInput
     bool HasStop = false;      // the enemy owns such a defensive (MAJOR_DEFENSIVE_SPELLS)
     bool StopSeen = false;     // such a defensive was seen up (StopSeenAgeMs ago)
     uint32 StopSeenAgeMs = 0;
+    // The shortest base cooldown (DBC) of the enemy's such defensives: seen up within it, spent (0: unknown,
+    // Opponent.ExpireMs). Counted from the last sighting of the aura, not the use; shortening talents are not known.
+    uint32 StopCooldownMs = 0;
     uint32 HeldMs = 0;  // this bot's hold for it, from the first hold since its last use (0: none yet)
 };
 
@@ -436,7 +439,8 @@ inline BurstHold DecideBurstHold(BurstHoldInput const& input, DefensiveParams co
     if (input.DefensiveUp)
         return BurstHold::DefensiveUp;
 
-    if (!input.HasStop || (input.StopSeen && input.StopSeenAgeMs <= params.OpponentExpireMs))
+    uint32 const spentMs = input.StopCooldownMs != 0 ? input.StopCooldownMs : params.OpponentExpireMs;
+    if (!input.HasStop || (input.StopSeen && input.StopSeenAgeMs <= spentMs))
         return BurstHold::None;
 
     if (input.EnemyHpPct <= params.BurstHoldFloorPct || input.HeldMs >= params.BurstHoldMaxMs)
@@ -707,6 +711,15 @@ void RunDefensiveChecks(Check&& check)
         check(DecideBurstHold(input, p99) == BurstHold::None, "its defensive used 5 s ago is spent: burst");
         input.StopSeenAgeMs = p99.OpponentExpireMs + 1;
         check(DecideBurstHold(input, p99) == BurstHold::Ready, "its defensive may be back: hold");
+        // 13e-decide fix: the defensive's own cooldown when known (ice block 5 min, anti-magic shell 45 s)
+        input.StopCooldownMs = 300000;
+        bool const iceBlockSpent = DecideBurstHold(input, p99) == BurstHold::None;
+        input.StopCooldownMs = 45000;
+        input.StopSeenAgeMs = 50000;
+        check(iceBlockSpent && DecideBurstHold(input, p99) == BurstHold::Ready,
+              "the defensive's own cooldown: ice block seen 2 min ago is spent, anti-magic shell 50 s ago is back");
+        input.StopCooldownMs = 0;
+        input.StopSeenAgeMs = p99.OpponentExpireMs + 1;
         input.HeldMs = p99.BurstHoldMaxMs - 1;
         bool const capOpen = DecideBurstHold(input, p99) == BurstHold::Ready;
         input.HeldMs = p99.BurstHoldMaxMs;

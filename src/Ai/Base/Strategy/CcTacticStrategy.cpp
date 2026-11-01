@@ -2578,12 +2578,25 @@ bool DefensiveStopUp(Unit const* unit, bool physical)
            std::any_of(DEFENSIVE_AURAS.begin(), DEFENSIVE_AURAS.end(), stops);
 }
 
-// 13e-decide: the enemy owns a major defensive that stops this attacker (what a player knows of a class and spec)
-bool DefensiveHasStop(Player const* enemy, bool physical)
+// 13e-decide: the enemy owns a major defensive that stops this attacker (what a player knows of a class and spec);
+// cooldownMs = the shortest base cooldown (DBC) among them (0: none known)
+bool DefensiveHasStop(Player const* enemy, bool physical, uint32& cooldownMs)
 {
-    return std::any_of(
-        MAJOR_DEFENSIVE_SPELLS.begin(), MAJOR_DEFENSIVE_SPELLS.end(), [enemy, physical](uint32 spellId)
-        { return DefensiveStopHolds(ClassifyDefensiveAura(spellId), physical) && enemy->HasSpell(spellId); });
+    bool has = false;
+    cooldownMs = 0;
+    for (uint32 const spellId : MAJOR_DEFENSIVE_SPELLS)
+    {
+        if (!DefensiveStopHolds(ClassifyDefensiveAura(spellId), physical) || !enemy->HasSpell(spellId))
+            continue;
+
+        has = true;
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+        uint32 const recoveryMs = info ? std::max(info->RecoveryTime, info->CategoryRecoveryTime) : 0;
+        if (recoveryMs != 0 && (cooldownMs == 0 || recoveryMs < cooldownMs))
+            cooldownMs = recoveryMs;
+    }
+
+    return has;
 }
 }  // namespace
 
@@ -2766,7 +2779,7 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
     input.EnemyHpPct = DefensiveHealthPct(target);
     input.DefensiveUp = DefensiveStopUp(target, physical);
     Player const* const enemy = target->ToPlayer();
-    input.HasStop = enemy && DefensiveHasStop(enemy, physical);
+    input.HasStop = enemy && DefensiveHasStop(enemy, physical, input.StopCooldownMs);
     OpponentMemory& memory = botAI->GetOpponentMemory();
     uint32 const guid = target->GetGUID().GetCounter();
     uint32 const index = memory.IndexOf(guid);
