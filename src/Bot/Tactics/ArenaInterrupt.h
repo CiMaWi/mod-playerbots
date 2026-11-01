@@ -376,6 +376,20 @@ inline uint32 BelievedHealCastMs(InterruptHoldParams const& hold, bool seenKnown
     return classPriorMs > 0 ? classPriorMs : hold.AssumedCastMs;
 }
 
+// 13e-decide (Interrupt.SeeCancelLag): the kicker saw the bar live last at lastSeenMs; it still sees it at nowMs while
+// its reaction to the end (seeLagMs) has not passed and the bar as seen has not run out (a bar that ran out finished,
+// nobody kicks it). With the kick decided and its commit point reached, the press lands on the ended bar: a fake's
+// cancel shortly before the commit point baits it.
+inline bool SeesEndedBar(uint32 nowMs, uint32 lastSeenMs, uint32 startMs, uint32 castMs, uint32 commitMs,
+                         uint32 seeLagMs, bool kick)
+{
+    if (!kick || seeLagMs == 0 || lastSeenMs == 0 || nowMs - lastSeenMs > seeLagMs)
+        return false;
+
+    uint32 const elapsedMs = nowMs - startMs;
+    return elapsedMs >= commitMs && elapsedMs < castMs;
+}
+
 // The bot's expected reaction to a heal it waits for: the reaction model's median plus extraMs (ping and display),
 // the button and the deep check, anticipated (Foresight)
 inline uint32 HoldReactionMs(ReactionState const& state, ReactionTypeState const& types, ReactionEase ease,
@@ -521,6 +535,8 @@ struct InterruptCastSlot
     uint32 StartMs = 0;     // the bar's start as seen at the decision
     uint32 SeenMs = 0;      // the last check that asked
     uint32 ActiveAtMs = 0;  // the first check that let the kick go (0: not yet)
+    uint32 CastMs = 0;      // the bar's length at the decision
+    uint32 SeeLagMs = 0;    // 13e-decide (Interrupt.SeeCancelLag): the bar stays in view this long after it ends
     uint8 Casting = 1;      // enemies casting at the decision (the choice's options)
     bool Deep = false;
     ArenaInterrupt::Kind CastKind = ArenaInterrupt::Kind::Other;
@@ -911,6 +927,11 @@ struct InterruptBotState
                 latest = &slot;
 
         return latest;
+    }
+
+    InterruptCastSlot* Latest(uint32 guid)
+    {
+        return const_cast<InterruptCastSlot*>(static_cast<InterruptBotState const*>(this)->Latest(guid));
     }
 
     // A free slot or the one asked longest ago, cleared

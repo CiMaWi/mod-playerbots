@@ -20,8 +20,10 @@ struct DefensiveConfig
     uint32 BurstLossPctAtSkill1 = 55;  // health lost within the window that counts as burst, by skill
     uint32 BurstLossPctAtSkill99 = 30;
     uint32 SampleMs = 250;
-    // "Focused": enemy players whose victim or cast target is the bot
+    // "Focused": enemy players whose victim or cast target is the bot; only against an enemy team of at least
+    // FocusedMinTeam players at the match's start (13e-decide: in 2v2 two enemies are the whole team)
     uint32 FocusedMinEnemies = 2;
+    uint32 FocusedMinTeam = 3;
     // The self-defensive trigger: health at or below HpPct AND (burst OR focused); focused adds FocusedHpBonusPct
     uint32 HpPctAtSkill1 = 25;
     uint32 HpPctAtSkill99 = 60;
@@ -49,6 +51,10 @@ struct DefensiveConfig
     uint32 OpponentMinEvents = 1;
     uint32 OpponentFromSkill = 40;  // addon-level knowledge only from about this skill (DT.12)
     uint32 OpponentExpireMs = 120000;
+    // 13e-decide (reading B): the burst waits for an enemy's major defensive believed ready at most this long (from
+    // the first hold since its last use; 0: no such hold), and never below this health
+    uint32 BurstHoldMaxMs = 8000;
+    uint32 BurstHoldFloorPct = 30;
 };
 
 #endif

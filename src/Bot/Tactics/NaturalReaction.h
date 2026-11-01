@@ -799,6 +799,11 @@ struct OpponentMemorySlot
     // when. Overwritten by a later sighting only after it expired (a new burst window, not each tick).
     uint8 DefHpPct = 0;
     uint32 DefSeenMs = 0;
+    // 13e-decide: when a defensive that stops physical / magic damage was last seen up (0: never), and when this bot
+    // first held its burst for this enemy's defensive believed ready since its last use (0: no hold)
+    uint32 StopPhysicalMs = 0;
+    uint32 StopMagicMs = 0;
+    uint32 BurstHoldSinceMs = 0;
     // G5e: the last kick the enemy was seen to use (its spell and when; 0: none)
     uint32 KickSpellId = 0;
     uint32 KickSeenMs = 0;
@@ -927,6 +932,18 @@ struct OpponentMemory
 
         slot.DefHpPct = static_cast<uint8>(std::clamp(hpPct, 1u, 100u));
         slot.DefSeenMs = std::max(nowMs, 1u);
+    }
+
+    // 13e-decide: the enemy is seen with a defensive up that stops physical and/or magic damage (the latest sighting)
+    void NoteStop(uint32 guid, bool physical, bool magic, uint32 nowMs)
+    {
+        OpponentMemorySlot& slot = Touch(guid, nowMs);
+        uint32 const stamp = std::max(nowMs, 1u);
+        if (physical)
+            slot.StopPhysicalMs = stamp;
+
+        if (magic)
+            slot.StopMagicMs = stamp;
     }
 
     // The health the enemy used its defensive at (0: unknown or expired)

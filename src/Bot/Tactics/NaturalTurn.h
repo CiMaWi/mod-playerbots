@@ -47,6 +47,58 @@ constexpr uint32 TURN_MODE_SPLINE = 2;
 constexpr uint32 TURN_PERCENT = 100;
 constexpr uint32 TURN_SELFTEST_DRAWS = 4000;  // turns drawn per skill in RunTurnChecks
 
+// G2a measurement (13e-decide): why FaceTarget snapped instead of turning, and its caller, on the snap's trace line
+// ("Turn: X snaps N deg to Y (why, site)"), so a run can attribute instant 180s to their writer
+enum class TurnSnapWhy : uint8
+{
+    Moving,     // the bot moves (its path sets the facing)
+    NoControl,  // stunned, feared, ...: the stepper does not run
+    NotHere     // the natural facing is off here (the option, the context, the Natural tactic)
+};
+
+inline char const* TurnSnapWhyName(TurnSnapWhy why)
+{
+    switch (why)
+    {
+        case TurnSnapWhy::Moving:
+            return "moving";
+        case TurnSnapWhy::NoControl:
+            return "no control";
+        default:
+            return "not here";
+    }
+}
+
+// The caller (forward-declared in PlayerbotAI.h)
+enum class TurnSnapSite : uint8
+{
+    Other = 0,
+    CastSpell,    // PlayerbotAI::CastSpell's arc check
+    CastUpdate,   // the bot's own cast in progress (the AI update)
+    Attack,       // AttackAction's swing
+    CastCommand,  // the "cast" chat command
+    SetFacing     // the "set facing" action
+};
+
+inline char const* TurnSnapSiteName(TurnSnapSite site)
+{
+    switch (site)
+    {
+        case TurnSnapSite::CastSpell:
+            return "cast";
+        case TurnSnapSite::CastUpdate:
+            return "casting";
+        case TurnSnapSite::Attack:
+            return "attack";
+        case TurnSnapSite::CastCommand:
+            return "cast command";
+        case TurnSnapSite::SetFacing:
+            return "set facing";
+        default:
+            return "other";
+    }
+}
+
 constexpr uint64 TURN_ERROR_SALT = 0x452821E638D01377ULL;
 constexpr uint64 TURN_SIGN_SALT = 0xBE5466CF34E90C6CULL;
 constexpr uint64 TURN_DURATION_SALT = 0xC0AC29B7C97C50DDULL;
@@ -920,6 +972,13 @@ void RunTurnChecks(Check&& check)
               "blink back's direction turn holds \"set facing\" off, so it casts after its flick (without the hold "
               "only the give-up casts); a turn that cannot finish gives up and casts after TURN_DIRECTION_GIVE_UP_MS");
     }
+
+    // 13e-decide: the snap trace line names every reason and caller apart
+    check(std::string(TurnSnapWhyName(TurnSnapWhy::Moving)) != TurnSnapWhyName(TurnSnapWhy::NoControl) &&
+              std::string(TurnSnapWhyName(TurnSnapWhy::NoControl)) != TurnSnapWhyName(TurnSnapWhy::NotHere) &&
+              std::string(TurnSnapSiteName(TurnSnapSite::Other)) == "other" &&
+              std::string(TurnSnapSiteName(TurnSnapSite::SetFacing)) == "set facing",
+          "the snap's reasons and callers have their own names");
 }
 
 // The game side (PlayerbotAI.cpp): whether the bot turns naturally now (the option, the Natural tactic here, a PvP

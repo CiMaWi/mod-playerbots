@@ -1005,7 +1005,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 // Ensure bot is facing target if necessary (G2a: the natural turn where it applies, else the snap)
                 if (spellTarget && !bot->HasInArc(CAST_ANGLE_IN_FRONT, spellTarget) &&
                     (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
-                    FaceTarget(spellTarget);
+                    FaceTarget(spellTarget, TurnSnapSite::CastUpdate);
 
                 // The own cast as the bot sees it; stopped for a kick (user note 1) the engine runs in this check
                 uint32 const ownLeft = static_cast<uint32>(std::max(0, currentSpell->GetCastTimeRemaining()));
@@ -4660,6 +4660,32 @@ void DecideFakeCast(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 nowM
         }
     }
 
+    // 13e-decide (Fake.HealGuardPct): no fake heal while its target, or (the only healer) any friend, is low
+    if (input.KickersLive != 0 && ArenaInterrupt::Classify(InterruptSpellFactsOf(info)) == ArenaInterrupt::Kind::Heal)
+    {
+        auto const pct = [](Unit const* unit) { return static_cast<uint32>(unit->GetHealthPct() + 0.5f); };
+        Unit const* const healed = spell->m_targets.GetUnitTarget();
+        input.Heal = true;
+        input.HealTargetHpPct = pct(healed ? healed : bot);
+        uint32 healers = 0;
+        uint32 lowest = pct(bot);
+        if (Group* const group = bot->GetGroup())
+        {
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* const member = ref->GetSource();
+                if (!member || !member->IsInMap(bot) || !member->IsAlive())
+                    continue;
+
+                healers += PlayerbotAI::IsHeal(member) ? 1 : 0;
+                lowest = std::min(lowest, pct(member));
+            }
+        }
+
+        input.OnlyHealer = healers <= 1;
+        input.LowestFriendHpPct = lowest;
+    }
+
     input.NowMs = nowMs;
     input.NextFakeAtMs = state.NextFakeAtMs;
     input.MinuteStartMs = state.MinuteStartMs;
@@ -4918,7 +4944,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     {
         // G2a: under the natural facing the bot turns, and the cast waits while the target is outside the core's
         // 180-degree arc (the engine tries again after CastRetryMs); else the snap, as before
-        if (!FaceTarget(faceTo))
+        if (!FaceTarget(faceTo, TurnSnapSite::CastSpell))
         {
             GetTurnState().NoteCastWait(target->GetGUID().GetRawValue(), getMSTime());
 
@@ -8311,7 +8337,7 @@ void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
 // one from the bot's orientation now. A bot without control (stunned, feared in place) gets the snap too: the stepper
 // stops a turn there, and a refused cast would only be retried every CastRetryMs. True when the target is inside the
 // core's 180-degree spell arc (Spell.cpp CheckCast), so a cast may go ahead while the turn finishes.
-bool PlayerbotAI::FaceTarget(WorldObject* target)
+bool PlayerbotAI::FaceTarget(WorldObject* target, TurnSnapSite site)
 {
     if (!target)
         return false;
@@ -8327,6 +8353,14 @@ bool PlayerbotAI::FaceTarget(WorldObject* target)
 
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Snap")
                                                         : nullptr);
+        // G2a measurement (13e-decide): why and from where the bot snapped, so a run can attribute instant 180s
+        TurnSnapWhy const why = bot->isMoving()                              ? TurnSnapWhy::Moving
+                                : bot->HasUnitState(UNIT_STATE_LOST_CONTROL) ? TurnSnapWhy::NoControl
+                                                                             : TurnSnapWhy::NotHere;
+        LOG_TRACE("playerbots", "Turn: {} snaps {} deg to {} ({}, {}), at {} ms", bot->GetName(),
+                  static_cast<int32>(
+                      std::fabs(TurnDelta(bot->GetOrientation(), bot->GetAngle(target))) / TURN_RAD_PER_DEG + 0.5f),
+                  target->GetName(), TurnSnapWhyName(why), TurnSnapSiteName(site), nowMs);
         ServerFacade::instance().SetFacingTo(bot, target);
         return true;
     }
@@ -8637,6 +8671,15 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
         slot->Guid = enemyGuid;
         slot->SpellId = bar.Info->Id;
         slot->StartMs = startMs;
+        slot->CastMs = bar.CastMs;
+        // 13e-decide (Interrupt.SeeCancelLag): the bar's end reaches the bot with its reaction delay
+        if (config.TacticInterrupt.SeeCancelLag)
+        {
+            ReactionParams const& reaction = config.NaturalReaction;
+            slot->SeeLagMs = ArenaInterrupt::HoldReactionMs(
+                reactionState, reactionTypes, ReactionEase::Common,
+                reaction.EndToEnd ? reaction.PingMs + reaction.DisplayMs : 0, reaction.MinMs);
+        }
         uint64 const hash = ReactionEventHash(bot->GetGUID().GetCounter(),
                                               static_cast<uint8>(SkillNoticeCategory::Interrupt), startMs) ^
                             enemyGuid;

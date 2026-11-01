@@ -562,6 +562,7 @@ struct TrackBotState
     uint32 BestAtMs = 0;
     uint32 TrueUntilMs = 0;
     uint32 AimCallMs = 0;         // the last chase call (TrackAimTrue); one older than TRACK_STALE_MS drops the mark
+    uint32 IssueMs = 0;           // the last tracked chase's move (LastMovement::msTime; 0: none), 13e-decide
     uint32 InSightCheckedMs = 0;  // OutsidePvpInSight's cached answer
     bool InSight = false;
     // What the bot did (tactics show)
@@ -570,6 +571,7 @@ struct TrackBotState
     uint32 LagMsSum = 0;
     uint32 Capped = 0;
     uint32 Unsticks = 0;
+    uint32 Refreshes = 0;  // tracked moves that replaced a waited-for one (Track.RefreshMs)
     std::array<uint32, static_cast<uint32>(TrackMode::Count)> Modes{};
     TrackMode LastMode = TrackMode::None;
     uint32 LastLagMs = 0;
@@ -597,6 +599,15 @@ struct TrackBotState
         LastMs = std::max(nowMs, 1u);
     }
 };
+
+// 13e-decide (Natural.Track.RefreshMs): a tracked chase replaces the move it waits for (MoveTo's destination hold) once
+// that move (issued at issueMs) is refreshMs old and the new point is more than TRACK_REFRESH_YARDS from its point
+constexpr float TRACK_REFRESH_YARDS = 1.0f;
+
+inline bool TrackRefreshDue(uint32 nowMs, uint32 issueMs, float shiftYards, uint32 refreshMs)
+{
+    return refreshMs != 0 && issueMs != 0 && nowMs - issueMs >= refreshMs && shiftYards > TRACK_REFRESH_YARDS;
+}
 
 // The target's true position at a ReachCombatTo call: a new target or a stale ring starts again, a sample goes in
 // once per TrackSampleGapMs
@@ -1090,6 +1101,12 @@ void RunTrackChecks(Check&& check)
         check(inReach && afterPause && counts && paused.Unsticks == 0 && paused.BestAtMs == 1000 + stuckMs + 500,
               "the first chase after a pause of StuckMs starts a new count (no unstick from the mark before it)");
     }
+
+    // 13e-decide: the chase refresh (Track.RefreshMs 250): a waited-for move 250 ms old and a point 1.5 yd away
+    check(TrackRefreshDue(10250, 10000, 1.5f, 250) && !TrackRefreshDue(10249, 10000, 1.5f, 250) &&
+              !TrackRefreshDue(10500, 10000, 0.9f, 250) && !TrackRefreshDue(10500, 10000, 1.5f, 0) &&
+              !TrackRefreshDue(10500, 0, 1.5f, 250),
+          "a tracked chase refreshes a move 250 ms old by more than 1 yd; RefreshMs 0 keeps the hold");
 }
 
 // The game side (PlayerbotAI.cpp): whether the bot tracks naturally now (the option, the Natural tactic here, a PvP

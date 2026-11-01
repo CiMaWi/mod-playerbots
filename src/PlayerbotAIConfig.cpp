@@ -1151,6 +1151,7 @@ bool PlayerbotAIConfig::Initialize()
         naturalNumber("Track", "MinMoveYards", NaturalTrack.MinMoveYards, MaxNaturalYards);
         naturalNumber("Track", "JukeDeg", NaturalTrack.JukeDeg, MaxNaturalDeg);
         naturalNumber("Track", "StuckMs", NaturalTrack.StuckMs, MaxNaturalMs);
+        naturalNumber("Track", "RefreshMs", NaturalTrack.RefreshMs, MaxNaturalMs);
     }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
@@ -1296,6 +1297,7 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Interrupt.HoldForHealer", TacticInterrupt.HoldForHealer, MaxCcSwitch);
     focusNumber("Interrupt.HealerCacheMs", TacticInterrupt.HealerCacheMs, MaxInterruptCacheMs);
     focusNumber("Interrupt.ArmsPummel", TacticInterrupt.ArmsPummel, MaxCcSwitch);
+    focusNumber("Interrupt.SeeCancelLag", TacticInterrupt.SeeCancelLag, MaxCcSwitch);
     // G5c-c: the use draw and the hold policy
     constexpr uint32 MaxHoldMs = 60000;
     constexpr uint32 MaxHoldCastMs = 10000;
@@ -1338,6 +1340,7 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Defensive.BurstLossPctAtSkill99", TacticDefensive.BurstLossPctAtSkill99, MaxFocusPct);
     focusNumber("Defensive.SampleMs", TacticDefensive.SampleMs, MaxFocusMs);
     focusNumber("Defensive.FocusedMinEnemies", TacticDefensive.FocusedMinEnemies, MaxDefensiveEnemies);
+    focusNumber("Defensive.FocusedMinTeam", TacticDefensive.FocusedMinTeam, MaxDefensiveEnemies);
     focusNumber("Defensive.HpPctAtSkill1", TacticDefensive.HpPctAtSkill1, MaxFocusPct);
     focusNumber("Defensive.HpPctAtSkill99", TacticDefensive.HpPctAtSkill99, MaxFocusPct);
     focusNumber("Defensive.FocusedHpBonusPct", TacticDefensive.FocusedHpBonusPct, MaxFocusPct);
@@ -1360,6 +1363,8 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Defensive.Opponent.MinEvents", TacticDefensive.OpponentMinEvents, MaxCcEvents);
     focusNumber("Defensive.Opponent.FromSkill", TacticDefensive.OpponentFromSkill, MaxCcSkill);
     focusNumber("Defensive.Opponent.ExpireMs", TacticDefensive.OpponentExpireMs, MaxFocusMs);
+    focusNumber("Defensive.BurstHoldMaxMs", TacticDefensive.BurstHoldMaxMs, MaxFocusMs);
+    focusNumber("Defensive.BurstHoldFloorPct", TacticDefensive.BurstHoldFloorPct, MaxFocusPct);
 
     // G5e: the Fake tactic (Playerbots.Tactics.Fake.*), the defaults in FakeConfig
     TacticFake = FakeConfig{};
@@ -1382,6 +1387,7 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Fake.ChancePctAtSkill70", TacticFake.ChancePctAtSkill70, MaxFocusPct);
     focusNumber("Fake.ChancePctAtSkill99", TacticFake.ChancePctAtSkill99, MaxFocusPct);
     focusNumber("Fake.BaitedWindowMs", TacticFake.BaitedWindowMs, MaxFocusMs);
+    focusNumber("Fake.HealGuardPct", TacticFake.HealGuardPct, MaxFocusPct);
 
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);

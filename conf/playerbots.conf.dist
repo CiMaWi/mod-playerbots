@@ -1834,7 +1834,10 @@ Playerbots.Natural.Cadence.NearRealPlayerYards = 0
 # Playerbots.Natural.Track.MinMoveYards = 1
 # Playerbots.Natural.Track.JukeDeg = 60
 # Playerbots.Natural.Track.StuckMs = 3000
+# Playerbots.Natural.Track.RefreshMs = 250
 # (Ranges: skills 0-100, RingSamples 4-32, percents 0-100, degrees 0-360, ms 0-60000, yards 0-500, SkipLeadRule 0-1.)
+# RefreshMs (13e-decide): while the bot waits for its last tracked chase move (MoveTo's destination hold), a new
+# tracked point replaces it once that move is RefreshMs old and the point moved more than 1 yd; 0 keeps the hold.
 
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
@@ -2443,6 +2446,12 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Interrupt.HoldTrendPctAtKnowledge1 = 50
 # Playerbots.Tactics.Interrupt.HoldTrendPctAtKnowledge99 = 100
 #
+# SeeCancelLag (13e-decide): 1 = a cast bar that ends (finished, cancelled or cut) stays in the judging kicker's view
+# for its reaction delay (the reaction model's median plus ping, display and the deep check), so a kick it committed on
+# that bar goes on the ended bar while it cannot yet see the end (a fake's cancel baits it; the kick is spent). 0 (the
+# default) reads the bar's end live, as before. (Range 0-1.)
+# Playerbots.Tactics.Interrupt.SeeCancelLag = 0
+#
 # With the Interrupt tactic enabled (or the PvP harness on), the strategy "tactic interrupt" adds the class kicks the
 # specs' own strategies lack, all through the decision above: the mage's counterspell on the current target, the death
 # knight's strangulate (30 yards; mind freeze is 5, so strangulate is the long-range kick and the backup while mind
@@ -2484,12 +2493,17 @@ Playerbots.Tactics.Enable = 0
 # protect actions (hand of protection, pain suppression, intervene) use it with their own cooldowns. A disc priest
 # with Protect on and a living partner keeps pain suppression for the partner: on itself only at CriticalHpPct (the
 # Defensive tactic's opener, burst and focused presses skip it). Opponent memory (Foresight; from skill
-# Opponent.FromSkill): the bot remembers the health at which each enemy was seen with a defensive up. It holds its
-# burst while an enemy's defensive is up; within Opponent.ExpireMs of that sighting the defensive counts as spent (the
-# burst goes at once); after Opponent.ExpireMs it may be back: the bot holds its burst until the enemy is at most
-# Opponent.LeadPctAtForesight99 points (at Foresight 99) above the remembered health, and a new sighting replaces the
-# remembered one. Opponent.Enable 0 turns the memory off. Protect.AttackedWithinMs, Protect.MinGapMs and
-# Opponent.MinEvents are read but not used yet.
+# Opponent.FromSkill): the bot remembers when each enemy was last seen with a major defensive up (immunities: ice
+# block, divine shield, deterrence, dispersion; physical stops: evasion, hand of protection; magic stops: cloak of
+# shadows, anti-magic shell). It holds its burst while a defensive that stops its own damage is up (an immunity, or the
+# stop of its damage type: melee and hunters physical, casters magic; minor reductions such as barkskin or pain
+# suppression never hold), and while the enemy owns such a defensive not seen up within Opponent.ExpireMs (believed
+# ready) until the enemy uses it: at most BurstHoldMaxMs from the first such hold since its last use (0: no such hold)
+# and never with the enemy at or below BurstHoldFloorPct per cent health. "Focused" counts only against an enemy team
+# of at least FocusedMinTeam players at the match's start (the arena's size; battlegrounds and the open world always):
+# in 2v2 both enemies on the bot are the normal case, so there only burst and the plain line press. Opponent.Enable 0
+# turns the memory off. Protect.AttackedWithinMs, Protect.MinGapMs, Opponent.MinEvents and
+# Opponent.LeadPctAtForesight99 (the lead of the hold before 13e-decide) are read but not used.
 # Playerbots.Tactics.Defensive.Enable = 0
 # Playerbots.Tactics.Protect.Enable = 0
 # Playerbots.Tactics.Defensive.BurstWindowMs = 2000
@@ -2497,6 +2511,7 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Defensive.BurstLossPctAtSkill99 = 30
 # Playerbots.Tactics.Defensive.SampleMs = 250
 # Playerbots.Tactics.Defensive.FocusedMinEnemies = 2
+# Playerbots.Tactics.Defensive.FocusedMinTeam = 3
 # Playerbots.Tactics.Defensive.HpPctAtSkill1 = 25
 # Playerbots.Tactics.Defensive.HpPctAtSkill99 = 60
 # Playerbots.Tactics.Defensive.FocusedHpBonusPct = 15
@@ -2519,8 +2534,10 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Defensive.Opponent.MinEvents = 1
 # Playerbots.Tactics.Defensive.Opponent.FromSkill = 40
 # Playerbots.Tactics.Defensive.Opponent.ExpireMs = 120000
-# (Ranges: percents 0-100, ms 0-120000, FocusedMinEnemies 0-8, Protect.DistanceYards 0-100, PotionEnable and
-# Opponent.Enable 0-1, Opponent.MinEvents 0-20, Opponent.FromSkill 0-100.)
+# Playerbots.Tactics.Defensive.BurstHoldMaxMs = 8000
+# Playerbots.Tactics.Defensive.BurstHoldFloorPct = 30
+# (Ranges: percents 0-100, ms 0-120000, FocusedMinEnemies and FocusedMinTeam 0-8, Protect.DistanceYards 0-100,
+# PotionEnable and Opponent.Enable 0-1, Opponent.MinEvents 0-20, Opponent.FromSkill 0-100.)
 #
 # Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World). With it on, a bot from
 # KnownFromSkill (Knowledge) that starts a kickable cast of at least MinCastMs sees whether an enemy player of its
@@ -2534,7 +2551,8 @@ Playerbots.Tactics.Enable = 0
 # cast finishes). The next fake is at least RepeatMsAtPatience0..100 ms later (jitter RepeatJitterPct per cent), at
 # most MaxPerMinute a minute. A kick at the bot within BaitedWindowMs after the cancel counts as baited (counters
 # fakes, kicksBaited, kickSeen). Nothing tells a kicker it faces a fake; its own memory of seen cancels is all it has
-# (Playerbots.Tactics.Interrupt).
+# (Playerbots.Tactics.Interrupt). HealGuardPct (13e-decide): a heal is never faked while its target is below this
+# health, nor, by the group's only healer, while any friend is below it.
 # Playerbots.Tactics.Fake.Enable = 0
 # Playerbots.Tactics.Fake.KnownFromSkill = 70
 # Playerbots.Tactics.Fake.MinCastMs = 1500
@@ -2555,6 +2573,7 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Fake.ChancePctAtSkill70 = 40
 # Playerbots.Tactics.Fake.ChancePctAtSkill99 = 90
 # Playerbots.Tactics.Fake.BaitedWindowMs = 300
+# Playerbots.Tactics.Fake.HealGuardPct = 70
 # (Ranges: skills 0-100, percents 0-100, ms 0-120000, MaxPerMinute 0-600, yards 0-100, KickerNeedFacing 0-1.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.

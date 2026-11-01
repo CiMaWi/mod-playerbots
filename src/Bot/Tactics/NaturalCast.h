@@ -95,6 +95,7 @@ struct FakeParams
     bool RemembersKicks = true;  // Knowledge reaches KickMemoryFromSkill: kicks seen used take their kicker out
     uint32 KickSeenMs = 8000;
     uint32 BaitedWindowMs = 300;
+    uint32 HealGuardPct = 70;
 };
 
 inline uint32 FakePct(float value) { return static_cast<uint32>(std::clamp(value, 0.0f, 100.0f) + 0.5f); }
@@ -137,6 +138,7 @@ inline FakeParams ComputeFakeParams(uint8 skill, BotAttributeValues const& attri
     params.RemembersKicks = knowledge >= config.KickMemoryFromSkill;
     params.KickSeenMs = config.KickSeenMs;
     params.BaitedWindowMs = config.BaitedWindowMs;
+    params.HealGuardPct = std::min(config.HealGuardPct, 100u);
     return params;
 }
 
@@ -151,7 +153,8 @@ enum class FakeVerdict : uint8
     KickSeen,     // every kicker in view was seen to use its kick within KickSeenMs (remembered)
     Repeat,       // too soon after the last fake
     Rate,         // MaxPerMinute fakes in the last minute
-    Chance        // the draw said no
+    Chance,       // the draw said no
+    Urgent        // 13e-decide: a heal while its target (or, the only healer, any friend) is below HealGuardPct
 };
 
 inline char const* FakeVerdictName(FakeVerdict verdict)
@@ -176,6 +179,8 @@ inline char const* FakeVerdictName(FakeVerdict verdict)
             return "rate";
         case FakeVerdict::Chance:
             return "chance";
+        case FakeVerdict::Urgent:
+            return "urgent";
     }
 
     return "?";
@@ -230,7 +235,19 @@ struct FakeInput
     uint32 MinuteStartMs = 0;
     uint32 MinuteFakes = 0;
     uint64 Hash = 0;  // FakeCastHash
+    // 13e-decide: a heal, its target's health, the caster the group's only healer, the lowest friend's health
+    bool Heal = false;
+    uint32 HealTargetHpPct = 100;
+    bool OnlyHealer = false;
+    uint32 LowestFriendHpPct = 100;
 };
+
+// 13e-decide: a heal is urgent (never faked) while its target, or for the only healer any friend, is below the guard
+inline bool FakeHealUrgent(FakeParams const& params, FakeInput const& input)
+{
+    return input.Heal && (input.HealTargetHpPct < params.HealGuardPct ||
+                          (input.OnlyHealer && input.LowestFriendHpPct < params.HealGuardPct));
+}
 
 inline FakeVerdict DecideFake(FakeParams const& params, FakeInput const& input)
 {
@@ -243,6 +260,9 @@ inline FakeVerdict DecideFake(FakeParams const& params, FakeInput const& input)
 
     if (input.KickersLive == 0)
         return FakeVerdict::KickSeen;
+
+    if (FakeHealUrgent(params, input))
+        return FakeVerdict::Urgent;
 
     if (input.NextFakeAtMs != 0 && static_cast<int32>(input.NextFakeAtMs - input.NowMs) > 0)
         return FakeVerdict::Repeat;
@@ -547,6 +567,33 @@ void RunFakeChecks(Check&& check)
           "the instant survives the clock's wrap");
     check(FakeBaited(1000, 1300, 300) && !FakeBaited(1000, 1301, 300) && !FakeBaited(0, 100, 300),
           "a kick within 300 ms after the cancel is baited");
+
+    // 13e-decide (HealGuardPct): no fake heal while it is urgent
+    {
+        FakeInput heal;
+        heal.CastMs = 2500;
+        heal.KickersSeen = 1;
+        heal.KickersLive = 1;
+        heal.NowMs = 100000;
+        heal.Heal = true;
+        heal.HealTargetHpPct = 60;
+        bool const lowTarget = DecideFake(p99, heal) == FakeVerdict::Urgent;
+        heal.HealTargetHpPct = 70;
+        bool const atGuard = DecideFake(p99, heal) != FakeVerdict::Urgent;
+        heal.HealTargetHpPct = 90;
+        heal.LowestFriendHpPct = 50;
+        heal.OnlyHealer = true;
+        bool const lowFriend = DecideFake(p99, heal) == FakeVerdict::Urgent;
+        heal.OnlyHealer = false;
+        bool const otherHealer = DecideFake(p99, heal) != FakeVerdict::Urgent;
+        heal.Heal = false;
+        heal.HealTargetHpPct = 10;
+        heal.OnlyHealer = true;
+        bool const damage = DecideFake(p99, heal) != FakeVerdict::Urgent;
+        check(lowTarget && atGuard && lowFriend && otherHealer && damage && p99.HealGuardPct == 70,
+              "no fake heal on a target below 70 %, nor as the only healer with a friend below 70 %; damage casts as "
+              "before");
+    }
 }
 
 // The game side (PlayerbotAI.cpp), from PlayerbotsPlayerScript::OnPlayerSpellCast on the caster's map thread: a kick

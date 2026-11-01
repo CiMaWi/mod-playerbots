@@ -49,6 +49,7 @@ struct FocusBotState;
 struct InterruptBotState;
 struct TrackBotState;
 struct TurnBotState;
+enum class TurnSnapSite : uint8;  // NaturalTurn.h
 class ReactionEngine;
 class Gameobject;
 class Item;
@@ -786,7 +787,8 @@ public:
     bool IsNaturalPreGate() const { return naturalPreGate; }
     // Face the target the way the bot's turn state allows (G2a): true when the bot's facing holds towards it. With
     // the natural facing off this is the instant snap (ServerFacade::SetFacingTo) and always true.
-    bool FaceTarget(WorldObject* target);
+    // site: the caller, for the snap's trace line (13e-decide)
+    bool FaceTarget(WorldObject* target, TurnSnapSite site = TurnSnapSite(0));
     // The Interrupt tactic's hook (enabled here): true when the bot's kick may go at the enemy's cast now. One
     // decision per cast (the shortcut or the judging path), its commit point from the bar's start.
     bool DecideInterrupt(Unit* enemy);

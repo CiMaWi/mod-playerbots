@@ -48,6 +48,7 @@ struct TrackConfig
     uint32 MinMoveYards = 1;  // a target that moved less than this since the last sample is standing
     uint32 JukeDeg = 60;      // a heading change this large between two samples is a juke
     uint32 StuckMs = 3000;    // a chaser that closed nothing for this long aims at the target's true position
+    uint32 RefreshMs = 250;   // 13e-decide: a tracked chase may replace a waited-for move this old (0: the hold)
 };
 
 #endif

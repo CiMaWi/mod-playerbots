@@ -902,10 +902,36 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
 
     path.ShortenPathUntilDist(G3D::Vector3(reachX, reachY, reachZ), shortenTo);
     G3D::Vector3 endPos = path.GetPath().back();
+    // G2b (13e-decide, Natural.Track.RefreshMs): a tracked chase may set a new point while the bot still waits for its
+    // last tracked move (the destination hold, IsWaitingForLastMove) once that move is RefreshMs old and the point
+    // moved more than TRACK_REFRESH_YARDS; every other move keeps the hold
+    bool refreshed = false;
+    if (tracked && IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
+    {
+        LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
+        if (lastMove.msTime == botAI->GetTrackState().IssueMs &&
+            lastMove.priority == MovementPriority::MOVEMENT_COMBAT &&
+            TrackRefreshDue(nowMs, lastMove.msTime, lastMove.lastMoveShort.GetExactDist(endPos.x, endPos.y, endPos.z),
+                            sPlayerbotAIConfig.NaturalTrack.RefreshMs))
+        {
+            lastMove.lastdelayTime = 0.0f;
+            refreshed = true;
+        }
+    }
+
     bool const moved = MoveTo(target->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
     if (moved && tracked)
     {
+        TrackBotState& track = botAI->GetTrackState();
+        track.IssueMs = AI_VALUE(LastMovement&, "last movement").msTime;
+        if (refreshed)
+        {
+            ++track.Refreshes;
+            LOG_TRACE("playerbots", "Track: {} refreshes its chase of {} (the last move waited for), at {} ms",
+                      bot->GetName(), target->GetName(), nowMs);
+        }
+
         float const offYards = std::hypot(tx - target->GetPositionX(), ty - target->GetPositionY());
         botAI->GetTrackState().NoteChase(prediction, offYards, nowMs);
         botAI->CountTactic(TacticCounter::TrackChases);
@@ -2704,7 +2730,7 @@ bool SetFacingTargetAction::Execute(Event /*event*/)
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
         return true;
 
-    botAI->FaceTarget(target);  // G2a: the natural turn where it applies, else the snap
+    botAI->FaceTarget(target, TurnSnapSite::SetFacing);  // G2a: the natural turn where it applies, else the snap
     botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
     return true;
 }

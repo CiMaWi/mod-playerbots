@@ -2490,6 +2490,16 @@ void TacticDefensiveStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
                                                             NextAction("healing potion", BurstPotionRelevance)}));
 }
 
+namespace
+{
+// 13e-decide: the enemy team's size at the match's start (the arena's type; 0 outside arenas: large or unknown)
+uint32 DefensiveEnemyTeam(Player const* bot)
+{
+    Battleground const* const bg = bot->GetBattleground();
+    return bg && bg->isArena() ? bg->GetArenaType() : 0;
+}
+}  // namespace
+
 bool BurstTrigger::IsActive()
 {
     if (!bot->IsAlive() || !botAI->TacticActive(TacticId::Defensive))
@@ -2501,6 +2511,7 @@ bool BurstTrigger::IsActive()
     input.HpPct = DefensiveHealthPct(bot);
     input.LostPct = state.Ring.LostPct(nowMs, input.HpPct, state.Params.WindowMs);
     input.FocusedBy = state.FocusedBy;
+    input.EnemyTeam = DefensiveEnemyTeam(bot);
     input.OpenerDue = DefensiveOpenerDue(state.OpenerDrawn, state.CombatSinceMs, nowMs);
     DefensiveReason const reason = SelfDefensiveReason(input, state.Params);
     if (potion)
@@ -2555,6 +2566,26 @@ bool DefensiveAuraUp(Unit const* unit)
     return std::any_of(DEFENSIVE_IMMUNITY_AURAS.begin(), DEFENSIVE_IMMUNITY_AURAS.end(), up) ||
            std::any_of(DEFENSIVE_AURAS.begin(), DEFENSIVE_AURAS.end(), up);
 }
+
+namespace
+{
+// 13e-decide: a defensive is up on the unit that stops a physical (or a magic) attacker (DefensiveStopHolds)
+bool DefensiveStopUp(Unit const* unit, bool physical)
+{
+    auto const stops = [unit, physical](uint32 spellId)
+    { return DefensiveStopHolds(ClassifyDefensiveAura(spellId), physical) && unit->HasAura(spellId); };
+    return std::any_of(DEFENSIVE_IMMUNITY_AURAS.begin(), DEFENSIVE_IMMUNITY_AURAS.end(), stops) ||
+           std::any_of(DEFENSIVE_AURAS.begin(), DEFENSIVE_AURAS.end(), stops);
+}
+
+// 13e-decide: the enemy owns a major defensive that stops this attacker (what a player knows of a class and spec)
+bool DefensiveHasStop(Player const* enemy, bool physical)
+{
+    return std::any_of(
+        MAJOR_DEFENSIVE_SPELLS.begin(), MAJOR_DEFENSIVE_SPELLS.end(), [enemy, physical](uint32 spellId)
+        { return DefensiveStopHolds(ClassifyDefensiveAura(spellId), physical) && enemy->HasSpell(spellId); });
+}
+}  // namespace
 
 void FollowDefensive(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
@@ -2673,6 +2704,10 @@ void ObserveEnemyDefensive(PlayerbotAI* botAI, Unit* enemy, uint32 nowMs)
     bool const known = memory.DefensiveHpPct(guid, nowMs, expireMs) != 0;
     uint32 const hpPct = DefensiveHealthPct(enemy);
     memory.NoteDefensive(guid, hpPct, nowMs, expireMs);
+    bool const physical = DefensiveStopUp(enemy, true);
+    bool const magic = DefensiveStopUp(enemy, false);
+    if (physical || magic)
+        memory.NoteStop(guid, physical, magic, nowMs);
     if (!known)
         LOG_TRACE("playerbots", "Defensive seen: {} saw {} with a defensive up at {} %, skill {}, at {} ms",
                   botAI->GetBot()->GetName(), enemy->GetName(), hpPct, botAI->GetPvpSkill(), nowMs);
@@ -2723,30 +2758,46 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
     if (!state.Params.OpponentKnows)
         return false;
 
+    // 13e-decide (reading B): the attacker's damage type picks the defensives that hold it (melee and hunters
+    // physical, casters magic); the enemy's major defensive believed ready holds it until used (capped)
     uint32 const nowMs = getMSTime();
+    bool const physical = !PlayerbotAI::IsCaster(botAI->GetBot());
     BurstHoldInput input;
     input.EnemyHpPct = DefensiveHealthPct(target);
-    input.DefensiveUp = DefensiveAuraUp(target);
-    if (OpponentMemorySlot const* const slot = botAI->GetOpponentMemory().Find(target->GetGUID().GetCounter()))
-    {
-        if (slot->DefHpPct != 0)
-        {
-            input.RememberedHpPct = slot->DefHpPct;
-            input.RememberedAgeMs = nowMs - slot->DefSeenMs;
-        }
-    }
+    input.DefensiveUp = DefensiveStopUp(target, physical);
+    Player const* const enemy = target->ToPlayer();
+    input.HasStop = enemy && DefensiveHasStop(enemy, physical);
+    OpponentMemory& memory = botAI->GetOpponentMemory();
+    uint32 const guid = target->GetGUID().GetCounter();
+    uint32 const index = memory.IndexOf(guid);
+    OpponentMemorySlot* slot = index < OPPONENT_MEMORY_SLOTS ? &memory.Slots[index] : nullptr;
+    uint32 const seenMs = slot ? (physical ? slot->StopPhysicalMs : slot->StopMagicMs) : 0;
+    input.StopSeen = seenMs != 0;
+    input.StopSeenAgeMs = nowMs - seenMs;
+    // Used since the hold began: the next hold is a new one
+    if (slot && slot->BurstHoldSinceMs != 0 && seenMs != 0 && static_cast<int32>(seenMs - slot->BurstHoldSinceMs) >= 0)
+        slot->BurstHoldSinceMs = 0;
 
+    input.HeldMs = slot && slot->BurstHoldSinceMs != 0 ? nowMs - slot->BurstHoldSinceMs : 0;
     BurstHold const hold = DecideBurstHold(input, state.Params);
     if (hold == BurstHold::None)
         return false;
 
+    if (hold == BurstHold::Ready)
+    {
+        if (!slot)
+            slot = &memory.Touch(guid, nowMs);
+
+        if (slot->BurstHoldSinceMs == 0)
+            slot->BurstHoldSinceMs = std::max(nowMs, 1u);
+    }
+
     if (state.LastHoldMs == 0 || nowMs - state.LastHoldMs > DEFENSIVE_HOLD_EPISODE_MS)
     {
         ++state.Holds;
-        LOG_TRACE("playerbots",
-                  "Defensive burst hold: {} holds its burst on {} at {} % ({}, remembered {} %), at {} ms",
+        LOG_TRACE("playerbots", "Defensive burst hold: {} holds its burst on {} at {} % ({}, {}, held {} ms), at {} ms",
                   botAI->GetBot()->GetName(), target->GetName(), input.EnemyHpPct, BurstHoldName(hold),
-                  input.RememberedHpPct, nowMs);
+                  physical ? "physical" : "magic", input.HeldMs, nowMs);
     }
 
     state.LastHoldMs = std::max(nowMs, 1u);

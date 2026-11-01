@@ -29,6 +29,7 @@ struct InterruptConfig
     uint32 HoldForHealer = 1;      // 1 = no kick on a damage cast while an enemy healer is in reach
     uint32 HealerCacheMs = 200;    // "enemy healer target": how long its best target is kept
     uint32 ArmsPummel = 0;         // 1 = an Arms warrior swaps into Berserker stance to pummel (G5c)
+    uint32 SeeCancelLag = 0;       // 1 = an ended bar stays in the kicker's view for its reaction delay (13e-decide)
     // G5c-c: the chance a bot notices an interruptible cast at all (else it lets the cast go), lerped by skill
     uint32 UsePctAtSkill1 = 100;
     uint32 UsePctAtSkill99 = 100;

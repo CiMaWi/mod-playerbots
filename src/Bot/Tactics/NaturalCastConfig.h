@@ -37,6 +37,8 @@ struct FakeConfig
     uint32 ChancePctAtSkill70 = 40;
     uint32 ChancePctAtSkill99 = 90;
     uint32 BaitedWindowMs = 300;  // an enemy kick within this after the cancel counts as baited
+    // 13e-decide: no fake of a heal whose target is below this health, or (the only healer) while any friend is
+    uint32 HealGuardPct = 70;
 };
 
 #endif

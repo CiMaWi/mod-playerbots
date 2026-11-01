@@ -25,8 +25,9 @@
 // DT.12). The self-defensive trigger fires at or below a skill-lerped health line AND (burst OR focused), or at the
 // critical line, or (low skill) at the opener; low effort presses late. The partner is protected only in PvP (the
 // Protect tactic's scope, DT.3) below a skill-lerped health line. The opponent memory keeps the health at which each
-// enemy was first seen with a defensive up; a bot with enough Foresight holds its burst cooldowns while the enemy's
-// defensive is up and, when that defensive may be ready again, until the enemy nears the health it used it at. The
+// enemy was first seen with a defensive up and when it last saw a major one (13e-decide); a bot with enough Foresight
+// holds its burst cooldowns while a defensive that stops its damage is up and, while the enemy has such a defensive
+// believed ready (not seen used within Opponent.ExpireMs), until the enemy uses it (capped, never at low health). The
 // game side is DefensiveTacticStrategy.h (CcTacticStrategy.cpp); the numbers are DefensiveConfig's.
 
 // Defensive auras a player sees on an enemy's buff bar (FocusStrategy's list) and the immunities
@@ -54,6 +55,66 @@ constexpr std::array<uint32, 5> DEFENSIVE_IMMUNITY_AURAS = {
     642,    // Divine Shield
     1022,   // Hand of Protection (ranks 1-3)
     5599,  10278,
+};
+
+// 13e-decide: what a defensive aura stops, for the burst hold. Immunity: all damage (ice block, divine shield,
+// deterrence (parries melee, deflects spells and ranged), dispersion (90 % of all damage)); Physical: evasion, hand of
+// protection; Magic: cloak of shadows, anti-magic shell; Minor: the other reductions (barkskin, pain suppression,
+// shield wall, ...), which never hold a burst.
+enum class DefensiveStop : uint8
+{
+    None = 0,
+    Minor,
+    Physical,
+    Magic,
+    Immunity
+};
+
+inline DefensiveStop ClassifyDefensiveAura(uint32 spellId)
+{
+    switch (spellId)
+    {
+        case 45438:
+        case 642:
+        case 19263:
+        case 47585:
+            return DefensiveStop::Immunity;
+        case 5277:
+        case 26669:
+        case 1022:
+        case 5599:
+        case 10278:
+            return DefensiveStop::Physical;
+        case 31224:
+        case 48707:
+            return DefensiveStop::Magic;
+        default:
+            return std::find(DEFENSIVE_AURAS.begin(), DEFENSIVE_AURAS.end(), spellId) != DEFENSIVE_AURAS.end()
+                       ? DefensiveStop::Minor
+                       : DefensiveStop::None;
+    }
+}
+
+// The stop holds a burst of this attacker: an immunity always, a physical or magic stop against that damage type (melee
+// and hunters physical, casters magic), a minor reduction never
+inline bool DefensiveStopHolds(DefensiveStop stop, bool physicalAttacker)
+{
+    return stop == DefensiveStop::Immunity || (stop == DefensiveStop::Physical && physicalAttacker) ||
+           (stop == DefensiveStop::Magic && !physicalAttacker);
+}
+
+// The major defensives an enemy may own (spell = aura): the burst waits for one that stops the attacker (HasSpell)
+constexpr std::array<uint32, 11> MAJOR_DEFENSIVE_SPELLS = {
+    45438,  // Ice Block
+    642,    // Divine Shield
+    19263,  // Deterrence
+    47585,  // Dispersion
+    5277,   // Evasion (ranks 1-2)
+    26669,
+    1022,  // Hand of Protection (ranks 1-3)
+    5599,  10278,
+    31224,  // Cloak of Shadows
+    48707,  // Anti-Magic Shell
 };
 
 // A cooldown spent on oneself or a partner (first ranks): tactics.defSelf / tactics.defPartner
@@ -143,6 +204,7 @@ struct DefensiveParams
     uint32 SampleMs = 250;
     uint32 BurstLossPct = 30;
     uint32 FocusedMinEnemies = 2;
+    uint32 FocusedMinTeam = 3;
     uint32 HpPct = 60;  // the line: burst or focused at or below it
     uint32 FocusedHpBonusPct = 15;
     uint32 CriticalHpPct = 20;
@@ -156,6 +218,8 @@ struct DefensiveParams
     bool OpponentKnows = true;  // Foresight reaches Opponent.FromSkill and Opponent.Enable
     uint32 OpponentLeadPct = 20;
     uint32 OpponentExpireMs = 120000;
+    uint32 BurstHoldMaxMs = 8000;
+    uint32 BurstHoldFloorPct = 30;
 };
 
 constexpr uint32 DEFENSIVE_PROTECT_TANK_HP_PCT = 10;  // a tank is protected only this low (the old picker's line)
@@ -192,6 +256,7 @@ inline DefensiveParams ComputeDefensiveParams(uint8 skill, BotAttributeValues co
     params.BurstLossPct =
         std::max(DefensivePct(lerp(config.BurstLossPctAtSkill1, config.BurstLossPctAtSkill99, wisdom)), 1u);
     params.FocusedMinEnemies = config.FocusedMinEnemies;
+    params.FocusedMinTeam = config.FocusedMinTeam;
     params.HpPct = DefensivePct(lerp(config.HpPctAtSkill1, config.HpPctAtSkill99, wisdom) +
                                 static_cast<float>(config.CautionShiftPct) * caution);
     params.FocusedHpBonusPct = config.FocusedHpBonusPct;
@@ -212,6 +277,8 @@ inline DefensiveParams ComputeDefensiveParams(uint8 skill, BotAttributeValues co
         config.OpponentEnable != 0 && (full || attributes.Get(BotAttribute::Foresight) >= config.OpponentFromSkill);
     params.OpponentLeadPct = DefensivePct(lerp(0, config.OpponentLeadPctAtForesight99, foresight));
     params.OpponentExpireMs = config.OpponentExpireMs;
+    params.BurstHoldMaxMs = config.BurstHoldMaxMs;
+    params.BurstHoldFloorPct = std::min(config.BurstHoldFloorPct, 100u);
     return params;
 }
 
@@ -247,14 +314,17 @@ struct DefensiveInput
     uint32 HpPct = 100;  // 0: dead
     uint32 LostPct = 0;  // HealthRing::LostPct
     uint32 FocusedBy = 0;
+    uint32 EnemyTeam = 0;  // enemy players at the match's start (the arena's size; 0: unknown, counts as large)
     bool OpenerDue = false;
 };
 
 inline bool DefensiveBurst(uint32 lostPct, DefensiveParams const& params) { return lostPct >= params.BurstLossPct; }
 
-inline bool DefensiveFocused(uint32 focusedBy, DefensiveParams const& params)
+// 13e-decide: in a small arena (2v2) "two enemies on it" is the whole enemy team, so headcount alone never focuses
+inline bool DefensiveFocused(uint32 focusedBy, uint32 enemyTeam, DefensiveParams const& params)
 {
-    return params.FocusedMinEnemies != 0 && focusedBy >= params.FocusedMinEnemies;
+    return params.FocusedMinEnemies != 0 && focusedBy >= params.FocusedMinEnemies &&
+           (enemyTeam == 0 || enemyTeam >= params.FocusedMinTeam);
 }
 
 inline DefensiveReason SelfDefensiveReason(DefensiveInput const& input, DefensiveParams const& params)
@@ -268,7 +338,7 @@ inline DefensiveReason SelfDefensiveReason(DefensiveInput const& input, Defensiv
     if (input.HpPct <= params.CriticalHpPct)
         return DefensiveReason::Critical;
 
-    bool const focused = DefensiveFocused(input.FocusedBy, params);
+    bool const focused = DefensiveFocused(input.FocusedBy, input.EnemyTeam, params);
     uint32 const line = std::min(params.HpPct + (focused ? params.FocusedHpBonusPct : 0), 100u);
     if (input.HpPct > line)
         return DefensiveReason::None;
@@ -323,14 +393,16 @@ inline bool PartnerNeedsProtect(uint32 hpPct, bool attacked, bool tank, Defensiv
     return hpPct <= (tank ? std::min(DEFENSIVE_PROTECT_TANK_HP_PCT, params.ProtectHpPct) : params.ProtectHpPct);
 }
 
-// Burst cooldowns against an enemy player (BoostTrigger): held while its defensive is up, and, when its defensive was
-// seen long ago (it may be ready again), until it nears the health it used it at (+ the Foresight lead). A defensive
-// seen recently is spent: the burst goes now. Unknown: as before.
+// Burst cooldowns against an enemy player (BoostTrigger), 13e-decide reading B: held while a defensive that stops the
+// attacker's damage is up (DefensiveStopHolds; minor reductions never hold), and while the enemy owns such a defensive
+// believed ready (not seen up within Opponent.ExpireMs) until it uses it: at most BurstHoldMaxMs from the first such
+// hold since its last use, and never with the enemy at or below BurstHoldFloorPct. Seen used recently: spent, the burst
+// goes now.
 enum class BurstHold : uint8
 {
     None = 0,
     DefensiveUp,
-    Bait
+    Ready
 };
 
 inline char const* BurstHoldName(BurstHold hold)
@@ -339,8 +411,8 @@ inline char const* BurstHoldName(BurstHold hold)
     {
         case BurstHold::DefensiveUp:
             return "up";
-        case BurstHold::Bait:
-            return "bait";
+        case BurstHold::Ready:
+            return "ready";
         default:
             return "none";
     }
@@ -349,9 +421,11 @@ inline char const* BurstHoldName(BurstHold hold)
 struct BurstHoldInput
 {
     uint32 EnemyHpPct = 100;
-    bool DefensiveUp = false;
-    uint32 RememberedHpPct = 0;  // 0: never seen
-    uint32 RememberedAgeMs = 0;
+    bool DefensiveUp = false;  // a defensive that stops this attacker's damage is up
+    bool HasStop = false;      // the enemy owns such a defensive (MAJOR_DEFENSIVE_SPELLS)
+    bool StopSeen = false;     // such a defensive was seen up (StopSeenAgeMs ago)
+    uint32 StopSeenAgeMs = 0;
+    uint32 HeldMs = 0;  // this bot's hold for it, from the first hold since its last use (0: none yet)
 };
 
 inline BurstHold DecideBurstHold(BurstHoldInput const& input, DefensiveParams const& params)
@@ -362,11 +436,13 @@ inline BurstHold DecideBurstHold(BurstHoldInput const& input, DefensiveParams co
     if (input.DefensiveUp)
         return BurstHold::DefensiveUp;
 
-    if (input.RememberedHpPct == 0 || input.RememberedAgeMs <= params.OpponentExpireMs)
+    if (!input.HasStop || (input.StopSeen && input.StopSeenAgeMs <= params.OpponentExpireMs))
         return BurstHold::None;
 
-    return input.EnemyHpPct > std::min(input.RememberedHpPct + params.OpponentLeadPct, 100u) ? BurstHold::Bait
-                                                                                             : BurstHold::None;
+    if (input.EnemyHpPct <= params.BurstHoldFloorPct || input.HeldMs >= params.BurstHoldMaxMs)
+        return BurstHold::None;
+
+    return BurstHold::Ready;
 }
 
 // tactics.deathsDefReady counts a death once: at the lethal hit (before the kill can end the arena and the harness
@@ -534,6 +610,24 @@ void RunDefensiveChecks(Check&& check)
     check(reason(50, 10, 2, p99) == DefensiveReason::Focused, "two enemies on it at 50 %: focused");
     check(reason(70, 10, 2, p99) == DefensiveReason::Focused, "focused adds 15 points to the line");
     check(reason(70, 10, 1, p99) == DefensiveReason::None, "one enemy on it is not focused");
+    {
+        DefensiveInput arena;
+        arena.HpPct = 70;
+        arena.LostPct = 10;
+        arena.FocusedBy = 2;
+        arena.EnemyTeam = 2;
+        bool const twoNone = SelfDefensiveReason(arena, p99) == DefensiveReason::None;
+        arena.HpPct = 50;
+        bool const twoLow = SelfDefensiveReason(arena, p99) == DefensiveReason::None;
+        arena.LostPct = 35;
+        bool const twoBurst = SelfDefensiveReason(arena, p99) == DefensiveReason::Burst;
+        arena.LostPct = 10;
+        arena.HpPct = 70;
+        arena.EnemyTeam = 3;
+        bool const three = SelfDefensiveReason(arena, p99) == DefensiveReason::Focused;
+        check(twoNone && twoLow && twoBurst && three,
+              "2v2: both enemies on it is not focused (burst still presses); 3v3: focused with the bonus");
+    }
     check(reason(50, 40, 2, p1) == DefensiveReason::None, "skill 1 at 50 % does not press");
     check(reason(18, 0, 0, p1) == DefensiveReason::Critical, "every skill presses at critical health");
     check(reason(0, 50, 2, p99) == DefensiveReason::None, "a dead bot presses nothing");
@@ -605,17 +699,55 @@ void RunDefensiveChecks(Check&& check)
         input.DefensiveUp = true;
         check(DecideBurstHold(input, p99) == BurstHold::DefensiveUp, "no burst into a defensive that is up");
         input.DefensiveUp = false;
-        check(DecideBurstHold(input, p99) == BurstHold::None, "an enemy never seen with a defensive: burst");
-        input.RememberedHpPct = 35;
-        input.RememberedAgeMs = 5000;
+        check(DecideBurstHold(input, p99) == BurstHold::None, "an enemy without a defensive that stops it: burst");
+        input.HasStop = true;
+        check(DecideBurstHold(input, p99) == BurstHold::Ready, "its defensive never seen used: hold until it is used");
+        input.StopSeen = true;
+        input.StopSeenAgeMs = 5000;
         check(DecideBurstHold(input, p99) == BurstHold::None, "its defensive used 5 s ago is spent: burst");
-        input.RememberedAgeMs = p99.OpponentExpireMs + 1;
-        check(DecideBurstHold(input, p99) == BurstHold::Bait, "its defensive may be back: hold at 80 %");
-        input.EnemyHpPct = 50;
-        check(DecideBurstHold(input, p99) == BurstHold::None, "within the lead of its defensive health: burst");
+        input.StopSeenAgeMs = p99.OpponentExpireMs + 1;
+        check(DecideBurstHold(input, p99) == BurstHold::Ready, "its defensive may be back: hold");
+        input.HeldMs = p99.BurstHoldMaxMs - 1;
+        bool const capOpen = DecideBurstHold(input, p99) == BurstHold::Ready;
+        input.HeldMs = p99.BurstHoldMaxMs;
+        check(capOpen && DecideBurstHold(input, p99) == BurstHold::None && p99.BurstHoldMaxMs == 8000,
+              "the hold lasts at most BurstHoldMaxMs (8 s), then the burst goes");
+        input.HeldMs = 0;
+        input.EnemyHpPct = 30;
+        bool const floorBurst = DecideBurstHold(input, p99) == BurstHold::None;
+        input.EnemyHpPct = 31;
+        check(floorBurst && DecideBurstHold(input, p99) == BurstHold::Ready,
+              "at or below the floor (30 %) the burst goes at once");
         input.EnemyHpPct = 80;
         check(p1.OpponentKnows == false && DecideBurstHold(input, p1) == BurstHold::None,
               "below Opponent.FromSkill the bot does not use the memory");
+
+        // What a defensive aura stops: immunities hold every attacker, stops their damage type, minors none
+        check(ClassifyDefensiveAura(45438) == DefensiveStop::Immunity &&
+                  ClassifyDefensiveAura(10278) == DefensiveStop::Physical &&
+                  ClassifyDefensiveAura(31224) == DefensiveStop::Magic &&
+                  ClassifyDefensiveAura(22812) == DefensiveStop::Minor &&
+                  ClassifyDefensiveAura(133) == DefensiveStop::None,
+              "ice block immunity, hand of protection physical, cloak magic, barkskin minor, a fireball none");
+        uint32 classified = 0;
+        for (uint32 const aura : DEFENSIVE_AURAS)
+            classified += ClassifyDefensiveAura(aura) != DefensiveStop::None ? 1 : 0;
+        for (uint32 const aura : DEFENSIVE_IMMUNITY_AURAS)
+            classified += ClassifyDefensiveAura(aura) != DefensiveStop::None ? 1 : 0;
+        bool majorsHold = true;
+        for (uint32 const spell : MAJOR_DEFENSIVE_SPELLS)
+        {
+            DefensiveStop const stop = ClassifyDefensiveAura(spell);
+            majorsHold = majorsHold && stop != DefensiveStop::None && stop != DefensiveStop::Minor;
+        }
+        check(classified == DEFENSIVE_AURAS.size() + DEFENSIVE_IMMUNITY_AURAS.size() && majorsHold,
+              "every defensive aura is classified, every major defensive spell stops something");
+        check(DefensiveStopHolds(DefensiveStop::Immunity, true) && DefensiveStopHolds(DefensiveStop::Immunity, false) &&
+                  DefensiveStopHolds(DefensiveStop::Physical, true) &&
+                  !DefensiveStopHolds(DefensiveStop::Physical, false) &&
+                  DefensiveStopHolds(DefensiveStop::Magic, false) && !DefensiveStopHolds(DefensiveStop::Magic, true) &&
+                  !DefensiveStopHolds(DefensiveStop::Minor, true) && !DefensiveStopHolds(DefensiveStop::Minor, false),
+              "evasion holds a warrior, not a mage; cloak a mage, not a warrior; barkskin nobody");
         check(p99.OpponentLeadPct == 20 && p40.OpponentLeadPct < p80.OpponentLeadPct, "the lead grows with Foresight");
     }
 

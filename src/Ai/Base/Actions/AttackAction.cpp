@@ -9,6 +9,7 @@
 #include "Event.h"
 #include "LastMovementValue.h"
 #include "LootObjectStack.h"
+#include "NaturalTurn.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -188,7 +189,7 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
 
     // G2a: the natural turn where it applies (the swing waits for the core's arc), else the snap
     if (botAI->CanMove() && !bot->HasInArc(CAST_ANGLE_IN_FRONT, target))
-        botAI->FaceTarget(target);
+        botAI->FaceTarget(target, TurnSnapSite::Attack);
 
     botAI->ChangeEngine(BOT_STATE_COMBAT);
 

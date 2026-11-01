@@ -1037,6 +1037,17 @@ inline void RunHoldSelftest(Check&& check, Say&& say, uint64 modelSeed = 1)
                      worst[0], worst[1], worst[2]));
     check(worst[2] < worst[0] && worst[2] < worst[1],
           "model: the hold policy's worst shortfall from the best policy is below no hold's and the rule's");
+
+    // 13e-decide (Interrupt.SeeCancelLag): an ended bar stays in the kicker's view for its reaction delay
+    check(SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, true) && !SeesEndedBar(1451, 1200, 0, 2000, 1000, 250, true),
+          "see lag: an ended bar stays in view for the reaction delay after its last live sighting");
+    check(!SeesEndedBar(1300, 1200, 0, 2000, 1000, 0, true) && !SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, false),
+          "see lag: off (lag 0) or no kick decided, no press on an ended bar");
+    check(!SeesEndedBar(900, 850, 0, 2000, 1000, 250, true) && !SeesEndedBar(2050, 1950, 0, 2000, 1000, 250, true),
+          "see lag: before the commit point, or past the bar's own end (it finished), no press");
+    check(SeesEndedBar(1000, 850, 0, 2000, 1000, 300, true) && !SeesEndedBar(1400, 1050, 0, 2000, 1400, 300, true),
+          "see lag: a damage bait cancelled at 45 % lands the 50 % press (baited); a heal bait cut at 54 % stays clear "
+          "of the 70 % commit with 300 ms lag");
 }
 }  // namespace ArenaInterruptSim
 

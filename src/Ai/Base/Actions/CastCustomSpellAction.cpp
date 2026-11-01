@@ -8,6 +8,7 @@
 #include "ChatHelper.h"
 #include "Event.h"
 #include "ItemUsageValue.h"
+#include "NaturalTurn.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
 
@@ -132,7 +133,7 @@ bool CastCustomSpellAction::Execute(Event event)
 
     if (target != bot && !bot->HasInArc(CAST_ANGLE_IN_FRONT, target, sPlayerbotAIConfig.SightDistance))
     {
-        botAI->FaceTarget(target);  // G2a: the natural turn where it applies, else the snap
+        botAI->FaceTarget(target, TurnSnapSite::CastCommand);  // G2a: the natural turn where it applies, else the snap
         botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
 
         msg << "cast " << text;

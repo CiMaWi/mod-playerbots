@@ -5,6 +5,7 @@
  */
 
 #include "GenericTriggers.h"
+#include "ArenaInterrupt.h"
 #include "Corpse.h"
 #include "CreatureAI.h"
 #include "DefensiveTacticStrategy.h"
@@ -367,6 +368,38 @@ bool HealerShouldAttackTrigger::IsActive()
 
 bool ItemCountTrigger::IsActive() { return AI_VALUE2(uint32, "item count", item) < uint32(count); }
 
+namespace
+{
+// 13e-decide (Playerbots.Tactics.Interrupt.SeeCancelLag): the kicker still sees the bar of a cast that just ended (its
+// reaction to the end has not passed, ArenaInterrupt::SeesEndedBar), so a kick it committed goes on the ended bar (a
+// fake's cancel baits it, the kick is spent)
+bool InterruptSeesEndedBar(PlayerbotAI* botAI, Unit* target)
+{
+    if (!sPlayerbotAIConfig.TacticInterrupt.SeeCancelLag || !target || !target->IsInWorld() || !target->IsAlive() ||
+        target->IsNonMeleeSpellCast(true))
+        return false;
+
+    InterruptBotState& state = botAI->GetInterruptState();
+    InterruptCastSlot* const slot = state.Latest(target->GetGUID().GetCounter());
+    uint32 const nowMs = getMSTime();
+    if (!slot || !ArenaInterrupt::SeesEndedBar(nowMs, slot->SeenMs, slot->StartMs, slot->CastMs,
+                                               slot->Decision.CommitMs, slot->SeeLagMs, slot->Decision.Kick))
+        return false;
+
+    if (slot->ActiveAtMs == 0)
+    {
+        slot->ActiveAtMs = nowMs;
+        ++state.Kicks;
+    }
+
+    LOG_TRACE("playerbots.reaction",
+              "interrupt ended bar skill {} enemy {} spell {} elapsed {} cast {} commit {} lag {} gone {} at {}",
+              botAI->GetPvpSkill(), slot->Guid, slot->SpellId, nowMs - slot->StartMs, slot->CastMs,
+              slot->Decision.CommitMs, slot->SeeLagMs, nowMs - slot->SeenMs, nowMs);
+    return true;
+}
+}  // namespace
+
 bool InterruptSpellTrigger::IsActive()
 {
     if (!SpellTrigger::IsActive())
@@ -374,7 +407,7 @@ bool InterruptSpellTrigger::IsActive()
 
     Unit* const target = GetTarget();
     if (!botAI->IsInterruptableSpellCasting(target, getName()))
-        return false;
+        return botAI->TacticEnabledHere(TacticId::Interrupt) && InterruptSeesEndedBar(botAI, target);
 
     // G5b: with the Interrupt tactic on here, the kick waits for the bot's decision on the cast (ArenaInterrupt.h)
     return !botAI->TacticEnabledHere(TacticId::Interrupt) || botAI->DecideInterrupt(target);
