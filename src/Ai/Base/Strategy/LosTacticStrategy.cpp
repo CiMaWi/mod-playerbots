@@ -371,6 +371,12 @@ bool FindCoverRegain(Player* bot, Unit* see, bool enemyTarget, LosParams const& 
     if (!(path.GetPathType() & PATHFIND_NORMAL) || PathYards(path.GetPath()) > LOS_MAX_MOVE_YARDS * LOS_PATH_FACTOR)
         return false;
 
+    // never across Dalaran's waterfall (the straight line neither: the spline may cut a corner)
+    uint32 const mapId = bot->GetMapId();
+    if (PillarCrossesWaterfall(mapId, PositionOf(bot), {found.Point.X, found.Point.Y, z}) ||
+        PillarWalkCrossesWaterfall(mapId, PositionOf(bot), path.GetPath()))
+        return false;
+
     plan.Pillar = found.Pillar;
     plan.Point = {found.Point.X, found.Point.Y, z};
     plan.WantHidden = caster && found.Hidden;
@@ -388,11 +394,22 @@ bool FindPathRegain(Player* bot, Unit* see, bool enemyTarget, uint32 maxRays, Co
         return false;
 
     Movement::PointsArray const& points = path.GetPath();
+    uint32 const mapId = bot->GetMapId();
+    CoverVec const self = PositionOf(bot);
     for (size_t index = 1; index < points.size() && rays < maxRays; ++index)
     {
         G3D::Vector3 const& point = points[index];
         if (enemyTarget && see->GetDistance(point.x, point.y, point.z) < LOS_MELEE_YARDS)
             return false;
+
+        // Dalaran's waterfall: a path leg across it ends the search (every later point lies behind it); a straight
+        // line across it skips the point
+        if (PillarCrossesWaterfall(mapId, {points[index - 1].x, points[index - 1].y, points[index - 1].z},
+                                   {point.x, point.y, point.z}))
+            return false;
+
+        if (PillarCrossesWaterfall(mapId, self, {point.x, point.y, point.z}))
+            continue;
 
         ++rays;
         if (!see->IsWithinLOS(point.x, point.y, point.z + bot->GetCollisionHeight()))
@@ -484,6 +501,8 @@ bool HardCastAtBot(Player* bot, Battleground* bg, uint32 hardCastMs, PillarBar& 
 
         CcKind kind = CcKind::Snare;
         bool const cc = CcKindOfAura(info->GetAllEffectsMechanicMask(), 0, kind) && kind != CcKind::Snare;
+        // Spell::CheckCast (Spell.cpp:6106-6108, this core) skips the unit target's LOS check for either attribute
+        // (the enum text of SPELL_ATTR5_ALWAYS_AOE_LINE_OF_SIGHT here: "Ignore line of sight checks")
         bool const ignoresLos = info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) ||
                                 info->HasAttribute(SPELL_ATTR5_ALWAYS_AOE_LINE_OF_SIGHT);
         uint32 const castMs = static_cast<uint32>(cast->GetCastTime());
@@ -576,12 +595,8 @@ bool PillarWalkable(Player* bot, CoverVec const& point, float maxYards, CoverVec
     if (yards > maxYards)
         return false;
 
-    for (size_t index = 1; index < points.size(); ++index)
-    {
-        if (PillarCrossesWaterfall(mapId, {points[index - 1].x, points[index - 1].y, points[index - 1].z},
-                                   {points[index].x, points[index].y, points[index].z}))
-            return false;
-    }
+    if (PillarWalkCrossesWaterfall(mapId, PositionOf(bot), points))
+        return false;
 
     at = ground;
     pathYards = yards;
@@ -758,7 +773,9 @@ bool CastAtMeTrigger::IsActive()
     if (seen.Handled || !seen.Hide)
         return false;
 
-    if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) || (!bar.Cc && bot->IsNonMeleeSpellCast(false)))
+    // auto-repeat (auto shot, wand) does not hold the bot; a rooted or stunned bot cannot step, so no search for it
+    if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) || (!bar.Cc && bot->IsNonMeleeSpellCast(false, false, true)) ||
+        !botAI->CanMove())
         return false;
 
     uint32 const remainingMs = bar.CastMs - bar.ElapsedMs;
@@ -811,7 +828,7 @@ bool PillarStepTrigger::IsActive()
     Battleground* bg = PillarArenaHere(botAI, bot, state);
     ArenaCoverTable const* table = bg ? FindArenaCoverTable(bot->GetMapId()) : nullptr;
     if (!table || !table->Count || !BotPillarParams(botAI, state, nowMs).Known || bot->isMoving() ||
-        bot->IsNonMeleeSpellCast(false))
+        bot->IsNonMeleeSpellCast(false, false, true))
         return false;
 
     Player* chaser = MeleeChaser(bot, bg);
@@ -859,7 +876,7 @@ bool RegainLosAction::isUseful()
         return false;
 
     // a healer's cast on someone it sees finishes first
-    return state.Want != LosWant::Partner || !bot->IsNonMeleeSpellCast(false);
+    return state.Want != LosWant::Partner || !bot->IsNonMeleeSpellCast(false, false, true);
 }
 
 bool RegainLosAction::Execute(Event /*event*/)
@@ -991,12 +1008,13 @@ bool BreakLosAction::Execute(Event /*event*/)
         return false;
     }
 
-    // a crowd control bar: the bot's own cast gives way (the trigger let it finish any other)
-    if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
-        bot->InterruptSpell(CURRENT_GENERIC_SPELL, false);
-
+    // a crowd control bar: the bot's own cast gives way once the move is under way (the trigger let it finish any
+    // other); a refused move leaves the cast alone
     if (!MoveTo(bot->GetMapId(), at.X, at.Y, at.Z, false, false, false, false, MovementPriority::MOVEMENT_FORCED, true))
         return false;
+
+    if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        bot->InterruptSpell(CURRENT_GENERIC_SPELL, false);
 
     LosState(botAI).Relocs.Note(nowMs);
     CoverPlan plan;
@@ -1040,7 +1058,7 @@ bool PillarStepAction::isUseful()
 {
     PillarBotState const& state = PillarState(botAI);
     return static_cast<PillarDue>(state.Due) == PillarDue::Step && getMSTime() - state.DueMs < LOS_DUE_MS &&
-           bot->IsAlive() && !bot->IsNonMeleeSpellCast(false);
+           bot->IsAlive() && !bot->IsNonMeleeSpellCast(false, false, true);
 }
 
 // One hop round the pillar (ground and path checked again, never across the waterfall)
@@ -1053,7 +1071,15 @@ bool PillarStepAction::Execute(Event /*event*/)
     PillarStepPick const pick = state.DueStep;
     CoverVec at;
     float pathYards = 0.0f;
-    if (!bg || !pick.Found || !PillarWalkable(bot, pick.Point, state.Params.StepYards * LOS_PATH_FACTOR, at, pathYards))
+    bool walkable = false;
+    if (bg && pick.Found)
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Pillar::Step")
+                                                        : nullptr);
+        walkable = PillarWalkable(bot, pick.Point, state.Params.StepYards * LOS_PATH_FACTOR, at, pathYards);
+    }
+
+    if (!walkable)
     {
         ++state.StepsRefused;
         return false;

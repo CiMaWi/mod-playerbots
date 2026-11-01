@@ -177,6 +177,27 @@ inline bool PillarCrossesWaterfall(uint32 mapId, CoverVec const& a, CoverVec con
            CoverSegmentHitsDisc(a, b, PILLAR_DS_WATERFALL_X, PILLAR_DS_WATERFALL_Y, PILLAR_DS_WATERFALL_R);
 }
 
+// Does a walk that starts at `from` and runs through the path points (anything with x, y, z: G3D::Vector3) cross
+// Dalaran's waterfall? Used for the mmap paths of the Los and Pillar moves alike
+template <typename Points>
+inline bool PillarWalkCrossesWaterfall(uint32 mapId, CoverVec const& from, Points const& points)
+{
+    if (mapId != COVER_MAP_DALARAN)
+        return false;
+
+    CoverVec last = from;
+    for (auto const& point : points)
+    {
+        CoverVec const next{point.x, point.y, point.z};
+        if (PillarCrossesWaterfall(mapId, last, next))
+            return true;
+
+        last = next;
+    }
+
+    return false;
+}
+
 // A step round a pillar from a melee chaser: the active pillar whose ring is nearest the bot (at most PILLAR_NEAR_YARDS
 // off it), its NextCirclePoint; refused when shorter than PILLAR_MIN_STEP_YARDS (the pillar is between them already),
 // longer than stepYards, outside the box, in a pillar or across the waterfall; farSideOnly (Ring of Valor): the point
@@ -579,6 +600,21 @@ void RunPillarChecks(Check&& check)
         }
     }
     check(clear, "Dalaran: no pillar step crosses the waterfall");
+
+    // a Los regain's mmap path (any points with x, y, z): across the waterfall refused, round it or on other maps not
+    struct PathPoint
+    {
+        float x, y, z;
+    };
+
+    PathPoint const across[] = {{1285.0f, 790.0f, 7.0f}, {1298.0f, 791.0f, 7.0f}, {1310.0f, 795.0f, 7.0f}};
+    PathPoint const round[] = {{1290.0f, 760.0f, 7.0f}, {1312.0f, 760.0f, 7.0f}, {1320.0f, 780.0f, 7.0f}};
+    CoverVec const pathFrom{1275.0f, 790.0f, 7.0f};
+    CoverVec const roundFrom{1280.0f, 750.0f, 7.0f};
+    check(PillarWalkCrossesWaterfall(COVER_MAP_DALARAN, pathFrom, across) &&
+              !PillarWalkCrossesWaterfall(COVER_MAP_DALARAN, roundFrom, round) &&
+              !PillarWalkCrossesWaterfall(COVER_MAP_NAGRAND, pathFrom, across),
+          "Dalaran: a regain path across the waterfall is refused, round it not, other maps never");
 
     // Ring of Valor's first 21 s (LosArenaIdle, the battleground's clock) hold every break and step
     check(LosArenaIdle(true, true, 20999, config.RvIdleMs) && !LosArenaIdle(true, true, 21000, config.RvIdleMs),
