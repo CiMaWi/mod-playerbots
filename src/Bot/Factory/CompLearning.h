@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -29,10 +30,18 @@
 // team's ladder percentile (strict at the top, forgiving at the bottom; never a sure pick).
 namespace CompLearning
 {
+// Load limits: a row's games (wins <= games), the prior, a band edge (team rating), entries of one comp (5v5)
+constexpr double MaxRowGames = 1e9;
+constexpr double MaxPrior = 1000.0;
+constexpr double MaxRating = 1e7;
+constexpr size_t MaxCompEntries = 5;
+
 struct CompRow
 {
     uint32 Games = 0;
     uint32 Wins = 0;
+    // The key's entries, split once at load for the pooled lookups (empty: split on use)
+    std::vector<std::string> Entries;
 };
 
 struct Band
@@ -49,6 +58,8 @@ struct Table
     float Prior = 8.0f;
     std::string GeneratedAt;
     uint32 Rows = 0;
+    // Comp rows left out at load (bad numbers, a band out of range, an empty or too long comp)
+    uint32 Skipped = 0;
     std::vector<Band> Bands;
 };
 
@@ -167,10 +178,10 @@ inline bool EntryMatches(std::string const& pattern, std::string const& entry)
 // True when the sorted entries can be matched one to one onto the patterns
 inline bool KeyMatches(std::vector<std::string> const& patterns, std::vector<std::string> const& entries)
 {
-    if (patterns.size() != entries.size())
+    if (patterns.size() != entries.size() || entries.size() > 32)
         return false;
 
-    std::vector<bool> used(entries.size(), false);
+    uint32 used = 0;
     // Exact patterns first, so a wildcard never takes the entry an exact one needs
     for (int pass = 0; pass < 2; ++pass)
     {
@@ -183,9 +194,10 @@ inline bool KeyMatches(std::vector<std::string> const& patterns, std::vector<std
             bool found = false;
             for (size_t i = 0; i < entries.size() && !found; ++i)
             {
-                if (!used[i] && EntryMatches(pattern, entries[i]))
+                uint32 const bit = 1u << i;
+                if (!(used & bit) && EntryMatches(pattern, entries[i]))
                 {
-                    used[i] = true;
+                    used |= bit;
                     found = true;
                 }
             }
@@ -197,10 +209,28 @@ inline bool KeyMatches(std::vector<std::string> const& patterns, std::vector<std
 
     return true;
 }
+
+// A whole number in [lo, hi]
+inline bool WholeIn(double value, double lo, double hi)
+{
+    return value >= lo && value <= hi && std::floor(value) == value;
+}
+
+inline std::string Num(double value)
+{
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%g", value);
+    return buffer;
+}
 }  // namespace Detail
 
-// The table's counts for a comp in a band. Entries without a spec pool every matching row (Exact false).
-inline Lookup Find(Table const& table, int32 band, std::vector<std::string> const& entries)
+// Pooled lookups by band and comp key; valid while the table stays the same (the caller clears it on a load)
+using LookupCache = std::unordered_map<std::string, Lookup>;
+
+// The table's counts for a comp in a band. Entries without a spec pool every matching row (Exact false); such a
+// lookup scans the band's rows once and is kept in the cache when one is given.
+inline Lookup Find(Table const& table, int32 band, std::vector<std::string> const& entries,
+                   LookupCache* cache = nullptr)
 {
     Lookup lookup;
     if (band < 0 || static_cast<size_t>(band) >= table.Bands.size())
@@ -223,15 +253,29 @@ inline Lookup Find(Table const& table, int32 band, std::vector<std::string> cons
     }
 
     lookup.Exact = false;
+    std::string cacheKey;
+    if (cache)
+    {
+        cacheKey = std::to_string(band) + ":" + key;
+        auto const cached = cache->find(cacheKey);
+        if (cached != cache->end())
+            return cached->second;
+    }
+
     std::vector<std::string> const patterns = Detail::SplitKey(key);
     for (auto const& [compKey, row] : rows.Comps)
     {
-        if (Detail::KeyMatches(patterns, Detail::SplitKey(compKey)))
+        bool const match = row.Entries.empty() ? Detail::KeyMatches(patterns, Detail::SplitKey(compKey))
+                                               : Detail::KeyMatches(patterns, row.Entries);
+        if (match)
         {
             lookup.Games += row.Games;
             lookup.Wins += row.Wins;
         }
     }
+
+    if (cache)
+        cache->emplace(std::move(cacheKey), lookup);
 
     return lookup;
 }
@@ -324,7 +368,7 @@ struct GroupValue
 // than teamSize - 1 members or the band is unknown
 inline bool CandidateValue(Table const& table, int32 band, std::vector<std::string> const& members,
                            std::string const& candidate, uint32 teamSize, float explore, size_t maxGroups, float& value,
-                           std::vector<GroupValue>* groups)
+                           std::vector<GroupValue>* groups, LookupCache* cache = nullptr)
 {
     if (!table.Loaded || band < 0 || static_cast<size_t>(band) >= table.Bands.size() || teamSize < 1 ||
         members.size() + 1 < teamSize)
@@ -339,7 +383,7 @@ inline bool CandidateValue(Table const& table, int32 band, std::vector<std::stri
         for (size_t index : set)
             entries.push_back(members[index]);
 
-        Lookup const lookup = Find(table, band, entries);
+        Lookup const lookup = Find(table, band, entries, cache);
         float const learned = LearnedValue(lookup, table.Prior, bandGames, explore);
         sum += learned;
         ++count;
@@ -624,15 +668,48 @@ private:
         if (Literal("null"))
             return true;
 
-        char const* start = _text.c_str() + _pos;
-        char* end = nullptr;
-        double const number = std::strtod(start, &end);
-        if (end == start)
+        // A JSON number only (no nan, inf, hex or leading '+') that is finite (no overflow such as 1e999)
+        size_t end = _pos;
+        auto digits = [&]()
+        {
+            size_t const from = end;
+            while (end < _text.size() && std::isdigit(static_cast<unsigned char>(_text[end])))
+                ++end;
+
+            return end > from;
+        };
+
+        if (end < _text.size() && _text[end] == '-')
+            ++end;
+
+        if (!digits())
+            return false;
+
+        if (end < _text.size() && _text[end] == '.')
+        {
+            ++end;
+            if (!digits())
+                return false;
+        }
+
+        if (end < _text.size() && (_text[end] == 'e' || _text[end] == 'E'))
+        {
+            ++end;
+            if (end < _text.size() && (_text[end] == '+' || _text[end] == '-'))
+                ++end;
+
+            if (!digits())
+                return false;
+        }
+
+        std::string const token = _text.substr(_pos, end - _pos);
+        double const number = std::strtod(token.c_str(), nullptr);
+        if (!std::isfinite(number))
             return false;
 
         out.Type = Value::Kind::Number;
         out.Number = number;
-        _pos += static_cast<size_t>(end - start);
+        _pos = end;
         return true;
     }
 
@@ -646,7 +723,11 @@ inline double NumberOr(Json::Value const* value, double fallback)
     return value && value->Type == Json::Value::Kind::Number ? value->Number : fallback;
 }
 
-// Parses comp-strength.json (format 1) into out; false with a reason (out untouched) when the text is not usable
+// Parses comp-strength.json (format 1) into out; false with a reason (out untouched) when the text is not usable.
+// Refused: not JSON (also nan, inf, hex or overflowing numbers), format != 1, a prior outside (0, MaxPrior], band edges
+// that are not whole ratings in [0, MaxRating] ascending without overlap. Skipped and counted (Skipped): comp rows
+// whose band is not a band index, whose games or wins are not whole numbers with 0 <= wins <= games <= MaxRowGames,
+// whose comp is empty, has an empty entry or more than MaxCompEntries, or that would overflow the band's games.
 inline bool ParseTable(std::string const& text, Table& out, std::string& error)
 {
     Json::Value root;
@@ -660,7 +741,14 @@ inline bool ParseTable(std::string const& text, Table& out, std::string& error)
     double const format = NumberOr(root.Get("format"), 0.0);
     if (format != 1.0)
     {
-        error = "format " + std::to_string(static_cast<int32>(format)) + " is not 1";
+        error = "format " + Detail::Num(format) + " is not 1";
+        return false;
+    }
+
+    double const prior = NumberOr(root.Get("prior"), 8.0);
+    if (!(prior > 0.0 && prior <= MaxPrior))
+    {
+        error = "prior " + Detail::Num(prior) + " is outside (0, " + Detail::Num(MaxPrior) + "]";
         return false;
     }
 
@@ -674,39 +762,63 @@ inline bool ParseTable(std::string const& text, Table& out, std::string& error)
     }
 
     Table table;
-    table.Prior = static_cast<float>(std::max(0.0, NumberOr(root.Get("prior"), 8.0)));
+    table.Prior = static_cast<float>(prior);
     if (Json::Value const* generated = root.Get("generatedAt"))
         table.GeneratedAt = generated->Text;
 
+    double previousHi = 0.0;
     for (Json::Value const& item : bands->Items)
     {
-        Band band;
-        band.Lo = static_cast<int32>(NumberOr(item.Get("lo"), 0.0));
-        band.Hi = static_cast<int32>(NumberOr(item.Get("hi"), 0.0));
-        if (band.Hi <= band.Lo)
+        double const lo = NumberOr(item.Get("lo"), -1.0);
+        double const hi = NumberOr(item.Get("hi"), -1.0);
+        if (!Detail::WholeIn(lo, previousHi, MaxRating) || !Detail::WholeIn(hi, lo + 1.0, MaxRating))
         {
-            error = "a band with hi <= lo";
+            error = "band " + std::to_string(table.Bands.size()) + " [" + Detail::Num(lo) + ", " + Detail::Num(hi) +
+                    ") is no whole rating range in [0, " + Detail::Num(MaxRating) + "] above the previous band";
             return false;
         }
 
+        Band band;
+        band.Lo = static_cast<int32>(lo);
+        band.Hi = static_cast<int32>(hi);
         table.Bands.push_back(std::move(band));
+        previousHi = hi;
     }
 
+    double const lastBand = static_cast<double>(table.Bands.size()) - 1.0;
     for (Json::Value const& item : comps->Items)
     {
         Json::Value const* comp = item.Get("comp");
         double const band = NumberOr(item.Get("band"), -1.0);
         double const games = NumberOr(item.Get("games"), -1.0);
         double const wins = NumberOr(item.Get("wins"), -1.0);
-        if (!comp || comp->Type != Json::Value::Kind::String || comp->Text.empty() || band < 0.0 ||
-            band >= static_cast<double>(table.Bands.size()) || games < 0.0 || wins < 0.0 || wins > games)
+        if (!comp || comp->Type != Json::Value::Kind::String || !Detail::WholeIn(band, 0.0, lastBand) ||
+            !Detail::WholeIn(games, 0.0, MaxRowGames) || !Detail::WholeIn(wins, 0.0, games))
+        {
+            ++table.Skipped;
             continue;
+        }
 
+        std::vector<std::string> const entries = Detail::SplitKey(comp->Text);
+        bool const emptyEntry =
+            std::any_of(entries.begin(), entries.end(), [](std::string const& entry) { return entry.empty(); });
         Band& target = table.Bands[static_cast<size_t>(band)];
-        CompRow& row = target.Comps[CompKey(Detail::SplitKey(comp->Text))];
-        row.Games += static_cast<uint32>(games);
+        uint32 const rowGames = static_cast<uint32>(games);
+        if (emptyEntry || entries.size() > MaxCompEntries ||
+            static_cast<uint64>(target.Games) + rowGames > std::numeric_limits<uint32>::max())
+        {
+            ++table.Skipped;
+            continue;
+        }
+
+        std::string const key = CompKey(entries);
+        CompRow& row = target.Comps[key];
+        if (row.Entries.empty())
+            row.Entries = Detail::SplitKey(key);
+
+        row.Games += rowGames;
         row.Wins += static_cast<uint32>(wins);
-        target.Games += static_cast<uint32>(games);
+        target.Games += rowGames;
         ++table.Rows;
     }
 
@@ -773,6 +885,56 @@ inline uint32 RunSelftest(std::vector<std::string>& out)
               !ParseTable("{\"format\":1,", untouched, error),
           "parse: wrong format and cut file refused");
 
+    // Bad numbers: non-JSON or non-finite numbers, a bad prior or bad band edges refuse the file
+    auto refused = [&](std::string const& prior, std::string const& bands)
+    {
+        Table bad;
+        std::string reason;
+        return !ParseTable("{\"format\":1,\"prior\":" + prior + ",\"bands\":[" + bands + "],\"comps\":[]}", bad,
+                           reason) &&
+               !bad.Loaded;
+    };
+    std::string const band0 = "{\"lo\":0,\"hi\":500}";
+    check(refused("nan", band0) && refused("NaN", band0) && refused("inf", band0) && refused("-Infinity", band0) &&
+              refused("1e999", band0) && refused("0x10", band0) && refused("+8", band0) && refused(".5", band0) &&
+              refused("8", "{\"lo\":0,\"hi\":1e400}") && !refused("8", band0),
+          "parse: nan, inf, hex, overflowing and non-JSON numbers refused");
+    check(refused("0", band0) && refused("-3", band0) && refused("5e9", band0) && !refused("1000", band0),
+          "parse: prior outside (0, 1000] refused");
+    check(refused("8", "{\"lo\":-1,\"hi\":500}") && refused("8", "{\"lo\":0,\"hi\":5e9}") &&
+              refused("8", "{\"lo\":0.5,\"hi\":500}") && refused("8", "{\"lo\":500,\"hi\":500}") &&
+              refused("8", band0 + ",{\"lo\":400,\"hi\":900}") && refused("8", "{\"lo\":0}") &&
+              !refused("8", band0 + ",{\"lo\":500,\"hi\":100000}"),
+          "parse: bad band edges refused (negative, huge, fractional, empty, overlapping, missing)");
+
+    // Bad rows are skipped and counted; four rows of 1e9 games fill a band, a fifth would overflow it
+    std::string rows = "{\"format\":1,\"bands\":[" + band0 + "],\"comps\":[";
+    for (char const* row :
+         {"\"comp\":\"mage/frost+priest/disc\",\"band\":0,\"games\":10,\"wins\":6",
+          "\"comp\":\"a+b\",\"band\":0.5,\"games\":1,\"wins\":1", "\"comp\":\"a+b\",\"band\":-1,\"games\":1,\"wins\":1",
+          "\"comp\":\"a+b\",\"band\":1,\"games\":1,\"wins\":1", "\"comp\":\"a+b\",\"band\":0,\"games\":5e9,\"wins\":1",
+          "\"comp\":\"a+b\",\"band\":0,\"games\":-4,\"wins\":0", "\"comp\":\"a+b\",\"band\":0,\"games\":4,\"wins\":5",
+          "\"comp\":\"a+b\",\"band\":0,\"games\":4,\"wins\":-1", "\"comp\":\"a+b\",\"band\":0,\"games\":4.5,\"wins\":1",
+          "\"comp\":\"a+b\",\"band\":0,\"games\":null,\"wins\":1",
+          "\"comp\":\"a++b\",\"band\":0,\"games\":4,\"wins\":1", "\"comp\":\"\",\"band\":0,\"games\":4,\"wins\":1",
+          "\"comp\":\"a+b+c+d+e+f\",\"band\":0,\"games\":4,\"wins\":1", "\"comp\":7,\"band\":0,\"games\":4,\"wins\":1",
+          "\"comp\":\"rogue/sub+warrior/arms\",\"band\":0,\"games\":1e9,\"wins\":1",
+          "\"comp\":\"rogue/sub+warrior/arms\",\"band\":0,\"games\":1e9,\"wins\":1",
+          "\"comp\":\"rogue/sub+warrior/arms\",\"band\":0,\"games\":1e9,\"wins\":1",
+          "\"comp\":\"rogue/sub+warrior/arms\",\"band\":0,\"games\":1e9,\"wins\":1",
+          "\"comp\":\"rogue/sub+warrior/arms\",\"band\":0,\"games\":1e9,\"wins\":1"})
+        rows += std::string(rows.back() == '[' ? "" : ",") + "{" + row + "}";
+
+    rows += "]}";
+    Table counted;
+    bool const countedOk = ParseTable(rows, counted, error);
+    check(countedOk && counted.Rows == 5 && counted.Skipped == 14 && counted.Bands[0].Games == 4000000010u &&
+              counted.Bands[0].Comps.at("rogue/sub+warrior/arms").Games == 4000000000u,
+          fmt("parse: bad rows skipped and counted (rows %.0f, skipped %.0f)", counted.Rows, counted.Skipped));
+    check(countedOk && counted.Bands[0].Comps.at("mage/frost+priest/disc").Entries ==
+                           std::vector<std::string>{"mage/frost", "priest/disc"},
+          "parse: comp entries split once at load");
+
     // Keys, bands, lookups
     check(CompKey({"Warrior/Arms", "rogue/sub"}) == "rogue/sub+warrior/arms", "key: lower case, sorted");
     check(BandOf(table, 0) == 0 && BandOf(table, 499) == 0 && BandOf(table, 500) == 1 && BandOf(table, 3000) == 1,
@@ -791,6 +953,13 @@ inline uint32 RunSelftest(std::vector<std::string>& out)
     check(exact.Games == 40 && exact.Wins == 20 && exact.Exact, "find: exact row");
     check(pooled.Games == 60 && pooled.Wins == 30 && !pooled.Exact, "find: class-only entry pools its specs");
     check(none.Games == 0, "find: untried comp has no games");
+    LookupCache cache;
+    Lookup const cached1 = Find(table, 0, {"priest/disc", "mage"}, &cache);
+    Lookup const cached2 = Find(table, 0, {"mage", "priest/disc"}, &cache);
+    Lookup const cachedExact = Find(table, 0, {"priest/disc", "mage/frost"}, &cache);
+    check(cached1.Games == 60 && cached2.Games == 60 && cached2.Wins == 30 && !cached2.Exact && cache.size() == 1 &&
+              cachedExact.Games == 40,
+          "find: pooled lookups cached by band and key, exact ones not");
 
     // Values: shrunk, bonus, blend with weight 0 leaves the fit unchanged (mode off)
     float const strong = LearnedValue(Find(table, 0, {"warlock/demo", "paladin/prot"}), 8.0f, 140, 0.0f);

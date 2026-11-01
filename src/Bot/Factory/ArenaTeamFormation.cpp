@@ -50,6 +50,10 @@ constexpr float MinPickWeight = 0.05f;
 // Comp learning: the most playing groups scored per candidate, the default table file, lines shown
 constexpr size_t MaxCompGroups = 32;
 constexpr char const* DefaultCompsFile = "comp-strength.json";
+// A larger comp table is refused (today's is about 20 KB)
+constexpr std::uintmax_t MaxCompsFileBytes = 16 * 1024 * 1024;
+constexpr uint32 CompsCheckSeconds = 300;
+constexpr size_t MaxCompLookups = 4096;
 constexpr size_t CompRowsShown = 6;
 constexpr size_t DiversityTopShown = 3;
 
@@ -230,13 +234,28 @@ void ArenaTeamFormation::Update(uint32 diff)
         return;
     }
 
-    // The comp table is read once the option is on (startup, or the first tick after a config reload turned it on)
-    if (sPlayerbotAIConfig.ArenaTeamCompLearningEnable && !_compsTried)
+    // The comp table is read once the option is on (startup, or the first tick after a config reload turned it on),
+    // then again when the file changes (checked every CompsCheckSeconds; the farm refreshes it daily)
+    if (sPlayerbotAIConfig.ArenaTeamCompLearningEnable)
     {
-        PLAYERBOT_CHECK_WORLD_THREAD("ArenaTeamFormation::LoadComps");
-        _compsTried = true;
-        std::string message;
-        LoadComps(message);
+        if (!_compsTried)
+        {
+            PLAYERBOT_CHECK_WORLD_THREAD("ArenaTeamFormation::LoadComps");
+            _compsTried = true;
+            _compsCheckTimer = 0;
+            std::string message;
+            LoadComps(message);
+        }
+        else
+        {
+            _compsCheckTimer += diff;
+            if (_compsCheckTimer >= CompsCheckSeconds * IN_MILLISECONDS)
+            {
+                _compsCheckTimer = 0;
+                PLAYERBOT_CHECK_WORLD_THREAD("ArenaTeamFormation::ReloadChangedComps");
+                ReloadChangedComps();
+            }
+        }
     }
 
     _timer += diff;
@@ -571,6 +590,7 @@ void ArenaTeamFormation::Recruit(ArenaTeam* team, std::vector<Candidate>& pool, 
     {
         std::vector<size_t> indices;
         std::vector<float> fits;
+        bool learned = false;
         for (size_t i = 0; i < pool.size(); ++i)
         {
             if (pool[i].Taken || pool[i].LeftTeamId == team->GetId())
@@ -581,21 +601,24 @@ void ArenaTeamFormation::Recruit(ArenaTeam* team, std::vector<Candidate>& pool, 
                 !RandomPlayerbotFactory::SameArenaBracket(captain->Level, bot->GetLevel()))
                 continue;
 
-            float const fit = TeamFit(team, bot);
+            bool usedLearned = false;
+            float const fit = TeamFit(team, bot, &usedLearned);
             if (fit < 0.0f)
                 continue;
 
             indices.push_back(i);
             fits.push_back(fit);
+            learned = learned || usedLearned;
         }
 
         if (indices.empty())
             return;
 
-        // Strict at the top (the best score), forgiving at the bottom (weighted random). With comp learning a softmax
-        // whose temperature falls with the percentile: the top mostly takes the best, never surely.
+        // Strict at the top (the best score), forgiving at the bottom (weighted random). When the scores carry a
+        // learned comp term a softmax whose temperature falls with the percentile: the top mostly takes the best, never
+        // surely. A team without one (no band with games, roster too small) keeps the coin.
         size_t pick = 0;
-        if (CompLearningOn())
+        if (learned)
             pick = CompLearning::PickSoftmax(fits, CompParams(percentile).Temperature, frand(0.0f, 1.0f));
         else
             pick = frand(0.0f, 1.0f) < percentile ? PickBest(fits) : PickWeighted(fits);
@@ -685,7 +708,7 @@ void ArenaTeamFormation::OnFounded(Player* bot, ArenaTeam const* team)
              team->GetType());
 }
 
-float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate) const
+float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate, bool* usedLearned) const
 {
     std::vector<uint8> classes;
     float skillSum = 0.0f;
@@ -714,6 +737,9 @@ float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate) const
     if (!CompLearningOn() || !LearnedTerm(team, candidate, learned, nullptr))
         return fit;
 
+    if (usedLearned)
+        *usedLearned = true;
+
     return CompLearning::Blend(fit, learned, CompParams(LadderPercentile(team->GetId())).Weight);
 }
 
@@ -738,9 +764,36 @@ CompLearning::Params ArenaTeamFormation::CompParams(float percentile)
         sPlayerbotAIConfig.ArenaTeamCompLearningTemperatureTop);
 }
 
+void ArenaTeamFormation::ReloadChangedComps()
+{
+    std::string const path = CompsPath();
+    std::error_code error;
+    std::filesystem::file_time_type const stamp = std::filesystem::last_write_time(path, error);
+    // A missing file keeps the table; an unchanged one is not read again (also not after a failed read)
+    if (error || (path == _compsStampPath && static_cast<int64>(stamp.time_since_epoch().count()) == _compsStamp))
+        return;
+
+    std::string message;
+    LoadComps(message);
+}
+
 bool ArenaTeamFormation::LoadComps(std::string& message)
 {
     std::string const path = CompsPath();
+    // The stamp before the read: a file replaced during it is read again at the next check
+    std::error_code fileError;
+    std::filesystem::file_time_type const stamp = std::filesystem::last_write_time(path, fileError);
+    _compsStampPath = fileError ? std::string() : path;
+    _compsStamp = fileError ? 0 : static_cast<int64>(stamp.time_since_epoch().count());
+    std::uintmax_t const size = std::filesystem::file_size(path, fileError);
+    if (!fileError && size > MaxCompsFileBytes)
+    {
+        message = Acore::StringFormat("{} has {} bytes, more than {} ({})", path, size, MaxCompsFileBytes,
+                                      _comps.Loaded ? "the previous table stays" : "comp learning stays off");
+        LOG_WARN("playerbots", "Arena formation: {}", message);
+        return false;
+    }
+
     std::ifstream in(path, std::ios::binary);
     if (!in)
     {
@@ -764,9 +817,18 @@ bool ArenaTeamFormation::LoadComps(std::string& message)
 
     _comps = std::move(table);
     _compsSource = path;
+    _compLookups.clear();
     message = Acore::StringFormat("comp table loaded from {}: {} rows in {} bands, prior {}, generated {}", path,
                                   _comps.Rows, _comps.Bands.size(), _comps.Prior, _comps.GeneratedAt);
-    LOG_INFO("playerbots", "Arena formation: {}", message);
+    if (_comps.Skipped)
+    {
+        message +=
+            Acore::StringFormat(", {} bad row(s) skipped (band, games or wins out of range, bad comp)", _comps.Skipped);
+        LOG_WARN("playerbots", "Arena formation: {}", message);
+    }
+    else
+        LOG_INFO("playerbots", "Arena formation: {}", message);
+
     return true;
 }
 
@@ -808,8 +870,11 @@ bool ArenaTeamFormation::LearnedTerm(ArenaTeam* team, Player* candidate, float& 
 
     std::string const entry = MemberEntry(candidate->GetGUID(), candidate->getClass());
     float const explore = CompParams(LadderPercentile(team->GetId())).Explore;
+    if (_compLookups.size() > MaxCompLookups)
+        _compLookups.clear();
+
     return CompLearning::CandidateValue(_comps, band, members, entry, team->GetType(), explore, MaxCompGroups, value,
-                                        groups);
+                                        groups, &_compLookups);
 }
 
 std::vector<std::string> ArenaTeamFormation::DiversityLines() const

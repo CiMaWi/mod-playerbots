@@ -3288,9 +3288,12 @@ Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 # team's rating rank among the bot teams of its type: the bottom explores varied comps (low weight, high exploration,
 # a warm pick), the top leans on strong comps with some variance (high weight, a cold pick that is never certain). A
 # member's comp entry is "class/spec" as the match records name it, from the online bot, else the last one seen, else
-# the class alone (pooling every spec of it). The table is read when the option is first seen on (startup or a
-# config reload) and by the console command below; a missing or broken file keeps learning off (or the previous
-# table). 0 = the formation scores and picks exactly as before. GM command (works from the console):
+# the class alone (pooling every spec of it). A team without a learned term (no rating band with games, a roster too
+# small for a playing group) scores and picks as with the option off. The table is read when the option is first seen
+# on (startup or a config reload), again within 5 minutes after the file changes (the farm's daily refresh) and by the
+# console command below; a missing, broken or oversized (above 16 MB) file keeps learning off (or the previous table);
+# rows with numbers out of range are skipped and counted in the load line. 0 = the formation scores and picks exactly
+# as before. GM command (works from the console):
 # .playerbots arena comps [reload | selftest | teams]: the table, comp diversity per band, reload, the pure selftest,
 # every team's playing-group comps. Formation joins log the learned value and the groups' wins/games.
 #   Enable (1/0): learn comps.

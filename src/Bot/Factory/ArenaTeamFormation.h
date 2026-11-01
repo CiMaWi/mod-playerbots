@@ -105,8 +105,9 @@ private:
     bool WantsRecruitAboveMin(ArenaTeam const* team, time_t now) const;
     void BuildPool(std::vector<Candidate>& pool) const;
     void OnJoined(Player* bot, ArenaTeam* team, time_t now);
-    // Fit of a candidate for a team, or a negative value when its skill is outside the team's tolerance
-    float TeamFit(ArenaTeam* team, Player* candidate) const;
+    // Fit of a candidate for a team, or a negative value when its skill is outside the team's tolerance; usedLearned
+    // (when given) is set when the fit carries a learned comp term
+    float TeamFit(ArenaTeam* team, Player* candidate, bool* usedLearned = nullptr) const;
     float LadderPercentile(uint32 teamId) const;
     uint32 LossStreakOf(ObjectGuid guid, uint32 teamId) const;
     // The team the bot left last, or 0
@@ -114,6 +115,8 @@ private:
 
     // World thread: reads the comp table (CompLearning.File); a failed read keeps the previous table
     bool LoadComps(std::string& message);
+    // World thread: reads the table again when the file's modification time differs from the last read's
+    void ReloadChangedComps();
     static std::string CompsPath();
     static CompLearning::Params CompParams(float percentile);
     // "class/spec" of a member as the match records name it: from the online player (cached per pass), else the last
@@ -144,6 +147,12 @@ private:
     CompLearning::Table _comps;
     std::string _compsSource;
     bool _compsTried = false;
+    uint32 _compsCheckTimer = 0;
+    // The path and modification time (file clock ticks) of the last read; an empty path when the file was missing
+    std::string _compsStampPath;
+    int64 _compsStamp = 0;
+    // Pooled comp lookups (world thread); cleared when a table loads or it grows past its cap
+    mutable CompLearning::LookupCache _compLookups;
     // guid -> (pass it was read in, "class/spec"); world thread
     mutable std::unordered_map<ObjectGuid::LowType, std::pair<uint32, std::string>> _entries;
 };
