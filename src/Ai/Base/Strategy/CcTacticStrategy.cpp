@@ -2570,12 +2570,25 @@ bool DefensiveAuraUp(Unit const* unit)
 namespace
 {
 // 13e-decide: a defensive is up on the unit that stops a physical (or a magic) attacker (DefensiveStopHolds)
-bool DefensiveStopUp(Unit const* unit, bool physical)
+bool DefensiveStopUp(Unit const* unit, bool physical, bool* immunity = nullptr)
 {
-    auto const stops = [unit, physical](uint32 spellId)
-    { return DefensiveStopHolds(ClassifyDefensiveAura(spellId), physical) && unit->HasAura(spellId); };
-    return std::any_of(DEFENSIVE_IMMUNITY_AURAS.begin(), DEFENSIVE_IMMUNITY_AURAS.end(), stops) ||
-           std::any_of(DEFENSIVE_AURAS.begin(), DEFENSIVE_AURAS.end(), stops);
+    // 13e-polish: and whether the stop up is an immunity (the burst hold's cap and floor spare it)
+    DefensiveStop found = DefensiveStop::None;
+    auto const stops = [unit, physical, &found](uint32 spellId)
+    {
+        DefensiveStop const stop = ClassifyDefensiveAura(spellId);
+        if (!DefensiveStopHolds(stop, physical) || !unit->HasAura(spellId))
+            return false;
+
+        found = stop;
+        return true;
+    };
+    bool const up = std::any_of(DEFENSIVE_IMMUNITY_AURAS.begin(), DEFENSIVE_IMMUNITY_AURAS.end(), stops) ||
+                    std::any_of(DEFENSIVE_AURAS.begin(), DEFENSIVE_AURAS.end(), stops);
+    if (immunity)
+        *immunity = up && found == DefensiveStop::Immunity;
+
+    return up;
 }
 
 // 13e-decide: the enemy owns a major defensive that stops this attacker (what a player knows of a class and spec);
@@ -2777,7 +2790,7 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
     bool const physical = !PlayerbotAI::IsCaster(botAI->GetBot());
     BurstHoldInput input;
     input.EnemyHpPct = DefensiveHealthPct(target);
-    input.DefensiveUp = DefensiveStopUp(target, physical);
+    input.DefensiveUp = DefensiveStopUp(target, physical, &input.ImmunityUp);
     Player const* const enemy = target->ToPlayer();
     input.HasStop = enemy && DefensiveHasStop(enemy, physical, input.StopCooldownMs);
     OpponentMemory& memory = botAI->GetOpponentMemory();
@@ -2792,6 +2805,10 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
         slot->BurstHoldSinceMs = 0;
 
     input.HeldMs = slot && slot->BurstHoldSinceMs != 0 ? nowMs - slot->BurstHoldSinceMs : 0;
+    // 13e-polish: the stop's own clock, per aura episode (the ready clock above is not reset by an up episode)
+    if (input.DefensiveUp)
+        input.UpHeldMs = state.UpEpisode.Note(guid, nowMs);
+
     BurstHold const hold = DecideBurstHold(input, state.Params);
     if (hold == BurstHold::None)
         return false;
@@ -2808,9 +2825,11 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
     if (state.LastHoldMs == 0 || nowMs - state.LastHoldMs > DEFENSIVE_HOLD_EPISODE_MS)
     {
         ++state.Holds;
+        bool const up = hold == BurstHold::DefensiveUp;
         LOG_TRACE("playerbots", "Defensive burst hold: {} holds its burst on {} at {} % ({}, {}, held {} ms), at {} ms",
-                  botAI->GetBot()->GetName(), target->GetName(), input.EnemyHpPct, BurstHoldName(hold),
-                  physical ? "physical" : "magic", input.HeldMs, nowMs);
+                  botAI->GetBot()->GetName(), target->GetName(), input.EnemyHpPct,
+                  up && input.ImmunityUp ? "immunity" : BurstHoldName(hold), physical ? "physical" : "magic",
+                  up ? input.UpHeldMs : input.HeldMs, nowMs);
     }
 
     state.LastHoldMs = std::max(nowMs, 1u);

@@ -85,13 +85,15 @@ struct ArenaCoverTable
     uint32 Count;
 };
 
-// Ring of Valor (core BattlegroundRV.cpp:239-243 positions, GetPillarIdForPos radii 1.75 and 2 x 1.75); gate k is
-// BG_RV_OBJECT_PILAR_k, solid while GO_STATE_READY (GameObject::SetGoState); Z is the arena floor, not the object's
-// origin. UpdatePillars swaps sets 1+3 and 2+4 every 25 s from about 45.5 s into the match.
+// Ring of Valor (core BattlegroundRV.cpp:239-243 positions; radii: the small pillars 1 and 3 as G2d-b's scan measured
+// them, 2.26 against GetPillarIdForPos's 1.75; the large ones 2 x 1.75, not scanned raised); gate k is
+// BG_RV_OBJECT_PILAR_k, solid while GO_STATE_ACTIVE (raised; GO_STATE_READY is lowered, the scan's finding); Z is the
+// arena floor, not the object's origin. UpdatePillars swaps sets 1+3 and 2+4 every 25 s from about 45.5 s into the
+// match.
 inline constexpr std::array<CoverPillar, 4> ARENA_COVER_RV_PILLARS = {{
-    {763.632385f, -306.162384f, 28.28f, 1.75f, 1},
+    {763.632385f, -306.162384f, 28.28f, 2.26f, 1},
     {723.644287f, -284.493256f, 28.28f, 3.5f, 2},
-    {763.611145f, -261.856750f, 28.28f, 1.75f, 3},
+    {763.611145f, -261.856750f, 28.28f, 2.26f, 3},
     {802.211609f, -284.493256f, 28.28f, 3.5f, 4},
 }};
 
@@ -731,7 +733,7 @@ CoverScanResult CoverScan(CoverScanParams const& params, Ground&& ground, Los&& 
 }
 
 // Game side (ArenaCover.cpp): the gates up now (bit 0 always; Ring of Valor: bit k while BG_RV_OBJECT_PILAR_k is
-// GO_STATE_READY), the map's ray between two eye points (the spell check's LOS), and the scan command's body
+// GO_STATE_ACTIVE, raised), the map's ray between two eye points (the spell check's LOS), and the scan command's body
 uint32 ArenaCoverActiveGates(Battleground* bg);
 bool ArenaCoverLos(Map* map, uint32 phaseMask, CoverVec const& a, CoverVec const& b);
 bool RunArenaCoverScan(ChatHandler* handler, Player* player);
@@ -763,10 +765,10 @@ void RunCoverChecks(Check&& check)
     if (!rv || rv->Count != 4)
         return;
 
-    check(rv->Pillars[0].R == 1.75f && rv->Pillars[1].R == 3.5f && rv->Pillars[2].R == 1.75f &&
+    check(rv->Pillars[0].R == 2.26f && rv->Pillars[1].R == 3.5f && rv->Pillars[2].R == 2.26f &&
               rv->Pillars[3].R == 3.5f && rv->Pillars[0].Gate == 1 && rv->Pillars[1].Gate == 2 &&
               rv->Pillars[2].Gate == 3 && rv->Pillars[3].Gate == 4,
-          "Ring of Valor radii and gates of the core");
+          "Ring of Valor radii (small pillars as scanned) and gates of the core");
 
     uint32 rays = 0;
     uint32 gates = COVER_ALL_GATES;

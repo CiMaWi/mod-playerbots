@@ -49,9 +49,11 @@ uint32 ArenaCoverActiveGates(Battleground* bg)
     if (!bg || bg->GetMapId() != COVER_MAP_RING_OF_VALOR)
         return gates;
 
+    // 13e-polish (G2d-b's scan): a pillar at GO_STATE_ACTIVE is raised and blocks the rays, at GO_STATE_READY it is
+    // lowered and blocks none. Its LOS follows the transport's animation, so a swap is unreliable for up to about 5 s.
     for (uint32 gate = 1; gate <= RV_PILLAR_OBJECTS.size(); ++gate)
         if (GameObject* pillar = bg->GetBGObject(RV_PILLAR_OBJECTS[gate - 1]))
-            if (pillar->GetGoState() == GO_STATE_READY)
+            if (pillar->GetGoState() == GO_STATE_ACTIVE)
                 gates |= 1u << gate;
 
     return gates;

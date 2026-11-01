@@ -4624,6 +4624,33 @@ bool FakeKickerInView(Player* bot, Player* enemy, FakeParams const& params)
     return FakeKickerSees(enemy->HasInArc(static_cast<float>(M_PI), bot), enemy->GetTarget() == bot->GetGUID(), params);
 }
 
+// 13e-polish: a cast outside the fight (a conjure, an item, a pet summon, an enchant, a trade skill) is no bait
+bool FakeUtilityCast(SpellInfo const* info)
+{
+    for (uint8 i = EFFECT_0; i <= EFFECT_2; ++i)
+    {
+        switch (info->Effects[i].Effect)
+        {
+            case SPELL_EFFECT_CREATE_ITEM:
+            case SPELL_EFFECT_CREATE_ITEM_2:
+            case SPELL_EFFECT_CREATE_RANDOM_ITEM:
+            case SPELL_EFFECT_CREATE_MANA_GEM:
+            case SPELL_EFFECT_TRADE_SKILL:
+            case SPELL_EFFECT_ENCHANT_ITEM:
+            case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY:
+            case SPELL_EFFECT_ENCHANT_HELD_ITEM:
+            case SPELL_EFFECT_SUMMON_PET:
+            case SPELL_EFFECT_SUMMON_OBJECT_WILD:
+            case SPELL_EFFECT_FEED_PET:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    return false;
+}
+
 // G5e: the bot's cast began (CastSpell). A new long generic cast ends any pending fake and may become one: the fight's
 // enemies in view that could kick it, without those whose kick the bot remembers used lately; a fake's cancel instant
 // goes to the pre-gate stepper. Anything else (an instant, a channel) leaves a pending fake alone.
@@ -4643,7 +4670,8 @@ void DecideFakeCast(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 nowM
     FakeInput input;
     input.CastMs = static_cast<uint32>(std::max(spell->GetCastTime(), 0));
     input.Kickable = (info->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT) != 0;
-    if (FakeCastVerdict(params, input.CastMs, input.Kickable) != FakeVerdict::Fake)
+    input.Fight = bot->IsInCombat() && !FakeUtilityCast(info);
+    if (FakeCastVerdict(params, input.CastMs, input.Kickable, input.Fight) != FakeVerdict::Fake)
         return;
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalCast::Decide")
@@ -8401,7 +8429,8 @@ void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
 }
 
 // G2a: face the target the natural way where NaturalFacingHere says so, else the instant snap (as before; also for a
-// moving bot, whose path sets its facing). A turn under way to the same object goes on; anything else starts a new
+// moving bot, whose path sets its facing; there the "set facing" action waits for the bot to stand, 13e-polish, so only
+// a cast or a swing on the move snaps). A turn under way to the same object goes on; anything else starts a new
 // one from the bot's orientation now. A bot without control (stunned, feared in place) gets the snap too: the stepper
 // stops a turn there, and a refused cast would only be retried every CastRetryMs. True when the target is inside the
 // core's 180-degree spell arc (Spell.cpp CheckCast), so a cast may go ahead while the turn finishes.

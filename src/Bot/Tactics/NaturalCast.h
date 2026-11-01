@@ -154,7 +154,8 @@ enum class FakeVerdict : uint8
     Repeat,       // too soon after the last fake
     Rate,         // MaxPerMinute fakes in the last minute
     Chance,       // the draw said no
-    Urgent        // 13e-decide: a heal while its target (or, the only healer, any friend) is below HealGuardPct
+    Urgent,       // 13e-decide: a heal while its target (or, the only healer, any friend) is below HealGuardPct
+    Utility       // 13e-polish: a cast outside the fight (out of combat; a conjure, an item, a pet summon, an enchant)
 };
 
 inline char const* FakeVerdictName(FakeVerdict verdict)
@@ -181,16 +182,21 @@ inline char const* FakeVerdictName(FakeVerdict verdict)
             return "chance";
         case FakeVerdict::Urgent:
             return "urgent";
+        case FakeVerdict::Utility:
+            return "utility";
     }
 
     return "?";
 }
 
 // The cast itself: Fake when it may be a bait (the kickers are looked at only then)
-inline FakeVerdict FakeCastVerdict(FakeParams const& params, uint32 castMs, bool kickable)
+inline FakeVerdict FakeCastVerdict(FakeParams const& params, uint32 castMs, bool kickable, bool fight = true)
 {
     if (!params.Known)
         return FakeVerdict::Unknown;
+
+    if (!fight)
+        return FakeVerdict::Utility;
 
     if (!kickable)
         return FakeVerdict::NotKickable;
@@ -228,6 +234,7 @@ struct FakeInput
 {
     uint32 CastMs = 0;
     bool Kickable = true;
+    bool Fight = true;       // 13e-polish: a fight cast (in combat; no conjure, item, pet summon or enchant)
     uint32 KickersSeen = 0;  // enemy players in reach, facing or targeting the bot
     uint32 KickersLive = 0;  // of them, those whose kick the bot does not remember used lately
     uint32 NowMs = 0;
@@ -251,7 +258,7 @@ inline bool FakeHealUrgent(FakeParams const& params, FakeInput const& input)
 
 inline FakeVerdict DecideFake(FakeParams const& params, FakeInput const& input)
 {
-    FakeVerdict const cast = FakeCastVerdict(params, input.CastMs, input.Kickable);
+    FakeVerdict const cast = FakeCastVerdict(params, input.CastMs, input.Kickable, input.Fight);
     if (cast != FakeVerdict::Fake)
         return cast;
 
@@ -415,6 +422,9 @@ void RunFakeChecks(Check&& check)
     check(FakeCastVerdict(p99, 1000, true) == FakeVerdict::Short, "a 1 s cast is no bait");
     check(FakeCastVerdict(p99, 2500, false) == FakeVerdict::NotKickable, "a cast no kick interrupts is no bait");
     check(FakeCastVerdict(p60, 2500, true) == FakeVerdict::Unknown, "skill 60 does not fake");
+    check(FakeCastVerdict(p99, 3000, true, false) == FakeVerdict::Utility &&
+              std::string(FakeVerdictName(FakeVerdict::Utility)) == "utility",
+          "a cast outside the fight (conjure mana gem) is no bait");
     FakeParams roomless = p99;
     roomless.MinCastMs = 100;
     check(FakeCastVerdict(roomless, 500, true) == FakeVerdict::Short, "no room between CancelMinMs and the end");

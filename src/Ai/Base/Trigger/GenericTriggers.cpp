@@ -422,8 +422,8 @@ bool InterruptSeesEndedBar(PlayerbotAI* botAI, Unit* target, std::string const& 
     uint32 const nowMs = getMSTime();
     if (!slot ||
         !ArenaInterrupt::SeesEndedBar(nowMs, slot->SeenMs, slot->StartMs, slot->CastMs, slot->Decision.CommitMs,
-                                      slot->SeeLagMs, slot->Decision.Kick,
-                                      InterruptEndedBarInterrupted(target, *slot)) ||
+                                      slot->SeeLagMs, slot->Decision.Kick, InterruptEndedBarInterrupted(target, *slot),
+                                      slot->ActiveAtMs) ||
         !InterruptSpellUsable(botAI, target, spell))
         return false;
 

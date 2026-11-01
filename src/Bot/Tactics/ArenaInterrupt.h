@@ -382,14 +382,23 @@ inline uint32 BelievedHealCastMs(InterruptHoldParams const& hold, bool seenKnown
 // cancel shortly before the commit point baits it. A bar ended by an interrupt (interrupted: this bot pressed one at
 // the cast, or the enemy shows its mark: school locked, silenced, stunned, feared or polymorphed) is not seen: the bot
 // saw the interrupt land, so no second interrupt goes on the dead bar.
+// 13e-polish: a press committed while the bar was still in view (activeAtMs: the first check that let the kick go) is
+// under way: it goes out once the bot's reaction to it passes, also after the lag, until the bar as seen would have run
+// out or SEE_COMMITTED_PRESS_MS passed (the 13e verification run: the lag window, p50 113 ms, closed long before the
+// kick's reaction, p50 745 ms, so no committed press ever went out on an ended bar).
+constexpr uint32 SEE_COMMITTED_PRESS_MS = 1500;
+
 inline bool SeesEndedBar(uint32 nowMs, uint32 lastSeenMs, uint32 startMs, uint32 castMs, uint32 commitMs,
-                         uint32 seeLagMs, bool kick, bool interrupted)
+                         uint32 seeLagMs, bool kick, bool interrupted, uint32 activeAtMs = 0)
 {
-    if (!kick || interrupted || seeLagMs == 0 || lastSeenMs == 0 || nowMs - lastSeenMs > seeLagMs)
+    if (!kick || interrupted || seeLagMs == 0 || lastSeenMs == 0)
         return false;
 
     uint32 const elapsedMs = nowMs - startMs;
-    return elapsedMs >= commitMs && elapsedMs < castMs;
+    if (elapsedMs < commitMs || elapsedMs >= castMs)
+        return false;
+
+    return nowMs - lastSeenMs <= seeLagMs || (activeAtMs != 0 && nowMs - activeAtMs <= SEE_COMMITTED_PRESS_MS);
 }
 
 // The bot's expected reaction to a heal it waits for: the reaction model's median plus extraMs (ping and display),

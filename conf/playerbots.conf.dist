@@ -2492,8 +2492,9 @@ Playerbots.Tactics.Enable = 0
 #
 # SeeCancelLag (13e-decide): 1 = a cast bar that ends (finished, cancelled or cut) stays in the judging kicker's view
 # for its reaction delay (the reaction model's median plus ping, display and the deep check), so a kick it committed on
-# that bar goes on the ended bar while it cannot yet see the end (a fake's cancel baits it; the kick is spent). 0 (the
-# default) reads the bar's end live, as before. (Range 0-1.)
+# that bar goes on the ended bar while it cannot yet see the end (a fake's cancel baits it; the kick is spent); a kick
+# committed while the bar was in view goes out when the kicker's reaction passes, until the bar as seen would have run
+# out (at most 1.5 s after the commit). 0 (the default) reads the bar's end live, as before. (Range 0-1.)
 # Playerbots.Tactics.Interrupt.SeeCancelLag = 0
 #
 # With the Interrupt tactic enabled (or the PvP harness on), the strategy "tactic interrupt" adds the class kicks the
@@ -2543,7 +2544,9 @@ Playerbots.Tactics.Enable = 0
 # stop of its damage type: melee and hunters physical, casters magic; minor reductions such as barkskin or pain
 # suppression never hold), and while the enemy owns such a defensive not seen up within Opponent.ExpireMs (believed
 # ready) until the enemy uses it: at most BurstHoldMaxMs from the first such hold since its last use (0: no such hold)
-# and never with the enemy at or below BurstHoldFloorPct per cent health. "Focused" counts only against an enemy team
+# and never with the enemy at or below BurstHoldFloorPct per cent health. A stop that is up (not an immunity) holds
+# the burst under the same cap, counted per episode of the aura, and the same floor (13e-polish; an immunity holds while
+# it lasts). "Focused" counts only against an enemy team
 # of at least FocusedMinTeam players at the match's start (the arena's size; battlegrounds and the open world always):
 # in 2v2 both enemies on the bot are the normal case, so there only burst and the plain line press. Opponent.Enable 0
 # turns the memory off. Protect.AttackedWithinMs, Protect.MinGapMs, Opponent.MinEvents and
@@ -2596,7 +2599,8 @@ Playerbots.Tactics.Enable = 0
 # most MaxPerMinute a minute. A kick at the bot within BaitedWindowMs after the cancel counts as baited (counters
 # fakes, kicksBaited, kickSeen). Nothing tells a kicker it faces a fake; its own memory of seen cancels is all it has
 # (Playerbots.Tactics.Interrupt). HealGuardPct (13e-decide): a heal is never faked while its target is below this
-# health, nor, by the group's only healer, while any friend is below it.
+# health, nor, by the group's only healer, while any friend is below it. Only fight casts are faked: in combat, and no
+# conjure, created item, pet summon, enchant or trade skill (13e-polish).
 # Playerbots.Tactics.Fake.Enable = 0
 # Playerbots.Tactics.Fake.KnownFromSkill = 70
 # Playerbots.Tactics.Fake.MinCastMs = 1500

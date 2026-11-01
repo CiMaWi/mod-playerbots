@@ -397,7 +397,8 @@ inline bool PartnerNeedsProtect(uint32 hpPct, bool attacked, bool tank, Defensiv
 // attacker's damage is up (DefensiveStopHolds; minor reductions never hold), and while the enemy owns such a defensive
 // believed ready (not seen up within its cooldown) until it uses it: at most BurstHoldMaxMs from the first such
 // hold since its last use, and never with the enemy at or below BurstHoldFloorPct. Seen used recently: spent, the burst
-// goes now.
+// goes now. 13e-polish: a stop that is up (not an immunity) holds under the same cap, counted per aura episode
+// (BurstUpEpisode), and the same floor; an immunity holds for its whole episode (a burst into it does nothing).
 enum class BurstHold : uint8
 {
     None = 0,
@@ -429,6 +430,33 @@ struct BurstHoldInput
     // Opponent.ExpireMs). Counted from the last sighting of the aura, not the use; shortening talents are not known.
     uint32 StopCooldownMs = 0;
     uint32 HeldMs = 0;  // this bot's hold for it, from the first hold since its last use (0: none yet)
+    // 13e-polish: the defensive up is an immunity, and how long this bot has seen it up in this episode
+    bool ImmunityUp = false;
+    uint32 UpHeldMs = 0;
+};
+
+// 13e-polish: one aura episode of an enemy's defensive up, as one bot sees it at its burst checks: the same enemy with
+// a stop up at checks no further apart than DEFENSIVE_UP_EPISODE_GAP_MS. Note returns how long the episode has been
+// seen up (0 at its first check).
+constexpr uint32 DEFENSIVE_UP_EPISODE_GAP_MS = 3000;
+
+struct BurstUpEpisode
+{
+    uint32 Guid = 0;
+    uint32 SinceMs = 0;  // 0: none
+    uint32 LastMs = 0;
+
+    uint32 Note(uint32 guid, uint32 nowMs)
+    {
+        if (SinceMs == 0 || Guid != guid || nowMs - LastMs > DEFENSIVE_UP_EPISODE_GAP_MS)
+        {
+            Guid = guid;
+            SinceMs = nowMs == 0 ? 1 : nowMs;
+        }
+
+        LastMs = nowMs;
+        return nowMs - SinceMs;
+    }
 };
 
 inline BurstHold DecideBurstHold(BurstHoldInput const& input, DefensiveParams const& params)
@@ -436,8 +464,13 @@ inline BurstHold DecideBurstHold(BurstHoldInput const& input, DefensiveParams co
     if (!params.OpponentKnows)
         return BurstHold::None;
 
+    // A stop up at or below the floor, or past the cap in its episode, holds no more (it is seen up, so it is not
+    // believed ready either)
     if (input.DefensiveUp)
-        return BurstHold::DefensiveUp;
+        return input.ImmunityUp ||
+                       (input.EnemyHpPct > params.BurstHoldFloorPct && input.UpHeldMs < params.BurstHoldMaxMs)
+                   ? BurstHold::DefensiveUp
+                   : BurstHold::None;
 
     uint32 const spentMs = input.StopCooldownMs != 0 ? input.StopCooldownMs : params.OpponentExpireMs;
     if (!input.HasStop || (input.StopSeen && input.StopSeenAgeMs <= spentMs))
@@ -496,7 +529,8 @@ struct DefensiveBotState
     DefensiveDeathLatch Death;  // tactics.deathsDefReady
     uint32 LastObserveMs = 0;   // the enemy defensive scan
     uint32 LastHoldMs = 0;
-    uint32 LastBurstMs = 0;  // the last burst counted (tactics.defBurst: one per window)
+    BurstUpEpisode UpEpisode;  // 13e-polish: the enemy defensive up that holds the burst
+    uint32 LastBurstMs = 0;    // the last burst counted (tactics.defBurst: one per window)
     // What the bot did (tactics show)
     uint32 Presses = 0;
     uint32 SelfUses = 0;
@@ -734,6 +768,35 @@ void RunDefensiveChecks(Check&& check)
         input.EnemyHpPct = 80;
         check(p1.OpponentKnows == false && DecideBurstHold(input, p1) == BurstHold::None,
               "below Opponent.FromSkill the bot does not use the memory");
+
+        // 13e-polish: a stop up holds at most BurstHoldMaxMs of its episode and not at or below the floor; an
+        // immunity its whole episode
+        BurstHoldInput up;
+        up.EnemyHpPct = 80;
+        up.DefensiveUp = true;
+        up.HeldMs = 311000;  // a stale ready clock plays no part
+        up.UpHeldMs = p99.BurstHoldMaxMs - 1;
+        bool const upOpen = DecideBurstHold(up, p99) == BurstHold::DefensiveUp;
+        up.UpHeldMs = p99.BurstHoldMaxMs;
+        bool const upCapped = DecideBurstHold(up, p99) == BurstHold::None;
+        up.UpHeldMs = 0;
+        up.EnemyHpPct = p99.BurstHoldFloorPct;
+        bool const upFloor = DecideBurstHold(up, p99) == BurstHold::None;
+        up.EnemyHpPct = p99.BurstHoldFloorPct + 1;
+        check(upOpen && upCapped && upFloor && DecideBurstHold(up, p99) == BurstHold::DefensiveUp,
+              "a stop up holds the burst at most BurstHoldMaxMs of its episode, never at or below the floor");
+        up.ImmunityUp = true;
+        up.EnemyHpPct = 5;
+        up.UpHeldMs = 60000;
+        check(DecideBurstHold(up, p99) == BurstHold::DefensiveUp, "an immunity up holds the burst whatever the clock");
+
+        BurstUpEpisode episode;
+        uint32 const first = episode.Note(42, 1000);
+        uint32 const steady = episode.Note(42, 1000 + DEFENSIVE_UP_EPISODE_GAP_MS);
+        uint32 const later = episode.Note(42, 1000 + 2 * DEFENSIVE_UP_EPISODE_GAP_MS + 1);
+        uint32 const other = episode.Note(43, 1000 + 2 * DEFENSIVE_UP_EPISODE_GAP_MS + 2);
+        check(first == 0 && steady == DEFENSIVE_UP_EPISODE_GAP_MS && later == 0 && other == 0,
+              "the up clock runs per aura episode: a gap or another enemy starts a new one");
 
         // What a defensive aura stops: immunities hold every attacker, stops their damage type, minors none
         check(ClassifyDefensiveAura(45438) == DefensiveStop::Immunity &&

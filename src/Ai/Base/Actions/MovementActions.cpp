@@ -3050,9 +3050,15 @@ bool SetFacingTargetAction::Execute(Event /*event*/)
 
 // G2a: no use while a direction turn holds (blink back's 180 before its cast): at relevance 37 over blink back's 35 it
 // turned the bot back at every check, so blink back never cast. The engine goes on to the next action then.
+// 13e-polish: nor while the bot moves where the natural facing applies: its path sets the facing (the spline writes it
+// back at the next update), so the snap was only an instant 180 there and back (the 13e verification run's snap tags:
+// moving set facing); once the bot stands, the natural turn faces the target.
 bool SetFacingTargetAction::isUseful()
 {
-    return !AI_VALUE2(bool, "facing", "current target") && !NaturalDirectionTurnHolds(botAI);
+    if (AI_VALUE2(bool, "facing", "current target") || NaturalDirectionTurnHolds(botAI))
+        return false;
+
+    return !bot->isMoving() || !NaturalFacingHere(botAI, getMSTime());
 }
 
 bool SetFacingTargetAction::isPossible()

@@ -1057,6 +1057,18 @@ inline void RunHoldSelftest(Check&& check, Say&& say, uint64 modelSeed = 1)
               !SeesEndedBar(1300, 1200, 0, 2000, 1000, 250, true, true) &&
               !SeesEndedBar(1000, 850, 0, 2000, 1000, 300, true, true),
           "see lag: a bar ended by a landed interrupt is not seen (no second interrupt on the dead bar)");
+    // 13e-polish: a press committed in view goes out after the lag (its reaction passes), within the bar as seen
+    check(!SeesEndedBar(1600, 1200, 0, 2000, 1000, 250, true, false) &&
+              SeesEndedBar(1600, 1200, 0, 2000, 1000, 250, true, false, 1300) &&
+              SeesEndedBar(1600, 1200, 0, 2000, 1000, 250, true, false, 1000),
+          "see lag: a press committed while the bar was in view goes out after the lag");
+    check(!SeesEndedBar(2050, 1200, 0, 2000, 1000, 250, true, false, 1300) &&
+              !SeesEndedBar(4400, 1200, 0, 5000, 1000, 250, true, false, 1300 - 1) &&
+              SeesEndedBar(2800, 1200, 0, 5000, 1000, 250, true, false, 1300),
+          "see lag: the committed press ends with the bar as seen, or SEE_COMMITTED_PRESS_MS after the commit");
+    check(!SeesEndedBar(1600, 1200, 0, 2000, 1000, 250, true, true, 1300) &&
+              !SeesEndedBar(1600, 1200, 0, 2000, 1000, 0, true, false, 1300),
+          "see lag: a committed press stops at a landed interrupt, and never without the lag option");
 }
 }  // namespace ArenaInterruptSim
 
