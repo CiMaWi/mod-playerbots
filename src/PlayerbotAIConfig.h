@@ -617,6 +617,15 @@ public:
     float ArenaTeamSynergyWeight;
     uint32 ArenaTeamRecruitsPerPass;
     uint32 ArenaTeamRecruitAboveMinChance;
+    // Playerbots.ArenaTeam.CompLearning.*: the partner score learns comp strength from comp-strength.json (G6f)
+    bool ArenaTeamCompLearningEnable;
+    std::string ArenaTeamCompLearningFile;
+    float ArenaTeamCompLearningWeightBottom;
+    float ArenaTeamCompLearningWeightTop;
+    float ArenaTeamCompLearningExploreBottom;
+    float ArenaTeamCompLearningExploreTop;
+    float ArenaTeamCompLearningTemperatureBottom;
+    float ArenaTeamCompLearningTemperatureTop;
     // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite to a randombot
     bool ArenaRecruitEnable;
     uint32 ArenaRecruitRatingAtSkill1;

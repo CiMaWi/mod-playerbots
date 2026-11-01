@@ -79,6 +79,7 @@ public:
         static ChatCommandTable playerbotsArenaCommandTable = {
             {"resetratings", HandleArenaResetRatingsCommand, SEC_GAMEMASTER, Console::Yes},
             {"teams", ArenaTeamFormation::HandleTeamsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"comps", ArenaTeamFormation::HandleCompsCommand, SEC_GAMEMASTER, Console::Yes},
             {"recruit", ArenaRecruit::HandleRecruitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 

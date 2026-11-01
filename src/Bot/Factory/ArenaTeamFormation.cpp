@@ -9,19 +9,26 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include <string>
 
+#include "AiFactory.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
 #include "BotProfileMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "Common.h"
+#include "Config.h"
 #include "Group.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
+#include "PvpTestRecord.h"
 #include "Random.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
@@ -40,6 +47,11 @@ constexpr uint32 PercentMax = 100;
 constexpr float UnknownCloseness = 0.5f;
 // Every candidate keeps a small chance in a weighted pick
 constexpr float MinPickWeight = 0.05f;
+// Comp learning: the most playing groups scored per candidate, the default table file, lines shown
+constexpr size_t MaxCompGroups = 32;
+constexpr char const* DefaultCompsFile = "comp-strength.json";
+constexpr size_t CompRowsShown = 6;
+constexpr size_t DiversityTopShown = 3;
 
 // Class synergy, from the classes alone (members may be offline)
 constexpr float SynergyBase = 0.5f;
@@ -218,6 +230,15 @@ void ArenaTeamFormation::Update(uint32 diff)
         return;
     }
 
+    // The comp table is read once the option is on (startup, or the first tick after a config reload turned it on)
+    if (sPlayerbotAIConfig.ArenaTeamCompLearningEnable && !_compsTried)
+    {
+        PLAYERBOT_CHECK_WORLD_THREAD("ArenaTeamFormation::LoadComps");
+        _compsTried = true;
+        std::string message;
+        LoadComps(message);
+    }
+
     _timer += diff;
     if (_timer < sPlayerbotAIConfig.ArenaTeamUpdateSeconds * IN_MILLISECONDS)
         return;
@@ -326,6 +347,12 @@ void ArenaTeamFormation::RunPass()
 
             LOG_INFO("playerbots", "Arena formation: {}v{} {} teams (roster {}: {}), since startup {} leaves, {} joins",
                      type, type, teams.size(), sizes, counts, _leaves, _joins);
+        }
+
+        if (CompLearningOn())
+        {
+            for (std::string const& line : DiversityLines())
+                LOG_INFO("playerbots", "Arena formation comps: {}", line);
         }
     }
 
@@ -565,8 +592,14 @@ void ArenaTeamFormation::Recruit(ArenaTeam* team, std::vector<Candidate>& pool, 
         if (indices.empty())
             return;
 
-        // Strict at the top (the best score), forgiving at the bottom (weighted random)
-        size_t const pick = frand(0.0f, 1.0f) < percentile ? PickBest(fits) : PickWeighted(fits);
+        // Strict at the top (the best score), forgiving at the bottom (weighted random). With comp learning a softmax
+        // whose temperature falls with the percentile: the top mostly takes the best, never surely.
+        size_t pick = 0;
+        if (CompLearningOn())
+            pick = CompLearning::PickSoftmax(fits, CompParams(percentile).Temperature, frand(0.0f, 1.0f));
+        else
+            pick = frand(0.0f, 1.0f) < percentile ? PickBest(fits) : PickWeighted(fits);
+
         Candidate& candidate = pool[indices[pick]];
         candidate.Taken = true;
         Player* bot = ObjectAccessor::FindConnectedPlayer(candidate.Guid);
@@ -627,8 +660,21 @@ void ArenaTeamFormation::OnJoined(Player* bot, ArenaTeam* team, time_t now)
     _tracks.erase(bot->GetGUID().GetCounter());
     _teamChangedAt[team->GetId()] = now;
     ++_joins;
-    LOG_INFO("playerbots", "Arena formation: {} joined {} ({}v{}, rating {}, roster {})", bot->GetName(),
-             team->GetName(), team->GetType(), team->GetType(), team->GetRating(), team->GetMembersSize());
+    std::string learned;
+    std::vector<CompLearning::GroupValue> groups;
+    float value = 0.0f;
+    if (CompLearningOn() && LearnedTerm(team, bot, value, &groups))
+    {
+        learned = Acore::StringFormat(", learned {:.3f} at percentile {:.2f}:", value, LadderPercentile(team->GetId()));
+        for (CompLearning::GroupValue const& group : groups)
+        {
+            learned += Acore::StringFormat(" {} {:.3f} ({}/{}{})", group.Key, group.Value, group.Counts.Wins,
+                                           group.Counts.Games, group.Counts.Exact ? "" : " pooled");
+        }
+    }
+
+    LOG_INFO("playerbots", "Arena formation: {} joined {} ({}v{}, rating {}, roster {}{})", bot->GetName(),
+             team->GetName(), team->GetType(), team->GetType(), team->GetRating(), team->GetMembersSize(), learned);
 }
 
 void ArenaTeamFormation::OnFounded(Player* bot, ArenaTeam const* team)
@@ -662,7 +708,161 @@ float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate) const
     if (known && std::fabs(diff) > tolerance)
         return -1.0f;
 
-    return FitScore(known, diff, tolerance, classes, candidate->getClass(), sPlayerbotAIConfig.ArenaTeamSynergyWeight);
+    float const fit =
+        FitScore(known, diff, tolerance, classes, candidate->getClass(), sPlayerbotAIConfig.ArenaTeamSynergyWeight);
+    float learned = 0.0f;
+    if (!CompLearningOn() || !LearnedTerm(team, candidate, learned, nullptr))
+        return fit;
+
+    return CompLearning::Blend(fit, learned, CompParams(LadderPercentile(team->GetId())).Weight);
+}
+
+bool ArenaTeamFormation::CompLearningOn() const
+{
+    return sPlayerbotAIConfig.ArenaTeamCompLearningEnable && _comps.Loaded && IsActive();
+}
+
+std::string ArenaTeamFormation::CompsPath()
+{
+    std::string const& file = sPlayerbotAIConfig.ArenaTeamCompLearningFile;
+    std::string const name = file.empty() ? std::string(DefaultCompsFile) : file;
+    return std::filesystem::path(name).is_absolute() ? name : sConfigMgr->GetConfigPath() + name;
+}
+
+CompLearning::Params ArenaTeamFormation::CompParams(float percentile)
+{
+    return CompLearning::ParamsAt(
+        percentile, sPlayerbotAIConfig.ArenaTeamCompLearningWeightBottom,
+        sPlayerbotAIConfig.ArenaTeamCompLearningWeightTop, sPlayerbotAIConfig.ArenaTeamCompLearningExploreBottom,
+        sPlayerbotAIConfig.ArenaTeamCompLearningExploreTop, sPlayerbotAIConfig.ArenaTeamCompLearningTemperatureBottom,
+        sPlayerbotAIConfig.ArenaTeamCompLearningTemperatureTop);
+}
+
+bool ArenaTeamFormation::LoadComps(std::string& message)
+{
+    std::string const path = CompsPath();
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        message = Acore::StringFormat("cannot read {} ({})", path,
+                                      _comps.Loaded ? "the previous table stays" : "comp learning stays off");
+        LOG_WARN("playerbots", "Arena formation: {}", message);
+        return false;
+    }
+
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    CompLearning::Table table;
+    std::string error;
+    if (!CompLearning::ParseTable(buffer.str(), table, error))
+    {
+        message = Acore::StringFormat("{}: {} ({})", path, error,
+                                      _comps.Loaded ? "the previous table stays" : "comp learning stays off");
+        LOG_WARN("playerbots", "Arena formation: {}", message);
+        return false;
+    }
+
+    _comps = std::move(table);
+    _compsSource = path;
+    message = Acore::StringFormat("comp table loaded from {}: {} rows in {} bands, prior {}, generated {}", path,
+                                  _comps.Rows, _comps.Bands.size(), _comps.Prior, _comps.GeneratedAt);
+    LOG_INFO("playerbots", "Arena formation: {}", message);
+    return true;
+}
+
+std::string ArenaTeamFormation::MemberEntry(ObjectGuid guid, uint8 cls) const
+{
+    auto const it = _entries.find(guid.GetCounter());
+    if (it != _entries.end() && it->second.first == _pass)
+        return it->second.second;
+
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))
+    {
+        std::string entry = PvpTestRecordWriter::ClassName(cls);
+        std::string const spec = AiFactory::GetPlayerSpecName(player);
+        if (!spec.empty())
+            entry += "/" + spec;
+
+        std::transform(entry.begin(), entry.end(), entry.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        _entries[guid.GetCounter()] = {_pass, entry};
+        return entry;
+    }
+
+    return it != _entries.end() ? it->second.second : PvpTestRecordWriter::ClassName(cls);
+}
+
+bool ArenaTeamFormation::LearnedTerm(ArenaTeam* team, Player* candidate, float& value,
+                                     std::vector<CompLearning::GroupValue>* groups) const
+{
+    int32 const band = CompLearning::DataBand(_comps, team->GetRating());
+    if (band < 0)
+        return false;
+
+    std::vector<std::string> members;
+    for (ArenaTeamMember const& member : team->GetMembers())
+    {
+        if (member.Guid != candidate->GetGUID())
+            members.push_back(MemberEntry(member.Guid, member.Class));
+    }
+
+    std::string const entry = MemberEntry(candidate->GetGUID(), candidate->getClass());
+    float const explore = CompParams(LadderPercentile(team->GetId())).Explore;
+    return CompLearning::CandidateValue(_comps, band, members, entry, team->GetType(), explore, MaxCompGroups, value,
+                                        groups);
+}
+
+std::vector<std::string> ArenaTeamFormation::DiversityLines() const
+{
+    std::vector<std::string> lines;
+    for (ArenaType type : ArenaTypes)
+    {
+        auto const it = RandomPlayerbotFactory::_botArenaTeamRegistry.find(type);
+        if (it == RandomPlayerbotFactory::_botArenaTeamRegistry.end())
+            continue;
+
+        // band index (-1: no table, or outside every band) -> weighted playing-group comps; a team's groups share 1
+        std::map<int32, std::vector<std::pair<std::string, float>>> byBand;
+        for (uint32 teamId : it->second)
+        {
+            ArenaTeam* team = sArenaTeamMgr->GetArenaTeamById(teamId);
+            if (!team)
+                continue;
+
+            std::vector<std::string> roster;
+            for (ArenaTeamMember const& member : team->GetMembers())
+                roster.push_back(MemberEntry(member.Guid, member.Class));
+
+            std::vector<std::vector<size_t>> const sets =
+                CompLearning::Combinations(roster.size(), type, MaxCompGroups);
+            std::vector<std::pair<std::string, float>>& comps = byBand[CompLearning::BandOf(_comps, team->GetRating())];
+            for (std::vector<size_t> const& set : sets)
+            {
+                std::vector<std::string> entries;
+                for (size_t index : set)
+                    entries.push_back(roster[index]);
+
+                comps.emplace_back(CompLearning::CompKey(entries), 1.0f / static_cast<float>(sets.size()));
+            }
+        }
+
+        for (auto const& [band, comps] : byBand)
+        {
+            CompLearning::Diversity const diversity = CompLearning::Summarize(comps, DiversityTopShown);
+            std::string const range = band < 0
+                                          ? std::string("all ratings")
+                                          : Acore::StringFormat("{}-{}", _comps.Bands[band].Lo, _comps.Bands[band].Hi);
+            std::string top;
+            for (auto const& [key, weight] : diversity.Top)
+                top += Acore::StringFormat("{}{} {:.1f}", top.empty() ? "" : ", ", key, weight);
+
+            lines.push_back(Acore::StringFormat("{}v{} band {}: {:.0f} teams, {} comps (effective {:.1f}); most: {}",
+                                                type, type, range, diversity.Teams, diversity.Distinct,
+                                                diversity.Effective, top));
+        }
+    }
+
+    return lines;
 }
 
 float ArenaTeamFormation::LadderPercentile(uint32 teamId) const
@@ -742,5 +942,120 @@ bool ArenaTeamFormation::HandleTeamsCommand(ChatHandler* handler, char const* /*
 
     handler->PSendSysMessage("{} teams (* = captain; W/L this season); since startup {} leaves, {} joins", shown,
                              formation._leaves, formation._joins);
+    return true;
+}
+
+bool ArenaTeamFormation::HandleCompsCommand(ChatHandler* handler, char const* args)
+{
+    ArenaTeamFormation& formation = Instance();
+    std::istringstream words(args ? args : "");
+    std::string mode;
+    words >> mode;
+
+    if (mode == "reload")
+    {
+        PLAYERBOT_CHECK_WORLD_THREAD("ArenaTeamFormation::HandleCompsCommand");
+        formation._compsTried = true;
+        std::string message;
+        formation.LoadComps(message);
+        handler->PSendSysMessage("Arena comps: {}", message);
+        return true;
+    }
+
+    if (mode == "selftest")
+    {
+        std::vector<std::string> lines;
+        uint32 const failures = CompLearning::RunSelftest(lines);
+        for (std::string const& line : lines)
+            handler->PSendSysMessage("{}", line);
+
+        handler->PSendSysMessage("comps selftest: {} ({} failure(s))", failures ? "FAIL" : "PASS", failures);
+        LOG_INFO("playerbots", "Arena formation: comps selftest {} ({} failure(s))", failures ? "FAIL" : "PASS",
+                 failures);
+        return true;
+    }
+
+    CompLearning::Table const& table = formation._comps;
+    if (mode == "teams")
+    {
+        uint32 shown = 0;
+        for (ArenaType type : ArenaTypes)
+        {
+            auto const it = RandomPlayerbotFactory::_botArenaTeamRegistry.find(type);
+            if (it == RandomPlayerbotFactory::_botArenaTeamRegistry.end())
+                continue;
+
+            for (uint32 teamId : it->second)
+            {
+                ArenaTeam* team = sArenaTeamMgr->GetArenaTeamById(teamId);
+                if (!team)
+                    continue;
+
+                std::vector<std::string> roster;
+                for (ArenaTeamMember const& member : team->GetMembers())
+                    roster.push_back(formation.MemberEntry(member.Guid, member.Class));
+
+                float const percentile = formation.LadderPercentile(teamId);
+                int32 const band = CompLearning::DataBand(table, team->GetRating());
+                std::string groups;
+                for (std::vector<size_t> const& set : CompLearning::Combinations(roster.size(), type, CompRowsShown))
+                {
+                    std::vector<std::string> entries;
+                    for (size_t index : set)
+                        entries.push_back(roster[index]);
+
+                    CompLearning::Lookup const lookup = CompLearning::Find(table, band, entries);
+                    float const value = band < 0
+                                            ? 0.5f
+                                            : CompLearning::LearnedValue(lookup, table.Prior, table.Bands[band].Games,
+                                                                         CompParams(percentile).Explore);
+                    groups += Acore::StringFormat("{}{} {:.3f} ({}/{})", groups.empty() ? "" : ", ",
+                                                  CompLearning::CompKey(entries), value, lookup.Wins, lookup.Games);
+                }
+
+                handler->PSendSysMessage("#{} <{}> {}v{} rating {}, percentile {:.2f}, data band {}: {}", teamId,
+                                         team->GetName(), type, type, team->GetRating(), percentile, band, groups);
+                ++shown;
+            }
+        }
+
+        handler->PSendSysMessage("{} teams (groups: learned value with this percentile's exploration, wins/games)",
+                                 shown);
+        return true;
+    }
+
+    handler->PSendSysMessage(
+        "Comp learning {} (option {}, formation {}); table {}", formation.CompLearningOn() ? "on" : "off",
+        sPlayerbotAIConfig.ArenaTeamCompLearningEnable ? "on" : "off", IsActive() ? "on" : "off",
+        table.Loaded ? Acore::StringFormat("{}: {} rows, prior {}, generated {}", formation._compsSource, table.Rows,
+                                           table.Prior, table.GeneratedAt)
+                     : "not loaded (" + CompsPath() + "; .playerbots arena comps reload)");
+    for (size_t band = 0; band < table.Bands.size(); ++band)
+    {
+        CompLearning::Band const& rows = table.Bands[band];
+        std::vector<std::pair<float, std::string>> ranked;
+        for (auto const& [key, row] : rows.Comps)
+        {
+            float const shrunk = CompLearning::LearnedValue(CompLearning::Lookup{row.Games, row.Wins, true},
+                                                            table.Prior, rows.Games, 0.0f);
+            ranked.emplace_back(shrunk, Acore::StringFormat("{} {:.3f} ({}/{})", key, shrunk, row.Wins, row.Games));
+        }
+
+        std::sort(ranked.begin(), ranked.end(), [](auto const& a, auto const& b)
+                  { return a.first != b.first ? a.first > b.first : a.second < b.second; });
+        std::string best;
+        for (size_t i = 0; i < ranked.size() && i < CompRowsShown; ++i)
+            best += (best.empty() ? "" : ", ") + ranked[i].second;
+
+        handler->PSendSysMessage("band {} [{}, {}): {} comps, {} games; best: {}", band, rows.Lo, rows.Hi,
+                                 rows.Comps.size(), rows.Games, best.empty() ? "-" : best);
+    }
+
+    std::vector<std::string> const lines = formation.DiversityLines();
+    handler->PSendSysMessage("Bot teams by rating band ({} lines; playing-group comps, a team's groups share 1):",
+                             lines.size());
+    for (std::string const& line : lines)
+        handler->PSendSysMessage("{}", line);
+
     return true;
 }

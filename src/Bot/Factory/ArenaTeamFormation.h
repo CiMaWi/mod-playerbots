@@ -9,9 +9,11 @@
 
 #include <ctime>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "CompLearning.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 
@@ -24,6 +26,8 @@ class Player;
 // streak may leave, and teams short of members recruit bots without a team (close skill, complementary class). Teams
 // low on the ladder are forgiving (rare leaves, wide skill tolerance, weighted-random picks), teams at the top strict.
 // Every membership change runs on the world thread (the periodic pass, or the login assignment operation).
+// With Playerbots.ArenaTeam.CompLearning.Enable the score also learns comp strength from comp-strength.json
+// (CompLearning.h): a weight and a softmax pick temperature by ladder percentile, an exploration bonus for rare comps.
 class ArenaTeamFormation
 {
 public:
@@ -65,6 +69,11 @@ public:
 
     // .playerbots arena teams: every bot team with its roster (never a skill value)
     static bool HandleTeamsCommand(ChatHandler* handler, char const* args);
+    // .playerbots arena comps [reload | selftest | teams]: the comp table and the bot teams' comps per rating band
+    static bool HandleCompsCommand(ChatHandler* handler, char const* args);
+
+    // Formation active, CompLearning.Enable on and a comp table loaded
+    bool CompLearningOn() const;
 
 private:
     ArenaTeamFormation() = default;
@@ -103,6 +112,20 @@ private:
     // The team the bot left last, or 0
     uint32 LeftTeamOf(ObjectGuid guid) const;
 
+    // World thread: reads the comp table (CompLearning.File); a failed read keeps the previous table
+    bool LoadComps(std::string& message);
+    static std::string CompsPath();
+    static CompLearning::Params CompParams(float percentile);
+    // "class/spec" of a member as the match records name it: from the online player (cached per pass), else the last
+    // one seen, else the class alone (matches every spec of it)
+    std::string MemberEntry(ObjectGuid guid, uint8 cls) const;
+    // Mean learned value of the playing groups the candidate may form with the team's other members; false when the
+    // roster is too small or the table has no games
+    bool LearnedTerm(ArenaTeam* team, Player* candidate, float& value,
+                     std::vector<CompLearning::GroupValue>* groups) const;
+    // One line per arena type and rating band: teams, distinct playing-group comps, effective number, the most common
+    std::vector<std::string> DiversityLines() const;
+
     uint32 _timer = 0;
     uint32 _pass = 0;
     uint32 _leaves = 0;
@@ -117,6 +140,12 @@ private:
     // read by captains on map threads)
     std::unordered_map<uint32, uint32> _pairFormedAtGames;
     mutable std::mutex _pairLock;
+
+    CompLearning::Table _comps;
+    std::string _compsSource;
+    bool _compsTried = false;
+    // guid -> (pass it was read in, "class/spec"); world thread
+    mutable std::unordered_map<ObjectGuid::LowType, std::pair<uint32, std::string>> _entries;
 };
 
 #endif

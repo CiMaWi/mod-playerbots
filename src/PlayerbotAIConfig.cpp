@@ -1656,6 +1656,20 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitsPerPass", 4), 0, 100);
     ArenaTeamRecruitAboveMinChance =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitAboveMinChance", 0), 0, 100);
+    ArenaTeamCompLearningEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.CompLearning.Enable", false);
+    ArenaTeamCompLearningFile = sConfigMgr->GetOption<std::string>("Playerbots.ArenaTeam.CompLearning.File", "");
+    ArenaTeamCompLearningWeightBottom =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.WeightBottom", 0.2f), 0.0f, 1.0f);
+    ArenaTeamCompLearningWeightTop =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.WeightTop", 0.5f), 0.0f, 1.0f);
+    ArenaTeamCompLearningExploreBottom =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.ExploreBottom", 0.3f), 0.0f, 2.0f);
+    ArenaTeamCompLearningExploreTop =
+        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.ExploreTop", 0.05f), 0.0f, 2.0f);
+    ArenaTeamCompLearningTemperatureBottom = std::clamp(
+        sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureBottom", 0.25f), 0.01f, 10.0f);
+    ArenaTeamCompLearningTemperatureTop = std::clamp(
+        sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureTop", 0.05f), 0.01f, 10.0f);
     ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", false);
     ArenaRecruitRatingAtSkill1 =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill1", 0), 0, 10000);

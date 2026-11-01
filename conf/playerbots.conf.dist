@@ -3279,6 +3279,37 @@ Playerbots.ArenaTeam.SynergyWeight = 0.4
 Playerbots.ArenaTeam.RecruitsPerPass = 4
 Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 
+# Comp learning (needs Formation.Enable): the partner score above also learns which comps win, from the hub's
+# comp-strength.json (tools/comp-strength.js: wins per comp and team-rating band from the ladder's match records). A
+# candidate's learned value for a team is the mean, over the playing groups it may form with the other members, of the
+# group comp's shrunk win rate in the team's rating band (or the nearest band with games) plus an exploration bonus
+# that is large for comps with few games (an upper confidence bound). The score becomes fit * (1 - weight) + learned *
+# weight, and the recruit is picked by a softmax over the scores. Weight, exploration and softmax temperature follow the
+# team's rating rank among the bot teams of its type: the bottom explores varied comps (low weight, high exploration,
+# a warm pick), the top leans on strong comps with some variance (high weight, a cold pick that is never certain). A
+# member's comp entry is "class/spec" as the match records name it, from the online bot, else the last one seen, else
+# the class alone (pooling every spec of it). The table is read when the option is first seen on (startup or a
+# config reload) and by the console command below; a missing or broken file keeps learning off (or the previous
+# table). 0 = the formation scores and picks exactly as before. GM command (works from the console):
+# .playerbots arena comps [reload | selftest | teams]: the table, comp diversity per band, reload, the pure selftest,
+# every team's playing-group comps. Formation joins log the learned value and the groups' wins/games.
+#   Enable (1/0): learn comps.
+#   File: the table; empty = comp-strength.json in the configs folder (configs/, beside worldserver.conf); a relative
+#     path is relative to that folder.
+#   WeightBottom, WeightTop (0.0..1.0): the share of the learned value in the score at the bottom and the top.
+#   ExploreBottom, ExploreTop (0.0..2.0): the exploration factor (bonus = factor * sqrt(ln(band games + 1) / (comp
+#     games + 1))).
+#   TemperatureBottom, TemperatureTop (0.01..10.0): the softmax temperature of the recruit pick.
+#
+Playerbots.ArenaTeam.CompLearning.Enable = 0
+Playerbots.ArenaTeam.CompLearning.File = ""
+Playerbots.ArenaTeam.CompLearning.WeightBottom = 0.2
+Playerbots.ArenaTeam.CompLearning.WeightTop = 0.5
+Playerbots.ArenaTeam.CompLearning.ExploreBottom = 0.3
+Playerbots.ArenaTeam.CompLearning.ExploreTop = 0.05
+Playerbots.ArenaTeam.CompLearning.TemperatureBottom = 0.25
+Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
+
 # Scouting: a real player's arena team invite to a randombot goes through a hidden rule instead of being accepted
 # always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
 # considers its own level, which comes from its hidden skill (a bot without a skill, e.g. with Playerbots.Skill.Enable
