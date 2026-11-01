@@ -13,6 +13,7 @@
 #include "Battleground.h"
 #include "GridTerrainData.h"
 #include "Group.h"
+#include "LastMovementValue.h"
 #include "Log.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
@@ -22,7 +23,9 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "Spell.h"
 #include "Timer.h"
+#include "World.h"
 
 // G2e: the Los tactic's game side (the policy in LosTactic.h, the cover in ArenaCover.h). G2f fills the pillar parts.
 
@@ -49,22 +52,26 @@ LosParams BotLosParams(PlayerbotAI* botAI)
 // The spell check's line of sight (Spell::CheckCast: M2 models ignored)
 bool SeesUnit(Player* bot, Unit* unit) { return bot->IsWithinLOSInMap(unit, VMAP::ModelIgnoreFlags::M2); }
 
-// Before the gates open and in Ring of Valor's first RvIdleMs nothing moves for LOS (outside battlegrounds: never idle)
-bool LosIdleHere(Player* bot, LosBotState& state, uint32 nowMs)
+// Before the gates open and in Ring of Valor's first RvIdleMs after them (the battleground's clock: the triggers run
+// in combat only, so the bot's first look comes too late) nothing moves for LOS; outside battlegrounds never idle.
+// Another battleground (or none) starts a fresh episode.
+bool LosIdleHere(Player* bot, LosBotState& state)
 {
     Battleground* bg = bot->GetBattleground();
+    uint32 const instance = bg ? bg->GetInstanceID() : 0;
+    if (state.ArenaInstance != instance)
+    {
+        state.ArenaInstance = instance;
+        LosResetEpisode(state);
+    }
+
     if (!bg)
         return false;
 
-    bool const inProgress = bg->GetStatus() == STATUS_IN_PROGRESS;
-    if (inProgress && state.ArenaInstance != bg->GetInstanceID())
-    {
-        state.ArenaInstance = bg->GetInstanceID();
-        state.ArenaSinceMs = nowMs;
-    }
-
-    return LosArenaIdle(inProgress, bg->isArena() && bg->GetMapId() == COVER_MAP_RING_OF_VALOR, state.ArenaSinceMs,
-                        nowMs, sPlayerbotAIConfig.TacticPillar.RvIdleMs);
+    bool const ringOfValor = bg->isArena() && bg->GetMapId() == COVER_MAP_RING_OF_VALOR;
+    uint32 const prepMs = sWorld->getIntConfig(CONFIG_ARENA_PREP_TIME) * IN_MILLISECONDS;
+    return LosArenaIdle(bg->GetStatus() == STATUS_IN_PROGRESS, ringOfValor, LosSinceGatesMs(bg->GetStartTime(), prepMs),
+                        sPlayerbotAIConfig.TacticPillar.RvIdleMs);
 }
 
 Battleground* ArenaOf(Player* bot)
@@ -79,9 +86,10 @@ CoverVec PositionOf(WorldObject const* object)
     return {object->GetPositionX(), object->GetPositionY(), object->GetPositionZ()};
 }
 
-// The healer's partner out of sight: the group's alive partners within LOS_PARTNER_YARDS, the most hurt first, one
-// ray each while the budget lasts. Returns the first unseen one's raw guid, 0 when it sees all it tested.
-uint64 LostPartner(Player* bot, uint32 budget, uint32& rays)
+// The healer's partner out of sight: the group's alive partners within LOS_PARTNER_YARDS, the episode's partner
+// (keepGuid) first, then the most hurt, one ray each while the budget lasts. Returns the first unseen one's raw guid,
+// 0 when it sees all it tested.
+uint64 LostPartner(Player* bot, uint64 keepGuid, uint32 budget, uint32& rays)
 {
     Group* group = bot->GetGroup();
     if (!group)
@@ -98,7 +106,7 @@ uint64 LostPartner(Player* bot, uint32 budget, uint32& rays)
             {member->GetGUID().GetRawValue(), member->IsAlive(), bot->GetDistance(member), member->GetHealthPct()});
     }
 
-    LosPartnerOrder(partners);
+    LosPartnerOrder(partners, keepGuid);
     for (LosPartner const& partner : partners)
     {
         if (rays >= budget)
@@ -149,6 +157,28 @@ bool PlanHolds(Player* bot, CoverPlan const& plan, uint32 budget, uint32& rays)
                              COVER_EYE_YARDS, &rays);
 }
 
+// The unit a regain walks for died or left: the regain ends (aborted, not regained) and the bot stops if it still
+// walks to the point issued for it (the last movement goes there)
+void AbortRegain(PlayerbotAI* botAI, Player* bot, LosBotState& state, uint32 nowMs)
+{
+    Value<CoverPlan>* planValue = botAI->GetAiObjectContext()->GetValue<CoverPlan>("cover plan");
+    CoverPlan plan = planValue->Get();
+    if (plan.Valid && plan.WantSee && plan.SeeGuid == state.SeeGuid)
+    {
+        LastMovement const& last = botAI->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get();
+        if (bot->isMoving() && std::fabs(last.lastMoveToX - plan.Point.X) < LOS_AT_POINT_YARDS &&
+            std::fabs(last.lastMoveToY - plan.Point.Y) < LOS_AT_POINT_YARDS)
+            bot->StopMoving();
+
+        plan.Valid = false;
+        planValue->Set(plan);
+    }
+
+    LOG_TRACE("playerbots", "Los: {} stops regaining sight of its {} (gone or dead after {} ms), skill {}, at {} ms",
+              bot->GetName(), LosWantName(state.Want), nowMs - state.RegainStartMs, botAI->GetPvpSkill(), nowMs);
+    LosAbortRegain(state);
+}
+
 // The sight refresh: what the bot cannot see now, at most once per LOS_REFRESH_MS and at most RaysPerSecond rays.
 // partnerLosLostMs counts for every healer while the harness counts (also where the tactic is off: A against B).
 void RefreshLos(PlayerbotAI* botAI, Player* bot, LosBotState& state, bool enabled, bool healer, uint32 nowMs)
@@ -156,6 +186,7 @@ void RefreshLos(PlayerbotAI* botAI, Player* bot, LosBotState& state, bool enable
     if (state.RefreshMs && nowMs - state.RefreshMs < LOS_REFRESH_MS)
         return;
 
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Los::Sight") : nullptr);
     uint32 const lostMs = LosLostGapMs(state.PartnerLost, state.RefreshMs, nowMs);
     if (lostMs)
     {
@@ -170,7 +201,7 @@ void RefreshLos(PlayerbotAI* botAI, Player* bot, LosBotState& state, bool enable
     uint64 seeGuid = 0;
     if (healer)
     {
-        seeGuid = LostPartner(bot, budget, rays);
+        seeGuid = LostPartner(bot, state.Want == LosWant::Partner ? state.SeeGuid : 0, budget, rays);
         want = seeGuid ? LosWant::Partner : LosWant::None;
     }
     else if (enabled)
@@ -192,6 +223,13 @@ void RefreshLos(PlayerbotAI* botAI, Player* bot, LosBotState& state, bool enable
     {
         state.RefreshMs = std::max(nowMs, 1u);
         return;
+    }
+
+    if (state.RegainStartMs && (want != state.Want || seeGuid != state.SeeGuid))
+    {
+        Unit* seen = ObjectAccessor::GetUnit(*bot, ObjectGuid(state.SeeGuid));
+        if (!seen || !seen->IsAlive() || !seen->IsInWorld() || seen->GetMap() != bot->GetMap())
+            AbortRegain(botAI, bot, state, nowMs);
     }
 
     state.PlanHolds = false;
@@ -218,10 +256,9 @@ bool LosTriggerDue(PlayerbotAI* botAI, Player* bot, LosWant want, bool enabled)
 {
     uint32 const nowMs = getMSTime();
     LosBotState& state = LosState(botAI);
-    if (!bot->IsAlive() || LosIdleHere(bot, state, nowMs))
+    if (LosIdleHere(bot, state) || !bot->IsAlive())
     {
-        state.PartnerLost = false;
-        state.RefreshMs = 0;
+        LosResetEpisode(state);
         return false;
     }
 
@@ -295,8 +332,9 @@ float PathYards(Movement::PointsArray const& points)
 
 // An arena with pillars: a ring point that sees the unit (FindCoverPoint; from HidesFromCaster also hidden from the
 // nearest enemy caster), its ground at the pillar's floor and an mmap path to it of at most LOS_PATH_FACTOR x the walk
-// (the table's Z is the pillar's floor: Dalaran's pipes and Blade's Edge's bridge are a second level)
-bool FindCoverRegain(Player* bot, Unit* see, LosParams const& params, CoverPlan& plan, uint32& rays)
+// (the table's Z is the pillar's floor: Dalaran's pipes and Blade's Edge's bridge are a second level); never within
+// LOS_MELEE_YARDS of an enemy target
+bool FindCoverRegain(Player* bot, Unit* see, bool enemyTarget, LosParams const& params, CoverPlan& plan, uint32& rays)
 {
     Battleground* bg = ArenaOf(bot);
     ArenaCoverTable const* table = bg ? FindArenaCoverTable(bot->GetMapId()) : nullptr;
@@ -317,7 +355,7 @@ bool FindCoverRegain(Player* bot, Unit* see, LosParams const& params, CoverPlan&
         FindCoverPoint(*table, ArenaCoverActiveGates(bg), PositionOf(bot), caster ? PositionOf(caster) : seeAt, &seeAt,
                        LOS_MAX_MOVE_YARDS, los, search);
     rays += found.Rays;
-    if (!found.Found)
+    if (!found.Found || LosPointInMelee(found.Point, seeAt, enemyTarget))
         return false;
 
     float const z = map->GetHeight(phaseMask, found.Point.X, found.Point.Y, found.Point.Z + LOS_FLOOR_DZ + 1.0f, true,
@@ -387,17 +425,22 @@ void TacticPillarStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("pillar step", {NextAction("pillar step", ACTION_MOVE + 3)}));
 }
 
-// ArenaTactics walks a ranged bot into its target on lost LOS (BattleGroundTactics.cpp); a bot that knows the regain
-// moves to a point that sees instead. Cheap exits first: outside arenas every action ends at one test.
+// ArenaTactics walks a ranged bot into its target on lost LOS (BattleGroundTactics.cpp); a bot whose regain runs or is
+// due moves to a point that sees instead. Cheap exits first: outside arenas every action ends at one test.
 float TacticLosMultiplier::GetValue(Action* action)
 {
     if (!action || !bot->InArena() || !dynamic_cast<ArenaTactics*>(action) || !botAI->TacticEnabledHere(TacticId::Los))
         return 1.0f;
 
-    // a regain given up (timed out, or no point that sees) hands the bot back to ArenaTactics' walk
-    LosBotState const& state = LosState(botAI);
-    bool const parks = LosParksArenaTactics(PlayerbotAI::IsRanged(bot), state.Params.Known && !state.GaveUp,
-                                            bot->IsInCombat(), bot->GetVictim() != nullptr);
+    // idle (gates, Ring of Valor's elevators), waiting out the lateness or given up: ArenaTactics' walk as before
+    LosBotState& state = LosState(botAI);
+    if (LosIdleHere(bot, state))
+        return 1.0f;
+
+    Unit* victim = bot->GetVictim();
+    bool const parks = LosParksArenaTactics(PlayerbotAI::IsRanged(bot), bot->IsInCombat(), victim != nullptr,
+                                            LosRegainActive(state, getMSTime()),
+                                            victim ? bot->GetPositionZ() - victim->GetPositionZ() : 0.0f);
     return parks ? 0.0f : 1.0f;
 }
 
@@ -447,8 +490,11 @@ bool RegainLosAction::Execute(Event /*event*/)
 
     CoverPlan plan = AI_VALUE(CoverPlan, "cover plan");
     if (due == LosDue::Resume && plan.Valid)
+    {
+        state.ResumeMs = std::max(nowMs, 1u);
         return MoveTo(plan.MapId, plan.Point.X, plan.Point.Y, plan.Point.Z, false, false, false, false,
                       MovementPriority::MOVEMENT_COMBAT, true);
+    }
 
     botAI->GetCoverState().LastSearchMs = std::max(nowMs, 1u);
     ++state.Searches;
@@ -459,7 +505,7 @@ bool RegainLosAction::Execute(Event /*event*/)
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Cover::Search")
                                                         : nullptr);
         if (!state.EpisodeIntoOpen)
-            cover = found = FindCoverRegain(bot, see, state.Params, plan, rays);
+            cover = found = FindCoverRegain(bot, see, state.Want == LosWant::Target, state.Params, plan, rays);
 
         if (!found)
             found = FindPathRegain(bot, see, state.Want == LosWant::Target, state.Params.MaxRays, plan, rays);
@@ -477,9 +523,10 @@ bool RegainLosAction::Execute(Event /*event*/)
         return false;
     }
 
-    // a cast at the unseen target fails at its end anyway (Spell::CheckCast's LOS)
-    if (state.Want == LosWant::Target && bot->IsNonMeleeSpellCast(false))
-        bot->CastStop();
+    // a cast at the unseen target fails at its end anyway (Spell::CheckCast's LOS); other casts go on
+    Spell* spell = state.Want == LosWant::Target ? bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) : nullptr;
+    if (spell && spell->m_targets.GetUnitTargetGUID() == see->GetGUID())
+        bot->InterruptSpell(CURRENT_GENERIC_SPELL, false);
 
     if (!MoveTo(bot->GetMapId(), plan.Point.X, plan.Point.Y, plan.Point.Z, false, false, false, false,
                 MovementPriority::MOVEMENT_COMBAT, true))

@@ -4441,8 +4441,8 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         handler->PSendSysMessage(
             "  los: {}, known {}, late {} ms, into open {} %, hides from caster {}, healer stays {}; lost {} ({} ms, "
             "episode {}, wait {} ms{}{}), regaining {} ms, point {} ({} pillar {}, {:.1f} yd away, hidden {}); "
-            "regains {} (regained {}, timeouts {}), guarded {}, searches {} (cover {}, path {}, none {}; rays {}, last "
-            "{}), partner lost {} ms",
+            "regains {} (regained {}, timeouts {}, aborted {}), guarded {}, searches {} (cover {}, path {}, none {}; "
+            "rays {}, last {}), partner lost {} ms",
             botAI->TacticEnabledHere(TacticId::Los) ? "on here" : "off here", params.Known ? "yes" : "no",
             params.LateMs, params.IntoOpenPct, params.HidesFromCaster ? "yes" : "no", params.HealerStays ? "yes" : "no",
             LosWantName(los.Want), los.LostSinceMs ? getMSTimeDiff(los.LostSinceMs, nowMs) : 0u, los.Episode,
@@ -4450,8 +4450,9 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             los.RegainStartMs ? getMSTimeDiff(los.RegainStartMs, nowMs) : 0u, plan.Valid ? "held" : "none",
             plan.Pillar >= 0 ? "cover" : "path", plan.Pillar,
             plan.Valid ? botAI->GetBot()->GetExactDist2d(plan.Point.X, plan.Point.Y) : 0.0f,
-            plan.WantHidden ? "yes" : "no", los.Regains, los.Regained, los.Timeouts, los.Guarded, los.Searches,
-            los.CoverPoints, los.PathPoints, los.NoPoint, los.SearchRays, los.LastSearchRays, los.PartnerLostMs);
+            plan.WantHidden ? "yes" : "no", los.Regains, los.Regained, los.Timeouts, los.Aborted, los.Guarded,
+            los.Searches, los.CoverPoints, los.PathPoints, los.NoPoint, los.SearchRays, los.LastSearchRays,
+            los.PartnerLostMs);
     }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;

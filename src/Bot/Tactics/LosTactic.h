@@ -39,6 +39,8 @@ constexpr float LOS_MELEE_YARDS = 8.0f;       // a path point this near the enem
 constexpr float LOS_AT_POINT_YARDS = 1.5f;    // the bot stands on its point
 constexpr uint32 LOS_LOST_GAP_CAP_MS = 2000;  // one refresh adds at most this to partnerLosLostMs
 constexpr uint32 LOS_DUE_MS = 1000;           // a due regain is acted on within this, else dropped
+constexpr uint32 LOS_RESUME_MS = 500;         // a walk to the held point is re-issued at most this often
+constexpr float LOS_ARENA_TACTICS_DZ = 5.0f;  // ArenaTactics' height branch (a target this far above or below)
 constexpr uint32 LOS_RING = 8;                // the relocation ring (MaxRelocs is clamped to it)
 constexpr float LOS_LATE_SIGMA = 0.35f;       // the lateness' log-normal spread
 constexpr float LOS_LATE_MIN_FACTOR = 0.4f;   // ... clamped to this ...
@@ -188,14 +190,22 @@ struct LosPartner
 };
 
 // The partners worth a ray, in the order to test them: alive, within LOS_PARTNER_YARDS, the most hurt first (a dead
-// partner is never watched, so a healer never regains LOS to a corpse)
-inline void LosPartnerOrder(std::vector<LosPartner>& partners)
+// partner is never watched, so a healer never regains LOS to a corpse). keepGuid (the partner of the running
+// episode) goes first while it is still watched: a flip of the health order does not start a new episode (3v3).
+inline void LosPartnerOrder(std::vector<LosPartner>& partners, uint64 keepGuid = 0)
 {
     partners.erase(std::remove_if(partners.begin(), partners.end(), [](LosPartner const& partner)
                                   { return !partner.Alive || partner.Yards > LOS_PARTNER_YARDS; }),
                    partners.end());
     std::stable_sort(partners.begin(), partners.end(),
                      [](LosPartner const& a, LosPartner const& b) { return a.HealthPct < b.HealthPct; });
+    if (!keepGuid)
+        return;
+
+    auto const kept = std::find_if(partners.begin(), partners.end(),
+                                   [keepGuid](LosPartner const& partner) { return partner.Guid == keepGuid; });
+    if (kept != partners.end())
+        std::rotate(partners.begin(), kept, kept + 1);
 }
 
 // The ms one refresh adds to partnerLosLostMs: the time since the last refresh while a partner was out of sight there
@@ -208,18 +218,37 @@ inline uint32 LosLostGapMs(bool partnerLost, uint32 lastRefreshMs, uint32 nowMs)
     return std::min(nowMs - lastRefreshMs, LOS_LOST_GAP_CAP_MS);
 }
 
-// No regain before the gates open, nor in Ring of Valor's first RvIdleMs (the elevators carry the teams), counted
-// from the bot's first look at the started match (late rather than early, as G2c's hops)
-inline bool LosArenaIdle(bool inProgress, bool ringOfValor, uint32 sinceMs, uint32 nowMs, uint32 rvIdleMs)
+// The ms since the gates opened, from the battleground's own clock: Battleground::GetStartTime counts from the
+// preparation's start (both count only while players are in), the preparation lasts prepMs (Arena.PrepTime)
+inline uint32 LosSinceGatesMs(uint32 bgStartTimeMs, uint32 prepMs)
 {
-    return !inProgress || (ringOfValor && nowMs - sinceMs < rvIdleMs);
+    return bgStartTimeMs > prepMs ? bgStartTimeMs - prepMs : 0;
 }
 
-// A ranged bot that knows the tactic does not walk into its target on lost LOS (ArenaTactics' branch, which runs only
-// with a victim): the regain replaces it. The rest of ArenaTactics (the walk to the centre out of combat) stays.
-inline bool LosParksArenaTactics(bool ranged, bool known, bool inCombat, bool hasVictim)
+// No regain before the gates open, nor in Ring of Valor's first RvIdleMs after them (the elevators carry the teams).
+// The battleground's clock, not the bot's first look: the regain's triggers run in combat only, so a first look is
+// the first fight, long after the elevators.
+inline bool LosArenaIdle(bool inProgress, bool ringOfValor, uint32 sinceGatesMs, uint32 rvIdleMs)
 {
-    return ranged && known && inCombat && hasVictim;
+    return !inProgress || (ringOfValor && sinceGatesMs < rvIdleMs);
+}
+
+// A cover point this near the enemy target is melee: never taken (as the path points)
+inline bool LosPointInMelee(CoverVec const& point, CoverVec const& target, bool enemyTarget)
+{
+    float const dx = point.X - target.X;
+    float const dy = point.Y - target.Y;
+    float const dz = point.Z - target.Z;
+    return enemyTarget && dx * dx + dy * dy + dz * dz < LOS_MELEE_YARDS * LOS_MELEE_YARDS;
+}
+
+// A ranged bot whose regain runs or is due does not walk into its target on lost LOS (ArenaTactics' branch, which runs
+// only with a victim): the regain replaces it. Never its height branch (a victim more than LOS_ARENA_TACTICS_DZ above
+// or below: Dalaran's pipes, Blade's Edge's bridge), which the regain does not cover. The rest of ArenaTactics (the
+// walk to the centre out of combat) stays, as does the walk while the bot is idle, waits out its lateness or gave up.
+inline bool LosParksArenaTactics(bool ranged, bool inCombat, bool hasVictim, bool regainActive, float victimDz)
+{
+    return ranged && inCombat && hasVictim && regainActive && std::fabs(victimDz) <= LOS_ARENA_TACTICS_DZ;
 }
 
 // The per-bot state (the value "los state"; the bot's own update, tactics show on the world thread)
@@ -239,18 +268,19 @@ struct LosBotState
     bool EpisodeIntoOpen = false;
     bool GaveUp = false;
     uint32 RegainStartMs = 0;  // 0: not regaining
+    uint32 ResumeMs = 0;       // the last walk on to the held point
     // the trigger's answer for the action
     uint8 Due = 0;  // LosDue
     uint32 DueMs = 0;
     bool Guarding = false;  // the guards refuse now (counted once per refusal)
-    // the arena's start
+    // the battleground of the episode (0: none; another one resets the episode)
     uint32 ArenaInstance = 0;
-    uint32 ArenaSinceMs = 0;
     LosRelocRing Relocs;
     // what it did (tactics show)
     uint32 Regains = 0;
     uint32 Regained = 0;
     uint32 Timeouts = 0;
+    uint32 Aborted = 0;  // the unit regained for died or left during the regain
     uint32 Guarded = 0;
     uint32 Searches = 0;
     uint32 SearchRays = 0;
@@ -260,6 +290,48 @@ struct LosBotState
     uint32 NoPoint = 0;
     uint32 PartnerLostMs = 0;
 };
+
+// No episode (the bot dead, idle at the gates or in a new match): the next look starts a fresh one, not one that
+// times out at once or stays given up
+inline void LosResetEpisode(LosBotState& state)
+{
+    state.RefreshMs = 0;
+    state.Want = LosWant::None;
+    state.SeeGuid = 0;
+    state.PartnerLost = false;
+    state.PlanHolds = false;
+    state.LostSinceMs = 0;
+    state.GaveUp = false;
+    state.RegainStartMs = 0;
+    state.ResumeMs = 0;
+    state.Due = 0;
+    state.DueMs = 0;
+    state.Guarding = false;
+}
+
+// The unit a regain walks for died or left (a partner, the target): the regain ends, not counted as regained
+inline void LosAbortRegain(LosBotState& state)
+{
+    state.Want = LosWant::None;
+    state.SeeGuid = 0;
+    state.PlanHolds = false;
+    state.LostSinceMs = 0;
+    state.GaveUp = false;
+    state.RegainStartMs = 0;
+    state.ResumeMs = 0;
+    state.Due = 0;
+    ++state.Aborted;
+}
+
+// A regain runs (a point issued) or is due now (the trigger fired within LOS_DUE_MS); not while the bot waits out its
+// lateness, gave up or does not know the tactic
+inline bool LosRegainActive(LosBotState const& state, uint32 nowMs)
+{
+    if (!state.Params.Known || state.Want == LosWant::None || state.GaveUp)
+        return false;
+
+    return state.RegainStartMs || (state.Due && state.DueMs && nowMs - state.DueMs < LOS_DUE_MS);
+}
 
 enum class LosEvent : uint8
 {
@@ -351,7 +423,10 @@ inline LosDue LosRegainDue(LosBotState const& state, bool atPoint, bool moving, 
         return LosDue::No;
 
     if (state.RegainStartMs && state.PlanHolds)
-        return !moving && !atPoint ? LosDue::Resume : LosDue::No;
+    {
+        bool const resumeFree = !state.ResumeMs || nowMs - state.ResumeMs >= LOS_RESUME_MS;
+        return !moving && !atPoint && resumeFree ? LosDue::Resume : LosDue::No;
+    }
 
     if (lastSearchMs && nowMs - lastSearchMs < params.SearchIntervalMs)
         return LosDue::No;
@@ -453,17 +528,42 @@ void RunLosChecks(Check&& check)
     std::vector<LosPartner> dead = {{9, false, 5.0f, 0.0f}};
     LosPartnerOrder(dead);
     check(dead.empty(), "a dead partner: nothing to watch, so no regain");
+    std::vector<LosPartner> three = {{1, true, 20.0f, 30.0f}, {2, true, 20.0f, 50.0f}, {3, true, 20.0f, 70.0f}};
+    std::vector<LosPartner> kept = three;
+    LosPartnerOrder(kept, 2);
+    std::vector<LosPartner> gone = three;
+    LosPartnerOrder(gone, 9);
+    check(kept[0].Guid == 2 && kept[1].Guid == 1 && kept[2].Guid == 3 && gone[0].Guid == 1 && gone[1].Guid == 2,
+          "partners: the episode's partner first while watched, else the most hurt (3v3 hysteresis)");
     check(LosLostGapMs(true, 1000, 2000) == 1000 && LosLostGapMs(true, 1000, 9000) == LOS_LOST_GAP_CAP_MS &&
               LosLostGapMs(false, 1000, 2000) == 0 && LosLostGapMs(true, 0, 2000) == 0,
           "partner lost ms: the refresh gap, capped, only while lost");
 
     // the arena's start and the walk into the target
-    check(LosArenaIdle(false, false, 0, 1000, 21000) && LosArenaIdle(true, true, 1000, 21000, 21000) &&
-              !LosArenaIdle(true, true, 1000, 22000, 21000) && !LosArenaIdle(true, false, 1000, 1001, 21000),
-          "idle before the gates and in Ring of Valor's first 21 s");
-    check(LosParksArenaTactics(true, true, true, true) && !LosParksArenaTactics(false, true, true, true) &&
-              !LosParksArenaTactics(true, false, true, true) && !LosParksArenaTactics(true, true, false, true),
-          "ArenaTactics' walk parked for known ranged bots in combat only");
+    uint32 const prep = 15000;
+    check(LosSinceGatesMs(10000, prep) == 0 && LosSinceGatesMs(prep + 4000, prep) == 4000,
+          "since the gates: the battleground's clock minus the preparation");
+    check(LosArenaIdle(false, false, 0, 21000) &&
+              LosArenaIdle(true, true, LosSinceGatesMs(prep + 20000, prep), 21000) &&
+              !LosArenaIdle(true, true, LosSinceGatesMs(prep + 21000, prep), 21000) &&
+              !LosArenaIdle(true, false, LosSinceGatesMs(prep + 1, prep), 21000),
+          "idle before the gates and in Ring of Valor's first 21 s after them");
+    check(!LosArenaIdle(true, true, LosSinceGatesMs(prep + 25000, prep), 21000),
+          "Ring of Valor: a bot whose first look is its first fight 25 s after the gates is not idle (B1)");
+    check(LosParksArenaTactics(true, true, true, true, 0.0f) && LosParksArenaTactics(true, true, true, true, -4.0f) &&
+              !LosParksArenaTactics(false, true, true, true, 0.0f) &&
+              !LosParksArenaTactics(true, false, true, true, 0.0f) &&
+              !LosParksArenaTactics(true, true, false, true, 0.0f) &&
+              !LosParksArenaTactics(true, true, true, false, 0.0f),
+          "ArenaTactics' walk parked for ranged bots in combat with a regain running or due only");
+    check(!LosParksArenaTactics(true, true, true, true, 6.0f) && !LosParksArenaTactics(true, true, true, true, -6.0f),
+          "ArenaTactics' height branch (pipes, bridge) is never parked");
+
+    // a cover point next to the enemy target is melee
+    check(LosPointInMelee({0.0f, 0.0f, 0.0f}, {5.0f, 3.0f, 0.0f}, true) &&
+              !LosPointInMelee({0.0f, 0.0f, 0.0f}, {5.0f, 3.0f, 0.0f}, false) &&
+              !LosPointInMelee({0.0f, 0.0f, 0.0f}, {7.0f, 4.0f, 0.0f}, true),
+          "cover point within 8 yd of the enemy target rejected (not for a partner)");
 
     // the episode
     LosBotState state;
@@ -486,6 +586,12 @@ void RunLosChecks(Check&& check)
               LosRegainDue(state, false, true, start, start + 100) == LosDue::No &&
               LosRegainDue(state, true, false, start, start + 100) == LosDue::No,
           "due: resume to the held point only when stopped short of it");
+    state.ResumeMs = start + 100;
+    check(LosRegainDue(state, false, false, start, start + 400) == LosDue::No &&
+              LosRegainDue(state, false, false, start, start + 600) == LosDue::Resume,
+          "due: a resume at most every 500 ms");
+    check(LosRegainActive(state, start + 600), "a running regain parks ArenaTactics' walk");
+    state.ResumeMs = 0;
     state.PlanHolds = false;
     check(LosRegainDue(state, false, false, start, start + 1000) == LosDue::No,
           "due: a failed point waits for the search interval");
@@ -509,6 +615,30 @@ void RunLosChecks(Check&& check)
     state.RegainStartMs = start + 13000;
     check(LosNoteSight(state, LosWant::None, 0, 7, start + 14000) == LosEvent::Regained && state.Regained == 1,
           "episode: seen again during a regain counts it");
+
+    // the partner dies during the regain: aborted, not regained
+    LosNoteSight(state, LosWant::Partner, 45, 7, start + 15000);
+    state.RegainStartMs = start + 16000;
+    LosAbortRegain(state);
+    check(state.Aborted == 1 && !state.RegainStartMs && state.Want == LosWant::None &&
+              LosNoteSight(state, LosWant::None, 0, 7, start + 17000) == LosEvent::None && state.Regained == 1,
+          "episode: a partner dead during the regain aborts it, not counted as regained");
+
+    // death, idle and a new match reset the episode: no timeout at once, not still given up
+    LosNoteSight(state, LosWant::Partner, 46, 7, start + 20000);
+    state.RegainStartMs = start + 21000;
+    state.GaveUp = true;
+    state.Due = static_cast<uint8>(LosDue::Search);
+    state.DueMs = start + 21000;
+    LosResetEpisode(state);
+    check(!state.LostSinceMs && !state.RegainStartMs && !state.GaveUp && !state.Due && state.Want == LosWant::None &&
+              !LosRegainActive(state, start + 21100),
+          "reset: no episode, nothing parked while idle or dead");
+    uint32 const episode = state.Episode;
+    check(LosNoteSight(state, LosWant::Partner, 46, 7, start + 90000) == LosEvent::Lost &&
+              state.Episode == episode + 1 && !state.GaveUp && state.Timeouts == 1,
+          "reset: the same partner unseen in the next match is a fresh episode, no timeout");
+    check(!LosRegainActive(state, start + 90000), "waiting out the lateness parks nothing");
     LosBotState stays;
     stays.Params = ComputeLosParams(config, inputs(60, 10));
     LosNoteSight(stays, LosWant::Partner, 5, 7, 1000);
