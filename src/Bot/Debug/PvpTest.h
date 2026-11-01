@@ -75,6 +75,8 @@ public:
     };
 
     PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide sideA, PvpTestSide sideB, ObjectGuid issuer);
+    // Drops the arena's harness mark (PvpTestMgr::TakeHarnessArena) if its end did not take it
+    ~PvpTestArenaJob();
 
     // Builds the two sides from team names or name rosters; returns false with the reason in error
     static bool Resolve(PvpTestArenaParams const& params, PvpTestSide& sideA, PvpTestSide& sideB, std::string& error);
@@ -231,6 +233,12 @@ public:
     static bool HandlePlanStartCommand(ChatHandler* handler, char const* args);
     static bool HandlePlanStatusCommand(ChatHandler* handler, char const* args);
     static bool HandlePlanStopCommand(ChatHandler* handler, char const* args);
+
+    // The arenas the harness started (G6b: skill growth skips them). Mark: world thread, when a job creates its
+    // arena; Take: any thread (the arena's map thread at its end), true once for a marked arena and drops the mark,
+    // so a later match on a reused instance id counts again. Mutex-guarded, a handful of ids
+    static void MarkHarnessArena(uint32 instanceId, bool harness);
+    static bool TakeHarnessArena(uint32 instanceId);
 
 private:
     PvpTestMgr() = default;

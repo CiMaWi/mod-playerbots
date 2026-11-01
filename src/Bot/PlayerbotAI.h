@@ -660,7 +660,10 @@ public:
     // Hidden PvP skill 1-99 (BotProfileMgr), set at login; 0 when Playerbots.Skill.Enable is 0. Only GM commands and
     // the PvP harness records may show it.
     uint8 GetPvpSkill() const { return pvpSkill; }
-    void SetPvpSkill(uint8 skill);
+    // firstRoll (G6b, DT.14): the skill the fixed attributes read; 0 = the skill itself (no growth)
+    void SetPvpSkill(uint8 skill, uint8 firstRoll = 0);
+    // The first roll SetPvpSkill was given (the skill when it had none), 0 before the first call
+    uint8 GetPvpSkillFirstRoll() const { return pvpSkillFirstRoll; }
     void SetArenaOnlyState(ArenaOnlyState state) { arenaOnlyState = state; }
     // Reaction-delay factor from the hidden skill (Playerbots.Skill.React*), cached by SetPvpSkill. 1.0 when the
     // skill system or the factor range is off, and in PvE fights when Playerbots.Skill.FullAbilityInPvE is on.
@@ -894,6 +897,7 @@ protected:
     uint32 nextTransportCheck = 0;
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
+    uint8 pvpSkillFirstRoll = 0;
     ArenaOnlyState arenaOnlyState = ArenaOnlyState::Off;
     uint32 arenaOnlyLeftAt = 0;  // getMSTime() when the bot came back from a battleground, 0 once it queued again
     float skillReactFactor = 1.0f;

@@ -48,6 +48,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpTestCounters.h"
+#include "SkillGrowth.h"
 #include "SpellAuras.h"
 #include "StringConvert.h"
 #include "TacticGate.h"
@@ -2668,6 +2669,26 @@ void RunDrinkSelftest(ChatHandler* handler)
                              failures);
 }
 
+// G6b's skill growth (SkillGrowth.h): the curve, the potential, the 99 cap, the rounding, the attributes
+void RunGrowthSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunSkillGrowthChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest growth FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest growth: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 // G3a: the Kite tactic's pure parts (ArenaKite.h; the offline harness runs the same checks)
 void RunKiteSelftest(ChatHandler* handler)
 {
@@ -4746,11 +4767,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
         name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake" &&
         name != "turn" && name != "track" && name != "path" && name != "cover" && name != "los" && name != "pillar" &&
-        name != "kite" && name != "drink" && name != "jump")
+        name != "kite" && name != "drink" && name != "jump" && name != "growth")
     {
         handler->PSendSysMessage(
             "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, "
-            "fake, turn, track, path, cover, los, pillar, kite, drink, jump",
+            "fake, turn, track, path, cover, los, pillar, kite, drink, jump, growth",
             name);
         return false;
     }
@@ -4808,6 +4829,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "kite")
         RunKiteSelftest(handler);
+
+    if (name.empty() || name == "growth")
+        RunGrowthSelftest(handler);
 
     return true;
 }

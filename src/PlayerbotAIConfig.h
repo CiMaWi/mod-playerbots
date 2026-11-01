@@ -21,6 +21,7 @@
 #include "NaturalReaction.h"
 #include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
+#include "SkillGrowth.h"
 #include "TacticGate.h"
 #include "Tactics.h"
 #include <algorithm>
@@ -493,6 +494,10 @@ public:
     // Playerbots.Skill.ExemptRealMasterBots: bots with a game-client master play at full ability (1, phase D) or keep
     // their skill (0, DT.2)
     bool SkillExemptRealMasterBots;
+    // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
+    // off without Playerbots.Skill.Enable and on a lab (Playerbots.Ladder.ServerId labN)
+    bool SkillGrowthEnable;
+    SkillGrowthParams SkillGrowth;
     // Playerbots.Skill.CurveExponent, KnowledgeSpread, Effort*, StyleSpread: the tactic gate's skill parameters
     TacticGateParams SkillGate;
     // Playerbots.Skill.Attributes.*: loadings, spreads and the correlation matrix (factorised at load) of the attribute

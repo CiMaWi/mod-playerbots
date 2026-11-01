@@ -2099,6 +2099,25 @@ Playerbots.Skill.Max = 99
 # and used, full effort. With 0 the bots in a real player's group keep their skill like every other bot.
 Playerbots.Skill.ExemptRealMasterBots = 1
 
+# Skill growth (needs Playerbots.Skill.Enable = 1). With 1 every bot that plays an arena or battleground to its end
+# (draws count, a leaver does not) grows its hidden skill: GainPerMatch points per match, RealPlayerFactor times that
+# with a real player (or the headless test player) on its team, shrinking linearly to 0 at the bot's potential: its
+# first roll (its percentile through the distribution above; growth never changes the percentile) plus a gap of
+# PotentialMin..PotentialMax drawn from its guid, at most 99. Fractions round up with their chance, so the mean gain is
+# exact; with the defaults about 30 matches (10 beside a real player) cover 60 % of the gap. Harness matches
+# (.playerbots pvptest) never count, and a lab (Playerbots.Ladder.ServerId labN) ignores the option. The learnable
+# attributes (Wisdom, Foresight, Knowledge, Teamwork; Dexterity at half) read the grown skill, the fixed ones (Speed,
+# Focus, Discipline, Grit, the traits) the first roll. The new skill is saved at once and reaches a logged-in bot
+# outside a fight. With 1 a start keeps a stored skill that lies above the first roll and at most at the potential;
+# with 0 every skill goes back to its first roll at the next start (as before), so turning growth off drops it, and
+# .playerbots skill <bot> reroll drops it too. .playerbots skill <bot> shows the first roll and the potential,
+# .playerbots skill the growth counters, .playerbots tactics selftest growth checks the curve.
+Playerbots.Skill.Growth.Enable = 0
+Playerbots.Skill.Growth.GainPerMatch = 0.8
+Playerbots.Skill.Growth.RealPlayerFactor = 3.0
+Playerbots.Skill.Growth.PotentialMin = 10
+Playerbots.Skill.Growth.PotentialMax = 40
+
 # Skill curve. Every lerp from AtSkill1 to AtSkill99 (the reaction factor, the notice miss chance and delay, the
 # tactics' use chances, effort) runs along position' = 1 - (1 - position)^CurveExponent, where position goes from 0 at
 # skill 1 to 1 at skill 99. 1.0 (default) is the straight line, as before. Above 1 most of the ability comes early

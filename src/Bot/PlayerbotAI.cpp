@@ -8097,9 +8097,10 @@ std::set<uint32> PlayerbotAI::GetCurrentIncompleteQuestIds()
     return result;
 }
 
-void PlayerbotAI::SetPvpSkill(uint8 skill)
+void PlayerbotAI::SetPvpSkill(uint8 skill, uint8 firstRoll)
 {
     pvpSkill = skill;
+    pvpSkillFirstRoll = firstRoll ? firstRoll : skill;
     skillReactFactor = 1.0f;
     skillNoticeMissPercent = 0;
     skillNoticeDelayMs = 0;
@@ -8111,11 +8112,11 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     // reads these values while they change one after another.
     // The hashes' guid: the bot's own, or a lab copy's template (G0j-b); they never see the percentile
     uint64 const guid = attributeTemplate ? attributeTemplate : (bot ? bot->GetGUID().GetCounter() : 0);
-    // The attributes from the skill and the guid (BotAttributes.h; with the defaults every ability is the skill). No
-    // growth yet (DT.14): the stored skill is also the first roll.
+    // The attributes from the skill and the guid (BotAttributes.h; with the defaults every ability is the skill).
+    // DT.14: the learnable ones read the (grown) skill, the fixed ones the first roll (G6b; the skill without growth)
     SkillDistributionParams const distribution{config.SkillDistributionUniform, config.SkillMean, config.SkillSd,
                                                config.SkillMin, config.SkillMax};
-    attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, skill, guid);
+    attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, pvpSkillFirstRoll, guid);
     // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
     tacticGate = ComputeTacticGate(config.SkillGate, config.TacticConfig,
                                    AttributeGateInputs(config.SkillAttributes, attributes, skill), guid);

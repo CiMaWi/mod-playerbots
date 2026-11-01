@@ -657,6 +657,8 @@ public:
             TimeHookCall("WorldHook PvpGear", [diff] { PvpGearMgr::Instance().Update(diff); });
             // Queued world-thread operations (arena group formation, PvP gear swaps, ...)
             TimeHookCall("WorldHook Operations", [diff] { PlayerbotWorldThreadProcessor::instance().Update(diff); });
+            // Grown skills for logged-in bots outside a fight; returns at once when none is queued
+            TimeHookCall("WorldHook SkillGrowth", [] { BotProfileMgr::instance().UpdateGrowth(); });
             // Cached LFG state per bot, read on map threads
             TimeHookCall("WorldHook LfgStates", [diff] { PlayerbotsMgr::instance().RefreshLfgStates(diff); });
             // World thread only
@@ -725,9 +727,10 @@ public:
     void OnBattlegroundEnd(Battleground* bg, TeamId winnerTeam) override
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
-        FocusClearArenaMarks(bg);         // Map thread: the team plan's skull and moon go (Playerbots.Tactics.Enable)
-        MatchLog::OnEnd(bg, winnerTeam);  // Map thread: an arena's record (Playerbots.MatchLog.Enable)
-        PvpGearMgr::QueueMatchEnd(bg);  // Map thread: a rated arena's players get a buy check on the world thread
+        FocusClearArenaMarks(bg);          // Map thread: the team plan's skull and moon go (Playerbots.Tactics.Enable)
+        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record (Playerbots.MatchLog.Enable)
+        PvpGearMgr::QueueMatchEnd(bg);     // Map thread: a rated arena's players get a buy check on the world thread
+        BotProfileMgr::QueueMatchEnd(bg);  // Map thread: the bots' skill growth (Playerbots.Skill.Growth.Enable)
     }
 
     // Map thread: a ladder bot puts its PvP loadout on (Playerbots.PvpGear.Wear; queued to the world thread)

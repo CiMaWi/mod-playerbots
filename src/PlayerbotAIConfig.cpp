@@ -874,6 +874,24 @@ bool PlayerbotAIConfig::Initialize()
     }
     SkillExemptRealMasterBots = sConfigMgr->GetOption<bool>("Playerbots.Skill.ExemptRealMasterBots", true);
     {
+        // G6b: never on a lab (DT.7); the hub's config apply forces a lab's server id to its instance id (labN)
+        bool const growth = sConfigMgr->GetOption<bool>("Playerbots.Skill.Growth.Enable", false);
+        bool const lab = LadderServerId.rfind("lab", 0) == 0;
+        SkillGrowthEnable = SkillEnable && growth && !lab;
+        if (growth && lab)
+            LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
+                     LadderServerId);
+
+        SkillGrowth.GainPerMatch =
+            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Growth.GainPerMatch", 0.8f), 0.0f, 10.0f);
+        SkillGrowth.RealPlayerFactor =
+            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Growth.RealPlayerFactor", 3.0f), 1.0f, 10.0f);
+        SkillGrowth.PotentialMin =
+            std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMin", 10), 0, 98);
+        SkillGrowth.PotentialMax = std::clamp<uint32>(
+            sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMax", 40), SkillGrowth.PotentialMin, 98);
+    }
+    {
         auto const percent = [](std::string const& key, uint32 fallback, uint32 high)
         { return static_cast<uint8>(std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, high)); };
         SkillGate.CurveExponent =

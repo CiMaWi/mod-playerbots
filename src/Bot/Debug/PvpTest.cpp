@@ -11,10 +11,12 @@
 #include <cctype>
 #include <ctime>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "AiFactory.h"
 #include "ArenaTeam.h"
@@ -217,7 +219,31 @@ bool ChooseMap(std::string const& key, PvpTestArenaParams& params, std::string& 
     params.Map = available[generator() % available.size()];
     return true;
 }
+
+// G6b: the harness's running arenas, read on the arena's map thread at its end
+std::mutex HarnessArenasLock;
+std::unordered_set<uint32> HarnessArenas;
 }  // namespace
+
+void PvpTestMgr::MarkHarnessArena(uint32 instanceId, bool harness)
+{
+    if (!instanceId)
+        return;
+
+    std::lock_guard<std::mutex> guard(HarnessArenasLock);
+    if (harness)
+        HarnessArenas.insert(instanceId);
+    else
+        HarnessArenas.erase(instanceId);
+}
+
+bool PvpTestMgr::TakeHarnessArena(uint32 instanceId)
+{
+    std::lock_guard<std::mutex> guard(HarnessArenasLock);
+    return HarnessArenas.erase(instanceId) != 0;
+}
+
+PvpTestArenaJob::~PvpTestArenaJob() { PvpTestMgr::MarkHarnessArena(_instanceId, false); }
 
 PvpTestArenaJob::PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide sideA, PvpTestSide sideB,
                                  ObjectGuid issuer)
@@ -648,6 +674,7 @@ bool PvpTestArenaJob::StartArena(std::string& error)
     arena->StartBattleground();
 
     _instanceId = arena->GetInstanceID();
+    PvpTestMgr::MarkHarnessArena(_instanceId, true);
     _bgTypeId = arena->GetBgTypeID();
     _result.Map = arena->GetName();
     _record.Map = _result.Map;
@@ -943,7 +970,7 @@ void PvpTestArenaJob::RestoreSkills()
                 continue;
 
             auto const profile = BotProfileMgr::instance().Find(guid.GetCounter());
-            botAI->SetPvpSkill(profile ? profile->Skill : 0);
+            botAI->SetPvpSkill(profile ? profile->Skill : 0, profile ? BotProfileMgr::FirstRoll(*profile) : 0);
         }
     }
 

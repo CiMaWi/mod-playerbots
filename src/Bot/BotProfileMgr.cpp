@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "Battleground.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
@@ -22,11 +23,18 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotOperation.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "PvpTest.h"
+#include "SkillGrowth.h"
 #include "SkillStrategy.h"
+#include "SplitMix64.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
+#include "ThreadCheck.h"
+#include "Timer.h"
 
 namespace
 {
@@ -66,6 +74,28 @@ uint8 ClampSkill(double value)
 {
     return static_cast<uint8>(std::clamp<long>(std::lround(value), BotProfileMgr::MinSkill, BotProfileMgr::MaxSkill));
 }
+
+// G6b: one finished match's bots, from the map thread to the world thread
+class SkillGrowthOperation : public PlayerbotOperation
+{
+public:
+    SkillGrowthOperation(std::vector<SkillGrowthEntry> entries, uint64 matchSeed)
+        : _entries(std::move(entries)), _matchSeed(matchSeed)
+    {
+    }
+
+    bool Execute() override
+    {
+        BotProfileMgr::instance().GrowMatch(_entries, _matchSeed);
+        return true;
+    }
+
+    std::string GetName() const override { return "SkillGrowth"; }
+
+private:
+    std::vector<SkillGrowthEntry> _entries;
+    uint64 _matchSeed;
+};
 }  // namespace
 
 uint8 BotProfileMgr::Roll(uint32 guid, uint32 version)
@@ -188,6 +218,7 @@ void BotProfileMgr::EnsureLoaded()
     uint32 migrated = 0;
     uint32 remapped = 0;
     uint32 unsaved = 0;
+    uint32 grownKept = 0;
     if (PreparedQueryResult result = PlayerbotsDatabase.Query(stmt))
     {
         do
@@ -208,7 +239,11 @@ void BotProfileMgr::EnsureLoaded()
                     std::clamp(NormalCdf((profile.Skill - SkillMean) / SkillDeviation), 1e-6, 1.0 - 1e-6);
 
             uint8 const skill = SkillFromPercentile(profile.Percentile);
-            bool const changed = skill != profile.Skill;
+            // G6b: while growth is on, a grown skill (above the first roll, at most the potential) stays
+            bool const grown = sPlayerbotAIConfig.SkillGrowthEnable && profile.Skill > skill &&
+                               profile.Skill <= SkillGrowthPotential(skill, guid, sPlayerbotAIConfig.SkillGrowth);
+            grownKept += grown ? 1 : 0;
+            bool const changed = !grown && skill != profile.Skill;
             migrated += known ? 0 : 1;
             if (_percentileColumn || !changed)
             {
@@ -232,6 +267,8 @@ void BotProfileMgr::EnsureLoaded()
                                   sPlayerbotAIConfig.SkillSd);
     LOG_INFO("playerbots", "Bot profiles: distribution {}, {} percentiles migrated, {} skills remapped", shape,
              _percentileColumn ? migrated : 0, remapped);
+    if (sPlayerbotAIConfig.SkillGrowthEnable)
+        LOG_INFO("playerbots", "Bot profiles: skill growth on, {} grown skills kept", grownKept);
     if (!_percentileColumn)
         LOG_WARN("playerbots",
                  "Bot profiles: playerbots_bot_profile has no percentile column (update 2026_10_27_00 not applied): "
@@ -312,6 +349,142 @@ double BotProfileMgr::Percentile(uint32 guid)
     EnsureLoaded();
     auto const it = _profiles.find(guid);
     return it != _profiles.end() ? it->second.Percentile : LegacyPercentile(guid);
+}
+
+uint8 BotProfileMgr::FirstRoll(BotProfile const& profile)
+{
+    return sPlayerbotAIConfig.SkillGrowthEnable ? SkillFromPercentile(profile.Percentile) : profile.Skill;
+}
+
+uint8 BotProfileMgr::FirstRoll(uint32 guid)
+{
+    if (!sPlayerbotAIConfig.SkillGrowthEnable)
+        return 0;
+
+    std::lock_guard<std::mutex> guard(_lock);
+    EnsureLoaded();
+    auto const it = _profiles.find(guid);
+    return it != _profiles.end() ? FirstRoll(it->second) : 0;
+}
+
+void BotProfileMgr::QueueMatchEnd(Battleground* bg)
+{
+    if (!sPlayerbotAIConfig.SkillGrowthEnable || !bg)
+        return;
+
+    // Harness matches never count (DT.7); taking the mark frees the instance id for a later match
+    if (PvpTestMgr::TakeHarnessArena(bg->GetInstanceID()))
+        return;
+
+    // Map thread: the players still in the match played it to its end (a leaver is gone from the list; a draw
+    // counts). A team with a real player (or the headless test player: no PlayerbotAI) gives its bots the factor
+    std::array<bool, PVP_TEAMS_COUNT> realPlayer{};
+    for (auto const& [guid, player] : bg->GetPlayers())
+    {
+        if (!player || !IsRealPlayer(player))
+            continue;
+
+        TeamId const team = player->GetBgTeamId();
+        if (team < PVP_TEAMS_COUNT)
+            realPlayer[team] = true;
+    }
+
+    std::vector<SkillGrowthEntry> entries;
+    for (auto const& [guid, player] : bg->GetPlayers())
+    {
+        PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
+        // A lab copy draws from its template (G0j-b) and has no practice of its own
+        if (!botAI || botAI->GetAttributeTemplate())
+            continue;
+
+        TeamId const team = player->GetBgTeamId();
+        SkillGrowthEntry entry;
+        entry.Guid = guid.GetCounter();
+        entry.RealPlayerOnTeam = team < PVP_TEAMS_COUNT && realPlayer[team];
+        entries.push_back(entry);
+    }
+
+    if (entries.empty())
+        return;
+
+    // The rounding's seed: the arena or battleground instance and the time of its end
+    uint64 const matchSeed = SplitMix64((static_cast<uint64>(bg->GetInstanceID()) << 32) | getMSTime());
+    PlayerbotWorldThreadProcessor::instance().QueueOperation(
+        std::make_unique<SkillGrowthOperation>(std::move(entries), matchSeed));
+}
+
+void BotProfileMgr::GrowMatch(std::vector<SkillGrowthEntry> const& entries, uint64 matchSeed)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("BotProfileMgr::GrowMatch");
+    // A .reload config may have turned growth off since the match ended
+    if (!sPlayerbotAIConfig.SkillGrowthEnable)
+        return;
+
+    SkillGrowthParams const& params = sPlayerbotAIConfig.SkillGrowth;
+    ++_growthMatches;
+    std::lock_guard<std::mutex> guard(_lock);
+    EnsureLoaded();
+    for (SkillGrowthEntry const& entry : entries)
+    {
+        auto const it = _profiles.find(entry.Guid);
+        if (it == _profiles.end())
+            continue;
+
+        BotProfile& profile = it->second;
+        ++_growthResults;
+        _growthBesideReal += entry.RealPlayerOnTeam ? 1 : 0;
+        uint8 const first = FirstRoll(profile);
+        uint8 const potential = SkillGrowthPotential(first, entry.Guid, params);
+        uint8 const grown =
+            GrowSkill(profile.Skill, first, potential, SkillGrowthMatchGain(params, entry.RealPlayerOnTeam),
+                      SkillGrowthHash(matchSeed, entry.Guid));
+        if (grown == profile.Skill)
+            continue;
+
+        uint8 const previous = profile.Skill;
+        ++_growthRaised;
+        _growthPoints += grown - previous;
+        // Only the skill: the percentile keeps the first roll (and the rank, DD.7)
+        profile.Skill = grown;
+        Save(entry.Guid, profile);
+        auto const pending = std::find_if(_pendingSkills.begin(), _pendingSkills.end(),
+                                          [&entry](PendingSkill const& queued) { return queued.Guid == entry.Guid; });
+        if (pending != _pendingSkills.end())
+        {
+            pending->Skill = grown;
+            pending->FirstRoll = first;
+        }
+        else
+            _pendingSkills.push_back({entry.Guid, grown, first, previous});
+    }
+}
+
+void BotProfileMgr::UpdateGrowth()
+{
+    if (_pendingSkills.empty())
+        return;
+
+    PLAYERBOT_CHECK_WORLD_THREAD("BotProfileMgr::UpdateGrowth");
+    for (auto it = _pendingSkills.begin(); it != _pendingSkills.end();)
+    {
+        // Looked up per tick; the pointers are not kept
+        Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(it->Guid));
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (botAI && bot->IsInCombat())
+        {
+            ++it;
+            continue;
+        }
+
+        // Offline: the login reads the grown profile. A skill set otherwise since the match stays
+        if (botAI && !botAI->GetAttributeTemplate() && botAI->GetPvpSkill() == it->Previous)
+        {
+            botAI->SetPvpSkill(it->Skill, it->FirstRoll);
+            ++_growthApplied;
+        }
+
+        it = _pendingSkills.erase(it);
+    }
 }
 
 BotProfile BotProfileMgr::Reroll(uint32 guid)
@@ -478,6 +651,13 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
     if (target.empty())
     {
         handler->PSendSysMessage("Bot profiles: {}", mgr.Summary());
+        if (sPlayerbotAIConfig.SkillGrowthEnable)
+            handler->PSendSysMessage(
+                "Skill growth: {} matches, {} bot results ({} beside a real player), {} raised by {} points, {} "
+                "applied, {} pending",
+                mgr._growthMatches, mgr._growthResults, mgr._growthBesideReal, mgr._growthRaised, mgr._growthPoints,
+                mgr._growthApplied, mgr._pendingSkills.size());
+
         return true;
     }
 
@@ -527,13 +707,13 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
         profile = mgr.SetSkill(low, static_cast<uint8>(*skill));
         // An actual skill change resets the notice counters; a plain read must not
         if (botAI)
-            botAI->SetPvpSkill(profile.Skill);
+            botAI->SetPvpSkill(profile.Skill, FirstRoll(profile));
     }
     else if (verb == "reroll")
     {
         profile = mgr.Reroll(low);
         if (botAI)
-            botAI->SetPvpSkill(profile.Skill);
+            botAI->SetPvpSkill(profile.Skill, FirstRoll(profile));
     }
     else
     {
@@ -547,6 +727,14 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage("{} (guid {}, {}): skill {}, percentile {:.4f}, roll {}", name, low,
                              botAI ? "online" : "offline", static_cast<uint32>(profile.Skill), profile.Percentile,
                              profile.Version);
+    // G6b: the first roll and the potential the skill grows toward (hidden like the skill, C4)
+    if (sPlayerbotAIConfig.SkillGrowthEnable)
+    {
+        uint8 const first = FirstRoll(profile);
+        handler->PSendSysMessage("Growth: first roll {}, potential {}", static_cast<uint32>(first),
+                                 static_cast<uint32>(SkillGrowthPotential(first, low, sPlayerbotAIConfig.SkillGrowth)));
+    }
+
     if (botAI && sPlayerbotAIConfig.SkillNoticeActive)
     {
         // Multiplier verdicts since the skill was last set, not executed casts

@@ -192,7 +192,7 @@ bool LabCopyMgr::Pin(Player* templatePlayer, Player* copy, std::string& error, s
     bool const loadout = PvpGearMgr::Instance().PinLoadout(copyGuid, templateGuid);
     // The template's guid draws the attributes and the gate in SetPvpSkill, with the template's skill
     copyAI->SetAttributeTemplate(templateGuid);
-    copyAI->SetPvpSkill(templateAI->GetPvpSkill());
+    copyAI->SetPvpSkill(templateAI->GetPvpSkill(), templateAI->GetPvpSkillFirstRoll());
     if (talentsCopied)
         copyAI->ResetStrategies();
 
@@ -230,7 +230,7 @@ bool LabCopyMgr::Unpin(uint32 copyGuid, std::string& error, std::string& detail)
 
     copyAI->SetAttributeTemplate(0);
     std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(copyGuid);
-    copyAI->SetPvpSkill(profile ? profile->Skill : 0);
+    copyAI->SetPvpSkill(profile ? profile->Skill : 0, profile ? BotProfileMgr::FirstRoll(*profile) : 0);
     bool restored = false;
     char const* talents = RestoreTalents(copy, pinned->second.OwnTalents, pinned->second.TalentsChanged, restored);
     if (restored)
@@ -436,7 +436,7 @@ bool LabCopyMgr::HandleReapplyCommand(ChatHandler* handler, char const* args)
             return false;
 
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        botAI->SetPvpSkill(botAI->GetPvpSkill());
+        botAI->SetPvpSkill(botAI->GetPvpSkill(), botAI->GetPvpSkillFirstRoll());
         count = 1;
     }
     else
@@ -448,7 +448,7 @@ bool LabCopyMgr::HandleReapplyCommand(ChatHandler* handler, char const* args)
             if (!botAI)
                 continue;
 
-            botAI->SetPvpSkill(botAI->GetPvpSkill());
+            botAI->SetPvpSkill(botAI->GetPvpSkill(), botAI->GetPvpSkillFirstRoll());
             ++count;
         }
     }

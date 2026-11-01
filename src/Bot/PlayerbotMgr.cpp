@@ -595,7 +595,12 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     }
     PlayerbotRepository::instance().Load(botAI);
     if (sPlayerbotAIConfig.SkillEnable)
-        botAI->SetPvpSkill(BotProfileMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter()));
+    {
+        uint32 const low = bot->GetGUID().GetCounter();
+        uint8 const skill = BotProfileMgr::instance().LoadOrCreate(low);
+        // G6b: the fixed attributes read the first roll (0 = the skill while growth is off)
+        botAI->SetPvpSkill(skill, BotProfileMgr::instance().FirstRoll(low));
+    }
     botAI->ResetTacticMask();
     // G5a: Avoid.EnsureTrinket's trinket left by a crash or a save before its restore comes off first (its mark)
     CcCleanEnsuredTrinket(botAI);

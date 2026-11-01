@@ -11,9 +11,11 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "Define.h"
 
+class Battleground;
 class ChatHandler;
 
 struct BotProfile
@@ -25,6 +27,13 @@ struct BotProfile
     uint32 Version = 1;
     // The bot's fixed rank in (0, 1): the skill is this percentile mapped through Playerbots.Skill.Distribution
     double Percentile = 0.5;
+};
+
+// One bot of a finished match (G6b): its guid and whether a real player fought on its team
+struct SkillGrowthEntry
+{
+    uint32 Guid = 0;
+    bool RealPlayerOnTeam = false;
 };
 
 // The hidden per-bot profile (Playerbots.Skill.Enable). All rows are loaded with one query at startup (or at the first
@@ -55,6 +64,21 @@ public:
     double Percentile(uint32 guid);
     // Count, mean, sd, min, max and a histogram in steps of 10
     std::string Summary();
+
+    // The first roll (G6b, DT.14): the percentile through the distribution, which growth never writes; the stored
+    // skill while Playerbots.Skill.Growth.Enable is 0 (no growth: the skill is the first roll, as before)
+    static uint8 FirstRoll(BotProfile const& profile);
+    // SetPvpSkill's second argument: the bot's first roll, 0 (= the skill) without a profile or with growth off
+    uint8 FirstRoll(uint32 guid);
+    // Map thread, from OnBattlegroundEnd (Playerbots.Skill.Growth.Enable): the bots still in the match (draws count,
+    // leavers are gone) go to the world thread with their teams' real-player flags; never for a harness match
+    static void QueueMatchEnd(Battleground* bg);
+    // World thread (the queued operation): grows each bot's profile by one match, saves it asynchronously and queues
+    // the new skill for the bot
+    void GrowMatch(std::vector<SkillGrowthEntry> const& entries, uint64 matchSeed);
+    // World thread, every tick (returns at once while nothing is queued): a logged-in bot outside a fight takes its
+    // grown skill (SetPvpSkill while the map threads wait); an offline one reads it at its next login
+    void UpdateGrowth();
 
     // The skill before percentiles: normal distribution, mean 50, sd 15, rounded and clamped to 1-99, seeded from
     // guid and version only
@@ -89,6 +113,24 @@ private:
     // playerbots_bot_profile.percentile exists (update 2026_10_27_00); without it percentiles live in memory only
     bool _percentileColumn = false;
     uint32 _created = 0;
+
+    // G6b: grown skills waiting for their bots (world thread only). Previous is the skill before the first of the
+    // queued matches: a bot whose skill was set otherwise since (GM command, harness, lab pin) keeps that one
+    struct PendingSkill
+    {
+        uint32 Guid;
+        uint8 Skill;
+        uint8 FirstRoll;
+        uint8 Previous;
+    };
+    std::vector<PendingSkill> _pendingSkills;
+    // Counters for .playerbots skill (world thread only)
+    uint64 _growthMatches = 0;
+    uint64 _growthResults = 0;
+    uint64 _growthBesideReal = 0;
+    uint64 _growthRaised = 0;
+    uint64 _growthPoints = 0;
+    uint64 _growthApplied = 0;
 };
 
 #endif
