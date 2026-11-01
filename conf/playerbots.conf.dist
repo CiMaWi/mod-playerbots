@@ -1802,8 +1802,10 @@ Playerbots.Natural.Cadence.NearRealPlayerYards = 0
 # the true velocity (spread GainSigmaPct); from TurnRateFromSkill it also reads the turn rate and from PatternFromSkill
 # turns and patterns over HistoryMsAtSkill1..99 ms of history. A heading change of JukeDeg degrees between two samples
 # is a juke no level predicts. The predicted point is at most MaxLeadYards from the lagged one; a target that moved
-# less than MinMoveYards in the half second before what the chaser saw is standing; a chaser that closed nothing for
-# StuckMs aims at the true position for 1.5 s. SkipLeadRule 1: the old 3-yard lead rule of ReachCombatTo is skipped.
+# less than MinMoveYards in the half second before what the chaser saw is standing; a chaser out of its reach that for
+# StuckMs neither closed 1 yd on the target nor ran 2 yd itself aims at the true position for 1.5 s. The chaser runs
+# to the tracked point but stops within reach of the target's true position. Combat chases only (the heal and
+# resurrect reach keep the exact point). SkipLeadRule 1: the old 3-yard lead rule of ReachCombatTo is skipped.
 # The ring takes a sample at most every SampleMs (wider when RingSamples must reach back over a long lag and history);
 # the chaser sees the newest sample at least its lag old. A moving chaser faces its path, so it faces the same point.
 # OutsidePvpInSight as in Facing. With Playerbots.PerfMonEnabled the row NaturalMove::Track shows the cost; tactics

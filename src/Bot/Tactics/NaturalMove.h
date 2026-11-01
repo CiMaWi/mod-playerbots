@@ -28,10 +28,10 @@
 // extrapolation by the turn rate it read; from PatternFromSkill it reads jukes over HistoryMs and, when they repeat,
 // expects the next one on time and runs the leg before as the next. A heading change of JukeDeg is a juke no level
 // predicts. The predicted point is at most MaxLeadYards from the seen one; a target that moved less than MinMoveYards
-// in the half second before the seen instant is standing; a chaser that closed nothing for StuckMs aims at the true
-// position for a while. Every draw comes from a hash of the bot, the instant and its call number (no RNG state). The
-// game side is in MovementActions.cpp (ReachCombatTo) and PlayerbotAI.cpp (NaturalTrackHere, the params by
-// SetPvpSkill); the numbers are TrackConfig's.
+// in the half second before the seen instant is standing; a chaser out of its reach that neither closed on the target
+// nor ran for StuckMs aims at the true position for a while. Every draw comes from a hash of the bot, the instant and
+// its call number (no RNG state). The game side is in MovementActions.cpp (ReachCombatTo) and PlayerbotAI.cpp
+// (NaturalTrackHere, the params by SetPvpSkill); the numbers are TrackConfig's.
 
 constexpr float TRACK_PI = 3.14159265358979323846f;
 constexpr float TRACK_TWO_PI = 2.0f * TRACK_PI;
@@ -49,6 +49,7 @@ constexpr uint32 TRACK_MIN_JUKES = 2;                 // jukes in the history th
 constexpr float TRACK_MIN_SEGMENT_YARDS = 0.05f;      // a segment between two samples shorter than this has no heading
 constexpr float TRACK_CLOSE_YARDS = 1.0f;             // closing this much on the target is progress (StuckMs)
 constexpr float TRACK_ESCAPE_YARDS = 8.0f;            // the target this much farther than the best: a new chase
+constexpr float TRACK_MOVED_YARDS = 2.0f;             // the chaser running this far itself is progress (StuckMs)
 constexpr uint32 TRACK_TRUE_AIM_MS = 1500;            // a stuck chaser aims at the true position this long
 constexpr float TRACK_SAME_YARDS = 0.5f;              // a predicted point this close to the seen one needs no checks
 constexpr uint32 TRACK_SELFTEST_BOTS = 24;            // simulated chasers per skill and run in RunTrackChecks
@@ -551,8 +552,11 @@ struct TrackBotState
     TrackRing Ring;
     uint64 TargetGuid = 0;  // the ring's target (raw guid)
     uint32 Calls = 0;       // predictions made (the hash's call number)
-    // StuckMs: the least distance to the target this chase and since when; the true aim until
+    // StuckMs: the least distance to the target this chase, where the chaser stood then and since when; the true aim
+    // until
     float BestDistance = 0.0f;
+    float MarkX = 0.0f;
+    float MarkY = 0.0f;
     uint32 BestAtMs = 0;
     uint32 TrueUntilMs = 0;
     uint32 InSightCheckedMs = 0;  // OutsidePvpInSight's cached answer
@@ -610,9 +614,12 @@ inline void TrackObserve(TrackBotState& state, TrackConfig const& config, uint64
     state.Ring.Push(TrackSample{nowMs, x, y, z}, config.RingSamples);
 }
 
-// StuckMs: a chaser that closed nothing (TRACK_CLOSE_YARDS) on the target for stuckMs aims at its true position for
-// TRACK_TRUE_AIM_MS, then tracks again; a target that got far away (a blink, a charge) starts a new count
-inline bool TrackAimTrue(TrackBotState& state, float distance, uint32 nowMs, uint32 stuckMs)
+// StuckMs: a chaser out of its reach that for stuckMs neither closed TRACK_CLOSE_YARDS on the target nor ran
+// TRACK_MOVED_YARDS itself aims at the target's true position for TRACK_TRUE_AIM_MS, then tracks again. A chase at an
+// equal distance (the chaser runs) and a bot within reach (a caster holding its range) are no stuck chasers; a target
+// that got far away (a blink, a charge) starts a new count. distance and reach as ReachCombatTo's (combat reaches in)
+inline bool TrackAimTrue(TrackBotState& state, float distance, float reach, float botX, float botY, uint32 nowMs,
+                         uint32 stuckMs)
 {
     if (state.TrueUntilMs != 0)
     {
@@ -622,10 +629,13 @@ inline bool TrackAimTrue(TrackBotState& state, float distance, uint32 nowMs, uin
         state.TrueUntilMs = 0;
     }
 
-    if (state.BestAtMs == 0 || distance < state.BestDistance - TRACK_CLOSE_YARDS ||
+    bool const ran = std::hypot(botX - state.MarkX, botY - state.MarkY) >= TRACK_MOVED_YARDS;
+    if (state.BestAtMs == 0 || distance <= reach || ran || distance < state.BestDistance - TRACK_CLOSE_YARDS ||
         distance > state.BestDistance + TRACK_ESCAPE_YARDS)
     {
         state.BestDistance = distance;
+        state.MarkX = botX;
+        state.MarkY = botY;
         state.BestAtMs = std::max(nowMs, 1u);
         return false;
     }
@@ -636,13 +646,16 @@ inline bool TrackAimTrue(TrackBotState& state, float distance, uint32 nowMs, uin
     ++state.Unsticks;
     state.TrueUntilMs = std::max(nowMs + TRACK_TRUE_AIM_MS, 1u);
     state.BestDistance = distance;
+    state.MarkX = botX;
+    state.MarkY = botY;
     state.BestAtMs = std::max(nowMs, 1u);
     return true;
 }
 
 // tactics selftest track (also the offline harness): the numbers by skill, the draws, the ring, then simulated chases
 // (a call every 100 ms, as the AI's checks) on a straight run, a circle and a zigzag: the prediction error falls with
-// skill, every level misses a sudden turn, the turn rate helps on the circle and the pattern on the zigzag
+// skill, every level misses a sudden turn (at its first call after it and over the lag and a sample gap after it,
+// leading along the old heading), the turn rate helps on the circle and the pattern on the zigzag
 template <typename Check>
 void RunTrackChecks(Check&& check)
 {
@@ -799,14 +812,18 @@ void RunTrackChecks(Check&& check)
         }
     };
     // The mean error (yards) of the predicted point against the true position now, over chasers and calls; with
-    // Pattern/TurnRate overrides for the comparisons. The sudden turn is read at its first call after the turn.
+    // Pattern/TurnRate overrides for the comparisons. The sudden turn is read over turnWindowMs after the turn (100:
+    // at its first call after it).
     struct Result
     {
         float Error = 0.0f;
-        float AlongNew = 0.0f;  // sudden turn: the prediction's progress along the new heading
+        float AlongNew = 0.0f;      // sudden turn: the prediction's progress along the new heading
+        float TrueAlongNew = 0.0f;  // sudden turn: the target's true progress along the new heading
+        float LeadOld = 0.0f;       // sudden turn: the lead (predicted minus seen point) along the old heading
+        float LeadNew = 0.0f;       // sudden turn: the lead along the new heading
         float PatternShare = 0.0f;
     };
-    auto const simulate = [&](TrackParams const& params, uint32 kind)
+    auto const chase = [&](TrackParams const& params, uint32 kind, uint32 turnWindowMs)
     {
         Result result;
         uint32 count = 0;
@@ -820,7 +837,7 @@ void RunTrackChecks(Check&& check)
             {
                 TrackPoint const now = positionAt(kind, ms);
                 TrackObserve(state, config, 1, ms, now.X, now.Y, now.Z);
-                bool const measured = kind == 3 ? ms > 4000 && ms <= 4100 : ms >= 3000;
+                bool const measured = kind == 3 ? ms > 4000 && ms <= 4000 + turnWindowMs : ms >= 3000;
                 if (!measured)
                     continue;
 
@@ -828,6 +845,9 @@ void RunTrackChecks(Check&& check)
                     TrackPredict(state.Ring, state.Params, config, ms, TrackHash(bot + 1, ms, state.Calls++));
                 result.Error += TrackDistance2d(prediction.Point, now);
                 result.AlongNew += prediction.Point.Y;
+                result.TrueAlongNew += now.Y;
+                result.LeadOld += prediction.Point.X - prediction.Seen.X;
+                result.LeadNew += prediction.Point.Y - prediction.Seen.Y;
                 patterns += prediction.Mode == TrackMode::Pattern ? 1 : 0;
                 ++count;
             }
@@ -837,11 +857,15 @@ void RunTrackChecks(Check&& check)
         {
             result.Error /= static_cast<float>(count);
             result.AlongNew /= static_cast<float>(count);
+            result.TrueAlongNew /= static_cast<float>(count);
+            result.LeadOld /= static_cast<float>(count);
+            result.LeadNew /= static_cast<float>(count);
             result.PatternShare = static_cast<float>(patterns) / static_cast<float>(count);
         }
 
         return result;
     };
+    auto const simulate = [&](TrackParams const& params, uint32 kind) { return chase(params, kind, 100); };
 
     std::array<uint8, 6> const skills = {1, 30, 45, 60, 80, 99};
     for (Path const& path : {Path{"straight run", 0}, Path{"circle", 1}, Path{"zigzag", 2}})
@@ -875,6 +899,38 @@ void RunTrackChecks(Check&& check)
         }
 
         check(missed, "every level misses a sudden turn (cyd at skill 1/30/45/60/80/99: " + errors + ")");
+    }
+
+    // Over the whole window in which the turn hides (the lag and one sample gap after it) no level anticipates the new
+    // heading (less than a quarter of the target's mean progress on it, an error of at least half of it), and the lead
+    // keeps pointing along the old heading (no lead below the velocity level)
+    {
+        bool missed = true;
+        bool ledOld = true;
+        std::string errors;
+        std::string leads;
+        auto const cyd = [](float yards) { return std::to_string(static_cast<int>(std::lround(yards * 100.0f))); };
+        for (uint8 skill : skills)
+        {
+            TrackParams const params = paramsAt(skill);
+            Result const result = chase(params, 3, params.LagMs + TrackSampleGapMs(params, config));
+            missed =
+                missed && result.AlongNew < result.TrueAlongNew * 0.25f && result.Error >= result.TrueAlongNew * 0.5f;
+            ledOld = ledOld && (params.Level() == TrackLevel::LastSeen
+                                    ? std::fabs(result.LeadOld) < 1e-4f && std::fabs(result.LeadNew) < 1e-4f
+                                    : result.LeadOld > 0.0f && result.LeadOld > 2.0f * std::fabs(result.LeadNew));
+            errors += (errors.empty() ? "" : "/") + cyd(result.AlongNew) + ":" + cyd(result.TrueAlongNew);
+            leads += (leads.empty() ? "" : "/") + cyd(result.LeadOld) + ":" + cyd(result.LeadNew);
+        }
+
+        check(missed,
+              "every level misses a sudden turn over the lag and a sample gap after it (cyd on the new "
+              "heading, predicted:true, at skill 1/30/45/60/80/99: " +
+                  errors + ")");
+        check(ledOld,
+              "after a sudden turn the lead keeps pointing along the old heading (cyd old:new at skill "
+              "1/30/45/60/80/99: " +
+                  leads + ")");
     }
 
     // The turn rate helps on the circle, the pattern on the zigzag (the same bot without them)
@@ -916,19 +972,40 @@ void RunTrackChecks(Check&& check)
               "a fresh ring aims at its one sample");
     }
 
-    // Stuck chasers
+    // Stuck chasers (reach 5 yd): a standing one, one running at an equal distance, one within reach
     {
+        float const reach = 5.0f;
+        uint32 const stuckMs = config.StuckMs;
         TrackBotState state;
-        bool const first = !TrackAimTrue(state, 10.0f, 1000, config.StuckMs);
-        bool const closing = !TrackAimTrue(state, 8.5f, 2500, config.StuckMs);
-        bool const waiting = !TrackAimTrue(state, 8.4f, 2500 + config.StuckMs - 1, config.StuckMs);
-        bool const stuck = TrackAimTrue(state, 8.4f, 2500 + config.StuckMs, config.StuckMs);
-        bool const holds = TrackAimTrue(state, 8.4f, 2500 + config.StuckMs + TRACK_TRUE_AIM_MS - 1, config.StuckMs);
-        bool const again = !TrackAimTrue(state, 8.4f, 2500 + config.StuckMs + TRACK_TRUE_AIM_MS, config.StuckMs);
+        auto const aim = [&](float distance, uint32 ms)
+        { return TrackAimTrue(state, distance, reach, 0.0f, 0.0f, ms, stuckMs); };
+        bool const first = !aim(10.0f, 1000);
+        bool const closing = !aim(8.5f, 2500);
+        bool const waiting = !aim(8.4f, 2500 + stuckMs - 1);
+        bool const stuck = aim(8.4f, 2500 + stuckMs);
+        bool const holds = aim(8.4f, 2500 + stuckMs + TRACK_TRUE_AIM_MS - 1);
+        bool const again = !aim(8.4f, 2500 + stuckMs + TRACK_TRUE_AIM_MS);
         check(first && closing && waiting && stuck && holds && again && state.Unsticks == 1,
-              "a chaser that closed nothing for StuckMs aims at the true position for a while, then tracks again");
-        bool const escaped = !TrackAimTrue(state, 30.0f, 2500 + 3 * config.StuckMs, config.StuckMs);
+              "a chaser out of reach that neither closed nor ran for StuckMs aims at the true position for a while, "
+              "then tracks again");
+        bool const escaped = !aim(30.0f, 2500 + 3 * stuckMs);
         check(escaped && state.BestDistance == 30.0f, "a target far away starts a new count");
+
+        TrackBotState running;
+        bool runningFree = true;
+        for (uint32 ms = 1000; ms <= 1000 + 3 * stuckMs; ms += 100)
+        {
+            float const x = TRACK_SELFTEST_RUN * static_cast<float>(ms);
+            runningFree = runningFree && !TrackAimTrue(running, 10.0f, reach, x, 0.0f, ms, stuckMs);
+        }
+
+        check(runningFree && running.Unsticks == 0, "a chase at an equal distance (the chaser runs) is not stuck");
+        TrackBotState holding;
+        bool holdingFree = true;
+        for (uint32 ms = 1000; ms <= 1000 + 3 * stuckMs; ms += 100)
+            holdingFree = holdingFree && !TrackAimTrue(holding, 4.5f, reach, 0.0f, 0.0f, ms, stuckMs);
+
+        check(holdingFree && holding.Unsticks == 0, "a bot within its reach (holding its range) is not stuck");
     }
 }
 

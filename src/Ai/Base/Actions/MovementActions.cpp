@@ -794,16 +794,17 @@ namespace
 // G2b (NaturalMove.h): the point a chaser runs to where NaturalTrackHere says so. Every call puts the target's true
 // position into the bot's ring; the point is the target as the bot saw it, predicted by its Foresight, moved back to
 // the seen point when a wall lies between the two (as the old lead rule). False (the true position) while the bot is
-// stuck (StuckMs) or has nothing seen yet.
-bool TrackChasePoint(PlayerbotAI* botAI, Player* bot, Unit* target, uint32 nowMs, float& x, float& y, float& z,
-                     TrackPrediction& prediction)
+// stuck (StuckMs: out of reach, neither closing nor running) or has nothing seen yet.
+bool TrackChasePoint(PlayerbotAI* botAI, Player* bot, Unit* target, float reach, uint32 nowMs, float& x, float& y,
+                     float& z, TrackPrediction& prediction)
 {
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalMove::Track")
                                                     : nullptr);
     TrackConfig const& config = sPlayerbotAIConfig.NaturalTrack;
     TrackBotState& state = botAI->GetTrackState();
     TrackObserve(state, config, target->GetGUID().GetRawValue(), nowMs, x, y, z);
-    if (TrackAimTrue(state, bot->GetExactDist(target), nowMs, config.StuckMs))
+    if (TrackAimTrue(state, bot->GetExactDist(target), reach, bot->GetPositionX(), bot->GetPositionY(), nowMs,
+                     config.StuckMs))
         return false;
 
     prediction = TrackPredict(state.Ring, state.Params, config, nowMs,
@@ -839,11 +840,15 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     float ty = target->GetPositionY();
     float tz = target->GetPositionZ();
 
-    // G2b: with the natural tracking the lagged, predicted point, and no 3-yard lead (SkipLeadRule)
+    float const reach = distance + (bot->GetCombatReach() + target->GetCombatReach());
+
+    // G2b: with the natural tracking the lagged, predicted point, and no 3-yard lead (SkipLeadRule); combat chases
+    // only (a friendly target, the heal and resurrect reach, keeps the exact point and stays out of the counters)
     uint32 const nowMs = getMSTime();
     TrackPrediction prediction;
-    bool const tracked = sPlayerbotAIConfig.NaturalTrack.Enable && NaturalTrackHere(botAI, nowMs) &&
-                         TrackChasePoint(botAI, bot, target, nowMs, tx, ty, tz, prediction);
+    bool const tracked = sPlayerbotAIConfig.NaturalTrack.Enable && !bot->IsFriendlyTo(target) &&
+                         NaturalTrackHere(botAI, nowMs) &&
+                         TrackChasePoint(botAI, bot, target, reach, nowMs, tx, ty, tz, prediction);
     float const baseX = tx;
     float const baseY = ty;
     float const baseZ = tz;
@@ -868,10 +873,14 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
             tz = baseZ;
         }
     }
-    float combatDistance = bot->GetCombatReach() + target->GetCombatReach();
-    distance += combatDistance;
+    distance = reach;
 
-    if (bot->GetExactDist(tx, ty, tz) <= distance)
+    // G2b: the bot runs to the tracked point but measures its reach (the early return, the path's end) from the
+    // target's true position, so a lagging chaser does not stop lag x speed short of a runner
+    float const reachX = tracked ? target->GetPositionX() : tx;
+    float const reachY = tracked ? target->GetPositionY() : ty;
+    float const reachZ = tracked ? target->GetPositionZ() : tz;
+    if (bot->GetExactDist(reachX, reachY, reachZ) <= distance)
         return false;
 
     PathGenerator path(bot);
@@ -883,14 +892,14 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     float shortenTo = distance;
 
     // Avoid walking too far when moving towards each other
-    float disToGo = bot->GetExactDist(tx, ty, tz) - distance;
+    float disToGo = bot->GetExactDist(reachX, reachY, reachZ) - distance;
     if (disToGo >= 6.0f)
         shortenTo = disToGo / 2 + distance;
 
     // if (bot->GetExactDist(tx, ty, tz) <= shortenTo)
     //     return false;
 
-    path.ShortenPathUntilDist(G3D::Vector3(tx, ty, tz), shortenTo);
+    path.ShortenPathUntilDist(G3D::Vector3(reachX, reachY, reachZ), shortenTo);
     G3D::Vector3 endPos = path.GetPath().back();
     bool const moved = MoveTo(target->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
