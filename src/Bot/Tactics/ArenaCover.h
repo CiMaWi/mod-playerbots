@@ -95,13 +95,38 @@ inline constexpr std::array<CoverPillar, 4> ARENA_COVER_RV_PILLARS = {{
     {802.211609f, -284.493256f, 28.28f, 3.5f, 4},
 }};
 
-// The five arenas. Nagrand, Blade's Edge, Lordaeron and Dalaran get their rows from G2d-b's scan (their pillars are
-// map geometry, not game objects); the boxes centre on ArenaTactics::moveToCenter's points.
+// Nagrand, Blade's Edge and Dalaran: the discs of G2d-b's scan (tactics cover scan in a lab1 match's preparation,
+// 2026-11-01), each confirmed by 8 of 8 blocked diameters. "Elongated" discs (the shortest probe under half the radius:
+// a block, not a round pillar) overstate the cover; FindCoverPoint confirms every point by rays. Dalaran's centre disc
+// (1291.58, 790.67, r 7.21) is the waterfall (game objects, on and off every 30 s): left out, the rays see it.
+// Lordaeron: the scan kept no disc (the tomb's clusters were dropped as hollow), so it has no rows yet.
+inline constexpr std::array<CoverPillar, 3> ARENA_COVER_NA_PILLARS = {{
+    {4059.17f, 2888.33f, 12.65f, 5.77f, 0},  // elongated
+    {4081.33f, 2901.83f, 12.68f, 5.81f, 0},  // elongated
+    {4054.83f, 2953.67f, 12.70f, 6.00f, 0},  // elongated
+}};
+
+inline constexpr std::array<CoverPillar, 4> ARENA_COVER_BE_PILLARS = {{
+    {6231.33f, 247.00f, 2.79f, 5.00f, 0},  // elongated
+    {6251.20f, 251.12f, 2.58f, 3.57f, 0},
+    {6225.53f, 272.27f, 2.44f, 3.69f, 0},
+    {6246.75f, 277.50f, 2.82f, 4.88f, 0},  // elongated
+}};
+
+inline constexpr std::array<CoverPillar, 2> ARENA_COVER_DS_PILLARS = {{
+    {1308.67f, 774.05f, 7.11f, 4.15f, 0},
+    {1274.79f, 808.04f, 7.11f, 4.32f, 0},
+}};
+
+// The five arenas; the boxes centre on ArenaTactics::moveToCenter's points.
 inline constexpr std::array<ArenaCoverTable, 5> ARENA_COVER_TABLES = {{
-    {COVER_MAP_NAGRAND, "Nagrand Arena", 4056.0f, 2919.0f, 13.3f, 44.0f, nullptr, 0},
-    {COVER_MAP_BLADES_EDGE, "Blade's Edge Arena", 6242.0f, 263.0f, 1.5f, 48.0f, nullptr, 0},
+    {COVER_MAP_NAGRAND, "Nagrand Arena", 4056.0f, 2919.0f, 13.3f, 44.0f, ARENA_COVER_NA_PILLARS.data(),
+     static_cast<uint32>(ARENA_COVER_NA_PILLARS.size())},
+    {COVER_MAP_BLADES_EDGE, "Blade's Edge Arena", 6242.0f, 263.0f, 1.5f, 48.0f, ARENA_COVER_BE_PILLARS.data(),
+     static_cast<uint32>(ARENA_COVER_BE_PILLARS.size())},
     {COVER_MAP_LORDAERON, "Ruins of Lordaeron", 1280.0f, 1666.0f, 34.0f, 46.0f, nullptr, 0},
-    {COVER_MAP_DALARAN, "Dalaran Sewers", 1291.6f, 790.9f, 7.8f, 44.0f, nullptr, 0},
+    {COVER_MAP_DALARAN, "Dalaran Sewers", 1291.6f, 790.9f, 7.8f, 44.0f, ARENA_COVER_DS_PILLARS.data(),
+     static_cast<uint32>(ARENA_COVER_DS_PILLARS.size())},
     {COVER_MAP_RING_OF_VALOR, "Ring of Valor", 763.5f, -284.0f, 28.28f, 44.0f, ARENA_COVER_RV_PILLARS.data(),
      static_cast<uint32>(ARENA_COVER_RV_PILLARS.size())},
 }};
