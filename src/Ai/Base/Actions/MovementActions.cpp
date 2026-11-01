@@ -16,6 +16,7 @@
 #include "MoveSplineInitArgs.h"
 #include "MovementGenerator.h"
 #include "NaturalMove.h"
+#include "NaturalTurn.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
 #include "PathGenerator.h"
@@ -2708,7 +2709,12 @@ bool SetFacingTargetAction::Execute(Event /*event*/)
     return true;
 }
 
-bool SetFacingTargetAction::isUseful() { return !AI_VALUE2(bool, "facing", "current target"); }
+// G2a: no use while a direction turn holds (blink back's 180 before its cast): at relevance 37 over blink back's 35 it
+// turned the bot back at every check, so blink back never cast. The engine goes on to the next action then.
+bool SetFacingTargetAction::isUseful()
+{
+    return !AI_VALUE2(bool, "facing", "current target") && !NaturalDirectionTurnHolds(botAI);
+}
 
 bool SetFacingTargetAction::isPossible()
 {

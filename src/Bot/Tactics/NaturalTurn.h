@@ -39,8 +39,10 @@ constexpr float TURN_ERROR_FULL_DEG = 90.0f;   // a turn this wide or wider carr
 constexpr float TURN_ERROR_MIN_SHARE = 0.25f;  // the share of the error a tiny turn still carries
 constexpr float TURN_SAME_RAD = 0.01f;         // orientations closer than this (about 0.6 degrees) are the same
 constexpr uint32 TURN_WAIT_MAX_MS = 2000;      // a cast wait longer than this is not counted (the bot went on)
-constexpr float TURN_DIRECTION_READY_DEG = 10.0f;  // a direction turn: the bot already faces it within this
-constexpr float TURN_DIRECTION_DONE_DEG = 50.0f;   // ... or its flick ended within this (the error cap and a margin)
+constexpr float TURN_DIRECTION_READY_DEG = 10.0f;   // a direction turn: the bot already faces it within this
+constexpr float TURN_DIRECTION_DONE_DEG = 50.0f;    // ... or its flick ended within this (the error cap and a margin)
+constexpr uint32 TURN_DIRECTION_HOLD_MS = 1000;     // ... after its flick it keeps other turns away this long
+constexpr uint32 TURN_DIRECTION_GIVE_UP_MS = 2000;  // ... an attempt not ready this long takes the instant write
 constexpr uint32 TURN_MODE_SPLINE = 2;
 constexpr uint32 TURN_PERCENT = 100;
 constexpr uint32 TURN_SELFTEST_DRAWS = 4000;  // turns drawn per skill in RunTurnChecks
@@ -280,6 +282,9 @@ struct TurnBotState
     TurnLeg Leg;
     uint64 TargetGuid = 0;    // the object faced (raw guid), looked up again for the correction
     uint64 DirectionKey = 0;  // a direction turn's target (raw guid; TargetGuid 0 then: no correction)
+    // The direction attempt (its turns until the cast goes; Begin keeps it): since when and at which target
+    uint32 DirectionSinceMs = 0;
+    uint64 DirectionSinceKey = 0;
     uint64 Hash = 0;
     float ErrorRad = 0.0f;
     bool Correct = false;
@@ -375,12 +380,15 @@ struct TurnBotState
 // that goes the way the bot faces (disengage faces the target, blink turns its back on it). Ready: the cast may go now
 // (the bot faces the direction within TURN_DIRECTION_READY_DEG, or the flick of this target's direction turn is over
 // and left it within TURN_DIRECTION_DONE_DEG, its aim error); Wait: that flick goes on; Turn: a new turn is due (none
-// yet, another turn, or this one abandoned or ended far off).
+// yet, another turn, or this one abandoned or ended far off); Snap: a new turn is due, but this target's attempt has
+// run TURN_DIRECTION_GIVE_UP_MS (its turns could not finish: someone else turned the bot back), so the instant write
+// and the cast now, as without the natural facing.
 enum class TurnDirectionStep : uint8
 {
     Ready,
     Wait,
     Turn,
+    Snap,
 };
 
 inline TurnDirectionStep TurnDirectionNext(TurnBotState const& state, uint64 key, float actualRad, float goalRad,
@@ -398,7 +406,48 @@ inline TurnDirectionStep TurnDirectionNext(TurnBotState const& state, uint64 key
     if (mine && left <= TURN_DIRECTION_DONE_DEG * TURN_RAD_PER_DEG)
         return TurnDirectionStep::Ready;
 
+    uint32 const attemptMs = nowMs - state.DirectionSinceMs;
+    if (state.DirectionSinceMs != 0 && state.DirectionSinceKey == key && attemptMs >= TURN_DIRECTION_GIVE_UP_MS &&
+        attemptMs <= TURN_DIRECTION_GIVE_UP_MS + TURN_MAX_LEG_MS)
+        return TurnDirectionStep::Snap;
+
     return TurnDirectionStep::Turn;
+}
+
+// A direction turn starts (TurnDirectionNext said Turn; the plan without a correction): the first turn of an attempt
+// at this target starts its span, a later one (the last was abandoned or ended far off) keeps it
+inline void TurnDirectionBegin(TurnBotState& state, TurnPlan plan, uint64 key, uint32 nowMs)
+{
+    bool const sameAttempt = state.DirectionSinceMs != 0 && state.DirectionSinceKey == key &&
+                             nowMs - state.DirectionSinceMs <= TURN_DIRECTION_GIVE_UP_MS + TURN_MAX_LEG_MS;
+    plan.Correct = false;
+    state.Begin(plan, 0, nowMs);
+    state.DirectionKey = key;
+    if (!sameAttempt)
+    {
+        state.DirectionSinceMs = std::max(nowMs, 1u);
+        state.DirectionSinceKey = key;
+    }
+}
+
+// The direction turn's cast goes (Ready or Snap): the attempt and the hold end
+inline void TurnDirectionEnd(TurnBotState& state)
+{
+    state.DirectionKey = 0;
+    state.DirectionSinceMs = 0;
+    state.DirectionSinceKey = 0;
+}
+
+// Whether a direction turn holds the bot's facing: its flick runs, or it ended within TURN_DIRECTION_HOLD_MS and its
+// cast has not gone yet (TurnDirectionEnd). No turn back to the target starts then ("set facing" stays out, FaceTarget
+// keeps the orientation): blink back turns its back on the target, which made "not facing target" (relevance 37 over
+// blink back's 35) turn the bot back at every check, so it never blinked. Bounded by TURN_MAX_LEG_MS.
+inline bool TurnDirectionHolds(TurnBotState const& state, uint32 nowMs)
+{
+    if (state.DirectionKey == 0 || state.TargetGuid != 0 || state.LastTurnMs == 0)
+        return false;
+
+    return nowMs - state.LastTurnMs <= std::min(state.LastTurnDurMs + TURN_DIRECTION_HOLD_MS, TURN_MAX_LEG_MS);
 }
 
 // The correction is due and needs the target's orientation from the bot now
@@ -800,6 +849,77 @@ void RunTurnChecks(Check&& check)
         check(first && waits && otherTurns && ready && farOff && stale && facing && cleared,
               "a direction turn waits for its flick, then the cast goes; another, far-off or stale turn turns anew");
     }
+    // Blink back against "set facing" (the AI's checks every 100 ms, the stepper every 20 ms, the target 5 at 0
+    // degrees, the bot facing it): "set facing" (relevance 37 over blink back's 35) turns to the target while it is
+    // outside +-45 degrees, unless a direction turn holds (hold); else blink back's direction turn (the back to the
+    // target), cast once Ready or Snap. otherSnaps: someone else turns the bot back to the target at every check while
+    // a turn runs, so no turn can finish. The cast's ms (0: none within 6 s)
+    auto const blinkCastMs = [&](TurnParams const& params, bool hold, bool otherSnaps, bool& snapped) -> uint32
+    {
+        TurnBotState state;
+        state.Params = params;
+        float orientation = 0.0f;
+        uint64 const target = 5;
+        snapped = false;
+        for (uint32 nowMs = 1000; nowMs <= 7000; nowMs += 20)
+        {
+            TurnStepOut const out = StepTurn(state, nowMs, orientation, true, 0.0f);
+            if (out.Write)
+                orientation = out.Orientation;
+
+            if (nowMs % 100 != 0)
+                continue;
+
+            if (otherSnaps && state.Turning())
+                orientation = 0.0f;
+
+            bool const facing = std::fabs(TurnDelta(orientation, 0.0f)) <= TURN_PI / 4.0f;
+            if (!facing && !(hold && TurnDirectionHolds(state, nowMs)))
+            {
+                // "set facing": FaceTarget's turn to the target (a turn under way to it goes on)
+                if (!state.Turning() || state.TargetGuid != target)
+                    state.Begin(PlanTurn(params, orientation, 0.0f, nowMs, TurnHash(1, nowMs, state.Turns)), target,
+                                nowMs);
+
+                continue;
+            }
+
+            TurnDirectionStep const step = TurnDirectionNext(state, target, orientation, TURN_PI, nowMs);
+            if (step == TurnDirectionStep::Ready || step == TurnDirectionStep::Snap)
+            {
+                snapped = step == TurnDirectionStep::Snap;
+                TurnDirectionEnd(state);
+                return nowMs;
+            }
+
+            if (step == TurnDirectionStep::Turn)
+                TurnDirectionBegin(state,
+                                   PlanTurn(params, orientation, TURN_PI, nowMs, TurnHash(2, nowMs, state.Turns)),
+                                   target, nowMs);
+        }
+
+        return 0u;
+    };
+    {
+        bool snapped = false;
+        bool casts = true;
+        for (TurnParams const& params : {p99, p50, p1})
+        {
+            uint32 const castMs = blinkCastMs(params, true, false, snapped);
+            casts = casts && castMs != 0 && castMs - 1000 <= TURN_MAX_LEG_MS && !snapped;
+        }
+
+        // Without the hold "set facing" turns the bot back at every check: only the give-up casts
+        blinkCastMs(p99, false, false, snapped);
+        bool const loopedFast = snapped;
+        blinkCastMs(p1, false, false, snapped);
+        bool const loopedSlow = snapped;
+        uint32 const givenUpMs = blinkCastMs(p1, true, true, snapped);
+        bool const givesUp = givenUpMs != 0 && snapped && givenUpMs - 1000 <= TURN_DIRECTION_GIVE_UP_MS + 200;
+        check(casts && loopedFast && loopedSlow && givesUp,
+              "blink back's direction turn holds \"set facing\" off, so it casts after its flick (without the hold "
+              "only the give-up casts); a turn that cannot finish gives up and casts after TURN_DIRECTION_GIVE_UP_MS");
+    }
 }
 
 // The game side (PlayerbotAI.cpp): whether the bot turns naturally now (the option, the Natural tactic here, a PvP
@@ -812,5 +932,9 @@ bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs);
 // the bot does not turn naturally), false while the natural turn runs (the caller waits)
 class Unit;
 bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad);
+
+// Whether a direction turn holds the bot's facing now (TurnDirectionHolds; false while Natural.Facing.Enable is 0):
+// "set facing" is no use then
+bool NaturalDirectionTurnHolds(PlayerbotAI* botAI);
 
 #endif

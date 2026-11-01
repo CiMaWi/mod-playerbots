@@ -508,7 +508,7 @@ void FeedNaturalTrack(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
         return;
 
     Unit* const target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
-    if (!target || target == bot || !target->IsInWorld() || !target->IsAlive() || !target->IsInMap(bot) ||
+    if (!target || target == bot || !target->IsInWorld() || !target->IsInMap(bot) || !target->IsAlive() ||
         bot->IsFriendlyTo(target))
         return;
 
@@ -8335,7 +8335,9 @@ bool PlayerbotAI::FaceTarget(WorldObject* target)
                                                     : nullptr);
     TurnBotState& state = GetTurnState();
     uint64 const targetGuid = target->GetGUID().GetRawValue();
-    if (!state.Turning() || state.TargetGuid != targetGuid)
+    // A direction turn that holds (blink back's 180 before its cast, TurnDirectionHolds) is not turned back: the
+    // orientation stays, the answer is the arc's
+    if ((!state.Turning() || state.TargetGuid != targetGuid) && !TurnDirectionHolds(state, nowMs))
     {
         TurnRefreshRules(state.Params, sPlayerbotAIConfig.NaturalFacing);
         float const targetRad = bot->GetAngle(target);
@@ -8360,14 +8362,19 @@ bool PlayerbotAI::FaceTarget(WorldObject* target)
 
 // G2a: a direction turn before a cast that goes the way the bot faces (NaturalTurn.h TurnDirectionNext). Where
 // NaturalFacingHere says so and the bot stands in control, a natural turn to the target's angle plus offsetRad (no
-// correction: a direction, not an object) and false until its flick is over, so the caller waits; else the instant
-// orientation write as before (no packet) and true.
+// correction: a direction, not an object) and false until its flick is over, so the caller waits; while it holds,
+// FaceTarget and "set facing" turn nothing back (TurnDirectionHolds). An attempt whose turns cannot finish within
+// TURN_DIRECTION_GIVE_UP_MS (someone else turns the bot back) takes the instant write. Else the instant orientation
+// write as before (no packet) and true.
 bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
 {
     Player* const bot = botAI->GetBot();
     uint32 const nowMs = getMSTime();
     if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !NaturalFacingHere(botAI, nowMs))
     {
+        if (sPlayerbotAIConfig.NaturalFacing.Enable)
+            TurnDirectionEnd(botAI->GetTurnState());  // the cast goes now: an earlier attempt holds nothing
+
         bot->SetOrientation(bot->GetAngle(target) + offsetRad);
         return true;
     }
@@ -8376,17 +8383,31 @@ bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
     uint64 const key = target->GetGUID().GetRawValue();
     float const goalRad = TurnWrap(bot->GetAngle(target) + offsetRad);
     TurnDirectionStep const step = TurnDirectionNext(state, key, bot->GetOrientation(), goalRad, nowMs);
-    if (step != TurnDirectionStep::Turn)
-        return step == TurnDirectionStep::Ready;
+    if (step == TurnDirectionStep::Wait)
+        return false;
+
+    if (step == TurnDirectionStep::Ready || step == TurnDirectionStep::Snap)
+    {
+        if (step == TurnDirectionStep::Snap)
+        {
+            state.Stop();
+            ++state.Snaps;
+            bot->SetOrientation(goalRad);
+            LOG_TRACE("playerbots", "Turn: {} gives up a turn to {} deg off {} after {} ms, instant, at {} ms",
+                      bot->GetName(), static_cast<int32>(offsetRad / TURN_RAD_PER_DEG + 0.5f), target->GetName(),
+                      nowMs - state.DirectionSinceMs, nowMs);
+        }
+
+        TurnDirectionEnd(state);
+        return true;
+    }
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Direction")
                                                     : nullptr);
     TurnRefreshRules(state.Params, sPlayerbotAIConfig.NaturalFacing);
-    TurnPlan plan = PlanTurn(state.Params, bot->GetOrientation(), goalRad, nowMs,
-                             TurnHash(bot->GetGUID().GetCounter(), nowMs, state.Turns));
-    plan.Correct = false;
-    state.Begin(plan, 0, nowMs);
-    state.DirectionKey = key;
+    TurnPlan const plan = PlanTurn(state.Params, bot->GetOrientation(), goalRad, nowMs,
+                                   TurnHash(bot->GetGUID().GetCounter(), nowMs, state.Turns));
+    TurnDirectionBegin(state, plan, key, nowMs);
     if (plan.Leg.Spline && !bot->IsRooted())
         bot->SetFacingTo(plan.Leg.Goal());
 
@@ -8399,6 +8420,11 @@ bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
         plan.Leg.DurMs, plan.Leg.Keyboard ? "keyboard" : (plan.Leg.Spline ? "spline" : "flick"), state.LastErrorDeg,
         botAI->GetPvpSkill(), nowMs);
     return false;
+}
+
+bool NaturalDirectionTurnHolds(PlayerbotAI* botAI)
+{
+    return sPlayerbotAIConfig.NaturalFacing.Enable && TurnDirectionHolds(botAI->GetTurnState(), getMSTime());
 }
 
 namespace

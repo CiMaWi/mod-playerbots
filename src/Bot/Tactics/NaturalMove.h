@@ -561,6 +561,7 @@ struct TrackBotState
     float MarkY = 0.0f;
     uint32 BestAtMs = 0;
     uint32 TrueUntilMs = 0;
+    uint32 AimCallMs = 0;         // the last chase call (TrackAimTrue); one older than TRACK_STALE_MS drops the mark
     uint32 InSightCheckedMs = 0;  // OutsidePvpInSight's cached answer
     bool InSight = false;
     // What the bot did (tactics show)
@@ -634,10 +635,16 @@ inline bool TrackFeed(TrackBotState& state, TrackConfig const& config, uint64 ta
 // StuckMs: a chaser out of its reach that for stuckMs neither closed TRACK_CLOSE_YARDS on the target nor ran
 // TRACK_MOVED_YARDS itself aims at the target's true position for TRACK_TRUE_AIM_MS, then tracks again. A chase at an
 // equal distance (the chaser runs) and a bot within reach (a caster holding its range) are no stuck chasers; a target
-// that got far away (a blink, a charge) starts a new count. distance and reach as ReachCombatTo's (combat reaches in)
+// that got far away (a blink, a charge) starts a new count, and so does the first chase after a pause (no chase call
+// for TRACK_STALE_MS: an in-range cast, a held move; the feed keeps the ring live then, not the mark). distance and
+// reach as ReachCombatTo's (combat reaches in)
 inline bool TrackAimTrue(TrackBotState& state, float distance, float reach, float botX, float botY, uint32 nowMs,
                          uint32 stuckMs)
 {
+    if (state.AimCallMs != 0 && nowMs - state.AimCallMs > TRACK_STALE_MS)
+        state.ResetStuck();
+
+    state.AimCallMs = std::max(nowMs, 1u);
     if (state.TrueUntilMs != 0)
     {
         if (!TrackReached(state.TrueUntilMs, nowMs))
@@ -1037,16 +1044,25 @@ void RunTrackChecks(Check&& check)
         TrackBotState state;
         auto const aim = [&](float distance, uint32 ms)
         { return TrackAimTrue(state, distance, reach, 0.0f, 0.0f, ms, stuckMs); };
+        // Chase calls every 100 ms (a gap over TRACK_STALE_MS would start a new count)
+        auto const aimEvery = [&](float distance, uint32 fromMs, uint32 toMs, bool want)
+        {
+            bool all = true;
+            for (uint32 ms = fromMs; ms < toMs; ms += 100)
+                all = all && aim(distance, ms) == want;
+
+            return all;
+        };
         bool const first = !aim(10.0f, 1000);
-        bool const closing = !aim(8.5f, 2500);
-        bool const waiting = !aim(8.4f, 2500 + stuckMs - 1);
-        bool const stuck = aim(8.4f, 2500 + stuckMs);
-        bool const holds = aim(8.4f, 2500 + stuckMs + TRACK_TRUE_AIM_MS - 1);
-        bool const again = !aim(8.4f, 2500 + stuckMs + TRACK_TRUE_AIM_MS);
+        bool const closing = !aim(8.5f, 1100);
+        bool const waiting = aimEvery(8.4f, 1200, 1100 + stuckMs, false);
+        bool const stuck = aim(8.4f, 1100 + stuckMs);
+        bool const holds = aimEvery(8.4f, 1100 + stuckMs + 100, 1100 + stuckMs + TRACK_TRUE_AIM_MS, true);
+        bool const again = !aim(8.4f, 1100 + stuckMs + TRACK_TRUE_AIM_MS);
         check(first && closing && waiting && stuck && holds && again && state.Unsticks == 1,
               "a chaser out of reach that neither closed nor ran for StuckMs aims at the true position for a while, "
               "then tracks again");
-        bool const escaped = !aim(30.0f, 2500 + 3 * stuckMs);
+        bool const escaped = !aim(30.0f, 1200 + stuckMs + TRACK_TRUE_AIM_MS);
         check(escaped && state.BestDistance == 30.0f, "a target far away starts a new count");
 
         TrackBotState running;
@@ -1064,6 +1080,15 @@ void RunTrackChecks(Check&& check)
             holdingFree = holdingFree && !TrackAimTrue(holding, 4.5f, reach, 0.0f, 0.0f, ms, stuckMs);
 
         check(holdingFree && holding.Unsticks == 0, "a bot within its reach (holding its range) is not stuck");
+
+        // A caster in reach at its last chase call, then a pause of StuckMs + 500 ms without chase calls (it cast
+        // standing; the feed kept the ring live), then a chase to a target 3 yd out of reach: a new count, no unstick
+        TrackBotState paused;
+        bool const inReach = !TrackAimTrue(paused, reach - 0.5f, reach, 0.0f, 0.0f, 1000, stuckMs);
+        bool const afterPause = !TrackAimTrue(paused, reach + 3.0f, reach, 0.0f, 0.0f, 1000 + stuckMs + 500, stuckMs);
+        bool const counts = !TrackAimTrue(paused, reach + 3.0f, reach, 0.0f, 0.0f, 1100 + stuckMs + 500, stuckMs);
+        check(inReach && afterPause && counts && paused.Unsticks == 0 && paused.BestAtMs == 1000 + stuckMs + 500,
+              "the first chase after a pause of StuckMs starts a new count (no unstick from the mark before it)");
     }
 }
 
