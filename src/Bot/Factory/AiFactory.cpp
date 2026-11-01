@@ -547,6 +547,16 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         (tactics.TacticConfig[static_cast<uint32>(TacticId::Defensive)].Enable || tactics.PvpTestEnable))
         engine->addStrategy("tactic defensive", false);
 
+    // Line of sight and pillar play (G2e, G2f): "tactic los" and "tactic pillar" (the triggers test the tactic's mask,
+    // scope and gate at run time; 13f-0: stubs that never act) with the tactic enabled or the harness on
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Los)].Enable || tactics.PvpTestEnable))
+        engine->addStrategy("tactic los", false);
+
+    if (tactics.TacticsEnable &&
+        (tactics.TacticConfig[static_cast<uint32>(TacticId::Pillar)].Enable || tactics.PvpTestEnable))
+        engine->addStrategy("tactic pillar", false);
+
     uint8 const cleanser = player->getClass();
     if (tactics.TacticsEnable && (cleanser == CLASS_PRIEST || cleanser == CLASS_PALADIN || cleanser == CLASS_SHAMAN) &&
         (tactics.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || tactics.PvpTestEnable))

@@ -1035,6 +1035,7 @@ bool PlayerbotAIConfig::Initialize()
         memory.MinCasts = count(part + "Memory.MinCasts", 3, 1, 100);
         memory.EndToleranceMs = ms(part + "Memory.EndToleranceMs", 150);
         reaction.MovementEnable = flag(part + "Movement.Enable");
+        reaction.PositioningEnable = flag(part + "Positioning.Enable");
         // Arena and battleground only by default: the model's arm cost measurably more per tick (G0h2-b)
         uint8 const reactionMatches =
             static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
@@ -1152,6 +1153,41 @@ bool PlayerbotAIConfig::Initialize()
         naturalNumber("Track", "JukeDeg", NaturalTrack.JukeDeg, MaxNaturalDeg);
         naturalNumber("Track", "StuckMs", NaturalTrack.StuckMs, MaxNaturalMs);
         naturalNumber("Track", "RefreshMs", NaturalTrack.RefreshMs, MaxNaturalMs);
+
+        // G2c: the natural paths (Playerbots.Natural.Path.*); Enable and each flag 0 keep the straight mmap paths
+        auto const naturalReal = [](char const* part, char const* key, float& value, float maximum)
+        {
+            value = std::clamp(
+                sConfigMgr->GetOption<float>(std::string("Playerbots.Natural.") + part + "." + key, value, false), 0.0f,
+                maximum);
+        };
+        NaturalPath = PathConfig{};
+        naturalFlag("Path", "Enable", NaturalPath.Enable);
+        naturalContexts("Path", NaturalPath.Contexts);
+        naturalFlag("Path", "OutsidePvpInSight", NaturalPath.OutsidePvpInSight);
+        naturalNumber("Path", "InSightYards", NaturalPath.InSightYards, MaxNaturalYards);
+        naturalNumber("Path", "InSightCacheMs", NaturalPath.InSightCacheMs, MaxNaturalMs);
+        naturalFlag("Path", "Offsets.Enable", NaturalPath.OffsetsEnable);
+        naturalReal("Path", "OffsetYardsAtSkill1", NaturalPath.OffsetYardsAtSkill1, 20.0f);
+        naturalReal("Path", "OffsetYardsAtSkill99", NaturalPath.OffsetYardsAtSkill99, 20.0f);
+        naturalNumber("Path", "OffsetSigmaPct", NaturalPath.OffsetSigmaPct, MaxNaturalPct);
+        naturalNumber("Path", "MinLegYards", NaturalPath.MinLegYards, MaxNaturalYards);
+        naturalFlag("Path", "Curves.Enable", NaturalPath.CurvesEnable);
+        naturalFlag("Path", "Strafe.Enable", NaturalPath.StrafeEnable);
+        naturalFlag("Path", "Hops.Enable", NaturalPath.HopsEnable);
+        naturalFlag("Path", "Walk.Enable", NaturalPath.WalkEnable);
+        naturalNumber("Path", "Strafe.FromSkill", NaturalPath.StrafeFromSkill, MaxNaturalSkill);
+        naturalNumber("Path", "Strafe.LegMinYards", NaturalPath.StrafeLegMinYards, MaxNaturalYards);
+        naturalNumber("Path", "Strafe.LegMaxYards", NaturalPath.StrafeLegMaxYards, MaxNaturalYards);
+        NaturalPath.StrafeLegMaxYards = std::max(NaturalPath.StrafeLegMaxYards, NaturalPath.StrafeLegMinYards);
+        naturalNumber("Path", "Strafe.EveryMsAtSkill50", NaturalPath.StrafeEveryMsAtSkill50, MaxNaturalMs);
+        naturalNumber("Path", "Strafe.EveryMsAtSkill99", NaturalPath.StrafeEveryMsAtSkill99, MaxNaturalMs);
+        naturalNumber("Path", "Hops.FromSkill", NaturalPath.HopsFromSkill, MaxNaturalSkill);
+        naturalNumber("Path", "Hops.EveryMsAtSkill60", NaturalPath.HopsEveryMsAtSkill60, MaxNaturalMs);
+        naturalNumber("Path", "Hops.EveryMsAtSkill99", NaturalPath.HopsEveryMsAtSkill99, MaxNaturalMs);
+        naturalNumber("Path", "Hops.EdgeYards", NaturalPath.HopsEdgeYards, MaxNaturalYards);
+        naturalNumber("Path", "Hops.MaxLegYards", NaturalPath.HopsMaxLegYards, MaxNaturalYards);
+        naturalNumber("Path", "Walk.MaxLegYards", NaturalPath.WalkMaxLegYards, MaxNaturalYards);
     }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
@@ -1388,6 +1424,32 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Fake.ChancePctAtSkill99", TacticFake.ChancePctAtSkill99, MaxFocusPct);
     focusNumber("Fake.BaitedWindowMs", TacticFake.BaitedWindowMs, MaxFocusMs);
     focusNumber("Fake.HealGuardPct", TacticFake.HealGuardPct, MaxFocusPct);
+
+    // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f), optional: the numbers of those tactics (ArenaCover.h)
+    constexpr uint32 MaxCoverRays = 1000;
+    TacticLos = LosConfig{};
+    focusNumber("Los.KnownFromSkill", TacticLos.KnownFromSkill, MaxFocusSkill);
+    focusNumber("Los.LateMsAtSkill1", TacticLos.LateMsAtSkill1, MaxFocusMs);
+    focusNumber("Los.LateMsAtSkill99", TacticLos.LateMsAtSkill99, MaxFocusMs);
+    focusNumber("Los.IntoOpenPctAtSkill1", TacticLos.IntoOpenPctAtSkill1, MaxFocusPct);
+    focusNumber("Los.IntoOpenPctAtSkill99", TacticLos.IntoOpenPctAtSkill99, MaxFocusPct);
+    focusNumber("Los.HidesFromCasterFromSkill", TacticLos.HidesFromCasterFromSkill, MaxFocusSkill);
+    focusNumber("Los.EffortMin", TacticLos.EffortMin, MaxFocusPct);
+    focusNumber("Los.HoldMs", TacticLos.HoldMs, MaxFocusMs);
+    focusNumber("Los.MaxRelocs", TacticLos.MaxRelocs, MaxCoverRays);
+    focusNumber("Los.RelocWindowMs", TacticLos.RelocWindowMs, MaxFocusMs);
+    focusNumber("Los.SearchIntervalMs", TacticLos.SearchIntervalMs, MaxFocusMs);
+    focusNumber("Los.MaxRaysPerSearch", TacticLos.MaxRaysPerSearch, MaxCoverRays);
+    focusNumber("Los.RaysPerSecond", TacticLos.RaysPerSecond, MaxCoverRays);
+    focusNumber("Los.TimeoutMs", TacticLos.TimeoutMs, MaxFocusMs);
+    TacticPillar = PillarConfig{};
+    focusNumber("Pillar.KnownFromSkill", TacticPillar.KnownFromSkill, MaxFocusSkill);
+    focusNumber("Pillar.HardCastMs", TacticPillar.HardCastMs, MaxFocusMs);
+    focusNumber("Pillar.StepYards", TacticPillar.StepYards, MaxCoverRays);
+    focusNumber("Pillar.RandomHidePctAtSkill1", TacticPillar.RandomHidePctAtSkill1, MaxFocusPct);
+    focusNumber("Pillar.RandomHidePctAtSkill59", TacticPillar.RandomHidePctAtSkill59, MaxFocusPct);
+    focusNumber("Pillar.CautiousEarlyMs", TacticPillar.CautiousEarlyMs, MaxFocusMs);
+    focusNumber("Pillar.RvIdleMs", TacticPillar.RvIdleMs, MaxFocusMs);
 
     BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
     BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);

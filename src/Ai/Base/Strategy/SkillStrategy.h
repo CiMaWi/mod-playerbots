@@ -31,7 +31,10 @@ enum class SkillNoticeCategory : uint8
     CrowdControlBreak,
     TargetSwitch,
     // A reaction only (G0h3-b: avoid aoe, Playerbots.Natural.Reaction.Movement.Enable): no notice counter, no D4 delay
-    Movement
+    Movement,
+    // A reaction only as well (G2e, G2f: regain los, break los, pillar step; Playerbots.Natural.Reaction.Positioning.
+    // Enable): no notice counter (SkillNoticeCounters::Categories stays), no D4 delay, so no match record changes
+    Positioning
 };
 
 char const* SkillNoticeCategoryName(SkillNoticeCategory category);
@@ -71,7 +74,7 @@ private:
     std::unordered_map<Action*, ActionClass> categories;
     // Natural reaction, per bot (touched only by the bot's own update): the current event per category, whether that
     // event's context uses the natural path, and the bot's focus
-    static constexpr size_t ReactionCategories = static_cast<size_t>(SkillNoticeCategory::Movement);
+    static constexpr size_t ReactionCategories = static_cast<size_t>(SkillNoticeCategory::Positioning);
     std::array<ReactionEvent, ReactionCategories> reactionEvents{};
     std::array<bool, ReactionCategories> reactionNatural{};
     ReactionFocus reactionFocus;

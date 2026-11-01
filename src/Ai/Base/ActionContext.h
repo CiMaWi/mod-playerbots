@@ -43,6 +43,7 @@
 #include "LeaveGroupAction.h"
 #include "LootAction.h"
 #include "LootRollAction.h"
+#include "LosTacticStrategy.h"
 #include "MoveToRpgTargetAction.h"
 #include "MoveToTravelTargetAction.h"
 #include "MovementActions.h"
@@ -131,6 +132,9 @@ public:
         creators["pvp trinket"] = &ActionContext::pvp_trinket;
         creators["dispel cc on party"] = &ActionContext::dispel_cc_on_party;
         creators["self defensive"] = &ActionContext::self_defensive;
+        creators["regain los"] = &ActionContext::regain_los;
+        creators["break los"] = &ActionContext::break_los;
+        creators["pillar step"] = &ActionContext::pillar_step;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
@@ -368,6 +372,9 @@ private:
     static Action* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketAction(botAI); }
     static Action* dispel_cc_on_party(PlayerbotAI* botAI) { return new DispelCcOnPartyAction(botAI); }
     static Action* self_defensive(PlayerbotAI* botAI) { return new SelfDefensiveAction(botAI); }
+    static Action* regain_los(PlayerbotAI* botAI) { return new RegainLosAction(botAI); }
+    static Action* break_los(PlayerbotAI* botAI) { return new BreakLosAction(botAI); }
+    static Action* pillar_step(PlayerbotAI* botAI) { return new PillarStepAction(botAI); }
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }

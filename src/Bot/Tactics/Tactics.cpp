@@ -4509,11 +4509,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
         name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake" &&
-        name != "turn" && name != "track")
+        name != "turn" && name != "track" && name != "path" && name != "cover" && name != "los" && name != "pillar")
     {
         handler->PSendSysMessage(
             "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, "
-            "fake, turn, track",
+            "fake, turn, track, path, cover, los, pillar",
             name);
         return false;
     }
@@ -4550,6 +4550,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "track")
         RunTrackSelftest(handler);
+
+    // 13f-0 stubs: the checks come with G2c (path), G2d (cover), G2e (los) and G2f (pillar)
+    for (char const* stub : {"path", "cover", "los", "pillar"})
+        if (name.empty() || name == stub)
+            handler->PSendSysMessage("TACTICS selftest {}: PASS (0 checks, 0 failed; not written yet)", stub);
 
     return true;
 }
@@ -4819,5 +4824,12 @@ bool TacticCommands::HandleInterruptCommand(ChatHandler* handler, char const* ar
         "TACTICS interrupt: Playerbots.Tactics.Interrupt.{} {} -> {}; the next interrupt decision takes it; a restart "
         "or .playerbots rndbot reload restores the conf value",
         found->Name, before, found->Value);
+    return true;
+}
+
+bool TacticCommands::HandleCoverCommand(ChatHandler* handler, char const* /*args*/)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("TacticCommands::HandleCoverCommand");
+    handler->PSendSysMessage("TACTICS cover scan: not implemented yet (G2d)");
     return true;
 }

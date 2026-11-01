@@ -8,6 +8,7 @@
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
 #include "ArenaCcConfig.h"
+#include "ArenaCoverConfig.h"
 #include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
@@ -15,6 +16,7 @@
 #include "DBCEnums.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
 #include "NaturalReaction.h"
 #include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
@@ -531,6 +533,11 @@ public:
     // NaturalMove.h); Enable 0 keeps the instant facing snap and the exact chase point
     TurnConfig NaturalFacing;
     TrackConfig NaturalTrack;
+    // Playerbots.Natural.Path.* (G2c): natural paths (NaturalPath.h); Enable 0 keeps the straight mmap paths
+    PathConfig NaturalPath;
+    // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
+    LosConfig TacticLos;
+    PillarConfig TacticPillar;
     bool BotActiveAloneSmartScale;
     uint32 BotActiveAloneSmartScaleDiffLimitFloor;
     uint32 BotActiveAloneSmartScaleDiffLimitCeiling;

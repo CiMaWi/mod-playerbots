@@ -104,19 +104,32 @@ enum class TacticCounter : uint8
     FaceFails,          // G2a: casts that failed for the facing arc
     TrackChases,        // G2b: chase destinations set from the lagged, predicted point
     TrackLagMs,         // G2b: the lag applied, summed over the chases (mean = trackLagMs / trackChases)
+    PathOffsets,        // G2c: paths whose interior waypoints were offset sideways
+    PathStrafes,        // G2c: strafe legs started
+    PathHops,           // G2c: cosmetic hops made
+    PathHopsRefused,    // G2c: hops refused by the guards (edge, void, arc ray, landing)
+    LosRegains,         // G2e: regains of LOS started
+    LosTimeouts,        // G2e: regains not finished within TimeoutMs
+    PartnerLosLostMs,   // G2e: ms a healer could not see an alive partner (both sides count it)
+    LosBreaks,          // G2f: LOS breaks from an enemy cast started
+    CastsLosBroken,     // G2f: enemy casts that failed for the lost LOS
+    PillarSteps,        // G2f: pillar hops made
+    RelocGuards,        // G2e/G2f: relocations the guards refused (hold time, relocations per window)
     Count
 };
 
 constexpr uint32 PVPTEST_TACTIC_COUNT = static_cast<uint32>(TacticCounter::Count);
 
 constexpr std::array<char const*, PVPTEST_TACTIC_COUNT> PVPTEST_TACTIC_NAMES = {
-    "focusSame",   "focusDiff",   "planSwitch",      "immuneSwapMs",      "holdSwitch",  "ccOnTarget",
-    "chainGapMs",  "chains",      "ccHeldMs",        "ownBreakAoe",       "ownBreakDot", "ownBreakPet",
-    "oppTrinkets", "oppDispels",  "chainEarlyMs",    "chainBusy",         "reCcs",       "reCcGapMs",
-    "breakWasted", "breakMs",     "partnerDispelMs", "intHeal",           "intCc",       "intDamage",
-    "intLate",     "intWasted",   "intHealDone",     "skullOutOfReachMs", "intHold",     "intHoldEpisodes",
-    "intHoldPaid", "intHoldVain", "intHoldExpired",  "focusKick",         "focusCc",     "switchKick",
-    "defSelf",     "defPartner",  "defBurst",        "deathsDefReady",    "fakes",       "kicksBaited",
-    "kickSeen",    "turnFlicks",  "turnWaitMs",      "faceFails",         "trackChases", "trackLagMs"};
+    "focusSame",        "focusDiff",   "planSwitch",      "immuneSwapMs",      "holdSwitch",  "ccOnTarget",
+    "chainGapMs",       "chains",      "ccHeldMs",        "ownBreakAoe",       "ownBreakDot", "ownBreakPet",
+    "oppTrinkets",      "oppDispels",  "chainEarlyMs",    "chainBusy",         "reCcs",       "reCcGapMs",
+    "breakWasted",      "breakMs",     "partnerDispelMs", "intHeal",           "intCc",       "intDamage",
+    "intLate",          "intWasted",   "intHealDone",     "skullOutOfReachMs", "intHold",     "intHoldEpisodes",
+    "intHoldPaid",      "intHoldVain", "intHoldExpired",  "focusKick",         "focusCc",     "switchKick",
+    "defSelf",          "defPartner",  "defBurst",        "deathsDefReady",    "fakes",       "kicksBaited",
+    "kickSeen",         "turnFlicks",  "turnWaitMs",      "faceFails",         "trackChases", "trackLagMs",
+    "pathOffsets",      "pathStrafes", "pathHops",        "pathHopsRefused",   "losRegains",  "losTimeouts",
+    "partnerLosLostMs", "losBreaks",   "castsLosBroken",  "pillarSteps",       "relocGuards"};
 
 #endif

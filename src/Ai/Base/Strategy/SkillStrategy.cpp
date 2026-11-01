@@ -167,6 +167,10 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"attack enemy flag carrier", C::TargetSwitch},
         // Out of a ground effect (G0h3-b; a reaction only, Playerbots.Natural.Reaction.Movement.Enable)
         {"avoid aoe", C::Movement},
+        // Cover and line of sight (G2e, G2f; reactions only, Playerbots.Natural.Reaction.Positioning.Enable)
+        {"regain los", C::Positioning},
+        {"break los", C::Positioning},
+        {"pillar step", C::Positioning},
     };
     return table;
 }
@@ -221,6 +225,7 @@ uint8 ReactionImportance(SkillNoticeCategory category)
         case SkillNoticeCategory::Defensive:
             return 6;
         case SkillNoticeCategory::Movement:
+        case SkillNoticeCategory::Positioning:
             return 5;
         case SkillNoticeCategory::CrowdControlBreak:
             return 4;
@@ -254,6 +259,8 @@ char const* SkillNoticeCategoryName(SkillNoticeCategory category)
             return "target switch";
         case SkillNoticeCategory::Movement:
             return "movement";
+        case SkillNoticeCategory::Positioning:
+            return "positioning";
         default:
             return "none";
     }
@@ -273,8 +280,12 @@ float SkillMultiplier::GetValue(Action* action)
         return 1.0f;
 
     // avoid aoe is a reaction only (G0h3-b): through the natural model with its Movement part, else at once
-    bool const movement = category == SkillNoticeCategory::Movement;
-    if (movement && (!sPlayerbotAIConfig.NaturalReactionActive || !sPlayerbotAIConfig.NaturalReaction.MovementEnable))
+    // (regain los, break los and pillar step the same with their Positioning part: G2e, G2f)
+    bool const positioning = category == SkillNoticeCategory::Positioning;
+    bool const movement = category == SkillNoticeCategory::Movement || positioning;
+    if (movement && (!sPlayerbotAIConfig.NaturalReactionActive ||
+                     !(positioning ? sPlayerbotAIConfig.NaturalReaction.PositioningEnable
+                                   : sPlayerbotAIConfig.NaturalReaction.MovementEnable)))
         return 1.0f;
 
     if (botAI->IsSkillExempt())
@@ -601,7 +612,8 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
     if (!reactionNatural[index])
     {
         event.LastQueryMs = now;
-        return category == SkillNoticeCategory::Movement || HasNoticed(category);
+        return category == SkillNoticeCategory::Movement || category == SkillNoticeCategory::Positioning ||
+               HasNoticed(category);
     }
 
     // An overshoot beyond two check delays is a pause of the bot's own (a cast), not its check latency

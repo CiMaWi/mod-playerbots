@@ -18,6 +18,7 @@
 #include "HealthTriggers.h"
 #include "LfgTriggers.h"
 #include "LootTriggers.h"
+#include "LosTacticStrategy.h"
 #include "NamedObjectContext.h"
 #include "NewRpgStrategy.h"
 #include "NewRpgTriggers.h"
@@ -103,6 +104,10 @@ public:
         creators["dispel cc on party"] = &TriggerContext::dispel_cc_on_party;
         creators["burst"] = &TriggerContext::burst;
         creators["burst potion"] = &TriggerContext::burst_potion;
+        creators["target out of los"] = &TriggerContext::target_out_of_los;
+        creators["partner out of los"] = &TriggerContext::partner_out_of_los;
+        creators["cast at me"] = &TriggerContext::cast_at_me;
+        creators["pillar step"] = &TriggerContext::pillar_step;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
         creators["enemy player near"] = &TriggerContext::enemy_player_near;
 
@@ -360,6 +365,10 @@ private:
     static Trigger* dispel_cc_on_party(PlayerbotAI* botAI) { return new DispelCcOnPartyTrigger(botAI); }
     static Trigger* burst(PlayerbotAI* botAI) { return new BurstTrigger(botAI, false); }
     static Trigger* burst_potion(PlayerbotAI* botAI) { return new BurstTrigger(botAI, true); }
+    static Trigger* target_out_of_los(PlayerbotAI* botAI) { return new TargetOutOfLosTrigger(botAI); }
+    static Trigger* partner_out_of_los(PlayerbotAI* botAI) { return new PartnerOutOfLosTrigger(botAI); }
+    static Trigger* cast_at_me(PlayerbotAI* botAI) { return new CastAtMeTrigger(botAI); }
+    static Trigger* pillar_step(PlayerbotAI* botAI) { return new PillarStepTrigger(botAI); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }
     static Trigger* enemy_player_near(PlayerbotAI* botAI) { return new EnemyPlayerNear(botAI); }
     static Trigger* Random(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "random", 20); }

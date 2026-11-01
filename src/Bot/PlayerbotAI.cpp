@@ -8,6 +8,7 @@
 #include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "ArenaCcSpells.h"
+#include "ArenaCover.h"
 #include "ArenaDefensive.h"
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSpells.h"
@@ -45,6 +46,7 @@
 #include "MoveSplineInit.h"
 #include "NaturalCast.h"
 #include "NaturalMove.h"
+#include "NaturalPath.h"
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
 #include "NewRpgStrategy.h"
@@ -8204,6 +8206,22 @@ TrackBotState& PlayerbotAI::GetTrackState()
     return *trackState;
 }
 
+PathBotState& PlayerbotAI::GetPathState()
+{
+    if (!pathState)
+        pathState = std::make_unique<PathBotState>();
+
+    return *pathState;
+}
+
+CoverBotState& PlayerbotAI::GetCoverState()
+{
+    if (!coverState)
+        coverState = std::make_unique<CoverBotState>();
+
+    return *coverState;
+}
+
 // G2a: whether the bot turns naturally now (NaturalTurn.h)
 bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs)
 {
@@ -8249,6 +8267,33 @@ bool NaturalTrackHere(PlayerbotAI* botAI, uint32 nowMs)
         return false;
 
     TrackBotState& state = botAI->GetTrackState();
+    if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
+    {
+        state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
+        state.InSightCheckedMs = std::max(nowMs, 1u);
+    }
+
+    return state.InSight;
+}
+
+// G2c: whether the bot walks natural paths now (NaturalPath.h); as NaturalTrackHere with the Path options
+bool NaturalPathHere(PlayerbotAI* botAI, uint32 nowMs)
+{
+    PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
+    if (!config.Enable || !botAI->TacticEnabledHere(TacticId::Natural))
+        return false;
+
+    TacticContext const context = botAI->GetTacticContext();
+    if (config.Contexts & TacticContextBit(context))
+        return true;
+
+    // Out of PvP only in a real player's sight, and never in a dungeon or raid (their scripted paths stay exact)
+    Player* const bot = botAI->GetBot();
+    Map* const map = bot ? bot->GetMap() : nullptr;
+    if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
+        return false;
+
+    PathBotState& state = botAI->GetPathState();
     if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
     {
         state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
@@ -8976,8 +9021,10 @@ uint8 PlayerbotAI::BeginExecutedCount(Action* action, ObjectGuid& previousTarget
     else
         category = SkillNoticeCategoryOf(action->getName());
 
-    // A movement (avoid aoe) is a reaction only, with no executed count
-    if (category == SkillNoticeCategory::None || category == SkillNoticeCategory::Movement)
+    // A movement (avoid aoe) or a positioning (regain los, break los, pillar step) is a reaction only, with no
+    // executed count
+    if (category == SkillNoticeCategory::None || category == SkillNoticeCategory::Movement ||
+        category == SkillNoticeCategory::Positioning)
         return 0;
 
     if (category == SkillNoticeCategory::TargetSwitch)

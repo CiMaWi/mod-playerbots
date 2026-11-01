@@ -1725,6 +1725,9 @@ Playerbots.Natural.Reaction.Memory.Enable = 0
 Playerbots.Natural.Reaction.Memory.MinCasts = 3
 Playerbots.Natural.Reaction.Memory.EndToleranceMs = 150
 Playerbots.Natural.Reaction.Movement.Enable = 0
+# Positioning: regain los, break los and pillar step (G2e, G2f) as reactions, stamped by the first query; a reaction only
+# like Movement (no notice counter, no D4 delay). Default: 0 (they go at once)
+Playerbots.Natural.Reaction.Positioning.Enable = 0
 
 # Natural cadence: bots in Contexts check their AI at least every CheckMs (20-1000) in combat in a started match
 # (battleground and arena gates open; open-world PvP fights when World is listed) instead of upstream's combat
@@ -1838,6 +1841,47 @@ Playerbots.Natural.Cadence.NearRealPlayerYards = 0
 # (Ranges: skills 0-100, RingSamples 4-32, percents 0-100, degrees 0-360, ms 0-60000, yards 0-500, SkipLeadRule 0-1.)
 # RefreshMs (13e-decide): while the bot waits for its last tracked chase move (MoveTo's destination hold), a new
 # tracked point replaces it once that move is RefreshMs old and the point moved more than 1 yd; 0 keeps the hold.
+
+# Natural paths (G2c): moving bots do not run in perfect straight lines. With Enable 1 the interior waypoints of a
+# bot's mmap path are moved sideways by a draw of OffsetYardsAtSkill1..99 yards (larger at low skill, spread
+# OffsetSigmaPct per cent), each point validated by the collision check and a ground probe and dropped on failure; a
+# path shorter than MinLegYards stays straight. Needs the Natural tactic here (Playerbots.Tactics.Natural.Enable) and
+# the bot in Contexts (Arena,Battleground,World); OutsidePvpInSight, InSightYards and InSightCacheMs as in Facing.
+# Offsets.Enable 0 turns the offsets off while keeping the other parts. Each part below has its own flag, default 0:
+#   Curves.Enable  catmullrom curves on open ground
+#   Strafe.Enable  strafe splines (SetFacing) for ranged bots from Strafe.FromSkill, a leg of LegMinYards..LegMaxYards,
+#                  every EveryMsAtSkill50..99 ms, never while casting
+#   Hops.Enable    cosmetic hops on flat validated ground while running or kiting from Hops.FromSkill, every
+#                  EveryMsAtSkill60..99 ms, a leg of at most MaxLegYards, never within EdgeYards of an edge
+#   Walk.Enable    walking on short legs (at most Walk.MaxLegYards) out of combat
+# With Playerbots.PerfMonEnabled the rows NaturalPath::* show the cost; tactics counters pathOffsets, pathStrafes,
+# pathHops and pathHopsRefused; GM: .playerbots tactics selftest path. Default: off (straight paths).
+# Playerbots.Natural.Path.Enable = 0
+# Playerbots.Natural.Path.Contexts = "Arena,Battleground,World"
+# Playerbots.Natural.Path.OutsidePvpInSight = 0
+# Playerbots.Natural.Path.InSightYards = 60
+# Playerbots.Natural.Path.InSightCacheMs = 1000
+# Playerbots.Natural.Path.Offsets.Enable = 1
+# Playerbots.Natural.Path.OffsetYardsAtSkill1 = 1.5
+# Playerbots.Natural.Path.OffsetYardsAtSkill99 = 0.4
+# Playerbots.Natural.Path.OffsetSigmaPct = 30
+# Playerbots.Natural.Path.MinLegYards = 12
+# Playerbots.Natural.Path.Curves.Enable = 0
+# Playerbots.Natural.Path.Strafe.Enable = 0
+# Playerbots.Natural.Path.Strafe.FromSkill = 50
+# Playerbots.Natural.Path.Strafe.LegMinYards = 2
+# Playerbots.Natural.Path.Strafe.LegMaxYards = 4
+# Playerbots.Natural.Path.Strafe.EveryMsAtSkill50 = 4000
+# Playerbots.Natural.Path.Strafe.EveryMsAtSkill99 = 1500
+# Playerbots.Natural.Path.Hops.Enable = 0
+# Playerbots.Natural.Path.Hops.FromSkill = 60
+# Playerbots.Natural.Path.Hops.EveryMsAtSkill60 = 12000
+# Playerbots.Natural.Path.Hops.EveryMsAtSkill99 = 5000
+# Playerbots.Natural.Path.Hops.EdgeYards = 8
+# Playerbots.Natural.Path.Hops.MaxLegYards = 6
+# Playerbots.Natural.Path.Walk.Enable = 0
+# Playerbots.Natural.Path.Walk.MaxLegYards = 6
+# (Ranges: skills 0-100, percents 0-100, ms 0-60000, yards 0-500, OffsetYards 0-20.)
 
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
@@ -2575,6 +2619,45 @@ Playerbots.Tactics.Enable = 0
 # Playerbots.Tactics.Fake.BaitedWindowMs = 300
 # Playerbots.Tactics.Fake.HealGuardPct = 70
 # (Ranges: skills 0-100, percents 0-100, ms 0-120000, MaxPerMinute 0-600, yards 0-100, KickerNeedFacing 0-1.)
+
+# Line of sight and pillar play (G2e, G2f; Playerbots.Tactics.Los.Enable, scope Arena,Battleground,World, and
+# Playerbots.Tactics.Pillar.Enable, scope Arena). Los: a ranged bot that loses sight of its target, or a healer of an
+# alive partner, moves to a point that sees it again instead of running into melee or not healing (cover points in
+# arenas), known from KnownFromSkill; the lower the skill the later (LateMsAtSkill1..99 ms) and the more often into the
+# open (IntoOpenPctAtSkill1..99); from HidesFromCasterFromSkill the point also hides the bot from the enemy caster; a
+# healer below EffortMin stays put. A point is held at least HoldMs, at most MaxRelocs relocations per RelocWindowMs
+# (else counter relocGuards); a cover search runs at most every SearchIntervalMs with at most MaxRaysPerSearch rays;
+# the cover plan takes at most RaysPerSecond rays per bot and second; a regain not finished in TimeoutMs is a timeout.
+# Pillar: a bot that an enemy casts at (a cast of HardCastMs or more, or crowd control) that no interrupt can stop steps
+# behind a pillar (one hop of at most StepYards) and a melee chaser is pulled round it, from KnownFromSkill; below it
+# the bot hides at random (RandomHidePctAtSkill1..59) or never; the cautious style hides CautiousEarlyMs earlier;
+# Ring of Valor: no move in the first RvIdleMs (the elevators). The notice delay of these moves is the Positioning part
+# of Playerbots.Natural.Reaction.*. Counters losRegains, losTimeouts, partnerLosLostMs, losBreaks, castsLosBroken,
+# pillarSteps, relocGuards. Default: off.
+# Playerbots.Tactics.Los.Enable = 0
+# Playerbots.Tactics.Los.KnownFromSkill = 25
+# Playerbots.Tactics.Los.LateMsAtSkill1 = 2500
+# Playerbots.Tactics.Los.LateMsAtSkill99 = 500
+# Playerbots.Tactics.Los.IntoOpenPctAtSkill1 = 25
+# Playerbots.Tactics.Los.IntoOpenPctAtSkill99 = 0
+# Playerbots.Tactics.Los.HidesFromCasterFromSkill = 70
+# Playerbots.Tactics.Los.EffortMin = 25
+# Playerbots.Tactics.Los.HoldMs = 2500
+# Playerbots.Tactics.Los.MaxRelocs = 3
+# Playerbots.Tactics.Los.RelocWindowMs = 10000
+# Playerbots.Tactics.Los.SearchIntervalMs = 1500
+# Playerbots.Tactics.Los.MaxRaysPerSearch = 40
+# Playerbots.Tactics.Los.RaysPerSecond = 5
+# Playerbots.Tactics.Los.TimeoutMs = 6000
+# Playerbots.Tactics.Pillar.Enable = 0
+# Playerbots.Tactics.Pillar.KnownFromSkill = 60
+# Playerbots.Tactics.Pillar.HardCastMs = 1500
+# Playerbots.Tactics.Pillar.StepYards = 6
+# Playerbots.Tactics.Pillar.RandomHidePctAtSkill1 = 30
+# Playerbots.Tactics.Pillar.RandomHidePctAtSkill59 = 5
+# Playerbots.Tactics.Pillar.CautiousEarlyMs = 300
+# Playerbots.Tactics.Pillar.RvIdleMs = 21000
+# (Ranges: skills 0-99, percents 0-100, ms 0-120000, rays and relocations 0-1000, yards 0-1000.)
 
 # SmartScale — automatically reduces active bots when the server is struggling.
 # Monitors the server's update time (how long each server tick takes in milliseconds).

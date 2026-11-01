@@ -127,6 +127,10 @@ public:
             {"traceselftest", MatchTrace::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsTacticsCoverCommandTable = {
+            {"scan", TacticCommands::HandleCoverCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsTacticsCommandTable = {
             {"show", TacticCommands::HandleShowCommand, SEC_GAMEMASTER, Console::Yes},
             {"stats", TacticCommands::HandleStatsCommand, SEC_GAMEMASTER, Console::Yes},
@@ -135,6 +139,7 @@ public:
             {"moon", TacticCommands::HandleMoonCommand, SEC_GAMEMASTER, Console::Yes},
             {"ensuretrinket", TacticCommands::HandleEnsureTrinketCommand, SEC_GAMEMASTER, Console::Yes},
             {"interrupt", TacticCommands::HandleInterruptCommand, SEC_GAMEMASTER, Console::Yes},
+            {"cover", playerbotsTacticsCoverCommandTable},
         };
 
         static ChatCommandTable playerbotsAttributesCommandTable = {

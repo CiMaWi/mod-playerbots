@@ -56,6 +56,7 @@
 #include "LogLevelValue.h"
 #include "LootStrategyValue.h"
 #include "LootValues.h"
+#include "LosTacticStrategy.h"
 #include "MaintenanceValues.h"
 #include "ManaSaveLevelValue.h"
 #include "NearestCorpsesValue.h"
@@ -335,6 +336,7 @@ public:
         creators["fishing spot"] = &ValueContext::fishing_spot;
         creators["wait for attack time"] = &ValueContext::wait_for_attack_time;
         creators["combat start time"] = &ValueContext::combat_start_time;
+        creators["cover plan"] = &ValueContext::cover_plan;
     }
 
 private:
@@ -595,6 +597,7 @@ private:
     }
     static UntypedValue* wait_for_attack_time(PlayerbotAI* botAI) { return new WaitForAttackTimeValue(botAI); }
     static UntypedValue* combat_start_time(PlayerbotAI* botAI) { return new CombatStartTimeValue(botAI); }
+    static UntypedValue* cover_plan(PlayerbotAI* botAI) { return new CoverPlanValue(botAI); }
 };
 
 #endif

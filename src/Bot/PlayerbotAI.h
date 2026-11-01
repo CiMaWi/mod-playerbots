@@ -43,10 +43,12 @@ class Engine;
 class ExternalEventHelper;
 class Group;
 struct CcBotState;
+struct CoverBotState;
 struct DefensiveBotState;
 struct FakeBotState;
 struct FocusBotState;
 struct InterruptBotState;
+struct PathBotState;
 struct TrackBotState;
 struct TurnBotState;
 enum class TurnSnapSite : uint8;  // NaturalTurn.h
@@ -780,6 +782,9 @@ public:
     FakeBotState& GetFakeState();
     TurnBotState& GetTurnState();
     TrackBotState& GetTrackState();
+    // Natural paths (NaturalPath.h, G2c) and the Los and Pillar tactics' cover state (ArenaCover.h, G2e, G2f): the same
+    PathBotState& GetPathState();
+    CoverBotState& GetCoverState();
     // The natural pre-gate stepper (G5e's cancel instant, G2a's turn steps): called from UpdateAI before the AI
     // gates on every Player::Update while SetNaturalPreGate(true), else one bool test. nowMs = getMSTime().
     void StepNaturalPreGate(uint32 nowMs);
@@ -900,6 +905,8 @@ protected:
     std::unique_ptr<FakeBotState> fakeState;            // the same (GetFakeState)
     std::unique_ptr<TurnBotState> turnState;            // the same (GetTurnState)
     std::unique_ptr<TrackBotState> trackState;          // the same (GetTrackState)
+    std::unique_ptr<PathBotState> pathState;            // the same (GetPathState)
+    std::unique_ptr<CoverBotState> coverState;          // the same (GetCoverState)
     bool naturalPreGate = false;  // true while a pre-gate stepper has work (a turn, a fake cast); one bool test else
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;

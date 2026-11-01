@@ -180,6 +180,9 @@ struct ReactionParams
     ReactionReevalParams Reeval;
     ReactionMemoryParams Memory;
     bool MovementEnable = false;
+    // The Positioning category (G2e, G2f): regain los, break los and pillar step as reactions (a reaction only, like
+    // Movement: no notice counter, no D4 delay)
+    bool PositioningEnable = false;
 };
 
 // Per bot, cached by SetPvpSkill: ln(median) and sigma of the reaction time at the bot's skill
