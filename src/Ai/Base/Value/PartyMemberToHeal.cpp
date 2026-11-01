@@ -5,6 +5,7 @@
  */
 
 #include "PartyMemberToHeal.h"
+#include "DefensiveTacticStrategy.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
 
@@ -24,8 +25,6 @@ public:
         return false;
     }
 };
-
-inline bool compareByHealth(Unit const* u1, Unit const* u2) { return u1->GetHealthPct() < u2->GetHealthPct(); }
 
 Unit* PartyMemberToHeal::Calculate()
 {
@@ -161,46 +160,6 @@ Unit* HealerLowMana::Calculate()
     return (Unit*)calc.param;
 }
 
-Unit* PartyMemberToProtect::Calculate()
-{
-    return nullptr;
-    Group* group = bot->GetGroup();
-    if (!group)
-        return nullptr;
-
-    std::vector<Unit*> needProtect;
-
-    GuidVector attackers = botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get();
-    for (GuidVector::iterator i = attackers.begin(); i != attackers.end(); ++i)
-    {
-        Unit* unit = botAI->GetUnit(*i);
-        if (!unit)
-            continue;
-
-        Unit* pVictim = unit->GetVictim();
-        if (!pVictim || !pVictim->IsPlayer())
-            continue;
-
-        if (pVictim == bot)
-            continue;
-
-        float attackDistance = 30.0f;
-        if (ServerFacade::instance().GetDistance2d(pVictim, unit) > attackDistance)
-            continue;
-
-        if (PlayerbotAI::IsTank((Player*)pVictim) && pVictim->GetHealthPct() > 10)
-            continue;
-        else if (pVictim->GetHealthPct() > 30)
-            continue;
-
-        if (find(needProtect.begin(), needProtect.end(), pVictim) == needProtect.end())
-            needProtect.push_back(pVictim);
-    }
-
-    if (needProtect.empty())
-        return nullptr;
-
-    sort(needProtect.begin(), needProtect.end(), compareByHealth);
-
-    return needProtect[0];
-}
+// G5d: the old picker (attackers whose victim is a partner within 30 yards, at or below 30 %, a tank at 10 %) was dead
+// code; it lives on in DefensivePartnerToProtect with the skill-lerped line, in PvP only (the Protect tactic, DT.3)
+Unit* PartyMemberToProtect::Calculate() { return DefensivePartnerToProtect(botAI); }

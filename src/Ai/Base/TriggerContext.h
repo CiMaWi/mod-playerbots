@@ -10,6 +10,7 @@
 #include "BotStateTriggers.h"
 #include "CcTacticStrategy.h"
 #include "CureTriggers.h"
+#include "DefensiveTacticStrategy.h"
 #include "FishingTriggers.h"
 #include "FocusStrategy.h"
 #include "GenericTriggers.h"
@@ -100,6 +101,8 @@ public:
         creators["own cc target"] = &TriggerContext::own_cc_target;
         creators["cc matters"] = &TriggerContext::cc_matters;
         creators["dispel cc on party"] = &TriggerContext::dispel_cc_on_party;
+        creators["burst"] = &TriggerContext::burst;
+        creators["burst potion"] = &TriggerContext::burst_potion;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
         creators["enemy player near"] = &TriggerContext::enemy_player_near;
 
@@ -355,6 +358,8 @@ private:
     static Trigger* own_cc_target(PlayerbotAI* botAI) { return new OwnCcTargetTrigger(botAI); }
     static Trigger* cc_matters(PlayerbotAI* botAI) { return new CcMattersTrigger(botAI); }
     static Trigger* dispel_cc_on_party(PlayerbotAI* botAI) { return new DispelCcOnPartyTrigger(botAI); }
+    static Trigger* burst(PlayerbotAI* botAI) { return new BurstTrigger(botAI, false); }
+    static Trigger* burst_potion(PlayerbotAI* botAI) { return new BurstTrigger(botAI, true); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }
     static Trigger* enemy_player_near(PlayerbotAI* botAI) { return new EnemyPlayerNear(botAI); }
     static Trigger* Random(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "random", 20); }

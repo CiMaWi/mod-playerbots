@@ -18,9 +18,11 @@
 #include "AiFactory.h"
 #include "ArenaCc.h"
 #include "ArenaCcSpells.h"
+#include "ArenaDefensive.h"
 #include "Bag.h"
 #include "Battleground.h"
 #include "CcState.h"
+#include "DefensiveTacticStrategy.h"
 #include "FocusState.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
@@ -2349,3 +2351,375 @@ bool DispelCcOnPartyAction::Execute(Event /*event*/)
 Unit* PartyMemberCcToDispelValue::Calculate() { return CcDispelPick(botAI); }
 
 void AddCcTacticScripts() { new CcTacticUnitScript(); }
+
+// G5d: the Defensive and Protect tactics, the game side (policy in ArenaDefensive.h)
+namespace
+{
+// Below the classes' critical-health defensives (ACTION_EMERGENCY and up), above the heals and rotations
+constexpr float SelfDefensiveRelevance = ACTION_EMERGENCY - 5.0f;
+constexpr float BurstStoneRelevance = ACTION_EMERGENCY - 6.0f;
+constexpr float BurstPotionRelevance = ACTION_EMERGENCY - 7.0f;
+
+constexpr uint32 SpellIceBlock = 45438;
+constexpr uint32 SpellDivineShield = 642;
+constexpr uint32 SpellHypothermia = 41425;  // no ice block while it lasts
+constexpr uint32 SpellForbearance = 25771;  // no divine shield while it lasts
+
+// The class's self-defensives in the order tried (the spec's talents decide through "spell id")
+std::span<char const* const> SelfDefensiveSpells(Player* bot)
+{
+    static constexpr std::array<char const*, 1> Mage = {"ice block"};
+    static constexpr std::array<char const*, 1> Paladin = {"divine shield"};
+    static constexpr std::array<char const*, 2> Rogue = {"cloak of shadows", "evasion"};
+    static constexpr std::array<char const*, 1> DeathKnight = {"icebound fortitude"};
+    static constexpr std::array<char const*, 1> Hunter = {"deterrence"};
+    static constexpr std::array<char const*, 2> Druid = {"barkskin", "survival instincts"};
+    static constexpr std::array<char const*, 2> Priest = {"pain suppression", "dispersion"};
+    static constexpr std::array<char const*, 1> Warrior = {"shield wall"};
+    switch (bot->getClass())
+    {
+        case CLASS_MAGE:
+            return Mage;
+        case CLASS_PALADIN:
+            return Paladin;
+        case CLASS_ROGUE:
+            return Rogue;
+        case CLASS_DEATH_KNIGHT:
+            return DeathKnight;
+        case CLASS_HUNTER:
+            return Hunter;
+        case CLASS_DRUID:
+            return Druid;
+        case CLASS_PRIEST:
+            return Priest;
+        case CLASS_WARRIOR:
+            // Shield wall needs a shield: Protection only
+            if (AiFactory::GetPlayerSpecTab(bot) == WARRIOR_TAB_PROTECTION)
+                return Warrior;
+            return {};
+        default:
+            return {};
+    }
+}
+
+uint32 DefensiveSpellId(PlayerbotAI* botAI, char const* name)
+{
+    return botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+}
+
+// Rounded up: a live unit is never at 0 (0 is dead for the policy)
+uint32 DefensiveHealthPct(Unit const* unit)
+{
+    if (!unit->IsAlive())
+        return 0;
+
+    return static_cast<uint32>(std::clamp(std::ceil(unit->GetHealthPct()), 1.0f, 100.0f));
+}
+
+// The unit an enemy aims at as a player sees it: its victim (melee, wand, shots), else its cast bar's target
+Unit* DefensiveAimedAt(Unit* enemy)
+{
+    if (Unit* const victim = enemy->GetVictim())
+        return victim;
+
+    for (CurrentSpellTypes const type : {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL})
+        if (Spell* const spell = enemy->GetCurrentSpell(type))
+            if (Unit* const target = spell->m_targets.GetUnitTarget())
+                return target;
+
+    return nullptr;
+}
+
+// A self-defensive was ready when the bot died: known, off cooldown and not blocked by hypothermia or forbearance
+bool DefensiveReadyAtDeath(PlayerbotAI* botAI, Player* bot)
+{
+    for (char const* name : SelfDefensiveSpells(bot))
+    {
+        uint32 const spellId = DefensiveSpellId(botAI, name);
+        if (!spellId || bot->HasSpellCooldown(spellId))
+            continue;
+
+        if ((spellId == SpellIceBlock && bot->HasAura(SpellHypothermia)) ||
+            (spellId == SpellDivineShield && bot->HasAura(SpellForbearance)))
+            continue;
+
+        return true;
+    }
+
+    return false;
+}
+}  // namespace
+
+void TacticDefensiveStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+{
+    // The class switch is SelfDefensiveSpells: a class without self-defensives gets only the potions
+    if (!SelfDefensiveSpells(botAI->GetBot()).empty())
+        triggers.push_back(new TriggerNode("burst", {NextAction("self defensive", SelfDefensiveRelevance)}));
+
+    if (sPlayerbotAIConfig.TacticDefensive.PotionEnable)
+        triggers.push_back(new TriggerNode("burst potion", {NextAction("healthstone", BurstStoneRelevance),
+                                                            NextAction("healing potion", BurstPotionRelevance)}));
+}
+
+bool BurstTrigger::IsActive()
+{
+    if (!bot->IsAlive() || !botAI->TacticActive(TacticId::Defensive))
+        return false;
+
+    uint32 const nowMs = getMSTime();
+    DefensiveBotState& state = botAI->GetDefensiveState();
+    DefensiveInput input;
+    input.HpPct = DefensiveHealthPct(bot);
+    input.LostPct = state.Ring.LostPct(nowMs, input.HpPct, state.Params.WindowMs);
+    input.FocusedBy = state.FocusedBy;
+    input.OpenerDue = DefensiveOpenerDue(state.OpenerDrawn, state.CombatSinceMs, nowMs);
+    DefensiveReason const reason = SelfDefensiveReason(input, state.Params);
+    if (potion)
+        return state.Params.PotionEnable && reason != DefensiveReason::None && input.HpPct <= state.Params.PotionHpPct;
+
+    if (!DefensiveDue(reason, state.PendingSinceMs, state.LastUseMs, nowMs, state.Params))
+        return false;
+
+    state.LastReason = reason;
+    return true;
+}
+
+bool SelfDefensiveAction::isUseful() { return bot->IsAlive() && !DefensiveAuraUp(bot); }
+
+bool SelfDefensiveAction::Execute(Event /*event*/)
+{
+    uint32 const nowMs = getMSTime();
+    DefensiveBotState& state = botAI->GetDefensiveState();
+    for (char const* name : SelfDefensiveSpells(bot))
+    {
+        uint32 const spellId = DefensiveSpellId(botAI, name);
+        if (!spellId || !botAI->CanCastSpell(spellId, bot) || !botAI->CastSpell(spellId, bot))
+            continue;
+
+        uint32 const hpPct = DefensiveHealthPct(bot);
+        state.LastUseMs = std::max(nowMs, 1u);
+        state.LastPressMs = state.LastUseMs;
+        state.PendingSinceMs = 0;
+        ++state.Presses;
+        botAI->CountTactic(TacticCounter::DefSelf);
+        LOG_TRACE("playerbots",
+                  "Defensive: {} pressed {} ({}) on {} at {} % (lost {} % in {} ms, focused by {}), skill {}, at {} ms",
+                  bot->GetName(), name, spellId, DefensiveReasonName(state.LastReason), hpPct,
+                  state.Ring.LostPct(nowMs, hpPct, state.Params.WindowMs), state.Params.WindowMs, state.FocusedBy,
+                  botAI->GetPvpSkill(), nowMs);
+        return true;
+    }
+
+    return false;
+}
+
+bool DefensiveAuraUp(Unit const* unit)
+{
+    auto const up = [unit](uint32 spellId) { return unit->HasAura(spellId); };
+    return std::any_of(DEFENSIVE_IMMUNITY_AURAS.begin(), DEFENSIVE_IMMUNITY_AURAS.end(), up) ||
+           std::any_of(DEFENSIVE_AURAS.begin(), DEFENSIVE_AURAS.end(), up);
+}
+
+void FollowDefensive(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
+{
+    DefensiveBotState& state = botAI->GetDefensiveState();
+    // Both sides of a harness match: a death with a self-defensive ready
+    bool const alive = bot->IsAlive();
+    if (state.WasAlive && !alive && botAI->IsPvpTestCounting() && DefensiveReadyAtDeath(botAI, bot))
+    {
+        botAI->CountTactic(TacticCounter::DeathsDefReady);
+        LOG_TRACE("playerbots", "Defensive: {} died with a self-defensive ready, tactic {}, skill {}, at {} ms",
+                  bot->GetName(), botAI->TacticEnabledHere(TacticId::Defensive) ? "on" : "off", botAI->GetPvpSkill(),
+                  nowMs);
+    }
+
+    state.WasAlive = alive;
+    if (!botAI->TacticEnabledHere(TacticId::Defensive))
+        return;
+
+    // The match: its opener draw, the first combat
+    Battleground* const battleground = bot->GetBattleground();
+    uint32 const matchId =
+        battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
+    if (matchId != state.MatchId)
+    {
+        state.MatchId = matchId;
+        state.CombatSinceMs = 0;
+        state.PendingSinceMs = 0;
+        state.Ring.Clear();
+        state.OpenerDrawn = DefensiveOpenerDraw(bot->GetGUID().GetCounter(), matchId, state.Params.OpenerPct);
+    }
+
+    if (matchId != 0 && state.CombatSinceMs == 0 && bot->IsInCombat())
+        state.CombatSinceMs = std::max(nowMs, 1u);
+
+    if (!alive)
+    {
+        state.Ring.Clear();
+        state.FocusedBy = 0;
+        return;
+    }
+
+    if (state.Ring.Count != 0 && nowMs - state.Ring.LastMs() < state.Params.SampleMs)
+        return;
+
+    uint32 const hpPct = DefensiveHealthPct(bot);
+    state.Ring.Push(nowMs, hpPct);
+    uint32 const lost = state.Ring.LostPct(nowMs, hpPct, state.Params.WindowMs);
+    if (DefensiveBurst(lost, state.Params) &&
+        (state.LastBurstMs == 0 || nowMs - state.LastBurstMs > state.Params.WindowMs))
+    {
+        state.LastBurstMs = std::max(nowMs, 1u);
+        botAI->CountTactic(TacticCounter::DefBurst);
+        LOG_TRACE("playerbots", "Defensive: {} under burst, lost {} % in {} ms at {} %, skill {}, at {} ms",
+                  bot->GetName(), lost, state.Params.WindowMs, hpPct, botAI->GetPvpSkill(), nowMs);
+    }
+
+    // Focused: enemy players aiming at the bot (as many as the opponent memory holds)
+    uint32 focused = 0;
+    uint32 read = 0;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->LazyGet())
+    {
+        if (read >= OPPONENT_MEMORY_SLOTS)
+            break;
+
+        Unit* const unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld() || !unit->IsPlayer() || !unit->IsAlive() || !bot->IsHostileTo(unit))
+            continue;
+
+        ++read;
+        if (DefensiveAimedAt(unit) == bot)
+            ++focused;
+    }
+
+    state.FocusedBy = static_cast<uint8>(std::min(focused, 255u));
+}
+
+void ObserveEnemyDefensive(PlayerbotAI* botAI, Unit* enemy, uint32 nowMs)
+{
+    if (!DefensiveAuraUp(enemy))
+        return;
+
+    uint32 const expireMs = botAI->GetDefensiveState().Params.OpponentExpireMs;
+    OpponentMemory& memory = botAI->GetOpponentMemory();
+    uint32 const guid = enemy->GetGUID().GetCounter();
+    bool const known = memory.DefensiveHpPct(guid, nowMs, expireMs) != 0;
+    uint32 const hpPct = DefensiveHealthPct(enemy);
+    memory.NoteDefensive(guid, hpPct, nowMs, expireMs);
+    if (!known)
+        LOG_TRACE("playerbots", "Defensive seen: {} saw {} with a defensive up at {} %, skill {}, at {} ms",
+                  botAI->GetBot()->GetName(), enemy->GetName(), hpPct, botAI->GetPvpSkill(), nowMs);
+}
+
+void NoteDefensiveCast(Player* caster, Spell* spell)
+{
+    SpellInfo const* const info = spell ? spell->GetSpellInfo() : nullptr;
+    if (!caster || !info)
+        return;
+
+    SpellInfo const* const first = info->GetFirstRankSpell();
+    Unit* const target = spell->m_targets.GetUnitTarget();
+    DefensiveCastKind const kind = ClassifyDefensiveCast(first ? first->Id : info->Id, !target || target == caster);
+    if (kind == DefensiveCastKind::None)
+        return;
+
+    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(caster);
+    if (!botAI)
+        return;
+
+    uint32 const nowMs = getMSTime();
+    DefensiveBotState& state = botAI->GetDefensiveState();
+    if (kind == DefensiveCastKind::Self)
+    {
+        state.LastUseMs = std::max(nowMs, 1u);
+        ++state.SelfUses;
+    }
+    else
+    {
+        state.LastPartnerMs = std::max(nowMs, 1u);
+        ++state.PartnerUses;
+        botAI->CountTactic(TacticCounter::DefPartner);
+    }
+
+    Unit const* const on = target ? target : caster;
+    LOG_TRACE("playerbots", "Defensive cast: {} cast {} ({}) on {} at {} %, {}, skill {}, at {} ms", caster->GetName(),
+              info->SpellName[0], info->Id, on->GetName(), DefensiveHealthPct(on),
+              kind == DefensiveCastKind::Self ? "self" : "partner", botAI->GetPvpSkill(), nowMs);
+}
+
+bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
+{
+    if (!target || !botAI->TacticEnabledHere(TacticId::Defensive))
+        return false;
+
+    DefensiveBotState& state = botAI->GetDefensiveState();
+    if (!state.Params.OpponentKnows)
+        return false;
+
+    uint32 const nowMs = getMSTime();
+    BurstHoldInput input;
+    input.EnemyHpPct = DefensiveHealthPct(target);
+    input.DefensiveUp = DefensiveAuraUp(target);
+    if (OpponentMemorySlot const* const slot = botAI->GetOpponentMemory().Find(target->GetGUID().GetCounter()))
+    {
+        if (slot->DefHpPct != 0)
+        {
+            input.RememberedHpPct = slot->DefHpPct;
+            input.RememberedAgeMs = nowMs - slot->DefSeenMs;
+        }
+    }
+
+    BurstHold const hold = DecideBurstHold(input, state.Params);
+    if (hold == BurstHold::None)
+        return false;
+
+    if (state.LastHoldMs == 0 || nowMs - state.LastHoldMs > DEFENSIVE_HOLD_EPISODE_MS)
+    {
+        ++state.Holds;
+        LOG_TRACE("playerbots",
+                  "Defensive burst hold: {} holds its burst on {} at {} % ({}, remembered {} %), at {} ms",
+                  botAI->GetBot()->GetName(), target->GetName(), input.EnemyHpPct, BurstHoldName(hold),
+                  input.RememberedHpPct, nowMs);
+    }
+
+    state.LastHoldMs = std::max(nowMs, 1u);
+    return true;
+}
+
+Unit* DefensivePartnerToProtect(PlayerbotAI* botAI)
+{
+    // DT.3: in PvP only (the Protect tactic's scope); elsewhere nobody, as before (blessing of protection drops a
+    // tank's threat)
+    if (!botAI->TacticActive(TacticId::Protect))
+        return nullptr;
+
+    Player* const bot = botAI->GetBot();
+    if (!bot->GetGroup())
+        return nullptr;
+
+    DefensiveParams const& params = botAI->GetDefensiveState().Params;
+    float const distance = static_cast<float>(params.ProtectDistanceYards);
+    Player* pick = nullptr;
+    uint32 pickHpPct = 101;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
+    {
+        Unit* const unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld() || !unit->IsAlive())
+            continue;
+
+        Unit* const victim = DefensiveAimedAt(unit);
+        Player* const partner = victim ? victim->ToPlayer() : nullptr;
+        if (!partner || partner == bot || !partner->IsAlive() || !partner->IsInMap(bot) ||
+            !bot->IsInSameRaidWith(partner) || unit->GetExactDist2d(partner) > distance)
+            continue;
+
+        uint32 const hpPct = DefensiveHealthPct(partner);
+        if (hpPct < pickHpPct && PartnerNeedsProtect(hpPct, true, PlayerbotAI::IsTank(partner), params))
+        {
+            pick = partner;
+            pickHpPct = hpPct;
+        }
+    }
+
+    return pick;
+}

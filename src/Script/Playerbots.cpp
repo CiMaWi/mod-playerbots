@@ -18,6 +18,7 @@
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
+#include "DefensiveTacticStrategy.h"
 #include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
 #include <mysqld_error.h>
@@ -164,8 +165,12 @@ public:
         PLAYERHOOK_ON_SPELL_CAST
     }) {}
 
-    // G5e: the kick memory and kicksBaited are filled here (the caster's map thread). 13e-0 scaffold: no body yet.
-    void OnPlayerSpellCast(Player* /*player*/, Spell* /*spell*/, bool /*skipCheck*/) override {}
+    // The caster's map thread, every cast of every player: each part filters first. G5d: a bot's self or partner
+    // defensive (tactics.defSelf/defPartner bookkeeping); G5e: the kick memory and kicksBaited.
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
+    {
+        NoteDefensiveCast(player, spell);
+    }
 
     void OnPlayerVictimRewardAfter(Player* player, Player* victim, uint32& /*killerTitle*/, int32& /*victimRank*/,
                                    float& honor) override

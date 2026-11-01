@@ -22,6 +22,7 @@
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
+#include "DefensiveTacticStrategy.h"
 #include "EmoteAction.h"
 #include "Engine.h"
 #include "EventProcessor.h"
@@ -426,6 +427,17 @@ void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowM
 
     uint32 const tolerance = sPlayerbotAIConfig.NaturalReaction.Memory.EndToleranceMs;
     AiObjectContext* const context = botAI->GetAiObjectContext();
+    // G5d: the enemies seen with a defensive up and their health (the Defensive tactic's opponent memory), at most
+    // every DEFENSIVE_OBSERVE_MS
+    bool defensiveScan = false;
+    if (sPlayerbotAIConfig.TacticDefensive.OpponentEnable && botAI->TacticEnabledHere(TacticId::Defensive))
+    {
+        DefensiveBotState& defensive = botAI->GetDefensiveState();
+        defensiveScan = defensive.LastObserveMs == 0 || nowMs - defensive.LastObserveMs >= DEFENSIVE_OBSERVE_MS;
+        if (defensiveScan)
+            defensive.LastObserveMs = std::max(nowMs, 1u);
+    }
+
     uint32 seen = 0;
     auto const look = [&](Unit* unit)
     {
@@ -434,6 +446,9 @@ void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowM
 
         ++seen;
         uint32 const guid = unit->GetGUID().GetCounter();
+        if (defensiveScan)
+            ObserveEnemyDefensive(botAI, unit, nowMs);
+
         OpponentMemorySlot const* const slot = memory.Find(guid);
         Spell* const spell = unit->GetCurrentSpell(CURRENT_GENERIC_SPELL);
         if (spell && spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0 && spell->GetSpellInfo())
@@ -847,6 +862,19 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G4e: the focus target, while the FocusTarget tactic is on here or a focus is left to clear
     if (TacticEnabledHere(TacticId::FocusTarget) || (focusState && focusState->Target.Pick.Guid != 0))
         FollowFocusTarget(this, bot, nowMs);
+
+    // G5d: the Defensive tactic's health sampler, focus and opener while it is on here; deaths with a self-defensive
+    // ready on both sides of a harness match
+    if (pvpTestCounting || TacticEnabledHere(TacticId::Defensive))
+    {
+        if (PerfMonitor::IsEnabled())
+        {
+            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "Defensive::Follow"));
+            FollowDefensive(this, bot, nowMs);
+        }
+        else
+            FollowDefensive(this, bot, nowMs);
+    }
 
     bool stoppedForKick = false;
 
@@ -7745,6 +7773,9 @@ void PlayerbotAI::SetPvpSkill(uint8 skill)
     // Crowd control's numbers (G4b, G4a NOTE 8), cached whatever Playerbots.Tactics.Cc/OwnCc.Enable say
     GetCcState().Params =
         ComputeCcParams(skill, attributes, tacticGate.Effort, config.SkillGate.CurveExponent, config.TacticCc);
+    // The Defensive and Protect tactics' numbers (G5d), cached whatever their Enable says; skill 0 gives skill 99's
+    GetDefensiveState().Params = ComputeDefensiveParams(skill, attributes, tacticGate.Effort,
+                                                        config.SkillGate.CurveExponent, config.TacticDefensive);
     if (skill == 0)
         return;
 
@@ -7813,7 +7844,13 @@ InterruptBotState& PlayerbotAI::GetInterruptState()
 DefensiveBotState& PlayerbotAI::GetDefensiveState()
 {
     if (!defensiveState)
+    {
+        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones (full ability)
+        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         defensiveState = std::make_unique<DefensiveBotState>();
+        defensiveState->Params = ComputeDefensiveParams(0, attributes, SKILL_GATE_FULL, config.SkillGate.CurveExponent,
+                                                        config.TacticDefensive);
+    }
 
     return *defensiveState;
 }

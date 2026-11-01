@@ -16,6 +16,7 @@
 
 #include "ArenaCc.h"
 #include "ArenaCcSpells.h"
+#include "ArenaDefensive.h"
 #include "ArenaFocus.h"
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSim.h"
@@ -2456,6 +2457,26 @@ void RunInterruptSelftest(ChatHandler* handler)
                              checks, failures);
 }
 
+// G5d: the Defensive and Protect tactics' pure policy (ArenaDefensive.h; the offline harness runs the same checks)
+void RunDefensiveSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunDefensiveChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest defensive FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest defensive: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS",
+                             checks, failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4205,6 +4226,26 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             FocusSourceName(target.Pick.Source), target.Pick.Guid ? getMSTimeDiff(target.Pick.SinceMs, nowMs) : 0u,
             target.Pick.Picks, target.Kicks, target.Ccs, target.SwitchKicks);
     }
+    // G5d: the Defensive and Protect tactics (the bot's lines, its sampler now, what it pressed and held)
+    {
+        DefensiveBotState const& defensive = botAI->GetDefensiveState();
+        DefensiveParams const& params = defensive.Params;
+        Player* const self = botAI->GetBot();
+        uint32 const hpPct = self->IsAlive() ? static_cast<uint32>(std::ceil(self->GetHealthPct())) : 0;
+        handler->PSendSysMessage(
+            "  defensive: {}, protect {}; burst {} % in {} ms, line {} % (+{} focused by {}), critical {} %, "
+            "opener {} % ({}), late {} ms; now lost {} %, focused by {}; pressed {} (last {}, {} ms ago), self {}, "
+            "partner {}; protect line {} %; burst holds {} (memory {}, lead {} %)",
+            botAI->TacticEnabledHere(TacticId::Defensive) ? "on here" : "off here",
+            botAI->TacticEnabledHere(TacticId::Protect) ? "on here" : "off here", params.BurstLossPct, params.WindowMs,
+            params.HpPct, params.FocusedHpBonusPct, params.FocusedMinEnemies, params.CriticalHpPct, params.OpenerPct,
+            defensive.OpenerDrawn ? "drawn" : "not drawn", params.LateMs,
+            defensive.Ring.LostPct(nowMs, hpPct, params.WindowMs), defensive.FocusedBy, defensive.Presses,
+            DefensiveReasonName(defensive.LastReason),
+            defensive.LastPressMs ? getMSTimeDiff(defensive.LastPressMs, nowMs) : 0u, defensive.SelfUses,
+            defensive.PartnerUses, params.ProtectHpPct, defensive.Holds, params.OpponentKnows ? "known" : "unknown",
+            params.OpponentLeadPct);
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4360,10 +4401,11 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 {
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
-        name != "focus" && name != "cc" && name != "interrupt")
+        name != "focus" && name != "cc" && name != "interrupt" && name != "defensive")
     {
         handler->PSendSysMessage(
-            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt", name);
+            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive",
+            name);
         return false;
     }
 
@@ -4387,6 +4429,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "interrupt")
         RunInterruptSelftest(handler);
+
+    if (name.empty() || name == "defensive")
+        RunDefensiveSelftest(handler);
 
     return true;
 }

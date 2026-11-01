@@ -24,6 +24,7 @@
 #include "ChooseRpgTargetAction.h"
 #include "ChooseTargetActions.h"
 #include "ChooseTravelTargetAction.h"
+#include "DefensiveTacticStrategy.h"
 #include "DelayAction.h"
 #include "DestroyItemAction.h"
 #include "DropQuestAction.h"
@@ -129,6 +130,7 @@ public:
         creators["cc retarget"] = &ActionContext::cc_retarget;
         creators["pvp trinket"] = &ActionContext::pvp_trinket;
         creators["dispel cc on party"] = &ActionContext::dispel_cc_on_party;
+        creators["self defensive"] = &ActionContext::self_defensive;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
@@ -365,6 +367,7 @@ private:
     static Action* cc_retarget(PlayerbotAI* botAI) { return new CcRetargetAction(botAI); }
     static Action* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketAction(botAI); }
     static Action* dispel_cc_on_party(PlayerbotAI* botAI) { return new DispelCcOnPartyAction(botAI); }
+    static Action* self_defensive(PlayerbotAI* botAI) { return new SelfDefensiveAction(botAI); }
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }

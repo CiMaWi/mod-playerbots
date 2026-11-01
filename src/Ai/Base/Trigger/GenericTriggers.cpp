@@ -7,6 +7,7 @@
 #include "GenericTriggers.h"
 #include "Corpse.h"
 #include "CreatureAI.h"
+#include "DefensiveTacticStrategy.h"
 #include "GenericBuffUtils.h"
 #include "ItemVisitors.h"
 #include "LastSpellCastValue.h"
@@ -317,9 +318,10 @@ bool BoostTrigger::IsActive()
     if (!BuffTrigger::IsActive())
         return false;
 
+    // G5d: against a player, the burst waits while the Defensive tactic's opponent memory says so (DefensiveHoldsBurst)
     Unit* target = AI_VALUE(Unit*, "current target");
     if (target && target->ToPlayer())
-        return true;
+        return !DefensiveHoldsBurst(botAI, target);
 
     return AI_VALUE(uint8, "balance") <= balance;
 }
@@ -328,7 +330,7 @@ bool GenericBoostTrigger::IsActive()
 {
     Unit* target = AI_VALUE(Unit*, "current target");
     if (target && target->ToPlayer())
-        return true;
+        return !DefensiveHoldsBurst(botAI, target);
 
     return AI_VALUE(uint8, "balance") <= balance;
 }
