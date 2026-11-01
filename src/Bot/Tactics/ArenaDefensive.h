@@ -369,6 +369,37 @@ inline BurstHold DecideBurstHold(BurstHoldInput const& input, DefensiveParams co
                                                                                              : BurstHold::None;
 }
 
+// tactics.deathsDefReady counts a death once: at the lethal hit (before the kill can end the arena and the harness
+// reads the counters) or, for a death no damage hook saw (an instakill), at the bot's next check. Alive again arms it.
+struct DefensiveDeathLatch
+{
+    bool Noted = false;  // this death is counted or checked
+
+    // The lethal hit on a live bot: true the first time for this death
+    bool OnLethalHit()
+    {
+        if (Noted)
+            return false;
+
+        Noted = true;
+        return true;
+    }
+
+    // The bot's check: true for a death (alive at the last check, dead now) that no lethal hit noted
+    bool OnCheck(bool wasAlive, bool alive)
+    {
+        if (alive)
+        {
+            Noted = false;
+            return false;
+        }
+
+        bool const unseen = wasAlive && !Noted;
+        Noted = true;
+        return unseen;
+    }
+};
+
 // The per-bot state (PlayerbotAI::GetDefensiveState; the bot's own update and its own casts only)
 struct DefensiveBotState
 {
@@ -382,7 +413,8 @@ struct DefensiveBotState
     uint32 CombatSinceMs = 0;  // the first combat of the match (the opener)
     bool OpenerDrawn = false;
     bool WasAlive = true;
-    uint32 LastObserveMs = 0;  // the enemy defensive scan
+    DefensiveDeathLatch Death;  // tactics.deathsDefReady
+    uint32 LastObserveMs = 0;   // the enemy defensive scan
     uint32 LastHoldMs = 0;
     uint32 LastBurstMs = 0;  // the last burst counted (tactics.defBurst: one per window)
     // What the bot did (tactics show)
@@ -613,6 +645,24 @@ void RunDefensiveChecks(Check&& check)
                 spike = SelfDefensiveReason(input, p80);
         }
         check(spike == DefensiveReason::Burst, "a healed bot losing 46 % in 1.75 s presses on burst at skill 80");
+    }
+
+    // tactics.deathsDefReady: the arena's last death ends the match inside the kill, so the lethal hit counts it (the
+    // harness reads the counters before the dead bot's next check); the check after it does not count it again; a
+    // death no hit saw counts once at the next check; alive again arms the latch
+    {
+        DefensiveDeathLatch latch;
+        bool const atHit = latch.OnLethalHit();
+        bool const secondHit = latch.OnLethalHit();
+        bool const checkAfterHit = latch.OnCheck(true, false);
+        check(atHit && !secondHit && !checkAfterHit, "a death is counted once, at the lethal hit");
+        bool const aliveAgain = latch.OnCheck(false, true);
+        bool const unseen = latch.OnCheck(true, false);
+        bool const stillDead = latch.OnCheck(false, false);
+        check(!aliveAgain && unseen && !stillDead, "a death no hit saw is counted once, at the next check");
+        latch.OnCheck(false, true);
+        bool const rearmed = latch.OnLethalHit();
+        check(rearmed && !latch.OnCheck(true, false), "alive again: the next lethal hit counts, its check does not");
     }
 }
 

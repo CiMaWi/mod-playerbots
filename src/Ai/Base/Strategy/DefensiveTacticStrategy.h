@@ -47,7 +47,7 @@ private:
 
 // The first of the class's self-defensives (ice block, divine shield, cloak of shadows and evasion, icebound
 // fortitude, deterrence, barkskin and survival instincts, pain suppression or dispersion, Protection's shield wall)
-// that is known and castable; none while one of the bot's defensives is up
+// that is known and castable; none while one of the bot's defensives is up or every one is on cooldown
 class SelfDefensiveAction : public Action
 {
 public:
@@ -62,6 +62,10 @@ bool DefensiveAuraUp(Unit const* unit);
 // At the bot's checks (PlayerbotAI::UpdateAI) with the Defensive tactic on here or the harness counting: the health
 // sampler, the enemies focusing the bot, the match's opener and tactics.deathsDefReady
 void FollowDefensive(PlayerbotAI* botAI, Player* bot, uint32 nowMs);
+// UnitScript::OnDamage (the victim's map thread, before Unit::Kill): a counting bot's lethal hit counts
+// tactics.deathsDefReady when a self-defensive is ready, before the kill can end the arena (Arena::HandleKillPlayer ->
+// EndBattleground stops the counting and lets the harness read the counters); once per death (DefensiveDeathLatch)
+void DefensiveNoteLethalHit(Unit* victim, uint32 damage);
 // ObserveOpponents: an enemy seen with a defensive up goes into the opponent memory with its health
 void ObserveEnemyDefensive(PlayerbotAI* botAI, Unit* enemy, uint32 nowMs);
 // PlayerScript::OnPlayerSpellCast (the caster's map thread): a bot's self or partner defensive is counted

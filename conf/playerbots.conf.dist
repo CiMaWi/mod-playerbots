@@ -2460,18 +2460,22 @@ Playerbots.Tactics.Enable = 0
 # knight icebound fortitude, hunter deterrence, druid barkskin or survival instincts, disc priest pain suppression,
 # shadow priest dispersion, protection warrior shield wall; healthstones and potions with PotionEnable) when health is
 # at or below HpPctAtSkill1..99 per cent AND (the bot is under burst OR focused). Burst: health lost within
-# BurstWindowMs of at least BurstLossPctAtSkill1..99 per cent, from a ring of 8 health samples taken every SampleMs.
+# BurstWindowMs of at least BurstLossPctAtSkill1..99 per cent, from a ring of 16 health samples taken every SampleMs.
 # Focused: at least FocusedMinEnemies enemy players whose victim or cast target is the bot (what the combat log and the
-# cast bars show); a focused bot presses FocusedHpBonusPct points earlier. A low-skill bot presses only at
-# CriticalHpPct, or at the gates opening with the chance OpenerPctAtSkill1..99; low effort waits LateMsAtEffort0..100
-# ms after the trigger holds; Caution moves the threshold by up to CautionShiftPct points; two presses are at least
-# MinGapMs apart. With Protect on, PartyMemberToProtect returns a partner (PvP scope only: blessing of protection drops
-# a tank's threat) attacked within Protect.AttackedWithinMs by an enemy within Protect.DistanceYards, whose health is at
-# or below Protect.HpPctAtSkill1..99 per cent; the existing protect actions (blessing of protection, pain suppression,
-# intervene) use it, at least Protect.MinGapMs apart. Opponent memory (Foresight; from skill Opponent.FromSkill): the
-# bot remembers the health at which each enemy used its defensives (forgotten after Opponent.ExpireMs) and times its
-# burst Opponent.LeadPctAtForesight99 points above it at Foresight 99, when it has seen at least Opponent.MinEvents
-# such uses; Opponent.Enable 0 turns the memory off.
+# cast bars show; read in Arena, Battleground and open-world PvP only); a focused bot presses FocusedHpBonusPct points
+# earlier. A low-skill bot presses only at CriticalHpPct, or at the gates opening with the chance
+# OpenerPctAtSkill1..99; low effort waits LateMsAtEffort0..100 ms after the trigger holds; Caution moves the threshold
+# by up to CautionShiftPct points; two presses are at least MinGapMs apart; no press while a defensive is up or every
+# self-defensive is on cooldown. With Protect on, PartyMemberToProtect returns a partner (PvP scope only: blessing of
+# protection drops a tank's threat) that an enemy within Protect.DistanceYards attacks now (its victim or cast target),
+# whose health is at or below Protect.HpPctAtSkill1..99 per cent; the existing protect actions (blessing of
+# protection, pain suppression, intervene) use it with their own cooldowns. Opponent memory (Foresight; from skill
+# Opponent.FromSkill): the bot remembers the health at which each enemy was seen with a defensive up. It holds its
+# burst while an enemy's defensive is up; within Opponent.ExpireMs of that sighting the defensive counts as spent (the
+# burst goes at once); after Opponent.ExpireMs it may be back: the bot holds its burst until the enemy is at most
+# Opponent.LeadPctAtForesight99 points (at Foresight 99) above the remembered health, and a new sighting replaces the
+# remembered one. Opponent.Enable 0 turns the memory off. Protect.AttackedWithinMs, Protect.MinGapMs and
+# Opponent.MinEvents are read but not used yet.
 # Playerbots.Tactics.Defensive.BurstWindowMs = 2000
 # Playerbots.Tactics.Defensive.BurstLossPctAtSkill1 = 55
 # Playerbots.Tactics.Defensive.BurstLossPctAtSkill99 = 30

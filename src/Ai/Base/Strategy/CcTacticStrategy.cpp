@@ -748,7 +748,11 @@ public:
     {
     }
 
-    void OnDamage(Unit* attacker, Unit* victim, uint32& /*damage*/) override { CcCountOwnBreak(attacker, victim); }
+    void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
+    {
+        CcCountOwnBreak(attacker, victim);
+        DefensiveNoteLethalHit(victim, damage);
+    }
 
     // One store each; only the own-break log line reads it
     void ModifyPeriodicDamageAurasTick(Unit* /*target*/, Unit* /*attacker*/, uint32& /*damage*/,
@@ -2364,6 +2368,8 @@ constexpr uint32 SpellIceBlock = 45438;
 constexpr uint32 SpellDivineShield = 642;
 constexpr uint32 SpellHypothermia = 41425;  // no ice block while it lasts
 constexpr uint32 SpellForbearance = 25771;  // no divine shield while it lasts
+// The focused scan reads at most this many entries of the bot's attackers (players, pets and NPCs alike)
+constexpr uint32 DefensiveFocusMaxReads = 12;
 
 // The class's self-defensives in the order tried (the spec's talents decide through "spell id")
 std::span<char const* const> SelfDefensiveSpells(Player* bot)
@@ -2430,8 +2436,9 @@ Unit* DefensiveAimedAt(Unit* enemy)
     return nullptr;
 }
 
-// A self-defensive was ready when the bot died: known, off cooldown and not blocked by hypothermia or forbearance
-bool DefensiveReadyAtDeath(PlayerbotAI* botAI, Player* bot)
+// A self-defensive is ready: known, off cooldown and not blocked by hypothermia or forbearance (also the check at a
+// death: hypothermia and forbearance are read before the death removes them)
+bool SelfDefensiveReady(PlayerbotAI* botAI, Player* bot)
 {
     for (char const* name : SelfDefensiveSpells(bot))
     {
@@ -2484,7 +2491,11 @@ bool BurstTrigger::IsActive()
     return true;
 }
 
-bool SelfDefensiveAction::isUseful() { return bot->IsAlive() && !DefensiveAuraUp(bot); }
+// Not while a defensive is up or every self-defensive is on cooldown (no failing press on every tick)
+bool SelfDefensiveAction::isUseful()
+{
+    return bot->IsAlive() && !DefensiveAuraUp(bot) && SelfDefensiveReady(botAI, bot);
+}
 
 bool SelfDefensiveAction::Execute(Event /*event*/)
 {
@@ -2523,12 +2534,15 @@ bool DefensiveAuraUp(Unit const* unit)
 void FollowDefensive(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
     DefensiveBotState& state = botAI->GetDefensiveState();
-    // Both sides of a harness match: a death with a self-defensive ready
-    bool const alive = bot->IsAlive();
-    if (state.WasAlive && !alive && botAI->IsPvpTestCounting() && DefensiveReadyAtDeath(botAI, bot))
+    // Both sides of a harness match: a death with a self-defensive ready. DefensiveNoteLethalHit counts it at the
+    // lethal hit; this is the fallback for a death no damage hook saw (an instakill), once per death. A priest in
+    // spirit of redemption counts as dead (the arena counted the kill).
+    bool const alive = bot->IsAlive() && !bot->HasSpiritOfRedemptionAura();
+    if (state.Death.OnCheck(state.WasAlive, alive) && botAI->IsPvpTestCounting() && SelfDefensiveReady(botAI, bot))
     {
         botAI->CountTactic(TacticCounter::DeathsDefReady);
-        LOG_TRACE("playerbots", "Defensive: {} died with a self-defensive ready, tactic {}, skill {}, at {} ms",
+        LOG_TRACE("playerbots",
+                  "Defensive: {} died with a self-defensive ready (seen at its check), tactic {}, skill {}, at {} ms",
                   bot->GetName(), botAI->TacticEnabledHere(TacticId::Defensive) ? "on" : "off", botAI->GetPvpSkill(),
                   nowMs);
     }
@@ -2575,24 +2589,50 @@ void FollowDefensive(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
                   bot->GetName(), lost, state.Params.WindowMs, hpPct, botAI->GetPvpSkill(), nowMs);
     }
 
-    // Focused: enemy players aiming at the bot (as many as the opponent memory holds)
+    // Focused: enemy players aiming at the bot, in PvP contexts only (NPCs never count), at most
+    // DefensiveFocusMaxReads attackers read
     uint32 focused = 0;
-    uint32 read = 0;
-    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->LazyGet())
+    if (botAI->GetTacticContext() != TacticContext::Pve)
     {
-        if (read >= OPPONENT_MEMORY_SLOTS)
-            break;
+        uint32 read = 0;
+        for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->LazyGet())
+        {
+            if (read++ >= DefensiveFocusMaxReads)
+                break;
 
-        Unit* const unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsInWorld() || !unit->IsPlayer() || !unit->IsAlive() || !bot->IsHostileTo(unit))
-            continue;
+            Unit* const unit = botAI->GetUnit(guid);
+            if (!unit || !unit->IsInWorld() || !unit->IsPlayer() || !unit->IsAlive() || !bot->IsHostileTo(unit))
+                continue;
 
-        ++read;
-        if (DefensiveAimedAt(unit) == bot)
-            ++focused;
+            if (DefensiveAimedAt(unit) == bot)
+                ++focused;
+        }
     }
 
     state.FocusedBy = static_cast<uint8>(std::min(focused, 255u));
+}
+
+void DefensiveNoteLethalHit(Unit* victim, uint32 damage)
+{
+    // Every damage event of every unit: players only, a lethal hit only, then the bot's counting flag
+    if (!victim->IsPlayer() || damage < victim->GetHealth() || !victim->IsAlive())
+        return;
+
+    Player* const bot = victim->ToPlayer();
+    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
+    // A duel stops at 1 health (Unit::DealDamage); cheat god never reaches OnDamage
+    if (!botAI || !botAI->IsPvpTestCounting() || bot->duel)
+        return;
+
+    DefensiveBotState& state = botAI->GetDefensiveState();
+    if (!state.Death.OnLethalHit() || !SelfDefensiveReady(botAI, bot))
+        return;
+
+    botAI->CountTactic(TacticCounter::DeathsDefReady);
+    LOG_TRACE("playerbots",
+              "Defensive: {} died with a self-defensive ready (at the lethal hit of {}), tactic {}, skill {}, at {} ms",
+              bot->GetName(), damage, botAI->TacticEnabledHere(TacticId::Defensive) ? "on" : "off",
+              botAI->GetPvpSkill(), getMSTime());
 }
 
 void ObserveEnemyDefensive(PlayerbotAI* botAI, Unit* enemy, uint32 nowMs)
