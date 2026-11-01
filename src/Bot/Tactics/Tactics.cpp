@@ -30,6 +30,7 @@
 #include "FocusState.h"
 #include "Group.h"
 #include "Item.h"
+#include "NaturalCast.h"
 #include "NaturalReaction.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -2477,6 +2478,26 @@ void RunDefensiveSelftest(ChatHandler* handler)
                              checks, failures);
 }
 
+// G5e: the Fake tactic's pure policy (NaturalCast.h; the offline harness runs the same checks)
+void RunFakeSelftest(ChatHandler* handler)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    RunFakeChecks(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            handler->PSendSysMessage("TACTICS selftest fake FAILED: {}", what);
+        });
+
+    handler->PSendSysMessage("TACTICS selftest fake: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
+                             failures);
+}
+
 void RunCcSelftest(ChatHandler* handler)
 {
     static_assert(CC_DR_GROUP_COUNT == PVPTEST_DR_GROUP_COUNT, "the DR group names cover the core's groups");
@@ -4246,6 +4267,20 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             defensive.PartnerUses, params.ProtectHpPct, defensive.Holds, params.OpponentKnows ? "known" : "unknown",
             params.OpponentLeadPct);
     }
+    // G5e: the Fake tactic (its numbers, what it decided, cancelled and baited, the kicks it saw)
+    {
+        FakeBotState const& fake = botAI->GetFakeState();
+        FakeParams const& params = fake.Params;
+        handler->PSendSysMessage(
+            "  fake: {}, known {}, chance {} %, cancel at {} % (sigma {} %), repeat {} ms, kick memory {}; decided {}, "
+            "faked {}, let finish {}, cast gone {}, baited {}, kicks seen {}; last {} (cancel at {} %, error {} ms, "
+            "{} ms ago); pending {}",
+            botAI->TacticEnabledHere(TacticId::Fake) ? "on here" : "off here", params.Known ? "yes" : "no",
+            params.ChancePct, params.CancelPct, params.CancelSigmaPct, params.RepeatMs,
+            params.RemembersKicks ? "yes" : "no", fake.Decisions, fake.Fakes, fake.Finished, fake.Gone, fake.Baited,
+            fake.KicksSeen, FakeVerdictName(fake.LastVerdict), fake.LastCancelPct, fake.LastErrorMs,
+            fake.LastFakeMs ? getMSTimeDiff(fake.LastFakeMs, nowMs) : 0u, fake.Pending() ? "yes" : "no");
+    }
     CcBotState const& cc = botAI->GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
@@ -4401,10 +4436,10 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 {
     std::string const name = Lower(Trim(args ? args : ""));
     if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
-        name != "focus" && name != "cc" && name != "interrupt" && name != "defensive")
+        name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake")
     {
         handler->PSendSysMessage(
-            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive",
+            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, fake",
             name);
         return false;
     }
@@ -4432,6 +4467,9 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
 
     if (name.empty() || name == "defensive")
         RunDefensiveSelftest(handler);
+
+    if (name.empty() || name == "fake")
+        RunFakeSelftest(handler);
 
     return true;
 }

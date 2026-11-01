@@ -2507,15 +2507,18 @@ Playerbots.Tactics.Enable = 0
 # Opponent.Enable 0-1, Opponent.MinEvents 0-20, Opponent.FromSkill 0-100.)
 #
 # Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World). With it on, a bot from
-# KnownFromSkill that starts a cast of at least MinCastMs sees whether an enemy player could kick it (its class has a
-# kick, it is within KickerRangeYards plus KickerRangeSlackYards, and it faces the bot or targets it when
-# KickerNeedFacing is 1) and has seen no kick used within KickSeenMs (bots from KickMemoryFromSkill remember the kicks
-# they saw used); it then fakes with the chance ChancePctAtSkill70..99 per cent and cancels the cast at a drawn point
-# of the bar (CancelPctAtPatience0..100 per cent of the cast time, log-normal spread CancelSigmaPct; never earlier than
-# CancelMinMs into the cast and never within CancelMinLeftMs of its end). The next fake is at least
-# RepeatMsAtPatience0..100 ms later (jitter RepeatJitterPct per cent), at most MaxPerMinute a minute. A kick used
-# within BaitedWindowMs after the cancel counts as baited (counters fakes and kicksBaited). Nothing tells a kicker it
-# faces a fake; its own memory of seen cancels is all it has (Playerbots.Tactics.Interrupt).
+# KnownFromSkill (Knowledge) that starts a kickable cast of at least MinCastMs sees whether an enemy player of its
+# fight could kick it (its class has a kick aimed at one enemy; it is within that kick's reach (melee 5, Wind Shear
+# 25, Counterspell and Silence 30, Silencing Shot 35 yards) capped at KickerRangeYards, plus KickerRangeSlackYards;
+# and it faces the bot or targets it when KickerNeedFacing is 1) and has seen no kick used within KickSeenMs (bots
+# from KickMemoryFromSkill remember the kicks they saw used within 40 yards); it then fakes with the chance
+# ChancePctAtSkill70..99 per cent and cancels the cast at a drawn point of the bar (CancelPctAtPatience0..100 per cent
+# of the cast time, log-normal spread CancelSigmaPct; never earlier than CancelMinMs into the cast and never within
+# CancelMinLeftMs of its end), on the bot's first update at that instant, if the kicker still threatens it (else the
+# cast finishes). The next fake is at least RepeatMsAtPatience0..100 ms later (jitter RepeatJitterPct per cent), at
+# most MaxPerMinute a minute. A kick at the bot within BaitedWindowMs after the cancel counts as baited (counters
+# fakes, kicksBaited, kickSeen). Nothing tells a kicker it faces a fake; its own memory of seen cancels is all it has
+# (Playerbots.Tactics.Interrupt).
 # Playerbots.Tactics.Fake.KnownFromSkill = 70
 # Playerbots.Tactics.Fake.MinCastMs = 1500
 # Playerbots.Tactics.Fake.CancelPctAtPatience0 = 35

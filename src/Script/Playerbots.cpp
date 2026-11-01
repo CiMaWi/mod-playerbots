@@ -30,6 +30,7 @@
 #include "LadderMgr.h"
 #include "MatchLog.h"
 #include "Matchmaker.h"
+#include "NaturalCast.h"
 #include "NaturalTrace.h"
 #include "PerfMonitor.h"
 #include "PlayerScript.h"
@@ -170,6 +171,8 @@ public:
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
     {
         NoteDefensiveCast(player, spell);
+        // G5e: a kick seen used (the kick memory of the bots that see it, tactics.kicksBaited)
+        NoteFakeKickCast(player, spell);
     }
 
     void OnPlayerVictimRewardAfter(Player* player, Player* victim, uint32& /*killerTitle*/, int32& /*victimRank*/,
