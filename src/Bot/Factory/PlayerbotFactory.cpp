@@ -31,6 +31,7 @@
 #include "PlayerbotRepository.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
+#include "Population.h"
 #include "PvpGearMgr.h"
 #include "QuestDef.h"
 #include "RandomItemMgr.h"
@@ -589,6 +590,9 @@ bool PlayerbotFactory::LearnProfessionSpecialization(Player* bot,
 PlayerbotFactory::PlayerbotFactory(Player* bot, uint32 level, uint32 itemQuality, uint32 gearScoreLimit)
     : level(level), itemQuality(itemQuality), gearScoreLimit(gearScoreLimit), bot(bot)
 {
+    // Persistent population (H1): every factory path that sets the level (Randomize, Prepare, the quest inits)
+    // uses this->level, so one guard keeps a random bot from going down a level.
+    this->level = Population::GuardLevel(bot, this->level, "PlayerbotFactory");
     botAI = GET_PLAYERBOT_AI(bot);
     if (!this->itemQuality)
     {
@@ -1655,8 +1659,10 @@ void PlayerbotFactory::ClearSkills()
 
 void PlayerbotFactory::ClearEverything()
 {
-    bot->GiveLevel(bot->getClass() == CLASS_DEATH_KNIGHT ? sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL)
-                                                         : sWorld->getIntConfig(CONFIG_START_PLAYER_LEVEL));
+    uint32 const startLevel = bot->getClass() == CLASS_DEATH_KNIGHT
+                                  ? sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL)
+                                  : sWorld->getIntConfig(CONFIG_START_PLAYER_LEVEL);
+    bot->GiveLevel(Population::GuardLevel(bot, startLevel, "ClearEverything"));
     bot->SetUInt32Value(PLAYER_XP, 0);
     LOG_INFO("playerbots", "Resetting player...");
     bot->resetTalents(true);

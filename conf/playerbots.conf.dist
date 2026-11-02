@@ -29,6 +29,7 @@
 #    RANDOMBOT-SPECIFIC SETTINGS
 #        GENERAL
 #        LEVELS
+#        POPULATION
 #        RANDOM BOT LEVEL MANAGEMENT (LEVEL BRACKETS + LEVEL RESET)
 #        GEAR
 #        QUESTS
@@ -840,12 +841,38 @@ Playerbots.RandomBotMaxLevelChance = 0.1
 Playerbots.RandomBotFixedLevel = 0
 
 # Set RandomBotMaxLevel bots to RandomBotMinLevel
+# Refused while Playerbots.Population.Persistent = 1 (see POPULATION)
 # Default: 0 (disabled)
 Playerbots.DowngradeMaxLevelBot = 0
 
 # Set XP rate for randombots (Default: 1.0)
 # Server XP Rate * Playerbots.RandomBotXPRate
 Playerbots.RandomBotXPRate = 1.0
+
+#
+#
+####################################################################################################
+
+####################################################################################################
+# POPULATION
+#
+# Persistent population: random bots keep their progress like the characters of real players.
+#
+# Persistence mode: with it on, no code path lowers a random bot's level.
+#   - The periodic randomize never rerolls a bot (also not one below level 3) and never downgrades a
+#     max-level bot: it refreshes gear and talents at the bot's current level.
+#   - The console commands "playerbots rndbot init" re-initialise a bot at its current level and
+#     "playerbots rndbot clear" keeps it.
+#   - Playerbots.DowngradeMaxLevelBot, Playerbots.ResetBotLevel.Enabled and
+#     Playerbots.LevelBrackets.Enabled are refused: a warning at startup and on ".reload config" for
+#     each one that is set, and the level management below does not run.
+#   - Any other path that would give a random bot a lower level (bot "init=" commands at a lower
+#     master level, for example) keeps the bot's current level and logs a warning.
+#   - Characters created from now on stay at their creation level (1, Death Knights 55) and level up
+#     by playing; Playerbots.DisableRandomLevels and Playerbots.RandombotStartingLevel are not applied.
+# Levels still go up (quests, kills). Picked up by ".reload config".
+# Default: 0 (off, upstream behaviour)
+Playerbots.Population.Persistent = 0
 
 #
 #

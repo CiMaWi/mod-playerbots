@@ -17,6 +17,8 @@
 #include "Player.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
+#include "Population.h"
+#include "PopulationPolicy.h"
 #include "QueryResult.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
@@ -931,6 +933,11 @@ void RandomBotLevelMgr::RunResetPlayedTimeCheck()
 
 void RandomBotLevelMgr::Update(uint32 diff)
 {
+    // Persistent population (H1): both sub-features move bots between levels, so neither runs (refused with a
+    // warning by Population::LoadConfig). Their timers and the pending queue wait until persistence is off.
+    if (!PopulationPolicy::LevelMgrAllowed(Population::IsPersistent()))
+        return;
+
     if (sPlayerbotAIConfig.LevelBracketsEnabled)
     {
         _bracketsTimer += diff;
@@ -1146,14 +1153,14 @@ public:
 
     void OnPlayerLogin(Player* player) override
     {
-        if (!sPlayerbotAIConfig.ResetBotLevelEnabled)
+        if (!sPlayerbotAIConfig.ResetBotLevelEnabled || !PopulationPolicy::LevelMgrAllowed(Population::IsPersistent()))
             return;
         RandomBotLevelMgr::instance().OnBotLogin(player);
     }
 
     void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
     {
-        if (!sPlayerbotAIConfig.ResetBotLevelEnabled)
+        if (!sPlayerbotAIConfig.ResetBotLevelEnabled || !PopulationPolicy::LevelMgrAllowed(Population::IsPersistent()))
             return;
         RandomBotLevelMgr::instance().OnBotLevelChanged(player, oldLevel);
     }

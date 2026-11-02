@@ -38,6 +38,8 @@
 #include "PlayerbotTextMgr.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
+#include "Population.h"
+#include "PopulationPolicy.h"
 #include "Position.h"
 #include "RaceMgr.h"
 #include "Random.h"
@@ -2113,20 +2115,29 @@ void RandomPlayerbotMgr::Randomize(Player* bot)
     if (bot->InBattleground())
         return;
 
-    if (bot->GetLevel() < 3 || (bot->GetLevel() < 56 && bot->getClass() == CLASS_DEATH_KNIGHT))
+    // Upstream: reroll below level 3 (Death Knights below 56), downgrade at max level when DowngradeMaxLevelBot,
+    // else incremental. Persistent population (H1): always incremental at the current level.
+    PopulationPolicy::RandomizeDecision const decision = PopulationPolicy::DecideRandomize(
+        Population::IsPersistent(), bot->GetLevel(), bot->getClass() == CLASS_DEATH_KNIGHT,
+        sPlayerbotAIConfig.RandomBotMaxLevel, sPlayerbotAIConfig.DowngradeMaxLevelBot);
+
+    if (decision.kept == PopulationPolicy::KeptReason::Downgrade)
+        LOG_INFO("playerbots", "[Population] randomize: refused to downgrade {} from level {} (persistent)",
+                 bot->GetName(), bot->GetLevel());
+    else if (decision.kept == PopulationPolicy::KeptReason::Reroll)
+        LOG_DEBUG("playerbots", "[Population] randomize: kept {} at level {} instead of a reroll (persistent)",
+                  bot->GetName(), bot->GetLevel());
+
+    if (decision.first)
     {
         RandomizeFirst(bot);
     }
-    else if (bot->GetLevel() < sPlayerbotAIConfig.RandomBotMaxLevel || !sPlayerbotAIConfig.DowngradeMaxLevelBot)
+    else
     {
         uint8 level = bot->GetLevel();
         PlayerbotFactory factory(bot, level);
         factory.Randomize(true);
         // IncreaseLevel(bot);
-    }
-    else
-    {
-        RandomizeFirst(bot);
     }
 }
 
@@ -2213,6 +2224,14 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
         level = bot->getClass() == CLASS_DEATH_KNIGHT ? std::max(sPlayerbotAIConfig.RandomBotStartingLevel,
                                                                  sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL))
                                                       : sPlayerbotAIConfig.RandomBotStartingLevel;
+    }
+
+    // Persistent population (H1): a re-initialisation at the current level, never a new level.
+    if (Population::IsPersistent() && level != bot->GetLevel())
+    {
+        LOG_INFO("playerbots", "[Population] RandomizeFirst: kept {} at level {} instead of {} (persistent)",
+                 bot->GetName(), bot->GetLevel(), level);
+        level = PopulationPolicy::FirstLevel(true, bot->GetLevel(), level);
     }
 
     SetValue(bot, "level", level);
