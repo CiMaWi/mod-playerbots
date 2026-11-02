@@ -59,6 +59,27 @@ void NoteLogin(uint32 guid);
 // (its owed online time) goes too. The rotation's per-guid caches are the roster and the schedule state.
 void InvalidateRoster(uint32 retiredGuid = 0);
 
+// Any thread (relaxed atomic): Playerbots.Population.Balance.Enable
+bool IsBalance();
+
+// H3. Any thread, O(1), no lock, no allocation (the XP hook): the XP multiplier of a random bot of `level` from the
+// last balance update; 1 while the balance is off. OnPlayerGiveXP multiplies it into Playerbots.RandomBotXPRate.
+float XPMultiplier(uint32 level);
+
+// World thread (RandomPlayerbotMgr::UpdateAIInternal), every Balance.IntervalMinutes, else nothing: counts the
+// population per level range (the rotation roster while the rotation has one, else `online`; levels from the
+// character cache, no DB query), steps the controller and publishes the XP multipliers and the rotation weights.
+void BalanceTick(std::unordered_set<uint32> const& online);
+
+// World thread. H4 (retires bots in ranges persistently over target, by these targets): the level ranges as last
+// measured: levels, target, count, XP multiplier, online weight and overSince (game time since when the range is
+// over its target beyond the deadband; 0 = not over). Empty while the balance is off or before its first update.
+// H3 keeps no per-guid cache (counts come from the roster or the online set at each update).
+std::vector<PopulationPolicy::BalanceRange> BalanceRanges();
+
+// World thread: the index into BalanceRanges() of a level
+uint32 BalanceRangeOf(uint32 level);
+
 // .playerbots population status | selftest
 bool HandleStatusCommand(ChatHandler* handler, char const* args);
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);

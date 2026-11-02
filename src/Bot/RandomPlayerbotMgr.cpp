@@ -356,6 +356,10 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
         }
     }
 
+    // Playerbots.Population.Balance: XP multipliers per level range toward the range targets
+    if (Population::IsBalance() && !LadderMgr::Instance().IsHostedOnly())
+        Population::BalanceTick(currentBots);
+
     // Copied deliberately: ProcessBot() erases from currentBots while this is
     // being iterated below, so the loops must run over a snapshot.
     std::unordered_set<uint32> availableBots = currentBots;

@@ -916,6 +916,57 @@ Playerbots.Population.Rotation.AcquaintedSharePct = 90
 # Default: 1
 Playerbots.Population.Rotation.AcquaintedMinScore = 1
 
+# Level-range balance by levelling speed. The levels below the max level form ranges of RangeSize
+# levels (1-9, 10-19, ..., 70-79), the max level a range of its own. Each range's target is an equal
+# share of the population, the max level range MaxLevelWeightPct of one share. Every IntervalMinutes
+# the ranges are counted (the rotation roster when Rotation.Enable = 1, else the online random bots;
+# no DB query) and each range gets an XP multiplier (times Playerbots.RandomBotXPRate): over its
+# target the range's bots level faster, under it slower; not for bots grouped with a real player.
+# With the rotation on, bots of an over-target range are also owed less online time and those of an
+# under-target range more (LogoutPreferencePct). The controller is slow on purpose: it learns over
+# days how long each range takes (ResponseHours); a quick change of counts moves it only a little
+# (GainPct). No level ever goes down. GM command: ".playerbots population status".
+# Default: 0 (off, upstream behaviour)
+Playerbots.Population.Balance.Enable = 0
+
+# Minutes between two counts of the ranges
+# Default: 10
+Playerbots.Population.Balance.IntervalMinutes = 10
+
+# Levels per range below the max level (raised if there would be more than 32 ranges)
+# Default: 10
+Playerbots.Population.Balance.RangeSize = 10
+
+# Target of the max level range against one other range's, in percent (200 = double share)
+# Default: 200
+Playerbots.Population.Balance.MaxLevelWeightPct = 200
+
+# Bounds of the XP multiplier, in percent (minimum 1-100, maximum 100 or more)
+# Default: 50, 300
+Playerbots.Population.Balance.MinMultiplierPct = 50
+Playerbots.Population.Balance.MaxMultiplierPct = 300
+
+# No correction while a range is within this many percent of its target (at least the counting noise
+# of a small range: one standard deviation, 100 / sqrt(target) percent)
+# Default: 10
+Playerbots.Population.Balance.DeadbandPct = 10
+
+# How strongly the multiplier follows the current count: percent of log(count / target), the count
+# smoothed over 6 hours
+# Default: 50
+Playerbots.Population.Balance.GainPct = 50
+
+# How fast the multiplier learns: a range twice its target for this many hours has its multiplier
+# raised about 2x more. Keep it at least the time a bot needs from level 1 to the max level; shorter
+# lets the bots bunch into waves.
+# Default: 384 (16 days)
+Playerbots.Population.Balance.ResponseHours = 384
+
+# With Rotation.Enable = 1: the online share of a range twice (half) its target is weighted
+# 1 - (1 +) this percent (maximum 90; 0 = no logout preference)
+# Default: 25
+Playerbots.Population.Balance.LogoutPreferencePct = 25
+
 #
 #
 ####################################################################################################
