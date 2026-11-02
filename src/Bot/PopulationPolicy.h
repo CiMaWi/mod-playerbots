@@ -1276,6 +1276,26 @@ inline uint32_t BalanceSelftest(std::vector<std::string>& failures, bool full)
     check(ranges[1].overSince == 1000 && ranges[1].integral > 0.0 && ranges[2].integral < 0.0,
           "over since kept; the integral moves with the error");
 
+    // Smoothing (Playerbots.Population.Balance.SmoothingHours): at 6 h a minute moves the measure by 1/360 of the gap,
+    // at 60 s it follows at once
+    {
+        BalanceSettings quick = settings;
+        quick.smoothingSeconds = 60;
+        std::vector<BalanceRange> slow = BalanceLayout(settings);
+        std::vector<BalanceRange> fast = BalanceLayout(quick);
+        std::vector<uint32_t> flat(slow.size(), 250);
+        flat.back() = 500;
+        std::vector<uint32_t> moved = flat;
+        moved[1] = 400;
+        BalanceUpdate(slow, flat, 2500, 100, 0, settings);
+        BalanceUpdate(fast, flat, 2500, 100, 0, quick);
+        BalanceUpdate(slow, moved, 2500, 160, 60, settings);
+        BalanceUpdate(fast, moved, 2500, 160, 60, quick);
+        double const raw = std::log(401.0 / 251.0);
+        check(same(fast[1].measured, raw) && slow[1].measured > 0.0 && slow[1].measured < raw / 300.0,
+              "smoothing: 60 s follows a step at once, 6 h by 1/360");
+    }
+
     // Bounds: a range holding everybody, held for weeks
     std::vector<uint32_t> skewed(ranges.size(), 0);
     skewed[0] = 2500;

@@ -956,6 +956,12 @@ Playerbots.Population.Balance.DeadbandPct = 10
 # Default: 50
 Playerbots.Population.Balance.GainPct = 50
 
+# The hours over which the measured count of a range is smoothed (counting noise). Shorter reacts
+# faster and counts more noise; 6 is the tuned value, a short value is for tests only
+# (in a run of minutes use 0.05)
+# Default: 6
+Playerbots.Population.Balance.SmoothingHours = 6
+
 # How fast the multiplier learns: a range twice its target for this many hours has its multiplier
 # raised about 2x more. Keep it at least the time a bot needs from level 1 to the max level; shorter
 # lets the bots bunch into waves.

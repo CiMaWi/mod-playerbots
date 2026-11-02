@@ -262,6 +262,8 @@ void LoadBalanceConfig(bool reload)
     settings.deadbandPct = get("DeadbandPct", 10);
     settings.gainPct = get("GainPct", 50);
     settings.responseSeconds = 3600 * std::max<uint32>(1, get("ResponseHours", 384));
+    float const smoothingHours = sConfigMgr->GetOption<float>("Playerbots.Population.Balance.SmoothingHours", 6.0f);
+    settings.smoothingSeconds = static_cast<uint32>(std::clamp(smoothingHours * 3600.0f, 1.0f, 8640000.0f));
     settings.preferencePct = std::min<uint32>(90, get("LogoutPreferencePct", 25));
     balance.intervalSeconds = 60 * std::max<uint32>(1, get("IntervalMinutes", 10));
 
@@ -289,11 +291,11 @@ void LoadBalanceConfig(bool reload)
 
     LOG_INFO("playerbots",
              "[Population] {}{} = 1: {} ranges of {} levels up to {} (max level at {} % of a range), every {} min, "
-             "XP multiplier {}-{} %, deadband {} %, gain {} %, response {} h, logout preference {} %",
+             "XP multiplier {}-{} %, deadband {} %, gain {} %, response {} h, smoothing {} s, logout preference {} %",
              reload ? "reload: " : "", BalanceEnableKey, balance.ranges.size(),
              PopulationPolicy::BalanceRangeSize(settings), settings.maxLevel, settings.maxLevelWeightPct,
              balance.intervalSeconds / 60, settings.minMultiplierPct, settings.maxMultiplierPct, settings.deadbandPct,
-             settings.gainPct, settings.responseSeconds / 3600, settings.preferencePct);
+             settings.gainPct, settings.responseSeconds / 3600, settings.smoothingSeconds, settings.preferencePct);
     if (!sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false) &&
         sConfigMgr->GetOption<bool>("Playerbots.LevelBrackets.Enabled", false))
         LOG_WARN("playerbots",
