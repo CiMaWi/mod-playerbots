@@ -10,6 +10,7 @@
 
 #include "RandomBotLevelMgr.h"
 #include "ArenaTeamMgr.h"
+#include "Config.h"
 #include "DatabaseEnv.h"
 #include "LFGMgr.h"
 #include "Log.h"
@@ -139,7 +140,9 @@ void RandomBotLevelMgr::LoadConfig()
 
 void RandomBotLevelMgr::LogStartupSummary() const
 {
-    if (Population::IsPersistent())
+    // Read from the config, not Population::IsPersistent(): this runs on the startup hook, possibly before
+    // Population::LoadConfig has.
+    if (sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false))
     {
         LOG_INFO("playerbots",
             "[RandomBotLevelMgr] Level brackets and level reset suppressed by Playerbots.Population.Persistent.");
