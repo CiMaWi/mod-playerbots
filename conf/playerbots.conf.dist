@@ -862,7 +862,7 @@ Playerbots.RandomBotXPRate = 1.0
 #   - The periodic randomize never rerolls a bot (also not one below level 3) and never downgrades a
 #     max-level bot: it refreshes gear and talents at the bot's current level.
 #   - The console commands "playerbots rndbot init" re-initialise a bot at its current level and
-#     "playerbots rndbot clear" keeps it.
+#     "playerbots rndbot clear" keeps it (the level stays, the XP within the level is reset).
 #   - Playerbots.DowngradeMaxLevelBot, Playerbots.ResetBotLevel.Enabled and
 #     Playerbots.LevelBrackets.Enabled are refused: a warning at startup and on ".reload config" for
 #     each one that is set, and the level management below does not run.

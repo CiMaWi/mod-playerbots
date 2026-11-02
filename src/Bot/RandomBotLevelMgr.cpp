@@ -139,6 +139,13 @@ void RandomBotLevelMgr::LoadConfig()
 
 void RandomBotLevelMgr::LogStartupSummary() const
 {
+    if (Population::IsPersistent())
+    {
+        LOG_INFO("playerbots",
+            "[RandomBotLevelMgr] Level brackets and level reset suppressed by Playerbots.Population.Persistent.");
+        return;
+    }
+
     if (!sPlayerbotAIConfig.LevelBracketsEnabled)
         LOG_INFO("playerbots", "[RandomBotLevelMgr] Level brackets sub-feature disabled via configuration.");
     else
