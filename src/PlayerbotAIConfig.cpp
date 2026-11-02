@@ -657,7 +657,7 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotFixedLevel = sConfigMgr->GetOption<bool>("Playerbots.RandomBotFixedLevel", false);
     DisableRandomLevels = sConfigMgr->GetOption<bool>("Playerbots.DisableRandomLevels", false);
     RandomBotRandomPassword = sConfigMgr->GetOption<bool>("Playerbots.RandomBotRandomPassword", true);
-    DowngradeMaxLevelBot = sConfigMgr->GetOption<bool>("Playerbots.DowngradeMaxLevelBot", true);
+    DowngradeMaxLevelBot = sConfigMgr->GetOption<bool>("Playerbots.DowngradeMaxLevelBot", false);
     EquipAndSpecPersistence = sConfigMgr->GetOption<bool>("Playerbots.EquipAndSpecPersistence", true);
     EquipAndSpecPersistenceLevel = sConfigMgr->GetOption<int32>("Playerbots.EquipAndSpecPersistenceLevel", 1);
     GroupInvitationPermission = sConfigMgr->GetOption<int32>("Playerbots.GroupInvitationPermission", 1);
