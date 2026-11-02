@@ -137,6 +137,8 @@ public:
     static bool HandlePlayerbotConsoleCommand(ChatHandler* handler, char const* args);
     bool IsRandomBot(Player* bot);
     bool IsRandomBot(ObjectGuid::LowType bot);
+    // World thread. H4 (a retired bot): drops its event cache entry and its place in the online set
+    void ForgetBot(uint32 bot);
     bool IsAddclassBot(Player* bot);
     bool IsAddclassBot(ObjectGuid::LowType bot);
     void Randomize(Player* bot);

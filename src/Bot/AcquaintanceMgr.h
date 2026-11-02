@@ -114,6 +114,12 @@ public:
     std::vector<std::pair<uint32, Acquaintance>> GetAcquaintances(uint32 player, size_t limit) const;
     // Every bot some real player knows with at least minScore (the population rotation, once per tick)
     void CollectBots(uint32 minScore, std::unordered_set<uint32>& bots) const;
+    // The highest score any real player has with the bot (0: never met); O(real players with acquaintances)
+    uint32 MaxScoreOfBot(uint32 bot) const;
+    // The rows are in memory (Load ran with Playerbots.Acquaintance.Enable = 1)
+    bool IsLoaded() const { return _loaded; }
+    // World thread. H4 (a retired bot): drops its pairs from memory, so no flush writes them back after the delete
+    void ForgetBot(uint32 bot);
 
     // .playerbots acquaintances [<player>] | stats | record <player> <bot> <kind>
     static bool HandleCommand(ChatHandler* handler, char const* args);

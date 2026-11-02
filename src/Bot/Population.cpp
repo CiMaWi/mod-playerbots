@@ -9,11 +9,16 @@
 #include <algorithm>
 #include <atomic>
 #include <ctime>
+#include <deque>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "AcquaintanceMgr.h"
+#include "AsyncCallbackProcessor.h"
+#include "BotProfileMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "Config.h"
@@ -23,9 +28,13 @@
 #include "LadderMgr.h"
 #include "Log.h"
 #include "Map.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotsDatabase.h"
 #include "PopulationPolicy.h"
+#include "PvpGearMgr.h"
+#include "QueryCallback.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
@@ -337,6 +346,655 @@ void PrintBalance(ChatHandler* handler, uint32 now)
             range.multiplier, range.weight,
             range.overSince ? Acore::StringFormat(", over target for {} s", now - range.overSince) : std::string());
 }
+
+// H4a: retiring never-met random bots (Playerbots.Population.Retire.*)
+std::atomic<bool> s_retire{false};
+
+constexpr char const* RetireEnableKey = "Playerbots.Population.Retire.Enable";
+
+// The rows of a retired bot that Player::DeleteFromDB leaves behind: one DELETE each, in one transaction per DB queued
+// before the core's delete (one async worker per DB, so FIFO: item_soulbound_trade_data still finds the bot's items).
+// A table or column the DB lacks (mod-ollama-chat not installed, an older schema) is left out. The hub's
+// tools/population-inventory.js reads both lists (one entry per line) and checks them against the real schemas.
+struct RetireRow
+{
+    char const* table;
+    char const* column;
+    bool byItem;  // the column holds item guids: those of the bot's items (item_instance.owner_guid)
+};
+
+// clang-format off
+constexpr RetireRow RetireCharacterRows[] = {
+    {"character_stats", "guid", false},
+    {"character_arena_stats", "guid", false},
+    {"character_banned", "guid", false},
+    {"character_battleground_random", "guid", false},
+    {"character_brew_of_the_month", "guid", false},
+    {"character_achievement_offline_updates", "guid", false},
+    {"battleground_deserters", "guid", false},
+    {"lfg_data", "guid", false},
+    {"mail_server_character", "guid", false},
+    {"guild_member_withdraw", "guid", false},
+    {"channels_bans", "playerGUID", false},
+    {"recovery_item", "Guid", false},
+    {"pvpstats_players", "character_guid", false},
+    {"quest_tracker", "character_guid", false},
+    {"item_refund_instance", "player_guid", false},
+    {"item_soulbound_trade_data", "itemGuid", true},
+    {"mod_ollama_chat_personality", "guid", false},
+    {"mod_ollama_chat_bot_player_sentiments", "bot_guid", false},
+    {"mod_ollama_chat_bot_player_sentiments", "player_guid", false},
+    {"mod_ollama_chat_history", "bot_guid", false},
+    {"mod_ollama_chat_history", "player_guid", false},
+    {"mod_ollama_chat_memories", "bot_guid", false},
+    {"mod_ollama_chat_relationships", "bot_guid", false},
+    {"mod_ollama_chat_relationships", "other_guid", false},
+};
+
+constexpr RetireRow RetirePlayerbotsRows[] = {
+    {"playerbots_random_bots", "bot", false},
+    {"playerbots_db_store", "guid", false},
+    {"playerbots_bot_profile", "guid", false},
+    {"playerbots_acquaintance", "bot_guid", false},
+    {"playerbots_pvp_loadout", "guid", false},
+    {"playerbots_pvp_worn", "guid", false},
+    {"playerbots_ladder_roster", "guid", false},
+    {"playerbots_preferred_mounts", "guid", false},
+    {"playerbots_guild_tasks", "owner", false},
+    {"playerbots_custom_strategy", "owner", false},
+};
+// clang-format on
+
+struct RetireRecord
+{
+    std::string name;
+    uint32 guid;
+    uint32 level;
+    uint32 at;
+    bool dryRun;
+};
+
+// One pass's candidate batch and the protections its queries found
+struct RetirePass
+{
+    std::vector<uint32> batch;
+    std::unordered_map<uint32, uint32> protect;
+    uint32 seed = 0;
+    bool failed = false;
+};
+
+// World thread only
+struct Retire
+{
+    bool enable = false;
+    bool dryRun = true;
+    uint32 intervalSeconds = 600;
+    uint32 maxPerPass = 1;
+    uint32 maxPerHour = 10;
+    uint32 maxScore = 0;
+    uint32 persistSeconds = 3600;
+    uint32 candidates = 50;
+    bool testRange = false;
+    uint32 testFirst = 0;
+    uint32 testLast = 0;
+    uint32 testTarget = 0;
+    std::string refusal;  // why the switched-on retire does not run; empty: it runs
+    uint32 nextPass = 0;
+    bool busy = false;                                 // the preparation's or a pass's queries are in flight
+    bool prepared = false;                             // the schemas' columns and the clone accounts are loaded
+    std::unordered_set<std::string> characterColumns;  // "table.column"
+    std::unordered_set<std::string> playerbotsColumns;
+    std::unordered_set<uint32> cloneAccounts;  // lab-bots clone accounts (email LAB-BOTS ...): never touched
+    std::unordered_set<uint32> refusedLogged;  // known bots whose refusal was logged (once per bot)
+    std::vector<uint32> recent;                // game times of this hour's retires (dry-run picks too)
+    std::deque<RetireRecord> last;
+    std::unordered_set<uint32> const* online = nullptr;  // the manager's online set while the callbacks run
+    uint32 seed = 0;
+    uint32 lastPass = 0;
+    uint32 lastInRange = 0;
+    uint32 characterRows = 0;
+    uint32 playerbotsRows = 0;
+    uint64 passes = 0;
+    uint64 retired = 0;
+    uint64 wouldRetire = 0;
+    uint64 refused = 0;
+    QueryCallbackProcessor queries;
+};
+
+Retire& GetRetire()
+{
+    static Retire retire;
+    return retire;
+}
+
+std::string JoinIds(std::vector<uint32> const& ids)
+{
+    std::string text;
+    for (uint32 const id : ids)
+        text += (text.empty() ? "" : ",") + std::to_string(id);
+
+    return text;
+}
+
+std::string ColumnKey(char const* table, char const* column) { return std::string(table) + "." + column; }
+
+// The protections the world thread knows without a query: online, away, a clone account, and the character cache's
+// arena teams and group (the pass's query checks those again in the DB)
+uint32 MemoryProtect(Retire const& retire, uint32 guid)
+{
+    ObjectGuid const playerGuid = ObjectGuid::Create<HighGuid::Player>(guid);
+    uint32 protect = 0;
+    if ((retire.online && retire.online->contains(guid)) || ObjectAccessor::FindConnectedPlayer(playerGuid) ||
+        sRandomPlayerbotMgr.GetPlayerBot(playerGuid))
+        protect |= PopulationPolicy::RetireOnline;
+
+    if (LadderMgr::Instance().IsAway(guid))
+        protect |= PopulationPolicy::RetireAway;
+
+    CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(playerGuid);
+    if (!entry || !entry->AccountId || retire.cloneAccounts.contains(entry->AccountId))
+        return protect | PopulationPolicy::RetireClone;
+
+    for (uint32 const teamId : entry->ArenaTeamId)
+        if (teamId)
+            protect |= PopulationPolicy::RetireArenaTeam;
+
+    if (!entry->GroupGuid.IsEmpty())
+        protect |= PopulationPolicy::RetireGrouped;
+
+    return protect;
+}
+
+PopulationPolicy::RetireCandidate RetireCandidateOf(Retire const& retire, uint32 guid)
+{
+    PopulationPolicy::RetireCandidate candidate;
+    candidate.guid = guid;
+    candidate.level = CachedLevel(guid);
+    candidate.score = AcquaintanceMgr::Instance().MaxScoreOfBot(guid);
+    candidate.protect = MemoryProtect(retire, guid);
+    return candidate;
+}
+
+int32 RetireRangeIndex(std::vector<PopulationPolicy::RetireRange> const& ranges, uint32 level)
+{
+    for (size_t i = 0; i < ranges.size(); ++i)
+        if (level >= ranges[i].firstLevel && level <= ranges[i].lastLevel)
+            return static_cast<int32>(i);
+
+    return -1;
+}
+
+// The ranges a pass may retire from with their roster counts now: Retire.TestRange with Retire.TestTarget, else H3's
+// ranges over target for Retire.PersistMinutes (never the level-1 range new bots start in); only those with a surplus
+std::vector<PopulationPolicy::RetireRange> RetireRanges(Retire const& retire, uint32 now)
+{
+    std::vector<PopulationPolicy::RetireRange> ranges;
+    if (retire.testRange)
+        ranges.push_back({retire.testFirst, retire.testLast, 0, static_cast<double>(retire.testTarget)});
+    else
+        for (PopulationPolicy::BalanceRange const& range : Population::BalanceRanges())
+            if (PopulationPolicy::RetireRangeDue(range.overSince, now, retire.persistSeconds) &&
+                PopulationPolicy::RetireRangeAllowed(range.firstLevel, range.lastLevel))
+                ranges.push_back({range.firstLevel, range.lastLevel, 0, range.target});
+
+    if (ranges.empty())
+        return ranges;
+
+    for (RosterBot const& bot : GetRotation().roster)
+    {
+        int32 const index = RetireRangeIndex(ranges, CachedLevel(bot.guid));
+        if (index >= 0)
+            ++ranges[index].count;
+    }
+
+    ranges.erase(std::remove_if(ranges.begin(), ranges.end(), [](PopulationPolicy::RetireRange const& range)
+                                { return !PopulationPolicy::RetireSurplus(range.count, range.target); }),
+                 ranges.end());
+    return ranges;
+}
+
+void LogRetireRefusal(Retire& retire, PopulationPolicy::RetireCandidate const& candidate)
+{
+    if (!retire.refusedLogged.insert(candidate.guid).second)
+        return;
+
+    ++retire.refused;
+    LOG_INFO("playerbots", "[Population] retire refused: {} (#{}, level {}): {}", BotName(candidate.guid),
+             candidate.guid, candidate.level,
+             PopulationPolicy::RetireReasons(candidate.protect, candidate.score, retire.maxScore));
+}
+
+// Deletes one bot (or, with DryRun, only logs it). The caller checked it a moment ago on this thread: offline, in an
+// over-target range, never met, unprotected.
+void RetireBot(Retire& retire, uint32 guid, uint32 score, PopulationPolicy::RetireRange const& range, uint32 now)
+{
+    ObjectGuid const playerGuid = ObjectGuid::Create<HighGuid::Player>(guid);
+    CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(playerGuid);
+    if (!entry)
+        return;
+
+    std::string const name = entry->Name;
+    uint32 const account = entry->AccountId;
+    uint32 const level = entry->Level;
+    uint32 const classId = entry->Class;
+    retire.recent.push_back(now);
+    retire.last.push_front({name, guid, level, now, retire.dryRun});
+    if (retire.last.size() > 5)
+        retire.last.pop_back();
+
+    if (retire.dryRun)
+    {
+        ++retire.wouldRetire;
+        LOG_INFO("playerbots",
+                 "[Population] would retire: {} (#{}, level {}, class {}, account {}, score {}) range {}-{} count {} "
+                 "target {:.0f} (Retire.DryRun = 1: nothing deleted)",
+                 name, guid, level, classId, account, score, range.firstLevel, range.lastLevel, range.count,
+                 range.target);
+        return;
+    }
+
+    // Memory first: nothing may write the bot's rows back after the delete
+    sRandomPlayerbotMgr.ForgetBot(guid);
+    BotProfileMgr::instance().Forget(guid);
+    AcquaintanceMgr::Instance().ForgetBot(guid);
+    PvpGearMgr::Instance().ForgetBot(guid);
+    Population::InvalidateRoster(guid);
+
+    CharacterDatabaseTransaction characters = CharacterDatabase.BeginTransaction();
+    bool anyCharacterRow = false;
+    for (RetireRow const& row : RetireCharacterRows)
+    {
+        if (!retire.characterColumns.contains(ColumnKey(row.table, row.column)))
+            continue;
+
+        characters->Append(row.byItem
+                               ? Acore::StringFormat("DELETE FROM {} WHERE {} IN (SELECT guid FROM "
+                                                     "item_instance WHERE owner_guid = {})",
+                                                     row.table, row.column, guid)
+                               : Acore::StringFormat("DELETE FROM {} WHERE {} = {}", row.table, row.column, guid));
+        anyCharacterRow = true;
+    }
+
+    if (anyCharacterRow)
+        CharacterDatabase.CommitTransaction(characters);
+
+    PlayerbotsDatabaseTransaction playerbots = PlayerbotsDatabase.BeginTransaction();
+    bool anyPlayerbotsRow = false;
+    for (RetireRow const& row : RetirePlayerbotsRows)
+    {
+        if (!retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
+            continue;
+
+        playerbots->Append(Acore::StringFormat("DELETE FROM {} WHERE {} = {}", row.table, row.column, guid));
+        anyPlayerbotsRow = true;
+    }
+
+    if (anyPlayerbotsRow)
+        PlayerbotsDatabase.CommitTransaction(playerbots);
+
+    // The core's delete (CHAR_DELETE_REMOVE): the character, its items, pets, mail, social lists, achievements, quests,
+    // guild membership and the character cache entry; the account stays (H4b reuses its free slot). It runs a few
+    // synchronous mail queries on this thread, hence the per-pass and per-hour caps.
+    Player::DeleteFromDB(guid, account, true, true);
+    ++retire.retired;
+    LOG_INFO("playerbots",
+             "[Population] retire: {} (#{}, level {}, class {}, account {}, score {}) range {}-{} count {} target "
+             "{:.0f}",
+             name, guid, level, classId, account, score, range.firstLevel, range.lastLevel, range.count, range.target);
+}
+
+// The pass's second half (world thread, from the query callbacks): checks the batch again with the queries'
+// protections and fresh levels and counts (the world moved on while the queries ran), then retires
+void FinishRetirePass(RetirePass const& pass)
+{
+    Retire& retire = GetRetire();
+    retire.busy = false;
+    if (!s_retire.load(std::memory_order_relaxed))
+        return;
+
+    if (pass.failed)
+    {
+        LOG_ERROR("playerbots", "[Population] retire pass: a protection query failed; nothing retired");
+        return;
+    }
+
+    uint32 const now = Now();
+    std::vector<PopulationPolicy::RetireRange> ranges = RetireRanges(retire, now);
+    std::vector<PopulationPolicy::RetireCandidate> candidates;
+    uint32 guarded = 0;
+    for (uint32 const guid : pass.batch)
+    {
+        PopulationPolicy::RetireCandidate candidate = RetireCandidateOf(retire, guid);
+        auto const it = pass.protect.find(guid);
+        if (it != pass.protect.end())
+            candidate.protect |= it->second;
+
+        // Bots the user knows through a guild or a friend list (DH.2): logged once each
+        if (candidate.protect & (PopulationPolicy::RetireGuildWithReal | PopulationPolicy::RetireFriendOfReal))
+            LogRetireRefusal(retire, candidate);
+
+        if (candidate.protect || candidate.score > retire.maxScore)
+            ++guarded;
+
+        candidates.push_back(candidate);
+    }
+
+    uint32 const left = PopulationPolicy::RetireHourLeft(retire.recent, now, retire.maxPerHour);
+    std::vector<uint32> const chosen = PopulationPolicy::SelectRetirees(candidates, ranges, retire.maxScore,
+                                                                        std::min(left, retire.maxPerPass), pass.seed);
+    LOG_DEBUG("playerbots", "[Population] retire pass: {} bots in range, batch {}, {} protected, {} chosen{}",
+              retire.lastInRange, pass.batch.size(), guarded, chosen.size(), retire.dryRun ? " (dry run)" : "");
+    for (uint32 const guid : chosen)
+    {
+        auto const candidate =
+            std::find_if(candidates.begin(), candidates.end(),
+                         [guid](PopulationPolicy::RetireCandidate const& entry) { return entry.guid == guid; });
+        int32 const index = RetireRangeIndex(ranges, candidate->level);
+        if (index < 0)
+            continue;
+
+        RetireBot(retire, guid, candidate->score, ranges[index], now);
+        --ranges[index].count;
+    }
+}
+
+// A pass's first half: the bots of the over-target ranges, filtered in memory and ordered by the rule, and one query
+// per DB for the protections the world thread does not hold (guild or friend of a real player, arena team, guild
+// leader, group, ladder roster). Every query returns a sentinel row, so an empty result means a failed query.
+void StartRetirePass(Retire& retire, uint32 now)
+{
+    Rotation const& rotation = GetRotation();
+    std::vector<uint32> const& accounts = sPlayerbotAIConfig.RandomBotAccounts;
+    if (rotation.roster.empty() || accounts.empty() || !AcquaintanceMgr::Instance().IsLoaded())
+    {
+        LOG_DEBUG("playerbots", "[Population] retire pass skipped: roster {}, random bot accounts {}, acquaintances {}",
+                  rotation.roster.size(), accounts.size(),
+                  AcquaintanceMgr::Instance().IsLoaded() ? "loaded" : "not loaded");
+        return;
+    }
+
+    if (!retire.maxPerPass || !PopulationPolicy::RetireHourLeft(retire.recent, now, retire.maxPerHour))
+        return;
+
+    std::vector<PopulationPolicy::RetireRange> const ranges = RetireRanges(retire, now);
+    if (ranges.empty())
+        return;
+
+    ++retire.passes;
+    retire.lastPass = now;
+    uint32 const seed = retire.seed ^ static_cast<uint32>(retire.passes * 2654435761ull);
+    std::vector<PopulationPolicy::RetireCandidate> pool;
+    for (RosterBot const& bot : rotation.roster)
+    {
+        if (RetireRangeIndex(ranges, CachedLevel(bot.guid)) < 0)
+            continue;
+
+        PopulationPolicy::RetireCandidate const candidate = RetireCandidateOf(retire, bot.guid);
+        // Acquainted bots (DH.2): logged once each
+        if (candidate.score > retire.maxScore && !(candidate.protect & PopulationPolicy::RetireClone))
+            LogRetireRefusal(retire, candidate);
+
+        pool.push_back(candidate);
+    }
+
+    retire.lastInRange = static_cast<uint32>(pool.size());
+    auto pass = std::make_shared<RetirePass>();
+    pass->batch = PopulationPolicy::SelectRetirees(pool, ranges, retire.maxScore, retire.candidates, seed, false);
+    pass->seed = seed;
+    if (pass->batch.empty())
+    {
+        LOG_DEBUG("playerbots", "[Population] retire pass: {} bots in range, none unprotected", pool.size());
+        return;
+    }
+
+    std::string const ids = JoinIds(pass->batch);
+    std::string const bots = JoinIds(accounts);
+    // A real player's character: on an account that is no random bot account
+    std::string const characterSql = Acore::StringFormat(
+        "SELECT gm.guid, {} FROM guild_member gm JOIN guild_member o ON o.guildid = gm.guildid "
+        "JOIN characters c ON c.guid = o.guid WHERE gm.guid IN ({}) AND c.account NOT IN ({}) "
+        "UNION ALL SELECT s.friend, {} FROM character_social s JOIN characters c ON c.guid = s.guid "
+        "WHERE s.friend IN ({}) AND (s.flags & 1) <> 0 AND c.account NOT IN ({}) "
+        "UNION ALL SELECT guid, {} FROM arena_team_member WHERE guid IN ({}) "
+        "UNION ALL SELECT leaderguid, {} FROM guild WHERE leaderguid IN ({}) "
+        "UNION ALL SELECT memberGuid, {} FROM group_member WHERE memberGuid IN ({}) "
+        "UNION ALL SELECT 0, 0",
+        uint32(PopulationPolicy::RetireGuildWithReal), ids, bots, uint32(PopulationPolicy::RetireFriendOfReal), ids,
+        bots, uint32(PopulationPolicy::RetireArenaTeam), ids, uint32(PopulationPolicy::RetireGuildLeader), ids,
+        uint32(PopulationPolicy::RetireGrouped), ids);
+    std::string const ladderSql =
+        retire.playerbotsColumns.contains("playerbots_ladder_roster.guid")
+            ? Acore::StringFormat("SELECT guid FROM playerbots_ladder_roster WHERE guid IN ({}) UNION ALL SELECT 0",
+                                  ids)
+            : std::string("SELECT 0");
+    retire.busy = true;
+    retire.queries.AddCallback(CharacterDatabase.AsyncQuery(characterSql)
+                                   .WithChainingCallback(
+                                       [pass, ladderSql](QueryCallback& callback, QueryResult result)
+                                       {
+                                           if (!result)
+                                               pass->failed = true;
+                                           else
+                                               do
+                                               {
+                                                   Field* fields = result->Fetch();
+                                                   pass->protect[fields[0].Get<uint32>()] |= fields[1].Get<uint32>();
+                                               } while (result->NextRow());
+
+                                           callback.SetNextQuery(PlayerbotsDatabase.AsyncQuery(ladderSql));
+                                       })
+                                   .WithCallback(
+                                       [pass](QueryResult result)
+                                       {
+                                           if (!result)
+                                               pass->failed = true;
+                                           else
+                                               do
+                                               {
+                                                   pass->protect[result->Fetch()[0].Get<uint32>()] |=
+                                                       PopulationPolicy::RetireLadderRoster;
+                                               } while (result->NextRow());
+
+                                           FinishRetirePass(*pass);
+                                       }));
+}
+
+bool ReadColumns(QueryResult const& result, std::unordered_set<std::string>& columns)
+{
+    if (!result)
+        return false;
+
+    do
+    {
+        Field* fields = result->Fetch();
+        columns.insert(fields[0].Get<std::string>() + "." + fields[1].Get<std::string>());
+    } while (result->NextRow());
+
+    return true;
+}
+
+// Once per switch-on and reload, before the first pass: which of the rows the DBs have, and the lab clone accounts
+void StartRetirePrepare(Retire& retire)
+{
+    struct Prepared
+    {
+        std::unordered_set<std::string> characters;
+        std::unordered_set<std::string> playerbots;
+        bool failed = false;
+    };
+
+    auto prepared = std::make_shared<Prepared>();
+    std::string const columnsSql =
+        "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()";
+    retire.busy = true;
+    retire.queries.AddCallback(
+        CharacterDatabase.AsyncQuery(columnsSql)
+            .WithChainingCallback(
+                [prepared, columnsSql](QueryCallback& callback, QueryResult result)
+                {
+                    prepared->failed |= !ReadColumns(result, prepared->characters);
+                    callback.SetNextQuery(PlayerbotsDatabase.AsyncQuery(columnsSql));
+                })
+            .WithChainingCallback(
+                [prepared](QueryCallback& callback, QueryResult result)
+                {
+                    prepared->failed |= !ReadColumns(result, prepared->playerbots);
+                    callback.SetNextQuery(LoginDatabase.AsyncQuery(
+                        "SELECT 0 UNION ALL SELECT id FROM account WHERE email LIKE 'LAB-BOTS%'"));
+                })
+            .WithCallback(
+                [prepared](QueryResult result)
+                {
+                    Retire& retire = GetRetire();
+                    retire.busy = false;
+                    if (prepared->failed || !result)
+                    {
+                        LOG_ERROR("playerbots",
+                                  "[Population] retire: the schema or clone account query failed; "
+                                  "nothing is retired until it succeeds (next interval)");
+                        return;
+                    }
+
+                    retire.characterColumns = std::move(prepared->characters);
+                    retire.playerbotsColumns = std::move(prepared->playerbots);
+                    retire.cloneAccounts.clear();
+                    do
+                    {
+                        if (uint32 const id = result->Fetch()[0].Get<uint32>())
+                            retire.cloneAccounts.insert(id);
+                    } while (result->NextRow());
+
+                    std::string missing;
+                    retire.characterRows = 0;
+                    retire.playerbotsRows = 0;
+                    for (RetireRow const& row : RetireCharacterRows)
+                        if (retire.characterColumns.contains(ColumnKey(row.table, row.column)))
+                            ++retire.characterRows;
+                        else
+                            missing += " " + ColumnKey(row.table, row.column);
+
+                    for (RetireRow const& row : RetirePlayerbotsRows)
+                        if (retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
+                            ++retire.playerbotsRows;
+                        else
+                            missing += " " + ColumnKey(row.table, row.column);
+
+                    retire.prepared = true;
+                    LOG_INFO(
+                        "playerbots",
+                        "[Population] retire: {} characters and {} playerbots rows cleared per retired bot besides "
+                        "the core's delete; {} lab clone accounts never touched{}{}",
+                        retire.characterRows, retire.playerbotsRows, retire.cloneAccounts.size(),
+                        missing.empty() ? "" : "; not in the DB:", missing);
+                }));
+}
+
+void LoadRetireConfig(bool reload, bool persistent)
+{
+    Retire& retire = GetRetire();
+    bool const wasOn = s_retire.load(std::memory_order_relaxed);
+    bool const wasLive = wasOn && !retire.dryRun;
+    retire.enable = sConfigMgr->GetOption<bool>(RetireEnableKey, false);
+    retire.dryRun = sConfigMgr->GetOption<bool>("Playerbots.Population.Retire.DryRun", true);
+    retire.intervalSeconds =
+        std::max<uint32>(10, sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.IntervalSeconds", 600));
+    retire.maxPerPass = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerPass", 1);
+    retire.maxPerHour = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerHour", 10);
+    retire.maxScore = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxScore", 0);
+    retire.persistSeconds = 60 * sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.PersistMinutes", 60);
+    retire.candidates =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.Candidates", 50), 1, 500);
+    std::string const testRange = sConfigMgr->GetOption<std::string>("Playerbots.Population.Retire.TestRange", "");
+    retire.testRange =
+        !testRange.empty() && PopulationPolicy::ParseRetireTestRange(testRange, retire.testFirst, retire.testLast);
+    retire.testTarget = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.TestTarget", 0);
+    if (!testRange.empty() && !retire.testRange)
+        LOG_WARN("playerbots",
+                 "[Population] Playerbots.Population.Retire.TestRange = \"{}\" is not first-last; ignored", testRange);
+
+    retire.refusal.clear();
+    if (retire.enable)
+    {
+        if (!persistent)
+            retire.refusal = "Playerbots.Population.Persistent = 0 (the new bots would be re-levelled)";
+        else if (!sConfigMgr->GetOption<bool>("Playerbots.Acquaintance.Enable", false))
+            retire.refusal = "Playerbots.Acquaintance.Enable = 0 (every bot would look never met)";
+        else if (!sConfigMgr->GetOption<bool>(RotationEnableKey, false))
+            retire.refusal = "Playerbots.Population.Rotation.Enable = 0 (no roster to keep)";
+        else if (!retire.testRange && !sConfigMgr->GetOption<bool>(BalanceEnableKey, false))
+            retire.refusal = "Playerbots.Population.Balance.Enable = 0 (no range targets)";
+    }
+
+    bool const on = retire.enable && retire.refusal.empty();
+    // The live safeguard: the first pass after switching on, or from the dry run to live, waits one interval
+    if (on && (!wasOn || (!wasLive && !retire.dryRun)))
+        retire.nextPass = Now() + retire.intervalSeconds;
+
+    retire.prepared = false;
+    retire.refusedLogged.clear();
+    if (!reload)
+        retire.seed = static_cast<uint32>(time(nullptr));
+
+    s_retire.store(on, std::memory_order_relaxed);
+    if (!retire.enable)
+    {
+        LOG_INFO("playerbots", "[Population] {}{} = 0", reload ? "reload: " : "", RetireEnableKey);
+        return;
+    }
+
+    if (!on)
+    {
+        LOG_ERROR("playerbots", "[Population] {}{} = 1 refused: {}; nothing is retired", reload ? "reload: " : "",
+                  RetireEnableKey, retire.refusal);
+        return;
+    }
+
+    LOG_INFO("playerbots",
+             "[Population] {}{} = 1{}: every {} s, at most {} per pass and {} per hour, max score {}, ranges over "
+             "target for {} min, batch {}{}",
+             reload ? "reload: " : "", RetireEnableKey,
+             retire.dryRun ? " (DryRun = 1: logs only)" : " (LIVE: deletes characters)", retire.intervalSeconds,
+             retire.maxPerPass, retire.maxPerHour, retire.maxScore, retire.persistSeconds / 60, retire.candidates,
+             retire.testRange ? Acore::StringFormat(", test range {}-{} target {}", retire.testFirst, retire.testLast,
+                                                    retire.testTarget)
+                              : std::string());
+}
+
+void PrintRetire(ChatHandler* handler, uint32 now)
+{
+    Retire& retire = GetRetire();
+    if (!retire.enable)
+    {
+        handler->PSendSysMessage("Retire: off");
+        return;
+    }
+
+    if (!retire.refusal.empty())
+    {
+        handler->PSendSysMessage("Retire: refused ({})", retire.refusal);
+        return;
+    }
+
+    uint32 const left = PopulationPolicy::RetireHourLeft(retire.recent, now, retire.maxPerHour);
+    handler->PSendSysMessage(
+        "Retire: on{}; every {} s, at most {} per pass and {} per hour ({} left), max score {}, persist {} min, "
+        "batch {}{}",
+        retire.dryRun ? " (DRY RUN: nothing deleted)" : "", retire.intervalSeconds, retire.maxPerPass,
+        retire.maxPerHour, left, retire.maxScore, retire.persistSeconds / 60, retire.candidates,
+        retire.testRange
+            ? Acore::StringFormat(", test range {}-{} target {}", retire.testFirst, retire.testLast, retire.testTarget)
+            : std::string());
+    handler->PSendSysMessage(
+        "Retire totals: passes {}, retired {}, would retire {}, known bots refused {}; last pass {}, {} bots in range; "
+        "{} + {} rows per bot ({}), {} clone accounts",
+        retire.passes, retire.retired, retire.wouldRetire, retire.refused,
+        retire.lastPass ? Acore::StringFormat("{} s ago", now - retire.lastPass) : std::string("none"),
+        retire.lastInRange, retire.characterRows, retire.playerbotsRows, retire.prepared ? "prepared" : "not prepared",
+        retire.cloneAccounts.size());
+    for (RetireRecord const& record : retire.last)
+        handler->PSendSysMessage("  {} {} (#{}), level {}, {} s ago", record.dryRun ? "would retire" : "retired",
+                                 record.name, record.guid, record.level, now - record.at);
+}
 }  // namespace
 
 bool Population::IsPersistent() { return s_persistent.load(std::memory_order_relaxed); }
@@ -364,6 +1022,7 @@ void Population::LoadConfig(bool reload)
                  option);
 
     LoadBalanceConfig(reload);
+    LoadRetireConfig(reload, persistent);
 
     Rotation& rotation = GetRotation();
     PopulationPolicy::RotationSettings& settings = rotation.settings;
@@ -625,6 +1284,32 @@ uint32 Population::BalanceRangeOf(uint32 level)
     return BalanceIndex(balance.settings, balance.ranges.size(), level);
 }
 
+bool Population::IsRetire() { return s_retire.load(std::memory_order_relaxed); }
+
+void Population::RetireTick(std::unordered_set<uint32> const& online)
+{
+    Retire& retire = GetRetire();
+    if (!retire.busy && !IsRetire())
+        return;
+
+    PLAYERBOT_CHECK_WORLD_THREAD("Population::RetireTick");
+    retire.online = &online;
+    retire.queries.ProcessReadyCallbacks();
+    retire.online = nullptr;
+    if (retire.busy || !IsRetire())
+        return;
+
+    uint32 const now = Now();
+    if (now < retire.nextPass)
+        return;
+
+    retire.nextPass = now + retire.intervalSeconds;
+    if (!retire.prepared)
+        StartRetirePrepare(retire);
+    else
+        StartRetirePass(retire, now);
+}
+
 bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
 {
     Rotation const& rotation = GetRotation();
@@ -640,6 +1325,7 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
         settings.intervalSeconds, settings.meanSessionSeconds / 60, settings.minSessionSeconds / 60,
         settings.acquaintedSharePct, rotation.acquaintedMinScore);
     PrintBalance(handler, now);
+    PrintRetire(handler, now);
     if (!rotation.ticks)
     {
         handler->PSendSysMessage("No rotation tick yet");
@@ -679,6 +1365,7 @@ bool Population::HandleSelftestCommand(ChatHandler* handler, char const* /*args*
     std::vector<std::string> failures;
     uint32 checks = PopulationPolicy::RotationSelftest(failures, false);
     checks += PopulationPolicy::BalanceSelftest(failures, false);
+    checks += PopulationPolicy::RetireSelftest(failures, false);
     for (std::string const& failure : failures)
         handler->PSendSysMessage("POPULATION selftest FAIL: {}", failure);
 

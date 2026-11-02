@@ -687,6 +687,23 @@ PvpGearMgr::Loadout const* PvpGearMgr::Find(uint32 guid) const
     return it == _loadouts.end() ? nullptr : &it->second;
 }
 
+void PvpGearMgr::ForgetBot(uint32 guid)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::ForgetBot");
+    _loadouts.erase(guid);
+    _pinnedLoadouts.erase(guid);
+    {
+        std::unique_lock lock(_wornLock);
+        _worn.erase(guid);
+    }
+
+    _wallets.erase(guid);
+    _unbuyable.erase(guid);
+    std::erase_if(_retry, [guid](std::pair<uint32, uint32> const& retry) { return retry.first == guid; });
+    std::erase(_buyPending, guid);
+    std::erase(_buySweep, guid);
+}
+
 bool PvpGearMgr::PinLoadout(uint32 copyGuid, uint32 templateGuid)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::PinLoadout");

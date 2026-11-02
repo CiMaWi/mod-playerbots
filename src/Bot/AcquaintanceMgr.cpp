@@ -773,6 +773,34 @@ void AcquaintanceMgr::CollectBots(uint32 minScore, std::unordered_set<uint32>& b
             bots.insert(static_cast<uint32>(key & 0xFFFFFFFF));
 }
 
+uint32 AcquaintanceMgr::MaxScoreOfBot(uint32 bot) const
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::MaxScoreOfBot");
+    uint32 score = 0;
+    for (auto const& [player, bots] : _byPlayer)
+    {
+        auto const it = _pairs.find(Key(player, bot));
+        if (it != _pairs.end())
+            score = std::max(score, it->second.Data.Score);
+    }
+
+    return score;
+}
+
+void AcquaintanceMgr::ForgetBot(uint32 bot)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::ForgetBot");
+    for (auto& [player, bots] : _byPlayer)
+    {
+        uint64 const key = Key(player, bot);
+        if (!_pairs.erase(key))
+            continue;
+
+        std::erase(bots, bot);
+        std::erase(_dirty, key);
+    }
+}
+
 std::vector<std::pair<uint32, Acquaintance>> AcquaintanceMgr::GetAcquaintances(uint32 player, size_t limit) const
 {
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::GetAcquaintances");

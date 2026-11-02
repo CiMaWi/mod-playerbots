@@ -56,6 +56,9 @@ public:
     // Bot login: the bot's skill; rolls and saves a new profile when the bot has none
     uint8 LoadOrCreate(uint32 guid);
     std::optional<BotProfile> Find(uint32 guid);
+    // World thread. H4 (a retired bot): drops its profile and its queued skill growth from memory (the retire deletes
+    // the row)
+    void Forget(uint32 guid);
     // Sets the skill (clamped to 1-99) and the percentile that maps to it, and saves the profile
     BotProfile SetSkill(uint32 guid, uint8 skill);
     // Re-applies the distribution to the bot's percentile (the rank stays), counts the version up, saves the profile

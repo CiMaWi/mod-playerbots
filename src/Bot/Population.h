@@ -80,6 +80,16 @@ std::vector<PopulationPolicy::BalanceRange> BalanceRanges();
 // World thread: the index into BalanceRanges() of a level
 uint32 BalanceRangeOf(uint32 level);
 
+// Any thread (relaxed atomic): Playerbots.Population.Retire.Enable with its prerequisites met (Persistent,
+// Acquaintance.Enable, Rotation.Enable, and Balance.Enable or Retire.TestRange)
+bool IsRetire();
+
+// H4a. World thread (RandomPlayerbotMgr::UpdateAIInternal), every tick; returns at once while the retire is off and no
+// query is in flight. Every Retire.IntervalSeconds, in the level ranges persistently over target: offline roster bots
+// no real player knows (DH.2) are deleted, or with Retire.DryRun only logged, at most Retire.MaxPerPass per pass and
+// Retire.MaxPerHour per hour, never below a range's target (DH.3). `online` is the manager's online set.
+void RetireTick(std::unordered_set<uint32> const& online);
+
 // .playerbots population status | selftest
 bool HandleStatusCommand(ChatHandler* handler, char const* args);
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);

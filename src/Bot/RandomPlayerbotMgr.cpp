@@ -360,6 +360,11 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
     if (Population::IsBalance() && !LadderMgr::Instance().IsHostedOnly())
         Population::BalanceTick(currentBots);
 
+    // Playerbots.Population.Retire: never-met bots of over-target ranges are deleted (rate limited; returns at once
+    // while off and no query is in flight)
+    if (!LadderMgr::Instance().IsHostedOnly())
+        Population::RetireTick(currentBots);
+
     // Copied deliberately: ProcessBot() erases from currentBots while this is
     // being iterated below, so the loops must run over a snapshot.
     std::unordered_set<uint32> availableBots = currentBots;
@@ -2709,6 +2714,17 @@ std::string RandomPlayerbotMgr::GetEventData(uint32 bot, std::string const& even
     std::string data;
     ReadEvent(bot, event, nullptr, &data);
     return data;
+}
+
+void RandomPlayerbotMgr::ForgetBot(uint32 bot)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("RandomPlayerbotMgr::ForgetBot");
+    {
+        std::lock_guard<std::mutex> guard(_eventCacheLock);
+        eventCache.erase(bot);
+    }
+
+    currentBots.erase(bot);
 }
 
 uint32 RandomPlayerbotMgr::SetEventValue(uint32 bot, std::string const& event, uint32 value, uint32 validIn,

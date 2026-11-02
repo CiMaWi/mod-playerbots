@@ -329,6 +329,17 @@ std::optional<BotProfile> BotProfileMgr::Find(uint32 guid)
     return it->second;
 }
 
+void BotProfileMgr::Forget(uint32 guid)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("BotProfileMgr::Forget");
+    {
+        std::lock_guard<std::mutex> guard(_lock);
+        _profiles.erase(guid);
+    }
+
+    std::erase_if(_pendingSkills, [guid](PendingSkill const& pending) { return pending.Guid == guid; });
+}
+
 BotProfile BotProfileMgr::SetSkill(uint32 guid, uint8 skill)
 {
     std::lock_guard<std::mutex> guard(_lock);

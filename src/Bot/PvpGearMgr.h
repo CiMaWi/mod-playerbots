@@ -116,6 +116,8 @@ public:
     // memory only (never written, never reloaded); false when the template has none
     bool PinLoadout(uint32 copyGuid, uint32 templateGuid);
     void UnpinLoadout(uint32 copyGuid) { _pinnedLoadouts.erase(copyGuid); }
+    // World thread. H4 (a retired bot): drops its loadout, worn state, wallet, retries and buy checks from memory
+    void ForgetBot(uint32 guid);
 
     // Wearing (PvpGearWear.cpp). One playerbots_pvp_worn row per swapped slot
     struct WornSlot

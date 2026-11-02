@@ -1387,6 +1387,446 @@ inline uint32_t BalanceSelftest(std::vector<std::string>& failures, bool full)
     check(same(again.meanError, on.meanError) && again.retired == on.retired, "the simulation is deterministic");
     return checks;
 }
+
+// H4a: retiring never-met random bots (Playerbots.Population.Retire.*). In a level range persistently over its target
+// (H3), offline roster bots no real player knows are deleted: acquaintance score at most maxScore (0 by default, a
+// manual knob; DH.2), in no guild with a real player, on no real player's friend list, in no arena team, in no group,
+// no guild leader, not in a ladder roster, not away on an arena server and not on a lab clone account. At most a few
+// per pass and per hour, never so many that a range falls below its target (DH.3).
+
+enum RetireProtect : uint32_t
+{
+    RetireOnline = 1u << 0,         // online, logging in, or in the manager's online set
+    RetireAway = 1u << 1,           // away on an arena server (LadderMgr::IsAway)
+    RetireGuildWithReal = 1u << 2,  // in a guild with a real player's character
+    RetireFriendOfReal = 1u << 3,   // on a real player's friend list
+    RetireArenaTeam = 1u << 4,      // in any arena team (no team is disbanded)
+    RetireGuildLeader = 1u << 5,    // leads a guild
+    RetireLadderRoster = 1u << 6,   // named in playerbots_ladder_roster
+    RetireGrouped = 1u << 7,        // in a group (saved groups outlive a logout)
+    RetireClone = 1u << 8,          // on a lab-bots clone account, or no account known
+};
+
+constexpr uint32_t RetireProtectBits = 9;
+
+// One bot the pass looks at: its level, its highest acquaintance score with a real player and its protections
+struct RetireCandidate
+{
+    uint32_t guid = 0;
+    uint32_t level = 0;
+    uint32_t score = 0;
+    uint32_t protect = 0;  // RetireProtect bits
+};
+
+// A level range the pass may retire from: its levels, the roster's bots in it now and its target
+struct RetireRange
+{
+    uint32_t firstLevel = 0;
+    uint32_t lastLevel = 0;
+    uint32_t count = 0;
+    double target = 0.0;
+};
+
+// How many bots a range may lose without falling below its target
+inline uint32_t RetireSurplus(uint32_t count, double target)
+{
+    double const keep = std::ceil(std::max(0.0, target));
+    return count > keep ? count - static_cast<uint32_t>(keep) : 0;
+}
+
+// "Persistently over": H3's overSince (game time since the range is over its target beyond the deadband; 0 = not over)
+// is at least persistSeconds old
+inline bool RetireRangeDue(uint32_t overSince, uint32_t now, uint32_t persistSeconds)
+{
+    return overSince && now >= overSince && now - overSince >= persistSeconds;
+}
+
+// The range a new bot starts in (level 1) is never retired from by the balance: a new level-1 bot would replace the
+// retired one in the same range (the test range of the overlay may still name it)
+inline bool RetireRangeAllowed(uint32_t firstLevel, uint32_t lastLevel, uint32_t createLevel = 1)
+{
+    return createLevel < firstLevel || createLevel > lastLevel;
+}
+
+// The retires this sliding hour may still take: drops the times an hour old or more from `times`
+inline uint32_t RetireHourLeft(std::vector<uint32_t>& times, uint32_t now, uint32_t maxPerHour)
+{
+    times.erase(std::remove_if(times.begin(), times.end(), [now](uint32_t t) { return now >= t + 3600; }), times.end());
+    return maxPerHour > times.size() ? maxPerHour - static_cast<uint32_t>(times.size()) : 0;
+}
+
+// A seeded order among bots of equal score (a 32-bit mix of guid and seed): deterministic per seed
+inline uint32_t RetireOrderKey(uint32_t guid, uint32_t seed)
+{
+    uint32_t x = guid ^ (seed * 0x9E3779B9u);
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
+}
+
+// The bots to retire: unprotected, score at most maxScore, level in one of `ranges`; lowest score first, then the
+// seeded order; at most maxCount, and with bySurplus no more from a range than its surplus. No automatic fallback to
+// higher scores: maxScore is the only knob (DH.2). bySurplus false picks the pass's candidate batch (checked further
+// before the final pick).
+inline std::vector<uint32_t> SelectRetirees(std::vector<RetireCandidate> const& candidates,
+                                            std::vector<RetireRange> const& ranges, uint32_t maxScore,
+                                            uint32_t maxCount, uint32_t seed, bool bySurplus = true)
+{
+    struct Pick
+    {
+        uint32_t score;
+        uint32_t key;
+        uint32_t guid;
+        size_t range;
+    };
+
+    std::vector<Pick> picks;
+    for (RetireCandidate const& candidate : candidates)
+    {
+        if (!candidate.guid || candidate.protect || candidate.score > maxScore)
+            continue;
+
+        for (size_t i = 0; i < ranges.size(); ++i)
+            if (candidate.level >= ranges[i].firstLevel && candidate.level <= ranges[i].lastLevel)
+            {
+                picks.push_back({candidate.score, RetireOrderKey(candidate.guid, seed), candidate.guid, i});
+                break;
+            }
+    }
+
+    std::sort(picks.begin(), picks.end(),
+              [](Pick const& a, Pick const& b)
+              {
+                  if (a.score != b.score)
+                      return a.score < b.score;
+
+                  return a.key != b.key ? a.key < b.key : a.guid < b.guid;
+              });
+
+    std::vector<uint32_t> surplus(ranges.size(), UINT32_MAX);
+    if (bySurplus)
+        for (size_t i = 0; i < ranges.size(); ++i)
+            surplus[i] = RetireSurplus(ranges[i].count, ranges[i].target);
+
+    std::vector<uint32_t> chosen;
+    for (Pick const& pick : picks)
+    {
+        if (chosen.size() >= maxCount)
+            break;
+
+        if (!surplus[pick.range] || std::find(chosen.begin(), chosen.end(), pick.guid) != chosen.end())
+            continue;
+
+        --surplus[pick.range];
+        chosen.push_back(pick.guid);
+    }
+
+    return chosen;
+}
+
+// Playerbots.Population.Retire.TestRange: "first-last" (1 <= first <= last), else false
+inline bool ParseRetireTestRange(std::string const& text, uint32_t& firstLevel, uint32_t& lastLevel)
+{
+    size_t const dash = text.find('-');
+    if (dash == std::string::npos || !dash || dash + 1 >= text.size() || dash > 3 || text.size() - dash - 1 > 3)
+        return false;
+
+    for (size_t i = 0; i < text.size(); ++i)
+        if (i != dash && (text[i] < '0' || text[i] > '9'))
+            return false;
+
+    uint32_t const first = static_cast<uint32_t>(std::stoul(text.substr(0, dash)));
+    uint32_t const last = static_cast<uint32_t>(std::stoul(text.substr(dash + 1)));
+    if (!first || last < first)
+        return false;
+
+    firstLevel = first;
+    lastLevel = last;
+    return true;
+}
+
+// The protections as text (log lines): "guild|friend|...", "score" when only the score protects
+inline std::string RetireReasons(uint32_t protect, uint32_t score, uint32_t maxScore)
+{
+    static char const* const names[RetireProtectBits] = {"online", "away",   "guild", "friend", "arena",
+                                                         "leader", "ladder", "group", "clone"};
+    std::string text;
+    for (uint32_t bit = 0; bit < RetireProtectBits; ++bit)
+        if (protect & (1u << bit))
+            text += std::string(text.empty() ? "" : "|") + names[bit];
+
+    if (score > maxScore)
+        text += std::string(text.empty() ? "" : "|") + "score";
+
+    return text;
+}
+
+struct RetireSimParams
+{
+    uint32_t bots = 2500;
+    uint32_t hours = 48;
+    uint32_t passesPerHour = 6;
+    uint32_t maxPerPass = 1;
+    uint32_t maxPerHour = 10;
+    uint32_t maxScore = 0;
+    uint32_t persistSeconds = 0;
+    uint32_t protectedPct = 15;  // bots with a protection bit
+    uint32_t metPct = 5;         // bots with a score of 1-10
+    uint32_t levelUpPerMille = 10;
+    uint32_t seed = 1;
+};
+
+struct RetireSimStats
+{
+    uint64_t retired = 0;
+    uint64_t created = 0;
+    uint64_t protectedRetired = 0;  // a bot with a protection bit or a score above maxScore was retired
+    uint64_t belowTarget = 0;       // a retire left a range below its target
+    uint64_t overHour = 0;          // more retires in a sliding hour than maxPerHour
+    uint64_t overPass = 0;          // more retires in a pass than maxPerPass
+    uint64_t createRangeRetired = 0;
+    uint32_t minRoster = UINT32_MAX;
+    uint32_t maxRoster = 0;
+};
+
+// Hours of passes over a roster skewed to 70-79, ranges of 10 levels with an equal share and the max level double
+// (DH.1), every retire replaced by a new level-1 bot (H4b), bots levelling up at random between passes
+inline RetireSimStats SimulateRetire(RetireSimParams const& params)
+{
+    uint64_t state = params.seed * 0x9E3779B97F4A7C15ull + 1;
+    auto next = [&state](uint32_t bound)
+    {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return bound ? static_cast<uint32_t>(state % bound) : 0;
+    };
+
+    std::vector<RetireCandidate> roster;
+    uint32_t nextGuid = 1;
+    for (uint32_t i = 0; i < params.bots; ++i)
+    {
+        RetireCandidate bot;
+        bot.guid = nextGuid++;
+        bot.level = next(100) < 40 ? 70 + next(10) : 1 + next(80);
+        if (next(100) < params.protectedPct)
+            bot.protect = 1u << next(RetireProtectBits);
+
+        if (next(100) < params.metPct)
+            bot.score = 1 + next(10);
+
+        roster.push_back(bot);
+    }
+
+    std::vector<RetireRange> layout;
+    for (uint32_t first = 0; first < 80; first += 10)
+        layout.push_back({std::max<uint32_t>(1, first), first + 9, 0, 0.0});
+
+    layout.push_back({80, 80, 0, 0.0});
+    RetireSimStats stats;
+    std::vector<uint32_t> recent;
+    uint32_t const step = 3600 / std::max<uint32_t>(1, params.passesPerHour);
+    uint32_t const passes = params.hours * std::max<uint32_t>(1, params.passesPerHour);
+    for (uint32_t pass = 0; pass < passes; ++pass)
+    {
+        uint32_t const now = 1000 + pass * step;
+        for (RetireCandidate& bot : roster)
+            if (bot.level < 80 && next(1000) < params.levelUpPerMille)
+                ++bot.level;
+
+        std::vector<RetireRange> ranges;
+        for (RetireRange range : layout)
+        {
+            range.target = params.bots * (range.firstLevel == 80 ? 2.0 : 1.0) / 10.0;
+            for (RetireCandidate const& bot : roster)
+                if (bot.level >= range.firstLevel && bot.level <= range.lastLevel)
+                    ++range.count;
+
+            if (RetireRangeAllowed(range.firstLevel, range.lastLevel) && RetireSurplus(range.count, range.target))
+                ranges.push_back(range);
+        }
+
+        uint32_t const left = RetireHourLeft(recent, now, params.maxPerHour);
+        std::vector<uint32_t> const chosen =
+            SelectRetirees(roster, ranges, params.maxScore, std::min(left, params.maxPerPass), params.seed + pass);
+        if (chosen.size() > params.maxPerPass)
+            ++stats.overPass;
+
+        for (uint32_t const guid : chosen)
+        {
+            auto const it = std::find_if(roster.begin(), roster.end(),
+                                         [guid](RetireCandidate const& bot) { return bot.guid == guid; });
+            if (it == roster.end())
+                continue;
+
+            if (it->protect || it->score > params.maxScore)
+                ++stats.protectedRetired;
+
+            if (!RetireRangeAllowed(1, 9) && it->level <= 9)
+                ++stats.createRangeRetired;
+
+            for (RetireRange& range : ranges)
+                if (it->level >= range.firstLevel && it->level <= range.lastLevel)
+                {
+                    --range.count;
+                    if (range.count < std::ceil(range.target))
+                        ++stats.belowTarget;
+                }
+
+            roster.erase(it);
+            ++stats.retired;
+            recent.push_back(now);
+            if (recent.size() > params.maxPerHour)
+                ++stats.overHour;
+
+            RetireCandidate created;
+            created.guid = nextGuid++;
+            created.level = 1;
+            roster.push_back(created);
+            ++stats.created;
+        }
+
+        stats.minRoster = std::min<uint32_t>(stats.minRoster, static_cast<uint32_t>(roster.size()));
+        stats.maxRoster = std::max<uint32_t>(stats.maxRoster, static_cast<uint32_t>(roster.size()));
+    }
+
+    return stats;
+}
+
+// The retire selection rule (.playerbots population selftest; full adds the long simulation)
+inline uint32_t RetireSelftest(std::vector<std::string>& failures, bool full)
+{
+    uint32_t checks = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("retire: " + what);
+    };
+
+    std::vector<RetireRange> const one = {{10, 19, 10, 5.0}};  // surplus 5
+    check(SelectRetirees({{100, 15, 0, 0}}, one, 0, 10, 1) == std::vector<uint32_t>{100},
+          "an unprotected never-met bot in the range is chosen");
+    for (uint32_t bit = 0; bit < RetireProtectBits; ++bit)
+        check(SelectRetirees({{100, 15, 0, 1u << bit}}, one, 0, 10, 1).empty(),
+              "protection " + RetireReasons(1u << bit, 0, 0) + " alone excludes the bot");
+
+    // Score: never above maxScore, and the low scores only after every score-0 bot
+    std::vector<RetireCandidate> mixed;
+    for (uint32_t guid = 1; guid <= 4; ++guid)
+        mixed.push_back({guid, 12, 0, 0});
+
+    mixed.push_back({5, 12, 1, 0});
+    mixed.push_back({6, 12, 2, 0});
+    std::vector<uint32_t> const atZero = SelectRetirees(mixed, one, 0, 10, 3);
+    check(atZero.size() == 4 && std::find(atZero.begin(), atZero.end(), 5u) == atZero.end(),
+          "a bot with score 1 is never chosen at MaxScore 0");
+    std::vector<uint32_t> const atOne = SelectRetirees(mixed, one, 1, 10, 3);
+    check(atOne.size() == 5 && atOne.back() == 5 && std::find(atOne.begin(), atOne.end(), 6u) == atOne.end(),
+          "at MaxScore 1 the score-1 bot comes after every score-0 bot, score 2 never");
+    check(SelectRetirees({{5, 12, 1, 0}, {6, 12, 3, 0}}, one, 0, 10, 3).empty(),
+          "no automatic fallback: only met bots left, MaxScore 0 retires none");
+
+    // Caps: maxCount and never below the target
+    std::vector<RetireCandidate> ten;
+    for (uint32_t guid = 1; guid <= 10; ++guid)
+        ten.push_back({guid, 14, 0, 0});
+
+    check(SelectRetirees(ten, {{10, 19, 12, 9.5}}, 0, 5, 1).size() == 2, "surplus 12 over 9.5 is 2");
+    check(SelectRetirees(ten, {{10, 19, 12, 9.5}}, 0, 1, 1).size() == 1, "maxCount 1 caps a surplus of 2");
+    check(SelectRetirees(ten, {{10, 19, 12, 12.0}}, 0, 5, 1).empty(), "a range at its target loses none");
+    check(SelectRetirees(ten, {{10, 19, 12, 11.2}}, 0, 5, 1).empty(), "a fractional target is kept whole (ceil)");
+    check(SelectRetirees(ten, {{10, 19, 12, 12.0}}, 0, 5, 1, false).size() == 5,
+          "the candidate batch ignores the surplus, not maxCount");
+    std::vector<RetireCandidate> two = ten;
+    for (uint32_t guid = 11; guid <= 15; ++guid)
+        two.push_back({guid, 25, 0, 0});
+
+    std::vector<uint32_t> const split = SelectRetirees(two, {{10, 19, 11, 10.0}, {20, 29, 13, 10.0}}, 0, 10, 1);
+    uint32_t const fromFirst =
+        static_cast<uint32_t>(std::count_if(split.begin(), split.end(), [](uint32_t guid) { return guid <= 10; }));
+    check(split.size() == 4 && fromFirst == 1, "each range gives at most its own surplus");
+
+    // Levels outside every range
+    check(SelectRetirees({{1, 9, 0, 0}, {2, 20, 0, 0}, {3, 0, 0, 0}}, one, 0, 10, 1).empty(),
+          "levels outside the range are never chosen");
+
+    // Deterministic per seed, another seed another order
+    std::vector<RetireCandidate> fifty;
+    for (uint32_t guid = 1; guid <= 50; ++guid)
+        fifty.push_back({guid, 15, 0, 0});
+
+    std::vector<RetireRange> const wide = {{10, 19, 100, 0.0}};
+    check(SelectRetirees(fifty, wide, 0, 5, 42) == SelectRetirees(fifty, wide, 0, 5, 42), "same seed, same pick");
+    bool differs = false;
+    for (uint32_t seed = 1; seed <= 5 && !differs; ++seed)
+        differs = SelectRetirees(fifty, wide, 0, 5, seed) != SelectRetirees(fifty, wide, 0, 5, seed + 100);
+
+    check(differs, "another seed picks other bots");
+
+    // Helpers
+    check(RetireSurplus(10, 5.0) == 5 && RetireSurplus(5, 5.0) == 0 && RetireSurplus(3, 5.0) == 0 &&
+              RetireSurplus(6, 5.5) == 0 && RetireSurplus(4, -1.0) == 4,
+          "RetireSurplus");
+    check(!RetireRangeDue(0, 5000, 0) && RetireRangeDue(1000, 1000, 0) && !RetireRangeDue(1000, 4599, 3600) &&
+              RetireRangeDue(1000, 4600, 3600) && !RetireRangeDue(5000, 1000, 0),
+          "RetireRangeDue: 0 is never over; persistSeconds old");
+    check(!RetireRangeAllowed(1, 9) && RetireRangeAllowed(10, 19) && RetireRangeAllowed(80, 80),
+          "the level-1 range is not retired from");
+    std::vector<uint32_t> times = {100, 200, 3700, 3750};
+    check(RetireHourLeft(times, 3800, 3) == 1 && times.size() == 2, "the sliding hour drops old retires");
+    check(RetireHourLeft(times, 3800, 2) == 0, "the hour cap reached leaves none");
+    uint32_t first = 0;
+    uint32_t last = 0;
+    check(ParseRetireTestRange("1-9", first, last) && first == 1 && last == 9 &&
+              ParseRetireTestRange("70-79", first, last) && first == 70 && last == 79,
+          "TestRange parses first-last");
+    check(!ParseRetireTestRange("", first, last) && !ParseRetireTestRange("9-1", first, last) &&
+              !ParseRetireTestRange("0-9", first, last) && !ParseRetireTestRange("a-9", first, last) &&
+              !ParseRetireTestRange("10", first, last) && !ParseRetireTestRange("-9", first, last),
+          "TestRange refuses malformed text");
+    check(RetireReasons(RetireGuildWithReal | RetireFriendOfReal, 3, 0) == "guild|friend|score", "RetireReasons text");
+
+    // Over simulated hours, every retire replaced by a level-1 bot: the roster stays constant, no protected or met
+    // bot is retired, no range falls below its target, the caps hold
+    RetireSimParams sim;
+    sim.bots = 300;
+    sim.hours = 12;
+    sim.passesPerHour = 6;
+    sim.maxPerPass = 1;
+    sim.maxPerHour = 4;
+    RetireSimStats const slow = SimulateRetire(sim);
+    check(slow.retired > 0 && slow.retired == slow.created && slow.minRoster == sim.bots && slow.maxRoster == sim.bots,
+          "300 bots, 12 h: " + std::to_string(slow.retired) + " retired, roster constant");
+    check(!slow.protectedRetired && !slow.belowTarget && !slow.overHour && !slow.overPass && !slow.createRangeRetired,
+          "300 bots, 12 h: no protected bot retired, targets and caps hold");
+    sim.passesPerHour = 180;
+    sim.maxPerPass = 3;
+    sim.maxPerHour = 120;
+    sim.hours = 2;
+    RetireSimStats const fast = SimulateRetire(sim);
+    check(fast.retired > 0 && fast.minRoster == sim.bots && fast.maxRoster == sim.bots && !fast.protectedRetired &&
+              !fast.belowTarget && !fast.overHour && !fast.overPass,
+          "300 bots, overlay rates (20 s, 3/pass, 120/h): " + std::to_string(fast.retired) + " retired, rules hold");
+    if (full)
+    {
+        RetireSimParams big;
+        big.bots = 2500;
+        big.hours = 72;
+        RetireSimStats const day = SimulateRetire(big);
+        check(day.retired > 0 && day.minRoster == big.bots && day.maxRoster == big.bots && !day.protectedRetired &&
+                  !day.belowTarget && !day.overHour && !day.overPass && !day.createRangeRetired,
+              "2500 bots, 72 h at the defaults: " + std::to_string(day.retired) + " retired, rules hold");
+        big.maxScore = 3;
+        RetireSimStats const met = SimulateRetire(big);
+        check(!met.protectedRetired && met.minRoster == big.bots, "MaxScore 3: no bot above it retired");
+    }
+
+    return checks;
+}
 }  // namespace PopulationPolicy
 
 #endif

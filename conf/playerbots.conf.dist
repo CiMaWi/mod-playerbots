@@ -974,6 +974,71 @@ Playerbots.Population.Balance.ResponseHours = 384
 Playerbots.Population.Balance.LogoutPreferencePct = 25
 
 #
+# Playerbots.Population.Retire.Enable (H4)
+# Description: In a level range persistently over its Balance target, deletes offline roster
+#              bots no real player knows, so new level-1 bots can take their place. A bot is
+#              kept when a real player has an acquaintance score above Retire.MaxScore with it,
+#              it is in a guild with a real player's character, on a real player's friend list,
+#              in any arena team or group, leads a guild, is named in a ladder roster, is away on
+#              an arena server, is online, or sits on a lab-bots clone account. A range never
+#              falls below its target; the range of level 1 is never retired from. Only random
+#              bot characters are deleted (completely: also their playerbots and mod-ollama-chat
+#              rows), never another character; the account stays. One log line per bot.
+#              Needs Population.Persistent = 1, Acquaintance.Enable = 1, Rotation.Enable = 1 and
+#              Balance.Enable = 1 (or Retire.TestRange); else one error line and nothing happens.
+#              Keep it 0 on labs with lab-bots clones.
+# Default:     0 - off
+#              1 - on (see Retire.DryRun)
+Playerbots.Population.Retire.Enable = 0
+
+# Playerbots.Population.Retire.DryRun
+# Description: Logs "would retire" lines and deletes nothing. Switching to 0 (".reload config")
+#              waits one interval before the first delete, as does switching Retire.Enable on.
+# Default:     1 - logs only
+#              0 - deletes
+Playerbots.Population.Retire.DryRun = 1
+
+# Playerbots.Population.Retire.IntervalSeconds
+# Description: Seconds between two passes (minimum 10)
+# Default: 600
+Playerbots.Population.Retire.IntervalSeconds = 600
+
+# Playerbots.Population.Retire.MaxPerPass
+# Playerbots.Population.Retire.MaxPerHour
+# Description: Bots retired at most per pass and per sliding hour (dry-run picks count too).
+#              Each retire runs a few synchronous queries on the world thread (the core's delete).
+# Default: 1, 10
+Playerbots.Population.Retire.MaxPerPass = 1
+Playerbots.Population.Retire.MaxPerHour = 10
+
+# Playerbots.Population.Retire.MaxScore
+# Description: The highest acquaintance score a retired bot may have with any real player.
+#              0 = never-met bots only. Higher values allow barely-met bots; they go only after
+#              every never-met candidate of the range.
+# Default: 0
+Playerbots.Population.Retire.MaxScore = 0
+
+# Playerbots.Population.Retire.PersistMinutes
+# Description: A range is retired from once it has been over its target (beyond the Balance
+#              deadband) for this many minutes
+# Default: 60
+Playerbots.Population.Retire.PersistMinutes = 60
+
+# Playerbots.Population.Retire.Candidates
+# Description: Bots a pass checks against the database (guild, friends, arena teams, groups,
+#              ladder roster), 1-500
+# Default: 50
+Playerbots.Population.Retire.Candidates = 50
+
+# Playerbots.Population.Retire.TestRange
+# Playerbots.Population.Retire.TestTarget
+# Description: Test only: retire from this range ("first-last", e.g. "1-9") down to this
+#              target instead of the Balance ranges. Empty = off.
+# Default: "", 0
+Playerbots.Population.Retire.TestRange = ""
+Playerbots.Population.Retire.TestTarget = 0
+
+#
 #
 ####################################################################################################
 
