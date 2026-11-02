@@ -765,6 +765,14 @@ uint32 AcquaintanceMgr::GetScore(uint32 player, uint32 bot) const
     return data ? data->Score : 0;
 }
 
+void AcquaintanceMgr::CollectBots(uint32 minScore, std::unordered_set<uint32>& bots) const
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::CollectBots");
+    for (auto const& [key, entry] : _pairs)
+        if (entry.Data.Score >= minScore)
+            bots.insert(static_cast<uint32>(key & 0xFFFFFFFF));
+}
+
 std::vector<std::pair<uint32, Acquaintance>> AcquaintanceMgr::GetAcquaintances(uint32 player, size_t limit) const
 {
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::GetAcquaintances");

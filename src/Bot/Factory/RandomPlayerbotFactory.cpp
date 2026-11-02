@@ -24,6 +24,7 @@
 #include "PlayerbotOperations.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
+#include "Population.h"
 #include "RaceMgr.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
@@ -437,6 +438,9 @@ uint32 RandomPlayerbotFactory::CalculateTotalAccountCount()
     // Take periodic online/offline into account
     if (sPlayerbotAIConfig.EnablePeriodicOnlineOffline)
         maxBots *= sPlayerbotAIConfig.PeriodicOnlineOfflineRatio;
+
+    // Playerbots.Population.Rotation: accounts for the whole roster, above the online cap
+    maxBots = static_cast<int>(Population::RosterBotCount(static_cast<uint32>(maxBots)));
 
     // Main's ladder pool may be away on arena servers, outside the online count
     if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)

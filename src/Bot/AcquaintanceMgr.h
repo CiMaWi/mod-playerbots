@@ -10,6 +10,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -111,6 +112,8 @@ public:
     uint32 GetScore(uint32 player, uint32 bot) const;
     // The player's acquaintances, highest score first, at most limit entries
     std::vector<std::pair<uint32, Acquaintance>> GetAcquaintances(uint32 player, size_t limit) const;
+    // Every bot some real player knows with at least minScore (the population rotation, once per tick)
+    void CollectBots(uint32 minScore, std::unordered_set<uint32>& bots) const;
 
     // .playerbots acquaintances [<player>] | stats | record <player> <bot> <kind>
     static bool HandleCommand(ChatHandler* handler, char const* args);

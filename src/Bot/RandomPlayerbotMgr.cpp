@@ -334,6 +334,28 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
         maxAllowedBotCount = GetMaxAllowedBotCount();
 
     GetBots();
+
+    // Playerbots.Population.Rotation: by schedule, online bots make way for offline ones of their faction
+    if (Population::IsRotation() && !LadderMgr::Instance().IsHostedOnly())
+    {
+        for (PopulationPolicy::RotationSwap const& swap :
+             Population::RotationTick(rndBotTypeAccounts, currentBots, maxAllowedBotCount))
+        {
+            SetEventValue(swap.out, "add", 0, 0);
+            currentBots.erase(swap.out);
+            ObjectGuid const outGuid = ObjectGuid::Create<HighGuid::Player>(swap.out);
+            if (GetPlayerBot(outGuid))
+                LogoutPlayerBot(outGuid);
+
+            if (!swap.in)
+                continue;
+
+            SetEventValue(swap.in, "add", 1, sPlayerbotAIConfig.PermanentlyInWorldTime);
+            SetEventValue(swap.in, "logout", 0, 0);
+            currentBots.insert(swap.in);
+        }
+    }
+
     // Copied deliberately: ProcessBot() erases from currentBots while this is
     // being iterated below, so the loops must run over a snapshot.
     std::unordered_set<uint32> availableBots = currentBots;
@@ -582,6 +604,9 @@ void RandomPlayerbotMgr::AssignAccountTypes()
             maxBots *= sPlayerbotAIConfig.PeriodicOnlineOfflineRatio;
         }
 
+        // Playerbots.Population.Rotation: accounts for the whole roster, above the online cap
+        maxBots = static_cast<int>(Population::RosterBotCount(static_cast<uint32>(maxBots)));
+
         // Calculate base accounts needed for RNDbots, ensuring round up for maxBots not cleanly divisible by the divisor
         neededRndBotAccounts = (maxBots + divisor - 1) / divisor;
     }
@@ -714,9 +739,13 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
             allowedAllianceCount++;
         }
 
+        // Playerbots.Population.Rotation: the whole roster, in the schedule's order, each bot online until the
+        // rotation swaps it out
+        bool const rotation = Population::IsRotation();
+
         // Determine which accounts to use based on EnablePeriodicOnlineOffline
         std::vector<uint32> accountsToUse;
-        if (sPlayerbotAIConfig.EnablePeriodicOnlineOffline)
+        if (sPlayerbotAIConfig.EnablePeriodicOnlineOffline && !rotation)
         {
 
             // Calculate how many accounts can be used
@@ -770,7 +799,11 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         }
 
         // Shuffle for class balance
-        std::shuffle(allCharacters.begin(), allCharacters.end(), rng);
+        if (rotation)
+            std::sort(allCharacters.begin(), allCharacters.end(), [](CharacterInfo const& a, CharacterInfo const& b)
+                      { return Population::LoginBefore(a.guid, b.guid); });
+        else
+            std::shuffle(allCharacters.begin(), allCharacters.end(), rng);
 
         // Separate characters by faction for phased login
         std::vector<CharacterInfo> allianceChars;
@@ -791,6 +824,9 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
             if (LadderMgr::Instance().IsAway(charInfo.guid))
                 return false;
 
+            if (rotation && !Population::InRoster(charInfo.guid))
+                return false;
+
             if (GetEventValue(charInfo.guid, "add") ||
                 GetEventValue(charInfo.guid, "logout") ||
                 GetPlayerBot(charInfo.guid) ||
@@ -800,14 +836,16 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
                 return false;
             }
 
-            uint32 add_time = sPlayerbotAIConfig.EnablePeriodicOnlineOffline
-                                ? urand(sPlayerbotAIConfig.MinRandomBotInWorldTime,
-                                        sPlayerbotAIConfig.MaxRandomBotInWorldTime)
-                                : sPlayerbotAIConfig.PermanentlyInWorldTime;
+            uint32 add_time =
+                sPlayerbotAIConfig.EnablePeriodicOnlineOffline && !rotation
+                    ? urand(sPlayerbotAIConfig.MinRandomBotInWorldTime, sPlayerbotAIConfig.MaxRandomBotInWorldTime)
+                    : sPlayerbotAIConfig.PermanentlyInWorldTime;
 
             SetEventValue(charInfo.guid, "add", 1, add_time);
             SetEventValue(charInfo.guid, "logout", 0, 0);
             currentBots.insert(charInfo.guid);
+            if (rotation)
+                Population::NoteLogin(charInfo.guid);
 
             return true;
         };

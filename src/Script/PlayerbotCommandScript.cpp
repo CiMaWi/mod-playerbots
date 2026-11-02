@@ -24,6 +24,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
+#include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
 #include "RandomPlayerbotFactory.h"
@@ -175,6 +176,11 @@ public:
             {"selftest", NaturalTrace::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsPopulationCommandTable = {
+            {"status", Population::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", Population::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -198,6 +204,7 @@ public:
             {"attributes", playerbotsAttributesCommandTable},
             {"arenaonly", playerbotsArenaOnlyCommandTable},
             {"natural", playerbotsNaturalCommandTable},
+            {"population", playerbotsPopulationCommandTable},
         };
 
         static ChatCommandTable commandTable = {

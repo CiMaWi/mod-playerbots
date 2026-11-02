@@ -874,6 +874,48 @@ Playerbots.RandomBotXPRate = 1.0
 # Default: 0 (off, upstream behaviour)
 Playerbots.Population.Persistent = 0
 
+# Roster above the online cap, rotated by schedule. More random bot characters exist than are online
+# (Playerbots.MinRandomBots/MaxRandomBots stay the online cap); every IntervalSeconds the rotation
+# swaps online bots for offline ones of the same faction. Each bot is owed a share of online time
+# (cap / eligible roster); a bot a real player knows (Playerbots.Acquaintance.Enable, score >=
+# AcquaintedMinScore) is owed AcquaintedSharePct, as far as the cap allows. The most over-served
+# online bots make way for the most owed offline ones; a bot in a group, battleground, arena queue,
+# instance, combat or flight is not logged out. Bots away on an arena server (ladder) never log in
+# and do not count toward the cap. The schedule lives in memory (a restart starts it afresh).
+# Supersedes Playerbots.EnablePeriodicOnlineOffline. GM commands: ".playerbots population status"
+# and ".playerbots population selftest".
+# Default: 0 (off, upstream behaviour)
+Playerbots.Population.Rotation.Enable = 0
+
+# Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
+# with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
+# 0 = every character on the random bot accounts.
+# Default: 2500
+Playerbots.Population.Rotation.RosterSize = 2500
+
+# Seconds between two rotation ticks (minimum 10)
+# Default: 300
+Playerbots.Population.Rotation.IntervalSeconds = 300
+
+# Mean length of an online session in minutes: each tick swaps about online x interval / mean session
+# bots.
+# Default: 120
+Playerbots.Population.Rotation.MeanSessionMinutes = 120
+
+# A swapped bot stays online (and a bot logged out stays offline) at least this many minutes before
+# the rotation swaps it again (at most MeanSessionMinutes).
+# Default: 30
+Playerbots.Population.Rotation.MinSessionMinutes = 30
+
+# Online share per day (percent) owed to a bot a real player knows. Never below the fair share
+# cap / roster; lowered when the acquainted bots alone would exceed the cap.
+# Default: 90
+Playerbots.Population.Rotation.AcquaintedSharePct = 90
+
+# The acquaintance score from which a bot counts as known (Playerbots.Acquaintance.*; minimum 1).
+# Default: 1
+Playerbots.Population.Rotation.AcquaintedMinScore = 1
+
 #
 #
 ####################################################################################################
