@@ -19,6 +19,7 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
+#include "LFGMgr.h"
 #include "LadderMgr.h"
 #include "Log.h"
 #include "Map.h"
@@ -90,8 +91,33 @@ bool IsPinned(Player* bot)
     if (bot->GetGroup() || bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue())
         return true;
 
+    if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE)
+        return true;
+
+    // Logged in over the cap by a ladder move (PvP gear comes off before a depart), or its team arrives or departs
+    for (uint8 slot = 0; slot < MAX_ARENA_SLOT; ++slot)
+    {
+        uint32 const teamId = bot->GetArenaTeamId(slot);
+        if (teamId && LadderMgr::Instance().IsMoving(teamId))
+            return true;
+    }
+
     Map* map = bot->GetMap();
     return map && map->Instanceable();
+}
+
+// A member of an arena team, the ladder's teams included: outside the roster it is left to the ladder (members it
+// released, resident teams), not logged out by the extra-logout pass
+bool InArenaTeam(Player* bot)
+{
+    if (!bot)
+        return false;
+
+    for (uint8 slot = 0; slot < MAX_ARENA_SLOT; ++slot)
+        if (bot->GetArenaTeamId(slot))
+            return true;
+
+    return false;
 }
 
 std::string BotName(uint32 guid)
@@ -457,7 +483,11 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
             if (rotation.lastExtra >= std::max<uint32>(1, rotation.last.budget))
                 break;
 
-            if (rotation.rosterGuids.contains(guid) || IsPinned(sRandomPlayerbotMgr.GetPlayerBot(guid)))
+            if (rotation.rosterGuids.contains(guid))
+                continue;
+
+            Player* extra = sRandomPlayerbotMgr.GetPlayerBot(guid);
+            if (IsPinned(extra) || InArenaTeam(extra))
                 continue;
 
             swaps.push_back({guid, 0});
