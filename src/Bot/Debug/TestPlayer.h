@@ -49,6 +49,8 @@ public:
     static bool HandleStatusCommand(ChatHandler* handler, char const* args);
     // Whispers a character through the chat opcode handler, as a client would (the chat hooks run)
     static bool HandleWhisperCommand(ChatHandler* handler, char const* args);
+    // Sends party chat through the chat opcode handler so the normal group chat hooks run
+    static bool HandlePartyCommand(ChatHandler* handler, char const* args);
     // Groups a character with the test player as the leader (as an accepted invite), or "none" leaves the group
     static bool HandleGroupCommand(ChatHandler* handler, char const* args);
     // Queues a 2v2 arena (rated: in a 2v2 team with the character, founded if missing) grouped with a character;
@@ -72,6 +74,7 @@ private:
     void Status(ChatHandler* handler);
     Player* OnlinePlayer() const;
     bool Whisper(ChatHandler* handler, std::string const& target, std::string const& text);
+    bool Party(ChatHandler* handler, std::string const& text);
     bool GroupWith(ChatHandler* handler, std::string const& target);
     bool ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated);
     void AcceptInvites(Player* player, uint32 diff);

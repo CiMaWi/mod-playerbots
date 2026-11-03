@@ -181,6 +181,18 @@ bool TestPlayerMgr::HandleWhisperCommand(ChatHandler* handler, char const* args)
     return Instance().Whisper(handler, target, text);
 }
 
+bool TestPlayerMgr::HandlePartyCommand(ChatHandler* handler, char const* args)
+{
+    if (!CheckEnabled(handler))
+        return false;
+
+    std::string const text(args ? args : "");
+    if (text.find_first_not_of(" \t\n\r\f\v") == std::string::npos)
+        return Fail(handler, "Usage: .playerbots testplayer party <text>");
+
+    return Instance().Party(handler, text);
+}
+
 bool TestPlayerMgr::HandleGroupCommand(ChatHandler* handler, char const* args)
 {
     if (!CheckEnabled(handler))
@@ -219,6 +231,30 @@ bool TestPlayerMgr::Whisper(ChatHandler* handler, std::string const& target, std
     packet << text;
     _session->HandleMessagechatOpcode(packet);
     handler->PSendSysMessage("Test player {} whispered {}: {}", _name, receiver->GetName(), text);
+    return true;
+}
+
+bool TestPlayerMgr::Party(ChatHandler* handler, std::string const& text)
+{
+    Player* player = OnlinePlayer();
+    if (!player)
+        return Fail(handler, "No test player is online");
+
+    Group* group = player->GetOriginalGroup();
+    if (!group)
+    {
+        group = player->GetGroup();
+        if (!group || group->isBGGroup())
+            return Fail(handler, "The test player is in no ordinary group");
+    }
+
+    uint32 const lang = player->GetTeamId() == TEAM_ALLIANCE ? LANG_COMMON : LANG_ORCISH;
+    WorldPacket packet(CMSG_MESSAGECHAT, 4 + 4 + text.size() + 1);
+    packet << uint32(CHAT_MSG_PARTY);
+    packet << lang;
+    packet << text;
+    _session->HandleMessagechatOpcode(packet);
+    handler->PSendSysMessage("Test player {} sent party chat: {}", _name, text);
     return true;
 }
 
