@@ -9,11 +9,13 @@
 #include <cmath>
 
 #include "AttackAction.h"
+#include "FollowActions.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotSecurity.h"
 #include "Playerbots.h"
+#include "StayActions.h"
 #include "ThreadCheck.h"
 #include "WorldSession.h"
 
@@ -35,6 +37,35 @@ bool Visible(Player* observer, Unit* target, float distance)
     return target && target->IsInWorld() && observer->IsInMap(target) && observer->InSamePhase(target) &&
            observer->IsWithinDistInMap(target, distance) && observer->CanSeeOrDetect(target, false, true);
 }
+
+// Only an attack or a mark names a unit; the wire carries no target for the other verbs.
+bool NeedsTarget(Intent operation) { return operation == Intent::AttackOwnTarget || operation == Intent::Mark; }
+
+// One move toward the formation location around the master; the follow strategy itself is left unchanged.
+Result FollowOnce(PlayerbotAI* ai, Player* bot, Player* controller)
+{
+    if (ai->GetMaster() != controller || !bot->IsAlive())
+        return Result::Rejected;
+
+    FollowAction follow(ai);
+    if (!follow.isUseful())
+        return Result::Rejected;
+
+    return follow.Execute(Event()) ? Result::Applied : Result::Failed;
+}
+
+// Stops the current movement once; an active follow strategy resumes at the engine's next movement decision.
+Result StayOnce(PlayerbotAI* ai, Player* bot)
+{
+    if (!bot->IsAlive())
+        return Result::Rejected;
+
+    StayAction stay(ai);
+    if (!stay.isUseful())
+        return Result::Rejected;
+
+    return stay.Execute(Event()) ? Result::Applied : Result::Failed;
+}
 }  // namespace
 
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize)
@@ -44,11 +75,11 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
 
     switch (order.Operation)
     {
+        case Intent::Follow:
+        case Intent::Stay:
         case Intent::AttackOwnTarget:
         case Intent::Mark:
             break;
-        case Intent::Follow:
-        case Intent::Stay:
         case Intent::Flee:
         case Intent::Regroup:
         case Intent::Pull:
@@ -63,9 +94,11 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
             return Result::Rejected;
     }
 
-    if (!order.Bot || !order.Controller || order.Bot == order.Controller || !order.Group || !order.Target ||
-        !std::isfinite(order.VisibilityDistance) || order.VisibilityDistance <= 0.0f ||
-        (order.Operation == Intent::Mark && order.Icon > 7) || !authorize || !authorize() || !phase.Current())
+    // A stray target on a target-less verb is a mapping error, never an ignored field.
+    if (!order.Bot || !order.Controller || order.Bot == order.Controller || !order.Group ||
+        NeedsTarget(order.Operation) != (order.Target != 0) || !std::isfinite(order.VisibilityDistance) ||
+        order.VisibilityDistance <= 0.0f || (order.Operation == Intent::Mark && order.Icon > 7) || !authorize ||
+        !authorize() || !phase.Current())
         return Result::Rejected;
 
     Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
@@ -84,6 +117,16 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
         (ai->GetMaster() ? ai->GetMaster() != controller : !group->IsLeader(controller->GetGUID())) ||
         !ai->GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_ALLOW_ALL, true, controller))
         return Result::Rejected;
+
+    switch (order.Operation)
+    {
+        case Intent::Follow:
+            return FollowOnce(ai, bot, controller);
+        case Intent::Stay:
+            return StayOnce(ai, bot);
+        default:
+            break;
+    }
 
     Unit* target = ObjectAccessor::GetUnit(*bot, ObjectGuid(order.Target));
     if (!Visible(bot, target, order.VisibilityDistance) || !Visible(controller, target, order.VisibilityDistance))

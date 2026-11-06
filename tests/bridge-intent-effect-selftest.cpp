@@ -4,8 +4,9 @@
  * or (at your option) any later version.
  */
 
-// The isolated runner supplies game doubles and includes the unchanged production effect implementation and
-// AttackAction method bodies. It does not replace either decision path with a parallel guard implementation.
+// The isolated runner supplies game doubles and includes the unchanged production effect implementation and the
+// AttackAction and StayAction method bodies; FollowAction is a counting double. It does not replace a decision path
+// with a parallel guard implementation.
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -15,6 +16,7 @@
 #include "J6b1-game-fixture.h"
 #include "BridgeIntentEffect.cpp"
 #include "AttackAction-body.inc"
+#include "StayAction-body.inc"
 // clang-format on
 
 using PlayerbotBridge::Intent;
@@ -69,9 +71,9 @@ struct Fixture
 
     Fixture()
     {
-        mutations = attacks = marks = 0;
-        security = melee = true;
-        waitForAttack = prohibited = unavailable = false;
+        mutations = attacks = marks = follows = usefulFollow = stays = stops = 0;
+        security = melee = followUseful = followResult = true;
+        waitForAttack = prohibited = unavailable = moveFromGroup = false;
         Bot.Guid = ObjectGuid(1);
         Human.Guid = ObjectGuid(2);
         Human.Session = &HumanSession;
@@ -84,6 +86,16 @@ struct Fixture
         AI.Master = &Human;
         ObjectAccessor::Units = {{1, &Bot}, {2, &Human}, {4, &Target}, {5, &Other}};
         PlayerbotThreadCheck::worldThread = std::this_thread::get_id();
+    }
+
+    // A target-less verb with its wire shape (no target) and a bot that is moving.
+    void OneShot(Intent operation)
+    {
+        Command.Operation = operation;
+        Command.Target = 0;
+        Bot.Moving = true;
+        AI.Values.Moving.Data = true;
+        Bot.State = UNIT_STATE_CHASE | UNIT_STATE_FOLLOW;
     }
 
     Result Run()
@@ -99,7 +111,8 @@ struct Fixture
     void Denied(Result expected = Result::Rejected)
     {
         Check(Run() == expected, "denial result");
-        Check(mutations == 0 && attacks == 0 && marks == 0, "denied no mutation");
+        Check(mutations == 0 && attacks == 0 && marks == 0 && follows == 0 && stays == 0 && stops == 0,
+              "denied no mutation");
     }
 };
 }  // namespace
@@ -139,7 +152,8 @@ int main()
     {
         Fixture f;
         f.Command.Operation = static_cast<Intent>(operation);
-        if (f.Command.Operation != Intent::AttackOwnTarget && f.Command.Operation != Intent::Mark)
+        if (f.Command.Operation != Intent::AttackOwnTarget && f.Command.Operation != Intent::Mark &&
+            f.Command.Operation != Intent::Follow && f.Command.Operation != Intent::Stay)
         {
             f.Denied(Result::Unavailable);
             Check(f.Authorizations == 0, "unavailable before admission callback");
@@ -314,6 +328,128 @@ int main()
         f.AI.Values.Current.Data = &f.Target;
         Check(action.Execute(Event{}), "legacy wait semantics preserved");
         Check(attacks == 0 && mutations > 0, "legacy target selection retained");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        Check(f.Run() == Result::Applied, "follow applies");
+        Check(follows == 1 && usefulFollow == 1 && stays == 0 && stops == 0 && attacks == 0 && marks == 0,
+              "one follow move and nothing else");
+        Check(f.Authorizations == 1 && f.Party.Marked == ObjectGuid() && f.Bot.Target == f.Target.Guid,
+              "one follow authorization without target or selection writes");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Stay);
+        Check(f.Run() == Result::Applied, "stay applies");
+        Check(stays == 1 && stops == 1 && follows == 0 && usefulFollow == 0 && attacks == 0 && marks == 0,
+              "one stop and nothing else");
+        Check(!f.Bot.Moving && !f.Bot.HasUnitState(UNIT_STATE_CHASE | UNIT_STATE_FOLLOW) &&
+                  f.AI.Values.StayTime.Data != 0 && f.AI.Values.MovingParam == "moving/self target",
+              "stay stops chase and follow once and records its stay time");
+        Check(f.Authorizations == 1, "one stay authorization");
+    }
+    for (Intent operation : {Intent::Follow, Intent::Stay})
+    {
+        std::vector<std::function<void(Fixture&)>> oneShotDenials = {
+            [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
+            [](Fixture& f) { f.HumanSession.Headless = true; },
+            [](Fixture& f) { f.Human.Session = nullptr; },
+            [](Fixture& f) { f.Command.Bot = 0; },
+            [](Fixture& f) { f.Command.Controller = 0; },
+            [](Fixture& f) { f.Command.Controller = 1; },
+            [](Fixture& f) { f.Command.Group = 0; },
+            [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
+            [](Fixture&) { ObjectAccessor::Units.erase(1); },
+            [](Fixture&) { ObjectAccessor::Units.erase(2); },
+            [](Fixture& f) { f.Bot.World = false; },
+            [](Fixture& f) { f.Bot.AI = nullptr; },
+            [](Fixture& f) { f.AI.BotAI = false; },
+            [](Fixture& f) { f.Human.AI = &f.HumanAI; },
+            [](Fixture& f) { f.Human.Seen = false; },
+            [](Fixture& f) { f.Bot.Seen = false; },
+            [](Fixture& f) { f.Human.Map = 2; },
+            [](Fixture& f) { f.Human.Phase = 2; },
+            [](Fixture& f) { f.Human.Near = false; },
+            [](Fixture& f) { f.Human.Team = 1; },
+            [](Fixture& f) { f.Bot.Party = nullptr; },
+            [](Fixture& f) { f.Party.Guid = ObjectGuid(77); },
+            [](Fixture& f) { f.Human.Party = &f.OtherParty; },
+            [](Fixture& f) { f.Party.Member = false; },
+            [](Fixture& f) { f.AI.Master = &f.Other; },
+            [](Fixture& f)
+            {
+                f.AI.Master = nullptr;
+                f.Party.Leader = f.Other.Guid;
+            },
+            [](Fixture&) { security = false; },
+            [](Fixture& f) { f.Bot.Alive = false; }};
+        if (operation == Intent::Follow)
+            oneShotDenials.push_back([](Fixture&) { followUseful = false; });
+        else
+        {
+            oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Moving.Data = false; });
+            oneShotDenials.push_back([](Fixture&) { moveFromGroup = true; });
+            oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Positions.Data["stay"].Set = true; });
+        }
+        for (auto const& deny : oneShotDenials)
+        {
+            Fixture f;
+            f.OneShot(operation);
+            deny(f);
+            f.Denied();
+        }
+        {
+            Fixture f;
+            f.OneShot(operation);
+            Check(OllamaBotRandomChatter::Run(f.Command, {}) == Result::Rejected, "one-shot missing callback");
+            Check(OllamaBotRandomChatter::Run(f.Command, [] { return false; }) == Result::Rejected,
+                  "one-shot admission refusal");
+            Check(OllamaBotRandomChatter::Run(f.Command,
+                                              [&]
+                                              {
+                                                  f.AI.Master = &f.Other;
+                                                  return true;
+                                              }) == Result::Rejected,
+                  "one-shot facts resolved after admission callback");
+            Check(OllamaBotRandomChatter::Run(
+                      f.Command, [] { return true; }, true) == Result::Rejected,
+                  "one-shot scope cannot cross threads");
+            Check(mutations == 0 && follows == 0 && stays == 0 && usefulFollow == 0, "one-shot refusals no effect");
+        }
+        {
+            Fixture f;
+            f.OneShot(operation);
+            PlayerbotThreadCheck::worldThread = std::thread::id();
+            f.Denied();
+            Check(f.Authorizations == 0, "one-shot startup no authority");
+        }
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        f.AI.Master = nullptr;
+        f.Denied();
+        Check(f.Authorizations == 1 && usefulFollow == 0, "a follow in a leader-run group has no master to follow");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Stay);
+        f.AI.Master = nullptr;
+        Check(f.Run() == Result::Applied && stays == 1, "the group leader may stop a masterless bot once");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        followResult = false;
+        Check(f.Run() == Result::Failed && follows == 1 && f.Authorizations == 1, "follow failure one attempt");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Stay);
+        f.Bot.MotionState.Type = FLIGHT_MOTION_TYPE;
+        Check(f.Run() == Result::Failed && stays == 1 && stops == 0 && f.Authorizations == 1,
+              "stay failure one attempt");
     }
     std::cout << "PASS " << checks << " checks\n";
 }
