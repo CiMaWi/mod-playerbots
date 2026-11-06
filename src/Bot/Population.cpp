@@ -35,11 +35,14 @@
 #include "PopulationPolicy.h"
 #include "PvpGearMgr.h"
 #include "QueryCallback.h"
+#include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
+#include "Timer.h"
 #include "World.h"
+#include "WorldSession.h"
 
 namespace
 {
@@ -351,6 +354,8 @@ void PrintBalance(ChatHandler* handler, uint32 now)
 std::atomic<bool> s_retire{false};
 
 constexpr char const* RetireEnableKey = "Playerbots.Population.Retire.Enable";
+constexpr size_t RetireRecordsKept = 5;          // the last retires and creations the status lists
+constexpr uint32 CreateConfirmRetrySeconds = 5;  // a missing row is looked for again (several async DB workers)
 
 // The rows of a retired bot that Player::DeleteFromDB leaves behind: one DELETE each, in one transaction per DB queued
 // before the core's delete (one async worker per DB, so FIFO: item_soulbound_trade_data still finds the bot's items).
@@ -423,6 +428,17 @@ struct RetirePass
     bool failed = false;
 };
 
+// The counters a summary reports as differences
+struct RetireTotals
+{
+    uint64 retired = 0;
+    uint64 created = 0;
+    uint64 gaveUp = 0;
+    uint64 wouldRetire = 0;
+    uint64 wouldCreate = 0;
+    uint64 refused = 0;
+};
+
 // World thread only
 struct Retire
 {
@@ -458,6 +474,18 @@ struct Retire
     uint64 retired = 0;
     uint64 wouldRetire = 0;
     uint64 refused = 0;
+    uint32 createAttempts = 3;
+    uint32 summarySeconds = 3600;
+    uint32 lastSummary = 0;
+    uint32 nextSummary = 0;
+    bool counting = false;                       // the summary's character count is in flight
+    PopulationPolicy::CreateAccounting creates;  // the replacements the live retires owe (H4b)
+    std::deque<RetireRecord> lastCreated;
+    uint64 made = 0;  // characters made and saved, confirmed or not
+    uint64 wouldCreate = 0;
+    uint64 createMsTotal = 0;
+    uint32 createMsMax = 0;
+    RetireTotals summaryBase;
     QueryCallbackProcessor queries;
 };
 
@@ -579,17 +607,22 @@ void RetireBot(Retire& retire, uint32 guid, uint32 score, PopulationPolicy::Reti
     uint32 const classId = entry->Class;
     retire.recent.push_back(now);
     retire.last.push_front({name, guid, level, now, retire.dryRun});
-    if (retire.last.size() > 5)
+    if (retire.last.size() > RetireRecordsKept)
         retire.last.pop_back();
 
     if (retire.dryRun)
     {
         ++retire.wouldRetire;
+        ++retire.wouldCreate;
         LOG_INFO("playerbots",
                  "[Population] would retire: {} (#{}, level {}, class {}, account {}, score {}) range {}-{} count {} "
                  "target {:.0f} (Retire.DryRun = 1: nothing deleted)",
                  name, guid, level, classId, account, score, range.firstLevel, range.lastLevel, range.count,
                  range.target);
+        LOG_INFO("playerbots",
+                 "[Population] would create: a new bot of class {} on account {} for {} (#{}) (Retire.DryRun = 1: "
+                 "nothing created)",
+                 classId, account, name, guid);
         return;
     }
 
@@ -633,9 +666,10 @@ void RetireBot(Retire& retire, uint32 guid, uint32 score, PopulationPolicy::Reti
         PlayerbotsDatabase.CommitTransaction(playerbots);
 
     // The core's delete (CHAR_DELETE_REMOVE): the character, its items, pets, mail, social lists, achievements, quests,
-    // guild membership and the character cache entry; the account stays (H4b reuses its free slot). It runs a few
-    // synchronous mail queries on this thread, hence the per-pass and per-hour caps.
+    // guild membership and the character cache entry; the account stays, and its free slot takes the replacement. It
+    // runs a few synchronous mail queries on this thread, hence the per-pass and per-hour caps.
     Player::DeleteFromDB(guid, account, true, true);
+    PopulationPolicy::CreateOwe(retire.creates, guid, account, classId, now, name);
     ++retire.retired;
     LOG_INFO("playerbots",
              "[Population] retire: {} (#{}, level {}, class {}, account {}, score {}) range {}-{} count {} target "
@@ -703,6 +737,14 @@ void FinishRetirePass(RetirePass const& pass)
 // leader, group, ladder roster). Every query returns a sentinel row, so an empty result means a failed query.
 void StartRetirePass(Retire& retire, uint32 now)
 {
+    // The roster is never short by more than one pass's retires
+    if (!PopulationPolicy::RetireGate(retire.creates))
+    {
+        LOG_DEBUG("playerbots", "[Population] retire pass skipped: {} replacements owed{}", retire.creates.owed.size(),
+                  retire.creates.paused ? ", paused after a replacement was given up" : "");
+        return;
+    }
+
     Rotation const& rotation = GetRotation();
     std::vector<uint32> const& accounts = sPlayerbotAIConfig.RandomBotAccounts;
     if (rotation.roster.empty() || accounts.empty() || !AcquaintanceMgr::Instance().IsLoaded())
@@ -883,9 +925,171 @@ void StartRetirePrepare(Retire& retire)
                     LOG_INFO(
                         "playerbots",
                         "[Population] retire: {} characters and {} playerbots rows cleared per retired bot besides "
-                        "the core's delete; {} lab clone accounts never touched{}{}",
+                        "the core's delete; {} lab clone accounts never touched; each live retire is replaced by a "
+                        "new bot of its class on its account{}{}",
                         retire.characterRows, retire.playerbotsRows, retire.cloneAccounts.size(),
                         missing.empty() ? "" : "; not in the DB:", missing);
+                }));
+}
+
+RetireTotals TotalsOf(Retire const& retire)
+{
+    RetireTotals totals;
+    totals.retired = retire.retired;
+    totals.created = retire.creates.created;
+    totals.gaveUp = retire.creates.gaveUp;
+    totals.wouldRetire = retire.wouldRetire;
+    totals.wouldCreate = retire.wouldCreate;
+    totals.refused = retire.refused;
+    return totals;
+}
+
+// The entry as it was before the failed attempt
+void LogCreateFailure(PopulationPolicy::CreateEntry const& entry, PopulationPolicy::CreateDecision decision,
+                      uint32 maxAttempts, uint32 retrySeconds, std::string const& why)
+{
+    if (decision == PopulationPolicy::CreateDecision::GaveUp)
+        LOG_ERROR("playerbots",
+                  "[Population] create gave up: account {} class {} (replacing {} #{}) after {} attempts, last: {}; "
+                  "the roster is short by 1 until the next restart (the factory refills accounts at startup); "
+                  "retires pause until .reload config",
+                  entry.account, entry.classId, entry.retiredName, entry.retiredGuid, entry.attempts + 1, why);
+    else
+        LOG_WARN("playerbots",
+                 "[Population] create failed: account {} class {} (replacing {} #{}): {}; attempt {} of {}, again in "
+                 "{} s",
+                 entry.account, entry.classId, entry.retiredName, entry.retiredGuid, why, entry.attempts + 1,
+                 maxAttempts, retrySeconds);
+}
+
+// The confirm query's answer (world thread): the roster reload (a synchronous query) runs only once the row is there
+void ConfirmCreated(uint32 retiredGuid, uint32 guid, bool found)
+{
+    Retire& retire = GetRetire();
+    PopulationPolicy::CreateEntry const* owed = PopulationPolicy::CreateFind(retire.creates, retiredGuid);
+    if (!owed)
+        return;
+
+    PopulationPolicy::CreateEntry const entry = *owed;
+    PopulationPolicy::CreateDecision const decision = PopulationPolicy::CreateApply(
+        retire.creates, retiredGuid,
+        found ? PopulationPolicy::CreateOutcome::Confirmed : PopulationPolicy::CreateOutcome::Missing, Now(),
+        CreateConfirmRetrySeconds, retire.createAttempts);
+    if (decision == PopulationPolicy::CreateDecision::Done)
+    {
+        Population::InvalidateRoster();
+        LOG_DEBUG("playerbots", "[Population] create confirmed: #{} replaces #{}", guid, retiredGuid);
+        return;
+    }
+
+    LogCreateFailure(entry, decision, retire.createAttempts, CreateConfirmRetrySeconds,
+                     Acore::StringFormat("#{} not in characters after the save", guid));
+}
+
+// Queued behind the save's transaction on the same async worker
+void StartCreateConfirm(Retire& retire, uint32 retiredGuid, uint32 guid, uint32 account, uint32 now)
+{
+    PopulationPolicy::CreateApply(retire.creates, retiredGuid, PopulationPolicy::CreateOutcome::Created, now, 0,
+                                  retire.createAttempts, guid);
+    retire.queries.AddCallback(CharacterDatabase
+                                   .AsyncQuery(Acore::StringFormat(
+                                       "SELECT guid FROM characters WHERE guid = {} AND account = {}", guid, account))
+                                   .WithCallback([retiredGuid, guid](QueryResult result)
+                                                 { ConfirmCreated(retiredGuid, guid, static_cast<bool>(result)); }));
+}
+
+// The owed replacements (world thread): the startup factory's creation and save on the retired bot's account, then a
+// confirm query. The factory's name pick runs up to two synchronous queries, hence at most MaxPerPass per call, timed.
+void CreateOwedBots(Retire& retire, uint32 now)
+{
+    for (uint32 const retiredGuid : PopulationPolicy::CreateDue(retire.creates, now, retire.maxPerPass))
+    {
+        PopulationPolicy::CreateEntry const* owed = PopulationPolicy::CreateFind(retire.creates, retiredGuid);
+        if (!owed)
+            continue;
+
+        PopulationPolicy::CreateEntry const entry = *owed;
+        if (entry.createdGuid)
+        {
+            StartCreateConfirm(retire, retiredGuid, entry.createdGuid, entry.account, now);
+            continue;
+        }
+
+        uint32 const start = getMSTime();
+        std::unique_ptr<WorldSession> const session(new WorldSession(entry.account, "", 0x0, nullptr, SEC_PLAYER,
+                                                                     EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0),
+                                                                     LOCALE_enUS, 0, false, false, 0));
+        // Empty: the factory picks the one name it needs
+        std::unordered_map<RandomPlayerbotFactory::NameRaceAndGender, std::vector<std::string>> names;
+        RandomPlayerbotFactory factory;
+        Player* bot = factory.CreateRandomBot(session.get(), static_cast<uint8>(entry.classId), names);
+        if (!bot)
+        {
+            PopulationPolicy::CreateDecision const decision =
+                PopulationPolicy::CreateApply(retire.creates, retiredGuid, PopulationPolicy::CreateOutcome::Failed, now,
+                                              retire.intervalSeconds, retire.createAttempts);
+            LogCreateFailure(entry, decision, retire.createAttempts, retire.intervalSeconds,
+                             "the factory made no character");
+            continue;
+        }
+
+        uint32 const guid = bot->GetGUID().GetCounter();
+        std::string const name = bot->GetName();
+        uint32 const level = bot->GetLevel();  // 1; a death knight starts at the heroic start level
+        uint32 const race = bot->getRace();
+        bot->SaveToDB(true, false);
+        sCharacterCache->AddCharacterCacheEntry(bot->GetGUID(), entry.account, name, bot->getGender(), bot->getRace(),
+                                                bot->getClass(), bot->GetLevel());
+        bot->CleanupsBeforeDelete();
+        delete bot;
+
+        uint32 const ms = GetMSTimeDiffToNow(start);
+        ++retire.made;
+        retire.createMsTotal += ms;
+        retire.createMsMax = std::max(retire.createMsMax, ms);
+        retire.lastCreated.push_front({name, guid, level, now, false});
+        if (retire.lastCreated.size() > RetireRecordsKept)
+            retire.lastCreated.pop_back();
+
+        LOG_INFO("playerbots",
+                 "[Population] create: {} (#{}, level {}, class {}, race {}, account {}) replaces {} (#{}), took {} ms",
+                 name, guid, level, entry.classId, race, entry.account, entry.retiredName, entry.retiredGuid, ms);
+        StartCreateConfirm(retire, retiredGuid, guid, entry.account, now);
+    }
+}
+
+// Retire.SummaryMinutes: the window's retires and creations and the bot accounts' character count (one async query)
+void StartRetireSummary(Retire& retire, uint32 now)
+{
+    RetireTotals const totals = TotalsOf(retire);
+    RetireTotals const& base = retire.summaryBase;
+    std::string const text = Acore::StringFormat(
+        "retired {}, created {}, create gave up {}, would retire {}, would create {}, refused {}, owed {}{}, roster {}",
+        totals.retired - base.retired, totals.created - base.created, totals.gaveUp - base.gaveUp,
+        totals.wouldRetire - base.wouldRetire, totals.wouldCreate - base.wouldCreate, totals.refused - base.refused,
+        retire.creates.owed.size(), retire.creates.paused ? " (paused)" : "", GetRotation().roster.size());
+    uint32 const minutes = (now - retire.lastSummary) / 60;
+    retire.summaryBase = totals;
+    retire.lastSummary = now;
+    retire.nextSummary = now + retire.summarySeconds;
+    std::vector<uint32> const& accounts = sPlayerbotAIConfig.RandomBotAccounts;
+    if (accounts.empty())
+    {
+        LOG_INFO("playerbots", "[Population] retire summary (last {} min): {}, characters ?", minutes, text);
+        return;
+    }
+
+    retire.counting = true;
+    retire.queries.AddCallback(
+        CharacterDatabase
+            .AsyncQuery(Acore::StringFormat(
+                "SELECT COUNT(*) FROM characters WHERE account IN ({}) AND deleteDate IS NULL", JoinIds(accounts)))
+            .WithCallback(
+                [minutes, text](QueryResult result)
+                {
+                    GetRetire().counting = false;
+                    LOG_INFO("playerbots", "[Population] retire summary (last {} min): {}, characters {}", minutes,
+                             text, result ? std::to_string(result->Fetch()[0].Get<uint64>()) : std::string("?"));
                 }));
 }
 
@@ -908,6 +1112,9 @@ void LoadRetireConfig(bool reload, bool persistent)
     retire.testRange =
         !testRange.empty() && PopulationPolicy::ParseRetireTestRange(testRange, retire.testFirst, retire.testLast);
     retire.testTarget = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.TestTarget", 0);
+    retire.createAttempts =
+        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.CreateAttempts", 3), 1, 10);
+    retire.summarySeconds = 60 * sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.SummaryMinutes", 60);
     if (!testRange.empty() && !retire.testRange)
         LOG_WARN("playerbots",
                  "[Population] Playerbots.Population.Retire.TestRange = \"{}\" is not first-last; ignored", testRange);
@@ -932,6 +1139,10 @@ void LoadRetireConfig(bool reload, bool persistent)
 
     retire.prepared = false;
     retire.refusedLogged.clear();
+    retire.creates.paused = false;  // a reload resumes the retires a given-up replacement paused
+    retire.lastSummary = Now();
+    retire.nextSummary = retire.lastSummary + retire.summarySeconds;
+    retire.summaryBase = TotalsOf(retire);
     if (!reload)
         retire.seed = static_cast<uint32>(time(nullptr));
 
@@ -949,29 +1160,35 @@ void LoadRetireConfig(bool reload, bool persistent)
         return;
     }
 
-    LOG_INFO("playerbots",
-             "[Population] {}{} = 1{}: every {} s, at most {} per pass and {} per hour, max score {}, ranges over "
-             "target for {} min, batch {}{}",
-             reload ? "reload: " : "", RetireEnableKey,
-             retire.dryRun ? " (DryRun = 1: logs only)" : " (LIVE: deletes characters)", retire.intervalSeconds,
-             retire.maxPerPass, retire.maxPerHour, retire.maxScore, retire.persistSeconds / 60, retire.candidates,
-             retire.testRange ? Acore::StringFormat(", test range {}-{} target {}", retire.testFirst, retire.testLast,
-                                                    retire.testTarget)
-                              : std::string());
+    LOG_INFO(
+        "playerbots",
+        "[Population] {}{} = 1{}: every {} s, at most {} per pass and {} per hour, max score {}, ranges over "
+        "target for {} min, batch {}, {} tries per replacement, summary {}{}",
+        reload ? "reload: " : "", RetireEnableKey,
+        retire.dryRun ? " (DryRun = 1: logs only)" : " (LIVE: deletes and replaces characters)", retire.intervalSeconds,
+        retire.maxPerPass, retire.maxPerHour, retire.maxScore, retire.persistSeconds / 60, retire.candidates,
+        retire.createAttempts,
+        retire.summarySeconds ? Acore::StringFormat("every {} min", retire.summarySeconds / 60) : std::string("off"),
+        retire.testRange
+            ? Acore::StringFormat(", test range {}-{} target {}", retire.testFirst, retire.testLast, retire.testTarget)
+            : std::string());
 }
 
 void PrintRetire(ChatHandler* handler, uint32 now)
 {
     Retire& retire = GetRetire();
+    std::string const owed = retire.creates.owed.empty()
+                                 ? std::string()
+                                 : Acore::StringFormat("; {} replacements still owed", retire.creates.owed.size());
     if (!retire.enable)
     {
-        handler->PSendSysMessage("Retire: off");
+        handler->PSendSysMessage("Retire: off{}", owed);
         return;
     }
 
     if (!retire.refusal.empty())
     {
-        handler->PSendSysMessage("Retire: refused ({})", retire.refusal);
+        handler->PSendSysMessage("Retire: refused ({}){}", retire.refusal, owed);
         return;
     }
 
@@ -979,21 +1196,32 @@ void PrintRetire(ChatHandler* handler, uint32 now)
     handler->PSendSysMessage(
         "Retire: on{}; every {} s, at most {} per pass and {} per hour ({} left), max score {}, persist {} min, "
         "batch {}{}",
-        retire.dryRun ? " (DRY RUN: nothing deleted)" : "", retire.intervalSeconds, retire.maxPerPass,
+        retire.dryRun ? " (DRY RUN: nothing deleted or created)" : "", retire.intervalSeconds, retire.maxPerPass,
         retire.maxPerHour, left, retire.maxScore, retire.persistSeconds / 60, retire.candidates,
         retire.testRange
             ? Acore::StringFormat(", test range {}-{} target {}", retire.testFirst, retire.testLast, retire.testTarget)
             : std::string());
     handler->PSendSysMessage(
-        "Retire totals: passes {}, retired {}, would retire {}, known bots refused {}; last pass {}, {} bots in range; "
-        "{} + {} rows per bot ({}), {} clone accounts",
-        retire.passes, retire.retired, retire.wouldRetire, retire.refused,
+        "Retire totals: passes {}, retired {}, would retire {}, known bots refused {}; created {}, create failed {}, "
+        "owed {}, would create {}; last pass {}, {} bots in range; {} + {} rows per bot ({}), {} clone accounts",
+        retire.passes, retire.retired, retire.wouldRetire, retire.refused, retire.creates.created,
+        retire.creates.gaveUp, retire.creates.owed.size(), retire.wouldCreate,
         retire.lastPass ? Acore::StringFormat("{} s ago", now - retire.lastPass) : std::string("none"),
         retire.lastInRange, retire.characterRows, retire.playerbotsRows, retire.prepared ? "prepared" : "not prepared",
         retire.cloneAccounts.size());
+    handler->PSendSysMessage(
+        "Create: {} tries per replacement, {} failed attempts{}; {} ms per creation on average, "
+        "{} at most",
+        retire.createAttempts, retire.creates.failures,
+        retire.creates.paused ? ", retires paused until .reload config" : "",
+        retire.made ? retire.createMsTotal / retire.made : 0, retire.createMsMax);
     for (RetireRecord const& record : retire.last)
         handler->PSendSysMessage("  {} {} (#{}), level {}, {} s ago", record.dryRun ? "would retire" : "retired",
                                  record.name, record.guid, record.level, now - record.at);
+
+    for (RetireRecord const& record : retire.lastCreated)
+        handler->PSendSysMessage("  created {} (#{}), level {}, {} s ago", record.name, record.guid, record.level,
+                                 now - record.at);
 }
 }  // namespace
 
@@ -1289,18 +1517,25 @@ bool Population::IsRetire() { return s_retire.load(std::memory_order_relaxed); }
 void Population::RetireTick(std::unordered_set<uint32> const& online)
 {
     Retire& retire = GetRetire();
-    if (!retire.busy && !IsRetire())
+    // Owed replacements are made even after Retire is switched off: their bots are deleted already
+    if (!retire.busy && !retire.counting && retire.creates.owed.empty() && !IsRetire())
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("Population::RetireTick");
     retire.online = &online;
     retire.queries.ProcessReadyCallbacks();
     retire.online = nullptr;
-    if (retire.busy || !IsRetire())
+    uint32 const now = Now();
+    if (!retire.creates.owed.empty())
+        CreateOwedBots(retire, now);
+
+    if (!IsRetire())
         return;
 
-    uint32 const now = Now();
-    if (now < retire.nextPass)
+    if (retire.summarySeconds && !retire.counting && now >= retire.nextSummary)
+        StartRetireSummary(retire, now);
+
+    if (retire.busy || now < retire.nextPass)
         return;
 
     retire.nextPass = now + retire.intervalSeconds;

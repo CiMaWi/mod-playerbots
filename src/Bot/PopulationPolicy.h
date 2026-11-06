@@ -1564,6 +1564,125 @@ inline std::string RetireReasons(uint32_t protect, uint32_t score, uint32_t maxS
     return text;
 }
 
+// H4b: a live retire owes a new bot of the retired bot's class on its account (the core's delete keeps the account,
+// so it has a free slot). The entry stays until the new character's row is confirmed or the replacement is given up.
+struct CreateEntry
+{
+    uint32_t retiredGuid = 0;
+    uint32_t account = 0;
+    uint32_t classId = 0;
+    uint32_t attempts = 0;     // failed creations and confirms
+    uint32_t notBefore = 0;    // game time of the next try
+    uint32_t createdGuid = 0;  // the new character while its row is unconfirmed: a retry confirms, never creates again
+    bool confirming = false;   // its confirm query is in flight
+    std::string retiredName;
+};
+
+enum class CreateOutcome
+{
+    Created,    // the character was made and saved: its row is confirmed next
+    Failed,     // the factory made none: create again later
+    Confirmed,  // its row is in the DB
+    Missing,    // its row is not in the DB: confirm again later
+};
+
+enum class CreateDecision
+{
+    Unknown,  // no such entry
+    Confirm,
+    Retry,
+    GaveUp,
+    Done,
+};
+
+struct CreateAccounting
+{
+    std::vector<CreateEntry> owed;  // oldest first
+    uint64_t created = 0;
+    uint64_t gaveUp = 0;
+    uint64_t failures = 0;  // failed attempts, given up or not
+    bool paused = false;    // a replacement was given up: no retire until a reload (the caller clears it)
+};
+
+// No retire pass while a replacement is owed or after one was given up: the roster is short by at most one pass's
+// retires, and a factory that fails costs no more than that
+inline bool RetireGate(CreateAccounting const& accounting) { return accounting.owed.empty() && !accounting.paused; }
+
+inline void CreateOwe(CreateAccounting& accounting, uint32_t retiredGuid, uint32_t account, uint32_t classId,
+                      uint32_t now, std::string const& retiredName = std::string())
+{
+    CreateEntry entry;
+    entry.retiredGuid = retiredGuid;
+    entry.account = account;
+    entry.classId = classId;
+    entry.notBefore = now;
+    entry.retiredName = retiredName;
+    accounting.owed.push_back(entry);
+}
+
+inline CreateEntry const* CreateFind(CreateAccounting const& accounting, uint32_t retiredGuid)
+{
+    for (CreateEntry const& entry : accounting.owed)
+        if (entry.retiredGuid == retiredGuid)
+            return &entry;
+
+    return nullptr;
+}
+
+// The entries to work on now, oldest first, at least one and at most maxPerCall: none in flight, none waiting
+inline std::vector<uint32_t> CreateDue(CreateAccounting const& accounting, uint32_t now, uint32_t maxPerCall)
+{
+    std::vector<uint32_t> due;
+    for (CreateEntry const& entry : accounting.owed)
+    {
+        if (due.size() >= std::max<uint32_t>(1, maxPerCall))
+            break;
+
+        if (!entry.confirming && now >= entry.notBefore)
+            due.push_back(entry.retiredGuid);
+    }
+
+    return due;
+}
+
+// Records an outcome. A failed creation or confirm waits retrySeconds and counts towards maxAttempts; then the
+// replacement is given up (the factory refills the account at the next startup) and the retires pause.
+inline CreateDecision CreateApply(CreateAccounting& accounting, uint32_t retiredGuid, CreateOutcome outcome,
+                                  uint32_t now, uint32_t retrySeconds, uint32_t maxAttempts, uint32_t createdGuid = 0)
+{
+    auto const it = std::find_if(accounting.owed.begin(), accounting.owed.end(),
+                                 [retiredGuid](CreateEntry const& entry) { return entry.retiredGuid == retiredGuid; });
+    if (it == accounting.owed.end())
+        return CreateDecision::Unknown;
+
+    if (outcome == CreateOutcome::Created)
+    {
+        it->createdGuid = createdGuid;
+        it->confirming = true;
+        return CreateDecision::Confirm;
+    }
+
+    if (outcome == CreateOutcome::Confirmed)
+    {
+        ++accounting.created;
+        accounting.owed.erase(it);
+        return CreateDecision::Done;
+    }
+
+    ++accounting.failures;
+    it->confirming = false;
+    if (++it->attempts >= std::max<uint32_t>(1, maxAttempts))
+    {
+        ++accounting.gaveUp;
+        accounting.paused = true;
+        accounting.owed.erase(it);
+        return CreateDecision::GaveUp;
+    }
+
+    it->notBefore = now + retrySeconds;
+    return CreateDecision::Retry;
+}
+
 struct RetireSimParams
 {
     uint32_t bots = 2500;
@@ -1576,6 +1695,9 @@ struct RetireSimParams
     uint32_t protectedPct = 15;  // bots with a protection bit
     uint32_t metPct = 5;         // bots with a score of 1-10
     uint32_t levelUpPerMille = 10;
+    uint32_t createFailPerMille = 0;  // creations that fail
+    uint32_t createFailHours = 0;     // ... in the first hours only; 0 = the whole run
+    uint32_t createAttempts = 3;
     uint32_t seed = 1;
 };
 
@@ -1588,12 +1710,74 @@ struct RetireSimStats
     uint64_t overHour = 0;          // more retires in a sliding hour than maxPerHour
     uint64_t overPass = 0;          // more retires in a pass than maxPerPass
     uint64_t createRangeRetired = 0;
+    uint64_t createFailures = 0;  // failed creation attempts
+    uint64_t gaveUp = 0;          // replacements given up
+    uint64_t gatedPasses = 0;     // passes without a retire because a replacement was owed
+    uint32_t owedAtEnd = 0;
+    uint32_t finalRoster = 0;
     uint32_t minRoster = UINT32_MAX;
     uint32_t maxRoster = 0;
 };
 
+// One simulated pass's retires (SimulateRetire): the bots chosen leave the roster and are returned
+inline std::vector<uint32_t> SimulateRetirePass(RetireSimParams const& params, std::vector<RetireCandidate>& roster,
+                                                std::vector<RetireRange> const& layout, std::vector<uint32_t>& recent,
+                                                uint32_t now, uint32_t pass, RetireSimStats& stats)
+{
+    std::vector<RetireRange> ranges;
+    for (RetireRange range : layout)
+    {
+        range.target = params.bots * (range.firstLevel == 80 ? 2.0 : 1.0) / 10.0;
+        for (RetireCandidate const& bot : roster)
+            if (bot.level >= range.firstLevel && bot.level <= range.lastLevel)
+                ++range.count;
+
+        if (RetireRangeAllowed(range.firstLevel, range.lastLevel) && RetireSurplus(range.count, range.target))
+            ranges.push_back(range);
+    }
+
+    uint32_t const left = RetireHourLeft(recent, now, params.maxPerHour);
+    std::vector<uint32_t> const chosen =
+        SelectRetirees(roster, ranges, params.maxScore, std::min(left, params.maxPerPass), params.seed + pass);
+    if (chosen.size() > params.maxPerPass)
+        ++stats.overPass;
+
+    std::vector<uint32_t> retired;
+    for (uint32_t const guid : chosen)
+    {
+        auto const it =
+            std::find_if(roster.begin(), roster.end(), [guid](RetireCandidate const& bot) { return bot.guid == guid; });
+        if (it == roster.end())
+            continue;
+
+        if (it->protect || it->score > params.maxScore)
+            ++stats.protectedRetired;
+
+        if (!RetireRangeAllowed(1, 9) && it->level <= 9)
+            ++stats.createRangeRetired;
+
+        for (RetireRange& range : ranges)
+            if (it->level >= range.firstLevel && it->level <= range.lastLevel)
+            {
+                --range.count;
+                if (range.count < std::ceil(range.target))
+                    ++stats.belowTarget;
+            }
+
+        roster.erase(it);
+        ++stats.retired;
+        retired.push_back(guid);
+        recent.push_back(now);
+        if (recent.size() > params.maxPerHour)
+            ++stats.overHour;
+    }
+
+    return retired;
+}
+
 // Hours of passes over a roster skewed to 70-79, ranges of 10 levels with an equal share and the max level double
-// (DH.1), every retire replaced by a new level-1 bot (H4b), bots levelling up at random between passes
+// (DH.1), every retire owing a new level-1 bot (H4b; failed creations retried, given up after createAttempts), bots
+// levelling up at random between passes
 inline RetireSimStats SimulateRetire(RetireSimParams const& params)
 {
     uint64_t state = params.seed * 0x9E3779B97F4A7C15ull + 1;
@@ -1627,9 +1811,11 @@ inline RetireSimStats SimulateRetire(RetireSimParams const& params)
 
     layout.push_back({80, 80, 0, 0.0});
     RetireSimStats stats;
+    CreateAccounting accounting;
     std::vector<uint32_t> recent;
     uint32_t const step = 3600 / std::max<uint32_t>(1, params.passesPerHour);
     uint32_t const passes = params.hours * std::max<uint32_t>(1, params.passesPerHour);
+    uint32_t const failPasses = params.createFailHours * std::max<uint32_t>(1, params.passesPerHour);
     for (uint32_t pass = 0; pass < passes; ++pass)
     {
         uint32_t const now = 1000 + pass * step;
@@ -1637,62 +1823,41 @@ inline RetireSimStats SimulateRetire(RetireSimParams const& params)
             if (bot.level < 80 && next(1000) < params.levelUpPerMille)
                 ++bot.level;
 
-        std::vector<RetireRange> ranges;
-        for (RetireRange range : layout)
+        if (!RetireGate(accounting))
+            ++stats.gatedPasses;
+        else
+            for (uint32_t const guid : SimulateRetirePass(params, roster, layout, recent, now, pass, stats))
+                CreateOwe(accounting, guid, 0, 0, now);
+
+        // The replacements due: the pass's own and the retries
+        bool const failing = params.createFailPerMille && (!failPasses || pass < failPasses);
+        for (uint32_t const retiredGuid : CreateDue(accounting, now, params.maxPerPass))
         {
-            range.target = params.bots * (range.firstLevel == 80 ? 2.0 : 1.0) / 10.0;
-            for (RetireCandidate const& bot : roster)
-                if (bot.level >= range.firstLevel && bot.level <= range.lastLevel)
-                    ++range.count;
-
-            if (RetireRangeAllowed(range.firstLevel, range.lastLevel) && RetireSurplus(range.count, range.target))
-                ranges.push_back(range);
-        }
-
-        uint32_t const left = RetireHourLeft(recent, now, params.maxPerHour);
-        std::vector<uint32_t> const chosen =
-            SelectRetirees(roster, ranges, params.maxScore, std::min(left, params.maxPerPass), params.seed + pass);
-        if (chosen.size() > params.maxPerPass)
-            ++stats.overPass;
-
-        for (uint32_t const guid : chosen)
-        {
-            auto const it = std::find_if(roster.begin(), roster.end(),
-                                         [guid](RetireCandidate const& bot) { return bot.guid == guid; });
-            if (it == roster.end())
+            if (failing && next(1000) < params.createFailPerMille)
+            {
+                CreateApply(accounting, retiredGuid, CreateOutcome::Failed, now, step, params.createAttempts);
                 continue;
-
-            if (it->protect || it->score > params.maxScore)
-                ++stats.protectedRetired;
-
-            if (!RetireRangeAllowed(1, 9) && it->level <= 9)
-                ++stats.createRangeRetired;
-
-            for (RetireRange& range : ranges)
-                if (it->level >= range.firstLevel && it->level <= range.lastLevel)
-                {
-                    --range.count;
-                    if (range.count < std::ceil(range.target))
-                        ++stats.belowTarget;
-                }
-
-            roster.erase(it);
-            ++stats.retired;
-            recent.push_back(now);
-            if (recent.size() > params.maxPerHour)
-                ++stats.overHour;
+            }
 
             RetireCandidate created;
             created.guid = nextGuid++;
             created.level = 1;
-            roster.push_back(created);
-            ++stats.created;
+            CreateApply(accounting, retiredGuid, CreateOutcome::Created, now, step, params.createAttempts,
+                        created.guid);
+            if (CreateApply(accounting, retiredGuid, CreateOutcome::Confirmed, now, step, params.createAttempts) ==
+                CreateDecision::Done)
+                roster.push_back(created);
         }
 
         stats.minRoster = std::min<uint32_t>(stats.minRoster, static_cast<uint32_t>(roster.size()));
         stats.maxRoster = std::max<uint32_t>(stats.maxRoster, static_cast<uint32_t>(roster.size()));
     }
 
+    stats.created = accounting.created;
+    stats.createFailures = accounting.failures;
+    stats.gaveUp = accounting.gaveUp;
+    stats.owedAtEnd = static_cast<uint32_t>(accounting.owed.size());
+    stats.finalRoster = static_cast<uint32_t>(roster.size());
     return stats;
 }
 
@@ -1790,6 +1955,51 @@ inline uint32_t RetireSelftest(std::vector<std::string>& failures, bool full)
           "TestRange refuses malformed text");
     check(RetireReasons(RetireGuildWithReal | RetireFriendOfReal, 3, 0) == "guild|friend|score", "RetireReasons text");
 
+    // H4b: the replacement of a live retire (create, confirm the row, retry, give up)
+    CreateAccounting happy;
+    CreateOwe(happy, 7, 70, 4, 100, "Old");
+    bool const owedGates = !RetireGate(happy) && CreateDue(happy, 100, 1) == std::vector<uint32_t>{7};
+    bool const confirming =
+        CreateApply(happy, 7, CreateOutcome::Created, 100, 600, 3, 900) == CreateDecision::Confirm &&
+        CreateDue(happy, 100, 1).empty() && !RetireGate(happy);
+    check(owedGates && confirming &&
+              CreateApply(happy, 7, CreateOutcome::Confirmed, 101, 600, 3) == CreateDecision::Done &&
+              happy.created == 1 && happy.owed.empty() && RetireGate(happy) && !happy.failures,
+          "a replacement is created, confirmed and closes the gate again; no pass while it is owed");
+    CreateAccounting failing;
+    CreateOwe(failing, 8, 80, 1, 100);
+    bool const firstRetry = CreateApply(failing, 8, CreateOutcome::Failed, 100, 600, 3) == CreateDecision::Retry &&
+                            CreateDue(failing, 699, 1).empty() &&
+                            CreateDue(failing, 700, 1) == std::vector<uint32_t>{8};
+    bool const secondRetry = CreateApply(failing, 8, CreateOutcome::Failed, 700, 600, 3) == CreateDecision::Retry;
+    check(firstRetry && secondRetry &&
+              CreateApply(failing, 8, CreateOutcome::Failed, 1300, 600, 3) == CreateDecision::GaveUp &&
+              failing.gaveUp == 1 && failing.failures == 3 && !failing.created && failing.owed.empty() &&
+              !RetireGate(failing),
+          "a failed creation waits a retry interval; the third failure gives up and pauses the retires");
+    failing.paused = false;
+    check(RetireGate(failing), "a reload (paused cleared) opens the gate again");
+    CreateAccounting missing;
+    CreateOwe(missing, 9, 90, 2, 100);
+    CreateApply(missing, 9, CreateOutcome::Created, 100, 5, 3, 901);
+    bool const missingRetry = CreateApply(missing, 9, CreateOutcome::Missing, 101, 5, 3) == CreateDecision::Retry &&
+                              CreateFind(missing, 9) && CreateFind(missing, 9)->createdGuid == 901 &&
+                              CreateDue(missing, 105, 1).empty() && CreateDue(missing, 106, 1).size() == 1;
+    check(missingRetry && CreateApply(missing, 9, CreateOutcome::Created, 106, 5, 3, 901) == CreateDecision::Confirm &&
+              CreateApply(missing, 9, CreateOutcome::Confirmed, 107, 5, 3) == CreateDecision::Done &&
+              missing.created == 1 && missing.failures == 1,
+          "a missing row is confirmed again (the character is not made twice)");
+    CreateAccounting many;
+    for (uint32_t guid = 1; guid <= 5; ++guid)
+        CreateOwe(many, guid, guid, 1, 100);
+
+    check(CreateDue(many, 100, 3) == std::vector<uint32_t>({1, 2, 3}) && CreateDue(many, 100, 0).size() == 1 &&
+              CreateDue(many, 99, 3).empty(),
+          "MaxPerPass bounds the creations per call (at least one), none before notBefore");
+    check(CreateApply(many, 42, CreateOutcome::Confirmed, 100, 5, 3) == CreateDecision::Unknown && !many.created &&
+              many.owed.size() == 5,
+          "an unknown entry changes nothing");
+
     // Over simulated hours, every retire replaced by a level-1 bot: the roster stays constant, no protected or met
     // bot is retired, no range falls below its target, the caps hold
     RetireSimParams sim;
@@ -1811,6 +2021,30 @@ inline uint32_t RetireSelftest(std::vector<std::string>& failures, bool full)
     check(fast.retired > 0 && fast.minRoster == sim.bots && fast.maxRoster == sim.bots && !fast.protectedRetired &&
               !fast.belowTarget && !fast.overHour && !fast.overPass,
           "300 bots, overlay rates (20 s, 3/pass, 120/h): " + std::to_string(fast.retired) + " retired, rules hold");
+
+    // Failed creations: the roster is short by at most one pass's retires plus the replacements given up, no pass
+    // retires while one is owed or after one was given up, and it is whole again once retried failures stop
+    auto const accounted = [](RetireSimStats const& stats, RetireSimParams const& params)
+    {
+        return stats.retired == stats.created + stats.gaveUp + stats.owedAtEnd &&
+               stats.finalRoster + stats.gaveUp + stats.owedAtEnd == params.bots &&
+               stats.minRoster + stats.gaveUp + params.maxPerPass >= params.bots && stats.maxRoster <= params.bots &&
+               !stats.protectedRetired && !stats.belowTarget && !stats.overHour && !stats.overPass &&
+               !stats.createRangeRetired;
+    };
+    sim.createFailPerMille = 100;
+    sim.createFailHours = 1;
+    RetireSimStats const flaky = SimulateRetire(sim);
+    check(accounted(flaky, sim) && flaky.createFailures > 0 && flaky.gatedPasses > 0 && !flaky.gaveUp &&
+              flaky.retired == flaky.created && flaky.finalRoster == sim.bots,
+          "overlay rates, 10 % failed creations in the first hour: " + std::to_string(flaky.createFailures) +
+              " failures retried, the roster whole at the end");
+    sim.createFailPerMille = 1000;
+    RetireSimStats const broken = SimulateRetire(sim);
+    check(accounted(broken, sim) && broken.gaveUp > 0 && broken.retired == broken.gaveUp &&
+              broken.retired <= sim.maxPerPass,
+          "overlay rates, every creation failing: " + std::to_string(broken.gaveUp) +
+              " given up and counted, then the retires pause");
     if (full)
     {
         RetireSimParams big;
@@ -1823,6 +2057,12 @@ inline uint32_t RetireSelftest(std::vector<std::string>& failures, bool full)
         big.maxScore = 3;
         RetireSimStats const met = SimulateRetire(big);
         check(!met.protectedRetired && met.minRoster == big.bots, "MaxScore 3: no bot above it retired");
+        big.maxScore = 0;
+        big.createFailPerMille = 20;
+        RetireSimStats const flakyDay = SimulateRetire(big);
+        check(accounted(flakyDay, big) && flakyDay.createFailures > 0,
+              "2500 bots, 72 h, 2 % failed creations: " + std::to_string(flakyDay.createFailures) +
+                  " failures, every retire replaced or counted");
     }
 
     return checks;

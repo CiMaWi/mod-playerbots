@@ -983,7 +983,12 @@ Playerbots.Population.Balance.LogoutPreferencePct = 25
 #              an arena server, is online, or sits on a lab-bots clone account. A range never
 #              falls below its target; the range of level 1 is never retired from. Only random
 #              bot characters are deleted (completely: also their playerbots and mod-ollama-chat
-#              rows), never another character; the account stays. One log line per bot.
+#              rows), never another character; the account stays, and a new bot of the same
+#              class (level 1; a death knight at its start level) is created on it right after,
+#              so the character count stays constant. No pass runs while a replacement is owed;
+#              one given up (Retire.CreateAttempts) pauses the retires until ".reload config"
+#              and the factory refills the account at the next startup. One log line per
+#              retire and per creation.
 #              Needs Population.Persistent = 1, Acquaintance.Enable = 1, Rotation.Enable = 1 and
 #              Balance.Enable = 1 (or Retire.TestRange); else one error line and nothing happens.
 #              Keep it 0 on labs with lab-bots clones.
@@ -992,7 +997,8 @@ Playerbots.Population.Balance.LogoutPreferencePct = 25
 Playerbots.Population.Retire.Enable = 0
 
 # Playerbots.Population.Retire.DryRun
-# Description: Logs "would retire" lines and deletes nothing. Switching to 0 (".reload config")
+# Description: Logs "would retire" and "would create" lines; deletes and creates nothing.
+#              Switching to 0 (".reload config")
 #              waits one interval before the first delete, as does switching Retire.Enable on.
 # Default:     1 - logs only
 #              0 - deletes
@@ -1037,6 +1043,21 @@ Playerbots.Population.Retire.Candidates = 50
 # Default: "", 0
 Playerbots.Population.Retire.TestRange = ""
 Playerbots.Population.Retire.TestTarget = 0
+
+# Playerbots.Population.Retire.CreateAttempts
+# Description: Tries per replacement, 1-10: a failed creation is tried again one interval later,
+#              a saved row not found a few seconds later. Then it is given up: one error line,
+#              the retires pause until ".reload config", and the roster is short by one until
+#              the next restart.
+# Default: 3
+Playerbots.Population.Retire.CreateAttempts = 3
+
+# Playerbots.Population.Retire.SummaryMinutes
+# Description: Minutes between two summary lines (retires, creations, failures, owed
+#              replacements, roster size and the random bot accounts' character count).
+#              0 = no summary.
+# Default: 60
+Playerbots.Population.Retire.SummaryMinutes = 60
 
 #
 #
