@@ -10,6 +10,7 @@
 #include "ArenaTeamMgr.h"
 #include "BattlegroundMgr.h"
 #include "Event.h"
+#include "GameTime.h"
 #include "GroupMgr.h"
 #include "LadderMgr.h"
 #include "PlayerbotAI.h"
@@ -42,6 +43,8 @@ Player* BusyArenaGroupMember(Player* captain, ArenaType type)
 
     return nullptr;
 }
+
+constexpr uint32 BG_JOIN_LOGIN_DELAY_MS = 120 * IN_MILLISECONDS;
 }  // namespace
 
 bool BGJoinAction::Execute(Event /*event*/)
@@ -425,8 +428,8 @@ bool BGJoinAction::isUseful()
     if (LadderMgr::Instance().IsQueueBlocked(bot))
         return false;
 
-    // do not try right after login (currently not working)
-    if ((time(nullptr) - bot->GetInGameTime()) < 120)
+    // do not try right after login
+    if (getMSTimeDiff(bot->GetInGameTime(), GameTime::GetGameTimeMS().count()) < BG_JOIN_LOGIN_DELAY_MS)
         return false;
 
     // check level

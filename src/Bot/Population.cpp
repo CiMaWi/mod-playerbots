@@ -1286,11 +1286,6 @@ void Population::LoadConfig(bool reload)
              reload ? "reload: " : "", RotationEnableKey, rotation.rosterSize, settings.intervalSeconds,
              settings.meanSessionSeconds / 60, settings.minSessionSeconds / 60, settings.acquaintedSharePct,
              rotation.acquaintedMinScore);
-    if (sConfigMgr->GetOption<bool>("Playerbots.EnablePeriodicOnlineOffline", false))
-        LOG_WARN("playerbots",
-                 "[Population] Playerbots.EnablePeriodicOnlineOffline is superseded while {} = 1: the rotation picks "
-                 "the bots from the whole roster and keeps each online until it swaps the bot out",
-                 RotationEnableKey);
 }
 
 uint32 Population::GuardLevel(Player* bot, uint32 requestedLevel, char const* site)

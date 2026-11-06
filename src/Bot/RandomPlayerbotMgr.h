@@ -301,6 +301,9 @@ private:
     float activityMod = 0.25;
     bool _isBotInitializing = true;
     bool _isBotLogging = true;
+    bool _botCountRolled = false;
+    time_t _nextScheduledCountUpdate = 0;
+    uint32 _rolledCountMode = 0;
     NewRpgStatistic rpgStasticTotal;
     // Event cache: read from map threads (bot AI) and the world thread, guarded by _eventCacheLock. The helpers below
     // run with the lock held and never hand a pointer into the cache to callers; no DB query runs with the lock held.
@@ -320,6 +323,9 @@ private:
     time_t DelayLoginBotsTimer;
     time_t printStatsTimer;
     uint32 AddRandomBots();
+    uint32 RemoveRandomBots();
+    uint32 GetScheduledBotCount();
+    bool IsRemovableBot(Player* bot);
     bool ProcessBot(uint32 bot);
     void ScheduleRandomize(uint32 bot, uint32 time);
     void RandomTeleport(Player* bot);

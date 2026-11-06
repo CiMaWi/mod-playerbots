@@ -608,6 +608,11 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     // loadout gets the base tier (memory, async write)
     PvpGearMgr::Instance().OnBotLogin(bot);
 
+    // The loaded strategies were saved at the bot's last strategy change and can include another
+    // instance's strategy, so apply the current map's again.
+    if (sPlayerbotAIConfig.ApplyInstanceStrategies)
+        botAI->ApplyInstanceStrategies(bot->GetMapId());
+
     if (master && !master->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
         bot->GetMotionMaster()->MovementExpired();
