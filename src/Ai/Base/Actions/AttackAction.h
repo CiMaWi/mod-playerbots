@@ -17,9 +17,10 @@ public:
     AttackAction(PlayerbotAI* botAI, std::string const name) : MovementAction(botAI, name) {}
 
     bool Execute(Event event) override;
+    bool ExecuteExactTarget(Unit* target);
 
 protected:
-    bool Attack(Unit* target, bool with_pet = true);
+    bool Attack(Unit* target, bool with_pet = true, bool immediate = false);
 };
 
 class AttackMyTargetAction : public AttackAction

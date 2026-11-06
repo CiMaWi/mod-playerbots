@@ -5,6 +5,7 @@
  */
 
 #include "AttackAction.h"
+
 #include "CreatureAI.h"
 #include "Event.h"
 #include "LastMovementValue.h"
@@ -40,8 +41,8 @@ bool AttackMyTargetAction::Execute(Event /*event*/)
     if (!guid)
     {
         if (verbose)
-            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "pull_no_target_error", "You have no target", {}));
+            botAI->TellError(
+                PlayerbotTextMgr::instance().GetBotTextOrDefault("pull_no_target_error", "You have no target", {}));
 
         return false;
     }
@@ -54,13 +55,19 @@ bool AttackMyTargetAction::Execute(Event /*event*/)
     return result;
 }
 
-bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
+bool AttackAction::ExecuteExactTarget(Unit* target)
+{
+    verbose = false;
+    return Attack(target, true, true);
+}
+
+bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/, bool immediate)
 {
     if (!target)
     {
         if (verbose)
-            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_no_target_error", "I have no target", {}));
+            botAI->TellError(
+                PlayerbotTextMgr::instance().GetBotTextOrDefault("attack_no_target_error", "I have no target", {}));
 
         return false;
     }
@@ -68,10 +75,9 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
     if (!target->IsInWorld())
     {
         if (verbose)
-            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_target_not_in_world_error",
-                "%target is no longer in the world.",
-                {{"%target", target->GetName()}}));
+            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault("attack_target_not_in_world_error",
+                                                                              "%target is no longer in the world.",
+                                                                              {{"%target", target->GetName()}}));
 
         return false;
     }
@@ -80,23 +86,20 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
         bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
         if (verbose)
-            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_in_flight_error", "I cannot attack in flight", {}));
+            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault("attack_in_flight_error",
+                                                                              "I cannot attack in flight", {}));
 
         return false;
     }
 
     // Check if bot OR target is in prohibited zone/area (skip for duels)
-    if ((target->IsPlayer() || target->IsPet()) &&
-        (!bot->duel || bot->duel->Opponent != target) &&
+    if ((target->IsPlayer() || target->IsPet()) && (!bot->duel || bot->duel->Opponent != target) &&
         (sPlayerbotAIConfig.IsPvpProhibited(bot->GetZoneId(), bot->GetAreaId()) ||
-        sPlayerbotAIConfig.IsPvpProhibited(target->GetZoneId(), target->GetAreaId())))
+         sPlayerbotAIConfig.IsPvpProhibited(target->GetZoneId(), target->GetAreaId())))
     {
         if (verbose)
             botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_pvp_prohibited_error",
-                "I cannot attack other players in PvP prohibited areas.",
-                {}));
+                "attack_pvp_prohibited_error", "I cannot attack other players in PvP prohibited areas.", {}));
 
         return false;
     }
@@ -105,9 +108,7 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
     {
         if (verbose)
             botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_target_friendly_error",
-                "%target is friendly to me.",
-                {{"%target", target->GetName()}}));
+                "attack_target_friendly_error", "%target is friendly to me.", {{"%target", target->GetName()}}));
 
         return false;
     }
@@ -116,9 +117,7 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
     {
         if (verbose)
             botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_target_dead_error",
-                "%target is dead.",
-                {{"%target", target->GetName()}}));
+                "attack_target_dead_error", "%target is dead.", {{"%target", target->GetName()}}));
 
         return false;
     }
@@ -130,9 +129,7 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
     {
         if (verbose)
             botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_target_not_in_sight_error",
-                "%target is not in my sight.",
-                {{"%target", target->GetName()}}));
+                "attack_target_not_in_sight_error", "%target is not in my sight.", {{"%target", target->GetName()}}));
 
         return false;
     }
@@ -153,9 +150,7 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
     {
         if (verbose)
             botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "attack_already_attacking_error",
-                "I am already attacking %target.",
-                {{"%target", target->GetName()}}));
+                "attack_already_attacking_error", "I am already attacking %target.", {{"%target", target->GetName()}}));
 
         return false;
     }
@@ -174,6 +169,9 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
     //     WorldPacket emptyPacket;
     //     bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
     // }
+
+    if (immediate && (!bot->IsInMap(target) || !bot->InSamePhase(target)))
+        return false;
 
     ObjectGuid guid = target->GetGUID();
     bot->SetSelection(target->GetGUID());
@@ -196,6 +194,9 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
         botAI->FaceTarget(target, TurnSnapSite::Attack);
 
     botAI->ChangeEngine(BOT_STATE_COMBAT);
+
+    if (immediate)
+        return bot->Attack(target, shouldMelee);
 
     if (!WaitForAttackStrategy::ShouldWait(botAI))
         bot->Attack(target, shouldMelee);
