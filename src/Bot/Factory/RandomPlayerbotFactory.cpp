@@ -36,6 +36,7 @@
 #include "World.h"
 
 #include <cmath>
+#include <unordered_set>
 
 void RandomPlayerbotFactory::LoadLocalizedNameColumns()
 {
@@ -413,21 +414,48 @@ uint32 RandomPlayerbotFactory::CalculateTotalAccountCount()
     uint32 existingRndBotAccounts = 0;
     uint32 existingAddClassAccounts = 0;
     uint32 existingUnassignedAccounts = 0;
+    std::vector<uint32> unassignedAccounts;
 
-    PlayerbotsDatabasePreparedStatement* typeStmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_TYPE_COUNT_BY_TYPE);
+    PlayerbotsDatabasePreparedStatement* typeStmt =
+        PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_TYPE);
     PreparedQueryResult typeCheck = PlayerbotsDatabase.Query(typeStmt);
     if (typeCheck)
     {
         do
         {
             Field* fields = typeCheck->Fetch();
-            uint8 accountType = fields[0].Get<uint8>();
-            uint32 count = static_cast<uint32>(fields[1].Get<uint64>());
+            uint32 accountId = fields[0].Get<uint32>();
+            uint8 accountType = fields[1].Get<uint8>();
 
-            if (accountType == 0) existingUnassignedAccounts = count;
-            else if (accountType == 1) existingRndBotAccounts = count;
-            else if (accountType == 2) existingAddClassAccounts = count;
+            if (accountType == 0)
+                unassignedAccounts.push_back(accountId);
+            else if (accountType == 1)
+                ++existingRndBotAccounts;
+            else if (accountType == 2)
+                ++existingAddClassAccounts;
         } while (typeCheck->NextRow());
+    }
+
+    // AssignAccountTypes() adds an unassigned row for every bot account in the login database, which other realms
+    // may share, so only unassigned accounts with characters in this realm count
+    if (!unassignedAccounts.empty())
+    {
+        std::unordered_set<uint32> realmAccounts;
+        if (QueryResult characterAccounts = CharacterDatabase.Query("SELECT DISTINCT account FROM characters"))
+        {
+            do
+            {
+                realmAccounts.insert(characterAccounts->Fetch()[0].Get<uint32>());
+            } while (characterAccounts->NextRow());
+        }
+
+        for (uint32 accountId : unassignedAccounts)
+            if (realmAccounts.count(accountId))
+                ++existingUnassignedAccounts;
+
+        if (existingUnassignedAccounts < unassignedAccounts.size())
+            LOG_INFO("playerbots", "Ignoring {} unassigned random bot accounts without characters in this realm",
+                     unassignedAccounts.size() - existingUnassignedAccounts);
     }
 
     // Determine divisor based on Death Knight availability and requested A&H faction ratio

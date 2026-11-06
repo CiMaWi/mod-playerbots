@@ -61,6 +61,7 @@
 #include <random>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 struct GuidClassRaceInfo
@@ -600,6 +601,15 @@ void RandomPlayerbotMgr::AssignAccountTypes()
         }
     }
 
+    // Assign only accounts the factory covered this start: other realms sharing the login database have bot accounts
+    // that hold no characters here
+    std::unordered_set<uint32> const factoryAccounts(sPlayerbotAIConfig.RandomBotAccounts.begin(),
+                                                     sPlayerbotAIConfig.RandomBotAccounts.end());
+    std::vector<uint32> assignableAccounts;
+    for (uint32 accountId : allRandomBotAccounts)
+        if (factoryAccounts.count(accountId))
+            assignableAccounts.push_back(accountId);
+
     // Calculate needed RNDbot accounts
     uint32 neededRndBotAccounts = 0;
     if (sPlayerbotAIConfig.MaxRandomBots > 0)
@@ -636,9 +646,9 @@ void RandomPlayerbotMgr::AssignAccountTypes()
         uint32 toAssign = neededRndBotAccounts - existingRndBotAccounts;
         uint32 assigned = 0;
 
-        for (uint32 i = 0; i < allRandomBotAccounts.size() && assigned < toAssign; i++)
+        for (uint32 i = 0; i < assignableAccounts.size() && assigned < toAssign; i++)
         {
-            uint32 accountId = allRandomBotAccounts[i];
+            uint32 accountId = assignableAccounts[i];
             if (currentAssignments[accountId] == 0) // Unassigned
             {
                 PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_UPD_ACCOUNT_TYPE);
@@ -664,9 +674,9 @@ void RandomPlayerbotMgr::AssignAccountTypes()
         uint32 toAssign = neededAddClassAccounts - existingAddClassAccounts;
         uint32 assigned = 0;
 
-        for (size_t idx = allRandomBotAccounts.size(); idx-- > 0 && assigned < toAssign;)
+        for (size_t idx = assignableAccounts.size(); idx-- > 0 && assigned < toAssign;)
         {
-            uint32 accountId = allRandomBotAccounts[idx];
+            uint32 accountId = assignableAccounts[idx];
             if (currentAssignments[accountId] == 0) // Unassigned
             {
                 PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_UPD_ACCOUNT_TYPE);
