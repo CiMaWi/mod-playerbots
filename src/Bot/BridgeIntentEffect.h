@@ -49,6 +49,11 @@ struct Order
     uint64_t Target = 0;
     uint8_t Icon = 0;
     float VisibilityDistance = 0.0f;
+    // Position only: the exact destination. Doubles, so a huge wire value is refused before any float conversion.
+    uint32_t MapId = 0;
+    double X = 0.0;
+    double Y = 0.0;
+    double Z = 0.0;
 };
 
 // Construct only on the stack in OllamaBotRandomChatter::OnUpdate, after MapMgr::Update joins its workers.
@@ -69,6 +74,11 @@ private:
 // Synchronous only. The caller owns replay/rate/epoch/deadline/audience admission and supplies its last currentness
 // check here. No order, game pointer, callback or phase scope is retained. Failed attempts must never be replayed.
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize);
+
+// Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within VisibilityDistance of
+// the bot and of the controller, and reached by a complete navmesh path no longer than twice that radius. One path
+// query; it mutates nothing, so a caller may use it as a fact before Execute, which checks it again.
+bool PositionReachable(PostMapJoin const& phase, Order const& order);
 }  // namespace PlayerbotBridge
 
 #endif

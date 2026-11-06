@@ -13,9 +13,11 @@
 #include "Group.h"
 #include "MovementActions.h"
 #include "ObjectAccessor.h"
+#include "PathGenerator.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotSecurity.h"
 #include "Playerbots.h"
+#include "PositionAction.h"
 #include "StayActions.h"
 #include "ThreadCheck.h"
 #include "WorldSession.h"
@@ -86,7 +88,54 @@ Result FleeOnce(PlayerbotAI* ai, Player* bot)
 
     return flee.Execute(Event()) ? Result::Applied : Result::Failed;
 }
+
+bool FinitePosition(Order const& order)
+{
+    return std::isfinite(order.X) && std::isfinite(order.Y) && std::isfinite(order.Z);
+}
+
+// Within the radius in double precision: a huge finite coordinate fails here instead of overflowing a float.
+bool Near(Player* player, Order const& order)
+{
+    double const dx = order.X - player->GetPositionX();
+    double const dy = order.Y - player->GetPositionY();
+    double const dz = order.Z - player->GetPositionZ();
+    double const radius = order.VisibilityDistance;
+    return dx * dx + dy * dy + dz * dz <= radius * radius;
+}
+
+// One move to the checked position; no stored named position is read or written. An active follow or guard strategy
+// may move the bot on at the engine's next movement decision.
+Result PositionOnce(PostMapJoin const& phase, PlayerbotAI* ai, Player* bot, Order const& order)
+{
+    if (!bot->IsAlive() || !PositionReachable(phase, order))
+        return Result::Rejected;
+
+    MoveToPositionAction move(ai, "move to position", "bridge");
+    return move.ExecuteExactPosition(order.MapId, static_cast<float>(order.X), static_cast<float>(order.Y),
+                                     static_cast<float>(order.Z))
+               ? Result::Applied
+               : Result::Failed;
+}
 }  // namespace
+
+bool PositionReachable(PostMapJoin const& phase, Order const& order)
+{
+    if (!phase.Current() || !FinitePosition(order) || !std::isfinite(order.VisibilityDistance) ||
+        order.VisibilityDistance <= 0.0f)
+        return false;
+
+    Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
+    Player* controller = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Controller));
+    if (!bot || !bot->IsInWorld() || !controller || !controller->IsInWorld() || bot->GetMapId() != order.MapId ||
+        !bot->IsInMap(controller) || !Near(bot, order) || !Near(controller, order))
+        return false;
+
+    // Stricter than MoveTo's own search: a complete navmesh path only, never a partial path or a shortcut.
+    PathGenerator path(bot);
+    path.CalculatePath(static_cast<float>(order.X), static_cast<float>(order.Y), static_cast<float>(order.Z), false);
+    return path.GetPathType() == PATHFIND_NORMAL && path.getPathLength() <= 2.0f * order.VisibilityDistance;
+}
 
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize)
 {
@@ -98,6 +147,7 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
         case Intent::Follow:
         case Intent::Stay:
         case Intent::Flee:
+        case Intent::Position:
         case Intent::AttackOwnTarget:
         case Intent::Mark:
             break;
@@ -107,7 +157,6 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
         case Intent::AssignRole:
         case Intent::SaveMana:
         case Intent::Formation:
-        case Intent::Position:
         case Intent::DungeonClear:
             return Result::Unavailable;
         default:
@@ -117,8 +166,9 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
     // A stray target on a target-less verb is a mapping error, never an ignored field.
     if (!order.Bot || !order.Controller || order.Bot == order.Controller || !order.Group ||
         NeedsTarget(order.Operation) != (order.Target != 0) || !std::isfinite(order.VisibilityDistance) ||
-        order.VisibilityDistance <= 0.0f || (order.Operation == Intent::Mark && order.Icon > 7) || !authorize ||
-        !authorize() || !phase.Current())
+        order.VisibilityDistance <= 0.0f || (order.Operation == Intent::Mark && order.Icon > 7) ||
+        (order.Operation == Intent::Position && !FinitePosition(order)) || !authorize || !authorize() ||
+        !phase.Current())
         return Result::Rejected;
 
     Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
@@ -146,6 +196,8 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
             return StayOnce(ai, bot);
         case Intent::Flee:
             return FleeOnce(ai, bot);
+        case Intent::Position:
+            return PositionOnce(phase, ai, bot, order);
         default:
             break;
     }

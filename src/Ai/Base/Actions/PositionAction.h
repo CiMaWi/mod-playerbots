@@ -29,6 +29,8 @@ public:
 
     bool Execute(Event event) override;
     bool isUseful() override;
+    // One move to an exact, already validated position; no stored named position is read or written.
+    bool ExecuteExactPosition(uint32 mapId, float x, float y, float z);
 
 protected:
     std::string const qualifier;

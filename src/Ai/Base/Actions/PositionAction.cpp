@@ -123,6 +123,11 @@ bool MoveToPositionAction::isUseful()
     return pos.isSet() && distance > sPlayerbotAIConfig.FollowDistance && distance < sPlayerbotAIConfig.ReactDistance;
 }
 
+bool MoveToPositionAction::ExecuteExactPosition(uint32 mapId, float x, float y, float z)
+{
+    return MoveTo(mapId, x, y, z, false, false, true, true);
+}
+
 bool SetReturnPositionAction::Execute(Event /*event*/)
 {
     PositionMap& posMap = context->GetValue<PositionMap&>("position")->Get();

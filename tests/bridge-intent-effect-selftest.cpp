@@ -5,8 +5,9 @@
  */
 
 // The isolated runner supplies game doubles and includes the unchanged production effect implementation and the
-// AttackAction, StayAction and FleeAction method bodies; FollowAction and MovementAction::MoveAway are counting
-// doubles. It does not replace a decision path with a parallel guard implementation.
+// AttackAction, StayAction, FleeAction and MoveToPositionAction::ExecuteExactPosition method bodies; FollowAction,
+// MovementAction::MoveAway/MoveTo and PathGenerator are counting doubles. It does not replace a decision path with a
+// parallel guard implementation.
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -18,6 +19,7 @@
 #include "AttackAction-body.inc"
 #include "StayAction-body.inc"
 #include "FleeAction-body.inc"
+#include "PositionAction-body.inc"
 // clang-format on
 
 using PlayerbotBridge::Intent;
@@ -39,6 +41,18 @@ public:
 
         Result result = Result::Applied;
         std::thread thread([&] { result = PlayerbotBridge::Execute(phase, order, authorize); });
+        thread.join();
+        return result;
+    }
+
+    static bool Reachable(Order const& order, bool worker = false)
+    {
+        PlayerbotBridge::PostMapJoin phase;
+        if (!worker)
+            return PlayerbotBridge::PositionReachable(phase, order);
+
+        bool result = true;
+        std::thread thread([&] { result = PlayerbotBridge::PositionReachable(phase, order); });
         thread.join();
         return result;
     }
@@ -74,11 +88,15 @@ struct Fixture
 
     Fixture()
     {
-        mutations = attacks = marks = follows = usefulFollow = stays = stops = flees = fleeRuns = 0;
-        security = melee = followUseful = followResult = fleeResult = true;
+        mutations = attacks = marks = follows = usefulFollow = stays = stops = flees = fleeRuns = moves = paths = 0;
+        security = melee = followUseful = followResult = fleeResult = moveResult = true;
         waitForAttack = prohibited = unavailable = moveFromGroup = fleeBackwards = false;
         fleeFrom = nullptr;
         fleeDistance = 0.0f;
+        pathType = PATHFIND_NORMAL;
+        pathLength = 12.0f;
+        pathOwner = nullptr;
+        Human.X = 20.0f;
         Bot.Guid = ObjectGuid(1);
         Human.Guid = ObjectGuid(2);
         Human.Session = &HumanSession;
@@ -93,7 +111,8 @@ struct Fixture
         PlayerbotThreadCheck::worldThread = std::this_thread::get_id();
     }
 
-    // A target-less verb with its wire shape (no target) and a bot that is moving; a flee has an opponent in melee.
+    // A target-less verb with its wire shape (no target) and a bot that is moving; a flee has an opponent in melee; a
+    // position is on the bot's map, about 11 yards from the bot at (0, 0, 0) and from the controller at (20, 0, 0).
     void OneShot(Intent operation)
     {
         Command.Operation = operation;
@@ -103,6 +122,13 @@ struct Fixture
         Bot.State = UNIT_STATE_CHASE | UNIT_STATE_FOLLOW;
         if (operation == Intent::Flee)
             AI.Values.Current.Data = &Target;
+        if (operation == Intent::Position)
+        {
+            Command.MapId = 1;
+            Command.X = 10.0;
+            Command.Y = -4.0;
+            Command.Z = 2.0;
+        }
     }
 
     Result Run()
@@ -119,7 +145,7 @@ struct Fixture
     {
         Check(Run() == expected, "denial result");
         Check(mutations == 0 && attacks == 0 && marks == 0 && follows == 0 && stays == 0 && stops == 0 && flees == 0 &&
-                  fleeRuns == 0,
+                  fleeRuns == 0 && moves == 0,
               "denied no mutation");
     }
 };
@@ -162,7 +188,7 @@ int main()
         f.Command.Operation = static_cast<Intent>(operation);
         if (f.Command.Operation != Intent::AttackOwnTarget && f.Command.Operation != Intent::Mark &&
             f.Command.Operation != Intent::Follow && f.Command.Operation != Intent::Stay &&
-            f.Command.Operation != Intent::Flee)
+            f.Command.Operation != Intent::Flee && f.Command.Operation != Intent::Position)
         {
             f.Denied(Result::Unavailable);
             Check(f.Authorizations == 0, "unavailable before admission callback");
@@ -376,7 +402,21 @@ int main()
         Check(f.Run() == Result::Applied && flees == 1 && fleeFrom == &f.Other,
               "flee uses the bot's current target value, not its selection");
     }
-    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee})
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        Check(f.Run() == Result::Applied, "position applies");
+        Check(moves == 1 && moveMap == 1 && moveX == 10.0f && moveY == -4.0f && moveZ == 2.0f && mutations == 1,
+              "one move to the exact position");
+        Check(!moveIdle && !moveReact && moveNormalOnly && moveExact, "an exact waypoint over normal paths, not idle");
+        Check(paths == 1 && pathOwner == static_cast<Unit const*>(&f.Bot) && pathX == 10.0f && pathY == -4.0f &&
+                  pathZ == 2.0f && !pathForce,
+              "one complete-path query from the bot to that position");
+        Check(follows == 0 && stays == 0 && stops == 0 && flees == 0 && attacks == 0 && marks == 0 &&
+                  f.Authorizations == 1 && f.AI.Values.Positions.Data.empty() && f.Bot.Target == f.Target.Guid,
+              "one position authorization without named position, target or selection writes");
+    }
+    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Position})
     {
         std::vector<std::function<void(Fixture&)>> oneShotDenials = {
             [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
@@ -423,11 +463,19 @@ int main()
             oneShotDenials.push_back([](Fixture& f) { f.Bot.Channeled = &channeling; });
             oneShotDenials.push_back([](Fixture& f) { f.Bot.Mounted = true; });
         }
-        else
+        else if (operation == Intent::Stay)
         {
             oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Moving.Data = false; });
             oneShotDenials.push_back([](Fixture&) { moveFromGroup = true; });
             oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Positions.Data["stay"].Set = true; });
+        }
+        else
+        {
+            oneShotDenials.push_back([](Fixture& f) { f.Command.MapId = 2; });
+            oneShotDenials.push_back([](Fixture& f) { f.Command.X = 45.0; });
+            oneShotDenials.push_back([](Fixture& f) { f.Command.X = -15.0; });
+            oneShotDenials.push_back([](Fixture&) { pathType = PATHFIND_NOPATH; });
+            oneShotDenials.push_back([](Fixture&) { pathLength = 60.5f; });
         }
         for (auto const& deny : oneShotDenials)
         {
@@ -452,7 +500,8 @@ int main()
             Check(OllamaBotRandomChatter::Run(
                       f.Command, [] { return true; }, true) == Result::Rejected,
                   "one-shot scope cannot cross threads");
-            Check(mutations == 0 && follows == 0 && stays == 0 && usefulFollow == 0 && flees == 0 && fleeRuns == 0,
+            Check(mutations == 0 && follows == 0 && stays == 0 && usefulFollow == 0 && flees == 0 && fleeRuns == 0 &&
+                      moves == 0,
                   "one-shot refusals no effect");
         }
         {
@@ -488,6 +537,114 @@ int main()
         f.AI.Values.Current.Data = nullptr;
         f.Denied();
         Check(f.Authorizations == 1, "a flee without an opponent is refused after admission, never a failed attempt");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        Check(OllamaBotRandomChatter::Reachable(f.Command) && paths == 1 && mutations == 0 && f.Authorizations == 0,
+              "the reachability fact is one read-only path query");
+        f.Command.X = 30.0;
+        f.Command.Y = f.Command.Z = 0.0;
+        pathLength = 60.0f;
+        Check(OllamaBotRandomChatter::Reachable(f.Command), "exactly at the radius with a path of twice the radius");
+        Check(f.Run() == Result::Applied && moves == 1 && moveX == 30.0f, "a boundary position applies");
+    }
+    std::vector<std::function<void(Fixture&)>> remote = {
+        [](Fixture& f) { f.Command.MapId = 2; },
+        [](Fixture& f) { f.Command.X = std::numeric_limits<double>::quiet_NaN(); },
+        [](Fixture& f) { f.Command.Y = std::numeric_limits<double>::infinity(); },
+        [](Fixture& f) { f.Command.Z = -std::numeric_limits<double>::infinity(); },
+        [](Fixture& f) { f.Command.X = 1e300; },
+        [](Fixture& f) { f.Command.Y = -std::numeric_limits<double>::max(); },
+        [](Fixture& f) { f.Command.X = 45.0; },
+        [](Fixture& f) { f.Command.X = -15.0; },
+        [](Fixture& f) { f.Command.Z = 31.0; },
+        [](Fixture& f) { f.Command.VisibilityDistance = 0.0f; },
+        [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
+        [](Fixture&) { ObjectAccessor::Units.erase(1); },
+        [](Fixture&) { ObjectAccessor::Units.erase(2); },
+        [](Fixture& f) { f.Bot.World = false; },
+        [](Fixture& f) { f.Human.World = false; },
+        [](Fixture& f) { f.Human.Map = 2; }};
+    for (auto const& deny : remote)
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        deny(f);
+        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 0 && mutations == 0,
+              "an unchecked position is refused before any path query");
+        f.Denied();
+        Check(paths == 0, "no path query for an order refused on its facts");
+    }
+    std::vector<PathType> const incomplete = {PATHFIND_BLANK,
+                                              PATHFIND_SHORTCUT,
+                                              PATHFIND_INCOMPLETE,
+                                              PATHFIND_NOPATH,
+                                              PATHFIND_NOT_USING_PATH,
+                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH),
+                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_SHORT),
+                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_FARFROMPOLY_START),
+                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_FARFROMPOLY_END)};
+    for (PathType type : incomplete)
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        pathType = type;
+        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1 && mutations == 0,
+              "only a complete normal path is reachable");
+        f.Denied();
+        Check(paths == 2 && f.Authorizations == 1, "an incomplete path is refused after one admission");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        pathLength = 60.5f;
+        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "a detour longer than twice the radius");
+        Check(!OllamaBotRandomChatter::Reachable(f.Command, true) && paths == 1, "no path query off the world thread");
+        PlayerbotThreadCheck::worldThread = std::thread::id();
+        pathLength = 12.0f;
+        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "no path query during startup");
+    }
+    for (double Order::* coordinate : {&Order::X, &Order::Y, &Order::Z})
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        f.Command.*coordinate = std::numeric_limits<double>::quiet_NaN();
+        f.Denied();
+        Check(f.Authorizations == 0 && paths == 0, "a non-finite position is refused before admission");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        Check(OllamaBotRandomChatter::Reachable(f.Command), "the fact held when the adapter checked it");
+        pathType = PATHFIND_NOPATH;
+        f.Denied();
+        Check(f.Authorizations == 1 && paths == 2, "a stale reachability fact is checked again before the move");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        Check(OllamaBotRandomChatter::Run(f.Command,
+                                          [&]
+                                          {
+                                              pathType = PATHFIND_INCOMPLETE;
+                                              return true;
+                                          }) == Result::Rejected &&
+                  paths == 1 && moves == 0 && mutations == 0,
+              "pathing is read after the admission callback");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        f.AI.Master = nullptr;
+        Check(f.Run() == Result::Applied && moves == 1, "the group leader may move a masterless bot once");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        moveResult = false;
+        Check(f.Run() == Result::Failed && moves == 1 && paths == 1 && f.Authorizations == 1,
+              "position failure one attempt");
     }
     {
         Fixture f;
