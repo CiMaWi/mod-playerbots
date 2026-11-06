@@ -11,6 +11,7 @@
 #include "AttackAction.h"
 #include "FollowActions.h"
 #include "Group.h"
+#include "MovementActions.h"
 #include "ObjectAccessor.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotSecurity.h"
@@ -66,6 +67,25 @@ Result StayOnce(PlayerbotAI* ai, Player* bot)
 
     return stay.Execute(Event()) ? Result::Applied : Result::Failed;
 }
+
+// Moves away once from the bot's own opponent (its "current target" value, never wire data). Not the group-member
+// Flee search, which picks a random spot and speaks.
+Result FleeOnce(PlayerbotAI* ai, Player* bot)
+{
+    if (!bot->IsAlive() || bot->IsMounted())
+        return Result::Rejected;
+
+    // Without a live opponent MoveAway changes nothing: a refusal, not a failed attempt. IsInMap needs both in world.
+    Unit* opponent = ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    if (!opponent || !opponent->IsAlive() || !bot->IsInMap(opponent))
+        return Result::Rejected;
+
+    FleeAction flee(ai);
+    if (!flee.isUseful())
+        return Result::Rejected;
+
+    return flee.Execute(Event()) ? Result::Applied : Result::Failed;
+}
 }  // namespace
 
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize)
@@ -77,10 +97,10 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
     {
         case Intent::Follow:
         case Intent::Stay:
+        case Intent::Flee:
         case Intent::AttackOwnTarget:
         case Intent::Mark:
             break;
-        case Intent::Flee:
         case Intent::Regroup:
         case Intent::Pull:
         case Intent::FocusHealing:
@@ -124,6 +144,8 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
             return FollowOnce(ai, bot, controller);
         case Intent::Stay:
             return StayOnce(ai, bot);
+        case Intent::Flee:
+            return FleeOnce(ai, bot);
         default:
             break;
     }

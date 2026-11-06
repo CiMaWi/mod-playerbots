@@ -5,8 +5,8 @@
  */
 
 // The isolated runner supplies game doubles and includes the unchanged production effect implementation and the
-// AttackAction and StayAction method bodies; FollowAction is a counting double. It does not replace a decision path
-// with a parallel guard implementation.
+// AttackAction, StayAction and FleeAction method bodies; FollowAction and MovementAction::MoveAway are counting
+// doubles. It does not replace a decision path with a parallel guard implementation.
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -17,6 +17,7 @@
 #include "BridgeIntentEffect.cpp"
 #include "AttackAction-body.inc"
 #include "StayAction-body.inc"
+#include "FleeAction-body.inc"
 // clang-format on
 
 using PlayerbotBridge::Intent;
@@ -45,6 +46,8 @@ public:
 
 namespace
 {
+Spell channeling;
+
 void Check(bool value, char const* label)
 {
     ++checks;
@@ -71,9 +74,11 @@ struct Fixture
 
     Fixture()
     {
-        mutations = attacks = marks = follows = usefulFollow = stays = stops = 0;
-        security = melee = followUseful = followResult = true;
-        waitForAttack = prohibited = unavailable = moveFromGroup = false;
+        mutations = attacks = marks = follows = usefulFollow = stays = stops = flees = fleeRuns = 0;
+        security = melee = followUseful = followResult = fleeResult = true;
+        waitForAttack = prohibited = unavailable = moveFromGroup = fleeBackwards = false;
+        fleeFrom = nullptr;
+        fleeDistance = 0.0f;
         Bot.Guid = ObjectGuid(1);
         Human.Guid = ObjectGuid(2);
         Human.Session = &HumanSession;
@@ -88,7 +93,7 @@ struct Fixture
         PlayerbotThreadCheck::worldThread = std::this_thread::get_id();
     }
 
-    // A target-less verb with its wire shape (no target) and a bot that is moving.
+    // A target-less verb with its wire shape (no target) and a bot that is moving; a flee has an opponent in melee.
     void OneShot(Intent operation)
     {
         Command.Operation = operation;
@@ -96,6 +101,8 @@ struct Fixture
         Bot.Moving = true;
         AI.Values.Moving.Data = true;
         Bot.State = UNIT_STATE_CHASE | UNIT_STATE_FOLLOW;
+        if (operation == Intent::Flee)
+            AI.Values.Current.Data = &Target;
     }
 
     Result Run()
@@ -111,7 +118,8 @@ struct Fixture
     void Denied(Result expected = Result::Rejected)
     {
         Check(Run() == expected, "denial result");
-        Check(mutations == 0 && attacks == 0 && marks == 0 && follows == 0 && stays == 0 && stops == 0,
+        Check(mutations == 0 && attacks == 0 && marks == 0 && follows == 0 && stays == 0 && stops == 0 && flees == 0 &&
+                  fleeRuns == 0,
               "denied no mutation");
     }
 };
@@ -153,7 +161,8 @@ int main()
         Fixture f;
         f.Command.Operation = static_cast<Intent>(operation);
         if (f.Command.Operation != Intent::AttackOwnTarget && f.Command.Operation != Intent::Mark &&
-            f.Command.Operation != Intent::Follow && f.Command.Operation != Intent::Stay)
+            f.Command.Operation != Intent::Follow && f.Command.Operation != Intent::Stay &&
+            f.Command.Operation != Intent::Flee)
         {
             f.Denied(Result::Unavailable);
             Check(f.Authorizations == 0, "unavailable before admission callback");
@@ -349,7 +358,25 @@ int main()
               "stay stops chase and follow once and records its stay time");
         Check(f.Authorizations == 1, "one stay authorization");
     }
-    for (Intent operation : {Intent::Follow, Intent::Stay})
+    {
+        Fixture f;
+        f.OneShot(Intent::Flee);
+        Check(f.Run() == Result::Applied, "flee applies");
+        Check(flees == 1 && fleeRuns == 1 && fleeFrom == &f.Target && fleeBackwards &&
+                  fleeDistance == sPlayerbotAIConfig.FleeDistance && mutations == 1,
+              "one backwards move away from the opponent at the configured flee distance");
+        Check(follows == 0 && usefulFollow == 0 && stays == 0 && stops == 0 && attacks == 0 && marks == 0 &&
+                  f.Authorizations == 1 && f.Bot.Target == f.Target.Guid && f.AI.Values.Current.Data == &f.Target,
+              "one flee authorization without target or selection writes");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Flee);
+        f.AI.Values.Current.Data = &f.Other;
+        Check(f.Run() == Result::Applied && flees == 1 && fleeFrom == &f.Other,
+              "flee uses the bot's current target value, not its selection");
+    }
+    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee})
     {
         std::vector<std::function<void(Fixture&)>> oneShotDenials = {
             [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
@@ -386,6 +413,16 @@ int main()
             [](Fixture& f) { f.Bot.Alive = false; }};
         if (operation == Intent::Follow)
             oneShotDenials.push_back([](Fixture&) { followUseful = false; });
+        else if (operation == Intent::Flee)
+        {
+            oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Current.Data = nullptr; });
+            oneShotDenials.push_back([](Fixture& f) { f.Target.Alive = false; });
+            oneShotDenials.push_back([](Fixture& f) { f.Target.World = false; });
+            oneShotDenials.push_back([](Fixture& f) { f.Target.Map = 2; });
+            oneShotDenials.push_back([](Fixture&) { melee = false; });
+            oneShotDenials.push_back([](Fixture& f) { f.Bot.Channeled = &channeling; });
+            oneShotDenials.push_back([](Fixture& f) { f.Bot.Mounted = true; });
+        }
         else
         {
             oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Moving.Data = false; });
@@ -415,7 +452,8 @@ int main()
             Check(OllamaBotRandomChatter::Run(
                       f.Command, [] { return true; }, true) == Result::Rejected,
                   "one-shot scope cannot cross threads");
-            Check(mutations == 0 && follows == 0 && stays == 0 && usefulFollow == 0, "one-shot refusals no effect");
+            Check(mutations == 0 && follows == 0 && stays == 0 && usefulFollow == 0 && flees == 0 && fleeRuns == 0,
+                  "one-shot refusals no effect");
         }
         {
             Fixture f;
@@ -440,6 +478,19 @@ int main()
     }
     {
         Fixture f;
+        f.OneShot(Intent::Flee);
+        f.AI.Master = nullptr;
+        Check(f.Run() == Result::Applied && flees == 1, "the group leader may make a masterless bot flee once");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Flee);
+        f.AI.Values.Current.Data = nullptr;
+        f.Denied();
+        Check(f.Authorizations == 1, "a flee without an opponent is refused after admission, never a failed attempt");
+    }
+    {
+        Fixture f;
         f.OneShot(Intent::Follow);
         followResult = false;
         Check(f.Run() == Result::Failed && follows == 1 && f.Authorizations == 1, "follow failure one attempt");
@@ -450,6 +501,13 @@ int main()
         f.Bot.MotionState.Type = FLIGHT_MOTION_TYPE;
         Check(f.Run() == Result::Failed && stays == 1 && stops == 0 && f.Authorizations == 1,
               "stay failure one attempt");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Flee);
+        fleeResult = false;
+        Check(f.Run() == Result::Failed && flees == 1 && fleeRuns == 0 && f.Authorizations == 1,
+              "flee failure one attempt");
     }
     std::cout << "PASS " << checks << " checks\n";
 }
