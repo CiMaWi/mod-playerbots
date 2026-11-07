@@ -182,6 +182,25 @@ int main()
         missingSession.Human.Session = nullptr;
         missingSession.Denied();
     }
+    {
+        // The headless test player's order applies like a real player's; any other headless session stays denied
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        f.HumanSession.Headless = true;
+        TestPlayerMgr::Instance().Session = &f.HumanSession;
+        Result const result = f.Run();
+        TestPlayerMgr::Instance().Session = nullptr;
+        Check(result == Result::Applied && follows == 1 && f.Authorizations == 1, "the test player's follow applies");
+
+        Fixture other;
+        other.OneShot(Intent::Follow);
+        other.HumanSession.Headless = true;
+        WorldSession testSession;
+        testSession.Headless = true;
+        TestPlayerMgr::Instance().Session = &testSession;
+        other.Denied();
+        TestPlayerMgr::Instance().Session = nullptr;
+    }
     for (int operation = 0; operation <= static_cast<int>(Intent::DungeonClear); ++operation)
     {
         Fixture f;

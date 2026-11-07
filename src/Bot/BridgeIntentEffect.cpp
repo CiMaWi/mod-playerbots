@@ -19,6 +19,7 @@
 #include "Playerbots.h"
 #include "PositionAction.h"
 #include "StayActions.h"
+#include "TestPlayer.h"
 #include "ThreadCheck.h"
 #include "WorldSession.h"
 
@@ -176,7 +177,9 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
     WorldSession const* controllerSession = controller ? controller->GetSession() : nullptr;
     PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
     PlayerbotAI* controllerAI = controller ? GET_PLAYERBOT_AI(controller) : nullptr;
-    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI() || !controllerSession || controllerSession->IsHeadless() ||
+    // The headless test player stands in for a real player's client, so it may give orders like one
+    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI() || !controllerSession ||
+        (controllerSession->IsHeadless() && !TestPlayerMgr::Instance().IsTestPlayer(controller)) ||
         (controllerAI && controllerAI->IsBotAI()) || !Visible(bot, controller, order.VisibilityDistance) ||
         !Visible(controller, bot, order.VisibilityDistance) || bot->GetTeamId() != controller->GetTeamId())
         return Result::Rejected;

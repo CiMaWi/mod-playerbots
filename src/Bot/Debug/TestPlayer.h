@@ -42,6 +42,9 @@ public:
     void Update(uint32 diff);
     // Logs the test player out (server shutdown)
     void Shutdown();
+    // True for the test player from session creation to logout. Code that counts a headless session as a bot uses it
+    // to count the test player as the real player it stands in for
+    bool IsTestPlayer(Player const* player) const;
 
     static bool HandleLoginCommand(ChatHandler* handler, char const* args);
     static bool HandleRouteCommand(ChatHandler* handler, char const* args);

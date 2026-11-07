@@ -212,6 +212,11 @@ Player* TestPlayerMgr::OnlinePlayer() const
     return _state == State::Online && _session ? _session->GetPlayer() : nullptr;
 }
 
+bool TestPlayerMgr::IsTestPlayer(Player const* player) const
+{
+    return player && _session && player->GetSession() == _session;
+}
+
 bool TestPlayerMgr::Whisper(ChatHandler* handler, std::string const& target, std::string const& text)
 {
     Player* player = OnlinePlayer();
