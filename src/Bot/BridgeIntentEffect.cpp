@@ -7,6 +7,7 @@
 #include "BridgeIntentEffect.h"
 
 #include <cmath>
+#include <list>
 
 #include "AttackAction.h"
 #include "FollowActions.h"
@@ -43,8 +44,32 @@ bool Visible(Player* observer, Unit* target, float distance)
            observer->IsWithinDistInMap(target, distance) && observer->CanSeeOrDetect(target, false, true);
 }
 
-// Only an attack or a mark names a unit; the wire carries no target for the other verbs.
-bool NeedsTarget(Intent operation) { return operation == Intent::AttackOwnTarget || operation == Intent::Mark; }
+// Only an attack, a mark or a focus heal names a unit; the wire carries no target for the other verbs.
+bool NeedsTarget(Intent operation)
+{
+    return operation == Intent::AttackOwnTarget || operation == Intent::Mark || operation == Intent::FocusHealing;
+}
+
+char const* FormationName(FormationShape shape)
+{
+    switch (shape)
+    {
+        case FormationShape::Close:
+            return "near";
+        case FormationShape::Spread:
+            return "far";
+        case FormationShape::Line:
+            return "line";
+        default:
+            return nullptr;
+    }
+}
+
+// The strategies the follow and stay commands change (ChatShortcutActions.cpp), in Baseline::Strategies bit order,
+// first for the non-combat state, then for the combat state. Runaway and guard are there because adding follow or stay
+// drops them: the four are one sibling group (MovementStrategyContext, Engine::addStrategy).
+char const* const MovementStrategies[] = {"follow", "stay", "runaway", "guard", "passive", "grind", "move from group"};
+BotState const MovementStates[] = {BOT_STATE_NON_COMBAT, BOT_STATE_COMBAT};
 
 // Follow as playerbots' "follow" command does (ChatShortcutActions.cpp FollowChatShortcutAction), without its
 // "Following" line: the bridge reply speaks. Execute admitted the controller as the master, or as the leader of a
@@ -118,6 +143,241 @@ Result FleeOnce(PlayerbotAI* ai, Player* bot)
     return flee.Execute(Event()) ? Result::Applied : Result::Failed;
 }
 
+// Sets the formation as the "formation <name>" command does (SetFormationAction), without its reply line.
+Result FormationOnce(PlayerbotAI* ai, Order const& order)
+{
+    char const* name = FormationName(order.Shape);
+    if (!name)
+        return Result::Rejected;
+
+    UntypedValue* formation = ai->GetAiObjectContext()->GetUntypedValue("formation");
+    if (!formation)
+        return Result::Failed;
+
+    return formation->Load(name) ? Result::Applied : Result::Failed;
+}
+
+// The class levels of the "save mana *" command (SaveManaAction.cpp), which also tells the master.
+double ClassManaSaveLevel(Player* bot)
+{
+    switch (bot->getClass())
+    {
+        case CLASS_HUNTER:
+        case CLASS_SHAMAN:
+        case CLASS_DRUID:
+            return 5.0;
+        case CLASS_MAGE:
+        case CLASS_PRIEST:
+        case CLASS_WARLOCK:
+            return 2.0;
+        default:
+            return 3.0;
+    }
+}
+
+// Sets the mana save level as "save mana *" (enabled) or "save mana" (disabled, 1.0) does, without its reply line.
+Result SaveManaOnce(PlayerbotAI* ai, Player* bot, bool enabled)
+{
+    Value<double>* level = ai->GetAiObjectContext()->GetValue<double>("mana save level");
+    if (!level)
+        return Result::Failed;
+
+    level->Set(enabled ? ClassManaSaveLevel(bot) : 1.0);
+    return Result::Applied;
+}
+
+// Makes the target the one focus heal target as the "focus heal <name>" command does (SetFocusHealTargetsAction):
+// a player of the bot's group, for a healer or off-healer, with the combat strategy on. No reply line.
+Result FocusHealOnce(PlayerbotAI* ai, Player* bot, Group* group, Unit* target)
+{
+    if (!target->IsPlayer() || !group->IsMember(target->GetGUID()) ||
+        (!PlayerbotAI::IsHeal(bot) && !ai->HasStrategy("offheal", BOT_STATE_COMBAT)))
+        return Result::Rejected;
+
+    Value<std::list<ObjectGuid>>* targets =
+        ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("focus heal targets");
+    if (!targets)
+        return Result::Failed;
+
+    targets->Set({target->GetGUID()});
+    ai->ChangeStrategy("+focus heal targets", BOT_STATE_COMBAT);
+    return Result::Applied;
+}
+
+NamedPosition ReadPosition(PositionMap& positions, std::string const& name)
+{
+    NamedPosition result;
+    PositionMap::iterator const found = positions.find(name);
+    if (found == positions.end() || !found->second.isSet())
+        return result;
+
+    result.Set = true;
+    result.X = found->second.x;
+    result.Y = found->second.y;
+    result.Z = found->second.z;
+    result.MapId = found->second.mapId;
+    return result;
+}
+
+void WritePosition(PositionMap& positions, std::string const& name, NamedPosition const& position)
+{
+    if (position.Set)
+        positions[name].Set(position.X, position.Y, position.Z, position.MapId);
+    else if (positions.find(name) != positions.end())
+        positions[name].Reset();
+}
+
+// The connected bot's AI, or null for an offline player or one that is no longer a bot. inWorld is false while the
+// bot is out of the world, e.g. during a far teleport: it comes back, so that is not a logout.
+PlayerbotAI* ConnectedBot(uint64_t guid, bool& inWorld)
+{
+    Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(guid));
+    PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    inWorld = bot && bot->IsInWorld();
+    return ai && ai->IsBotAI() ? ai : nullptr;
+}
+
+bool ReadPart(PlayerbotAI* ai, uint64_t bot, Part part, Baseline& out)
+{
+    out = Baseline();
+    out.Bot = bot;
+    out.Held = part;
+    switch (part)
+    {
+        case Part::Movement:
+        {
+            Value<PositionMap&>* positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position");
+            if (!positions)
+                return false;
+
+            uint16_t bit = 1;
+            for (BotState state : MovementStates)
+            {
+                for (char const* name : MovementStrategies)
+                {
+                    if (ai->HasStrategy(name, state))
+                        out.Strategies |= bit;
+
+                    bit <<= 1;
+                }
+            }
+
+            out.Stay = ReadPosition(positions->Get(), "stay");
+            out.Return = ReadPosition(positions->Get(), "return");
+            return true;
+        }
+        case Part::Formation:
+        {
+            UntypedValue* formation = ai->GetAiObjectContext()->GetUntypedValue("formation");
+            if (!formation)
+                return false;
+
+            out.Formation = formation->Save();
+            return true;
+        }
+        case Part::ManaSave:
+        {
+            Value<double>* level = ai->GetAiObjectContext()->GetValue<double>("mana save level");
+            if (!level)
+                return false;
+
+            out.ManaSaveLevel = level->Get();
+            return true;
+        }
+        case Part::FocusHeal:
+        {
+            Value<std::list<ObjectGuid>>* targets =
+                ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("focus heal targets");
+            if (!targets)
+                return false;
+
+            for (ObjectGuid const& target : targets->Get())
+                out.FocusHealTargets.push_back(target.GetRawValue());
+
+            out.FocusHealStrategy = ai->HasStrategy("focus heal targets", BOT_STATE_COMBAT);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+// Writes target's part over current, which ReadPart just filled: only the strategies and values that differ.
+bool WritePart(PlayerbotAI* ai, Baseline const& current, Baseline const& target)
+{
+    switch (target.Held)
+    {
+        case Part::Movement:
+        {
+            Value<PositionMap&>* positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position");
+            if (!positions)
+                return false;
+
+            uint16_t bit = 1;
+            for (BotState state : MovementStates)
+            {
+                std::string changes;
+                for (char const* name : MovementStrategies)
+                {
+                    if ((current.Strategies & bit) != (target.Strategies & bit))
+                    {
+                        changes += changes.empty() ? "" : ",";
+                        changes += (target.Strategies & bit) ? "+" : "-";
+                        changes += name;
+                    }
+
+                    bit <<= 1;
+                }
+
+                if (!changes.empty())
+                    ai->ChangeStrategy(changes, state);
+            }
+
+            if (current.Stay != target.Stay)
+                WritePosition(positions->Get(), "stay", target.Stay);
+
+            if (current.Return != target.Return)
+                WritePosition(positions->Get(), "return", target.Return);
+
+            return true;
+        }
+        case Part::Formation:
+        {
+            UntypedValue* formation = ai->GetAiObjectContext()->GetUntypedValue("formation");
+            return formation && formation->Load(target.Formation);
+        }
+        case Part::ManaSave:
+        {
+            Value<double>* level = ai->GetAiObjectContext()->GetValue<double>("mana save level");
+            if (!level)
+                return false;
+
+            level->Set(target.ManaSaveLevel);
+            return true;
+        }
+        case Part::FocusHeal:
+        {
+            Value<std::list<ObjectGuid>>* targets =
+                ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("focus heal targets");
+            if (!targets)
+                return false;
+
+            std::list<ObjectGuid> list;
+            for (uint64_t guid : target.FocusHealTargets)
+                list.push_back(ObjectGuid(guid));
+
+            targets->Set(list);
+            if (current.FocusHealStrategy != target.FocusHealStrategy)
+                ai->ChangeStrategy(target.FocusHealStrategy ? "+focus heal targets" : "-focus heal targets",
+                                   BOT_STATE_COMBAT);
+
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 bool FinitePosition(Order const& order)
 {
     return std::isfinite(order.X) && std::isfinite(order.Y) && std::isfinite(order.Z);
@@ -179,22 +439,25 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
         case Intent::Position:
         case Intent::AttackOwnTarget:
         case Intent::Mark:
-            break;
-        case Intent::Regroup:
-        case Intent::Pull:
         case Intent::FocusHealing:
-        case Intent::AssignRole:
         case Intent::SaveMana:
         case Intent::Formation:
+            break;
+        // No safe playerbots effect: pull and regroup (DS.9), no role setter, and dungeon clear is another module.
+        case Intent::Regroup:
+        case Intent::Pull:
+        case Intent::AssignRole:
         case Intent::DungeonClear:
             return Result::Unavailable;
         default:
             return Result::Rejected;
     }
 
-    // A stray target on a target-less verb is a mapping error, never an ignored field.
+    // A stray target, shape or enable flag on another verb is a mapping error, never an ignored field.
     if (!order.Bot || !order.Controller || order.Bot == order.Controller || !order.Group ||
-        NeedsTarget(order.Operation) != (order.Target != 0) || !std::isfinite(order.VisibilityDistance) ||
+        NeedsTarget(order.Operation) != (order.Target != 0) ||
+        (order.Operation == Intent::Formation) != (FormationName(order.Shape) != nullptr) ||
+        (order.Enabled && order.Operation != Intent::SaveMana) || !std::isfinite(order.VisibilityDistance) ||
         order.VisibilityDistance <= 0.0f || (order.Operation == Intent::Mark && order.Icon > 7) ||
         (order.Operation == Intent::Position && !FinitePosition(order)) || !authorize || !authorize() ||
         !phase.Current())
@@ -229,6 +492,10 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
             return FleeOnce(ai, bot);
         case Intent::Position:
             return PositionOnce(phase, ai, bot, order);
+        case Intent::Formation:
+            return FormationOnce(ai, order);
+        case Intent::SaveMana:
+            return SaveManaOnce(ai, bot, order.Enabled);
         default:
             break;
     }
@@ -236,6 +503,9 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
     Unit* target = ObjectAccessor::GetUnit(*bot, ObjectGuid(order.Target));
     if (!Visible(bot, target, order.VisibilityDistance) || !Visible(controller, target, order.VisibilityDistance))
         return Result::Rejected;
+
+    if (order.Operation == Intent::FocusHealing)
+        return FocusHealOnce(ai, bot, group, target);
 
     if (order.Operation == Intent::Mark)
     {
@@ -259,5 +529,54 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
     AttackAction attack(ai, "attack");
     // Attack can fail after changing selection/AI/movement. Failed is an attempted result, never a retry grant.
     return attack.ExecuteExactTarget(target) ? Result::Applied : Result::Failed;
+}
+
+bool Capture(PostMapJoin const& phase, uint64_t bot, Part part, Baseline& out)
+{
+    out = Baseline();
+    if (!phase.Current())
+        return false;
+
+    bool inWorld = false;
+    PlayerbotAI* ai = ConnectedBot(bot, inWorld);
+    if (!ai || !inWorld || !ReadPart(ai, bot, part, out))
+    {
+        out = Baseline();
+        return false;
+    }
+
+    return true;
+}
+
+RestoreResult Restore(PostMapJoin const& phase, uint64_t bot, Baseline const& before, Baseline const& applied)
+{
+    if (!phase.Current() || before.Held == Part::None || before.Held != applied.Held)
+        return RestoreResult::Rejected;
+
+    // Another bot's baseline is a caller's mix-up, never a reason to write.
+    if (before.Bot != bot || applied.Bot != bot)
+        return RestoreResult::Rejected;
+
+    bool inWorld = false;
+    PlayerbotAI* ai = ConnectedBot(bot, inWorld);
+    if (!ai)
+        return RestoreResult::Gone;
+
+    // A teleporting bot is back in the world soon; the caller retries rather than dropping the bridge's state.
+    if (!inWorld)
+        return RestoreResult::Failed;
+
+    Baseline current;
+    if (!ReadPart(ai, bot, before.Held, current))
+        return RestoreResult::Failed;
+
+    if (current == before)
+        return RestoreResult::Restored;
+
+    // The same rule as a plan ledger's (Baseline::operator==; Movement by its strategies only).
+    if (current != applied)
+        return RestoreResult::Superseded;
+
+    return WritePart(ai, current, before) ? RestoreResult::Restored : RestoreResult::Failed;
 }
 }  // namespace PlayerbotBridge
