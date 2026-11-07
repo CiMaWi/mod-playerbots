@@ -123,12 +123,6 @@ std::set<std::string> AiObjectContext::GetSiblingStrategy(std::string const name
 
 Trigger* AiObjectContext::GetTrigger(std::string const name) { return triggerContexts.GetContextObject(name, botAI); }
 
-// Same name rule as GetTrigger, read from the shared creator table only: nothing is created or cached for the bot.
-bool AiObjectContext::HasTrigger(std::string const& name) const
-{
-    return triggerContexts.creators.find(name.substr(0, name.find("::"))) != triggerContexts.creators.end();
-}
-
 Action* AiObjectContext::GetAction(std::string const name) { return actionContexts.GetContextObject(name, botAI); }
 
 UntypedValue* AiObjectContext::GetUntypedValue(std::string const name)

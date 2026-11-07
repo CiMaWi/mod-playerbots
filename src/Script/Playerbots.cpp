@@ -13,6 +13,7 @@
 #include "BotProfileMgr.h"
 #include "CcTacticStrategy.h"
 #include "Channel.h"
+#include "ChatCommandLine.h"
 #include "CheckMountStateAction.h"
 #include "Config.h"
 #include "BuiltInConfig.h"
@@ -348,12 +349,17 @@ public:
             return true;
         }
 
-        botAI->HandleCommand(type, msg, player);
+        // The whisper itself is always delivered; only a command line (see ChatCommandLine.h) commands the bot.
+        std::string command;
+        if (!PlayerbotBridge::ExtractChatCommand(msg, command))
+            return true;
+
+        botAI->HandleCommand(type, command, player);
 
         // hotfix; otherwise the server will crash when whispering logout
         // https://github.com/mod-playerbots/mod-playerbots/pull/1838
         // TODO: find the root cause and solve it. (does not happen in party chat)
-        if (msg == "logout")
+        if (command == "logout")
             return false;
 
         return true;
@@ -363,6 +369,10 @@ public:
     {
         // Addon traffic (DBM, Carbonite, ...) is no bot command; its text used to trigger item commands like trade.
         if (lang == LANG_ADDON)
+            return true;
+
+        std::string command;
+        if (!PlayerbotBridge::ExtractChatCommand(msg, command))
             return true;
 
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
@@ -377,7 +387,7 @@ public:
             if (botAI == nullptr)
                 continue;
 
-            botAI->HandleCommand(type, msg, player);
+            botAI->HandleCommand(type, command, player);
         }
 
         return true;
@@ -386,6 +396,10 @@ public:
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& msg, Guild* /*guild*/) override
     {
         if (type != CHAT_MSG_GUILD || lang == LANG_ADDON)
+            return true;
+
+        std::string command;
+        if (!PlayerbotBridge::ExtractChatCommand(msg, command))
             return true;
 
         PlayerbotMgr* playerbotMgr = PlayerbotsMgr::instance().GetPlayerbotMgr(player);
@@ -403,7 +417,7 @@ public:
             if (bot->GetGuildId() != player->GetGuildId())
                 continue;
 
-            PlayerbotsMgr::instance().GetPlayerbotAI(bot)->HandleCommand(type, msg, player);
+            PlayerbotsMgr::instance().GetPlayerbotAI(bot)->HandleCommand(type, command, player);
         }
 
         return true;
@@ -411,12 +425,16 @@ public:
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg, Channel* channel) override
     {
+        std::string command;
+        if (!PlayerbotBridge::ExtractChatCommand(msg, command))
+            return true;
+
         PlayerbotMgr* const playerbotMgr = PlayerbotsMgr::instance().GetPlayerbotMgr(player);
 
         if (playerbotMgr != nullptr && channel->GetFlags() & 0x18)
-            playerbotMgr->HandleCommand(type, msg);
+            playerbotMgr->HandleCommand(type, command);
 
-        sRandomPlayerbotMgr.HandleCommand(type, msg, player);
+        sRandomPlayerbotMgr.HandleCommand(type, command, player);
 
         return true;
     }

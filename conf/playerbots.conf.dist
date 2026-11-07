@@ -4504,6 +4504,9 @@ Playerbots.SkipIdleTriggerChecks = 0
 #
 
 # Prefix for bot chat commands (e.g., follow, stay)
+# A human chat line commands bots only when it starts with "#" (fixed, not an option): "#follow", "#c food",
+# "##w follow" for a reply-channel selector. Every other line is ordinary chat. A non-empty prefix is checked after
+# the "#" is removed ("#<prefix>follow").
 Playerbots.CommandPrefix = ""
 
 # Separator for bot chat commands
