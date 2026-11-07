@@ -31,6 +31,21 @@ inline bool ExtractChatCommand(std::string const& text, std::string& command)
     command = text.substr(start);
     return true;
 }
+
+// Bot speech is never a command line, whoever hears it: removes the indicators and spaces from the front of `text`
+// for as long as ExtractChatCommand would accept it ("##w follow" -> "w follow", "# Plan" -> "Plan"). True when `text`
+// changed. Chat stays untouched, and a run of indicators keeps its last one ("###" -> "#"), so text never empties.
+inline bool NeutralizeCommandIndicator(std::string& text)
+{
+    std::string command;
+    if (!ExtractChatCommand(text, command))
+        return false;
+
+    constexpr char Skipped[] = {CommandIndicator, ' ', '\t', '\0'};
+    std::size_t const start = text.find_first_not_of(Skipped);
+    text.erase(0, start == std::string::npos ? text.rfind(CommandIndicator) : start);
+    return true;
+}
 }  // namespace PlayerbotBridge
 
 #endif
