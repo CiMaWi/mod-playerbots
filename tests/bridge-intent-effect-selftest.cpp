@@ -61,6 +61,12 @@ public:
 namespace
 {
 Spell channeling;
+using StrategyChanges = std::vector<std::pair<std::string, int>>;
+// The strategy changes of playerbots' own "follow" and "stay" commands (ChatShortcutActions.cpp).
+StrategyChanges const FollowStrategies{{"+follow,-passive,-grind,-move from group", BOT_STATE_NON_COMBAT},
+                                       {"-stay,-follow,-passive,-grind,-move from group", BOT_STATE_COMBAT}};
+StrategyChanges const StayStrategies{{"+stay,-passive,-move from group", BOT_STATE_NON_COMBAT},
+                                     {"+stay,-follow,-passive,-move from group", BOT_STATE_COMBAT}};
 
 void Check(bool value, char const* label)
 {
@@ -386,21 +392,42 @@ int main()
     {
         Fixture f;
         f.OneShot(Intent::Follow);
+        f.AI.Values.Positions.Data["stay"].Stored = f.AI.Values.Positions.Data["return"].Stored = true;
+        f.AI.Values.Priority.Data = {f.Target.Guid};
         Check(f.Run() == Result::Applied, "follow applies");
         Check(follows == 1 && usefulFollow == 1 && stays == 0 && stops == 0 && attacks == 0 && marks == 0,
               "one follow move and nothing else");
         Check(f.Authorizations == 1 && f.Party.Marked == ObjectGuid() && f.Bot.Target == f.Target.Guid,
               "one follow authorization without target or selection writes");
+        Check(f.AI.Strategies == FollowStrategies && f.AI.StrategyResets == 0 && f.AI.Resets == 0 &&
+                  f.AI.Master == &f.Human,
+              "the follow command's strategies for the master");
+        Check(!f.AI.Values.Positions.Data["stay"].Stored && !f.AI.Values.Positions.Data["return"].Stored &&
+                  f.AI.Values.Priority.Data.empty(),
+              "follow clears the stay and return positions and the prioritized targets");
     }
     {
         Fixture f;
         f.OneShot(Intent::Stay);
+        f.Bot.X = 3.0f;
+        f.Bot.Y = -2.0f;
+        f.Bot.Z = 1.0f;
         Check(f.Run() == Result::Applied, "stay applies");
         Check(stays == 1 && stops == 1 && follows == 0 && usefulFollow == 0 && attacks == 0 && marks == 0,
               "one stop and nothing else");
         Check(!f.Bot.Moving && !f.Bot.HasUnitState(UNIT_STATE_CHASE | UNIT_STATE_FOLLOW) &&
-                  f.AI.Values.StayTime.Data != 0 && f.AI.Values.MovingParam == "moving/self target",
+                  f.AI.Values.StayTime.Data != 0 && f.AI.Values.MovingParam.empty(),
               "stay stops chase and follow once and records its stay time");
+        Check(f.AI.Resets == 1 && f.AI.Strategies == StayStrategies && f.AI.StrategyResets == 0 &&
+                  f.AI.Master == &f.Human,
+              "the stay command's reset and strategies");
+        for (char const* name : {"stay", "return"})
+        {
+            PositionInfo const& position = f.AI.Values.Positions.Data[name];
+            Check(position.Stored && position.X == 3.0f && position.Y == -2.0f && position.Z == 1.0f &&
+                      position.MapId == 1,
+                  "stay and return positions where the bot stands");
+        }
         Check(f.Authorizations == 1, "one stay authorization");
     }
     {
@@ -470,9 +497,7 @@ int main()
             },
             [](Fixture&) { security = false; },
             [](Fixture& f) { f.Bot.Alive = false; }};
-        if (operation == Intent::Follow)
-            oneShotDenials.push_back([](Fixture&) { followUseful = false; });
-        else if (operation == Intent::Flee)
+        if (operation == Intent::Flee)
         {
             oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Current.Data = nullptr; });
             oneShotDenials.push_back([](Fixture& f) { f.Target.Alive = false; });
@@ -482,13 +507,7 @@ int main()
             oneShotDenials.push_back([](Fixture& f) { f.Bot.Channeled = &channeling; });
             oneShotDenials.push_back([](Fixture& f) { f.Bot.Mounted = true; });
         }
-        else if (operation == Intent::Stay)
-        {
-            oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Moving.Data = false; });
-            oneShotDenials.push_back([](Fixture&) { moveFromGroup = true; });
-            oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Positions.Data["stay"].Set = true; });
-        }
-        else
+        else if (operation == Intent::Position)
         {
             oneShotDenials.push_back([](Fixture& f) { f.Command.MapId = 2; });
             oneShotDenials.push_back([](Fixture& f) { f.Command.X = 45.0; });
@@ -535,14 +554,51 @@ int main()
         Fixture f;
         f.OneShot(Intent::Follow);
         f.AI.Master = nullptr;
+        Check(f.Run() == Result::Applied && follows == 1 && f.Authorizations == 1,
+              "the group leader may make a masterless bot follow");
+        Check(f.AI.Master == &f.Human && f.AI.StrategyResets == 1 && f.AI.Strategies == FollowStrategies,
+              "a masterless bot takes the leader as master, then the follow strategies");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        f.AI.Master = nullptr;
+        f.Bot.Battleground = true;
         f.Denied();
-        Check(f.Authorizations == 1 && usefulFollow == 0, "a follow in a leader-run group has no master to follow");
+        Check(f.Authorizations == 1 && !f.AI.Master && f.AI.Strategies.empty() && f.AI.StrategyResets == 0,
+              "a masterless battleground bot keeps playerbots' own master choice");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        followUseful = false;
+        Check(f.Run() == Result::Applied && follows == 0 && usefulFollow == 1 && f.AI.Strategies == FollowStrategies,
+              "a bot already at its place follows from here on without a move");
     }
     {
         Fixture f;
         f.OneShot(Intent::Stay);
         f.AI.Master = nullptr;
-        Check(f.Run() == Result::Applied && stays == 1, "the group leader may stop a masterless bot once");
+        Check(f.Run() == Result::Applied && stays == 1 && !f.AI.Master && f.AI.Strategies == StayStrategies,
+              "the group leader may make a masterless bot stay");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Stay);
+        f.Bot.Moving = false;
+        f.AI.Values.Moving.Data = false;
+        f.Bot.State = 0;
+        Check(f.Run() == Result::Applied && stays == 1 && stops == 0 && f.AI.Resets == 1 &&
+                  f.AI.Strategies == StayStrategies,
+              "a standing bot told to stay stays");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Stay);
+        moveFromGroup = true;
+        f.AI.Values.Positions.Data["stay"].Stored = true;
+        Check(f.Run() == Result::Applied && stops == 1 && f.AI.Strategies == StayStrategies,
+              "stay replaces move from group and an old stay position");
     }
     {
         Fixture f;
@@ -675,7 +731,8 @@ int main()
         Fixture f;
         f.OneShot(Intent::Stay);
         f.Bot.MotionState.Type = FLIGHT_MOTION_TYPE;
-        Check(f.Run() == Result::Failed && stays == 1 && stops == 0 && f.Authorizations == 1,
+        Check(f.Run() == Result::Failed && stays == 1 && stops == 0 && f.Authorizations == 1 && f.AI.Resets == 0 &&
+                  f.AI.Strategies.empty() && f.AI.Values.Positions.Data.empty(),
               "stay failure one attempt");
     }
     {

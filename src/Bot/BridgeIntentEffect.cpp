@@ -18,6 +18,7 @@
 #include "PlayerbotSecurity.h"
 #include "Playerbots.h"
 #include "PositionAction.h"
+#include "PositionValue.h"
 #include "StayActions.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
@@ -45,30 +46,57 @@ bool Visible(Player* observer, Unit* target, float distance)
 // Only an attack or a mark names a unit; the wire carries no target for the other verbs.
 bool NeedsTarget(Intent operation) { return operation == Intent::AttackOwnTarget || operation == Intent::Mark; }
 
-// One move toward the formation location around the master; the follow strategy itself is left unchanged.
+// Follow as playerbots' "follow" command does (ChatShortcutActions.cpp FollowChatShortcutAction), without its
+// "Following" line: the bridge reply speaks. Execute admitted the controller as the master, or as the leader of a
+// masterless bot, which then takes the leader as master as PlayerbotAI::UpdateAIGroupMaster would on its next tick.
 Result FollowOnce(PlayerbotAI* ai, Player* bot, Player* controller)
 {
-    if (ai->GetMaster() != controller || !bot->IsAlive())
+    if (!bot->IsAlive())
         return Result::Rejected;
 
+    if (!ai->GetMaster())
+    {
+        // Battleground masters stay playerbots' own choice.
+        if (bot->InBattleground())
+            return Result::Rejected;
+
+        ai->SetMaster(controller);
+        ai->ResetStrategies();
+    }
+
+    ai->ChangeStrategy("+follow,-passive,-grind,-move from group", BOT_STATE_NON_COMBAT);
+    ai->ChangeStrategy("-stay,-follow,-passive,-grind,-move from group", BOT_STATE_COMBAT);
+    ai->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Reset();
+    PositionMap& positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position")->Get();
+    positions["return"].Reset();
+    positions["stay"].Reset();
+
+    // One move now toward the formation location; a bot already there follows from here on without one.
     FollowAction follow(ai);
     if (!follow.isUseful())
-        return Result::Rejected;
+        return Result::Applied;
 
     return follow.Execute(Event()) ? Result::Applied : Result::Failed;
 }
 
-// Stops the current movement once; an active follow strategy resumes at the engine's next movement decision.
+// Stay as playerbots' "stay" command does (ChatShortcutActions.cpp StayChatShortcutAction), without its "Staying"
+// line, after one stop of a moving bot. A standing bot stays too; a bot on a flight path cannot, and nothing changes.
 Result StayOnce(PlayerbotAI* ai, Player* bot)
 {
     if (!bot->IsAlive())
         return Result::Rejected;
 
     StayAction stay(ai);
-    if (!stay.isUseful())
-        return Result::Rejected;
+    if (!stay.Execute(Event()))
+        return Result::Failed;
 
-    return stay.Execute(Event()) ? Result::Applied : Result::Failed;
+    ai->Reset();
+    ai->ChangeStrategy("+stay,-passive,-move from group", BOT_STATE_NON_COMBAT);
+    ai->ChangeStrategy("+stay,-follow,-passive,-move from group", BOT_STATE_COMBAT);
+    PositionMap& positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position")->Get();
+    positions["return"].Set(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
+    positions["stay"].Set(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
+    return Result::Applied;
 }
 
 // Moves away once from the bot's own opponent (its "current target" value, never wire data). Not the group-member
