@@ -16,7 +16,6 @@
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
 #include "PlayerbotAI.h"
-#include "PlayerbotSecurity.h"
 #include "Playerbots.h"
 #include "PositionAction.h"
 #include "PositionValue.h"
@@ -42,6 +41,24 @@ bool Visible(Player* observer, Unit* target, float distance)
 {
     return target && target->IsInWorld() && observer->IsInMap(target) && observer->InSamePhase(target) &&
            observer->IsWithinDistInMap(target, distance) && observer->CanSeeOrDetect(target, false, true);
+}
+
+Result Refuse(Refusal& why, Refusal reason)
+{
+    why = reason;
+    return Result::Rejected;
+}
+
+// The one admission test for a conversation partner: a player's own client, or the headless test player standing in
+// for one; never a bot. DS.11's later bot-to-bot conversations widen this one function. Any such player of the bot's
+// team may make any bot act: safe only because the user is the only player (DS.12); a server with several players
+// needs a per-bot partner rule here.
+bool PartnerAllowed(Player* partner)
+{
+    WorldSession const* session = partner ? partner->GetSession() : nullptr;
+    PlayerbotAI* partnerAI = partner ? GET_PLAYERBOT_AI(partner) : nullptr;
+    return session && (!session->IsHeadless() || TestPlayerMgr::Instance().IsTestPlayer(partner)) &&
+           !(partnerAI && partnerAI->IsBotAI());
 }
 
 // Only an attack, a mark or a focus heal names a unit; the wire carries no target for the other verbs.
@@ -72,20 +89,16 @@ char const* const MovementStrategies[] = {"follow", "stay", "runaway", "guard", 
 BotState const MovementStates[] = {BOT_STATE_NON_COMBAT, BOT_STATE_COMBAT};
 
 // Follow as playerbots' "follow" command does (ChatShortcutActions.cpp FollowChatShortcutAction), without its
-// "Following" line: the bridge reply speaks. Execute admitted the controller as the master, or as the leader of a
-// masterless bot, which then takes the leader as master as PlayerbotAI::UpdateAIGroupMaster would on its next tick.
-Result FollowOnce(PlayerbotAI* ai, Player* bot, Player* controller)
+// "Following" line: the bridge reply speaks. Execute admitted only a partner of the bot's group outside battlegrounds,
+// so a masterless bot here is grouped and takes the partner as master, as PlayerbotAI::FindNewMaster picks a player of
+// its group. A bot with a master keeps it and follows that master, so Applied means "follows the partner" only
+// because the user is the only player (DS.12) and, outside battlegrounds, playerbots gives a bot a real player as
+// master; with several players this would need the partner as master. An ungrouped bot never reaches this.
+Result FollowOnce(PlayerbotAI* ai, Player* partner)
 {
-    if (!bot->IsAlive())
-        return Result::Rejected;
-
     if (!ai->GetMaster())
     {
-        // Battleground masters stay playerbots' own choice.
-        if (bot->InBattleground())
-            return Result::Rejected;
-
-        ai->SetMaster(controller);
+        ai->SetMaster(partner);
         ai->ResetStrategies();
     }
 
@@ -108,9 +121,6 @@ Result FollowOnce(PlayerbotAI* ai, Player* bot, Player* controller)
 // line, after one stop of a moving bot. A standing bot stays too; a bot on a flight path cannot, and nothing changes.
 Result StayOnce(PlayerbotAI* ai, Player* bot)
 {
-    if (!bot->IsAlive())
-        return Result::Rejected;
-
     StayAction stay(ai);
     if (!stay.Execute(Event()))
         return Result::Failed;
@@ -126,19 +136,19 @@ Result StayOnce(PlayerbotAI* ai, Player* bot)
 
 // Moves away once from the bot's own opponent (its "current target" value, never wire data). Not the group-member
 // Flee search, which picks a random spot and speaks.
-Result FleeOnce(PlayerbotAI* ai, Player* bot)
+Result FleeOnce(PlayerbotAI* ai, Player* bot, Refusal& why)
 {
-    if (!bot->IsAlive() || bot->IsMounted())
-        return Result::Rejected;
+    if (bot->IsMounted())
+        return Refuse(why, Refusal::CannotNow);
 
     // Without a live opponent MoveAway changes nothing: a refusal, not a failed attempt. IsInMap needs both in world.
     Unit* opponent = ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
     if (!opponent || !opponent->IsAlive() || !bot->IsInMap(opponent))
-        return Result::Rejected;
+        return Refuse(why, Refusal::CannotNow);
 
     FleeAction flee(ai);
     if (!flee.isUseful())
-        return Result::Rejected;
+        return Refuse(why, Refusal::CannotNow);
 
     return flee.Execute(Event()) ? Result::Applied : Result::Failed;
 }
@@ -188,11 +198,11 @@ Result SaveManaOnce(PlayerbotAI* ai, Player* bot, bool enabled)
 
 // Makes the target the one focus heal target as the "focus heal <name>" command does (SetFocusHealTargetsAction):
 // a player of the bot's group, for a healer or off-healer, with the combat strategy on. No reply line.
-Result FocusHealOnce(PlayerbotAI* ai, Player* bot, Group* group, Unit* target)
+Result FocusHealOnce(PlayerbotAI* ai, Player* bot, Group* group, Unit* target, Refusal& why)
 {
     if (!target->IsPlayer() || !group->IsMember(target->GetGUID()) ||
         (!PlayerbotAI::IsHeal(bot) && !ai->HasStrategy("offheal", BOT_STATE_COMBAT)))
-        return Result::Rejected;
+        return Refuse(why, Refusal::CannotNow);
 
     Value<std::list<ObjectGuid>>* targets =
         ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("focus heal targets");
@@ -395,10 +405,10 @@ bool Near(Player* player, Order const& order)
 
 // One move to the checked position; no stored named position is read or written. An active follow or guard strategy
 // may move the bot on at the engine's next movement decision.
-Result PositionOnce(PostMapJoin const& phase, PlayerbotAI* ai, Player* bot, Order const& order)
+Result PositionOnce(PostMapJoin const& phase, PlayerbotAI* ai, Order const& order, Refusal& why)
 {
-    if (!bot->IsAlive() || !PositionReachable(phase, order))
-        return Result::Rejected;
+    if (!PositionReachable(phase, order))
+        return Refuse(why, Refusal::Unreachable);
 
     MoveToPositionAction move(ai, "move to position", "bridge");
     return move.ExecuteExactPosition(order.MapId, static_cast<float>(order.X), static_cast<float>(order.Y),
@@ -406,6 +416,9 @@ Result PositionOnce(PostMapJoin const& phase, PlayerbotAI* ai, Player* bot, Orde
                ? Result::Applied
                : Result::Failed;
 }
+
+// Execute's body below it; it sets why only for a Rejected result.
+Result ExecuteOrder(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize, Refusal& why);
 }  // namespace
 
 bool PositionReachable(PostMapJoin const& phase, Order const& order)
@@ -415,9 +428,7 @@ bool PositionReachable(PostMapJoin const& phase, Order const& order)
         return false;
 
     Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
-    Player* controller = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Controller));
-    if (!bot || !bot->IsInWorld() || !controller || !controller->IsInWorld() || bot->GetMapId() != order.MapId ||
-        !bot->IsInMap(controller) || !Near(bot, order) || !Near(controller, order))
+    if (!bot || !bot->IsInWorld() || bot->GetMapId() != order.MapId || !Near(bot, order))
         return false;
 
     // Stricter than MoveTo's own search: a complete navmesh path only, never a partial path or a shortcut.
@@ -426,7 +437,19 @@ bool PositionReachable(PostMapJoin const& phase, Order const& order)
     return path.GetPathType() == PATHFIND_NORMAL && path.getPathLength() <= 2.0f * order.VisibilityDistance;
 }
 
-Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize)
+Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize, Refusal* why)
+{
+    Refusal reason = Refusal::None;
+    Result const result = ExecuteOrder(phase, order, authorize, reason);
+    if (why)
+        *why = result == Result::Rejected ? reason : Refusal::None;
+
+    return result;
+}
+
+namespace
+{
+Result ExecuteOrder(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize, Refusal& why)
 {
     if (!phase.Current())
         return Result::Rejected;
@@ -454,7 +477,7 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
     }
 
     // A stray target, shape or enable flag on another verb is a mapping error, never an ignored field.
-    if (!order.Bot || !order.Controller || order.Bot == order.Controller || !order.Group ||
+    if (!order.Bot || !order.Controller || order.Bot == order.Controller ||
         NeedsTarget(order.Operation) != (order.Target != 0) ||
         (order.Operation == Intent::Formation) != (FormationName(order.Shape) != nullptr) ||
         (order.Enabled && order.Operation != Intent::SaveMana) || !std::isfinite(order.VisibilityDistance) ||
@@ -463,64 +486,82 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
         !phase.Current())
         return Result::Rejected;
 
+    // Facts are read only now, after the caller's last check. A changed group means a stale scope: no reason to give.
     Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
-    Player* controller = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Controller));
-    WorldSession const* controllerSession = controller ? controller->GetSession() : nullptr;
+    Player* partner = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Controller));
     PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
-    PlayerbotAI* controllerAI = controller ? GET_PLAYERBOT_AI(controller) : nullptr;
-    // The headless test player stands in for a real player's client, so it may give orders like one
-    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI() || !controllerSession ||
-        (controllerSession->IsHeadless() && !TestPlayerMgr::Instance().IsTestPlayer(controller)) ||
-        (controllerAI && controllerAI->IsBotAI()) || !Visible(bot, controller, order.VisibilityDistance) ||
-        !Visible(controller, bot, order.VisibilityDistance) || bot->GetTeamId() != controller->GetTeamId())
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    ObjectGuid const groupGuid = group ? group->GetGUID() : ObjectGuid();
+    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI() || !PartnerAllowed(partner) ||
+        bot->GetTeamId() != partner->GetTeamId() || groupGuid != ObjectGuid(order.Group))
         return Result::Rejected;
 
-    Group* group = bot->GetGroup();
-    if (!group || group->GetGUID() != ObjectGuid(order.Group) || controller->GetGroup() != group ||
-        !group->IsMember(bot->GetGUID()) || !group->IsMember(controller->GetGUID()) ||
-        (ai->GetMaster() ? ai->GetMaster() != controller : !group->IsLeader(controller->GetGUID())) ||
-        !ai->GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_ALLOW_ALL, true, controller))
-        return Result::Rejected;
+    // Battlegrounds and arenas stay playerbots' own (DP.1); a flight path or death leaves the bot nothing to do.
+    if (bot->InBattleground())
+        return Refuse(why, Refusal::Battleground);
 
+    if (bot->IsInFlight())
+        return Refuse(why, Refusal::Travelling);
+
+    if (!bot->IsAlive())
+        return Refuse(why, Refusal::Dead);
+
+    // Following and the group settings are group play: the partner shares the bot's group. Stay, flee, a position
+    // and an attack need no group; a mark and focus healing need the bot's own group.
+    bool const partnerInGroup = group && partner->GetGroup() == group && group->IsMember(partner->GetGUID());
     switch (order.Operation)
     {
         case Intent::Follow:
-            return FollowOnce(ai, bot, controller);
+            if (!partnerInGroup)
+                return Refuse(why, Refusal::NotWithYou);
+
+            if (!bot->IsInMap(partner))
+                return Refuse(why, Refusal::TooFar);
+
+            return FollowOnce(ai, partner);
         case Intent::Stay:
             return StayOnce(ai, bot);
         case Intent::Flee:
-            return FleeOnce(ai, bot);
+            return FleeOnce(ai, bot, why);
         case Intent::Position:
-            return PositionOnce(phase, ai, bot, order);
+            return PositionOnce(phase, ai, order, why);
         case Intent::Formation:
-            return FormationOnce(ai, order);
+            return partnerInGroup ? FormationOnce(ai, order) : Refuse(why, Refusal::NotInGroup);
         case Intent::SaveMana:
-            return SaveManaOnce(ai, bot, order.Enabled);
+            return partnerInGroup ? SaveManaOnce(ai, bot, order.Enabled) : Refuse(why, Refusal::NotInGroup);
         default:
             break;
     }
 
+    if (order.Operation != Intent::AttackOwnTarget && !group)
+        return Refuse(why, Refusal::NotInGroup);
+
+    // The bot acts on what it sees itself; whether the partner sees the target plays no part.
     Unit* target = ObjectAccessor::GetUnit(*bot, ObjectGuid(order.Target));
-    if (!Visible(bot, target, order.VisibilityDistance) || !Visible(controller, target, order.VisibilityDistance))
-        return Result::Rejected;
+    if (!Visible(bot, target, order.VisibilityDistance))
+        return Refuse(why, Refusal::TargetNotVisible);
 
     if (order.Operation == Intent::FocusHealing)
-        return FocusHealOnce(ai, bot, group, target);
+        return FocusHealOnce(ai, bot, group, target, why);
 
     if (order.Operation == Intent::Mark)
     {
-        if ((group->isRaidGroup() && !group->IsLeader(controller->GetGUID()) &&
-             !group->IsAssistant(controller->GetGUID())) ||
+        // The bot marks as itself (as RtiAction does): in a raid only as its leader or an assistant, and never a player
+        // who is not connected or is hostile to the bot.
+        if ((group->isRaidGroup() && !group->IsLeader(bot->GetGUID()) && !group->IsAssistant(bot->GetGUID())) ||
             (target->IsPlayer() &&
-             (ObjectAccessor::FindConnectedPlayer(target->GetGUID()) != target || target->IsHostileTo(controller))))
-            return Result::Rejected;
+             (ObjectAccessor::FindConnectedPlayer(target->GetGUID()) != target || target->IsHostileTo(bot))))
+            return Refuse(why, Refusal::CannotNow);
 
-        group->SetTargetIcon(order.Icon, controller->GetGUID(), target->GetGUID());
+        group->SetTargetIcon(order.Icon, bot->GetGUID(), target->GetGUID());
         return group->GetTargetIcon(order.Icon) == target->GetGUID() ? Result::Applied : Result::Failed;
     }
 
-    if (bot->GetTarget() != target->GetGUID() || !bot->IsAlive() || bot->IsMounted())
-        return Result::Rejected;
+    if (bot->GetTarget() != target->GetGUID())
+        return Refuse(why, Refusal::NoTarget);
+
+    if (bot->IsMounted())
+        return Refuse(why, Refusal::CannotNow);
 
     // A bridge attack cannot defer the attack or update the wait strategy's combat-start timer.
     if (ai->HasStrategy("wait for attack", BOT_STATE_COMBAT))
@@ -530,6 +571,7 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
     // Attack can fail after changing selection/AI/movement. Failed is an attempted result, never a retry grant.
     return attack.ExecuteExactTarget(target) ? Result::Applied : Result::Failed;
 }
+}  // namespace
 
 bool Capture(PostMapJoin const& phase, uint64_t bot, Part part, Baseline& out)
 {

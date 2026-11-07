@@ -27,6 +27,7 @@ using PlayerbotBridge::FormationShape;
 using PlayerbotBridge::Intent;
 using PlayerbotBridge::Order;
 using PlayerbotBridge::Part;
+using PlayerbotBridge::Refusal;
 using PlayerbotBridge::RestoreResult;
 using PlayerbotBridge::Result;
 
@@ -37,14 +38,16 @@ static_assert(!std::is_move_constructible_v<PlayerbotBridge::PostMapJoin>);
 class OllamaBotRandomChatter
 {
 public:
-    static Result Run(Order const& order, std::function<bool()> const& authorize, bool worker = false)
+    static Result Run(Order const& order, std::function<bool()> const& authorize, bool worker = false,
+                      Refusal* why = nullptr)
     {
         PlayerbotBridge::PostMapJoin phase;
         if (!worker)
-            return PlayerbotBridge::Execute(phase, order, authorize);
+            return why ? PlayerbotBridge::Execute(phase, order, authorize, why)
+                       : PlayerbotBridge::Execute(phase, order, authorize);
 
         Result result = Result::Applied;
-        std::thread thread([&] { result = PlayerbotBridge::Execute(phase, order, authorize); });
+        std::thread thread([&] { result = PlayerbotBridge::Execute(phase, order, authorize, why); });
         thread.join();
         return result;
     }
@@ -119,6 +122,7 @@ struct Fixture
     WorldSession HumanSession;
     Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
     int Authorizations = 0;
+    Refusal Why = Refusal::None;
 
     Fixture()
     {
@@ -182,22 +186,59 @@ struct Fixture
 
     Result Run()
     {
-        return OllamaBotRandomChatter::Run(Command,
-                                           [&]
-                                           {
-                                               ++Authorizations;
-                                               return true;
-                                           });
+        // A value outside the enum: a result that leaves the reason unwritten fails the check below.
+        Why = static_cast<Refusal>(99);
+        Result const result = OllamaBotRandomChatter::Run(
+            Command,
+            [&]
+            {
+                ++Authorizations;
+                return true;
+            },
+            false, &Why);
+        Check(result == Result::Rejected || Why == Refusal::None, "a result other than a refusal carries no reason");
+        return result;
     }
 
-    void Denied(Result expected = Result::Rejected)
+    void Denied(Result expected = Result::Rejected, Refusal reason = Refusal::None)
     {
         Check(Run() == expected, "denial result");
+        Check(Why == reason, "denial reason");
         Check(mutations == 0 && attacks == 0 && marks == 0 && follows == 0 && stays == 0 && stops == 0 && flees == 0 &&
                   fleeRuns == 0 && moves == 0,
               "denied no mutation");
     }
+
+    // DS.14: a plausibility or safety refusal after the one admission, with the reason the caller words for the
+    // partner, and no effect.
+    void Refused(Refusal reason)
+    {
+        Denied(Result::Rejected, reason);
+        Check(Authorizations == 1, "a plausibility refusal follows the one admission");
+    }
 };
+
+// An ungrouped bot and partner: the order carries no group.
+void Ungrouped(Fixture& f)
+{
+    f.Bot.Party = f.Human.Party = nullptr;
+    f.Command.Group = 0;
+}
+
+// DS.14: who leads the bot, its security level and what the partner sees or where the partner stands never decide an
+// order; only following needs the partner near (same map and instance).
+std::vector<std::function<void(Fixture&)>> const NoLeaderGate = {[](Fixture& f) { f.AI.Master = &f.Other; },
+                                                                 [](Fixture& f)
+                                                                 {
+                                                                     f.AI.Master = nullptr;
+                                                                     f.Party.Leader = f.Other.Guid;
+                                                                 },
+                                                                 [](Fixture&) { security = false; },
+                                                                 [](Fixture& f) { f.Human.Seen = false; },
+                                                                 [](Fixture& f) { f.Bot.Seen = false; },
+                                                                 [](Fixture& f) { f.Human.Phase = 2; },
+                                                                 [](Fixture& f) { f.Human.Near = false; },
+                                                                 [](Fixture& f) { f.Human.Hidden.insert(4); }};
 }  // namespace
 
 int main()
@@ -206,7 +247,7 @@ int main()
         Fixture f;
         Check(f.Run() == Result::Applied, "mark applies");
         Check(marks == 1 && attacks == 0, "one mark attempt");
-        Check(f.Party.Actor == f.Human.Guid && f.Party.Marked == f.Target.Guid, "exact actor and target");
+        Check(f.Party.Actor == f.Bot.Guid && f.Party.Marked == f.Target.Guid, "the bot marks as itself, exact target");
         Check(f.Party.Icons[6] == f.Target.Guid && f.Authorizations == 1, "exact icon and authorization");
     }
     {
@@ -291,54 +332,81 @@ int main()
         [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
         [](Fixture&) { ObjectAccessor::Units.erase(1); },
         [](Fixture&) { ObjectAccessor::Units.erase(2); },
-        [](Fixture&) { ObjectAccessor::Units.erase(4); },
         [](Fixture& f) { f.Bot.World = false; },
-        [](Fixture& f) { f.Human.World = false; },
         [](Fixture& f) { f.Bot.AI = nullptr; },
         [](Fixture& f) { f.AI.BotAI = false; },
         [](Fixture& f) { f.Human.AI = &f.HumanAI; },
-        [](Fixture& f) { f.Human.Seen = false; },
-        [](Fixture& f) { f.Bot.Seen = false; },
-        [](Fixture& f) { f.Human.Map = 2; },
-        [](Fixture& f) { f.Human.Phase = 2; },
-        [](Fixture& f) { f.Human.Near = false; },
         [](Fixture& f) { f.Human.Team = 1; },
         [](Fixture& f) { f.Bot.Party = nullptr; },
-        [](Fixture& f) { f.Party.Guid = ObjectGuid(77); },
-        [](Fixture& f) { f.Human.Party = &f.OtherParty; },
-        [](Fixture& f) { f.Party.Member = false; },
-        [](Fixture& f) { f.AI.Master = &f.Other; },
-        [](Fixture& f)
-        {
-            f.AI.Master = nullptr;
-            f.Party.Leader = f.Other.Guid;
-        },
-        [](Fixture&) { security = false; },
-        [](Fixture& f) { f.Target.World = false; },
-        [](Fixture& f) { f.Target.Map = 2; },
-        [](Fixture& f) { f.Target.Phase = 2; },
-        [](Fixture& f) { f.Target.Seen = false; },
-        [](Fixture& f) { f.Target.Near = false; },
-        [](Fixture& f)
-        {
-            f.Party.Raid = true;
-            f.Party.Leader = f.Other.Guid;
-        },
-        [](Fixture& f)
-        {
-            f.Target.PlayerType = true;
-            f.Target.Hostile = true;
-        }};
+        [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
     for (auto const& deny : denials)
     {
         Fixture f;
         deny(f);
         f.Denied();
     }
+    std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> const markRefusals = {
+        {[](Fixture& f) { f.Bot.Alive = false; }, Refusal::Dead},
+        {[](Fixture& f) { f.Bot.Battleground = true; }, Refusal::Battleground},
+        {[](Fixture& f) { f.Bot.State = UNIT_STATE_IN_FLIGHT; }, Refusal::Travelling},
+        {Ungrouped, Refusal::NotInGroup},
+        {[](Fixture&) { ObjectAccessor::Units.erase(4); }, Refusal::TargetNotVisible},
+        {[](Fixture& f) { f.Target.World = false; }, Refusal::TargetNotVisible},
+        {[](Fixture& f) { f.Target.Map = 2; }, Refusal::TargetNotVisible},
+        {[](Fixture& f) { f.Target.Phase = 2; }, Refusal::TargetNotVisible},
+        {[](Fixture& f) { f.Target.Seen = false; }, Refusal::TargetNotVisible},
+        {[](Fixture& f) { f.Target.Near = false; }, Refusal::TargetNotVisible},
+        {[](Fixture& f)
+         {
+             f.Party.Raid = true;
+             f.Party.Leader = f.Other.Guid;
+         },
+         Refusal::CannotNow},
+        {[](Fixture& f)
+         {
+             f.Target.PlayerType = true;
+             f.Target.Hostile = true;
+         },
+         Refusal::CannotNow}};
+    for (auto const& [deny, reason] : markRefusals)
+    {
+        Fixture f;
+        deny(f);
+        f.Refused(reason);
+    }
+    // An attack or a mark is the bot's own act on what it sees; the partner may be elsewhere or in another group.
+    for (Intent operation : {Intent::Mark, Intent::AttackOwnTarget})
+    {
+        std::vector<std::function<void(Fixture&)>> loosened = NoLeaderGate;
+        loosened.push_back([](Fixture& f) { f.Human.World = false; });
+        loosened.push_back([](Fixture& f) { f.Human.Map = 2; });
+        loosened.push_back([](Fixture& f) { f.Human.Party = &f.OtherParty; });
+        for (auto const& loosen : loosened)
+        {
+            Fixture f;
+            f.Command.Operation = operation;
+            loosen(f);
+            Check(f.Run() == Result::Applied && f.Authorizations == 1, "an attack or mark without a leader's say");
+            Check(operation == Intent::Mark ? marks == 1 && f.Party.Actor == f.Bot.Guid : attacks == 1 && marks == 0,
+                  "the bot's own attack or mark");
+        }
+    }
+    {
+        Fixture f;
+        f.Command.Operation = Intent::AttackOwnTarget;
+        Ungrouped(f);
+        Check(f.Run() == Result::Applied && attacks == 1, "an ungrouped bot attacks its own target");
+    }
+    {
+        Fixture f;
+        f.Human.Hidden.insert(f.Target.Guid.Value);
+        f.Command.Operation = Intent::AttackOwnTarget;
+        Check(f.Run() == Result::Applied && attacks == 1, "a target the bot sees and the partner does not");
+    }
     {
         Fixture f;
         f.AI.Master = nullptr;
-        Check(f.Run() == Result::Applied, "actual group leader fallback");
+        Check(f.Run() == Result::Applied, "a masterless bot marks");
     }
     {
         Fixture f;
@@ -349,14 +417,34 @@ int main()
         Fixture f;
         f.Command.Target = f.Other.Guid.Value;
         f.Other.Hostile = true;
-        f.Denied();
+        f.Refused(Refusal::CannotNow);
     }
     {
         Fixture f;
         f.Party.Raid = true;
         f.Party.Leader = f.Other.Guid;
-        f.Party.Assistant = true;
-        Check(f.Run() == Result::Applied, "raid assistant marking");
+        f.Party.Assistant = f.Bot.Guid;
+        Check(f.Run() == Result::Applied && f.Party.Actor == f.Bot.Guid, "a raid assistant bot marks as itself");
+    }
+    {
+        Fixture f;
+        f.Party.Raid = true;
+        f.Party.Leader = f.Bot.Guid;
+        Check(f.Run() == Result::Applied && f.Party.Actor == f.Bot.Guid, "a raid leader bot marks as itself");
+    }
+    {
+        // The partner's own standing in the raid gives the bot none.
+        Fixture f;
+        f.Party.Raid = true;
+        f.Refused(Refusal::CannotNow);
+        Check(f.Party.Icons[6] == ObjectGuid(), "a raid led by the partner: the bot does not mark");
+    }
+    {
+        Fixture f;
+        f.Party.Raid = true;
+        f.Party.Leader = f.Other.Guid;
+        f.Party.Assistant = f.Human.Guid;
+        f.Refused(Refusal::CannotNow);
     }
     {
         Fixture f;
@@ -384,25 +472,28 @@ int main()
         Check(OllamaBotRandomChatter::Run(f.Command,
                                           [&]
                                           {
-                                              f.AI.Master = &f.Other;
+                                              f.Bot.Alive = false;
                                               return true;
                                           }) == Result::Rejected,
               "facts resolved after admission callback");
         Check(mutations == 0, "changed authorization no effect");
     }
-    std::vector<std::function<void(Fixture&)>> attackDenials = {[](Fixture& f) { f.Bot.Target = f.Other.Guid; },
-                                                                [](Fixture& f) { f.Bot.Alive = false; },
-                                                                [](Fixture& f) { f.Bot.Mounted = true; }};
-    for (auto const& deny : attackDenials)
+    std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> const attackDenials = {
+        {[](Fixture& f) { f.Bot.Target = f.Other.Guid; }, Refusal::NoTarget},
+        {[](Fixture& f) { f.Bot.Alive = false; }, Refusal::Dead},
+        {[](Fixture& f) { f.Bot.Mounted = true; }, Refusal::CannotNow},
+        {[](Fixture& f) { f.Bot.State = UNIT_STATE_IN_FLIGHT; }, Refusal::Travelling},
+        {[](Fixture& f) { f.Bot.Battleground = true; }, Refusal::Battleground},
+        {[](Fixture& f) { f.Target.Seen = false; }, Refusal::TargetNotVisible}};
+    for (auto const& [deny, reason] : attackDenials)
     {
         Fixture f;
         f.Command.Operation = Intent::AttackOwnTarget;
         deny(f);
-        f.Denied();
+        f.Refused(reason);
     }
     std::vector<std::function<void(Fixture&)>> attackFailures = {[](Fixture& f)
                                                                  { f.Bot.MotionState.Type = FLIGHT_MOTION_TYPE; },
-                                                                 [](Fixture& f) { f.Bot.State = UNIT_STATE_IN_FLIGHT; },
                                                                  [](Fixture& f)
                                                                  {
                                                                      f.Target.PlayerType = true;
@@ -524,6 +615,7 @@ int main()
     for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Position, Intent::Formation,
                              Intent::SaveMana, Intent::FocusHealing})
     {
+        // No reason for the partner: a malformed or stale order, a partner who is no player, or the other side.
         std::vector<std::function<void(Fixture&)>> oneShotDenials = {
             [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
             [](Fixture& f) { f.HumanSession.Headless = true; },
@@ -539,57 +631,83 @@ int main()
             [](Fixture& f) { f.Bot.AI = nullptr; },
             [](Fixture& f) { f.AI.BotAI = false; },
             [](Fixture& f) { f.Human.AI = &f.HumanAI; },
-            [](Fixture& f) { f.Human.Seen = false; },
-            [](Fixture& f) { f.Bot.Seen = false; },
-            [](Fixture& f) { f.Human.Map = 2; },
-            [](Fixture& f) { f.Human.Phase = 2; },
-            [](Fixture& f) { f.Human.Near = false; },
             [](Fixture& f) { f.Human.Team = 1; },
             [](Fixture& f) { f.Bot.Party = nullptr; },
-            [](Fixture& f) { f.Party.Guid = ObjectGuid(77); },
-            [](Fixture& f) { f.Human.Party = &f.OtherParty; },
-            [](Fixture& f) { f.Party.Member = false; },
-            [](Fixture& f) { f.AI.Master = &f.Other; },
-            [](Fixture& f)
-            {
-                f.AI.Master = nullptr;
-                f.Party.Leader = f.Other.Guid;
-            },
-            [](Fixture&) { security = false; }};
-        // A lasting setting does not need a live bot; the one-shot moves do.
-        if (operation != Intent::Formation && operation != Intent::SaveMana && operation != Intent::FocusHealing)
-            oneShotDenials.push_back([](Fixture& f) { f.Bot.Alive = false; });
+            [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
+        // The common plausibility and safety rules, then each verb's own.
+        std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> refusals = {
+            {[](Fixture& f) { f.Bot.Alive = false; }, Refusal::Dead},
+            {[](Fixture& f) { f.Bot.Battleground = true; }, Refusal::Battleground},
+            {[](Fixture& f) { f.Bot.State |= UNIT_STATE_IN_FLIGHT; }, Refusal::Travelling}};
+        std::vector<std::function<void(Fixture&)>> freed = NoLeaderGate;
+        if (operation == Intent::Follow)
+        {
+            refusals.push_back({[](Fixture& f) { f.Human.Party = &f.OtherParty; }, Refusal::NotWithYou});
+            refusals.push_back({[](Fixture& f) { f.Party.Member = false; }, Refusal::NotWithYou});
+            refusals.push_back({Ungrouped, Refusal::NotWithYou});
+            refusals.push_back({[](Fixture& f) { f.Human.Map = 2; }, Refusal::TooFar});
+            refusals.push_back({[](Fixture& f) { f.Human.World = false; }, Refusal::TooFar});
+        }
+        else
+        {
+            freed.push_back([](Fixture& f) { f.Human.Map = 2; });
+            freed.push_back([](Fixture& f) { f.Human.World = false; });
+        }
+        if (operation == Intent::Formation || operation == Intent::SaveMana)
+        {
+            refusals.push_back({[](Fixture& f) { f.Human.Party = &f.OtherParty; }, Refusal::NotInGroup});
+            refusals.push_back({[](Fixture& f) { f.Party.Member = false; }, Refusal::NotInGroup});
+            refusals.push_back({Ungrouped, Refusal::NotInGroup});
+        }
+        else if (operation != Intent::Follow)
+            freed.push_back([](Fixture& f) { f.Human.Party = &f.OtherParty; });
+        if (operation == Intent::Stay || operation == Intent::Flee || operation == Intent::Position)
+            freed.push_back(Ungrouped);
         if (operation == Intent::FocusHealing)
         {
             oneShotDenials.erase(oneShotDenials.begin());
             oneShotDenials.push_back([](Fixture& f) { f.Command.Target = 0; });
-            oneShotDenials.push_back([](Fixture&) { ObjectAccessor::Units.erase(5); });
-            oneShotDenials.push_back([](Fixture& f) { f.Other.World = false; });
-            oneShotDenials.push_back([](Fixture& f) { f.Other.Map = 2; });
-            oneShotDenials.push_back([](Fixture& f) { f.Other.Phase = 2; });
-            oneShotDenials.push_back([](Fixture& f) { f.Other.Seen = false; });
-            oneShotDenials.push_back([](Fixture& f) { f.Other.Near = false; });
-            oneShotDenials.push_back([](Fixture& f) { f.Party.Outsider = f.Other.Guid; });
-            oneShotDenials.push_back([](Fixture& f) { f.Command.Target = f.Target.Guid.Value; });
-            oneShotDenials.push_back([](Fixture&) { healer = false; });
+            refusals.push_back({Ungrouped, Refusal::NotInGroup});
+            refusals.push_back({[](Fixture&) { ObjectAccessor::Units.erase(5); }, Refusal::TargetNotVisible});
+            refusals.push_back({[](Fixture& f) { f.Other.World = false; }, Refusal::TargetNotVisible});
+            refusals.push_back({[](Fixture& f) { f.Other.Map = 2; }, Refusal::TargetNotVisible});
+            refusals.push_back({[](Fixture& f) { f.Other.Phase = 2; }, Refusal::TargetNotVisible});
+            refusals.push_back({[](Fixture& f) { f.Other.Seen = false; }, Refusal::TargetNotVisible});
+            refusals.push_back({[](Fixture& f) { f.Other.Near = false; }, Refusal::TargetNotVisible});
+            refusals.push_back({[](Fixture& f) { f.Party.Outsider = f.Other.Guid; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture& f) { f.Command.Target = f.Target.Guid.Value; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture&) { healer = false; }, Refusal::CannotNow});
         }
         else if (operation == Intent::Flee)
         {
-            oneShotDenials.push_back([](Fixture& f) { f.AI.Values.Current.Data = nullptr; });
-            oneShotDenials.push_back([](Fixture& f) { f.Target.Alive = false; });
-            oneShotDenials.push_back([](Fixture& f) { f.Target.World = false; });
-            oneShotDenials.push_back([](Fixture& f) { f.Target.Map = 2; });
-            oneShotDenials.push_back([](Fixture&) { melee = false; });
-            oneShotDenials.push_back([](Fixture& f) { f.Bot.Channeled = &channeling; });
-            oneShotDenials.push_back([](Fixture& f) { f.Bot.Mounted = true; });
+            refusals.push_back({[](Fixture& f) { f.AI.Values.Current.Data = nullptr; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture& f) { f.Target.Alive = false; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture& f) { f.Target.World = false; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture& f) { f.Target.Map = 2; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture&) { melee = false; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture& f) { f.Bot.Channeled = &channeling; }, Refusal::CannotNow});
+            refusals.push_back({[](Fixture& f) { f.Bot.Mounted = true; }, Refusal::CannotNow});
         }
         else if (operation == Intent::Position)
         {
-            oneShotDenials.push_back([](Fixture& f) { f.Command.MapId = 2; });
-            oneShotDenials.push_back([](Fixture& f) { f.Command.X = 45.0; });
-            oneShotDenials.push_back([](Fixture& f) { f.Command.X = -15.0; });
-            oneShotDenials.push_back([](Fixture&) { pathType = PATHFIND_NOPATH; });
-            oneShotDenials.push_back([](Fixture&) { pathLength = 60.5f; });
+            refusals.push_back({[](Fixture& f) { f.Command.MapId = 2; }, Refusal::Unreachable});
+            refusals.push_back({[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable});
+            refusals.push_back({[](Fixture&) { pathType = PATHFIND_NOPATH; }, Refusal::Unreachable});
+            refusals.push_back({[](Fixture&) { pathLength = 60.5f; }, Refusal::Unreachable});
+        }
+        for (auto const& [deny, reason] : refusals)
+        {
+            Fixture f;
+            f.OneShot(operation);
+            deny(f);
+            f.Refused(reason);
+        }
+        for (auto const& loosen : freed)
+        {
+            Fixture f;
+            f.OneShot(operation);
+            loosen(f);
+            Check(f.Run() == Result::Applied && f.Authorizations == 1, "an order without a leader's say applies");
         }
         for (auto const& deny : oneShotDenials)
         {
@@ -607,7 +725,7 @@ int main()
             Check(OllamaBotRandomChatter::Run(f.Command,
                                               [&]
                                               {
-                                                  f.AI.Master = &f.Other;
+                                                  f.Bot.Alive = false;
                                                   return true;
                                               }) == Result::Rejected,
                   "one-shot facts resolved after admission callback");
@@ -636,11 +754,49 @@ int main()
               "a masterless bot takes the leader as master, then the follow strategies");
     }
     {
+        // DS.14: a partner who does not lead the group. A masterless grouped bot takes the partner as master.
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        f.AI.Master = nullptr;
+        f.Party.Leader = f.Other.Guid;
+        Check(f.Run() == Result::Applied && follows == 1 && f.AI.Master == &f.Human && f.AI.StrategyResets == 1 &&
+                  f.AI.Strategies == FollowStrategies,
+              "a masterless grouped bot follows a partner who does not lead");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        f.AI.Master = &f.Other;
+        f.Party.Leader = f.Other.Guid;
+        Check(f.Run() == Result::Applied && follows == 1 && f.AI.Master == &f.Other && f.AI.StrategyResets == 0 &&
+                  f.AI.Strategies == FollowStrategies,
+              "a bot with a master keeps it when a partner who does not lead asks it to follow");
+    }
+    {
+        // An ungrouped bot never follows and never takes a master; it may stay for a partner far away.
+        Fixture f;
+        f.OneShot(Intent::Follow);
+        f.AI.Master = nullptr;
+        Ungrouped(f);
+        f.Refused(Refusal::NotWithYou);
+        Check(!f.AI.Master && f.AI.StrategyResets == 0 && f.AI.Strategies.empty(), "an ungrouped bot takes no master");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Stay);
+        f.AI.Master = nullptr;
+        Ungrouped(f);
+        f.Human.Map = 2;
+        f.Human.Near = f.Human.Seen = false;
+        Check(f.Run() == Result::Applied && stays == 1 && !f.AI.Master && f.AI.Strategies == StayStrategies,
+              "an ungrouped bot stays when a partner far away asks");
+    }
+    {
         Fixture f;
         f.OneShot(Intent::Follow);
         f.AI.Master = nullptr;
         f.Bot.Battleground = true;
-        f.Denied();
+        f.Refused(Refusal::Battleground);
         Check(f.Authorizations == 1 && !f.AI.Master && f.AI.Strategies.empty() && f.AI.StrategyResets == 0,
               "a masterless battleground bot keeps playerbots' own master choice");
     }
@@ -686,7 +842,7 @@ int main()
         Fixture f;
         f.OneShot(Intent::Flee);
         f.AI.Values.Current.Data = nullptr;
-        f.Denied();
+        f.Refused(Refusal::CannotNow);
         Check(f.Authorizations == 1, "a flee without an opponent is refused after admission, never a failed attempt");
     }
     {
@@ -700,32 +856,53 @@ int main()
         Check(OllamaBotRandomChatter::Reachable(f.Command), "exactly at the radius with a path of twice the radius");
         Check(f.Run() == Result::Applied && moves == 1 && moveX == 30.0f, "a boundary position applies");
     }
-    std::vector<std::function<void(Fixture&)>> remote = {
-        [](Fixture& f) { f.Command.MapId = 2; },
-        [](Fixture& f) { f.Command.X = std::numeric_limits<double>::quiet_NaN(); },
-        [](Fixture& f) { f.Command.Y = std::numeric_limits<double>::infinity(); },
-        [](Fixture& f) { f.Command.Z = -std::numeric_limits<double>::infinity(); },
-        [](Fixture& f) { f.Command.X = 1e300; },
-        [](Fixture& f) { f.Command.Y = -std::numeric_limits<double>::max(); },
-        [](Fixture& f) { f.Command.X = 45.0; },
-        [](Fixture& f) { f.Command.X = -15.0; },
-        [](Fixture& f) { f.Command.Z = 31.0; },
-        [](Fixture& f) { f.Command.VisibilityDistance = 0.0f; },
-        [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
-        [](Fixture&) { ObjectAccessor::Units.erase(1); },
-        [](Fixture&) { ObjectAccessor::Units.erase(2); },
-        [](Fixture& f) { f.Bot.World = false; },
-        [](Fixture& f) { f.Human.World = false; },
-        [](Fixture& f) { f.Human.Map = 2; }};
-    for (auto const& deny : remote)
+    std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> const remote = {
+        {[](Fixture& f) { f.Command.MapId = 2; }, Refusal::Unreachable},
+        {[](Fixture& f) { f.Command.X = std::numeric_limits<double>::quiet_NaN(); }, Refusal::None},
+        {[](Fixture& f) { f.Command.Y = std::numeric_limits<double>::infinity(); }, Refusal::None},
+        {[](Fixture& f) { f.Command.Z = -std::numeric_limits<double>::infinity(); }, Refusal::None},
+        {[](Fixture& f) { f.Command.X = 1e300; }, Refusal::Unreachable},
+        {[](Fixture& f) { f.Command.Y = -std::numeric_limits<double>::max(); }, Refusal::Unreachable},
+        {[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable},
+        {[](Fixture& f) { f.Command.Z = 31.0; }, Refusal::Unreachable},
+        {[](Fixture& f) { f.Command.VisibilityDistance = 0.0f; }, Refusal::None},
+        {[](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); }, Refusal::None},
+        {[](Fixture&) { ObjectAccessor::Units.erase(1); }, Refusal::None},
+        {[](Fixture& f) { f.Bot.World = false; }, Refusal::None}};
+    for (auto const& [deny, reason] : remote)
     {
         Fixture f;
         f.OneShot(Intent::Position);
         deny(f);
         Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 0 && mutations == 0,
               "an unchecked position is refused before any path query");
-        f.Denied();
+        f.Denied(Result::Rejected, reason);
         Check(paths == 0, "no path query for an order refused on its facts");
+    }
+    // DS.14: the partner plays no part in a position: far away, out of the world or offline, or the spot 35 yards
+    // from the partner and 15 from the bot.
+    for (auto const& loosen :
+         std::vector<std::function<void(Fixture&)>>{
+             [](Fixture& f) { f.Human.Map = 2; }, [](Fixture& f) { f.Human.World = false; },
+             [](Fixture&) { ObjectAccessor::Units.erase(2); }, [](Fixture& f) { f.Command.X = -15.0; }})
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        loosen(f);
+        Check(OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "the reachability fact ignores the partner");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        f.Command.X = -15.0;
+        Check(f.Run() == Result::Applied && moves == 1 && moveX == -15.0f, "a spot near the bot, far from the partner");
+    }
+    {
+        Fixture f;
+        f.OneShot(Intent::Position);
+        ObjectAccessor::Units.erase(2);
+        f.Denied();
+        Check(paths == 0, "an offline partner's position is refused before any path query");
     }
     std::vector<PathType> const incomplete = {PATHFIND_BLANK,
                                               PATHFIND_SHORTCUT,
@@ -743,7 +920,7 @@ int main()
         pathType = type;
         Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1 && mutations == 0,
               "only a complete normal path is reachable");
-        f.Denied();
+        f.Refused(Refusal::Unreachable);
         Check(paths == 2 && f.Authorizations == 1, "an incomplete path is refused after one admission");
     }
     {
@@ -769,7 +946,7 @@ int main()
         f.OneShot(Intent::Position);
         Check(OllamaBotRandomChatter::Reachable(f.Command), "the fact held when the adapter checked it");
         pathType = PATHFIND_NOPATH;
-        f.Denied();
+        f.Refused(Refusal::Unreachable);
         Check(f.Authorizations == 1 && paths == 2, "a stale reachability fact is checked again before the move");
     }
     {
@@ -845,9 +1022,7 @@ int main()
         Fixture f;
         f.OneShot(Intent::Formation);
         f.AI.Master = nullptr;
-        f.Bot.Alive = false;
-        Check(f.Run() == Result::Applied && f.AI.Values.Formation.Name == "near",
-              "the leader sets a masterless or dead bot's formation");
+        Check(f.Run() == Result::Applied && f.AI.Values.Formation.Name == "near", "a masterless bot's formation");
     }
     {
         Fixture f;

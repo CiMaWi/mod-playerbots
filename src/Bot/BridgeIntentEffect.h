@@ -42,6 +42,23 @@ enum class Result : uint8_t
     Failed
 };
 
+// Why Execute refused an order (Rejected), so the caller can word it for the partner. None for every other result and
+// for refusals that are no concern of the partner's: a malformed or stale order, or the caller's own admission.
+enum class Refusal : uint8_t
+{
+    None,
+    Dead,              // The bot is dead or a ghost.
+    Battleground,      // The bot is in a battleground or an arena.
+    Travelling,        // The bot is on a flight path.
+    NotWithYou,        // Follow: the partner is not in the bot's group.
+    TooFar,            // Follow: the partner is on another map or in another instance.
+    NotInGroup,        // Mark, focus healing: the bot has no group; formation, save mana: the partner is not in it.
+    Unreachable,       // Position: not on the bot's map, not near it, or no complete short path from it.
+    TargetNotVisible,  // Attack, mark, focus healing: the bot does not see the target.
+    NoTarget,          // Attack: the target is not the bot's own.
+    CannotNow          // The verb's own state rule (mounted, no opponent, raid marking, not a healer, ...).
+};
+
 // Formation only: the wire shapes, mapped to playerbots formations (close -> near, spread -> far, line -> line).
 enum class FormationShape : uint8_t
 {
@@ -55,7 +72,9 @@ struct Order
 {
     Intent Operation = Intent::Stay;
     uint64_t Bot = 0;
+    // The conversation partner: the speaker of the line the bot reacts to (the field keeps the wire's old name).
     uint64_t Controller = 0;
+    // The bot's group when the line was captured, 0 for an ungrouped bot; Execute refuses once it no longer matches.
     uint64_t Group = 0;
     uint64_t Target = 0;
     uint8_t Icon = 0;
@@ -170,21 +189,26 @@ private:
 
 // Synchronous only. The caller owns replay/rate/epoch/deadline/audience admission and supplies its last currentness
 // check here. No order, game pointer, callback or phase scope is retained. Failed attempts must never be replayed.
-Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize);
+// DS.14: the bot acts as itself in a conversation with the partner (Order::Controller). Execute checks plausibility and
+// safety, never who leads the bot: the bot in the world, a bot, not in a battleground, not in flight, alive; the
+// partner online, allowed (PartnerAllowed) and of the bot's team; the captured group still the bot's; then each verb's
+// own rule. why, when given, receives the reason of a Rejected result and None for every other result.
+Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize,
+               Refusal* why = nullptr);
 
 // Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within VisibilityDistance of
-// the bot and of the controller, and reached by a complete navmesh path no longer than twice that radius. One path
-// query; it mutates nothing, so a caller may use it as a fact before Execute, which checks it again.
+// the bot, and reached by a complete navmesh path from the bot no longer than twice that radius. The partner plays no
+// part. One path query; it mutates nothing, so a caller may use it as a fact before Execute, which checks it again.
 bool PositionReachable(PostMapJoin const& phase, Order const& order);
 
 // Synchronous, post-map-join only, read-only: copies one lasting part of a connected, in-world bot into out. False (out
-// cleared) off the world thread, for Part::None, or when the bot or the value is missing. No group or controller check:
+// cleared) off the world thread, for Part::None, or when the bot or the value is missing. No group or partner check:
 // the caller captures the baseline before Execute and the applied state after an Applied result, in the same phase.
 bool Capture(PostMapJoin const& phase, uint64_t bot, Part part, Baseline& out);
 
 // Synchronous, post-map-join only. Puts the part before holds back, but only while the bot's part still equals what
 // the bridge set (applied, by Baseline::operator==): a later command wins. Both baselines must be this bot's. Works
-// without a group or controller, so expiry, a group change, controller loss or bridge retirement can restore; a
+// without a group or partner, so expiry, a group change, the partner's loss or bridge retirement can restore; a
 // logged-out bot is Gone, a bot out of the world for a teleport is Failed.
 RestoreResult Restore(PostMapJoin const& phase, uint64_t bot, Baseline const& before, Baseline const& applied);
 }  // namespace PlayerbotBridge
