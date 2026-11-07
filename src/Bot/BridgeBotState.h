@@ -1,0 +1,108 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef PLAYERBOTS_BRIDGEBOTSTATE_H
+#define PLAYERBOTS_BRIDGEBOTSTATE_H
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+class ObjectGuid;
+
+// DS.14/J5f: raw facts about a bot for one conversation-bridge request. Read on the world thread while map threads
+// are idle (the chat hook, a wake submit, the post-map-join update), from stored values and Player fields only;
+// nothing here scans the world. The bridge module filters and bounds them before anything reaches a model.
+namespace PlayerbotBridge
+{
+struct BotStateFacts
+{
+    float healthPct = 0.0f;
+    uint8_t powerType = 0xFF;  // Powers value of the bot's power bar.
+    uint32_t powerCurrent = 0;
+    uint32_t powerMax = 0;
+    uint32_t level = 0;
+    bool alive = false;
+    bool ghost = false;
+    bool inCombat = false;  // In combat, or the combat engine is active.
+    bool victim = false;    // The bot's own current victim; never anybody else's target.
+    bool victimVisible = false;
+    std::string victimName;
+    uint32_t victimLevel = 0;
+    float victimHealthPct = 0.0f;
+    bool flying = false;  // On a flight path.
+    bool casting = false;
+    bool looting = false;     // A loot target is set.
+    bool resting = false;     // Sitting with a food or drink aura.
+    bool travelling = false;  // Travel target on its way.
+    bool working = false;     // Travel target at its destination.
+    std::string questTitle;   // The travel destination's quest, when it has one.
+    std::string zone;
+    std::string area;
+    uint32_t mapId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    bool partnerOnline = false;
+    bool partnerInGroup = false;
+    bool partnerVisible = false;
+    bool partnerSameMap = false;  // Same map, instance and phase; only then are yards and position set.
+    float partnerYards = 0.0f;
+    std::string partnerZone;
+    float partnerX = 0.0f;
+    float partnerY = 0.0f;
+    float partnerZ = 0.0f;
+    bool mounted = false;
+    bool swimming = false;
+    uint32_t groupSize = 0;  // 0 when ungrouped.
+    bool leads = false;
+    std::string masterName;
+    bool follow = false;  // Non-combat movement strategies.
+    bool stay = false;
+    bool guard = false;
+    bool grind = false;
+    bool passive = false;
+    uint32_t freeBagSlots = 0;
+    uint32_t money = 0;
+};
+
+// False (facts reset) off the world thread, or for a guid that is not an online bot in the world.
+bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotStateFacts& facts);
+
+// J5f-b: the topics a conversation partner can ask about, read on demand (one bridge query, same thread rule).
+enum class BotStateTopic : uint8_t
+{
+    Inventory,
+    Quests,
+    Cooldowns,
+    Strategies,
+    Spells
+};
+
+// One raw entry of a topic; the bridge module filters, cuts and names the fields.
+//   Inventory:  name, value = quality, extra = stack count, code 1 = equipped (0 = in a bag); equipped items first,
+//               then bag items by quality, best first
+//   Quests:     name = title, value = objectives done, extra = needed, code 0 active, 1 complete, 2 failed
+//   Cooldowns:  name = spell name, value = seconds left (rounded up), longest first
+//   Strategies: name, code 1 = combat (0 = non-combat)
+//   Spells:     name, value = rank (0 = none); the known rank of each active class spell (not passive, shown in the
+//               spellbook, no higher rank known), highest spell level first
+struct BotStateItem
+{
+    std::string name;
+    uint32_t value = 0;
+    uint32_t extra = 0;
+    uint8_t code = 0;
+};
+
+constexpr std::size_t BotStateTopicMaxItems = 64;  // The reader never returns more.
+
+// False (items cleared) off the world thread, for an unknown topic or a guid that is not an online bot in the world.
+// Only the bot's own items, quest log, cooldowns, strategies and spellbook; nothing here scans the world.
+bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vector<BotStateItem>& items);
+}  // namespace PlayerbotBridge
+
+#endif

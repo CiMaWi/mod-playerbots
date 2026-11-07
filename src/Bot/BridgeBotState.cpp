@@ -1,0 +1,263 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#include "BridgeBotState.h"
+
+#include <algorithm>
+#include <thread>
+
+#include "Bag.h"
+#include "DBCStores.h"
+#include "Group.h"
+#include "LootObjectStack.h"
+#include "ObjectAccessor.h"
+#include "ObjectGuid.h"
+#include "ObjectMgr.h"
+#include "PlayerbotAI.h"
+#include "Playerbots.h"
+#include "QuestDef.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "ThreadCheck.h"
+#include "TravelMgr.h"
+
+namespace PlayerbotBridge
+{
+namespace
+{
+bool Visible(Player* observer, Unit* target)
+{
+    return target && target->IsInWorld() && observer->IsInMap(target) && observer->InSamePhase(target) &&
+           observer->IsWithinDistInMap(target, observer->GetSightRange()) &&
+           observer->CanSeeOrDetect(target, false, true);
+}
+
+// Cached zone and area ids; never a terrain lookup.
+std::string AreaName(uint32 areaId)
+{
+    AreaTableEntry const* entry = sAreaTableStore.LookupEntry(areaId);
+    return entry ? PlayerbotAI::GetLocalizedAreaName(entry) : std::string();
+}
+
+void ReadInventory(Player* bot, std::vector<BotStateItem>& items)
+{
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            items.push_back({item->GetTemplate()->Name1, item->GetTemplate()->Quality, item->GetCount(), 1});
+    std::vector<BotStateItem> carried;
+    auto const carry = [&](Item* item)
+    {
+        if (item)
+            carried.push_back({item->GetTemplate()->Name1, item->GetTemplate()->Quality, item->GetCount(), 0});
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        carry(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                carry(bag->GetItemByPos(static_cast<uint8>(slot)));
+    std::stable_sort(carried.begin(), carried.end(),
+                     [](BotStateItem const& a, BotStateItem const& b) { return a.value > b.value; });
+    items.insert(items.end(), carried.begin(), carried.end());
+}
+
+void ReadQuests(Player* bot, std::vector<BotStateItem>& items)
+{
+    QuestStatusMap& statuses = bot->getQuestStatusMap();
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = bot->GetQuestSlotQuestId(slot);
+        Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+        auto const status = statuses.find(questId);
+        if (!quest || status == statuses.end())
+            continue;
+        BotStateItem item{quest->GetTitle()};
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        {
+            item.extra += quest->RequiredNpcOrGoCount[i];
+            item.value += std::min<uint32>(status->second.CreatureOrGOCount[i], quest->RequiredNpcOrGoCount[i]);
+        }
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        {
+            item.extra += quest->RequiredItemCount[i];
+            item.value += std::min<uint32>(status->second.ItemCount[i], quest->RequiredItemCount[i]);
+        }
+        item.code = status->second.Status == QUEST_STATUS_COMPLETE ? 1
+                    : status->second.Status == QUEST_STATUS_FAILED ? 2
+                                                                   : 0;
+        items.push_back(std::move(item));
+    }
+}
+
+void ReadCooldowns(Player* bot, std::vector<BotStateItem>& items)
+{
+    for (auto const& [spellId, cooldown] : bot->GetSpellCooldownMap())
+    {
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+        uint32 const left = bot->GetSpellCooldownDelay(spellId);
+        if (!spell || !left || spell->HasAttribute(SPELL_ATTR0_DO_NOT_DISPLAY) || !spell->SpellName[0])
+            continue;
+        items.push_back({spell->SpellName[0], (left + 999) / 1000});
+    }
+    std::stable_sort(items.begin(), items.end(),
+                     [](BotStateItem const& a, BotStateItem const& b) { return a.value > b.value; });
+}
+
+void ReadStrategies(PlayerbotAI* ai, std::vector<BotStateItem>& items)
+{
+    for (std::string& name : ai->GetStrategies(BOT_STATE_COMBAT))
+        items.push_back({std::move(name), 0, 0, 1});
+    for (std::string& name : ai->GetStrategies(BOT_STATE_NON_COMBAT))
+        items.push_back({std::move(name), 0, 0, 0});
+}
+
+void ReadSpells(Player* bot, std::vector<BotStateItem>& items)
+{
+    std::vector<std::pair<uint32, BotStateItem>> spells;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active || !known->IsInSpec(bot->GetActiveSpec()))
+            continue;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+        if (!spell || spell->IsPassive() || spell->HasAttribute(SPELL_ATTR0_DO_NOT_DISPLAY) ||
+            spell->SpellFamilyName == SPELLFAMILY_GENERIC || !spell->SpellName[0])
+            continue;
+        SpellInfo const* next = spell->GetNextRankSpell();
+        if (next && bot->HasSpell(next->Id))
+            continue;
+        spells.push_back({spell->SpellLevel, {spell->SpellName[0], spell->GetRank()}});
+    }
+    std::stable_sort(spells.begin(), spells.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
+    for (auto& spell : spells)
+        items.push_back(std::move(spell.second));
+}
+}  // namespace
+
+bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotStateFacts& facts)
+{
+    facts = {};
+    // Map threads change these values; only the world thread reads them while the maps are idle.
+    if (std::this_thread::get_id() != PlayerbotThreadCheck::worldThread.load(std::memory_order_relaxed))
+        return false;
+    Player* bot = ObjectAccessor::FindConnectedPlayer(botGuid);
+    PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI())
+        return false;
+
+    facts.healthPct = bot->GetHealthPct();
+    Powers const power = bot->getPowerType();
+    facts.powerType = static_cast<uint8_t>(power);
+    facts.powerCurrent = bot->GetPower(power);
+    facts.powerMax = bot->GetMaxPower(power);
+    facts.level = bot->GetLevel();
+    facts.alive = bot->IsAlive();
+    facts.ghost = bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
+    facts.inCombat = bot->IsInCombat() || ai->GetState() == BOT_STATE_COMBAT;
+    if (Unit* victim = bot->GetVictim())
+    {
+        facts.victim = true;
+        facts.victimVisible = Visible(bot, victim);
+        facts.victimName = victim->GetName();
+        facts.victimLevel = victim->GetLevel();
+        facts.victimHealthPct = victim->GetHealthPct();
+    }
+
+    facts.flying = bot->IsInFlight();
+    facts.casting = bot->IsNonMeleeSpellCast(false);
+    AiObjectContext* context = ai->GetAiObjectContext();
+    facts.looting = !context->GetValue<LootObject>("loot target")->Get().IsEmpty();
+    facts.resting =
+        bot->IsSitState() && (bot->HasAuraType(SPELL_AURA_MOD_REGEN) || bot->HasAuraType(SPELL_AURA_MOD_POWER_REGEN));
+    // Status fields only: TravelTarget::isActive() asks the destination, which evaluates calculated values.
+    if (TravelTarget* travel = context->GetValue<TravelTarget*>("travel target")->Get())
+    {
+        facts.travelling = travel->getStatus() == TRAVEL_STATUS_TRAVEL;
+        facts.working = travel->getStatus() == TRAVEL_STATUS_WORK;
+        TravelDestination* destination = travel->getDestination();
+        Quest const* quest =
+            (facts.travelling || facts.working) && destination ? destination->GetQuestTemplate() : nullptr;
+        if (quest)
+            facts.questTitle = quest->GetTitle();
+    }
+
+    facts.zone = AreaName(bot->GetZoneId());
+    facts.area = AreaName(bot->GetAreaId());
+    facts.mapId = bot->GetMapId();
+    facts.x = bot->GetPositionX();
+    facts.y = bot->GetPositionY();
+    facts.z = bot->GetPositionZ();
+    facts.mounted = bot->IsMounted();
+    facts.swimming = bot->IsInWater();
+
+    Group* group = bot->GetGroup();
+    if (group)
+    {
+        facts.groupSize = group->GetMembersCount();
+        facts.leads = group->GetLeaderGUID() == bot->GetGUID();
+    }
+    if (Player* master = ai->GetMaster(); master && master != bot)
+        facts.masterName = master->GetName();
+    facts.follow = ai->HasStrategy("follow", BOT_STATE_NON_COMBAT);
+    facts.stay = ai->HasStrategy("stay", BOT_STATE_NON_COMBAT);
+    facts.guard = ai->HasStrategy("guard", BOT_STATE_NON_COMBAT);
+    facts.grind = ai->HasStrategy("grind", BOT_STATE_NON_COMBAT);
+    facts.passive = ai->HasStrategy("passive", BOT_STATE_NON_COMBAT);
+    facts.freeBagSlots = bot->GetFreeInventorySpace();
+    facts.money = bot->GetMoney();
+
+    Player* partner = ObjectAccessor::FindConnectedPlayer(partnerGuid);
+    if (partner && partner != bot && partner->IsInWorld())
+    {
+        facts.partnerOnline = true;
+        facts.partnerInGroup = group && group->IsMember(partnerGuid);
+        facts.partnerVisible = Visible(bot, partner);
+        facts.partnerZone = AreaName(partner->GetZoneId());
+        facts.partnerSameMap = bot->IsInMap(partner) && bot->InSamePhase(partner);
+        if (facts.partnerSameMap)
+        {
+            facts.partnerYards = bot->GetExactDist(partner);
+            facts.partnerX = partner->GetPositionX();
+            facts.partnerY = partner->GetPositionY();
+            facts.partnerZ = partner->GetPositionZ();
+        }
+    }
+    return true;
+}
+
+bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vector<BotStateItem>& items)
+{
+    items.clear();
+    if (std::this_thread::get_id() != PlayerbotThreadCheck::worldThread.load(std::memory_order_relaxed))
+        return false;
+    Player* bot = ObjectAccessor::FindConnectedPlayer(botGuid);
+    PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI())
+        return false;
+    switch (topic)
+    {
+        case BotStateTopic::Inventory:
+            ReadInventory(bot, items);
+            break;
+        case BotStateTopic::Quests:
+            ReadQuests(bot, items);
+            break;
+        case BotStateTopic::Cooldowns:
+            ReadCooldowns(bot, items);
+            break;
+        case BotStateTopic::Strategies:
+            ReadStrategies(ai, items);
+            break;
+        case BotStateTopic::Spells:
+            ReadSpells(bot, items);
+            break;
+        default:
+            return false;
+    }
+    if (items.size() > BotStateTopicMaxItems)
+        items.resize(BotStateTopicMaxItems);
+    return true;
+}
+}  // namespace PlayerbotBridge
