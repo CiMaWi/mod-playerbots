@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -209,6 +210,7 @@ inline std::uint64_t EdgeKey(std::uint32_t fromNode, std::uint32_t toNode)
 struct StuckEdges
 {
     std::unordered_map<std::uint64_t, std::uint16_t> flags;
+    std::uint32_t generation{0};  // counts the book's publications: a cached route is only as good as its flags
 };
 
 // Seconds a fare weighs: the share of the purse it takes, times an hour at thrift 100. Negative: unaffordable
@@ -329,21 +331,16 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
         return {node.mapId, node.x, node.y, node.z};
     };
 
-    // The cheapest arrival by a jump onto the goal's map, a lower bound for any vertex off that map
+    // The cheapest arrival by a jump onto the goal's map, a lower bound for any vertex off that map (the graph keeps
+    // one arrival per node, so this reads a few dozen entries, not every link)
     float jump = UNREACHED;
     if (params.heuristic)
     {
-        for (std::uint32_t index = 0; index < graph.LinkCount(); ++index)
+        for (TravelGraphArrival const& arrival : graph.ArrivalsOnto(goal.mapId))
         {
-            TravelGraphLink const& link = graph.GetLink(index);
-            TravelGraphNode const& to = graph.GetNode(link.to);
-            if (link.type == TravelLinkType::Walk || to.mapId != goal.mapId)
-                continue;
-            float lowest = 0.0f;
-            if (link.type == TravelLinkType::Portal)
-                lowest = link.extraCost;
-            else if (link.type == TravelLinkType::Flight)
-                lowest = link.pathLength / params.flightSpeed + FLIGHT_BOARDING_SECONDS;
+            TravelGraphNode const& to = graph.GetNode(arrival.node);
+            float const lowest =
+                std::min(arrival.fixedSeconds, arrival.flightYards / params.flightSpeed + FLIGHT_BOARDING_SECONDS);
             jump = std::min(jump, lowest + Distance({to.mapId, to.x, to.y, to.z}, goal) / fastest);
         }
     }
@@ -597,6 +594,7 @@ public:
             auto edges = std::make_shared<StuckEdges>();
             for (auto const& [key, mark] : _marks)
                 edges->flags.emplace(key, mark.flags);
+            edges->generation = ++_generation;
             std::shared_ptr<StuckEdges const> published = std::move(edges);
             std::lock_guard<std::mutex> lock(_currentMutex);
             _current.swap(published);
@@ -626,6 +624,7 @@ private:
     std::shared_ptr<StuckEdges const> _current{std::make_shared<StuckEdges const>()};
     std::unordered_map<std::uint64_t, Mark> _marks;  // world thread only
     std::uint32_t _sweptMs{0};
+    std::uint32_t _generation{0};
 };
 
 // The checks shared by tests/route-rules-selftest.cpp and `playerbots route selftest` on the shipped graph with its
@@ -919,6 +918,11 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     std::uint32_t unstable = 0;
     std::uint64_t expandedAStar = 0;
     std::uint64_t expandedDijkstra = 0;
+    double microsAStar = 0.0;
+    double microsDijkstra = 0.0;
+    using Clock = std::chrono::steady_clock;
+    auto const micros = [](Clock::time_point since)
+    { return std::chrono::duration<double, std::micro>(Clock::now() - since).count(); };
     for (std::uint32_t i = 0; i < 50; ++i)
     {
         TravelGraphNode const& a = graph.GetNode(anyNode(random));
@@ -932,9 +936,13 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         traveller.allowTransport = true;
         traveller.hearthCooldownMs = (i % 3) ? 0 : 20 * 60 * 1000;
         Request const pair{traveller, {b.mapId, b.x, b.y, b.z}};
+        Clock::time_point const started = Clock::now();
         Result const first = Search(graph, pair, StuckEdges{}, aStar);
+        microsAStar += micros(started);
         Result const again = Search(graph, pair, StuckEdges{}, aStar);
+        Clock::time_point const reset = Clock::now();
         Result const reference = Search(graph, pair, StuckEdges{}, dijkstraParams);
+        microsDijkstra += micros(reset);
         bool stable =
             first.ok == again.ok && first.totalSeconds == again.totalSeconds && first.legs.size() == again.legs.size();
         for (std::size_t leg = 0; stable && leg < first.legs.size(); ++leg)
@@ -957,7 +965,8 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     check(pairs >= 25, "f) only " + std::to_string(pairs) + " of 50 random pairs have a route");
     notes.push_back("f) 50 random pairs: " + std::to_string(pairs) + " routed, " + std::to_string(mismatches) +
                     " A*/Dijkstra mismatches, expanded A* " + std::to_string(expandedAStar / 50) + " / Dijkstra " +
-                    std::to_string(expandedDijkstra / 50) + " per search");
+                    std::to_string(expandedDijkstra / 50) + " per search, " + num(microsAStar / 50.0) + " / " +
+                    num(microsDijkstra / 50.0) + " us per search");
     return checks;
 }
 }  // namespace TravelRoute

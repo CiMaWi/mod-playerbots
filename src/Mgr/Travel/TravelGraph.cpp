@@ -12,7 +12,7 @@
 #include "Log.h"
 #include "PlayerbotsDatabase.h"
 #include "QueryResult.h"
-#include "RouteRules.h"
+#include "RouteService.h"
 #include "StringFormat.h"
 #include "Timer.h"
 
@@ -175,6 +175,7 @@ bool TravelGraph::HandleStatusCommand(ChatHandler* handler, char const* /*args*/
             text = "failed";
         handler->PSendSysMessage("ROUTE status: travel graph {}{}", text,
                                  state == State::Failed ? " (" + graph._error + ")" : "");
+        handler->PSendSysMessage("{}", TravelRoute::RouteServiceStatus());
         return true;
     }
 
@@ -185,6 +186,7 @@ bool TravelGraph::HandleStatusCommand(ChatHandler* handler, char const* /*args*/
         stats.nodes, stats.links, stats.linksByType[1], stats.linksByType[2], stats.linksByType[3],
         stats.linksByType[4], stats.points, static_cast<double>(stats.memoryBytes) / (1024.0 * 1024.0), stats.loadMs,
         stats.peakChunkRows);
+    handler->PSendSysMessage("{}", TravelRoute::RouteServiceStatus());
     return true;
 }
 
@@ -199,8 +201,10 @@ bool TravelGraph::HandleSelftestCommand(ChatHandler* handler, char const* /*args
 
     std::vector<std::string> failures;
     std::vector<std::string> notes;
-    // The graph's own checks, then the route search's fixed snapshots (RouteRules.h)
-    uint32 const checks = graph.Selftest(failures, notes) + TravelRoute::Selftest(graph, failures, notes);
+    // The graph's own checks, the route search's fixed snapshots (RouteRules.h), then a four-worker route service
+    // of its own under load (RouteService.h); the server's service keeps running
+    uint32 const checks = graph.Selftest(failures, notes) + TravelRoute::Selftest(graph, failures, notes) +
+                          TravelRoute::ServiceSelftest(graph, failures, notes);
     for (std::string const& note : notes)
         handler->PSendSysMessage("ROUTE {}", note);
     for (std::string const& failure : failures)

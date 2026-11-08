@@ -5,8 +5,8 @@
  */
 
 // Standalone check of the route search (src/Ai/World/Rpg/RouteRules.h) on the shipped travel graph and the 3.3.5
-// TaxiPath/TaxiNodes DBC files: the fixed snapshots a) - f) of TravelRoute::Selftest, the checks `playerbots route
-// selftest` also runs on the loaded graph.
+// TaxiPath/TaxiNodes DBC files: the fixed snapshots a) - f) of TravelRoute::Selftest and the worker test g) of
+// TravelRoute::ServiceSelftest (RouteService.h), the checks `playerbots route selftest` also runs on the loaded graph.
 // Usage: route-rules-selftest [module root] [dbc dir] (defaults: the current directory,
 // C:/Games/AzerothCore/Server/data/dbc)
 #include <chrono>
@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "RouteRules.h"
+#include "RouteService.h"
 #include "TravelGraphSql.h"
 
 int main(int argc, char** argv)
@@ -38,7 +39,8 @@ int main(int argc, char** argv)
     std::vector<std::string> failures;
     std::vector<std::string> notes;
     auto const started = std::chrono::steady_clock::now();
-    std::uint32_t const checks = TravelRoute::Selftest(graph, failures, notes);
+    std::uint32_t const checks =
+        TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)

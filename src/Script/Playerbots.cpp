@@ -49,7 +49,7 @@
 #include "CensusMgr.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
-#include "RouteRules.h"
+#include "RouteService.h"
 #include "TravelGraph.h"
 #include "WorldScript.h"
 #include "WorldThreadMonitor.h"
@@ -628,8 +628,12 @@ public:
         AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
         PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
+        // Route searches run on the route service's own workers; it refuses requests until the graph is ready
         if (sPlayerbotAIConfig.Enabled)
+        {
             TravelGraph::Instance().Start();
+            TravelRoute::StartRouteService();
+        }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
     }
@@ -688,6 +692,7 @@ public:
     // Runs before the sessions are kicked on server shutdown
     void OnShutdown() override
     {
+        TravelRoute::RouteService::Instance().Stop();  // joins the route workers; waiting requests are dropped
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close
         TestPlayerMgr::Instance().Shutdown();
         CensusMgr::Instance().Shutdown();

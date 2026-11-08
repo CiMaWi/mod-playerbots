@@ -86,6 +86,16 @@ struct TravelTaxiPath
     std::uint8_t teams{0};   // TAXI_ALLIANCE | TAXI_HORDE: who has a flight master at both ends
 };
 
+// A node some portal, transport or flight link arrives at, with the cheapest of them: the route search's lower bound
+// for reaching a map. Built once with the graph, one per node, sorted by map then node
+struct TravelGraphArrival
+{
+    std::uint32_t mapId{0};
+    std::uint32_t node{0};
+    float fixedSeconds{std::numeric_limits<float>::infinity()};  // a portal's stored seconds, 0 for a transport
+    float flightYards{std::numeric_limits<float>::infinity()};   // the shortest flight path onto it
+};
+
 struct TravelGraphStats
 {
     std::uint32_t nodes{0};
@@ -175,6 +185,18 @@ public:
         if (link.type != TravelLinkType::Flight || link.object >= _taxiPaths.size() || !_taxiPaths[link.object].from)
             return nullptr;
         return &_taxiPaths[link.object];
+    }
+
+    // The nodes on mapId that a portal, transport or flight link arrives at
+    std::span<TravelGraphArrival const> ArrivalsOnto(std::uint32_t mapId) const
+    {
+        auto const first = std::lower_bound(_arrivals.begin(), _arrivals.end(), mapId,
+                                            [](TravelGraphArrival const& arrival, std::uint32_t value)
+                                            { return arrival.mapId < value; });
+        auto const last =
+            std::upper_bound(first, _arrivals.end(), mapId, [](std::uint32_t value, TravelGraphArrival const& arrival)
+                             { return value < arrival.mapId; });
+        return {_arrivals.data() + (first - _arrivals.begin()), static_cast<std::size_t>(last - first)};
     }
 
     // The node index of a playerbots_travelnode.id, NO_NODE when there is none
@@ -408,13 +430,51 @@ private:
         }
     }
 
+    void BuildArrivals()
+    {
+        _arrivals.clear();
+        for (TravelGraphLink const& link : _links)
+        {
+            if (link.type == TravelLinkType::Walk)
+                continue;
+            TravelGraphArrival arrival;
+            arrival.mapId = _nodes[link.to].mapId;
+            arrival.node = link.to;
+            if (link.type == TravelLinkType::Portal)
+                arrival.fixedSeconds = link.extraCost;
+            else if (link.type == TravelLinkType::Transport)
+                arrival.fixedSeconds = 0.0f;  // a ship's wait is a tuning value: no bound
+            else
+                arrival.flightYards = link.pathLength;
+            _arrivals.push_back(arrival);
+        }
+        std::sort(_arrivals.begin(), _arrivals.end(), [](TravelGraphArrival const& a, TravelGraphArrival const& b)
+                  { return a.mapId != b.mapId ? a.mapId < b.mapId : a.node < b.node; });
+        std::size_t kept = 0;
+        for (std::size_t index = 0; index < _arrivals.size(); ++index)
+        {
+            TravelGraphArrival const& arrival = _arrivals[index];
+            if (kept && _arrivals[kept - 1].node == arrival.node)
+            {
+                TravelGraphArrival& merged = _arrivals[kept - 1];
+                merged.fixedSeconds = std::min(merged.fixedSeconds, arrival.fixedSeconds);
+                merged.flightYards = std::min(merged.flightYards, arrival.flightYards);
+            }
+            else
+                _arrivals[kept++] = arrival;
+        }
+        _arrivals.resize(kept);
+        _arrivals.shrink_to_fit();
+    }
+
     std::size_t MemoryBytes() const
     {
         std::size_t bytes =
             _nodes.capacity() * sizeof(TravelGraphNode) + _links.capacity() * sizeof(TravelGraphLink) +
             _points.capacity() * sizeof(TravelGraphPoint) + _names.capacity() * sizeof(std::string) +
             _indexOfId.capacity() * sizeof(std::uint32_t) + _cellKeys.capacity() * sizeof(std::uint64_t) +
-            _cellNodes.capacity() * sizeof(std::uint32_t) + _taxiPaths.capacity() * sizeof(TravelTaxiPath);
+            _cellNodes.capacity() * sizeof(std::uint32_t) + _taxiPaths.capacity() * sizeof(TravelTaxiPath) +
+            _arrivals.capacity() * sizeof(TravelGraphArrival);
         for (std::string const& name : _names)
             bytes += name.capacity() > 15 ? name.capacity() + 1 : 0;  // beyond the small-string buffer
         return bytes;
@@ -430,6 +490,7 @@ private:
     std::vector<std::uint64_t> _cellKeys;    // sorted (map, cell x, cell y)
     std::vector<std::uint32_t> _cellNodes;   // the node of each key
     std::vector<TravelTaxiPath> _taxiPaths;  // by TaxiPath id; from 0 = no such path
+    std::vector<TravelGraphArrival> _arrivals;
     TravelGraphStats _stats;
 
     std::atomic<State> _state{State::Idle};
@@ -663,6 +724,7 @@ public:
         graph._indexOfId = std::move(_indexOfId);
         graph._taxiPaths = std::move(_taxiPaths);
         graph.BuildGrid();
+        graph.BuildArrivals();
         graph._stats = _stats;
         graph._stats.memoryBytes = graph.MemoryBytes();
         return true;
