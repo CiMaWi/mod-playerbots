@@ -36,6 +36,7 @@
 #include "QuestPackets.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
+#include "RouteRules.h"
 #include "SharedDefines.h"
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
@@ -106,6 +107,11 @@ void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
     EventLog::Emit(bot, "Stuck", word, static_cast<uint32>(botAI->rpgInfo.GetStatus()),
                    WorldTravel::PackStuckPositions(bot->GetPositionX(), bot->GetPositionY(), dest.GetPositionX(),
                                                    dest.GetPositionY()));
+    // Plain positions only: the world thread maps them to a travel graph edge the route search avoids
+    if (!input.OtherMap)
+        TravelRoute::StuckBook::Instance().Push(
+            {{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()},
+             {dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()}});
 }
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)

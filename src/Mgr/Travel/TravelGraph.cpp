@@ -7,10 +7,13 @@
 #include "TravelGraph.h"
 
 #include "Chat.h"
+#include "DBCStores.h"
 #include "Field.h"
 #include "Log.h"
 #include "PlayerbotsDatabase.h"
 #include "QueryResult.h"
+#include "RouteRules.h"
+#include "StringFormat.h"
 #include "Timer.h"
 
 namespace
@@ -89,12 +92,26 @@ void TravelGraph::Load()
         } while (result->NextRow());
     }
 
+    // The flight links' TaxiPaths and who may use them: the DBC stores are loaded before OnBeforeWorldInitialized
+    // starts this thread and never change afterwards
+    for (uint32 id = 0; id < sTaxiNodesStore.GetNumRows(); ++id)
+        if (TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(id))
+            builder.AddTaxiNode(id, node->MountCreatureID[1] != 0, node->MountCreatureID[0] != 0);
+    for (uint32 id = 0; id < sTaxiPathStore.GetNumRows(); ++id)
+        if (TaxiPathEntry const* path = sTaxiPathStore.LookupEntry(id))
+            builder.AddTaxiPath(id, path->from, path->to, path->price);
+
     std::string error;
     if (!builder.EndLinks(error))
         return fail(error);
 
+    // A failed chunk query looks like an empty node range: the point count read must match the table's
+    uint64 expectedPoints = 0;
     if (QueryResult result = PlayerbotsDatabase.Query("SELECT COUNT(*) FROM playerbots_travelnode_path"))
-        builder.ReservePoints(result->Fetch()[0].Get<uint64>());
+        expectedPoints = result->Fetch()[0].Get<uint64>();
+    if (!expectedPoints)
+        return fail("the path point count could not be read");
+    builder.ReservePoints(expectedPoints);
 
     // Points of a node id past the last node would have no link anyway
     uint32 peakChunkRows = 0;
@@ -125,6 +142,9 @@ void TravelGraph::Load()
         std::this_thread::yield();
     }
 
+    if (rows[2] != expectedPoints)
+        return fail(Acore::StringFormat("{} of {} path points read (a chunk query failed)", rows[2], expectedPoints));
+
     if (!builder.Finish(*this, error))
         return fail(error);
 
@@ -134,8 +154,9 @@ void TravelGraph::Load()
              static_cast<double>(_stats.memoryBytes) / (1024.0 * 1024.0));
     LOG_INFO("playerbots",
              "[Route] travel graph rows read: {} nodes, {} links, {} points; largest path chunk {} rows; {} links "
-             "skipped, {} points without a link",
-             rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints);
+             "skipped, {} points without a link; {} taxi paths, {} flight links without one",
+             rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints, _stats.taxiPaths,
+             _stats.flightsWithoutTaxi);
     Publish(loadMs, peakChunkRows);
 }
 
@@ -178,7 +199,8 @@ bool TravelGraph::HandleSelftestCommand(ChatHandler* handler, char const* /*args
 
     std::vector<std::string> failures;
     std::vector<std::string> notes;
-    uint32 const checks = graph.Selftest(failures, notes);
+    // The graph's own checks, then the route search's fixed snapshots (RouteRules.h)
+    uint32 const checks = graph.Selftest(failures, notes) + TravelRoute::Selftest(graph, failures, notes);
     for (std::string const& note : notes)
         handler->PSendSysMessage("ROUTE {}", note);
     for (std::string const& failure : failures)

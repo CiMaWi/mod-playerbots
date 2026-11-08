@@ -76,6 +76,16 @@ struct TravelGraphPoint
     std::uint32_t mapId{0};  // a portal's, transport's or flight's points can change map midway
 };
 
+// A TaxiPath (TaxiPath.dbc) as a flight link needs it: the loader resolves it from the DBC stores, which are loaded
+// before the graph starts; the search reads it without the stores
+struct TravelTaxiPath
+{
+    std::uint32_t from{0};  // taxi node ids (TaxiNodes.dbc), the bit layout of PlayerTaxi's mask
+    std::uint32_t to{0};
+    std::uint32_t price{0};  // copper
+    std::uint8_t teams{0};   // TAXI_ALLIANCE | TAXI_HORDE: who has a flight master at both ends
+};
+
 struct TravelGraphStats
 {
     std::uint32_t nodes{0};
@@ -86,7 +96,9 @@ struct TravelGraphStats
     std::uint32_t orphanPoints{0};   // points of a link that is not in the link table
     std::size_t memoryBytes{0};      // capacity of all arrays
     std::uint32_t loadMs{0};
-    std::uint32_t peakChunkRows{0};  // the largest path chunk the loader held at once
+    std::uint32_t peakChunkRows{0};       // the largest path chunk the loader held at once
+    std::uint32_t taxiPaths{0};           // TaxiPath rows known to the graph
+    std::uint32_t flightsWithoutTaxi{0};  // flight links whose TaxiPath is unknown: the search never uses them
 };
 
 struct TravelGraphRoute
@@ -104,6 +116,8 @@ public:
     static constexpr std::uint32_t ANY_MAP = std::numeric_limits<std::uint32_t>::max();
     static constexpr std::uint32_t NO_NODE = std::numeric_limits<std::uint32_t>::max();
     static constexpr float GRID_CELL = 200.0f;  // yards per cell of the nearest-node index
+    static constexpr std::uint8_t TAXI_ALLIANCE = 1;
+    static constexpr std::uint8_t TAXI_HORDE = 2;
 
     // The simple cost of SimpleRoute, in seconds (WT6's reachability check; WT7's search has the real costs)
     static constexpr float RUN_SPEED = 7.0f;      // yd/s, a player running
@@ -153,6 +167,14 @@ public:
     std::uint32_t IndexOfLink(TravelGraphLink const& link) const
     {
         return static_cast<std::uint32_t>(&link - _links.data());
+    }
+
+    // The TaxiPath of a flight link, nullptr when the link is no flight or its path is unknown
+    TravelTaxiPath const* TaxiPathOf(TravelGraphLink const& link) const
+    {
+        if (link.type != TravelLinkType::Flight || link.object >= _taxiPaths.size() || !_taxiPaths[link.object].from)
+            return nullptr;
+        return &_taxiPaths[link.object];
     }
 
     // The node index of a playerbots_travelnode.id, NO_NODE when there is none
@@ -388,11 +410,11 @@ private:
 
     std::size_t MemoryBytes() const
     {
-        std::size_t bytes = _nodes.capacity() * sizeof(TravelGraphNode) + _links.capacity() * sizeof(TravelGraphLink) +
-                            _points.capacity() * sizeof(TravelGraphPoint) + _names.capacity() * sizeof(std::string) +
-                            _indexOfId.capacity() * sizeof(std::uint32_t) +
-                            _cellKeys.capacity() * sizeof(std::uint64_t) +
-                            _cellNodes.capacity() * sizeof(std::uint32_t);
+        std::size_t bytes =
+            _nodes.capacity() * sizeof(TravelGraphNode) + _links.capacity() * sizeof(TravelGraphLink) +
+            _points.capacity() * sizeof(TravelGraphPoint) + _names.capacity() * sizeof(std::string) +
+            _indexOfId.capacity() * sizeof(std::uint32_t) + _cellKeys.capacity() * sizeof(std::uint64_t) +
+            _cellNodes.capacity() * sizeof(std::uint32_t) + _taxiPaths.capacity() * sizeof(TravelTaxiPath);
         for (std::string const& name : _names)
             bytes += name.capacity() > 15 ? name.capacity() + 1 : 0;  // beyond the small-string buffer
         return bytes;
@@ -404,9 +426,10 @@ private:
     std::vector<std::string> _names;  // by node index
     std::vector<TravelGraphLink> _links;
     std::vector<TravelGraphPoint> _points;
-    std::vector<std::uint32_t> _indexOfId;  // playerbots_travelnode.id -> node index
-    std::vector<std::uint64_t> _cellKeys;   // sorted (map, cell x, cell y)
-    std::vector<std::uint32_t> _cellNodes;  // the node of each key
+    std::vector<std::uint32_t> _indexOfId;   // playerbots_travelnode.id -> node index
+    std::vector<std::uint64_t> _cellKeys;    // sorted (map, cell x, cell y)
+    std::vector<std::uint32_t> _cellNodes;   // the node of each key
+    std::vector<TravelTaxiPath> _taxiPaths;  // by TaxiPath id; from 0 = no such path
     TravelGraphStats _stats;
 
     std::atomic<State> _state{State::Idle};
@@ -529,6 +552,29 @@ public:
 
     void ReservePoints(std::size_t count) { _points.reserve(count); }
 
+    // TaxiNodes.dbc: which team has a flight master there (MountCreatureID[1] Alliance, [0] Horde not 0)
+    void AddTaxiNode(std::uint32_t id, bool alliance, bool horde)
+    {
+        if (id >= MAX_TAXI_ID)
+            return;
+        if (id >= _taxiNodeTeams.size())
+            _taxiNodeTeams.resize(id + 1, 0);
+        _taxiNodeTeams[id] = static_cast<std::uint8_t>((alliance ? TravelGraph::TAXI_ALLIANCE : 0) |
+                                                       (horde ? TravelGraph::TAXI_HORDE : 0));
+    }
+
+    // TaxiPath.dbc, after the taxi nodes: a path is usable by a team with a flight master at both ends
+    void AddTaxiPath(std::uint32_t id, std::uint32_t from, std::uint32_t to, std::uint32_t price)
+    {
+        if (id >= MAX_TAXI_ID || !from || !to)
+            return;
+        if (id >= _taxiPaths.size())
+            _taxiPaths.resize(id + 1);
+        auto const teams = [this](std::uint32_t node)
+        { return node < _taxiNodeTeams.size() ? _taxiNodeTeams[node] : std::uint8_t{0}; };
+        _taxiPaths[id] = {from, to, price, static_cast<std::uint8_t>(teams(from) & teams(to))};
+    }
+
     // The largest node id after EndLinks()
     std::uint32_t MaxNodeId() const
     {
@@ -601,6 +647,12 @@ public:
         }
 
         _points.shrink_to_fit();
+        for (TravelTaxiPath const& path : _taxiPaths)
+            _stats.taxiPaths += path.from ? 1 : 0;
+        for (TravelGraphLink const& link : _links)
+            if (link.type == TravelLinkType::Flight &&
+                (link.object >= _taxiPaths.size() || !_taxiPaths[link.object].from))
+                ++_stats.flightsWithoutTaxi;
         _stats.nodes = static_cast<std::uint32_t>(_nodes.size());
         _stats.links = static_cast<std::uint32_t>(_links.size());
         _stats.points = static_cast<std::uint32_t>(_points.size());
@@ -609,6 +661,7 @@ public:
         graph._links = std::move(_links);
         graph._points = std::move(_points);
         graph._indexOfId = std::move(_indexOfId);
+        graph._taxiPaths = std::move(_taxiPaths);
         graph.BuildGrid();
         graph._stats = _stats;
         graph._stats.memoryBytes = graph.MemoryBytes();
@@ -617,6 +670,7 @@ public:
 
 private:
     static constexpr std::uint32_t MAX_NODE_ID = 10000000;
+    static constexpr std::uint32_t MAX_TAXI_ID = 100000;
     static constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
     static constexpr std::uint32_t DISORDERED = NO_LINK - 1;
 
@@ -643,6 +697,8 @@ private:
     std::vector<TravelGraphLink> _links;
     std::vector<TravelGraphPoint> _points;
     std::vector<std::uint32_t> _indexOfId;
+    std::vector<std::uint8_t> _taxiNodeTeams;  // by taxi node id
+    std::vector<TravelTaxiPath> _taxiPaths;
     TravelGraphStats _stats;
     bool _linksDone{false};
     std::uint32_t _currentFromId{TravelGraph::NO_NODE};

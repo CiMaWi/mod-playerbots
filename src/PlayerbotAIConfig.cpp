@@ -1251,6 +1251,14 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("SightYards", WorldTravel.SightYards, MaxTravelYards);
         travelNumber("CorpseRunFailures", WorldTravel.CorpseRunFailures, MaxCorpseRunFailures);
         travelNumber("StuckAvoidSeconds", WorldTravel.StuckAvoidSeconds, MaxStuckAvoidSeconds);
+        constexpr uint32 MaxRouteThreads = 8;
+        constexpr uint32 MaxStuckPenalty = 100;
+        constexpr uint32 MaxTransportWaitSeconds = HOUR;
+        travelNumber("RouteThreads", WorldTravel.RouteThreads, MaxRouteThreads);
+        WorldTravel.RouteThreads = std::max<uint32>(WorldTravel.RouteThreads, 1);
+        travelNumber("StuckPenalty", WorldTravel.StuckPenalty, MaxStuckPenalty);
+        WorldTravel.StuckPenalty = std::max<uint32>(WorldTravel.StuckPenalty, 1);
+        travelNumber("TransportWaitSeconds", WorldTravel.TransportWaitSeconds, MaxTransportWaitSeconds);
 
         constexpr uint32 MaxBandNumber = 1000000;
         constexpr uint32 MaxPercent = 1000;

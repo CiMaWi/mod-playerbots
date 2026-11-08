@@ -49,6 +49,7 @@
 #include "CensusMgr.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
+#include "RouteRules.h"
 #include "TravelGraph.h"
 #include "WorldScript.h"
 #include "WorldThreadMonitor.h"
@@ -668,6 +669,14 @@ public:
             TimeHookCall("WorldHook Operations", [diff] { PlayerbotWorldThreadProcessor::instance().Update(diff); });
             // Grown skills for logged-in bots outside a fight; returns at once when none is queued
             TimeHookCall("WorldHook SkillGrowth", [] { BotProfileMgr::instance().UpdateGrowth(); });
+            // Stuck reports from map threads become the route search's stuck edges; returns at once when idle
+            TimeHookCall("WorldHook StuckEdges",
+                         []
+                         {
+                             TravelRoute::StuckBook::Instance().Update(
+                                 TravelGraph::Instance(), getMSTime(),
+                                 sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS);
+                         });
             // Cached LFG state per bot, read on map threads
             TimeHookCall("WorldHook LfgStates", [diff] { PlayerbotsMgr::instance().RefreshLfgStates(diff); });
             // World thread only

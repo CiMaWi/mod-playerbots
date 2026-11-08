@@ -2123,6 +2123,15 @@ Playerbots.WorldTravel.SightYards = 300
 Playerbots.WorldTravel.CorpseRunFailures = 2
 Playerbots.WorldTravel.StuckAvoidSeconds = 600
 
+# Route planning over the shipped travel graph, costed in seconds (walk, portal, flight with its fare, ship or
+# zeppelin, hearthstone). RouteThreads searches run off the map threads; an edge on which a bot recorded a Stuck event
+# costs StuckPenalty times more for StuckAvoidSeconds (after 3 such events it is skipped); a ship or zeppelin costs
+# TransportWaitSeconds of waiting (half its period) plus the crossing. (Ranges: RouteThreads 1-8; StuckPenalty 1-100;
+# TransportWaitSeconds 0-3600.) Defaults: 1, 5, 120
+Playerbots.WorldTravel.RouteThreads = 1
+Playerbots.WorldTravel.StuckPenalty = 5
+Playerbots.WorldTravel.TransportWaitSeconds = 120
+
 # Items, slots and bags of persistent bots. Every item has a worth in copper: what a vendor pays for what the bot
 # would sell, the buy price of what it uses (upgrades, consumables, reagents, ammo); quest items, kept items, upgrades
 # and the hearthstone are never destroyed. A free slot is worth the inventory-trip minutes it saves per hour times the
