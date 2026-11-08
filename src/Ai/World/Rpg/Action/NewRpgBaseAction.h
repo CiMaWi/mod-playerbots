@@ -35,6 +35,8 @@ public:
 protected:
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);
+    // Records the Stuck event (cause, status, bot and destination) when MoveFarTo gives a destination up
+    void RecordStuck(WorldPosition const& dest);
     bool MoveWorldObjectTo(ObjectGuid guid, float distance = INTERACTION_DISTANCE);
     bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL, WorldObject* center = nullptr);
     bool ForceToWait(uint32 duration, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
@@ -62,12 +64,12 @@ protected:
     /* FOR MOVE FAR */
     const float pathFinderDis = 70.0f;
     // Time without real progress toward dest before MoveFarTo
-    // falls back to teleport recovery. Kept short enough that a
-    // bot truly oscillating around an unreachable destination
-    // (mmap returning non-progressing partial paths, or NOPATH +
-    // cone fallback wandering) doesn't spin for 5 minutes before
-    // the teleport fires, but long enough that a genuine long
-    // walk that is slowly making progress never triggers it.
+    // gives the destination up (Stuck event, then IDLE). Kept short
+    // enough that a bot truly oscillating around an unreachable
+    // destination (mmap returning non-progressing partial paths, or
+    // NOPATH + cone fallback wandering) doesn't spin for 5 minutes,
+    // but long enough that a genuine long walk that is slowly making
+    // progress never triggers it.
     const uint32 stuckTime = 90 * IN_MILLISECONDS;
 
     /* FOR QUEST GIVER */

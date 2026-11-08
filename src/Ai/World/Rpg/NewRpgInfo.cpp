@@ -72,6 +72,18 @@ void NewRpgInfo::ChangeToRest()
     data = Rest{};
 }
 
+void NewRpgInfo::ChangeToTravel()
+{
+    startT = getMSTime();
+    data = Travel{};
+}
+
+void NewRpgInfo::ChangeToErrands()
+{
+    startT = getMSTime();
+    data = Errands{};
+}
+
 void NewRpgInfo::ChangeToIdle()
 {
     startT = getMSTime();
@@ -113,6 +125,8 @@ NewRpgStatus NewRpgInfo::StatusFromString(std::string const& name)
     if (name == "travel flight")  return RPG_TRAVEL_FLIGHT;
     if (name == "outdoor pvp")    return RPG_OUTDOOR_PVP;
     if (name == "do gather")      return RPG_DO_GATHER;
+    if (name == "travel")         return RPG_TRAVEL;
+    if (name == "errands")        return RPG_ERRANDS;
     return RPG_STATUS_END;
 }
 
@@ -130,6 +144,8 @@ NewRpgStatus NewRpgInfo::GetStatus()
         if constexpr (std::is_same_v<T, TravelFlight>) return RPG_TRAVEL_FLIGHT;
         if constexpr (std::is_same_v<T, OutdoorPvP>) return RPG_OUTDOOR_PVP;
         if constexpr (std::is_same_v<T, DoGather>) return RPG_DO_GATHER;
+        if constexpr (std::is_same_v<T, Travel>) return RPG_TRAVEL;
+        if constexpr (std::is_same_v<T, Errands>) return RPG_ERRANDS;
         return RPG_IDLE;
     }, data);
 }
@@ -210,6 +226,16 @@ std::string NewRpgInfo::ToString()
                 << arg.nodePos.GetPositionY() << " " << arg.nodePos.GetPositionZ();
             out << "\nvisited: " << arg.visited.size();
             out << "\nlastReach: " << (arg.lastReach ? GetMSTimeDiffToNow(arg.lastReach) : 0);
+        }
+        else if constexpr (std::is_same_v<T, Travel>)
+        {
+            out << "TRAVEL";
+            out << "\nlastTravel: " << startT;
+        }
+        else if constexpr (std::is_same_v<T, Errands>)
+        {
+            out << "ERRANDS";
+            out << "\nlastErrands: " << startT;
         }
         else
             out << "UNKNOWN";

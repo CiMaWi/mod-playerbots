@@ -1235,6 +1235,23 @@ bool PlayerbotAIConfig::Initialize()
         naturalNumber("Path", "Hops.MaxLegYards", NaturalPath.HopsMaxLegYards, MaxNaturalYards);
         naturalNumber("Path", "Walk.MaxLegYards", NaturalPath.WalkMaxLegYards, MaxNaturalYards);
     }
+
+    // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults
+    // (WorldTravelConfig) are the conf.dist values
+    {
+        constexpr uint32 MaxTravelYards = 2000;
+        constexpr uint32 MaxCorpseRunFailures = 100;
+        constexpr uint32 MaxStuckAvoidSeconds = DAY;
+        auto const travelNumber = [](char const* key, uint32& value, uint32 maximum)
+        {
+            value = std::min<uint32>(
+                sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldTravel.") + key, value, false), maximum);
+        };
+        WorldTravel = WorldTravelConfig{};
+        travelNumber("SightYards", WorldTravel.SightYards, MaxTravelYards);
+        travelNumber("CorpseRunFailures", WorldTravel.CorpseRunFailures, MaxCorpseRunFailures);
+        travelNumber("StuckAvoidSeconds", WorldTravel.StuckAvoidSeconds, MaxStuckAvoidSeconds);
+    }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)

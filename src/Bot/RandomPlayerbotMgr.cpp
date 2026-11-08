@@ -54,6 +54,7 @@
 #include "Unit.h"
 #include "World.h"
 #include "WorldSessionMgr.h"
+#include "WorldTravelRules.h"
 #include <algorithm>
 #include <array>
 #include <boost/thread/thread.hpp>
@@ -1795,6 +1796,10 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
         return false;
     }
 
+    // A persistent bot that died releases and runs back (DeadStrategy); it is never resurrected in place
+    if (bot->isDead() && HonestTravel())
+        return false;
+
     // if death revive
     if (bot->isDead())
     {
@@ -1827,20 +1832,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     }
 
     // only randomize and teleport idle bots
-    bool idleBot = false;
-    if (TravelTarget* target = botAI->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get())
-    {
-        if (target->getTravelState() == TravelState::TRAVEL_STATE_IDLE)
-        {
-            idleBot = true;
-        }
-    }
-    else
-    {
-        idleBot = true;
-    }
-
-    if (idleBot)
+    if (!IsBusy(bot))
     {
         // randomize
         uint32 randomize = GetEventValue(botId, "randomize");
@@ -1908,9 +1900,76 @@ void RandomPlayerbotMgr::Revive(Player* player)
     SetEventValue(bot, "dead", 0, 0);
     SetEventValue(bot, "revive", 0, 0);
 
+    // A persistent bot is never resurrected in place nor moved away from its corpse
+    if (HonestTravel())
+        return;
+
     EventLog::SourceScope reviveScope("mgr_revive");
     Refresh(player);
     RandomTeleportGrindForLevel(player);
+}
+
+bool RandomPlayerbotMgr::HonestTravel()
+{
+    return WorldTravel::AppliesTo(Population::IsPersistent(), sPlayerbotAIConfig.ArenaOnlyEnable);
+}
+
+bool RandomPlayerbotMgr::IsBusy(Player* bot)
+{
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        return false;
+
+    bool legacyIdle = true;
+    if (TravelTarget* target = botAI->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get())
+        legacyIdle = target->getTravelState() == TravelState::TRAVEL_STATE_IDLE;
+
+    NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+    WorldTravel::BusyInput in;
+    in.Honest = HonestTravel();
+    in.RealMaster = botAI->HasGameClientMaster();
+    in.HasGoal = false;  // the goal arrives with WT16
+    in.InCombat = bot->IsInCombat();
+    in.Dead = !bot->IsAlive();
+    in.Grouped = bot->GetGroup() != nullptr;
+    in.InInstance = bot->FindMap() && bot->FindMap()->Instanceable();
+    in.MidActivity = status == RPG_TRAVEL_FLIGHT || status == RPG_TRAVEL || status == RPG_ERRANDS;
+    in.LegacyIdle = legacyIdle;
+    return WorldTravel::IsBusy(in);
+}
+
+bool RandomPlayerbotMgr::IsTeleportSeen(Player* bot, WorldPosition const& dest)
+{
+    if (!HonestTravel())
+        return false;
+
+    auto const pointOf = [](WorldObject const* object)
+    {
+        return WorldTravel::SightPoint{object->GetMapId(), object->GetPositionX(), object->GetPositionY(),
+                                       object->GetPositionZ()};
+    };
+    float const radius = static_cast<float>(sPlayerbotAIConfig.WorldTravel.SightYards);
+    WorldTravel::SightPoint const from = pointOf(bot);
+    WorldTravel::SightPoint const to{dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()};
+    Map const* const botMap = bot->FindMap();
+    for (Player* player : players)
+    {
+        if (!player || !WorldTravel::IsViewer(player->IsGameMaster(), player->isGMVisible()))
+            continue;
+
+        if (WorldTravel::SeesTeleport(pointOf(player), from, to, radius))
+            return true;
+
+        // GetViewpoint looks the far-sight object up in the player's map: only safe on this thread's own map
+        if (!botMap || player->FindMap() != botMap)
+            continue;
+
+        WorldObject const* viewpoint = player->GetViewpoint();
+        if (viewpoint && viewpoint != player && WorldTravel::SeesTeleport(pointOf(viewpoint), from, to, radius))
+            return true;
+    }
+
+    return false;
 }
 
 void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>& locs, bool hearth)
@@ -1943,6 +2002,11 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
             botAI->HasPlayerNearby())
             return;
     }
+
+    // A busy persistent bot is never teleported (level-up, hub, city)
+    bool const honest = HonestTravel();
+    if (honest && IsBusy(bot))
+        return;
 
     // if (sPlayerbotAIConfig.RandomBotRpgChance < 0)
     //     return;
@@ -2025,15 +2089,20 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
                   zone->area_name[locale], area->ID, area->area_name[locale], zone->area_level, area->area_level, x, y,
                   z, i + 1, tlocs.size());
 
+        // Prevent blink to be detected by visible real players: persistent bots check the bot and the destination
+        // (the sight rule); the teleport is tried again at the next interval
+        bool const seen =
+            honest ? IsTeleportSeen(bot, WorldPosition(loc.GetMapId(), x, y, z)) : botAI->HasPlayerNearby(150.0f);
+        if (seen)
+        {
+            LOG_DEBUG("playerbots", "Bot {} <{}>: teleport skipped, a real player would see it",
+                      bot->GetGUID().GetCounter(), bot->GetName());
+            break;
+        }
+
         if (hearth)
         {
             bot->SetHomebind(loc, zone->ID);
-        }
-
-        // Prevent blink to be detected by visible real players
-        if (botAI->HasPlayerNearby(150.0f))
-        {
-            break;
         }
 
         bot->GetMotionMaster()->Clear();
@@ -2538,6 +2607,10 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
 {
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
+        return;
+
+    // A dead persistent bot runs back to its corpse: no resurrection in place, and no refresh while dead
+    if (bot->isDead() && HonestTravel())
         return;
 
     if (bot->isDead())
@@ -3487,11 +3560,11 @@ void RandomPlayerbotMgr::PrintStats()
         LOG_INFO("playerbots", "Bots rpg status:");
         LOG_INFO("playerbots",
                  "    Idle: {}, Rest: {}, GoGrind: {}, GoCamp: {}, MoveRandom: {}, MoveNpc: {}, DoQuest: {}, "
-                 "TravelFlight: {}, OutdoorPvP: {}, DoGather: {}",
+                 "TravelFlight: {}, OutdoorPvP: {}, DoGather: {}, Travel: {}, Errands: {}",
                  rpgStatusCount[RPG_IDLE], rpgStatusCount[RPG_REST], rpgStatusCount[RPG_GO_GRIND],
                  rpgStatusCount[RPG_GO_CAMP], rpgStatusCount[RPG_WANDER_RANDOM], rpgStatusCount[RPG_WANDER_NPC],
                  rpgStatusCount[RPG_DO_QUEST], rpgStatusCount[RPG_TRAVEL_FLIGHT], rpgStatusCount[RPG_OUTDOOR_PVP],
-                 rpgStatusCount[RPG_DO_GATHER]);
+                 rpgStatusCount[RPG_DO_GATHER], rpgStatusCount[RPG_TRAVEL], rpgStatusCount[RPG_ERRANDS]);
 
         PrintQuestTotals(rpgStasticTotal);
     }

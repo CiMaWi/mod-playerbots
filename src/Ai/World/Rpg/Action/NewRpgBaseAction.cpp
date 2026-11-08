@@ -39,7 +39,37 @@
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "WorldTravelRules.h"
 #include "G3D/Vector2.h"
+
+void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
+{
+    WorldTravel::StuckInput input;
+    input.OtherMap = dest.GetMapId() != bot->GetMapId();
+    input.OnTransport = bot->GetTransport() != nullptr || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
+    input.FallingOrSwimming =
+        bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR) || bot->IsInWater();
+    input.NearDoorOrElevator =
+        bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_DOOR, WorldTravel::STUCK_DOOR_YARDS) ||
+        bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_TRANSPORT, WorldTravel::STUCK_DOOR_YARDS);
+    if (!input.OtherMap && !input.OnTransport && !input.FallingOrSwimming && !input.NearDoorOrElevator)
+    {
+        PathGenerator path(bot);
+        path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        PathType const type = path.GetPathType();
+        input.PathComputed = true;
+        input.NoPath = (type & PATHFIND_NOPATH) != 0;
+        input.DestinationOffMesh = (type & PATHFIND_FARFROMPOLY_END) != 0;
+    }
+
+    char const* const word = WorldTravel::StuckCauseWord(WorldTravel::ClassifyStuck(input));
+    LOG_DEBUG("playerbots", "[New RPG] {} gives up ({},{},{},{}) at ({},{},{},{}), stuck: {}", bot->GetName(),
+              dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId(), bot->GetPositionX(),
+              bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(), word);
+    EventLog::Emit(bot, "Stuck", word, static_cast<uint32>(botAI->rpgInfo.GetStatus()),
+                   WorldTravel::PackStuckPositions(bot->GetPositionX(), bot->GetPositionY(), dest.GetPositionX(),
+                                                   dest.GetPositionY()));
+}
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 {
@@ -56,6 +86,20 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     bool newDest = dest != botAI->rpgInfo.moveFarPos;
     if (newDest)
     {
+        // A destination given up after a Stuck event is not walked to again for a while
+        NewRpgInfo const& info = botAI->rpgInfo;
+        WorldTravel::SightPoint const given{info.stuckAvoidPos.GetMapId(), info.stuckAvoidPos.GetPositionX(),
+                                            info.stuckAvoidPos.GetPositionY(), info.stuckAvoidPos.GetPositionZ()};
+        WorldTravel::SightPoint const wanted{dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(),
+                                             dest.GetPositionZ()};
+        if (WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+                                       sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, given,
+                                       wanted))
+        {
+            botAI->rpgInfo.ChangeToIdle();
+            return true;
+        }
+
         // clear stuck information if it's a new dest
         botAI->rpgInfo.SetMoveFarTo(dest);
     }
@@ -82,7 +126,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     // If the bot is still actively walking toward its last
     // committed point on the same map, just let the current spline
     // finish. The stuck counter below continues to track real
-    // progress toward dest and triggers teleport recovery if the
+    // progress toward dest and gives the destination up if the
     // committed paths genuinely aren't closing the gap.
     //
     // A changed destination (e.g. the gather state switching to a
@@ -105,7 +149,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     // Require a meaningful improvement (5yd) to reset the stuck counter.
     // The old 1yd threshold was small enough that bots oscillating back
     // and forth around an obstacle would keep "making progress" forever
-    // and never trigger the teleport recovery below.
+    // and never give up on the destination below.
     if (disToDest + 5.0f < botAI->rpgInfo.nearestMoveFarDis)
     {
         botAI->rpgInfo.nearestMoveFarDis = disToDest;
@@ -114,22 +158,13 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     }
     else if (++botAI->rpgInfo.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgInfo.stuckTs) >= stuckTime)
     {
-        // No meaningful progress toward dest for `stuckTime`: fall
-        // back to teleporting directly so the bot can get on with
-        // its RPG objective instead of oscillating indefinitely.
-        botAI->rpgInfo.stuckTs = getMSTime();
-        botAI->rpgInfo.stuckAttempts = 0;
-        AreaTableEntry const* entry = sAreaTableStore.LookupEntry(bot->GetZoneId());
-        std::string zone_name = PlayerbotAI::GetLocalizedAreaName(entry);
-        LOG_DEBUG(
-            "playerbots",
-            "[New RPG] Teleport {} from ({},{},{},{}) to ({},{},{},{}) as it stuck when moving far - Zone: {} ({})",
-            bot->GetName(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(),
-            dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId(), bot->GetZoneId(),
-            zone_name);
-        bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
-        EventLog::Honesty(bot, "Teleport", "stuck_teleport", dest.GetMapId());
-        return bot->TeleportTo(dest);
+        // No meaningful progress toward dest for `stuckTime`: give the destination up, record why and go IDLE
+        RecordStuck(dest);
+        botAI->rpgInfo.stuckAvoidPos = dest;
+        botAI->rpgInfo.stuckAvoidTs = getMSTime();
+        botAI->rpgInfo.SetMoveFarTo(WorldPosition());
+        botAI->rpgInfo.ChangeToIdle();
+        return true;
     }
 
     float dis = bot->GetExactDist(dest);

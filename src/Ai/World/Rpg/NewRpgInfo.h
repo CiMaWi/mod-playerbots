@@ -86,6 +86,14 @@ struct NewRpgInfo
         uint32 lastPassiveCheck{0};
         ObjectGuid::LowType lastSwitchedFrom{0};
     };
+    // RPG_TRAVEL: follows a planned route (filled by WT8)
+    struct Travel
+    {
+    };
+    // RPG_ERRANDS: runs a list of town errands (filled by WT3)
+    struct Errands
+    {
+    };
     struct Idle
     {
     };
@@ -97,6 +105,9 @@ struct NewRpgInfo
     uint32 stuckTs{0};
     uint32 stuckAttempts{0};
     WorldPosition moveFarPos;
+    // The destination given up after the last Stuck event, avoided for WorldTravel.StuckAvoidSeconds
+    WorldPosition stuckAvoidPos;
+    uint32 stuckAvoidTs{0};
     // END MOVE_FAR
 
     // QUEST GIVER
@@ -116,7 +127,9 @@ struct NewRpgInfo
         Rest,
         TravelFlight,
         OutdoorPvP,
-        DoGather
+        DoGather,
+        Travel,
+        Errands
     >;
     RpgData data;
 
@@ -132,6 +145,8 @@ struct NewRpgInfo
     void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
     void ChangeToDoGather();
     void ChangeToRest();
+    void ChangeToTravel();
+    void ChangeToErrands();
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);
     void Reset();

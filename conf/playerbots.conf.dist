@@ -2110,6 +2110,19 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # Playerbots.Natural.Path.Walk.MaxLegYards = 6
 # (Ranges: skills 0-100, percents 0-100, ms 0-60000, yards 0-500, OffsetYards 0-20.)
 
+# Honest world travel of persistent bots (Playerbots.Population.Persistent = 1; arena instances with
+# Playerbots.ArenaOnly.Enable keep their own cycle). These bots are never resurrected in place, never take the stuck
+# teleport (a bot that makes no progress toward its destination records a Stuck event in the census event log, gives
+# the destination up for StuckAvoidSeconds and goes IDLE) and are never randomized, refreshed or teleported while their
+# RPG is busy (not IDLE) or a real player is their master. A dead bot runs back to its corpse; after CorpseRunFailures
+# runs that ended in another death it walks to the spirit healer. Every teleport that remains (level-up, hub, city,
+# graveyard) is skipped while a real player is within SightYards of the bot or of the destination, and tried again
+# later; other setups keep the old 150 yd check around the bot. (Ranges: SightYards 0-2000, 0 = no sight check;
+# CorpseRunFailures 0-100; StuckAvoidSeconds 0-86400.) Defaults: 300, 2, 600
+Playerbots.WorldTravel.SightYards = 300
+Playerbots.WorldTravel.CorpseRunFailures = 2
+Playerbots.WorldTravel.StuckAvoidSeconds = 600
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600

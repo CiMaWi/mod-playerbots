@@ -178,6 +178,13 @@ public:
     uint32 GetMaxAllowedBotCount();
     bool ProcessBot(Player* player);
     void Revive(Player* player);
+    // Honest world travel (WorldTravelRules.h): on for persistent bots outside arena instances
+    static bool HonestTravel();
+    // No randomize, refresh or teleport for a busy bot (WorldTravel::IsBusy); bot's map thread or the world thread
+    bool IsBusy(Player* bot);
+    // The sight rule: with HonestTravel, a real player within Playerbots.WorldTravel.SightYards of the bot or of dest
+    // sees a teleport, which is then skipped; always false without HonestTravel
+    bool IsTeleportSeen(Player* bot, WorldPosition const& dest);
     // Playerbots.ArenaOnly.SpreadContinents, world thread: moves a waiting bot (not in a battleground or its queue,
     // alive, out of combat) to its home spot when it stands on another map; true when it teleported
     bool PlaceArenaOnlyHome(Player* bot);

@@ -24,6 +24,7 @@
 #include "SkillGrowth.h"
 #include "TacticGate.h"
 #include "Tactics.h"
+#include "WorldTravelConfig.h"
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -102,7 +103,11 @@ enum NewRpgStatus : int
     RPG_OUTDOOR_PVP = 8,
     // Roam the current zone harvesting herb/ore nodes
     RPG_DO_GATHER = 9,
-    RPG_STATUS_END = 10
+    // Follow a planned route leg by leg (world travel plan, WT8)
+    RPG_TRAVEL = 10,
+    // Run a list of town errands (world travel plan, WT3)
+    RPG_ERRANDS = 11,
+    RPG_STATUS_END = 12
 };
 
 #define MAX_SPECNO 20
@@ -545,6 +550,8 @@ public:
     TrackConfig NaturalTrack;
     // Playerbots.Natural.Path.* (G2c): natural paths (NaturalPath.h); Enable 0 keeps the straight mmap paths
     PathConfig NaturalPath;
+    // Playerbots.WorldTravel.*: honest travel of persistent bots (sight rule, corpse runs, stuck spots)
+    WorldTravelConfig WorldTravel;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
     LosConfig TacticLos;
     PillarConfig TacticPillar;

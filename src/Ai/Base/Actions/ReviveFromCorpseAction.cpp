@@ -15,6 +15,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "WorldTravelRules.h"
 
 // Top of the default start-zone brackets (Playerbots.ZoneBracket.*).
 constexpr uint32 START_ZONE_GRAVEYARD_MAX_LEVEL = 12;
@@ -62,8 +63,12 @@ bool ReviveFromCorpseAction::Execute(Event event)
     if (!botAI->HasGameClientMaster())
     {
         uint32 dCount = AI_VALUE(uint32, "death count");
+        bool const exhausted =
+            RandomPlayerbotMgr::HonestTravel()
+                ? WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures)
+                : dCount >= 5;
 
-        if (dCount >= 5)
+        if (exhausted)
             return botAI->DoSpecificAction("spirit healer");
     }
 
@@ -98,10 +103,15 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // }
 
     uint32 dCount = AI_VALUE(uint32, "death count");
+    bool const honest = RandomPlayerbotMgr::HonestTravel();
 
     if (!botAI->HasGameClientMaster())
     {
-        if (dCount >= 5)
+        // A persistent bot whose corpse runs failed walks to the spirit healer; it is never revived in place
+        if (honest && WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures))
+            return botAI->DoSpecificAction("spirit healer", Event(), true);
+
+        if (!honest && dCount >= 5)
         {
             // LOG_INFO("playerbots", "Bot {} {}:{} <{}>: died too many times, was revived and teleported",
             //     bot->GetGUID().ToString().c_str(), bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(),
@@ -172,11 +182,13 @@ bool FindCorpseAction::Execute(Event /*event*/)
                        bot->GetSpeed(MOVE_RUN);        // Time a bot would take to travel to it's corpse.
         delay = std::min(delay, uint32(10 * MINUTE));  // Cap time to get to corpse at 10 minutes.
 
-        if (deadTime > delay)
+        // The sight rule: a persistent ghost seen by a real player keeps waiting
+        if (deadTime > delay && !sRandomPlayerbotMgr.IsTeleportSeen(bot, moveToPos))
         {
             bot->GetMotionMaster()->Clear();
             bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
             bot->TeleportTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(), moveToPos.GetPositionZ(), 0);
+            EventLog::Honesty(bot, "Teleport", "ghost_to_corpse", moveToPos.GetMapId());
         }
 
         moved = true;
@@ -363,11 +375,18 @@ bool SpiritHealerAction::Execute(Event /*event*/)
     if (moved)
         return true;
 
+    // The sight rule: a persistent ghost seen by a real player tries again later
+    if (sRandomPlayerbotMgr.IsTeleportSeen(
+            bot, WorldPosition(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z)))
+        return false;
+
     // if (!IsRealPlayer(botAI->GetMaster()))
     // {
     context->GetValue<uint32>("death count")->Set(dCount + 1);
     bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
-    return bot->TeleportTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, 0.f);
+    bool const teleported = bot->TeleportTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, 0.f);
+    EventLog::Honesty(bot, "Teleport", "spirit_healer_fallback", ClosestGrave->Map);
+    return teleported;
     // }
 
     // LOG_INFO("playerbots", "Bot {} {}:{} <{}> can't find a spirit healer", bot->GetGUID().ToString().c_str(),
