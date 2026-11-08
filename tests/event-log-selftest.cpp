@@ -171,6 +171,32 @@ void CheckScopes()
     Report(!currentSourceState.source && !currentSourceState.action, "nothing left after the last scope");
 }
 
+// The StoreNewItem note: the item hooks get the entry by pointer comparison only, once, on the noting thread
+void CheckStoredItemNote()
+{
+    using EventLog::NoteStoredItem;
+    using EventLog::TakeStoredEntry;
+    int first = 0;
+    int second = 0;
+
+    Report(TakeStoredEntry(&first) == 0, "no note: entry 0");
+    NoteStoredItem(&first, 2589);
+    Report(TakeStoredEntry(&first) == 2589, "noted item: its entry");
+    Report(TakeStoredEntry(&first) == 0, "a note answers once");
+    NoteStoredItem(&first, 2589);
+    Report(TakeStoredEntry(&second) == 0, "another item: entry 0");
+    Report(TakeStoredEntry(&first) == 0, "a mismatch clears the note");
+    NoteStoredItem(&first, 2589);
+    Report(TakeStoredEntry(nullptr) == 0, "null item: entry 0");
+    NoteStoredItem(&first, 2589);
+    NoteStoredItem(&second, 4306);
+    Report(TakeStoredEntry(&second) == 4306, "the last store wins");
+    NoteStoredItem(&first, 2589);
+    std::thread other([&first] { Report(TakeStoredEntry(&first) == 0, "notes are per thread"); });
+    other.join();
+    Report(TakeStoredEntry(&first) == 2589, "the noting thread keeps its note");
+}
+
 // The CensusMgr::Enqueue pattern: one short lock per line, the line pushed and its type counted together
 struct FakeQueue
 {
@@ -255,6 +281,7 @@ int main(int argc, char** argv)
     CheckClassification();
     CheckSourceWords();
     CheckScopes();
+    CheckStoredItemNote();
     CheckConcurrentEnqueue();
 
     if (argc > 1)

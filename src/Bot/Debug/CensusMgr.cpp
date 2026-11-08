@@ -61,10 +61,11 @@ void EmitFromScope(Player* player, char const* type, uint32 id, int64 amount)
     CensusMgr::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
 }
 
-void EmitItemIn(Player* player, Item* item, uint32 count, char const* source)
+// ItemIn for the item StoreNewItem stored just before this hook: reads the note, never the item (TakeStoredEntry)
+void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* source)
 {
-    if (item)
-        EventLog::Emit(player, "ItemIn", source, item->GetEntry(), count);
+    if (uint32 const entry = EventLog::TakeStoredEntry(item))
+        EventLog::Emit(player, "ItemIn", source, entry, count);
 }
 
 // The cheap, state-free columns of one sample row (the part after the time and the type). Columns, in order: name,
@@ -93,19 +94,20 @@ void AppendRow(std::string& out, std::string const& time, char const* type, Play
 
 // Level-up and event log hooks; registered once, do nothing while the census is off. They run on the thread that
 // updates the player's map (or the world thread): they read only the hooked players and queue one line each.
-// StoreNewItem is not hooked: loot, quest, vendor and craft items pass through it before their own hook below.
-// Master-loot items and disenchant-roll results have no hook of their own and are not counted as ItemIn.
+// StoreNewItem is not counted (loot, quest, vendor and craft items pass through it before their own hook below); it
+// only notes the stored item's entry for those hooks. Master-loot items and disenchant-roll results have no hook of
+// their own and are not counted as ItemIn.
 class CensusPlayerScript : public PlayerScript
 {
 public:
     CensusPlayerScript()
         : PlayerScript(
               "CensusPlayerScript",
-              {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_LOOT_ITEM,
-               PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM, PLAYERHOOK_ON_QUEST_REWARD_ITEM, PLAYERHOOK_ON_CREATE_ITEM,
-               PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM, PLAYERHOOK_ON_AFTER_TAKE_ITEM_FROM_MAIL,
-               PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_ON_PLAYER_RESURRECT, PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST,
-               PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
+              {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_STORE_NEW_ITEM,
+               PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM, PLAYERHOOK_ON_QUEST_REWARD_ITEM,
+               PLAYERHOOK_ON_CREATE_ITEM, PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
+               PLAYERHOOK_ON_AFTER_TAKE_ITEM_FROM_MAIL, PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_ON_PLAYER_RESURRECT,
+               PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
     {
     }
 
@@ -123,46 +125,57 @@ public:
             EmitFromScope(player, "GoldOut", 0, std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
     }
 
+    // Inside StoreNewItem, before the scripts' item hooks: the item is alive here (the core's callers use it after
+    // this hook), so its entry is read now for the hooks below, which must not read the item
+    void OnPlayerStoreNewItem(Player* /*player*/, Item* item, uint32 /*count*/) override
+    {
+        if (sPlayerbotAIConfig.CensusEnable && item)
+            EventLog::NoteStoredItem(item, item->GetEntry());
+    }
+
     void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
     {
-        EmitItemIn(player, item, count, "loot");
+        EmitStoredItemIn(player, item, count, "loot");
     }
 
     // A won need or greed roll: Group stores the item itself and fires only this hook, not OnPlayerLootItem
     void OnPlayerGroupRollRewardItem(Player* player, Item* item, uint32 count, RollVote /*voteType*/,
                                      Roll* /*roll*/) override
     {
-        EmitItemIn(player, item, count, "loot");
+        EmitStoredItemIn(player, item, count, "loot");
     }
 
     void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 count) override
     {
-        EmitItemIn(player, item, count, "quest");
+        EmitStoredItemIn(player, item, count, "quest");
     }
 
     void OnPlayerCreateItem(Player* player, Item* item, uint32 count) override
     {
-        EmitItemIn(player, item, count, "craft");
+        EmitStoredItemIn(player, item, count, "craft");
     }
 
-    // count is the number of vendor stacks bought
+    // count is the number of vendor stacks bought; the item is null when the store failed and is never read (the
+    // template is static data)
     void OnPlayerAfterStoreOrEquipNewItem(Player* player, uint32 /*vendorslot*/, Item* item, uint8 count, uint8 /*bag*/,
                                           uint8 /*slot*/, ItemTemplate const* proto, Creature* /*vendor*/,
                                           VendorItem const* /*crItem*/, bool /*bStore*/) override
     {
-        if (proto)
+        if (item && proto)
             EventLog::Emit(player, "ItemIn", "vendor", proto->ItemId, static_cast<int64>(proto->BuyCount) * count);
-        else
-            EmitItemIn(player, item, count, "vendor");
     }
 
+    // A mail item is moved into the bags, not stored new, so there is no note and the item is read here: safe while
+    // no script registered before this one destroys the taken item in this hook (none does)
     void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
     {
-        EmitItemIn(player, item, count, "mail");
+        if (item && IsLoggedBot(player))
+            EventLog::Emit(player, "ItemIn", "mail", item->GetEntry(), count);
     }
 
     // "sold" ItemOut is an upper bound: a later check of the sell handler can still refuse the sale, and the whole
-    // stack is counted where SellAction sells only the part that quest items do not need
+    // stack is counted where SellAction sells only the part that quest items do not need. The item is alive here:
+    // the sell handler reads it after this hook.
     [[nodiscard]] bool OnPlayerCanSellItem(Player* player, Item* item, Creature* /*creature*/) override
     {
         if (item)

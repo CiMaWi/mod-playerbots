@@ -105,6 +105,29 @@ private:
     SourceState _previous;
 };
 
+// The item StoreNewItem stored last on this thread, with its entry. The item hooks that follow StoreNewItem (loot,
+// group roll, quest reward, create) run after the hooks of scripts registered earlier, which may destroy the item
+// (mod-junk-to-gold sells looted junk at once; a new item is deleted on the spot). Those hooks only compare the
+// pointer with this note and never read the item; the core compares a possibly deleted item's pointer the same way
+// (Player::MoveItemToInventory).
+struct StoredItemNote
+{
+    void const* item = nullptr;
+    uint32_t entry = 0;
+};
+
+inline thread_local StoredItemNote storedItemNote;
+
+inline void NoteStoredItem(void const* item, uint32_t entry) { storedItemNote = {item, entry}; }
+
+// The entry noted for this item by the StoreNewItem just before, or 0; a note answers once
+inline uint32_t TakeStoredEntry(void const* item)
+{
+    StoredItemNote const note = storedItemNote;
+    storedItemNote = {};
+    return item && item == note.item ? note.entry : 0;
+}
+
 // Name of the innermost scope on this thread, or "other"; an action's name stays valid until the next call on the
 // same thread (defined in CensusMgr.cpp, which knows Action)
 char const* CurrentSource();
