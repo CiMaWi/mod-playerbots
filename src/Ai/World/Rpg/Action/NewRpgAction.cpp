@@ -30,6 +30,7 @@
 #include "QuestDef.h"
 #include "Random.h"
 #include "SharedDefines.h"
+#include "StartingHistoryRules.h"
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "WaypointMovementGenerator.h"
@@ -724,12 +725,21 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
     if (bot->IsMounted())
         bot->Dismount();
 
-    // Learning the master's node is the grant: it opens a route the bot never discovered
-    uint32 const flightNode = sObjectMgr->GetNearestTaxiNode(*flightMaster, bot->GetTeamId(true));
-    if (flightNode && !bot->m_taxi.IsTaximaskNodeKnown(flightNode))
-        EventLog::Honesty(bot, "Flight", "undiscovered_flight", flightNode);
-
+    // Learning the master's own node is natural: a player learns it here too
     bot->GetSession()->SendLearnNewTaxiNode(flightMaster);
+
+    auto const known = [this](uint32 node) { return bot->m_taxi.IsTaximaskNodeKnown(node); };
+    if (!StartingHistory::PathKnown(nodes, known))
+    {
+        // Persistent bots pick only discovered routes; other setups still fly and the flight is counted
+        if (RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot))
+        {
+            info.ChangeToIdle();
+            return true;
+        }
+
+        EventLog::Honesty(bot, "Flight", "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
+    }
 
     if (!bot->ActivateTaxiPathTo(nodes, flightMaster, 0))
     {

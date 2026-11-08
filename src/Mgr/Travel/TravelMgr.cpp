@@ -20,6 +20,7 @@
 #include "PathGenerator.h"
 #include "Playerbots.h"
 #include "RaceMgr.h"
+#include "StartingHistoryRules.h"
 #include "Talentspec.h"
 #include "TransportMgr.h"
 #include "TravelNode.h"
@@ -4415,6 +4416,27 @@ std::vector<uint32> TravelMgr::GetFlightNodesInZone(uint32 zoneId, TeamId team, 
     return result;
 }
 
+std::map<uint32, TravelMgr::FlightMasterInfo> const& TravelMgr::GetFlightMasters(TeamId team) const
+{
+    return team == TEAM_ALLIANCE ? allianceFlightMasterCache : hordeFlightMasterCache;
+}
+
+std::vector<TravelMgr::InnInfo> const& TravelMgr::GetInns(TeamId team) const
+{
+    return team == TEAM_ALLIANCE ? allianceInnCache : hordeInnCache;
+}
+
+bool TravelMgr::GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const
+{
+    auto const itr = zone2LevelBracket.find(zoneId);
+    if (itr == zone2LevelBracket.end())
+        return false;
+
+    low = itr->second.low;
+    high = itr->second.high;
+    return true;
+}
+
 std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player* bot)
 {
     std::vector<std::vector<uint32>> validDestinations;
@@ -4432,6 +4454,15 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         return validDestinations;
 
     uint32 botLevel = bot->GetLevel();
+
+    // Persistent bots fly only to nodes they have discovered, through discovered stops
+    bool const discoveredOnly = RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot);
+    auto const known = [bot](uint32 node) { return bot->m_taxi.IsTaximaskNodeKnown(node); };
+    auto const nodesInZone = [&](uint32 zoneId)
+    {
+        std::vector<uint32> nodes = GetFlightNodesInZone(zoneId, bot->GetTeamId(), fromNode);
+        return discoveredOnly ? StartingHistory::KnownNodes(nodes, known) : nodes;
+    };
 
     // Bots already in a capital shouldn't have another capital picked as a
     // flight destination — that just shuffles them between cities.
@@ -4457,7 +4488,7 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         {
             if (botLevel < bracket.low || botLevel > bracket.high)
                 continue;
-            if (GetFlightNodesInZone(zoneId, bot->GetTeamId(), fromNode).empty())
+            if (nodesInZone(zoneId).empty())
                 continue;
             candidateZones.push_back(zoneId);
         }
@@ -4471,13 +4502,13 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         uint32 zoneIndex = urand(0, candidateZones.size() - 1);
         uint32 pickedZone = candidateZones[zoneIndex];
 
-        std::vector<uint32> usableNodes = GetFlightNodesInZone(pickedZone, bot->GetTeamId(), fromNode);
+        std::vector<uint32> usableNodes = nodesInZone(pickedZone);
 
         if (!usableNodes.empty())
         {
             uint32 pickedNode = usableNodes[urand(0, usableNodes.size() - 1)];
             std::vector<uint32> path = sTravelNodeMap.FindTaxiPath(fromNode, pickedNode);
-            if (!path.empty())
+            if (!path.empty() && (!discoveredOnly || StartingHistory::PathKnown(path, known)))
             {
                 validDestinations.push_back(std::move(path));
                 return validDestinations;
@@ -4834,6 +4865,13 @@ void TravelMgr::PrepareDestinationCache()
 
                 LevelBracket bracket = zone2LevelBracket[areaId];
                 WorldPosition loc(mapId, x + cos(orient) * 5.0f, y + sin(orient) * 5.0f, z + 0.5f, orient + M_PI);
+                InnInfo const inn{loc, area->ID, areaId};
+                if (forHorde)
+                    hordeInnCache.push_back(inn);
+
+                if (forAlliance)
+                    allianceInnCache.push_back(inn);
+
                 for (uint32 i = bracket.low; i <= bracket.high; i++)
                 {
                     if (forHorde)

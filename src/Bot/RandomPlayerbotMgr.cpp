@@ -3028,7 +3028,8 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
 
     if (!args || !*args)
     {
-        LOG_ERROR("playerbots", "Usage: rndbot stats/queststats/questdump/update/reset/init/refresh/add/remove");
+        LOG_ERROR("playerbots",
+                  "Usage: rndbot stats/queststats/questdump/update/reset/init/refresh/add/remove/history");
         return false;
     }
 
@@ -3073,6 +3074,52 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
     if (cmd == "update")
     {
         sRandomPlayerbotMgr.UpdateAIInternal(0);
+        return true;
+    }
+
+    // "history [name]": the starting history, once, for the online persistent random bots (WT.3)
+    if (cmd == "history" || cmd.rfind("history ", 0) == 0)
+    {
+        if (!HonestTravel())
+        {
+            LOG_ERROR("playerbots",
+                      "rndbot history: only for a persistent population (Playerbots.Population.Persistent)");
+            return false;
+        }
+
+        std::string const name = cmd.size() > 8 ? cmd.substr(8) : std::string();
+        uint32 changed = 0;
+        uint32 unchanged = 0;
+        uint32 skipped = 0;
+        for (auto itr = sRandomPlayerbotMgr.GetPlayerBotsBegin(); itr != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++itr)
+        {
+            Player* bot = itr->second;
+            if (!bot || !bot->IsInWorld() || !sRandomPlayerbotMgr.IsRandomBot(bot))
+                continue;
+
+            if (!name.empty() && bot->GetName() != name)
+                continue;
+
+            if (bot->InBattleground() || bot->InArena())
+            {
+                LOG_INFO("playerbots", "[History] {} skipped: in a battleground or arena", bot->GetName());
+                ++skipped;
+                continue;
+            }
+
+            PlayerbotFactory factory(bot, bot->GetLevel());
+            if (!factory.ApplyStartingHistory())
+            {
+                ++unchanged;
+                continue;
+            }
+
+            bot->SaveToDB(false, false);
+            ++changed;
+        }
+
+        LOG_INFO("playerbots", "[History] rndbot history: {} bots changed, {} unchanged, {} skipped", changed,
+                 unchanged, skipped);
         return true;
     }
 

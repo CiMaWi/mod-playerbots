@@ -884,6 +884,18 @@ public:
     // Backed by a startup-built per-(level, team) index; empty when there is no valid giver.
     std::vector<WorldLocation> GetValidQuestGiverLocations(Player* bot);
     std::vector<uint32> GetFlightNodesInZone(uint32 zoneId, TeamId team, uint32 excludeNode = 0) const;
+
+    // Starting history: the startup caches, read only afterwards
+    struct InnInfo
+    {
+        WorldLocation loc;  // in front of the innkeeper
+        uint32 areaId;      // the bind's area
+        uint32 zoneId;
+    };
+    std::map<uint32, FlightMasterInfo> const& GetFlightMasters(TeamId team) const;
+    std::vector<InnInfo> const& GetInns(TeamId team) const;
+    bool GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const;
+
     bool SelectAuctioneerByMap(Player* bot, NpcLocation& outAuctioneer);
     std::vector<WorldLocation> const& GetLocsPerLevelCache(uint8 level) { return locsPerLevelCache[level]; }
 
@@ -1013,6 +1025,8 @@ private:
     std::map<uint32, FlightMasterInfo> hordeFlightMasterCache;
     std::map<uint8, std::vector<WorldLocation>> allianceHubsPerLevelCache;
     std::map<uint8, std::vector<WorldLocation>> hordeHubsPerLevelCache;
+    std::vector<InnInfo> allianceInnCache;
+    std::vector<InnInfo> hordeInnCache;
     std::map<uint8, std::vector<BankerLocation>> bankerLocsPerLevelCache;
     std::unordered_map<uint32, WorldLocation> bankerEntryToLocation;
     std::map<uint8, std::vector<WorldLocation>> locsPerLevelCache;

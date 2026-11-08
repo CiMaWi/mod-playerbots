@@ -41,7 +41,9 @@
 #include "SharedDefines.h"
 #include "StatsWeightCalculator.h"
 #include "SpellMgr.h"
+#include "StartingHistoryRules.h"
 #include "Trainer.h"
+#include "TravelMgr.h"
 #include "World.h"
 #include <array>
 #include <mutex>
@@ -1087,6 +1089,13 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Save");
     LOG_DEBUG("playerbots", "Saving to DB...");
+    // Persistent bots keep their hearthstone; a new one above level 1 gets its starting history once (WT.3)
+    bool const honestBot = RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot);
+    if (StartingHistory::FactoryApplies(honestBot, bot->GetLevel(), bot->GetTotalPlayedTime()))
+        ApplyStartingHistory();
+    else if (honestBot && !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
+        bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
+
     uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
     bot->SetMoney(randomizeMoney);
     EventLog::Honesty(bot, "Gold", "factory_randomize", 0, randomizeMoney);
@@ -2964,6 +2973,187 @@ void PlayerbotFactory::InitBags(bool destroyOld)
         //     newItem->AddToUpdateQueueOf(bot);
         // }
     }
+}
+
+namespace
+{
+uint32 AddHistoryFlightNodes(Player* bot)
+{
+    PlayerTaxi raceStart;
+    raceStart.InitTaxiNodesForLevel(bot->getRace(), bot->getClass(), bot->GetLevel());
+    std::vector<uint32> startNodes;
+    for (uint32 node = 1; node < sTaxiNodesStore.GetNumRows(); ++node)
+        if (raceStart.IsTaximaskNodeKnown(node))
+            startNodes.push_back(node);
+
+    std::vector<StartingHistory::NodeInZone> teamNodes;
+    for (auto const& [dbGuid, info] : sTravelMgr.GetFlightMasters(bot->GetTeamId()))
+    {
+        StartingHistory::NodeInZone spot;
+        spot.node = info.taxiNodeId;
+        spot.hasBracket = sTravelMgr.GetZoneBracket(info.zoneId, spot.bracket.low, spot.bracket.high);
+        teamNodes.push_back(spot);
+    }
+
+    uint32 added = 0;
+    for (uint32 node : StartingHistory::HistoryNodes(bot->GetLevel(), startNodes, teamNodes))
+        if (bot->m_taxi.SetTaximaskNode(node))
+            ++added;
+
+    return added;
+}
+
+// Binds the hearthstone at an inn of the bot's team whose zone fits its level, unless the bind fits already;
+// true when it bound anew
+bool BindAtFittingInn(Player* bot, std::string& bind)
+{
+    uint32 const level = bot->GetLevel();
+    uint32 bindZone = bot->m_homebindAreaId;
+    if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->m_homebindAreaId))
+        bindZone = area->zone ? area->zone : area->ID;
+
+    StartingHistory::Bracket bindBracket;
+    bool const hasBracket = sTravelMgr.GetZoneBracket(bindZone, bindBracket.low, bindBracket.high);
+    bind = "kept";
+    if (StartingHistory::BindFits(level, hasBracket, bindBracket))
+        return false;
+
+    std::vector<TravelMgr::InnInfo> const& inns = sTravelMgr.GetInns(bot->GetTeamId());
+    std::vector<StartingHistory::Bracket> brackets(inns.size());
+    for (size_t i = 0; i < inns.size(); ++i)
+        sTravelMgr.GetZoneBracket(inns[i].zoneId, brackets[i].low, brackets[i].high);
+
+    std::vector<size_t> const fitting = StartingHistory::FittingInns(level, brackets);
+    bind = "kept (no fitting inn)";
+    if (fitting.empty())
+        return false;
+
+    TravelMgr::InnInfo const& inn = inns[fitting[urand(0, fitting.size() - 1)]];
+    bot->SetHomebind(inn.loc, inn.areaId);
+    bind = Acore::StringFormat("map {} zone {} area {}", inn.loc.GetMapId(), inn.zoneId, inn.areaId);
+    return true;
+}
+
+// A free slot in the backpack or a general bag other than skipBagSlot and the factory bags; 0 when there is none
+uint16 FindFreeHistorySlot(Player* bot, uint8 skipBagSlot)
+{
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            return (INVENTORY_SLOT_BAG_0 << 8) | slot;
+
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* bag = bot->GetBagByPos(bagSlot);
+        if (bagSlot == skipBagSlot || !bag || bag->GetEntry() == StartingHistory::ITEM_FACTORY_BAG ||
+            bag->GetTemplate()->SubClass != ITEM_SUBCLASS_CONTAINER)
+            continue;
+
+        for (uint32 i = 0; i < bag->GetBagSize(); ++i)
+            if (!bag->GetItemByPos(i))
+                return (bagSlot << 8) | i;
+    }
+
+    return 0;
+}
+
+// Moves the bag's items to free slots elsewhere; true when the bag is empty afterwards
+bool EmptyFactoryBag(Player* bot, uint8 bagSlot)
+{
+    Bag* bag = bot->GetBagByPos(bagSlot);
+    if (!bag)
+        return false;
+
+    for (uint32 i = 0; i < bag->GetBagSize(); ++i)
+    {
+        if (!bag->GetItemByPos(i))
+            continue;
+
+        uint16 const dest = FindFreeHistorySlot(bot, bagSlot);
+        if (!dest)
+            return false;
+
+        bot->SwapItem((bagSlot << 8) | i, dest);
+        if (bag->GetItemByPos(i))
+            return false;
+    }
+
+    return bag->IsEmpty();
+}
+}  // namespace
+
+bool PlayerbotFactory::EquipHistoryBag(uint8 slot, uint32 itemId)
+{
+    uint16 dest;
+    if (!CanEquipUnseenItem(slot, dest, itemId))
+        return false;
+
+    return bot->EquipNewItem(dest, itemId, true) != nullptr;
+}
+
+bool PlayerbotFactory::ApplyStartingHistory()
+{
+    bool const hearthstone = !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true) &&
+                             bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
+    uint32 const level = bot->GetLevel();
+    if (level <= 1)
+    {
+        if (hearthstone)
+            LOG_INFO("playerbots", "[History] {} level {}: hearthstone given", bot->GetName(), level);
+
+        return hearthstone;
+    }
+
+    uint32 const nodesAdded = AddHistoryFlightNodes(bot);
+    std::string bind;
+    bool const rebound = BindAtFittingInn(bot, bind);
+
+    uint32 equipped = 0;
+    uint32 replaced = 0;
+    uint32 removed = 0;
+    uint32 keptFactory = 0;
+    // The bags hold the displaced PvE gear while the PvP loadout is worn
+    if (!PvpGearMgr::Instance().IsWorn(bot))
+    {
+        uint32 const historyBag = StartingHistory::BagForLevel(level);
+        // Empty slots first, so the contents of a replaced factory bag have room
+        for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        {
+            Item* bag = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            StartingHistory::BagStep const step = StartingHistory::DecideBagSlot(bag ? bag->GetEntry() : 0, historyBag);
+            if (step == StartingHistory::BagStep::Equip && EquipHistoryBag(slot, historyBag))
+                ++equipped;
+        }
+
+        for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        {
+            Item* bag = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            StartingHistory::BagStep const step = StartingHistory::DecideBagSlot(bag ? bag->GetEntry() : 0, historyBag);
+            if (step != StartingHistory::BagStep::Replace && step != StartingHistory::BagStep::Remove)
+                continue;
+
+            if (!EmptyFactoryBag(bot, slot))
+            {
+                ++keptFactory;
+                continue;
+            }
+
+            bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+            if (step == StartingHistory::BagStep::Replace && EquipHistoryBag(slot, historyBag))
+                ++replaced;
+            else
+                ++removed;
+        }
+    }
+
+    bool const changed = hearthstone || nodesAdded || rebound || equipped || replaced || removed;
+    if (changed || keptFactory)
+        LOG_INFO("playerbots",
+                 "[History] {} level {}: hearthstone {}, flight nodes +{}, bind {}, bags equipped {} replaced {} "
+                 "removed {}, factory bags kept (contents did not fit) {}",
+                 bot->GetName(), level, hearthstone ? "given" : "had", nodesAdded, bind, equipped, replaced, removed,
+                 keptFactory);
+
+    return changed;
 }
 
 void PlayerbotFactory::EnchantItem(Item* item)

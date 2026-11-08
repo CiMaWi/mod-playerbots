@@ -93,6 +93,9 @@ public:
     void InitFood();
     void InitMounts();
     void InitBags(bool destroyOld = true);
+    // A persistent bot's hearthstone and, above level 1, the history a player of its level plausibly has (WT.3).
+    // Idempotent by state; logs what it changed and returns true when it changed anything.
+    bool ApplyStartingHistory();
     void ApplyEnchantAndGemsNew(bool destroyOld = true);
     void InitInstanceQuests();
     void UnbindInstance();
@@ -165,6 +168,7 @@ private:
     // void InitEquipmentNew(bool incremental);
     bool CanEquipItem(ItemTemplate const* proto);
     bool CanEquipUnseenItem(uint8 slot, uint16& dest, uint32 item);
+    bool EquipHistoryBag(uint8 slot, uint32 itemId);
     static bool IsPrimaryTradeSkill(uint16 skillId);
     static bool IsSecondaryTradeSkill(uint16 skillId);
     static uint16 GetTrainerSpellTradeSkill(Trainer::Spell const* trainerSpell);
