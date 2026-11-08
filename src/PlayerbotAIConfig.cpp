@@ -1251,6 +1251,46 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("SightYards", WorldTravel.SightYards, MaxTravelYards);
         travelNumber("CorpseRunFailures", WorldTravel.CorpseRunFailures, MaxCorpseRunFailures);
         travelNumber("StuckAvoidSeconds", WorldTravel.StuckAvoidSeconds, MaxStuckAvoidSeconds);
+
+        constexpr uint32 MaxBandNumber = 1000000;
+        constexpr uint32 MaxPercent = 1000;
+        // One comma-separated value per level band; a list of another length keeps the defaults
+        auto const bandList = [this](char const* key, uint32_t WorldTravel::SlotBand::* field)
+        {
+            std::string const text =
+                sConfigMgr->GetOption<std::string>(std::string("Playerbots.WorldTravel.") + key, "", false);
+            if (text.empty())
+                return;
+
+            std::vector<uint32> values;
+            std::stringstream stream(text);
+            std::string token;
+            while (std::getline(stream, token, ','))
+            {
+                char* end = nullptr;
+                unsigned long const value = std::strtoul(token.c_str(), &end, 10);
+                if (end == token.c_str())
+                    break;
+                values.push_back(static_cast<uint32>(std::min<unsigned long>(value, MaxBandNumber)));
+            }
+
+            if (values.size() != WorldTravel::LEVEL_BAND_COUNT)
+            {
+                LOG_ERROR("server.loading", "Playerbots.WorldTravel.{} needs {} values; keeping the defaults", key,
+                          WorldTravel::LEVEL_BAND_COUNT);
+                return;
+            }
+
+            for (uint32 band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+                WorldTravel.SlotBands[band].*field = values[band];
+        };
+        bandList("Slots.LootPerHour", &WorldTravel::SlotBand::LootSlotsPerHour);
+        bandList("Slots.TripMinutes", &WorldTravel::SlotBand::TripMinutes);
+        bandList("Slots.EarnCopperPerMinute", &WorldTravel::SlotBand::EarnCopperPerMinute);
+        bandList("Bags.HorizonHours", &WorldTravel::SlotBand::BagHorizonHours);
+        travelNumber("Bags.ThriftPercent", WorldTravel.BagThriftPercent, MaxPercent);
+        travelNumber("Bags.BudgetPercent", WorldTravel.BagBudgetPercent, WorldTravel::PERCENT);
+        travelNumber("Destroy.MarginPercent", WorldTravel.DestroyMarginPercent, MaxPercent);
     }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;

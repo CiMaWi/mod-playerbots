@@ -10,6 +10,7 @@
 #include "InventoryAction.h"
 
 class FindItemVisitor;
+class Item;
 class PlayerbotAI;
 
 class DestroyItemAction : public InventoryAction
@@ -22,6 +23,8 @@ public:
 protected:
     // Destroys every match. An unsaved Item is deleted here, so callers must not hold Item* across this.
     void DestroyItem(FindItemVisitor* visitor);
+    // Destroys this item unless it is worn PvP gear or displaced PvE gear; true when it is gone
+    bool DestroyOne(Item* item);
 };
 
 class SmartDestroyItemAction : public DestroyItemAction
@@ -31,6 +34,9 @@ public:
 
     bool Execute(Event event) override;
     bool isUseful() override;
+    // Full bags of a persistent bot: destroys the lowest-worth item in a general slot when loot worth lootWorth beats
+    // it (WorldTravel::ShouldDestroyFor) and records an Inventory event; true when a slot was freed
+    bool DestroyForLoot(uint32 lootWorth);
 
 private:
     bool DestroyUntilBagSpace(std::vector<uint32> const& itemIds);

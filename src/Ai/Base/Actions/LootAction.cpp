@@ -8,10 +8,12 @@
 
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
+#include "DestroyItemAction.h"
 #include "Event.h"
 #include "GuildMgr.h"
 #include "GuildTaskMgr.h"
 #include "ItemUsageValue.h"
+#include "ItemWorthRules.h"
 #include "LootObjectStack.h"
 #include "LootStrategyValue.h"
 #include "PlayerbotAIConfig.h"
@@ -19,6 +21,55 @@
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "UseItemAction.h"
+
+namespace
+{
+// Slots the stored loot newly takes; merging into a stack takes none
+float NewSlotsFor(Player* bot, ItemPosCountVec const& dest)
+{
+    float slots = 0.0f;
+    for (ItemPosCount const& position : dest)
+        if (!bot->GetItemByPos(position.pos))
+            slots += 1.0f;
+
+    return slots;
+}
+
+// Persistent bots loot what fits; with full bags they destroy their lowest-worth item for better loot. Loot left
+// behind and items destroyed count as lost worth, stored loot as used slots (WorldTravel::SlotMeasure).
+bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* proto, uint32 count)
+{
+    WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    ItemPosCountVec dest;
+    InventoryResult const result = bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, proto->ItemId, count);
+    if (result == EQUIP_ERR_OK)
+    {
+        WorldTravel::AddLootSlots(measure, getMSTime(), NewSlotsFor(bot, dest));
+        return true;
+    }
+
+    if (result != EQUIP_ERR_INVENTORY_FULL)
+        return false;
+
+    ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", proto->ItemId);
+    uint32 const worth =
+        ItemUsageValue::ItemWorth(proto, usage, count, static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot)));
+    SmartDestroyItemAction* const destroy =
+        dynamic_cast<SmartDestroyItemAction*>(context->GetAction("smart destroy item"));
+    if (destroy && destroy->DestroyForLoot(worth))
+    {
+        dest.clear();
+        if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, proto->ItemId, count) == EQUIP_ERR_OK)
+        {
+            WorldTravel::AddLootSlots(measure, getMSTime(), NewSlotsFor(bot, dest));
+            return true;
+        }
+    }
+
+    WorldTravel::AddLostWorth(measure, getMSTime(), worth);
+    return false;
+}
+}  // namespace
 
 bool LootAction::Execute(Event /*event*/)
 {
@@ -422,6 +473,9 @@ bool StoreLootAction::Execute(Event event)
         // bot->GetSession()->HandleLootMoneyOpcode(packet);
     }
 
+    // Persistent bots weigh full bags by item worth (WT.5); other setups keep the bag space rule below
+    bool const honestSpace =
+        RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) && !IsRealPlayer(botAI->GetMaster());
     for (uint8 i = 0; i < items; ++i)
     {
         uint32 itemid;
@@ -447,8 +501,13 @@ bool StoreLootAction::Execute(Event event)
         if (!proto)
             continue;
 
+        if (honestSpace)
+        {
+            if (!MakeRoomForLoot(bot, context, proto, itemcount))
+                continue;
+        }
         // Skip loot that isn't useful when bags are nearly full.
-        if (!IsRealPlayer(botAI->GetMaster()) && AI_VALUE(uint8, "bag space") > 80)
+        else if (!IsRealPlayer(botAI->GetMaster()) && AI_VALUE(uint8, "bag space") > 80)
         {
             ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", itemid);
             bool const isUsefulItem = proto->StartQuest ||

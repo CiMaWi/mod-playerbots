@@ -5,8 +5,12 @@
  */
 
 #include "DestroyItemAction.h"
+#include "CensusMgr.h"
 #include "Event.h"
 #include "ItemCountValue.h"
+#include "ItemUsageValue.h"
+#include "ItemWorthRules.h"
+#include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
 #include <algorithm>
@@ -27,6 +31,17 @@ std::vector<uint32> DistinctItemIds(std::vector<Item*> const& items)
     }
 
     return itemIds;
+}
+
+// A backpack slot or a slot of a plain bag takes any loot; keyring and special bag slots do not
+bool FreesGeneralSlot(Player* bot, Item const* item)
+{
+    uint8 const bagSlot = item->GetBagSlot();
+    if (bagSlot == INVENTORY_SLOT_BAG_0)
+        return item->GetSlot() >= INVENTORY_SLOT_ITEM_START && item->GetSlot() < INVENTORY_SLOT_ITEM_END;
+
+    Bag const* const bag = bot->GetBagByPos(bagSlot);
+    return bag && bag->GetTemplate()->SubClass == ITEM_SUBCLASS_CONTAINER;
 }
 }  // namespace
 
@@ -49,16 +64,20 @@ void DestroyItemAction::DestroyItem(FindItemVisitor* visitor)
     IterateItems(visitor);
     std::vector<Item*> items = visitor->GetResult();
     for (Item* item : items)
-    {
-        if (PvpGearMgr::Instance().IsWornItem(bot, item))  // a worn PvP item or a displaced PvE item
-            continue;
+        DestroyOne(item);
+}
 
-        std::ostringstream out;
-        out << chat->FormatItem(item->GetTemplate()) << " destroyed";
-        botAI->TellMaster(out);
+bool DestroyItemAction::DestroyOne(Item* item)
+{
+    if (PvpGearMgr::Instance().IsWornItem(bot, item))  // a worn PvP item or a displaced PvE item
+        return false;
 
-        bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
-    }
+    std::ostringstream out;
+    out << chat->FormatItem(item->GetTemplate()) << " destroyed";
+    botAI->TellMaster(out);
+
+    bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+    return true;
 }
 
 bool SmartDestroyItemAction::isUseful() { return !IsRealPlayer(botAI->GetMaster()); }
@@ -107,6 +126,49 @@ bool SmartDestroyItemAction::Execute(Event /*event*/)
     }
 
     return false;
+}
+
+bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
+{
+    CollectItemsVisitor visitor;
+    IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
+
+    float const sellMultiplier = static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot));
+    std::vector<WorldTravel::SpaceCandidate> candidates;
+    candidates.reserve(visitor.items.size());
+    for (Item* item : visitor.items)
+    {
+        WorldTravel::SpaceCandidate candidate;
+        candidate.Protected = !FreesGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item);
+        if (!candidate.Protected)
+            candidate.Worth =
+                ItemUsageValue::ItemWorth(item->GetTemplate(), AI_VALUE2(ItemUsage, "item usage", item->GetEntry()),
+                                          item->GetCount(), sellMultiplier);
+
+        candidates.push_back(candidate);
+    }
+
+    int32 const victim = WorldTravel::LowestWorthVictim(candidates);
+    if (victim == WorldTravel::NO_VICTIM)
+        return false;
+
+    WorldTravel::DestroyForSpaceInput input;
+    input.InInstance = bot->GetMap()->Instanceable();
+    input.TripWorthIt = false;  // WT3 weighs an inventory trip against destroying
+    input.LootWorth = lootWorth;
+    input.VictimWorth = candidates[victim].Worth;
+    input.MarginPercent = sPlayerbotAIConfig.WorldTravel.DestroyMarginPercent;
+    if (!WorldTravel::ShouldDestroyFor(input))
+        return false;
+
+    uint32 const itemId = visitor.items[victim]->GetEntry();
+    if (!DestroyOne(visitor.items[victim]))
+        return false;
+
+    EventLog::Emit(bot, "Inventory", "destroyed_for_space", itemId, input.VictimWorth);
+    WorldTravel::AddLostWorth(context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(), getMSTime(),
+                              input.VictimWorth);
+    return true;
 }
 
 bool SmartDestroyItemAction::DestroyUntilBagSpace(std::vector<uint32> const& itemIds)

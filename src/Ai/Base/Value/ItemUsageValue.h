@@ -35,7 +35,8 @@ enum ItemUsage : uint32
     ITEM_USAGE_AH = 10,
     ITEM_USAGE_KEEP = 11,
     ITEM_USAGE_VENDOR = 12,
-    ITEM_USAGE_AMMO = 13
+    ITEM_USAGE_AMMO = 13,
+    ITEM_USAGE_BANK = 14  // reserved for the bank (WB); nothing returns it yet
 };
 
 class ItemUsageValue : public CalculatedValue<ItemUsage>, public Qualified
@@ -53,7 +54,6 @@ protected:
     ParsedItemUsage GetItemIdFromQualifier();
 
 private:
-    uint32 GetSmallestBagSize();
     bool IsItemUsefulForQuest(Player* player, ItemTemplate const* proto);
     bool IsStartQuestItemUsefulFor(Player* player, ItemTemplate const* proto);
     bool IsItemNeededForSkill(ItemTemplate const* proto);
@@ -75,6 +75,11 @@ public:
     static bool SpellGivesSkillUp(uint32 spellId, Player* bot);
 
     static std::string const GetConsumableType(ItemTemplate const* proto, bool hasMana);
+    // Slots of the smallest equipped bag; 0 while a bag slot is empty
+    static uint32 SmallestBagSize(Player* bot);
+    // Worth in copper of count items with this usage (ItemWorthRules.h); sellMultiplier: what a vendor pays the bot
+    // per copper of sell price. Quest, kept and banked items, upgrades and the hearthstone are priceless.
+    static uint32 ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier);
 };
 
 class ItemUpgradeValue : public ItemUsageValue

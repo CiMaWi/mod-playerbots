@@ -8,6 +8,7 @@
 #define _PLAYERBOT_WORLDTRAVELCONFIG_H
 
 #include "Define.h"
+#include "ItemWorthRules.h"
 
 // The numbers of honest world travel for persistent bots (Playerbots.WorldTravel.*), read once at config load
 // (PlayerbotAIConfig::WorldTravel); the initial values are the conf.dist defaults. Kept apart from PlayerbotAIConfig.h
@@ -20,6 +21,14 @@ struct WorldTravelConfig
     uint32 CorpseRunFailures = 2;
     // Seconds a destination given up after a Stuck event is not walked to again
     uint32 StuckAvoidSeconds = 600;
+    // Slot and bag worth by level band (ItemWorthRules.h) until a bot has measured its own loot rate
+    WorldTravel::SlotBandTable SlotBands = WorldTravel::DEFAULT_SLOT_BANDS;
+    // Percent of the money reserve (repairs, training, travel, ammo, guild) kept before buying a bag
+    uint32 BagThriftPercent = 100;
+    // Percent of the money above the reserve that one bag may cost
+    uint32 BagBudgetPercent = 50;
+    // Percent by which loot must out-worth the item a full bot destroys for it outside instances
+    uint32 DestroyMarginPercent = 50;
 };
 
 #endif

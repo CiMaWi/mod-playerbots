@@ -2123,6 +2123,30 @@ Playerbots.WorldTravel.SightYards = 300
 Playerbots.WorldTravel.CorpseRunFailures = 2
 Playerbots.WorldTravel.StuckAvoidSeconds = 600
 
+# Items, slots and bags of persistent bots. Every item has a worth in copper: what a vendor pays for what the bot
+# would sell, the buy price of what it uses (upgrades, consumables, reagents, ammo); quest items, kept items, upgrades
+# and the hearthstone are never destroyed. A free slot is worth the inventory-trip minutes it saves per hour times the
+# bot's earning rate, plus a share of what the bot destroys or leaves behind for lack of space; with F free slots
+# after an emptying trip the bot makes about LootPerHour / F trips of TripMinutes each. Until a bot has measured its
+# own loot rate (one-hour windows, in memory) it uses the defaults of its level band; each list holds one value per
+# band: levels 1-19, 20-39, 40-59, 60-69, 70-80. A bag is worth the slots it adds over the bag it replaces for
+# HorizonHours. The bot equips looted or quest-reward bags that add slots and buys a vendor bag when its price is at
+# most its worth and at most BudgetPercent of the money left after a reserve (repairs, training, travel, ammo,
+# guild) scaled by ThriftPercent; it buys at most one bag per vendor visit and records an Inventory event bag_bought.
+# A full bot destroys its lowest-worth item for better loot: in an instance when the loot is worth more, in the
+# world when it is worth MarginPercent more (Inventory event destroyed_for_space). New persistent bots get no free
+# bags. Defaults are estimates: the loot rate in slots per hour, minutes per trip, copper per minute and horizon
+# hours were chosen so that a bot buys the small vendor bags while levelling and the 2 g 10-slot bag only when it
+# is short of room. (Ranges: list values 0-1000000, ThriftPercent 0-1000, BudgetPercent 0-100, MarginPercent
+# 0-1000.)
+Playerbots.WorldTravel.Slots.LootPerHour = 15,20,25,25,30
+Playerbots.WorldTravel.Slots.TripMinutes = 10,10,8,8,6
+Playerbots.WorldTravel.Slots.EarnCopperPerMinute = 30,100,250,500,1000
+Playerbots.WorldTravel.Bags.HorizonHours = 20,30,40,40,100
+Playerbots.WorldTravel.Bags.ThriftPercent = 100
+Playerbots.WorldTravel.Bags.BudgetPercent = 50
+Playerbots.WorldTravel.Destroy.MarginPercent = 50
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600

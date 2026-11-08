@@ -9,6 +9,7 @@
 #include "ChatHelper.h"
 #include "GuildTaskMgr.h"
 #include "Item.h"
+#include "ItemWorthRules.h"
 #include "LootObjectStack.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
@@ -21,6 +22,11 @@
 #include <unordered_set>
 
 static bool IsRoguePoison(ItemTemplate const* proto);
+
+namespace
+{
+constexpr uint32 ITEM_HEARTHSTONE = 6948;
+}  // namespace
 
 ItemUsage ItemUsageValue::Calculate()
 {
@@ -282,7 +288,7 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         if (itemProto->SubClass != ITEM_SUBCLASS_CONTAINER)
             return ITEM_USAGE_NONE;  // Todo add logic for non-bag containers. We want to look at professions/class and
                                      // only replace if non-bag is larger than bag.
-        if (GetSmallestBagSize() >= itemProto->ContainerSlots)
+        if (SmallestBagSize(bot) >= itemProto->ContainerSlots)
             return ITEM_USAGE_NONE;
 
         return ITEM_USAGE_EQUIP;
@@ -529,26 +535,57 @@ ParsedItemUsage ItemUsageValue::GetItemIdFromQualifier()
         parsed.itemId = atoi(qualifier.c_str());
     return parsed;
 }
-// Return smaltest bag size equipped
-uint32 ItemUsageValue::GetSmallestBagSize()
+uint32 ItemUsageValue::SmallestBagSize(Player* bot)
 {
-    int8 curSlot = 0;
-    uint32 curSlots = 0;
-    for (uint8 bag = INVENTORY_SLOT_BAG_START + 1; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    uint32 smallest = 0;
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
     {
-        if (Bag const* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
-        {
-            if (curSlot > 0 && curSlots < pBag->GetBagSize())
-                continue;
-
-            curSlot = pBag->GetSlot();
-            curSlots = pBag->GetBagSize();
-        }
-        else
+        Bag const* const bag = bot->GetBagByPos(slot);
+        if (!bag)
             return 0;
+
+        if (slot == INVENTORY_SLOT_BAG_START || bag->GetBagSize() < smallest)
+            smallest = bag->GetBagSize();
     }
 
-    return curSlots;
+    return smallest;
+}
+
+uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier)
+{
+    if (!proto)
+        return 0;
+
+    WorldTravel::ItemFacts facts;
+    switch (usage)
+    {
+        case ITEM_USAGE_QUEST:
+        case ITEM_USAGE_GUILD_TASK:
+            facts.Quest = true;
+            break;
+        case ITEM_USAGE_KEEP:
+        case ITEM_USAGE_BANK:
+            facts.Kept = true;
+            break;
+        case ITEM_USAGE_EQUIP:
+        case ITEM_USAGE_REPLACE:
+        case ITEM_USAGE_BAD_EQUIP:
+        case ITEM_USAGE_BROKEN_EQUIP:
+            facts.Upgrade = true;
+            break;
+        case ITEM_USAGE_USE:
+        case ITEM_USAGE_SKILL:
+        case ITEM_USAGE_AMMO:
+            facts.Used = true;
+            break;
+        default:  // none, vendor, auction and disenchant items sell
+            break;
+    }
+
+    facts.Quest = facts.Quest || proto->StartQuest;
+    facts.Hearthstone = proto->ItemId == ITEM_HEARTHSTONE;
+    return WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(facts), proto->SellPrice,
+                                  static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), count, sellMultiplier);
 }
 
 bool ItemUsageValue::IsItemUsefulForQuest(Player* player, ItemTemplate const* proto)

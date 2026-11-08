@@ -47,6 +47,7 @@
 #include "ItemCountValue.h"
 #include "ItemForSpellValue.h"
 #include "ItemUsageValue.h"
+#include "ItemWorthRules.h"
 #include "KiteTacticStrategy.h"
 #include "LastMovementValue.h"
 #include "LastSaidValue.h"
@@ -180,6 +181,7 @@ public:
         creators["has aggro"] = &ValueContext::has_aggro;
         creators["mounted"] = &ValueContext::mounted;
         creators["custom_glyphs"] = &ValueContext::custom_glyphs;   // Added for custom glyphs
+        creators["slot measure"] = &ValueContext::slot_measure;
 
         creators["can loot"] = &ValueContext::can_loot;
         creators["loot target"] = &ValueContext::loot_target;
@@ -618,6 +620,10 @@ private:
     static UntypedValue* custom_glyphs(PlayerbotAI* botAI)
     {
         return new ManualSetValue<bool>(botAI, false, "custom_glyphs");
+    }
+    static UntypedValue* slot_measure(PlayerbotAI* botAI)
+    {
+        return new ManualSetValue<WorldTravel::SlotMeasure>(botAI, WorldTravel::SlotMeasure{}, "slot measure");
     }
     static UntypedValue* wait_for_attack_time(PlayerbotAI* botAI) { return new WaitForAttackTimeValue(botAI); }
     static UntypedValue* combat_start_time(PlayerbotAI* botAI) { return new CombatStartTimeValue(botAI); }

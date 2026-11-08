@@ -2936,6 +2936,10 @@ void PlayerbotFactory::InitBags(bool destroyOld)
     if (PvpGearMgr::Instance().IsWorn(bot))  // the bags hold the displaced PvE gear
         return;
 
+    // Persistent bots loot or buy their bags (WT.5); randomize and maintenance keep the bags they have
+    if (RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot))
+        return;
+
     for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
     {
         uint32 newItemId = 51809;

@@ -12,8 +12,35 @@
 #include "ItemCountValue.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
+#include "ItemWorthRules.h"
+#include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "StatsWeightCalculator.h"
+
+namespace
+{
+// A persistent bot buys a vendor bag when its price is at most its worth (the slots it adds over the bag it replaces)
+// and fits the budget above the money reserve (WT.5)
+bool ShouldBuyVendorBag(Player* bot, AiObjectContext* context, ItemTemplate const* proto, uint32 price)
+{
+    WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
+    WorldTravel::SlotBand const& band = config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())];
+    WorldTravel::SlotRates const rates =
+        WorldTravel::CurrentRates(context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(), band);
+
+    WorldTravel::BagBuyInput input;
+    input.Price = price;
+    input.Worth = WorldTravel::BagWorth(rates, bot->GetFreeInventorySpace(), proto->ContainerSlots,
+                                        ItemUsageValue::SmallestBagSize(bot), band.BagHorizonHours);
+    input.Gold = bot->GetMoney();
+    // Everything saved before gear: guild, repairs, ammo, training and travel
+    input.Reserve = AI_VALUE2(uint32, "total money needed for", uint32(NeedMoneyFor::gear)) -
+                    AI_VALUE2(uint32, "money needed for", uint32(NeedMoneyFor::gear));
+    input.ThriftPercent = config.BagThriftPercent;
+    input.BudgetPercent = config.BagBudgetPercent;
+    return WorldTravel::ShouldBuyBag(input);
+}
+}  // namespace
 
 bool BuyAction::Execute(Event event)
 {
@@ -32,6 +59,10 @@ bool BuyAction::Execute(Event event)
 
     bool vendored = false;
     bool result = false;
+    // Persistent bots buy bags by worth, at most one per visit
+    bool const honestBags = buyUseful && RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) &&
+                            !IsRealPlayer(botAI->GetMaster());
+    bool boughtBag = false;
     for (GuidVector::iterator i = vendors.begin(); i != vendors.end(); ++i)
     {
         ObjectGuid vendorguid = *i;
@@ -107,6 +138,21 @@ bool BuyAction::Execute(Event event)
                     // Stock and currency costs change between purchases; recheck each time.
                     if (!CanAfford(tItem, proto, pCreature))
                         break;
+
+                    if (honestBags && proto->Class == ITEM_CLASS_CONTAINER &&
+                        proto->SubClass == ITEM_SUBCLASS_CONTAINER)
+                    {
+                        uint32 const bagPrice =
+                            uint32(floor(proto->BuyPrice * bot->GetReputationPriceDiscount(pCreature)));
+                        if (boughtBag || !ShouldBuyVendorBag(bot, context, proto, bagPrice) ||
+                            !BuyItem(tItems, vendorguid, proto))
+                            break;
+
+                        boughtBag = true;
+                        EventLog::Emit(bot, "Inventory", "bag_bought", proto->ItemId, bagPrice);
+                        botAI->DoSpecificAction("equip upgrades packet action");
+                        break;
+                    }
 
                     ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", tItem->item);
 
