@@ -843,6 +843,8 @@ void PlayerbotFactory::Randomize(bool incremental)
              bot->GetName().c_str(), level, bot->getClass());
     // LOG_DEBUG("playerbots", "Preparing to {} randomize...", (incremental ? "incremental" : "full"));
     uint32 oldLevel = bot->GetLevel();
+    bool const keepsPossessions = KeepsPossessions(bot);
+    bool const wipe = StartingHistory::RandomizeWipes(!incremental, keepsPossessions, bot->GetTotalPlayedTime());
     Prepare();
     LOG_DEBUG("playerbots", "Resetting player...");
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reset");
@@ -865,7 +867,8 @@ void PlayerbotFactory::Randomize(bool incremental)
             ClearAllItems();
         }
     }
-    ClearInventory();
+    if (wipe)
+        ClearInventory();
     bot->RemoveAllSpellCooldown();
     UnbindInstance();
 
@@ -885,7 +888,9 @@ void PlayerbotFactory::Randomize(bool incremental)
     if (sPlayerbotAIConfig.RandomBotPreQuests)
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Quests");
-        InitInstanceQuests();
+        // Rewards every quest again (money too) and then clears the bags: creation only for a bot that keeps them
+        if (wipe)
+            InitInstanceQuests();
         InitAttunementQuests();
         if (pmo)
             pmo->finish();
@@ -1090,15 +1095,17 @@ void PlayerbotFactory::Randomize(bool incremental)
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Save");
     LOG_DEBUG("playerbots", "Saving to DB...");
     // Persistent bots keep their hearthstone; a new one above level 1 gets its starting history once (WT.3)
-    bool const honestBot = RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot);
-    if (StartingHistory::FactoryApplies(honestBot, bot->GetLevel(), bot->GetTotalPlayedTime()))
+    if (StartingHistory::FactoryApplies(keepsPossessions, bot->GetLevel(), bot->GetTotalPlayedTime()))
         ApplyStartingHistory();
-    else if (honestBot && !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
+    else if (keepsPossessions && !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
         bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
 
-    uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
-    bot->SetMoney(randomizeMoney);
-    EventLog::Honesty(bot, "Gold", "factory_randomize", 0, randomizeMoney);
+    if (wipe)
+    {
+        uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
+        bot->SetMoney(randomizeMoney);
+        EventLog::Honesty(bot, "Gold", "factory_randomize", 0, randomizeMoney);
+    }
     bot->SetHealth(bot->GetMaxHealth());
     bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
     bot->SaveToDB(false, false);
@@ -1116,7 +1123,10 @@ void PlayerbotFactory::Refresh()
     //     InitEquipment(true);
     // }
     InitAttunementQuests();
-    ClearInventory();
+    // Refresh never creates: a bot that keeps its possessions is only restocked
+    bool const keepsPossessions = KeepsPossessions(bot);
+    if (!keepsPossessions)
+        ClearInventory();
     InitAmmo();
     InitFood();
     InitReagents();
@@ -1150,7 +1160,7 @@ void PlayerbotFactory::Refresh()
         EventLog::Honesty(bot, "Resurrect", "factory_refresh");
     }
     uint32 money = urand(level * 1000, level * 5 * 1000);
-    if (bot->GetMoney() < money)
+    if (!keepsPossessions && bot->GetMoney() < money)
     {
         EventLog::Honesty(bot, "Gold", "factory_refresh", 0, money - bot->GetMoney());
         bot->SetMoney(money);
@@ -4201,6 +4211,15 @@ void PlayerbotFactory::InitInstanceQuests()
     bot->SetUInt32Value(PLAYER_XP, currentXP);
 }
 
+bool PlayerbotFactory::KeepsPossessions(Player* bot)
+{
+    if (!RandomPlayerbotMgr::HonestTravel() || !sRandomPlayerbotMgr.IsRandomBot(bot))
+        return false;
+
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    return botAI && !IsRealPlayer(botAI->GetMaster());
+}
+
 void PlayerbotFactory::ClearInventory()
 {
     if (PvpGearMgr::Instance().IsWorn(bot))  // the bags hold the displaced PvE gear
@@ -4607,11 +4626,31 @@ void PlayerbotFactory::InitFood()
         items[proto->Spells[0].SpellCategory].push_back(itemId);
     }
 
+    // Food and drink already carried count towards the two stacks, so a bot that keeps its bags is not piled up
+    std::unordered_map<uint32, uint32> carried;
+    auto const addCarried = [&carried](Item* item)
+    {
+        ItemTemplate const* proto = item->GetTemplate();
+        if (proto->Class == ITEM_CLASS_CONSUMABLE && proto->SubClass == ITEM_SUBCLASS_FOOD)
+            carried[proto->Spells[0].SpellCategory] += item->GetCount();
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            addCarried(item);
+
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                if (Item* item = bag->GetItemByPos(slot))
+                    addCarried(item);
+
     uint32 categories[] = {11, 59};
     for (size_t i = 0; i < sizeof(categories) / sizeof(uint32); ++i)
     {
         uint32 category = categories[i];
         std::vector<uint32>& ids = items[category];
+        uint32& have = carried[category];
         int tries = 0;
         for (int j = 0; j < 2; j++)
         {
@@ -4634,7 +4673,15 @@ void PlayerbotFactory::InitFood()
                 j--;
                 continue;
             }
-            StoreItem(itemId, proto->GetMaxStackSize());
+            uint32 const stack = proto->GetMaxStackSize();
+            if (have >= stack)
+            {
+                have -= stack;
+                continue;
+            }
+
+            StoreItem(itemId, stack - have);
+            have = 0;
         }
     }
 }

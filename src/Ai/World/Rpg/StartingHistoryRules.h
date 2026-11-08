@@ -142,10 +142,19 @@ inline BagStep DecideBagSlot(uint32_t currentEntry, uint32_t historyBag)
     return BagStep::Keep;
 }
 
+inline bool NewCharacter(uint32_t playedSeconds) { return playedSeconds < NEW_CHARACTER_PLAYED_SECONDS; }
+
 // The factory gives the history once, to a new persistent random bot above level 1
 inline bool FactoryApplies(bool honestRandomBot, uint32_t level, uint32_t playedSeconds)
 {
-    return honestRandomBot && level > 1 && playedSeconds < NEW_CHARACTER_PLAYED_SECONDS;
+    return honestRandomBot && level > 1 && NewCharacter(playedSeconds);
+}
+
+// Whether a randomize clears the bags and sets the gold. A bot that keeps its possessions (family rule 2) is only
+// given a fresh kit when it is created or by a full init, an operator command.
+inline bool RandomizeWipes(bool fullInit, bool keepsPossessions, uint32_t playedSeconds)
+{
+    return fullInit || !keepsPossessions || NewCharacter(playedSeconds);
 }
 }  // namespace StartingHistory
 

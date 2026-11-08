@@ -2646,10 +2646,14 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (bot->GetMaxPower(POWER_ENERGY) > 0)
         bot->SetPower(POWER_ENERGY, bot->GetMaxPower(POWER_ENERGY));
 
-    uint32 money = bot->GetMoney();
-    uint32 const refreshMoney = 500 * sqrt(urand(1, bot->GetLevel() * 5));
-    bot->SetMoney(money + refreshMoney);
-    EventLog::Honesty(bot, "Gold", "mgr_refresh", 0, refreshMoney);
+    // A bot that keeps its possessions earns its gold
+    if (!PlayerbotFactory::KeepsPossessions(bot))
+    {
+        uint32 money = bot->GetMoney();
+        uint32 const refreshMoney = 500 * sqrt(urand(1, bot->GetLevel() * 5));
+        bot->SetMoney(money + refreshMoney);
+        EventLog::Honesty(bot, "Gold", "mgr_refresh", 0, refreshMoney);
+    }
 
     if (bot->GetGroup())
         botAI->LeaveOrDisbandGroup();
@@ -3094,7 +3098,8 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
         for (auto itr = sRandomPlayerbotMgr.GetPlayerBotsBegin(); itr != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++itr)
         {
             Player* bot = itr->second;
-            if (!bot || !bot->IsInWorld() || !sRandomPlayerbotMgr.IsRandomBot(bot))
+            // A bot with a real master is left to that player (WT.15)
+            if (!bot || !bot->IsInWorld() || !PlayerbotFactory::KeepsPossessions(bot))
                 continue;
 
             if (!name.empty() && bot->GetName() != name)

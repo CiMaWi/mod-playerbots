@@ -145,6 +145,17 @@ void CheckFactory()
           "an existing bot waits for the console pass");
     Check(!StartingHistory::FactoryApplies(false, 55, 0), "not a persistent random bot");
 }
+
+void CheckWipe()
+{
+    uint32_t const played = StartingHistory::NEW_CHARACTER_PLAYED_SECONDS;
+    Check(!StartingHistory::RandomizeWipes(false, true, played), "a persistent bot keeps its bags and gold");
+    Check(!StartingHistory::RandomizeWipes(false, true, played * 100), "also after a long life");
+    Check(StartingHistory::RandomizeWipes(false, true, 0), "creation gives the fresh kit");
+    Check(StartingHistory::RandomizeWipes(false, true, played - 1), "the first hour still counts as creation");
+    Check(StartingHistory::RandomizeWipes(true, true, played), "a full init (operator command) clears");
+    Check(StartingHistory::RandomizeWipes(false, false, played), "other setups keep the old cycle");
+}
 }  // namespace
 
 int main()
@@ -154,6 +165,7 @@ int main()
     CheckInns();
     CheckBags();
     CheckFactory();
+    CheckWipe();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
