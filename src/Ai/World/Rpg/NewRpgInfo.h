@@ -15,6 +15,7 @@
 #include "QuestDef.h"
 #include "Strategy.h"
 #include "Timer.h"
+#include "TravelLegRules.h"
 #include "TravelMgr.h"
 
 #include <array>
@@ -86,9 +87,16 @@ struct NewRpgInfo
         uint32 lastPassiveCheck{0};
         ObjectGuid::LowType lastSwitchedFrom{0};
     };
-    // RPG_TRAVEL: follows a planned route (filled by WT8)
+    // RPG_TRAVEL: follows a planned route leg by leg (NewRpgTravelAction, TravelLegRules.h)
     struct Travel
     {
+        WorldPosition dest{};
+        TravelLegs::Trip trip;        // the route's legs and the place on them; no legs: a route is due
+        TravelLegs::RouteWait route;  // the route request waited for
+        bool stuck{false};            // MoveFarTo gave the current waypoint up (instead of going IDLE)
+        uint32 failedMs{0};           // the last failed leg: the new route is asked for REPLAN_DELAY_MS later
+        float estimateSeconds{0.0f};  // the first route's
+        uint32 tripStartMs{0};
     };
     // RPG_ERRANDS: a trip to a vendor to sell, repair and maybe buy a bag
     struct Errands
@@ -103,6 +111,7 @@ struct NewRpgInfo
     };
 
     uint32 startT{0};  // start timestamp of the current status
+    uint32 routeRequests{0};  // the bot's route request ids (TravelRoute::Snapshot::requestId), across trips
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};
@@ -155,7 +164,7 @@ struct NewRpgInfo
     void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
     void ChangeToDoGather();
     void ChangeToRest();
-    void ChangeToTravel();
+    void ChangeToTravel(WorldPosition dest);
     void ChangeToErrands(uint32 vendorEntry, WorldPosition vendorPos, uint32 money);
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);

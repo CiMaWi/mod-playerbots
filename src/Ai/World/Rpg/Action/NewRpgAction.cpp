@@ -33,11 +33,15 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "Random.h"
+#include "RouteService.h"
 #include "SharedDefines.h"
 #include "StartingHistoryRules.h"
 #include "Timer.h"
+#include "TravelGraph.h"
+#include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "WaypointMovementGenerator.h"
+#include "WorldPacket.h"
 #include "G3D/Vector2.h"
 #include <cmath>
 #include <cstdlib>
@@ -862,6 +866,187 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         return true;
     }
     return false;
+}
+
+namespace
+{
+// A route exists only once the graph is ready (the route service answers only then), and it never changes after
+TravelRoute::Point GraphNodeAt(std::uint32_t index)
+{
+    TravelGraphNode const& node = TravelGraph::Instance().GetNode(index);
+    return {node.mapId, node.x, node.y, node.z};
+}
+}  // namespace
+
+bool NewRpgTravelAction::Execute(Event /*event*/)
+{
+    auto* data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (!data)
+        return false;
+    if (GetMSTimeDiffToNow(data->tripStartMs) > TravelLegs::TripDeadlineMs(data->estimateSeconds))
+    {
+        EndTrip("deadline");
+        return true;
+    }
+    if (data->route.waiting)
+        return TakeRoute(*data);
+    if (data->trip.legs.empty())
+    {
+        // The trip's start, or a new route once the failed leg's stuck report has reached the published book
+        if (data->failedMs && GetMSTimeDiffToNow(data->failedMs) < TravelLegs::REPLAN_DELAY_MS)
+            return true;
+        return RequestRoute(*data);
+    }
+
+    TravelLegs::Observation seen;
+    seen.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    seen.inFlight = bot->IsInFlight();
+    seen.money = bot->GetMoney();
+    seen.stuck = data->stuck;
+    seen.nowMs = getMSTime();
+    TravelLegs::Decision const next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
+    switch (next.act)
+    {
+        case TravelLegs::Act::Arrived:
+            LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
+                      GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS, data->estimateSeconds,
+                      static_cast<uint32>(data->trip.replans));
+            botAI->rpgInfo.ChangeToIdle();
+            return true;
+        case TravelLegs::Act::Walk:
+            return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
+        case TravelLegs::Act::UseTrigger:
+            return UsePortal(*data);
+        case TravelLegs::Act::TalkFlightMaster:
+        case TravelLegs::Act::Ride:
+            // Flight legs come with WT8b; RequestRoute leaves them out until then
+            return LegFailed(*data, TravelLegs::FailReason::Unsupported);
+        case TravelLegs::Act::Fail:
+            return LegFailed(*data, next.reason);
+        case TravelLegs::Act::Wait:
+        case TravelLegs::Act::Done:
+            return true;
+    }
+    return false;
+}
+
+bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
+{
+    TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, ++botAI->rpgInfo.routeRequests);
+    // Legs the follower does not run yet: flights (WT8b; with no destination node known the search flies nowhere),
+    // the hearthstone (WT9) and transports (WT19)
+    snapshot.knownTaxi = {};
+    snapshot.hasHearthstone = false;
+    snapshot.allowTransport = false;
+    TravelRoute::Request const request{
+        snapshot, {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()}};
+    if (!TravelRoute::RouteService::Instance().Submit(bot->GetGUID().GetRawValue(), request,
+                                                      TravelRoute::ConfiguredParams()))
+    {
+        EndTrip("no route service");  // the graph is not loaded yet: no route now, never wait
+        return true;
+    }
+    data.route = {snapshot.requestId, snapshot.position.mapId, snapshot.takenMs, true};
+    data.stuck = false;
+    return true;
+}
+
+bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
+{
+    uint32 const now = getMSTime();
+    std::optional<TravelRoute::Answer> answer =
+        TravelRoute::RouteService::Instance().TryTake(bot->GetGUID().GetRawValue());
+    if (!answer)
+        return TravelLegs::WaitExpired(data.route, now) ? LegFailed(data, TravelLegs::FailReason::NoAnswer) : true;
+    switch (TravelLegs::Judge(data.route, answer->requestId, bot->GetMapId(), now))
+    {
+        case TravelLegs::Verdict::Drop:
+            return true;  // an older request's answer: the latest is still on its way
+        case TravelLegs::Verdict::Refresh:
+            return LegFailed(data, TravelLegs::FailReason::NoAnswer);
+        case TravelLegs::Verdict::Apply:
+            break;
+    }
+
+    data.route.waiting = false;
+    TravelRoute::Result& route = answer->result;
+    if (!route.ok)
+    {
+        LOG_DEBUG("playerbots", "[Route] {} has no route: {}", bot->GetName(), TravelRoute::FailureWord(route.failure));
+        return LegFailed(data, TravelLegs::FailReason::NoRoute);
+    }
+    if (data.estimateSeconds <= 0.0f)
+        data.estimateSeconds = route.totalSeconds;
+    LOG_DEBUG("playerbots", "[Route] {} to ({}, {:.0f}, {:.0f}, {:.0f}): {} legs, {:.0f} s{}", bot->GetName(),
+              data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ(),
+              route.legs.size(), route.totalSeconds, answer->cached ? " (cached)" : "");
+    if (route.legs.empty())
+    {
+        botAI->rpgInfo.ChangeToIdle();  // already there
+        return true;
+    }
+    data.trip.legs = std::move(route.legs);
+    TravelLegs::StartLeg(data.trip, 0, now, GraphNodeAt);
+    return true;
+}
+
+bool NewRpgTravelAction::UsePortal(NewRpgInfo::Travel& data)
+{
+    uint32 const triggerId = data.trip.legs[data.trip.legIdx].object;
+    AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(triggerId);
+    if (!trigger || !sObjectMgr->GetAreaTriggerTeleport(triggerId) || trigger->map != bot->GetMapId())
+        return LegFailed(data, TravelLegs::FailReason::Portal);
+    if (!bot->IsInAreaTriggerRadius(trigger))
+        return MoveFarTo(WorldPosition(trigger->map, trigger->x, trigger->y, trigger->z));
+
+    // What a player's client sends on entering the trigger: the core's own handler checks it and teleports
+    WorldPacket packet(CMSG_AREATRIGGER);
+    packet << triggerId;
+    packet.rpos(0);
+    bot->GetSession()->HandleAreaTriggerOpcode(packet);
+    data.trip.triggered = true;
+    return true;
+}
+
+bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason)
+{
+    TravelLegs::Trip& trip = data.trip;
+    LOG_DEBUG("playerbots", "[Route] {} leg {}/{} failed: {}", bot->GetName(), trip.legIdx + 1, trip.legs.size(),
+              TravelLegs::FailWord(reason));
+    // A portal that did not take the bot through: the search avoids that edge for a while (a stuck walk was
+    // reported by MoveFarTo's give-up already)
+    if (reason == TravelLegs::FailReason::Portal)
+    {
+        auto const [from, to] = TravelLegs::StuckEdge(trip);
+        if (from != TravelLegs::NO_NODE)
+        {
+            TravelRoute::StuckBook::Report report;
+            report.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+            report.destination = report.bot;
+            report.fromNode = from;
+            report.toNode = to;
+            TravelRoute::StuckBook::Instance().Push(report);
+        }
+    }
+
+    if (TravelLegs::AfterFailure(trip, reason) == TravelLegs::Recovery::Abort)
+    {
+        EndTrip(TravelLegs::FailWord(reason));
+        return true;
+    }
+    trip.legs.clear();
+    trip.legIdx = 0;
+    trip.waypoints.clear();
+    data.route.waiting = false;
+    data.stuck = false;
+    data.failedMs = std::max<uint32>(getMSTime(), 1);  // 0 = no failed leg
+    return true;
+}
+
+void NewRpgTravelAction::EndTrip(char const* why)
+{
+    LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
+    botAI->rpgInfo.ChangeToIdle();
 }
 
 bool NewRpgTravelFlightAction::Execute(Event /*event*/)

@@ -72,10 +72,13 @@ void NewRpgInfo::ChangeToRest()
     data = Rest{};
 }
 
-void NewRpgInfo::ChangeToTravel()
+void NewRpgInfo::ChangeToTravel(WorldPosition dest)
 {
     startT = getMSTime();
-    data = Travel{};
+    Travel travel;
+    travel.dest = dest;
+    travel.tripStartMs = startT;
+    data = std::move(travel);
 }
 
 void NewRpgInfo::ChangeToErrands(uint32 vendorEntry, WorldPosition vendorPos, uint32 money)
@@ -234,7 +237,13 @@ std::string NewRpgInfo::ToString()
         else if constexpr (std::is_same_v<T, Travel>)
         {
             out << "TRAVEL";
-            out << "\nlastTravel: " << startT;
+            out << "\ndest: " << arg.dest.GetMapId() << " " << arg.dest.GetPositionX() << " "
+                << arg.dest.GetPositionY() << " " << arg.dest.GetPositionZ();
+            out << "\nleg: " << arg.trip.legIdx << "/" << arg.trip.legs.size();
+            out << "\nwaitingForRoute: " << arg.route.waiting;
+            out << "\nreplans: " << static_cast<uint32>(arg.trip.replans);
+            out << "\nestimate: " << arg.estimateSeconds;
+            out << "\nelapsed: " << GetMSTimeDiffToNow(arg.tripStartMs) / IN_MILLISECONDS;
         }
         else if constexpr (std::is_same_v<T, Errands>)
         {

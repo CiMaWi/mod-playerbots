@@ -1,0 +1,440 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+// Standalone check of RPG_TRAVEL's leg sequencing (src/Ai/World/Rpg/TravelLegRules.h) with scripted observations:
+// a route walk -> portal -> walk -> flight -> walk with no-op walks at both ends, the timeouts per leg type, a stuck
+// walk with its edge and the replans up to the abort, a wrong map, an unaffordable fare, the leg predicates, the
+// waypoints of a leg, the judgement of route answers, what survives the AI's full reset (a far teleport keeps a
+// trip) and the whole trip's deadline.
+#include <cstdint>
+#include <iostream>
+#include <string>
+#include <variant>
+#include <vector>
+
+#include "TravelLegRules.h"
+
+using TravelLegs::Act;
+using TravelLegs::Decision;
+using TravelLegs::FailReason;
+using TravelLegs::Observation;
+using TravelLegs::Trip;
+using TravelRoute::Leg;
+using TravelRoute::LegType;
+using TravelRoute::Point;
+
+namespace
+{
+int passed = 0;
+int failed = 0;
+
+void Check(bool condition, std::string const& name)
+{
+    if (condition)
+    {
+        ++passed;
+        return;
+    }
+
+    ++failed;
+    std::cout << "FAIL: " << name << "\n";
+}
+
+// A fake graph: node index -> position
+std::vector<Point> const NODES = {
+    {0, 0.0f, 0.0f, 0.0f},        // 0 start node
+    {0, 100.0f, 0.0f, 0.0f},      // 1
+    {0, 200.0f, 0.0f, 0.0f},      // 2 the portal's trigger
+    {1, 1000.0f, 1000.0f, 0.0f},  // 3 the portal's exit
+    {1, 1100.0f, 1000.0f, 0.0f},  // 4
+    {1, 1200.0f, 1000.0f, 0.0f},  // 5 a flight master
+    {1, 5000.0f, 5000.0f, 0.0f},  // 6 the landing
+};
+Point const START{0, -2.0f, 0.0f, 0.0f};
+Point const GOAL{1, 5055.0f, 5000.0f, 0.0f};
+std::uint32_t const FARE = 500;
+
+Point NodeAt(std::uint32_t index) { return NODES[index]; }
+
+Leg MakeLeg(LegType type, Point from, Point to, std::vector<std::uint32_t> nodes, float seconds, std::uint32_t fare = 0)
+{
+    Leg leg;
+    leg.type = type;
+    leg.from = from;
+    leg.to = to;
+    leg.nodes = std::move(nodes);
+    leg.seconds = seconds;
+    leg.fareCopper = fare;
+    if (type == LegType::Portal)
+        leg.object = 99;
+    if (type == LegType::Flight)
+        leg.taxiNodes = {10, 11};
+    return leg;
+}
+
+std::vector<Leg> FullRoute()
+{
+    return {
+        MakeLeg(LegType::Walk, START, NODES[0], {0}, 0.0f),            // a 0-second start walk
+        MakeLeg(LegType::Walk, NODES[0], NODES[2], {0, 1, 2}, 30.0f),  // two graph links
+        MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f),    // onto map 1
+        MakeLeg(LegType::Walk, NODES[3], NODES[5], {3, 4, 5}, 30.0f),  // to the flight master
+        MakeLeg(LegType::Flight, NODES[5], NODES[6], {5, 6}, 200.0f, FARE),
+        MakeLeg(LegType::Walk, NODES[6], GOAL, {6}, 8.0f),  // off the graph to the goal
+        MakeLeg(LegType::Walk, GOAL, GOAL, {}, 0.0f),       // a 0-second end walk
+    };
+}
+
+char const* ActWord(Act act)
+{
+    switch (act)
+    {
+        case Act::Walk:
+            return "walk";
+        case Act::UseTrigger:
+            return "trigger";
+        case Act::TalkFlightMaster:
+            return "talk";
+        case Act::Ride:
+            return "ride";
+        case Act::Wait:
+            return "wait";
+        case Act::Done:
+            return "done";
+        case Act::Arrived:
+            return "arrived";
+        case Act::Fail:
+            return "fail";
+    }
+    return "?";
+}
+
+Observation At(Point bot, std::uint32_t nowMs, std::uint32_t money = 10000, bool inFlight = false, bool stuck = false)
+{
+    Observation seen;
+    seen.bot = bot;
+    seen.nowMs = nowMs;
+    seen.money = money;
+    seen.inFlight = inFlight;
+    seen.stuck = stuck;
+    return seen;
+}
+
+Trip StartedTrip(std::vector<Leg> legs, std::uint32_t nowMs = 1000)
+{
+    Trip trip;
+    trip.legs = std::move(legs);
+    TravelLegs::StartLeg(trip, 0, nowMs, NodeAt);
+    return trip;
+}
+
+// The whole route with a simulated bot that does what it is told: walks arrive at once, the trigger takes the bot
+// through one tick after it is sent, the taxi takes off one tick after it is taken and lands after one tick of riding
+void CheckFullRoute()
+{
+    Trip trip = StartedTrip(FullRoute());
+    Check(trip.legIdx == 1, "the 0-second start walk is skipped");
+    Check(trip.waypoints.size() == 3 && trip.waypoints[0].node == 0 && trip.waypoints[2].node == 2,
+          "the first walk's waypoints are its nodes 0, 1, 2");
+
+    Point bot = START;
+    std::uint32_t money = 10000;
+    std::uint32_t nowMs = 1000;
+    bool inFlight = false;
+    bool portalSent = false;
+    bool taxiTaken = false;
+    std::string trace;
+    std::vector<Point> walked;
+    for (int tick = 0; tick < 40; ++tick)
+    {
+        nowMs += 1000;
+        Decision const next = TravelLegs::Advance(trip, At(bot, nowMs, money, inFlight), NodeAt);
+        trace += std::string(trace.empty() ? "" : " ") + ActWord(next.act);
+        if (next.act == Act::Arrived || next.act == Act::Fail)
+            break;
+        switch (next.act)
+        {
+            case Act::Walk:
+                walked.push_back(next.target);
+                bot = next.target;
+                break;
+            case Act::UseTrigger:
+                trip.triggered = true;
+                portalSent = true;
+                break;
+            case Act::TalkFlightMaster:
+                trip.taxiActivated = true;
+                money -= FARE;
+                taxiTaken = true;
+                break;
+            case Act::Ride:
+                inFlight = false;
+                bot = NODES[6];
+                break;
+            case Act::Wait:
+                if (portalSent)
+                {
+                    bot = NODES[3];
+                    portalSent = false;
+                }
+                if (taxiTaken)
+                {
+                    inFlight = true;
+                    taxiTaken = false;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    std::string const expected = "walk walk trigger wait walk walk talk wait ride walk arrived";
+    Check(trace == expected, "full route: got \"" + trace + "\", want \"" + expected + "\"");
+    bool const order = walked.size() == 5 && walked[0].x == 100.0f && walked[1].x == 200.0f && walked[2].x == 1100.0f &&
+                       walked[3].x == 1200.0f && walked[4].x == GOAL.x;
+    Check(order, "full route: walk targets are nodes 1, 2, 4, 5 and the goal in order");
+    Check(money == 10000 - FARE, "full route: the fare is paid once");
+    Check(trip.legIdx == trip.legs.size() && trip.replans == 0, "full route: all legs passed without a replan");
+}
+
+void CheckTimeouts()
+{
+    // Walk: estimate x 3 + 60 s; completion by position wins over the timeout
+    Leg const walk = MakeLeg(LegType::Walk, NODES[0], NODES[1], {0, 1}, 100.0f);
+    Check(TravelLegs::LegTimeoutMs(walk) == 360000, "walk timeout = 100 s x 3 + 60 s");
+    Trip trip = StartedTrip({walk}, 0);
+    Check(TravelLegs::StepLeg(trip, At(NODES[0], 359999)).act == Act::Walk, "walk: no timeout before 360 s");
+    Decision const late = TravelLegs::StepLeg(trip, At(NODES[0], 360001));
+    Check(late.act == Act::Fail && late.reason == FailReason::Timeout, "walk: Fail(timeout) after 360 s");
+    Check(TravelLegs::StepLeg(trip, At(NODES[1], 999999)).act == Act::Done, "walk: an arrival after the time is done");
+
+    // A cached answer moved a 0-second walk's end 700 yd away: walked, with time for 700 yd at run speed
+    Leg const moved = MakeLeg(LegType::Walk, NODES[6], {1, 5700.0f, 5000.0f, 0.0f}, {6}, 0.0f);
+    Check(!TravelLegs::IsNoOp(moved), "a 0-second walk whose end moved is not skipped");
+    Check(TravelLegs::LegTimeoutMs(moved) == 360000, "a moved walk's timeout uses its straight line (100 s)");
+    Check(TravelLegs::IsNoOp(MakeLeg(LegType::Walk, GOAL, GOAL, {}, 0.0f)), "a 0-second walk in place is skipped");
+    Check(!TravelLegs::IsNoOp(MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 0.0f)), "a portal is no no-op");
+
+    // Portal: 20 s after the leg began
+    Trip portal = StartedTrip({MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)}, 0);
+    portal.triggered = true;
+    Check(TravelLegs::StepLeg(portal, At(NODES[2], 19000)).act == Act::Wait, "portal: waits for the trigger");
+    Decision const stuckPortal = TravelLegs::StepLeg(portal, At(NODES[2], 21000));
+    Check(stuckPortal.act == Act::Fail && stuckPortal.reason == FailReason::Portal, "portal: Fail(portal) after 20 s");
+
+    // Flight: path seconds x 2 + 60 s before take-off; none in the air
+    Leg const flight = MakeLeg(LegType::Flight, NODES[5], NODES[6], {5, 6}, 200.0f, FARE);
+    Check(TravelLegs::LegTimeoutMs(flight) == 460000, "flight timeout = 200 s x 2 + 60 s");
+    Trip flying = StartedTrip({flight}, 0);
+    flying.taxiActivated = true;
+    Check(TravelLegs::StepLeg(flying, At(NODES[5], 459000)).act == Act::Wait, "flight: waits for take-off");
+    Check(TravelLegs::StepLeg(flying, At(NODES[5], 461000)).reason == FailReason::Timeout,
+          "flight: Fail(timeout) when the taxi never takes off");
+    Check(TravelLegs::StepLeg(flying, At({1, 3000.0f, 3000.0f, 300.0f}, 900000, 0, true)).act == Act::Ride,
+          "flight: no timeout in the air");
+}
+
+void CheckStuckAndReplans()
+{
+    Trip trip = StartedTrip(FullRoute());
+    Check(TravelLegs::Advance(trip, At(NODES[1], 2000), NodeAt).act == Act::Walk && trip.next == 2,
+          "stuck: the walk heads for node 2");
+    auto const edge = TravelLegs::StuckEdge(trip);
+    Check(edge.first == 1 && edge.second == 2, "stuck: the edge is node 1 -> node 2");
+    Decision const stuck = TravelLegs::Advance(trip, At(NODES[1], 3000, 10000, false, true), NodeAt);
+    Check(stuck.act == Act::Fail && stuck.reason == FailReason::Stuck, "stuck: Fail(stuck) mid-walk");
+
+    for (int replan = 1; replan <= TravelLegs::MAX_REPLANS; ++replan)
+        Check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == TravelLegs::Recovery::Replan,
+              "replan " + std::to_string(replan) + " of 3 is granted");
+    Check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == TravelLegs::Recovery::Abort,
+          "the fourth failure aborts the trip");
+    Trip fresh;
+    Check(TravelLegs::AfterFailure(fresh, FailReason::Unsupported) == TravelLegs::Recovery::Abort,
+          "an unsupported leg aborts at once");
+    Check(TravelLegs::AfterFailure(fresh, FailReason::NoRoute) == TravelLegs::Recovery::Abort,
+          "no route aborts at once");
+    Check(fresh.replans == 0, "an abort spends no replan");
+
+    // The first walk from the bot's own start has no graph edge yet; the portal's edge is its two nodes
+    Trip fromStart = StartedTrip({MakeLeg(LegType::Walk, START, NODES[1], {0, 1}, 20.0f)});
+    Check(fromStart.waypoints.size() == 3 && fromStart.waypoints[0].node == TravelLegs::NO_NODE,
+          "a walk from the bot's start: start, node 0, node 1");
+    Check(TravelLegs::StuckEdge(fromStart).first == TravelLegs::NO_NODE, "no edge from the bot's start point");
+    Trip portal = StartedTrip({MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)});
+    auto const portalEdge = TravelLegs::StuckEdge(portal);
+    Check(portalEdge.first == 2 && portalEdge.second == 3, "the portal's edge is node 2 -> node 3");
+}
+
+void CheckWrongMapAndFare()
+{
+    Trip walk = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[2], {0, 1, 2}, 30.0f)});
+    Decision const wrong = TravelLegs::StepLeg(walk, At(NODES[4], 2000));
+    Check(wrong.act == Act::Fail && wrong.reason == FailReason::WrongMap, "a walk on another map fails (wrong map)");
+
+    Trip portal = StartedTrip({MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)});
+    Check(TravelLegs::StepLeg(portal, At({2, 0.0f, 0.0f, 0.0f}, 2000)).reason == FailReason::WrongMap,
+          "a portal leg on a third map fails (wrong map)");
+
+    Leg const flight = MakeLeg(LegType::Flight, NODES[5], NODES[6], {5, 6}, 200.0f, FARE);
+    Trip poor = StartedTrip({flight});
+    Decision const far = TravelLegs::StepLeg(poor, At(NODES[4], 2000, FARE - 1));
+    Check(far.act == Act::Fail && far.reason == FailReason::Fare, "an unaffordable flight fails before the walk");
+    Decision const there = TravelLegs::StepLeg(poor, At(NODES[5], 2000, FARE - 1));
+    Check(there.act == Act::Fail && there.reason == FailReason::Fare && !poor.taxiActivated,
+          "an unaffordable flight never reaches the flight master's talk");
+    Trip rich = StartedTrip({flight});
+    Check(TravelLegs::StepLeg(rich, At(NODES[4], 2000, FARE)).act == Act::Walk, "an affordable flight walks first");
+    Check(TravelLegs::StepLeg(rich, At(NODES[5], 2000, FARE)).act == Act::TalkFlightMaster,
+          "an affordable flight talks at the master");
+}
+
+void CheckPredicates()
+{
+    Point const sevenYards{0, 107.0f, 0.0f, 0.0f};
+    // The goal is reached within 10 yd, a waypoint before it within 5 yd
+    Trip last = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[1], {0, 1}, 20.0f)});
+    Check(TravelLegs::Advance(last, At(sevenYards, 2000), NodeAt).act == Act::Arrived, "the goal counts at 7 yd");
+    Trip middle = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[1], {0, 1}, 20.0f),
+                               MakeLeg(LegType::Walk, NODES[1], NODES[2], {1, 2}, 20.0f)});
+    Decision const notYet = TravelLegs::Advance(middle, At(sevenYards, 2000), NodeAt);
+    Check(notYet.act == Act::Walk && middle.legIdx == 0, "a waypoint before the goal does not count at 7 yd");
+    // A path past a node: the waypoint after the current one counts too
+    Trip skip = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[2], {0, 1, 2}, 30.0f),
+                             MakeLeg(LegType::Walk, NODES[2], {0, 300.0f, 0.0f, 0.0f}, {2}, 20.0f)});
+    TravelLegs::Advance(skip, At(NODES[2], 2000), NodeAt);
+    Check(skip.legIdx == 1, "reaching the waypoint after the current one passes both");
+
+    // Portal across maps: done on the exit's map; within one map: done near the exit
+    Trip cross = StartedTrip({MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)});
+    Check(TravelLegs::StepLeg(cross, At({0, 150.0f, 0.0f, 0.0f}, 2000)).act == Act::Walk,
+          "portal: walk to its node first");
+    Check(TravelLegs::StepLeg(cross, At(NODES[2], 2000)).act == Act::UseTrigger, "portal: trigger at its node");
+    // On the way from the node to a trigger centre 8 yd further on: no turning back to the node
+    Check(TravelLegs::StepLeg(cross, At({0, 208.0f, 0.0f, 0.0f}, 2500)).act == Act::UseTrigger,
+          "portal: past its node the bot keeps heading for the trigger");
+    Check(TravelLegs::StepLeg(cross, At({1, 1300.0f, 1300.0f, 0.0f}, 3000)).act == Act::Done,
+          "portal: done anywhere on the exit's map");
+    Trip inside = StartedTrip({MakeLeg(LegType::Portal, NODES[1], NODES[2], {1, 2}, 3.0f)});
+    inside.triggered = true;
+    Check(TravelLegs::StepLeg(inside, At({0, 230.0f, 0.0f, 0.0f}, 3000)).act == Act::Done,
+          "portal within a map: done 30 yd from the exit");
+
+    // Flight: done on landing within 30 yd; a landing elsewhere fails
+    Leg const flight = MakeLeg(LegType::Flight, NODES[5], NODES[6], {5, 6}, 200.0f, FARE);
+    Trip landed = StartedTrip({flight});
+    landed.taxiActivated = true;
+    TravelLegs::StepLeg(landed, At({1, 3000.0f, 3000.0f, 300.0f}, 2000, 0, true));
+    Check(TravelLegs::StepLeg(landed, At({1, 5020.0f, 5000.0f, 0.0f}, 3000)).act == Act::Done,
+          "flight: done on landing 20 yd from its end");
+    Trip astray = StartedTrip({flight});
+    astray.taxiActivated = true;
+    TravelLegs::StepLeg(astray, At({1, 3000.0f, 3000.0f, 300.0f}, 2000, 0, true));
+    Decision const elsewhere = TravelLegs::StepLeg(astray, At({1, 5100.0f, 5000.0f, 0.0f}, 3000));
+    Check(elsewhere.act == Act::Fail && elsewhere.reason == FailReason::Landing, "flight: a landing 100 yd off fails");
+
+    // Hearth and transport legs are not run before WT9/WT19
+    Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, NODES[0], NODES[1], {}, 10.0f)});
+    Check(TravelLegs::StepLeg(hearth, At(NODES[0], 2000)).reason == FailReason::Unsupported, "hearth: unsupported");
+    Trip ship = StartedTrip({MakeLeg(LegType::Transport, NODES[0], NODES[1], {0, 1}, 120.0f)});
+    Check(TravelLegs::StepLeg(ship, At(NODES[0], 2000)).reason == FailReason::Unsupported, "transport: unsupported");
+
+    // A route of no-op walks only has arrived
+    Trip none = StartedTrip({MakeLeg(LegType::Walk, GOAL, GOAL, {}, 0.0f)});
+    Check(TravelLegs::Advance(none, At(GOAL, 2000), NodeAt).act == Act::Arrived, "a route of no-ops has arrived");
+}
+
+void CheckWaypointsAndAnswers()
+{
+    std::vector<TravelLegs::Waypoint> const points =
+        TravelLegs::Waypoints(MakeLeg(LegType::Walk, START, GOAL, {0, 1}, 50.0f), NodeAt);
+    Check(points.size() == 4 && points[1].node == 0 && points[2].node == 1 && points[3].node == TravelLegs::NO_NODE,
+          "waypoints: start, node 0, node 1, goal");
+    std::vector<TravelLegs::Waypoint> const onNodes =
+        TravelLegs::Waypoints(MakeLeg(LegType::Walk, NODES[0], NODES[1], {0, 1}, 20.0f), NodeAt);
+    Check(onNodes.size() == 2 && onNodes[0].node == 0 && onNodes[1].node == 1, "waypoints: ends on nodes merge");
+
+    TravelLegs::RouteWait wait{7, 0, 0xFFFFF000u, true};  // the clock wraps while waiting
+    Check(TravelLegs::Judge(wait, 6, 0, 0xFFFFF100u) == TravelLegs::Verdict::Drop, "an older answer is dropped");
+    Check(TravelLegs::Judge(wait, 7, 0, 0x00001000u) == TravelLegs::Verdict::Apply, "a young answer is applied");
+    Check(TravelLegs::Judge(wait, 7, 1, 0x00001000u) == TravelLegs::Verdict::Refresh, "an answer for another map");
+    Check(TravelLegs::Judge(wait, 7, 0, 0x00008000u) == TravelLegs::Verdict::Refresh, "an answer older than 30 s");
+    Check(!TravelLegs::WaitExpired(wait, 0x00007000u) && TravelLegs::WaitExpired(wait, 0x00009000u),
+          "the wait expires after 35 s");
+}
+
+// NewRpgInfo's shape for TravelLegs::AfterReset: a status variant, its start and the request counter beside other state
+struct FakeInfo
+{
+    struct Idle
+    {
+    };
+    struct Travel
+    {
+        Trip trip;
+    };
+    struct Errands
+    {
+        std::uint32_t vendor{0};
+    };
+    std::variant<Idle, Travel, Errands> data{Idle{}};
+    std::uint32_t startT{0};
+    std::uint32_t routeRequests{0};
+    float nearestMoveFarDis{1.0e9f};
+};
+
+void CheckResetAndDeadline()
+{
+    FakeInfo travelling;
+    travelling.data = FakeInfo::Travel{StartedTrip(FullRoute())};
+    std::get<FakeInfo::Travel>(travelling.data).trip.legIdx = 2;  // on the portal leg
+    travelling.startT = 1234;
+    travelling.routeRequests = 17;
+    travelling.nearestMoveFarDis = 3.0f;
+
+    // A far teleport (the portal's worldport) keeps the trip where it was
+    FakeInfo const ported = TravelLegs::AfterReset<FakeInfo::Travel>(travelling, true);
+    FakeInfo::Travel const* kept = std::get_if<FakeInfo::Travel>(&ported.data);
+    Check(kept && kept->trip.legIdx == 2 && kept->trip.legs.size() == FullRoute().size() && ported.startT == 1234,
+          "a far teleport keeps the trip on its leg");
+    Check(ported.routeRequests == 17 && ported.nearestMoveFarDis == 1.0e9f,
+          "a far teleport keeps the request ids and resets the MOVE_FAR state");
+    // The kept portal leg is done on the exit's map at the next tick
+    Trip portal = kept ? kept->trip : Trip{};
+    Check(kept && TravelLegs::StepLeg(portal, At({1, 1000.0f, 1000.0f, 0.0f}, 3000)).act == Act::Done,
+          "the kept portal leg is done on the exit's map");
+
+    // Any other full reset ends the trip but keeps the request ids
+    FakeInfo const reset = TravelLegs::AfterReset<FakeInfo::Travel>(travelling, false);
+    Check(std::holds_alternative<FakeInfo::Idle>(reset.data) && reset.startT == 0 && reset.routeRequests == 17,
+          "a full reset ends the trip and keeps the request ids");
+    // Other statuses start over on a far teleport, as before
+    FakeInfo errands;
+    errands.data = FakeInfo::Errands{42};
+    errands.startT = 99;
+    errands.routeRequests = 5;
+    FakeInfo const away = TravelLegs::AfterReset<FakeInfo::Travel>(errands, true);
+    Check(std::holds_alternative<FakeInfo::Idle>(away.data) && away.startT == 0 && away.routeRequests == 5,
+          "a far teleport resets other statuses (request ids kept)");
+
+    // The whole trip's bound: estimate x 3 + 10 min; before the first answer the slack alone
+    Check(TravelLegs::TripDeadlineMs(0.0f) == 600000u, "trip deadline: 10 min before a route");
+    Check(TravelLegs::TripDeadlineMs(1000.0f) == 3600000u, "trip deadline: a 1000 s route gets 60 min");
+    Check(TravelLegs::TripDeadlineMs(1.0e9f) > 3000000000u, "trip deadline: no overflow on a huge estimate");
+}
+}  // namespace
+
+int main()
+{
+    CheckFullRoute();
+    CheckTimeouts();
+    CheckStuckAndReplans();
+    CheckWrongMapAndFare();
+    CheckPredicates();
+    CheckWaypointsAndAnswers();
+    CheckResetAndDeadline();
+    std::cout << passed << " passed, " << failed << " failed\n";
+    return failed ? 1 : 0;
+}

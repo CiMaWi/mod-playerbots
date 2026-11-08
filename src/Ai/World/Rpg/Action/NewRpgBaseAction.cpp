@@ -107,11 +107,17 @@ void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
     EventLog::Emit(bot, "Stuck", word, static_cast<uint32>(botAI->rpgInfo.GetStatus()),
                    WorldTravel::PackStuckPositions(bot->GetPositionX(), bot->GetPositionY(), dest.GetPositionX(),
                                                    dest.GetPositionY()));
-    // Plain positions only: the world thread maps them to a travel graph edge the route search avoids
+    // Plain data only: the world thread maps it to a travel graph edge the route search avoids. A route follower
+    // names the edge it walked; other statuses give positions
     if (!input.OtherMap)
-        TravelRoute::StuckBook::Instance().Push(
-            {{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()},
-             {dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()}});
+    {
+        TravelRoute::StuckBook::Report report;
+        report.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        report.destination = {dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()};
+        if (auto const* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
+            std::tie(report.fromNode, report.toNode) = TravelLegs::StuckEdge(travel->trip);
+        TravelRoute::StuckBook::Instance().Push(report);
+    }
 }
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
@@ -127,6 +133,9 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         return true;
 
     bool newDest = dest != botAI->rpgInfo.moveFarPos;
+    // A route follower's waypoints are graph nodes: the route search avoids stuck edges itself (StuckBook), so the
+    // avoided-spot memo below would only end the trip early
+    bool const travelling = std::holds_alternative<NewRpgInfo::Travel>(botAI->rpgInfo.data);
     if (newDest)
     {
         // A destination given up after a Stuck event is not walked to again for a while
@@ -135,7 +144,8 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
                                             info.stuckAvoidPos.GetPositionY(), info.stuckAvoidPos.GetPositionZ()};
         WorldTravel::SightPoint const wanted{dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(),
                                              dest.GetPositionZ()};
-        if (WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+        if (!travelling &&
+            WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
                                        sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, given,
                                        wanted, info.stuckRepeats))
         {
@@ -216,6 +226,12 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         info.stuckBotPos = WorldPosition(bot);
         info.stuckAvoidTs = getMSTime();
         botAI->rpgInfo.SetMoveFarTo(WorldPosition());
+        // A route follower stays in RPG_TRAVEL: its next tick fails the leg and asks for a new route
+        if (auto* travel = std::get_if<NewRpgInfo::Travel>(&info.data))
+        {
+            travel->stuck = true;
+            return true;
+        }
         botAI->rpgInfo.ChangeToIdle();
         return true;
     }

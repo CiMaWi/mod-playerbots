@@ -164,6 +164,15 @@ struct Result
     std::uint32_t expandedNodes{0};
 };
 
+// Copper the route's flights cost together: the search keeps it within the snapshot's money
+inline std::uint32_t RouteFare(Result const& route)
+{
+    std::uint32_t total = 0;
+    for (Leg const& leg : route.legs)
+        total += leg.fareCopper;
+    return total;
+}
+
 inline char const* LegTypeWord(LegType type)
 {
     switch (type)
@@ -240,7 +249,7 @@ inline float WalkModifier(TravelGraphLink const& link, Snapshot const& bot)
 }
 
 // The seconds of one graph link for this bot, before stuck flags; negative when the bot cannot use it. fare gets the
-// copper a flight costs
+// copper a flight costs; a fare above the whole purse is refused here, Search also counts the fares paid before it
 inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, Snapshot const& bot,
                          Params const& params, float runSpeed, float swimSpeed, std::uint32_t& fare)
 {
@@ -279,7 +288,11 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
 // virtual walks cost distance / run speed. The heuristic is a lower bound: on the goal's map the straight distance at
 // the fastest speed, else (and capped by) the cheapest jump onto the goal's map (a portal, flight or transport link
 // arriving there, plus the rest at the fastest speed). Reopening keeps the result optimal; the selftest compares it
-// with Dijkstra (Params::heuristic false) on random pairs
+// with Dijkstra (Params::heuristic false) on random pairs. The fare budget: every vertex carries the copper its best
+// way paid for flights, and a flight link that would take that total above the purse is not relaxed, because the core
+// charges a taxi chain's whole fare up front (Player::ActivateTaxiPathTo: money < totalcost fails) and every flight
+// of a route draws on the same purse. The returned route's RouteFare is within the money; with one label per vertex a
+// way that is slower but cheaper in copper can be missed when the purse is tight (then the route walks more)
 inline Result Search(TravelGraph const& graph, Request const& request, StuckEdges const& stuck, Params const& params)
 {
     Result result;
@@ -380,8 +393,10 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
 
     std::vector<float> best(nodeCount + 3, UNREACHED);
     std::vector<Via> via(nodeCount + 3);
+    std::vector<std::uint32_t> spent(nodeCount + 3, 0);  // copper the best way to each vertex paid for flights
     std::priority_queue<Open, std::vector<Open>, std::greater<Open>> open;
-    auto const relax = [&](std::uint32_t from, std::uint32_t to, float seconds, std::uint32_t link, Step step)
+    auto const relax =
+        [&](std::uint32_t from, std::uint32_t to, float seconds, std::uint32_t link, Step step, std::uint32_t fare)
     {
         float const next = best[from] + seconds;
         if (next >= best[to])
@@ -391,10 +406,11 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
             return;  // off the goal's map with no portal, flight or transport onto it: the goal is out of reach
         best[to] = next;
         via[to] = {from, link, step};
+        spent[to] = spent[from] + fare;
         open.push({next + rest, next, to});
     };
     auto const walkTo = [&](std::uint32_t from, std::uint32_t to)
-    { relax(from, to, Distance(pointOf(from), pointOf(to)) / runSpeed, NO_LINK, Step::Walk); };
+    { relax(from, to, Distance(pointOf(from), pointOf(to)) / runSpeed, NO_LINK, Step::Walk, 0); };
 
     best[source] = 0.0f;
     open.push({estimate(source), 0.0f, source});
@@ -417,7 +433,7 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
                 walkTo(vertex, target);
             if (vertex == source && hearth)
                 relax(source, bind, HEARTH_CAST_SECONDS + static_cast<float>(bot.hearthCooldownMs) / 1000.0f, NO_LINK,
-                      Step::Hearth);
+                      Step::Hearth, 0);
             continue;
         }
 
@@ -427,6 +443,8 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
             if (seconds < 0.0f)
                 continue;
+            if (fare && static_cast<std::uint64_t>(spent[vertex]) + fare > bot.money)
+                continue;  // the fares paid before this one leave too little for it
             if (!stuck.flags.empty())
             {
                 auto const flagged = stuck.flags.find(EdgeKey(link.from, link.to));
@@ -437,7 +455,7 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
                     seconds *= std::max(params.stuckPenalty, 1.0f);
                 }
             }
-            relax(vertex, link.to, seconds, graph.IndexOfLink(link), Step::Link);
+            relax(vertex, link.to, seconds, graph.IndexOfLink(link), Step::Link, fare);
         }
         if (std::find(goalNodes.begin(), goalNodes.end(), vertex) != goalNodes.end())
             walkTo(vertex, target);
@@ -498,6 +516,15 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
 
     result.ok = true;
     result.totalSeconds = best[target];
+    // One label per vertex: a vertex reopened with a new fare total can leave a successor's way through it on the old
+    // total, so the rebuilt route may cost more than the purse. Then the route goes without paid flights (no loop: with
+    // no money every paid flight link is pruned)
+    if (RouteFare(result) > bot.money)
+    {
+        Request walking = request;
+        walking.snapshot.money = 0;
+        return Search(graph, walking, stuck, params);
+    }
     return result;
 }
 
@@ -520,9 +547,9 @@ inline std::uint32_t StuckLink(TravelGraph const& graph, Point const& bot, Point
     return NO_LINK;
 }
 
-// The stuck edges, double buffered: map threads Push() reports (map and two positions, nothing else), the world thread
-// maps them to edges in Update() and publishes a new immutable StuckEdges; a search copies the shared_ptr once
-// (Current()) and keeps its edges however often the book changes meanwhile
+// The stuck edges, double buffered: map threads Push() reports (map and two positions, or the edge's two nodes when
+// the bot followed a route), the world thread maps them to edges in Update() and publishes a new immutable StuckEdges;
+// a search copies the shared_ptr once (Current()) and keeps its edges however often the book changes meanwhile
 class StuckBook
 {
 public:
@@ -530,6 +557,9 @@ public:
     {
         Point bot;
         Point destination;
+        // A route follower knows the graph edge it walked (TravelLegs::StuckEdge): flagged as given, no position match
+        std::uint32_t fromNode{TravelGraph::NO_NODE};
+        std::uint32_t toNode{TravelGraph::NO_NODE};
     };
 
     static StuckBook& Instance()
@@ -562,7 +592,20 @@ public:
         {
             for (Report const& report : reports)
             {
-                std::uint32_t const index = StuckLink(graph, report.bot, report.destination);
+                std::uint32_t index = NO_LINK;
+                if (report.fromNode < graph.NodeCount() && report.toNode < graph.NodeCount())
+                {
+                    for (TravelGraphLink const& link : graph.LinksOf(report.fromNode))
+                    {
+                        if (link.to == report.toNode)
+                        {
+                            index = graph.IndexOfLink(link);
+                            break;
+                        }
+                    }
+                }
+                if (index == NO_LINK)
+                    index = StuckLink(graph, report.bot, report.destination);
                 if (index == NO_LINK)
                     continue;
                 TravelGraphLink const& link = graph.GetLink(index);
@@ -886,6 +929,17 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
               "d) the route is not back after the flag expired");
         book.Push({{0, 0.0f, 0.0f, 0.0f}, {0, 1.0f, 1.0f, 0.0f}});
         check(book.Update(graph, nowMs, avoidMs) == 0, "d) a destination off the graph flags an edge");
+        // A follower's report names the edge: flagged although the positions match no node
+        StuckBook exact;
+        StuckBook::Report named;
+        named.bot = {0, 0.0f, 0.0f, 0.0f};
+        named.destination = {0, 1.0f, 1.0f, 0.0f};
+        named.fromNode = flaggedFrom;
+        named.toNode = flaggedTo;
+        exact.Push(named);
+        check(exact.Update(graph, nowMs, avoidMs) == 1 && exact.Current()->flags.size() == 1 &&
+                  exact.Current()->flags.count(EdgeKey(flaggedFrom, flaggedTo)),
+              "d) a report naming its edge does not flag exactly that edge");
         notes.push_back("d) flagged " + std::string(graph.GetName(flaggedFrom)) + " -> " +
                         std::string(graph.GetName(flaggedTo)) + ": " + num(penalised.totalSeconds) +
                         " s with one flag");
@@ -967,6 +1021,69 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
                     " A*/Dijkstra mismatches, expanded A* " + std::to_string(expandedAStar / 50) + " / Dijkstra " +
                     std::to_string(expandedDijkstra / 50) + " per search, " + num(microsAStar / 50.0) + " / " +
                     num(microsDijkstra / 50.0) + " us per search");
+
+    // h) The fare budget. The core charges a taxi chain's total up front and every flight of a route draws on the same
+    //    purse: find a route with a flight leg of several hops (every flight node known, thrift 0 so fares weigh no
+    //    time and only the purse decides), then give the bot one copper less than the route's fares. Every hop alone
+    //    is still affordable, yet the new route's flights must fit the purse. A route with two flight legs gets the
+    //    same check when the random pairs find one
+    auto const dearestHop = [&graph](Leg const& leg)
+    {
+        std::uint32_t dearest = 0;
+        for (std::size_t i = 1; leg.type == LegType::Flight && i < leg.nodes.size(); ++i)
+            for (TravelGraphLink const& link : graph.LinksOf(leg.nodes[i - 1]))
+                if (link.to == leg.nodes[i])
+                    if (TravelTaxiPath const* path = graph.TaxiPathOf(link))
+                        dearest = std::max(dearest, path->price);
+        return dearest;
+    };
+    Snapshot spender = human;
+    spender.money = 1000000;
+    spender.thrift = 0;
+    spender.knownTaxi.fill(0xFFFFFFFFu);
+    spender.hasHearthstone = false;
+    std::mt19937 fareRandom(20261110u);
+    bool chained = false;
+    bool twoLegs = false;
+    for (std::uint32_t i = 0; i < 600 && !(chained && twoLegs); ++i)
+    {
+        TravelGraphNode const& a = graph.GetNode(anyNode(fareRandom));
+        TravelGraphNode const& b = graph.GetNode(anyNode(fareRandom));
+        Request request{spender, {b.mapId, b.x, b.y, b.z}};
+        request.snapshot.position = {a.mapId, a.x, a.y, a.z};
+        request.snapshot.team = static_cast<std::uint8_t>(i % 2);
+        Result const free = Search(graph, request, StuckEdges{}, aStar);
+        std::uint32_t const total = RouteFare(free);
+        std::uint32_t hop = 0;
+        bool severalHops = false;
+        for (Leg const& leg : free.legs)
+        {
+            hop = std::max(hop, dearestHop(leg));
+            severalHops = severalHops || (leg.type == LegType::Flight && leg.taxiNodes.size() >= 3);
+        }
+        bool const several = legCount(free, LegType::Flight) >= 2;
+        if (!free.ok || total <= hop || ((!severalHops || chained) && (!several || twoLegs)))
+            continue;
+        request.snapshot.money = total - 1;
+        Result const tight = Search(graph, request, StuckEdges{}, aStar);
+        bool legsFit = true;
+        for (Leg const& leg : tight.legs)
+            legsFit = legsFit && leg.fareCopper <= request.snapshot.money;
+        std::string const label = std::string("h) ") + (severalHops ? "a chain of hops" : "") +
+                                  (severalHops && several ? ", " : "") + (several ? "two flight legs" : "");
+        check(legsFit && RouteFare(tight) <= request.snapshot.money,
+              label + ": a route paying " + std::to_string(RouteFare(tight)) + "c from a purse of " +
+                  std::to_string(request.snapshot.money) + "c");
+        notes.push_back(label + " " + std::to_string(a.id) + " -> " + std::to_string(b.id) + ", dearest hop " +
+                        std::to_string(hop) + "c, fares " + std::to_string(total) + "c: " + describe(free) +
+                        " | purse " + std::to_string(request.snapshot.money) +
+                        "c: " + (tight.ok ? describe(tight) : FailureWord(tight.failure)));
+        chained = chained || severalHops;
+        twoLegs = twoLegs || several;
+    }
+    check(chained, "h) no route with a flight leg of several hops among 600 random pairs");
+    if (!twoLegs)
+        notes.push_back("h) no route with two separate flight legs among the random pairs");
     return checks;
 }
 }  // namespace TravelRoute

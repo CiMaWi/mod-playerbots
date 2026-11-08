@@ -72,15 +72,6 @@ struct ServiceStats
     std::uint32_t waitP95Us{0};
 };
 
-// Copper of the route's dearest flight leg
-inline std::uint32_t DearestFare(Result const& route)
-{
-    std::uint32_t dearest = 0;
-    for (Leg const& leg : route.legs)
-        dearest = std::max(dearest, leg.fareCopper);
-    return dearest;
-}
-
 class RouteService
 {
 public:
@@ -248,7 +239,7 @@ private:
     {
         Question question;
         Result result;
-        std::uint32_t dearestFare{0};  // the question matches the purse by bit width: a purse below this misses
+        std::uint32_t routeFare{0};  // all the route's fares (RouteFare): a purse below this misses
         Clock::time_point at;
         Clock::time_point used;
     };
@@ -334,7 +325,7 @@ private:
                     for (CacheEntry& entry : cached->second)
                     {
                         if (picked - entry.at > std::chrono::milliseconds(CACHE_KEEP_MS) ||
-                            job.request.snapshot.money < entry.dearestFare || !entry.question.Same(question))
+                            job.request.snapshot.money < entry.routeFare || !entry.question.Same(question))
                             continue;
                         entry.used = picked;
                         answer.result = entry.result;
@@ -373,7 +364,7 @@ private:
                 Sample(_searchUs, _nextSearch, searchUs);
                 if (cacheable && answer.result.failure != Failure::GraphNotReady)
                 {
-                    CacheEntry entry{question, answer.result, DearestFare(answer.result), now, now};
+                    CacheEntry entry{question, answer.result, RouteFare(answer.result), now, now};
                     Cache& entries = _cache[bot];
                     auto const same = std::find_if(entries.begin(), entries.end(), [&question](CacheEntry const& old)
                                                    { return old.question.Same(question); });
@@ -660,7 +651,7 @@ inline std::uint32_t ServiceSelftest(TravelGraph const& graph, std::vector<std::
     bool fareChecked = false;
     for (std::size_t pair = 0; pair < requests.size() && !fareChecked; ++pair)
     {
-        std::uint32_t const fare = DearestFare(plain[pair]);
+        std::uint32_t const fare = RouteFare(plain[pair]);
         if (fare < 3 || std::has_single_bit(fare))
             continue;
         std::uint64_t const bot = 1000 + pair;
@@ -672,7 +663,7 @@ inline std::uint32_t ServiceSelftest(TravelGraph const& graph, std::vector<std::
         poor.snapshot.money = std::bit_floor(fare);
         poor.snapshot.requestId = 2;
         std::optional<Answer> const flown = fares.Submit(bot, rich, params) ? answerFor(fares, bot, 1) : std::nullopt;
-        if (!flown || DearestFare(flown->result) <= poor.snapshot.money)
+        if (!flown || RouteFare(flown->result) <= poor.snapshot.money)
             continue;
         std::optional<Answer> const after = fares.Submit(bot, poor, params) ? answerFor(fares, bot, 2) : std::nullopt;
         check(after && !after->cached, "g) a route with a fare above the purse came from the cache");

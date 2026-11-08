@@ -1,0 +1,410 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef PLAYERBOTS_TRAVELLEGRULES_H
+#define PLAYERBOTS_TRAVELLEGRULES_H
+
+// RPG_TRAVEL's leg sequencing (WT8), Player-free: what the route follower does next, from plain observations of the
+// bot. NewRpgTravelAction feeds it on the bot's map thread and carries the decisions out;
+// tests/travel-legs-selftest.cpp drives it with scripted observations. A leg ends by a position or map predicate, never
+// by time: time only fails it. A failed leg asks for a new route (at most MAX_REPLANS per trip), never a teleport.
+
+#include <algorithm>
+#include <cstdint>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "RouteRules.h"
+
+namespace TravelLegs
+{
+using TravelRoute::Distance;
+using TravelRoute::Leg;
+using TravelRoute::LegType;
+using TravelRoute::Point;
+
+constexpr std::uint32_t NO_NODE = TravelGraph::NO_NODE;
+constexpr float SAME_POINT_YARDS = 0.5f;       // a leg end this close to a graph node is that node
+constexpr float WAYPOINT_YARDS = 5.0f;         // a walk waypoint is reached this close
+constexpr float GOAL_YARDS = 10.0f;            // the route's last waypoint
+constexpr float NOOP_SECONDS = 1.0f;           // a walk leg this short with ends within WAYPOINT_YARDS is no step
+constexpr float PORTAL_EXIT_YARDS = 50.0f;     // a portal within one map has put the bot this close to its exit
+constexpr float FLIGHT_MASTER_YARDS = 15.0f;   // the flight leg's node stands at the master: talk from here
+constexpr float LANDING_YARDS = 30.0f;         // a flight has landed at its leg's end
+constexpr float WALK_FLOOR_SPEED = 7.0f;       // yd/s: a walk leg's time is at least its straight line at run speed
+constexpr float WALK_TIMEOUT_FACTOR = 3.0f;    // walk: estimate x 3 + slack
+constexpr float FLIGHT_TIMEOUT_FACTOR = 2.0f;  // flight: path seconds x 2 + slack
+constexpr std::uint32_t LEG_SLACK_MS = 60 * 1000;
+constexpr std::uint32_t PORTAL_TIMEOUT_MS = 20 * 1000;
+constexpr std::uint32_t TRIP_SLACK_MS = 10 * 60 * 1000;  // whole trip: the first route's estimate x 3 + this
+constexpr std::uint8_t MAX_REPLANS = 3;             // new routes per trip after failed legs; then the trip is given up
+constexpr std::uint32_t REPLAN_DELAY_MS = 2000;     // the failed leg's stuck report reaches the published book first
+constexpr std::uint32_t ROUTE_WAIT_MS = 35 * 1000;  // no answer by then: the service has dropped the request
+constexpr std::uint32_t ROUTE_AGE_MS = 30 * 1000;   // an answer to an older snapshot is not applied
+constexpr std::uint32_t LEGS_PER_TICK = 4;          // finished legs passed in one tick at most
+constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;     // reached waypoints passed in one tick at most
+
+enum class Act : std::uint8_t
+{
+    Walk,              // MoveFarTo(target) on the bot's map
+    UseTrigger,        // step into the portal leg's area trigger
+    TalkFlightMaster,  // at the flight master of the leg's start: learn the node, pay, take off
+    Ride,              // in flight (a cross-map flight continues)
+    Wait,              // nothing to do this tick (a sent trigger or an activated taxi takes effect)
+    Done,              // the leg ended (Advance starts the next one)
+    Arrived,           // the last leg ended
+    Fail
+};
+
+enum class FailReason : std::uint8_t
+{
+    None,
+    Timeout,      // the leg took longer than its timeout
+    WrongMap,     // the bot is on a map the leg does not run on
+    Stuck,        // MoveFarTo gave the waypoint up
+    Portal,       // the area trigger did not take the bot through
+    Fare,         // the purse does not pay the flight
+    Landing,      // the flight ended away from the leg's end
+    Unsupported,  // a hearth or transport leg (WT9, WT19): not produced while the request leaves them out
+    NoAnswer,     // the route service did not answer in time, or the answer was for another map or too old
+    NoRoute       // the search found no route
+};
+
+inline char const* FailWord(FailReason reason)
+{
+    switch (reason)
+    {
+        case FailReason::None:
+            return "none";
+        case FailReason::Timeout:
+            return "timeout";
+        case FailReason::WrongMap:
+            return "wrong_map";
+        case FailReason::Stuck:
+            return "stuck";
+        case FailReason::Portal:
+            return "portal";
+        case FailReason::Fare:
+            return "fare";
+        case FailReason::Landing:
+            return "landing";
+        case FailReason::Unsupported:
+            return "unsupported";
+        case FailReason::NoAnswer:
+            return "no_answer";
+        case FailReason::NoRoute:
+            return "no_route";
+    }
+    return "?";
+}
+
+struct Waypoint
+{
+    Point at;
+    std::uint32_t node{NO_NODE};  // the graph node at this point; NO_NODE for the bot's start or the goal
+};
+
+// What the follower sees of the bot this tick
+struct Observation
+{
+    Point bot;
+    bool inFlight{false};
+    std::uint32_t money{0};  // copper
+    bool stuck{false};       // MoveFarTo gave the current waypoint up (a traveller does not go IDLE there)
+    std::uint32_t nowMs{0};  // getMSTime()
+};
+
+struct Decision
+{
+    Act act{Act::Wait};
+    Point target;  // Walk: where to; UseTrigger, TalkFlightMaster: the leg's start; Ride: the leg's end
+    FailReason reason{FailReason::None};
+};
+
+// A route's legs and the follower's place on them
+struct Trip
+{
+    std::vector<Leg> legs;
+    std::uint32_t legIdx{0};
+    std::uint32_t legStartMs{0};
+    std::vector<Waypoint> waypoints;  // the current leg's: [0] its start; the bot heads for waypoints[next]
+    std::uint32_t next{1};
+    bool approached{false};     // portal: the bot reached the trigger's node; from there it heads for the trigger
+    bool triggered{false};      // portal: the area trigger was sent
+    bool taxiActivated{false};  // flight: the taxi was taken (fare paid)
+    bool seenInFlight{false};   // flight: the bot was seen in flight
+    std::uint8_t replans{0};
+};
+
+// The route request the follower waits for (the bot's latest; RouteService answers older ones too)
+struct RouteWait
+{
+    std::uint32_t requestId{0};
+    std::uint32_t mapId{0};
+    std::uint32_t requestedMs{0};
+    bool waiting{false};
+};
+
+enum class Verdict : std::uint8_t
+{
+    Apply,   // the answer to the latest request, still on its map and young
+    Drop,    // an answer to an older request: keep waiting
+    Refresh  // the bot changed maps or the answer is too old: the leg counts as failed (NoAnswer)
+};
+
+inline Verdict Judge(RouteWait const& wait, std::uint32_t answerId, std::uint32_t botMapId, std::uint32_t nowMs)
+{
+    if (answerId != wait.requestId)
+        return Verdict::Drop;
+    if (botMapId != wait.mapId || nowMs - wait.requestedMs > ROUTE_AGE_MS)
+        return Verdict::Refresh;
+    return Verdict::Apply;
+}
+
+inline bool WaitExpired(RouteWait const& wait, std::uint32_t nowMs) { return nowMs - wait.requestedMs > ROUTE_WAIT_MS; }
+
+// Routes begin and end with walks of 0 seconds (start or goal on a node); a cached answer moves the first leg's start
+// and the last leg's end to the new positions but keeps their seconds, so a moved end is walked, not skipped
+inline bool IsNoOp(Leg const& leg)
+{
+    return leg.type == LegType::Walk && leg.seconds < NOOP_SECONDS && leg.from.mapId == leg.to.mapId &&
+           Distance(leg.from, leg.to) <= WAYPOINT_YARDS;
+}
+
+inline std::uint32_t LegTimeoutMs(Leg const& leg)
+{
+    switch (leg.type)
+    {
+        case LegType::Walk:
+        {
+            float seconds = leg.seconds;
+            if (leg.from.mapId == leg.to.mapId)
+                seconds = std::max(seconds, Distance(leg.from, leg.to) / WALK_FLOOR_SPEED);
+            return static_cast<std::uint32_t>(seconds * WALK_TIMEOUT_FACTOR * 1000.0f) + LEG_SLACK_MS;
+        }
+        case LegType::Portal:
+            return PORTAL_TIMEOUT_MS;
+        case LegType::Flight:
+            return static_cast<std::uint32_t>(leg.seconds * FLIGHT_TIMEOUT_FACTOR * 1000.0f) + LEG_SLACK_MS;
+        default:
+            return LEG_SLACK_MS;
+    }
+}
+
+// The points a leg passes: its start, then for a walk every graph node in order, then its end. Points within
+// SAME_POINT_YARDS of the previous one merge (a leg starting or ending on a node). nodeAt(index) -> Point
+template <class NodeAt>
+std::vector<Waypoint> Waypoints(Leg const& leg, NodeAt const& nodeAt)
+{
+    std::vector<Waypoint> points{{leg.from, NO_NODE}};
+    auto const add = [&points](Point const& at, std::uint32_t node)
+    {
+        Waypoint& last = points.back();
+        if (at.mapId == last.at.mapId && Distance(at, last.at) <= SAME_POINT_YARDS)
+        {
+            if (node != NO_NODE)
+                last.node = node;
+            return;
+        }
+        points.push_back({at, node});
+    };
+    if (leg.type == LegType::Walk)
+    {
+        for (std::uint32_t const node : leg.nodes)
+            add(nodeAt(node), node);
+    }
+    else if (!leg.nodes.empty())
+        add(nodeAt(leg.nodes.front()), leg.nodes.front());
+    add(leg.to, leg.type != LegType::Walk && !leg.nodes.empty() ? leg.nodes.back() : NO_NODE);
+    return points;
+}
+
+// Starts leg index (no-op walks skipped); index past the last leg: the trip has arrived
+template <class NodeAt>
+void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const& nodeAt)
+{
+    while (index < trip.legs.size() && IsNoOp(trip.legs[index]))
+        ++index;
+    trip.legIdx = index;
+    trip.legStartMs = nowMs;
+    trip.next = 1;
+    trip.approached = false;
+    trip.triggered = false;
+    trip.taxiActivated = false;
+    trip.seenInFlight = false;
+    trip.waypoints.clear();
+    if (index < trip.legs.size())
+        trip.waypoints = Waypoints(trip.legs[index], nodeAt);
+}
+
+// The current leg's next step. Done, Fail and the others; never Arrived
+inline Decision StepLeg(Trip& trip, Observation const& seen)
+{
+    Leg const& leg = trip.legs[trip.legIdx];
+    bool const lastLeg = trip.legIdx + 1 == trip.legs.size();
+    std::uint32_t const legMs = seen.nowMs - trip.legStartMs;  // unsigned: wraps as getMSTimeDiff does
+    auto const fail = [](FailReason reason) { return Decision{Act::Fail, {}, reason}; };
+    auto const within = [&seen](Point const& at, float yards)
+    { return seen.bot.mapId == at.mapId && Distance(seen.bot, at) <= yards; };
+
+    if (seen.stuck)
+        return fail(FailReason::Stuck);
+
+    switch (leg.type)
+    {
+        case LegType::Walk:
+        {
+            if (seen.bot.mapId != leg.to.mapId)
+                return fail(FailReason::WrongMap);
+            std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
+            auto const reached = [&](std::uint32_t index)
+            { return within(trip.waypoints[index].at, lastLeg && index + 1 == count ? GOAL_YARDS : WAYPOINT_YARDS); };
+            // The current waypoint, or the one after it when the path went past a node
+            for (std::uint32_t passed = 0; passed < WAYPOINTS_PER_TICK && trip.next < count; ++passed)
+            {
+                if (reached(trip.next))
+                    ++trip.next;
+                else if (trip.next + 1 < count && reached(trip.next + 1))
+                    trip.next += 2;
+                else
+                    break;
+            }
+            if (trip.next >= count)
+                return {Act::Done, leg.to, FailReason::None};
+            if (legMs > LegTimeoutMs(leg))
+                return fail(FailReason::Timeout);
+            return {Act::Walk, trip.waypoints[trip.next].at, FailReason::None};
+        }
+        case LegType::Portal:
+        {
+            bool const exited =
+                leg.from.mapId != leg.to.mapId ? seen.bot.mapId == leg.to.mapId : within(leg.to, PORTAL_EXIT_YARDS);
+            if (exited)
+                return {Act::Done, leg.to, FailReason::None};
+            if (legMs > PORTAL_TIMEOUT_MS)
+                return fail(FailReason::Portal);
+            if (seen.bot.mapId != leg.from.mapId)
+                return fail(FailReason::WrongMap);
+            if (trip.triggered)
+                return {Act::Wait, leg.to, FailReason::None};
+            // From the trigger's node on, the bot heads for the trigger itself (UsePortal), which may lie further than
+            // WAYPOINT_YARDS on: turning back to the node would alternate with that walk until the leg timed out
+            if (!trip.approached && !within(leg.from, WAYPOINT_YARDS))
+                return {Act::Walk, leg.from, FailReason::None};
+            trip.approached = true;
+            return {Act::UseTrigger, leg.from, FailReason::None};
+        }
+        case LegType::Flight:
+        {
+            if (!seen.inFlight && within(leg.to, LANDING_YARDS))
+                return {Act::Done, leg.to, FailReason::None};
+            if (seen.inFlight)
+            {
+                // A flight always ends: no timeout in the air (a bot cannot leave the taxi anyway)
+                trip.seenInFlight = true;
+                return {Act::Ride, leg.to, FailReason::None};
+            }
+            if (legMs > LegTimeoutMs(leg))
+                return fail(FailReason::Timeout);
+            if (trip.seenInFlight)
+                return fail(FailReason::Landing);
+            if (trip.taxiActivated)
+                return {Act::Wait, leg.to, FailReason::None};
+            if (seen.money < leg.fareCopper)
+                return fail(FailReason::Fare);
+            if (seen.bot.mapId != leg.from.mapId)
+                return fail(FailReason::WrongMap);
+            if (!within(leg.from, FLIGHT_MASTER_YARDS))
+                return {Act::Walk, leg.from, FailReason::None};
+            return {Act::TalkFlightMaster, leg.from, FailReason::None};
+        }
+        default:
+            return fail(FailReason::Unsupported);
+    }
+}
+
+// The trip's next step: finished legs are passed (at most LEGS_PER_TICK), then the current leg's step; Arrived after
+// the last leg
+template <class NodeAt>
+Decision Advance(Trip& trip, Observation const& seen, NodeAt const& nodeAt)
+{
+    for (std::uint32_t passed = 0; passed < LEGS_PER_TICK; ++passed)
+    {
+        if (trip.legIdx >= trip.legs.size())
+            return {Act::Arrived, seen.bot, FailReason::None};
+        Decision const decision = StepLeg(trip, seen);
+        if (decision.act != Act::Done)
+            return decision;
+        StartLeg(trip, trip.legIdx + 1, seen.nowMs, nodeAt);
+    }
+    if (trip.legIdx >= trip.legs.size())
+        return {Act::Arrived, seen.bot, FailReason::None};
+    return {Act::Wait, seen.bot, FailReason::None};
+}
+
+enum class Recovery : std::uint8_t
+{
+    Replan,  // ask for a new route from where the bot stands
+    Abort    // give the trip up (IDLE)
+};
+
+// After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
+// at once (a new search would give the same answer)
+inline Recovery AfterFailure(Trip& trip, FailReason reason)
+{
+    if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || trip.replans >= MAX_REPLANS)
+        return Recovery::Abort;
+    ++trip.replans;
+    return Recovery::Replan;
+}
+
+// The graph edge the bot is on: a walk's two waypoints around it, or a portal's two nodes; {NO_NODE, NO_NODE} when an
+// end is no graph node (the bot's start, the goal)
+inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
+{
+    std::pair<std::uint32_t, std::uint32_t> const none{NO_NODE, NO_NODE};
+    if (trip.legIdx >= trip.legs.size() || trip.next == 0 || trip.next >= trip.waypoints.size())
+        return none;
+    LegType const type = trip.legs[trip.legIdx].type;
+    if (type != LegType::Walk && type != LegType::Portal)
+        return none;
+    std::uint32_t const from = trip.waypoints[trip.next - 1].node;
+    std::uint32_t const to = trip.waypoints[trip.next].node;
+    if (from == NO_NODE || to == NO_NODE)
+        return none;
+    return {from, to};
+}
+
+// The whole trip's bound beside the legs' own timeouts: a leg's timeout x MAX_REPLANS can run for hours on a long
+// merged walk while the bot counts as busy. Before the first answer the estimate is 0 (the slack only)
+inline std::uint32_t TripDeadlineMs(float estimateSeconds)
+{
+    float const ms = std::min(std::max(estimateSeconds, 0.0f) * WALK_TIMEOUT_FACTOR * 1000.0f, 3.0e9f);
+    return static_cast<std::uint32_t>(ms) + TRIP_SLACK_MS;
+}
+
+// PlayerbotAI::Reset(true) renews the bot's RPG state, also after every far teleport (HandleTeleportAck). What
+// survives it: the route request counter always (ids restarting at 0 would let an older answer pass Judge as
+// current); on a far teleport also a trip in progress with its status start (a portal or a cross-map flight leg ends
+// on the new map; a teleport that is not the trip's fails the leg as wrong_map and replans). Every other status and
+// the MOVE_FAR state start over as before. Info: NewRpgInfo (data a std::variant, startT, routeRequests); TravelData:
+// its RPG_TRAVEL alternative
+template <class TravelData, class Info>
+Info AfterReset(Info const& before, bool farTeleport)
+{
+    Info after;
+    after.routeRequests = before.routeRequests;
+    if (farTeleport && std::holds_alternative<TravelData>(before.data))
+    {
+        after.startT = before.startT;
+        after.data = before.data;
+    }
+    return after;
+}
+}  // namespace TravelLegs
+
+#endif

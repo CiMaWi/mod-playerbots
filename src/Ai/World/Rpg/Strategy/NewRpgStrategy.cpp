@@ -91,6 +91,14 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    triggers.push_back(
+        new TriggerNode(
+            "travel status",
+            {
+                NextAction("new rpg travel", 3.0f)
+            }
+        )
+    );
     // Above the status update (11), which would otherwise pick the next status first
     triggers.push_back(
         new TriggerNode(

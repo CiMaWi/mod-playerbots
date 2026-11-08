@@ -133,6 +133,22 @@ private:
     static constexpr float VENDOR_SEARCH_YARDS = 30.0f;
 };
 
+// Follows the trip's route leg by leg (RPG_TRAVEL): asks the route service, walks the waypoints, takes portals; a
+// failed leg asks for a new route (at most TravelLegs::MAX_REPLANS), never a teleport. Flights come with WT8b
+class NewRpgTravelAction : public NewRpgBaseAction
+{
+public:
+    NewRpgTravelAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg travel") {}
+    bool Execute(Event event) override;
+
+private:
+    bool RequestRoute(NewRpgInfo::Travel& data);
+    bool TakeRoute(NewRpgInfo::Travel& data);
+    bool UsePortal(NewRpgInfo::Travel& data);
+    bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
+    void EndTrip(char const* why);
+};
+
 class NewRpgTravelFlightAction : public NewRpgBaseAction
 {
 public:

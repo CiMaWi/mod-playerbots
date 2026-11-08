@@ -1610,8 +1610,10 @@ void PlayerbotAI::HandleTeleportAck()
         if (sPlayerbotAIConfig.RestrictHealerDPS)
             EvaluateHealerDpsStrategy();
 
-        // reset AI state after teleport
+        // reset AI state after teleport; a trip in progress goes on (a portal or a cross-map flight leg ends here)
+        NewRpgInfo const kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
         Reset(true);
+        rpgInfo = kept;
 
         // clear movement only AFTER teleport is finalized and bot is in world. Skip during a taxi map-transfer
         if (bot->IsInWorld() && bot->GetMotionMaster() && !bot->IsInFlight())
@@ -1705,7 +1707,7 @@ void PlayerbotAI::Reset(bool full)
             ->setTarget(TravelMgr::instance().nullTravelDestination, TravelMgr::instance().nullWorldPosition, true);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setStatus(TRAVEL_STATUS_EXPIRED);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
-        rpgInfo = NewRpgInfo();
+        rpgInfo = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, false);  // keeps the route request ids
     }
 
     aiObjectContext->GetValue<GuidSet&>("ignore rpg target")->Get().clear();
