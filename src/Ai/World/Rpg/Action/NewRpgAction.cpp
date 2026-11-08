@@ -534,38 +534,39 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     WorldTravel::StampErrandCheck(measure, getMSTime());
     measure.HasVendor = false;
 
-    // The nearest friendly vendor on the bot's map (the list is built at load; no route to other maps yet)
+    // The nearest vendor on the bot's map that trades with the bot (startup cache; no route to other maps yet)
     uint32 const mapId = bot->GetMapId();
+    std::vector<TravelMgr::VendorInfo> const& vendors = TravelMgr::instance().GetVendors(mapId);
     uint32 vendorEntry = 0;
     WorldPosition vendorPos;
     float vendorYards = std::numeric_limits<float>::max();
-    for (TravelDestination* destination : TravelMgr::instance().getRpgTravelDestinations(bot, true, true, 0.0f))
+    uint32 refused = 0;
+    for (TravelMgr::VendorInfo const& vendor : vendors)
     {
-        CreatureTemplate const* cInfo = static_cast<RpgTravelDestination*>(destination)->GetCreatureTemplate();
-        if (!cInfo || !(cInfo->npcflag & UNIT_NPC_FLAG_VENDOR))
+        float const yards =
+            bot->GetExactDist(vendor.loc.GetPositionX(), vendor.loc.GetPositionY(), vendor.loc.GetPositionZ());
+        if (yards >= vendorYards)
             continue;
 
-        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(cInfo->faction);
-        if (!faction || bot->GetReputationRank(faction->faction) <= REP_NEUTRAL)
-            continue;
-
-        for (WorldPosition* point : destination->getPoints(true))
+        // The core's interact test (Player::GetNPCIfCanInteractWith): the vendor's reaction must be above Unfriendly.
+        // A template without a reputation faction is judged by the template relation, not refused as Neutral.
+        if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(vendor.factionTemplate), bot) <= REP_UNFRIENDLY)
         {
-            if (point->GetMapId() != mapId)
-                continue;
-
-            float const yards = bot->GetExactDist(point->GetPositionX(), point->GetPositionY(), point->GetPositionZ());
-            if (yards >= vendorYards)
-                continue;
-
-            vendorEntry = cInfo->Entry;
-            vendorPos = *point;
-            vendorYards = yards;
+            ++refused;
+            continue;
         }
+
+        vendorEntry = vendor.entry;
+        vendorPos = WorldPosition(vendor.loc);
+        vendorYards = yards;
     }
 
     if (!vendorEntry)
+    {
+        LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
+                  bot->GetName(), mapId, vendors.size(), refused);
         return false;
+    }
 
     float const walkMinutes = WorldTravel::WalkMinutes(vendorYards, bot->GetSpeed(MOVE_RUN));
     measure.HasVendor = true;
@@ -586,7 +587,14 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (!WorldTravel::TripWorthIt(WorldTravel::MakeTripInput(
             measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], WorldTravel::FreeGeneralSlots(bot),
             sellableSlots, walkMinutes, config.ErrandNextStopMinutes)))
+    {
+        LOG_DEBUG("playerbots",
+                  "[New RPG] {} errands: trip not worth it (vendor {} at {:.0f} yd, {:.1f} walk min, {} sellable, {} "
+                  "free slots)",
+                  bot->GetName(), vendorEntry, vendorYards, walkMinutes, sellableSlots,
+                  WorldTravel::FreeGeneralSlots(bot));
         return false;
+    }
 
     botAI->rpgInfo.ChangeToErrands(vendorEntry, vendorPos, bot->GetMoney());
     return true;

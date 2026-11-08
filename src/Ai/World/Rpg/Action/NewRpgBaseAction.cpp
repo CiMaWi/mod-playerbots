@@ -14,6 +14,7 @@
 #include "GossipDef.h"
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
+#include "MapCollisionData.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "QuestLevelRules.h"
@@ -41,6 +42,42 @@
 #include "TravelMgr.h"
 #include "WorldTravelRules.h"
 #include "G3D/Vector2.h"
+
+namespace
+{
+uint32 constexpr GRIND_PICK_TRIES = 3;
+
+// A grind spot is a 50 yd cell centre (TravelMgr rounds x, y and z), so it can sit off the ground or inside a rock.
+// It is kept when the nav mesh has a poly a bot may walk (the bots' path filter) within 3 yd across and 50 yd up or
+// down, and moves onto that poly; on a tile not loaded yet nothing can be judged and the spot stays as it is.
+bool SnapToNavMesh(Player* bot, WorldPosition& spot)
+{
+    MMapData& mmap = bot->GetMap()->GetMapCollisionData().GetMMapData();
+    dtNavMesh const* mesh = mmap.GetNavMesh();
+    dtNavMeshQuery const* query = mmap.GetNavMeshQuery();
+    if (!mesh || !query)
+        return true;
+
+    float const point[3] = {spot.GetPositionY(), spot.GetPositionZ(), spot.GetPositionX()};
+    int tileX = 0;
+    int tileY = 0;
+    mesh->calcTileLoc(point, &tileX, &tileY);
+    if (!mesh->getTileAt(tileX, tileY, 0))
+        return true;
+
+    dtQueryFilter filter;
+    filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
+    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
+    float const extents[3] = {3.0f, 50.0f, 3.0f};
+    dtPolyRef poly = 0;
+    float nearest[3] = {0.0f, 0.0f, 0.0f};
+    if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &poly, nearest)) || !poly)
+        return false;
+
+    spot.Relocate(nearest[2], nearest[0], nearest[1]);
+    return true;
+}
+}  // namespace
 
 void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
 {
@@ -94,7 +131,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
                                              dest.GetPositionZ()};
         if (WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
                                        sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, given,
-                                       wanted))
+                                       wanted, info.stuckRepeats))
         {
             botAI->rpgInfo.ChangeToIdle();
             return true;
@@ -160,8 +197,18 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     {
         // No meaningful progress toward dest for `stuckTime`: give the destination up, record why and go IDLE
         RecordStuck(dest);
-        botAI->rpgInfo.stuckAvoidPos = dest;
-        botAI->rpgInfo.stuckAvoidTs = getMSTime();
+        // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h)
+        NewRpgInfo& info = botAI->rpgInfo;
+        WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
+                                              info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
+        WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                           bot->GetPositionZ()};
+        info.stuckRepeats = WorldTravel::NextStuckRepeats(
+            info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);
+        info.stuckAvoidPos = dest;
+        info.stuckBotPos = WorldPosition(bot);
+        info.stuckAvoidTs = getMSTime();
         botAI->rpgInfo.SetMoveFarTo(WorldPosition());
         botAI->rpgInfo.ChangeToIdle();
         return true;
@@ -865,20 +912,38 @@ WorldPosition NewRpgBaseAction::SelectRandomGrindPos(Player* bot)
             lo_prepared_locs.push_back(loc);
         }
     }
+    // At most GRIND_PICK_TRIES draws: a spot off the nav mesh is dropped and another drawn, else no spot
     WorldPosition dest{};
-    if (urand(1, 100) <= 50 && !hi_prepared_locs.empty())
+    uint32 rejected = 0;
+    for (uint32 attempt = 0; attempt < GRIND_PICK_TRIES; ++attempt)
     {
-        uint32 idx = urand(0, hi_prepared_locs.size() - 1);
-        dest = hi_prepared_locs[idx];
+        std::vector<WorldLocation>* pool = nullptr;
+        if (urand(1, 100) <= 50 && !hi_prepared_locs.empty())
+            pool = &hi_prepared_locs;
+        else if (!lo_prepared_locs.empty())
+            pool = &lo_prepared_locs;
+        if (!pool)
+            break;
+
+        uint32 const idx = urand(0, pool->size() - 1);
+        WorldPosition candidate = (*pool)[idx];
+        if (SnapToNavMesh(bot, candidate))
+        {
+            dest = candidate;
+            break;
+        }
+
+        ++rejected;
+        (*pool)[idx] = pool->back();
+        pool->pop_back();
     }
-    else if (!lo_prepared_locs.empty())
-    {
-        uint32 idx = urand(0, lo_prepared_locs.size() - 1);
-        dest = lo_prepared_locs[idx];
-    }
-    LOG_DEBUG("playerbots", "[New RPG] Bot {} select random grind pos Map:{} X:{} Y:{} Z:{} ({}+{} available in {})",
+    if (rejected)
+        LOG_DEBUG("playerbots", "[New RPG] Bot {} grind pos: {} spots off the nav mesh dropped", bot->GetName(),
+                  rejected);
+    LOG_DEBUG("playerbots",
+              "[New RPG] Bot {} select random grind pos Map:{} X:{} Y:{} Z:{} ({} near, {} in range of {})",
               bot->GetName(), dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
-              hi_prepared_locs.size(), lo_prepared_locs.size() - hi_prepared_locs.size(), locs.size());
+              hi_prepared_locs.size(), lo_prepared_locs.size(), locs.size());
     return dest;
 }
 

@@ -199,6 +199,68 @@ void CheckAvoid()
           "other map: free");
     Check(!WorldTravel::IsAvoidedSpot(false, 0, AVOID_MS, given, given), "no memo: free");
 }
+
+void CheckAvoidRepeat()
+{
+    constexpr uint32_t AVOID_MS = 600000;
+    SightPoint const given{MAP_KALIMDOR, 100.0f, 100.0f, 0.0f};
+    SightPoint const farDest{MAP_KALIMDOR, 160.0f, 100.0f, 0.0f};
+    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, farDest, 0), "60 yd away, first give-up: free");
+    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, farDest, 1), "60 yd away, one repeat (40 yd): free");
+    Check(WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, farDest, 2),
+          "60 yd away, two repeats (80 yd): avoided");
+    Check(WorldTravel::StuckAvoidYards(9) == WorldTravel::StuckAvoidYards(WorldTravel::STUCK_REPEAT_MAX),
+          "radius capped");
+    Check(WorldTravel::StuckAvoidMs(AVOID_MS, 1) == 2 * AVOID_MS, "one repeat doubles the time");
+    Check(WorldTravel::StuckAvoidMs(AVOID_MS, 9) == 8 * AVOID_MS, "time capped at three doublings");
+    Check(WorldTravel::StuckAvoidMs(UINT32_MAX / 2, 3) == UINT32_MAX, "time saturates instead of wrapping");
+    Check(WorldTravel::IsAvoidedSpot(true, AVOID_MS + 1, AVOID_MS, given, given, 1), "a repeat keeps it longer");
+    Check(!WorldTravel::IsAvoidedSpot(true, 2 * AVOID_MS, AVOID_MS, given, given, 1), "and then expires");
+    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, {MAP_EASTERN, 100.0f, 100.0f, 0.0f}, 3),
+          "other map stays free");
+
+    SightPoint const lastBot{MAP_KALIMDOR, 0.0f, 0.0f, 0.0f};
+    SightPoint const sameCell{MAP_KALIMDOR, 60.0f, 50.0f, 0.0f};
+    SightPoint const otherCell{MAP_KALIMDOR, 150.0f, 0.0f, 0.0f};
+    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 0, lastBot, sameCell) == 1, "same cell: repeat");
+    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 3, lastBot, sameCell) == 3, "repeats capped");
+    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 2, lastBot, otherCell) == 0, "another cell: reset");
+    Check(WorldTravel::NextStuckRepeats(true, AVOID_MS, AVOID_MS, 0, lastBot, sameCell) == 0, "expired: reset");
+    Check(WorldTravel::NextStuckRepeats(true, AVOID_MS, AVOID_MS, 1, lastBot, sameCell) == 2,
+          "within the escalated time: repeat");
+    Check(WorldTravel::NextStuckRepeats(false, 0, AVOID_MS, 0, lastBot, lastBot) == 0, "no memo: first");
+    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 0, lastBot, {MAP_EASTERN, 0.0f, 0.0f, 0.0f}) == 0,
+          "other map: reset");
+}
+
+void CheckGhost()
+{
+    using WorldTravel::GhostInput;
+    using WorldTravel::GhostStep;
+    uint32_t const retry = WorldTravel::GHOST_TELEPORT_RETRY_MS;
+
+    GhostInput atGrave;
+    atGrave.AtGrave = true;
+    Check(WorldTravel::GhostFallback(atGrave) == GhostStep::Wait, "a ghost at its grave never teleports");
+    atGrave.TeleportedBefore = true;
+    atGrave.SinceTeleportMs = 10 * retry;
+    Check(WorldTravel::GhostFallback(atGrave) == GhostStep::Wait, "not even long after the last teleport");
+
+    GhostInput far;
+    Check(WorldTravel::GhostFallback(far) == GhostStep::Teleport, "a far ghost may teleport once");
+    far.TeleportedBefore = true;
+    far.SinceTeleportMs = retry - 1;
+    Check(WorldTravel::GhostFallback(far) == GhostStep::Wait, "then waits for the interval");
+    far.SinceTeleportMs = retry;
+    Check(WorldTravel::GhostFallback(far) == GhostStep::Teleport, "and may teleport again after it");
+    far.Seen = true;
+    Check(WorldTravel::GhostFallback(far) == GhostStep::Wait, "a seen ghost waits");
+
+    uint32_t const search = WorldTravel::GHOST_HEALER_RETRY_MS;
+    Check(WorldTravel::RetryDue(false, 0, search), "the first healer search is due at once");
+    Check(!WorldTravel::RetryDue(true, search - 1, search), "the next one waits for the interval");
+    Check(WorldTravel::RetryDue(true, search, search), "and is due after it");
+}
 }  // namespace
 
 int main()
@@ -209,6 +271,8 @@ int main()
     CheckStuck();
     CheckPacking();
     CheckAvoid();
+    CheckAvoidRepeat();
+    CheckGhost();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

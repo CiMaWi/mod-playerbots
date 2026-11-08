@@ -894,6 +894,14 @@ public:
     };
     std::map<uint32, FlightMasterInfo> const& GetFlightMasters(TeamId team) const;
     std::vector<InnInfo> const& GetInns(TeamId team) const;
+    // Errands: every vendor spawn on the bot maps outside game events, per map (startup cache, read only afterwards)
+    struct VendorInfo
+    {
+        WorldLocation loc;  // the spawn point
+        uint32 entry;
+        uint32 factionTemplate;
+    };
+    std::vector<VendorInfo> const& GetVendors(uint32 mapId) const;
     bool GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const;
 
     bool SelectAuctioneerByMap(Player* bot, NpcLocation& outAuctioneer);
@@ -1027,6 +1035,7 @@ private:
     std::map<uint8, std::vector<WorldLocation>> hordeHubsPerLevelCache;
     std::vector<InnInfo> allianceInnCache;
     std::vector<InnInfo> hordeInnCache;
+    std::unordered_map<uint32, std::vector<VendorInfo>> vendorsByMap;
     std::map<uint8, std::vector<BankerLocation>> bankerLocsPerLevelCache;
     std::unordered_map<uint32, WorldLocation> bankerEntryToLocation;
     std::map<uint8, std::vector<WorldLocation>> locsPerLevelCache;

@@ -1127,6 +1127,8 @@ void PlayerbotFactory::Refresh()
     bool const keepsPossessions = KeepsPossessions(bot);
     if (!keepsPossessions)
         ClearInventory();
+    else if (!bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
+        bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
     InitAmmo();
     InitFood();
     InitReagents();

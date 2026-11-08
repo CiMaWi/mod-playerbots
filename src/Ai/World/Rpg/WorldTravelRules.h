@@ -22,6 +22,14 @@ constexpr uint32_t DEATH_COUNT_PER_DEATH = 2;
 constexpr float STUCK_DOOR_YARDS = 15.0f;
 // A new destination this close to the one given up is avoided too
 constexpr float STUCK_AVOID_YARDS = 20.0f;
+// A give-up this close to where the bot gave up last time is the same obstacle again
+constexpr float STUCK_REPEAT_YARDS = 100.0f;
+// Each repeat at the same obstacle doubles the avoid time and radius, at most this many times
+constexpr uint32_t STUCK_REPEAT_MAX = 3;
+// A ghost waiting at its grave looks for a spirit healer at most this often
+constexpr uint32_t GHOST_HEALER_RETRY_MS = 30 * 1000;
+// A ghost that cannot walk to its grave is teleported there at most this often
+constexpr uint32_t GHOST_TELEPORT_RETRY_MS = 5 * 60 * 1000;
 constexpr int32_t PACK_COORD_MIN = -32768;
 constexpr int32_t PACK_COORD_MAX = 32767;
 constexpr uint32_t PACK_COORD_BITS = 16;
@@ -89,6 +97,34 @@ inline bool IsBusy(BusyInput const& in)
 inline bool CorpseRunsExhausted(uint32_t deathCount, uint32_t failures)
 {
     return deathCount / DEATH_COUNT_PER_DEATH > failures;
+}
+
+// A timed retry is due when it never ran (tsSet false) or retryMs have passed since
+inline bool RetryDue(bool tsSet, uint32_t sinceMs, uint32_t retryMs) { return !tsSet || sinceMs >= retryMs; }
+
+enum class GhostStep : uint8_t
+{
+    Wait,
+    Teleport
+};
+
+struct GhostInput
+{
+    bool AtGrave = false;           // on the grave's map and within sight of it
+    bool Seen = false;              // a real player would see the teleport (the sight rule)
+    bool TeleportedBefore = false;  // SinceTeleportMs is valid
+    uint32_t SinceTeleportMs = 0;
+};
+
+// A ghost that does not walk toward its grave. At the grave it waits for a spirit healer and never teleports (it
+// used to teleport to the grave it stood at, again and again); a far one is teleported unseen, at most once per
+// GHOST_TELEPORT_RETRY_MS.
+inline GhostStep GhostFallback(GhostInput const& in)
+{
+    if (in.AtGrave || in.Seen || !RetryDue(in.TeleportedBefore, in.SinceTeleportMs, GHOST_TELEPORT_RETRY_MS))
+        return GhostStep::Wait;
+
+    return GhostStep::Teleport;
 }
 
 enum class StuckCause : uint8_t
@@ -177,11 +213,35 @@ inline int32_t UnpackStuckCoord(int64_t amount, uint32_t index)
     return static_cast<int16_t>(static_cast<uint16_t>((static_cast<uint64_t>(amount) >> shift) & PACK_COORD_MASK));
 }
 
-// A destination given up after a Stuck event stays avoided for avoidMs (sinceMs since the event; memoSet false = none)
-inline bool IsAvoidedSpot(bool memoSet, uint32_t sinceMs, uint32_t avoidMs, SightPoint const& given,
-                          SightPoint const& dest)
+// The avoid time after `repeats` give-ups in a row at the same obstacle: doubled per repeat, capped
+inline uint32_t StuckAvoidMs(uint32_t baseMs, uint32_t repeats)
 {
-    return memoSet && sinceMs < avoidMs && WithinSight(given, dest, STUCK_AVOID_YARDS);
+    uint64_t const ms = static_cast<uint64_t>(baseMs) << std::min(repeats, STUCK_REPEAT_MAX);
+    return static_cast<uint32_t>(std::min<uint64_t>(ms, UINT32_MAX));
+}
+
+inline float StuckAvoidYards(uint32_t repeats)
+{
+    return STUCK_AVOID_YARDS * static_cast<float>(1u << std::min(repeats, STUCK_REPEAT_MAX));
+}
+
+// A destination given up after a Stuck event stays avoided for the (escalated) avoid time within the (escalated)
+// radius (sinceMs since the event; memoSet false = none)
+inline bool IsAvoidedSpot(bool memoSet, uint32_t sinceMs, uint32_t avoidMs, SightPoint const& given,
+                          SightPoint const& dest, uint32_t repeats = 0)
+{
+    return memoSet && sinceMs < StuckAvoidMs(avoidMs, repeats) && WithinSight(given, dest, StuckAvoidYards(repeats));
+}
+
+// The repeat count of a new give-up: one more than the last while that is still avoided and the bot gives up within
+// STUCK_REPEAT_YARDS of where it gave up then (the same obstacle), else 0
+inline uint32_t NextStuckRepeats(bool memoSet, uint32_t sinceMs, uint32_t avoidMs, uint32_t repeats,
+                                 SightPoint const& lastBot, SightPoint const& bot)
+{
+    if (!memoSet || sinceMs >= StuckAvoidMs(avoidMs, repeats) || !WithinSight(lastBot, bot, STUCK_REPEAT_YARDS))
+        return 0;
+
+    return std::min(repeats + 1, STUCK_REPEAT_MAX);
 }
 }  // namespace WorldTravel
 

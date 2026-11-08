@@ -5,11 +5,15 @@
  */
 
 #include "ReviveFromCorpseAction.h"
+
+#include "CellImpl.h"
 #include "CensusMgr.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "FleeManager.h"
 #include "GameGraveyard.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "MapMgr.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -315,6 +319,40 @@ GraveyardStruct const* SpiritHealerAction::GetGrave(bool startZone)
     return ClosestGrave;
 }
 
+namespace
+{
+// A living spirit healer within range; no line of sight needed ("nearest npcs" requires it and missed healers behind
+// a wall or a slope, so ghosts at their grave teleported to it again and again)
+class SpiritHealerInRange
+{
+public:
+    SpiritHealerInRange(WorldObject const* origin, float range) : _origin(origin), _range(range) {}
+
+    bool operator()(Creature* creature)
+    {
+        if (!creature->HasNpcFlag(UNIT_NPC_FLAG_SPIRITHEALER) || !creature->IsAlive() ||
+            !_origin->IsWithinDistInMap(creature, _range))
+            return false;
+
+        _range = _origin->GetDistance(creature);  // the last match is the nearest
+        return true;
+    }
+
+private:
+    WorldObject const* _origin;
+    float _range;
+};
+
+Creature* FindSpiritHealer(Player* bot, float range)
+{
+    Creature* healer = nullptr;
+    SpiritHealerInRange check(bot, range);
+    Acore::CreatureLastSearcher<SpiritHealerInRange> searcher(bot, healer, check);
+    Cell::VisitObjects(bot, searcher, range);
+    return healer;
+}
+}  // namespace
+
 bool SpiritHealerAction::Execute(Event /*event*/)
 {
     // GetGrave() picks world graveyards; teleporting there from a BG removes the bot from it.
@@ -333,36 +371,38 @@ bool SpiritHealerAction::Execute(Event /*event*/)
 
     GraveyardStruct const* ClosestGrave =
         GetGrave(dCount > 10 || deadTime > 15 * MINUTE || AI_VALUE(uint8, "durability") < 10);
-
-    if (bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig.SightDistance)
-    {
-        GuidVector npcs = AI_VALUE(GuidVector, "nearest npcs");
-        for (GuidVector::iterator i = npcs.begin(); i != npcs.end(); i++)
-        {
-            Unit* unit = botAI->GetUnit(*i);
-            if (unit && unit->HasNpcFlag(UNIT_NPC_FLAG_SPIRITHEALER))
-            {
-                LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
-                          bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
-                PlayerbotChatHandler ch(bot);
-                bot->ResurrectPlayer(0.5f);
-                EventLog::Honesty(bot, "Resurrect", "spirit_healer_free");
-                bot->SpawnCorpseBones();
-                context->GetValue<Unit*>("current target")->Set(nullptr);
-                bot->SetTarget();
-                botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
-
-                if (dCount > 20)
-                    context->GetValue<uint32>("death count")->Set(0);
-
-                return true;
-            }
-        }
-    }
-
     if (!ClosestGrave)
-    {
         return false;
+
+    WorldPosition const gravePos(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z);
+    bool const atGrave = ClosestGrave->Map == bot->GetMapId() &&
+                         bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig.SightDistance;
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (atGrave && WorldTravel::RetryDue(info.ghostHealerTs != 0, GetMSTimeDiffToNow(info.ghostHealerTs),
+                                         WorldTravel::GHOST_HEALER_RETRY_MS))
+    {
+        info.ghostHealerTs = getMSTime();
+        if (FindSpiritHealer(bot, sPlayerbotAIConfig.SightDistance))
+        {
+            LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
+                      bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
+            PlayerbotChatHandler ch(bot);
+            bot->ResurrectPlayer(0.5f);
+            EventLog::Honesty(bot, "Resurrect", "spirit_healer_free");
+            bot->SpawnCorpseBones();
+            context->GetValue<Unit*>("current target")->Set(nullptr);
+            bot->SetTarget();
+            botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
+
+            if (dCount > 20)
+                context->GetValue<uint32>("death count")->Set(0);
+
+            return true;
+        }
+
+        LOG_DEBUG("playerbots", "Bot {} <{}>: no spirit healer within {} yd at graveyard {} (map {})",
+                  bot->GetGUID().ToString().c_str(), bot->GetName(), sPlayerbotAIConfig.SightDistance, ClosestGrave->ID,
+                  ClosestGrave->Map);
     }
 
     bool moved = false;
@@ -375,9 +415,22 @@ bool SpiritHealerAction::Execute(Event /*event*/)
     if (moved)
         return true;
 
-    // The sight rule: a persistent ghost seen by a real player tries again later
-    if (sRandomPlayerbotMgr.IsTeleportSeen(
-            bot, WorldPosition(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z)))
+    if (sRandomPlayerbotMgr.IsRandomBot(bot) && RandomPlayerbotMgr::HonestTravel())
+    {
+        // A persistent ghost at its grave waits for the healer; a far one is teleported unseen and rate-limited
+        WorldTravel::GhostInput ghost;
+        ghost.AtGrave = atGrave;
+        ghost.TeleportedBefore = info.ghostTeleportTs != 0;
+        ghost.SinceTeleportMs = ghost.TeleportedBefore ? GetMSTimeDiffToNow(info.ghostTeleportTs) : 0;
+        if (WorldTravel::GhostFallback(ghost) == WorldTravel::GhostStep::Teleport)
+            ghost.Seen = sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos);
+
+        if (WorldTravel::GhostFallback(ghost) != WorldTravel::GhostStep::Teleport)
+            return false;
+
+        info.ghostTeleportTs = getMSTime();
+    }
+    else if (sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos))
         return false;
 
     // if (!IsRealPlayer(botAI->GetMaster()))

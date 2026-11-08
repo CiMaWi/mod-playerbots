@@ -112,7 +112,13 @@ struct NewRpgInfo
     // The destination given up after the last Stuck event, avoided for WorldTravel.StuckAvoidSeconds
     WorldPosition stuckAvoidPos;
     uint32 stuckAvoidTs{0};
+    WorldPosition stuckBotPos;  // where the bot stood at that Stuck event
+    uint32 stuckRepeats{0};     // give-ups in a row at the same obstacle (WorldTravel::NextStuckRepeats)
     // END MOVE_FAR
+
+    // GHOST (SpiritHealerAction): the last spirit healer search and the last fallback teleport
+    uint32 ghostHealerTs{0};
+    uint32 ghostTeleportTs{0};
 
     // QUEST GIVER
     ObjectGuid questGiver;  // giver the bot is walking to or talking with

@@ -5,6 +5,7 @@
  */
 
 #include "AutoMaintenanceOnLevelupAction.h"
+
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "PlayerbotAIConfig.h"
@@ -12,13 +13,41 @@
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
 #include "SpellMgr.h"
+#include "StartingHistoryRules.h"
+
+namespace
+{
+bool HasHearthstone(Player* bot) { return bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true); }
+
+// Names the level-up step after which a persistent bot's hearthstone is gone; WT5 saw every level-up lose it
+// without finding the step
+void NoteHearthstoneLoss(Player* bot, bool& had, char const* step)
+{
+    if (!had || HasHearthstone(bot))
+        return;
+
+    had = false;
+    LOG_INFO("playerbots", "[Hearthstone] {} level {}: gone at level-up step {}", bot->GetName(), bot->GetLevel(),
+             step);
+}
+}  // namespace
 
 bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
 {
+    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    bool had = keepsPossessions;
+    NoteHearthstoneLoss(bot, had, "before");
     AutoPickTalents();
+    NoteHearthstoneLoss(bot, had, "talents");
     AutoLearnSpell();
+    NoteHearthstoneLoss(bot, had, "spells");
     AutoTeleportForLevel();
+    NoteHearthstoneLoss(bot, had, "teleport");
     AutoUpgradeEquip();
+
+    // Persistent bots keep their hearthstone (WT.3)
+    if (keepsPossessions && !HasHearthstone(bot) && bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1))
+        EventLog::Honesty(bot, "Item", "hearthstone_restored", StartingHistory::ITEM_HEARTHSTONE, 1);
 
     return true;
 }
@@ -170,19 +199,23 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
         return;
 
     PlayerbotFactory factory(bot, bot->GetLevel());
+    bool had = PlayerbotFactory::KeepsPossessions(bot) && HasHearthstone(bot);
 
     factory.CleanupConsumables();
+    NoteHearthstoneLoss(bot, had, "cleanup consumables");
 
     factory.InitAmmo();
     factory.InitReagents();
     factory.InitFood();
     factory.InitConsumables();
     factory.InitPotions();
+    NoteHearthstoneLoss(bot, had, "restock");
     EventLog::Honesty(bot, "Item", "levelup_maintenance");
 
     if (sPlayerbotAIConfig.AutoUpgradeEquip)
     {
         factory.InitEquipment(true);
+        NoteHearthstoneLoss(bot, had, "equipment");
         EventLog::Honesty(bot, "Item", "levelup_maintenance");
     }
 }

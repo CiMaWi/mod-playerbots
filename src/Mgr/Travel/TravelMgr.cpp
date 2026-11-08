@@ -26,8 +26,15 @@
 #include "TravelNode.h"
 #include "VMapFactory.h"
 #include "VMapMgr2.h"
+#include <deque>
 #include <iomanip>
 #include <numeric>
+
+// TravelDestination keeps raw WorldPosition pointers: the loader's points live here for the process lifetime (a deque
+// never moves its elements on emplace_back)
+static std::deque<WorldPosition> loadedPoints;
+
+static WorldPosition* KeepPoint(WorldPosition const& point) { return &loadedPoints.emplace_back(point); }
 
 // Navigation data
 
@@ -2075,10 +2082,10 @@ void TravelMgr::LoadQuestTravelTable()
 
                     for (auto& guidP : e.second)
                     {
-                        WorldPosition point = guidP;
+                        WorldPosition* point = KeepPoint(guidP);
                         for (auto tLoc : locs)
                         {
-                            tLoc->addPoint(&point);
+                            tLoc->addPoint(point);
                         }
                     }
                 }
@@ -2301,7 +2308,7 @@ void TravelMgr::LoadQuestTravelTable()
                 rLoc->setExpireDelay(5 * MINUTE * IN_MILLISECONDS);
                 rLoc->setMaxVisitors(15, 0);
 
-                rLoc->addPoint(&point);
+                rLoc->addPoint(KeepPoint(point));
                 rpgNpcs.push_back(rLoc);
                 break;
             }
@@ -2315,7 +2322,7 @@ void TravelMgr::LoadQuestTravelTable()
             gLoc->setMaxVisitors(100, 0);
 
             point = WorldPosition(u.map, u.x, u.y, u.z, u.o);
-            gLoc->addPoint(&point);
+            gLoc->addPoint(KeepPoint(point));
             grindMobs.push_back(gLoc);
         }
 
@@ -2328,7 +2335,7 @@ void TravelMgr::LoadQuestTravelTable()
             bLoc->setExpireDelay(5 * MINUTE * IN_MILLISECONDS);
             bLoc->setMaxVisitors(0, 0);
 
-            bLoc->addPoint(&point);
+            bLoc->addPoint(KeepPoint(point));
             bossMobs.push_back(bLoc);
         }
     }
@@ -2369,7 +2376,7 @@ void TravelMgr::LoadQuestTravelTable()
             loc = iloc->second;
         }
 
-        loc->addPoint(&point);
+        loc->addPoint(KeepPoint(point));
     }
 
     // Clear these logs files
@@ -4426,6 +4433,13 @@ std::vector<TravelMgr::InnInfo> const& TravelMgr::GetInns(TeamId team) const
     return team == TEAM_ALLIANCE ? allianceInnCache : hordeInnCache;
 }
 
+std::vector<TravelMgr::VendorInfo> const& TravelMgr::GetVendors(uint32 mapId) const
+{
+    static std::vector<VendorInfo> const none;
+    auto const it = vendorsByMap.find(mapId);
+    return it == vendorsByMap.end() ? none : it->second;
+}
+
 bool TravelMgr::GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const
 {
     auto const itr = zone2LevelBracket.find(zoneId);
@@ -4744,6 +4758,14 @@ void TravelMgr::PrepareDestinationCache()
     uint32 flightMastersCount = 0;
     uint32 innkeepersCount = 0;
     uint32 bankerCount = 0;
+    uint32 vendorCount = 0;
+
+    // Spawns of a positive game event exist only while it runs (same idiom as PrepareQuestGiverTeleportIndex)
+    std::unordered_set<ObjectGuid::LowType> eventSpawns;
+    auto const& eventCreatureGuids = sGameEventMgr->GameEventCreatureGuids;
+    for (size_t i = sGameEventMgr->GetEventMap().size(); i < eventCreatureGuids.size(); ++i)
+        eventSpawns.insert(eventCreatureGuids[i].begin(), eventCreatureGuids[i].end());
+    vendorsByMap.clear();
 
     LOG_INFO("playerbots", "Preparing destination caches for {} levels...", maxLevel);
     // Temporary map to group creatures by entry and area
@@ -4775,6 +4797,14 @@ void TravelMgr::PrepareDestinationCache()
             continue;
 
         uint32 areaId = area->zone ? area->zone : area->ID;
+
+        // ERRAND VENDORS (any vendor, also an innkeeper or banker; the errand action judges the faction per bot)
+        if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_VENDOR) && !eventSpawns.count(guid))
+        {
+            vendorsByMap[mapId].push_back(
+                {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
+            ++vendorCount;
+        }
 
         // CREATURES
         if (creatureTemplate->npcflag == 0 &&
@@ -4991,6 +5021,7 @@ void TravelMgr::PrepareDestinationCache()
     }
 
     LOG_INFO("playerbots", ">> {} flight masters and {} innkeepers and {} banker locations for level collected.", flightMastersCount, innkeepersCount, bankerCount);
+    LOG_INFO("playerbots", ">> {} errand vendors collected.", vendorCount);
 }
 
 void TravelMgr::PrepareQuestGiverTeleportIndex()
