@@ -7,6 +7,7 @@
 #include "NewRpgAction.h"
 #include "AreaDefines.h"
 #include "BroadcastHelper.h"
+#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "DBCStores.h"
 #include "GossipDef.h"
@@ -722,6 +723,11 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
     botAI->RemoveShapeshift();
     if (bot->IsMounted())
         bot->Dismount();
+
+    // Learning the master's node is the grant: it opens a route the bot never discovered
+    uint32 const flightNode = sObjectMgr->GetNearestTaxiNode(*flightMaster, bot->GetTeamId(true));
+    if (flightNode && !bot->m_taxi.IsTaximaskNodeKnown(flightNode))
+        EventLog::Honesty(bot, "Flight", "undiscovered_flight", flightNode);
 
     bot->GetSession()->SendLearnNewTaxiNode(flightMaster);
 

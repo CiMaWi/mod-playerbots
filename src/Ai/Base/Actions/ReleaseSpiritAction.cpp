@@ -5,6 +5,7 @@
  */
 
 #include "ReleaseSpiritAction.h"
+#include "CensusMgr.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "GameGraveyard.h"
@@ -48,6 +49,7 @@ bool ReleaseSpiritAction::Execute(Event event)
 
     IncrementDeathCount();
     bot->DurabilityRepairAll(false, 1.0f, false);
+    EventLog::Honesty(bot, "Repair", "free_repair_release");
     LogRelease("released");
 
     WorldPacket releasePacket(CMSG_REPOP_REQUEST);
@@ -89,6 +91,7 @@ bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 {
     IncrementDeathCount();
     bot->DurabilityRepairAll(false, 1.0f, false);
+    EventLog::Honesty(bot, "Repair", "free_repair_release");
     LogRelease("auto released");
 
     WorldPacket packet(CMSG_REPOP_REQUEST);

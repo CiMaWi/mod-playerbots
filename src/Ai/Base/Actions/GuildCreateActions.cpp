@@ -7,6 +7,7 @@
 #include "GuildCreateActions.h"
 #include "ArenaTeam.h"
 #include "BudgetValues.h"
+#include "CensusMgr.h"
 #include "Event.h"
 #include "GuildMgr.h"
 #include "Playerbots.h"
@@ -241,6 +242,7 @@ bool PetitionTurnInAction::Execute(Event /*event*/)
             uint32 have = bot->GetMoney();               // actual money earned by bot in copper
             if (have < REQUIRED)
             {
+                EventLog::Honesty(bot, "Gold", "guild_charter", 0, int64(REQUIRED - have));
                 bot->ModifyMoney(int32(REQUIRED - have)); // add only the missing amount to bot to reach 10g
             }
 

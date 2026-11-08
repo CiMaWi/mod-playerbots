@@ -5,6 +5,7 @@
  */
 
 #include "HireAction.h"
+#include "CensusMgr.h"
 #include "Event.h"
 #include "PlayerbotAI.h"
 #include "RandomPlayerbotMgr.h"
@@ -54,6 +55,7 @@ bool HireAction::Execute(Event /*event*/)
 
     botAI->TellMaster("I will join you at your next relogin");
 
+    EventLog::Honesty(bot, "Gold", "hire", 0, int64(moneyReq) - int64(bot->GetMoney()));
     bot->SetMoney(moneyReq);
     ObjectGuid const botGuid = bot->GetGUID();
     RandomPlayerbotMgr::instance().Remove(bot);

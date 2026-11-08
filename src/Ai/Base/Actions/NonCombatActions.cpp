@@ -6,6 +6,7 @@
 
 #include "NonCombatActions.h"
 
+#include "CensusMgr.h"
 #include "Event.h"
 #include "Playerbots.h"
 
@@ -42,6 +43,7 @@ bool DrinkAction::Execute(Event event)
 
     if (botAI->HasCheat(BotCheatMask::food))
     {
+        EventLog::Honesty(bot, "Food", "food_cheat");
         // if (bot->IsNonMeleeSpellCast(true))
         //     return false;
 
@@ -106,6 +108,7 @@ bool EatAction::Execute(Event event)
 
     if (botAI->HasCheat(BotCheatMask::food))
     {
+        EventLog::Honesty(bot, "Food", "food_cheat");
         // if (bot->IsNonMeleeSpellCast(true))
         //     return false;
 

@@ -11,6 +11,7 @@
 #include "AiObjectContext.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
+#include "CensusMgr.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "GuildMgr.h"
@@ -1086,7 +1087,9 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Save");
     LOG_DEBUG("playerbots", "Saving to DB...");
-    bot->SetMoney(urand(level * 100000, level * 5 * 100000));
+    uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
+    bot->SetMoney(randomizeMoney);
+    EventLog::Honesty(bot, "Gold", "factory_randomize", 0, randomizeMoney);
     bot->SetHealth(bot->GetMaxHealth());
     bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
     bot->SaveToDB(false, false);
@@ -1110,11 +1113,14 @@ void PlayerbotFactory::Refresh()
     InitReagents();
     InitConsumables();
     InitPotions();
+    EventLog::Honesty(bot, "Item", "factory_refresh");
     InitPet();
     InitPetTalents();
     InitSkills();
+    EventLog::Honesty(bot, "Skill", "factory_refresh");
     InitClassSpells();
     InitAvailableSpells();
+    EventLog::Honesty(bot, "Spell", "factory_refresh");
     InitReputation();
     InitSpecialSpells();
     InitMounts();
@@ -1123,15 +1129,23 @@ void PlayerbotFactory::Refresh()
         bot->GetLevel() < sPlayerbotAIConfig.EquipAndSpecPersistenceLevel)
     {
         InitTalentsTree(true, true, true);
+        EventLog::Honesty(bot, "Talent", "factory_refresh");
     }
     if (bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
         ApplyEnchantAndGemsNew();
     bot->DurabilityRepairAll(false, 1.0f, false);
+    EventLog::Honesty(bot, "Repair", "factory_refresh");
     if (bot->isDead())
+    {
         bot->ResurrectPlayer(1.0f, false);
+        EventLog::Honesty(bot, "Resurrect", "factory_refresh");
+    }
     uint32 money = urand(level * 1000, level * 5 * 1000);
     if (bot->GetMoney() < money)
+    {
+        EventLog::Honesty(bot, "Gold", "factory_refresh", 0, money - bot->GetMoney());
         bot->SetMoney(money);
+    }
     // bot->SaveToDB(false, false);
 }
 
@@ -1977,8 +1991,11 @@ public:
         }
 
         bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        ++destroyed;
         return true;
     }
+
+    uint32 destroyed = 0;
 
 private:
     bool CanKeep(uint32 id)
@@ -3997,6 +4014,7 @@ void PlayerbotFactory::ClearInventory()
 
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor);
+    EventLog::Honesty(bot, "Item", "factory_wipe", 0, visitor.destroyed);
 }
 
 void PlayerbotFactory::ClearAllItems()
@@ -4006,6 +4024,7 @@ void PlayerbotFactory::ClearAllItems()
 
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor, ITERATE_ALL_ITEMS);
+    EventLog::Honesty(bot, "Item", "factory_wipe", 0, visitor.destroyed);
 }
 
 static void DestroyObsoleteAmmo(Player* bot, ItemTemplate const* ammo)
@@ -4255,6 +4274,7 @@ void PlayerbotFactory::InitMounts()
         if (spell)
         {
             bot->learnSpell(spell);
+            EventLog::Honesty(bot, "Spell", "factory_mount", spell);
             LOG_DEBUG("playerbots", "Bot {} ({}) learned {} mount {}", bot->GetGUID().ToString().c_str(),
                       bot->GetLevel(), type == 0 ? "slow" : (type == 1 ? "fast" : "flying"), spell);
         }
@@ -5796,6 +5816,7 @@ void PlayerbotFactory::InitAttunementQuests()
         if (!questsToComplete.empty())
         {
             InitQuests(questsToComplete, false);
+            EventLog::Honesty(bot, "Item", "factory_attunement", 0, questsToComplete.size());
         }
     }
 

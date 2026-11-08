@@ -13,6 +13,7 @@
 #include "BattlegroundMgr.h"
 #include "Cell.h"
 #include "CellImpl.h"
+#include "CensusMgr.h"
 #include "ChannelMgr.h"
 #include "Chat.h"
 #include "Common.h"
@@ -1907,6 +1908,7 @@ void RandomPlayerbotMgr::Revive(Player* player)
     SetEventValue(bot, "dead", 0, 0);
     SetEventValue(bot, "revive", 0, 0);
 
+    EventLog::SourceScope reviveScope("mgr_revive");
     Refresh(player);
     RandomTeleportGrindForLevel(player);
 }
@@ -2040,6 +2042,7 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
             botAI->Reset(true);
         bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
         bot->TeleportTo(loc.GetMapId(), x, y, z, 0);
+        EventLog::Honesty(bot, "Teleport", EventLog::CurrentSource(), loc.GetMapId());
         bot->SendMovementFlagUpdate();
 
         if (pmo)
@@ -2148,6 +2151,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
         {
             LOG_DEBUG("playerbots", "Random teleporting bot {} to a quest giver ({} candidates)",
                       bot->GetName().c_str(), qlocs.size());
+            EventLog::SourceScope levelScope("mgr_level");
             RandomTeleport(bot, qlocs, /*hearth=*/false);
             return;
         }
@@ -2158,6 +2162,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
         std::vector<WorldLocation> locs = sTravelMgr.GetCityLocations(bot);
         if (!locs.empty())
         {
+            EventLog::SourceScope cityScope("mgr_city");
             RandomTeleport(bot, locs, /*hearth=*/true);
             return;
         }
@@ -2174,6 +2179,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 
     if (!locs.empty())
     {
+        EventLog::SourceScope hubScope("mgr_hub");
         RandomTeleport(bot, locs, false);
         return;
     }
@@ -2537,6 +2543,7 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (bot->isDead())
     {
         bot->ResurrectPlayer(1.0f);
+        EventLog::Honesty(bot, "Resurrect", "mgr_refresh");
         bot->SpawnCorpseBones();
         botAI->ResetStrategies(false);
     }
@@ -2554,6 +2561,7 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     botAI->Reset();
 
     bot->DurabilityRepairAll(false, 1.0f, false);
+    EventLog::Honesty(bot, "Repair", "mgr_refresh");
     bot->SetFullHealth();
     bot->SetPvP(sWorld->IsPvPRealm());
     PlayerbotFactory factory(bot, bot->GetLevel());
@@ -2566,7 +2574,9 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
         bot->SetPower(POWER_ENERGY, bot->GetMaxPower(POWER_ENERGY));
 
     uint32 money = bot->GetMoney();
-    bot->SetMoney(money + 500 * sqrt(urand(1, bot->GetLevel() * 5)));
+    uint32 const refreshMoney = 500 * sqrt(urand(1, bot->GetLevel() * 5));
+    bot->SetMoney(money + refreshMoney);
+    EventLog::Honesty(bot, "Gold", "mgr_refresh", 0, refreshMoney);
 
     if (bot->GetGroup())
         botAI->LeaveOrDisbandGroup();
@@ -3226,6 +3236,7 @@ void RandomPlayerbotMgr::OnPlayerLogin(Player* player)
 
         player->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
         player->TeleportTo(botPos);
+        EventLog::Honesty(player, "Teleport", "mgr_to_player", botPos.GetMapId());
 
         // player->Relocate(botPos.getX(), botPos.getY(), botPos.getZ(), botPos.getO());
     }
@@ -3889,6 +3900,7 @@ void RandomPlayerbotMgr::RandomTeleportForRpg(Player* bot)
     uint32 level = bot->GetLevel();
     LOG_DEBUG("playerbots", "Random teleporting bot {} for RPG ({} locations available)", bot->GetName().c_str(),
               rpgLocsCacheLevel[race].size());
+    EventLog::SourceScope rpgScope("mgr_rpg");
     RandomTeleport(bot, rpgLocsCacheLevel[race][level], true);
 }
 
@@ -4074,6 +4086,7 @@ bool RandomPlayerbotMgr::PlaceArenaOnlyHome(Player* bot)
     LOG_DEBUG("playerbots", "Bot {} <{}>: arena only, waits on map {}", bot->GetGUID().GetCounter(), bot->GetName(),
               home.GetMapId());
     bot->TeleportTo(home);
+    EventLog::Honesty(bot, "Teleport", "mgr_arena_wait", home.GetMapId());
     return true;
 }
 

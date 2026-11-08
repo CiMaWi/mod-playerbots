@@ -6,6 +6,7 @@
 
 #include "AutoMaintenanceOnLevelupAction.h"
 #include "BroadcastHelper.h"
+#include "CensusMgr.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
@@ -46,6 +47,7 @@ void AutoMaintenanceOnLevelupAction::AutoPickTalents()
 
     PlayerbotFactory factory(bot, bot->GetLevel());
     factory.InitTalentsTree(true, true, isRandomBot);
+    EventLog::Honesty(bot, "Talent", "levelup_maintenance");
     factory.InitPetTalents();
 }
 
@@ -81,8 +83,10 @@ void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*ou
 {
     PlayerbotFactory factory(bot, bot->GetLevel());
     factory.InitSkills();
+    EventLog::Honesty(bot, "Skill", "levelup_maintenance");
     factory.InitClassSpells();
     factory.InitAvailableSpells();
+    EventLog::Honesty(bot, "Spell", "levelup_maintenance");
     factory.InitPet();
 }
 
@@ -174,7 +178,11 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
     factory.InitFood();
     factory.InitConsumables();
     factory.InitPotions();
+    EventLog::Honesty(bot, "Item", "levelup_maintenance");
 
     if (sPlayerbotAIConfig.AutoUpgradeEquip)
+    {
         factory.InitEquipment(true);
+        EventLog::Honesty(bot, "Item", "levelup_maintenance");
+    }
 }

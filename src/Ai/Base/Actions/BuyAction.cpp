@@ -6,6 +6,7 @@
 
 #include "BuyAction.h"
 #include "BudgetValues.h"
+#include "CensusMgr.h"
 #include "DBCStores.h"
 #include "Event.h"
 #include "ItemCountValue.h"
@@ -264,7 +265,10 @@ bool BuyAction::BuyItem(VendorItemData const* tItems, ObjectGuid vendorguid, Ite
 
         uint32 botMoney = bot->GetMoney();
         if (botAI->HasCheat(BotCheatMask::gold))
+        {
             bot->SetMoney(10000000);
+            EventLog::Honesty(bot, "Gold", "cheat_gold", 0, int64(10000000) - int64(botMoney));
+        }
 
         bot->BuyItemFromVendorSlot(vendorguid, slot, itemId, 1, NULL_BAG, NULL_SLOT);
 

@@ -5,6 +5,7 @@
  */
 
 #include "ReviveFromCorpseAction.h"
+#include "CensusMgr.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "FleeManager.h"
@@ -333,6 +334,7 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                           bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
                 PlayerbotChatHandler ch(bot);
                 bot->ResurrectPlayer(0.5f);
+                EventLog::Honesty(bot, "Resurrect", "spirit_healer_free");
                 bot->SpawnCorpseBones();
                 context->GetValue<Unit*>("current target")->Set(nullptr);
                 bot->SetTarget();

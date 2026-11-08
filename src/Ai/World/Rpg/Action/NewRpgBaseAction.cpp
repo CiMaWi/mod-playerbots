@@ -6,6 +6,7 @@
 
 #include "NewRpgBaseAction.h"
 #include "BroadcastHelper.h"
+#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Creature.h"
 #include "GameObject.h"
@@ -127,6 +128,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
             dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId(), bot->GetZoneId(),
             zone_name);
         bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
+        EventLog::Honesty(bot, "Teleport", "stuck_teleport", dest.GetMapId());
         return bot->TeleportTo(dest);
     }
 
