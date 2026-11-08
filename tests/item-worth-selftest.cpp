@@ -6,7 +6,9 @@
 
 // Standalone check of the item and slot worth rules (src/Ai/World/Rpg/ItemWorthRules.h): level bands, item worth and
 // the never-destroy classes, the lowest-worth victim and the margin rule, the rolling measurements, slot worth with
-// its falling margin, bag worth and the bag purchase against price, reserve, thrift and budget.
+// its falling margin, bag worth and the bag purchase against price, reserve, thrift and budget, and the errand rule:
+// when bags are full enough to check, when a trip to a vendor is worth it, the measured trip minutes and the
+// destroy rule agreeing with the trip rule.
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -22,6 +24,7 @@ using WorldTravel::SlotMeasure;
 using WorldTravel::SlotRates;
 using WorldTravel::SpaceCandidate;
 using WorldTravel::SpaceClass;
+using WorldTravel::TripInput;
 
 namespace
 {
@@ -34,6 +37,7 @@ constexpr uint32_t TRAINING_RESERVE = 10 * GOLD;
 constexpr uint32_t HIGH_LOOT_SLOTS_PER_HOUR = 40;
 constexpr uint32_t FREE_SLOTS = 4;
 constexpr uint32_t BUDGET_PERCENT = 50;
+constexpr uint32_t NEXT_STOP_MINUTES = 30;
 
 int passed = 0;
 int failed = 0;
@@ -244,6 +248,99 @@ void CheckBagPurchase()
     uint32_t const roomy = WorldTravel::BagWorth(rates, 30, BAG_SLOTS, 0, 30);
     Check(roomy < worth, "a bot with room values the same bag less");
 }
+
+TripInput FullBotTrip(uint32_t sellableSlots, float walkMinutes)
+{
+    return WorldTravel::MakeTripInput(SlotMeasure{}, WorldTravel::DEFAULT_SLOT_BANDS[BAND_LEVEL_30], 0, sellableSlots,
+                                      walkMinutes, NEXT_STOP_MINUTES);
+}
+
+void CheckErrands()
+{
+    SlotMeasure measure;
+    uint32_t const now = 5000;
+    Check(!WorldTravel::ErrandDue(measure, WorldTravel::ERRAND_PRESSURE_PERCENT - 1, now),
+          "no check below the pressure");
+    Check(WorldTravel::ErrandDue(measure, WorldTravel::ERRAND_PRESSURE_PERCENT, now), "a check at the pressure");
+    WorldTravel::StampErrandCheck(measure, now);
+    Check(!WorldTravel::ErrandDue(measure, 100, now + WorldTravel::ERRAND_RETRY_MS - 1),
+          "cool-down: no check within the retry time of the last one");
+    Check(WorldTravel::ErrandDue(measure, 100, now + WorldTravel::ERRAND_RETRY_MS), "a check after the retry time");
+    SlotMeasure wrapped;
+    WorldTravel::StampErrandCheck(wrapped, UINT32_MAX - 1000);
+    Check(!WorldTravel::ErrandDue(wrapped, 100, 1000) &&
+              WorldTravel::ErrandDue(wrapped, 100, WorldTravel::ERRAND_RETRY_MS),
+          "the cool-down survives the millisecond clock wrapping");
+
+    // Band 20-39 defaults: r 20, t 10, e 100; a full bot freeing 10 slots saves (60 - 200 / 11) minutes an hour
+    Check(WorldTravel::TripWorthIt(FullBotTrip(10, 5.0f)),
+          "exit: a full bot with many sellable stacks and a close vendor makes the trip");
+    TripInput roomy = FullBotTrip(10, 1.0f);
+    roomy.FreeSlots = 30;
+    Check(!WorldTravel::TripWorthIt(roomy), "exit: plenty of free slots: no trip");
+    Check(!WorldTravel::TripWorthIt(FullBotTrip(2, 1.0f)), "exit: two sellable stacks are not worth a trip");
+    Check(WorldTravel::TripWorthIt(FullBotTrip(5, 2.0f)) && !WorldTravel::TripWorthIt(FullBotTrip(5, 5.0f)),
+          "exit: five stacks are worth a 2-minute walk but not a 5-minute one (the trip cost beats the saving)");
+    Check(!WorldTravel::TripWorthIt(FullBotTrip(10, WorldTravel::ERRAND_MAX_WALK_MINUTES + 0.5f)),
+          "exit: no vendor beyond the longest walk");
+    Check(!WorldTravel::TripWorthIt(FullBotTrip(0, 0.5f)), "nothing to sell: no trip");
+    TripInput noStop = FullBotTrip(10, 1.0f);
+    noStop.MinutesToNextStop = 0.0f;
+    Check(!WorldTravel::TripWorthIt(noStop), "a next stop of 0 minutes: no trip just for selling");
+
+    TripInput lossy = FullBotTrip(3, 1.0f);
+    Check(!WorldTravel::TripWorthIt(lossy), "three stacks alone are not worth the trip");
+    lossy.Rates.LostCopperPerHour = 2000.0f;
+    Check(WorldTravel::TripWorthIt(lossy), "with loot lost for lack of space the same trip is worth it");
+
+    Check(std::fabs(WorldTravel::WalkMinutes(420.0f, 7.0f) - 1.0f) < 0.001f, "420 yards at 7 yards a second: 1 minute");
+    Check(!WorldTravel::TripWorthIt(FullBotTrip(10, WorldTravel::WalkMinutes(100.0f, 0.0f))),
+          "a bot that cannot move makes no trip");
+
+    SlotMeasure trips;
+    WorldTravel::AddTripMinutes(trips, 6.0f);
+    Check(trips.HasTrip && trips.TripMinutes == 6.0f, "the first errand sets t");
+    WorldTravel::AddTripMinutes(trips, 4.0f);
+    Check(trips.TripMinutes == 5.0f, "t is the average of the old value and the new trip");
+    Check(WorldTravel::CurrentRates(trips, WorldTravel::DEFAULT_SLOT_BANDS[BAND_LEVEL_30]).TripMinutes == 5.0f,
+          "own t once measured");
+    TripInput quick = WorldTravel::MakeTripInput(trips, WorldTravel::DEFAULT_SLOT_BANDS[BAND_LEVEL_30], 0, 5, 5.0f,
+                                                 NEXT_STOP_MINUTES);
+    Check(WorldTravel::TripWorthIt(quick), "a bot with short trips makes one the band's t refused");
+
+    DestroyForSpaceInput destroy;
+    destroy.LootWorth = 200;
+    destroy.VictimWorth = 100;
+    destroy.MarginPercent = 50;
+    destroy.TripWorthIt = WorldTravel::TripWorthIt(FullBotTrip(10, 5.0f));
+    Check(!WorldTravel::ShouldDestroyFor(destroy), "TripWorthIt agrees: no destroy when the trip rule makes the trip");
+    destroy.TripWorthIt = WorldTravel::TripWorthIt(FullBotTrip(2, 5.0f));
+    Check(WorldTravel::ShouldDestroyFor(destroy), "TripWorthIt agrees: destroy when the trip rule makes none");
+    destroy.TripWorthIt = true;
+    destroy.InInstance = true;
+    Check(WorldTravel::ShouldDestroyFor(destroy), "in an instance the trip rule does not matter");
+
+    // While looting, the trip counts only when the errand can start now
+    TripInput const worthIt = FullBotTrip(10, 5.0f);
+    SlotMeasure looting;
+    Check(WorldTravel::LootWaitsForTrip(true, looting, 100, now, worthIt),
+          "loot waits for a trip the bot may start now");
+    Check(!WorldTravel::LootWaitsForTrip(false, looting, 100, now, worthIt),
+          "a questing bot (its status allows no errand) does not wait for a trip");
+    Check(!WorldTravel::LootWaitsForTrip(true, looting, WorldTravel::ERRAND_PRESSURE_PERCENT - 1, now, worthIt),
+          "below the pressure loot does not wait");
+    Check(!WorldTravel::LootWaitsForTrip(true, looting, 100, now, FullBotTrip(2, 5.0f)),
+          "loot does not wait for a trip not worth it");
+    WorldTravel::StampErrandCheck(looting, now);
+    Check(!WorldTravel::LootWaitsForTrip(true, looting, 100, now + 1000, worthIt),
+          "within the retry time of the last errand check loot does not wait");
+    DestroyForSpaceInput questDrop;
+    questDrop.LootWorth = WorldTravel::WORTH_PRICELESS;
+    questDrop.VictimWorth = 100;
+    questDrop.MarginPercent = 50;
+    questDrop.TripWorthIt = WorldTravel::LootWaitsForTrip(false, SlotMeasure(), 100, now, worthIt);
+    Check(WorldTravel::ShouldDestroyFor(questDrop), "review 1: a questing bot destroys junk for a quest drop");
+}
 }  // namespace
 
 int main()
@@ -254,6 +351,7 @@ int main()
     CheckMeasure();
     CheckSlotWorth();
     CheckBagPurchase();
+    CheckErrands();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

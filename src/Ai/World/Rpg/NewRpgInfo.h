@@ -90,9 +90,13 @@ struct NewRpgInfo
     struct Travel
     {
     };
-    // RPG_ERRANDS: runs a list of town errands (filled by WT3)
+    // RPG_ERRANDS: a trip to a vendor to sell, repair and maybe buy a bag
     struct Errands
     {
+        uint32 vendorEntry{0};
+        WorldPosition vendorPos{};
+        ObjectGuid vendor;  // the creature, found near vendorPos on arrival
+        uint32 moneyAtStart{0};
     };
     struct Idle
     {
@@ -146,7 +150,7 @@ struct NewRpgInfo
     void ChangeToDoGather();
     void ChangeToRest();
     void ChangeToTravel();
-    void ChangeToErrands();
+    void ChangeToErrands(uint32 vendorEntry, WorldPosition vendorPos, uint32 money);
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);
     void Reset();

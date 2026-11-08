@@ -13,8 +13,9 @@
 #include <limits>
 #include <vector>
 
-// The Player-free rules of item worth, slot worth, destroying for space and buying bags for persistent bots. All worth
-// is in copper. Header-only so tests/item-worth-selftest.cpp checks the same code the server runs.
+// The Player-free rules of item worth, slot worth, destroying for space, buying bags and inventory errands for
+// persistent bots. All worth is in copper. Header-only so tests/item-worth-selftest.cpp checks the same code the server
+// runs.
 namespace WorldTravel
 {
 constexpr uint32_t LEVEL_BAND_COUNT = 5;
@@ -160,6 +161,16 @@ struct SlotMeasure
     bool HasOwn = false;
     float LootSlotsPerHour = 0.0f;   // r
     float LostCopperPerHour = 0.0f;  // d: destroyed or left behind for lack of space
+    bool HasTrip = false;
+    float TripMinutes = 0.0f;  // t: from the start of an errand to the end of its vendor visit
+    // The last errand check (a start, an end or a refusal) and the vendor it found, for TripWorthIt while looting
+    bool ErrandChecked = false;
+    uint32_t ErrandCheckMs = 0;
+    bool HasVendor = false;
+    uint32_t VendorMapId = 0;
+    float VendorX = 0.0f;
+    float VendorY = 0.0f;
+    float VendorZ = 0.0f;
 };
 
 // Closes a window that is at least MEASURE_WINDOW_MS old; the new rates are the average of the old ones and the
@@ -218,12 +229,20 @@ struct SlotRates
     float EarnCopperPerMinute = 0.0f;  // e
 };
 
-// The bot's own r and d once measured, else the band's; t and e are the band's until WT3 measures them
+// The minutes of a finished errand; t is the average of the old value and the new trip
+inline void AddTripMinutes(SlotMeasure& measure, float minutes)
+{
+    measure.TripMinutes = measure.HasTrip ? (measure.TripMinutes + minutes) / 2.0f : minutes;
+    measure.HasTrip = true;
+}
+
+// The bot's own r and d once measured and its own t after its first errand, else the band's; e stays the band's
+// until the earning rate is measured (WT15)
 inline SlotRates CurrentRates(SlotMeasure const& measure, SlotBand const& band)
 {
     SlotRates rates;
     rates.LootSlotsPerHour = measure.HasOwn ? measure.LootSlotsPerHour : static_cast<float>(band.LootSlotsPerHour);
-    rates.TripMinutes = static_cast<float>(band.TripMinutes);
+    rates.TripMinutes = measure.HasTrip ? measure.TripMinutes : static_cast<float>(band.TripMinutes);
     rates.LostCopperPerHour = measure.HasOwn ? measure.LostCopperPerHour : 0.0f;
     rates.EarnCopperPerMinute = static_cast<float>(band.EarnCopperPerMinute);
     return rates;
@@ -288,6 +307,85 @@ inline bool ShouldBuyBag(BagBuyInput const& in)
         return false;
 
     return static_cast<uint64_t>(in.Price) * PERCENT <= (in.Gold - reserve) * in.BudgetPercent;
+}
+
+// Inventory errands: a trip to a vendor to sell, repair and maybe buy a bag. A bot whose general bags are this full
+// checks whether a trip is worth it
+constexpr uint32_t ERRAND_PRESSURE_PERCENT = 80;
+// After an errand check (a start, an end or a refusal) the next waits this long, so that bags full of things no vendor
+// takes do not send the bot on trip after trip
+constexpr uint32_t ERRAND_RETRY_MS = 5 * 60 * 1000;
+// A vendor farther than this walk is never chosen; the deadline leaves room for the walk, fights and the visit
+constexpr float ERRAND_MAX_WALK_MINUTES = 10.0f;
+constexpr uint32_t ERRAND_DEADLINE_MS = 20 * 60 * 1000;
+constexpr float SECONDS_PER_MINUTE = 60.0f;
+
+inline void StampErrandCheck(SlotMeasure& measure, uint32_t nowMs)
+{
+    measure.ErrandChecked = true;
+    measure.ErrandCheckMs = nowMs;
+}
+
+// The cheap part of the errand rule, for the trigger: bags this full and no errand check within the retry time
+inline bool ErrandDue(SlotMeasure const& measure, uint32_t usedPercent, uint32_t nowMs)
+{
+    if (usedPercent < ERRAND_PRESSURE_PERCENT)
+        return false;
+
+    return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
+}
+
+// Straight-line minutes at the bot's run speed
+inline float WalkMinutes(float yards, float yardsPerSecond)
+{
+    if (yardsPerSecond <= 0.0f)
+        return std::numeric_limits<float>::max();
+
+    return yards / yardsPerSecond / SECONDS_PER_MINUTE;
+}
+
+struct TripInput
+{
+    SlotRates Rates;
+    uint32_t FreeSlots = 0;          // free general slots now
+    uint32_t SellableSlots = 0;      // stacks a vendor would take
+    float WalkMinutes = 0.0f;        // to the vendor
+    float MinutesToNextStop = 0.0f;  // until the bot passes a vendor anyway
+};
+
+inline TripInput MakeTripInput(SlotMeasure const& measure, SlotBand const& band, uint32_t freeSlots,
+                               uint32_t sellableSlots, float walkMinutes, uint32_t minutesToNextStop)
+{
+    TripInput in;
+    in.Rates = CurrentRates(measure, band);
+    in.FreeSlots = freeSlots;
+    in.SellableSlots = sellableSlots;
+    in.WalkMinutes = walkMinutes;
+    in.MinutesToNextStop = static_cast<float>(minutesToNextStop);
+    return in;
+}
+
+// A trip just for selling is worth it when staying this full until the next natural stop loses more than the trip
+// costs: the slots it frees are worth SlotsWorthPerHour until that stop; the trip takes a usual trip's minutes (t)
+// plus the walk to this vendor (standing for the way back) at the earning rate
+inline bool TripWorthIt(TripInput const& in)
+{
+    if (!in.SellableSlots || in.WalkMinutes > ERRAND_MAX_WALK_MINUTES)
+        return false;
+
+    float const saved =
+        SlotsWorthPerHour(in.Rates, in.FreeSlots, in.SellableSlots) * in.MinutesToNextStop / MINUTES_PER_HOUR;
+    float const cost = (in.Rates.TripMinutes + in.WalkMinutes) * in.Rates.EarnCopperPerMinute;
+    return saved > cost;
+}
+
+// While looting, a full bot leaves loot for a trip only when the errand can start now: it may leave its RPG status (a
+// questing or travelling bot may not) and is due for an errand check. Otherwise the destroy rule without a trip holds,
+// so a questing bot still makes room for a quest drop.
+inline bool LootWaitsForTrip(bool mayLeaveStatus, SlotMeasure const& measure, uint32_t usedPercent, uint32_t nowMs,
+                             TripInput const& in)
+{
+    return mayLeaveStatus && ErrandDue(measure, usedPercent, nowMs) && TripWorthIt(in);
 }
 }  // namespace WorldTravel
 

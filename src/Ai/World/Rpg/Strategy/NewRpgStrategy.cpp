@@ -83,6 +83,23 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    triggers.push_back(
+        new TriggerNode(
+            "errands status",
+            {
+                NextAction("new rpg errands", 3.0f)
+            }
+        )
+    );
+    // Above the status update (11), which would otherwise pick the next status first
+    triggers.push_back(
+        new TriggerNode(
+            "inventory pressure",
+            {
+                NextAction("new rpg start errands", 12.0f)
+            }
+        )
+    );
 }
 
 void NewRpgStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

@@ -269,6 +269,8 @@ public:
         creators["travel flight status"] = &TriggerContext::travel_flight_status;
         creators["outdoor pvp status"] = &TriggerContext::outdoor_pvp_status;
         creators["do gather status"] = &TriggerContext::do_gather_status;
+        creators["errands status"] = &TriggerContext::errands_status;
+        creators["inventory pressure"] = &TriggerContext::inventory_pressure;
         creators["can self resurrect"] = &TriggerContext::can_self_resurrect;
         creators["can fish"] = &TriggerContext::can_fish;
         creators["can use fishing bobber"] = &TriggerContext::can_use_fishing_bobber;
@@ -502,6 +504,8 @@ private:
     static Trigger* travel_flight_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_TRAVEL_FLIGHT); }
     static Trigger* outdoor_pvp_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_OUTDOOR_PVP); }
     static Trigger* do_gather_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_DO_GATHER); }
+    static Trigger* errands_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_ERRANDS); }
+    static Trigger* inventory_pressure(PlayerbotAI* botAI) { return new InventoryPressureTrigger(botAI); }
     static Trigger* can_self_resurrect(PlayerbotAI* botAI) { return new SelfResurrectTrigger(botAI); }
     static Trigger* can_fish(PlayerbotAI* botAI) { return new CanFishTrigger(botAI); }
     static Trigger* can_use_fishing_bobber(PlayerbotAI* botAI) { return new CanUseFishingBobberTrigger(botAI); }

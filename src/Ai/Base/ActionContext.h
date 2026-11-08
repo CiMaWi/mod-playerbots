@@ -303,6 +303,8 @@ public:
         creators["new rpg travel flight"] = &ActionContext::new_rpg_travel_flight;
         creators["new rpg outdoor pvp"] = &ActionContext::new_rpg_outdoor_pvp;
         creators["new rpg do gather"] = &ActionContext::new_rpg_do_gather;
+        creators["new rpg start errands"] = &ActionContext::new_rpg_start_errands;
+        creators["new rpg errands"] = &ActionContext::new_rpg_errands;
         creators["wait for attack keep safe distance"] = &ActionContext::wait_for_attack_keep_safe_distance;
     }
 
@@ -527,6 +529,8 @@ private:
     static Action* new_rpg_travel_flight(PlayerbotAI* botAI) { return new NewRpgTravelFlightAction(botAI); }
     static Action* new_rpg_outdoor_pvp(PlayerbotAI* botAI) { return new NewRpgOutdoorPvpAction(botAI); }
     static Action* new_rpg_do_gather(PlayerbotAI* botAI) { return new NewRpgDoGatherAction(botAI); }
+    static Action* new_rpg_start_errands(PlayerbotAI* botAI) { return new NewRpgStartErrandsAction(botAI); }
+    static Action* new_rpg_errands(PlayerbotAI* botAI) { return new NewRpgErrandsAction(botAI); }
     static Action* wait_for_attack_keep_safe_distance(PlayerbotAI* botAI) { return new WaitForAttackKeepSafeDistanceAction(botAI); }
 };
 

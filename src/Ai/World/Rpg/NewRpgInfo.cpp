@@ -78,10 +78,14 @@ void NewRpgInfo::ChangeToTravel()
     data = Travel{};
 }
 
-void NewRpgInfo::ChangeToErrands()
+void NewRpgInfo::ChangeToErrands(uint32 vendorEntry, WorldPosition vendorPos, uint32 money)
 {
     startT = getMSTime();
-    data = Errands{};
+    Errands errands;
+    errands.vendorEntry = vendorEntry;
+    errands.vendorPos = vendorPos;
+    errands.moneyAtStart = money;
+    data = errands;
 }
 
 void NewRpgInfo::ChangeToIdle()
@@ -235,6 +239,10 @@ std::string NewRpgInfo::ToString()
         else if constexpr (std::is_same_v<T, Errands>)
         {
             out << "ERRANDS";
+            out << "\nvendorEntry: " << arg.vendorEntry;
+            out << "\nvendorPos: " << arg.vendorPos.GetMapId() << " " << arg.vendorPos.GetPositionX() << " "
+                << arg.vendorPos.GetPositionY() << " " << arg.vendorPos.GetPositionZ();
+            out << "\nfound: " << (arg.vendor.IsEmpty() ? 0 : 1);
             out << "\nlastErrands: " << startT;
         }
         else

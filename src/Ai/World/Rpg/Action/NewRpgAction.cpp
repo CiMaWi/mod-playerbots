@@ -12,6 +12,9 @@
 #include "DBCStores.h"
 #include "GossipDef.h"
 #include "IVMapMgr.h"
+#include "InventorySlots.h"
+#include "ItemUsageValue.h"
+#include "ItemWorthRules.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
@@ -25,6 +28,7 @@
 #include "PathGenerator.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
@@ -37,6 +41,36 @@
 #include "G3D/Vector2.h"
 #include <cmath>
 #include <cstdlib>
+#include <limits>
+
+namespace
+{
+// Ends the bot's errand: stamps the errand check, measures t from a visited vendor and records the run
+void FinishErrands(PlayerbotAI* botAI, bool visited)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    auto const* data = std::get_if<NewRpgInfo::Errands>(&info.data);
+    if (!data)
+        return;
+
+    Player* bot = botAI->GetBot();
+    WorldTravel::SlotMeasure& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    uint32 const now = getMSTime();
+    float const minutes = static_cast<float>(getMSTimeDiff(info.startT, now)) / (MINUTE * IN_MILLISECONDS);
+    WorldTravel::StampErrandCheck(measure, now);
+    if (visited)
+    {
+        WorldTravel::AddTripMinutes(measure, minutes);
+        EventLog::Emit(bot, "Inventory", "errand_run", data->vendorEntry,
+                       int64(bot->GetMoney()) - int64(data->moneyAtStart));
+    }
+    else
+        EventLog::Emit(bot, "Inventory", "errand_abort", data->vendorEntry, int64(minutes));
+
+    info.ChangeToIdle();
+}
+}  // namespace
 
 void TellRpgStatusAction::WhisperStatusChange(Player* owner, std::string const& statusName)
 {
@@ -353,6 +387,16 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             }
             break;
         }
+        case RPG_ERRANDS:
+        {
+            // ERRANDS -> IDLE: a trip that has not ended in time is given up
+            if (info.HasStatusPersisted(WorldTravel::ERRAND_DEADLINE_MS))
+            {
+                FinishErrands(botAI, false);
+                return true;
+            }
+            break;
+        }
         default:
             break;
     }
@@ -481,6 +525,126 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         return MoveRandomNear(15.0f);
     }
 
+    return true;
+}
+
+bool NewRpgStartErrandsAction::Execute(Event /*event*/)
+{
+    WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::StampErrandCheck(measure, getMSTime());
+    measure.HasVendor = false;
+
+    // The nearest friendly vendor on the bot's map (the list is built at load; no route to other maps yet)
+    uint32 const mapId = bot->GetMapId();
+    uint32 vendorEntry = 0;
+    WorldPosition vendorPos;
+    float vendorYards = std::numeric_limits<float>::max();
+    for (TravelDestination* destination : TravelMgr::instance().getRpgTravelDestinations(bot, true, true, 0.0f))
+    {
+        CreatureTemplate const* cInfo = static_cast<RpgTravelDestination*>(destination)->GetCreatureTemplate();
+        if (!cInfo || !(cInfo->npcflag & UNIT_NPC_FLAG_VENDOR))
+            continue;
+
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(cInfo->faction);
+        if (!faction || bot->GetReputationRank(faction->faction) <= REP_NEUTRAL)
+            continue;
+
+        for (WorldPosition* point : destination->getPoints(true))
+        {
+            if (point->GetMapId() != mapId)
+                continue;
+
+            float const yards = bot->GetExactDist(point->GetPositionX(), point->GetPositionY(), point->GetPositionZ());
+            if (yards >= vendorYards)
+                continue;
+
+            vendorEntry = cInfo->Entry;
+            vendorPos = *point;
+            vendorYards = yards;
+        }
+    }
+
+    if (!vendorEntry)
+        return false;
+
+    float const walkMinutes = WorldTravel::WalkMinutes(vendorYards, bot->GetSpeed(MOVE_RUN));
+    measure.HasVendor = true;
+    measure.VendorMapId = mapId;
+    measure.VendorX = vendorPos.GetPositionX();
+    measure.VendorY = vendorPos.GetPositionY();
+    measure.VendorZ = vendorPos.GetPositionZ();
+
+    // The stacks the sell action would take from the general slots (as the destroy rule counts them)
+    uint32 sellableSlots = 0;
+    for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
+        for (Item* item :
+             AI_VALUE2(std::vector<Item*>, "inventory items", "usage " + std::to_string(static_cast<uint32>(usage))))
+            if (WorldTravel::InGeneralSlot(bot, item))
+                ++sellableSlots;
+
+    WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
+    if (!WorldTravel::TripWorthIt(WorldTravel::MakeTripInput(
+            measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], WorldTravel::FreeGeneralSlots(bot),
+            sellableSlots, walkMinutes, config.ErrandNextStopMinutes)))
+        return false;
+
+    botAI->rpgInfo.ChangeToErrands(vendorEntry, vendorPos, bot->GetMoney());
+    return true;
+}
+
+bool NewRpgErrandsAction::Execute(Event /*event*/)
+{
+    auto* data = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    if (!data)
+        return false;
+
+    if (data->vendor.IsEmpty())
+    {
+        if (bot->GetExactDist(data->vendorPos) > VENDOR_SEARCH_YARDS)
+        {
+            if (MoveFarTo(data->vendorPos))
+                return true;
+            return MoveRandomNear(10.0f);
+        }
+
+        Creature* found = bot->FindNearestCreature(data->vendorEntry, VENDOR_SEARCH_YARDS);
+        if (!found)
+        {
+            FinishErrands(botAI, false);
+            return true;
+        }
+        data->vendor = found->GetGUID();
+    }
+
+    WorldObject* object = ObjectAccessor::GetWorldObject(*bot, data->vendor);
+    Creature* vendor = object ? object->ToCreature() : nullptr;
+    if (!vendor || !vendor->IsAlive())
+    {
+        FinishErrands(botAI, false);
+        return true;
+    }
+
+    if (!IsWithinInteractionDist(vendor))
+    {
+        if (MoveWorldObjectTo(data->vendor))
+            return true;
+        return MoveRandomNear(15.0f);
+    }
+
+    // The vendor visit of the npc wander: sell by worth, buy (a bag by worth) and repair, all paid
+    constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
+    botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+    // A bag bought earlier may lie inside the bag it should replace, where the swap always fails
+    if (WorldTravel::MoveSpareBagToBackpack(bot, ItemUsageValue::SmallestBagSize(bot)))
+        botAI->DoSpecificAction("equip upgrades packet action");
+
+    if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
+        botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
+
+    if (vendor->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))
+        botAI->DoSpecificAction("repair", Event("repair"), true);
+
+    FinishErrands(botAI, true);
     return true;
 }
 

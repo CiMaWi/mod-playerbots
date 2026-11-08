@@ -2147,6 +2147,16 @@ Playerbots.WorldTravel.Bags.ThriftPercent = 100
 Playerbots.WorldTravel.Bags.BudgetPercent = 50
 Playerbots.WorldTravel.Destroy.MarginPercent = 50
 
+# Inventory errands of persistent bots. A bot whose general bags are at least 80% full checks, at most every 5
+# minutes, whether a trip to the nearest friendly vendor on its map (at most a 10-minute walk) is worth it: the slots
+# that selling frees are worth (as above) for NextStopMinutes, the minutes until it would pass a vendor anyway, and
+# the trip costs its usual trip minutes (measured from its own errands, TripMinutes until then) plus the walk, at
+# EarnCopperPerMinute. A worthwhile trip walks there (no teleport), sells, buys (a bag by worth) and repairs (paid),
+# and records an Inventory event errand_run; a trip given up after 20 minutes records errand_abort. The same rule
+# tells a full bot looting in the world not to destroy items when a trip is worth it. (Range: 0-1440; 0 = no trip
+# just for selling.) Default: 30
+Playerbots.WorldTravel.Errands.NextStopMinutes = 30
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600

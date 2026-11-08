@@ -23,4 +23,22 @@ protected:
     NewRpgStatus status;
 };
 
+namespace WorldTravel
+{
+// A persistent bot alone in the open world, alive and out of combat, in an RPG status an errand may interrupt (the
+// trigger and the destroy rule share it)
+bool ErrandMayStart(PlayerbotAI* botAI);
+}  // namespace WorldTravel
+
+// A persistent bot with full bags in an RPG status it may leave, due for an errand check (ItemWorthRules.h ErrandDue)
+class InventoryPressureTrigger : public Trigger
+{
+public:
+    InventoryPressureTrigger(PlayerbotAI* botAI) : Trigger(botAI, "inventory pressure", CHECK_SECONDS) {}
+    bool IsActive() override;
+
+private:
+    static constexpr int32 CHECK_SECONDS = 30;
+};
+
 #endif

@@ -113,6 +113,26 @@ protected:
     const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
 };
 
+// Chooses the nearest friendly vendor on the bot's map and starts an errand there when the trip is worth it
+class NewRpgStartErrandsAction : public NewRpgBaseAction
+{
+public:
+    NewRpgStartErrandsAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg start errands") {}
+    bool Execute(Event event) override;
+};
+
+// Walks to the errand's vendor, sells, buys and repairs there, then goes IDLE
+class NewRpgErrandsAction : public NewRpgBaseAction
+{
+public:
+    NewRpgErrandsAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg errands") {}
+    bool Execute(Event event) override;
+
+private:
+    // A vendor that walks along its route stays within this distance of its spawn point
+    static constexpr float VENDOR_SEARCH_YARDS = 30.0f;
+};
+
 class NewRpgTravelFlightAction : public NewRpgBaseAction
 {
 public:

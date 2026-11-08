@@ -9,6 +9,7 @@
 #include "CensusMgr.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "InventorySlots.h"
 #include "ItemCountValue.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
@@ -30,7 +31,7 @@ bool ShouldBuyVendorBag(Player* bot, AiObjectContext* context, ItemTemplate cons
 
     WorldTravel::BagBuyInput input;
     input.Price = price;
-    input.Worth = WorldTravel::BagWorth(rates, bot->GetFreeInventorySpace(), proto->ContainerSlots,
+    input.Worth = WorldTravel::BagWorth(rates, WorldTravel::FreeGeneralSlots(bot), proto->ContainerSlots,
                                         ItemUsageValue::SmallestBagSize(bot), band.BagHorizonHours);
     input.Gold = bot->GetMoney();
     // Everything saved before gear: guild, repairs, ammo, training and travel
@@ -144,8 +145,9 @@ bool BuyAction::Execute(Event event)
                     {
                         uint32 const bagPrice =
                             uint32(floor(proto->BuyPrice * bot->GetReputationPriceDiscount(pCreature)));
-                        if (boughtBag || !ShouldBuyVendorBag(bot, context, proto, bagPrice) ||
-                            !BuyItem(tItems, vendorguid, proto))
+                        // A bag bought earlier that could not be equipped yet would be bought again
+                        if (boughtBag || WorldTravel::CarriesSpareBag(bot, ItemUsageValue::SmallestBagSize(bot)) ||
+                            !ShouldBuyVendorBag(bot, context, proto, bagPrice) || !BuyItem(tItems, vendorguid, proto))
                             break;
 
                         boughtBag = true;
