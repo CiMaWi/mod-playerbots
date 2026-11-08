@@ -22,6 +22,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotGuildMgr.h"
@@ -292,11 +293,20 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
 
 void PlayerbotHolder::UpdateSessions()
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("PlayerbotHolder UpdateSessions");
+
     for (PlayerBotMap::const_iterator itr = GetPlayerBotsBegin(); itr != GetPlayerBotsEnd(); ++itr)
     {
         Player* const bot = itr->second;
-        // Nothing else drives a headless session's async query, transaction and holder callbacks
-        bot->GetSession()->ProcessQueryCallbacks();
+        // A bot in the world gets its async query, transaction and holder callbacks from its map's session update
+        // (Map::Update, every tick); nothing else drives them for a headless session outside the world (login, far
+        // teleport). The map updates and this world-thread loop run in different phases of the tick, never at once.
+        if (!bot->IsInWorld())
+        {
+            PerfMonitorScope const scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldHook UpdateSessions callbacks"));
+            bot->GetSession()->ProcessQueryCallbacks();
+        }
+
         if (bot->IsBeingTeleported())
         {
             PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
@@ -316,6 +326,9 @@ void PlayerbotHolder::HandleBotPackets(WorldSession* session)
 {
     while (std::unique_ptr<WorldPacket> packet = session->NextQueuedPacket())
     {
+        // Per handled packet, so an idle bot costs nothing here; also counts the packets of bots owned by real
+        // players, drained from their session update
+        PerfMonitorScope const scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldHook UpdateSessions packets"));
         OpcodeClient opcode = static_cast<OpcodeClient>(packet->GetOpcode());
         ClientOpcodeHandler const* opHandle = opcodeTable[opcode];
         if (!opHandle)

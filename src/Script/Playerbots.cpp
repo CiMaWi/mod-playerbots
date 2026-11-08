@@ -23,7 +23,6 @@
 #include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
 #include <mysqld_error.h>
-#include "AllMapScript.h"
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
@@ -552,25 +551,6 @@ public:
     }
 };
 
-class PlayerbotsAllMapScript : public AllMapScript
-{
-public:
-    PlayerbotsAllMapScript() : AllMapScript("PlayerbotsAllMapScript", {
-        ALLMAPHOOK_CAN_SEND_OBJECT_UPDATES_TO_PLAYER
-    }) {}
-
-    // Bots have no client to render object updates; only self bots still need them
-    bool CanSendObjectUpdatesToPlayer(Map* /*map*/, Player* player) override
-    {
-        PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
-
-        if (botAI == nullptr)
-            return true;
-
-        return IsSelfBot(player);
-    }
-};
-
 class PlayerbotsGlobalScript : public GlobalScript
 {
 public:
@@ -806,7 +786,6 @@ void AddPlayerbotsScripts()
     new PlayerbotsMiscScript();
     new PlayerbotsServerScript();
     new PlayerbotsSessionScript();
-    new PlayerbotsAllMapScript();
     new PlayerbotsGlobalScript();
     new PlayerbotsWorldScript();
     new PlayerBotsBGScript();
