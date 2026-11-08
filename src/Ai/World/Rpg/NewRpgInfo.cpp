@@ -72,12 +72,14 @@ void NewRpgInfo::ChangeToRest()
     data = Rest{};
 }
 
-void NewRpgInfo::ChangeToTravel(WorldPosition dest)
+void NewRpgInfo::ChangeToTravel(WorldPosition dest, std::string place)
 {
     startT = getMSTime();
     Travel travel;
     travel.dest = dest;
     travel.tripStartMs = startT;
+    travel.routeStartMs = startT;
+    travel.place = std::move(place);
     data = std::move(travel);
 }
 

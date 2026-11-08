@@ -15,6 +15,7 @@
 #include "RouteService.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "TravelPlaces.h"
 
 namespace
 {
@@ -201,10 +202,11 @@ bool TravelGraph::HandleSelftestCommand(ChatHandler* handler, char const* /*args
 
     std::vector<std::string> failures;
     std::vector<std::string> notes;
-    // The graph's own checks, the route search's fixed snapshots (RouteRules.h), then a four-worker route service
-    // of its own under load (RouteService.h); the server's service keeps running
+    // The graph's own checks, the route search's fixed snapshots (RouteRules.h), a four-worker route service of its
+    // own under load (RouteService.h; the server's service keeps running), then the named places of `route go`
     uint32 const checks = graph.Selftest(failures, notes) + TravelRoute::Selftest(graph, failures, notes) +
-                          TravelRoute::ServiceSelftest(graph, failures, notes);
+                          TravelRoute::ServiceSelftest(graph, failures, notes) +
+                          TravelPlaces::Selftest(graph, failures, notes);
     for (std::string const& note : notes)
         handler->PSendSysMessage("ROUTE {}", note);
     for (std::string const& failure : failures)

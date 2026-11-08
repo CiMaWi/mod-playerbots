@@ -43,9 +43,12 @@
 #include "WaypointMovementGenerator.h"
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <mutex>
+#include <unordered_map>
 
 namespace
 {
@@ -286,9 +289,84 @@ bool StartRpgDoQuestAction::Execute(Event event)
     return false;
 }
 
+namespace
+{
+constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
+
+std::mutex travelOrdersLock;
+std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
+std::atomic<uint32> travelOrdersWaiting{0};                // travelOrders.size(): the map threads' cheap check
+
+// A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
+bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (order.stop)
+    {
+        auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data);
+        if (!data)
+        {
+            LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
+            return false;
+        }
+        LOG_INFO("playerbots", "[Route] {} gives the trip up: stopped", bot->GetName());
+        EventLog::Emit(bot, "Travel", "abort:stopped", data->trip.replans,
+                       GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS);
+        info.ChangeToIdle();
+        return true;
+    }
+
+    char const* refusal = nullptr;
+    if (!bot->IsAlive())
+        refusal = "dead";
+    else if (bot->IsInFlight())
+        refusal = "in flight";
+    else if (bot->GetMap()->Instanceable())
+        refusal = "in an instance";
+    if (refusal)
+    {
+        LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
+        return false;
+    }
+    LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
+             order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
+    info.ChangeToTravel(order.dest, order.place);
+    return true;
+}
+}  // namespace
+
+void TravelOrders::Post(ObjectGuid bot, TravelOrder order)
+{
+    std::lock_guard<std::mutex> guard(travelOrdersLock);
+    travelOrders[bot] = std::move(order);
+    travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
+}
+
+bool TravelOrders::Take(ObjectGuid bot, TravelOrder& order)
+{
+    if (!travelOrdersWaiting.load(std::memory_order_acquire))
+        return false;
+    std::lock_guard<std::mutex> guard(travelOrdersLock);
+    auto const found = travelOrders.find(bot);
+    if (found == travelOrders.end())
+        return false;
+    order = std::move(found->second);
+    travelOrders.erase(found);
+    // Orders nobody took (the bot logged out) go with the next take
+    for (auto it = travelOrders.begin(); it != travelOrders.end();)
+        it = GetMSTimeDiffToNow(it->second.postedMs) > TRAVEL_ORDER_TTL_MS ? travelOrders.erase(it) : std::next(it);
+    travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
+    return GetMSTimeDiffToNow(order.postedMs) <= TRAVEL_ORDER_TTL_MS;
+}
+
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
+    {
+        TravelOrder order;
+        if (TravelOrders::Take(bot->GetGUID(), order) && ApplyTravelOrder(botAI, bot, order))
+            return true;
+    }
     NewRpgStatus status = info.GetStatus();
     switch (status)
     {
@@ -883,9 +961,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     auto* data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (!data)
         return false;
-    if (GetMSTimeDiffToNow(data->tripStartMs) > TravelLegs::TripDeadlineMs(data->estimateSeconds))
+    if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, bot->IsInFlight()))
     {
-        EndTrip("deadline");
+        EndTrip(*data, "deadline", "abort:deadline");
         return true;
     }
     if (data->route.waiting)
@@ -904,23 +982,31 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     seen.money = bot->GetMoney();
     seen.stuck = data->stuck;
     seen.nowMs = getMSTime();
+    TravelLegs::Trip const& trip = data->trip;
+    uint32 const legBefore = trip.legIdx;
+    uint32 const legStartBefore = trip.legStartMs;
     TravelLegs::Decision const next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
+    // The legs passed this tick (no-op walks are no legs to a reader): id the leg's number, amount its seconds
+    for (uint32 i = legBefore; i < trip.legIdx && i < trip.legs.size(); ++i)
+    {
+        if (!TravelLegs::IsNoOp(trip.legs[i]))
+            EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), i + 1,
+                           i == legBefore ? (seen.nowMs - legStartBefore) / IN_MILLISECONDS : 0);
+    }
     switch (next.act)
     {
         case TravelLegs::Act::Arrived:
-            LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
-                      GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS, data->estimateSeconds,
-                      static_cast<uint32>(data->trip.replans));
-            botAI->rpgInfo.ChangeToIdle();
-            return true;
+            return Arrive(*data);
         case TravelLegs::Act::Walk:
             return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
         case TravelLegs::Act::UseTrigger:
             return UsePortal(*data);
         case TravelLegs::Act::TalkFlightMaster:
+            return TalkFlightMaster(*data);
         case TravelLegs::Act::Ride:
-            // Flight legs come with WT8b; RequestRoute leaves them out until then
-            return LegFailed(*data, TravelLegs::FailReason::Unsupported);
+            // As the random flight status does: nothing else to do in the air
+            ContinueCrossMapTaxi();
+            return false;
         case TravelLegs::Act::Fail:
             return LegFailed(*data, next.reason);
         case TravelLegs::Act::Wait:
@@ -933,9 +1019,8 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
 bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
 {
     TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, ++botAI->rpgInfo.routeRequests);
-    // Legs the follower does not run yet: flights (WT8b; with no destination node known the search flies nowhere),
-    // the hearthstone (WT9) and transports (WT19)
-    snapshot.knownTaxi = {};
+    // Legs the follower does not run yet: the hearthstone (WT9) and transports (WT19). Flights only to discovered
+    // nodes (the snapshot's taxi mask), their fares within the purse (the search's fare budget)
     snapshot.hasHearthstone = false;
     snapshot.allowTransport = false;
     TravelRoute::Request const request{
@@ -943,7 +1028,7 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     if (!TravelRoute::RouteService::Instance().Submit(bot->GetGUID().GetRawValue(), request,
                                                       TravelRoute::ConfiguredParams()))
     {
-        EndTrip("no route service");  // the graph is not loaded yet: no route now, never wait
+        EndTrip(data, "no route service", "abort:no_service");  // the graph is not loaded yet: never wait
         return true;
     }
     data.route = {snapshot.requestId, snapshot.position.mapId, snapshot.takenMs, true};
@@ -976,15 +1061,22 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
         return LegFailed(data, TravelLegs::FailReason::NoRoute);
     }
     if (data.estimateSeconds <= 0.0f)
+    {
         data.estimateSeconds = route.totalSeconds;
+        EventLog::Emit(bot, "Travel", "start", static_cast<uint32>(route.legs.size()),
+                       static_cast<int64>(route.totalSeconds));
+        if (!data.place.empty())
+            LOG_INFO("playerbots", "[Route] {} travel to {}: {} legs, {:.0f} s", bot->GetName(), data.place,
+                     route.legs.size(), route.totalSeconds);
+    }
+    // The deadline runs against the current route (a replan's own estimate)
+    data.routeStartMs = now;
+    data.routeSeconds = route.totalSeconds;
     LOG_DEBUG("playerbots", "[Route] {} to ({}, {:.0f}, {:.0f}, {:.0f}): {} legs, {:.0f} s{}", bot->GetName(),
               data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ(),
               route.legs.size(), route.totalSeconds, answer->cached ? " (cached)" : "");
     if (route.legs.empty())
-    {
-        botAI->rpgInfo.ChangeToIdle();  // already there
-        return true;
-    }
+        return Arrive(data);  // already there
     data.trip.legs = std::move(route.legs);
     TravelLegs::StartLeg(data.trip, 0, now, GraphNodeAt);
     return true;
@@ -1008,16 +1100,59 @@ bool NewRpgTravelAction::UsePortal(NewRpgInfo::Travel& data)
     return true;
 }
 
+bool NewRpgTravelAction::TalkFlightMaster(NewRpgInfo::Travel& data)
+{
+    TravelRoute::Leg const& leg = data.trip.legs[data.trip.legIdx];
+    if (leg.taxiNodes.size() < 2)
+        return LegFailed(data, TravelLegs::FailReason::Taxi);
+    // The master of the leg's first taxi node nearest the leg's start (startup cache, read only; scanned only on the
+    // few ticks the bot stands at the master)
+    TravelMgr::FlightMasterInfo const* master = nullptr;
+    float nearest = TravelLegs::FLIGHT_MASTER_YARDS * 2.0f;
+    for (auto const& [dbGuid, info] : sTravelMgr.GetFlightMasters(bot->GetTeamId()))
+    {
+        if (info.taxiNodeId != leg.taxiNodes.front() || info.pos.GetMapId() != leg.from.mapId)
+            continue;
+        float const yards = TravelRoute::Distance(
+            {info.pos.GetMapId(), info.pos.GetPositionX(), info.pos.GetPositionY(), info.pos.GetPositionZ()}, leg.from);
+        if (yards < nearest)
+        {
+            nearest = yards;
+            master = &info;
+        }
+    }
+    if (!master)
+        return LegFailed(data, TravelLegs::FailReason::Taxi);
+
+    switch (StartTaxi(master->templateEntry, master->pos, leg.taxiNodes))
+    {
+        case TaxiStart::Moving:
+            return true;
+        case TaxiStart::Stalled:
+            return false;
+        case TaxiStart::Started:
+            data.trip.taxiActivated = true;
+            return true;
+        case TaxiStart::NoMaster:
+        case TaxiStart::Undiscovered:
+        case TaxiStart::Refused:
+            break;
+    }
+    return LegFailed(data, TravelLegs::FailReason::Taxi);
+}
+
 bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason)
 {
     TravelLegs::Trip& trip = data.trip;
     LOG_DEBUG("playerbots", "[Route] {} leg {}/{} failed: {}", bot->GetName(), trip.legIdx + 1, trip.legs.size(),
               TravelLegs::FailWord(reason));
-    // A portal that did not take the bot through: the search avoids that edge for a while (a stuck walk was
-    // reported by MoveFarTo's give-up already)
-    if (reason == TravelLegs::FailReason::Portal)
+    EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), trip.legIdx + 1);
+    // A portal that did not take the bot through, or a flight that could not be taken: the search avoids that edge
+    // for a while (a stuck walk was reported by MoveFarTo's give-up already)
+    if (reason == TravelLegs::FailReason::Portal || reason == TravelLegs::FailReason::Taxi)
     {
-        auto const [from, to] = TravelLegs::StuckEdge(trip);
+        auto const [from, to] =
+            reason == TravelLegs::FailReason::Portal ? TravelLegs::StuckEdge(trip) : TravelLegs::FirstFlightHop(trip);
         if (from != TravelLegs::NO_NODE)
         {
             TravelRoute::StuckBook::Report report;
@@ -1031,7 +1166,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
 
     if (TravelLegs::AfterFailure(trip, reason) == TravelLegs::Recovery::Abort)
     {
-        EndTrip(TravelLegs::FailWord(reason));
+        EndTrip(data, TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
         return true;
     }
     trip.legs.clear();
@@ -1043,9 +1178,28 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     return true;
 }
 
-void NewRpgTravelAction::EndTrip(char const* why)
+bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel const& data)
 {
-    LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
+    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
+    uint32 const replans = data.trip.replans;
+    if (data.place.empty())
+        LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
+                  seconds, data.estimateSeconds, replans);
+    else
+        LOG_INFO("playerbots", "[Route] {} arrived at {} after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
+                 data.place, seconds, data.estimateSeconds, replans);
+    EventLog::Emit(bot, "Travel", "arrived", replans, seconds);
+    botAI->rpgInfo.ChangeToIdle();
+    return true;
+}
+
+void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source)
+{
+    if (data.place.empty())
+        LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
+    else
+        LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
+    EventLog::Emit(bot, "Travel", source, data.trip.replans, GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS);
     botAI->rpgInfo.ChangeToIdle();
 }
 
@@ -1064,19 +1218,33 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
         return false;
     }
 
-    if (bot->GetDistance(data.flightMasterPos) > INTERACTION_DISTANCE)
-        return MoveFarTo(data.flightMasterPos);
-
-    Creature* flightMaster = bot->FindNearestCreature(data.flightMasterEntry, INTERACTION_DISTANCE * 3);
-    if (!flightMaster || !flightMaster->IsAlive())
+    switch (StartTaxi(data.flightMasterEntry, data.flightMasterPos, data.path))
     {
-        info.ChangeToIdle();
-        return true;
+        case TaxiStart::Moving:
+        case TaxiStart::Started:
+            return true;
+        case TaxiStart::Stalled:
+            return false;
+        case TaxiStart::NoMaster:
+        case TaxiStart::Undiscovered:
+        case TaxiStart::Refused:
+            break;
     }
-    if (bot->GetDistance(flightMaster) > INTERACTION_DISTANCE)
-        return MoveFarTo(flightMaster);
+    info.ChangeToIdle();
+    return true;
+}
 
-    std::vector<uint32> nodes = data.path;
+NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, WorldPosition const& masterPos,
+                                                        std::vector<uint32> const& nodes)
+{
+    if (bot->GetDistance(masterPos) > INTERACTION_DISTANCE)
+        return MoveFarTo(masterPos) ? TaxiStart::Moving : TaxiStart::Stalled;
+
+    Creature* flightMaster = bot->FindNearestCreature(masterEntry, INTERACTION_DISTANCE * 3);
+    if (!flightMaster || !flightMaster->IsAlive())
+        return TaxiStart::NoMaster;
+    if (bot->GetDistance(flightMaster) > INTERACTION_DISTANCE)
+        return MoveFarTo(flightMaster) ? TaxiStart::Moving : TaxiStart::Stalled;
 
     botAI->RemoveShapeshift();
     if (bot->IsMounted())
@@ -1090,25 +1258,22 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
     {
         // Persistent bots pick only discovered routes; other setups still fly and the flight is counted
         if (RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot))
-        {
-            info.ChangeToIdle();
-            return true;
-        }
+            return TaxiStart::Undiscovered;
 
         EventLog::Honesty(bot, "Flight", "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
     }
 
+    // Pays the fare; fails when a node is not usable or the purse is short
     if (!bot->ActivateTaxiPathTo(nodes, flightMaster, 0))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} active taxi path {} (from {} to {}) failed", bot->GetName(),
                   flightMaster->GetEntry(), nodes.empty() ? 0 : nodes.front(), nodes.empty() ? 0 : nodes.back());
-        info.ChangeToIdle();
-        return true;
+        return TaxiStart::Refused;
     }
-    return true;
+    return TaxiStart::Started;
 }
 
-void NewRpgTravelFlightAction::ContinueCrossMapTaxi()
+void NewRpgBaseAction::ContinueCrossMapTaxi()
 {
     if (bot->IsBeingTeleported())
         return;

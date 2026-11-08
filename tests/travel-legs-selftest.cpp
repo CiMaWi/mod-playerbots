@@ -8,7 +8,9 @@
 // a route walk -> portal -> walk -> flight -> walk with no-op walks at both ends, the timeouts per leg type, a stuck
 // walk with its edge and the replans up to the abort, a wrong map, an unaffordable fare, the leg predicates, the
 // waypoints of a leg, the judgement of route answers, what survives the AI's full reset (a far teleport keeps a
-// trip) and the whole trip's deadline.
+// trip) and the whole trip's deadline; then the flight leg's failure (taxi) and its reported hop, the deadline in
+// flight and after a replan, the Travel event sources, and the named places of `playerbots route go` (TravelPlaces.h;
+// their graph check is in route-rules-selftest).
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -16,6 +18,7 @@
 #include <vector>
 
 #include "TravelLegRules.h"
+#include "TravelPlaces.h"
 
 using TravelLegs::Act;
 using TravelLegs::Decision;
@@ -424,6 +427,86 @@ void CheckResetAndDeadline()
     Check(TravelLegs::TripDeadlineMs(1000.0f) == 3600000u, "trip deadline: a 1000 s route gets 60 min");
     Check(TravelLegs::TripDeadlineMs(1.0e9f) > 3000000000u, "trip deadline: no overflow on a huge estimate");
 }
+
+void CheckFlightFailureAndDeadline()
+{
+    // A flight that cannot be taken (no master, undiscovered path, the core refuses) replans and reports its first hop
+    Trip trip = StartedTrip(FullRoute());
+    trip.legIdx = 4;  // the flight leg, nodes 5 -> 6
+    auto const hop = TravelLegs::FirstFlightHop(trip);
+    Check(hop.first == 5 && hop.second == 6, "taxi: the reported edge is the flight's first hop 5 -> 6");
+    trip.legIdx = 1;
+    Check(TravelLegs::FirstFlightHop(trip).first == TravelLegs::NO_NODE, "taxi: a walk leg has no flight hop");
+    Check(TravelLegs::AfterFailure(trip, FailReason::Taxi) == TravelLegs::Recovery::Replan && trip.replans == 1,
+          "taxi: a failed taxi start asks for a new route");
+    Check(std::string(TravelLegs::FailWord(FailReason::Taxi)) == "taxi", "taxi: its word");
+
+    // The deadline: counted from the current route, never in the air
+    std::uint32_t const bound = TravelLegs::TripDeadlineMs(1000.0f);
+    Check(!TravelLegs::PastDeadline(bound, 1000.0f, false), "deadline: not past at the bound");
+    Check(TravelLegs::PastDeadline(bound + 1, 1000.0f, false), "deadline: past one ms after the bound");
+    Check(!TravelLegs::PastDeadline(bound + 1, 1000.0f, true), "deadline: waits while the bot is in flight");
+    Check(!TravelLegs::PastDeadline(bound + 1, 2000.0f, false), "deadline: a replan's longer estimate moves the bound");
+    Check(TravelLegs::PastDeadline(TravelLegs::TRIP_SLACK_MS + 1, 0.0f, false),
+          "deadline: before the first answer the slack alone");
+}
+
+void CheckEventSources()
+{
+    bool legs = true;
+    for (LegType const type : {LegType::Walk, LegType::Portal, LegType::Flight, LegType::Transport, LegType::Hearth})
+        legs = legs && std::string(TravelLegs::LegDoneSource(type)) ==
+                           std::string("leg_done:") + TravelRoute::LegTypeWord(type);
+    Check(legs, "events: leg_done:<leg type> for every leg type");
+    bool reasons = true;
+    for (int r = 0; r <= static_cast<int>(FailReason::Taxi); ++r)
+    {
+        FailReason const reason = static_cast<FailReason>(r);
+        std::string const word = TravelLegs::FailWord(reason);
+        reasons = reasons && word != "?" && TravelLegs::LegFailedSource(reason) == "leg_failed:" + word &&
+                  TravelLegs::AbortSource(reason) == "abort:" + word;
+    }
+    Check(reasons, "events: leg_failed:<reason> and abort:<reason> for every reason");
+}
+
+void CheckPlaces()
+{
+    auto const thunderBluff = TravelPlaces::Resolve("Thunder Bluff");
+    Check(thunderBluff && thunderBluff->mapId == 1, "places: \"Thunder Bluff\" names thunderbluff on Kalimdor");
+    auto const stormwind = TravelPlaces::Resolve("STORMWIND");
+    Check(stormwind && stormwind->mapId == 0, "places: names ignore case");
+    Check(TravelPlaces::Key("Sentinel Hill") == "sentinelhill", "places: names ignore spaces");
+    auto const literal = TravelPlaces::Resolve(" -8825.5, 630.25 ,97.75, 0");
+    Check(literal && literal->mapId == 0 && literal->x == -8825.5f && literal->y == 630.25f && literal->z == 97.75f,
+          "places: a literal x,y,z,map");
+    auto const outland = TravelPlaces::Resolve("1,2,3,530");
+    Check(outland && outland->mapId == 530, "places: a literal's map");
+    Check(!TravelPlaces::Resolve("1,2,3"), "places: a literal needs four numbers");
+    Check(!TravelPlaces::Resolve("1,2,3,0x"), "places: nothing after the map");
+    Check(!TravelPlaces::Resolve("1,2,3,-1"), "places: no negative map");
+    Check(!TravelPlaces::Resolve("atlantis"), "places: an unknown name");
+    Check(!TravelPlaces::Resolve(""), "places: empty text");
+
+    bool starts = true;
+    bool unique = true;
+    bool bothSides = false;
+    bool bothTeams[2] = {false, false};
+    auto const& all = TravelPlaces::All();
+    for (std::size_t i = 0; i < all.size(); ++i)
+    {
+        TravelPlaces::Place const* from = TravelPlaces::Find(all[i].testFrom);
+        starts = starts && from && from != &all[i] && TravelPlaces::Find(all[i].name) == &all[i];
+        for (std::size_t j = i + 1; j < all.size(); ++j)
+            unique = unique && TravelPlaces::Key(all[i].name) != TravelPlaces::Key(all[j].name);
+        bothSides = bothSides || all[i].at.mapId == 1;
+        bothTeams[all[i].testTeam & 1] = true;
+    }
+    Check(starts, "places: every place finds itself by name and has another place as its test start");
+    Check(unique, "places: names are unique");
+    Check(bothSides && all.front().at.mapId == 0 && bothTeams[0] && bothTeams[1],
+          "places: both continents and both factions");
+    Check(TravelPlaces::Names().find("darnassus") != std::string::npos, "places: the usage lists the names");
+}
 }  // namespace
 
 int main()
@@ -435,6 +518,9 @@ int main()
     CheckPredicates();
     CheckWaypointsAndAnswers();
     CheckResetAndDeadline();
+    CheckFlightFailureAndDeadline();
+    CheckEventSources();
+    CheckPlaces();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

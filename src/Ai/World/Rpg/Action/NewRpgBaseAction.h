@@ -60,6 +60,21 @@ protected:
     bool RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus);
     bool CheckRpgStatusAvailable(NewRpgStatus status);
 
+    /* FLIGHTS (the random flight status and RPG_TRAVEL's flight legs) */
+    enum class TaxiStart : uint8
+    {
+        Moving,        // walking to the flight master
+        Stalled,       // MoveFarTo did not move this tick
+        NoMaster,      // no living flight master of that entry near masterPos
+        Undiscovered,  // a persistent bot does not know the path's nodes
+        Refused,       // Player::ActivateTaxiPathTo refused (fare, node not usable)
+        Started        // the taxi is taken and the fare paid
+    };
+    // Walks to the flight master, learns its node as a player does there, and takes the taxi along nodes
+    TaxiStart StartTaxi(uint32 masterEntry, WorldPosition const& masterPos, std::vector<uint32> const& nodes);
+    // While in flight: a flight whose next node lies on another map continues there
+    void ContinueCrossMapTaxi();
+
 protected:
     /* FOR MOVE FAR */
     const float pathFinderDis = 70.0f;

@@ -145,18 +145,35 @@ private:
     bool RequestRoute(NewRpgInfo::Travel& data);
     bool TakeRoute(NewRpgInfo::Travel& data);
     bool UsePortal(NewRpgInfo::Travel& data);
+    bool TalkFlightMaster(NewRpgInfo::Travel& data);
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
-    void EndTrip(char const* why);
+    bool Arrive(NewRpgInfo::Travel const& data);
+    // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
+    void EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source);
 };
+
+// GM orders for RPG_TRAVEL (`playerbots route go|stop`, tests): the command posts on the world thread, the bot's map
+// thread takes its order in NewRpgStatusUpdateAction (one atomic load per tick while no order waits). An order not
+// taken within a minute (the bot is not in the rpg strategy, or logged out) is dropped
+struct TravelOrder
+{
+    WorldPosition dest{};
+    std::string place;  // the name in the log lines
+    bool stop{false};   // end the bot's trip instead
+    uint32 postedMs{0};
+};
+
+namespace TravelOrders
+{
+void Post(ObjectGuid bot, TravelOrder order);
+bool Take(ObjectGuid bot, TravelOrder& order);
+}  // namespace TravelOrders
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction
 {
 public:
     NewRpgTravelFlightAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg travel flight") {}
     bool Execute(Event event) override;
-
-protected:
-    void ContinueCrossMapTaxi();
 };
 
 #endif

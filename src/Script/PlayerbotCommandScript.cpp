@@ -12,6 +12,7 @@
 #include "BotProfileMgr.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
+#include "DBCStores.h"
 #include "GuildTaskMgr.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
@@ -19,10 +20,12 @@
 #include "MatchTrace.h"
 #include "Matchmaker.h"
 #include "NaturalTrace.h"
+#include "NewRpgAction.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotFactory.h"
 #include "PlayerbotMgr.h"
 #include "Population.h"
 #include "PvpGearMgr.h"
@@ -33,6 +36,7 @@
 #include "Tactics.h"
 #include "TestPlayer.h"
 #include "TravelGraph.h"
+#include "TravelPlaces.h"
 #include "WorldThreadMonitor.h"
 
 using namespace Acore::ChatCommands;
@@ -186,6 +190,8 @@ public:
         static ChatCommandTable playerbotsRouteCommandTable = {
             {"status", TravelGraph::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", TravelGraph::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"go", HandleRouteGoCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stop", HandleRouteStopCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -255,6 +261,71 @@ public:
         Player* from = handler->GetSession() ? handler->GetSession()->GetPlayer() : botAI->GetBot();
         botAI->HandleCommand(CHAT_MSG_WHISPER, std::string(command), from);
         handler->PSendSysMessage("{}: '{}' sent", target.GetName(), std::string(command));
+        return true;
+    }
+
+    // `playerbots route go <bot> <place>` (WT8, tests): sends a persistent bot on a planned trip to a named place
+    // (TravelPlaces.h) or "x,y,z,map". World thread: the order waits for the bot's map thread, which checks the bot
+    // again and logs `[Route] <bot> travel to <place>: <n> legs, <s> s` once the route returns
+    static bool HandleRouteGoCommand(ChatHandler* handler, PlayerIdentifier target, Tail place)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        std::string const text(place);
+        std::optional<TravelRoute::Point> const dest = TravelPlaces::Resolve(text);
+        if (!dest)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route go <bot> <place>|<x,y,z,map>; places: {}",
+                                      TravelPlaces::Names());
+            return false;
+        }
+
+        char const* refusal = nullptr;
+        MapEntry const* destMap = sMapStore.LookupEntry(dest->mapId);
+        if (!TravelGraph::Instance().IsReady())
+            refusal = "the travel graph is not ready";
+        else if (!PlayerbotFactory::KeepsPossessions(bot))
+            refusal = "not a persistent bot (honest travel, random bot, no real master)";
+        else if (!bot->IsAlive())
+            refusal = "dead";
+        else if (bot->IsInFlight())
+            refusal = "in flight";
+        else if (bot->GetMap()->Instanceable())
+            refusal = "in an instance";
+        else if (!destMap || destMap->Instanceable())
+            refusal = "the destination is not on a continent";
+        if (refusal)
+        {
+            handler->SendErrorMessage("ROUTE go: {} refused: {}", target.GetName(), refusal);
+            return false;
+        }
+
+        TravelPlaces::Place const* named = TravelPlaces::Find(text);
+        TravelOrder order;
+        order.dest = WorldPosition(dest->mapId, dest->x, dest->y, dest->z);
+        order.place = named ? named->name : text;
+        order.postedMs = getMSTime();
+        handler->PSendSysMessage("ROUTE go: {} -> {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered; see [Route] {} travel to {}",
+                                 target.GetName(), order.place, dest->mapId, dest->x, dest->y, dest->z,
+                                 target.GetName(), order.place);
+        TravelOrders::Post(bot->GetGUID(), std::move(order));
+        return true;
+    }
+
+    // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update
+    static bool HandleRouteStopCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        TravelOrder order;
+        order.stop = true;
+        order.place = "stop";
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI->GetBot()->GetGUID(), std::move(order));
+        handler->PSendSysMessage("ROUTE stop: {} ordered", target.GetName());
         return true;
     }
 

@@ -40,7 +40,7 @@ constexpr float WALK_TIMEOUT_FACTOR = 3.0f;    // walk: estimate x 3 + slack
 constexpr float FLIGHT_TIMEOUT_FACTOR = 2.0f;  // flight: path seconds x 2 + slack
 constexpr std::uint32_t LEG_SLACK_MS = 60 * 1000;
 constexpr std::uint32_t PORTAL_TIMEOUT_MS = 20 * 1000;
-constexpr std::uint32_t TRIP_SLACK_MS = 10 * 60 * 1000;  // whole trip: the first route's estimate x 3 + this
+constexpr std::uint32_t TRIP_SLACK_MS = 10 * 60 * 1000;  // the current route's estimate x 3 + this
 constexpr std::uint8_t MAX_REPLANS = 3;             // new routes per trip after failed legs; then the trip is given up
 constexpr std::uint32_t REPLAN_DELAY_MS = 2000;     // the failed leg's stuck report reaches the published book first
 constexpr std::uint32_t ROUTE_WAIT_MS = 35 * 1000;  // no answer by then: the service has dropped the request
@@ -71,7 +71,8 @@ enum class FailReason : std::uint8_t
     Landing,      // the flight ended away from the leg's end
     Unsupported,  // a hearth or transport leg (WT9, WT19): not produced while the request leaves them out
     NoAnswer,     // the route service did not answer in time, or the answer was for another map or too old
-    NoRoute       // the search found no route
+    NoRoute,      // the search found no route
+    Taxi          // no flight master at the leg's start, the path is not discovered, or the core refused the taxi
 };
 
 inline char const* FailWord(FailReason reason)
@@ -98,8 +99,91 @@ inline char const* FailWord(FailReason reason)
             return "no_answer";
         case FailReason::NoRoute:
             return "no_route";
+        case FailReason::Taxi:
+            return "taxi";
     }
     return "?";
+}
+
+// Travel event sources (EventLog::Emit(bot, "Travel", source, ...); literals, as the log keeps the pointer's text):
+// "start", "arrived", "leg_done:<leg type>", "leg_failed:<reason>", "abort:<reason>" and the aborts that are no failed
+// leg: "abort:deadline", "abort:no_service", "abort:stopped"
+inline char const* LegDoneSource(LegType type)
+{
+    switch (type)
+    {
+        case LegType::Walk:
+            return "leg_done:walk";
+        case LegType::Portal:
+            return "leg_done:portal";
+        case LegType::Flight:
+            return "leg_done:flight";
+        case LegType::Transport:
+            return "leg_done:transport";
+        case LegType::Hearth:
+            return "leg_done:hearth";
+    }
+    return "leg_done:?";
+}
+
+inline char const* LegFailedSource(FailReason reason)
+{
+    switch (reason)
+    {
+        case FailReason::None:
+            return "leg_failed:none";
+        case FailReason::Timeout:
+            return "leg_failed:timeout";
+        case FailReason::WrongMap:
+            return "leg_failed:wrong_map";
+        case FailReason::Stuck:
+            return "leg_failed:stuck";
+        case FailReason::Portal:
+            return "leg_failed:portal";
+        case FailReason::Fare:
+            return "leg_failed:fare";
+        case FailReason::Landing:
+            return "leg_failed:landing";
+        case FailReason::Unsupported:
+            return "leg_failed:unsupported";
+        case FailReason::NoAnswer:
+            return "leg_failed:no_answer";
+        case FailReason::NoRoute:
+            return "leg_failed:no_route";
+        case FailReason::Taxi:
+            return "leg_failed:taxi";
+    }
+    return "leg_failed:?";
+}
+
+inline char const* AbortSource(FailReason reason)
+{
+    switch (reason)
+    {
+        case FailReason::None:
+            return "abort:none";
+        case FailReason::Timeout:
+            return "abort:timeout";
+        case FailReason::WrongMap:
+            return "abort:wrong_map";
+        case FailReason::Stuck:
+            return "abort:stuck";
+        case FailReason::Portal:
+            return "abort:portal";
+        case FailReason::Fare:
+            return "abort:fare";
+        case FailReason::Landing:
+            return "abort:landing";
+        case FailReason::Unsupported:
+            return "abort:unsupported";
+        case FailReason::NoAnswer:
+            return "abort:no_answer";
+        case FailReason::NoRoute:
+            return "abort:no_route";
+        case FailReason::Taxi:
+            return "abort:taxi";
+    }
+    return "abort:?";
 }
 
 struct Waypoint
@@ -379,12 +463,32 @@ inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
     return {from, to};
 }
 
+// A flight leg's first hop (its first two graph nodes), the edge a failed taxi start is reported on;
+// {NO_NODE, NO_NODE} on any other leg
+inline std::pair<std::uint32_t, std::uint32_t> FirstFlightHop(Trip const& trip)
+{
+    if (trip.legIdx >= trip.legs.size())
+        return {NO_NODE, NO_NODE};
+    Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type != LegType::Flight || leg.nodes.size() < 2)
+        return {NO_NODE, NO_NODE};
+    return {leg.nodes[0], leg.nodes[1]};
+}
+
 // The whole trip's bound beside the legs' own timeouts: a leg's timeout x MAX_REPLANS can run for hours on a long
 // merged walk while the bot counts as busy. Before the first answer the estimate is 0 (the slack only)
 inline std::uint32_t TripDeadlineMs(float estimateSeconds)
 {
     float const ms = std::min(std::max(estimateSeconds, 0.0f) * WALK_TIMEOUT_FACTOR * 1000.0f, 3.0e9f);
     return static_cast<std::uint32_t>(ms) + TRIP_SLACK_MS;
+}
+
+// The deadline counts from the current route's start against that route's estimate (a replan starts a new bound;
+// MAX_REPLANS bounds their number) and waits while the bot is in flight: a bot cannot leave the taxi, so ending the
+// trip mid-air would only drop the legs after the landing
+inline bool PastDeadline(std::uint32_t routeMs, float routeSeconds, bool inFlight)
+{
+    return !inFlight && routeMs > TripDeadlineMs(routeSeconds);
 }
 
 // PlayerbotAI::Reset(true) renews the bot's RPG state, also after every far teleport (HandleTeleportAck). What

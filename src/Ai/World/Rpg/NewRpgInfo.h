@@ -97,6 +97,9 @@ struct NewRpgInfo
         uint32 failedMs{0};           // the last failed leg: the new route is asked for REPLAN_DELAY_MS later
         float estimateSeconds{0.0f};  // the first route's
         uint32 tripStartMs{0};
+        uint32 routeStartMs{0};  // the current route's start and estimate: the trip's deadline
+        float routeSeconds{0.0f};
+        std::string place;  // a GM order's place (`playerbots route go`): its first route is logged
     };
     // RPG_ERRANDS: a trip to a vendor to sell, repair and maybe buy a bag
     struct Errands
@@ -164,7 +167,7 @@ struct NewRpgInfo
     void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
     void ChangeToDoGather();
     void ChangeToRest();
-    void ChangeToTravel(WorldPosition dest);
+    void ChangeToTravel(WorldPosition dest, std::string place = {});
     void ChangeToErrands(uint32 vendorEntry, WorldPosition vendorPos, uint32 money);
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);
