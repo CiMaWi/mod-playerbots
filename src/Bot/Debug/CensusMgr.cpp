@@ -14,7 +14,10 @@
 #include <shared_mutex>
 #include <utility>
 
+#include "Action.h"
 #include "Config.h"
+#include "Creature.h"
+#include "Item.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
@@ -22,6 +25,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "QuestDef.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
 
@@ -32,6 +36,36 @@ constexpr float PERCENT = 100.0f;
 constexpr size_t BYTES_PER_ROW = 160;
 constexpr char const* LOCATIONS_FILE = "bot_locations.csv";
 constexpr char const* EVENTS_FILE = "bot_events.csv";
+constexpr char const* HONESTY_PREFIX = "Honesty";
+constexpr char const* LEVEL_UP_TYPE = "LevelUp";
+constexpr int64 ONE_EVENT = 1;
+
+// The event log's gate: census on and a bot (real players are not logged)
+bool IsLoggedBot(Player* player) { return sPlayerbotAIConfig.CensusEnable && player && GET_PLAYERBOT_AI(player); }
+
+// Where a PvP kill or death happened, from the player's own state
+char const* PvpPlace(Player* player)
+{
+    if (player->InArena())
+        return "arena";
+
+    return player->InBattleground() ? "battleground" : "world";
+}
+
+// An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
+void EmitFromScope(Player* player, char const* type, uint32 id, int64 amount)
+{
+    if (!IsLoggedBot(player))
+        return;
+
+    CensusMgr::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
+}
+
+void EmitItemIn(Player* player, Item* item, uint32 count, char const* source)
+{
+    if (item)
+        EventLog::Emit(player, "ItemIn", source, item->GetEntry(), count);
+}
 
 // The cheap, state-free columns of one sample row (the part after the time and the type). Columns, in order: name,
 // "POINT(y x)", orientation, race, class, map, level, health, power%, money, grouper, guilder, allowActivity,
@@ -57,15 +91,130 @@ void AppendRow(std::string& out, std::string const& time, char const* type, Play
         player->GetAreaId(), combat ? 1 : 0);
 }
 
-// Level-up hook; registered once, does nothing while the census is off
+// Level-up and event log hooks; registered once, do nothing while the census is off. They run on the thread that
+// updates the player's map (or the world thread): they read only the hooked players and queue one line each.
+// StoreNewItem is not hooked: loot, quest, vendor and craft items pass through it before their own hook below.
+// Master-loot items and disenchant-roll results have no hook of their own and are not counted as ItemIn.
 class CensusPlayerScript : public PlayerScript
 {
 public:
-    CensusPlayerScript() : PlayerScript("CensusPlayerScript", {PLAYERHOOK_ON_LEVEL_CHANGED}) {}
+    CensusPlayerScript()
+        : PlayerScript(
+              "CensusPlayerScript",
+              {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_LOOT_ITEM,
+               PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM, PLAYERHOOK_ON_QUEST_REWARD_ITEM, PLAYERHOOK_ON_CREATE_ITEM,
+               PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM, PLAYERHOOK_ON_AFTER_TAKE_ITEM_FROM_MAIL,
+               PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_ON_PLAYER_RESURRECT, PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST,
+               PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
+    {
+    }
 
     void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
     {
         CensusMgr::Instance().OnLevelChanged(player, oldLevel);
+    }
+
+    // Called before the change; a loss is capped at the money the player has, as ModifyMoney does
+    void OnPlayerMoneyChanged(Player* player, int32& amount) override
+    {
+        if (amount > 0)
+            EmitFromScope(player, "GoldIn", 0, amount);
+        else if (amount < 0 && player && player->GetMoney())
+            EmitFromScope(player, "GoldOut", 0, std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
+    }
+
+    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
+    {
+        EmitItemIn(player, item, count, "loot");
+    }
+
+    // A won need or greed roll: Group stores the item itself and fires only this hook, not OnPlayerLootItem
+    void OnPlayerGroupRollRewardItem(Player* player, Item* item, uint32 count, RollVote /*voteType*/,
+                                     Roll* /*roll*/) override
+    {
+        EmitItemIn(player, item, count, "loot");
+    }
+
+    void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 count) override
+    {
+        EmitItemIn(player, item, count, "quest");
+    }
+
+    void OnPlayerCreateItem(Player* player, Item* item, uint32 count) override
+    {
+        EmitItemIn(player, item, count, "craft");
+    }
+
+    // count is the number of vendor stacks bought
+    void OnPlayerAfterStoreOrEquipNewItem(Player* player, uint32 /*vendorslot*/, Item* item, uint8 count, uint8 /*bag*/,
+                                          uint8 /*slot*/, ItemTemplate const* proto, Creature* /*vendor*/,
+                                          VendorItem const* /*crItem*/, bool /*bStore*/) override
+    {
+        if (proto)
+            EventLog::Emit(player, "ItemIn", "vendor", proto->ItemId, static_cast<int64>(proto->BuyCount) * count);
+        else
+            EmitItemIn(player, item, count, "vendor");
+    }
+
+    void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
+    {
+        EmitItemIn(player, item, count, "mail");
+    }
+
+    // "sold" ItemOut is an upper bound: a later check of the sell handler can still refuse the sale, and the whole
+    // stack is counted where SellAction sells only the part that quest items do not need
+    [[nodiscard]] bool OnPlayerCanSellItem(Player* player, Item* item, Creature* /*creature*/) override
+    {
+        if (item)
+            EventLog::Emit(player, "ItemOut", "sold", item->GetEntry(), item->GetCount());
+
+        return true;
+    }
+
+    void OnPlayerResurrect(Player* player, float /*restorePercent*/, bool& /*applySickness*/) override
+    {
+        EmitFromScope(player, "DeathReturn", 0, ONE_EVENT);
+    }
+
+    void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
+    {
+        if (quest)
+            EventLog::Emit(player, "QuestDone", "quest", quest->GetQuestId(), ONE_EVENT);
+    }
+
+    // Environmental damage (falling, lava, drowning) is dealt by the player to itself
+    void OnPlayerPVPKill(Player* killer, Player* killed) override
+    {
+        if (!killer || !killed)
+            return;
+
+        if (killer == killed)
+        {
+            EventLog::Emit(killed, "Death", "environment", 0, ONE_EVENT);
+            return;
+        }
+
+        uint32 const killerId = killer->GetGUID().GetCounter();
+        EventLog::Emit(killed, "Death", "player", killerId, ONE_EVENT);
+        EventLog::Emit(killed, "PvpDeath", PvpPlace(killed), killerId, ONE_EVENT);
+        EventLog::Emit(killer, "PvpKill", PvpPlace(killer), killed->GetGUID().GetCounter(), ONE_EVENT);
+    }
+
+    // A player's pet, totem or guardian is a creature: its kill is a PvP death with the owner as the killer
+    void OnPlayerKilledByCreature(Creature* killer, Player* killed) override
+    {
+        if (!killer || !killed)
+            return;
+
+        ObjectGuid const owner = killer->GetOwnerGUID();
+        if (!owner.IsPlayer())
+        {
+            EventLog::Emit(killed, "Death", "creature", killer->GetEntry(), ONE_EVENT);
+            return;
+        }
+
+        EventLog::Emit(killed, "Death", "player_pet", owner.GetCounter(), ONE_EVENT);
+        EventLog::Emit(killed, "PvpDeath", PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
     }
 };
 }  // namespace
@@ -100,6 +249,13 @@ void CensusMgr::Update(uint32 diff)
         StartWriter();
 
     Sample();
+
+    std::map<std::string, uint64, std::less<>> totals;
+    {
+        std::lock_guard<std::mutex> guard(_mutex);
+        totals = _totals;
+    }
+    LogTotals(totals);
 }
 
 void CensusMgr::Sample()
@@ -137,14 +293,27 @@ void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
         return;
 
     // spp-map bot_events.csv: time, name, event, "POINT(y x)", race, class, level, "info 1", "info 2"
-    Enqueue(true, Acore::StringFormat("{},{},LevelUp,\"POINT({:.2f} {:.2f})\",{},{},{:.2f},\"{}\",\"{}\"\n",
-                                      TimeString(), player->GetName(), player->GetPositionY(), player->GetPositionX(),
-                                      static_cast<uint32>(player->getRace()), static_cast<uint32>(player->getClass()),
-                                      static_cast<float>(player->GetLevel()), static_cast<uint32>(oldLevel),
-                                      static_cast<uint32>(player->GetLevel())));
+    Enqueue(true,
+            Acore::StringFormat("{},{},LevelUp,\"POINT({:.2f} {:.2f})\",{},{},{:.2f},\"{}\",\"{}\"\n", TimeString(),
+                                player->GetName(), player->GetPositionY(), player->GetPositionX(),
+                                static_cast<uint32>(player->getRace()), static_cast<uint32>(player->getClass()),
+                                static_cast<float>(player->GetLevel()), static_cast<uint32>(oldLevel),
+                                static_cast<uint32>(player->GetLevel())),
+            LEVEL_UP_TYPE);
 }
 
-void CensusMgr::Enqueue(bool events, std::string text)
+void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
+{
+    if (type.empty() || !IsLoggedBot(bot))
+        return;
+
+    Enqueue(true,
+            EventLog::FormatEventLine(TimeString(), bot->GetGUID().GetCounter(), type, source, id, amount,
+                                      bot->GetMapId(), bot->GetZoneId()),
+            type);
+}
+
+void CensusMgr::Enqueue(bool events, std::string text, std::string_view countType)
 {
     {
         std::lock_guard<std::mutex> guard(_mutex);
@@ -152,8 +321,29 @@ void CensusMgr::Enqueue(bool events, std::string text)
             return;
 
         _queue.push_back(Chunk{events, std::move(text)});
+        if (!countType.empty())
+        {
+            auto const found = _totals.find(countType);
+            if (found != _totals.end())
+                ++found->second;
+            else
+                _totals.emplace(std::string(countType), 1);
+        }
     }
     _wake.notify_one();
+}
+
+// One line for the hub's checks: "EventLog totals: <Type>=<n> ..." (counts since the start, types with events only)
+void CensusMgr::LogTotals(std::map<std::string, uint64, std::less<>> const& totals)
+{
+    std::string line = "EventLog totals:";
+    for (auto const& [type, count] : totals)
+        line += Acore::StringFormat(" {}={}", type, count);
+
+    if (totals.empty())
+        line += " (none)";
+
+    LOG_INFO("playerbots", "{}", line);
 }
 
 void CensusMgr::StartWriter()
@@ -205,13 +395,49 @@ void CensusMgr::WriterLoop(std::string dir)
 
 void CensusMgr::Shutdown()
 {
+    std::map<std::string, uint64, std::less<>> totals;
+    bool first = false;
     {
         std::lock_guard<std::mutex> guard(_mutex);
+        first = !_stop;
         _stop = true;
+        totals = _totals;
     }
     _wake.notify_all();
     if (_writer.joinable())
         _writer.join();
+
+    // The destructor calls Shutdown again after the server's own call: log once, while logging still runs
+    if (first && _started)
+        LogTotals(totals);
+}
+
+char const* EventLog::CurrentSource()
+{
+    // An action's name is a copy (getName() returns by value); read only when an event asks for it
+    thread_local std::string actionName;
+    SourceState const state = currentSourceState;
+    if (state.action)
+    {
+        actionName = state.action->getName();
+        return actionName.c_str();
+    }
+
+    return state.source ? state.source : SOURCE_OTHER;
+}
+
+void EventLog::Emit(Player* bot, char const* type, char const* source, uint32 id, int64 amount)
+{
+    if (type)
+        CensusMgr::Instance().OnEvent(bot, type, source ? source : SOURCE_OTHER, id, amount);
+}
+
+void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32 id, int64 amount)
+{
+    if (!kind || !IsLoggedBot(bot))
+        return;
+
+    CensusMgr::Instance().OnEvent(bot, std::string(HONESTY_PREFIX) + kind, source ? source : SOURCE_OTHER, id, amount);
 }
 
 void AddSC_census() { new CensusPlayerScript(); }

@@ -6,6 +6,7 @@
 
 #include "Engine.h"
 #include "Action.h"
+#include "CensusMgr.h"
 #include "Event.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
@@ -623,6 +624,8 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     if (actionExecutionListeners.Before(action, event))
     {
+        // Money and items that move inside the action carry its name in the census event log
+        EventLog::SourceScope const source(action);
         actionExecuted = actionExecutionListeners.AllowExecution(action, event) ? action->Execute(event) : true;
     }
 

@@ -1622,6 +1622,12 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 #   power %, money, grouper type, guilder type, allowActivity (active|inactive), in world (active|delay),
 #   combat (combat|non-combat), safe (always n/a), alive (alive|dead), zoneId, areaId, inCombat (1|0)
 # bot_events.csv columns: time, name, LevelUp, "POINT(y x)", race, class, level, "old level", "new level"
+# Typed bot events share bot_events.csv: time, bot guid, type, source, id, amount, map, zone. Types: GoldIn/GoldOut
+# (copper), ItemIn/ItemOut (item id, count), Death (creature, player, player_pet, environment), DeathReturn, QuestDone
+# (quest id), PvpKill/PvpDeath (other player's guid; arena, battleground, world), Honesty<Kind> (module shortcuts).
+# The source of gold and of a return from death is the bot action that ran, as a word (loot, quest, vendor, repair,
+# train, flight, mail, trade, corpse, spirit_healer) or the action's name, else "other". Per-type totals are logged
+# as "EventLog totals: ..." every interval and at shutdown.
 # The hub tool tools/liveliness.js turns bot_locations.csv into a report.
 #
 Playerbots.Census.Enable = 0
