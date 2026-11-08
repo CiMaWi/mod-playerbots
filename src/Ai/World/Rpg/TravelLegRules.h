@@ -41,18 +41,21 @@ constexpr float FLIGHT_TIMEOUT_FACTOR = 2.0f;  // flight: path seconds x 2 + sla
 constexpr std::uint32_t LEG_SLACK_MS = 60 * 1000;
 constexpr std::uint32_t PORTAL_TIMEOUT_MS = 20 * 1000;
 constexpr std::uint32_t TRIP_SLACK_MS = 10 * 60 * 1000;  // the current route's estimate x 3 + this
-constexpr std::uint8_t MAX_REPLANS = 3;             // new routes per trip after failed legs; then the trip is given up
-constexpr std::uint32_t REPLAN_DELAY_MS = 2000;     // the failed leg's stuck report reaches the published book first
-constexpr std::uint32_t ROUTE_WAIT_MS = 35 * 1000;  // no answer by then: the service has dropped the request
-constexpr std::uint32_t ROUTE_AGE_MS = 30 * 1000;   // an answer to an older snapshot is not applied
-constexpr std::uint32_t LEGS_PER_TICK = 4;          // finished legs passed in one tick at most
-constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;     // reached waypoints passed in one tick at most
+constexpr std::uint8_t MAX_REPLANS = 3;       // new routes per trip after failed legs; then the trip is given up
+constexpr float HEARTH_ARRIVE_YARDS = 40.0f;  // a hearth leg is done within this of the bind point
+constexpr std::uint32_t HEARTH_SLACK_MS = 30 * 1000;  // a hearth leg's time beyond its cooldown wait and cast
+constexpr std::uint32_t REPLAN_DELAY_MS = 2000;       // the failed leg's stuck report reaches the published book first
+constexpr std::uint32_t ROUTE_WAIT_MS = 35 * 1000;    // no answer by then: the service has dropped the request
+constexpr std::uint32_t ROUTE_AGE_MS = 30 * 1000;     // an answer to an older snapshot is not applied
+constexpr std::uint32_t LEGS_PER_TICK = 4;            // finished legs passed in one tick at most
+constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;       // reached waypoints passed in one tick at most
 
 enum class Act : std::uint8_t
 {
     Walk,              // MoveFarTo(target) on the bot's map
     UseTrigger,        // step into the portal leg's area trigger
     TalkFlightMaster,  // at the flight master of the leg's start: learn the node, pay, take off
+    UseHearth,         // the hearthstone leg: cast it (wait for the cooldown and the cast)
     Ride,              // in flight (a cross-map flight continues)
     Wait,              // nothing to do this tick (a sent trigger or an activated taxi takes effect)
     Done,              // the leg ended (Advance starts the next one)
@@ -69,10 +72,11 @@ enum class FailReason : std::uint8_t
     Portal,       // the area trigger did not take the bot through
     Fare,         // the purse does not pay the flight
     Landing,      // the flight ended away from the leg's end
-    Unsupported,  // a hearth or transport leg (WT9, WT19): not produced while the request leaves them out
+    Unsupported,  // a transport leg (WT19): not produced while the request leaves them out
     NoAnswer,     // the route service did not answer in time, or the answer was for another map or too old
     NoRoute,      // the search found no route
-    Taxi          // no flight master at the leg's start, the path is not discovered, or the core refused the taxi
+    Taxi,         // no flight master at the leg's start, the path is not discovered, or the core refused the taxi
+    Hearth        // the hearthstone is missing or its cast failed
 };
 
 inline char const* FailWord(FailReason reason)
@@ -101,6 +105,8 @@ inline char const* FailWord(FailReason reason)
             return "no_route";
         case FailReason::Taxi:
             return "taxi";
+        case FailReason::Hearth:
+            return "hearth";
     }
     return "?";
 }
@@ -152,6 +158,8 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:no_route";
         case FailReason::Taxi:
             return "leg_failed:taxi";
+        case FailReason::Hearth:
+            return "leg_failed:hearth";
     }
     return "leg_failed:?";
 }
@@ -182,6 +190,8 @@ inline char const* AbortSource(FailReason reason)
             return "abort:no_route";
         case FailReason::Taxi:
             return "abort:taxi";
+        case FailReason::Hearth:
+            return "abort:hearth";
     }
     return "abort:?";
 }
@@ -274,6 +284,9 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
             return PORTAL_TIMEOUT_MS;
         case LegType::Flight:
             return static_cast<std::uint32_t>(leg.seconds * FLIGHT_TIMEOUT_FACTOR * 1000.0f) + LEG_SLACK_MS;
+        case LegType::Hearth:
+            // The route's seconds hold the cooldown wait and the cast
+            return static_cast<std::uint32_t>(leg.seconds * 1000.0f) + HEARTH_SLACK_MS;
         default:
             return LEG_SLACK_MS;
     }
@@ -405,6 +418,17 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             if (!within(leg.from, FLIGHT_MASTER_YARDS))
                 return {Act::Walk, leg.from, FailReason::None};
             return {Act::TalkFlightMaster, leg.from, FailReason::None};
+        }
+        case LegType::Hearth:
+        {
+            // The hearthstone's teleport is a far teleport (the trip survives it): done on the bind's map near the bind
+            if (within(leg.to, HEARTH_ARRIVE_YARDS))
+                return {Act::Done, leg.to, FailReason::None};
+            if (legMs > LegTimeoutMs(leg))
+                return fail(FailReason::Timeout);
+            if (seen.bot.mapId != leg.from.mapId)
+                return fail(FailReason::WrongMap);
+            return {Act::UseHearth, leg.to, FailReason::None};
         }
         default:
             return fail(FailReason::Unsupported);

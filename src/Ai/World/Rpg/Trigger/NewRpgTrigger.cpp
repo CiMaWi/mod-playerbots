@@ -10,6 +10,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "Timer.h"
+#include "WorldTravelRules.h"
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
@@ -42,4 +43,15 @@ bool InventoryPressureTrigger::IsActive()
     WorldTravel::SlotMeasure const& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     return WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), getMSTime()) &&
            sRandomPlayerbotMgr.IsRandomBot(bot);
+}
+
+bool InnBindTrigger::IsActive()
+{
+    if (!WorldTravel::ErrandMayStart(botAI) || !WorldTravel::InnCheckDue(botAI->rpgInfo.lastInnMs, getMSTime()) ||
+        !sRandomPlayerbotMgr.IsRandomBot(bot))
+        return false;
+
+    bool const sameMap = bot->m_homebindMapId == bot->GetMapId();
+    float const yards = sameMap ? bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) : 0.0f;
+    return WorldTravel::BindIsFar(sameMap, yards);
 }

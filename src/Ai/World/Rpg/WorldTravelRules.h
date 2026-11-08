@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 // The Player-free rules of honest world travel for persistent bots: the sight rule for teleports, the busy test, the
 // corpse-run limit and the Stuck event's cause and position packing. Header-only so tests/world-travel-selftest.cpp
@@ -242,6 +243,45 @@ inline uint32_t NextStuckRepeats(bool memoSet, uint32_t sinceMs, uint32_t avoidM
         return 0;
 
     return std::min(repeats + 1, STUCK_REPEAT_MAX);
+}
+
+// Teleports and the hearthstone (WT9). A manager teleport asked to "hearth" used to rebind the bot at the destination
+// (a city or an rpg spot); a persistent bot (honest travel) keeps its bind: it moves only at an inn
+inline bool TeleportRebinds(bool honest, bool hearth) { return hearth && !honest; }
+
+// Inn binding as an errand. The bind is "far" past ShouldHomeBindValue's 1000 yd, or on another map than the bot's
+constexpr float INN_BIND_FAR_YARDS = 1000.0f;
+// A persistent bot checks at most this often (ms), the first check is due at once
+constexpr uint32_t INN_RETRY_MS = 30 * 60 * 1000;
+// The inn must lie within this much walking at run speed
+constexpr float INN_MAX_WALK_SECONDS = 600.0f;
+
+inline bool BindIsFar(bool sameMap, float yardsToBind) { return !sameMap || yardsToBind > INN_BIND_FAR_YARDS; }
+
+// lastCheckMs 0 = never checked (the stamp is kept non-zero)
+inline bool InnCheckDue(uint32_t lastCheckMs, uint32_t nowMs)
+{
+    return RetryDue(lastCheckMs != 0, nowMs - lastCheckMs, INN_RETRY_MS);
+}
+
+// One inn of the bot's team on the bot's map: the straight yards from the bot, and whether its zone fits the level
+struct InnCandidate
+{
+    float yards{0.0f};
+    bool fits{false};
+};
+
+// The nearest level-fitting inn within maxYards; -1 when none (no errand). A bind that already sits at a fitting inn
+// near the bot never gets here: it is not far
+inline int PickInn(std::vector<InnCandidate> const& inns, float maxYards)
+{
+    int pick = -1;
+    for (size_t i = 0; i < inns.size(); ++i)
+        if (inns[i].fits && inns[i].yards <= maxYards &&
+            (pick < 0 || inns[i].yards < inns[static_cast<size_t>(pick)].yards))
+            pick = static_cast<int>(i);
+
+    return pick;
 }
 }  // namespace WorldTravel
 

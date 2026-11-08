@@ -2100,7 +2100,8 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
             break;
         }
 
-        if (hearth)
+        // A persistent bot keeps its bind: it moves it at an inn (the inn errand), not by being teleported
+        if (WorldTravel::TeleportRebinds(honest, hearth))
         {
             bot->SetHomebind(loc, zone->ID);
         }

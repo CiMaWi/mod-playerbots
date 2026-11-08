@@ -288,6 +288,8 @@ public:
             refusal = "the travel graph is not ready";
         else if (!PlayerbotFactory::KeepsPossessions(bot))
             refusal = "not a persistent bot (honest travel, random bot, no real master)";
+        else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+            refusal = "the bot does not run the new rpg strategy";
         else if (!bot->IsAlive())
             refusal = "dead";
         else if (bot->IsInFlight())

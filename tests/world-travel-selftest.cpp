@@ -263,8 +263,39 @@ void CheckGhost()
 }
 }  // namespace
 
+namespace
+{
+void CheckHearthAndInns()
+{
+    Check(!WorldTravel::TeleportRebinds(true, true), "an honest bot's hearth teleport keeps its bind");
+    Check(WorldTravel::TeleportRebinds(false, true), "an arena or old-setup bot still rebinds");
+    Check(!WorldTravel::TeleportRebinds(true, false) && !WorldTravel::TeleportRebinds(false, false),
+          "no hearth request, no rebind");
+
+    Check(!WorldTravel::BindIsFar(true, 1000.0f), "a bind 1000 yd away is not far");
+    Check(WorldTravel::BindIsFar(true, 1000.5f), "a bind past 1000 yd is far");
+    Check(WorldTravel::BindIsFar(false, 0.0f), "a bind on another map is far");
+
+    Check(WorldTravel::InnCheckDue(0, 5000), "the first inn check is due at once");
+    Check(!WorldTravel::InnCheckDue(1000, 1000 + WorldTravel::INN_RETRY_MS - 1), "the next waits 30 minutes");
+    Check(WorldTravel::InnCheckDue(1000, 1000 + WorldTravel::INN_RETRY_MS), "and is due after them");
+
+    using WorldTravel::InnCandidate;
+    float const reach = WorldTravel::INN_MAX_WALK_SECONDS * 7.0f;
+    Check(WorldTravel::PickInn({}, reach) == -1, "no inns on the map, no errand");
+    Check(WorldTravel::PickInn({{100.0f, false}, {200.0f, false}}, reach) == -1, "no fitting inn, no errand");
+    Check(WorldTravel::PickInn({{100.0f, false}, {900.0f, true}, {400.0f, true}}, reach) == 2,
+          "the nearest fitting inn, not the nearest inn");
+    Check(WorldTravel::PickInn({{reach + 1.0f, true}}, reach) == -1,
+          "a fitting inn past 10 walking minutes is no errand");
+    Check(WorldTravel::PickInn({{reach, true}}, reach) == 0, "and one at exactly 10 minutes is");
+    Check(WorldTravel::PickInn({{50.0f, true}, {50.0f, true}}, reach) == 0, "ties go to the first");
+}
+}  // namespace
+
 int main()
 {
+    CheckHearthAndInns();
     CheckSight();
     CheckBusy();
     CheckCorpseRuns();

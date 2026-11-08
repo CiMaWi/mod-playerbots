@@ -41,4 +41,15 @@ private:
     static constexpr int32 CHECK_SECONDS = 30;
 };
 
+// A persistent bot whose bind is far (WorldTravel::BindIsFar) and whose inn check is due (every 30 minutes)
+class InnBindTrigger : public Trigger
+{
+public:
+    InnBindTrigger(PlayerbotAI* botAI) : Trigger(botAI, "inn bind", CHECK_SECONDS) {}
+    bool IsActive() override;
+
+private:
+    static constexpr int32 CHECK_SECONDS = 60;
+};
+
 #endif

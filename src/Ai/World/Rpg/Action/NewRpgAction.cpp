@@ -20,6 +20,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
+#include "NewRpgTriggers.h"
 #include "Object.h"
 #include "ObjectAccessor.h"
 #include "ObjectDefines.h"
@@ -41,6 +42,7 @@
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "WaypointMovementGenerator.h"
+#include "WorldTravelRules.h"
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
 #include <atomic>
@@ -291,6 +293,9 @@ bool StartRpgDoQuestAction::Execute(Event event)
 
 namespace
 {
+constexpr uint32 HEARTHSTONE_SPELL = 8690;
+constexpr float INN_TALK_YARDS = 12.0f;  // the "home" action is tried from here
+constexpr float INN_STAND_YARDS = 2.0f;  // standing this close and still unbound: the errand ends
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
 
 std::mutex travelOrdersLock;
@@ -347,16 +352,29 @@ bool TravelOrders::Take(ObjectGuid bot, TravelOrder& order)
     if (!travelOrdersWaiting.load(std::memory_order_acquire))
         return false;
     std::lock_guard<std::mutex> guard(travelOrdersLock);
-    auto const found = travelOrders.find(bot);
-    if (found == travelOrders.end())
-        return false;
-    order = std::move(found->second);
-    travelOrders.erase(found);
-    // Orders nobody took (the bot logged out) go with the next take
+    // Orders nobody took in time are dropped on any take, also a miss (so no order keeps every bot at the lock), and
+    // logged: the bot is not in the new rpg strategy, logged out or in combat
     for (auto it = travelOrders.begin(); it != travelOrders.end();)
-        it = GetMSTimeDiffToNow(it->second.postedMs) > TRAVEL_ORDER_TTL_MS ? travelOrders.erase(it) : std::next(it);
+    {
+        if (GetMSTimeDiffToNow(it->second.postedMs) <= TRAVEL_ORDER_TTL_MS)
+        {
+            ++it;
+            continue;
+        }
+        LOG_INFO("playerbots", "[Route] order '{}' for bot {} dropped: not taken within {} s", it->second.place,
+                 it->first.GetCounter(), TRAVEL_ORDER_TTL_MS / IN_MILLISECONDS);
+        it = travelOrders.erase(it);
+    }
+    auto const found = travelOrders.find(bot);
+    bool taken = false;
+    if (found != travelOrders.end())
+    {
+        order = std::move(found->second);
+        travelOrders.erase(found);
+        taken = true;
+    }
     travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
-    return GetMSTimeDiffToNow(order.postedMs) <= TRAVEL_ORDER_TTL_MS;
+    return taken;
 }
 
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
@@ -1003,6 +1021,8 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
             return UsePortal(*data);
         case TravelLegs::Act::TalkFlightMaster:
             return TalkFlightMaster(*data);
+        case TravelLegs::Act::UseHearth:
+            return UseHearth(*data);
         case TravelLegs::Act::Ride:
             // As the random flight status does: nothing else to do in the air
             ContinueCrossMapTaxi();
@@ -1019,9 +1039,10 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
 bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
 {
     TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, ++botAI->rpgInfo.routeRequests);
-    // Legs the follower does not run yet: the hearthstone (WT9) and transports (WT19). Flights only to discovered
-    // nodes (the snapshot's taxi mask), their fares within the purse (the search's fare budget)
-    snapshot.hasHearthstone = false;
+    // Transports are not run yet (WT19). Flights only to discovered nodes (the snapshot's taxi mask), their fares
+    // within the purse (the search's fare budget). The hearthstone is a leg while its stone is in the bags and it is
+    // ready or cooling for at most the wait cap (the search); not again after a hearth leg of this trip failed
+    snapshot.hasHearthstone = snapshot.hasHearthstone && !data.noHearth;
     snapshot.allowTransport = false;
     TravelRoute::Request const request{
         snapshot, {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()}};
@@ -1133,12 +1154,36 @@ bool NewRpgTravelAction::TalkFlightMaster(NewRpgInfo::Travel& data)
         case TaxiStart::Started:
             data.trip.taxiActivated = true;
             return true;
+        case TaxiStart::Refused:
+        {
+            // The core's fare differs from the snapshot's: a purse short of the chain's price fails as the fare
+            uint32 cost = 0;
+            for (size_t i = 0; i + 1 < leg.taxiNodes.size(); ++i)
+            {
+                uint32 path = 0;
+                uint32 price = 0;
+                sObjectMgr->GetTaxiPath(leg.taxiNodes[i], leg.taxiNodes[i + 1], path, price);
+                cost += price;
+            }
+            return LegFailed(data,
+                             bot->GetMoney() < cost ? TravelLegs::FailReason::Fare : TravelLegs::FailReason::Taxi);
+        }
         case TaxiStart::NoMaster:
         case TaxiStart::Undiscovered:
-        case TaxiStart::Refused:
             break;
     }
     return LegFailed(data, TravelLegs::FailReason::Taxi);
+}
+
+bool NewRpgTravelAction::UseHearth(NewRpgInfo::Travel& data)
+{
+    // The cast takes 10 s and a cooling stone is waited for (the route's seconds hold both; the leg's timeout bounds
+    // them). The teleport is the stone's own spell: no bot teleport, no sight check
+    if (bot->IsNonMeleeSpellCast(false) || bot->HasSpellCooldown(HEARTHSTONE_SPELL))
+        return true;
+    if (!botAI->DoSpecificAction("hearthstone", Event(), true))
+        return LegFailed(data, TravelLegs::FailReason::Hearth);
+    return true;
 }
 
 bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason)
@@ -1147,6 +1192,8 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     LOG_DEBUG("playerbots", "[Route] {} leg {}/{} failed: {}", bot->GetName(), trip.legIdx + 1, trip.legs.size(),
               TravelLegs::FailWord(reason));
     EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), trip.legIdx + 1);
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Hearth)
+        data.noHearth = true;
     // A portal that did not take the bot through, or a flight that could not be taken: the search avoids that edge
     // for a while (a stuck walk was reported by MoveFarTo's give-up already)
     if (reason == TravelLegs::FailReason::Portal || reason == TravelLegs::FailReason::Taxi)
@@ -1182,6 +1229,19 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel const& data)
 {
     uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
     uint32 const replans = data.trip.replans;
+    if (data.bindInn)
+    {
+        // The route ends in front of the innkeeper (InnInfo::loc): bind through the "home" action, which talks to the
+        // innkeeper in reach. Not yet there: walk the rest; nothing to walk any more (or MoveFarTo gave up): ends
+        float const yards =
+            bot->GetExactDist(data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ());
+        bool const bound = yards <= INN_TALK_YARDS && botAI->DoSpecificAction("home", Event(), true);
+        if (!bound && !data.stuck && yards > INN_STAND_YARDS)
+            return MoveFarTo(data.dest);
+        LOG_INFO("playerbots", "[Route] {} {} at the inn after {} s ({} replans)", bot->GetName(),
+                 bound ? "bound its hearthstone" : "could not bind", seconds, replans);
+        EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", replans, seconds);
+    }
     if (data.place.empty())
         LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
                   seconds, data.estimateSeconds, replans);
@@ -1201,6 +1261,52 @@ void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel const& data, char const* why
         LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
     EventLog::Emit(bot, "Travel", source, data.trip.replans, GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS);
     botAI->rpgInfo.ChangeToIdle();
+}
+
+bool NewRpgStartInnAction::Execute(Event /*event*/)
+{
+    if (!WorldTravel::ErrandMayStart(botAI))
+        return false;
+
+    // Checked at most every INN_RETRY_MS, whatever comes of it
+    NewRpgInfo& info = botAI->rpgInfo;
+    info.lastInnMs = std::max<uint32>(getMSTime(), 1);
+
+    // The bot's team's inns on its map (startup cache): the nearest one whose zone fits its level, within 10 minutes of
+    // walking (straight line at run speed)
+    std::vector<TravelMgr::InnInfo> const& inns = sTravelMgr.GetInns(bot->GetTeamId());
+    std::vector<WorldTravel::InnCandidate> candidates;
+    std::vector<size_t> innIndex;
+    uint32 const level = bot->GetLevel();
+    for (size_t i = 0; i < inns.size(); ++i)
+    {
+        TravelMgr::InnInfo const& inn = inns[i];
+        if (inn.loc.GetMapId() != bot->GetMapId())
+            continue;
+
+        StartingHistory::Bracket bracket;
+        bool const fits = sTravelMgr.GetZoneBracket(inn.zoneId, bracket.low, bracket.high) &&
+                          StartingHistory::BracketFits(level, bracket);
+        candidates.push_back(
+            {bot->GetExactDist(inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.loc.GetPositionZ()), fits});
+        innIndex.push_back(i);
+    }
+    float const maxYards = WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    int const pick = WorldTravel::PickInn(candidates, maxYards);
+    if (pick < 0)
+    {
+        LOG_DEBUG("playerbots", "[Route] {} inn errand: no fitting inn within reach ({} inns on the map)",
+                  bot->GetName(), candidates.size());
+        return false;
+    }
+
+    TravelMgr::InnInfo const& inn = inns[innIndex[static_cast<size_t>(pick)]];
+    LOG_DEBUG("playerbots", "[Route] {} inn errand: bind far, inn at ({:.0f}, {:.0f}) in zone {}", bot->GetName(),
+              inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.zoneId);
+    info.ChangeToTravel(WorldPosition(inn.loc));
+    if (auto* travel = std::get_if<NewRpgInfo::Travel>(&info.data))
+        travel->bindInn = true;
+    return true;
 }
 
 bool NewRpgTravelFlightAction::Execute(Event /*event*/)

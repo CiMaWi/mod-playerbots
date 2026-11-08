@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -114,6 +115,9 @@ inline std::optional<Point> ParseLiteral(std::string_view text)
         ++end;
     if (*end != '\0' || mapId > 0xFFFFu)
         return std::nullopt;
+    for (float const value : values)
+        if (!std::isfinite(value))
+            return std::nullopt;
     return Point{static_cast<std::uint32_t>(mapId), values[0], values[1], values[2]};
 }
 

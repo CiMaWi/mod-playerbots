@@ -100,6 +100,8 @@ struct NewRpgInfo
         uint32 routeStartMs{0};  // the current route's start and estimate: the trip's deadline
         float routeSeconds{0.0f};
         std::string place;  // a GM order's place (`playerbots route go`): its first route is logged
+        bool bindInn{false};   // an inn errand: at the end the bot binds at the innkeeper in front of it
+        bool noHearth{false};  // a hearth leg failed: later routes of this trip leave the hearthstone out
     };
     // RPG_ERRANDS: a trip to a vendor to sell, repair and maybe buy a bag
     struct Errands
@@ -113,7 +115,8 @@ struct NewRpgInfo
     {
     };
 
-    uint32 startT{0};  // start timestamp of the current status
+    uint32 startT{0};     // start timestamp of the current status
+    uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
     uint32 routeRequests{0};  // the bot's route request ids (TravelRoute::Snapshot::requestId), across trips
 
     // MOVE_FAR

@@ -146,10 +146,20 @@ private:
     bool TakeRoute(NewRpgInfo::Travel& data);
     bool UsePortal(NewRpgInfo::Travel& data);
     bool TalkFlightMaster(NewRpgInfo::Travel& data);
+    bool UseHearth(NewRpgInfo::Travel& data);
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
     bool Arrive(NewRpgInfo::Travel const& data);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     void EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source);
+};
+
+// Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its
+// hearthstone through the "home" action. Started by the "inn bind" trigger (the bind is far)
+class NewRpgStartInnAction : public NewRpgBaseAction
+{
+public:
+    NewRpgStartInnAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg start inn") {}
+    bool Execute(Event event) override;
 };
 
 // GM orders for RPG_TRAVEL (`playerbots route go|stop`, tests): the command posts on the world thread, the bot's map

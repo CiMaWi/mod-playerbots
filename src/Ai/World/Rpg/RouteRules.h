@@ -24,6 +24,7 @@
 //   (Params::transportWaitSeconds, half a period) plus SHIP_RIDE_SECONDS
 // - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
+//   A cooldown above HEARTH_WAIT_CAP_MS (3 min) is no edge: the follower never waits that long
 // - an edge flagged by Stuck events costs Params::stuckPenalty times more, and is skipped after STUCK_SKIP_FLAGS
 
 #include <algorithm>
@@ -47,16 +48,17 @@
 
 namespace TravelRoute
 {
-constexpr std::size_t TAXI_MASK_SIZE = 14;       // TaxiMaskSize (DBCStructure.h): 448 taxi nodes, PlayerTaxi's layout
-constexpr std::size_t END_NODES = 5;             // graph nodes the bot, the goal and the bind point connect to
-constexpr float DIRECT_YARDS = 100.0f;           // start and goal this close on one map may also be walked directly
-constexpr float HEARTH_CAST_SECONDS = 10.0f;     // the hearthstone's cast
-constexpr float FLIGHT_BOARDING_SECONDS = 5.0f;  // talking to the flight master, mounting and landing
-constexpr float SHIP_RIDE_SECONDS = 120.0f;      // a ship or zeppelin crossing until WT19 knows the real periods
-constexpr float FULL_PURSE_SECONDS = 3600.0f;    // at thrift 100, a fare of all one's money weighs an hour of travel
-constexpr std::uint16_t STUCK_SKIP_FLAGS = 3;    // an edge flagged this often within the avoid window is skipped
-constexpr float STUCK_NODE_YARDS = 10.0f;        // a stuck walk's destination this close to a node was a graph leg
-constexpr std::size_t STUCK_QUEUE_MAX = 4096;    // reports waiting for the world thread; more are dropped
+constexpr std::size_t TAXI_MASK_SIZE = 14;    // TaxiMaskSize (DBCStructure.h): 448 taxi nodes, PlayerTaxi's layout
+constexpr std::size_t END_NODES = 5;          // graph nodes the bot, the goal and the bind point connect to
+constexpr float DIRECT_YARDS = 100.0f;        // start and goal this close on one map may also be walked directly
+constexpr float HEARTH_CAST_SECONDS = 10.0f;  // the hearthstone's cast
+constexpr std::uint32_t HEARTH_WAIT_CAP_MS = 3 * 60 * 1000;  // a cooldown longer than this is no hearth edge
+constexpr float FLIGHT_BOARDING_SECONDS = 5.0f;              // talking to the flight master, mounting and landing
+constexpr float SHIP_RIDE_SECONDS = 120.0f;    // a ship or zeppelin crossing until WT19 knows the real periods
+constexpr float FULL_PURSE_SECONDS = 3600.0f;  // at thrift 100, a fare of all one's money weighs an hour of travel
+constexpr std::uint16_t STUCK_SKIP_FLAGS = 3;  // an edge flagged this often within the avoid window is skipped
+constexpr float STUCK_NODE_YARDS = 10.0f;      // a stuck walk's destination this close to a node was a graph leg
+constexpr std::size_t STUCK_QUEUE_MAX = 4096;  // reports waiting for the world thread; more are dropped
 constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
 constexpr float UNREACHED = std::numeric_limits<float>::infinity();
 
@@ -233,6 +235,15 @@ inline float FareSeconds(std::uint32_t fare, std::uint32_t money, std::uint32_t 
            static_cast<float>(std::min<std::uint32_t>(thrift, 100)) / 100.0f;
 }
 
+// Walk or fly (the time value): a flight is worth it when it saves more seconds than its fare weighs. The search weighs
+// every flight link by the same FareSeconds, so this rule and the route's own choice agree (route-rules-selftest b)
+inline bool FlightWorthIt(float walkSeconds, float flightSeconds, std::uint32_t fare, std::uint32_t money,
+                          std::uint32_t thrift)
+{
+    float const weight = FareSeconds(fare, money, thrift);
+    return weight >= 0.0f && walkSeconds - flightSeconds > weight;
+}
+
 // The legacy annoyance (TravelNodePath::getCost): maxCreature = {hostile mobs, Alliance-only friendly, Horde-only
 // friendly}; the other faction's creatures annoy three times as much
 inline float WalkModifier(TravelGraphLink const& link, Snapshot const& bot)
@@ -322,7 +333,8 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
     std::vector<std::uint32_t> bindNodes;
     if (bot.hasHearthstone)
         bindNodes = graph.NearestNodes(bot.hearth.mapId, bot.hearth.x, bot.hearth.y, bot.hearth.z, END_NODES);
-    bool const hearth = bot.hasHearthstone && (!bindNodes.empty() || bot.hearth.mapId == goal.mapId);
+    bool const hearth = bot.hasHearthstone && bot.hearthCooldownMs <= HEARTH_WAIT_CAP_MS &&
+                        (!bindNodes.empty() || bot.hearth.mapId == goal.mapId);
 
     float const runSpeed = std::max(bot.runSpeed, 1.0f);
     float const swimSpeed = std::max(bot.swimSpeed, 1.0f);
@@ -829,6 +841,20 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     Result const poor = Search(graph, broke, StuckEdges{}, aStar);
     check(legCount(poor, LegType::Flight) == 0, "b) a flight leg without money");
     check(!poor.ok || poor.totalSeconds > flown.totalSeconds, "b) the route without money is not dearer");
+    // The follower's time-value rule and the search agree: the flown route (fare weighed in) is chosen exactly when
+    // FlightWorthIt says the flight saves more than its fare weighs
+    if (poor.ok && flown.ok)
+    {
+        std::uint32_t const fare = RouteFare(flown);
+        float const pure = flown.totalSeconds - FareSeconds(fare, flyer.money, flyer.thrift);
+        check(FlightWorthIt(poor.totalSeconds, pure, fare, flyer.money, flyer.thrift) ==
+                  (flown.totalSeconds < poor.totalSeconds),
+              "b) FlightWorthIt and the search disagree on Stormwind -> Ironforge");
+    }
+    check(FlightWorthIt(1000.0f, 200.0f, 100, 100000, 50), "b) FlightWorthIt: a cheap fare saves 800 s");
+    check(!FlightWorthIt(1000.0f, 200.0f, 100000, 100000, 100), "b) FlightWorthIt: the whole purse weighs an hour");
+    check(!FlightWorthIt(1000.0f, 200.0f, 500, 100, 50), "b) FlightWorthIt: an unaffordable fare");
+    check(!FlightWorthIt(200.0f, 190.0f, 50000, 100000, 100), "b) FlightWorthIt: 10 s saved, half a purse spent");
     Request unknown = flight;
     unknown.snapshot.knownTaxi = {};
     unknown.snapshot.LearnTaxiNode(stormwindTaxi);
@@ -866,6 +892,17 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         check(legCount(flownHome, LegType::Flight) == 1, "c) no flight home");
         check(flownHome.totalSeconds > hearthed.totalSeconds, "c) the cooling hearth's route is not dearer");
     }
+    // A short cooldown is waited for (60 s + 10 s beats the 200 s flight); one past the cap is no edge at all
+    Request shortWait = home;
+    shortWait.snapshot.hearthCooldownMs = 60 * 1000;
+    Result const waited = Search(graph, shortWait, StuckEdges{}, aStar);
+    if (sound(waited, shortWait, "c) Ironforge -> Stormwind inn, hearth in 60 s"))
+        check(legCount(waited, LegType::Hearth) == 1 && waited.totalSeconds < 120.0f,
+              "c) a 60 s cooldown is not waited for (" + num(waited.totalSeconds) + " s)");
+    Request pastCap = home;
+    pastCap.snapshot.hearthCooldownMs = HEARTH_WAIT_CAP_MS + 1000;
+    check(legCount(Search(graph, pastCap, StuckEdges{}, aStar), LegType::Hearth) == 0,
+          "c) a cooldown past the wait cap is used");
     Request noStone = home;
     noStone.snapshot.hasHearthstone = false;
     check(legCount(Search(graph, noStone, StuckEdges{}, aStar), LegType::Hearth) == 0,

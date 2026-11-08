@@ -101,6 +101,8 @@ char const* ActWord(Act act)
             return "trigger";
         case Act::TalkFlightMaster:
             return "talk";
+        case Act::UseHearth:
+            return "hearth";
         case Act::Ride:
             return "ride";
         case Act::Wait:
@@ -338,9 +340,27 @@ void CheckPredicates()
     Decision const elsewhere = TravelLegs::StepLeg(astray, At({1, 5100.0f, 5000.0f, 0.0f}, 3000));
     Check(elsewhere.act == Act::Fail && elsewhere.reason == FailReason::Landing, "flight: a landing 100 yd off fails");
 
-    // Hearth and transport legs are not run before WT9/WT19
-    Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, NODES[0], NODES[1], {}, 10.0f)});
-    Check(TravelLegs::StepLeg(hearth, At(NODES[0], 2000)).reason == FailReason::Unsupported, "hearth: unsupported");
+    // The hearthstone leg: cast it where the bot stands, done within 40 yd of the bind (its map), the cast and a
+    // cooldown wait are inside the timeout
+    Point const bind{1, 1300.0f, 1300.0f, 0.0f};
+    Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, NODES[0], bind, {}, 10.0f)});
+    Check(TravelLegs::StepLeg(hearth, At(NODES[0], 2000)).act == Act::UseHearth, "hearth: casts at the start");
+    Check(TravelLegs::StepLeg(hearth, At({1, 1330.0f, 1300.0f, 0.0f}, 12000)).act == Act::Done,
+          "hearth: done within 40 yd of the bind");
+    Check(TravelLegs::StepLeg(hearth, At({1, 1345.0f, 1300.0f, 0.0f}, 12000)).reason == FailReason::WrongMap,
+          "hearth: 45 yd away is not there; on the bind's map it is no start map either");
+    Check(TravelLegs::StepLeg(hearth, At(NODES[0], 1000 + 40000)).act == Act::UseHearth, "hearth: 40 s are allowed");
+    Decision const lateHearth = TravelLegs::StepLeg(hearth, At(NODES[0], 1000 + 40001));
+    Check(lateHearth.act == Act::Fail && lateHearth.reason == FailReason::Timeout, "hearth: past 40 s fails");
+    Trip cooling = StartedTrip({MakeLeg(LegType::Hearth, NODES[0], bind, {}, 130.0f)});
+    Check(TravelLegs::StepLeg(cooling, At(NODES[0], 1000 + 150000)).act == Act::UseHearth,
+          "hearth: a 2 minute cooldown wait is inside the timeout");
+    Check(TravelLegs::StepLeg(cooling, At(NODES[0], 1000 + 160001)).reason == FailReason::Timeout,
+          "hearth: the timeout is the leg's seconds plus 30 s");
+    Trip hearthThenWalk = StartedTrip(
+        {MakeLeg(LegType::Hearth, NODES[0], bind, {}, 10.0f), MakeLeg(LegType::Walk, bind, GOAL, {}, 50.0f)});
+    Check(TravelLegs::Advance(hearthThenWalk, At(bind, 12000), NodeAt).act == Act::Walk && hearthThenWalk.legIdx == 1,
+          "hearth: the walk after it starts on the bind's map");
     Trip ship = StartedTrip({MakeLeg(LegType::Transport, NODES[0], NODES[1], {0, 1}, 120.0f)});
     Check(TravelLegs::StepLeg(ship, At(NODES[0], 2000)).reason == FailReason::Unsupported, "transport: unsupported");
 
@@ -459,7 +479,7 @@ void CheckEventSources()
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
     bool reasons = true;
-    for (int r = 0; r <= static_cast<int>(FailReason::Taxi); ++r)
+    for (int r = 0; r <= static_cast<int>(FailReason::Hearth); ++r)
     {
         FailReason const reason = static_cast<FailReason>(r);
         std::string const word = TravelLegs::FailWord(reason);
@@ -485,6 +505,9 @@ void CheckPlaces()
     Check(!TravelPlaces::Resolve("1,2,3,0x"), "places: nothing after the map");
     Check(!TravelPlaces::Resolve("1,2,3,-1"), "places: no negative map");
     Check(!TravelPlaces::Resolve("atlantis"), "places: an unknown name");
+    Check(!TravelPlaces::Resolve("nan,0,0,0") && !TravelPlaces::Resolve("0,inf,0,0") &&
+              !TravelPlaces::Resolve("0,0,-infinity,0"),
+          "places: a literal with a non-finite coordinate");
     Check(!TravelPlaces::Resolve(""), "places: empty text");
 
     bool starts = true;
