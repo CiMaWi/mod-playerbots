@@ -10,7 +10,9 @@
 // waypoints of a leg, the judgement of route answers, what survives the AI's full reset (a far teleport keeps a
 // trip) and the whole trip's deadline; then the flight leg's failure (taxi) and its reported hop, the deadline in
 // flight and after a replan, the Travel event sources, and the named places of `playerbots route go` (TravelPlaces.h;
-// their graph check is in route-rules-selftest).
+// their graph check is in route-rules-selftest). Also what a stuck walk leaves out of the trip's later routes (a direct
+// walk, the first hop, the goal hop; a second stuck walk at one waypoint ends the trip) and the late answers asked
+// again.
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -215,7 +217,7 @@ void CheckTimeouts()
     Check(late.act == Act::Fail && late.reason == FailReason::Timeout, "walk: Fail(timeout) after 360 s");
     Check(TravelLegs::StepLeg(trip, At(NODES[1], 999999)).act == Act::Done, "walk: an arrival after the time is done");
 
-    // A cached answer moved a 0-second walk's end 700 yd away: walked, with time for 700 yd at run speed
+    // A 0-second walk whose end lies 700 yd away: walked, with time for 700 yd at run speed
     Leg const moved = MakeLeg(LegType::Walk, NODES[6], {1, 5700.0f, 5000.0f, 0.0f}, {6}, 0.0f);
     Check(!TravelLegs::IsNoOp(moved), "a 0-second walk whose end moved is not skipped");
     Check(TravelLegs::LegTimeoutMs(moved) == 360000, "a moved walk's timeout uses its straight line (100 s)");
@@ -251,8 +253,11 @@ void CheckStuckAndReplans()
     Decision const stuck = TravelLegs::Advance(trip, At(NODES[1], 3000, 10000, false, true), NodeAt);
     Check(stuck.act == Act::Fail && stuck.reason == FailReason::Stuck, "stuck: Fail(stuck) mid-walk");
 
-    for (int replan = 1; replan <= TravelLegs::MAX_REPLANS; ++replan)
-        Check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == TravelLegs::Recovery::Replan,
+    Check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == TravelLegs::Recovery::Replan && trip.avoid.size() == 1 &&
+              trip.avoid[0] == 2 && !trip.noDirect,
+          "replan 1 of 3 is granted; node 2 is no end of the next route");
+    for (int replan = 2; replan <= TravelLegs::MAX_REPLANS; ++replan)
+        Check(TravelLegs::AfterFailure(trip, FailReason::Timeout) == TravelLegs::Recovery::Replan,
               "replan " + std::to_string(replan) + " of 3 is granted");
     Check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == TravelLegs::Recovery::Abort,
           "the fourth failure aborts the trip");
@@ -271,6 +276,61 @@ void CheckStuckAndReplans()
     Trip portal = StartedTrip({MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)});
     auto const portalEdge = TravelLegs::StuckEdge(portal);
     Check(portalEdge.first == 2 && portalEdge.second == 3, "the portal's edge is node 2 -> node 3");
+}
+
+// A stuck walk's start or goal hop is no graph edge: the trip leaves it out of its later routes itself
+void CheckStuckAvoid()
+{
+    using TravelLegs::Recovery;
+    Point const near{0, 60.0f, 30.0f, 0.0f};
+
+    // A direct walk, then a route through nodes 0 and 1 that gets stuck at the same goal
+    Trip direct = StartedTrip({MakeLeg(LegType::Walk, START, near, {}, 9.0f)});
+    Check(direct.waypoints.size() == 2 && TravelLegs::StuckEdge(direct).first == TravelLegs::NO_NODE,
+          "a direct walk has no graph edge");
+    Check(TravelLegs::AfterFailure(direct, FailReason::Stuck) == Recovery::Replan && direct.noDirect &&
+              direct.avoid.empty(),
+          "stuck on a direct walk: the next route walks no straight line to the goal");
+    direct.legs = {MakeLeg(LegType::Walk, START, near, {0, 1}, 20.0f)};
+    TravelLegs::StartLeg(direct, 0, 5000, NodeAt);
+    direct.next = static_cast<std::uint32_t>(direct.waypoints.size() - 1);
+    Check(TravelLegs::AfterFailure(direct, FailReason::Stuck) == Recovery::Abort && direct.replans == 1,
+          "stuck at the same goal again: the trip ends with 2 replans left");
+    Check(direct.avoid.size() == 1 && direct.avoid[0] == 1, "stuck on the goal hop: node 1 before it is left out");
+
+    // The first hop from the bot's start, then the next hop: another waypoint, another replan
+    Trip first = StartedTrip({MakeLeg(LegType::Walk, START, NODES[1], {0, 1}, 20.0f)});
+    Check(first.next == 1 && TravelLegs::AfterFailure(first, FailReason::Stuck) == Recovery::Replan &&
+              first.avoid.size() == 1 && first.avoid[0] == 0 && !first.noDirect,
+          "stuck on the first hop: node 0 is no end of the next route");
+    first.next = 2;
+    Check(TravelLegs::AfterFailure(first, FailReason::Stuck) == Recovery::Replan && first.avoid.size() == 2,
+          "stuck at another waypoint: a replan, node 1 left out too");
+
+    // The goal hop from a node: no straight walk, and node 1 is no end
+    Trip last = StartedTrip({MakeLeg(LegType::Walk, NODES[0], near, {0, 1}, 20.0f)});
+    last.next = 2;
+    Check(last.waypoints.size() == 3 && TravelLegs::AfterFailure(last, FailReason::Stuck) == Recovery::Replan &&
+              last.noDirect && last.avoid.size() == 1 && last.avoid[0] == 1,
+          "stuck on the goal hop: no straight walk, node 1 is no end of the next route");
+
+    // At most AVOID_NODES nodes; a hearth leg walks nowhere
+    Trip many = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1, 2}, 30.0f),
+                             MakeLeg(LegType::Walk, NODES[3], NODES[6], {3, 4, 5, 6}, 30.0f)});
+    for (std::uint32_t leg = 0; leg < 2; ++leg)
+    {
+        TravelLegs::StartLeg(many, leg, 1000, NodeAt);
+        for (std::uint32_t next = 1; next < many.waypoints.size(); ++next)
+        {
+            many.next = next;
+            TravelLegs::NoteStuck(many);
+        }
+    }
+    Check(many.avoid.size() == TravelLegs::AVOID_NODES && many.avoid.front() == 0 && many.avoid.back() == 4,
+          "at most 4 nodes are left out");
+    Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, START, NODES[3], {}, 10.0f)});
+    Check(!TravelLegs::NoteStuck(hearth) && !hearth.noDirect && hearth.avoid.empty() && !hearth.stuckSeen,
+          "a hearth leg leaves nothing out");
 }
 
 void CheckWrongMapAndFare()
@@ -382,10 +442,18 @@ void CheckWaypointsAndAnswers()
     TravelLegs::RouteWait wait{7, 0, 0xFFFFF000u, true};  // the clock wraps while waiting
     Check(TravelLegs::Judge(wait, 6, 0, 0xFFFFF100u) == TravelLegs::Verdict::Drop, "an older answer is dropped");
     Check(TravelLegs::Judge(wait, 7, 0, 0x00001000u) == TravelLegs::Verdict::Apply, "a young answer is applied");
+    Check(TravelLegs::Judge(wait, 7, 0, 0x00007000u) == TravelLegs::Verdict::Apply,
+          "an answer 33 s old is applied (it lives 60 s)");
     Check(TravelLegs::Judge(wait, 7, 1, 0x00001000u) == TravelLegs::Verdict::Refresh, "an answer for another map");
-    Check(TravelLegs::Judge(wait, 7, 0, 0x00008000u) == TravelLegs::Verdict::Refresh, "an answer older than 30 s");
-    Check(!TravelLegs::WaitExpired(wait, 0x00007000u) && TravelLegs::WaitExpired(wait, 0x00009000u),
-          "the wait expires after 35 s");
+    Check(TravelLegs::Judge(wait, 7, 0, 0x0000F000u) == TravelLegs::Verdict::Refresh, "an answer older than 60 s");
+    Check(!TravelLegs::WaitExpired(wait, 0x0000D000u) && TravelLegs::WaitExpired(wait, 0x0000F000u),
+          "the wait expires after 60 s, when the service drops the answer");
+
+    // A late or lost answer is asked again three times per trip; the fourth fails the leg (NoAnswer)
+    Trip asking;
+    for (int ask = 1; ask <= TravelLegs::MAX_RESUBMITS; ++ask)
+        Check(TravelLegs::Resubmit(asking), "late answer " + std::to_string(ask) + " of 3 is asked again");
+    Check(!TravelLegs::Resubmit(asking) && asking.replans == 0, "the fourth late answer fails the leg");
 }
 
 // NewRpgInfo's shape for TravelLegs::AfterReset: a status variant, its start and the request counter beside other state
@@ -537,6 +605,7 @@ int main()
     CheckFullRoute();
     CheckTimeouts();
     CheckStuckAndReplans();
+    CheckStuckAvoid();
     CheckWrongMapAndFare();
     CheckPredicates();
     CheckWaypointsAndAnswers();

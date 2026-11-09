@@ -45,10 +45,10 @@ constexpr std::uint8_t MAX_REPLANS = 3;       // new routes per trip after faile
 constexpr float HEARTH_ARRIVE_YARDS = 40.0f;  // a hearth leg is done within this of the bind point
 constexpr std::uint32_t HEARTH_SLACK_MS = 30 * 1000;  // a hearth leg's time beyond its cooldown wait and cast
 constexpr std::uint32_t REPLAN_DELAY_MS = 2000;       // the failed leg's stuck report reaches the published book first
-constexpr std::uint32_t ROUTE_WAIT_MS = 35 * 1000;    // no answer by then: the service has dropped the request
-constexpr std::uint32_t ROUTE_AGE_MS = 30 * 1000;     // an answer to an older snapshot is not applied
 constexpr std::uint32_t LEGS_PER_TICK = 4;            // finished legs passed in one tick at most
 constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;       // reached waypoints passed in one tick at most
+constexpr std::uint8_t MAX_RESUBMITS = 3;             // route requests asked again per trip after a late or lost answer
+constexpr std::size_t AVOID_NODES = 4;                // route ends a trip leaves out after stuck walks
 
 enum class Act : std::uint8_t
 {
@@ -232,6 +232,11 @@ struct Trip
     bool taxiActivated{false};  // flight: the taxi was taken (fare paid)
     bool seenInFlight{false};   // flight: the bot was seen in flight
     std::uint8_t replans{0};
+    std::uint8_t resubmits{0};         // route requests asked again after a late or lost answer (Resubmit)
+    std::vector<std::uint32_t> avoid;  // after stuck walks: nodes later routes neither start nor end at (NoteStuck)
+    bool noDirect{false};              // after a stuck walk towards the goal: no straight walk from the bot to it
+    bool stuckSeen{false};
+    Point stuckAt;  // the waypoint of the trip's last stuck walk
 };
 
 // The route request the follower waits for (the bot's latest; RouteService answers older ones too)
@@ -247,22 +252,36 @@ enum class Verdict : std::uint8_t
 {
     Apply,   // the answer to the latest request, still on its map and young
     Drop,    // an answer to an older request: keep waiting
-    Refresh  // the bot changed maps or the answer is too old: the leg counts as failed (NoAnswer)
+    Refresh  // the bot changed maps or the answer is too old: the route is asked again (Resubmit)
 };
 
 inline Verdict Judge(RouteWait const& wait, std::uint32_t answerId, std::uint32_t botMapId, std::uint32_t nowMs)
 {
     if (answerId != wait.requestId)
         return Verdict::Drop;
-    if (botMapId != wait.mapId || nowMs - wait.requestedMs > ROUTE_AGE_MS)
+    if (botMapId != wait.mapId || nowMs - wait.requestedMs > TravelRoute::ANSWER_KEEP_MS)
         return Verdict::Refresh;
     return Verdict::Apply;
 }
 
-inline bool WaitExpired(RouteWait const& wait, std::uint32_t nowMs) { return nowMs - wait.requestedMs > ROUTE_WAIT_MS; }
+// No answer within its life: the service has dropped it (or the request)
+inline bool WaitExpired(RouteWait const& wait, std::uint32_t nowMs)
+{
+    return nowMs - wait.requestedMs > TravelRoute::ANSWER_KEEP_MS;
+}
 
-// Routes begin and end with walks of 0 seconds (start or goal on a node); a cached answer moves the first leg's start
-// and the last leg's end to the new positions but keeps their seconds, so a moved end is walked, not skipped
+// A late or lost answer is no failed leg: the route is asked again from where the bot stands, at most MAX_RESUBMITS
+// times per trip (the trip's deadline bounds them too); false: the leg fails as NoAnswer
+inline bool Resubmit(Trip& trip)
+{
+    if (trip.resubmits >= MAX_RESUBMITS)
+        return false;
+    ++trip.resubmits;
+    return true;
+}
+
+// Routes begin and end with walks of 0 seconds (start or goal on a node); a 0-second walk whose ends lie apart is
+// walked, not skipped
 inline bool IsNoOp(Leg const& leg)
 {
     return leg.type == LegType::Walk && leg.seconds < NOOP_SECONDS && leg.from.mapId == leg.to.mapId &&
@@ -460,11 +479,49 @@ enum class Recovery : std::uint8_t
     Abort    // give the trip up (IDLE)
 };
 
+// What a stuck walk teaches the trip's later routes; the graph edge (StuckEdge) is flagged for every bot, but a start
+// or goal hop is no graph edge. Heading for a graph node: no route starts or ends there (a walk to or from it would
+// take the same way); heading for the goal: no straight walk from the bot, and no route ends at the node the bot came
+// from. True when the bot got stuck at this waypoint before in this trip
+inline bool NoteStuck(Trip& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.waypoints.empty())
+        return false;
+    LegType const type = trip.legs[trip.legIdx].type;
+    if (type == LegType::Hearth)
+        return false;  // no walk
+    // A walk heads for its next waypoint, a portal or flight leg for its start
+    std::uint32_t const last = static_cast<std::uint32_t>(trip.waypoints.size() - 1);
+    std::uint32_t const index = type == LegType::Walk ? std::min(trip.next, last) : 0;
+    Waypoint const& target = trip.waypoints[index];
+    bool const again =
+        trip.stuckSeen && target.at.mapId == trip.stuckAt.mapId && Distance(target.at, trip.stuckAt) <= WAYPOINT_YARDS;
+    trip.stuckSeen = true;
+    trip.stuckAt = target.at;
+    auto const avoid = [&trip](std::uint32_t node)
+    {
+        if (node != NO_NODE && trip.avoid.size() < AVOID_NODES &&
+            std::find(trip.avoid.begin(), trip.avoid.end(), node) == trip.avoid.end())
+            trip.avoid.push_back(node);
+    };
+    if (target.node != NO_NODE)
+        avoid(target.node);
+    else
+    {
+        trip.noDirect = true;
+        if (index > 0)
+            avoid(trip.waypoints[index - 1].node);
+    }
+    return again;
+}
+
 // After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
-// at once (a new search would give the same answer)
+// at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint
 inline Recovery AfterFailure(Trip& trip, FailReason reason)
 {
     if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || trip.replans >= MAX_REPLANS)
+        return Recovery::Abort;
+    if (reason == FailReason::Stuck && NoteStuck(trip))
         return Recovery::Abort;
     ++trip.replans;
     return Recovery::Replan;

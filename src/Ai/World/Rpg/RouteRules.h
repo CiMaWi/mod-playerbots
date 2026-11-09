@@ -26,6 +26,8 @@
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
 //   A cooldown above HEARTH_WAIT_CAP_MS (3 min) is no edge: the follower never waits that long
 // - an edge flagged by Stuck events costs Params::stuckPenalty times more, and is skipped after STUCK_SKIP_FLAGS
+// - the request's avoided nodes are no start or goal node, and noDirect drops the straight walk from the bot (the
+//   bot's own stuck walks of the trip: their start or goal hop is no graph edge to flag)
 
 #include <algorithm>
 #include <array>
@@ -56,6 +58,8 @@ constexpr std::uint32_t HEARTH_WAIT_CAP_MS = 3 * 60 * 1000;  // a cooldown longe
 constexpr float FLIGHT_BOARDING_SECONDS = 5.0f;              // talking to the flight master, mounting and landing
 constexpr float SHIP_RIDE_SECONDS = 120.0f;    // a ship or zeppelin crossing until WT19 knows the real periods
 constexpr float FULL_PURSE_SECONDS = 3600.0f;  // at thrift 100, a fare of all one's money weighs an hour of travel
+// A route answer's life from its request: the service keeps it, the follower waits for it and applies it this long
+constexpr std::uint32_t ANSWER_KEEP_MS = 60 * 1000;
 constexpr std::uint16_t STUCK_SKIP_FLAGS = 3;  // an edge flagged this often within the avoid window is skipped
 constexpr float STUCK_NODE_YARDS = 10.0f;      // a stuck walk's destination this close to a node was a graph leg
 constexpr std::size_t STUCK_QUEUE_MAX = 4096;  // reports waiting for the world thread; more are dropped
@@ -114,8 +118,15 @@ struct Snapshot
 
 struct Request
 {
+    Request() = default;
+    Request(Snapshot const& bot, Point const& to) : snapshot(bot), goal(to) {}
+
     Snapshot snapshot;
     Point goal;
+    // After stuck walks of the trip (TravelLegs::NoteStuck): nodes the route neither starts nor ends at, and no
+    // straight walk from the bot to the goal
+    std::vector<std::uint32_t> avoidNodes;
+    bool noDirect{false};
 };
 
 // Tuning values (WorldTravelConfig) and the selftest's switch
@@ -221,7 +232,6 @@ inline std::uint64_t EdgeKey(std::uint32_t fromNode, std::uint32_t toNode)
 struct StuckEdges
 {
     std::unordered_map<std::uint64_t, std::uint16_t> flags;
-    std::uint32_t generation{0};  // counts the book's publications: a cached route is only as good as its flags
 };
 
 // Seconds a fare weighs: the share of the purse it takes, times an hour at thrift 100. Negative: unaffordable
@@ -316,9 +326,13 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
     Snapshot const& bot = request.snapshot;
     Point const& start = bot.position;
     Point const& goal = request.goal;
-    std::vector<std::uint32_t> const startNodes = graph.NearestNodes(start.mapId, start.x, start.y, start.z, END_NODES);
-    std::vector<std::uint32_t> const goalNodes = graph.NearestNodes(goal.mapId, goal.x, goal.y, goal.z, END_NODES);
-    bool const direct = start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS;
+    std::vector<std::uint32_t> startNodes = graph.NearestNodes(start.mapId, start.x, start.y, start.z, END_NODES);
+    std::vector<std::uint32_t> goalNodes = graph.NearestNodes(goal.mapId, goal.x, goal.y, goal.z, END_NODES);
+    auto const avoided = [&request](std::uint32_t node)
+    { return std::find(request.avoidNodes.begin(), request.avoidNodes.end(), node) != request.avoidNodes.end(); };
+    std::erase_if(startNodes, avoided);
+    std::erase_if(goalNodes, avoided);
+    bool const direct = !request.noDirect && start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS;
     if (startNodes.empty() && !direct)
     {
         result.failure = Failure::NoStartNode;
@@ -441,7 +455,8 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
         {
             for (std::uint32_t const node : vertex == source ? startNodes : bindNodes)
                 walkTo(vertex, node);
-            if (pointOf(vertex).mapId == goal.mapId && Distance(pointOf(vertex), goal) <= DIRECT_YARDS)
+            if (vertex == source ? direct
+                                 : bot.hearth.mapId == goal.mapId && Distance(bot.hearth, goal) <= DIRECT_YARDS)
                 walkTo(vertex, target);
             if (vertex == source && hearth)
                 relax(source, bind, HEARTH_CAST_SECONDS + static_cast<float>(bot.hearthCooldownMs) / 1000.0f, NO_LINK,
@@ -649,7 +664,6 @@ public:
             auto edges = std::make_shared<StuckEdges>();
             for (auto const& [key, mark] : _marks)
                 edges->flags.emplace(key, mark.flags);
-            edges->generation = ++_generation;
             std::shared_ptr<StuckEdges const> published = std::move(edges);
             std::lock_guard<std::mutex> lock(_currentMutex);
             _current.swap(published);
@@ -679,7 +693,6 @@ private:
     std::shared_ptr<StuckEdges const> _current{std::make_shared<StuckEdges const>()};
     std::unordered_map<std::uint64_t, Mark> _marks;  // world thread only
     std::uint32_t _sweptMs{0};
-    std::uint32_t _generation{0};
 };
 
 // The checks shared by tests/route-rules-selftest.cpp and `playerbots route selftest` on the shipped graph with its

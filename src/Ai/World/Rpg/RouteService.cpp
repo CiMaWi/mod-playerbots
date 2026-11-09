@@ -30,9 +30,9 @@ constexpr float JOURNEYMAN_MOUNT_RATE = 2.0f;
 static_assert(TAXI_MASK_SIZE == TaxiMaskSize, "the snapshot's taxi mask has PlayerTaxi's layout");
 
 // On a worker: PerfMonitor rows record from any thread (one shard per thread)
-void RecordPerf(bool searched, std::uint64_t searchUs, std::uint64_t waitUs)
+void RecordPerf(std::uint64_t searchUs, std::uint64_t waitUs)
 {
-    if (PerformanceData* row = searched ? sPerfMonitor.acquire(PERF_MON_TOTAL, "route search") : nullptr)
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "route search"))
         row->Record(searchUs);
     if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "route queue wait"))
         row->Record(waitUs);
@@ -100,11 +100,10 @@ std::string RouteServiceStatus()
     double const expanded =
         stats.searches ? static_cast<double>(stats.expanded) / static_cast<double>(stats.searches) : 0.0;
     return Acore::StringFormat(
-        "ROUTE service: {} worker(s), {} requests ({} replaced, {} dropped, {} superseded), {} searches, {} cache "
-        "hits, {:.0f} expanded per search, search p50/p95 {}/{} us, queue wait p50/p95 {}/{} us, {} waiting, {} "
-        "expired, {} bots cached; {} stuck edges flagged",
-        stats.threads, stats.requests, stats.replaced, stats.dropped, stats.superseded, stats.searches, stats.cacheHits,
-        expanded, stats.searchP50Us, stats.searchP95Us, stats.waitP50Us, stats.waitP95Us, stats.waiting, stats.expired,
-        stats.cachedBots, flagged);
+        "ROUTE service: {} worker(s), {} requests ({} replaced, {} dropped, {} superseded), {} searches, {:.0f} "
+        "expanded per search, search p50/p95 {}/{} us, queue wait p50/p95 {}/{} us, {} waiting, {} expired; {} stuck "
+        "edges flagged",
+        stats.threads, stats.requests, stats.replaced, stats.dropped, stats.superseded, stats.searches, expanded,
+        stats.searchP50Us, stats.searchP95Us, stats.waitP50Us, stats.waitP95Us, stats.waiting, stats.expired, flagged);
 }
 }  // namespace TravelRoute
