@@ -39,6 +39,7 @@
 #include "TestPlayer.h"
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
+#include "WorldLog.h"
 #include "WorldThreadMonitor.h"
 
 using namespace Acore::ChatCommands;
@@ -206,6 +207,10 @@ public:
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsWorldLogCommandTable = {
+            {"selftest", WorldLog::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -233,6 +238,7 @@ public:
             {"population", playerbotsPopulationCommandTable},
             {"route", playerbotsRouteCommandTable},
             {"planner", playerbotsPlannerCommandTable},
+            {"worldlog", playerbotsWorldLogCommandTable},
         };
 
         static ChatCommandTable commandTable = {

@@ -1633,6 +1633,21 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 Playerbots.Census.Enable = 0
 Playerbots.Census.IntervalSeconds = 30
 
+# World log (on when Dir is set)
+# The server writes the world log to Dir, the session folder the hub's tools/ac.js sets on every start (empty = off):
+# append-only CSV segments per stream (event, state, meta; later decision and recorder), each with a header row, named
+# <stream>-<yyyymmddhh>.csv after the UTC hour of their rows (<stream>-<yyyymmddhhmm>.csv when SegmentMinutes is below
+# 60). The streams, columns and words are in the hub's .claude/docs/world-log.md. Dir is read at startup only.
+# StateSeconds (5..3600): one state row per online player this often.
+# SegmentMinutes (1..60): segment length; values below 60 are for tests.
+# QueueRows (1..10000000): rows per stream that may wait for the writer; more are dropped and counted (meta drops rows
+# every hour). The three numbers are re-read on .reload config.
+#
+Playerbots.WorldLog.Dir = ""
+Playerbots.WorldLog.StateSeconds = 60
+Playerbots.WorldLog.SegmentMinutes = 60
+Playerbots.WorldLog.QueueRows = 200000
+
 # Acquaintances (1 = on, 0 = off)
 # When 1, the server records which random bots each real player has met and how well: one row per (player, bot)
 # pair in the playerbots table playerbots_acquaintance with a score, flags (group, whisper, partychat, trade, duel,

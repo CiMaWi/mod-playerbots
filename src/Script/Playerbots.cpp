@@ -802,6 +802,7 @@ void AddSC_IcecrownBotScripts();
 void AddSC_RubySanctumBotScripts();
 void AddSC_randombot_level_mgr();
 void AddSC_census();
+void AddSC_world_log();
 void AddSC_acquaintance();
 void AddSC_match_log();
 void AddSC_match_trace();
@@ -834,6 +835,7 @@ void AddPlayerbotsScripts()
     AddSC_RubySanctumBotScripts();
     AddSC_randombot_level_mgr();
     AddSC_census();
+    AddSC_world_log();
     AddSC_acquaintance();
     AddSC_match_log();
     AddSC_match_trace();
