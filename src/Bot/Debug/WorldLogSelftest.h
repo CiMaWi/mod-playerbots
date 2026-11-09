@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "WorldLogFormat.h"
+#include "WorldLogStatus.h"
 
 // Checks of WorldLogFormat.h without files or server objects; shared by "playerbots worldlog selftest" and
 // tests/world-log-selftest.cpp. Returns the number of checks and appends one line per failure.
@@ -321,6 +322,66 @@ inline void CheckSegments(Checker& checker)
     checker.Check(odd.StartMs() == hourStart + 30 * minute && odd.EndMs() == hourStart + MINUTES_PER_HOUR * minute,
                   "a 45-minute length gives 30-minute segments inside the hour");
 }
+// (f) WL6: every fact type formats the event header's field count, the word tables cover their enums, the status
+// reason scope nests and restores
+inline void CheckEventWords(Checker& checker)
+{
+    constexpr std::string_view FACT_TYPES[] = {"XpGain",    "Kill",       "QuestAccept", "QuestAbandon", "Equip",
+                                               "SkillUp",   "SpellLearn", "TaxiNode",    "Flight",       "Hearth",
+                                               "MapChange", "Resurrect",  "Status"};
+    bool fields = true;
+    for (std::string_view const type : FACT_TYPES)
+    {
+        EventRow row;
+        row.t = T_2026_11_09_13_45_12;
+        row.bot = 17;
+        row.type = type;
+        row.source = EventLog::RankWord(1);
+        row.id = 8690;
+        row.amount = -3;
+        fields = fields && FieldCount(FormatEventRow(row)) == FieldCount(StreamHeader(Stream::Event));
+    }
+    checker.Check(fields, "every WL6 event type formats 11 fields");
+
+    std::string ranks;
+    for (uint32_t rank = 0; rank <= EventLog::RANK_COUNT; ++rank)
+        ranks.append(EventLog::RankWord(rank)).push_back(' ');
+    checker.Equal(ranks, "normal elite rare_elite world_boss rare other ", "a rank word per creature rank");
+
+    std::string sources;
+    for (uint32_t source = 0; source <= EventLog::XP_SOURCE_COUNT; ++source)
+        sources.append(EventLog::XpSourceWord(source)).push_back(' ');
+    checker.Equal(sources, "kill quest quest explore other other ", "an XP word per XP source");
+
+    std::string kinds;
+    for (uint32_t kind = 0; kind <= EventLog::MAP_KIND_COUNT; ++kind)
+        kinds.append(EventLog::MapKindWord(static_cast<EventLog::MapKind>(kind))).push_back(' ');
+    checker.Equal(kinds, "world dungeon raid battleground arena other ", "a map word per map kind");
+
+    checker.Equal(EventLog::SpellLearnWord("train", false, false), "trainer", "a training action learns at a trainer");
+    checker.Equal(EventLog::SpellLearnWord("other", true, true), "trainer", "a paid learn is a trainer's");
+    checker.Equal(EventLog::SpellLearnWord("other", false, true), "talent", "a talent spell");
+    checker.Equal(EventLog::SpellLearnWord("quest", false, false), "quest", "a quest action's learn");
+    checker.Equal(EventLog::SpellLearnWord("equip upgrades", false, false), "other", "any other learn");
+
+    checker.Equal(EventLog::ResurrectWord("corpse", false, 0.5f), "corpse", "a corpse run");
+    checker.Equal(EventLog::ResurrectWord("other", true, 0.5f), "spirit_healer", "sickness: a spirit healer");
+    checker.Equal(EventLog::ResurrectWord("accept resurrect", false, 0.0f), "spell", "nothing restored: a spell");
+    checker.Equal(EventLog::ResurrectWord("other", false, 1.0f), "other", "a full restore: other");
+
+    std::string reasons = WorldLog::CurrentStatusReason();
+    {
+        WorldLog::StatusReason const outer("pick");
+        reasons.append(" ").append(WorldLog::CurrentStatusReason());
+        {
+            WorldLog::StatusReason const inner("arrived");
+            reasons.append(" ").append(WorldLog::CurrentStatusReason());
+        }
+        reasons.append(" ").append(WorldLog::CurrentStatusReason());
+    }
+    reasons.append(" ").append(WorldLog::CurrentStatusReason());
+    checker.Equal(reasons, "other pick arrived pick other", "the status reason nests and restores");
+}
 }  // namespace SelftestDetail
 
 inline uint32_t Selftest(std::vector<std::string>& failures)
@@ -331,6 +392,7 @@ inline uint32_t Selftest(std::vector<std::string>& failures)
     SelftestDetail::CheckNames(checker);
     SelftestDetail::CheckQueue(checker);
     SelftestDetail::CheckSegments(checker);
+    SelftestDetail::CheckEventWords(checker);
     return checker.Checks();
 }
 }  // namespace WorldLogFormat

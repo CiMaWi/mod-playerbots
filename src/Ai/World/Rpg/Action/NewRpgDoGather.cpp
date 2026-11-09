@@ -20,6 +20,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Timer.h"
+#include "WorldLogStatus.h"
 
 // Base-rank gather spells, the same ids OpenLootAction::DoLoot casts.
 enum GatherSpells
@@ -73,6 +74,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // farming and let the maintenance logic (sell/destroy) catch up.
     if (AI_VALUE(uint8, "bag space") > 80)
     {
+        WorldLog::StatusReason const reasonScope("bags_full");
         info.ChangeToIdle();
         return true;
     }
@@ -146,6 +148,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         if (!node)
         {
             // nothing (left) to gather in this zone
+            WorldLog::StatusReason const reasonScope("finished");
             info.ChangeToIdle();
             return true;
         }

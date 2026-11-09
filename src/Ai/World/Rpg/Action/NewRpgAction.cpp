@@ -46,6 +46,7 @@
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "WaypointMovementGenerator.h"
+#include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
@@ -61,6 +62,7 @@ namespace
 // Ends the bot's errand: stamps the errand check, measures t from a visited vendor and records the run
 void FinishErrands(PlayerbotAI* botAI, bool visited)
 {
+    WorldLog::StatusReason const reasonScope("finished");
     NewRpgInfo& info = botAI->rpgInfo;
     auto const* data = std::get_if<NewRpgInfo::Errands>(&info.data);
     if (!data)
@@ -95,6 +97,7 @@ void TellRpgStatusAction::WhisperStatusChange(Player* owner, std::string const& 
 
 bool TellRpgStatusAction::Execute(Event event)
 {
+    WorldLog::StatusReason const reasonScope("order");
     Player* owner = event.getOwner();
     if (!owner)
         return false;
@@ -277,6 +280,7 @@ bool TellRpgStatusAction::Execute(Event event)
 
 bool StartRpgDoQuestAction::Execute(Event event)
 {
+    WorldLog::StatusReason const reasonScope("order");
     Player* owner = event.getOwner();
     if (!owner)
         return false;
@@ -307,6 +311,7 @@ std::atomic<uint32> travelOrdersWaiting{0};                // travelOrders.size(
 // A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
 bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 {
+    WorldLog::StatusReason const reasonScope("order");
     NewRpgInfo& info = botAI->rpgInfo;
     if (order.stop)
     {
@@ -403,6 +408,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // GO_GRIND -> WANDER_RANDOM
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
+                WorldLog::StatusReason const reasonScope("arrived");
                 info.ChangeToWanderRandom();
                 return true;
             }
@@ -416,6 +422,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // GO_CAMP -> WANDER_NPC
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
+                WorldLog::StatusReason const reasonScope("arrived");
                 info.ChangeToWanderNpc();
                 return true;
             }
@@ -426,6 +433,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // WANDER_RANDOM -> IDLE
             if (info.HasStatusPersisted(statusWanderRandomDuration))
             {
+                WorldLog::StatusReason const reasonScope("timeout");
                 info.ChangeToIdle();
                 return true;
             }
@@ -435,6 +443,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (info.HasStatusPersisted(statusWanderNpcDuration))
             {
+                WorldLog::StatusReason const reasonScope("timeout");
                 info.ChangeToIdle();
                 return true;
             }
@@ -445,6 +454,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // DO_QUEST -> IDLE
             if (info.HasStatusPersisted(statusDoQuestDuration))
             {
+                WorldLog::StatusReason const reasonScope("timeout");
                 info.ChangeToIdle();
                 return true;
             }
@@ -456,6 +466,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             if (data.inFlight && !bot->IsInFlight())
             {
                 // flight arrival
+                WorldLog::StatusReason const reasonScope("arrived");
                 info.ChangeToIdle();
                 return true;
             }
@@ -466,6 +477,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // REST -> IDLE
             if (info.HasStatusPersisted(statusRestDuration))
             {
+                WorldLog::StatusReason const reasonScope("timeout");
                 info.ChangeToIdle();
                 return true;
             }
@@ -475,6 +487,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (info.HasStatusPersisted(statusOutDoorPvPDuration))
             {
+                WorldLog::StatusReason const reasonScope("timeout");
                 info.ChangeToIdle();
                 return true;
             }
@@ -485,6 +498,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // DO_GATHER -> IDLE
             if (info.HasStatusPersisted(statusDoGatherDuration))
             {
+                WorldLog::StatusReason const reasonScope("timeout");
                 info.ChangeToIdle();
                 return true;
             }
@@ -573,6 +587,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         }
         if (npcOrGo.IsEmpty())
         {
+            WorldLog::StatusReason const reasonScope("no_target");
             info.ChangeToIdle();
             return true;
         }
@@ -633,6 +648,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
 
 bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 {
+    WorldLog::StatusReason const reasonScope("errand");
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     WorldTravel::StampErrandCheck(measure, getMSTime());
     measure.HasVendor = false;
@@ -780,6 +796,7 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
         default:
             break;
     }
+    WorldLog::StatusReason const reasonScope("finished");
     info.ChangeToIdle();
     return true;
 }
@@ -820,6 +837,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo))
         {
             // can't find a poi pos to go, stop doing quest for now
+            WorldLog::StatusReason const reasonScope("no_poi");
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
@@ -886,6 +904,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             botAI->lowPriorityQuest.insert(questId);
             botAI->RecordQuestAbandoned(questId, QuestAbandonReason::NoProgress);
             LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
+            WorldLog::StatusReason const reasonScope("abandon");
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
@@ -917,6 +936,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
         {
             // can't find a poi pos to reward, stop doing quest for now
+            WorldLog::StatusReason const reasonScope("no_poi");
             botAI->rpgInfo.ChangeToIdle();
             return false;
         }
@@ -961,6 +981,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         botAI->lowPriorityQuest.insert(questId);
         botAI->RecordQuestAbandoned(questId, QuestAbandonReason::CannotTurnIn);
         LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
+        WorldLog::StatusReason const reasonScope("abandon");
         botAI->rpgInfo.ChangeToIdle();
         return true;
     }
@@ -1337,6 +1358,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
         LOG_INFO("playerbots", "[Route] {} arrived at {} after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
                  data.place, seconds, data.estimateSeconds, replans);
     EventLog::Emit(bot, "Travel", "arrived", replans, seconds);
+    WorldLog::StatusReason const reasonScope("arrived");
     botAI->rpgInfo.ChangeToIdle();
     return true;
 }
@@ -1348,11 +1370,13 @@ void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel const& data, char const* why
     else
         LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
     EventLog::Emit(bot, "Travel", source, data.trip.replans, GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS);
+    WorldLog::StatusReason const reasonScope("abort");
     botAI->rpgInfo.ChangeToIdle();
 }
 
 bool NewRpgStartInnAction::Execute(Event /*event*/)
 {
+    WorldLog::StatusReason const reasonScope("inn");
     if (!WorldTravel::ErrandMayStart(botAI))
         return false;
 
@@ -1424,6 +1448,7 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
         case TaxiStart::Refused:
             break;
     }
+    WorldLog::StatusReason const reasonScope("failed");
     info.ChangeToIdle();
     return true;
 }

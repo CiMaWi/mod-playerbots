@@ -41,6 +41,7 @@
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
 #include "G3D/Vector2.h"
 
@@ -149,6 +150,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
                                        sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, given,
                                        wanted, info.stuckRepeats))
         {
+            WorldLog::StatusReason const reasonScope("stuck");
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
@@ -232,6 +234,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
             travel->stuck = true;
             return true;
         }
+        WorldLog::StatusReason const reasonScope("stuck");
         botAI->rpgInfo.ChangeToIdle();
         return true;
     }
@@ -1032,6 +1035,7 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)
 {
+    WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
     for (NewRpgStatus status : candidateStatus)

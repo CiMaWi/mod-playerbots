@@ -135,6 +135,79 @@ inline uint32_t TakeStoredEntry(void const* item)
 // Name of the innermost scope on this thread, or "other"; an action's name stays valid until the next call on the
 // same thread (defined in CensusMgr.cpp, which knows Action)
 char const* CurrentSource();
+
+// The world log's WL6 words. The rank and XP source tables mirror the core's enums by value (CREATURE_ELITE_*,
+// PlayerXPSource), so the selftests need no server headers.
+constexpr uint32_t RANK_COUNT = 5;
+inline constexpr char const* RANK_WORDS[RANK_COUNT] = {"normal", "elite", "rare_elite", "world_boss", "rare"};
+
+// Kill src: the creature's rank
+inline char const* RankWord(uint32_t rank) { return rank < RANK_COUNT ? RANK_WORDS[rank] : SOURCE_OTHER; }
+
+constexpr uint32_t XP_SOURCE_COUNT = 5;
+inline constexpr char const* XP_SOURCE_WORDS[XP_SOURCE_COUNT] = {"kill", "quest", "quest", "explore", SOURCE_OTHER};
+
+// XpGain src: kill, quest (also the dungeon finder's), explore; battleground XP is other
+inline char const* XpSourceWord(uint32_t source)
+{
+    return source < XP_SOURCE_COUNT ? XP_SOURCE_WORDS[source] : SOURCE_OTHER;
+}
+
+enum class MapKind : uint8_t
+{
+    World,
+    Dungeon,
+    Raid,
+    Battleground,
+    Arena
+};
+
+constexpr uint32_t MAP_KIND_COUNT = 5;
+inline constexpr char const* MAP_KIND_WORDS[MAP_KIND_COUNT] = {"world", "dungeon", "raid", "battleground", "arena"};
+
+// MapChange src: the new map's kind
+inline char const* MapKindWord(MapKind kind)
+{
+    uint32_t const index = static_cast<uint32_t>(kind);
+    return index < MAP_KIND_COUNT ? MAP_KIND_WORDS[index] : SOURCE_OTHER;
+}
+
+constexpr char const* FLIGHT_START = "start";
+constexpr char const* FLIGHT_END = "end";
+constexpr char const* LEARN_TRAINER = "trainer";
+constexpr char const* LEARN_TALENT = "talent";
+constexpr char const* LEARN_QUEST = "quest";
+constexpr char const* RESURRECT_SPIRIT_HEALER = "spirit_healer";
+constexpr char const* RESURRECT_CORPSE = "corpse";
+constexpr char const* RESURRECT_SPELL = "spell";
+
+// SpellLearn src: trainer (a debit just before paid for it, or a training action), talent, quest (a quest action),
+// else other. scopeWord is SourceWordOf(CurrentSource()).
+inline char const* SpellLearnWord(std::string_view scopeWord, bool paid, bool talent)
+{
+    if (paid || scopeWord == "train")
+        return LEARN_TRAINER;
+    if (talent)
+        return LEARN_TALENT;
+    if (scopeWord == "quest")
+        return LEARN_QUEST;
+
+    return SOURCE_OTHER;
+}
+
+// Resurrect src: the action's word (spirit_healer, corpse); else a spirit healer applies sickness, a resurrection
+// spell restores nothing in the call (health is set after it), anything else is other
+inline char const* ResurrectWord(std::string_view scopeWord, bool applySickness, float restorePercent)
+{
+    if (scopeWord == RESURRECT_SPIRIT_HEALER || applySickness)
+        return RESURRECT_SPIRIT_HEALER;
+    if (scopeWord == RESURRECT_CORPSE)
+        return RESURRECT_CORPSE;
+    if (restorePercent <= 0.0f)
+        return RESURRECT_SPELL;
+
+    return SOURCE_OTHER;
+}
 }  // namespace EventLog
 
 #endif

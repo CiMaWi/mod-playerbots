@@ -137,4 +137,10 @@ public:
     }
 };
 
-void AddSC_world_log() { new WorldLogWorldScript(); }
+void AddWorldLogHooks();
+
+void AddSC_world_log()
+{
+    new WorldLogWorldScript();
+    AddWorldLogHooks();
+}

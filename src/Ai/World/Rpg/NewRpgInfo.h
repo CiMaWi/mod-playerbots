@@ -24,10 +24,15 @@
 
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
+class Player;
+
 struct NewRpgInfo
 {
     NewRpgInfo() : data(Idle{}) {}
     ~NewRpgInfo() = default;
+
+    // The bot it belongs to (PlayerbotAI sets it): the world log's Status rows; null in a copy of no bot
+    Player* bot{nullptr};
 
     // RPG_GO_GRIND
     struct GoGrind
@@ -103,6 +108,7 @@ struct NewRpgInfo
         bool bindInn{false};   // an inn errand: at the end the bot binds at the innkeeper in front of it
         bool noHearth{false};  // a hearth leg failed: later routes of this trip leave the hearthstone out
         uint8 bindTries{0};    // an inn errand: binds tried in front of the innkeeper
+        uint32 tripId{0};      // the world log's trip id (WL7)
     };
     // RPG_ERRANDS: a trip to a vendor to sell, repair and maybe buy a bag
     struct Errands

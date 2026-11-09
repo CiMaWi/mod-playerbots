@@ -9,6 +9,7 @@
 #include "Event.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "WorldLogStatus.h"
 
 bool DropQuestAction::Execute(Event event)
 {
@@ -32,6 +33,7 @@ bool DropQuestAction::Execute(Event event)
 
         if (logQuest == entry || link.find(quest->GetTitle()) != std::string::npos)
         {
+            WorldLog::NoteQuestAbandon(bot, logQuest);
             bot->SetQuestSlot(slot, 0);
 
             // we ignore unequippable quest items in this case, its' still be equipped
@@ -119,6 +121,7 @@ bool CleanQuestLogAction::Execute(Event event)
 
             // Remove quest
             botAI->RecordQuestDropped(questId, QuestDropReason::Trivial);
+            WorldLog::NoteQuestAbandon(bot, questId);
             bot->SetQuestSlot(slot, 0);
             bot->TakeQuestSourceItem(questId, false);
             bot->SetQuestStatus(questId, QUEST_STATUS_NONE);
@@ -212,6 +215,7 @@ void CleanQuestLogAction::DropQuestType(uint8& numQuest, uint8 wantNum, bool isG
             continue;
 
         // Drop quest.
+        WorldLog::NoteQuestAbandon(bot, questId);
         bot->SetQuestSlot(slot, 0);
 
         // We ignore unequippable quest items in this case, its' still be equipped

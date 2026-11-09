@@ -84,6 +84,8 @@
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
+#include "WorldLogBotState.h"
+#include "WorldLogStatus.h"
 #include "WsgRouteState.h"
 #include <algorithm>
 #include <atomic>
@@ -180,6 +182,7 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       chatFilter(this),
       security(bot)  // reorder args - whipowill
 {
+    rpgInfo.bot = bot;
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
         bot->SetTaxiCheater(true);
 
@@ -806,6 +809,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
         return;
+
+    // The world log's Flight rows: one compare while the flight state stays
+    bool const flying = bot->IsInFlight();
+    if (flying != WorldLog::InFlight(worldLog))
+        WorldLog::NoteFlightEdge(bot, worldLog, flying);
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;
@@ -1612,9 +1620,16 @@ void PlayerbotAI::HandleTeleportAck()
             EvaluateHealerDpsStrategy();
 
         // reset AI state after teleport; a trip in progress goes on (a portal or a cross-map flight leg ends here)
+        NewRpgStatus const statusBefore = rpgInfo.GetStatus();
         NewRpgInfo const kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
+        rpgInfo.bot = nullptr;  // the reset notes no status change; the teleport does, once
         Reset(true);
         rpgInfo = kept;
+        rpgInfo.bot = bot;
+        {
+            WorldLog::StatusReason const reasonScope("teleport");
+            WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
+        }
 
         // clear movement only AFTER teleport is finalized and bot is in world. Skip during a taxi map-transfer
         if (bot->IsInWorld() && bot->GetMotionMaster() && !bot->IsInFlight())
@@ -1708,7 +1723,12 @@ void PlayerbotAI::Reset(bool full)
             ->setTarget(TravelMgr::instance().nullTravelDestination, TravelMgr::instance().nullWorldPosition, true);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setStatus(TRAVEL_STATUS_EXPIRED);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
+        Player* const rpgBot = rpgInfo.bot;  // null inside a far teleport's reset
+        NewRpgStatus const statusBefore = rpgInfo.GetStatus();
         rpgInfo = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, false);  // keeps the route request ids
+        rpgInfo.bot = rpgBot;
+        WorldLog::StatusReason const reasonScope("reset");
+        WorldLog::NoteStatus(rpgBot, statusBefore, rpgInfo.GetStatus());
     }
 
     aiObjectContext->GetValue<GuidSet&>("ignore rpg target")->Get().clear();

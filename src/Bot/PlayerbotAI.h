@@ -71,6 +71,11 @@ class WorldPosition;
 struct CreatureData;
 struct GameObjectData;
 
+namespace WorldLog
+{
+struct BotLog;
+}
+
 enum StrategyType : uint32;
 
 enum HealingItemId
@@ -853,6 +858,7 @@ public:
     static SpellFamilyNames Class2SpellFamilyName(uint8 cls);
     NewRpgInfo rpgInfo;
     NewRpgStatistic rpgStatistic;
+    std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);
     void RecordQuestCompleted(uint32 questId);
