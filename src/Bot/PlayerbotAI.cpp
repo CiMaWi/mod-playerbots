@@ -57,6 +57,7 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
@@ -9314,6 +9315,7 @@ void PlayerbotAI::RecordQuestAccepted(uint32 questId)
     ++rpgStatistic.questAccepted;
     if (sPlayerbotAIConfig.CollectDetailedQuestStats)
         ++rpgStatistic.byQuest[questId].accepted;
+    Planner::QuestStatAccepted(bot, questId);
 }
 
 void PlayerbotAI::RecordQuestCompleted(uint32 questId)
@@ -9334,6 +9336,7 @@ void PlayerbotAI::RecordQuestRewarded(uint32 questId)
     ++rpgStatistic.questRewarded;
     if (sPlayerbotAIConfig.CollectDetailedQuestStats)
         ++rpgStatistic.byQuest[questId].rewarded;
+    Planner::QuestStatRewarded(bot, questId);
 }
 
 void PlayerbotAI::RecordQuestDropped(uint32 questId, QuestDropReason reason)
@@ -9342,6 +9345,7 @@ void PlayerbotAI::RecordQuestDropped(uint32 questId, QuestDropReason reason)
     ++rpgStatistic.questDropped;
     if (sPlayerbotAIConfig.CollectDetailedQuestStats)
         ++rpgStatistic.byQuest[questId].dropped[static_cast<size_t>(reason)];
+    Planner::QuestStatDropped(bot, questId);
 }
 
 void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason)
@@ -9349,6 +9353,7 @@ void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason
     ++rpgStatistic.questAbandoned;
     if (sPlayerbotAIConfig.CollectDetailedQuestStats)
         ++rpgStatistic.byQuest[questId].abandoned[static_cast<size_t>(reason)];
+    Planner::QuestStatAbandoned(bot, questId);
 }
 
 uint32 PlayerbotAI::GetReactDelay()

@@ -21,6 +21,7 @@
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -201,6 +202,7 @@ public:
         if (!killer || !killed)
             return;
 
+        Planner::QuestStatDeath(killed);
         if (killer == killed)
         {
             EventLog::Emit(killed, "Death", "environment", 0, ONE_EVENT);
@@ -219,6 +221,7 @@ public:
         if (!killer || !killed)
             return;
 
+        Planner::QuestStatDeath(killed);
         ObjectGuid const owner = killer->GetOwnerGUID();
         if (!owner.IsPlayer())
         {

@@ -5,23 +5,33 @@
  */
 
 // The server side of the quest index (travel plan WT13a): the world-thread gather, the worker build, the published
-// index and the GM query
+// index and the GM query; and the population's quest statistics: the events, the load, the flush and the view
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <unordered_set>
+#include <variant>
 
 #include "Chat.h"
 #include "DBCStores.h"
 #include "GameObjectData.h"
 #include "Log.h"
+#include "NewRpgInfo.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "PlannerService.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
+#include "PlayerbotFactory.h"
+#include "Playerbots.h"
+#include "PlayerbotsDatabase.h"
 #include "QuestDef.h"
 #include "QuestIndex.h"
+#include "QuestStats.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 
@@ -51,10 +61,140 @@ constexpr double BYTES_PER_MB = 1024.0 * 1024.0;
 std::atomic<QuestIndexState> questState{QuestIndexState::NotStarted};
 QuestBook questBook;
 
+// The quest statistics (QuestStats.h): the book takes events from map threads; the rest is the world thread's
+enum class StatsLoad : uint8
+{
+    NotLoaded,
+    Loaded,
+    NoTable
+};
+
+constexpr uint32 STATS_FLUSH_MS = 300 * IN_MILLISECONDS;  // the world thread writes the changed cells this often
+
+std::atomic<bool> statsOn{false};  // set after the load; events before it are not counted
+QuestStatsBook statsBook;
+QuestStatsSlot statsSlot;
+StatsLoad statsLoad = StatsLoad::NotLoaded;
+uint32 statsLoadedRows = 0;
+uint32 statsBadRows = 0;  // rows whose minutes column did not parse: counts kept, samples dropped
+uint32 statsFlushTimer = 0;
+uint32 statsFlushes = 0;
+uint32 statsLastRows = 0;
+uint64 statsRowsWritten = 0;
+std::optional<std::chrono::steady_clock::time_point> statsLastFlush;
+
 uint32 MsSince(std::chrono::steady_clock::time_point start)
 {
     return static_cast<uint32>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+}
+
+uint64 StatsNowMs()
+{
+    return static_cast<uint64>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+// Map threads: the event with its scope check (persistent random bots, as the planner hook), timed as PerfMonitor
+// row `planner quest event`
+template <typename Event>
+void TimedEvent(Player* bot, Event const& event)
+{
+    auto const started = std::chrono::steady_clock::now();
+    if (PlayerbotFactory::KeepsPossessions(bot))
+        event(bot->GetGUID().GetCounter(), static_cast<uint32>(bot->GetLevel()));
+    auto const us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner quest event"))
+        row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
+}
+
+bool StatsOn(Player* bot) { return bot && statsOn.load(std::memory_order_acquire); }
+
+// World thread, at startup before any bot logs in (one query, as BotTraitMgr): the stored totals
+void LoadQuestStats()
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Planner::LoadQuestStats");
+    // The table comes with an update file that a server with Playerbots.Updates.EnableDatabases = 0 may lack: then
+    // the statistics live in memory only
+    bool const table = PlayerbotsDatabase.Query(
+                           "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = "
+                           "DATABASE() AND TABLE_NAME = 'playerbots_quest_stats'") != nullptr;
+    statsLoad = table ? StatsLoad::Loaded : StatsLoad::NoTable;
+    if (!table)
+        LOG_WARN("playerbots",
+                 "Quest stats: no table playerbots_quest_stats (update 2026_11_09_01 not applied): the "
+                 "statistics are kept in memory only");
+    else if (QueryResult result = PlayerbotsDatabase.Query(
+                 "SELECT quest_id, band, accepted, completed, abandoned, deaths, minutes FROM playerbots_quest_stats"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            QuestStatCell cell;
+            cell.accepted = fields[2].Get<uint32>();
+            cell.completed = fields[3].Get<uint32>();
+            cell.abandoned = fields[4].Get<uint32>();
+            cell.deaths = fields[5].Get<uint32>();
+            if (!DecodeMinutes(fields[6].Get<std::string>(), cell))
+                ++statsBadRows;
+            statsBook.Restore(fields[0].Get<uint32>(), fields[1].Get<uint8>(), cell);
+            ++statsLoadedRows;
+        } while (result->NextRow());
+    }
+    statsSlot.Publish(statsBook.View());
+    statsOn.store(true, std::memory_order_release);
+    LOG_INFO("playerbots", "Quest stats: loaded {} rows{}{}", statsLoadedRows,
+             statsBadRows ? Acore::StringFormat(" ({} with a bad minutes column)", statsBadRows) : "",
+             table ? "" : " (no table: memory only)");
+}
+
+std::string MinutesText(float minutes) { return minutes < 0.0f ? "-" : Acore::StringFormat("{:.1f}", minutes); }
+
+bool HandleQuestStats(ChatHandler* handler)
+{
+    QuestBookCounts const c = statsBook.Counts();
+    std::shared_ptr<QuestStatsView const> const view = QuestStats();
+    std::string const load = statsLoad == StatsLoad::Loaded    ? Acore::StringFormat("loaded {} rows", statsLoadedRows)
+                             : statsLoad == StatsLoad::NoTable ? std::string("no table, memory only")
+                                                               : std::string("not loaded");
+    std::string const last =
+        statsLastFlush
+            ? Acore::StringFormat("last {} s ago ({} rows)", MsSince(*statsLastFlush) / IN_MILLISECONDS, statsLastRows)
+            : std::string("none yet");
+    handler->PSendSysMessage("QUEST stats: {}; {} rows in memory, {} dirty, {} open quests; view {} rows", load,
+                             c.cells, c.dirty, c.open, view ? view->rows.size() : 0);
+    handler->PSendSysMessage(
+        "QUEST stats events: {} accepts, {} turn-ins ({} with minutes, {} without), {} abandons, {} drops, {} "
+        "deaths; {} open quests pruned, {} accepts without a start (full)",
+        c.accepts, c.turnIns, c.samples, c.unsampled, c.abandons, c.drops, c.deaths, c.pruned, c.full);
+    handler->PSendSysMessage("QUEST stats flushes: {} every {} s, {}, {} rows written since startup", statsFlushes,
+                             STATS_FLUSH_MS / IN_MILLISECONDS, last, statsRowsWritten);
+    return true;
+}
+
+void SendQuestStats(ChatHandler* handler, uint32 questId)
+{
+    if (!statsOn.load(std::memory_order_acquire))
+    {
+        handler->PSendSysMessage("  statistics: not loaded");
+        return;
+    }
+    std::vector<std::pair<uint8, QuestStatCell>> const cells = statsBook.CellsOf(questId);
+    if (cells.empty())
+        handler->PSendSysMessage("  statistics: none recorded yet");
+    for (auto const& [band, cell] : cells)
+    {
+        QuestStatSummary const s = Summarize(cell);
+        handler->PSendSysMessage(
+            "  stats band {} (levels {}-{}): accepted {}, completed {}, median {} min ({} samples), deaths per "
+            "completion {}, abandoned {}, deaths {}",
+            band, band * LEVEL_BAND_LEVELS, band * LEVEL_BAND_LEVELS + LEVEL_BAND_LEVELS - 1, s.accepted, s.completed,
+            MinutesText(s.medianMinutes), s.samples,
+            s.deathsPerCompletion < 0.0f ? std::string("-") : Acore::StringFormat("{:.2f}", s.deathsPerCompletion),
+            s.abandoned, s.deaths);
+    }
 }
 
 uint16 FlagsOf(Quest const* quest)
@@ -346,6 +486,98 @@ void StartQuestIndex()
         questState.store(QuestIndexState::Failed, std::memory_order_release);
         LOG_ERROR("server.loading", "Quest index: the planner pool is not running; no quest index");
     }
+    LoadQuestStats();
+}
+
+std::shared_ptr<QuestStatsView const> QuestStats() { return statsSlot.Current(); }
+
+void QuestStatAccepted(Player* bot, uint32 questId)
+{
+    if (StatsOn(bot))
+        TimedEvent(bot, [questId](uint32 guid, uint32 level) { statsBook.Accept(guid, questId, level, StatsNowMs()); });
+}
+
+void QuestStatRewarded(Player* bot, uint32 questId)
+{
+    if (StatsOn(bot))
+        TimedEvent(bot, [questId](uint32 guid, uint32 level) { statsBook.Reward(guid, questId, level, StatsNowMs()); });
+}
+
+void QuestStatAbandoned(Player* bot, uint32 questId)
+{
+    if (StatsOn(bot))
+        TimedEvent(bot,
+                   [questId](uint32 guid, uint32 level) { statsBook.Abandon(guid, questId, level, StatsNowMs()); });
+}
+
+void QuestStatDropped(Player* bot, uint32 questId)
+{
+    if (StatsOn(bot))
+        TimedEvent(bot, [questId](uint32 guid, uint32 level) { statsBook.Drop(guid, questId, level); });
+}
+
+void QuestStatDeath(Player* bot)
+{
+    if (!StatsOn(bot))
+        return;
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        return;
+    // The death counts for the quest the bot's rpg status is doing (its map thread, like the status update)
+    auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    if (!doing || !doing->questId)
+        return;
+    uint32 const questId = doing->questId;
+    TimedEvent(bot, [questId](uint32 guid, uint32 level) { statsBook.Death(guid, questId, level); });
+}
+
+uint32 QuestStatsFlushNow()
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Planner::QuestStatsFlushNow");
+    if (!statsOn.load(std::memory_order_acquire))
+        return 0;
+    statsFlushTimer = 0;
+    std::vector<std::pair<uint64, QuestStatCell>> const rows = statsBook.TakeDirty(StatsNowMs());
+    if (statsLoad == StatsLoad::Loaded && !rows.empty())
+    {
+        // Totals with explicit values: a repeated or late write leaves the same row
+        PlayerbotsDatabaseTransaction transaction = PlayerbotsDatabase.BeginTransaction();
+        for (auto const& [key, cell] : rows)
+        {
+            std::string const minutes = EncodeMinutes(cell);
+            transaction->Append(Acore::StringFormat(
+                "INSERT INTO playerbots_quest_stats (quest_id, band, accepted, completed, abandoned, deaths, minutes) "
+                "VALUES ({}, {}, {}, {}, {}, {}, '{}') ON DUPLICATE KEY UPDATE accepted = {}, completed = {}, "
+                "abandoned = {}, deaths = {}, minutes = '{}'",
+                StatQuest(key), StatBand(key), cell.accepted, cell.completed, cell.abandoned, cell.deaths, minutes,
+                cell.accepted, cell.completed, cell.abandoned, cell.deaths, minutes));
+        }
+        PlayerbotsDatabase.CommitTransaction(transaction);
+        statsRowsWritten += rows.size();
+    }
+    statsSlot.Publish(statsBook.View());
+    ++statsFlushes;
+    statsLastRows = static_cast<uint32>(rows.size());
+    statsLastFlush = std::chrono::steady_clock::now();
+    return statsLastRows;
+}
+
+void UpdateQuestStats(uint32 diff)
+{
+    if (!statsOn.load(std::memory_order_relaxed))
+        return;
+    statsFlushTimer += diff;
+    if (statsFlushTimer >= STATS_FLUSH_MS)
+        QuestStatsFlushNow();
+}
+
+void QuestStatsShutdown()
+{
+    if (!statsOn.load(std::memory_order_acquire))
+        return;
+    uint32 const rows = QuestStatsFlushNow();
+    statsOn.store(false, std::memory_order_release);
+    LOG_INFO("playerbots", "Quest stats: {} rows written at shutdown, {} since startup", rows, statsRowsWritten);
 }
 
 std::shared_ptr<QuestIndex const> Quests() { return questBook.Current(); }
@@ -373,10 +605,27 @@ std::string QuestIndexStatus()
 bool HandleQuestCommand(ChatHandler* handler, char const* args)
 {
     std::istringstream in(args ? args : "");
-    uint32 id = 0;
-    if (!(in >> id) || !id)
+    std::string word;
+    in >> word;
+    if (word == "stats")
+        return HandleQuestStats(handler);
+    if (word == "flush")
     {
-        handler->SendErrorMessage("Usage: playerbots planner quest <id>");
+        if (!statsOn.load(std::memory_order_acquire))
+        {
+            handler->SendErrorMessage("PLANNER: the quest statistics are not loaded");
+            return false;
+        }
+        uint32 const rows = QuestStatsFlushNow();
+        handler->PSendSysMessage(
+            "QUEST stats flush: {} rows {}", rows,
+            statsLoad == StatsLoad::Loaded ? "written (asynchronous)" : "taken, memory only (no table)");
+        return true;
+    }
+    uint32 id = 0;
+    if (!(std::istringstream(word) >> id) || !id)
+    {
+        handler->SendErrorMessage("Usage: playerbots planner quest <id> | stats | flush");
         return false;
     }
     std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
@@ -418,6 +667,7 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
                                  TargetName(objective), objective.count, objective.areas.size(),
                                  areas.empty() ? "" : ": ", areas);
     }
+    SendQuestStats(handler, id);
     return true;
 }
 }  // namespace Planner

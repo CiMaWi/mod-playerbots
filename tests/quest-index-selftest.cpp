@@ -6,16 +6,21 @@
 
 // Offline proof of the planner's quest index (travel plan WT13a): records, eligibility, chain links, givers and
 // camps, objective areas and their cap, the camp-to-hub rule, guards against bad points, determinism, the memory
-// estimate and the build time of a full-size synthetic world.
+// estimate and the build time of a full-size synthetic world; and the quest statistics (QuestStats.h): bands,
+// median, merge, the column text, the book's event rules and its use from several threads.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/quest-index-selftest.cpp
 
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <random>
 #include <string>
+#include <thread>
 
 #include "QuestIndex.h"
+#include "QuestStats.h"
 
 using namespace Planner;
 
@@ -458,6 +463,190 @@ void FullSize()
         idx.stats.quests, idx.stats.places, idx.stats.camps, idx.stats.objectives, ms,
         static_cast<double>(idx.stats.estimatedBytes) / (1024.0 * 1024.0));
 }
+
+constexpr std::uint64_t MINUTE = MS_PER_MINUTE;
+constexpr std::uint32_t BOT = 42;
+constexpr std::uint32_t STAT_QUEST = 783;
+constexpr int STAT_THREADS = 4;
+constexpr int STAT_EVENTS = 5000;  // per thread: an accept and a turn-in each
+constexpr int STAT_QUESTS = 50;
+constexpr int STAT_RUNS = 5;
+
+bool Near(float a, float b) { return std::fabs(a - b) < 0.001f; }
+
+// Bands, median, deaths per completion, merge, the over-cap sample and the column text
+void StatRules()
+{
+    Check(LevelBandOf(0) == 0 && LevelBandOf(4) == 0 && LevelBandOf(5) == 1 && LevelBandOf(80) == 16,
+          "level bands are five levels wide");
+    QuestStatCell empty;
+    Check(!MedianMinutes(empty) && !DeathsPerCompletion(empty) && Samples(empty) == 0, "an empty cell has no median");
+    QuestStatCell cell;
+    for (int i = 0; i < 2; ++i)
+    {
+        AddSample(cell, 30 * MINUTE);
+        AddSample(cell, 60 * MINUTE);
+    }
+    std::optional<float> const median = MedianMinutes(cell);
+    Check(median && Near(*median, 30.0f), "median of 30, 30, 60, 60 minutes is the top of the 30 minute bucket");
+    QuestStatCell five;
+    for (int i = 0; i < 5; ++i)
+        AddSample(five, 8 * MINUTE);
+    std::optional<float> const inside = MedianMinutes(five);
+    Check(inside && *inside > 7.0f && *inside <= 10.0f, "median of five 8 minute samples lies in their bucket");
+    QuestStatCell one;
+    AddSample(one, MINUTE / 2);
+    Check(MedianMinutes(one) && *MedianMinutes(one) <= 1.0f, "one half-minute sample has a median within a minute");
+    QuestStatCell capped;
+    Check(!AddSample(capped, SAMPLE_CAP_MS + 1) && Samples(capped) == 0, "a sample over the cap is ignored");
+    Check(AddSample(capped, SAMPLE_CAP_MS) && capped.minutes[MINUTE_BUCKETS - 1] == 1, "a sample at the cap counts");
+    QuestStatCell deaths;
+    deaths.completed = 2;
+    deaths.deaths = 3;
+    Check(DeathsPerCompletion(deaths) && Near(*DeathsPerCompletion(deaths), 1.5f), "3 deaths over 2 turn-ins is 1.5");
+    QuestStatCell merged = cell;
+    merged.accepted = 4;
+    Merge(merged, five);
+    Merge(merged, deaths);
+    Check(merged.accepted == 4 && merged.completed == 2 && merged.deaths == 3 && Samples(merged) == 9,
+          "merge adds counts and buckets");
+    QuestStatCell decoded;
+    Check(DecodeMinutes(EncodeMinutes(merged), decoded) && decoded.minutes == merged.minutes,
+          "the minutes column round-trips");
+    QuestStatCell untouched = decoded;
+    Check(!DecodeMinutes("1,2", untouched) && !DecodeMinutes("a", untouched) &&
+              !DecodeMinutes(EncodeMinutes(merged) + ",1", untouched) && untouched == decoded,
+          "a malformed minutes column is rejected and changes nothing");
+    Check(DecodeMinutes("", untouched) && Samples(untouched) == 0, "an empty minutes column is no sample");
+}
+
+QuestStatCell CellOf(QuestStatsBook const& book, std::uint32_t questId, std::uint8_t band)
+{
+    for (auto const& [b, cell] : book.CellsOf(questId))
+        if (b == band)
+            return cell;
+    return {};
+}
+
+// The event rules: bands of the accept, samples, abandons counted once, deaths, pruning, restore and the view
+void StatBook()
+{
+    QuestStatsBook book;
+    book.Accept(BOT, STAT_QUEST, 12, 0);
+    book.Death(BOT, STAT_QUEST, 13);
+    book.Reward(BOT, STAT_QUEST, 13, 10 * MINUTE);
+    QuestStatCell const band2 = CellOf(book, STAT_QUEST, 2);
+    Check(band2.accepted == 1 && band2.completed == 1 && band2.deaths == 1 && Samples(band2) == 1 &&
+              band2.minutes[MinuteBucket(10 * MINUTE)] == 1 && CellOf(book, STAT_QUEST, 3).completed == 0,
+          "accept, death and turn-in count in the band of the accept, with a 10 minute sample");
+    book.Reward(BOT, STAT_QUEST + 1, 20, MINUTE);
+    QuestStatCell const lost = CellOf(book, STAT_QUEST + 1, 4);
+    Check(lost.completed == 1 && Samples(lost) == 0, "a turn-in without a known accept counts, without a sample");
+    book.Accept(BOT, STAT_QUEST + 2, 20, 0);
+    book.Reward(BOT, STAT_QUEST + 2, 20, SAMPLE_CAP_MS + MINUTE);
+    QuestStatCell const late = CellOf(book, STAT_QUEST + 2, 4);
+    Check(late.completed == 1 && Samples(late) == 0, "a turn-in after the cap counts, without a sample");
+    book.Accept(BOT, STAT_QUEST + 3, 20, 0);
+    book.Abandon(BOT, STAT_QUEST + 3, 20, MINUTE);
+    book.Abandon(BOT, STAT_QUEST + 3, 20, 2 * MINUTE);
+    book.Drop(BOT, STAT_QUEST + 3, 20);
+    Check(CellOf(book, STAT_QUEST + 3, 4).abandoned == 1, "abandon, abandon again and the drop count one abandon");
+    book.Accept(BOT, STAT_QUEST + 4, 20, 0);
+    book.Drop(BOT, STAT_QUEST + 4, 20);
+    book.Drop(BOT + 1, STAT_QUEST + 4, 21);
+    Check(CellOf(book, STAT_QUEST + 4, 4).abandoned == 2, "a drop with or without an accept counts an abandon");
+    book.Abandon(BOT, STAT_QUEST + 5, 30, 0);
+    book.Reward(BOT, STAT_QUEST + 5, 30, MINUTE);
+    QuestStatCell const marked = CellOf(book, STAT_QUEST + 5, 6);
+    Check(marked.abandoned == 1 && marked.completed == 1 && Samples(marked) == 0,
+          "an abandon without an accept, then a turn-in: both count, no sample");
+    book.Death(BOT + 2, STAT_QUEST + 6, 44);
+    Check(CellOf(book, STAT_QUEST + 6, 8).deaths == 1, "a death without an accept counts in the current band");
+
+    QuestBookCounts const before = book.Counts();
+    Check(before.open == 0 && before.dirty == before.cells && before.samples == 1 && before.unsampled == 3,
+          "the counters follow the events");
+    auto const rows = book.TakeDirty(0);
+    Check(rows.size() == before.cells && book.Counts().dirty == 0 && book.TakeDirty(0).empty(),
+          "a flush takes each changed cell once");
+    book.Accept(BOT, STAT_QUEST + 7, 20, 0);
+    book.TakeDirty(OPEN_QUEST_MAX_AGE_MS + 1);
+    book.Reward(BOT, STAT_QUEST + 7, 20, OPEN_QUEST_MAX_AGE_MS + MINUTE);
+    Check(book.Counts().pruned == 1 && Samples(CellOf(book, STAT_QUEST + 7, 4)) == 0,
+          "an open quest older than the cap is forgotten at the flush");
+
+    QuestStatsBook loaded;
+    QuestStatCell stored = band2;
+    stored.completed = 2;
+    stored.deaths = 3;
+    loaded.Restore(STAT_QUEST, 2, stored);
+    Check(loaded.TakeDirty(0).empty() && loaded.Counts().cells == 1, "restored totals are not dirty");
+    loaded.Accept(BOT, STAT_QUEST, 14, 0);
+    loaded.Reward(BOT, STAT_QUEST, 14, 10 * MINUTE);
+    auto const written = loaded.TakeDirty(0);
+    Check(written.size() == 1 && written[0].second.completed == 3 && written[0].second.accepted == 2 &&
+              Samples(written[0].second) == 2,
+          "after a load the flush writes the stored totals plus the new events");
+    std::shared_ptr<QuestStatsView const> const view = loaded.View();
+    QuestStatSummary const* found = view->Find(STAT_QUEST, 2);
+    Check(found && found->completed == 3 && Near(found->deathsPerCompletion, 1.0f) && found->samples == 2 &&
+              found->medianMinutes > 7.0f && found->medianMinutes <= 10.0f && !view->Find(STAT_QUEST, 3),
+          "the view holds the summary: median, deaths per turn-in");
+}
+
+// Several map threads recording while the world thread flushes and publishes views
+void StatThreads()
+{
+    bool all = true;
+    for (int run = 0; run < STAT_RUNS; ++run)
+    {
+        QuestStatsBook book;
+        QuestStatsSlot slot;
+        std::atomic<bool> done{false};
+        std::uint64_t flushed = 0;
+        std::thread world(
+            [&]
+            {
+                while (!done.load())
+                {
+                    flushed += book.TakeDirty(0).size();
+                    slot.Publish(book.View());
+                }
+            });
+        std::vector<std::thread> maps;
+        for (int t = 0; t < STAT_THREADS; ++t)
+            maps.emplace_back(
+                [&book, t]
+                {
+                    for (int i = 0; i < STAT_EVENTS; ++i)
+                    {
+                        std::uint32_t const bot = static_cast<std::uint32_t>(t * 100000 + i);
+                        std::uint32_t const questId = static_cast<std::uint32_t>(1 + i % STAT_QUESTS);
+                        book.Accept(bot, questId, 10, static_cast<std::uint64_t>(i));
+                        book.Reward(bot, questId, 10, static_cast<std::uint64_t>(i) + MINUTE);
+                    }
+                });
+        for (std::thread& thread : maps)
+            thread.join();
+        done.store(true);
+        world.join();
+        slot.Publish(book.View());
+        std::uint64_t accepted = 0;
+        std::uint64_t completed = 0;
+        std::uint64_t samples = 0;
+        for (auto const& [key, row] : slot.Current()->rows)
+        {
+            accepted += row.accepted;
+            completed += row.completed;
+            samples += row.samples;
+        }
+        QuestBookCounts const counts = book.Counts();
+        std::uint64_t const events = static_cast<std::uint64_t>(STAT_THREADS) * STAT_EVENTS;
+        all = all && accepted == events && completed == events && samples == events && counts.open == 0 &&
+              counts.cells == STAT_QUESTS && slot.Current()->rows.size() == STAT_QUESTS && flushed > 0;
+    }
+    Check(all, "4 threads x 5000 accepts and turn-ins beside a flushing, publishing thread add up, 5 runs");
+}
 }  // namespace
 
 int main()
@@ -474,6 +663,9 @@ int main()
     Guards(idx);
     Determinism(idx, input);
     FullSize();
+    StatRules();
+    StatBook();
+    StatThreads();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

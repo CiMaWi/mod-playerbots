@@ -665,6 +665,8 @@ public:
             TimeHookCall("WorldHook Census", [diff] { CensusMgr::Instance().Update(diff); });
             // Bots and players per area for the planner; a timer add between refreshes
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
+            // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
+            TimeHookCall("WorldHook PlannerQuestStats", [diff] { Planner::UpdateQuestStats(diff); });
             // Opt-in; drains the hook events, writes in batches
             TimeHookCall("WorldHook Acquaintance", [diff] { AcquaintanceMgr::Instance().Update(diff); });
             // Opt-in; bot arena team rosters, every UpdateSeconds
@@ -700,6 +702,7 @@ public:
     // Runs before the sessions are kicked on server shutdown
     void OnShutdown() override
     {
+        Planner::QuestStatsShutdown();                 // the last asynchronous write of the quest statistics
         Planner::StopPlanner();                        // joins the planner workers; waiting jobs are dropped
         TravelRoute::RouteService::Instance().Stop();  // joins the route workers; waiting requests are dropped
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close

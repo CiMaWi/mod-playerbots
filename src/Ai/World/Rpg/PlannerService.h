@@ -24,6 +24,7 @@ class PlayerbotAI;
 namespace Planner
 {
 class QuestIndex;
+class QuestStatsView;
 
 PlannerPool& Pool();
 // World thread: starts the pool with WorldTravel.PlannerThreads workers and its PerfMonitor rows
@@ -73,8 +74,26 @@ std::shared_ptr<QuestIndex const> Quests();
 bool QuestsReady();
 // The quest index line of `playerbots planner status|indexes`
 std::string QuestIndexStatus();
-// `playerbots planner quest <id>`: the quest's entry
+// `playerbots planner quest <id> | stats | flush`: the quest's entry and statistics, the book's state, a flush now
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
+
+// The population's quest statistics (WT13a, PlannerQuests.cpp; rules and book in QuestStats.h). StartQuestIndex
+// loads the stored totals; events before that are not counted
+// Map threads: the bot's quest events, persistent random bots only; O(1) under one short lock, no DB
+void QuestStatAccepted(Player* bot, std::uint32_t questId);
+void QuestStatRewarded(Player* bot, std::uint32_t questId);
+void QuestStatAbandoned(Player* bot, std::uint32_t questId);
+void QuestStatDropped(Player* bot, std::uint32_t questId);
+// A death counts for the quest the bot's rpg status is doing
+void QuestStatDeath(Player* bot);
+// Any thread: the last published view (after the load and each flush); a reader keeps its copy alive
+std::shared_ptr<QuestStatsView const> QuestStats();
+// World thread: writes the changed cells asynchronously and publishes a new view; returns the rows taken
+std::uint32_t QuestStatsFlushNow();
+// World thread, every world tick: a timer add; a flush every 300 s
+void UpdateQuestStats(std::uint32_t diff);
+// World thread, at shutdown before the pools close: the last flush
+void QuestStatsShutdown();
 }  // namespace Planner
 
 #endif
