@@ -709,8 +709,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
     // The world log's decision row: walk seconds to the vendor, the sellable stacks and the free slots it weighed
-    WorldLogFormat::Alternatives const weighed = {{"sellable", static_cast<float>(sellableSlots)},
-                                                  {"free_slots", static_cast<float>(freeSlots)}};
+    WorldLogFormat::Alternatives weighed;
+    if (WorldLog::Active())
+        weighed = {{"sellable", static_cast<float>(sellableSlots)}, {"free_slots", static_cast<float>(freeSlots)}};
     float const walkSeconds = walkMinutes * MINUTE;
     if (!WorldTravel::TripWorthIt(
             WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], freeSlots,

@@ -13,6 +13,16 @@
 #include "Queue.h"
 #include "Strategy.h"
 #include "Timer.h"
+#include "WorldLogBotState.h"
+
+namespace
+{
+// Event::GetSource() returns a copy; the world log's recorder reads the trigger name without one
+struct EventSourceAccess : Event
+{
+    static std::string const& Of(Event const& event) { return event.*(&EventSourceAccess::source); }
+};
+}  // namespace
 
 Engine::Engine(PlayerbotAI* botAI, AiObjectContext* factory) : PlayerbotAIAware(botAI), aiObjectContext(factory)
 {
@@ -650,6 +660,11 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     actionExecuted = actionExecutionListeners.OverrideResult(action, actionExecuted, event);
     actionExecutionListeners.After(action, actionExecuted, event);
+
+    // The world log's recorder: what the non-combat and dead engines executed (the combat engine's casts would push
+    // the useful entries out of the ring in seconds)
+    if (WorldLog::Active() && this == botAI->GetCurrentEngine() && botAI->GetState() != BOT_STATE_COMBAT)
+        WorldLog::NoteAction(botAI->GetBot(), botAI->worldLog, action, EventSourceAccess::Of(event), actionExecuted);
 
     if (countCategory && actionExecuted)
         botAI->EndExecutedCount(countCategory, countTarget);

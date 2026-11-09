@@ -34,6 +34,7 @@
 #include "ScriptMgr.h"
 #include "StringFormat.h"
 #include "WorldLog.h"
+#include "WorldLogBotState.h"
 
 namespace
 {
@@ -83,6 +84,9 @@ void EmitWorldLogEvent(Player* player, std::string_view type, std::string_view s
 
     if (pmo)
         pmo->finish();
+
+    // A bot's event also goes into its recorder ring (WL8; its own PerfMonitor row)
+    WorldLog::NoteEvent(player, type, source, id, amount);
 }
 
 // The quest, vendor or flight master the RPG status works on, else 0
@@ -769,7 +773,8 @@ void CensusMgr::StartWriter(bool worldLog)
     if (worldLog)
     {
         uint64 const t = WorldLog::NowMs();
-        std::string const text = WorldLogFormat::StartText(WorldLog::RealmId(), WorldLog::CurrentSettings());
+        std::string const text = WorldLogFormat::StartText(WorldLog::RealmId(), WorldLog::CurrentSettings(),
+                                                           WorldLog::BotLogBytes(WorldLog::CurrentRecorderSettings()));
         EnqueueWorldLog(Stream::Meta,
                         WorldLogFormat::FormatMetaRow({t, WorldLogFormat::META_START, WorldLogFormat::CONTRACT_VERSION,
                                                        sPlayerbotAIConfig.MaxRandomBots, text}),

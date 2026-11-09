@@ -27,6 +27,10 @@ std::atomic<uint32> s_stateSeconds{WorldLogFormat::Settings{}.stateSeconds};
 std::atomic<uint32> s_segmentMinutes{WorldLogFormat::Settings{}.segmentMinutes};
 std::atomic<uint32> s_queueRows{WorldLogFormat::Settings{}.queueRows};
 std::atomic<uint32> s_realmId{DEFAULT_REALM_ID};
+std::atomic<uint32> s_recorderSeconds{WorldLogFormat::RECORDER_SECONDS};
+std::atomic<uint32> s_recorderActions{WorldLogFormat::RECORDER_ACTIONS};
+std::atomic<uint32> s_recorderEvents{WorldLogFormat::RECORDER_EVENTS};
+std::atomic<uint32> s_recorderCooldown{WorldLogFormat::RECORDER_COOLDOWN_SECONDS};
 bool s_dirChangeLogged = false;  // world thread only
 }  // namespace
 
@@ -40,6 +44,17 @@ void WorldLog::LoadConfig(bool reload)
     s_stateSeconds.store(settings.stateSeconds, std::memory_order_relaxed);
     s_segmentMinutes.store(settings.segmentMinutes, std::memory_order_relaxed);
     s_queueRows.store(settings.queueRows, std::memory_order_relaxed);
+
+    WorldLogFormat::RecorderSettings const recorder = WorldLogFormat::ClampRecorderSettings(
+        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderSeconds", WorldLogFormat::RECORDER_SECONDS),
+        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderActions", WorldLogFormat::RECORDER_ACTIONS),
+        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderEvents", WorldLogFormat::RECORDER_EVENTS),
+        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderCooldownSeconds",
+                                      WorldLogFormat::RECORDER_COOLDOWN_SECONDS));
+    s_recorderSeconds.store(recorder.seconds, std::memory_order_relaxed);
+    s_recorderActions.store(recorder.actions, std::memory_order_relaxed);
+    s_recorderEvents.store(recorder.events, std::memory_order_relaxed);
+    s_recorderCooldown.store(recorder.cooldownSeconds, std::memory_order_relaxed);
 
     std::string const dir = sConfigMgr->GetOption<std::string>("Playerbots.WorldLog.Dir", "");
     if (!reload)
@@ -60,6 +75,12 @@ void WorldLog::LoadConfig(bool reload)
     LOG_INFO("playerbots", "[WorldLog] {}Dir = \"{}\"{}, StateSeconds = {}, SegmentMinutes = {}, QueueRows = {}",
              reload ? "reload: " : "", s_dir, Active() ? "" : " (off)", settings.stateSeconds, settings.segmentMinutes,
              settings.queueRows);
+    LOG_INFO(
+        "playerbots",
+        "[WorldLog] {}RecorderSeconds = {}{}, RecorderActions = {}, RecorderEvents = {}, RecorderCooldownSeconds = "
+        "{}",
+        reload ? "reload: " : "", recorder.seconds, recorder.seconds ? "" : " (recorder off)", recorder.actions,
+        recorder.events, recorder.cooldownSeconds);
 
     if (reload && Active())
     {
@@ -83,6 +104,16 @@ WorldLogFormat::Settings WorldLog::CurrentSettings()
     settings.stateSeconds = s_stateSeconds.load(std::memory_order_relaxed);
     settings.segmentMinutes = s_segmentMinutes.load(std::memory_order_relaxed);
     settings.queueRows = s_queueRows.load(std::memory_order_relaxed);
+    return settings;
+}
+
+WorldLogFormat::RecorderSettings WorldLog::CurrentRecorderSettings()
+{
+    WorldLogFormat::RecorderSettings settings;
+    settings.seconds = s_recorderSeconds.load(std::memory_order_relaxed);
+    settings.actions = s_recorderActions.load(std::memory_order_relaxed);
+    settings.events = s_recorderEvents.load(std::memory_order_relaxed);
+    settings.cooldownSeconds = s_recorderCooldown.load(std::memory_order_relaxed);
     return settings;
 }
 
@@ -116,6 +147,7 @@ bool WorldLog::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
 
     for (std::string const& line : CensusMgr::Instance().WorldLogStatus())
         handler->PSendSysMessage("{}", line);
+    handler->PSendSysMessage("{}", RecorderStatus());
 
     return true;
 }

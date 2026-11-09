@@ -12,6 +12,7 @@
 
 #include "Define.h"
 #include "WorldLogFormat.h"
+#include "WorldLogRecorder.h"
 
 class ChatHandler;
 class Player;
@@ -31,6 +32,8 @@ bool Active();
 std::string const& Dir();
 // Any thread: the tuning values, clamped
 WorldLogFormat::Settings CurrentSettings();
+// Any thread: the recorder's tuning values (WL8), clamped; a ring takes them when it is allocated
+WorldLogFormat::RecorderSettings CurrentRecorderSettings();
 // RealmID from worldserver.conf, read at startup (the meta start row)
 uint32 RealmId();
 // UTC milliseconds since the epoch: every row's t
@@ -43,6 +46,11 @@ void Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::string_view c
               float value, WorldLogFormat::Alternatives const& alternatives = {}, uint32 ref = 0);
 
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);
+// WL8: "playerbots worldlog case <bot>": a case of the named bot at its next position push (trigger mark, detail
+// console), within the bot's case limit
+bool HandleCaseCommand(ChatHandler* handler, char const* args);
+// WL8: one status line: rings, cases, rows, triggers inside the case limit, words
+std::string RecorderStatus();
 // Dir, the writer, per stream the rows written, dropped, queued and their peak, the open segment; write errors
 bool HandleStatusCommand(ChatHandler* handler, char const* args);
 }  // namespace WorldLog

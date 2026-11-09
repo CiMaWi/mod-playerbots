@@ -1079,11 +1079,12 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     }
     // The world log's decision row weighs the chosen status against the three heaviest other available ones
     WorldLogFormat::Alternatives alternatives;
-    for (NewRpgStatus status : availableStatus)
-        if (status != chosenStatus)
-            alternatives.Offer({WorldLog::NewRpgStatusWord(status),
-                                static_cast<float>(sPlayerbotAIConfig.RpgStatusProbWeight[status])},
-                               false);
+    if (WorldLog::Active())
+        for (NewRpgStatus status : availableStatus)
+            if (status != chosenStatus)
+                alternatives.Offer({WorldLog::NewRpgStatusWord(status),
+                                    static_cast<float>(sPlayerbotAIConfig.RpgStatusProbWeight[status])},
+                                   false);
 
     auto const startStatus = [this](NewRpgStatus status) -> bool
     {

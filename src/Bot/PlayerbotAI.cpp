@@ -815,6 +815,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (flying != WorldLog::InFlight(worldLog))
         WorldLog::NoteFlightEdge(bot, worldLog, flying);
 
+    // The world log's recorder: a position a second (one compare between them)
+    if (WorldLog::Active())
+        WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
+
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;
     if (timingCombat)

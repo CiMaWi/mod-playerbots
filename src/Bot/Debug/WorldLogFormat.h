@@ -497,8 +497,8 @@ constexpr std::string_view AfterPrefix(std::string_view text, std::string_view p
     return text.substr(0, prefix.size()) == prefix ? text.substr(prefix.size()) : text;
 }
 
-// The start row's text: realm=<id> segment=<minutes> state=<seconds>
-inline std::string StartText(uint32_t realmId, Settings const& settings)
+// The start row's text: realm=<id> segment=<minutes> state=<seconds> ring_bytes=<a bot's recorder memory>
+inline std::string StartText(uint32_t realmId, Settings const& settings, uint64_t ringBytes)
 {
     std::string text = "realm=";
     AppendNumber(text, realmId);
@@ -506,6 +506,8 @@ inline std::string StartText(uint32_t realmId, Settings const& settings)
     AppendNumber(text, settings.segmentMinutes);
     text += " state=";
     AppendNumber(text, settings.stateSeconds);
+    text += " ring_bytes=";
+    AppendNumber(text, ringBytes);
     return text;
 }
 
