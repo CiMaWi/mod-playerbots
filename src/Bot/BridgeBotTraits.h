@@ -22,7 +22,8 @@ struct BotPersonality
     std::vector<std::string> interests;  // One to three ("fishing", "inns and ale")
 };
 
-// False (out cleared) when the guid is not a player's or the bot has no traits (not logged in since startup).
+// False (out cleared) when the guid is not a player's or the bot has no traits (it never logged in; without the
+// table, not since startup).
 bool ReadBotPersonality(ObjectGuid const& botGuid, BotPersonality& out);
 }  // namespace PlayerbotBridge
 

@@ -263,6 +263,7 @@ void BotTraitMgr::Save(uint32 guid, TraitRules::BotTraits const& traits) const
 
 TraitRules::BotTraits BotTraitMgr::LoadOrCreate(uint32 guid, uint8 race, uint8 cls)
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::LoadOrCreate");
     std::unique_lock<std::shared_mutex> guard(_lock);
     EnsureLoaded();
     auto const it = _traits.find(guid);
@@ -301,6 +302,7 @@ void BotTraitMgr::Forget(uint32 guid)
 
 TraitRules::BotTraits BotTraitMgr::Reroll(uint32 guid, uint8 race, uint8 cls)
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::Reroll");
     std::unique_lock<std::shared_mutex> guard(_lock);
     EnsureLoaded();
     auto const it = _traits.find(guid);
@@ -313,6 +315,7 @@ TraitRules::BotTraits BotTraitMgr::Reroll(uint32 guid, uint8 race, uint8 cls)
 
 std::optional<TraitRules::BotTraits> BotTraitMgr::SetTrait(uint32 guid, TraitRules::Trait trait, int value)
 {
+    PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::SetTrait");
     std::unique_lock<std::shared_mutex> guard(_lock);
     EnsureLoaded();
     auto const it = _traits.find(guid);
@@ -407,7 +410,10 @@ bool BotTraitMgr::HandleTraitsCommand(ChatHandler* handler, char const* args)
         return false;
     }
 
-    if (!verb.empty() && player && !botAI)
+    // An offline character is a bot when its account is a random-bot account or it is an addclass bot
+    bool const offlineBot = !player && (sPlayerbotAIConfig.IsInRandomAccountList(character->AccountId) ||
+                                        sRandomPlayerbotMgr.IsAddclassBot(low));
+    if (!verb.empty() && !botAI && !offlineBot)
     {
         handler->PSendSysMessage("{} is not a bot.", name);
         return false;

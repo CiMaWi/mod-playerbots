@@ -34,7 +34,7 @@ public:
     void Load();
     // Bot login, world thread: the bot's traits; rolls and saves version 1 when the bot has none
     TraitRules::BotTraits LoadOrCreate(uint32 guid, uint8 race, uint8 cls);
-    // Any thread: a copy of the bot's traits, none when it has not logged in since startup
+    // Any thread: a copy of the bot's traits; none when the bot never logged in (without the table: not since startup)
     std::optional<TraitRules::BotTraits> Find(uint32 guid);
     // Any thread: the AI's view of one trait, -1..+1; 0 when the bot has no traits
     float Trait(uint32 guid, TraitRules::Trait trait);

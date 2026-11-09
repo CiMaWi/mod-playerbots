@@ -38,6 +38,16 @@ struct WorldTravelConfig
     uint32 ErrandNextStopMinutes = 30;
     // WT11a: the test switch for `.playerbots traits <bot> set|reroll` (labs only)
     bool TraitsAllowEdit = false;
+    // WT12a: the planner's workers (read at startup), how often a bot's snapshot is renewed at the latest, and when a
+    // result is stale (older, or the bot moved further from where the snapshot was taken)
+    uint32 PlannerThreads = 2;
+    uint32 PlannerSnapshotMinutes = 5;
+    uint32 PlannerStaleSeconds = 30;
+    uint32 PlannerRecheckYards = 100;
+    // The no-op job's interval per bot, 0 = none: a test switch that proves the planner's machinery (WT16 removes it)
+    uint32 PlannerNoopSeconds = 0;
+    // WT12b: how often the live crowding data for the planner is rebuilt
+    uint32 CrowdingRefreshSeconds = 5;
 };
 
 #endif

@@ -39,6 +39,7 @@
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Population.h"
 #include "PvpGearMgr.h"
@@ -635,6 +636,7 @@ public:
         {
             TravelGraph::Instance().Start();
             TravelRoute::StartRouteService();
+            Planner::StartPlanner();
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
@@ -694,6 +696,7 @@ public:
     // Runs before the sessions are kicked on server shutdown
     void OnShutdown() override
     {
+        Planner::StopPlanner();                        // joins the planner workers; waiting jobs are dropped
         TravelRoute::RouteService::Instance().Stop();  // joins the route workers; waiting requests are dropped
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close
         TestPlayerMgr::Instance().Shutdown();

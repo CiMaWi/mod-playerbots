@@ -12,8 +12,8 @@
 // stuck edges as last published, so they read no game state. Every request is searched: a bot never asks the same
 // question twice (a replan starts elsewhere, the stuck edges change), and a search takes well under a millisecond.
 // Player-free like RouteRules.h, so tests/route-rules-selftest.cpp runs ServiceSelftest() on it; the server's
-// instance, FillSnapshot and the PerfMonitor rows live in RouteService.cpp. WT12a's planner pool replaces the workers
-// behind the same Submit/TryTake.
+// instance, FillSnapshot and the PerfMonitor rows live in RouteService.cpp. The route search keeps its own workers;
+// the planner's pool (PlannerPool.h) is separate.
 
 #include <algorithm>
 #include <atomic>

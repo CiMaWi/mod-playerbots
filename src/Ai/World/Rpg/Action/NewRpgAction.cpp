@@ -30,6 +30,7 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -381,6 +382,7 @@ bool TravelOrders::Take(ObjectGuid bot, TravelOrder& order)
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
+    Planner::PlannerHook(botAI, bot);
     {
         TravelOrder order;
         if (TravelOrders::Take(bot->GetGUID(), order) && ApplyTravelOrder(botAI, bot, order))

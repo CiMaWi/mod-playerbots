@@ -119,6 +119,17 @@ struct NewRpgInfo
     uint32 startT{0};     // start timestamp of the current status
     uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
     uint32 routeRequests{0};  // the bot's route request ids (TravelRoute::Snapshot::requestId), across trips
+    // The planner's view of the bot (Planner::PlannerHook, PlannerService.cpp); a reset only costs a new snapshot
+    struct PlannerState
+    {
+        uint32 stateVersion{0};    // counts the bot's situation changes; a result of an older version is not used
+        uint32 stateKey{0};        // level, zone, life and group as last seen
+        uint32 lastSnapshotMs{0};  // 0 = none yet
+        bool snapshotDue{true};    // the situation changed or a goal ended since the last snapshot
+        bool wasIdle{false};
+        bool pending{false};  // a job is out; its result is taken before the next one is submitted
+    };
+    PlannerState planner;
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};

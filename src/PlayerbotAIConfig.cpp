@@ -1303,6 +1303,24 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Errands.NextStopMinutes", WorldTravel.ErrandNextStopMinutes, MaxNextStopMinutes);
         WorldTravel.TraitsAllowEdit =
             sConfigMgr->GetOption<bool>("Playerbots.WorldTravel.Traits.AllowEdit", WorldTravel.TraitsAllowEdit, false);
+        constexpr uint32 MaxPlannerThreads = 8;
+        constexpr uint32 MaxSnapshotMinutes = 60;
+        constexpr uint32 MinStaleSeconds = 5;
+        constexpr uint32 MaxStaleSeconds = 600;
+        constexpr uint32 MinRecheckYards = 10;
+        constexpr uint32 MaxNoopSeconds = HOUR;
+        constexpr uint32 MaxCrowdingRefreshSeconds = 300;
+        travelNumber("Planner.Threads", WorldTravel.PlannerThreads, MaxPlannerThreads);
+        WorldTravel.PlannerThreads = std::max<uint32>(WorldTravel.PlannerThreads, 1);
+        travelNumber("Planner.SnapshotMinutes", WorldTravel.PlannerSnapshotMinutes, MaxSnapshotMinutes);
+        WorldTravel.PlannerSnapshotMinutes = std::max<uint32>(WorldTravel.PlannerSnapshotMinutes, 1);
+        travelNumber("Planner.ResultStaleSeconds", WorldTravel.PlannerStaleSeconds, MaxStaleSeconds);
+        WorldTravel.PlannerStaleSeconds = std::max<uint32>(WorldTravel.PlannerStaleSeconds, MinStaleSeconds);
+        travelNumber("Planner.RecheckYards", WorldTravel.PlannerRecheckYards, MaxTravelYards);
+        WorldTravel.PlannerRecheckYards = std::max<uint32>(WorldTravel.PlannerRecheckYards, MinRecheckYards);
+        travelNumber("Planner.NoopSeconds", WorldTravel.PlannerNoopSeconds, MaxNoopSeconds);
+        travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
+        WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;

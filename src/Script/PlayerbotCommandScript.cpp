@@ -24,6 +24,7 @@
 #include "NewRpgAction.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
+#include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
@@ -195,6 +196,11 @@ public:
             {"stop", HandleRouteStopCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsPlannerCommandTable = {
+            {"status", Planner::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"selftest", Planner::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -221,6 +227,7 @@ public:
             {"natural", playerbotsNaturalCommandTable},
             {"population", playerbotsPopulationCommandTable},
             {"route", playerbotsRouteCommandTable},
+            {"planner", playerbotsPlannerCommandTable},
         };
 
         static ChatCommandTable commandTable = {

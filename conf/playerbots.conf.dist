@@ -2171,6 +2171,22 @@ Playerbots.WorldTravel.Errands.NextStopMinutes = 30
 # reroll a bot's traits (`set <trait> <value>`, `reroll`): a switch for test servers. (Range: 0-1.) Default: 0
 Playerbots.WorldTravel.Traits.AllowEdit = 0
 
+# The planner of persistent bots. Threads workers (read at startup) run planning jobs off the map threads on a
+# snapshot of the bot, built on its map thread when its situation changes (level, zone, life, group), a goal ends, or
+# SnapshotMinutes have passed. A result is used only while the bot is alive, its situation unchanged, the result at
+# most ResultStaleSeconds old and the bot within RecheckYards of where the snapshot was taken; otherwise, and until
+# the planner has an answer, the bot picks its next activity as before. NoopSeconds > 0 runs a no-op job at most that
+# often per bot: a test switch that proves the machinery and changes nothing. Crowding.RefreshSeconds: how often the
+# live crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
+# 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000; NoopSeconds 0-3600, 0 = off;
+# Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
+Playerbots.WorldTravel.Planner.Threads = 2
+Playerbots.WorldTravel.Planner.SnapshotMinutes = 5
+Playerbots.WorldTravel.Planner.ResultStaleSeconds = 30
+Playerbots.WorldTravel.Planner.RecheckYards = 100
+Playerbots.WorldTravel.Planner.NoopSeconds = 0
+Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600
