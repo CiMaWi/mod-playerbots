@@ -664,8 +664,8 @@ void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view sou
         return;
 
     if (WorldLog::Active())
-        EmitWorldLogEvent(bot, type, source, worldLogId == EventLog::SAME_ID ? id : worldLogId,
-                          worldLogAmount == EventLog::SAME_AMOUNT ? amount : worldLogAmount);
+        EmitWorldLogEvent(bot, type, source, EventLog::WorldLogId(id, worldLogId),
+                          EventLog::WorldLogAmount(amount, worldLogAmount));
 
     if (!IsLoggedBot(bot))
         return;

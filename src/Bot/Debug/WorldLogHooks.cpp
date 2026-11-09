@@ -13,6 +13,7 @@
 #include "Item.h"
 #include "Map.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "ScriptMgr.h"
@@ -28,7 +29,8 @@
 // MapChange, Resurrect) from core hooks, of bots and real players alike, and the bots' Status and Flight rows. Every
 // row goes through EventLog::Emit (CensusMgr::OnEvent). Registered after PlayerbotsPlayerScript, whose GiveXP hook
 // applies the XP multipliers first. Hooks run on the player's map thread (or the world thread), read only the hooked
-// player and keep only guid-keyed notes between two hooks of one core call.
+// player and keep only guid-keyed notes between two hooks of one core call. WL7's decision rows (WorldLog::Decision,
+// called from the RPG actions) go to the decision stream the same way: formatted on the calling thread, then queued.
 namespace
 {
 constexpr uint32 SPELL_HEARTHSTONE = 8690;
@@ -312,6 +314,31 @@ void WorldLog::NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus)
         return;
 
     EventLog::Emit(bot, "Status", WorldLog::CurrentStatusReason(), static_cast<uint32>(newStatus), oldStatus);
+}
+
+void WorldLog::Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::string_view choice,
+                        std::string_view reason, float value, WorldLogFormat::Alternatives const& alternatives,
+                        uint32 ref)
+{
+    if (!bot || !WorldLog::Active())
+        return;
+
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog decision");
+
+    WorldLogFormat::DecisionRow row;
+    row.t = WorldLog::NowMs();
+    row.bot = bot->GetGUID().GetCounter();
+    row.kind = kind;
+    row.choice = choice;
+    row.reason = reason;
+    row.value = value;
+    row.alternatives = alternatives;
+    row.ref = ref;
+    CensusMgr::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Decision, WorldLogFormat::FormatDecisionRow(row), 1,
+                                          row.t);
+
+    if (pmo)
+        pmo->finish();
 }
 
 void WorldLog::NoteQuestAbandon(Player* bot, uint32_t questId)

@@ -100,6 +100,7 @@ void NewRpgInfo::ChangeToTravel(WorldPosition dest, std::string place)
     travel.tripStartMs = startT;
     travel.routeStartMs = startT;
     travel.place = std::move(place);
+    travel.tripId = WorldLog::NextTripId();
     data = std::move(travel);
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }

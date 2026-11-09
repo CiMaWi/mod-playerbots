@@ -26,6 +26,15 @@ constexpr size_t LINE_RESERVE = 96;
 constexpr uint32_t SAME_ID = std::numeric_limits<uint32_t>::max();
 constexpr int64_t SAME_AMOUNT = std::numeric_limits<int64_t>::min();
 
+// The world-log row's id and amount: Emit's worldLogId/worldLogAmount when set, else the census line's. WL7's Travel
+// rows keep the census meaning (legs, replans, leg number) for tools/lab-ledger.js until WL11 and give the world log
+// the trip id and seconds.
+inline uint32_t WorldLogId(uint32_t id, uint32_t worldLogId) { return worldLogId == SAME_ID ? id : worldLogId; }
+inline int64_t WorldLogAmount(int64_t amount, int64_t worldLogAmount)
+{
+    return worldLogAmount == SAME_AMOUNT ? amount : worldLogAmount;
+}
+
 // Copies a field without the characters that would split the CSV line or the row
 inline void AppendField(std::string& out, std::string_view field)
 {

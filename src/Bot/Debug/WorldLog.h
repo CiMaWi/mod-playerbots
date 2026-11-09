@@ -8,11 +8,13 @@
 #define _PLAYERBOT_WORLDLOG_H
 
 #include <string>
+#include <string_view>
 
 #include "Define.h"
 #include "WorldLogFormat.h"
 
 class ChatHandler;
+class Player;
 
 // The world log's server side: its options (Playerbots.WorldLog.*, read here, not in PlayerbotAIConfig), the rows'
 // clock and the console commands. On when Playerbots.WorldLog.Dir is set at startup (the hub's ac.js sets it to the
@@ -33,6 +35,12 @@ WorldLogFormat::Settings CurrentSettings();
 uint32 RealmId();
 // UTC milliseconds since the epoch: every row's t
 uint64 NowMs();
+
+// WL7: one decision row (t, bot, kind, choice, reason, value, up to three alternatives, ref) queued on the calling
+// thread, the bot's map thread or the world thread; reads only the bot's guid. Nothing is formatted when the world
+// log is off. choice, reason and the alternatives' words must outlive the call only (literals in practice).
+void Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::string_view choice, std::string_view reason,
+              float value, WorldLogFormat::Alternatives const& alternatives = {}, uint32 ref = 0);
 
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);
 // Dir, the writer, per stream the rows written, dropped, queued and their peak, the open segment; write errors

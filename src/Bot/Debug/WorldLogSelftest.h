@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_WORLDLOGSELFTEST_H
 #define _PLAYERBOT_WORLDLOGSELFTEST_H
 
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -382,6 +383,108 @@ inline void CheckEventWords(Checker& checker)
     reasons.append(" ").append(WorldLog::CurrentStatusReason());
     checker.Equal(reasons, "other pick arrived pick other", "the status reason nests and restores");
 }
+
+// (g) WL7: decision rows have the header's 13 fields with 0, 1 and 3 alternatives, clean their words and keep two
+// decimals; the alternatives keep the best three; the leg chain caps its length; a word per RPG status; trip ids
+// count from 1; the census keeps its id and amount where the world log takes Emit's
+inline void CheckDecisions(Checker& checker)
+{
+    size_t const columns = FieldCount(StreamHeader(Stream::Decision));
+    DecisionRow row;
+    row.t = T_2026_11_09_13_45_12;
+    row.bot = 17;
+    row.kind = DecisionKind::Errand;
+    row.choice = "skip";
+    row.reason = "not_worth";
+    row.value = 95.004f;
+    std::string const none = FormatDecisionRow(row);
+    checker.Equal(none, "1794231912000,17,errand,skip,not_worth,95.00,,,,,,,0\n", "a decision without alternatives");
+    checker.Check(FieldCount(none) == columns, "decision row field count, no alternative");
+
+    row.kind = DecisionKind::Route;
+    row.choice = "walk>flight,walk";
+    row.reason = "";
+    row.value = -0.004f;
+    row.alternatives = {{"legs", 3.0f}};
+    row.ref = 42;
+    std::string const one = FormatDecisionRow(row);
+    checker.Equal(one, "1794231912000,17,route,walk>flight_walk,other,0.00,legs,3.00,,,,,42\n",
+                  "one alternative; a comma cleaned, an empty word is other, no -0.00");
+    checker.Check(FieldCount(one) == columns, "decision row field count, one alternative");
+
+    row.kind = DecisionKind::RpgStatus;
+    row.choice = WorldLog::NewRpgStatusWord(5);
+    row.reason = "weights";
+    row.value = 40.0f;
+    row.alternatives = {{"rest", 1.5f}, {"go grind", -2.125f}, {"idle", 1234567.891f}, {"dropped", 9.0f}};
+    row.ref = 0;
+    std::string const three = FormatDecisionRow(row);
+    checker.Equal(three,
+                  "1794231912000,17,rpg_status,do quest,weights,40.00,rest,1.50,go grind,-2.13,idle,"
+                  "1234567.88,0\n",
+                  "three alternatives, a fourth ignored, half away from zero");
+    checker.Check(FieldCount(three) == columns, "decision row field count, three alternatives");
+    checker.Check(three.find(ROW_END) == three.size() - 1, "one decision row is one line");
+
+    std::string kinds;
+    for (size_t kind = 0; kind <= DECISION_KIND_COUNT; ++kind)
+        kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');
+    checker.Equal(kinds, "rpg_status route trip errand inn other ", "a word per decision kind");
+
+    std::string value;
+    AppendValue(value, std::numeric_limits<float>::infinity());
+    value.push_back(' ');
+    AppendValue(value, 3.0e30f);
+    checker.Equal(value, "0.00 1000000000000.00", "not finite is 0, huge values clamp");
+
+    Alternatives highest;
+    for (float const weight : {5.0f, 20.0f, 1.0f, 20.0f, 7.0f})
+        highest.Offer({"w", weight}, false);
+    Alternatives lowest;
+    for (float const seconds : {300.0f, 120.0f, 900.0f, 60.0f})
+        lowest.Offer({"s", seconds}, true);
+    checker.Check(
+        highest.Count() == 3 && highest[0].value == 20.0f && highest[1].value == 20.0f && highest[2].value == 7.0f,
+        "Offer keeps the three highest");
+    checker.Check(
+        lowest.Count() == 3 && lowest[0].value == 60.0f && lowest[1].value == 120.0f && lowest[2].value == 300.0f,
+        "Offer keeps the three lowest");
+
+    WordChain chain;
+    chain.Add("walk");
+    chain.Add("flight");
+    chain.Add("walk");
+    checker.Equal(chain.View(), "walk>flight>walk", "a leg chain");
+    WordChain longChain;
+    for (int i = 0; i < 20; ++i)
+        longChain.Add("transport");
+    checker.Check(longChain.View().size() <= CHAIN_CAPACITY && longChain.View().back() == CHAIN_MORE &&
+                      longChain.View().substr(0, 20) == "transport>transport>",
+                  "a long chain caps its length and ends in +");
+    checker.Equal(WordChain().View(), "", "an empty chain");
+
+    checker.Equal(AfterPrefix("abort:deadline", "abort:"), "deadline", "the abort reason after its prefix");
+    checker.Equal(AfterPrefix("stopped", "abort:"), "stopped", "no prefix: unchanged");
+    checker.Check(WalkSeconds(70.0f, 7.0f) == 10.0f && WalkSeconds(10.0f, 0.0f) == 10.0f, "walk seconds");
+
+    std::string statuses;
+    for (int32_t status = -1; status <= WorldLog::RPG_STATUS_WORD_COUNT; ++status)
+        statuses.append(WorldLog::NewRpgStatusWord(status)).push_back('|');
+    checker.Equal(statuses,
+                  "other|idle|go grind|go camp|wander random|wander npc|do quest|travel flight|rest|outdoor pvp|"
+                  "do gather|travel|errands|other|",
+                  "a word per RPG status, other outside");
+
+    WorldLog::TripCounter trips;
+    uint32_t const first = trips.Next();
+    uint32_t const second = trips.Next();
+    checker.Check(first == 1 && second == 2, "trip ids count from 1");
+
+    checker.Check(EventLog::WorldLogId(3, EventLog::SAME_ID) == 3 && EventLog::WorldLogId(3, 77) == 77,
+                  "the world log takes Emit's id when set");
+    checker.Check(EventLog::WorldLogAmount(-5, EventLog::SAME_AMOUNT) == -5 && EventLog::WorldLogAmount(2, 0) == 0,
+                  "the world log takes Emit's amount when set, 0 included");
+}
 }  // namespace SelftestDetail
 
 inline uint32_t Selftest(std::vector<std::string>& failures)
@@ -393,6 +496,7 @@ inline uint32_t Selftest(std::vector<std::string>& failures)
     SelftestDetail::CheckQueue(checker);
     SelftestDetail::CheckSegments(checker);
     SelftestDetail::CheckEventWords(checker);
+    SelftestDetail::CheckDecisions(checker);
     return checker.Checks();
 }
 }  // namespace WorldLogFormat

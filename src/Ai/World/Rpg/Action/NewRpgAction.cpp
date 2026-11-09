@@ -46,6 +46,7 @@
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "WaypointMovementGenerator.h"
+#include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
 #include "WorldPacket.h"
@@ -322,8 +323,10 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
             return false;
         }
         LOG_INFO("playerbots", "[Route] {} gives the trip up: stopped", bot->GetName());
-        EventLog::Emit(bot, "Travel", "abort:stopped", data->trip.replans,
-                       GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS);
+        uint32 const seconds = GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS;
+        EventLog::Emit(bot, "Travel", "abort:stopped", data->trip.replans, seconds, data->tripId, seconds);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", "stopped", static_cast<float>(seconds),
+                           {{"replans", static_cast<float>(data->trip.replans)}}, data->tripId);
         info.ChangeToIdle();
         return true;
     }
@@ -684,6 +687,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
                   bot->GetName(), mapId, vendors.size(), refused);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "no_vendor", 0.0f);
         return false;
     }
 
@@ -703,19 +707,25 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                 ++sellableSlots;
 
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
-    if (!WorldTravel::TripWorthIt(WorldTravel::MakeTripInput(
-            measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], WorldTravel::FreeGeneralSlots(bot),
-            sellableSlots, walkMinutes, config.ErrandNextStopMinutes)))
+    uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
+    // The world log's decision row: walk seconds to the vendor, the sellable stacks and the free slots it weighed
+    WorldLogFormat::Alternatives const weighed = {{"sellable", static_cast<float>(sellableSlots)},
+                                                  {"free_slots", static_cast<float>(freeSlots)}};
+    float const walkSeconds = walkMinutes * MINUTE;
+    if (!WorldTravel::TripWorthIt(
+            WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], freeSlots,
+                                       sellableSlots, walkMinutes, config.ErrandNextStopMinutes)))
     {
         LOG_DEBUG("playerbots",
                   "[New RPG] {} errands: trip not worth it (vendor {} at {:.0f} yd, {:.1f} walk min, {} sellable, {} "
                   "free slots)",
-                  bot->GetName(), vendorEntry, vendorYards, walkMinutes, sellableSlots,
-                  WorldTravel::FreeGeneralSlots(bot));
+                  bot->GetName(), vendorEntry, vendorYards, walkMinutes, sellableSlots, freeSlots);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "not_worth", walkSeconds, weighed);
         return false;
     }
 
     botAI->rpgInfo.ChangeToErrands(vendorEntry, vendorPos, bot->GetMoney());
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor", "worth_it", walkSeconds, weighed);
     return true;
 }
 
@@ -1014,6 +1024,37 @@ void LogWalkLeg(Player* bot, TravelRoute::Leg const& leg, uint32 index, size_t c
               bot->GetName(), index + 1, count, how, TravelRoute::Distance(leg.from, leg.to), path, seconds,
               seconds > 0.0f ? path / seconds : 0.0f, leg.seconds, TravelRoute::Distance(at, leg.to));
 }
+
+// The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
+constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
+
+// The world log's route decision (only when it is on): the leg chain without no-op walks, why it was searched,
+// its seconds; weighed against a straight walk at run speed (when the chain is not one walk on the same map) and its
+// leg count. The route service returns one route, so no other route is searched for the row.
+void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::Result const& route)
+{
+    WorldLogFormat::WordChain chain;
+    uint32 legs = 0;
+    bool walksOnly = true;
+    for (TravelRoute::Leg const& leg : route.legs)
+    {
+        if (TravelLegs::IsNoOp(leg))
+            continue;
+        chain.Add(TravelRoute::LegTypeWord(leg.type));
+        ++legs;
+        walksOnly = walksOnly && leg.type == TravelRoute::LegType::Walk;
+    }
+    WorldLogFormat::Alternatives alternatives;
+    if (!(legs == 1 && walksOnly) && bot->GetMapId() == data.dest.GetMapId())
+    {
+        float const yards =
+            bot->GetExactDist(data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ());
+        alternatives.Add({"walk_direct", WorldLogFormat::WalkSeconds(yards, bot->GetSpeed(MOVE_RUN))});
+    }
+    alternatives.Add({"legs", static_cast<float>(legs)});
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Route, legs ? chain.View() : "here",
+                       data.trip.replans ? "replan" : "search", route.totalSeconds, alternatives, data.tripId);
+}
 }  // namespace
 
 bool NewRpgTravelAction::Execute(Event /*event*/)
@@ -1051,8 +1092,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     {
         if (TravelLegs::IsNoOp(trip.legs[i]))
             continue;
-        EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), i + 1,
-                       i == legBefore ? (seen.nowMs - legStartBefore) / IN_MILLISECONDS : 0);
+        uint32 const seconds = i == legBefore ? (seen.nowMs - legStartBefore) / IN_MILLISECONDS : 0;
+        EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), i + 1, seconds, data->tripId,
+                       seconds);
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Walk)
             LogWalkLeg(bot, trip.legs[i], i, trip.legs.size(), seen.nowMs - legStartBefore, "done");
     }
@@ -1142,17 +1184,23 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
                   bot->GetName(), TravelRoute::FailureWord(route.failure), bot->GetMapId(), bot->GetPositionX(),
                   bot->GetPositionY(), bot->GetPositionZ(), data.dest.GetMapId(), data.dest.GetPositionX(),
                   data.dest.GetPositionY(), data.dest.GetPositionZ(), data.noHearth, data.trip.replans);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Route, "none", TravelRoute::FailureWord(route.failure),
+                           0.0f, {}, data.tripId);
         return LegFailed(data, TravelLegs::FailReason::NoRoute);
     }
     if (data.estimateSeconds <= 0.0f)
     {
         data.estimateSeconds = route.totalSeconds;
         EventLog::Emit(bot, "Travel", "start", static_cast<uint32>(route.legs.size()),
-                       static_cast<int64>(route.totalSeconds));
+                       static_cast<int64>(route.totalSeconds), data.tripId, static_cast<int64>(route.totalSeconds));
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", data.bindInn ? "inn" : "order",
+                           route.totalSeconds, {{"legs", static_cast<float>(route.legs.size())}}, data.tripId);
         if (!data.place.empty())
             LOG_INFO("playerbots", "[Route] {} travel to {}: {} legs, {:.0f} s", bot->GetName(), data.place,
                      route.legs.size(), route.totalSeconds);
     }
+    if (WorldLog::Active())
+        LogRouteDecision(bot, data, route);
     // The deadline runs against the current route (a replan's own estimate)
     data.routeStartMs = now;
     data.routeSeconds = route.totalSeconds;
@@ -1263,7 +1311,9 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     TravelLegs::Trip& trip = data.trip;
     LOG_DEBUG("playerbots", "[Route] {} leg {}/{} failed: {}", bot->GetName(), trip.legIdx + 1, trip.legs.size(),
               TravelLegs::FailWord(reason));
-    EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), trip.legIdx + 1);
+    uint32 const legSeconds =
+        trip.legIdx < trip.legs.size() ? GetMSTimeDiffToNow(trip.legStartMs) / IN_MILLISECONDS : 0;
+    EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), trip.legIdx + 1, 0, data.tripId, legSeconds);
     if (reason == TravelLegs::FailReason::Timeout && trip.legIdx < trip.legs.size() &&
         trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk)
         LogWalkLeg(bot, trip.legs[trip.legIdx], trip.legIdx, trip.legs.size(), getMSTime() - trip.legStartMs,
@@ -1292,6 +1342,8 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         EndTrip(data, TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
         return true;
     }
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "replan", TravelLegs::FailWord(reason),
+                       static_cast<float>(legSeconds), {{"leg", static_cast<float>(trip.legIdx + 1)}}, data.tripId);
     trip.legs.clear();
     trip.legIdx = 0;
     trip.waypoints.clear();
@@ -1349,7 +1401,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
         LOG_INFO("playerbots", "[Route] {} {} at the inn after {} s ({} replans, {} binds, {:.1f} yd{}{})",
                  bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
                  static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
-        EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", replans, seconds);
+        EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", replans, seconds, data.tripId, seconds);
     }
     if (data.place.empty())
         LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
@@ -1357,7 +1409,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
     else
         LOG_INFO("playerbots", "[Route] {} arrived at {} after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
                  data.place, seconds, data.estimateSeconds, replans);
-    EventLog::Emit(bot, "Travel", "arrived", replans, seconds);
+    EventLog::Emit(bot, "Travel", "arrived", replans, seconds, data.tripId, seconds);
     WorldLog::StatusReason const reasonScope("arrived");
     botAI->rpgInfo.ChangeToIdle();
     return true;
@@ -1369,7 +1421,11 @@ void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel const& data, char const* why
         LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
     else
         LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
-    EventLog::Emit(bot, "Travel", source, data.trip.replans, GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS);
+    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
+    EventLog::Emit(bot, "Travel", source, data.trip.replans, seconds, data.tripId, seconds);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort",
+                       WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX), static_cast<float>(seconds),
+                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
     WorldLog::StatusReason const reasonScope("abort");
     botAI->rpgInfo.ChangeToIdle();
 }
@@ -1403,12 +1459,22 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
             {bot->GetExactDist(inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.loc.GetPositionZ()), fits});
         innIndex.push_back(i);
     }
-    float const maxYards = WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    float const runSpeed = bot->GetSpeed(MOVE_RUN);
+    float const maxYards = WorldTravel::INN_MAX_WALK_SECONDS * std::max(runSpeed, 1.0f);
     int const pick = WorldTravel::PickInn(candidates, maxYards);
+    // The world log's decision row: the three nearest other inns in walk seconds (inn_unfit: not for the bot's level)
+    WorldLogFormat::Alternatives others;
+    if (WorldLog::Active())
+        for (size_t i = 0; i < candidates.size(); ++i)
+            if (static_cast<int>(i) != pick)
+                others.Offer({candidates[i].fits ? "inn" : "inn_unfit",
+                              WorldLogFormat::WalkSeconds(candidates[i].yards, runSpeed)},
+                             true);
     if (pick < 0)
     {
         LOG_DEBUG("playerbots", "[Route] {} inn errand: no fitting inn within reach ({} inns on the map)",
                   bot->GetName(), candidates.size());
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "none", "no_fitting_inn", 0.0f, others);
         return false;
     }
 
@@ -1416,8 +1482,15 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
     LOG_DEBUG("playerbots", "[Route] {} inn errand: bind far, inn at ({:.0f}, {:.0f}) in zone {}", bot->GetName(),
               inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.zoneId);
     info.ChangeToTravel(WorldPosition(inn.loc));
+    uint32 tripId = 0;
     if (auto* travel = std::get_if<NewRpgInfo::Travel>(&info.data))
+    {
         travel->bindInn = true;
+        tripId = travel->tripId;
+    }
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "bind_far", "inn_picked",
+                       WorldLogFormat::WalkSeconds(candidates[static_cast<size_t>(pick)].yards, runSpeed), others,
+                       tripId);
     return true;
 }
 

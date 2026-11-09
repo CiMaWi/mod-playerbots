@@ -41,6 +41,7 @@
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
 #include "G3D/Vector2.h"
@@ -1033,6 +1034,10 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
     return true;
 }
 
+static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_ERRANDS == 11 && RPG_TRAVEL == 10 &&
+                  RPG_DO_GATHER == 9 && RPG_REST == 7,
+              "WorldLog::RPG_STATUS_WORDS follows NewRpgStatus");
+
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)
 {
     WorldLog::StatusReason const reasonScope("pick");
@@ -1054,121 +1059,139 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     {
         botAI->rpgInfo.ChangeToRest();
         bot->SetStandState(UNIT_STAND_STATE_SIT);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(RPG_REST),
+                           "none_available", 0.0f);
         return true;
     }
     uint32 rand = urand(1, probSum);
     uint32 accumulate = 0;
     NewRpgStatus chosenStatus = RPG_STATUS_END;
+    uint32 chosenWeight = 0;
     for (NewRpgStatus status : availableStatus)
     {
         accumulate += sPlayerbotAIConfig.RpgStatusProbWeight[status];
         if (accumulate >= rand)
         {
             chosenStatus = status;
+            chosenWeight = sPlayerbotAIConfig.RpgStatusProbWeight[status];
             break;
         }
     }
+    // The world log's decision row weighs the chosen status against the three heaviest other available ones
+    WorldLogFormat::Alternatives alternatives;
+    for (NewRpgStatus status : availableStatus)
+        if (status != chosenStatus)
+            alternatives.Offer({WorldLog::NewRpgStatusWord(status),
+                                static_cast<float>(sPlayerbotAIConfig.RpgStatusProbWeight[status])},
+                               false);
 
-    switch (chosenStatus)
+    auto const startStatus = [this](NewRpgStatus status) -> bool
     {
-        case RPG_WANDER_RANDOM:
+        switch (status)
         {
-            botAI->rpgInfo.ChangeToWanderRandom();
-            return true;
-        }
-        case RPG_WANDER_NPC:
-        {
-            botAI->rpgInfo.ChangeToWanderNpc();
-            return true;
-        }
-        case RPG_GO_GRIND:
-        {
-            WorldPosition pos = SelectRandomGrindPos(bot);
-            if (pos != WorldPosition())
+            case RPG_WANDER_RANDOM:
             {
-                botAI->rpgInfo.ChangeToGoGrind(pos);
+                botAI->rpgInfo.ChangeToWanderRandom();
                 return true;
             }
-            return false;
-        }
-        case RPG_GO_CAMP:
-        {
-            WorldPosition pos = SelectRandomCampPos(bot);
-            if (pos != WorldPosition())
+            case RPG_WANDER_NPC:
             {
-                botAI->rpgInfo.ChangeToGoCamp(pos);
+                botAI->rpgInfo.ChangeToWanderNpc();
                 return true;
             }
-            return false;
-        }
-        case RPG_DO_QUEST:
-        {
-            std::vector<uint32> availableQuests;
-            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            case RPG_GO_GRIND:
             {
-                uint32 questId = bot->GetQuestSlotQuestId(slot);
-                if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
-                    continue;
-
-                std::vector<POIInfo> poiInfo;
-                if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+                WorldPosition pos = SelectRandomGrindPos(bot);
+                if (pos != WorldPosition())
                 {
-                    availableQuests.push_back(questId);
-                }
-            }
-            if (availableQuests.size())
-            {
-                uint32 questId = availableQuests[urand(0, availableQuests.size() - 1)];
-                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-                if (quest)
-                {
-                    botAI->rpgInfo.ChangeToDoQuest(questId, quest);
+                    botAI->rpgInfo.ChangeToGoGrind(pos);
                     return true;
                 }
+                return false;
             }
-            return false;
-        }
-        case RPG_TRAVEL_FLIGHT:
-        {
-            uint32 flightMasterEntry = 0;
-            WorldPosition flightMasterPos;
-            std::vector<uint32> path;
-            if (SelectRandomFlightTaxiNode(flightMasterEntry, flightMasterPos, path))
+            case RPG_GO_CAMP:
             {
-                botAI->rpgInfo.ChangeToTravelFlight(flightMasterEntry, flightMasterPos, path);
+                WorldPosition pos = SelectRandomCampPos(bot);
+                if (pos != WorldPosition())
+                {
+                    botAI->rpgInfo.ChangeToGoCamp(pos);
+                    return true;
+                }
+                return false;
+            }
+            case RPG_DO_QUEST:
+            {
+                std::vector<uint32> availableQuests;
+                for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+                {
+                    uint32 questId = bot->GetQuestSlotQuestId(slot);
+                    if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
+                        continue;
+
+                    std::vector<POIInfo> poiInfo;
+                    if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+                    {
+                        availableQuests.push_back(questId);
+                    }
+                }
+                if (availableQuests.size())
+                {
+                    uint32 questId = availableQuests[urand(0, availableQuests.size() - 1)];
+                    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                    if (quest)
+                    {
+                        botAI->rpgInfo.ChangeToDoQuest(questId, quest);
+                        return true;
+                    }
+                }
+                return false;
+            }
+            case RPG_TRAVEL_FLIGHT:
+            {
+                uint32 flightMasterEntry = 0;
+                WorldPosition flightMasterPos;
+                std::vector<uint32> path;
+                if (SelectRandomFlightTaxiNode(flightMasterEntry, flightMasterPos, path))
+                {
+                    botAI->rpgInfo.ChangeToTravelFlight(flightMasterEntry, flightMasterPos, path);
+                    return true;
+                }
+                return false;
+            }
+            case RPG_DO_GATHER:
+            {
+                botAI->rpgInfo.ChangeToDoGather();
                 return true;
             }
-            return false;
+            case RPG_IDLE:
+            {
+                botAI->rpgInfo.ChangeToIdle();
+                return true;
+            }
+            case RPG_REST:
+            {
+                botAI->rpgInfo.ChangeToRest();
+                bot->SetStandState(UNIT_STAND_STATE_SIT);
+                return true;
+            }
+            case RPG_OUTDOOR_PVP:
+            {
+                botAI->rpgInfo.ChangeToOutdoorPvp();
+                return true;
+            }
+            default:
+            {
+                botAI->rpgInfo.ChangeToRest();
+                bot->SetStandState(UNIT_STAND_STATE_SIT);
+                return true;
+            }
         }
-        case RPG_DO_GATHER:
-        {
-            botAI->rpgInfo.ChangeToDoGather();
-            return true;
-        }
-        case RPG_IDLE:
-        {
-            botAI->rpgInfo.ChangeToIdle();
-            return true;
-        }
-        case RPG_REST:
-        {
-            botAI->rpgInfo.ChangeToRest();
-            bot->SetStandState(UNIT_STAND_STATE_SIT);
-            return true;
-        }
-        case RPG_OUTDOOR_PVP:
-        {
-            botAI->rpgInfo.ChangeToOutdoorPvp();
-            return true;
-        }
-        default:
-        {
-            botAI->rpgInfo.ChangeToRest();
-            bot->SetStandState(UNIT_STAND_STATE_SIT);
-            return true;
-        }
-    }
-    return false;
+        return false;
+    };
+    bool const started = startStatus(chosenStatus);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(chosenStatus),
+                       started ? "weights" : "no_target", static_cast<float>(chosenWeight), alternatives);
+    return started;
 }
 
 bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
