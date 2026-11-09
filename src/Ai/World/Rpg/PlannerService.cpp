@@ -36,6 +36,8 @@ constexpr uint32 SELFTEST_FAILURES_SHOWN = 5;
 constexpr uint32 STATE_ZONE_SHIFT = 8;
 constexpr uint32 STATE_ALIVE_BIT = 1u << 24;
 constexpr uint32 STATE_GROUP_BIT = 1u << 25;
+constexpr uint32 STATE_SCOPE_BIT = 1u << 31;  // in PlannerState::stateKey: the bot keeps its possessions
+constexpr double NANOS_PER_MICRO = 1000.0;
 constexpr std::array<uint32, 15> SNAPSHOT_SKILLS = {
     SKILL_RIDING,        SKILL_FIRST_AID,      SKILL_COOKING,     SKILL_FISHING,   SKILL_ALCHEMY,
     SKILL_BLACKSMITHING, SKILL_ENCHANTING,     SKILL_ENGINEERING, SKILL_HERBALISM, SKILL_INSCRIPTION,
@@ -46,7 +48,7 @@ static_assert(QUEST_LOG_SLOTS == MAX_QUEST_LOG_SIZE, "the snapshot holds the who
 static_assert(QUEST_COUNTERS == QUEST_OBJECTIVES_COUNT, "one counter per quest objective");
 
 std::atomic<uint64> snapshotsBuilt{0};
-std::atomic<uint64> pendingLost{0};  // jobs out longer than RESULT_KEEP_MS: dropped, failed or expired
+std::atomic<uint64> pendingLost{0};  // jobs out longer than RESULT_KEEP_MS without a result: dropped or failed
 
 // On a worker: PerfMonitor rows record from any thread (one shard per thread)
 void RecordPerf(std::uint64_t computeUs, std::uint64_t waitUs)
@@ -205,19 +207,21 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
 
 void PlannerHook(PlayerbotAI* botAI, Player* bot)
 {
-    if (!PlayerbotFactory::KeepsPossessions(bot))
-        return;
-
+    // The scope (KeepsPossessions: lookups in the random bot lists) is checked again only when the state key
+    // changes; a real master takes a bot through a group invite, which changes the key. Bit 31 keeps the verdict
     NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
-    WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
-    uint32 const now = getMSTime();
     uint32 const key = StateKey(bot);
-    if (key != state.stateKey)
+    if (key != (state.stateKey & ~STATE_SCOPE_BIT))
     {
-        state.stateKey = key;
+        state.stateKey = key | (PlayerbotFactory::KeepsPossessions(bot) ? STATE_SCOPE_BIT : 0);
         ++state.stateVersion;
         state.snapshotDue = true;
     }
+    if (!(state.stateKey & STATE_SCOPE_BIT))
+        return;
+
+    WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
+    uint32 const now = getMSTime();
     bool const idle = botAI->rpgInfo.GetStatus() == RPG_IDLE;
     if (idle && !state.wasIdle)
         state.snapshotDue = true;  // a goal ended
@@ -236,7 +240,9 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
         else if (getMSTimeDiff(state.lastSnapshotMs, now) > RESULT_KEEP_MS)
         {
             state.pending = false;  // the bot keeps today's pick and asks again when due
-            pendingLost.fetch_add(1, std::memory_order_relaxed);
+            // An expired result is counted by the pool already: lost counts only jobs that left none
+            if (!Pool().ForgetExpired(bot->GetGUID().GetRawValue()))
+                pendingLost.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
@@ -259,24 +265,30 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
 std::vector<std::string> PlannerStatus()
 {
     PoolStats const stats = Pool().Stats();
-    double const busy = stats.threads && stats.uptimeUs ? 100.0 * static_cast<double>(stats.busyUs) /
-                                                              (static_cast<double>(stats.threads) * stats.uptimeUs)
+    double const busy = stats.threads && stats.uptimeNs ? 100.0 * static_cast<double>(stats.busyNs) /
+                                                              (static_cast<double>(stats.threads) * stats.uptimeNs)
                                                         : 0.0;
+    auto const us = [](std::uint64_t ns) { return static_cast<double>(ns) / NANOS_PER_MICRO; };
     auto const verdict = [&stats](Verdict v) { return stats.verdicts[static_cast<std::size_t>(v)]; };
-    return {
-        Acore::StringFormat("PLANNER pool: {} worker(s), busy {:.2f}%, jobs {} submitted, {} replaced, {} dropped, {} "
-                            "run, {} failed, {} waiting (peak {}), compute p50/p95 {}/{} us, queue wait p50/p95 {}/{} "
-                            "us, tasks {} posted, {} run",
+    std::vector<std::string> lines = {
+        Acore::StringFormat("PLANNER pool: {} worker(s), busy {:.4f}%, jobs {} submitted, {} replaced, {} dropped, {} "
+                            "run, {} failed, {} waiting (peak {}), compute p50/p95 {:.2f}/{:.2f} us, mean {:.2f} us, "
+                            "queue wait p50/p95 {:.2f}/{:.2f} us, tasks {} posted, {} run",
                             stats.threads, busy, stats.submitted, stats.replaced, stats.dropped, stats.run,
-                            stats.failures, stats.waiting, stats.peakWaiting, stats.computeP50Us, stats.computeP95Us,
-                            stats.waitP50Us, stats.waitP95Us, stats.posted, stats.tasksRun),
+                            stats.failures, stats.waiting, stats.peakWaiting, us(stats.computeP50Ns),
+                            us(stats.computeP95Ns), stats.run ? us(stats.computeNs) / stats.run : 0.0,
+                            us(stats.waitP50Ns), us(stats.waitP95Ns), stats.posted, stats.tasksRun),
         Acore::StringFormat("PLANNER results: {} made, {} taken ({} used; rejected {} dead, {} version, {} age, {} "
-                            "position), {} expired, {} superseded, {} waiting; {} snapshots built, {} lost",
+                            "position), {} expired, {} superseded, {} waiting; {} snapshots built, {} lost (no "
+                            "result: dropped or failed)",
                             stats.made, stats.taken, verdict(Verdict::Use), verdict(Verdict::Dead),
                             verdict(Verdict::Version), verdict(Verdict::Age), verdict(Verdict::Position), stats.expired,
                             stats.superseded, stats.results, snapshotsBuilt.load(std::memory_order_relaxed),
                             pendingLost.load(std::memory_order_relaxed)),
     };
+    for (std::string& line : IndexStatus())
+        lines.push_back(std::move(line));
+    return lines;
 }
 
 bool HandleStatusCommand(ChatHandler* handler, char const* /*args*/)

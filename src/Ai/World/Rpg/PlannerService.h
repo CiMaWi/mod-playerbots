@@ -8,9 +8,11 @@
 #define _PLAYERBOT_PLANNERSERVICE_H
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "PlannerIndexes.h"
 #include "PlannerPool.h"
 
 class ChatHandler;
@@ -35,6 +37,24 @@ std::vector<std::string> PlannerStatus();
 
 bool HandleStatusCommand(ChatHandler* handler, char const* args);
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);
+
+// The planner's indexes and crowding (WT12b, PlannerIndexes.cpp)
+// World thread, once after the pool started: gathers the spawns and zones, builds the indexes on a worker
+void StartPlannerIndexes();
+// Any thread: the published indexes (null before the first build); a reader keeps its copy alive
+std::shared_ptr<PlannerIndexes const> Indexes();
+// False until the build finished: planners keep today's pick meanwhile
+bool IndexesReady();
+// Any thread: the last crowding snapshot (null before the first refresh)
+std::shared_ptr<CrowdingSnapshot const> Crowding();
+// World thread, every world tick: a timer add; every Crowding.RefreshSeconds one pass over the online players
+void UpdateCrowding(std::uint32_t diff);
+// The index and crowding lines of `playerbots planner status|indexes`
+std::vector<std::string> IndexStatus();
+bool HandleIndexesCommand(ChatHandler* handler, char const* args);
+bool HandleHubCommand(ChatHandler* handler, char const* args);
+bool HandleServiceCommand(ChatHandler* handler, char const* args);
+bool HandleCrowdCommand(ChatHandler* handler, char const* args);
 }  // namespace Planner
 
 #endif

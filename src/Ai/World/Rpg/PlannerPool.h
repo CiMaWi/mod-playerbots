@@ -27,6 +27,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -147,8 +148,8 @@ struct Result
     Place position;
     JobKind kind{JobKind::Noop};
     Payload payload;
-    std::uint32_t computeUs{0};
-    std::uint32_t waitUs{0};
+    std::uint32_t computeNs{0};
+    std::uint32_t waitNs{0};
 };
 
 // A few microseconds of work that depends only on the snapshot (FNV-1a over its main fields)
@@ -235,12 +236,14 @@ struct PoolStats
     std::uint32_t waiting{0};
     std::uint32_t peakWaiting{0};
     std::uint32_t results{0};  // made, not yet taken or expired
-    std::uint32_t computeP50Us{0};
-    std::uint32_t computeP95Us{0};
-    std::uint32_t waitP50Us{0};
-    std::uint32_t waitP95Us{0};
-    std::uint64_t busyUs{0};    // all workers' time in jobs and tasks: busy share = busyUs / (threads x uptimeUs)
-    std::uint64_t uptimeUs{0};  // since Start
+    // Nanoseconds: a no-op job takes well under a microsecond
+    std::uint32_t computeP50Ns{0};
+    std::uint32_t computeP95Ns{0};
+    std::uint32_t waitP50Ns{0};
+    std::uint32_t waitP95Ns{0};
+    std::uint64_t computeNs{0};  // all jobs' compute time: mean = computeNs / run
+    std::uint64_t busyNs{0};     // all workers' time in jobs and tasks: busy share = busyNs / (threads x uptimeNs)
+    std::uint64_t uptimeNs{0};   // since Start
 };
 
 namespace Detail
@@ -275,7 +278,7 @@ public:
         _sink = std::move(sink);
         _started = Clock::now();
         std::uint32_t const count = std::clamp<std::uint32_t>(threads, 1, THREADS_MAX);
-        _busyUs.assign(count, 0);
+        _busyNs.assign(count, 0);
         for (std::uint32_t i = 0; i < count; ++i)
             _workers.emplace_back([this, i] { Work(i); });
     }
@@ -311,6 +314,7 @@ public:
                 return false;
             ++_stats.submitted;
             auto const waiting = _waiting.find(bot);
+            _expiredFor.erase(bot);
             if (waiting != _waiting.end())
             {
                 waiting->second = {std::move(job), Clock::now(), ++_sequence};
@@ -364,10 +368,19 @@ public:
             ++_stats.taken;
         }
         else
-            ++_stats.expired;
+            Expire(bot);
         _done.erase(done);
         _resultCount.store(static_cast<std::uint32_t>(_done.size()), std::memory_order_release);
         return result;
+    }
+
+    // Any thread, for a bot that gave up waiting: true (once) when its result expired untaken, already counted as
+    // expired; false when its job left no result (dropped or failed)
+    bool ForgetExpired(std::uint64_t bot)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        Sweep(Clock::now());
+        return _expiredFor.erase(bot) > 0;
     }
 
     // Any thread: the bot's recheck of a taken result
@@ -387,12 +400,12 @@ public:
             stats.threads = static_cast<std::uint32_t>(_workers.size());
             stats.waiting = static_cast<std::uint32_t>(_waiting.size());
             stats.results = static_cast<std::uint32_t>(_done.size());
-            for (std::uint64_t const busy : _busyUs)
-                stats.busyUs += busy;
+            for (std::uint64_t const busy : _busyNs)
+                stats.busyNs += busy;
             if (!_workers.empty())
-                stats.uptimeUs = Micros64(Clock::now() - _started);
-            computes = _computeUs;
-            waits = _waitUs;
+                stats.uptimeNs = Nanos64(Clock::now() - _started);
+            computes = _computeNs;
+            waits = _waitNs;
         }
         for (std::size_t i = 0; i < VERDICT_COUNT; ++i)
             stats.verdicts[i] = _verdicts[i].load(std::memory_order_relaxed);
@@ -404,10 +417,10 @@ public:
             std::nth_element(samples.begin(), at, samples.end());
             return *at;
         };
-        stats.computeP50Us = percentile(computes, 50);
-        stats.computeP95Us = percentile(computes, 95);
-        stats.waitP50Us = percentile(waits, 50);
-        stats.waitP95Us = percentile(waits, 95);
+        stats.computeP50Ns = percentile(computes, 50);
+        stats.computeP95Ns = percentile(computes, 95);
+        stats.waitP50Ns = percentile(waits, 50);
+        stats.waitP95Ns = percentile(waits, 95);
         return stats;
     }
 
@@ -419,6 +432,12 @@ private:
         std::uint64_t sequence{0};  // Submit's order over all bots: the bot's later job has a higher one
     };
 
+    struct Running
+    {
+        std::uint32_t count{0};   // the bot's jobs on workers now
+        std::uint64_t newest{0};  // the highest sequence among those picked since count was last 0
+    };
+
     struct Done
     {
         Result result;
@@ -426,15 +445,27 @@ private:
         std::uint64_t sequence{0};
     };
 
-    static std::uint64_t Micros64(Clock::duration duration)
+    static constexpr std::uint64_t NANOS_PER_MICRO = 1000;
+
+    static std::uint64_t Nanos64(Clock::duration duration)
     {
-        auto const count = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+        auto const count = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
         return static_cast<std::uint64_t>(std::max<long long>(count, 0));
     }
 
-    static std::uint32_t Micros(Clock::duration duration)
+    // Capped at about 4.3 s, plenty for one job's sample
+    static std::uint32_t Nanos(Clock::duration duration)
     {
-        return static_cast<std::uint32_t>(std::min<std::uint64_t>(Micros64(duration), 0xFFFFFFFFULL));
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(Nanos64(duration), 0xFFFFFFFFULL));
+    }
+
+    // Under _mutex: a result nobody took. The bot's ForgetExpired() learns it (bounded: cleared when it grows large)
+    void Expire(std::uint64_t bot)
+    {
+        ++_stats.expired;
+        if (_expiredFor.size() >= _queueMax)
+            _expiredFor.clear();
+        _expiredFor.insert(bot);
     }
 
     static void Sample(std::vector<std::uint32_t>& samples, std::size_t& next, std::uint32_t value)
@@ -456,7 +487,7 @@ private:
         {
             if (now - it->second.at > _resultKeep)
             {
-                ++_stats.expired;
+                Expire(it->first);
                 it = _done.erase(it);
             }
             else
@@ -473,6 +504,9 @@ private:
         auto const waiting = _waiting.find(bot);
         Pending pending = std::move(waiting->second);
         _waiting.erase(waiting);
+        Running& running = _running[bot];
+        ++running.count;
+        running.newest = std::max(running.newest, pending.sequence);
         lock.unlock();
 
         Clock::time_point const picked = Clock::now();
@@ -487,14 +521,19 @@ private:
             payload.reset();
         }
         Clock::time_point const now = Clock::now();
-        std::uint32_t const computeUs = Micros(now - picked);
-        std::uint32_t const waitUs = Micros(picked - pending.submitted);
+        std::uint32_t const computeNs = Nanos(now - picked);
+        std::uint32_t const waitNs = Nanos(picked - pending.submitted);
 
         lock.lock();
+        auto const runningIt = _running.find(bot);
+        bool const newerPicked = runningIt->second.newest > pending.sequence;
+        if (!--runningIt->second.count)
+            _running.erase(runningIt);
         ++_stats.run;
-        _busyUs[worker] += computeUs;
-        Sample(_computeUs, _nextCompute, computeUs);
-        Sample(_waitUs, _nextWait, waitUs);
+        _stats.computeNs += computeNs;
+        _busyNs[worker] += computeNs;
+        Sample(_computeNs, _nextCompute, computeNs);
+        Sample(_waitNs, _nextWait, waitNs);
         if (!payload)
             ++_stats.failures;
         else
@@ -507,12 +546,13 @@ private:
                           snapshot.position,
                           pending.job.kind,
                           std::move(*payload),
-                          computeUs,
-                          waitUs};
-            // With several workers the bot's later job can finish first, or still wait: only the latest result is
-            // kept, else the bot would take the older one and never see the newer
+                          computeNs,
+                          waitNs};
+            // With several workers the bot's later job can finish first (and be taken already), run beside this
+            // one, or still wait: only the latest result is kept, else the bot would take the older one
             auto const done = _done.find(bot);
-            if (_waiting.contains(bot) || (done != _done.end() && done->second.sequence > pending.sequence))
+            if (_waiting.contains(bot) || newerPicked ||
+                (done != _done.end() && done->second.sequence > pending.sequence))
                 ++_stats.superseded;
             else
             {
@@ -526,7 +566,7 @@ private:
         lock.unlock();
 
         if (_sink)
-            _sink(computeUs, waitUs);
+            _sink(computeNs / NANOS_PER_MICRO, waitNs / NANOS_PER_MICRO);
         lock.lock();
     }
 
@@ -546,10 +586,10 @@ private:
         {
             ok = false;
         }
-        std::uint32_t const busyUs = Micros(Clock::now() - started);
+        std::uint64_t const busyNs = Nanos64(Clock::now() - started);
 
         lock.lock();
-        _busyUs[worker] += busyUs;
+        _busyNs[worker] += busyNs;
         if (ok)
             ++_stats.tasksRun;
         else
@@ -589,9 +629,11 @@ private:
     std::atomic<std::uint32_t> _resultCount{0};
     std::array<std::atomic<std::uint64_t>, VERDICT_COUNT> _verdicts{};
     PoolStats _stats;
-    std::vector<std::uint64_t> _busyUs;  // per worker
-    std::vector<std::uint32_t> _computeUs;
-    std::vector<std::uint32_t> _waitUs;
+    std::vector<std::uint64_t> _busyNs;  // per worker
+    std::vector<std::uint32_t> _computeNs;
+    std::vector<std::uint32_t> _waitNs;
+    std::unordered_set<std::uint64_t> _expiredFor;        // bots whose result expired untaken, until ForgetExpired
+    std::unordered_map<std::uint64_t, Running> _running;  // bots with a job on a worker: at most one entry per worker
     std::size_t _nextCompute{0};
     std::size_t _nextWait{0};
     Clock::time_point _swept{};
@@ -736,6 +778,8 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
         check(!pool.TryTake(7), "a result older than the keep time is not taken");
         PoolStats const stats = pool.Stats();
         check(stats.expired == 1, "the old result counts as expired");
+        check(pool.ForgetExpired(7) && !pool.ForgetExpired(7), "the expiry is told to its bot once");
+        check(!pool.ForgetExpired(8), "a failed job's bot learns of no expired result");
         check(stats.failures == 2, "a job returning none and one throwing count as failures");
         sums(stats, "expiry and failures");
     }
@@ -885,11 +929,11 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
         check(outsideWorker.load() == 0, "IsWorkerThread is true inside every job");
         PoolStats const stats = pool.Stats();
         sums(stats, "threads");
-        check(stats.threads == WORKERS && stats.busyUs > 0, "worker count and busy time");
+        check(stats.threads == WORKERS && stats.busyNs > 0 && stats.computeNs > 0, "worker count and busy time");
         notes.push_back("threads: " + std::to_string(stats.run) + " jobs, compute p50/p95 " +
-                        std::to_string(stats.computeP50Us) + "/" + std::to_string(stats.computeP95Us) +
-                        " us, queue wait p50/p95 " + std::to_string(stats.waitP50Us) + "/" +
-                        std::to_string(stats.waitP95Us) + " us, " + std::to_string(stats.superseded) + " superseded");
+                        std::to_string(stats.computeP50Ns) + "/" + std::to_string(stats.computeP95Ns) +
+                        " ns, queue wait p50/p95 " + std::to_string(stats.waitP50Ns) + "/" +
+                        std::to_string(stats.waitP95Ns) + " ns, " + std::to_string(stats.superseded) + " superseded");
         pool.Stop();
     }
 

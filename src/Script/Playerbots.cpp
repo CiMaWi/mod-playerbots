@@ -637,6 +637,7 @@ public:
             TravelGraph::Instance().Start();
             TravelRoute::StartRouteService();
             Planner::StartPlanner();
+            Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
@@ -661,6 +662,8 @@ public:
             TimeHookCall("WorldHook TestPlayer", [diff] { TestPlayerMgr::Instance().Update(diff); });
             // Opt-in world census; returns at once when off
             TimeHookCall("WorldHook Census", [diff] { CensusMgr::Instance().Update(diff); });
+            // Bots and players per area for the planner; a timer add between refreshes
+            TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
             // Opt-in; drains the hook events, writes in batches
             TimeHookCall("WorldHook Acquaintance", [diff] { AcquaintanceMgr::Instance().Update(diff); });
             // Opt-in; bot arena team rosters, every UpdateSeconds
