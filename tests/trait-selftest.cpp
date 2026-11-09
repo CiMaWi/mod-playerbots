@@ -63,6 +63,8 @@ constexpr double WORLDLY_MIN = 0.03;
 constexpr double WORLDLY_MAX = 0.07;
 // Priests of every priest race: race shifts make a few more devout, never most of them
 constexpr double ALL_RACES_DEVOUT_MAX = 0.80;
+// ...and the occasional worldly priest stays (observed 0.037)
+constexpr double ALL_RACES_WORLDLY_MIN = 0.02;
 // A group's mean exceeds the all-bots mean by at least this share of its nominal shift (the all-bots mean carries other
 // groups' shifts of the same trait, clipping and the centre cap take a little more)
 constexpr double SHIFT_SHARE = 0.5;
@@ -242,7 +244,7 @@ void CheckPriests()
     shares(PRIEST_RACES, std::size(PRIEST_RACES), allDevout, allWorldly);
     std::cout << "priests of every priest race: " << allDevout << " devout, " << allWorldly << " worldly\n";
     Check(allDevout >= devout && allDevout <= ALL_RACES_DEVOUT_MAX, "race shifts add a few devout priests");
-    Check(allWorldly > 0.0, "still the occasional worldly priest");
+    Check(allWorldly >= ALL_RACES_WORLDLY_MIN, "still the occasional worldly priest");
 }
 
 void CheckShift(std::vector<BotTraits> const& bots, uint8_t race, uint8_t cls, Trait trait, int shift,

@@ -2166,6 +2166,11 @@ Playerbots.WorldTravel.Destroy.MarginPercent = 50
 # just for selling.) Default: 30
 Playerbots.WorldTravel.Errands.NextStopMinutes = 30
 
+# Every bot has a personality (30 traits and one to three interests, rolled once per bot and stored in
+# playerbots_bot_traits); the GM command `.playerbots traits <bot>` shows it. AllowEdit lets the same command set or
+# reroll a bot's traits (`set <trait> <value>`, `reroll`): a switch for test servers. (Range: 0-1.) Default: 0
+Playerbots.WorldTravel.Traits.AllowEdit = 0
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600

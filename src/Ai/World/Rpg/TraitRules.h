@@ -233,14 +233,47 @@ constexpr std::array<TraitWords, TRAIT_COUNT> WORDS = {{
     {"worldliness", {"rather green", "very green"}, {"rather seasoned", "a veteran"}},
 }};
 
+// No commas: the names are joined into comma lists
 constexpr std::array<std::string_view, INTEREST_COUNT> INTEREST_NAMES = {
-    "fishing",      "cooking", "collecting pets, mounts and tabards",
+    "fishing",      "cooking", "collecting pets and mounts",
     "crafting",     "trading", "duelling",
     "exploring",    "lore",    "inns and ale",
     "fine clothes",
 };
 
 constexpr std::size_t Index(Trait trait) { return static_cast<std::size_t>(trait); }
+
+static_assert(Index(Trait::Worldliness) + 1 == TRAIT_COUNT, "TRAIT_COUNT must match the Trait enum");
+static_assert(static_cast<std::size_t>(Interest::FineClothes) + 1 == INTEREST_COUNT,
+              "INTEREST_COUNT must match the Interest enum");
+
+// Every trait has a name and four words, every interest a name: a shorter initialiser would leave empty cells
+constexpr bool AllNamed()
+{
+    for (TraitWords const& words : WORDS)
+        if (words.Name.empty() || words.Low[0].empty() || words.Low[1].empty() || words.High[0].empty() ||
+            words.High[1].empty())
+            return false;
+
+    for (std::string_view const name : INTEREST_NAMES)
+        if (name.empty() || name.find(',') != std::string_view::npos)
+            return false;
+
+    return true;
+}
+static_assert(AllNamed(), "every trait needs a name and four words, every interest a comma-free name");
+
+// Roll applies the pairs in order on the raw draws: a follower used as an anchor would chain the correlations
+constexpr bool FollowersAreNoAnchors()
+{
+    for (Correlation const& follower : CORRELATIONS)
+        for (Correlation const& anchor : CORRELATIONS)
+            if (follower.Follower == anchor.Anchor)
+                return false;
+
+    return true;
+}
+static_assert(FollowersAreNoAnchors(), "a correlated follower must not anchor another pair");
 
 // splitmix64 stepping its state, as BotProfileMgr's skill roll: a fixed integer mix, so a guid gives the same traits on
 // every build and standard library (never <random>)

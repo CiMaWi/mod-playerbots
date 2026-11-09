@@ -11,6 +11,7 @@
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "BotProfileMgr.h"
+#include "BotTraitMgr.h"
 #include "CcTacticStrategy.h"
 #include "Channel.h"
 #include "ChatCommandLine.h"
@@ -625,6 +626,7 @@ public:
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
         BotProfileMgr::instance().Load();
+        BotTraitMgr::instance().Load();      // One query for all rows, before any bot logs in
         AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
         PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users

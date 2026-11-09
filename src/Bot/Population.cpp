@@ -19,6 +19,7 @@
 #include "AcquaintanceMgr.h"
 #include "AsyncCallbackProcessor.h"
 #include "BotProfileMgr.h"
+#include "BotTraitMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "Config.h"
@@ -400,6 +401,7 @@ constexpr RetireRow RetirePlayerbotsRows[] = {
     {"playerbots_random_bots", "bot", false},
     {"playerbots_db_store", "guid", false},
     {"playerbots_bot_profile", "guid", false},
+    {"playerbots_bot_traits", "guid", false},
     {"playerbots_acquaintance", "bot_guid", false},
     {"playerbots_pvp_loadout", "guid", false},
     {"playerbots_pvp_worn", "guid", false},
@@ -629,6 +631,7 @@ void RetireBot(Retire& retire, uint32 guid, uint32 score, PopulationPolicy::Reti
     // Memory first: nothing may write the bot's rows back after the delete
     sRandomPlayerbotMgr.ForgetBot(guid);
     BotProfileMgr::instance().Forget(guid);
+    BotTraitMgr::instance().Forget(guid);
     AcquaintanceMgr::Instance().ForgetBot(guid);
     PvpGearMgr::Instance().ForgetBot(guid);
     Population::InvalidateRoster(guid);

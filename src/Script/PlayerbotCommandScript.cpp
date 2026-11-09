@@ -10,6 +10,7 @@
 #include "ArenaTeamFormation.h"
 #include "BattleGroundTactics.h"
 #include "BotProfileMgr.h"
+#include "BotTraitMgr.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
@@ -203,6 +204,7 @@ public:
             {"worldthread", WorldThreadMonitor::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
+            {"traits", BotTraitMgr::HandleTraitsCommand, SEC_GAMEMASTER, Console::Yes},
             {"acquaintances", AcquaintanceMgr::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
             {"account", playerbotsAccountCommandTable},

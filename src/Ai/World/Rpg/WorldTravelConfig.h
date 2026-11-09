@@ -36,6 +36,8 @@ struct WorldTravelConfig
     uint32 DestroyMarginPercent = 50;
     // Minutes until a bot would pass a vendor anyway; a trip just for selling must save more than it costs over them
     uint32 ErrandNextStopMinutes = 30;
+    // WT11a: the test switch for `.playerbots traits <bot> set|reroll` (labs only)
+    bool TraitsAllowEdit = false;
 };
 
 #endif

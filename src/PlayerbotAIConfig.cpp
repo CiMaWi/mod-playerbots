@@ -1301,6 +1301,8 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Destroy.MarginPercent", WorldTravel.DestroyMarginPercent, MaxPercent);
         constexpr uint32 MaxNextStopMinutes = 24 * 60;
         travelNumber("Errands.NextStopMinutes", WorldTravel.ErrandNextStopMinutes, MaxNextStopMinutes);
+        WorldTravel.TraitsAllowEdit =
+            sConfigMgr->GetOption<bool>("Playerbots.WorldTravel.Traits.AllowEdit", WorldTravel.TraitsAllowEdit, false);
     }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;

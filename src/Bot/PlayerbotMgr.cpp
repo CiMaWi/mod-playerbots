@@ -7,6 +7,7 @@
 #include "PlayerbotMgr.h"
 #include "PlayerbotsDatabase.h"
 #include "BotProfileMgr.h"
+#include "BotTraitMgr.h"
 #include "BroadcastHelper.h"
 #include "CcTacticStrategy.h"
 #include "ChannelMgr.h"
@@ -607,6 +608,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(bot));
     }
     PlayerbotRepository::instance().Load(botAI);
+    // WT11a: every bot's personality, rolled and saved at its first login (the map only after startup's load)
+    BotTraitMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter(), bot->getRace(true), bot->getClass());
     if (sPlayerbotAIConfig.SkillEnable)
     {
         uint32 const low = bot->GetGUID().GetCounter();
