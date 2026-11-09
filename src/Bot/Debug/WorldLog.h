@@ -22,9 +22,10 @@ namespace WorldLog
 // World thread: at startup (reload false) and on ".reload config" (reload true). Dir keeps its startup value; the
 // tuning values are re-read.
 void LoadConfig(bool reload);
-// Any thread: Dir was set at startup
+// Any thread: Dir was set at startup (an acquire load: once true, Dir() is safe to read on any thread)
 bool Active();
-// The session folder the segments go to; fixed after startup
+// The session folder the segments go to; fixed after startup. Read it only after Active() returned true (or on the
+// world thread after startup).
 std::string const& Dir();
 // Any thread: the tuning values, clamped
 WorldLogFormat::Settings CurrentSettings();
@@ -34,6 +35,8 @@ uint32 RealmId();
 uint64 NowMs();
 
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);
+// Dir, the writer, per stream the rows written, dropped, queued and their peak, the open segment; write errors
+bool HandleStatusCommand(ChatHandler* handler, char const* args);
 }  // namespace WorldLog
 
 #endif

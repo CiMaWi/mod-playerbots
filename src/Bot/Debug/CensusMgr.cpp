@@ -11,14 +11,18 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <shared_mutex>
 #include <utility>
+#include <variant>
 
 #include "Action.h"
 #include "Config.h"
 #include "Creature.h"
+#include "Group.h"
 #include "Item.h"
 #include "Log.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
 #include "PlannerService.h"
@@ -29,10 +33,12 @@
 #include "QuestDef.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
+#include "WorldLog.h"
 
 namespace
 {
 constexpr uint32 MS_PER_SECOND = 1000;
+constexpr uint32 MS_PER_HOUR = 3600 * MS_PER_SECOND;
 constexpr float PERCENT = 100.0f;
 constexpr size_t BYTES_PER_ROW = 160;
 constexpr char const* LOCATIONS_FILE = "bot_locations.csv";
@@ -41,8 +47,261 @@ constexpr char const* HONESTY_PREFIX = "Honesty";
 constexpr char const* LEVEL_UP_TYPE = "LevelUp";
 constexpr int64 ONE_EVENT = 1;
 
+using WorldLogFormat::Stream;
+
 // The event log's gate: census on and a bot (real players are not logged)
 bool IsLoggedBot(Player* player) { return sPlayerbotAIConfig.CensusEnable && player && GET_PLAYERBOT_AI(player); }
+
+// The census's gate, or the world log's: on and any player (real players too)
+bool IsLogged(Player* player) { return player && (WorldLog::Active() || IsLoggedBot(player)); }
+
+WorldLogFormat::Place PlaceOf(Player* player)
+{
+    WorldLogFormat::Place place;
+    place.map = player->GetMapId();
+    place.zone = player->GetZoneId();
+    place.area = player->GetAreaId();
+    place.x = player->GetPositionX();
+    place.y = player->GetPositionY();
+    return place;
+}
+
+// One world-log event row of any player, from its own state, on the thread that updates its map (or the world thread)
+void EmitWorldLogEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount)
+{
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog event");
+
+    WorldLogFormat::EventRow row;
+    row.t = WorldLog::NowMs();
+    row.bot = player->GetGUID().GetCounter();
+    row.type = type;
+    row.source = source;
+    row.id = id;
+    row.amount = amount;
+    row.place = PlaceOf(player);
+    CensusMgr::Instance().EnqueueWorldLog(Stream::Event, WorldLogFormat::FormatEventRow(row), 1, row.t);
+
+    if (pmo)
+        pmo->finish();
+}
+
+// The quest, vendor or flight master the RPG status works on, else 0
+uint32 RpgTarget(NewRpgInfo const& info)
+{
+    if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
+        return quest->questId;
+
+    if (auto const* errands = std::get_if<NewRpgInfo::Errands>(&info.data))
+        return errands->vendorEntry;
+
+    if (auto const* flight = std::get_if<NewRpgInfo::TravelFlight>(&info.data))
+        return flight->flightMasterEntry;
+
+    return 0;
+}
+
+uint32 StateFlags(Player* player, bool human)
+{
+    uint32 flags = 0;
+    if (player->IsInCombat())
+        flags |= WorldLogFormat::STATE_FLAG_COMBAT;
+    if (!player->IsAlive())
+        flags |= WorldLogFormat::STATE_FLAG_DEAD;
+    if (player->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+        flags |= WorldLogFormat::STATE_FLAG_GHOST;
+    if (player->IsMounted())
+        flags |= WorldLogFormat::STATE_FLAG_MOUNTED;
+    if (player->IsInFlight())
+        flags |= WorldLogFormat::STATE_FLAG_TAXI;
+    if (player->HasPlayerFlag(PLAYER_FLAGS_RESTING))
+        flags |= WorldLogFormat::STATE_FLAG_RESTING;
+    if (player->GetGroup())
+        flags |= WorldLogFormat::STATE_FLAG_GROUPED;
+    if (player->GetMap() && player->GetMap()->Instanceable())
+        flags |= WorldLogFormat::STATE_FLAG_INSTANCE;
+    if (human)
+        flags |= WorldLogFormat::STATE_FLAG_HUMAN;
+
+    return flags;
+}
+
+// ilvl (integer mean over the equipped items, shirt and tabard left out) and dura_min (lowest durability % of the
+// equipped items that have durability; 100 if none): one pass over the 19 equipment slots
+void ReadEquipment(Player* player, WorldLogFormat::StateRow& row)
+{
+    uint32 levels = 0;
+    uint32 items = 0;
+    uint32 durabilityMin = WorldLogFormat::PERCENT;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        if (uint32 const maxDurability = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY))
+            durabilityMin = std::min(
+                durabilityMin, WorldLogFormat::Percent(item->GetUInt32Value(ITEM_FIELD_DURABILITY), maxDurability));
+
+        if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+            continue;
+
+        if (ItemTemplate const* proto = item->GetTemplate())
+        {
+            levels += proto->ItemLevel;
+            ++items;
+        }
+    }
+
+    row.itemLevel = items ? levels / items : 0;
+    row.durabilityMinPct = durabilityMin;
+}
+
+// One state row; world thread while no map update runs
+WorldLogFormat::StateRow StateRowOf(Player* player, uint64 t)
+{
+    PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
+    Powers const powerType = player->getPowerType();
+
+    WorldLogFormat::StateRow row;
+    row.t = t;
+    row.bot = player->GetGUID().GetCounter();
+    row.place = PlaceOf(player);
+    row.level = player->GetLevel();
+    row.xp = player->GetUInt32Value(PLAYER_XP);
+    row.money = player->GetMoney();
+    row.hpPct = WorldLogFormat::Percent(player->GetHealth(), player->GetMaxHealth());
+    row.powerPct = WorldLogFormat::Percent(player->GetPower(powerType), player->GetMaxPower(powerType));
+    if (ai)
+    {
+        row.rpg = static_cast<int32>(ai->rpgInfo.GetStatus());
+        row.target = RpgTarget(ai->rpgInfo);
+    }
+
+    row.flags = StateFlags(player, !ai);
+    row.freeSlots = player->GetFreeInventorySpace();
+    ReadEquipment(player, row);
+    if (Group const* group = player->GetGroup())
+        row.group = group->GetLeaderGUID().GetCounter();
+
+    return row;
+}
+
+// The world log's open segment and file per stream; writer thread only. A segment whose file fails to open or to
+// write stays its stream's open segment (its rows are lost and counted) until the stream rolls on: a closed segment's
+// name is never reopened.
+class SegmentFiles
+{
+public:
+    explicit SegmentFiles(std::string const& dir) : _dir(dir)
+    {
+        std::error_code error;
+        std::filesystem::create_directories(_dir, error);
+    }
+
+    // Appends rows (all with times near tMs) to their stream's segment; false when they are lost. Empty rows only
+    // open the segment (with its header row).
+    bool Write(Stream stream, uint64 tMs, std::string_view rows)
+    {
+        Segment& segment = _segments[WorldLogFormat::StreamIndex(stream)];
+        if (segment.tracker.Place(tMs, WorldLog::CurrentSettings().segmentMinutes) !=
+            WorldLogFormat::SegmentAction::Append)
+            Open(stream, segment);
+
+        if (segment.file && !rows.empty())
+            segment.file.write(rows.data(), static_cast<std::streamsize>(rows.size()));
+
+        if (segment.file)
+            return true;
+
+        ++_errors;
+        if (!_errorLogged)
+        {
+            _errorLogged = true;
+            LOG_ERROR("playerbots", "[WorldLog] cannot write {}; its rows are lost and counted as write errors",
+                      (_dir / segment.name).string());
+        }
+
+        return false;
+    }
+
+    void Flush()
+    {
+        for (Segment& segment : _segments)
+            if (segment.file.is_open())
+                segment.file.flush();
+    }
+
+    void CloseAll()
+    {
+        for (Segment& segment : _segments)
+        {
+            segment.tracker.Close();
+            if (segment.file.is_open())
+                segment.file.close();
+
+            segment.name.clear();
+        }
+
+        _namesChanged = true;
+    }
+
+    uint64 Errors() const { return _errors; }
+
+    // Copies the open segments' names when they changed since the last call
+    void PublishNames(std::array<std::string, WorldLogFormat::STREAM_COUNT>& names)
+    {
+        if (!_namesChanged)
+            return;
+
+        for (size_t index = 0; index < WorldLogFormat::STREAM_COUNT; ++index)
+            names[index] = _segments[index].name;
+
+        _namesChanged = false;
+    }
+
+private:
+    struct Segment
+    {
+        WorldLogFormat::SegmentTracker tracker;
+        std::ofstream file;
+        std::string name;
+    };
+
+    // Appends to the segment's file (a new or empty file gets the header row first); never truncates
+    void Open(Stream stream, Segment& segment)
+    {
+        if (segment.file.is_open())
+            segment.file.close();
+
+        segment.file.clear();
+        segment.name = segment.tracker.Name(stream);
+        _namesChanged = true;
+
+        std::filesystem::path const path = _dir / segment.name;
+        std::error_code error;
+        std::uintmax_t const size = std::filesystem::file_size(path, error);
+        segment.file.open(path, std::ios::out | std::ios::app | std::ios::binary);
+        if (segment.file && (error || !size))
+            segment.file << WorldLogFormat::StreamHeader(stream) << WorldLogFormat::ROW_END;
+    }
+
+    std::filesystem::path _dir;
+    std::array<Segment, WorldLogFormat::STREAM_COUNT> _segments;
+    uint64 _errors = 0;
+    bool _errorLogged = false;
+    bool _namesChanged = false;
+};
+
+// The census files, truncated when their first line comes
+void OpenCensusFiles(std::string const& dir, std::ofstream& locations, std::ofstream& events)
+{
+    std::error_code error;
+    std::filesystem::create_directories(dir, error);
+    locations.open(dir + LOCATIONS_FILE, std::ios::out | std::ios::trunc);
+    events.open(dir + EVENTS_FILE, std::ios::out | std::ios::trunc);
+    if (!locations || !events)
+        LOG_ERROR("playerbots", "Census: cannot open the files in {}; the census is discarded", dir);
+}
 
 // Where a PvP kill or death happened, from the player's own state
 char const* PvpPlace(Player* player)
@@ -56,7 +315,7 @@ char const* PvpPlace(Player* player)
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
 void EmitFromScope(Player* player, char const* type, uint32 id, int64 amount)
 {
-    if (!IsLoggedBot(player))
+    if (!IsLogged(player))
         return;
 
     CensusMgr::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
@@ -130,7 +389,7 @@ public:
     // this hook), so its entry is read now for the hooks below, which must not read the item
     void OnPlayerStoreNewItem(Player* /*player*/, Item* item, uint32 /*count*/) override
     {
-        if (sPlayerbotAIConfig.CensusEnable && item)
+        if ((sPlayerbotAIConfig.CensusEnable || WorldLog::Active()) && item)
             EventLog::NoteStoredItem(item, item->GetEntry());
     }
 
@@ -170,7 +429,7 @@ public:
     // no script registered before this one destroys the taken item in this hook (none does)
     void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
     {
-        if (item && IsLoggedBot(player))
+        if (item && IsLogged(player))
             EventLog::Emit(player, "ItemIn", "mail", item->GetEntry(), count);
     }
 
@@ -253,16 +512,33 @@ std::string CensusMgr::TimeString()
 
 void CensusMgr::Update(uint32 diff)
 {
-    if (!sPlayerbotAIConfig.CensusEnable)
+    bool const census = sPlayerbotAIConfig.CensusEnable;
+    if (!census && !WorldLog::Active())
         return;
 
+    if (!_started)
+        StartWriter(WorldLog::Active());
+
+    if (_worldLog)
+        UpdateWorldLog(diff);
+
+    if (census)
+        UpdateCensus(diff);
+}
+
+void CensusMgr::UpdateCensus(uint32 diff)
+{
     _elapsed += diff;
-    if (_started && _elapsed < sPlayerbotAIConfig.CensusIntervalSeconds * MS_PER_SECOND)
+    if (_censusStarted && _elapsed < sPlayerbotAIConfig.CensusIntervalSeconds * MS_PER_SECOND)
         return;
 
     _elapsed = 0;
-    if (!_started)
-        StartWriter();
+    if (!_censusStarted)
+    {
+        _censusStarted = true;
+        LOG_INFO("playerbots", "Census on: every {} s into {}", sPlayerbotAIConfig.CensusIntervalSeconds,
+                 LOCATIONS_FILE);
+    }
 
     Sample();
 
@@ -272,6 +548,31 @@ void CensusMgr::Update(uint32 diff)
         totals = _totals;
     }
     LogTotals(totals);
+}
+
+// A state pass every StateSeconds, the drops rows every hour of uptime
+void CensusMgr::UpdateWorldLog(uint32 diff)
+{
+    _stateElapsed += diff;
+    if (_stateElapsed >= WorldLog::CurrentSettings().stateSeconds * MS_PER_SECOND)
+    {
+        _stateElapsed = 0;
+        SampleState();
+    }
+
+    _dropsElapsed += diff;
+    if (_dropsElapsed < MS_PER_HOUR)
+        return;
+
+    _dropsElapsed -= MS_PER_HOUR;
+    {
+        std::lock_guard<std::mutex> guard(_mutex);
+        if (_stop)
+            return;
+
+        QueueDropsRowsLocked(WorldLog::NowMs());
+    }
+    _wake.notify_one();
 }
 
 void CensusMgr::Sample()
@@ -303,9 +604,47 @@ void CensusMgr::Sample()
         pmo->finish();
 }
 
+// One state row per online player (real players with the human flag), built into one chunk: a full queue drops the
+// whole pass and counts its rows
+void CensusMgr::SampleState()
+{
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog state");
+
+    uint64 const t = WorldLog::NowMs();
+    std::string text;
+    uint32 rows = 0;
+    {
+        // The players are only read here, on the world thread, while no map update runs
+        std::shared_lock<std::shared_mutex> guard(*HashMapHolder<Player>::GetLock());
+        auto const& players = ObjectAccessor::GetPlayers();
+        text.reserve(players.size() * WorldLogFormat::STATE_ROW_RESERVE);
+        for (auto const& pair : players)
+        {
+            Player* player = pair.second;
+            if (!player || !player->IsInWorld())
+                continue;
+
+            WorldLogFormat::AppendStateRow(text, StateRowOf(player, t));
+            ++rows;
+        }
+    }
+
+    if (rows)
+        EnqueueWorldLog(Stream::State, std::move(text), rows, t);
+
+    if (pmo)
+        pmo->finish();
+}
+
 void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
 {
-    if (!sPlayerbotAIConfig.CensusEnable || !player || !GET_PLAYERBOT_AI(player))
+    if (!player)
+        return;
+
+    if (WorldLog::Active())
+        EmitWorldLogEvent(player, WorldLogFormat::EVENT_LEVEL, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
+
+    if (!sPlayerbotAIConfig.CensusEnable || !GET_PLAYERBOT_AI(player))
         return;
 
     // spp-map bot_events.csv: time, name, event, "POINT(y x)", race, class, level, "info 1", "info 2"
@@ -318,9 +657,17 @@ void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
             LEVEL_UP_TYPE);
 }
 
-void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
+void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount,
+                        uint32 worldLogId, int64 worldLogAmount)
 {
-    if (type.empty() || !IsLoggedBot(bot))
+    if (type.empty() || !bot)
+        return;
+
+    if (WorldLog::Active())
+        EmitWorldLogEvent(bot, type, source, worldLogId == EventLog::SAME_ID ? id : worldLogId,
+                          worldLogAmount == EventLog::SAME_AMOUNT ? amount : worldLogAmount);
+
+    if (!IsLoggedBot(bot))
         return;
 
     Enqueue(true,
@@ -336,7 +683,7 @@ void CensusMgr::Enqueue(bool events, std::string text, std::string_view countTyp
         if (_stop)
             return;
 
-        _queue.push_back(Chunk{events, std::move(text)});
+        _queue.push_back(Chunk{events ? Sink::Events : Sink::Locations, std::move(text)});
         if (!countType.empty())
         {
             auto const found = _totals.find(countType);
@@ -347,6 +694,53 @@ void CensusMgr::Enqueue(bool events, std::string text, std::string_view countTyp
         }
     }
     _wake.notify_one();
+}
+
+bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)
+{
+    if (rows.empty() || !rowCount)
+        return false;
+
+    uint64 const cap = WorldLog::CurrentSettings().queueRows;
+    {
+        std::lock_guard<std::mutex> guard(_mutex);
+        if (_stop || !_account.Admit(stream, rowCount, cap))
+            return false;
+
+        _queue.push_back(Chunk{Sink::WorldLog, std::move(rows), stream, rowCount, tMs});
+    }
+    _wake.notify_one();
+    return true;
+}
+
+void CensusMgr::QueueDropsRowsLocked(uint64 tMs)
+{
+    std::string rows;
+    _account.AppendDropsRows(rows, tMs);
+    _account.Admit(Stream::Meta, WorldLogFormat::STREAM_COUNT, 0);
+    _queue.push_back(Chunk{Sink::WorldLog, std::move(rows), Stream::Meta, WorldLogFormat::STREAM_COUNT, tMs});
+}
+
+std::vector<std::string> CensusMgr::WorldLogStatus()
+{
+    WorldLogFormat::Settings const settings = WorldLog::CurrentSettings();
+    std::vector<std::string> lines;
+    std::lock_guard<std::mutex> guard(_mutex);
+    lines.push_back(Acore::StringFormat(
+        "WORLDLOG dir \"{}\", writer {}, state every {} s, segments of {} min, queue cap {} rows per stream, write "
+        "errors {}",
+        WorldLog::Dir(), _writerRunning ? "running" : "not running", settings.stateSeconds, settings.segmentMinutes,
+        settings.queueRows, _writeErrors));
+    for (size_t index = 0; index < WorldLogFormat::STREAM_COUNT; ++index)
+    {
+        WorldLogFormat::StreamCounters const& counters = _account.Of(WorldLogFormat::StreamAt(index));
+        lines.push_back(Acore::StringFormat("WORLDLOG {}: written {}, dropped {}, queued {}, peak {}, segment {}",
+                                            WorldLogFormat::STREAM_NAMES[index], _written[index], counters.dropped,
+                                            counters.queued, counters.peak,
+                                            _openNames[index].empty() ? "-" : _openNames[index]));
+    }
+
+    return lines;
 }
 
 // One line for the hub's checks: "EventLog totals: <Type>=<n> ..." (counts since the start, types with events only)
@@ -362,28 +756,57 @@ void CensusMgr::LogTotals(std::map<std::string, uint64, std::less<>> const& tota
     LOG_INFO("playerbots", "{}", line);
 }
 
-void CensusMgr::StartWriter()
+void CensusMgr::StartWriter(bool worldLog)
 {
     _started = true;
+    _worldLog = worldLog;
 
     std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
         dir.push_back('/');
     dir += "census/";
 
-    _writer = std::thread(&CensusMgr::WriterLoop, this, std::move(dir));
-    LOG_INFO("playerbots", "Census on: every {} s into {}", sPlayerbotAIConfig.CensusIntervalSeconds, LOCATIONS_FILE);
+    if (worldLog)
+    {
+        uint64 const t = WorldLog::NowMs();
+        std::string const text = WorldLogFormat::StartText(WorldLog::RealmId(), WorldLog::CurrentSettings());
+        EnqueueWorldLog(Stream::Meta,
+                        WorldLogFormat::FormatMetaRow({t, WorldLogFormat::META_START, WorldLogFormat::CONTRACT_VERSION,
+                                                       sPlayerbotAIConfig.MaxRandomBots, text}),
+                        1, t);
+        LOG_INFO("playerbots", "[WorldLog] writing into {}", WorldLog::Dir());
+    }
+
+    // An empty census chunk: the writer opens (truncates) the census files at start, also with nobody online
+    if (sPlayerbotAIConfig.CensusEnable)
+        Enqueue(false, std::string());
+
+    {
+        std::lock_guard<std::mutex> guard(_mutex);
+        _writerRunning = true;
+    }
+    _writer = std::thread(&CensusMgr::WriterLoop, this, std::move(dir), worldLog ? WorldLog::Dir() : std::string());
 }
 
-// Writer thread: owns the two files and touches nothing but strings from the queue. Files are truncated at start.
-void CensusMgr::WriterLoop(std::string dir)
+// Writer thread: owns the census files and the world log's segments and touches nothing but the strings from the
+// queue (and, under _mutex, the queue's counters). The census files are truncated when their first line comes; the
+// world log's segments are only appended to. The event, state and meta segments are opened at start, so each has its
+// header row before its first row. After the last batch the stop row (a = rows written to all streams before it, b =
+// rows dropped) closes the world log.
+void CensusMgr::WriterLoop(std::string censusDir, std::string worldLogDir)
 {
-    std::error_code error;
-    std::filesystem::create_directories(dir, error);
-    std::ofstream locations(dir + LOCATIONS_FILE, std::ios::out | std::ios::trunc);
-    std::ofstream events(dir + EVENTS_FILE, std::ios::out | std::ios::trunc);
-    if (!locations || !events)
-        LOG_ERROR("playerbots", "Census: cannot open the files in {}; the census is discarded", dir);
+    std::ofstream locations;
+    std::ofstream events;
+    bool censusOpened = false;
+    std::optional<SegmentFiles> segments;
+    std::array<uint64, WorldLogFormat::STREAM_COUNT> written{};
+    if (!worldLogDir.empty())
+    {
+        segments.emplace(worldLogDir);
+        uint64 const t = WorldLog::NowMs();
+        for (Stream const stream : {Stream::Event, Stream::State, Stream::Meta})
+            segments->Write(stream, t, {});
+    }
 
     std::vector<Chunk> batch;
     bool stop = false;
@@ -393,20 +816,90 @@ void CensusMgr::WriterLoop(std::string dir)
             std::unique_lock<std::mutex> guard(_mutex);
             _wake.wait(guard, [this] { return _stop || !_queue.empty(); });
             batch.swap(_queue);
+            for (Chunk const& chunk : batch)
+                if (chunk.sink == Sink::WorldLog)
+                    _account.Taken(chunk.stream, chunk.rows);
+
             stop = _stop;
         }
 
+        // The whole batch, census lines included
+        PerfMonitorOperation* pmo = segments ? sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog writer") : nullptr;
         for (Chunk const& chunk : batch)
         {
-            std::ofstream& file = chunk.events ? events : locations;
+            if (chunk.sink == Sink::WorldLog)
+            {
+                if (segments && segments->Write(chunk.stream, chunk.tMs, chunk.text))
+                    written[WorldLogFormat::StreamIndex(chunk.stream)] += chunk.rows;
+
+                continue;
+            }
+
+            if (!censusOpened)
+            {
+                censusOpened = true;
+                OpenCensusFiles(censusDir, locations, events);
+            }
+
+            std::ofstream& file = chunk.sink == Sink::Events ? events : locations;
             if (file)
                 file << chunk.text;
         }
 
-        locations.flush();
-        events.flush();
+        if (censusOpened)
+        {
+            locations.flush();
+            events.flush();
+        }
+
+        if (segments)
+            segments->Flush();
+
+        if (pmo)
+            pmo->finish();
+
         batch.clear();
+        if (segments)
+        {
+            std::lock_guard<std::mutex> guard(_mutex);
+            _written = written;
+            _writeErrors = segments->Errors();
+            segments->PublishNames(_openNames);
+        }
     }
+
+    if (segments)
+    {
+        uint64 total = 0;
+        for (uint64 const rows : written)
+            total += rows;
+
+        uint64 dropped = 0;
+        {
+            std::lock_guard<std::mutex> guard(_mutex);
+            dropped = _account.DroppedTotal();
+        }
+
+        WorldLogFormat::MetaRow stopRow;
+        stopRow.t = WorldLog::NowMs();
+        stopRow.kind = WorldLogFormat::META_STOP;
+        stopRow.a = static_cast<int64>(total);
+        stopRow.b = static_cast<int64>(dropped);
+        if (segments->Write(Stream::Meta, stopRow.t, WorldLogFormat::FormatMetaRow(stopRow)))
+            ++written[WorldLogFormat::StreamIndex(Stream::Meta)];
+
+        segments->CloseAll();
+    }
+
+    std::lock_guard<std::mutex> guard(_mutex);
+    _written = written;
+    if (segments)
+    {
+        _writeErrors = segments->Errors();
+        segments->PublishNames(_openNames);
+    }
+
+    _writerRunning = false;
 }
 
 void CensusMgr::Shutdown()
@@ -416,6 +909,10 @@ void CensusMgr::Shutdown()
     {
         std::lock_guard<std::mutex> guard(_mutex);
         first = !_stop;
+        // The last drops rows go before the stop row the writer adds
+        if (first && _worldLog && _writerRunning)
+            QueueDropsRowsLocked(WorldLog::NowMs());
+
         _stop = true;
         totals = _totals;
     }
@@ -424,7 +921,7 @@ void CensusMgr::Shutdown()
         _writer.join();
 
     // The destructor calls Shutdown again after the server's own call: log once, while logging still runs
-    if (first && _started)
+    if (first && _censusStarted)
         LogTotals(totals);
 }
 
@@ -442,15 +939,17 @@ char const* EventLog::CurrentSource()
     return state.source ? state.source : SOURCE_OTHER;
 }
 
-void EventLog::Emit(Player* bot, char const* type, char const* source, uint32 id, int64 amount)
+void EventLog::Emit(Player* bot, char const* type, char const* source, uint32 id, int64 amount, uint32 worldLogId,
+                    int64 worldLogAmount)
 {
     if (type)
-        CensusMgr::Instance().OnEvent(bot, type, source ? source : SOURCE_OTHER, id, amount);
+        CensusMgr::Instance().OnEvent(bot, type, source ? source : SOURCE_OTHER, id, amount, worldLogId,
+                                      worldLogAmount);
 }
 
 void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32 id, int64 amount)
 {
-    if (!kind || !IsLoggedBot(bot))
+    if (!kind || !IsLogged(bot))
         return;
 
     CensusMgr::Instance().OnEvent(bot, std::string(HONESTY_PREFIX) + kind, source ? source : SOURCE_OTHER, id, amount);

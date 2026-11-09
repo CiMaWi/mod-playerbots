@@ -209,6 +209,7 @@ public:
 
         static ChatCommandTable playerbotsWorldLogCommandTable = {
             {"selftest", WorldLog::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"status", WorldLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

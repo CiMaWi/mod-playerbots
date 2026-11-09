@@ -10,6 +10,7 @@
 #include <chrono>
 #include <vector>
 
+#include "CensusMgr.h"
 #include "Chat.h"
 #include "Config.h"
 #include "Log.h"
@@ -20,8 +21,8 @@ namespace
 {
 constexpr uint32 DEFAULT_REALM_ID = 1;
 
-std::atomic<bool> s_active{false};
-std::string s_dir;  // written once at startup, before any reader
+std::atomic<bool> s_active{false};  // published with release after s_dir is written
+std::string s_dir;                  // written once at startup, before s_active
 std::atomic<uint32> s_stateSeconds{WorldLogFormat::Settings{}.stateSeconds};
 std::atomic<uint32> s_segmentMinutes{WorldLogFormat::Settings{}.segmentMinutes};
 std::atomic<uint32> s_queueRows{WorldLogFormat::Settings{}.queueRows};
@@ -45,7 +46,7 @@ void WorldLog::LoadConfig(bool reload)
     {
         s_dir = dir;
         s_realmId.store(sConfigMgr->GetOption<uint32>("RealmID", DEFAULT_REALM_ID), std::memory_order_relaxed);
-        s_active.store(!s_dir.empty(), std::memory_order_relaxed);
+        s_active.store(!s_dir.empty(), std::memory_order_release);
     }
     else if (dir != s_dir && !s_dirChangeLogged)
     {
@@ -59,9 +60,20 @@ void WorldLog::LoadConfig(bool reload)
     LOG_INFO("playerbots", "[WorldLog] {}Dir = \"{}\"{}, StateSeconds = {}, SegmentMinutes = {}, QueueRows = {}",
              reload ? "reload: " : "", s_dir, Active() ? "" : " (off)", settings.stateSeconds, settings.segmentMinutes,
              settings.queueRows);
+
+    if (reload && Active())
+    {
+        uint64 const t = NowMs();
+        std::string const text = WorldLogFormat::ReloadText(settings);
+        CensusMgr::Instance().EnqueueWorldLog(
+            WorldLogFormat::Stream::Meta,
+            WorldLogFormat::FormatMetaRow(
+                {t, WorldLogFormat::META_RELOAD, settings.stateSeconds, settings.segmentMinutes, text}),
+            1, t);
+    }
 }
 
-bool WorldLog::Active() { return s_active.load(std::memory_order_relaxed); }
+bool WorldLog::Active() { return s_active.load(std::memory_order_acquire); }
 
 std::string const& WorldLog::Dir() { return s_dir; }
 
@@ -91,6 +103,20 @@ bool WorldLog::HandleSelftestCommand(ChatHandler* handler, char const* /*args*/)
 
     handler->PSendSysMessage("WORLDLOG selftest: {} checks, {} failures{}", checks, failures.size(),
                              failures.empty() ? " (PASS)" : "");
+    return true;
+}
+
+bool WorldLog::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
+{
+    if (!Active())
+    {
+        handler->PSendSysMessage("WORLDLOG off: Playerbots.WorldLog.Dir was empty at startup");
+        return true;
+    }
+
+    for (std::string const& line : CensusMgr::Instance().WorldLogStatus())
+        handler->PSendSysMessage("{}", line);
+
     return true;
 }
 

@@ -8,6 +8,7 @@
 #define _PLAYERBOT_EVENTLOGFORMAT_H
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -21,6 +22,9 @@ constexpr char const* SOURCE_OTHER = "other";
 constexpr char FIELD_SEPARATOR = ',';
 constexpr char FIELD_REPLACEMENT = '_';
 constexpr size_t LINE_RESERVE = 96;
+// EventLog::Emit's world-log id and amount when they differ from the census line's; unset = the census values
+constexpr uint32_t SAME_ID = std::numeric_limits<uint32_t>::max();
+constexpr int64_t SAME_AMOUNT = std::numeric_limits<int64_t>::min();
 
 // Copies a field without the characters that would split the CSV line or the row
 inline void AppendField(std::string& out, std::string_view field)

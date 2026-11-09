@@ -1639,9 +1639,10 @@ Playerbots.Census.IntervalSeconds = 30
 # <stream>-<yyyymmddhh>.csv after the UTC hour of their rows (<stream>-<yyyymmddhhmm>.csv when SegmentMinutes is below
 # 60). The streams, columns and words are in the hub's .claude/docs/world-log.md. Dir is read at startup only.
 # StateSeconds (5..3600): one state row per online player this often.
-# SegmentMinutes (1..60): segment length; values below 60 are for tests.
+# SegmentMinutes (1..60, rounded down to a divisor of 60): segment length; values below 60 are for tests.
 # QueueRows (1..10000000): rows per stream that may wait for the writer; more are dropped and counted (meta drops rows
-# every hour). The three numbers are re-read on .reload config.
+# every hour and at stop). The three numbers are re-read on .reload config (a meta reload row).
+# Console: "playerbots worldlog status" (rows written, dropped and waiting per stream), "playerbots worldlog selftest".
 #
 Playerbots.WorldLog.Dir = ""
 Playerbots.WorldLog.StateSeconds = 60

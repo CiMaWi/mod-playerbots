@@ -193,6 +193,9 @@ inline void CheckFlagsAndSettings(Checker& checker)
     checker.Check(low.stateSeconds == 5 && low.segmentMinutes == 1 && low.queueRows == 1, "lower bounds");
     Settings const high = ClampSettings(99999, 999, 99999999);
     checker.Check(high.stateSeconds == 3600 && high.segmentMinutes == 60 && high.queueRows == 10000000, "upper bounds");
+    checker.Check(ClampSettings(60, 7, 1).segmentMinutes == 6 && ClampSettings(60, 45, 1).segmentMinutes == 30 &&
+                      ClampSettings(60, 59, 1).segmentMinutes == 30 && ClampSettings(60, 12, 1).segmentMinutes == 12,
+                  "segment minutes round down to a divisor of 60");
 }
 
 // (c) segment names: hourly and short segments, day, year and leap-day boundaries
@@ -304,6 +307,19 @@ inline void CheckSegments(Checker& checker)
 
     tracker.Close();
     checker.Check(!tracker.IsOpen(), "closed at stop");
+
+    // After a close, a row of the closed period opens the next name, never the closed one
+    SegmentTracker closed;
+    closed.Place(hourStart, MINUTES_PER_HOUR);
+    closed.Close();
+    checker.Check(closed.Place(hourStart + 30 * minute, MINUTES_PER_HOUR) == SegmentAction::Open &&
+                      closed.Name(Stream::Event) == "event-2026111000.csv" &&
+                      closed.EndMs() == hourStart + 2 * MINUTES_PER_HOUR * minute,
+                  "a closed name is never reopened");
+    SegmentTracker odd;
+    odd.Place(hourStart + 50 * minute, 45);
+    checker.Check(odd.StartMs() == hourStart + 30 * minute && odd.EndMs() == hourStart + MINUTES_PER_HOUR * minute,
+                  "a 45-minute length gives 30-minute segments inside the hour");
 }
 }  // namespace SelftestDetail
 

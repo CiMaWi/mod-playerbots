@@ -102,11 +102,22 @@ constexpr uint32_t MAX_SEGMENT_MINUTES = MINUTES_PER_HOUR;
 constexpr uint32_t MIN_QUEUE_ROWS = 1;
 constexpr uint32_t MAX_QUEUE_ROWS = 10000000;
 
+// Segment length in minutes: clamped to 1..60, then rounded down to a divisor of 60, so every segment ends at or
+// before the end of the UTC hour its name gives
+inline uint32_t SegmentMinutesOf(uint32_t segmentMinutes)
+{
+    uint32_t minutes = std::clamp(segmentMinutes, MIN_SEGMENT_MINUTES, MAX_SEGMENT_MINUTES);
+    while (MINUTES_PER_HOUR % minutes)
+        --minutes;
+
+    return minutes;
+}
+
 inline Settings ClampSettings(uint32_t stateSeconds, uint32_t segmentMinutes, uint32_t queueRows)
 {
     Settings settings;
     settings.stateSeconds = std::clamp(stateSeconds, MIN_STATE_SECONDS, MAX_STATE_SECONDS);
-    settings.segmentMinutes = std::clamp(segmentMinutes, MIN_SEGMENT_MINUTES, MAX_SEGMENT_MINUTES);
+    settings.segmentMinutes = SegmentMinutesOf(segmentMinutes);
     settings.queueRows = std::clamp(queueRows, MIN_QUEUE_ROWS, MAX_QUEUE_ROWS);
     return settings;
 }
@@ -378,8 +389,8 @@ enum class SegmentAction : uint8_t
 
 // Which segment of one stream a row goes to, from the row's own t. A segment covers [start, end). A row before the
 // open segment's end stays in it (a late row never reopens a closed segment); a row at or after the end rolls to the
-// segment holding it. A new segment never starts before the closed one's end, so a length changed by a reload cannot
-// bring back a closed name. Writer thread only.
+// segment holding it. A new segment never starts before the end of any earlier one, also after Close(), so neither a
+// length changed by a reload nor a row after a close can bring back a closed name. Writer thread only.
 class SegmentTracker
 {
 public:
@@ -388,17 +399,19 @@ public:
         if (_open && tMs < _endMs)
             return SegmentAction::Append;
 
-        uint32_t const minutes = std::clamp(segmentMinutes, MIN_SEGMENT_MINUTES, MAX_SEGMENT_MINUTES);
+        uint32_t const minutes = SegmentMinutesOf(segmentMinutes);
         uint64_t const length = minutes * MS_PER_MINUTE;
         uint64_t const aligned = tMs / length * length;
         bool const wasOpen = _open;
-        _startMs = wasOpen ? std::max(aligned, _endMs) : aligned;
-        _endMs = aligned + length;
+        _startMs = std::max(aligned, _endMs);
+        // Aligned, unless the row lies in a period already closed: then the length after the floor
+        _endMs = aligned + length > _startMs ? aligned + length : _startMs + length;
         _minutes = minutes;
         _open = true;
         return wasOpen ? SegmentAction::Roll : SegmentAction::Open;
     }
 
+    // At stop; the end stays the floor of the next segment
     void Close() { _open = false; }
 
     bool IsOpen() const { return _open; }
