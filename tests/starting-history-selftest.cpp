@@ -158,8 +158,20 @@ void CheckWipe()
 }
 }  // namespace
 
+void CheckCleanup()
+{
+    using StartingHistory::CleanupDeletesMisc;
+    Check(!CleanupDeletesMisc(15, 0, StartingHistory::ITEM_HEARTHSTONE), "cleanup keeps the hearthstone (misc, junk)");
+    Check(!CleanupDeletesMisc(15, 1, StartingHistory::ITEM_HEARTHSTONE), "cleanup keeps the hearthstone by id");
+    Check(!CleanupDeletesMisc(15, 0, 12345), "cleanup keeps other junk");
+    Check(CleanupDeletesMisc(15, 1, 12345), "cleanup deletes misc reagents");
+    Check(CleanupDeletesMisc(5, 0, 12345), "cleanup deletes reagents");
+    Check(!CleanupDeletesMisc(0, 0, 12345), "cleanup leaves other classes to its other rules");
+}
+
 int main()
 {
+    CheckCleanup();
     CheckFlights();
     CheckNodes();
     CheckInns();

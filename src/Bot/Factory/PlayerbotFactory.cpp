@@ -4842,8 +4842,8 @@ void PlayerbotFactory::CleanupConsumables() // remove old consumables as part of
         if (proto->Class == ITEM_CLASS_CONSUMABLE && proto->SubClass == ITEM_SUBCLASS_POTION)
             itemsToDelete.push_back(item);
 
-        // Remove reagents
-        if (proto->Class == ITEM_CLASS_REAGENT || (proto->Class == ITEM_CLASS_MISC && proto->SubClass == ITEM_SUBCLASS_REAGENT))
+        // Remove reagents (Misc subclass 1; subclass 0 is Junk, which holds the hearthstone)
+        if (StartingHistory::CleanupDeletesMisc(proto->Class, proto->SubClass, proto->ItemId))
             itemsToDelete.push_back(item);
     }
 

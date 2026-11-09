@@ -283,6 +283,29 @@ inline int PickInn(std::vector<InnCandidate> const& inns, float maxYards)
 
     return pick;
 }
+
+// The inn errand's last steps. The innkeeper must be within interaction distance (about 5 yd) to bind, so the bot walks
+// until it stands this close; a bind that fails there is tried again, at most INN_BIND_TRIES times, then the errand
+// ends
+constexpr float INN_BIND_YARDS = 4.5f;
+constexpr float INN_REACH_YARDS = 12.0f;  // a stuck bot this close still tries the bind
+constexpr uint32_t INN_BIND_TRIES = 3;
+enum class InnStep
+{
+    Walk,  // not close enough yet
+    Bind,  // try the bind now (the caller counts the try)
+    Fail   // the errand ends unbound
+};
+inline InnStep InnNext(float yards, bool stuck, uint32_t triesDone)
+{
+    if (triesDone >= INN_BIND_TRIES)
+        return InnStep::Fail;
+    if (yards <= INN_BIND_YARDS)
+        return InnStep::Bind;
+    if (!stuck)
+        return InnStep::Walk;
+    return yards <= INN_REACH_YARDS ? InnStep::Bind : InnStep::Fail;
+}
 }  // namespace WorldTravel
 
 #endif

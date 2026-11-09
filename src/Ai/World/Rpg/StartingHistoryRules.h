@@ -156,6 +156,19 @@ inline bool RandomizeWipes(bool fullInit, bool keepsPossessions, uint32_t played
 {
     return fullInit || !keepsPossessions || NewCharacter(playedSeconds);
 }
+
+// The level-up cleanup of old consumables deletes reagents. Item class 15 (Misc) subclass 0 is Junk, which holds the
+// hearthstone; the Misc reagent subclass is 1. (The core's ITEM_SUBCLASS_REAGENT is 0 for class 5, Reagent.)
+constexpr uint32_t ITEM_CLASS_REAGENT_ID = 5;
+constexpr uint32_t ITEM_CLASS_MISC_ID = 15;
+constexpr uint32_t ITEM_SUBCLASS_MISC_REAGENT_ID = 1;
+inline bool CleanupDeletesMisc(uint32_t itemClass, uint32_t subClass, uint32_t itemId)
+{
+    if (itemId == ITEM_HEARTHSTONE)
+        return false;
+    return itemClass == ITEM_CLASS_REAGENT_ID ||
+           (itemClass == ITEM_CLASS_MISC_ID && subClass == ITEM_SUBCLASS_MISC_REAGENT_ID);
+}
 }  // namespace StartingHistory
 
 #endif

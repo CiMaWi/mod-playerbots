@@ -148,7 +148,7 @@ private:
     bool TalkFlightMaster(NewRpgInfo::Travel& data);
     bool UseHearth(NewRpgInfo::Travel& data);
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
-    bool Arrive(NewRpgInfo::Travel const& data);
+    bool Arrive(NewRpgInfo::Travel& data);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     void EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source);
 };

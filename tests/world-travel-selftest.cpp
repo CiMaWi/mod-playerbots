@@ -293,8 +293,22 @@ void CheckHearthAndInns()
 }
 }  // namespace
 
+void CheckInnBind()
+{
+    using WorldTravel::InnNext;
+    using WorldTravel::InnStep;
+    Check(InnNext(30.0f, false, 0) == InnStep::Walk, "inn: far away walks on");
+    Check(InnNext(8.0f, false, 0) == InnStep::Walk, "inn: 8 yd is still too far to talk to the innkeeper");
+    Check(InnNext(3.0f, false, 0) == InnStep::Bind, "inn: close enough binds");
+    Check(InnNext(3.0f, false, 2) == InnStep::Bind, "inn: the third try is still allowed");
+    Check(InnNext(3.0f, false, 3) == InnStep::Fail, "inn: three failed binds end the errand");
+    Check(InnNext(8.0f, true, 0) == InnStep::Bind, "inn: stuck but in reach tries the bind");
+    Check(InnNext(30.0f, true, 0) == InnStep::Fail, "inn: stuck out of reach ends the errand");
+}
+
 int main()
 {
+    CheckInnBind();
     CheckHearthAndInns();
     CheckSight();
     CheckBusy();

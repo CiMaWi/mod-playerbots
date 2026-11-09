@@ -7,10 +7,13 @@
 #include "NewRpgAction.h"
 #include "AreaDefines.h"
 #include "BroadcastHelper.h"
+#include "CellImpl.h"
 #include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "DBCStores.h"
 #include "GossipDef.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "IVMapMgr.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
@@ -294,8 +297,6 @@ bool StartRpgDoQuestAction::Execute(Event event)
 namespace
 {
 constexpr uint32 HEARTHSTONE_SPELL = 8690;
-constexpr float INN_TALK_YARDS = 12.0f;  // the "home" action is tried from here
-constexpr float INN_STAND_YARDS = 2.0f;  // standing this close and still unbound: the errand ends
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
 
 std::mutex travelOrdersLock;
@@ -1112,7 +1113,12 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
     TravelRoute::Result& route = answer->result;
     if (!route.ok)
     {
-        LOG_DEBUG("playerbots", "[Route] {} has no route: {}", bot->GetName(), TravelRoute::FailureWord(route.failure));
+        LOG_DEBUG("playerbots",
+                  "[Route] {} has no route: {} from ({}, {:.0f}, {:.0f}, {:.0f}) to ({}, {:.0f}, {:.0f}, {:.0f}), "
+                  "noHearth {}, replans {}",
+                  bot->GetName(), TravelRoute::FailureWord(route.failure), bot->GetMapId(), bot->GetPositionX(),
+                  bot->GetPositionY(), bot->GetPositionZ(), data.dest.GetMapId(), data.dest.GetPositionX(),
+                  data.dest.GetPositionY(), data.dest.GetPositionZ(), data.noHearth, data.trip.replans);
         return LegFailed(data, TravelLegs::FailReason::NoRoute);
     }
     if (data.estimateSeconds <= 0.0f)
@@ -1219,7 +1225,13 @@ bool NewRpgTravelAction::UseHearth(NewRpgInfo::Travel& data)
     if (bot->IsNonMeleeSpellCast(false) || bot->HasSpellCooldown(HEARTHSTONE_SPELL))
         return true;
     if (!botAI->DoSpecificAction("hearthstone", Event(), true))
+    {
+        LOG_DEBUG("playerbots",
+                  "[Route] {} hearth refused: stone in bags {}, in combat {}, casting {}, moving {}, alive {}",
+                  bot->GetName(), bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false), bot->IsInCombat(),
+                  bot->IsNonMeleeSpellCast(false), bot->isMoving(), bot->IsAlive());
         return LegFailed(data, TravelLegs::FailReason::Hearth);
+    }
     return true;
 }
 
@@ -1266,21 +1278,54 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     return true;
 }
 
-bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel const& data)
+bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
 {
     uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
     uint32 const replans = data.trip.replans;
     if (data.bindInn)
     {
-        // The route ends in front of the innkeeper (InnInfo::loc): bind through the "home" action, which talks to the
-        // innkeeper in reach. Not yet there: walk the rest; nothing to walk any more (or MoveFarTo gave up): ends
+        // The route ends in front of the innkeeper (InnInfo::loc). Walk until close enough to talk to him, then bind
+        // directly (not through the "home" action, which needs a cleared target and a cached npc list); a failed bind
+        // is tried again a few times, a stuck bot out of reach gives up
         float const yards =
             bot->GetExactDist(data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ());
-        bool const bound = yards <= INN_TALK_YARDS && botAI->DoSpecificAction("home", Event(), true);
-        if (!bound && !data.stuck && yards > INN_STAND_YARDS)
+        WorldTravel::InnStep const step = WorldTravel::InnNext(yards, data.stuck, data.bindTries);
+        if (step == WorldTravel::InnStep::Walk)
             return MoveFarTo(data.dest);
-        LOG_INFO("playerbots", "[Route] {} {} at the inn after {} s ({} replans)", bot->GetName(),
-                 bound ? "bound its hearthstone" : "could not bind", seconds, replans);
+        bool bound = false;
+        char const* why = "stuck out of reach";
+        if (step == WorldTravel::InnStep::Bind)
+        {
+            ++data.bindTries;
+            why = "no innkeeper in reach";
+            std::list<Unit*> units;
+            Acore::AnyUnitInObjectRangeCheck check(bot, WorldTravel::INN_REACH_YARDS);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+            Cell::VisitObjects(bot, searcher, WorldTravel::INN_REACH_YARDS);
+            for (Unit* unit : units)
+            {
+                if (!unit->IsCreature() || !unit->HasNpcFlag(UNIT_NPC_FLAG_INNKEEPER))
+                    continue;
+                Creature* innkeeper = bot->GetNPCIfCanInteractWith(unit->GetGUID(), UNIT_NPC_FLAG_INNKEEPER);
+                if (!innkeeper)
+                {
+                    why = "innkeeper not interactable";
+                    continue;
+                }
+                bot->GetSession()->SendBindPoint(innkeeper);
+                bound = true;
+                break;
+            }
+            if (!bound && data.bindTries < WorldTravel::INN_BIND_TRIES)
+            {
+                LOG_DEBUG("playerbots", "[Route] {} bind try {} failed ({}), {:.1f} yd from the inn spot",
+                          bot->GetName(), static_cast<uint32>(data.bindTries), why, yards);
+                return true;
+            }
+        }
+        LOG_INFO("playerbots", "[Route] {} {} at the inn after {} s ({} replans, {} binds, {:.1f} yd{}{})",
+                 bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
+                 static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
         EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", replans, seconds);
     }
     if (data.place.empty())
