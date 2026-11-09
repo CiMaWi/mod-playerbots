@@ -10,7 +10,9 @@
 // tests/planner-indexes-selftest.cpp
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <limits>
 #include <random>
 #include <string>
 #include <thread>
@@ -36,6 +38,7 @@ constexpr int QUERIES = 500;
 constexpr int PUBLISHES = 2000;
 constexpr int READERS = 4;
 constexpr float NEAR_YARDS = 600.0f;
+constexpr long long GUARD_MS = 100;
 
 int passed = 0;
 int failed = 0;
@@ -309,6 +312,78 @@ void Memory(PlannerIndexes const& idx)
     }
     Check(monotone, "the memory estimate grows with the spawns");
 }
+
+// Review note WT12b a: NaN, inf and huge points return at once (empty or from the nearest edge cell) and a point
+// outside the occupied cells still gets the exact nearest services
+void Guards(PlannerIndexes const& idx)
+{
+    float const nan = std::numeric_limits<float>::quiet_NaN();
+    float const inf = std::numeric_limits<float>::infinity();
+    float const huge = 1e30f;
+    Check(Detail::Cell(huge, SERVICE_CELL_YARDS) == CELL_OFFSET - 1 &&
+              Detail::Cell(-huge, SERVICE_CELL_YARDS) == -CELL_OFFSET &&
+              Detail::Cell(nan, SERVICE_CELL_YARDS) == -CELL_OFFSET && Detail::Cell(-1.0f, SERVICE_CELL_YARDS) == -1,
+          "cells clamp into the key range");
+    auto const start = std::chrono::steady_clock::now();
+    Check(idx.Nearest(ServiceKind::Vendor, MAP_A, nan, 0.0f, 0.0f, 3).empty() &&
+              idx.Nearest(ServiceKind::Vendor, MAP_A, 0.0f, inf, 0.0f, 3).empty() &&
+              idx.Nearest(ServiceKind::Vendor, MAP_A, 0.0f, 0.0f, -inf, 3).empty(),
+          "Nearest: NaN and inf give none");
+    Check(idx.NearestHubs(MAP_A, nan, 0.0f, 0.0f, 3).empty() && !idx.NearestHub(MAP_A, 0.0f, inf, 0.0f),
+          "NearestHubs: NaN and inf give none");
+    Check(idx.Nearest(ServiceKind::Vendor, MAP_A, huge, 0.0f, 0.0f, 3).size() == 3 &&
+              idx.Nearest(ServiceKind::Vendor, MAP_A, -huge, -huge, 0.0f, 3).size() == 3 &&
+              idx.Nearest(ServiceKind::Vendor, MAP_A, huge, 0.0f, 0.0f, 3, 500.0f).empty(),
+          "Nearest: 1e30 answers from the edge, none within 500 yd");
+    long long const ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    Check(ms < GUARD_MS, "the guard queries return at once (" + std::to_string(ms) + " ms)");
+
+    int mismatches = 0;
+    for (float const x : {50000.0f, -50000.0f, 2000.0f})
+        for (float const y : {50000.0f, -50000.0f, 300.0f})
+        {
+            std::vector<std::pair<float, std::uint32_t>> brute;
+            for (std::uint32_t i = 0; i < idx.services.size(); ++i)
+            {
+                Service const& svc = idx.services[i];
+                std::vector<ServiceKind> const kinds = Detail::KindsOf(svc.npcFlags, svc.bagSlots, svc.mailbox);
+                if (svc.mapId == MAP_A && std::find(kinds.begin(), kinds.end(), ServiceKind::QuestGiver) != kinds.end())
+                    brute.push_back({Detail::Distance(x, y, 10.0f, svc.x, svc.y, svc.z), i});
+            }
+            std::sort(brute.begin(), brute.end());
+            std::vector<Nearby> const got = idx.Nearest(ServiceKind::QuestGiver, MAP_A, x, y, 10.0f, 3);
+            bool ok = got.size() == 3;
+            for (std::size_t i = 0; ok && i < got.size(); ++i)
+                ok = got[i].index == brute[i].second;
+            mismatches += ok ? 0 : 1;
+        }
+    Check(mismatches == 0,
+          "points outside the occupied cells get the exact nearest (" + std::to_string(mismatches) + " mismatches)");
+}
+
+// Review note WT12b b: the spread of the hub radii
+void Radii(PlannerIndexes const& idx)
+{
+    HubRadii const r = idx.RadiusStats();
+    std::vector<float> radii;
+    for (Hub const& hub : idx.hubs)
+        radii.push_back(hub.radius);
+    std::sort(radii.begin(), radii.end());
+    Check(r.count == 3 && r.max == radii.back() && r.p50 == radii[1] && r.p95 == radii.back() && r.wide == 0,
+          "radius percentiles of three hubs (nearest rank)");
+    Check(r.widest.size() == 3 && idx.hubs[r.widest.front()].radius == radii.back() &&
+              idx.hubs[r.widest.back()].radius == radii.front(),
+          "the widest hubs, widest first");
+    GatherInput wide;
+    for (int i = 0; i < 12; ++i)
+        wide.spawns.push_back(
+            Spawn(MAP_A, 80.0f * static_cast<float>(i), 0.0f, static_cast<std::uint32_t>(i), NpcFlag::VENDOR, 1, 1));
+    HubRadii const one = PlannerIndexes::Build(wide).RadiusStats();
+    Check(one.count == 1 && one.wide == 1 && one.max > HUB_WIDE_YARDS && one.p50 == one.max,
+          "a chain of services 80 yd apart is one wide hub");
+    Check(PlannerIndexes().RadiusStats().count == 0, "no hubs: empty stats");
+}
 }  // namespace
 
 int main()
@@ -321,6 +396,8 @@ int main()
     Crowding();
     Publication(input);
     Memory(idx);
+    Guards(idx);
+    Radii(idx);
     std::vector<Nearby> const near = idx.Nearest(ServiceKind::Vendor, MAP_A, 100.0f, 100.0f, 10.0f, 3, NEAR_YARDS);
     std::printf("PLANNER indexes selftest: %zu services, %zu hubs, about %llu bytes; nearest vendor %.1f yd\n",
                 idx.services.size(), idx.hubs.size(), static_cast<unsigned long long>(idx.stats.estimatedBytes),

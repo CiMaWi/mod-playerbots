@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "PlannerIndexes.h"
@@ -22,6 +23,8 @@ class PlayerbotAI;
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
+class QuestIndex;
+
 PlannerPool& Pool();
 // World thread: starts the pool with WorldTravel.PlannerThreads workers and its PerfMonitor rows
 void StartPlanner();
@@ -55,6 +58,23 @@ bool HandleIndexesCommand(ChatHandler* handler, char const* args);
 bool HandleHubCommand(ChatHandler* handler, char const* args);
 bool HandleServiceCommand(ChatHandler* handler, char const* args);
 bool HandleCrowdCommand(ChatHandler* handler, char const* args);
+// World thread: the spawns that exist only while their game event runs (as TravelMgr::PrepareDestinationCache)
+std::unordered_set<std::uint32_t> EventCreatureSpawns();
+std::unordered_set<std::uint32_t> EventObjectSpawns();
+// World thread: the point's zone and area on its loaded map; false when the map is not loaded or the area unknown
+bool ResolveArea(std::uint32_t mapId, float x, float y, float z, std::uint32_t& zoneId, std::uint32_t& areaId);
+
+// The quest index (WT13a, PlannerQuests.cpp; records, camps and the hub rule in QuestIndex.h)
+// World thread, once after StartPlannerIndexes: gathers the quests and their spawns, builds the index on a worker
+void StartQuestIndex();
+// Any thread: the published quest index (null before the build); a reader keeps its copy alive
+std::shared_ptr<QuestIndex const> Quests();
+// False until the build finished
+bool QuestsReady();
+// The quest index line of `playerbots planner status|indexes`
+std::string QuestIndexStatus();
+// `playerbots planner quest <id>`: the quest's entry
+bool HandleQuestCommand(ChatHandler* handler, char const* args);
 }  // namespace Planner
 
 #endif

@@ -32,6 +32,7 @@
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelMgr.h"
+#include "World.h"
 
 namespace Planner
 {
@@ -124,20 +125,6 @@ char const* SideName(ZoneSide side)
     }
 }
 
-// World thread only: the spawn's area resolved on its loaded map; false when the map or the area is unknown
-bool ResolveArea(uint32 mapId, float x, float y, float z, uint32& zoneId, uint32& areaId)
-{
-    Map* map = sMapMgr->FindMap(mapId, 0);
-    if (!map)
-        return false;
-    AreaTableEntry const* area = sAreaTableStore.LookupEntry(map->GetAreaId(PHASEMASK_NORMAL, x, y, z));
-    if (!area)
-        return false;
-    areaId = area->ID;
-    zoneId = area->zone ? area->zone : area->ID;
-    return true;
-}
-
 // World thread only: copies what the build needs from the core's stores and TravelMgr's caches (both change at
 // runtime: GM spawns, `.reload config` rebuilds TravelMgr), so the worker reads only this copy
 GatherInput GatherWorld()
@@ -148,7 +135,7 @@ GatherInput GatherWorld()
                                              sPlayerbotAIConfig.RandomBotMaps.end());
     std::unordered_map<uint32, uint8> bagSlots;  // per vendor entry
 
-    std::unordered_set<ObjectGuid::LowType> const creatureEvents = EventSpawns(sGameEventMgr->GameEventCreatureGuids);
+    std::unordered_set<ObjectGuid::LowType> const creatureEvents = EventCreatureSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
     {
         if (!botMaps.count(data.mapid) || creatureEvents.count(guid))
@@ -179,7 +166,7 @@ GatherInput GatherWorld()
         input.spawns.push_back(spawn);
     }
 
-    std::unordered_set<ObjectGuid::LowType> const objectEvents = EventSpawns(sGameEventMgr->GameEventGameobjectGuids);
+    std::unordered_set<ObjectGuid::LowType> const objectEvents = EventObjectSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllGOData())
     {
         if (!botMaps.count(data.mapid) || objectEvents.count(guid))
@@ -281,6 +268,13 @@ std::optional<Where> ResolveWhere(ChatHandler* handler, std::vector<std::string>
             handler->SendErrorMessage("PLANNER: bad position; give <mapId> <x> <y> <z>");
             return std::nullopt;
         }
+        // Rejects NaN, inf and points off the map before any index sees them (WT12b review note a)
+        if (!MapMgr::IsValidMapCoord(where.mapId, where.x, where.y, where.z))
+        {
+            handler->SendErrorMessage("PLANNER: bad position; ({}, {}, {}) is not on map {}", words[first + 1],
+                                      words[first + 2], words[first + 3], words[first]);
+            return std::nullopt;
+        }
         where.who = Acore::StringFormat("({}, {:.0f}, {:.0f}, {:.0f})", where.mapId, where.x, where.y, where.z);
         return where;
     }
@@ -320,6 +314,13 @@ std::shared_ptr<PlannerIndexes const> ReadyIndexes(ChatHandler* handler)
     return indexes;
 }
 
+// The server's DBC locale: for status lines, which have no session
+std::string AreaName(uint32 id)
+{
+    AreaTableEntry const* area = sAreaTableStore.LookupEntry(id);
+    return area ? area->area_name[sWorld->GetDefaultDbcLocale()] : "unknown";
+}
+
 std::string ZoneText(ChatHandler* handler, PlannerIndexes const& indexes, uint32 zoneId)
 {
     ZoneRecord const* zone = indexes.FindZone(zoneId);
@@ -328,6 +329,24 @@ std::string ZoneText(ChatHandler* handler, PlannerIndexes const& indexes, uint32
                                zone ? SideName(zone->side) : "unknown side");
 }
 }  // namespace
+
+std::unordered_set<uint32> EventCreatureSpawns() { return EventSpawns(sGameEventMgr->GameEventCreatureGuids); }
+
+std::unordered_set<uint32> EventObjectSpawns() { return EventSpawns(sGameEventMgr->GameEventGameobjectGuids); }
+
+// World thread only: the point's area on its loaded map; false when the map or the area is unknown
+bool ResolveArea(uint32 mapId, float x, float y, float z, uint32& zoneId, uint32& areaId)
+{
+    Map* map = sMapMgr->FindMap(mapId, 0);
+    if (!map)
+        return false;
+    AreaTableEntry const* area = sAreaTableStore.LookupEntry(map->GetAreaId(PHASEMASK_NORMAL, x, y, z));
+    if (!area)
+        return false;
+    areaId = area->ID;
+    zoneId = area->zone ? area->zone : area->ID;
+    return true;
+}
 
 void StartPlannerIndexes()
 {
@@ -361,6 +380,11 @@ void StartPlannerIndexes()
                          kind(ServiceKind::Trainer), kind(ServiceKind::Innkeeper), kind(ServiceKind::FlightMaster),
                          kind(ServiceKind::Banker), kind(ServiceKind::Mailbox), kind(ServiceKind::Auctioneer),
                          kind(ServiceKind::QuestGiver), static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                HubRadii const radii = indexes->RadiusStats();
+                LOG_INFO("playerbots",
+                         "Planner hubs: radius p50 {:.0f} yd, p95 {:.0f} yd, max {:.0f} yd, {} of {} above {:.0f} yd "
+                         "(`playerbots planner indexes` names the widest)",
+                         radii.p50, radii.p95, radii.max, radii.wide, radii.count, HUB_WIDE_YARDS);
                 indexBook.Publish(std::move(indexes));
                 indexState.store(IndexState::Ready, std::memory_order_release);
             }
@@ -430,6 +454,17 @@ std::vector<std::string> IndexStatus()
             "ms, built in {} ms on a worker, about {:.1f} MB (estimate)",
             indexes->zones.size(), indexes->hubs.size(), indexes->services.size(), s.spawns, s.unresolved, s.gatherMs,
             s.buildMs, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB));
+        HubRadii const radii = indexes->RadiusStats();
+        std::string widest;
+        for (uint32 const index : radii.widest)
+        {
+            Hub const& hub = indexes->hubs[index];
+            widest += Acore::StringFormat("{}#{} {} in {} ({:.0f} yd, {} services)", widest.empty() ? "" : "; ", index,
+                                          AreaName(hub.areaId), AreaName(hub.zoneId), hub.radius, hub.members.size());
+        }
+        lines.push_back(Acore::StringFormat(
+            "PLANNER hubs: radius p50 {:.0f} yd, p95 {:.0f} yd, max {:.0f} yd, {} of {} above {:.0f} yd; widest: {}",
+            radii.p50, radii.p95, radii.max, radii.wide, radii.count, HUB_WIDE_YARDS, widest));
     }
     else
         lines.push_back(Acore::StringFormat("PLANNER indexes: {}", state == IndexState::Building ? "building"
@@ -445,6 +480,7 @@ std::vector<std::string> IndexStatus()
             crowd->byArea.size(), crowd->byZone.size(), crowd->positionLookups, graph));
     else
         lines.push_back(Acore::StringFormat("PLANNER crowding: no snapshot yet; travel graph {}", graph));
+    lines.push_back(QuestIndexStatus());
     return lines;
 }
 

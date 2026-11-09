@@ -638,6 +638,7 @@ public:
             TravelRoute::StartRouteService();
             Planner::StartPlanner();
             Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
+            Planner::StartQuestIndex();      // the same for the quest index
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");

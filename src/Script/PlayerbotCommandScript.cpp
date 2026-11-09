@@ -203,6 +203,7 @@ public:
             {"hub", Planner::HandleHubCommand, SEC_GAMEMASTER, Console::Yes},
             {"service", Planner::HandleServiceCommand, SEC_GAMEMASTER, Console::Yes},
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
+            {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

@@ -167,14 +167,36 @@ constexpr float SERVICE_CELL_YARDS = 200.0f;  // nearest-service grid, as Travel
 constexpr float HUB_CELL_YARDS = 100.0f;      // hub clustering: occupied cells joined with their 8 neighbours
 constexpr std::uint32_t HUB_MIN_SPAWNS = 4;   // fewer spawns make no hub
 constexpr std::int32_t CELL_OFFSET = 1 << 15;
-constexpr std::size_t NODE_BYTES = 64;  // a hash node's overhead, for the memory estimate
+constexpr std::size_t NODE_BYTES = 64;    // a hash node's overhead, for the memory estimate
+constexpr float HUB_WIDE_YARDS = 300.0f;  // a hub wider than this may hold more than one place (review note WT12b b)
+constexpr std::size_t HUB_WIDEST = 5;     // the widest hubs listed by RadiusStats
+
+// The spread of the hubs' radii (PlannerIndexes::RadiusStats)
+struct HubRadii
+{
+    std::uint32_t count{0};
+    float p50{0.0f};
+    float p95{0.0f};
+    float max{0.0f};
+    std::uint32_t wide{0};              // hubs above HUB_WIDE_YARDS
+    std::vector<std::uint32_t> widest;  // hub indices, widest first, at most HUB_WIDEST
+};
 
 namespace Detail
 {
+// Clamped into the cell keys' 16-bit range: a huge or non-finite coordinate never overflows the cast (NaN lands on
+// the lower edge; queries reject non-finite points first)
 inline std::int32_t Cell(float coordinate, float size)
 {
-    return static_cast<std::int32_t>(std::floor(coordinate / size));
+    float const cell = std::floor(coordinate / size);
+    if (!(cell > static_cast<float>(-CELL_OFFSET)))
+        return -CELL_OFFSET;
+    if (cell >= static_cast<float>(CELL_OFFSET - 1))
+        return CELL_OFFSET - 1;
+    return static_cast<std::int32_t>(cell);
 }
+
+inline bool Finite(float x, float y, float z) { return std::isfinite(x) && std::isfinite(y) && std::isfinite(z); }
 
 inline std::uint64_t CellKey(std::uint32_t tag, std::int32_t cx, std::int32_t cy)
 {
@@ -234,6 +256,74 @@ std::uint64_t VectorBytes(std::vector<T> const& v)
 {
     return static_cast<std::uint64_t>(v.capacity()) * sizeof(T);
 }
+
+// Groups of points whose cells touch: the occupied cells of cellYards per map joined with their 8 neighbours
+// (union-find). Groups come in the order of their first cell (map, x, y), members ascending, so canonically ordered
+// points give the same groups whatever the input order. pointOf(i) returns {mapId, x, y}
+template <typename PointOf>
+std::vector<std::vector<std::uint32_t>> ClusterByCells(std::uint32_t count, float cellYards, PointOf pointOf)
+{
+    std::map<std::uint64_t, std::vector<std::uint32_t>> cells;  // sorted: deterministic
+    for (std::uint32_t i = 0; i < count; ++i)
+    {
+        auto const [mapId, x, y] = pointOf(i);
+        cells[CellKey(mapId, Cell(x, cellYards), Cell(y, cellYards))].push_back(i);
+    }
+    std::vector<std::uint64_t> keys;
+    keys.reserve(cells.size());
+    for (auto const& [key, list] : cells)
+        keys.push_back(key);
+    std::vector<std::uint32_t> parent(keys.size());
+    for (std::uint32_t i = 0; i < parent.size(); ++i)
+        parent[i] = i;
+    auto const find = [&parent](std::uint32_t i)
+    {
+        while (parent[i] != i)
+        {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    };
+    auto const indexOf = [&keys](std::uint64_t key) -> std::optional<std::uint32_t>
+    {
+        auto const it = std::lower_bound(keys.begin(), keys.end(), key);
+        if (it == keys.end() || *it != key)
+            return std::nullopt;
+        return static_cast<std::uint32_t>(it - keys.begin());
+    };
+    for (std::uint32_t i = 0; i < keys.size(); ++i)
+    {
+        std::uint32_t const tag = static_cast<std::uint32_t>(keys[i] >> 32);
+        std::int32_t const cx = static_cast<std::int32_t>((keys[i] >> 16) & 0xFFFFu) - CELL_OFFSET;
+        std::int32_t const cy = static_cast<std::int32_t>(keys[i] & 0xFFFFu) - CELL_OFFSET;
+        for (std::int32_t dx = -1; dx <= 1; ++dx)
+            for (std::int32_t dy = -1; dy <= 1; ++dy)
+                if (std::optional<std::uint32_t> const j = indexOf(CellKey(tag, cx + dx, cy + dy)))
+                {
+                    std::uint32_t const a = find(i);
+                    std::uint32_t const b = find(*j);
+                    if (a != b)
+                        parent[std::max(a, b)] = std::min(a, b);  // the smaller key's cell is the root
+                }
+    }
+
+    std::map<std::uint32_t, std::vector<std::uint32_t>> groups;  // root -> members, in key order
+    for (std::uint32_t i = 0; i < keys.size(); ++i)
+    {
+        std::vector<std::uint32_t>& group = groups[find(i)];
+        std::vector<std::uint32_t> const& list = cells[keys[i]];
+        group.insert(group.end(), list.begin(), list.end());
+    }
+    std::vector<std::vector<std::uint32_t>> result;
+    result.reserve(groups.size());
+    for (auto& [root, members] : groups)
+    {
+        std::sort(members.begin(), members.end());
+        result.push_back(std::move(members));
+    }
+    return result;
+}
 }  // namespace Detail
 
 // Immutable once built. Readers on any thread hold a shared_ptr to it
@@ -269,13 +359,14 @@ public:
     {
         std::vector<Nearby> best;
         auto const bounds = _bounds.find(GridTag(kind, mapId));
-        if (!k || bounds == _bounds.end())
+        if (!k || bounds == _bounds.end() || !Detail::Finite(x, y, z))
             return best;
-        std::int32_t const cx = Detail::Cell(x, SERVICE_CELL_YARDS);
-        std::int32_t const cy = Detail::Cell(y, SERVICE_CELL_YARDS);
         Bounds const& b = bounds->second;
-        std::int32_t const maxRing =
-            std::max({std::abs(cx - b.minX), std::abs(cx - b.maxX), std::abs(cy - b.minY), std::abs(cy - b.maxY)});
+        // A point outside the occupied cells starts from the nearest edge cell: every occupied cell is at least as
+        // many cells from the point as from that cell, so the ring floor below holds and the rings stay in the span
+        std::int32_t const cx = std::clamp(Detail::Cell(x, SERVICE_CELL_YARDS), b.minX, b.maxX);
+        std::int32_t const cy = std::clamp(Detail::Cell(y, SERVICE_CELL_YARDS), b.minY, b.maxY);
+        std::int32_t const maxRing = std::max({cx - b.minX, b.maxX - cx, cy - b.minY, b.maxY - cy});
         std::uint32_t const tag = GridTag(kind, mapId);
         for (std::int32_t ring = 0; ring <= maxRing; ++ring)
         {
@@ -285,8 +376,8 @@ public:
                 break;
             if (best.size() >= k && best[k - 1].distance <= floorDistance)
                 break;
-            for (std::int32_t dx = -ring; dx <= ring; ++dx)
-                for (std::int32_t dy = -ring; dy <= ring; ++dy)
+            for (std::int32_t dx = std::max(-ring, b.minX - cx); dx <= std::min(ring, b.maxX - cx); ++dx)
+                for (std::int32_t dy = std::max(-ring, b.minY - cy); dy <= std::min(ring, b.maxY - cy); ++dy)
                 {
                     if (std::abs(dx) != ring && std::abs(dy) != ring)
                         continue;
@@ -312,7 +403,7 @@ public:
     {
         std::vector<Nearby> best;
         auto const onMap = _hubsByMap.find(mapId);
-        if (!k || onMap == _hubsByMap.end())
+        if (!k || onMap == _hubsByMap.end() || !Detail::Finite(x, y, z))
             return best;
         for (std::uint32_t const index : onMap->second)
         {
@@ -338,6 +429,34 @@ public:
     }
 
     std::vector<std::uint32_t> const& ServicesInHub(std::uint32_t hub) const { return hubs[hub].members; }
+
+    // Nearest-rank percentiles of the hubs' radii and the widest hubs (ties by index)
+    HubRadii RadiusStats() const
+    {
+        HubRadii r;
+        r.count = static_cast<std::uint32_t>(hubs.size());
+        if (hubs.empty())
+            return r;
+        std::vector<std::uint32_t> order(hubs.size());
+        for (std::uint32_t i = 0; i < order.size(); ++i)
+            order[i] = i;
+        std::sort(order.begin(), order.end(), [this](std::uint32_t a, std::uint32_t b)
+                  { return hubs[a].radius > hubs[b].radius || (hubs[a].radius == hubs[b].radius && a < b); });
+        // order is widest first: the share-th percentile is ceil(share x n) from the bottom
+        auto const rank = [this, &order](double share)
+        {
+            std::size_t const n = order.size();
+            std::size_t const fromBottom = static_cast<std::size_t>(std::ceil(share * static_cast<double>(n)));
+            return hubs[order[n - std::max<std::size_t>(fromBottom, 1)]].radius;
+        };
+        r.p50 = rank(0.5);
+        r.p95 = rank(0.95);
+        r.max = hubs[order.front()].radius;
+        for (Hub const& hub : hubs)
+            r.wide += hub.radius > HUB_WIDE_YARDS ? 1 : 0;
+        r.widest.assign(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(std::min(HUB_WIDEST, order.size())));
+        return r;
+    }
 
     std::uint64_t EstimateBytes() const
     {
@@ -431,69 +550,17 @@ private:
         services.shrink_to_fit();
     }
 
-    // Occupied 100-yard cells per map joined with their 8 neighbours (union-find); a group of at least
-    // HUB_MIN_SPAWNS services is a hub. Cells and services are visited in a sorted order: the result does not depend
-    // on the input order
+    // Occupied 100-yard cells per map joined with their 8 neighbours; a group of at least HUB_MIN_SPAWNS services is
+    // a hub. Services are in a canonical order: the result does not depend on the input order
     void BuildHubs()
     {
-        std::map<std::uint64_t, std::vector<std::uint32_t>> cells;  // sorted: deterministic
-        for (std::uint32_t i = 0; i < services.size(); ++i)
-        {
-            Service const& s = services[i];
-            cells[Detail::CellKey(s.mapId, Detail::Cell(s.x, HUB_CELL_YARDS), Detail::Cell(s.y, HUB_CELL_YARDS))]
-                .push_back(i);
-        }
-        std::vector<std::uint64_t> keys;
-        keys.reserve(cells.size());
-        for (auto const& [key, list] : cells)
-            keys.push_back(key);
-        std::vector<std::uint32_t> parent(keys.size());
-        for (std::uint32_t i = 0; i < parent.size(); ++i)
-            parent[i] = i;
-        auto const find = [&parent](std::uint32_t i)
-        {
-            while (parent[i] != i)
-            {
-                parent[i] = parent[parent[i]];
-                i = parent[i];
-            }
-            return i;
-        };
-        auto const indexOf = [&keys](std::uint64_t key) -> std::optional<std::uint32_t>
-        {
-            auto const it = std::lower_bound(keys.begin(), keys.end(), key);
-            if (it == keys.end() || *it != key)
-                return std::nullopt;
-            return static_cast<std::uint32_t>(it - keys.begin());
-        };
-        for (std::uint32_t i = 0; i < keys.size(); ++i)
-        {
-            std::uint32_t const tag = static_cast<std::uint32_t>(keys[i] >> 32);
-            std::int32_t const cx = static_cast<std::int32_t>((keys[i] >> 16) & 0xFFFFu) - CELL_OFFSET;
-            std::int32_t const cy = static_cast<std::int32_t>(keys[i] & 0xFFFFu) - CELL_OFFSET;
-            for (std::int32_t dx = -1; dx <= 1; ++dx)
-                for (std::int32_t dy = -1; dy <= 1; ++dy)
-                    if (std::optional<std::uint32_t> const j = indexOf(Detail::CellKey(tag, cx + dx, cy + dy)))
-                    {
-                        std::uint32_t const a = find(i);
-                        std::uint32_t const b = find(*j);
-                        if (a != b)
-                            parent[std::max(a, b)] = std::min(a, b);  // the smaller key's cell is the root
-                    }
-        }
-
-        std::map<std::uint32_t, std::vector<std::uint32_t>> groups;  // root -> services, in key order
-        for (std::uint32_t i = 0; i < keys.size(); ++i)
-        {
-            std::vector<std::uint32_t>& group = groups[find(i)];
-            std::vector<std::uint32_t> const& list = cells[keys[i]];
-            group.insert(group.end(), list.begin(), list.end());
-        }
-        for (auto& [root, members] : groups)
+        std::vector<std::vector<std::uint32_t>> groups =
+            Detail::ClusterByCells(static_cast<std::uint32_t>(services.size()), HUB_CELL_YARDS, [this](std::uint32_t i)
+                                   { return std::make_tuple(services[i].mapId, services[i].x, services[i].y); });
+        for (std::vector<std::uint32_t>& members : groups)
         {
             if (members.size() < HUB_MIN_SPAWNS)
                 continue;
-            std::sort(members.begin(), members.end());
             Hub hub;
             hub.mapId = services[members.front()].mapId;
             double sx = 0.0;
