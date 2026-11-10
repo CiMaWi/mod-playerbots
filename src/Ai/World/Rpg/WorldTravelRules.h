@@ -31,10 +31,6 @@ constexpr uint32_t STUCK_REPEAT_MAX = 3;
 constexpr uint32_t GHOST_HEALER_RETRY_MS = 30 * 1000;
 // A ghost that cannot walk to its grave is teleported there at most this often
 constexpr uint32_t GHOST_TELEPORT_RETRY_MS = 5 * 60 * 1000;
-constexpr int32_t PACK_COORD_MIN = -32768;
-constexpr int32_t PACK_COORD_MAX = 32767;
-constexpr uint32_t PACK_COORD_BITS = 16;
-constexpr uint64_t PACK_COORD_MASK = 0xFFFF;
 
 // The rules apply to persistent bots; arena instances (ArenaOnly) keep their own cycle
 inline bool AppliesTo(bool persistent, bool arenaOnly) { return persistent && !arenaOnly; }
@@ -170,7 +166,7 @@ inline StuckCause ClassifyStuck(StuckInput const& in)
     return StuckCause::NoProgress;
 }
 
-// The source word of the Stuck event (bot_events.csv); string literals, so they outlive the call
+// The source word of the Stuck event (the world log's event row); string literals, so they outlive the call
 constexpr char const* StuckCauseWord(StuckCause cause)
 {
     switch (cause)
@@ -190,28 +186,6 @@ constexpr char const* StuckCauseWord(StuckCause cause)
         default:
             return "other";
     }
-}
-
-inline uint64_t PackCoord(float value)
-{
-    long const rounded =
-        std::lround(std::clamp(value, static_cast<float>(PACK_COORD_MIN), static_cast<float>(PACK_COORD_MAX)));
-    return static_cast<uint64_t>(static_cast<uint16_t>(static_cast<int16_t>(rounded)));
-}
-
-// The Stuck event's amount: bot x, bot y, destination x, destination y as signed 16-bit yards, high to low
-inline int64_t PackStuckPositions(float botX, float botY, float destX, float destY)
-{
-    uint64_t const packed = PackCoord(botX) << (3 * PACK_COORD_BITS) | PackCoord(botY) << (2 * PACK_COORD_BITS) |
-                            PackCoord(destX) << PACK_COORD_BITS | PackCoord(destY);
-    return static_cast<int64_t>(packed);
-}
-
-// index 0 = bot x, 1 = bot y, 2 = destination x, 3 = destination y
-inline int32_t UnpackStuckCoord(int64_t amount, uint32_t index)
-{
-    uint32_t const shift = (3 - index) * PACK_COORD_BITS;
-    return static_cast<int16_t>(static_cast<uint16_t>((static_cast<uint64_t>(amount) >> shift) & PACK_COORD_MASK));
 }
 
 // The avoid time after `repeats` give-ups in a row at the same obstacle: doubled per repeat, capped

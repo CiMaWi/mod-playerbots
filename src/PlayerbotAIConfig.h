@@ -421,8 +421,6 @@ public:
     float PvpTestFightY;
     float PvpTestFightZ;
     float PvpTestFightO;
-    bool CensusEnable;
-    uint32 CensusIntervalSeconds;
     bool AcquaintanceEnable;
     uint32 AcquaintanceFlushSeconds;
     uint32 AcquaintanceDirectCooldownSeconds;

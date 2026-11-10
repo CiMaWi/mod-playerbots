@@ -23,8 +23,10 @@
 // WL8, the Player-free part of the recorder: a bot's rings of its last minutes (a position a second, the actions its
 // non-combat and dead engines executed, its events), the triggers that make them a case, and the case's recorder rows.
 // A push is O(1), formats nothing and allocates nothing: words are interned once (WordTable) and the rings hold ids.
-// Only the bot's own thread pushes and dumps; RequestCase may come from any thread (an atomic). Header-only so
-// tests/world-log-selftest.cpp checks the same code the server runs (on a virtual millisecond clock).
+// The bot's own thread pushes and dumps; events also come from the world thread (mail, auction house) while no map
+// update runs, and the busy flag (Enter) skips a push or dump that finds the recorder in use. RequestCase may come from
+// any thread (an atomic). Header-only so tests/world-log-selftest.cpp checks the same code the server runs (on a
+// virtual millisecond clock).
 namespace WorldLogFormat
 {
 // Playerbots.WorldLog.Recorder* defaults and bounds; the trigger thresholds are fixed

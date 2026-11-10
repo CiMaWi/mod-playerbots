@@ -1612,36 +1612,20 @@ Playerbots.PvpTest.Enable = 0
 Playerbots.PvpTest.TimeoutSeconds = 900
 Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 
-# World census (1 = on, 0 = off)
-# Every IntervalSeconds (5..3600) one CSV line per online bot (type RND) and per real player or test player (type
-# PLR) is written to <LogsDir>/census/bot_locations.csv, and one line per bot level-up to
-# <LogsDir>/census/bot_events.csv. Both files are truncated when the server starts and have no header line. The world
-# thread only formats the lines; a writer thread owns the files. Cost: O(online players) once per interval.
-# bot_locations.csv columns (the layout of spp-map's player_location.csv, three columns appended):
-#   time (UTC), RND|PLR, name, "POINT(y x)" (the game's y first), orientation, race, class, map, level, health,
-#   power %, money, grouper type, guilder type, allowActivity (active|inactive), in world (active|delay),
-#   combat (combat|non-combat), safe (always n/a), alive (alive|dead), zoneId, areaId, inCombat (1|0)
-# bot_events.csv columns: time, name, LevelUp, "POINT(y x)", race, class, level, "old level", "new level"
-# Typed bot events share bot_events.csv: time, bot guid, type, source, id, amount, map, zone. Types: GoldIn/GoldOut
-# (copper), ItemIn/ItemOut (item id, count), Death (creature, player, player_pet, environment), DeathReturn, QuestDone
-# (quest id), PvpKill/PvpDeath (other player's guid; arena, battleground, world), Honesty<Kind> (module shortcuts).
-# The source of gold and of a return from death is the bot action that ran, as a word (loot, quest, vendor, repair,
-# train, flight, mail, trade, corpse, spirit_healer) or the action's name, else "other". Per-type totals are logged
-# as "EventLog totals: ..." every interval and at shutdown.
-# The hub tool tools/liveliness.js turns bot_locations.csv into a report.
-#
-Playerbots.Census.Enable = 0
-Playerbots.Census.IntervalSeconds = 30
-
 # World log (on when Dir is set)
 # The server writes the world log to Dir, the session folder the hub's tools/ac.js sets on every start (empty = off):
-# append-only CSV segments per stream (event, state, meta; later decision and recorder), each with a header row, named
+# append-only CSV segments per stream (event, state, meta, decision, recorder), each with a header row, named
 # <stream>-<yyyymmddhh>.csv after the UTC hour of their rows (<stream>-<yyyymmddhhmm>.csv when SegmentMinutes is below
 # 60). The streams, columns and words are in the hub's .claude/docs/world-log.md. Dir is read at startup only.
 # StateSeconds (5..3600): one state row per online player this often.
 # SegmentMinutes (1..60, rounded down to a divisor of 60): segment length; values below 60 are for tests.
 # QueueRows (1..10000000): rows per stream that may wait for the writer; more are dropped and counted (meta drops rows
 # every hour and at stop). The three numbers are re-read on .reload config (a meta reload row).
+# Event rows (every player, real players too) include GoldIn/GoldOut (copper), ItemIn/ItemOut (item id, count), Death
+# (creature, player, player_pet, environment), DeathReturn, QuestDone (quest id), PvpKill/PvpDeath (other player's
+# guid; arena, battleground, world), Honesty<Kind> (module shortcuts), Stuck and Travel. The source of gold and of a
+# return from death is the bot action that ran, as a word (loot, quest, vendor, repair, train, flight, mail, trade,
+# corpse, spirit_healer) or the action's name, else "other".
 # Recorder (bots): each bot keeps a ring of its last RecorderSeconds (0..3600, 0 = off): a position a second, the last
 # RecorderActions (1..4096) actions its non-combat and dead engines executed with trigger and result (the combat
 # engine's are left out), its last RecorderEvents (1..4096) events. A trigger dumps the ring as one case on the
@@ -2140,7 +2124,7 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 
 # Honest world travel of persistent bots (Playerbots.Population.Persistent = 1; arena instances with
 # Playerbots.ArenaOnly.Enable keep their own cycle). These bots are never resurrected in place, never take the stuck
-# teleport (a bot that makes no progress toward its destination records a Stuck event in the census event log, gives
+# teleport (a bot that makes no progress toward its destination records a Stuck event in the world log, gives
 # the destination up for StuckAvoidSeconds and goes IDLE) and are never randomized, refreshed or teleported while their
 # RPG is busy (not IDLE) or a real player is their master. A dead bot runs back to its corpse; after CorpseRunFailures
 # runs that ended in another death it walks to the spirit healer. Every teleport that remains (level-up, hub, city,

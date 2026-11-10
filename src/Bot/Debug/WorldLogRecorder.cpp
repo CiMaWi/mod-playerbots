@@ -22,9 +22,10 @@
 #include "WorldLogBotState.h"
 
 // WL8, the recorder's server side: the pushes from PlayerbotAI::UpdateAI (positions), Engine::ListenAndExecute
-// (actions) and CensusMgr's world-log event rows (events), each on the bot's own thread, and the dump of a due case
-// into the writer's queue as one chunk of recorder rows. The rings, triggers and row format are Player-free in
-// WorldLogRecorder.h. PerfMonitor rows: "WorldLog record" (one push), "WorldLog record dump" (one case).
+// (actions) and CensusMgr's world-log event rows (events), each on the bot's own thread (events also on the world
+// thread, while no map update runs), and the dump of a due case into the writer's queue as one chunk of recorder rows.
+// The rings, triggers and row format are Player-free in WorldLogRecorder.h. PerfMonitor rows: "WorldLog record" (one
+// push), "WorldLog record dump" (one case).
 namespace
 {
 using WorldLogFormat::Recorder;
@@ -106,6 +107,8 @@ void WorldLog::NotePosition(Player* bot, std::unique_ptr<BotLog>& log, int32_t r
     if (!bot)
         return;
 
+    // The state and the rings are allocated (and the recorder's state set) before the busy flag is taken: safe only
+    // because the world thread's events (NoteEvent) never run during a map update, so they cannot overlap this push
     if (!log)
         log = std::make_unique<BotLog>();
 

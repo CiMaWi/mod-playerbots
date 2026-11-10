@@ -388,7 +388,7 @@ inline void CheckEventWords(Checker& checker)
 
 // (g) WL7: decision rows have the header's 13 fields with 0, 1 and 3 alternatives, clean their words and keep two
 // decimals; the alternatives keep the best three; the leg chain caps its length; a word per RPG status; trip ids
-// count from 1; the census keeps its id and amount where the world log takes Emit's
+// count from 1
 inline void CheckDecisions(Checker& checker)
 {
     size_t const columns = FieldCount(StreamHeader(Stream::Decision));
@@ -481,11 +481,6 @@ inline void CheckDecisions(Checker& checker)
     uint32_t const first = trips.Next();
     uint32_t const second = trips.Next();
     checker.Check(first == 1 && second == 2, "trip ids count from 1");
-
-    checker.Check(EventLog::WorldLogId(3, EventLog::SAME_ID) == 3 && EventLog::WorldLogId(3, 77) == 77,
-                  "the world log takes Emit's id when set");
-    checker.Check(EventLog::WorldLogAmount(-5, EventLog::SAME_AMOUNT) == -5 && EventLog::WorldLogAmount(2, 0) == 0,
-                  "the world log takes Emit's amount when set, 0 included");
 }
 
 // The last row of rows (without its end)

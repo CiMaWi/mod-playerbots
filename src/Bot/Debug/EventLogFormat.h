@@ -8,63 +8,24 @@
 #define _PLAYERBOT_EVENTLOGFORMAT_H
 
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <string_view>
 
 class Action;
 
-// The Player-free part of the census event log: line format, source words and the thread-local source scope.
+// The Player-free part of the event log (EventLog::Emit, the world log's event rows): field cleaning, source words
+// and the thread-local source scope.
 // Header-only so tests/event-log-selftest.cpp checks the same code the server runs.
 namespace EventLog
 {
 constexpr char const* SOURCE_OTHER = "other";
 constexpr char FIELD_SEPARATOR = ',';
 constexpr char FIELD_REPLACEMENT = '_';
-constexpr size_t LINE_RESERVE = 96;
-// EventLog::Emit's world-log id and amount when they differ from the census line's; unset = the census values
-constexpr uint32_t SAME_ID = std::numeric_limits<uint32_t>::max();
-constexpr int64_t SAME_AMOUNT = std::numeric_limits<int64_t>::min();
-
-// The world-log row's id and amount: Emit's worldLogId/worldLogAmount when set, else the census line's. WL7's Travel
-// rows keep the census meaning (legs, replans, leg number) for tools/lab-ledger.js until WL11 and give the world log
-// the trip id and seconds.
-inline uint32_t WorldLogId(uint32_t id, uint32_t worldLogId) { return worldLogId == SAME_ID ? id : worldLogId; }
-inline int64_t WorldLogAmount(int64_t amount, int64_t worldLogAmount)
-{
-    return worldLogAmount == SAME_AMOUNT ? amount : worldLogAmount;
-}
-
 // Copies a field without the characters that would split the CSV line or the row
 inline void AppendField(std::string& out, std::string_view field)
 {
     for (char const c : field)
         out.push_back(c == FIELD_SEPARATOR || c == '"' || c == '\n' || c == '\r' ? FIELD_REPLACEMENT : c);
-}
-
-// One bot_events.csv line: time,guid,type,source,id,amount,map,zone (tools/lab-ledger.js reads columns 2, 3 and 5)
-inline std::string FormatEventLine(std::string_view time, uint64_t guid, std::string_view type, std::string_view source,
-                                   uint32_t id, int64_t amount, uint32_t mapId, uint32_t zoneId)
-{
-    std::string line;
-    line.reserve(LINE_RESERVE);
-    AppendField(line, time);
-    line.push_back(FIELD_SEPARATOR);
-    line += std::to_string(guid);
-    line.push_back(FIELD_SEPARATOR);
-    AppendField(line, type);
-    line.push_back(FIELD_SEPARATOR);
-    AppendField(line, source.empty() ? std::string_view(SOURCE_OTHER) : source);
-    line.push_back(FIELD_SEPARATOR);
-    line += std::to_string(id);
-    line.push_back(FIELD_SEPARATOR);
-    line += std::to_string(amount);
-    line.push_back(FIELD_SEPARATOR);
-    line += std::to_string(mapId);
-    line.push_back(FIELD_SEPARATOR);
-    line += std::to_string(zoneId);
-    line.push_back('\n');
-    return line;
 }
 
 struct SourceWord

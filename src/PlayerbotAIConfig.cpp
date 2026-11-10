@@ -763,9 +763,6 @@ bool PlayerbotAIConfig::Initialize()
             LOG_ERROR("playerbots",
                       "Playerbots.PvpTest.FightLocation must be \"<map> <x> <y> <z> <o>\"; using the default spot");
     }
-    CensusEnable = sConfigMgr->GetOption<bool>("Playerbots.Census.Enable", false);
-    CensusIntervalSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Census.IntervalSeconds", 30), 5, 3600);
     AcquaintanceEnable = sConfigMgr->GetOption<bool>("Playerbots.Acquaintance.Enable", false);
     AcquaintanceFlushSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.FlushSeconds", 30), 5, 3600);

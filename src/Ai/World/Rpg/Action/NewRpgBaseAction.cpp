@@ -106,9 +106,8 @@ void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
     LOG_DEBUG("playerbots", "[New RPG] {} gives up ({},{},{},{}) at ({},{},{},{}), stuck: {}", bot->GetName(),
               dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId(), bot->GetPositionX(),
               bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(), word);
-    EventLog::Emit(bot, "Stuck", word, static_cast<uint32>(botAI->rpgInfo.GetStatus()),
-                   WorldTravel::PackStuckPositions(bot->GetPositionX(), bot->GetPositionY(), dest.GetPositionX(),
-                                                   dest.GetPositionY()));
+    // id the RPG status; the row's x, y are the bot's position (the recorder's case holds the trail)
+    EventLog::Emit(bot, "Stuck", word, static_cast<uint32>(botAI->rpgInfo.GetStatus()));
     // Plain data only: the world thread maps it to a travel graph edge the route search avoids. A route follower
     // names the edge it walked; other statuses give positions
     if (!input.OtherMap)

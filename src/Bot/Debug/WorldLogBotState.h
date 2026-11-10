@@ -20,7 +20,9 @@ class Player;
 namespace WorldLog
 {
 // A bot's world-log state (PlayerbotAI::worldLog), allocated at its first use while the world log is on; read and
-// written only on the bot's own thread (the recorder's RequestCase excepted)
+// written on the bot's own thread, and by NoteEvent also on the world thread (mail, auction house and other events the
+// world thread emits) while no map update runs. The recorder's busy flag skips a push that would overlap; its
+// RequestCase may come from any thread.
 struct BotLog
 {
     bool inFlight = false;
@@ -50,7 +52,8 @@ void NoteFlightEdge(Player* bot, std::unique_ptr<BotLog>& log, bool flying);
 void NotePosition(Player* bot, std::unique_ptr<BotLog>& log, int32_t rpgStatus);
 // Engine::ListenAndExecute, for the non-combat and dead engines: an executed action with its trigger and result
 void NoteAction(Player* bot, std::unique_ptr<BotLog>& log, Action* action, std::string const& trigger, bool result);
-// CensusMgr's world-log event row of a bot: the event into the ring and its trigger check
+// CensusMgr's world-log event row of a bot (the bot's thread or the world thread): the event into the ring and its
+// trigger check
 void NoteEvent(Player* player, std::string_view type, std::string_view source, uint32_t id, int64_t amount);
 }  // namespace WorldLog
 

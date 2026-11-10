@@ -324,7 +324,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         }
         LOG_INFO("playerbots", "[Route] {} gives the trip up: stopped", bot->GetName());
         uint32 const seconds = GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS;
-        EventLog::Emit(bot, "Travel", "abort:stopped", data->trip.replans, seconds, data->tripId, seconds);
+        EventLog::Emit(bot, "Travel", "abort:stopped", data->tripId, seconds);
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", "stopped", static_cast<float>(seconds),
                            {{"replans", static_cast<float>(data->trip.replans)}}, data->tripId);
         info.ChangeToIdle();
@@ -1088,14 +1088,13 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     uint32 const legBefore = trip.legIdx;
     uint32 const legStartBefore = trip.legStartMs;
     TravelLegs::Decision const next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
-    // The legs passed this tick (no-op walks are no legs to a reader): id the leg's number, amount its seconds
+    // The legs passed this tick (no-op walks are no legs to a reader): id the trip, amount the leg's seconds
     for (uint32 i = legBefore; i < trip.legIdx && i < trip.legs.size(); ++i)
     {
         if (TravelLegs::IsNoOp(trip.legs[i]))
             continue;
         uint32 const seconds = i == legBefore ? (seen.nowMs - legStartBefore) / IN_MILLISECONDS : 0;
-        EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), i + 1, seconds, data->tripId,
-                       seconds);
+        EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), data->tripId, seconds);
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Walk)
             LogWalkLeg(bot, trip.legs[i], i, trip.legs.size(), seen.nowMs - legStartBefore, "done");
     }
@@ -1192,8 +1191,7 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
     if (data.estimateSeconds <= 0.0f)
     {
         data.estimateSeconds = route.totalSeconds;
-        EventLog::Emit(bot, "Travel", "start", static_cast<uint32>(route.legs.size()),
-                       static_cast<int64>(route.totalSeconds), data.tripId, static_cast<int64>(route.totalSeconds));
+        EventLog::Emit(bot, "Travel", "start", data.tripId, static_cast<int64>(route.totalSeconds));
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", data.bindInn ? "inn" : "order",
                            route.totalSeconds, {{"legs", static_cast<float>(route.legs.size())}}, data.tripId);
         if (!data.place.empty())
@@ -1314,7 +1312,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
               TravelLegs::FailWord(reason));
     uint32 const legSeconds =
         trip.legIdx < trip.legs.size() ? GetMSTimeDiffToNow(trip.legStartMs) / IN_MILLISECONDS : 0;
-    EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), trip.legIdx + 1, 0, data.tripId, legSeconds);
+    EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), data.tripId, legSeconds);
     if (reason == TravelLegs::FailReason::Timeout && trip.legIdx < trip.legs.size() &&
         trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk)
         LogWalkLeg(bot, trip.legs[trip.legIdx], trip.legIdx, trip.legs.size(), getMSTime() - trip.legStartMs,
@@ -1402,7 +1400,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
         LOG_INFO("playerbots", "[Route] {} {} at the inn after {} s ({} replans, {} binds, {:.1f} yd{}{})",
                  bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
                  static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
-        EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", replans, seconds, data.tripId, seconds);
+        EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", data.tripId, seconds);
     }
     if (data.place.empty())
         LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
@@ -1410,7 +1408,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
     else
         LOG_INFO("playerbots", "[Route] {} arrived at {} after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
                  data.place, seconds, data.estimateSeconds, replans);
-    EventLog::Emit(bot, "Travel", "arrived", replans, seconds, data.tripId, seconds);
+    EventLog::Emit(bot, "Travel", "arrived", data.tripId, seconds);
     WorldLog::StatusReason const reasonScope("arrived");
     botAI->rpgInfo.ChangeToIdle();
     return true;
@@ -1423,7 +1421,7 @@ void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel const& data, char const* why
     else
         LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
     uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
-    EventLog::Emit(bot, "Travel", source, data.trip.replans, seconds, data.tripId, seconds);
+    EventLog::Emit(bot, "Travel", source, data.tripId, seconds);
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort",
                        WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX), static_cast<float>(seconds),
                        {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);

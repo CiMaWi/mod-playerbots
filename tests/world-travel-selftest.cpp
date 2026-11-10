@@ -170,21 +170,6 @@ void CheckStuck()
     Check(std::string(WorldTravel::StuckCauseWord(StuckCause::Other)) == "other", "word other");
 }
 
-void CheckPacking()
-{
-    int64_t const amount = WorldTravel::PackStuckPositions(-8913.4f, 554.6f, 1629.0f, -4373.5f);
-    Check(WorldTravel::UnpackStuckCoord(amount, 0) == -8913, "bot x");
-    Check(WorldTravel::UnpackStuckCoord(amount, 1) == 555, "bot y");
-    Check(WorldTravel::UnpackStuckCoord(amount, 2) == 1629, "destination x");
-    Check(WorldTravel::UnpackStuckCoord(amount, 3) == -4374, "destination y");
-
-    int64_t const edges = WorldTravel::PackStuckPositions(-40000.0f, 40000.0f, -1.0f, 0.0f);
-    Check(WorldTravel::UnpackStuckCoord(edges, 0) == -32768, "clamped low");
-    Check(WorldTravel::UnpackStuckCoord(edges, 1) == 32767, "clamped high");
-    Check(WorldTravel::UnpackStuckCoord(edges, 2) == -1, "minus one");
-    Check(WorldTravel::UnpackStuckCoord(edges, 3) == 0, "zero");
-}
-
 void CheckAvoid()
 {
     constexpr uint32_t AVOID_MS = 600000;
@@ -314,7 +299,6 @@ int main()
     CheckBusy();
     CheckCorpseRuns();
     CheckStuck();
-    CheckPacking();
     CheckAvoid();
     CheckAvoidRepeat();
     CheckGhost();

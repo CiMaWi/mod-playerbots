@@ -661,8 +661,8 @@ public:
             TimeHookCall("WorldHook UpdateSessions", [] { sRandomPlayerbotMgr.UpdateSessions(); });
             // Headless test player; returns at once when there is none
             TimeHookCall("WorldHook TestPlayer", [diff] { TestPlayerMgr::Instance().Update(diff); });
-            // Opt-in world census; returns at once when off
-            TimeHookCall("WorldHook Census", [diff] { CensusMgr::Instance().Update(diff); });
+            // The world log's state pass and writer start; returns at once when the world log is off
+            TimeHookCall("WorldHook WorldLog", [diff] { CensusMgr::Instance().Update(diff); });
             // Bots and players per area for the planner; a timer add between refreshes
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
             // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
