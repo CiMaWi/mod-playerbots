@@ -341,10 +341,39 @@ void CheckPublication()
     Check(held->ClassList(CLASS_MAGE) != nullptr && book.Current()->lists.empty(),
           "a reader keeps the old index alive after a new publish");
 }
+// A mount sold for gold and currency is kept with its extended cost; a gold-only one is GoldOnly
+void CheckExtendedCost()
+{
+    using namespace UpkeepItem;
+    constexpr std::uint32_t ITEM_GOLD_MOUNT = 18776;
+    constexpr std::uint32_t ITEM_CURRENCY_MOUNT = 44690;
+    constexpr std::uint32_t EXTENDED_COST = 2400;
+    UpkeepGather input;
+    UpkeepItemFacts goldMount = Item(ITEM_GOLD_MOUNT, CLASS_MISC, SUBCLASS_MOUNT, 1000000, 1, 70);
+    goldMount.requiredSkillRank = 300;
+    UpkeepItemFacts currencyMount = Item(ITEM_CURRENCY_MOUNT, CLASS_MISC, SUBCLASS_MOUNT, 10000, 1, 70);
+    currencyMount.requiredSkillRank = 300;
+    input.items = {goldMount, currencyMount};
+    input.vendorItems = {{VENDOR_REAGENT, ITEM_GOLD_MOUNT, 0, 0, 0, true},
+                         {VENDOR_REAGENT, ITEM_CURRENCY_MOUNT, 0, 0, EXTENDED_COST, true}};
+    UpkeepIndex const index = UpkeepIndex::Build(std::move(input));
+    std::vector<VendorOffer> const& mounts = index.Offers(UpkeepStock::Mount);
+    bool goldOnly = false;
+    bool withCurrency = false;
+    for (VendorOffer const& offer : mounts)
+    {
+        goldOnly = goldOnly || (offer.item == ITEM_GOLD_MOUNT && offer.GoldOnly() && !offer.extendedCost);
+        withCurrency = withCurrency ||
+                       (offer.item == ITEM_CURRENCY_MOUNT && !offer.GoldOnly() && offer.extendedCost == EXTENDED_COST);
+    }
+    Check(mounts.size() == 2 && goldOnly && withCurrency && index.stats.currencyOnly == 0,
+          "a gold+currency row is kept with its extended cost, not gold only; a gold row is gold only");
+}
 }  // namespace
 
 int main()
 {
+    CheckExtendedCost();
     CheckItemRules();
     UpkeepIndex const index = UpkeepIndex::Build(Synthetic());
     CheckTrainers(index);

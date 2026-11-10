@@ -88,9 +88,12 @@ std::shared_ptr<UpkeepIndex const> CurrentUpkeepIndex();
 bool UpkeepIndexReady();
 // The upkeep index lines of `playerbots planner status|indexes`
 std::vector<std::string> UpkeepIndexStatus();
-// Map thread, from FillSnapshot: the upkeep fields (stock, pet diet, known trainer spells); no DB, one pass over the
-// bags and one HasSpell per trainer spell of the bot's class and riding lists
+// Map thread, from FillSnapshot: the upkeep fields (stock, pet diet, known and learnable trainer spells); no DB, one
+// pass over the bags and one HasSpell and IsSpellFitByClassAndRace per trainer spell of the class and riding lists
 void FillUpkeep(Player* bot, Snapshot& snapshot);
+// `playerbots planner needs <bot>`: an online bot's needs, reserve and shortfall (UpkeepNeedRules.h), from a snapshot
+// taken on the world thread while no map updates
+bool HandleNeedsCommand(ChatHandler* handler, char const* args);
 
 // The population's quest statistics (WT13a, PlannerQuests.cpp; rules and book in QuestStats.h). StartQuestIndex
 // loads the stored totals; events before that are not counted

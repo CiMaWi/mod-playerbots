@@ -225,8 +225,12 @@ struct VendorOffer
     std::uint32_t requiredSkillRank{0};  // mounts: the riding rank
     std::uint32_t requiredFaction{0};
     std::uint32_t requiredFactionRank{0};
-    std::uint8_t diet{0};  // pet food: its diet bit
-    bool limited{false};   // the vendor restocks it (maxcount); stock is not tracked here
+    std::uint32_t extendedCost{0};  // the vendor row's ItemExtendedCost: 0 = gold only, else currency on top
+    std::uint8_t diet{0};           // pet food: its diet bit
+    bool limited{false};            // the vendor restocks it (maxcount); stock is not tracked here
+
+    // Payable in gold alone; the needs rules price only these (UpkeepNeedRules.h)
+    bool GoldOnly() const { return extendedCost == 0; }
 
     // The copper for at least `units` items: whole lots of buyCount
     std::uint64_t PriceFor(std::uint32_t units) const
@@ -478,6 +482,7 @@ private:
                 offer.requiredFactionRank = item.requiredFactionRank;
                 offer.diet = DietBit(item.foodType);
                 offer.limited = sold.maxCount != 0;
+                offer.extendedCost = sold.extendedCost;
                 offers[kind].push_back(offer);
             }
         }

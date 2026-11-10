@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -19,18 +20,24 @@
 #include <vector>
 
 #include "Bag.h"
+#include "Chat.h"
 #include "DBCStores.h"
+#include "ItemWorthRules.h"
 #include "Log.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
 #include "PlannerService.h"
 #include "Player.h"
+#include "PlayerbotAIConfig.h"
+#include "PlayerbotMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Trainer.h"
 #include "UpkeepIndex.h"
+#include "UpkeepNeedRules.h"
 
 namespace Planner
 {
@@ -241,14 +248,23 @@ void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, ui
     snapshot.stock.push_back({facts.item, item->GetCount(), kinds, DietBit(facts.foodType)});
 }
 
-void FillKnown(Player* bot, TrainerList const* list, std::vector<std::uint64_t>& bits)
+// The known bits and the can-learn bits (the trainer's own IsSpellFitByClassAndRace check, Trainer.cpp): the class
+// lists are the union over both factions' trainers
+void FillKnown(Player* bot, TrainerList const* list, std::vector<std::uint64_t>& known,
+               std::vector<std::uint64_t>& canLearn)
 {
     if (!list)
         return;
-    bits = SpellBits(list->spells.size());
+    known = SpellBits(list->spells.size());
+    canLearn = SpellBits(list->spells.size());
     for (std::size_t position = 0; position < list->spells.size(); ++position)
-        if (bot->HasSpell(list->spells[position].spellId))
-            SetSpellBit(bits, position);
+    {
+        uint32 const spellId = list->spells[position].spellId;
+        if (bot->HasSpell(spellId))
+            SetSpellBit(known, position);
+        if (bot->IsSpellFitByClassAndRace(spellId))
+            SetSpellBit(canLearn, position);
+    }
 }
 }  // namespace
 
@@ -346,7 +362,52 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
     if (!index)
         return;
     snapshot.upkeepVersion = index->version;
-    FillKnown(bot, index->ClassList(cls), snapshot.knownClassSpells);
-    FillKnown(bot, index->RidingList(bot->getRace(true)), snapshot.knownRidingSpells);
+    FillKnown(bot, index->ClassList(cls), snapshot.knownClassSpells, snapshot.canLearnClassSpells);
+    FillKnown(bot, index->RidingList(bot->getRace(true)), snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
+}
+
+bool HandleNeedsCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    in >> name;
+    if (name.empty() || !normalizePlayerName(name))
+    {
+        handler->SendErrorMessage("Usage: playerbots planner needs <bot name> (an online bot)");
+        return false;
+    }
+    Player* bot = ObjectAccessor::FindPlayerByName(name);
+    if (!bot || !PlayerbotsMgr::instance().GetPlayerbotAI(bot))
+    {
+        handler->SendErrorMessage("PLANNER: {} is not an online bot", name);
+        return false;
+    }
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    if (!index)
+    {
+        handler->SendErrorMessage("PLANNER: the upkeep index is not ready");
+        return false;
+    }
+
+    // Commands run on the world thread inside World::Update, outside MapMgr::Update (which waits for its map
+    // threads), so no map thread touches the bot while the snapshot reads it, as for every GM command on a player
+    PLAYERBOT_CHECK_WORLD_THREAD("planner needs");
+    Snapshot const snapshot = FillSnapshot(bot, 0);
+    UpkeepNeeds::NeedRates rates;
+    rates.earnCopperPerMinute = static_cast<float>(
+        sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(snapshot.level)].EarnCopperPerMinute);
+    if (snapshot.walkMinutesPerHour > 0.0f)
+        rates.walkMinutesPerHour = snapshot.walkMinutesPerHour;
+    rates.flightMinutesPerHour = snapshot.flightMinutesPerHour;
+    rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
+    UpkeepNeeds::NeedList const list = UpkeepNeeds::ComputeNeeds(snapshot, *index, rates);
+    handler->PSendSysMessage(
+        "PLANNER needs of {}: level {}, class {}, e {} c/min, walk {} min/h, durability {}% "
+        "(lowest {}%, {} broken), {} stock entries",
+        bot->GetName(), snapshot.level, snapshot.cls, rates.earnCopperPerMinute, rates.walkMinutesPerHour,
+        snapshot.durabilityPercent, snapshot.lowestDurabilityPercent, snapshot.brokenItems, snapshot.stock.size());
+    for (std::string const& line : UpkeepNeeds::DescribeAll(list))
+        handler->PSendSysMessage("PLANNER   {}", line);
+    return true;
 }
 }  // namespace Planner

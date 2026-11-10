@@ -13,6 +13,7 @@
 #include "Bag.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
+#include "DBCStores.h"
 #include "Group.h"
 #include "Log.h"
 #include "NewRpgInfo.h"
@@ -24,6 +25,7 @@
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "World.h"
 
 namespace Planner
 {
@@ -78,6 +80,41 @@ Limits ConfiguredLimits()
 
 Place PlaceOf(Player* bot) { return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()}; }
 
+// What Player::DurabilityRepair would charge for the item, without repairing it (DurabilityRepairAll(false, ...)
+// repairs for free, so the snapshot cannot call it): lost durability times the item level's multiplier for its class
+// and subclass times the quality's modifier times Rate.RepairCost; no reputation discount (the vendor's faction)
+uint32 RepairCost(Item const* item)
+{
+    if (!item)
+        return 0;
+    uint32 const most = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+    uint32 const current = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+    if (!most || current >= most)
+        return 0;
+    ItemTemplate const* proto = item->GetTemplate();
+    DurabilityCostsEntry const* costs = proto ? sDurabilityCostsStore.LookupEntry(proto->ItemLevel) : nullptr;
+    DurabilityQualityEntry const* quality =
+        costs ? sDurabilityQualityStore.LookupEntry((proto->Quality + 1) * 2) : nullptr;
+    if (!quality)
+        return 0;
+    uint32 const multiplier = costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class, proto->SubClass)];
+    uint32 const copper = uint32((most - current) * multiplier * double(quality->quality_mod));
+    return std::max<uint32>(uint32(copper * sWorld->getRate(RATE_REPAIRCOST)), 1);
+}
+
+// The items DurabilityRepairAll repairs: equipped, the backpack, the bags themselves and the items in them
+uint32 RepairCostAll(Player* bot)
+{
+    uint32 total = 0;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        total += RepairCost(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag const* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                total += RepairCost(bag->GetItemByPos(static_cast<uint8>(slot)));
+    return total;
+}
+
 void FillBags(Player* bot, Snapshot& snapshot)
 {
     uint32 slots = INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START;
@@ -126,6 +163,7 @@ void FillBags(Player* bot, Snapshot& snapshot)
         static_cast<uint8>(maxDurability ? std::min<uint64>(durability * PERCENT / maxDurability, PERCENT) : PERCENT);
     snapshot.lowestDurabilityPercent = static_cast<uint8>(lowest);
     snapshot.brokenItems = static_cast<uint8>(broken);
+    snapshot.repairCost = RepairCostAll(bot);
 }
 
 void FillQuests(Player* bot, Snapshot& snapshot)

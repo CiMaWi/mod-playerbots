@@ -107,6 +107,7 @@ struct Snapshot
     std::uint8_t durabilityPercent{100};
     std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
     std::uint8_t brokenItems{0};                // equipped items at durability 0
+    std::uint32_t repairCost{0};                // copper to repair every worn item, the core's formula, no discount
     std::vector<Skill> skills;                  // riding and the professions the bot has
     std::vector<QuestSlot> quests;
     std::vector<std::uint32_t> rewardedQuests;  // sorted
@@ -123,13 +124,15 @@ struct Snapshot
     Goal currentGoal;         // WT16 fills the goals
     std::vector<Goal> recentGoals;
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
-    std::vector<StockItem> stock;                  // the backpack and every bag, one entry per item id
-    std::uint8_t petDiet{0};                       // the hunter pet's food mask (bit FoodType - 1); 0 = no hunter pet
-    std::uint32_t upkeepVersion{0};                // the upkeep index the bit sets align to; 0 = none yet
-    std::vector<std::uint64_t> knownClassSpells;   // bit i: the class trainer list's spell i is known
-    std::vector<std::uint64_t> knownRidingSpells;  // the same over the riding trainer list
-    float walkMinutesPerHour{0.0f};                // not filled yet: the travel shares are measured later (WU14)
-    float flightMinutesPerHour{0.0f};              // not filled yet
+    std::vector<StockItem> stock;                     // the backpack and every bag, one entry per item id
+    std::uint8_t petDiet{0};                          // the hunter pet's diet (bit FoodType - 1); 0 = unknown
+    std::uint32_t upkeepVersion{0};                   // the upkeep index the bit sets align to; 0 = none yet
+    std::vector<std::uint64_t> knownClassSpells;      // bit i: the class trainer list's spell i is known
+    std::vector<std::uint64_t> knownRidingSpells;     // the same over the riding trainer list
+    std::vector<std::uint64_t> canLearnClassSpells;   // bit i: the class list's spell i fits the bot's class and race
+    std::vector<std::uint64_t> canLearnRidingSpells;  // the same over the riding trainer list
+    float walkMinutesPerHour{0.0f};                   // not filled yet: the travel shares are measured later (WU14)
+    float flightMinutesPerHour{0.0f};                 // not filled yet
 
     std::uint32_t StockCount(std::uint8_t kindBit) const
     {
@@ -145,7 +148,9 @@ struct Snapshot
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
                rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
                stock.capacity() * sizeof(StockItem) +
-               (knownClassSpells.capacity() + knownRidingSpells.capacity()) * sizeof(std::uint64_t);
+               (knownClassSpells.capacity() + knownRidingSpells.capacity() + canLearnClassSpells.capacity() +
+                canLearnRidingSpells.capacity()) *
+                   sizeof(std::uint64_t);
     }
 };
 
