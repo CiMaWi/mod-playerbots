@@ -2193,6 +2193,14 @@ inline int32_t ResizePlan(std::vector<ResizeRange>& ranges, uint32_t roster)
 // owed characters on top of the count the resize reports
 inline bool ResizeMayStart(bool retireBusy, size_t owedReplacements) { return !retireBusy && !owedReplacements; }
 
+// The roster a finished resize reports: what the accounts held when it started, less the deletes and plus the creations
+// it made. A fresh DB read right after the last deletes can still count them (the async commit), which made a run say
+// 2441 for an asked 2438.
+inline uint32_t ResizeDoneCount(uint32_t before, uint32_t deleted, uint32_t created)
+{
+    return before + created - std::min(before, deleted);
+}
+
 // The class of an added bot: the least represented in `classCounts` (indexed by class id) among the bits of
 // `allowedMask` (bit classId - 1), the lowest id on ties; 0 when none is allowed
 inline uint32_t ResizeClass(std::vector<uint32_t> const& classCounts, uint32_t allowedMask)
@@ -2380,6 +2388,9 @@ inline uint32_t ResizeSelftest(std::vector<std::string>& failures)
     }
     check(!ResizeMayStart(true, 0) && !ResizeMayStart(false, 1) && ResizeMayStart(false, 0),
           "a resize starts only with no retire batch running and no replacement owed");
+    check(ResizeDoneCount(2563, 125, 0) == 2438 && ResizeDoneCount(2000, 0, 50) == 2050 &&
+              ResizeDoneCount(2000, 30, 30) == 2000 && ResizeDoneCount(10, 20, 0) == 0,
+          "the resize's done count is before - deleted + created, exact while the last deletes are uncommitted");
     return checks;
 }
 

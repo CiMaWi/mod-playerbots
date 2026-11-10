@@ -1134,6 +1134,7 @@ struct Resize
     ResizeStage stage = ResizeStage::Idle;
     uint32 target = 0;
     uint32 from = 0;
+    uint32 before = 0;  // all characters on the accounts when the resize started (`from` counts the layout's only)
     bool planOnly = false;
     bool preparing = false;  // waits for the retire's preparation (the rows a delete clears)
     std::vector<PopulationPolicy::ResizeRange> ranges;
@@ -1183,13 +1184,16 @@ void FinishResize(Resize& resize, std::string const& note)
     uint32 count = resize.from;
     if (resize.deleted || resize.created)
     {
-        // The count is what the accounts hold, read fresh (not from - deleted + created: that misses bots outside the
-        // layout's levels). LoadRoster keeps the oldest RosterSize characters, so it loads uncapped (0) first and the
-        // new RosterSize is its found count.
+        // The count is the roster when the resize started, less the deletes and plus the creations it made (not from
+        // `from`, which misses bots outside the layout's levels; not a fresh read, which still counts deletes the async
+        // DB has not committed). The reload keeps the in-memory roster current; its rows may still hold the last
+        // deletes, so it is marked dirty to be read again once they are committed. LoadRoster keeps the oldest
+        // RosterSize characters, so it loads uncapped (0) first.
+        count = PopulationPolicy::ResizeDoneCount(resize.before, resize.deleted, resize.created);
         rotation.rosterSize = 0;
         LoadRoster(rotation, rotation.accounts);
-        count = static_cast<uint32>(rotation.rosterFound);
         rotation.rosterSize = count;
+        rotation.rosterDirty = true;
     }
 
     resize.last =
@@ -1359,6 +1363,7 @@ void StartResize(Resize& resize, Retire& retire)
         return;
     }
 
+    resize.before = static_cast<uint32>(rotation.roster.size());
     resize.ranges = PopulationPolicy::ResizeLayout(ResizeMaxLevel());
     resize.classCounts.assign(MAX_CLASSES, 0);
     resize.from = 0;
