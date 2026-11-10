@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <functional>
+#include <shared_mutex>
 
 #include "Action.h"
 #include "CensusMgr.h"
@@ -25,7 +26,7 @@
 // (actions) and CensusMgr's world-log event rows (events), each on the bot's own thread (events also on the world
 // thread, while no map update runs), and the dump of a due case into the writer's queue as one chunk of recorder rows.
 // The rings, triggers and row format are Player-free in WorldLogRecorder.h. PerfMonitor rows: "WorldLog record" (one
-// push), "WorldLog record dump" (one case).
+// push), "WorldLog record dump" (one case), "WorldLog mark" (one .wlog mark).
 namespace
 {
 using WorldLogFormat::Recorder;
@@ -34,6 +35,7 @@ static_assert(WorldLogFormat::RECORDER_RPG_IDLE == RPG_IDLE && WorldLogFormat::R
               "the still watch's idle and rest statuses match NewRpgStatus");
 
 constexpr char const* CONSOLE_CASE = "console";
+constexpr char const* MARK_CASE = "user";
 
 std::atomic<uint64> s_caseIds{0};
 std::atomic<uint64> s_rings{0};
@@ -238,9 +240,77 @@ bool WorldLog::HandleCaseCommand(ChatHandler* handler, char const* args)
 
     botAI->worldLog->recorder.RequestCase(CONSOLE_CASE);
     handler->PSendSysMessage(
-        "WORLDLOG case: requested for {} (guid {}): written at its next position push (trigger mark, detail {}) unless "
-        "it had a case in the last {} s",
-        name, bot->GetGUID().GetCounter(), CONSOLE_CASE, CurrentRecorderSettings().cooldownSeconds);
+        "WORLDLOG case: requested for {} (guid {}): written at its next position push (trigger mark, detail {})", name,
+        bot->GetGUID().GetCounter(), CONSOLE_CASE);
+    return true;
+}
+
+// In game, so on the world thread while no map update runs, like the console commands: the bots' places are read
+// here and each request is an atomic the bot's next position push takes
+bool WorldLog::HandleMarkCommand(ChatHandler* handler, char const* args)
+{
+    if (!Active())
+    {
+        handler->PSendSysMessage("WORLDLOG off: Playerbots.WorldLog.Dir was empty at startup");
+        return true;
+    }
+
+    Player* marker = handler->GetPlayer();
+    if (!marker || !marker->IsInWorld())
+    {
+        handler->PSendSysMessage("WORLDLOG mark: only from a character in the world");
+        return true;
+    }
+
+    std::string_view const text = WorldLogFormat::MarkUserText(args ? args : "");
+    if (text.empty())
+    {
+        handler->PSendSysMessage("WORLDLOG mark: usage: .wlog mark <text> (a case of each bot within {} yd)",
+                                 static_cast<uint32>(WorldLogFormat::MARK_YARDS));
+        return true;
+    }
+
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog mark");
+    uint64 const t = NowMs();
+    WorldLogFormat::FocusPoint const here = FocusPointOf(marker);
+    uint32 bots = 0;
+    {
+        std::shared_lock<std::shared_mutex> guard(*HashMapHolder<Player>::GetLock());
+        for (auto const& pair : ObjectAccessor::GetPlayers())
+        {
+            Player* player = pair.second;
+            if (!player || !player->IsInWorld() ||
+                !WorldLogFormat::Near(here, FocusPointOf(player), WorldLogFormat::MARK_YARDS))
+                continue;
+
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
+            if (!botAI || !botAI->worldLog || !botAI->worldLog->recorder.On())
+                continue;
+
+            botAI->worldLog->recorder.RequestCase(MARK_CASE, static_cast<int64>(t));
+            ++bots;
+        }
+    }
+
+    WorldLogFormat::Place place;
+    place.map = marker->GetMapId();
+    place.zone = marker->GetZoneId();
+    place.area = marker->GetAreaId();
+    place.x = marker->GetPositionX();
+    place.y = marker->GetPositionY();
+    std::string const markText = WorldLogFormat::MarkText(place, text);
+    bool const queued = CensusMgr::Instance().EnqueueWorldLog(
+        WorldLogFormat::Stream::Meta,
+        WorldLogFormat::FormatMetaRow(
+            {t, WorldLogFormat::META_MARK, static_cast<int64>(marker->GetGUID().GetCounter()), bots, markText}),
+        1, t);
+    if (pmo)
+        pmo->finish();
+
+    handler->PSendSysMessage(
+        "WORLDLOG mark t={}: a case requested for {} bots within {} yd (each at its next position push){}", t, bots,
+        static_cast<uint32>(WorldLogFormat::MARK_YARDS),
+        queued ? "" : "; the mark row was not queued (writer stopping)");
     return true;
 }
 

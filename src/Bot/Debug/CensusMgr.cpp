@@ -484,14 +484,22 @@ void CensusMgr::Update(uint32 diff)
     UpdateWorldLog(diff);
 }
 
-// A state pass every StateSeconds, the drops rows every hour of uptime
+// A state pass every StateSeconds and a focus pass every FOCUS_SECONDS between two, the drops rows every hour of
+// uptime
 void CensusMgr::UpdateWorldLog(uint32 diff)
 {
     _stateElapsed += diff;
+    _focusElapsed += diff;
     if (_stateElapsed >= WorldLog::CurrentSettings().stateSeconds * MS_PER_SECOND)
     {
         _stateElapsed = 0;
-        SampleState();
+        _focusElapsed = 0;
+        SampleState(false);
+    }
+    else if (_focusElapsed >= WorldLogFormat::FOCUS_SECONDS * MS_PER_SECOND)
+    {
+        _focusElapsed = 0;
+        SampleState(true);
     }
 
     _dropsElapsed += diff;
@@ -510,10 +518,12 @@ void CensusMgr::UpdateWorldLog(uint32 diff)
 }
 
 // One state row per online player (real players with the human flag), built into one chunk: a full queue drops the
-// whole pass and counts its rows
-void CensusMgr::SampleState()
+// whole pass and counts its rows. A focus pass keeps the real players and the bots within FOCUS_YARDS of one; with no
+// real player online it ends after one read of the player list.
+void CensusMgr::SampleState(bool focusOnly)
 {
-    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog state");
+    PerfMonitorOperation* pmo =
+        sPerfMonitor.start(PERF_MON_TOTAL, focusOnly ? "WorldLog state focus" : "WorldLog state");
 
     uint64 const t = WorldLog::NowMs();
     std::string text;
@@ -522,15 +532,34 @@ void CensusMgr::SampleState()
         // The players are only read here, on the world thread, while no map update runs
         std::shared_lock<std::shared_mutex> guard(*HashMapHolder<Player>::GetLock());
         auto const& players = ObjectAccessor::GetPlayers();
-        text.reserve(players.size() * WorldLogFormat::STATE_ROW_RESERVE);
-        for (auto const& pair : players)
+        _focusPoints.clear();
+        if (focusOnly)
         {
-            Player* player = pair.second;
-            if (!player || !player->IsInWorld())
-                continue;
+            for (auto const& pair : players)
+            {
+                Player* player = pair.second;
+                if (player && player->IsInWorld() && !GET_PLAYERBOT_AI(player))
+                    _focusPoints.push_back(WorldLog::FocusPointOf(player));
+            }
+        }
+        else
+            text.reserve(players.size() * WorldLogFormat::STATE_ROW_RESERVE);
 
-            WorldLogFormat::AppendStateRow(text, StateRowOf(player, t));
-            ++rows;
+        if (!focusOnly || !_focusPoints.empty())
+        {
+            for (auto const& pair : players)
+            {
+                Player* player = pair.second;
+                if (!player || !player->IsInWorld())
+                    continue;
+
+                if (focusOnly &&
+                    !WorldLogFormat::InFocus(_focusPoints, WorldLog::FocusPointOf(player), WorldLogFormat::FOCUS_YARDS))
+                    continue;
+
+                WorldLogFormat::AppendStateRow(text, StateRowOf(player, t));
+                ++rows;
+            }
         }
     }
 

@@ -313,19 +313,26 @@ public:
     bool Enter() { return !_busy.test_and_set(std::memory_order_acquire); }
     void Leave() { _busy.clear(std::memory_order_release); }
 
-    // Any thread: ask for a case at the bot's next position push (a user mark, the console). why must be a literal.
-    void RequestCase(char const* why) { _requested.store(why, std::memory_order_relaxed); }
+    // Any thread: ask for a case at the bot's next position push (a user mark, the console): trigger mark, detail
+    // why (a literal), the trigger row's a. A later request before that push replaces it.
+    void RequestCase(char const* why, int64_t a = 0)
+    {
+        _requestedA.store(a, std::memory_order_relaxed);
+        _requested.store(why, std::memory_order_release);
+    }
 
-    // A position, the mark request and the "no movement" watch. True when a case is due.
+    // A position, the mark request (taken once no other case is due) and the "no movement" watch. True when a case
+    // is due.
     bool PushPosition(WordTable& words, RecorderPosition const& position, bool watched)
     {
         _positions.Push(position);
         _nextPositionMs = position.ms + POSITION_MS;
         _here = position;
 
-        if (_requested.load(std::memory_order_relaxed))
-            if (char const* why = _requested.exchange(nullptr, std::memory_order_relaxed))
-                return Fire(CaseTrigger::Mark, words.Intern(why), 0, position.ms);
+        if (!_due && _requested.load(std::memory_order_relaxed))
+            if (char const* why = _requested.exchange(nullptr, std::memory_order_acquire))
+                return Fire(CaseTrigger::Mark, words.Intern(why), _requestedA.load(std::memory_order_relaxed),
+                            position.ms);
 
         if (!watched)
         {
@@ -496,10 +503,12 @@ private:
         return (reinterpret_cast<uintptr_t>(action) >> ACTION_CACHE_SHIFT) % ACTION_CACHE_SLOTS;
     }
 
-    // At most one case per cooldown; a trigger inside it is counted and dropped
+    // At most one case per cooldown; a trigger inside it is counted and dropped. A mark is the user's request and
+    // ignores the cooldown.
     bool Fire(CaseTrigger trigger, uint16_t detail, int64_t a, uint32_t nowMs)
     {
-        if (_due || (_dumped && nowMs - _lastCaseMs < _cooldownMs))
+        bool const cooling = trigger != CaseTrigger::Mark && _dumped && nowMs - _lastCaseMs < _cooldownMs;
+        if (_due || cooling)
         {
             ++_suppressed;
             return false;
@@ -557,6 +566,7 @@ private:
     State _state = State::Unset;
     std::atomic_flag _busy;  // clear (C++20)
     std::atomic<char const*> _requested{nullptr};
+    std::atomic<int64_t> _requestedA{0};
     RecorderRing<RecorderPosition> _positions;
     RecorderRing<RecorderAction> _actions;
     RecorderRing<RecorderEvent> _events;

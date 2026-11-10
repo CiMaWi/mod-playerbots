@@ -14,6 +14,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "Log.h"
+#include "Player.h"
 #include "ScriptMgr.h"
 #include "WorldLogSelftest.h"
 
@@ -123,6 +124,16 @@ uint64 WorldLog::NowMs()
 {
     auto const sinceEpoch = std::chrono::system_clock::now().time_since_epoch();
     return static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(sinceEpoch).count());
+}
+
+WorldLogFormat::FocusPoint WorldLog::FocusPointOf(Player* player)
+{
+    WorldLogFormat::FocusPoint point;
+    point.map = player->GetMapId();
+    point.instance = player->GetInstanceId();
+    point.x = player->GetPositionX();
+    point.y = player->GetPositionY();
+    return point;
 }
 
 bool WorldLog::HandleSelftestCommand(ChatHandler* handler, char const* /*args*/)

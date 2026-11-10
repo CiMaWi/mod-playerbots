@@ -1617,7 +1617,8 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 # append-only CSV segments per stream (event, state, meta, decision, recorder), each with a header row, named
 # <stream>-<yyyymmddhh>.csv after the UTC hour of their rows (<stream>-<yyyymmddhhmm>.csv when SegmentMinutes is below
 # 60). The streams, columns and words are in the hub's .claude/docs/world-log.md. Dir is read at startup only.
-# StateSeconds (5..3600): one state row per online player this often.
+# StateSeconds (5..3600): one state row per online player this often; real players and the bots within 100 yd of one
+# also every 5 s.
 # SegmentMinutes (1..60, rounded down to a divisor of 60): segment length; values below 60 are for tests.
 # QueueRows (1..10000000): rows per stream that may wait for the writer; more are dropped and counted (meta drops rows
 # every hour and at stop). The three numbers are re-read on .reload config (a meta reload row).
@@ -1631,10 +1632,12 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 # engine's are left out), its last RecorderEvents (1..4096) events. A trigger dumps the ring as one case on the
 # recorder stream: a Stuck event, a trip abort or leg failure, a second death within 10 minutes, a last-resort
 # teleport, no movement for 5 minutes while busy, the same action failing 10 times in a row, a mark. At most one case
-# per bot per RecorderCooldownSeconds (0..86400). About 9.5 KB per bot with the defaults (meta start row ring_bytes).
+# per bot per RecorderCooldownSeconds (0..86400); a mark (the user's request) ignores it. About 9.5 KB per bot with
+# the defaults (meta start row ring_bytes).
 # Ring sizes apply to rings allocated after a reload; the cooldown too.
 # Console: "playerbots worldlog status" (rows written, dropped and waiting per stream; the recorder's rings and cases),
-# "playerbots worldlog selftest", "playerbots worldlog case <bot>" (a case of that bot now, within its limit).
+# "playerbots worldlog selftest", "playerbots worldlog case <bot>" (a case of that bot now). In game (GM):
+# ".wlog mark <text>" (a mark row at your place and a case of each bot within 60 yd).
 #
 Playerbots.WorldLog.Dir = ""
 Playerbots.WorldLog.StateSeconds = 60

@@ -47,8 +47,13 @@ void Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::string_view c
 
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);
 // WL8: "playerbots worldlog case <bot>": a case of the named bot at its next position push (trigger mark, detail
-// console), within the bot's case limit
+// console; a mark ignores the case limit)
 bool HandleCaseCommand(ChatHandler* handler, char const* args);
+// WL14: ".wlog mark <text>" (GM, in game): a mark meta row at the GM's place and a case of each bot within
+// MARK_YARDS (trigger mark, detail user, a = the mark row's t)
+bool HandleMarkCommand(ChatHandler* handler, char const* args);
+// The player's map, instance and flat position for the focus and mark tests
+WorldLogFormat::FocusPoint FocusPointOf(Player* player);
 // WL8: one status line: rings, cases, rows, triggers inside the case limit, words
 std::string RecorderStatus();
 // Dir, the writer, per stream the rows written, dropped, queued and their peak, the open segment; write errors

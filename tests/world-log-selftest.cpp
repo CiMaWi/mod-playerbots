@@ -138,6 +138,8 @@ void WriteSample(std::string const& dir)
                                   sizeof(WorldLogFormat::Recorder) + WorldLogFormat::RingArrayBytes(recorderSettings));
     std::string metaRows = WorldLogFormat::FormatMetaRow(
         WorldLogFormat::MetaRow{SAMPLE_T, WorldLogFormat::META_START, WorldLogFormat::CONTRACT_VERSION, 0, startText});
+    metaRows += WorldLogFormat::FormatMetaRow(WorldLogFormat::MetaRow{
+        SAMPLE_T, WorldLogFormat::META_MARK, 7, 1, WorldLogFormat::MarkText(event.place, "the bot at the gate")});
     QueueAccount account;
     account.AppendDropsRows(metaRows, SAMPLE_T + 1);
     metaRows +=

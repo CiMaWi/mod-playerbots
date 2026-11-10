@@ -243,8 +243,13 @@ public:
             {"worldlog", playerbotsWorldLogCommandTable},
         };
 
+        static ChatCommandTable wlogCommandTable = {
+            {"mark", WorldLog::HandleMarkCommand, SEC_GAMEMASTER, Console::No},
+        };
+
         static ChatCommandTable commandTable = {
             {"playerbots", playerbotsCommandTable},
+            {"wlog", wlogCommandTable},
         };
 
         return commandTable;

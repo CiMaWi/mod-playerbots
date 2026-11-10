@@ -89,6 +89,16 @@ constexpr char const* META_RELOAD = "reload";
 constexpr char const* META_DROPS = "drops";
 constexpr char const* META_MARK = "mark";
 
+// WL14: focus and marks. Real players, and the bots within FOCUS_YARDS of one, get a state row every FOCUS_SECONDS
+// besides the StateSeconds pass; ".wlog mark" asks every bot within MARK_YARDS of the marking player for a case.
+// Distances are flat (x, y) on the same map and instance.
+constexpr uint32_t FOCUS_SECONDS = 5;
+constexpr float FOCUS_YARDS = 100.0f;
+constexpr float MARK_YARDS = 60.0f;
+constexpr size_t MARK_TEXT_MAX = 200;  // bytes of the user's text a mark row keeps
+constexpr unsigned char UTF8_CONTINUATION_MASK = 0xC0;
+constexpr unsigned char UTF8_CONTINUATION = 0x80;
+
 // Playerbots.WorldLog.* tuning values with their defaults and bounds
 struct Settings
 {
@@ -303,6 +313,70 @@ inline std::string FormatMetaRow(MetaRow const& row)
     std::string out;
     out.reserve(META_ROW_RESERVE);
     AppendMetaRow(out, row);
+    return out;
+}
+
+// A player's spot for the focus and mark tests
+struct FocusPoint
+{
+    uint32_t map = 0;
+    uint32_t instance = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+inline bool Near(FocusPoint const& a, FocusPoint const& b, float yards)
+{
+    float const dx = a.x - b.x;
+    float const dy = a.y - b.y;
+    return a.map == b.map && a.instance == b.instance && dx * dx + dy * dy <= yards * yards;
+}
+
+// True when point is within yards of one of points (a real player's own point puts it in focus)
+template <typename Points>
+inline bool InFocus(Points const& points, FocusPoint const& point, float yards)
+{
+    for (FocusPoint const& other : points)
+        if (Near(other, point, yards))
+            return true;
+
+    return false;
+}
+
+// The user's text of a mark: spaces trimmed, at most MARK_TEXT_MAX bytes, cut at a UTF-8 character boundary
+inline std::string_view MarkUserText(std::string_view text)
+{
+    size_t const first = text.find_first_not_of(' ');
+    if (first == std::string_view::npos)
+        return {};
+
+    text = text.substr(first, text.find_last_not_of(' ') - first + 1);
+    if (text.size() <= MARK_TEXT_MAX)
+        return text;
+
+    size_t length = MARK_TEXT_MAX;
+    while (length && (static_cast<unsigned char>(text[length]) & UTF8_CONTINUATION_MASK) == UTF8_CONTINUATION)
+        --length;
+
+    return text.substr(0, length);
+}
+
+// The mark meta row's text: "x=<x> y=<y> map=<map> area=<area> " and the user's text last (MarkUserText)
+inline std::string MarkText(Place const& place, std::string_view text)
+{
+    std::string_view const userText = MarkUserText(text);
+    std::string out;
+    out.reserve(META_ROW_RESERVE + userText.size());
+    out += "x=";
+    AppendPosition(out, place.x);
+    out += " y=";
+    AppendPosition(out, place.y);
+    out += " map=";
+    AppendNumber(out, place.map);
+    out += " area=";
+    AppendNumber(out, place.area);
+    out.push_back(' ');
+    out.append(userText);
     return out;
 }
 

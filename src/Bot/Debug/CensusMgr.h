@@ -22,7 +22,8 @@
 class Player;
 
 // The world log's writer (WorldLog.h; on when Playerbots.WorldLog.Dir is set): events of every player with positions,
-// a state row per online player every StateSeconds, decision, recorder and meta rows. The world thread and the hooks
+// a state row per online player every StateSeconds (real players and the bots near them every FOCUS_SECONDS),
+// decision, recorder and meta rows. The world thread and the hooks
 // only build the strings and queue them; one writer thread owns the segment files. (The class keeps its old name.)
 class CensusMgr
 {
@@ -33,8 +34,8 @@ public:
         return instance;
     }
 
-    // World thread, once per world tick; counter adds, and a state pass once per StateSeconds. Returns at once when
-    // the world log is off.
+    // World thread, once per world tick; counter adds, a state pass once per StateSeconds and a focus pass every
+    // FOCUS_SECONDS between. Returns at once when the world log is off.
     void Update(uint32 diff);
     // Level-up (any thread that raises the level): the world log's Level row of any player; queued, no I/O
     void OnLevelChanged(Player* player, uint8 oldLevel);
@@ -63,7 +64,8 @@ private:
     ~CensusMgr();
 
     void UpdateWorldLog(uint32 diff);
-    void SampleState();
+    // focusOnly: only the real players and the bots within FOCUS_YARDS of one
+    void SampleState(bool focusOnly);
     // The world log's drops rows (one per stream); the caller holds _mutex
     void QueueDropsRowsLocked(uint64 tMs);
     void StartWriter();
@@ -71,6 +73,8 @@ private:
 
     // World thread only
     uint32 _stateElapsed = 0;
+    uint32 _focusElapsed = 0;
+    std::vector<WorldLogFormat::FocusPoint> _focusPoints;  // the real players' spots of a focus pass, reused
     uint32 _dropsElapsed = 0;
     bool _started = false;
 

@@ -727,6 +727,82 @@ inline void CheckRecorder(Checker& checker)
                   "7,1794231912000,42,trigger,stuck,offmesh,0,-8913.2,554.1,0\n",
                   "a whole case's rows");
 }
+
+constexpr uint64_t SIZED_PLAYERS = 2500;     // the queue cap's sizing: 2000+ bots and a few real players
+constexpr uint64_t SIZED_STALL_MINUTES = 5;  // a writer that takes nothing for this long
+constexpr uint64_t SIZED_MARK_BOTS = 400;    // bots within a mark's reach in a crowded city
+constexpr uint64_t PASSES_PER_MINUTE = 60 / FOCUS_SECONDS;
+
+// (i) WL14: the focus range, mark rows, a mark against the case limit, the queue cap's sizing
+inline void CheckFocusAndMarks(Checker& checker)
+{
+    FocusPoint const player{0, 0, 100.0f, 200.0f};
+    std::array<FocusPoint, 2> const players = {player, FocusPoint{1, 0, 0.0f, 0.0f}};
+    checker.Check(InFocus(players, player, FOCUS_YARDS), "a real player is in its own focus");
+    checker.Check(InFocus(players, FocusPoint{0, 0, 160.0f, 280.0f}, FOCUS_YARDS) &&
+                      !InFocus(players, FocusPoint{0, 0, 160.1f, 280.0f}, FOCUS_YARDS),
+                  "focus reaches 100 yd and no further");
+    checker.Check(!InFocus(players, FocusPoint{2, 0, 100.0f, 200.0f}, FOCUS_YARDS) &&
+                      !InFocus(players, FocusPoint{0, 7, 100.0f, 200.0f}, FOCUS_YARDS),
+                  "another map or instance is out of focus");
+    checker.Check(InFocus(players, FocusPoint{1, 0, -70.0f, 70.0f}, FOCUS_YARDS), "every real player's range counts");
+    checker.Check(!InFocus(std::array<FocusPoint, 0>{}, player, FOCUS_YARDS), "no real player, no focus");
+    checker.Check(Near(player, FocusPoint{0, 0, 136.0f, 248.0f}, MARK_YARDS) &&
+                      !Near(player, FocusPoint{0, 0, 136.1f, 248.0f}, MARK_YARDS),
+                  "a mark reaches 60 yd and no further");
+
+    Place const place{571, 3537, 4100, 5804.25f, -624.5f};
+    std::string const markText = MarkText(place, "  stuck at the bridge, again  ");
+    checker.Equal(markText, "x=5804.3 y=-624.5 map=571 area=4100 stuck at the bridge, again",
+                  "mark text: the place first, the user's text last and trimmed");
+    checker.Equal(FormatMetaRow(MetaRow{T_2026_11_09_13_45_12, META_MARK, 9, 3, markText}),
+                  "1794231912000,mark,9,3,x=5804.3 y=-624.5 map=571 area=4100 stuck at the bridge_ again\n",
+                  "a mark row: a = the player, b = the bots asked, the text's commas replaced");
+    checker.Check(MarkUserText("   ").empty() && MarkUserText("").empty(), "a blank mark text is empty");
+    checker.Check(MarkUserText(std::string(MARK_TEXT_MAX + 50, 'a')).size() == MARK_TEXT_MAX,
+                  "a mark keeps 200 bytes of text");
+    std::string const accented = std::string(MARK_TEXT_MAX - 1, 'a') +
+                                 "\xC3\xA4"
+                                 "bb";
+    checker.Check(MarkUserText(accented).size() == MARK_TEXT_MAX - 1, "the text is cut at a UTF-8 character boundary");
+
+    WordTable words;
+    RecorderSettings const defaults;
+    Recorder marked;
+    marked.Allocate(defaults);
+    std::string rows;
+    bool const stuck = marked.PushEvent(words, RECORDER_T0, "Stuck", "offmesh", 0, 0);
+    marked.RequestCase("user", static_cast<int64_t>(T_2026_11_09_13_45_12));
+    bool const waiting = marked.PushPosition(words, RecorderPosition{RECORDER_T0 + SECOND_MS, 1.0f, 2.0f, 0, 0}, false);
+    marked.AppendCase(rows, words, 1, 1, RECORDER_T0 + SECOND_MS, T_2026_11_09_13_45_12);
+    checker.Check(stuck && !waiting, "a mark waits while another case is due");
+    rows.clear();
+    bool const markDue =
+        marked.PushPosition(words, RecorderPosition{RECORDER_T0 + 2 * SECOND_MS, 1.0f, 2.0f, 0, 0}, false);
+    marked.AppendCase(rows, words, 2, 1, RECORDER_T0 + 2 * SECOND_MS, T_2026_11_09_13_45_12);
+    std::string_view const trigger = LastRow(rows);
+    checker.Check(
+        markDue && Field(trigger, 4) == "mark" && Field(trigger, 5) == "user" && Field(trigger, 6) == "1794231912000",
+        "a mark right after a case makes its own; the trigger row's a is the mark's t");
+    bool const stuckAfter = marked.PushEvent(words, RECORDER_T0 + 5 * MINUTE_MS, "Stuck", "offmesh", 0, 0);
+    marked.RequestCase("user", 1);
+    bool const secondMark =
+        marked.PushPosition(words, RecorderPosition{RECORDER_T0 + 6 * MINUTE_MS, 1.0f, 2.0f, 0, 0}, false);
+    checker.Check(!stuckAfter && secondMark && marked.Suppressed() == 1,
+                  "after a mark other triggers keep the case limit, a second mark does not");
+
+    // A stalled writer: every player in focus (one full and eleven focus passes a minute), then a mark's cases
+    Settings const settings;
+    QueueAccount account;
+    bool admitted = true;
+    for (uint64_t pass = 0; pass < SIZED_STALL_MINUTES * PASSES_PER_MINUTE; ++pass)
+        admitted = account.Admit(Stream::State, SIZED_PLAYERS, settings.queueRows) && admitted;
+    uint64_t const caseRows = defaults.seconds + defaults.actions + defaults.events + 1;
+    for (uint64_t bot = 0; bot < SIZED_MARK_BOTS; ++bot)
+        admitted = account.Admit(Stream::Recorder, caseRows, settings.queueRows) && admitted;
+    checker.Check(admitted && account.DroppedTotal() == 0,
+                  "the default cap holds 5 minutes of 2500 players in focus and 400 full cases");
+}
 }  // namespace SelftestDetail
 
 inline uint32_t Selftest(std::vector<std::string>& failures)
@@ -740,6 +816,7 @@ inline uint32_t Selftest(std::vector<std::string>& failures)
     SelftestDetail::CheckEventWords(checker);
     SelftestDetail::CheckDecisions(checker);
     SelftestDetail::CheckRecorder(checker);
+    SelftestDetail::CheckFocusAndMarks(checker);
     return checker.Checks();
 }
 }  // namespace WorldLogFormat
