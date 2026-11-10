@@ -1008,22 +1008,31 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index)
     return {node.mapId, node.x, node.y, node.z};
 }
 
-// A walk leg's speed against its estimate (debug): its path through the waypoints, its straight line, the time taken
-void LogWalkLeg(Player* bot, TravelRoute::Leg const& leg, uint32 index, size_t count, uint32 elapsedMs, char const* how)
+// A walk leg's end (WT.23): its trip decision row, walk_leg when done or walk_leg_failed (how the bot went: foot, part
+// or mounted; its seconds in combat; its seconds against the estimate), and in the debug log its speed: its path
+// through the waypoints, its straight line, the time taken
+void LogWalkLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, TravelLegs::LegRecord const& record,
+                uint32 nowMs, uint32 elapsedMs, char const* how, bool done)
 {
+    TravelRoute::Leg const& leg = data.trip.legs[index];
+    float const seconds = static_cast<float>(elapsedMs) / 1000.0f;
+    float const combat = TravelLegs::CombatSeconds(record, nowMs);
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::Trip, done ? "walk_leg" : "walk_leg_failed", TravelLegs::MountWord(record),
+        combat, {{"seconds", seconds}, {"estimate", leg.seconds}, {"leg", static_cast<float>(index + 1)}}, data.tripId);
     if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return;
     std::vector<TravelLegs::Waypoint> const points = TravelLegs::Waypoints(leg, GraphNodeAt);
     float path = 0.0f;
     for (size_t i = 1; i < points.size(); ++i)
         path += TravelRoute::Distance(points[i - 1].at, points[i].at);
-    float const seconds = static_cast<float>(elapsedMs) / 1000.0f;
     TravelRoute::Point const at{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     LOG_DEBUG("playerbots",
               "[Route] {} walk leg {}/{} {}: {:.0f} yd straight, {:.0f} yd path in {:.0f} s ({:.1f} yd/s), estimate "
-              "{:.0f} s, {:.0f} yd from its end",
-              bot->GetName(), index + 1, count, how, TravelRoute::Distance(leg.from, leg.to), path, seconds,
-              seconds > 0.0f ? path / seconds : 0.0f, leg.seconds, TravelRoute::Distance(at, leg.to));
+              "{:.0f} s, {:.0f} yd from its end, {} ({} of {} ticks mounted), {:.0f} s in combat",
+              bot->GetName(), index + 1, data.trip.legs.size(), how, TravelRoute::Distance(leg.from, leg.to), path,
+              seconds, seconds > 0.0f ? path / seconds : 0.0f, leg.seconds, TravelRoute::Distance(at, leg.to),
+              TravelLegs::MountWord(record), record.mountedTicks, record.ticks, combat);
 }
 
 // The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
@@ -1053,6 +1062,9 @@ void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::
         alternatives.Add({"walk_direct", WorldLogFormat::WalkSeconds(yards, bot->GetSpeed(MOVE_RUN))});
     }
     alternatives.Add({"legs", static_cast<float>(legs)});
+    // No route kept within the walk level cap: this one walks past creatures above it (TravelRoute::Search)
+    if (route.overCap)
+        alternatives.Add({"over_cap", 1.0f});
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Route, legs ? chain.View() : "here",
                        data.trip.replans ? "replan" : "search", route.totalSeconds, alternatives, data.tripId);
 }
@@ -1068,6 +1080,10 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         EndTrip(*data, "deadline", "abort:deadline");
         return true;
     }
+    // Killed twice on the leg or three times on the trip (PlayerbotAI::ChangeEngine counts it, the follower runs
+    // again once the bot is back): the leg fails, its edge is avoided; the third death ends the trip
+    if (TravelLegs::DiedTooOften(data->trip))
+        return LegFailed(*data, TravelLegs::FailReason::Death);
     if (data->route.waiting)
         return TakeRoute(*data);
     if (data->trip.legs.empty())
@@ -1088,6 +1104,8 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     seen.stuck = data->stuck;
     seen.nowMs = getMSTime();
     TravelLegs::Trip const& trip = data->trip;
+    TravelLegs::NoteTick(data->trip, bot->IsMounted());
+    TravelLegs::LegRecord const recordBefore = trip.record;  // Advance starts a new leg's record
     uint32 const legBefore = trip.legIdx;
     uint32 const legStartBefore = trip.legStartMs;
     TravelLegs::Decision const next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
@@ -1099,7 +1117,7 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         uint32 const seconds = i == legBefore ? (seen.nowMs - legStartBefore) / IN_MILLISECONDS : 0;
         EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), data->tripId, seconds);
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Walk)
-            LogWalkLeg(bot, trip.legs[i], i, trip.legs.size(), seen.nowMs - legStartBefore, "done");
+            LogWalkLeg(bot, *data, i, recordBefore, seen.nowMs, seen.nowMs - legStartBefore, "done", true);
     }
     switch (next.act)
     {
@@ -1140,6 +1158,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     // The trip's stuck walks: their start or goal hops are left out (TravelLegs::NoteStuck)
     request.avoidNodes = data.trip.avoid;
     request.noDirect = data.trip.noDirect;
+    // The walks this bot died on twice (TravelLegs::NoteDeath): their graph edges are left out, for its trip only
+    request.avoidEdges = data.trip.avoidEdges;
     if (!TravelRoute::RouteService::Instance().Submit(bot->GetGUID().GetRawValue(), request,
                                                       TravelRoute::ConfiguredParams()))
     {
@@ -1322,10 +1342,13 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     uint32 const legSeconds =
         trip.legIdx < trip.legs.size() ? GetMSTimeDiffToNow(trip.legStartMs) / IN_MILLISECONDS : 0;
     EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), data.tripId, legSeconds);
-    if (reason == TravelLegs::FailReason::Timeout && trip.legIdx < trip.legs.size() &&
-        trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk)
-        LogWalkLeg(bot, trip.legs[trip.legIdx], trip.legIdx, trip.legs.size(), getMSTime() - trip.legStartMs,
-                   "timed out");
+    // A failed walk's row before AfterFailure starts the next record
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk)
+    {
+        uint32 const now = getMSTime();
+        LogWalkLeg(bot, data, trip.legIdx, trip.record, now, now - trip.legStartMs,
+                   reason == TravelLegs::FailReason::Timeout ? "timed out" : TravelLegs::FailWord(reason), false);
+    }
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Hearth)
         data.noHearth = true;
     // A portal that did not take the bot through, or a flight that could not be taken: the search avoids that edge

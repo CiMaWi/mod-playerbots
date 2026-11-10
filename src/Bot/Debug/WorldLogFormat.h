@@ -390,12 +390,13 @@ enum class DecisionKind : uint8_t
     Errand,
     Inn,
     Upkeep,
-    Death
+    Death,
+    Circuit
 };
 
-constexpr size_t DECISION_KIND_COUNT = 7;
+constexpr size_t DECISION_KIND_COUNT = 8;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status", "route", "trip", "errand", "inn", "upkeep", "death"};
+    "rpg_status", "route", "trip", "errand", "inn", "upkeep", "death", "circuit"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

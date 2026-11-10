@@ -22,10 +22,6 @@ namespace TravelRoute
 namespace
 {
 constexpr uint32 SPELL_HEARTHSTONE = 8690;
-constexpr uint32 RIDING_APPRENTICE = 75;   // a 60 % ground mount
-constexpr uint32 RIDING_JOURNEYMAN = 150;  // a 100 % ground mount
-constexpr float APPRENTICE_MOUNT_RATE = 1.6f;
-constexpr float JOURNEYMAN_MOUNT_RATE = 2.0f;
 
 static_assert(TAXI_MASK_SIZE == TaxiMaskSize, "the snapshot's taxi mask has PlayerTaxi's layout");
 
@@ -61,18 +57,9 @@ Snapshot FillSnapshot(Player const* bot, std::uint32_t requestId)
     snapshot.hearth = {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ};
     snapshot.hearthCooldownMs = bot->GetSpellCooldownDelay(SPELL_HEARTHSTONE);
     snapshot.mounted = bot->IsMounted();
-
-    float runSpeed = bot->GetSpeed(MOVE_RUN);
-    if (!snapshot.mounted)
-    {
-        // A bot that can ride mounts for a long way (CheckMountStateAction): plan with its ground mount's speed
-        uint32 const riding = bot->GetPureSkillValue(SKILL_RIDING);
-        if (riding >= RIDING_JOURNEYMAN)
-            runSpeed = std::max(runSpeed, playerBaseMoveSpeed[MOVE_RUN] * JOURNEYMAN_MOUNT_RATE);
-        else if (riding >= RIDING_APPRENTICE)
-            runSpeed = std::max(runSpeed, playerBaseMoveSpeed[MOVE_RUN] * APPRENTICE_MOUNT_RATE);
-    }
-    snapshot.runSpeed = runSpeed;
+    // The bot's speed as it is (WT.23): a mounted bot's run speed has its mount in it; one on foot is planned on foot,
+    // because travel walks are not proven to mount (the trip's walk_leg rows log mounted per leg)
+    snapshot.runSpeed = bot->GetSpeed(MOVE_RUN);
     snapshot.swimSpeed = bot->GetSpeed(MOVE_SWIM);
     return snapshot;
 }

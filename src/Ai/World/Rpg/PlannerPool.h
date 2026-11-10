@@ -22,6 +22,7 @@
 #include <deque>
 #include <exception>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -164,7 +165,8 @@ struct Snapshot
 
 enum class JobKind : std::uint8_t
 {
-    Noop,  // proves the machinery (WorldTravel.PlannerNoopSeconds); its answer changes nothing
+    Noop,     // proves the machinery (WorldTravel.PlannerNoopSeconds); its answer changes nothing
+    Circuit,  // a questing circuit at the bot's hub (WT13b, QuestCircuit.h); WT16 applies it
 };
 
 struct NoopAnswer
@@ -172,7 +174,14 @@ struct NoopAnswer
     std::uint64_t checksum{0};
 };
 
-using Payload = std::variant<std::monostate, NoopAnswer>;
+struct CircuitPlan;  // QuestCircuit.h
+
+struct CircuitAnswer
+{
+    std::shared_ptr<CircuitPlan const> plan;
+};
+
+using Payload = std::variant<std::monostate, NoopAnswer, CircuitAnswer>;
 // A pure function of the snapshot. None or an exception = failed: the bot gets no result and keeps today's pick
 using Compute = std::function<std::optional<Payload>(Snapshot const&)>;
 
