@@ -1319,6 +1319,14 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
         WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }
+    // Honest upkeep of persistent bots (Playerbots.Upkeep.*); the defaults (UpkeepConfig) are the conf.dist values
+    {
+        constexpr uint32 MaxHandoutShare = 100;
+        Upkeep = UpkeepConfig{};
+        Upkeep.HandoutShare = std::min<uint32>(
+            sConfigMgr->GetOption<uint32>("Playerbots.Upkeep.HandoutShare", Upkeep.HandoutShare, false),
+            MaxHandoutShare);
+    }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)

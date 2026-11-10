@@ -17,6 +17,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "Upkeep.h"
 
 // ReleaseSpiritAction implementation
 bool ReleaseSpiritAction::Execute(Event event)
@@ -49,8 +50,11 @@ bool ReleaseSpiritAction::Execute(Event event)
     botAI->TellMasterNoFacing(message);
 
     IncrementDeathCount();
-    bot->DurabilityRepairAll(false, 1.0f, false);
-    EventLog::Honesty(bot, "Repair", "free_repair_release");
+    if (Upkeep::Granted(bot, UpkeepKind::Repair))
+    {
+        bot->DurabilityRepairAll(false, 1.0f, false);
+        Upkeep::Note(bot, UpkeepKind::Repair, "free_repair_release");
+    }
     LogRelease("released");
 
     WorldPacket releasePacket(CMSG_REPOP_REQUEST);
@@ -91,8 +95,11 @@ void ReleaseSpiritAction::LogRelease(std::string const& releaseMsg) const
 bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 {
     IncrementDeathCount();
-    bot->DurabilityRepairAll(false, 1.0f, false);
-    EventLog::Honesty(bot, "Repair", "free_repair_release");
+    if (Upkeep::Granted(bot, UpkeepKind::Repair))
+    {
+        bot->DurabilityRepairAll(false, 1.0f, false);
+        Upkeep::Note(bot, UpkeepKind::Repair, "free_repair_release");
+    }
     LogRelease("auto released");
 
     WorldPacket packet(CMSG_REPOP_REQUEST);

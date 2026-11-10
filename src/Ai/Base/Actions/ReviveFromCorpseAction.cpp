@@ -19,6 +19,8 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "Upkeep.h"
+#include "World.h"
 #include "WorldTravelRules.h"
 
 // Top of the default start-zone brackets (Playerbots.ZoneBracket.*).
@@ -387,8 +389,13 @@ bool SpiritHealerAction::Execute(Event /*event*/)
             LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
                       bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
             PlayerbotChatHandler ch(bot);
-            bot->ResurrectPlayer(0.5f);
-            EventLog::Honesty(bot, "Resurrect", "spirit_healer_free");
+            // Free when granted, else what a player pays (WorldSession::SendSpiritResurrect)
+            bool const granted = Upkeep::Granted(bot, UpkeepKind::Resurrect);
+            bot->ResurrectPlayer(0.5f, !granted);
+            if (granted)
+                Upkeep::Note(bot, UpkeepKind::Resurrect, "spirit_healer_free");
+            else
+                bot->DurabilityLossAll(sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT) / 100.0f, true);
             bot->SpawnCorpseBones();
             context->GetValue<Unit*>("current target")->Set(nullptr);
             bot->SetTarget();
