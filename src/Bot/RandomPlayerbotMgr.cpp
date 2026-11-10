@@ -49,6 +49,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "ThreadCheck.h"
+#include "RpgNavMeshSnap.h"
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "Unit.h"
@@ -2077,6 +2078,18 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
             continue;
 
         z = 0.05f + ground;
+
+        // The spot must stand on the nav mesh (as grind spots do): off it a bot cannot start any move (WT10e-1). The
+        // mesh query belongs to its map's thread: for another map, from a map thread, the spot stays as it is (the
+        // off-mesh stuck check gets such a bot out)
+        if (map == bot->FindMap() || PlayerbotThreadCheck::IsWorldThread())
+        {
+            NavMeshSnap::Result const snap = NavMeshSnap::Nearest(map, x, y, z, 3.0f, 50.0f);
+            if (snap == NavMeshSnap::Result::None)
+                continue;
+            if (snap == NavMeshSnap::Result::Found)
+                z += 0.05f;
+        }
 
         if (!botAI->StarterLevelDistanceCheck(bot, loc, true))
             continue;

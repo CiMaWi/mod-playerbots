@@ -20,12 +20,15 @@
 #include "PathGenerator.h"
 #include "Playerbots.h"
 #include "RaceMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StartingHistoryRules.h"
 #include "Talentspec.h"
 #include "TransportMgr.h"
 #include "TravelNode.h"
 #include "VMapFactory.h"
 #include "VMapMgr2.h"
+#include "WorldTravelRules.h"
 #include <deque>
 #include <iomanip>
 #include <numeric>
@@ -4757,6 +4760,9 @@ void TravelMgr::PrepareDestinationCache()
     uint32 maxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
     uint32 flightMastersCount = 0;
     uint32 innkeepersCount = 0;
+    uint32 innSpots = 0;
+    uint32 innsPhased = 0;   // phased out by their area for a bot without quest progress, or not in the normal phase
+    uint32 innsHostile = 0;  // a faction hostile to every player
     uint32 bankerCount = 0;
     uint32 vendorCount = 0;
 
@@ -4893,6 +4899,34 @@ void TravelMgr::PrepareDestinationCache()
                 if (zone2LevelBracket.find(areaId) == zone2LevelBracket.end())
                     continue;
 
+                // Only innkeepers a bot can use (WorldTravel::InnSpawnUsable): seen in the normal phase, friendly to
+                // players and not phased out by the spell_area rows of their area or zone
+                bool const hostileToPlayers = (factionEntry->hostileMask & FACTION_MASK_PLAYER) != 0;
+                bool phasedOut = false;
+                for (uint32 const phaseArea : {area->ID, areaId})
+                {
+                    SpellAreaForAreaMapBounds const rows = sSpellMgr->GetSpellAreaForAreaMapBounds(phaseArea);
+                    for (auto row = rows.first; row != rows.second && !phasedOut; ++row)
+                    {
+                        SpellArea const* spellArea = row->second;
+                        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellArea->spellId);
+                        if (!spell)
+                            continue;
+                        for (SpellEffectInfo const& effect : spell->Effects)
+                            if (effect.ApplyAuraName == SPELL_AURA_PHASE &&
+                                WorldTravel::PhaseRowHidesSpawn(
+                                    spellArea->autocast, spellArea->questStart, spellArea->auraSpell,
+                                    static_cast<uint32>(effect.MiscValue), creatureData.phaseMask))
+                                phasedOut = true;
+                    }
+                }
+                if (!WorldTravel::InnSpawnUsable(creatureData.phaseMask, hostileToPlayers, phasedOut))
+                {
+                    ++(hostileToPlayers ? innsHostile : innsPhased);
+                    continue;
+                }
+                ++innSpots;
+
                 LevelBracket bracket = zone2LevelBracket[areaId];
                 WorldPosition loc(mapId, x + cos(orient) * 5.0f, y + sin(orient) * 5.0f, z + 0.5f, orient + M_PI);
                 InnInfo const inn{loc, area->ID, areaId};
@@ -4948,11 +4982,16 @@ void TravelMgr::PrepareDestinationCache()
         }
     }
 
-    // Process temporary caches
+    LOG_INFO("playerbots", ">> Inn cache: {} spots, {} filtered ({} phased out, {} hostile to players)", innSpots,
+             innsPhased + innsHostile, innsPhased, innsHostile);
+
+    // Process temporary caches. A cell's spot is its first spawn's own position: the cell corner (rounded to 50 yd in
+    // x, y and z) put bots inside rocks, under the world or on unmeshed objects (WT10e-1)
     for (auto const& [gridTuple, creatureDataList] : tempLocsCache)
     {
         if (creatureDataList.size() >= 2)
         {
+            CreatureData const& first = creatureDataList[0];
             CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(creatureDataList[0].id);
             uint32 level = (creatureTemplate->minlevel + creatureTemplate->maxlevel + 1) / 2;
             for (int32 l = (int32)level - (int32)sPlayerbotAIConfig.RandomBotTeleLowerLevel;
@@ -4961,10 +5000,8 @@ void TravelMgr::PrepareDestinationCache()
                 if (l < 1 || l > int32(maxLevel))
                     continue;
 
-                locsPerLevelCache[(uint8)l].push_back(WorldLocation(std::get<0>(gridTuple),
-                    static_cast<float>(std::get<1>(gridTuple)) * 50.0f,
-                    static_cast<float>(std::get<2>(gridTuple)) * 50.0f,
-                    static_cast<float>(std::get<3>(gridTuple)) * 50.0f));
+                locsPerLevelCache[(uint8)l].push_back(
+                    WorldLocation(std::get<0>(gridTuple), first.posX, first.posY, first.posZ));
             }
         }
     }

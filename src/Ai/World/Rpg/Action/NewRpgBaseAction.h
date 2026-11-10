@@ -36,7 +36,14 @@ protected:
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);
     // Records the Stuck event (cause, status, bot and destination) when MoveFarTo gives a destination up
-    void RecordStuck(WorldPosition const& dest);
+    WorldTravel::StuckCause RecordStuck(WorldPosition const& dest);
+    // The bot on the ground stands where no walkable poly is near (NavMeshSnap); false when the mesh cannot tell
+    bool BotOffMesh();
+    // An off-mesh bot's way back onto the mesh (WorldTravel::OffMeshNext): hearth, else an unseen short move
+    void RecoverOffMesh();
+    // Casts the hearthstone as a player would (off the mount first, on the ground). On a refusal `refusal` holds the
+    // reason word (WorldTravel::HearthRefusalWord) and `castResult` the core's SpellCastResult for cast_failed
+    bool CastHearth(char const*& refusal, float& castResult);
     bool MoveWorldObjectTo(ObjectGuid guid, float distance = INTERACTION_DISTANCE);
     bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL, WorldObject* center = nullptr);
     bool ForceToWait(uint32 duration, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);

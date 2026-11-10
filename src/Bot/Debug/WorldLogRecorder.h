@@ -53,8 +53,8 @@ constexpr size_t RECORDER_ROW_RESERVE = 64;
 constexpr int32_t RECORDER_RPG_IDLE = 0;
 constexpr int32_t RECORDER_RPG_REST = 7;
 // The last-resort teleports (Honesty Teleport sources) that make a case; the managers' moves (mgr_*) do not
-constexpr std::array<std::string_view, 3> LAST_RESORT_TELEPORTS = {"spirit_healer_fallback", "ghost_to_corpse",
-                                                                   "repop_graveyard"};
+constexpr std::array<std::string_view, 4> LAST_RESORT_TELEPORTS = {"spirit_healer_fallback", "ghost_to_corpse",
+                                                                   "repop_graveyard", "off_mesh_snap"};
 
 struct RecorderSettings
 {

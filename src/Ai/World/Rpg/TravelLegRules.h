@@ -76,7 +76,8 @@ enum class FailReason : std::uint8_t
     NoAnswer,     // the route service did not answer in time, or the answer was for another map or too old
     NoRoute,      // the search found no route
     Taxi,         // no flight master at the leg's start, the path is not discovered, or the core refused the taxi
-    Hearth        // the hearthstone is missing or its cast failed
+    Hearth,       // the hearthstone is missing or its cast failed
+    OffMesh       // the bot stands off the walkable mesh (MoveFarTo's off-mesh check): no walk can start there
 };
 
 inline char const* FailWord(FailReason reason)
@@ -107,6 +108,8 @@ inline char const* FailWord(FailReason reason)
             return "taxi";
         case FailReason::Hearth:
             return "hearth";
+        case FailReason::OffMesh:
+            return "off_mesh";
     }
     return "?";
 }
@@ -160,6 +163,8 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:taxi";
         case FailReason::Hearth:
             return "leg_failed:hearth";
+        case FailReason::OffMesh:
+            return "leg_failed:off_mesh";
     }
     return "leg_failed:?";
 }
@@ -192,6 +197,8 @@ inline char const* AbortSource(FailReason reason)
             return "abort:taxi";
         case FailReason::Hearth:
             return "abort:hearth";
+        case FailReason::OffMesh:
+            return "abort:off_mesh";
     }
     return "abort:?";
 }
@@ -516,10 +523,12 @@ inline bool NoteStuck(Trip& trip)
 }
 
 // After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
-// at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint
+// at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
+// the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans
 inline Recovery AfterFailure(Trip& trip, FailReason reason)
 {
-    if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || trip.replans >= MAX_REPLANS)
+    if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || reason == FailReason::OffMesh ||
+        trip.replans >= MAX_REPLANS)
         return Recovery::Abort;
     if (reason == FailReason::Stuck && NoteStuck(trip))
         return Recovery::Abort;

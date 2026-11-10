@@ -266,6 +266,8 @@ void CheckStuckAndReplans()
           "an unsupported leg aborts at once");
     Check(TravelLegs::AfterFailure(fresh, FailReason::NoRoute) == TravelLegs::Recovery::Abort,
           "no route aborts at once");
+    Check(TravelLegs::AfterFailure(fresh, FailReason::OffMesh) == TravelLegs::Recovery::Abort && fresh.avoid.empty(),
+          "off the mesh aborts at once and leaves no node out");
     Check(fresh.replans == 0, "an abort spends no replan");
 
     // The first walk from the bot's own start has no graph edge yet; the portal's edge is its two nodes
@@ -547,7 +549,7 @@ void CheckEventSources()
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
     bool reasons = true;
-    for (int r = 0; r <= static_cast<int>(FailReason::Hearth); ++r)
+    for (int r = 0; r <= static_cast<int>(FailReason::OffMesh); ++r)
     {
         FailReason const reason = static_cast<FailReason>(r);
         std::string const word = TravelLegs::FailWord(reason);
@@ -555,6 +557,9 @@ void CheckEventSources()
                   TravelLegs::AbortSource(reason) == "abort:" + word;
     }
     Check(reasons, "events: leg_failed:<reason> and abort:<reason> for every reason");
+    Check(std::string(TravelLegs::LegFailedSource(FailReason::OffMesh)) == "leg_failed:off_mesh" &&
+              std::string(TravelLegs::AbortSource(FailReason::OffMesh)) == "abort:off_mesh",
+          "events: off_mesh words");
 }
 
 void CheckPlaces()

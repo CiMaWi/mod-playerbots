@@ -158,6 +158,21 @@ void CheckStuck()
 
     Check(classify(StuckInput{}) == StuckCause::Other, "no path asked: other");
 
+    // The bot's own spot off the mesh (WT10e-2): before doors and the path result, after transport and water
+    StuckInput botOff = door;
+    botOff.StartOffMesh = true;
+    Check(classify(botOff) == StuckCause::OffMesh, "bot off the mesh before door and path");
+    StuckInput offNoPathAsked;
+    offNoPathAsked.StartOffMesh = true;
+    Check(classify(offNoPathAsked) == StuckCause::OffMesh, "bot off the mesh needs no path");
+    StuckInput offInWater = botOff;
+    offInWater.FallingOrSwimming = true;
+    Check(classify(offInWater) == StuckCause::FellOrSwimming, "falling or water before off the mesh");
+    StuckInput offOtherMap = botOff;
+    offOtherMap.OtherMap = true;
+    Check(classify(offOtherMap) == StuckCause::Other, "another map before off the mesh");
+    Check(std::string(WorldTravel::StuckCauseWord(StuckCause::OffMesh)) == "off_mesh", "word off_mesh");
+
     Check(std::string(WorldTravel::StuckCauseWord(StuckCause::NoPath)) == "no_path", "word no_path");
     Check(std::string(WorldTravel::StuckCauseWord(StuckCause::NoProgress)) == "no_progress", "word no_progress");
     Check(std::string(WorldTravel::StuckCauseWord(StuckCause::FellOrSwimming)) == "fell_or_swimming",
@@ -168,6 +183,110 @@ void CheckStuck()
     Check(std::string(WorldTravel::StuckCauseWord(StuckCause::UnreachablePoi)) == "unreachable_poi",
           "word unreachable_poi");
     Check(std::string(WorldTravel::StuckCauseWord(StuckCause::Other)) == "other", "word other");
+}
+
+void CheckOffMeshRecovery()
+{
+    using WorldTravel::OffMeshNext;
+    using WorldTravel::OffMeshRecovery;
+    Check(OffMeshNext(true, true, true) == OffMeshRecovery::Hearth, "off mesh: a cast hearthstone comes first");
+    Check(OffMeshNext(false, true, false) == OffMeshRecovery::Snap, "off mesh: no hearth, a poly near, unseen: snap");
+    Check(OffMeshNext(false, true, true) == OffMeshRecovery::Seen, "off mesh: a real player sees it: no snap");
+    Check(OffMeshNext(false, false, false) == OffMeshRecovery::NoPoly, "off mesh: no poly within 30 yd: nothing");
+    Check(std::string(WorldTravel::OffMeshRecoveryWord(OffMeshRecovery::Hearth)) == "hearth" &&
+              std::string(WorldTravel::OffMeshRecoveryWord(OffMeshRecovery::Snap)) == "snap" &&
+              std::string(WorldTravel::OffMeshRecoveryWord(OffMeshRecovery::Seen)) == "seen" &&
+              std::string(WorldTravel::OffMeshRecoveryWord(OffMeshRecovery::NoPoly)) == "no_poly",
+          "off mesh: recovery words");
+    Check(WorldTravel::OFF_MESH_SNAP_YARDS == 30.0f && WorldTravel::OFF_MESH_CHECK_ATTEMPT < 5,
+          "off mesh: 30 yd snap, checked before the stuck give-up");
+}
+
+void CheckHearthRefusal()
+{
+    using WorldTravel::HearthRefusalWord;
+    using WorldTravel::HearthState;
+    auto word = [](HearthState const& state) { return std::string(HearthRefusalWord(state)); };
+    HearthState fine;
+    Check(word(fine) == "cast_failed", "hearth refused: nothing visible left is the core's cast check");
+    HearthState mounted;
+    mounted.mounted = true;
+    Check(word(mounted) == "mounted", "hearth refused: mounted");
+    HearthState flying = mounted;
+    flying.flying = true;
+    Check(word(flying) == "flying", "hearth refused: flying before mounted (no dismount in the air)");
+    HearthState form;
+    form.flightForm = true;
+    Check(word(form) == "flight_form", "hearth refused: flight form");
+    HearthState moving;
+    moving.moving = true;
+    Check(word(moving) == "moving", "hearth refused: moving");
+    HearthState cooling;
+    cooling.cooldown = true;
+    Check(word(cooling) == "cooldown", "hearth refused: cooldown");
+    HearthState combat = mounted;
+    combat.inCombat = true;
+    Check(word(combat) == "combat", "hearth refused: combat before mounted");
+    HearthState bg;
+    bg.battleground = true;
+    Check(word(bg) == "battleground", "hearth refused: battleground");
+    HearthState noStone = combat;
+    noStone.stone = false;
+    Check(word(noStone) == "no_stone", "hearth refused: no stone before combat");
+    HearthState dead = noStone;
+    dead.alive = false;
+    Check(word(dead) == "dead", "hearth refused: dead first");
+}
+
+void CheckInnFilter()
+{
+    using WorldTravel::InnSpawnUsable;
+    using WorldTravel::PhaseRowHidesSpawn;
+    // Initiate Brenners (30308, phase 1) in The Shadow Vault (area 4477): Phase Shift I (30181, phase 2) is cast on
+    // everyone until quest 12896/12897 is rewarded (quest_start 0, no aura condition, autocast)
+    bool const brennersPhased = PhaseRowHidesSpawn(true, 0, 0, 2, 1);
+    Check(brennersPhased && !InnSpawnUsable(1, false, brennersPhased), "inn filter: Initiate Brenners is phased out");
+    // Lodge-Matron Embla (30005): faction template 2109's enemy mask holds every player
+    Check(!InnSpawnUsable(1, true, false), "inn filter: Lodge-Matron Embla is hostile");
+    // Marissa Everwatch (28791), The Argent Stand: phase 1, no phase row
+    Check(InnSpawnUsable(1, false, false), "inn filter: Marissa Everwatch is kept");
+    Check(!PhaseRowHidesSpawn(true, 13266, 0, 2, 1),
+          "inn filter: a phase during a quest hides no spawn for a fresh bot");
+    Check(!PhaseRowHidesSpawn(true, 0, 12345, 2, 1), "inn filter: a phase that needs an aura hides nothing");
+    Check(!PhaseRowHidesSpawn(false, 0, 0, 2, 1), "inn filter: a row that is only allowed, not cast, hides nothing");
+    Check(!PhaseRowHidesSpawn(true, 0, 0, 3, 1), "inn filter: a phase that holds phase 1 hides nothing");
+    Check(PhaseRowHidesSpawn(true, 0, -500, 2, 1), "inn filter: a phase cast without some aura still hides");
+    Check(!InnSpawnUsable(2, false, false), "inn filter: a spawn outside the normal phase is left out");
+    Check(InnSpawnUsable(3, false, false), "inn filter: a spawn in phases 1 and 2 is kept");
+}
+
+void CheckInnAvoid()
+{
+    using WorldTravel::AvoidedSpot;
+    std::vector<AvoidedSpot> spots;
+    SightPoint const vault{571, 8495.0f, 2687.0f, 652.5f};
+    SightPoint const nearVault{571, 8505.0f, 2687.0f, 652.5f};
+    SightPoint const stand{571, 5458.0f, -2637.0f, 307.5f};
+    uint32_t const now = 1000;
+    Check(!WorldTravel::InnAvoided(spots, now, vault), "inn avoid: an empty list avoids nothing");
+    WorldTravel::AvoidInn(spots, now, vault);
+    Check(WorldTravel::InnAvoided(spots, now + 1000, vault), "inn avoid: the failed spot is avoided");
+    Check(WorldTravel::InnAvoided(spots, now + 1000, nearVault), "inn avoid: and a spot 10 yd away");
+    Check(!WorldTravel::InnAvoided(spots, now + 1000, stand), "inn avoid: another inn is not");
+    Check(!WorldTravel::InnAvoided(spots, now + WorldTravel::INN_AVOID_MS, vault),
+          "inn avoid: an hour later it is free");
+    WorldTravel::AvoidInn(spots, now + 5000, nearVault);
+    Check(spots.size() == 1 && spots[0].sinceMs == now + 5000, "inn avoid: the same spot again renews its entry");
+    for (uint32_t i = 0; i < 6; ++i)
+        WorldTravel::AvoidInn(spots, now + 10000 + i, {571, 100.0f * static_cast<float>(i), 0.0f, 0.0f});
+    Check(spots.size() == WorldTravel::INN_AVOID_SPOTS, "inn avoid: at most four spots");
+    Check(WorldTravel::InnAvoided(spots, now + 20000, {571, 500.0f, 0.0f, 0.0f}) &&
+              !WorldTravel::InnAvoided(spots, now + 20000, vault),
+          "inn avoid: the oldest gives way");
+    uint32_t const wrapped = 0xFFFFF000u;
+    std::vector<AvoidedSpot> wrapping;
+    WorldTravel::AvoidInn(wrapping, wrapped, vault);
+    Check(WorldTravel::InnAvoided(wrapping, wrapped + 0x2000u, vault), "inn avoid: survives the ms clock wrap");
 }
 
 void CheckAvoid()
@@ -299,6 +418,10 @@ int main()
     CheckBusy();
     CheckCorpseRuns();
     CheckStuck();
+    CheckOffMeshRecovery();
+    CheckHearthRefusal();
+    CheckInnFilter();
+    CheckInnAvoid();
     CheckAvoid();
     CheckAvoidRepeat();
     CheckGhost();

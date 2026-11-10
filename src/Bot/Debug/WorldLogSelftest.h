@@ -582,11 +582,12 @@ inline void CheckRecorder(Checker& checker)
     checker.Equal(
         EventTrigger("Travel", "start") + EventTrigger("Travel", "leg_done:walk") + EventTrigger("Travel", "arrived"),
         "---", "other Travel events make none");
-    checker.Equal(EventTrigger("HonestyTeleport", "spirit_healer_fallback") +
-                      EventTrigger("HonestyTeleport", "ghost_to_corpse") +
-                      EventTrigger("HonestyTeleport", "repop_graveyard"),
-                  "teleport/spirit_healer_fallbackteleport/ghost_to_corpseteleport/repop_graveyard",
-                  "last-resort teleports make a case");
+    checker.Equal(
+        EventTrigger("HonestyTeleport", "spirit_healer_fallback") + EventTrigger("HonestyTeleport", "ghost_to_corpse") +
+            EventTrigger("HonestyTeleport", "repop_graveyard") + EventTrigger("HonestyTeleport", "off_mesh_snap"),
+        "teleport/spirit_healer_fallbackteleport/ghost_to_corpseteleport/repop_graveyard"
+        "teleport/off_mesh_snap",
+        "last-resort teleports make a case");
     checker.Equal(EventTrigger("HonestyTeleport", "mgr_to_player") + EventTrigger("Death", "creature") +
                       EventTrigger("Kill", "normal"),
                   "---", "manager teleports, a first death and other events make none");

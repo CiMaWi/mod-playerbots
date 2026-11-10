@@ -17,6 +17,7 @@
 #include "Timer.h"
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
+#include "WorldTravelRules.h"
 
 #include <array>
 #include <string>
@@ -99,6 +100,7 @@ struct NewRpgInfo
         TravelLegs::Trip trip;        // the route's legs and the place on them; no legs: a route is due
         TravelLegs::RouteWait route;  // the route request waited for
         bool stuck{false};            // MoveFarTo gave the current waypoint up (instead of going IDLE)
+        bool offMesh{false};          // that give-up found the bot off the mesh: the leg fails, the trip ends
         uint32 failedMs{0};           // the last failed leg: the new route is asked for REPLAN_DELAY_MS later
         float estimateSeconds{0.0f};  // the first route's
         uint32 tripStartMs{0};
@@ -124,6 +126,7 @@ struct NewRpgInfo
 
     uint32 startT{0};     // start timestamp of the current status
     uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
+    std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
     uint32 routeRequests{0};  // the bot's route request ids (TravelRoute::Snapshot::requestId), across trips
     // The planner's view of the bot (Planner::PlannerHook, PlannerService.cpp); a reset only costs a new snapshot
     struct PlannerState

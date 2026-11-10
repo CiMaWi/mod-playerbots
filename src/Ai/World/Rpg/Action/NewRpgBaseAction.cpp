@@ -44,45 +44,126 @@
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
+#include "RpgNavMeshSnap.h"
+#include "Spell.h"
+#include "StartingHistoryRules.h"
 #include "G3D/Vector2.h"
 
 namespace
 {
 uint32 constexpr GRIND_PICK_TRIES = 3;
+uint32 constexpr HEARTHSTONE_CAST_SPELL = 8690;  // the stone's spell (NewRpgAction.cpp's HEARTHSTONE_SPELL)
 
 // A grind spot is a 50 yd cell centre (TravelMgr rounds x, y and z), so it can sit off the ground or inside a rock.
 // It is kept when the nav mesh has a poly a bot may walk (the bots' path filter) within 3 yd across and 50 yd up or
 // down, and moves onto that poly; on a tile not loaded yet nothing can be judged and the spot stays as it is.
 bool SnapToNavMesh(Player* bot, WorldPosition& spot)
 {
-    MMapData& mmap = bot->GetMap()->GetMapCollisionData().GetMMapData();
-    dtNavMesh const* mesh = mmap.GetNavMesh();
-    dtNavMeshQuery const* query = mmap.GetNavMeshQuery();
-    if (!mesh || !query)
-        return true;
-
-    float const point[3] = {spot.GetPositionY(), spot.GetPositionZ(), spot.GetPositionX()};
-    int tileX = 0;
-    int tileY = 0;
-    mesh->calcTileLoc(point, &tileX, &tileY);
-    if (!mesh->getTileAt(tileX, tileY, 0))
-        return true;
-
-    dtQueryFilter filter;
-    filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
-    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
-    float const extents[3] = {3.0f, 50.0f, 3.0f};
-    dtPolyRef poly = 0;
-    float nearest[3] = {0.0f, 0.0f, 0.0f};
-    if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &poly, nearest)) || !poly)
-        return false;
-
-    spot.Relocate(nearest[2], nearest[0], nearest[1]);
-    return true;
+    float x = spot.GetPositionX();
+    float y = spot.GetPositionY();
+    float z = spot.GetPositionZ();
+    NavMeshSnap::Result const result = NavMeshSnap::Nearest(bot->GetMap(), x, y, z, 3.0f, 50.0f);
+    if (result == NavMeshSnap::Result::Found)
+        spot.Relocate(x, y, z);
+    return result != NavMeshSnap::Result::None;
 }
 }  // namespace
 
-void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
+bool NewRpgBaseAction::BotOffMesh()
+{
+    if (bot->IsInWater() || bot->IsFlying() || bot->GetTransport() ||
+        bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR | MOVEMENTFLAG_ONTRANSPORT))
+        return false;
+
+    float x = bot->GetPositionX();
+    float y = bot->GetPositionY();
+    float z = bot->GetPositionZ();
+    return NavMeshSnap::Nearest(bot->GetMap(), x, y, z, WorldTravel::OFF_MESH_ACROSS_YARDS,
+                                WorldTravel::OFF_MESH_VERTICAL_YARDS) == NavMeshSnap::Result::None;
+}
+
+bool NewRpgBaseAction::CastHearth(char const*& refusal, float& castResult)
+{
+    refusal = nullptr;
+    castResult = 0.0f;
+    // The core refuses a mounted cast (SPELL_FAILED_NOT_MOUNTED) and a flight form one, where a player's client leaves
+    // the mount or the form first; in the air that would be a fall, so only on the ground
+    bool const flying = bot->IsFlying() || bot->IsInFlight();
+    bool const flightForm = bot->GetShapeshiftForm() == FORM_FLIGHT || bot->GetShapeshiftForm() == FORM_FLIGHT_EPIC;
+    if (!flying && !bot->IsInCombat())
+    {
+        if (bot->IsMounted())
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        if (flightForm)
+            bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+    }
+    if (botAI->DoSpecificAction("hearthstone", Event(), true))
+        return true;
+
+    WorldTravel::HearthState state;
+    state.alive = bot->IsAlive();
+    state.stone = bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false);
+    state.inCombat = bot->IsInCombat();
+    state.battleground = bot->InBattleground();
+    state.flying = flying;
+    state.mounted = bot->IsMounted();
+    state.flightForm = bot->GetShapeshiftForm() == FORM_FLIGHT || bot->GetShapeshiftForm() == FORM_FLIGHT_EPIC;
+    state.moving = bot->isMoving();
+    state.cooldown = bot->HasSpellCooldown(HEARTHSTONE_CAST_SPELL);
+    refusal = WorldTravel::HearthRefusalWord(state);
+    // Only for a refusal nothing above explains: the core's own check names it (as PlayerbotAI::CanCastSpell asks it)
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(HEARTHSTONE_CAST_SPELL);
+    if (std::string_view(refusal) == "cast_failed" && info)
+    {
+        Spell* spell = new Spell(bot, info, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+        spell->m_targets.SetUnitTarget(bot);
+        spell->m_CastItem = bot->GetItemByEntry(StartingHistory::ITEM_HEARTHSTONE);
+        castResult = static_cast<float>(spell->CheckCast(true));
+        delete spell;
+    }
+    return false;
+}
+
+void NewRpgBaseAction::RecoverOffMesh()
+{
+    auto const* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    uint32 const tripId = travel ? travel->tripId : 0;
+    // The hearthstone when it is ready: the stone's own spell, no bot teleport and no sight check
+    char const* refusal = nullptr;
+    float castResult = 0.0f;
+    bool const hearthReady = bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) &&
+                             !bot->HasSpellCooldown(HEARTHSTONE_CAST_SPELL) && !bot->IsInCombat() &&
+                             !bot->IsNonMeleeSpellCast(false);
+    bool const hearthCast = hearthReady && CastHearth(refusal, castResult);
+    float x = bot->GetPositionX();
+    float y = bot->GetPositionY();
+    float z = bot->GetPositionZ();
+    bool polyFound = false;
+    bool seen = false;
+    if (!hearthCast)
+    {
+        polyFound = NavMeshSnap::Nearest(bot->GetMap(), x, y, z, WorldTravel::OFF_MESH_SNAP_YARDS,
+                                         WorldTravel::OFF_MESH_SNAP_YARDS) == NavMeshSnap::Result::Found;
+        seen = polyFound && sRandomPlayerbotMgr.IsTeleportSeen(bot, WorldPosition(bot->GetMapId(), x, y, z));
+    }
+    WorldTravel::OffMeshRecovery const recovery = WorldTravel::OffMeshNext(hearthCast, polyFound, seen);
+    char const* const word = WorldTravel::OffMeshRecoveryWord(recovery);
+    float const yards = recovery == WorldTravel::OffMeshRecovery::Snap ? bot->GetExactDist(x, y, z) : 0.0f;
+    LOG_DEBUG("playerbots", "[New RPG] {} off the mesh at ({}, {:.1f}, {:.1f}, {:.1f}): {} ({:.1f} yd{}{})",
+              bot->GetName(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), word,
+              yards, refusal ? ", hearth refused: " : "", refusal ? refusal : "");
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "off_mesh", word, yards, {}, tripId);
+    if (recovery != WorldTravel::OffMeshRecovery::Snap)
+        return;
+
+    // A last-resort teleport a few yards onto the mesh, unseen (the sight rule), counted in the ledger
+    bot->GetMotionMaster()->Clear();
+    bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
+    bot->TeleportTo(bot->GetMapId(), x, y, z + 0.5f, bot->GetOrientation());
+    EventLog::Honesty(bot, "Teleport", "off_mesh_snap", bot->GetMapId());
+}
+
+WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
 {
     WorldTravel::StuckInput input;
     input.OtherMap = dest.GetMapId() != bot->GetMapId();
@@ -92,7 +173,9 @@ void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
     input.NearDoorOrElevator =
         bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_DOOR, WorldTravel::STUCK_DOOR_YARDS) ||
         bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_TRANSPORT, WorldTravel::STUCK_DOOR_YARDS);
-    if (!input.OtherMap && !input.OnTransport && !input.FallingOrSwimming && !input.NearDoorOrElevator)
+    input.StartOffMesh = !input.OtherMap && !input.OnTransport && !input.FallingOrSwimming && BotOffMesh();
+    if (!input.OtherMap && !input.OnTransport && !input.FallingOrSwimming && !input.StartOffMesh &&
+        !input.NearDoorOrElevator)
     {
         PathGenerator path(bot);
         path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
@@ -100,17 +183,19 @@ void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
         input.PathComputed = true;
         input.NoPath = (type & PATHFIND_NOPATH) != 0;
         input.DestinationOffMesh = (type & PATHFIND_FARFROMPOLY_END) != 0;
+        input.StartOffMesh = (type & PATHFIND_FARFROMPOLY_START) != 0;
     }
 
-    char const* const word = WorldTravel::StuckCauseWord(WorldTravel::ClassifyStuck(input));
+    WorldTravel::StuckCause const cause = WorldTravel::ClassifyStuck(input);
+    char const* const word = WorldTravel::StuckCauseWord(cause);
     LOG_DEBUG("playerbots", "[New RPG] {} gives up ({},{},{},{}) at ({},{},{},{}), stuck: {}", bot->GetName(),
               dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId(), bot->GetPositionX(),
               bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(), word);
     // id the RPG status; the row's x, y are the bot's position (the recorder's case holds the trail)
     EventLog::Emit(bot, "Stuck", word, static_cast<uint32>(botAI->rpgInfo.GetStatus()));
     // Plain data only: the world thread maps it to a travel graph edge the route search avoids. A route follower
-    // names the edge it walked; other statuses give positions
-    if (!input.OtherMap)
+    // names the edge it walked; other statuses give positions. A bot off the mesh is at fault itself, not the edge
+    if (!input.OtherMap && cause != WorldTravel::StuckCause::OffMesh)
     {
         TravelRoute::StuckBook::Report report;
         report.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
@@ -119,6 +204,7 @@ void NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
             std::tie(report.fromNode, report.toNode) = TravelLegs::StuckEdge(travel->trip);
         TravelRoute::StuckBook::Instance().Push(report);
     }
+    return cause;
 }
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
@@ -211,27 +297,38 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         botAI->rpgInfo.stuckTs = getMSTime();
         botAI->rpgInfo.stuckAttempts = 0;
     }
-    else if (++botAI->rpgInfo.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgInfo.stuckTs) >= stuckTime)
+    else if ((++botAI->rpgInfo.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgInfo.stuckTs) >= stuckTime) ||
+             (botAI->rpgInfo.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
     {
-        // No meaningful progress toward dest for `stuckTime`: give the destination up, record why and go IDLE
-        RecordStuck(dest);
-        // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h)
+        // No meaningful progress toward dest for `stuckTime`, or none at all off the mesh: give the destination up,
+        // record why and go IDLE
+        WorldTravel::StuckCause const cause = RecordStuck(dest);
+        bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
         NewRpgInfo& info = botAI->rpgInfo;
-        WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
-                                              info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
-        WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                                           bot->GetPositionZ()};
-        info.stuckRepeats = WorldTravel::NextStuckRepeats(
-            info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
-            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);
-        info.stuckAvoidPos = dest;
-        info.stuckBotPos = WorldPosition(bot);
-        info.stuckAvoidTs = getMSTime();
+        if (offMesh)
+            RecoverOffMesh();
+        else
+        {
+            // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h);
+            // off the mesh the destination is not to blame
+            WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
+                                                  info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
+            WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                               bot->GetPositionZ()};
+            info.stuckRepeats = WorldTravel::NextStuckRepeats(
+                info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+                sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);
+            info.stuckAvoidPos = dest;
+            info.stuckBotPos = WorldPosition(bot);
+            info.stuckAvoidTs = getMSTime();
+        }
         botAI->rpgInfo.SetMoveFarTo(WorldPosition());
-        // A route follower stays in RPG_TRAVEL: its next tick fails the leg and asks for a new route
+        // A route follower stays in RPG_TRAVEL: its next tick fails the leg and asks for a new route (off the mesh:
+        // the trip ends)
         if (auto* travel = std::get_if<NewRpgInfo::Travel>(&info.data))
         {
             travel->stuck = true;
+            travel->offMesh = offMesh;
             return true;
         }
         WorldLog::StatusReason const reasonScope("stuck");

@@ -1077,6 +1077,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
             return true;
         return RequestRoute(*data);
     }
+    // MoveFarTo found the bot off the mesh and started its recovery (hearth or a short move): the trip ends
+    if (data->offMesh)
+        return LegFailed(*data, TravelLegs::FailReason::OffMesh);
 
     TravelLegs::Observation seen;
     seen.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
@@ -1297,12 +1300,15 @@ bool NewRpgTravelAction::UseHearth(NewRpgInfo::Travel& data)
     // them). The teleport is the stone's own spell: no bot teleport, no sight check
     if (bot->IsNonMeleeSpellCast(false) || bot->HasSpellCooldown(HEARTHSTONE_SPELL))
         return true;
-    if (!botAI->DoSpecificAction("hearthstone", Event(), true))
+    char const* refusal = nullptr;
+    float castResult = 0.0f;
+    if (!CastHearth(refusal, castResult))
     {
-        LOG_DEBUG("playerbots",
-                  "[Route] {} hearth refused: stone in bags {}, in combat {}, casting {}, moving {}, alive {}",
-                  bot->GetName(), bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false), bot->IsInCombat(),
-                  bot->IsNonMeleeSpellCast(false), bot->isMoving(), bot->IsAlive());
+        // The world log's row names why (WorldTravel::HearthRefusalWord; cast_failed: the value is the core's result)
+        LOG_DEBUG("playerbots", "[Route] {} hearth refused: {} (cast result {:.0f})", bot->GetName(),
+                  refusal ? refusal : "?", castResult);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "hearth_refused", refusal ? refusal : "?",
+                           castResult, {}, data.tripId);
         return LegFailed(data, TravelLegs::FailReason::Hearth);
     }
     return true;
@@ -1404,6 +1410,17 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
                  bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
                  static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
         EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", data.tripId, seconds);
+        // A spot where the bot stood but found no usable innkeeper (phased out, dead, hostile) is avoided by its next
+        // inn errands for a while (WorldTravel::InnAvoided); a bot stuck out of reach blames no spot
+        bool const noInnkeeper = std::string_view(why) == "no innkeeper in reach";
+        if (!bound && (noInnkeeper || std::string_view(why) == "innkeeper not interactable"))
+        {
+            WorldTravel::AvoidInn(
+                botAI->rpgInfo.innAvoid, getMSTime(),
+                {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()});
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "avoid",
+                               noInnkeeper ? "no_innkeeper" : "not_interactable", yards, {}, data.tripId);
+        }
     }
     if (data.place.empty())
         LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
@@ -1452,6 +1469,11 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
     {
         TravelMgr::InnInfo const& inn = inns[i];
         if (inn.loc.GetMapId() != bot->GetMapId())
+            continue;
+        // A spot whose bind found no usable innkeeper lately (Arrive)
+        if (!info.innAvoid.empty() && WorldTravel::InnAvoided(info.innAvoid, getMSTime(),
+                                                              {inn.loc.GetMapId(), inn.loc.GetPositionX(),
+                                                               inn.loc.GetPositionY(), inn.loc.GetPositionZ()}))
             continue;
 
         StartingHistory::Bracket bracket;
