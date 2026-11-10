@@ -6,7 +6,8 @@
 
 // Offline proof of the upkeep index (src/Ai/World/Rpg/UpkeepIndex.h, upkeep plan WU2) over a small synthetic gather:
 // the item rules, trainer dedupe and lists, dense positions and bit sets, vendor offers per kind with prices,
-// determinism, publication under reader threads, the memory estimate and learn spells (known by what they teach).
+// determinism, publication under reader threads, the memory estimate, learn spells (known by what they teach) and
+// the snapshot's precomputed paths (class-and-race fit, off-list abilities) against their direct forms.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/upkeep-index-selftest.cpp
 
 #include <algorithm>
@@ -291,7 +292,8 @@ bool SameIndex(UpkeepIndex const& a, UpkeepIndex const& b)
         return false;
     for (std::size_t i = 0; i < a.lists.size(); ++i)
         if (a.lists[i].kind != b.lists[i].kind || a.lists[i].requirement != b.lists[i].requirement ||
-            !(a.lists[i].spells == b.lists[i].spells))
+            !(a.lists[i].spells == b.lists[i].spells) || a.lists[i].fitRaces != b.lists[i].fitRaces ||
+            a.lists[i].offList != b.lists[i].offList)
             return false;
     for (std::size_t i = 0; i < a.trainers.size(); ++i)
         if (a.trainers[i].key != b.trainers[i].key || a.trainers[i].entries != b.trainers[i].entries ||
@@ -420,12 +422,118 @@ void CheckTeaches()
     Check(!knows(SPELL_SEAL, {SPELL_JUDGEMENT_TAUGHT}) && knows(SPELL_SEAL, {SPELL_SEAL}),
           "a spell teaching nothing is known only by itself");
 }
+
+// The snapshot's cheap paths equal the direct ones (lab7-20261110-162602: one IsSpellFitByClassAndRace per list spell
+// made a snapshot 8 times its pre-WU2 cost): the fit is looked up per class and race, and only precomputed off-list
+// abilities are asked for
+void CheckPrecomputed()
+{
+    constexpr std::uint32_t SPELL_ON_LIST = SPELL_FROSTBOLT;
+    constexpr std::uint32_t SPELL_TAUGHT = 80001;   // taught by a list spell
+    constexpr std::uint32_t SPELL_TALENT = 80002;   // off the list
+    constexpr std::uint32_t SPELL_RACIAL = 80003;   // off the list
+    constexpr std::uint32_t SPELL_TEACHER = 80010;  // teaches SPELL_TAUGHT
+    constexpr std::uint8_t RACE_ORC = 2;
+    constexpr std::uint8_t RACE_DRAENEI = 11;
+    UpkeepGather input;
+    TrainerSpell teacher = Spell(SPELL_TEACHER, 10, 1);
+    teacher.teaches[0] = SPELL_TAUGHT;
+    TrainerSpell needsAll = Spell(80020, 10, 1);
+    needsAll.reqAbility = {SPELL_ON_LIST, SPELL_TAUGHT, SPELL_APPRENTICE_RIDING};
+    TrainerSpell needsTalent = Spell(80021, 10, 1);
+    needsTalent.reqAbility = {SPELL_TALENT, 0, SPELL_TALENT};
+    TrainerSpell needsTwo = Spell(80022, 10, 1);
+    needsTwo.reqAbility = {SPELL_RACIAL, SPELL_TALENT, SPELL_ON_LIST};
+    TrainerSpell needsRiding = Spell(80023, 10, 1);
+    needsRiding.reqAbility = {SPELL_APPRENTICE_RIDING, 0, 0};
+    input.trainers.push_back({TRAINER_MAGE,
+                              TrainerKind::Class,
+                              CLASS_MAGE,
+                              {Spell(SPELL_ON_LIST, 10, 1), teacher, needsAll, needsTalent, needsTwo, needsRiding}});
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {Spell(SPELL_APPRENTICE_RIDING, 40000, 20)}});
+    input.trainers.push_back({TRAINER_PET, TrainerKind::Pet, 0, {Spell(7, 0, 10)}});
+    input.trainerEntries = {{TRAINER_MAGE, TRAINER_MAGE}, {TRAINER_RIDING, TRAINER_RIDING}, {TRAINER_PET, TRAINER_PET}};
+    SpellFit frostbolt{TrainerKind::Class, CLASS_MAGE, SPELL_ON_LIST, {}};
+    frostbolt.races[CLASS_MAGE] = 1u << (RACE_HUMAN - 1) | 1u << (RACE_DRAENEI - 1);
+    SpellFit riding{TrainerKind::Mount, 0, SPELL_APPRENTICE_RIDING, {}};
+    riding.races[CLASS_WARRIOR] = 1u << (RACE_ORC - 1);
+    input.fits = {riding, frostbolt, frostbolt};  // unsorted, a repeat (both faction trainers)
+    UpkeepIndex const index = UpkeepIndex::Build(std::move(input));
+    TrainerList const* mage = index.ClassList(CLASS_MAGE);
+    TrainerList const* mount = index.RidingList(RACE_HUMAN);
+    TrainerList const* pet = index.List(TrainerKind::Pet, 0);
+    if (!mage || mage->spells.size() != 6 || !mount || !pet)
+    {
+        Check(false, "the precomputed test lists are built");
+        return;
+    }
+    std::size_t const bolt = mage->Find(SPELL_ON_LIST);
+    Check(mage->fitRaces.size() == mage->spells.size() && mage->Fits(bolt, CLASS_MAGE, RACE_HUMAN) &&
+              mage->Fits(bolt, CLASS_MAGE, RACE_DRAENEI) && !mage->Fits(bolt, CLASS_MAGE, RACE_ORC) &&
+              !mage->Fits(bolt, CLASS_WARRIOR, RACE_HUMAN) && !mage->Fits(bolt, CLASS_MAGE, 0) &&
+              !mage->Fits(bolt, CLASS_MAGE, static_cast<std::uint8_t>(UPKEEP_RACE_SLOTS)) &&
+              !mage->Fits(mage->spells.size(), CLASS_MAGE, RACE_HUMAN) &&
+              !mage->Fits(mage->Find(SPELL_TEACHER), CLASS_MAGE, RACE_HUMAN),
+          "a class list spell fits the races its fit names, for its class only; a spell without a fit fits none");
+    Check(mount->Fits(0, CLASS_WARRIOR, RACE_ORC) && !mount->Fits(0, CLASS_MAGE, RACE_ORC) && pet->fitRaces.empty(),
+          "a riding spell fits per class; a list without fits keeps none");
+
+    // (position, ability) only for abilities neither on nor taught by the list; riding is asked at the fill
+    std::size_t const all = mage->Find(80020);
+    std::size_t const talent = mage->Find(80021);
+    std::size_t const two = mage->Find(80022);
+    std::size_t const ridingAt = mage->Find(80023);
+    using Off = std::pair<std::uint32_t, std::uint32_t>;
+    auto const has = [&mage](Off const& entry)
+    { return std::find(mage->offList.begin(), mage->offList.end(), entry) != mage->offList.end(); };
+    auto const at = [](std::size_t position, std::uint32_t ability)
+    { return Off{static_cast<std::uint32_t>(position), ability}; };
+    Check(mage->offList.size() == 6 && has(at(all, SPELL_APPRENTICE_RIDING)) && has(at(talent, SPELL_TALENT)) &&
+              has(at(two, SPELL_RACIAL)) && has(at(two, SPELL_TALENT)) && has(at(ridingAt, SPELL_APPRENTICE_RIDING)),
+          "the off-list abilities: not on the list, not taught by it");
+
+    // The direct form (the former FillOffList) against OffListMet over every subset of the spells a bot may have
+    std::vector<std::uint32_t> const candidates = {SPELL_ON_LIST, SPELL_TAUGHT, SPELL_TALENT, SPELL_RACIAL,
+                                                   SPELL_APPRENTICE_RIDING};
+    bool equal = true;
+    for (TrainerList const* ridingList : {mount, static_cast<TrainerList const*>(nullptr)})
+        for (std::uint32_t subset = 0; subset < (1u << candidates.size()); ++subset)
+        {
+            auto const hasSpell = [&candidates, subset](std::uint32_t id)
+            {
+                for (std::size_t i = 0; i < candidates.size(); ++i)
+                    if (candidates[i] == id)
+                        return ((subset >> i) & 1u) != 0;
+                return false;
+            };
+            std::vector<std::uint64_t> direct = SpellBits(mage->spells.size());
+            for (std::size_t position = 0; position < mage->spells.size(); ++position)
+            {
+                bool known = true;
+                for (std::uint32_t const ability : mage->spells[position].reqAbility)
+                    if (ability && mage->Find(ability) == TrainerList::NOT_FOUND &&
+                        mage->Teacher(ability) == TrainerList::NOT_FOUND &&
+                        (!ridingList || ridingList->Find(ability) == TrainerList::NOT_FOUND) && !hasSpell(ability))
+                        known = false;
+                if (known)
+                    SetSpellBit(direct, position);
+            }
+            equal = equal && direct == OffListMet(*mage, ridingList, hasSpell);
+        }
+    Check(equal, "the off-list bits equal the direct per-spell form for every bot spell set, with and without riding");
+    std::vector<std::uint64_t> const none = OffListMet(*mage, mount, [](std::uint32_t) { return false; });
+    Check(HasSpellBit(none, all) && HasSpellBit(none, ridingAt) && !HasSpellBit(none, talent) &&
+              !HasSpellBit(none, two) && HasSpellBit(none, bolt) && !HasSpellBit(none, mage->spells.size()),
+          "a bot knowing nothing: riding and list abilities are read elsewhere, a talent is unmet");
+    Check(index.stats.estimatedBytes == index.ApproxBytes(), "the memory estimate counts fits and off-list abilities");
+}
 }  // namespace
 
 int main()
 {
     CheckExtendedCost();
     CheckTeaches();
+    CheckPrecomputed();
     CheckItemRules();
     UpkeepIndex const index = UpkeepIndex::Build(Synthetic());
     CheckTrainers(index);

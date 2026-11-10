@@ -89,7 +89,8 @@ bool UpkeepIndexReady();
 // The upkeep index lines of `playerbots planner status|indexes`
 std::vector<std::string> UpkeepIndexStatus();
 // Map thread, from FillSnapshot: the upkeep fields (stock, pet diet, known and learnable trainer spells); no DB, one
-// pass over the bags and one HasSpell and IsSpellFitByClassAndRace per trainer spell of the class and riding lists
+// pass over the bags and one HasSpell per trainer spell of the class and riding lists (the class-and-race fit and the
+// off-list abilities are precomputed in the index)
 void FillUpkeep(Player* bot, Snapshot& snapshot);
 // `playerbots planner needs <bot>`: an online bot's needs, reserve and shortfall (UpkeepNeedRules.h), from a snapshot
 // taken on the world thread while no map updates

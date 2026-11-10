@@ -48,6 +48,7 @@ constexpr std::uint32_t CLASS_MASK_PLAYABLE = 0x5FF;  // CLASSMASK_ALL_PLAYABLE
 }  // namespace UpkeepItem
 
 constexpr std::size_t UPKEEP_CLASS_SLOTS = 12;  // class ids 1..11 (MAX_CLASSES)
+constexpr std::size_t UPKEEP_RACE_SLOTS = 12;   // race ids 1..11 (RACE_DRAENEI + 1)
 
 enum class UpkeepStock : std::uint8_t
 {
@@ -184,6 +185,16 @@ struct VendorItemFacts
     bool goldRequired{true};  // VendorItem::IsGoldRequired; false = sold for currency only
 };
 
+// The races that may learn a class or riding trainer spell, per class: Player::IsSpellFitByClassAndRace (Player.cpp)
+// for each race, taken at the gather; a class trainer's spell carries its own class only
+struct SpellFit
+{
+    TrainerKind kind{TrainerKind::Class};
+    std::uint32_t requirement{0};
+    std::uint32_t spellId{0};
+    std::array<std::uint32_t, UPKEEP_CLASS_SLOTS> races{};  // by class id: a bit per race id - 1
+};
+
 struct ReagentUse
 {
     std::uint32_t item{0};
@@ -198,6 +209,7 @@ struct UpkeepGather
     std::vector<VendorItemFacts> vendorItems;
     std::vector<UpkeepItemFacts> items;  // the vendors' items, once each
     std::vector<ReagentUse> reagents;
+    std::vector<SpellFit> fits;  // the class and riding trainers' spells
     std::uint32_t emptyVendors{0};
     std::uint32_t missingItems{0};  // vendor rows whose item has no template
 };
@@ -213,6 +225,11 @@ struct TrainerList
     // (taught spell, the position of a list spell that teaches it), sorted: a required ability such as Felsteed 5784
     // (Dreadsteed's) is taught by list spell 1710, so the rules read 1710's bit
     std::vector<std::pair<std::uint32_t, std::uint32_t>> taughtBy;
+    // By position, then class id: a bit per race id - 1 that may learn the spell (class and riding lists only)
+    std::vector<std::array<std::uint32_t, UPKEEP_CLASS_SLOTS>> fitRaces;
+    // (position, required ability) for each ability neither on nor taught by the list, so a snapshot looks up only
+    // these
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> offList;
 
     std::size_t Find(std::uint32_t spellId) const
     {
@@ -227,6 +244,13 @@ struct TrainerList
     {
         auto const it = std::lower_bound(taughtBy.begin(), taughtBy.end(), std::make_pair(spellId, std::uint32_t{0}));
         return it != taughtBy.end() && it->first == spellId ? static_cast<std::size_t>(it->second) : NOT_FOUND;
+    }
+
+    // Player::IsSpellFitByClassAndRace for a player of this class and race (race and original race the same)
+    bool Fits(std::size_t position, std::uint8_t cls, std::uint8_t race) const
+    {
+        return position < fitRaces.size() && cls < UPKEEP_CLASS_SLOTS && race && race < UPKEEP_RACE_SLOTS &&
+               ((fitRaces[position][cls] >> (race - 1)) & 1u);
     }
 };
 
@@ -308,6 +332,7 @@ public:
         index.stats.emptyVendors = input.emptyVendors;
         index.stats.missingItems = input.missingItems;
         index.BuildTrainers(input);
+        index.BuildFits(input);
         index.BuildReagents(input);
         index.BuildOffers(input);
         index.stats.estimatedBytes = index.ApproxBytes();
@@ -356,8 +381,10 @@ public:
                             trainers.capacity() * sizeof(UpkeepTrainer) +
                             reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>);
         for (TrainerList const& list : lists)
-            bytes += list.spells.capacity() * sizeof(TrainerSpell) +
-                     list.taughtBy.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>);
+            bytes +=
+                list.spells.capacity() * sizeof(TrainerSpell) +
+                (list.taughtBy.capacity() + list.offList.capacity()) * sizeof(std::pair<std::uint32_t, std::uint32_t>) +
+                list.fitRaces.capacity() * sizeof(std::array<std::uint32_t, UPKEEP_CLASS_SLOTS>);
         for (UpkeepTrainer const& trainer : trainers)
             bytes +=
                 trainer.entries.capacity() * sizeof(std::uint32_t) + trainer.spells.capacity() * sizeof(std::uint16_t);
@@ -397,7 +424,7 @@ private:
         {
             if (lists.empty() || lists.back().kind != all[i].first.first ||
                 lists.back().requirement != all[i].first.second)
-                lists.push_back({all[i].first.first, all[i].first.second, {}, {}});
+                lists.push_back({all[i].first.first, all[i].first.second, {}, {}, {}, {}});
             std::vector<TrainerSpell>& spells = lists.back().spells;
             if (!spells.empty() && spells.back().spellId == all[i].second.spellId)
             {
@@ -416,6 +443,12 @@ private:
                         list.taughtBy.emplace_back(taught, static_cast<std::uint32_t>(position));
             std::sort(list.taughtBy.begin(), list.taughtBy.end());
             list.taughtBy.shrink_to_fit();
+            for (std::size_t position = 0; position < list.spells.size(); ++position)
+                for (std::uint32_t const ability : list.spells[position].reqAbility)
+                    if (ability && list.Find(ability) == TrainerList::NOT_FOUND &&
+                        list.Teacher(ability) == TrainerList::NOT_FOUND)
+                        list.offList.emplace_back(static_cast<std::uint32_t>(position), ability);
+            list.offList.shrink_to_fit();
             stats.trainerSpells[static_cast<std::size_t>(list.kind)] += static_cast<std::uint32_t>(list.spells.size());
             if (list.kind == TrainerKind::Class && list.requirement < UPKEEP_CLASS_SLOTS)
                 stats.classSpells[list.requirement] = static_cast<std::uint32_t>(list.spells.size());
@@ -454,6 +487,25 @@ private:
             trainers.push_back(std::move(trainer));
         }
         stats.orphanEntries += static_cast<std::uint32_t>(input.trainerEntries.size() - next);
+    }
+
+    // Each list spell's fit from the gather; a list without fits (tradeskill, pet) keeps none
+    void BuildFits(UpkeepGather& input)
+    {
+        auto const key = [](SpellFit const& fit) { return std::tie(fit.kind, fit.requirement, fit.spellId); };
+        auto const less = [&key](SpellFit const& a, SpellFit const& b) { return key(a) < key(b); };
+        std::sort(input.fits.begin(), input.fits.end(), less);
+        for (TrainerList& list : lists)
+            for (std::size_t position = 0; position < list.spells.size(); ++position)
+            {
+                SpellFit const probe{list.kind, list.requirement, list.spells[position].spellId, {}};
+                auto const it = std::lower_bound(input.fits.begin(), input.fits.end(), probe, less);
+                if (it == input.fits.end() || key(*it) != key(probe))
+                    continue;
+                if (list.fitRaces.empty())
+                    list.fitRaces.resize(list.spells.size());
+                list.fitRaces[position] = it->races;
+            }
     }
 
     void BuildReagents(UpkeepGather const& input)
@@ -571,6 +623,22 @@ inline bool HasSpellBit(std::vector<std::uint64_t> const& bits, std::size_t posi
 {
     return position / BITS_PER_WORD < bits.size() &&
            (bits[position / BITS_PER_WORD] >> (position % BITS_PER_WORD)) & 1u;
+}
+
+// Snapshot::offListMetClassSpells over a class list: bit i when every ability spell i needs that is neither on nor
+// taught by the list nor on the riding list is known; only the list's precomputed off-list abilities are looked up
+template <typename HasSpell>
+std::vector<std::uint64_t> OffListMet(TrainerList const& list, TrainerList const* riding, HasSpell const& hasSpell)
+{
+    std::vector<std::uint64_t> unmet = SpellBits(list.spells.size());
+    for (auto const& [position, ability] : list.offList)
+        if ((!riding || riding->Find(ability) == TrainerList::NOT_FOUND) && !hasSpell(ability))
+            SetSpellBit(unmet, position);
+    std::vector<std::uint64_t> met = SpellBits(list.spells.size());
+    for (std::size_t position = 0; position < list.spells.size(); ++position)
+        if (!HasSpellBit(unmet, position))
+            SetSpellBit(met, position);
+    return met;
 }
 }  // namespace Planner
 

@@ -27,6 +27,7 @@
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "Pet.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -53,8 +54,9 @@ static_assert(UpkeepItem::CLASS_CONSUMABLE == ITEM_CLASS_CONSUMABLE &&
                   UpkeepItem::SUBCLASS_MOUNT == ITEM_SUBCLASS_JUNK_MOUNT,
               "the upkeep index's item classes are the core's");
 static_assert(UpkeepItem::CLASS_MASK_PLAYABLE == CLASSMASK_ALL_PLAYABLE &&
-                  UpkeepItem::CLASS_MASK_ROGUE == 1u << (CLASS_ROGUE - 1) && UPKEEP_CLASS_SLOTS == MAX_CLASSES,
-              "the upkeep index's class masks are the core's");
+                  UpkeepItem::CLASS_MASK_ROGUE == 1u << (CLASS_ROGUE - 1) && UPKEEP_CLASS_SLOTS == MAX_CLASSES &&
+                  UPKEEP_RACE_SLOTS == RACE_DRAENEI + 1,
+              "the upkeep index's class masks and race ids are the core's");
 static_assert(static_cast<uint32>(TrainerKind::Class) == static_cast<uint32>(Trainer::Type::Class) &&
                   static_cast<uint32>(TrainerKind::Mount) == static_cast<uint32>(Trainer::Type::Mount) &&
                   static_cast<uint32>(TrainerKind::Tradeskill) == static_cast<uint32>(Trainer::Type::Tradeskill) &&
@@ -130,6 +132,30 @@ void AddReagents(uint32 spellId, uint8 cls, std::vector<ReagentUse>& reagents)
     }
 }
 
+// The races that may learn the spell as this class: Player::IsSpellFitByClassAndRace (Player.cpp) for a player whose
+// race and original race are that race
+uint32 FitRaces(uint32 spellId, uint8 cls)
+{
+    SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    uint32 const classMask = 1u << (cls - 1);
+    uint32 races = 0;
+    for (uint8 race = 1; race < UPKEEP_RACE_SLOTS; ++race)
+    {
+        uint32 const raceMask = 1u << (race - 1);
+        bool fits = bounds.first == bounds.second;
+        for (auto ability = bounds.first; !fits && ability != bounds.second; ++ability)
+        {
+            SkillLineAbilityEntry const* entry = ability->second;
+            fits = (!entry->RaceMask || (entry->RaceMask & raceMask)) &&
+                   (!entry->ClassMask || (entry->ClassMask & classMask)) &&
+                   GetSkillRaceClassInfo(entry->SkillLine, race, cls) != nullptr;
+        }
+        if (fits)
+            races |= raceMask;
+    }
+    return races;
+}
+
 // World thread, at startup: plain copies only, so the worker never reads the core's stores (`.reload` changes them)
 UpkeepGather GatherUpkeep()
 {
@@ -178,6 +204,15 @@ UpkeepGather GatherUpkeep()
                     facts.spells.push_back(copy);
                     if (classTrainer)
                         AddReagents(spell.SpellId, static_cast<uint8>(facts.requirement), input.reagents);
+                    // Class trainers teach their class; riding trainers any class
+                    if (classTrainer || facts.kind == TrainerKind::Mount)
+                    {
+                        SpellFit fit{facts.kind, facts.requirement, spell.SpellId, {}};
+                        for (uint8 cls = 1; cls < UPKEEP_CLASS_SLOTS; ++cls)
+                            if (facts.kind == TrainerKind::Mount || cls == facts.requirement)
+                                fit.races[cls] = FitRaces(spell.SpellId, cls);
+                        input.fits.push_back(fit);
+                    }
                 }
                 input.trainers.push_back(std::move(facts));
             }
@@ -259,7 +294,8 @@ void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, ui
 }
 
 // The known bits (the trainer's Known state: the spell, or every spell it teaches) and the can-learn bits (its
-// IsSpellFitByClassAndRace check, Trainer.cpp): the class lists are the union over both factions' trainers
+// IsSpellFitByClassAndRace check, Trainer.cpp, precomputed per class and race in the index; a bot whose race differs
+// from its original race asks the core): the class lists are the union over both factions' trainers
 void FillKnown(Player* bot, TrainerList const* list, std::vector<std::uint64_t>& known,
                std::vector<std::uint64_t>& canLearn)
 {
@@ -268,24 +304,37 @@ void FillKnown(Player* bot, TrainerList const* list, std::vector<std::uint64_t>&
     known = SpellBits(list->spells.size());
     canLearn = SpellBits(list->spells.size());
     auto const hasSpell = [bot](uint32 spellId) { return bot->HasSpell(spellId); };
+    uint8 const cls = bot->getClass();
+    uint8 const race = bot->getRace();
+    bool const precomputed = race == bot->getRace(true);
     for (std::size_t position = 0; position < list->spells.size(); ++position)
     {
         TrainerSpell const& spell = list->spells[position];
         if (KnowsTrainerSpell(spell, hasSpell))
             SetSpellBit(known, position);
-        if (bot->IsSpellFitByClassAndRace(spell.spellId))
+        if (precomputed ? list->Fits(position, cls, race) : bot->IsSpellFitByClassAndRace(spell.spellId))
             SetSpellBit(canLearn, position);
     }
 }
 
-// Bit i: every ability the class list's spell i needs that is neither on nor taught by the class list nor on the
-// riding list (a talent, a racial, a quest spell such as Summon Warhorse) is known; the rules read the others from the
-// list bits
-void FillOffList(Player* bot, TrainerList const* list, TrainerList const* riding, std::vector<std::uint64_t>& met)
+// The direct forms of the can-learn and off-list bits (one core call per list spell), against which `planner needs`
+// checks the snapshot's precomputed ones: the number of positions that differ
+std::size_t FitDifferences(Player* bot, TrainerList const* list, std::vector<std::uint64_t> const& canLearn)
 {
+    std::size_t differ = 0;
+    if (list)
+        for (std::size_t position = 0; position < list->spells.size(); ++position)
+            if (HasSpellBit(canLearn, position) != bot->IsSpellFitByClassAndRace(list->spells[position].spellId))
+                ++differ;
+    return differ;
+}
+
+std::size_t OffListDifferences(Player* bot, TrainerList const* list, TrainerList const* riding,
+                               std::vector<std::uint64_t> const& met)
+{
+    std::size_t differ = 0;
     if (!list)
-        return;
-    met = SpellBits(list->spells.size());
+        return differ;
     for (std::size_t position = 0; position < list->spells.size(); ++position)
     {
         bool known = true;
@@ -294,9 +343,10 @@ void FillOffList(Player* bot, TrainerList const* list, TrainerList const* riding
                 list->Teacher(ability) == TrainerList::NOT_FOUND &&
                 (!riding || riding->Find(ability) == TrainerList::NOT_FOUND) && !bot->HasSpell(ability))
                 known = false;
-        if (known)
-            SetSpellBit(met, position);
+        if (known != HasSpellBit(met, position))
+            ++differ;
     }
+    return differ;
 }
 }  // namespace
 
@@ -372,6 +422,7 @@ std::vector<std::string> UpkeepIndexStatus()
 
 void FillUpkeep(Player* bot, Snapshot& snapshot)
 {
+    auto const started = std::chrono::steady_clock::now();
     std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
     uint8 const cls = bot->getClass();
 
@@ -391,14 +442,22 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
                 if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
                     AddStock(snapshot, index.get(), item, cls);
 
-    if (!index)
-        return;
-    snapshot.upkeepVersion = index->version;
-    TrainerList const* classList = index->ClassList(cls);
-    TrainerList const* riding = index->RidingList(bot->getRace(true));
-    FillKnown(bot, classList, snapshot.knownClassSpells, snapshot.canLearnClassSpells);
-    FillKnown(bot, riding, snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
-    FillOffList(bot, classList, riding, snapshot.offListMetClassSpells);
+    if (index)
+    {
+        snapshot.upkeepVersion = index->version;
+        TrainerList const* classList = index->ClassList(cls);
+        TrainerList const* riding = index->RidingList(bot->getRace(true));
+        FillKnown(bot, classList, snapshot.knownClassSpells, snapshot.canLearnClassSpells);
+        FillKnown(bot, riding, snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
+        if (classList)
+            snapshot.offListMetClassSpells =
+                OffListMet(*classList, riding, [bot](uint32 spellId) { return bot->HasSpell(spellId); });
+    }
+    // Its own PerfMonitor row (map-thread microseconds; `planner needs` calls add world-thread samples)
+    auto const us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner snapshot upkeep"))
+        row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
 }
 
 bool HandleNeedsCommand(ChatHandler* handler, char const* args)
@@ -447,6 +506,21 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
         snapshot.durabilityPercent, snapshot.lowestDurabilityPercent, snapshot.brokenItems, snapshot.stock.size());
     for (std::string const& line : UpkeepNeeds::DescribeAll(list))
         handler->PSendSysMessage("PLANNER   {}", line);
+
+    // The snapshot's precomputed can-learn and off-list bits against the core's direct answers
+    TrainerList const* classList = index->ClassList(snapshot.cls);
+    TrainerList const* riding = index->RidingList(bot->getRace(true));
+    std::size_t const differ = FitDifferences(bot, classList, snapshot.canLearnClassSpells) +
+                               FitDifferences(bot, riding, snapshot.canLearnRidingSpells) +
+                               OffListDifferences(bot, classList, riding, snapshot.offListMetClassSpells);
+    std::string const check = Acore::StringFormat(
+        "PLANNER check of {}: precomputed can-learn and off-list bits {} the direct ones ({} class, {} riding spells, "
+        "{} differ)",
+        bot->GetName(), differ ? "DIFFER from" : "equal", classList ? classList->spells.size() : 0,
+        riding ? riding->spells.size() : 0, differ);
+    handler->PSendSysMessage("{}", check);
+    if (differ)
+        LOG_ERROR("playerbots", "{}", check);
     return true;
 }
 }  // namespace Planner
