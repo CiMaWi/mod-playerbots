@@ -144,6 +144,8 @@ public:
     void Randomize(Player* bot);
     void Clear(Player* bot);
     void RandomizeFirst(Player* bot);
+    // ".playerbots population resize" made this bot at its level: its first randomize is a full one at that level
+    void MarkMadeAtLevel(uint32 bot);
     void RandomizeMin(Player* bot);
     void IncreaseLevel(Player* bot);
     void ScheduleTeleport(uint32 bot, uint32 time = 0);

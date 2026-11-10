@@ -188,6 +188,7 @@ public:
         static ChatCommandTable playerbotsPopulationCommandTable = {
             {"status", Population::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", Population::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"resize", Population::HandleResizeCommand, SEC_CONSOLE, Console::Yes},
         };
 
         static ChatCommandTable playerbotsRouteCommandTable = {

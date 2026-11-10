@@ -667,8 +667,9 @@ void RandomPlayerbotMgr::AssignAccountTypes()
         int divisor = RandomPlayerbotFactory::CalculateAvailableCharsPerAccount();
         int maxBots = sPlayerbotAIConfig.MaxRandomBots;
 
-        // Playerbots.Population.Rotation: accounts for the whole roster, above the online cap
-        maxBots = static_cast<int>(Population::RosterBotCount(static_cast<uint32>(maxBots)));
+        // Playerbots.Population.Rotation: accounts for the whole roster, above the online cap (with spare slots for a
+        // resize when the refill is capped)
+        maxBots = static_cast<int>(Population::RosterAccountBotCount(static_cast<uint32>(maxBots)));
 
         // Calculate base accounts needed for RNDbots, ensuring round up for maxBots not cleanly divisible by the divisor
         neededRndBotAccounts = (maxBots + divisor - 1) / divisor;
@@ -2392,10 +2393,22 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot)
     Refresh(bot);
 }
 
+// The event of a bot made at its level by ".playerbots population resize", until its first randomize (never expires)
+constexpr char const* MadeAtLevelEvent = "made_at_level";
+
+void RandomPlayerbotMgr::MarkMadeAtLevel(uint32 bot) { SetEventValue(bot, MadeAtLevelEvent, 1, 0); }
+
 void RandomPlayerbotMgr::Randomize(Player* bot)
 {
     if (bot->InBattleground())
         return;
+
+    // Made at its level by ".playerbots population resize": the first randomize is a full one at that level
+    if (GetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent))
+    {
+        RandomizeFirst(bot);
+        return;
+    }
 
     // Upstream: reroll below level 3 (Death Knights below 56), downgrade at max level when DowngradeMaxLevelBot,
     // else incremental. Persistent population (H1): always incremental at the current level.
@@ -2505,8 +2518,14 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
             level = sPlayerbotAIConfig.RandomBotStartingLevel;
     }
 
+    // Made at its level by ".playerbots population resize": that level, once
+    if (GetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent))
+    {
+        level = bot->GetLevel();
+        SetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent, 0, 0);
+    }
     // Persistent population (H1): a re-initialisation at the current level, never a new level.
-    if (Population::IsPersistent() && level != bot->GetLevel())
+    else if (Population::IsPersistent() && level != bot->GetLevel())
     {
         LOG_INFO("playerbots", "[Population] RandomizeFirst: kept {} at level {} instead of {} (persistent)",
                  bot->GetName(), bot->GetLevel(), level);

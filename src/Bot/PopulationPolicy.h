@@ -2067,6 +2067,524 @@ inline uint32_t RetireSelftest(std::vector<std::string>& failures, bool full)
 
     return checks;
 }
+
+// World-log WL19 (WL.14): the roster's count change (".playerbots population resize"). Level ranges 1-9, 10-19, ...
+// up to the level below the top, and the top level alone; the top holds at most ResizeTopSharePct of the roster, the
+// other ranges even shares of the rest. Existing bots keep their levels: deletions come from the ranges most over their
+// share, additions go to the ranges most under it.
+constexpr uint32_t ResizeTopSharePct = 10;
+constexpr uint32_t ResizeRangeLevels = 10;
+
+struct ResizeRange
+{
+    uint32_t firstLevel = 0;
+    uint32_t lastLevel = 0;
+    uint32_t count = 0;      // roster bots in the range now
+    uint32_t removable = 0;  // of them, the ones a deletion may take (offline, unprotected)
+    double target = 0.0;     // the range's share of the new roster
+    int32_t delta = 0;       // the plan: bots added (> 0) or deleted (< 0)
+};
+
+inline std::vector<ResizeRange> ResizeLayout(uint32_t maxLevel)
+{
+    std::vector<ResizeRange> ranges;
+    for (uint32_t first = 1; first < maxLevel; first = (first / ResizeRangeLevels + 1) * ResizeRangeLevels)
+    {
+        ResizeRange range;
+        range.firstLevel = first;
+        range.lastLevel = std::min((first / ResizeRangeLevels + 1) * ResizeRangeLevels - 1, maxLevel - 1);
+        ranges.push_back(range);
+    }
+
+    ResizeRange top;
+    top.firstLevel = std::max<uint32_t>(maxLevel, 1);
+    top.lastLevel = top.firstLevel;
+    ranges.push_back(top);
+    return ranges;
+}
+
+// The index of a level's range, -1 outside the layout
+inline int32_t ResizeRangeOf(std::vector<ResizeRange> const& ranges, uint32_t level)
+{
+    for (size_t i = 0; i < ranges.size(); ++i)
+        if (level >= ranges[i].firstLevel && level <= ranges[i].lastLevel)
+            return static_cast<int32_t>(i);
+
+    return -1;
+}
+
+inline void ResizeTargets(std::vector<ResizeRange>& ranges, uint32_t roster)
+{
+    if (ranges.size() < 2)
+    {
+        for (ResizeRange& range : ranges)
+            range.target = roster;
+
+        return;
+    }
+
+    double const top = roster * ResizeTopSharePct / 100.0;
+    double const other = (roster - top) / static_cast<double>(ranges.size() - 1);
+    for (ResizeRange& range : ranges)
+        range.target = other;
+
+    ranges.back().target = top;
+}
+
+// The plan toward `roster` bots, one bot at a time: a deletion from the range most over its target that still has a
+// removable bot, or an addition to the range most under it (the top level only below its share: bots reach it by
+// levelling); ties go to the lower range. Returns the planned change (< 0: deletions), short of the asked one when too
+// few bots are removable.
+inline int32_t ResizePlan(std::vector<ResizeRange>& ranges, uint32_t roster)
+{
+    uint32_t current = 0;
+    for (ResizeRange& range : ranges)
+    {
+        current += range.count;
+        range.delta = 0;
+    }
+
+    ResizeTargets(ranges, roster);
+    bool const adding = roster > current;
+    uint32_t const steps = adding ? roster - current : current - roster;
+    int32_t planned = 0;
+    for (uint32_t step = 0; step < steps; ++step)
+    {
+        int32_t best = -1;
+        double bestGap = 0.0;
+        for (size_t i = 0; i < ranges.size(); ++i)
+        {
+            ResizeRange const& range = ranges[i];
+            double const now = static_cast<double>(range.count) + range.delta;
+            double gap = 0.0;
+            if (adding)
+            {
+                gap = range.target - now;
+                if (i + 1 == ranges.size() && ranges.size() > 1 && gap <= 0.0)
+                    continue;
+            }
+            else
+            {
+                if (static_cast<uint32_t>(-range.delta) >= range.removable)
+                    continue;
+
+                gap = now - range.target;
+            }
+
+            if (best < 0 || gap > bestGap)
+            {
+                best = static_cast<int32_t>(i);
+                bestGap = gap;
+            }
+        }
+
+        if (best < 0)
+            break;
+
+        ranges[best].delta += adding ? 1 : -1;
+        planned += adding ? 1 : -1;
+    }
+
+    return planned;
+}
+
+// A resize counts the roster when it starts, so it waits while a retire query batch runs and while a retire replacement
+// is owed (its bot is deleted already, its character not made yet): counted then, the roster would end up with the
+// owed characters on top of the count the resize reports
+inline bool ResizeMayStart(bool retireBusy, size_t owedReplacements) { return !retireBusy && !owedReplacements; }
+
+// The class of an added bot: the least represented in `classCounts` (indexed by class id) among the bits of
+// `allowedMask` (bit classId - 1), the lowest id on ties; 0 when none is allowed
+inline uint32_t ResizeClass(std::vector<uint32_t> const& classCounts, uint32_t allowedMask)
+{
+    uint32_t best = 0;
+    for (uint32_t classId = 1; classId < classCounts.size() && classId <= 32; ++classId)
+        if ((allowedMask & (1u << (classId - 1))) && (!best || classCounts[classId] < classCounts[best]))
+            best = classId;
+
+    return best;
+}
+
+// "1-9: 380 -40, ..., 80: 210" (the count before the plan, then the change where there is one)
+inline std::string ResizePlanText(std::vector<ResizeRange> const& ranges)
+{
+    std::string text;
+    for (ResizeRange const& range : ranges)
+    {
+        text += text.empty() ? "" : ", ";
+        text += std::to_string(range.firstLevel);
+        if (range.lastLevel != range.firstLevel)
+            text += "-" + std::to_string(range.lastLevel);
+
+        text += ": " + std::to_string(range.count);
+        if (range.delta)
+            text += (range.delta > 0 ? " +" : " ") + std::to_string(range.delta);
+    }
+
+    return text;
+}
+
+// A creation-like roster of 2000 (the randomizer's 10 % at level 1 and 10 % at the top lift 1-9 and 80): the
+// selftest's fixture and the harness's printed example
+inline std::vector<ResizeRange> ResizeCreationFixture()
+{
+    std::vector<ResizeRange> ranges = ResizeLayout(80);
+    std::vector<uint32_t> const counts = {380, 200, 200, 200, 200, 200, 200, 210, 210};
+    for (size_t i = 0; i < ranges.size(); ++i)
+    {
+        ranges[i].count = counts[i];
+        ranges[i].removable = counts[i];
+    }
+
+    return ranges;
+}
+
+// The counts after a plan (every bot removable again)
+inline std::vector<ResizeRange> ResizeApply(std::vector<ResizeRange> ranges)
+{
+    for (ResizeRange& range : ranges)
+    {
+        range.count = static_cast<uint32_t>(static_cast<int32_t>(range.count) + range.delta);
+        range.removable = range.count;
+        range.delta = 0;
+    }
+
+    return ranges;
+}
+
+// The resize checks shared by the harness and ".playerbots population selftest": layout, shares, which ranges lose
+// and gain for fixture counts, the removable limit and the class pick
+inline uint32_t ResizeSelftest(std::vector<std::string>& failures)
+{
+    uint32_t checks = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("resize: " + what);
+    };
+    auto withCounts = [](std::vector<uint32_t> const& counts)
+    {
+        std::vector<ResizeRange> ranges = ResizeLayout(80);
+        for (size_t i = 0; i < ranges.size() && i < counts.size(); ++i)
+        {
+            ranges[i].count = counts[i];
+            ranges[i].removable = counts[i];
+        }
+
+        return ranges;
+    };
+    auto deltas = [](std::vector<ResizeRange> const& ranges)
+    {
+        std::vector<int32_t> out;
+        for (ResizeRange const& range : ranges)
+            out.push_back(range.delta);
+
+        return out;
+    };
+
+    std::vector<ResizeRange> layout = ResizeLayout(80);
+    check(layout.size() == 9 && layout[0].firstLevel == 1 && layout[0].lastLevel == 9 && layout[1].firstLevel == 10 &&
+              layout[7].firstLevel == 70 && layout[7].lastLevel == 79 && layout[8].firstLevel == 80 &&
+              layout[8].lastLevel == 80,
+          "layout 80: 1-9, 10-19, ..., 70-79, 80");
+    check(ResizeLayout(1).size() == 1 && ResizeRangeOf(layout, 9) == 0 && ResizeRangeOf(layout, 10) == 1 &&
+              ResizeRangeOf(layout, 80) == 8 && ResizeRangeOf(layout, 0) < 0 && ResizeRangeOf(layout, 81) < 0,
+          "the range of a level");
+    ResizeTargets(layout, 2500);
+    check(std::abs(layout[8].target - 250.0) < 1e-9 && std::abs(layout[0].target - 281.25) < 1e-9,
+          "shares of 2500: 250 at 80, 281.25 in each other range");
+
+    // 2000 -> 2050 -> 1950: the additions go to the ranges under their share, not to 1-9 or 80; the deletions to 1-9
+    std::vector<ResizeRange> grow = ResizeCreationFixture();
+    int32_t const added = ResizePlan(grow, 2050);
+    int32_t middle = 0;
+    for (size_t i = 1; i <= 6; ++i)
+        middle += (grow[i].delta >= 8 && grow[i].delta <= 9) ? grow[i].delta : 1000;
+
+    check(added == 50 && !grow[0].delta && !grow[7].delta && !grow[8].delta && middle == 50,
+          "2000 -> 2050: +8 or +9 in each of 10-69, none in 1-9, 70-79 or 80: " + ResizePlanText(grow));
+    std::vector<ResizeRange> shrink = ResizeApply(grow);
+    int32_t const removed = ResizePlan(shrink, 1950);
+    check(removed == -100 && shrink[0].delta == -100, "2050 -> 1950: all 100 from 1-9: " + ResizePlanText(shrink));
+
+    std::vector<ResizeRange> deep = ResizeCreationFixture();
+    int32_t const deepRemoved = ResizePlan(deep, 1700);
+    check(deepRemoved == -300 && deep[0].delta < deep[8].delta && deep[8].delta < 0 && deep[7].delta < 0,
+          "2000 -> 1700: most from 1-9, then 80 and 70-79 too: " + ResizePlanText(deep));
+
+    std::vector<ResizeRange> empty = withCounts({225, 225, 0, 225, 225, 225, 225, 225, 200});
+    check(ResizePlan(empty, 1875) == 100 && empty[2].delta == 100,
+          "an empty range gains first: " + ResizePlanText(empty));
+
+    std::vector<ResizeRange> one = withCounts({0, 0, 0, 0, 1000, 0, 0, 0, 0});
+    check(ResizePlan(one, 900) == -100 && one[4].delta == -100, "all in one range: the deletions come from it");
+    one = withCounts({0, 0, 0, 0, 1000, 0, 0, 0, 0});
+    int32_t const spread = ResizePlan(one, 1080);
+    std::vector<int32_t> const spreadDeltas = deltas(one);
+    check(spread == 80 && !one[4].delta && *std::max_element(spreadDeltas.begin(), spreadDeltas.end()) <= 12,
+          "all in one range: the additions spread over the others: " + ResizePlanText(one));
+
+    std::vector<ResizeRange> topHeavy = withCounts({100, 100, 100, 100, 100, 100, 100, 100, 300});
+    check(ResizePlan(topHeavy, 1200) == 100 && !topHeavy[8].delta, "80 over its 10 % gains nothing");
+    std::vector<ResizeRange> topLight = withCounts({250, 250, 250, 250, 250, 250, 250, 250, 0});
+    check(ResizePlan(topLight, 2100) == 100 && topLight[8].delta == 100, "80 under its 10 % may gain");
+
+    std::vector<ResizeRange> limited = withCounts({500, 300, 200, 200, 200, 200, 200, 200, 150});
+    limited[0].removable = 10;
+    check(ResizePlan(limited, 2050) == -100 && limited[0].delta == -10 && limited[1].delta == -90,
+          "a range loses no more than its removable bots: " + ResizePlanText(limited));
+    std::vector<ResizeRange> stuck = withCounts({500, 300, 200, 200, 200, 200, 200, 200, 200});
+    for (ResizeRange& range : stuck)
+        range.removable = 0;
+
+    check(ResizePlan(stuck, 2000) == 0 && deltas(stuck) == std::vector<int32_t>(9, 0), "nothing removable: no plan");
+    std::vector<ResizeRange> same = ResizeCreationFixture();
+    check(ResizePlan(same, 2000) == 0 && deltas(same) == std::vector<int32_t>(9, 0), "the same count: no plan");
+
+    std::vector<uint32_t> classes(12, 0);
+    classes[1] = 5;
+    classes[2] = 3;
+    classes[3] = 3;
+    check(ResizeClass(classes, (1u << 0) | (1u << 1) | (1u << 2)) == 2, "the least represented class, lowest id");
+    check(ResizeClass(classes, (1u << 0) | (1u << 1) | (1u << 2) | (1u << 5)) == 6, "an empty class first");
+    check(ResizeClass(classes, 0) == 0, "no class allowed: none");
+
+    // The ordering of one RetireTick (ProcessReadyCallbacks, ResizeTick, CreateOwedBots): a retire pass deleted k bots
+    // and owes k replacements. Started at once, the resize counts N - k and the replacements land on top of its count;
+    // waiting for them, it counts N. The runtime order itself is covered by this model and the owed list draining.
+    {
+        uint32_t const roster = 2000;
+        uint32_t const retired = 3;
+        uint32_t characters = roster - retired;  // the pass deleted its bots
+        size_t owed = retired;
+        bool resizeStarted = false;
+        uint32_t counted = 0;
+        for (uint32_t tick = 0; tick < 6; ++tick)
+        {
+            if (!resizeStarted && ResizeMayStart(false, owed))
+            {
+                resizeStarted = true;
+                counted = characters;
+            }
+
+            if (owed && tick >= 1)  // the creations land from the second tick on (a retry, the confirm query)
+            {
+                ++characters;
+                --owed;
+            }
+        }
+
+        check(resizeStarted && counted == roster && characters == roster,
+              "a resize waits for the owed retire replacements: it counts the whole roster");
+    }
+    check(!ResizeMayStart(true, 0) && !ResizeMayStart(false, 1) && ResizeMayStart(false, 0),
+          "a resize starts only with no retire batch running and no replacement owed");
+    return checks;
+}
+
+// WL19a: the startup factory's refill (RandomPlayerbotFactory::CreateRandomBots). Upstream fills every bot account to
+// a full set of characters at every start. A persistent roster with rotation (Population.Persistent and
+// Rotation.Enable) is filled only up to its count instead, so a resize's deletions stay deleted, and its accounts keep
+// spare slots for a resize's additions.
+inline bool RefillCapped(bool persistent, bool rotation) { return persistent && rotation; }
+
+// The spare share the roster accounts are sized for beyond the roster while the refill is capped: a tenth of the
+// roster, rounded up (2500 -> 250 bots, 25 empty accounts at 10 characters each)
+inline uint32_t RosterSpareBots(uint32_t roster) { return (roster + 9) / 10; }
+
+// What an account becomes in RandomPlayerbotMgr::AssignAccountTypes: a roster (type 1) or AddClass (type 2) account,
+// or an unassigned one the roster does not use
+enum class RefillRole : uint8_t
+{
+    Roster,
+    AddClass,
+    Spare
+};
+
+// The roles of the factory's accounts (in account order) from their stored types (0 = unassigned or no row), as
+// AssignAccountTypes will give them: types 1 and 2 stay; the lowest unassigned accounts become roster accounts up to
+// `neededRoster`, then the highest remaining ones AddClass accounts up to `neededAddClass`; the rest stay unassigned
+inline std::vector<RefillRole> RefillRoles(std::vector<uint8_t> const& types, uint32_t neededRoster,
+                                           uint32_t neededAddClass)
+{
+    std::vector<RefillRole> roles(types.size(), RefillRole::Spare);
+    std::vector<bool> assigned(types.size(), false);
+    uint32_t roster = 0;
+    uint32_t addClass = 0;
+    for (size_t i = 0; i < types.size(); ++i)
+    {
+        if (types[i] == 1)
+        {
+            roles[i] = RefillRole::Roster;
+            assigned[i] = true;
+            ++roster;
+        }
+        else if (types[i] == 2)
+        {
+            roles[i] = RefillRole::AddClass;
+            assigned[i] = true;
+            ++addClass;
+        }
+    }
+
+    for (size_t i = 0; i < types.size() && roster < neededRoster; ++i)
+    {
+        if (assigned[i])
+            continue;
+
+        roles[i] = RefillRole::Roster;
+        assigned[i] = true;
+        ++roster;
+    }
+
+    for (size_t i = types.size(); i-- > 0 && addClass < neededAddClass;)
+    {
+        if (assigned[i])
+            continue;
+
+        roles[i] = RefillRole::AddClass;
+        assigned[i] = true;
+        ++addClass;
+    }
+
+    return roles;
+}
+
+struct RefillAccount
+{
+    uint32_t held = 0;  // characters on the account now
+    RefillRole role = RefillRole::Roster;
+};
+
+constexpr uint32_t RefillNoLimit = 0xFFFFFFFFu;
+
+// How many characters the factory may make on each account. Uncapped: no limit anywhere (upstream's fill to a full
+// account). Capped: AddClass accounts still fill up; the roster accounts together reach `target` characters, filled in
+// account order up to `slotsPerAccount` each; unassigned accounts get none.
+inline std::vector<uint32_t> RefillPlan(std::vector<RefillAccount> const& accounts, bool capped, uint32_t target,
+                                        uint32_t slotsPerAccount)
+{
+    std::vector<uint32_t> plan(accounts.size(), RefillNoLimit);
+    if (!capped)
+        return plan;
+
+    uint32_t held = 0;
+    for (RefillAccount const& account : accounts)
+        if (account.role == RefillRole::Roster)
+            held += account.held;
+
+    uint32_t budget = target > held ? target - held : 0;
+    for (size_t i = 0; i < accounts.size(); ++i)
+    {
+        if (accounts[i].role == RefillRole::AddClass)
+            continue;
+
+        uint32_t const free = accounts[i].held < slotsPerAccount ? slotsPerAccount - accounts[i].held : 0;
+        plan[i] = accounts[i].role == RefillRole::Roster ? std::min(budget, free) : 0;
+        budget -= plan[i];
+    }
+
+    return plan;
+}
+
+// The characters a plan makes (the limits of capped accounts; an uncapped account counts its free slots)
+inline uint32_t RefillPlanned(std::vector<RefillAccount> const& accounts, std::vector<uint32_t> const& plan,
+                              uint32_t slotsPerAccount)
+{
+    uint32_t total = 0;
+    for (size_t i = 0; i < plan.size() && i < accounts.size(); ++i)
+    {
+        uint32_t const free = accounts[i].held < slotsPerAccount ? slotsPerAccount - accounts[i].held : 0;
+        total += plan[i] == RefillNoLimit ? free : plan[i];
+    }
+
+    return total;
+}
+
+// The refill checks shared by the harness and ".playerbots population selftest": the gate, the spare share, the
+// account roles and the refill count with the cap on and off
+inline uint32_t RefillSelftest(std::vector<std::string>& failures)
+{
+    uint32_t checks = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("refill: " + what);
+    };
+    auto accounts = [](std::vector<uint32_t> const& held, RefillRole role)
+    {
+        std::vector<RefillAccount> list;
+        for (uint32_t const count : held)
+            list.push_back({count, role});
+
+        return list;
+    };
+
+    check(RefillCapped(true, true) && !RefillCapped(true, false) && !RefillCapped(false, true) &&
+              !RefillCapped(false, false),
+          "capped only with persistence and rotation");
+    check(RosterSpareBots(2500) == 250 && RosterSpareBots(2001) == 201 && RosterSpareBots(0) == 0,
+          "the spare share is a tenth of the roster, rounded up");
+    check((2500 + RosterSpareBots(2500) + 9) / 10 == 275, "a roster of 2500 gets 275 accounts at 10 characters");
+
+    // A fresh roster: 250 roster accounts and 25 spare ones (all type 1), nothing held
+    std::vector<RefillAccount> const fresh = accounts(std::vector<uint32_t>(275, 0), RefillRole::Roster);
+    std::vector<uint32_t> const off = RefillPlan(fresh, false, 2500, 10);
+    check(off == std::vector<uint32_t>(275, RefillNoLimit) && RefillPlanned(fresh, off, 10) == 2750,
+          "rotation off: every account fills up, as upstream");
+    std::vector<uint32_t> const on = RefillPlan(fresh, true, 2500, 10);
+    check(RefillPlanned(fresh, on, 10) == 2500 && on[0] == 10 && on[249] == 10 && on[250] == 0 && on[274] == 0,
+          "rotation on: the first 250 accounts fill, the 25 spare ones stay empty");
+
+    // A resize deleted 100 (spread over the accounts) and the next start has RosterSize at the done line's count
+    std::vector<uint32_t> held(275, 0);
+    for (size_t i = 0; i < 250; ++i)
+        held[i] = i < 100 ? 9 : 10;
+
+    std::vector<RefillAccount> const shrunk = accounts(held, RefillRole::Roster);
+    check(RefillPlanned(shrunk, RefillPlan(shrunk, true, 2400, 10), 10) == 0,
+          "after a resize to 2400 with RosterSize 2400: nothing comes back");
+    check(RefillPlanned(shrunk, RefillPlan(shrunk, true, 2500, 10), 10) == 100,
+          "RosterSize left at 2500: the factory tops up 100");
+    check(RefillPlanned(shrunk, RefillPlan(shrunk, false, 2400, 10), 10) == 350,
+          "rotation off: the deleted ones and the spare accounts fill up");
+
+    // A resize added 50 on spare accounts: RosterSize 2550 at the next start makes nothing
+    held.assign(275, 0);
+    for (size_t i = 0; i < 255; ++i)
+        held[i] = 10;
+
+    std::vector<RefillAccount> const grown = accounts(held, RefillRole::Roster);
+    check(RefillPlanned(grown, RefillPlan(grown, true, 2550, 10), 10) == 0, "after a resize to 2550: nothing more");
+
+    std::vector<RefillAccount> const partial = accounts({10, 7, 0, 0}, RefillRole::Roster);
+    check(RefillPlan(partial, true, 25, 10) == std::vector<uint32_t>({0, 3, 5, 0}),
+          "the free slots fill in account order up to the target");
+    check(RefillPlanned(partial, RefillPlan(partial, true, 10, 10), 10) == 0, "more held than the target: none");
+
+    std::vector<RefillAccount> mixed = accounts({10, 4, 0}, RefillRole::Roster);
+    mixed.push_back({3, RefillRole::AddClass});
+    mixed.push_back({10, RefillRole::Spare});
+    mixed.push_back({0, RefillRole::Spare});
+    std::vector<uint32_t> const mixedPlan = RefillPlan(mixed, true, 20, 10);
+    check(mixedPlan == std::vector<uint32_t>({0, 6, 0, RefillNoLimit, 0, 0}),
+          "AddClass accounts fill up and do not count; unassigned ones get none");
+
+    std::vector<RefillRole> const roles = RefillRoles({1, 1, 0, 0, 0, 2, 0}, 3, 2);
+    check(
+        roles == std::vector<RefillRole>({RefillRole::Roster, RefillRole::Roster, RefillRole::Roster, RefillRole::Spare,
+                                          RefillRole::Spare, RefillRole::AddClass, RefillRole::AddClass}),
+        "roles: the lowest unassigned become roster accounts, the highest AddClass ones");
+    std::vector<RefillRole> const fresher = RefillRoles({0, 0, 0, 0}, 2, 1);
+    check(fresher == std::vector<RefillRole>(
+                         {RefillRole::Roster, RefillRole::Roster, RefillRole::Spare, RefillRole::AddClass}),
+          "roles on a fresh database");
+    check(RefillRoles({0, 0}, 5, 5) == std::vector<RefillRole>(2, RefillRole::Roster),
+          "roster accounts first when there are too few");
+    return checks;
+}
 }  // namespace PopulationPolicy
 
 #endif

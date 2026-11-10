@@ -42,6 +42,15 @@ bool IsRotation();
 // Reads the config itself (it runs before LoadConfig).
 uint32 RosterBotCount(uint32 upstreamCount);
 
+// Startup (the factory, before LoadConfig; reads the config itself): Playerbots.Population.Persistent and
+// Rotation.Enable both on. The factory then makes characters only up to the roster's count (RosterBotCount) instead of
+// filling every bot account, and the roster accounts keep spare slots for ".playerbots population resize".
+bool CapsStartupRefill();
+
+// Startup: the random bot characters the roster accounts are sized for: RosterBotCount, plus a tenth of it as spare
+// slots while CapsStartupRefill (PopulationPolicy::RosterSpareBots)
+uint32 RosterAccountBotCount(uint32 upstreamCount);
+
 // World thread (RandomPlayerbotMgr::UpdateAIInternal), every Rotation.IntervalSeconds, else nothing: the swaps of
 // online bots for offline ones (`in` 0: only a logout of a bot outside the roster). `accounts` are the random bot
 // accounts, `online` the manager's online set, `cap` its bot count. The caller logs the `out` bots out and lets the
@@ -93,6 +102,11 @@ void RetireTick(std::unordered_set<uint32> const& online);
 // .playerbots population status | selftest
 bool HandleStatusCommand(ChatHandler* handler, char const* args);
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);
+
+// World-log WL19, console only: ".playerbots population resize [<count> [plan]]" moves the roster toward `count`
+// characters by WL.14's shares (PopulationPolicy::ResizePlan): complete deletes from the ranges most over theirs, the
+// factory's new bots at levels of the ranges most under; spread over RetireTick's ticks. Without arguments: its state.
+bool HandleResizeCommand(ChatHandler* handler, char const* args);
 }  // namespace Population
 
 void AddSC_population();

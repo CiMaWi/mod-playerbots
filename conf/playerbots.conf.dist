@@ -893,6 +893,10 @@ Playerbots.Population.Rotation.Enable = 0
 
 # Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
 # with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
+# With Playerbots.Population.Persistent = 1 as well, the startup factory makes characters only up
+# to this count (not every account full), so bots ".playerbots population resize" deleted stay
+# deleted, and the accounts get a tenth more slots for a resize's new bots. Set it to the count of a
+# resize's done line before the next start.
 # 0 = every character on the random bot accounts.
 # Default: 2500
 Playerbots.Population.Rotation.RosterSize = 2500

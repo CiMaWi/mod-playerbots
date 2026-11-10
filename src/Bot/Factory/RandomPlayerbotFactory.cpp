@@ -36,7 +36,82 @@
 #include "World.h"
 
 #include <cmath>
+#include <unordered_map>
 #include <unordered_set>
+
+namespace
+{
+constexpr uint32 FactoryCharactersPerAccount = 10;  // CreateRandomBots fills an account up to this
+
+// The characters the startup refill may make on each of `accounts` (account id, characters held; in account order):
+// no limit unless Population::CapsStartupRefill, then the roster accounts together only up to the roster's count
+// (PopulationPolicy::RefillPlan; startup, world thread)
+std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& accounts)
+{
+    if (!Population::CapsStartupRefill())
+        return std::vector<uint32>(accounts.size(), PopulationPolicy::RefillNoLimit);
+
+    std::unordered_map<uint32, uint8> stored;
+    if (PreparedQueryResult result =
+            PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_TYPE)))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            stored[fields[0].Get<uint32>()] = fields[1].Get<uint8>();
+        } while (result->NextRow());
+    }
+
+    std::vector<uint8_t> types;
+    for (auto const& [accountId, held] : accounts)
+    {
+        auto const it = stored.find(accountId);
+        types.push_back(it == stored.end() ? 0 : it->second);
+    }
+
+    // The account types AssignAccountTypes gives after the factory, from the same counts
+    uint32 neededRoster = 0;
+    if (sPlayerbotAIConfig.MaxRandomBots > 0)
+    {
+        uint32 const divisor = std::max<uint32>(1, RandomPlayerbotFactory::CalculateAvailableCharsPerAccount());
+        neededRoster = (Population::RosterAccountBotCount(sPlayerbotAIConfig.MaxRandomBots) + divisor - 1) / divisor;
+    }
+
+    std::vector<PopulationPolicy::RefillRole> const roles =
+        PopulationPolicy::RefillRoles(types, neededRoster, sPlayerbotAIConfig.AddClassAccountPoolSize);
+
+    // The roster's count, plus main's ladder pool as CalculateTotalAccountCount has it
+    uint32 target = Population::RosterBotCount(sPlayerbotAIConfig.MaxRandomBots);
+    if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)
+        target += 2 * sPlayerbotAIConfig.LadderPoolTeams;
+
+    std::vector<PopulationPolicy::RefillAccount> list;
+    uint32 held = 0;
+    uint32 rosterAccounts = 0;
+    for (size_t i = 0; i < accounts.size(); ++i)
+    {
+        list.push_back({accounts[i].second, roles[i]});
+        if (roles[i] == PopulationPolicy::RefillRole::Roster)
+        {
+            held += accounts[i].second;
+            ++rosterAccounts;
+        }
+    }
+
+    std::vector<uint32> const plan = PopulationPolicy::RefillPlan(list, true, target, FactoryCharactersPerAccount);
+    uint32 making = 0;
+    for (size_t i = 0; i < plan.size(); ++i)
+        if (roles[i] == PopulationPolicy::RefillRole::Roster)
+            making += plan[i];
+
+    uint32 const slots = rosterAccounts * FactoryCharactersPerAccount;
+    LOG_INFO("playerbots",
+             "[Population] startup refill capped at the roster (Persistent and Rotation on): {} characters on {} "
+             "roster accounts, roster {}, making {}, {} slots spare for a resize",
+             held, rosterAccounts, target, making, slots > held + making ? slots - held - making : 0);
+    return plan;
+}
+}  // namespace
 
 void RandomPlayerbotFactory::LoadLocalizedNameColumns()
 {
@@ -463,8 +538,9 @@ uint32 RandomPlayerbotFactory::CalculateTotalAccountCount()
     // Calculate max bots
     int maxBots = sPlayerbotAIConfig.MaxRandomBots;
 
-    // Playerbots.Population.Rotation: accounts for the whole roster, above the online cap
-    maxBots = static_cast<int>(Population::RosterBotCount(static_cast<uint32>(maxBots)));
+    // Playerbots.Population.Rotation: accounts for the whole roster, above the online cap (with spare slots for a
+    // resize when the refill is capped)
+    maxBots = static_cast<int>(Population::RosterAccountBotCount(static_cast<uint32>(maxBots)));
 
     // Main's ladder pool may be away on arena servers, outside the online count
     if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)
@@ -748,6 +824,9 @@ void RandomPlayerbotFactory::CreateRandomBots()
     int bot_creation = 0;
     timer = getMSTime();
     bool nameCached = false;
+
+    // The accounts and their characters first: a capped refill plans over all of them
+    std::vector<std::pair<uint32, uint32>> accounts;  // account id, characters held
     for (uint32 accountNumber = 0; accountNumber < totalAccountCount; ++accountNumber)
     {
         std::ostringstream out;
@@ -764,9 +843,15 @@ void RandomPlayerbotFactory::CreateRandomBots()
         uint32 accountId = fields[0].Get<uint32>();
 
         sPlayerbotAIConfig.RandomBotAccounts.push_back(accountId);
+        accounts.emplace_back(accountId, AccountMgr::GetCharactersCount(accountId));
+    }
 
-        uint32 count = AccountMgr::GetCharactersCount(accountId);
-        if (count >= 10)
+    std::vector<uint32> const limits = RefillLimits(accounts);
+    for (size_t accountIndex = 0; accountIndex < accounts.size(); ++accountIndex)
+    {
+        uint32 const accountId = accounts[accountIndex].first;
+        uint32 const count = accounts[accountIndex].second;
+        if (count >= FactoryCharactersPerAccount || !limits[accountIndex])
         {
             continue;
         }
@@ -801,14 +886,16 @@ void RandomPlayerbotFactory::CreateRandomBots()
             } while (result->NextRow());
         }
 
-        LOG_DEBUG("playerbots", "Creating random bot characters for account: [{}/{}]", accountNumber + 1, totalAccountCount);
+        LOG_DEBUG("playerbots", "Creating random bot characters for account: [{}/{}]", accountIndex + 1,
+                  accounts.size());
         RandomPlayerbotFactory factory;
 
         WorldSession* session = new WorldSession(accountId, "", 0x0, nullptr, SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING,
                                                 time_t(0), LOCALE_enUS, 0, false, false, 0);
         sessionBots.push_back(session);
 
-        for (uint8 cls = CLASS_WARRIOR; cls < MAX_CLASSES - count; ++cls)
+        uint32 created = 0;
+        for (uint8 cls = CLASS_WARRIOR; cls < MAX_CLASSES - count && created < limits[accountIndex]; ++cls)
         {
             // skip nonexistent classes
             if (!((1 << (cls - 1)) & CLASSMASK_ALL_PLAYABLE) || !sChrClassesStore.LookupEntry(cls))
@@ -832,6 +919,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
             playerBot->CleanupsBeforeDelete();
             delete playerBot;
             bot_creation++;
+            ++created;
         }
     }
 
