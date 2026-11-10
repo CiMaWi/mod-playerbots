@@ -639,6 +639,7 @@ public:
             Planner::StartPlanner();
             Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
             Planner::StartQuestIndex();      // the same for the quest index
+            Planner::StartUpkeepIndex();     // and for the upkeep index
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");

@@ -25,6 +25,7 @@ namespace Planner
 {
 class QuestIndex;
 class QuestStatsView;
+class UpkeepIndex;
 
 PlannerPool& Pool();
 // World thread: starts the pool with WorldTravel.PlannerThreads workers and its PerfMonitor rows
@@ -76,6 +77,20 @@ bool QuestsReady();
 std::string QuestIndexStatus();
 // `playerbots planner quest <id> | stats | flush`: the quest's entry and statistics, the book's state, a flush now
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
+
+// The upkeep index (upkeep plan WU2, PlannerUpkeep.cpp; records and rules in UpkeepIndex.h)
+// World thread, once after StartQuestIndex: gathers the trainers, the vendor stock and the class reagents, builds the
+// index on a worker
+void StartUpkeepIndex();
+// Any thread: the published upkeep index (null before the build); a reader keeps its copy alive
+std::shared_ptr<UpkeepIndex const> CurrentUpkeepIndex();
+// False until the build finished
+bool UpkeepIndexReady();
+// The upkeep index lines of `playerbots planner status|indexes`
+std::vector<std::string> UpkeepIndexStatus();
+// Map thread, from FillSnapshot: the upkeep fields (stock, pet diet, known trainer spells); no DB, one pass over the
+// bags and one HasSpell per trainer spell of the bot's class and riding lists
+void FillUpkeep(Player* bot, Snapshot& snapshot);
 
 // The population's quest statistics (WT13a, PlannerQuests.cpp; rules and book in QuestStats.h). StartQuestIndex
 // loads the stored totals; events before that are not counted

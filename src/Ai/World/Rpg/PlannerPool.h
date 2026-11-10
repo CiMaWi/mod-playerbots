@@ -70,6 +70,15 @@ struct Skill
     std::uint16_t max{0};
 };
 
+// A carried item that counts for an upkeep stock kind (upkeep plan WU2, UpkeepIndex.h)
+struct StockItem
+{
+    std::uint32_t item{0};
+    std::uint32_t count{0};
+    std::uint8_t kinds{0};  // a bit per UpkeepStock
+    std::uint8_t diet{0};   // the pet food bit (FoodType - 1); 0 = no pet eats it
+};
+
 struct Goal
 {
     std::uint32_t kind{0};
@@ -96,7 +105,9 @@ struct Snapshot
     std::uint16_t bagFree{0};
     std::uint32_t lowestItemWorth{0};  // not filled yet: worth per item is not cheap on the map thread
     std::uint8_t durabilityPercent{100};
-    std::vector<Skill> skills;  // riding and the professions the bot has
+    std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
+    std::uint8_t brokenItems{0};                // equipped items at durability 0
+    std::vector<Skill> skills;                  // riding and the professions the bot has
     std::vector<QuestSlot> quests;
     std::vector<std::uint32_t> rewardedQuests;  // sorted
     bool hasHearthstone{false};
@@ -111,11 +122,30 @@ struct Snapshot
     std::uint32_t deaths{0};  // not filled yet: no cheap per-bot death count exists
     Goal currentGoal;         // WT16 fills the goals
     std::vector<Goal> recentGoals;
+    // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
+    std::vector<StockItem> stock;                  // the backpack and every bag, one entry per item id
+    std::uint8_t petDiet{0};                       // the hunter pet's food mask (bit FoodType - 1); 0 = no hunter pet
+    std::uint32_t upkeepVersion{0};                // the upkeep index the bit sets align to; 0 = none yet
+    std::vector<std::uint64_t> knownClassSpells;   // bit i: the class trainer list's spell i is known
+    std::vector<std::uint64_t> knownRidingSpells;  // the same over the riding trainer list
+    float walkMinutesPerHour{0.0f};                // not filled yet: the travel shares are measured later (WU14)
+    float flightMinutesPerHour{0.0f};              // not filled yet
+
+    std::uint32_t StockCount(std::uint8_t kindBit) const
+    {
+        std::uint32_t total = 0;
+        for (StockItem const& entry : stock)
+            if (entry.kinds & kindBit)
+                total += entry.count;
+        return total;
+    }
 
     std::size_t ApproxBytes() const
     {
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
-               rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal);
+               rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
+               stock.capacity() * sizeof(StockItem) +
+               (knownClassSpells.capacity() + knownRidingSpells.capacity()) * sizeof(std::uint64_t);
     }
 };
 

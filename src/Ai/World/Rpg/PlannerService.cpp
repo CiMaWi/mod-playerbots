@@ -107,14 +107,25 @@ void FillBags(Player* bot, Snapshot& snapshot)
 
     uint64 durability = 0;
     uint64 maxDurability = 0;
+    uint64 lowest = PERCENT;
+    uint32 broken = 0;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
         {
-            durability += item->GetUInt32Value(ITEM_FIELD_DURABILITY);
-            maxDurability += item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+            uint32 const current = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+            uint32 const most = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+            durability += current;
+            maxDurability += most;
+            if (!most)
+                continue;  // never wears
+            lowest = std::min<uint64>(lowest, static_cast<uint64>(current) * PERCENT / most);
+            if (!current)
+                ++broken;
         }
     snapshot.durabilityPercent =
         static_cast<uint8>(maxDurability ? std::min<uint64>(durability * PERCENT / maxDurability, PERCENT) : PERCENT);
+    snapshot.lowestDurabilityPercent = static_cast<uint8>(lowest);
+    snapshot.brokenItems = static_cast<uint8>(broken);
 }
 
 void FillQuests(Player* bot, Snapshot& snapshot)
@@ -202,6 +213,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
         snapshot.groupLeader = group->GetLeaderGUID().GetRawValue();
     }
+    FillUpkeep(bot, snapshot);
     return snapshot;
 }
 

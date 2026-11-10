@@ -481,6 +481,8 @@ std::vector<std::string> IndexStatus()
     else
         lines.push_back(Acore::StringFormat("PLANNER crowding: no snapshot yet; travel graph {}", graph));
     lines.push_back(QuestIndexStatus());
+    for (std::string const& line : UpkeepIndexStatus())
+        lines.push_back(line);
     return lines;
 }
 
