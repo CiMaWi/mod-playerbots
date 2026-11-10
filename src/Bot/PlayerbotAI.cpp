@@ -2294,6 +2294,13 @@ void PlayerbotAI::ChangeEngine(BotState type)
         currentEngine = engine;
         currentState = type;
         ReInitCurrentEngine();
+        // A travelling bot's combat stretches and deaths (WT.23): its route follower runs in neither engine
+        if (auto* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data))
+            TravelLegs::NoteLife(travel->trip,
+                                 type == BOT_STATE_COMBAT ? TravelLegs::Life::Combat
+                                 : type == BOT_STATE_DEAD ? TravelLegs::Life::Dead
+                                                          : TravelLegs::Life::Calm,
+                                 getMSTime());
 
         switch (type)
         {

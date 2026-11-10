@@ -49,6 +49,9 @@ constexpr std::uint32_t LEGS_PER_TICK = 4;            // finished legs passed in
 constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;       // reached waypoints passed in one tick at most
 constexpr std::uint8_t MAX_RESUBMITS = 3;             // route requests asked again per trip after a late or lost answer
 constexpr std::size_t AVOID_NODES = 4;                // route ends a trip leaves out after stuck walks
+constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leaves out after deaths on them
+constexpr std::uint8_t LEG_DEATHS = 2;                // deaths on one leg fail it (FailReason::Death)
+constexpr std::uint8_t TRIP_DEATHS = 3;               // deaths on one trip end it
 
 enum class Act : std::uint8_t
 {
@@ -77,7 +80,8 @@ enum class FailReason : std::uint8_t
     NoRoute,      // the search found no route
     Taxi,         // no flight master at the leg's start, the path is not discovered, or the core refused the taxi
     Hearth,       // the hearthstone is missing or its cast failed
-    OffMesh       // the bot stands off the walkable mesh (MoveFarTo's off-mesh check): no walk can start there
+    OffMesh,      // the bot stands off the walkable mesh (MoveFarTo's off-mesh check): no walk can start there
+    Death         // the bot died LEG_DEATHS times on the leg or TRIP_DEATHS times on the trip (NoteLife)
 };
 
 inline char const* FailWord(FailReason reason)
@@ -110,6 +114,8 @@ inline char const* FailWord(FailReason reason)
             return "hearth";
         case FailReason::OffMesh:
             return "off_mesh";
+        case FailReason::Death:
+            return "death";
     }
     return "?";
 }
@@ -165,6 +171,8 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:hearth";
         case FailReason::OffMesh:
             return "leg_failed:off_mesh";
+        case FailReason::Death:
+            return "leg_failed:death";
     }
     return "leg_failed:?";
 }
@@ -199,6 +207,8 @@ inline char const* AbortSource(FailReason reason)
             return "abort:hearth";
         case FailReason::OffMesh:
             return "abort:off_mesh";
+        case FailReason::Death:
+            return "abort:death";
     }
     return "abort:?";
 }
@@ -226,6 +236,18 @@ struct Decision
     FailReason reason{FailReason::None};
 };
 
+// What the current leg saw of the bot: follower ticks mounted, time in combat and deaths. The follower counts the
+// ticks; PlayerbotAI's engine changes (NoteLife) count combat and deaths, because the follower runs in neither the
+// combat nor the dead engine
+struct LegRecord
+{
+    std::uint32_t ticks{0};
+    std::uint32_t mountedTicks{0};
+    std::uint32_t combatMs{0};       // ended combat stretches
+    std::uint32_t combatSinceMs{0};  // the running stretch's start; 0 = not in combat
+    std::uint8_t deaths{0};
+};
+
 // A route's legs and the follower's place on them
 struct Trip
 {
@@ -243,7 +265,11 @@ struct Trip
     std::vector<std::uint32_t> avoid;  // after stuck walks: nodes later routes neither start nor end at (NoteStuck)
     bool noDirect{false};              // after a stuck walk towards the goal: no straight walk from the bot to it
     bool stuckSeen{false};
-    Point stuckAt;  // the waypoint of the trip's last stuck walk
+    Point stuckAt;           // the waypoint of the trip's last stuck walk
+    LegRecord record;        // the current leg's (StartLeg starts it anew)
+    std::uint8_t deaths{0};  // on the whole trip
+    // After deaths on a walk (NoteDeath): graph edges later routes do not use (this bot's trip only)
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> avoidEdges;
 };
 
 // The route request the follower waits for (the bot's latest; RouteService answers older ones too)
@@ -346,6 +372,68 @@ std::vector<Waypoint> Waypoints(Leg const& leg, NodeAt const& nodeAt)
     return points;
 }
 
+// A new leg's record: a combat stretch running at the leg change counts for the new leg from now
+inline LegRecord NextRecord(LegRecord const& before, std::uint32_t nowMs)
+{
+    LegRecord next;
+    next.combatSinceMs = before.combatSinceMs ? std::max<std::uint32_t>(nowMs, 1) : 0;
+    return next;
+}
+
+// The bot's engine as PlayerbotAI changes it (out of combat, in combat, dead)
+enum class Life : std::uint8_t
+{
+    Calm,
+    Combat,
+    Dead
+};
+
+// An engine change of a travelling bot (map thread): closes a running combat stretch, opens one in combat, and counts
+// a death for the trip and, while a leg runs, for the leg
+inline void NoteLife(Trip& trip, Life life, std::uint32_t nowMs)
+{
+    LegRecord& record = trip.record;
+    if (record.combatSinceMs)
+    {
+        record.combatMs += nowMs - record.combatSinceMs;
+        record.combatSinceMs = 0;
+    }
+    if (life == Life::Combat)
+        record.combatSinceMs = std::max<std::uint32_t>(nowMs, 1);
+    else if (life == Life::Dead)
+    {
+        trip.deaths = static_cast<std::uint8_t>(std::min(trip.deaths + 1, 255));
+        if (trip.legIdx < trip.legs.size())
+            record.deaths = static_cast<std::uint8_t>(std::min(record.deaths + 1, 255));
+    }
+}
+
+// A follower tick on the current leg
+inline void NoteTick(Trip& trip, bool mounted)
+{
+    ++trip.record.ticks;
+    if (mounted)
+        ++trip.record.mountedTicks;
+}
+
+// The leg's seconds in combat until now (a running stretch included)
+inline float CombatSeconds(LegRecord const& record, std::uint32_t nowMs)
+{
+    std::uint32_t const ms = record.combatMs + (record.combatSinceMs ? nowMs - record.combatSinceMs : 0);
+    return static_cast<float>(ms) / 1000.0f;
+}
+
+// How the bot went on the leg, from its follower ticks: foot (never mounted), mounted (always), part
+inline char const* MountWord(LegRecord const& record)
+{
+    if (!record.mountedTicks)
+        return "foot";
+    return record.mountedTicks >= record.ticks ? "mounted" : "part";
+}
+
+// Killed too often: LEG_DEATHS on the leg or TRIP_DEATHS on the trip fail the leg as FailReason::Death
+inline bool DiedTooOften(Trip const& trip) { return trip.record.deaths >= LEG_DEATHS || trip.deaths >= TRIP_DEATHS; }
+
 // Starts leg index (no-op walks skipped); index past the last leg: the trip has arrived
 template <class NodeAt>
 void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const& nodeAt)
@@ -359,6 +447,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.triggered = false;
     trip.taxiActivated = false;
     trip.seenInFlight = false;
+    trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
         trip.waypoints = Waypoints(trip.legs[index], nodeAt);
@@ -522,20 +611,6 @@ inline bool NoteStuck(Trip& trip)
     return again;
 }
 
-// After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
-// at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
-// the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans
-inline Recovery AfterFailure(Trip& trip, FailReason reason)
-{
-    if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || reason == FailReason::OffMesh ||
-        trip.replans >= MAX_REPLANS)
-        return Recovery::Abort;
-    if (reason == FailReason::Stuck && NoteStuck(trip))
-        return Recovery::Abort;
-    ++trip.replans;
-    return Recovery::Replan;
-}
-
 // The graph edge the bot is on: a walk's two waypoints around it, or a portal's two nodes; {NO_NODE, NO_NODE} when an
 // end is no graph node (the bot's start, the goal)
 inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
@@ -551,6 +626,49 @@ inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
     if (from == NO_NODE || to == NO_NODE)
         return none;
     return {from, to};
+}
+
+// A walk leg failed by deaths: later routes of this trip leave the walk's graph edge out (both ways); on a hop from
+// the bot's start, which is no edge, its node is no start of them. A goal hop leaves nothing out: the goal is the
+// goal, and a further death ends the trip
+inline void NoteDeath(Trip& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk || trip.next == 0 ||
+        trip.next >= trip.waypoints.size())
+        return;
+    auto const [from, to] = StuckEdge(trip);
+    if (from != NO_NODE)
+    {
+        std::pair<std::uint32_t, std::uint32_t> const edge{from, to};
+        if (trip.avoidEdges.size() < AVOID_EDGES &&
+            std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
+            trip.avoidEdges.push_back(edge);
+        return;
+    }
+    std::uint32_t const node = trip.waypoints[trip.next].node;
+    if (trip.waypoints[trip.next - 1].node == NO_NODE && node != NO_NODE && trip.avoid.size() < AVOID_NODES &&
+        std::find(trip.avoid.begin(), trip.avoid.end(), node) == trip.avoid.end())
+        trip.avoid.push_back(node);
+}
+
+// After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
+// at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
+// the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
+// Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it
+inline Recovery AfterFailure(Trip& trip, FailReason reason)
+{
+    std::uint32_t const combatSinceMs = trip.record.combatSinceMs;
+    trip.record = LegRecord{};  // the failed leg's record ends (a running combat stretch goes on)
+    trip.record.combatSinceMs = combatSinceMs;
+    if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || reason == FailReason::OffMesh ||
+        (reason == FailReason::Death && trip.deaths >= TRIP_DEATHS) || trip.replans >= MAX_REPLANS)
+        return Recovery::Abort;
+    if (reason == FailReason::Stuck && NoteStuck(trip))
+        return Recovery::Abort;
+    if (reason == FailReason::Death)
+        NoteDeath(trip);
+    ++trip.replans;
+    return Recovery::Replan;
 }
 
 // A flight leg's first hop (its first two graph nodes), the edge a failed taxi start is reported on;

@@ -153,6 +153,12 @@ void NewRpgBaseAction::RecoverOffMesh()
               bot->GetName(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), word,
               yards, refusal ? ", hearth refused: " : "", refusal ? refusal : "");
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "off_mesh", word, yards, {}, tripId);
+    if (WorldTravel::OffMeshStays(recovery))
+    {
+        // Nothing moved the bot: its next give-ups here are quiet for a while (WorldTravel::OffMeshBackoff)
+        botAI->rpgInfo.offMeshPos = WorldPosition(bot);
+        botAI->rpgInfo.offMeshTs = std::max<uint32>(getMSTime(), 1);
+    }
     if (recovery != WorldTravel::OffMeshRecovery::Snap)
         return;
 
@@ -301,20 +307,28 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
              (botAI->rpgInfo.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
     {
         // No meaningful progress toward dest for `stuckTime`, or none at all off the mesh: give the destination up,
-        // record why and go IDLE
-        WorldTravel::StuckCause const cause = RecordStuck(dest);
-        bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
+        // record why and go IDLE. Still at the spot where a recovery left the bot off the mesh: give it up quietly
+        // (no Stuck event, no recovery) until the back-off is over
         NewRpgInfo& info = botAI->rpgInfo;
+        WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                           bot->GetPositionZ()};
+        WorldTravel::SightPoint const offMeshAt{info.offMeshPos.GetMapId(), info.offMeshPos.GetPositionX(),
+                                                info.offMeshPos.GetPositionY(), info.offMeshPos.GetPositionZ()};
+        bool const backingOff =
+            WorldTravel::OffMeshBackoff(info.offMeshTs != 0, GetMSTimeDiffToNow(info.offMeshTs), offMeshAt, here);
+        WorldTravel::StuckCause const cause = backingOff ? WorldTravel::StuckCause::OffMesh : RecordStuck(dest);
+        bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
         if (offMesh)
-            RecoverOffMesh();
+        {
+            if (!backingOff)
+                RecoverOffMesh();
+        }
         else
         {
             // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h);
             // off the mesh the destination is not to blame
             WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
                                                   info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
-            WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                                               bot->GetPositionZ()};
             info.stuckRepeats = WorldTravel::NextStuckRepeats(
                 info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
                 sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);

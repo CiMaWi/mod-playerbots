@@ -202,6 +202,32 @@ void CheckOffMeshRecovery()
           "off mesh: 30 yd snap, checked before the stuck give-up");
 }
 
+void CheckOffMeshBackoff()
+{
+    using WorldTravel::OffMeshBackoff;
+    using WorldTravel::OffMeshRecovery;
+    using WorldTravel::OffMeshStays;
+    Check(OffMeshStays(OffMeshRecovery::Seen) && OffMeshStays(OffMeshRecovery::NoPoly) &&
+              !OffMeshStays(OffMeshRecovery::Hearth) && !OffMeshStays(OffMeshRecovery::Snap),
+          "off mesh back-off: only a recovery that left the bot in place sets the memo");
+    SightPoint const at{530, -2785.96f, 1416.26f, 27.88f};   // Elovi's frozen spot (WT10e-1)
+    SightPoint const near{530, -2782.0f, 1418.0f, 28.5f};    // 4.4 yd away
+    SightPoint const away{530, -2779.0f, 1416.26f, 27.88f};  // 7 yd away
+    SightPoint const otherMap{1, -2785.96f, 1416.26f, 27.88f};
+    uint32_t const window = WorldTravel::OFF_MESH_BACKOFF_MS;
+    Check(OffMeshBackoff(true, 0, at, at), "off mesh back-off: the same spot at once: quiet");
+    Check(OffMeshBackoff(true, window - 1, at, near), "off mesh back-off: 4 yd away within 10 min: quiet");
+    Check(!OffMeshBackoff(true, window, at, at), "off mesh back-off: over after 10 min");
+    Check(!OffMeshBackoff(true, 1000, at, away), "off mesh back-off: 7 yd away: a new Stuck and recovery");
+    Check(!OffMeshBackoff(true, 1000, at, otherMap), "off mesh back-off: another map: a new Stuck and recovery");
+    Check(!OffMeshBackoff(false, 0, at, at), "off mesh back-off: no memo: a new Stuck and recovery");
+    // The caller's difference is wrap-safe (getMSTimeDiff): a memo taken just before the uint32 wrap
+    uint32_t const setMs = 0xFFFFFFFFu - 1000u;
+    uint32_t const nowMs = 5000u;
+    Check(OffMeshBackoff(true, nowMs - setMs, at, at), "off mesh back-off: 6 s across the ms wrap: quiet");
+    Check(!OffMeshBackoff(true, (nowMs + window) - setMs, at, at), "off mesh back-off: 10 min across the wrap: over");
+}
+
 void CheckHearthRefusal()
 {
     using WorldTravel::HearthRefusalWord;
@@ -419,6 +445,7 @@ int main()
     CheckCorpseRuns();
     CheckStuck();
     CheckOffMeshRecovery();
+    CheckOffMeshBackoff();
     CheckHearthRefusal();
     CheckInnFilter();
     CheckInnAvoid();

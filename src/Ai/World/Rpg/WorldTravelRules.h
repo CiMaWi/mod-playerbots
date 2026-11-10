@@ -142,6 +142,10 @@ constexpr float OFF_MESH_VERTICAL_YARDS = 5.0f;
 constexpr uint32_t OFF_MESH_CHECK_ATTEMPT = 2;
 // An off-mesh bot that cannot hearth moves to the nearest walkable poly within this box, unseen (WT.23)
 constexpr float OFF_MESH_SNAP_YARDS = 30.0f;
+// After a recovery that found no way (seen, no_poly) the bot gives its goals up quietly at that spot for a while: no
+// new Stuck event and no new recovery while it stands this close to it (OffMeshBackoff)
+constexpr uint32_t OFF_MESH_BACKOFF_MS = 10 * 60 * 1000;
+constexpr float OFF_MESH_BACKOFF_YARDS = 5.0f;
 
 struct StuckInput
 {
@@ -236,6 +240,21 @@ constexpr char const* OffMeshRecoveryWord(OffMeshRecovery recovery)
         default:
             return "no_poly";
     }
+}
+
+// A recovery that left the bot where it was (it backs off there: OffMeshBackoff)
+constexpr bool OffMeshStays(OffMeshRecovery recovery)
+{
+    return recovery == OffMeshRecovery::Seen || recovery == OffMeshRecovery::NoPoly;
+}
+
+// A give-up while backing off: the memo of a recovery that left the bot in place is set, younger than
+// OFF_MESH_BACKOFF_MS (sinceMs: the wrap-safe difference to now), and the bot stands within OFF_MESH_BACKOFF_YARDS of
+// it. Then the give-up writes no Stuck event and tries no recovery: one Stuck off_mesh per spot and 10 minutes, so two
+// in a row at one spot mean that a recovery did not take
+inline bool OffMeshBackoff(bool memoSet, uint32_t sinceMs, SightPoint const& at, SightPoint const& here)
+{
+    return memoSet && sinceMs < OFF_MESH_BACKOFF_MS && WithinSight(at, here, OFF_MESH_BACKOFF_YARDS);
 }
 
 // What the bot looked like when the hearthstone action refused (the reason word of the hearth_refused decision row).

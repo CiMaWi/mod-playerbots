@@ -12,7 +12,7 @@
 // flight and after a replan, the Travel event sources, and the named places of `playerbots route go` (TravelPlaces.h;
 // their graph check is in route-rules-selftest). Also what a stuck walk leaves out of the trip's later routes (a direct
 // walk, the first hop, the goal hop; a second stuck walk at one waypoint ends the trip) and the late answers asked
-// again.
+// again. Deaths on a leg (the second fails it, the third ends the trip) and a leg's mount and combat record.
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -549,7 +549,7 @@ void CheckEventSources()
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
     bool reasons = true;
-    for (int r = 0; r <= static_cast<int>(FailReason::OffMesh); ++r)
+    for (int r = 0; r <= static_cast<int>(FailReason::Death); ++r)
     {
         FailReason const reason = static_cast<FailReason>(r);
         std::string const word = TravelLegs::FailWord(reason);
@@ -560,6 +560,63 @@ void CheckEventSources()
     Check(std::string(TravelLegs::LegFailedSource(FailReason::OffMesh)) == "leg_failed:off_mesh" &&
               std::string(TravelLegs::AbortSource(FailReason::OffMesh)) == "abort:off_mesh",
           "events: off_mesh words");
+    Check(std::string(TravelLegs::LegFailedSource(FailReason::Death)) == "leg_failed:death" &&
+              std::string(TravelLegs::AbortSource(FailReason::Death)) == "abort:death",
+          "events: death words");
+}
+
+// Deaths (PlayerbotAI's engine changes, NoteLife): the second on a leg fails it as death and the next route leaves its
+// edge out; the third on the trip ends it. A leg's combat seconds and mount word
+void CheckDeathsAndRecord()
+{
+    using TravelLegs::Life;
+    using TravelLegs::Recovery;
+    Trip trip = StartedTrip(FullRoute());
+    Check(TravelLegs::Advance(trip, At(NODES[1], 2000), NodeAt).act == Act::Walk && trip.next == 2,
+          "deaths: the walk heads for node 2");
+    TravelLegs::NoteLife(trip, Life::Combat, 3000);
+    TravelLegs::NoteLife(trip, Life::Calm, 8000);
+    TravelLegs::NoteLife(trip, Life::Combat, 10000);
+    Check(TravelLegs::CombatSeconds(trip.record, 12000) == 7.0f, "record: 5 s of ended and 2 s of running combat");
+    TravelLegs::NoteLife(trip, Life::Dead, 13000);
+    Check(trip.record.combatSinceMs == 0 && trip.record.combatMs == 8000 && trip.record.deaths == 1 && trip.deaths == 1,
+          "record: a death ends the combat stretch and counts once");
+    Check(!TravelLegs::DiedTooOften(trip), "deaths: one death on the leg goes on");
+    TravelLegs::NoteLife(trip, Life::Calm, 60000);  // revived
+    TravelLegs::NoteLife(trip, Life::Dead, 70000);
+    Check(TravelLegs::DiedTooOften(trip), "deaths: the second death on the leg fails it");
+    Check(TravelLegs::AfterFailure(trip, FailReason::Death) == Recovery::Replan && trip.avoidEdges.size() == 1 &&
+              trip.avoidEdges[0].first == 1 && trip.avoidEdges[0].second == 2 && trip.record.deaths == 0 &&
+              trip.deaths == 2 && trip.replans == 1,
+          "deaths: a replan that leaves edge 1 -> 2 out");
+    Check(!TravelLegs::DiedTooOften(trip), "deaths: the failed leg's count ends with it");
+    trip.legs = FullRoute();
+    TravelLegs::StartLeg(trip, 0, 80000, NodeAt);
+    TravelLegs::NoteLife(trip, Life::Dead, 90000);
+    Check(trip.record.deaths == 1 && trip.deaths == 3 && TravelLegs::DiedTooOften(trip),
+          "deaths: the third on the trip fails the leg");
+    Check(TravelLegs::AfterFailure(trip, FailReason::Death) == Recovery::Abort, "deaths: the third ends the trip");
+
+    Trip waiting;
+    TravelLegs::NoteLife(waiting, Life::Dead, 1000);
+    Check(waiting.deaths == 1 && waiting.record.deaths == 0, "deaths: between routes only the trip counts");
+    Trip fromStart = StartedTrip({MakeLeg(LegType::Walk, START, NODES[1], {0, 1}, 20.0f)});
+    Check(TravelLegs::AfterFailure(fromStart, FailReason::Death) == Recovery::Replan && fromStart.avoidEdges.empty() &&
+              fromStart.avoid.size() == 1 && fromStart.avoid[0] == 0,
+          "deaths: on the hop from the bot's start node 0 is no start of the next route");
+
+    Trip riding = StartedTrip(FullRoute());
+    Check(std::string(TravelLegs::MountWord(riding.record)) == "foot", "record: no tick: foot");
+    TravelLegs::NoteTick(riding, true);
+    TravelLegs::NoteTick(riding, true);
+    Check(std::string(TravelLegs::MountWord(riding.record)) == "mounted", "record: mounted on every tick");
+    TravelLegs::NoteTick(riding, false);
+    Check(std::string(TravelLegs::MountWord(riding.record)) == "part", "record: mounted on some ticks: part");
+    TravelLegs::NoteLife(riding, Life::Combat, 5000);
+    TravelLegs::StartLeg(riding, 1, 6000, NodeAt);
+    Check(riding.record.ticks == 0 && riding.record.combatSinceMs == 6000 &&
+              TravelLegs::CombatSeconds(riding.record, 7000) == 1.0f,
+          "record: a new leg starts anew, a running combat counts from the leg change");
 }
 
 void CheckPlaces()
@@ -617,6 +674,7 @@ int main()
     CheckResetAndDeadline();
     CheckFlightFailureAndDeadline();
     CheckEventSources();
+    CheckDeathsAndRecord();
     CheckPlaces();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
