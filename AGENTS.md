@@ -79,6 +79,8 @@ Read the matching doc(s) BEFORE starting the task:
   query blocks every bot on that map and a crash takes the map down. Factory and
   login paths on the world thread are the exception.
 - **Shared code must not branch on strategy names**, and one action does one job.
+- **Command security follows cheating, not risk** (the user, 2026-11-10): SEC_GAMEMASTER only for commands that
+  are cheats (they grant, teleport or change the world); read-only and logging commands are SEC_PLAYER.
 - **Bot chat is translatable** via `GetBotTextOrDefault` plus a translation SQL update.
 - **Config options are for choices server owners will want to make**, such as
   turning a default behaviour off or tuning it. A change to default behaviour does

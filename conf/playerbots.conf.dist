@@ -1636,7 +1636,7 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 # the defaults (meta start row ring_bytes).
 # Ring sizes apply to rings allocated after a reload; the cooldown too.
 # Console: "playerbots worldlog status" (rows written, dropped and waiting per stream; the recorder's rings and cases),
-# "playerbots worldlog selftest", "playerbots worldlog case <bot>" (a case of that bot now). In game (GM):
+# "playerbots worldlog selftest", "playerbots worldlog case <bot>" (a case of that bot now). In game (any player):
 # ".wlog mark <text>" (a mark row at your place and a case of each bot within 60 yd).
 #
 Playerbots.WorldLog.Dir = ""

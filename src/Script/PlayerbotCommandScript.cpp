@@ -244,7 +244,7 @@ public:
         };
 
         static ChatCommandTable wlogCommandTable = {
-            {"mark", WorldLog::HandleMarkCommand, SEC_GAMEMASTER, Console::No},
+            {"mark", WorldLog::HandleMarkCommand, SEC_PLAYER, Console::No},
         };
 
         static ChatCommandTable commandTable = {
