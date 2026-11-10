@@ -15,6 +15,7 @@
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "FightBook.h"
 #include "Group.h"
 #include "Log.h"
 #include "MatchLog.h"
@@ -131,6 +132,9 @@ void Aim(Player* player, Player* target)
     if (!botAI)
         return;
 
+    // World PvP (WP.6): the fight book tags fights of forced fighters pvptest, so the checks leave them out
+    WorldPvp::MarkForced(player->GetGUID());
+    WorldPvp::MarkForced(target->GetGUID());
     player->SetSelection(target->GetGUID());
     botAI->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Set({target->GetGUID()});
     botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
@@ -1084,6 +1088,7 @@ void PvpTestFightJob::UpdateTearDown()
                 botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(player));
             }
 
+            WorldPvp::ClearForced(player->GetGUID());
             player->TeleportTo(origin.MapId, origin.X, origin.Y, origin.Z, origin.O);
             origin.SentBack = true;
             pending = true;
