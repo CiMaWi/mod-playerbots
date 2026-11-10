@@ -97,6 +97,8 @@ struct Combatant
     uint8_t level = 0;
     float x = 0.0f;
     float y = 0.0f;
+    uint32_t zone = 0;
+    uint32_t area = 0;
     // A PvpTest fighter (WP.6): its fights are tagged so the checks leave them out
     bool forced = false;
 };
@@ -112,8 +114,11 @@ struct FightParticipant
     bool retreated = false;  // WP6
     uint8_t deaths = 0;
     bool inCombat = true;  // at the last tick
+    // Where the book last saw it on the fight's map (the end row's place when nobody is left there)
     float x = 0.0f;
     float y = 0.0f;
+    uint32_t zone = 0;
+    uint32_t area = 0;
 };
 
 struct Fight
@@ -142,6 +147,14 @@ struct Fight
     }
 
     FightParticipant const* Find(uint64_t guid) const { return const_cast<Fight*>(this)->Find(guid); }
+
+    // The participant whose end row it is when nobody of the fight is on its map any more: the starter, else the first
+    FightParticipant const* Anchor() const
+    {
+        if (FightParticipant const* const starterParticipant = Find(starter))
+            return starterParticipant;
+        return participants.empty() ? nullptr : &participants.front();
+    }
 
     uint32_t Count(Side side) const
     {
@@ -404,6 +417,8 @@ private:
         participant.joinedMs = nowMs;
         participant.x = combatant.x;
         participant.y = combatant.y;
+        participant.zone = combatant.zone;
+        participant.area = combatant.area;
         fight.participants.push_back(participant);
         fight.tagged = fight.tagged || combatant.forced;
         Reshape(fight);

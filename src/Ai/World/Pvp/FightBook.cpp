@@ -212,6 +212,8 @@ Combatant MakeCombatant(Player* player, uint32 nowMs)
     combatant.level = static_cast<uint8_t>(player->GetLevel());
     combatant.x = player->GetPositionX();
     combatant.y = player->GetPositionY();
+    combatant.zone = player->GetZoneId();
+    combatant.area = player->GetAreaId();
     combatant.forced = IsForced(player->GetGUID(), nowMs);
     return combatant;
 }
@@ -312,7 +314,7 @@ void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
     uint32 const seconds = ElapsedMs(fight.startMs, fight.endMs) / IN_MILLISECONDS;
     LOG_DEBUG("playerbots", "[WorldPvp] fight {} on map {} ended ({}): {} s, {} participants", fight.id, map->GetId(),
               Word(fight.cause), seconds, fight.participants.size());
-    if (!row || !WorldLog::Active())
+    if (!WorldLog::Active())
         return;
 
     auto const clamped = [](uint32 value) { return static_cast<int64>(std::min(value, COUNT_LIMIT)); };
@@ -321,8 +323,27 @@ void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
                         (clamped(fight.Deaths(Side::Horde)) << HORDE_DEATHS_SHIFT) |
                         (clamped(fight.Count(Side::Alliance)) << ALLIANCE_COUNT_SHIFT) |
                         clamped(fight.Count(Side::Horde));
-    EventLog::Emit(row, EVENT_FIGHT_END, Word(fight.cause), fight.id, seconds);
-    EventLog::Emit(row, EVENT_FIGHT_END, SOURCE_SIDES, fight.id, sides);
+    if (row)
+    {
+        EventLog::Emit(row, EVENT_FIGHT_END, Word(fight.cause), fight.id, seconds);
+        EventLog::Emit(row, EVENT_FIGHT_END, SOURCE_SIDES, fight.id, sides);
+        return;
+    }
+
+    // Nobody of the fight is on the map any more (PvpTest sent its brawlers back, or everyone left): the rows are the
+    // starter's (else the first participant's) at the place the book last saw it there
+    FightParticipant const* const anchor = fight.Anchor();
+    if (!anchor)
+        return;
+    WorldLogFormat::Place place;
+    place.map = map->GetId();
+    place.zone = anchor->zone;
+    place.area = anchor->area;
+    place.x = anchor->x;
+    place.y = anchor->y;
+    uint32 const bot = ObjectGuid(anchor->guid).GetCounter();
+    EventLog::EmitAt(bot, place, EVENT_FIGHT_END, Word(fight.cause), fight.id, seconds);
+    EventLog::EmitAt(bot, place, EVENT_FIGHT_END, SOURCE_SIDES, fight.id, sides);
 }
 
 void Publish(BookEntry& entry, uint32 nowMs)
@@ -383,6 +404,8 @@ void TickBook(Map* map, uint32 diff)
                 return false;
             participant.x = player->GetPositionX();
             participant.y = player->GetPositionY();
+            participant.zone = player->GetZoneId();
+            participant.area = player->GetAreaId();
             return player->GetCombatManager().HasPvPCombat();
         },
         ended);

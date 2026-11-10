@@ -8,7 +8,7 @@
 // with its starter, target and reason; joins into the fight of a participant and into the nearest fight within its
 // radius; a second cluster as a new fight; sides, deaths, the end by combat over and by the safety cap; the bounds
 // (fights per map, participants per fight, the ended ring's calm time); the PvpTest tag; the id counter; the fight
-// memory's meetings and its eviction.
+// memory's meetings and its eviction; the end rows' anchor when nobody is left on the map.
 #include <cstdint>
 #include <iostream>
 #include <set>
@@ -227,6 +227,27 @@ void CheckMemory()
     memory.Remember(2, 0xFFFFFF00u, 16);
     Check(memory.SeenRecently(2, 0x100u, window), "the millisecond clock's wrap keeps the window");
 }
+
+// The end rows' player and place when nobody of the fight is left on its map: the starter's last place, else the
+// first participant's
+void CheckEndAnchor()
+{
+    std::atomic<uint32_t> ids{0};
+    FightBook book(DefaultBounds(), ids);
+    Combatant starter = Bot(1, Side::Alliance, 0, 0);
+    starter.zone = 267;
+    starter.area = 271;
+    book.OnCombat(starter, Bot(2, Side::Horde, 10, 0), 0);
+    Fight fight = book.Active().front();
+    FightParticipant const* anchor = fight.Anchor();
+    Check(anchor && anchor->guid == 1 && anchor->zone == 267 && anchor->area == 271 && anchor->x == 0.0f,
+          "the end rows' anchor is the starter at its zone, area and place");
+    fight.starter = 99;
+    anchor = fight.Anchor();
+    Check(anchor && anchor->guid == fight.participants.front().guid, "without the starter the first participant");
+    fight.participants.clear();
+    Check(!fight.Anchor(), "no participant: no anchor");
+}
 }  // namespace
 
 int main()
@@ -237,6 +258,7 @@ int main()
     CheckSafetyCap();
     CheckBounds();
     CheckMemory();
+    CheckEndAnchor();
     std::cout << "fight-book-selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
 }

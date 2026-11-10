@@ -56,23 +56,30 @@ WorldLogFormat::Place PlaceOf(Player* player)
     return place;
 }
 
-// One world-log event row of any player, from its own state, on the thread that updates its map (or the world thread)
-void EmitWorldLogEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount)
+// One world-log event row of the player with guid counter `bot` at `place` (any thread)
+void EnqueueEventRow(uint32 bot, WorldLogFormat::Place const& place, std::string_view type, std::string_view source,
+                     uint32 id, int64 amount)
 {
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog event");
 
     WorldLogFormat::EventRow row;
     row.t = WorldLog::NowMs();
-    row.bot = player->GetGUID().GetCounter();
+    row.bot = bot;
     row.type = type;
     row.source = source;
     row.id = id;
     row.amount = amount;
-    row.place = PlaceOf(player);
+    row.place = place;
     CensusMgr::Instance().EnqueueWorldLog(Stream::Event, WorldLogFormat::FormatEventRow(row), 1, row.t);
 
     if (pmo)
         pmo->finish();
+}
+
+// One world-log event row of any player, from its own state, on the thread that updates its map (or the world thread)
+void EmitWorldLogEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount)
+{
+    EnqueueEventRow(player->GetGUID().GetCounter(), PlaceOf(player), type, source, id, amount);
 
     // A bot's event also goes into its recorder ring (WL8; its own PerfMonitor row)
     WorldLog::NoteEvent(player, type, source, id, amount);
@@ -754,6 +761,13 @@ void EventLog::Emit(Player* bot, char const* type, char const* source, uint32 id
 {
     if (type)
         CensusMgr::Instance().OnEvent(bot, type, source ? source : SOURCE_OTHER, id, amount);
+}
+
+void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id,
+                      int64 amount)
+{
+    if (type && WorldLog::Active())
+        EnqueueEventRow(bot, place, type, source ? source : SOURCE_OTHER, id, amount);
 }
 
 void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32 id, int64 amount)
