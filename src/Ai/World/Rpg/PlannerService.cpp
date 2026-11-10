@@ -40,10 +40,12 @@ constexpr uint32 STATE_ALIVE_BIT = 1u << 24;
 constexpr uint32 STATE_GROUP_BIT = 1u << 25;
 constexpr uint32 STATE_SCOPE_BIT = 1u << 31;  // in PlannerState::stateKey: the bot keeps its possessions
 constexpr double NANOS_PER_MICRO = 1000.0;
-constexpr std::array<uint32, 15> SNAPSHOT_SKILLS = {
-    SKILL_RIDING,        SKILL_FIRST_AID,      SKILL_COOKING,     SKILL_FISHING,   SKILL_ALCHEMY,
-    SKILL_BLACKSMITHING, SKILL_ENCHANTING,     SKILL_ENGINEERING, SKILL_HERBALISM, SKILL_INSCRIPTION,
-    SKILL_JEWELCRAFTING, SKILL_LEATHERWORKING, SKILL_MINING,      SKILL_SKINNING,  SKILL_TAILORING};
+static_assert(SNAPSHOT_SKILLS ==
+                  std::array<std::uint16_t, 15>{SKILL_RIDING, SKILL_FIRST_AID, SKILL_COOKING, SKILL_FISHING,
+                                                SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_ENCHANTING, SKILL_ENGINEERING,
+                                                SKILL_HERBALISM, SKILL_INSCRIPTION, SKILL_JEWELCRAFTING,
+                                                SKILL_LEATHERWORKING, SKILL_MINING, SKILL_SKINNING, SKILL_TAILORING},
+              "PlannerPool.h's snapshot skills are the core's SkillType ids");
 
 static_assert(TAXI_WORDS == TaxiMaskSize, "the snapshot's taxi mask has PlayerTaxi's layout");
 static_assert(QUEST_LOG_SLOTS == MAX_QUEST_LOG_SIZE, "the snapshot holds the whole quest log");
@@ -232,7 +234,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.area = bot->GetAreaId();
     snapshot.money = bot->GetMoney();
     FillBags(bot, snapshot);
-    for (uint32 const skill : SNAPSHOT_SKILLS)
+    for (std::uint16_t const skill : SNAPSHOT_SKILLS)
         if (uint16 const value = bot->GetPureSkillValue(skill))
             snapshot.skills.push_back(
                 {static_cast<uint16>(skill), value, static_cast<uint16>(bot->GetPureMaxSkillValue(skill))});

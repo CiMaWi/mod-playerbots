@@ -143,7 +143,8 @@ struct RankValue
     bool eligible{false};      // the level and the riding skill allow it now
     float savedMinutes{0.0f};  // per hour of play
     float worth{0.0f};         // savedMinutes x e x horizon, copper
-    float want{0.0f};          // collector and spendthrift, copper
+    float want{0.0f};          // collector and spendthrift, copper; decides a purchase, never the reserve
+    bool reserved{false};      // the rank within reach whose worth alone pays for it: in the reserve
     bool bought{false};
 
     std::uint64_t Price() const { return training + mount; }
@@ -200,6 +201,13 @@ inline std::uint32_t SkillValue(Snapshot const& snapshot, std::uint32_t skill)
         if (entry.id == skill)
             return entry.value;
     return 0;
+}
+
+// Riding and the professions: every snapshot carries them, so one it lacks is at 0
+inline bool SnapshotCarries(std::uint32_t skill)
+{
+    return std::find(Planner::SNAPSHOT_SKILLS.begin(), Planner::SNAPSHOT_SKILLS.end(), skill) !=
+           Planner::SNAPSHOT_SKILLS.end();
 }
 
 inline bool UsesWater(std::uint8_t cls)
@@ -380,29 +388,44 @@ inline bool BitsAlign(UpkeepIndex const& index, Snapshot const& snapshot)
     return snapshot.upkeepVersion && snapshot.upkeepVersion == index.version;
 }
 
-// A spell's skill and ability requirements against what the bot knows. The snapshot carries riding and the
-// professions only: a skill it does not carry counts as met. A required ability outside the list (a talent, a racial)
-// counts as unknown: the bot may lack it, so the spell is not counted
-inline bool RequirementsMet(TrainerList const& list, TrainerSpell const& spell, Snapshot const& snapshot,
-                            std::vector<std::uint64_t> const& have)
+// A class spell's skill and ability requirements against what the bot knows. A skill the snapshot carries (riding,
+// the professions) and lacks is at 0; any other skill counts as met. A required ability on the class list is known or
+// already counted, one on the riding list (class mounts need a riding rank) is a known rank, and the others (talents,
+// racials, quest spells such as Summon Warhorse) are in the snapshot's off-list bit, filled with HasSpell
+inline bool RequirementsMet(TrainerList const& list, TrainerList const* riding, std::size_t position,
+                            Snapshot const& snapshot, std::vector<std::uint64_t> const& have)
 {
-    for (Planner::Skill const& entry : snapshot.skills)
-        if (spell.reqSkillLine && entry.id == spell.reqSkillLine && entry.value < spell.reqSkillRank)
-            return false;
+    TrainerSpell const& spell = list.spells[position];
+    if (spell.reqSkillLine && SnapshotCarries(spell.reqSkillLine) &&
+        SkillValue(snapshot, spell.reqSkillLine) < spell.reqSkillRank)
+        return false;
+    bool offList = false;
     for (std::uint32_t const ability : spell.reqAbility)
     {
         if (!ability)
             continue;
-        std::size_t const position = list.Find(ability);
-        if (position == TrainerList::NOT_FOUND || !Planner::HasSpellBit(have, position))
-            return false;
+        std::size_t const onClass = list.Find(ability);
+        if (onClass != TrainerList::NOT_FOUND)
+        {
+            if (!Planner::HasSpellBit(have, onClass))
+                return false;
+            continue;
+        }
+        std::size_t const onRiding = riding ? riding->Find(ability) : TrainerList::NOT_FOUND;
+        if (onRiding != TrainerList::NOT_FOUND)
+        {
+            if (!Planner::HasSpellBit(snapshot.knownRidingSpells, onRiding))
+                return false;
+            continue;
+        }
+        offList = true;
     }
-    return true;
+    return !offList || Planner::HasSpellBit(snapshot.offListMetClassSpells, position);
 }
 
 // The class trainer spells the bot may learn up to this level: known bits plus the spells already counted, until no
 // new spell joins (ranks chain through reqAbility)
-inline std::vector<std::size_t> Learnable(TrainerList const& list, Snapshot const& snapshot,
+inline std::vector<std::size_t> Learnable(TrainerList const& list, TrainerList const* riding, Snapshot const& snapshot,
                                           std::vector<std::uint64_t> const& known,
                                           std::vector<std::uint64_t> const& canLearn, std::uint32_t upToLevel)
 {
@@ -416,7 +439,7 @@ inline std::vector<std::size_t> Learnable(TrainerList const& list, Snapshot cons
         {
             TrainerSpell const& spell = list.spells[position];
             if (Planner::HasSpellBit(have, position) || !Planner::HasSpellBit(canLearn, position) ||
-                spell.reqLevel > upToLevel || !RequirementsMet(list, spell, snapshot, have))
+                spell.reqLevel > upToLevel || !RequirementsMet(list, riding, position, snapshot, have))
                 continue;
             Planner::SetSpellBit(have, position);
             result.push_back(position);
@@ -441,9 +464,9 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
     TrainerList const* trainer = index.ClassList(snapshot.cls);
     if (!trainer || !BitsAlign(index, snapshot))
         return;
-    std::vector<std::size_t> const spells =
-        Learnable(*trainer, snapshot, snapshot.knownClassSpells, snapshot.canLearnClassSpells,
-                  static_cast<std::uint32_t>(snapshot.level) + rates.trainingReserveLevels);
+    std::vector<std::size_t> const spells = Learnable(
+        *trainer, index.RidingList(snapshot.race), snapshot, snapshot.knownClassSpells, snapshot.canLearnClassSpells,
+        static_cast<std::uint32_t>(snapshot.level) + rates.trainingReserveLevels);
     Need need;
     need.order = NeedOrder::Training;
     need.kind = UpkeepKind::TrainerSpell;
@@ -495,11 +518,18 @@ inline void PriceMount(UpkeepIndex const& index, Snapshot const& snapshot, RankV
     }
 }
 
+// The reserve's thrift scale applied to a sum of prices
+inline std::uint64_t Scaled(NeedList const& list, std::uint64_t copper)
+{
+    return static_cast<std::uint64_t>(std::llround(static_cast<double>(copper) * list.reserveScale));
+}
+
 // Riding ranks by worth (WU.5): the travel minutes a rank saves per hour of play, times e, times the horizon; a
-// collector or a spendthrift wants it on top. Bought (a need) when its price is at most worth plus want and fits the
-// gold above the reserve for nearer needs; the next rank joins the reserve within reach when it would be bought
+// collector or a spendthrift wants it on top. Bought (a need) when its price is at most worth plus want and the gold
+// covers it beside the thrift-scaled reserve for nearer needs with this rank in it. The next rank within reach joins
+// the reserve when its worth alone pays for it: the want grows with free gold, so it never moves the reserve (WU.4)
 inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates,
-                      std::uint64_t reserveBeforeRiding)
+                      std::uint64_t nearer)
 {
     TrainerList const* riding = index.RidingList(snapshot.race);
     if (!riding || !BitsAlign(index, snapshot))
@@ -516,7 +546,9 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
         else if (rank.kind == RideKind::Air)
             air = std::max(air, rank.speed);
     }
-    std::uint64_t free = snapshot.money > reserveBeforeRiding ? snapshot.money - reserveBeforeRiding : 0;
+    std::uint64_t const kept = Scaled(list, nearer);
+    std::uint64_t free = snapshot.money > kept ? snapshot.money - kept : 0;
+    std::uint64_t spent = 0;  // the ranks bought here, unscaled
     float const thrift = TraitUnit(snapshot, TraitRules::Trait::Thrift);
     float wantShare = HasInterest(snapshot, TraitRules::Interest::Collecting) ? COLLECTOR_WANT_SHARE : 0.0f;
     if (thrift < 0.0f)
@@ -549,14 +581,18 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
         value.savedMinutes = std::max(value.savedMinutes, 0.0f);
         value.worth = value.savedMinutes * e * horizon;
         value.want = wantShare * static_cast<float>(free);
-        bool const worthIt = static_cast<float>(value.Price()) <= value.worth + value.want;
+        bool const worthIt = static_cast<float>(value.Price()) <= value.worth;
+        bool const wanted = static_cast<float>(value.Price()) <= value.worth + value.want;
+        // The purchase leaves the scaled reserve with this rank in it: a frugal bot never buys and falls short at once
+        bool const affordable = value.Price() <= free && Scaled(list, nearer + spent + value.Price()) <= snapshot.money;
         std::size_t const kind = static_cast<std::size_t>(rank.kind);
         bool const next = !nextSeen[kind];
         nextSeen[kind] = true;
-        value.bought = next && value.eligible && worthIt && value.Price() <= free;
+        value.bought = next && value.eligible && wanted && affordable;
         if (value.bought)
         {
             free -= value.Price();  // two ranks bought at once share the budget
+            spent += value.Price();
             Need need;
             need.order = NeedOrder::Riding;
             need.kind = UpkeepKind::Riding;
@@ -569,11 +605,12 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
             need.without = "walks the long legs";
             list.needs.push_back(need);
         }
-        // Within reach: the lowest such rank, when it would be bought by worth and want
+        // Within reach: the lowest such rank, when its worth alone pays for it
         if (next && !reserved && worthIt && snapshot.level + RIDING_REACH_LEVELS >= spell.reqLevel && skillMet)
         {
             list.reserveRiding = value.Price();
             reserved = true;
+            value.reserved = true;
         }
         list.ranks.push_back(value);
     }
@@ -621,11 +658,9 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
             list.reserveStock += need.copper;
     AddTraining(list, index, snapshot, rates);
 
-    auto const scaled = [&list](std::uint64_t copper)
-    { return static_cast<std::uint64_t>(std::llround(static_cast<double>(copper) * list.reserveScale)); };
-    std::uint64_t const nearer = scaled(list.reserveRepair + list.reserveStock + list.reserveTraining);
+    std::uint64_t const nearer = list.reserveRepair + list.reserveStock + list.reserveTraining;
     AddRiding(list, index, snapshot, rates, nearer);
-    list.reserve = scaled(list.reserveRepair + list.reserveStock + list.reserveTraining + list.reserveRiding);
+    list.reserve = Scaled(list, nearer + list.reserveRiding);
     list.shortfall = list.reserve > list.money ? list.reserve - list.money : 0;
     Fund(list);
     return list;
@@ -673,7 +708,8 @@ inline std::string Describe(RankValue const& value)
            ", mount " + Money(value.mount) + (value.currencyMounts ? ", currency mounts skipped" : "") + "), level " +
            std::to_string(value.reqLevel) + (value.eligible ? "" : " (not yet)") + ", saves " +
            std::to_string(value.savedMinutes) + " min/h, worth " + Money(static_cast<std::uint64_t>(value.worth)) +
-           ", want " + Money(static_cast<std::uint64_t>(value.want)) + (value.bought ? ": BUY" : ": wait");
+           ", want " + Money(static_cast<std::uint64_t>(value.want)) + (value.reserved ? ", reserved" : "") +
+           (value.bought ? ": BUY" : ": wait");
 }
 
 inline std::vector<std::string> DescribeAll(NeedList const& list)
@@ -712,7 +748,7 @@ inline std::vector<std::string> TuningLines()
             f(HOURS_PER_LEVEL[0]) + "/" + f(HOURS_PER_LEVEL[1]) + "/" + f(HOURS_PER_LEVEL[2]) + "/" +
             f(HOURS_PER_LEVEL[3]) + "/" + f(HOURS_PER_LEVEL[4]) + " plus " + f(MAX_LEVEL_HORIZON_HOURS) +
             " h at the cap; want: collector " + f(COLLECTOR_WANT_SHARE) + ", spendthrift " + f(SPENDTHRIFT_WANT_SHARE) +
-            " x -thrift of the free gold",
+            " x -thrift of the free gold, for purchases only (worth alone decides the reserve)",
     };
 }
 }  // namespace UpkeepNeeds

@@ -70,6 +70,11 @@ struct Skill
     std::uint16_t max{0};
 };
 
+// The skills a snapshot carries (FillSnapshot reads exactly these, the core's SkillType ids): riding, then the
+// professions. One the snapshot lacks is at 0
+constexpr std::array<std::uint16_t, 15> SNAPSHOT_SKILLS = {762, 129, 185, 356, 171, 164, 333, 202,
+                                                           182, 773, 755, 165, 186, 393, 197};
+
 // A carried item that counts for an upkeep stock kind (upkeep plan WU2, UpkeepIndex.h)
 struct StockItem
 {
@@ -131,8 +136,11 @@ struct Snapshot
     std::vector<std::uint64_t> knownRidingSpells;     // the same over the riding trainer list
     std::vector<std::uint64_t> canLearnClassSpells;   // bit i: the class list's spell i fits the bot's class and race
     std::vector<std::uint64_t> canLearnRidingSpells;  // the same over the riding trainer list
-    float walkMinutesPerHour{0.0f};                   // not filled yet: the travel shares are measured later (WU14)
-    float flightMinutesPerHour{0.0f};                 // not filled yet
+    // Bit i: the abilities the class list's spell i needs that are on neither list (talents, racials, quest spells
+    // such as Summon Warhorse) are all known
+    std::vector<std::uint64_t> offListMetClassSpells;
+    float walkMinutesPerHour{0.0f};    // not filled yet: the travel shares are measured later (WU14)
+    float flightMinutesPerHour{0.0f};  // not filled yet
 
     std::uint32_t StockCount(std::uint8_t kindBit) const
     {
@@ -149,7 +157,7 @@ struct Snapshot
                rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
                stock.capacity() * sizeof(StockItem) +
                (knownClassSpells.capacity() + knownRidingSpells.capacity() + canLearnClassSpells.capacity() +
-                canLearnRidingSpells.capacity()) *
+                canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);
     }
 };

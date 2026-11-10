@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "AiObjectContext.h"
 #include "Bag.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -29,6 +30,7 @@
 #include "Pet.h"
 #include "PlannerService.h"
 #include "Player.h"
+#include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 #include "SpellInfo.h"
@@ -266,6 +268,25 @@ void FillKnown(Player* bot, TrainerList const* list, std::vector<std::uint64_t>&
             SetSpellBit(canLearn, position);
     }
 }
+
+// Bit i: every ability the class list's spell i needs that is on neither the class nor the riding list (a talent, a
+// racial, a quest spell such as Summon Warhorse) is known; the rules read the listed ones from their own bits
+void FillOffList(Player* bot, TrainerList const* list, TrainerList const* riding, std::vector<std::uint64_t>& met)
+{
+    if (!list)
+        return;
+    met = SpellBits(list->spells.size());
+    for (std::size_t position = 0; position < list->spells.size(); ++position)
+    {
+        bool known = true;
+        for (uint32 const ability : list->spells[position].reqAbility)
+            if (ability && list->Find(ability) == TrainerList::NOT_FOUND &&
+                (!riding || riding->Find(ability) == TrainerList::NOT_FOUND) && !bot->HasSpell(ability))
+                known = false;
+        if (known)
+            SetSpellBit(met, position);
+    }
+}
 }  // namespace
 
 void StartUpkeepIndex()
@@ -362,8 +383,11 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
     if (!index)
         return;
     snapshot.upkeepVersion = index->version;
-    FillKnown(bot, index->ClassList(cls), snapshot.knownClassSpells, snapshot.canLearnClassSpells);
-    FillKnown(bot, index->RidingList(bot->getRace(true)), snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
+    TrainerList const* classList = index->ClassList(cls);
+    TrainerList const* riding = index->RidingList(bot->getRace(true));
+    FillKnown(bot, classList, snapshot.knownClassSpells, snapshot.canLearnClassSpells);
+    FillKnown(bot, riding, snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
+    FillOffList(bot, classList, riding, snapshot.offListMetClassSpells);
 }
 
 bool HandleNeedsCommand(ChatHandler* handler, char const* args)
@@ -377,7 +401,8 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
         return false;
     }
     Player* bot = ObjectAccessor::FindPlayerByName(name);
-    if (!bot || !PlayerbotsMgr::instance().GetPlayerbotAI(bot))
+    PlayerbotAI* botAI = bot ? PlayerbotsMgr::instance().GetPlayerbotAI(bot) : nullptr;
+    if (!botAI)
     {
         handler->SendErrorMessage("PLANNER: {} is not an online bot", name);
         return false;
@@ -394,8 +419,11 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     PLAYERBOT_CHECK_WORLD_THREAD("planner needs");
     Snapshot const snapshot = FillSnapshot(bot, 0);
     UpkeepNeeds::NeedRates rates;
-    rates.earnCopperPerMinute = static_cast<float>(
-        sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(snapshot.level)].EarnCopperPerMinute);
+    // The bot's own rates over its rolling measure, as a bag purchase reads them (BuyAction.cpp)
+    WorldTravel::SlotRates const slotRates = WorldTravel::CurrentRates(
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(),
+        sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(snapshot.level)]);
+    rates.earnCopperPerMinute = slotRates.EarnCopperPerMinute;
     if (snapshot.walkMinutesPerHour > 0.0f)
         rates.walkMinutesPerHour = snapshot.walkMinutesPerHour;
     rates.flightMinutesPerHour = snapshot.flightMinutesPerHour;

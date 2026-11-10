@@ -8,7 +8,9 @@
 // index, each scenario printing its decisions - repair before food when gold is short, ammo for hunters and no water
 // for mages, training due by levels behind and thoroughness, riding by worth at 20 and 40 and later for a bot that
 // rarely travels, artisan riding for a rich level-80 collector only, the reserve growing towards an expensive level
-// and the shortfall, the unknown pet diet, and gold+currency mounts never priced.
+// and the shortfall, the unknown pet diet, and gold+currency mounts never priced. Class mounts and Swift Flight Form
+// come with training once the riding rank is known; a collector's want never moves the reserve; a frugal bot never
+// buys a rank and reports a shortfall in the same list.
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -45,6 +47,8 @@ constexpr std::uint8_t RACE_ORC = 2;
 constexpr std::uint32_t TRAINER_WARRIOR = 100;
 constexpr std::uint32_t TRAINER_MAGE = 110;
 constexpr std::uint32_t TRAINER_HUNTER = 120;
+constexpr std::uint32_t TRAINER_PALADIN = 130;
+constexpr std::uint32_t TRAINER_DRUID = 140;
 constexpr std::uint32_t TRAINER_RIDING = 300;
 constexpr std::uint32_t VENDOR_INN = 5000;
 constexpr std::uint32_t VENDOR_ARMS = 5001;
@@ -70,6 +74,12 @@ constexpr std::uint32_t SPELL_JOURNEYMAN = 33391;
 constexpr std::uint32_t SPELL_EXPERT = 34090;
 constexpr std::uint32_t SPELL_ARTISAN = 34091;
 constexpr std::uint32_t SPELL_COLD_WEATHER = 54197;
+constexpr std::uint32_t SPELL_WARHORSE = 13819;  // a quest spell, on no trainer list
+constexpr std::uint32_t SPELL_CHARGER = 23214;
+constexpr std::uint32_t SPELL_HOLY_SHIELD_1 = 20925;  // the talent
+constexpr std::uint32_t SPELL_HOLY_SHIELD_2 = 20927;
+constexpr std::uint32_t SPELL_FLIGHT_FORM = 33943;  // on no trainer list
+constexpr std::uint32_t SPELL_SWIFT_FLIGHT_FORM = 40120;
 
 constexpr std::uint32_t GOLD = COPPER_PER_GOLD;
 constexpr std::uint8_t MEAT_DIET = 1;  // FoodType 1
@@ -126,6 +136,17 @@ UpkeepIndex Fixture()
     mage.push_back(talentRank);
     input.trainers.push_back({TRAINER_MAGE, TrainerKind::Class, CLASS_MAGE, mage});
     input.trainers.push_back({TRAINER_HUNTER, TrainerKind::Class, CLASS_HUNTER, {Spell(3010, 500, 10)}});
+    // trainer_spell rows of paladin trainer 3 and druid trainer 33: the charger needs Summon Warhorse (on no list)
+    // and journeyman riding, Holy Shield rank 2 the talent, Swift Flight Form Flight Form (on no list) and riding 300
+    TrainerSpell charger = Spell(SPELL_CHARGER, 3500, 40);
+    charger.reqAbility[0] = SPELL_WARHORSE;
+    charger.reqAbility[1] = SPELL_JOURNEYMAN;
+    TrainerSpell holyShield = Spell(SPELL_HOLY_SHIELD_2, 1400, 50);
+    holyShield.reqAbility[0] = SPELL_HOLY_SHIELD_1;
+    input.trainers.push_back({TRAINER_PALADIN, TrainerKind::Class, CLASS_PALADIN, {holyShield, charger}});
+    TrainerSpell swiftFlight = RidingSpell(SPELL_SWIFT_FLIGHT_FORM, 20 * GOLD, 71, 300);
+    swiftFlight.reqAbility[0] = SPELL_FLIGHT_FORM;
+    input.trainers.push_back({TRAINER_DRUID, TrainerKind::Class, CLASS_DRUID, {swiftFlight}});
     input.trainers.push_back(
         {TRAINER_RIDING,
          TrainerKind::Mount,
@@ -133,10 +154,9 @@ UpkeepIndex Fixture()
          {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0), RidingSpell(SPELL_JOURNEYMAN, 50 * GOLD, 40, 75),
           RidingSpell(SPELL_EXPERT, 250 * GOLD, 60, 150), RidingSpell(SPELL_ARTISAN, 5000 * GOLD, 70, 225),
           RidingSpell(SPELL_COLD_WEATHER, 1000 * GOLD, 77, 225)}});
-    input.trainerEntries = {{TRAINER_WARRIOR, TRAINER_WARRIOR},
-                            {TRAINER_MAGE, TRAINER_MAGE},
-                            {TRAINER_HUNTER, TRAINER_HUNTER},
-                            {TRAINER_RIDING, TRAINER_RIDING}};
+    input.trainerEntries = {{TRAINER_WARRIOR, TRAINER_WARRIOR}, {TRAINER_MAGE, TRAINER_MAGE},
+                            {TRAINER_HUNTER, TRAINER_HUNTER},   {TRAINER_PALADIN, TRAINER_PALADIN},
+                            {TRAINER_DRUID, TRAINER_DRUID},     {TRAINER_RIDING, TRAINER_RIDING}};
 
     UpkeepItemFacts bread = Item(ITEM_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
     bread.spellCategory = CATEGORY_FOOD;
@@ -229,6 +249,14 @@ Snapshot Bot(UpkeepIndex const& index, std::uint8_t cls, std::uint8_t level, std
         if (std::uint32_t const target = StockTarget(bot, rates, kind))
             bot.stock.push_back({1000u + static_cast<std::uint32_t>(kind), target, StockBit(kind), 0});
     return bot;
+}
+
+// The bot knows the abilities off the lists that this class spell needs (FillOffList's bit)
+void KnowsOffList(Snapshot& bot, UpkeepIndex const& index, std::uint32_t spellId)
+{
+    TrainerList const* list = index.ClassList(bot.cls);
+    bot.offListMetClassSpells.resize(SpellBits(list->spells.size()).size());
+    Mark(bot.offListMetClassSpells, *list, spellId);
 }
 
 void SetStock(Snapshot& bot, UpkeepStock kind, std::uint32_t count, std::uint8_t diet = 0)
@@ -468,6 +496,112 @@ void ReserveAndShortfall(UpkeepIndex const& index)
           "thrift scales the reserve: frugal keeps more back, spendthrift less");
 }
 
+void ClassMounts(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: class mounts come with training\n";
+    Snapshot paladin = Bot(index, CLASS_PALADIN, 50, 100 * GOLD, 0, {SPELL_APPRENTICE});
+    KnowsOffList(paladin, index, SPELL_CHARGER);
+    NeedList const before = Show("paladin at 50 with Summon Warhorse, apprentice riding", paladin, index, Rates(50));
+    Check(!Find(before, NeedOrder::Training), "without journeyman riding the charger is no need yet");
+    Snapshot ridden = Bot(index, CLASS_PALADIN, 50, 100 * GOLD, 0, {SPELL_APPRENTICE, SPELL_JOURNEYMAN});
+    Check(!Find(ComputeNeeds(ridden, index, Rates(50)), NeedOrder::Training),
+          "without Summon Warhorse (on no list, not known) no charger");
+    KnowsOffList(ridden, index, SPELL_CHARGER);
+    NeedList const charger = Show("the paladin with Summon Warhorse and journeyman riding", ridden, index, Rates(50));
+    Need const* need = Find(charger, NeedOrder::Training);
+    Check(need && need->units == 1 && need->item == SPELL_CHARGER && need->copper == 3500 &&
+              need->trainer == TRAINER_PALADIN,
+          "with journeyman riding the charger is a training need; Holy Shield rank 2 waits for its talent");
+    KnowsOffList(ridden, index, SPELL_HOLY_SHIELD_2);
+    NeedList const talent = ComputeNeeds(ridden, index, Rates(50));
+    need = Find(talent, NeedOrder::Training);
+    Check(need && need->units == 2, "with the talent known its next rank counts too");
+
+    Snapshot druid = Bot(index, CLASS_DRUID, 71, 1000 * GOLD, 0);
+    KnowsOffList(druid, index, SPELL_SWIFT_FLIGHT_FORM);
+    Check(!Find(Show("druid at 71 with Flight Form, no riding skill at all", druid, index, Rates(71)),
+                NeedOrder::Training),
+          "a riding skill the snapshot lacks is 0, not met: no Swift Flight Form");
+    Snapshot expert = Bot(index, CLASS_DRUID, 71, 1000 * GOLD, 0, {SPELL_APPRENTICE, SPELL_JOURNEYMAN, SPELL_EXPERT});
+    KnowsOffList(expert, index, SPELL_SWIFT_FLIGHT_FORM);
+    Check(!Find(ComputeNeeds(expert, index, Rates(71)), NeedOrder::Training), "riding 225: no Swift Flight Form yet");
+    Snapshot artisan =
+        Bot(index, CLASS_DRUID, 71, 1000 * GOLD, 0, {SPELL_APPRENTICE, SPELL_JOURNEYMAN, SPELL_EXPERT, SPELL_ARTISAN});
+    KnowsOffList(artisan, index, SPELL_SWIFT_FLIGHT_FORM);
+    NeedList const flight = Show("the druid with artisan riding", artisan, index, Rates(71));
+    need = Find(flight, NeedOrder::Training);
+    Check(need && need->item == SPELL_SWIFT_FLIGHT_FORM, "riding 300 and Flight Form: Swift Flight Form is a need");
+}
+
+// Journeyman at 40 (60 gold) is worth about 37 gold to a bot walking 30 min/h: only a want buys it
+void WantNoFlip(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a want and growing gold, journeyman riding at 40\n";
+    for (bool const spendthrift : {false, true})
+    {
+        std::string const who = spendthrift ? "spendthrift" : "collector";
+        bool steady = true;
+        bool falls = true;
+        bool stays = true;
+        bool bought = false;
+        std::uint64_t reserve = 0;
+        std::uint64_t lastShortfall = 0;
+        std::uint32_t buyAt = 0;
+        for (std::uint32_t gold = 0; gold <= 200; ++gold)
+        {
+            Snapshot bot = Bot(index, CLASS_WARRIOR, 40, gold * GOLD, 40, {SPELL_APPRENTICE});
+            bot.traits = spendthrift ? Traits(TraitRules::MIN_VALUE, 0, false) : Traits(0, 0, true);
+            NeedList const list = ComputeNeeds(bot, index, Rates(40));
+            if (!gold)
+            {
+                reserve = list.reserve;
+                lastShortfall = list.shortfall;
+            }
+            steady = steady && list.reserve == reserve;
+            falls = falls && list.shortfall <= lastShortfall;
+            lastShortfall = list.shortfall;
+            bool const buys = Buys(list, SPELL_JOURNEYMAN);
+            stays = stays && (!bought || buys);
+            if (buys && !bought)
+                buyAt = gold;
+            bought = bought || buys;
+        }
+        std::cout << "    " << who << ": reserve " << Money(reserve) << " at every gold from 0 to 200 g, buys "
+                  << "journeyman from " << buyAt << " g\n";
+        Snapshot at = Bot(index, CLASS_WARRIOR, 40, buyAt * GOLD, 40, {SPELL_APPRENTICE});
+        at.traits = spendthrift ? Traits(TraitRules::MIN_VALUE, 0, false) : Traits(0, 0, true);
+        Show(who + " at the gold it buys with", at, index, Rates(40));
+        Check(steady, who + ": the want never moves the reserve");
+        Check(bought && falls && stays, who + ": more gold never brings a shortfall back or undoes the purchase");
+    }
+}
+
+void FrugalBuy(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a frugal bot at 20 (reserve x1.5) and apprentice riding\n";
+    bool clean = true;
+    bool stays = true;
+    bool bought = false;
+    std::uint32_t buyAt = 0;
+    for (std::uint32_t copper = 0; copper <= 30 * GOLD; copper += 10 * COPPER_PER_SILVER)
+    {
+        Snapshot bot = Bot(index, CLASS_WARRIOR, 20, copper, 20);
+        bot.traits = Traits(TraitRules::MAX_VALUE, 0, false);
+        NeedList const list = ComputeNeeds(bot, index, Rates(20));
+        bool const buys = Buys(list, SPELL_APPRENTICE);
+        clean = clean && !(buys && list.shortfall > 0);
+        stays = stays && (!bought || buys);
+        if (buys && !bought)
+            buyAt = copper;
+        bought = bought || buys;
+    }
+    Snapshot at = Bot(index, CLASS_WARRIOR, 20, buyAt, 20);
+    at.traits = Traits(TraitRules::MAX_VALUE, 0, false);
+    NeedList const list = Show("frugal warrior at the gold it buys with", at, index, Rates(20));
+    Check(bought && stays && list.money >= list.reserve, "it buys once its gold covers the scaled reserve");
+    Check(clean, "it never buys the rank and reports a shortfall in the same list");
+}
+
 void StaleBits(UpkeepIndex const& index)
 {
     std::cout << "Scenario: a snapshot of an older index\n";
@@ -493,6 +627,9 @@ int main()
     GroundRiding(index);
     FlyingRiding(index);
     ReserveAndShortfall(index);
+    ClassMounts(index);
+    WantNoFlip(index);
+    FrugalBuy(index);
     StaleBits(index);
 
     std::cout << passed << " passed, " << failed << " failed\n";
