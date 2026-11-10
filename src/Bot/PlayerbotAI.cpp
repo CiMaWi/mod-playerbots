@@ -57,7 +57,6 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
-#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
@@ -67,6 +66,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PositionValue.h"
+#include "QuestStatEvents.h"
 #include "RBAC.h"
 #include "RaceMgr.h"
 #include "RandomPlayerbotMgr.h"
@@ -9376,7 +9376,9 @@ void PlayerbotAI::RecordQuestDropped(uint32 questId, QuestDropReason reason)
     ++rpgStatistic.questDropped;
     if (sPlayerbotAIConfig.CollectDetailedQuestStats)
         ++rpgStatistic.byQuest[questId].dropped[static_cast<size_t>(reason)];
-    Planner::QuestStatDropped(bot, questId);
+    // An abandoned quest stays in the log at low priority; its later drop is the same leave and counted once
+    if (!lowPriorityQuest.contains(questId))
+        Planner::QuestStatDropped(bot, questId);
 }
 
 void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason)

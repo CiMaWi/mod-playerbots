@@ -388,12 +388,13 @@ enum class DecisionKind : uint8_t
     Route,
     Trip,
     Errand,
-    Inn
+    Inn,
+    Circuit
 };
 
-constexpr size_t DECISION_KIND_COUNT = 5;
+constexpr size_t DECISION_KIND_COUNT = 6;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {"rpg_status", "route", "trip",
-                                                                                   "errand", "inn"};
+                                                                                   "errand",     "inn",   "circuit"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {
