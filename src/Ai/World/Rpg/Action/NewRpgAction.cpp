@@ -1190,6 +1190,9 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
     }
     if (data.estimateSeconds <= 0.0f)
     {
+        // The trip's clock starts at its start row, so the ends' seconds span the logged trip (the wait for the
+        // first route is not counted; a trip that ends before this row counts from its pick)
+        data.tripStartMs = now;
         data.estimateSeconds = route.totalSeconds;
         EventLog::Emit(bot, "Travel", "start", data.tripId, static_cast<int64>(route.totalSeconds));
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", data.bindInn ? "inn" : "order",

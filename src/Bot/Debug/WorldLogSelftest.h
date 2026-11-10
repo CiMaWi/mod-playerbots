@@ -633,6 +633,20 @@ inline void CheckRecorder(Checker& checker)
                       FirstDue(idle, words, 400, 0.0f, RECORDER_RPG_IDLE) == 0 &&
                       FirstDue(resting, words, 400, 0.0f, RECORDER_RPG_REST) == 0,
                   "moving 3 yards a minute, idle or resting makes no still case");
+    Recorder fighting;
+    fighting.Allocate(defaults);
+    uint32_t fightingDue = 0;
+    for (uint32_t i = 0; i < 400 && !fightingDue; ++i)
+    {
+        uint32_t const ms = RECORDER_T0 + i * SECOND_MS;
+        if (i % 60 == 59)
+            fighting.PushEvent(words, ms, i % 120 == 59 ? "Kill" : "XpGain", "normal", 0, 0);
+
+        RecorderPosition const position{ms, 100.0f, 50.0f, 1, static_cast<int16_t>(RPG_DO_QUEST_STATUS)};
+        if (fighting.PushPosition(words, position, StillWatched(true, false, false, RPG_DO_QUEST_STATUS)))
+            fightingDue = i + 1;
+    }
+    checker.Check(fightingDue == 0, "a kill or XP gain every minute in one spot makes no still case");
     checker.Check(!StillWatched(false, false, false, RPG_DO_QUEST_STATUS) &&
                       !StillWatched(true, true, false, RPG_DO_QUEST_STATUS) &&
                       !StillWatched(true, false, true, RPG_DO_QUEST_STATUS) &&

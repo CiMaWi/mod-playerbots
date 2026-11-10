@@ -8,7 +8,6 @@
 #define _PLAYERBOT_WORLDTRAVELRULES_H
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <vector>
 

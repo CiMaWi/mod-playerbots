@@ -2707,6 +2707,8 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         if (oldItem)
             continue;
 
+        // The item's arrival for the world log, before the Equip row the equip writes (a report's gear source)
+        EventLog::Emit(bot, "ItemIn", "maintenance", bestItemForSlot, 1);
         if (Item* equipped = bot->EquipNewItem(dest, bestItemForSlot, true))
         {
             if (bestRandomPropForSlot != 0)
@@ -2801,6 +2803,8 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             if (!CanEquipUnseenItem(slot, dest, bestItemForSlot))
                 continue;
 
+            // The item's arrival for the world log, before the Equip row the equip writes (a report's gear source)
+            EventLog::Emit(bot, "ItemIn", "maintenance", bestItemForSlot, 1);
             if (Item* equipped = bot->EquipNewItem(dest, bestItemForSlot, true))
             {
                 if (bestRandomPropForSlot != 0)

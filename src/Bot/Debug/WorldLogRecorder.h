@@ -250,7 +250,8 @@ inline EventCase ClassifyEvent(std::string_view type, std::string_view source)
 }
 
 // The "no movement" watch applies to a living bot on the ground (no flight, no transport) busy with an RPG status
-// other than idle and rest
+// other than idle and rest. A kill or XP gain is progress: it starts the watch again (Recorder::PushEvent), so a bot
+// fighting in one spot makes no case while one standing in combat without kills still does.
 inline bool StillWatched(bool alive, bool flying, bool onTransport, int32_t rpgStatus)
 {
     return alive && !flying && !onTransport && rpgStatus != RECORDER_RPG_IDLE && rpgStatus != RECORDER_RPG_REST;
@@ -388,6 +389,12 @@ public:
                    int64_t amount)
     {
         _events.Push(RecorderEvent{amount, nowMs, id, words.Intern(type), words.Intern(source)});
+        if (type == "Kill" || type == "XpGain")
+        {
+            _anchored = false;  // progress: the still watch starts again at the next position
+            return false;
+        }
+
         if (type == "Death")
         {
             bool const second = _deathSeen && nowMs - _lastDeathMs < DEATH_WINDOW_SECONDS * POSITION_MS;

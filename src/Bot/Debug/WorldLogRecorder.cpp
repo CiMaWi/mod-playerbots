@@ -40,6 +40,7 @@ std::atomic<uint64> s_rings{0};
 std::atomic<uint64> s_cases{0};
 std::atomic<uint64> s_caseRows{0};
 std::atomic<uint64> s_caseBytes{0};
+std::atomic<uint64> s_casesDropped{0};
 
 WorldLogFormat::WordTable& Words()
 {
@@ -79,7 +80,8 @@ WorldLogFormat::RecorderPosition PositionOf(Player* bot, uint32 nowMs, int32 rpg
     return position;
 }
 
-// The due case as one chunk on the recorder stream (dropped whole and counted when it would pass the queue cap)
+// The due case as one chunk on the recorder stream (dropped whole and counted when it would pass the queue cap). A case
+// counts as written only once the queue took it; a refused one counts as dropped.
 void DumpCase(Player* bot, Recorder& recorder, uint32 nowMs)
 {
     if (!recorder.CaseDue())
@@ -91,11 +93,20 @@ void DumpCase(Player* bot, Recorder& recorder, uint32 nowMs)
     uint64 const wallMs = WorldLog::NowMs();
     std::string rows;
     uint32 const count = recorder.AppendCase(rows, Words(), caseId, bot->GetGUID().GetCounter(), nowMs, wallMs);
-    s_cases.fetch_add(1, std::memory_order_relaxed);
-    s_caseRows.fetch_add(count, std::memory_order_relaxed);
-    s_caseBytes.fetch_add(rows.size(), std::memory_order_relaxed);
-    LOG_DEBUG("playerbots", "[WorldLog] case {} of {}: {} rows, {} bytes", caseId, bot->GetName(), count, rows.size());
-    CensusMgr::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Recorder, std::move(rows), count, wallMs);
+    size_t const bytes = rows.size();
+    bool const queued =
+        CensusMgr::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Recorder, std::move(rows), count, wallMs);
+    if (queued)
+    {
+        s_cases.fetch_add(1, std::memory_order_relaxed);
+        s_caseRows.fetch_add(count, std::memory_order_relaxed);
+        s_caseBytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+    else
+        s_casesDropped.fetch_add(1, std::memory_order_relaxed);
+
+    LOG_DEBUG("playerbots", "[WorldLog] case {} of {}: {} rows, {} bytes{}", caseId, bot->GetName(), count, bytes,
+              queued ? "" : ", dropped (queue full)");
 
     if (pmo)
         pmo->finish();
@@ -238,9 +249,10 @@ std::string WorldLog::RecorderStatus()
     WorldLogFormat::RecorderSettings const settings = CurrentRecorderSettings();
     return Acore::StringFormat(
         "WORLDLOG recorder: {} s, {} actions, {} events, one case per {} s per bot, {} bytes per bot; rings {}, cases "
-        "{} ({} rows, {} bytes), words {}/{} ({} refused)",
+        "{} ({} rows, {} bytes), cases dropped {}, words {}/{} ({} refused)",
         settings.seconds, settings.actions, settings.events, settings.cooldownSeconds, BotLogBytes(settings),
         s_rings.load(std::memory_order_relaxed), s_cases.load(std::memory_order_relaxed),
-        s_caseRows.load(std::memory_order_relaxed), s_caseBytes.load(std::memory_order_relaxed), Words().Count(),
-        WorldLogFormat::WORD_CAPACITY, Words().Overflow());
+        s_caseRows.load(std::memory_order_relaxed), s_caseBytes.load(std::memory_order_relaxed),
+        s_casesDropped.load(std::memory_order_relaxed), Words().Count(), WorldLogFormat::WORD_CAPACITY,
+        Words().Overflow());
 }

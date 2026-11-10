@@ -303,6 +303,10 @@ void EmitFromScope(Player* player, char const* type, uint32 id, int64 amount)
     CensusMgr::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
 }
 
+// Set from OnPlayerBeforeLootMoney to the loot script's OnLootMoney on the thread that handles the loot window: the
+// money changes between them are the loot's gold (the looter's or the group's shares)
+thread_local bool lootMoneyOpen = false;
+
 // ItemIn for the item StoreNewItem stored just before this hook: reads the note, never the item (TakeStoredEntry)
 void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* source)
 {
@@ -321,9 +325,9 @@ public:
     CensusPlayerScript()
         : PlayerScript(
               "CensusPlayerScript",
-              {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_STORE_NEW_ITEM,
-               PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM, PLAYERHOOK_ON_QUEST_REWARD_ITEM,
-               PLAYERHOOK_ON_CREATE_ITEM, PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
+              {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_BEFORE_LOOT_MONEY,
+               PLAYERHOOK_ON_STORE_NEW_ITEM, PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM,
+               PLAYERHOOK_ON_QUEST_REWARD_ITEM, PLAYERHOOK_ON_CREATE_ITEM, PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
                PLAYERHOOK_ON_AFTER_TAKE_ITEM_FROM_MAIL, PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_ON_PLAYER_RESURRECT,
                PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
     {
@@ -334,14 +338,20 @@ public:
         CensusMgr::Instance().OnLevelChanged(player, oldLevel);
     }
 
-    // Called before the change; a loss is capped at the money the player has, as ModifyMoney does
+    // Called before the change; a loss is capped at the money the player has, as ModifyMoney does. Looted gold is
+    // paid while the loot window's money is handled (the bots' loot action only queues the packet), so its source
+    // comes from that window, not from the action scope.
     void OnPlayerMoneyChanged(Player* player, int32& amount) override
     {
-        if (amount > 0)
+        if (amount > 0 && lootMoneyOpen)
+            EventLog::Emit(player, "GoldIn", "loot", 0, amount);
+        else if (amount > 0)
             EmitFromScope(player, "GoldIn", 0, amount);
         else if (amount < 0 && player && player->GetMoney())
             EmitFromScope(player, "GoldOut", 0, std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
     }
+
+    void OnPlayerBeforeLootMoney(Player* /*player*/, Loot* /*loot*/) override { lootMoneyOpen = true; }
 
     // Inside StoreNewItem, before the scripts' item hooks: the item is alive here (the core's callers use it after
     // this hook), so its entry is read now for the hooks below, which must not read the item
@@ -449,6 +459,15 @@ public:
         EventLog::Emit(killed, "Death", "player_pet", owner.GetCounter(), ONE_EVENT);
         EventLog::Emit(killed, "PvpDeath", PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
     }
+};
+
+// Ends the loot money window OnPlayerBeforeLootMoney opened: the core calls it after paying the gold
+class CensusLootScript : public LootScript
+{
+public:
+    CensusLootScript() : LootScript("CensusLootScript", {LOOTHOOK_ON_LOOT_MONEY}) {}
+
+    void OnLootMoney(Player* /*player*/, uint32 /*gold*/) override { lootMoneyOpen = false; }
 };
 }  // namespace
 
@@ -716,4 +735,8 @@ void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32
     CensusMgr::Instance().OnEvent(bot, std::string(HONESTY_PREFIX) + kind, source ? source : SOURCE_OTHER, id, amount);
 }
 
-void AddSC_census() { new CensusPlayerScript(); }
+void AddSC_census()
+{
+    new CensusPlayerScript();
+    new CensusLootScript();
+}
