@@ -49,6 +49,7 @@ constexpr std::uint32_t TRAINER_MAGE = 110;
 constexpr std::uint32_t TRAINER_HUNTER = 120;
 constexpr std::uint32_t TRAINER_PALADIN = 130;
 constexpr std::uint32_t TRAINER_DRUID = 140;
+constexpr std::uint32_t TRAINER_WARLOCK = 150;
 constexpr std::uint32_t TRAINER_RIDING = 300;
 constexpr std::uint32_t VENDOR_INN = 5000;
 constexpr std::uint32_t VENDOR_ARMS = 5001;
@@ -80,15 +81,18 @@ constexpr std::uint32_t SPELL_HOLY_SHIELD_1 = 20925;  // the talent
 constexpr std::uint32_t SPELL_HOLY_SHIELD_2 = 20927;
 constexpr std::uint32_t SPELL_FLIGHT_FORM = 33943;  // on no trainer list
 constexpr std::uint32_t SPELL_SWIFT_FLIGHT_FORM = 40120;
+constexpr std::uint32_t SPELL_FELSTEED = 1710;  // a learn spell
+constexpr std::uint32_t SPELL_FELSTEED_TAUGHT = 5784;
+constexpr std::uint32_t SPELL_DREADSTEED = 23161;
 
 constexpr std::uint32_t GOLD = COPPER_PER_GOLD;
 constexpr std::uint8_t MEAT_DIET = 1;  // FoodType 1
 
-TrainerSpell Spell(std::uint32_t id, std::uint32_t cost, std::uint8_t level) { return {id, cost, 0, 0, {}, level}; }
+TrainerSpell Spell(std::uint32_t id, std::uint32_t cost, std::uint8_t level) { return {id, cost, 0, 0, {}, level, {}}; }
 
 TrainerSpell RidingSpell(std::uint32_t id, std::uint32_t cost, std::uint8_t level, std::uint32_t skillRank)
 {
-    return {id, cost, skillRank ? SKILL_RIDING : 0u, skillRank, {}, level};
+    return {id, cost, skillRank ? SKILL_RIDING : 0u, skillRank, {}, level, {}};
 }
 
 UpkeepItemFacts Item(std::uint32_t id, std::uint32_t itemClass, std::uint32_t subClass, std::uint32_t price,
@@ -147,6 +151,13 @@ UpkeepIndex Fixture()
     TrainerSpell swiftFlight = RidingSpell(SPELL_SWIFT_FLIGHT_FORM, 20 * GOLD, 71, 300);
     swiftFlight.reqAbility[0] = SPELL_FLIGHT_FORM;
     input.trainers.push_back({TRAINER_DRUID, TrainerKind::Class, CLASS_DRUID, {swiftFlight}});
+    // warlock trainer 31: Felsteed 1710 teaches 5784, which Dreadsteed needs with journeyman riding
+    TrainerSpell felsteed = Spell(SPELL_FELSTEED, 1000, 20);
+    felsteed.teaches[0] = SPELL_FELSTEED_TAUGHT;
+    TrainerSpell dreadsteed = Spell(SPELL_DREADSTEED, 5000, 40);
+    dreadsteed.reqAbility[0] = SPELL_FELSTEED_TAUGHT;
+    dreadsteed.reqAbility[1] = SPELL_JOURNEYMAN;
+    input.trainers.push_back({TRAINER_WARLOCK, TrainerKind::Class, CLASS_WARLOCK, {felsteed, dreadsteed}});
     input.trainers.push_back(
         {TRAINER_RIDING,
          TrainerKind::Mount,
@@ -156,7 +167,8 @@ UpkeepIndex Fixture()
           RidingSpell(SPELL_COLD_WEATHER, 1000 * GOLD, 77, 225)}});
     input.trainerEntries = {{TRAINER_WARRIOR, TRAINER_WARRIOR}, {TRAINER_MAGE, TRAINER_MAGE},
                             {TRAINER_HUNTER, TRAINER_HUNTER},   {TRAINER_PALADIN, TRAINER_PALADIN},
-                            {TRAINER_DRUID, TRAINER_DRUID},     {TRAINER_RIDING, TRAINER_RIDING}};
+                            {TRAINER_DRUID, TRAINER_DRUID},     {TRAINER_WARLOCK, TRAINER_WARLOCK},
+                            {TRAINER_RIDING, TRAINER_RIDING}};
 
     UpkeepItemFacts bread = Item(ITEM_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
     bread.spellCategory = CATEGORY_FOOD;
@@ -534,6 +546,26 @@ void ClassMounts(UpkeepIndex const& index)
 }
 
 // Journeyman at 40 (60 gold) is worth about 37 gold to a bot walking 30 min/h: only a want buys it
+// The spell Felsteed teaches is no off-list ability: the rules read Felsteed's bit (FillKnown sets it once 5784 is
+// known), so a bot without Felsteed counts both and one with it only Dreadsteed
+void LearnSpellMount(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a class mount needs what a learn spell teaches\n";
+    Snapshot fresh = Bot(index, CLASS_WARLOCK, 40, 100 * GOLD, 0, {SPELL_APPRENTICE, SPELL_JOURNEYMAN});
+    NeedList const both = Show("warlock at 40 without Felsteed", fresh, index, Rates(40));
+    Need const* need = Find(both, NeedOrder::Training);
+    Check(need && need->units == 2 && need->copper == 6000 && need->item == SPELL_FELSTEED &&
+              need->trainer == TRAINER_WARLOCK,
+          "Felsteed and Dreadsteed both count: Dreadsteed's ability is taught by a counted spell");
+    Snapshot felsteed = Bot(index, CLASS_WARLOCK, 40, 100 * GOLD, 20, {SPELL_APPRENTICE, SPELL_JOURNEYMAN});
+    NeedList const one = Show("warlock at 40 with Felsteed", felsteed, index, Rates(40));
+    need = Find(one, NeedOrder::Training);
+    Check(need && need->units == 1 && need->item == SPELL_DREADSTEED, "with Felsteed known only Dreadsteed counts");
+    Snapshot apprentice = Bot(index, CLASS_WARLOCK, 40, 100 * GOLD, 20, {SPELL_APPRENTICE});
+    Check(!Find(ComputeNeeds(apprentice, index, Rates(40)), NeedOrder::Training),
+          "without journeyman riding no Dreadsteed");
+}
+
 void WantNoFlip(UpkeepIndex const& index)
 {
     std::cout << "Scenario: a want and growing gold, journeyman riding at 40\n";
@@ -628,6 +660,7 @@ int main()
     FlyingRiding(index);
     ReserveAndShortfall(index);
     ClassMounts(index);
+    LearnSpellMount(index);
     WantNoFlip(index);
     FrugalBuy(index);
     StaleBits(index);

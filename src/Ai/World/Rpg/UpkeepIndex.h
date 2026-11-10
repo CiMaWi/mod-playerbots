@@ -141,9 +141,29 @@ struct TrainerSpell
     std::uint32_t reqSkillRank{0};
     std::array<std::uint32_t, 3> reqAbility{};
     std::uint8_t reqLevel{0};
+    std::array<std::uint32_t, 3> teaches{};  // the spells its learn-spell effects teach (Judgement 10321 -> 20271)
 
     bool operator==(TrainerSpell const& other) const = default;
 };
+
+// The core's Known state of a trainer spell (Trainer::GetDefaultSpellState): the bot has the spell itself, or it
+// teaches spells and the bot has every one of them; the bot never has a learn spell, only what it teaches
+template <typename HasSpell>
+bool KnowsTrainerSpell(TrainerSpell const& spell, HasSpell const& hasSpell)
+{
+    if (hasSpell(spell.spellId))
+        return true;
+    bool teaches = false;
+    for (std::uint32_t const taught : spell.teaches)
+    {
+        if (!taught)
+            continue;
+        if (!hasSpell(taught))
+            return false;
+        teaches = true;
+    }
+    return teaches;
+}
 
 // One core trainer (many creature entries share one); key = the lowest creature entry that uses it
 struct TrainerFacts
@@ -190,6 +210,9 @@ struct TrainerList
     TrainerKind kind{TrainerKind::Class};
     std::uint32_t requirement{0};
     std::vector<TrainerSpell> spells;
+    // (taught spell, the position of a list spell that teaches it), sorted: a required ability such as Felsteed 5784
+    // (Dreadsteed's) is taught by list spell 1710, so the rules read 1710's bit
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> taughtBy;
 
     std::size_t Find(std::uint32_t spellId) const
     {
@@ -197,6 +220,13 @@ struct TrainerList
             std::lower_bound(spells.begin(), spells.end(), spellId,
                              [](TrainerSpell const& spell, std::uint32_t id) { return spell.spellId < id; });
         return it != spells.end() && it->spellId == spellId ? static_cast<std::size_t>(it - spells.begin()) : NOT_FOUND;
+    }
+
+    // The position of the lowest list spell that teaches this spell, else NOT_FOUND
+    std::size_t Teacher(std::uint32_t spellId) const
+    {
+        auto const it = std::lower_bound(taughtBy.begin(), taughtBy.end(), std::make_pair(spellId, std::uint32_t{0}));
+        return it != taughtBy.end() && it->first == spellId ? static_cast<std::size_t>(it->second) : NOT_FOUND;
     }
 };
 
@@ -326,7 +356,8 @@ public:
                             trainers.capacity() * sizeof(UpkeepTrainer) +
                             reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>);
         for (TrainerList const& list : lists)
-            bytes += list.spells.capacity() * sizeof(TrainerSpell);
+            bytes += list.spells.capacity() * sizeof(TrainerSpell) +
+                     list.taughtBy.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>);
         for (UpkeepTrainer const& trainer : trainers)
             bytes +=
                 trainer.entries.capacity() * sizeof(std::uint32_t) + trainer.spells.capacity() * sizeof(std::uint16_t);
@@ -366,7 +397,7 @@ private:
         {
             if (lists.empty() || lists.back().kind != all[i].first.first ||
                 lists.back().requirement != all[i].first.second)
-                lists.push_back({all[i].first.first, all[i].first.second, {}});
+                lists.push_back({all[i].first.first, all[i].first.second, {}, {}});
             std::vector<TrainerSpell>& spells = lists.back().spells;
             if (!spells.empty() && spells.back().spellId == all[i].second.spellId)
             {
@@ -379,6 +410,12 @@ private:
         for (TrainerList& list : lists)
         {
             list.spells.shrink_to_fit();
+            for (std::size_t position = 0; position < list.spells.size(); ++position)
+                for (std::uint32_t const taught : list.spells[position].teaches)
+                    if (taught)
+                        list.taughtBy.emplace_back(taught, static_cast<std::uint32_t>(position));
+            std::sort(list.taughtBy.begin(), list.taughtBy.end());
+            list.taughtBy.shrink_to_fit();
             stats.trainerSpells[static_cast<std::size_t>(list.kind)] += static_cast<std::uint32_t>(list.spells.size());
             if (list.kind == TrainerKind::Class && list.requirement < UPKEEP_CLASS_SLOTS)
                 stats.classSpells[list.requirement] = static_cast<std::uint32_t>(list.spells.size());

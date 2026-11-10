@@ -389,9 +389,10 @@ inline bool BitsAlign(UpkeepIndex const& index, Snapshot const& snapshot)
 }
 
 // A class spell's skill and ability requirements against what the bot knows. A skill the snapshot carries (riding,
-// the professions) and lacks is at 0; any other skill counts as met. A required ability on the class list is known or
-// already counted, one on the riding list (class mounts need a riding rank) is a known rank, and the others (talents,
-// racials, quest spells such as Summon Warhorse) are in the snapshot's off-list bit, filled with HasSpell
+// the professions) and lacks is at 0; any other skill counts as met. A required ability on the class list, or taught
+// by a class list spell (Dreadsteed needs Felsteed 5784, taught by list spell 1710), is known or already counted, one
+// on the riding list (class mounts need a riding rank) is a known rank, and the others (talents, racials, quest spells
+// such as Summon Warhorse) are in the snapshot's off-list bit, filled with HasSpell
 inline bool RequirementsMet(TrainerList const& list, TrainerList const* riding, std::size_t position,
                             Snapshot const& snapshot, std::vector<std::uint64_t> const& have)
 {
@@ -404,7 +405,8 @@ inline bool RequirementsMet(TrainerList const& list, TrainerList const* riding, 
     {
         if (!ability)
             continue;
-        std::size_t const onClass = list.Find(ability);
+        std::size_t const found = list.Find(ability);
+        std::size_t const onClass = found != TrainerList::NOT_FOUND ? found : list.Teacher(ability);
         if (onClass != TrainerList::NOT_FOUND)
         {
             if (!Planner::HasSpellBit(have, onClass))

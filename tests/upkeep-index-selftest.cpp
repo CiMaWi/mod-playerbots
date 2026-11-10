@@ -6,9 +6,10 @@
 
 // Offline proof of the upkeep index (src/Ai/World/Rpg/UpkeepIndex.h, upkeep plan WU2) over a small synthetic gather:
 // the item rules, trainer dedupe and lists, dense positions and bit sets, vendor offers per kind with prices,
-// determinism, publication under reader threads and the memory estimate.
+// determinism, publication under reader threads, the memory estimate and learn spells (known by what they teach).
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/upkeep-index-selftest.cpp
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -40,6 +41,7 @@ void Check(bool condition, std::string const& what)
 }
 
 constexpr std::uint8_t CLASS_WARRIOR = 1;
+constexpr std::uint8_t CLASS_PALADIN = 2;
 constexpr std::uint8_t CLASS_ROGUE = 4;
 constexpr std::uint8_t CLASS_MAGE = 8;
 constexpr std::uint8_t RACE_HUMAN = 1;
@@ -49,6 +51,7 @@ constexpr std::uint32_t TRAINER_MAGE_CITY = 110;  // a second mage trainer, more
 constexpr std::uint32_t TRAINER_WARRIOR = 200;
 constexpr std::uint32_t TRAINER_RIDING = 300;
 constexpr std::uint32_t TRAINER_PET = 400;
+constexpr std::uint32_t TRAINER_PALADIN = 500;
 
 constexpr std::uint32_t VENDOR_INN = 5000;      // food and water
 constexpr std::uint32_t VENDOR_ARMS = 5001;     // ammo, a poison, a currency-only item
@@ -73,8 +76,14 @@ constexpr std::uint32_t SPELL_BLINK = 1953;
 constexpr std::uint32_t SPELL_HEROIC_STRIKE = 78;
 constexpr std::uint32_t SPELL_APPRENTICE_RIDING = 33388;
 constexpr std::uint32_t SPELL_COLD_WEATHER_FLYING = 54197;
+constexpr std::uint32_t SPELL_JUDGEMENT = 10321;  // a learn spell: the bot only ever has what it teaches
+constexpr std::uint32_t SPELL_JUDGEMENT_TAUGHT = 20271;
+constexpr std::uint32_t SPELL_TWO_FOLD = 70001;  // a synthetic learn spell teaching two spells
+constexpr std::uint32_t SPELL_TWO_FOLD_A = 70002;
+constexpr std::uint32_t SPELL_TWO_FOLD_B = 70003;
+constexpr std::uint32_t SPELL_SEAL = 21084;  // teaches nothing
 
-TrainerSpell Spell(std::uint32_t id, std::uint32_t cost, std::uint8_t level) { return {id, cost, 0, 0, {}, level}; }
+TrainerSpell Spell(std::uint32_t id, std::uint32_t cost, std::uint8_t level) { return {id, cost, 0, 0, {}, level, {}}; }
 
 UpkeepItemFacts Item(std::uint32_t id, std::uint32_t itemClass, std::uint32_t subClass, std::uint32_t price,
                      std::uint32_t count, std::uint32_t level)
@@ -369,11 +378,54 @@ void CheckExtendedCost()
     Check(mounts.size() == 2 && goldOnly && withCurrency && index.stats.currencyOnly == 0,
           "a gold+currency row is kept with its extended cost, not gold only; a gold row is gold only");
 }
+// Judgement 10321 teaches 20271 (lab7-20261110-153800: paladins knew 20271 and still listed 10321 as a need): the list
+// keeps what a spell teaches and finds its teacher, and the spell is known as Trainer::GetDefaultSpellState says
+void CheckTeaches()
+{
+    UpkeepGather input;
+    TrainerSpell judgement = Spell(SPELL_JUDGEMENT, 100, 4);
+    judgement.teaches[0] = SPELL_JUDGEMENT_TAUGHT;
+    TrainerSpell twoFold = Spell(SPELL_TWO_FOLD, 100, 4);
+    twoFold.teaches = {SPELL_TWO_FOLD_A, 0, SPELL_TWO_FOLD_B};
+    input.trainers.push_back(
+        {TRAINER_PALADIN, TrainerKind::Class, CLASS_PALADIN, {twoFold, judgement, Spell(SPELL_SEAL, 10, 1)}});
+    input.trainerEntries = {{TRAINER_PALADIN, TRAINER_PALADIN}};
+    UpkeepIndex const index = UpkeepIndex::Build(std::move(input));
+    TrainerList const* list = index.ClassList(CLASS_PALADIN);
+    if (!list || list->spells.size() != 3)
+    {
+        Check(false, "the paladin list has its three spells");
+        return;
+    }
+    std::size_t const position = list->Find(SPELL_JUDGEMENT);
+    std::size_t const twoFoldAt = list->Find(SPELL_TWO_FOLD);
+    Check(position != TrainerList::NOT_FOUND && list->spells[position].teaches[0] == SPELL_JUDGEMENT_TAUGHT &&
+              list->Teacher(SPELL_JUDGEMENT_TAUGHT) == position && list->Teacher(SPELL_TWO_FOLD_B) == twoFoldAt &&
+              list->Teacher(SPELL_JUDGEMENT) == TrainerList::NOT_FOUND &&
+              list->Teacher(SPELL_SEAL) == TrainerList::NOT_FOUND && list->taughtBy.size() == 3,
+          "a learn spell keeps what it teaches; the list finds the teacher of a taught spell, of nothing else");
+    Check(index.stats.estimatedBytes == index.ApproxBytes(), "the memory estimate counts the taught spells");
+
+    auto const knows = [&list](std::uint32_t spellId, std::vector<std::uint32_t> const& has)
+    {
+        auto const hasSpell = [&has](std::uint32_t id) { return std::find(has.begin(), has.end(), id) != has.end(); };
+        return KnowsTrainerSpell(list->spells[list->Find(spellId)], hasSpell);
+    };
+    Check(!knows(SPELL_JUDGEMENT, {}) && knows(SPELL_JUDGEMENT, {SPELL_JUDGEMENT_TAUGHT}) &&
+              knows(SPELL_JUDGEMENT, {SPELL_JUDGEMENT}),
+          "a learn spell is known by the spell it teaches, or by itself");
+    Check(!knows(SPELL_TWO_FOLD, {SPELL_TWO_FOLD_A}) && !knows(SPELL_TWO_FOLD, {SPELL_TWO_FOLD_B}) &&
+              knows(SPELL_TWO_FOLD, {SPELL_TWO_FOLD_B, SPELL_TWO_FOLD_A}),
+          "a spell teaching two is known only when both are");
+    Check(!knows(SPELL_SEAL, {SPELL_JUDGEMENT_TAUGHT}) && knows(SPELL_SEAL, {SPELL_SEAL}),
+          "a spell teaching nothing is known only by itself");
+}
 }  // namespace
 
 int main()
 {
     CheckExtendedCost();
+    CheckTeaches();
     CheckItemRules();
     UpkeepIndex const index = UpkeepIndex::Build(Synthetic());
     CheckTrainers(index);

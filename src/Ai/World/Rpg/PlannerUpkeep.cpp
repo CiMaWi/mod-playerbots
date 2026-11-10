@@ -63,6 +63,7 @@ static_assert(static_cast<uint32>(TrainerKind::Class) == static_cast<uint32>(Tra
 static_assert(std::tuple_size_v<decltype(TrainerSpell::reqAbility)> ==
                   std::tuple_size_v<decltype(Trainer::Spell::ReqAbility)>,
               "one required ability per core slot");
+static_assert(std::tuple_size_v<decltype(TrainerSpell::teaches)> == MAX_SPELL_EFFECTS, "one taught spell per effect");
 
 namespace
 {
@@ -167,6 +168,13 @@ UpkeepGather GatherUpkeep()
                     copy.reqSkillRank = spell.ReqSkillRank;
                     std::copy(spell.ReqAbility.begin(), spell.ReqAbility.end(), copy.reqAbility.begin());
                     copy.reqLevel = spell.ReqLevel;
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell.SpellId))
+                    {
+                        std::size_t taught = 0;
+                        for (SpellEffectInfo const& effect : info->GetEffects())
+                            if (effect.Effect == SPELL_EFFECT_LEARN_SPELL && effect.TriggerSpell)
+                                copy.teaches[taught++] = effect.TriggerSpell;
+                    }
                     facts.spells.push_back(copy);
                     if (classTrainer)
                         AddReagents(spell.SpellId, static_cast<uint8>(facts.requirement), input.reagents);
@@ -250,8 +258,8 @@ void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, ui
     snapshot.stock.push_back({facts.item, item->GetCount(), kinds, DietBit(facts.foodType)});
 }
 
-// The known bits and the can-learn bits (the trainer's own IsSpellFitByClassAndRace check, Trainer.cpp): the class
-// lists are the union over both factions' trainers
+// The known bits (the trainer's Known state: the spell, or every spell it teaches) and the can-learn bits (its
+// IsSpellFitByClassAndRace check, Trainer.cpp): the class lists are the union over both factions' trainers
 void FillKnown(Player* bot, TrainerList const* list, std::vector<std::uint64_t>& known,
                std::vector<std::uint64_t>& canLearn)
 {
@@ -259,18 +267,20 @@ void FillKnown(Player* bot, TrainerList const* list, std::vector<std::uint64_t>&
         return;
     known = SpellBits(list->spells.size());
     canLearn = SpellBits(list->spells.size());
+    auto const hasSpell = [bot](uint32 spellId) { return bot->HasSpell(spellId); };
     for (std::size_t position = 0; position < list->spells.size(); ++position)
     {
-        uint32 const spellId = list->spells[position].spellId;
-        if (bot->HasSpell(spellId))
+        TrainerSpell const& spell = list->spells[position];
+        if (KnowsTrainerSpell(spell, hasSpell))
             SetSpellBit(known, position);
-        if (bot->IsSpellFitByClassAndRace(spellId))
+        if (bot->IsSpellFitByClassAndRace(spell.spellId))
             SetSpellBit(canLearn, position);
     }
 }
 
-// Bit i: every ability the class list's spell i needs that is on neither the class nor the riding list (a talent, a
-// racial, a quest spell such as Summon Warhorse) is known; the rules read the listed ones from their own bits
+// Bit i: every ability the class list's spell i needs that is neither on nor taught by the class list nor on the
+// riding list (a talent, a racial, a quest spell such as Summon Warhorse) is known; the rules read the others from the
+// list bits
 void FillOffList(Player* bot, TrainerList const* list, TrainerList const* riding, std::vector<std::uint64_t>& met)
 {
     if (!list)
@@ -281,6 +291,7 @@ void FillOffList(Player* bot, TrainerList const* list, TrainerList const* riding
         bool known = true;
         for (uint32 const ability : list->spells[position].reqAbility)
             if (ability && list->Find(ability) == TrainerList::NOT_FOUND &&
+                list->Teacher(ability) == TrainerList::NOT_FOUND &&
                 (!riding || riding->Find(ability) == TrainerList::NOT_FOUND) && !bot->HasSpell(ability))
                 known = false;
         if (known)
