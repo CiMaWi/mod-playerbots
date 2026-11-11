@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 
+#include "BankRulesInput.h"
 #include "GameTime.h"
 #include "Mail.h"
 #include "Player.h"
@@ -18,19 +19,6 @@
 
 namespace BankMail
 {
-namespace
-{
-// The 28 bank item slots only: bank bags and bought bag slots are not this plan's (WB.3)
-uint16 CountFreeBankSlots(Player const* bot)
-{
-    uint16 free = 0;
-    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
-        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            ++free;
-    return free;
-}
-}  // namespace
-
 // Mail list read: the bot's own map thread or the world thread only (see BankMailState.h)
 uint16 CountWaitingMail(Player const* bot)
 {
@@ -62,10 +50,7 @@ void BuildBankKnowledge(PlayerbotAI* botAI)
         return;
 
     BotBankMail& known = botAI->rpgInfo.bankMail;
-    // The kept list stays empty until a keep rule decides which bank items are kept for a later level
-    known.bank.kept.clear();
-    known.bank.freeSlots = CountFreeBankSlots(bot);
-    SumDueItems(known.bank, bot->GetLevel());
+    RefreshBankKnowledge(botAI);
     known.bank.built = true;
     RefreshMailKnowledge(bot, known.mail);
 }

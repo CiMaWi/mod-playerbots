@@ -40,7 +40,7 @@ struct KeptItem
 
 struct BankKnowledge
 {
-    std::vector<KeptItem> kept;  // empty until a keep rule fills it
+    std::vector<KeptItem> kept;  // the bank items the keep rule keeps now, by later worth (BankRulesInput.h)
     uint16 freeSlots{0};         // free bank item slots (the 28; bank bags are not counted)
     uint32 dueCount{0};          // kept items the bot has reached the level for
     uint32 dueWorth{0};
@@ -137,8 +137,8 @@ inline BotBankMail AfterReset(BotBankMail const& before)
 uint16 CountWaitingMail(Player const* bot);
 void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail);
 
-// At login, on the world thread: the bank's free slots and the waiting mail, from what the character load brought
-// (no query)
+// At login, on the world thread: the bank's kept items and free slots and the waiting mail, from what the character
+// load brought (no query)
 void BuildBankKnowledge(PlayerbotAI* botAI);
 }  // namespace BankMail
 
