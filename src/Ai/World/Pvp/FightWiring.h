@@ -16,7 +16,8 @@
 #include "FightRules.h"
 
 // How the glue (FightBook.cpp) feeds the fight rules (FightRules.h) from what it reads off the players, and what a
-// decision (a start at a meeting, WP4; a bystander's join, WP5) changes in the bot's fight memory. Player-free:
+// decision (a start at a meeting, WP4; a bystander's join, WP5; a retreat, a chase, a calm area, WP6) changes in the
+// bot's fight memory. Player-free:
 // tests/fight-wiring-selftest.cpp proves the mapping.
 namespace WorldPvp
 {
@@ -92,7 +93,7 @@ inline StartBot MakeStartBot(FightMemory const& memory, uint32_t nowMs)
     bot.groupMember = memory.groupMember;
     bot.inFight = memory.fightId != 0;
     bot.atObjective = false;  // WP10: capture points
-    bot.inCalmArea = false;   // WP6: the calm-area cache
+    bot.inCalmArea = memory.calmKnown && memory.calm;
     bot.sinceFightEndMs = memory.hasFought ? nowMs - memory.lastFightEndMs : NEVER_MS;
     bot.sinceChanceMs = nowMs - (memory.hasChance ? memory.lastChanceMs : memory.bornMs);
     bot.graveyardYards = memory.graveyardYards;
@@ -283,18 +284,9 @@ struct JoinAnswer
     bool decided = false;
 };
 
-// A bystander's answer for fight `fightId`: the input the glue read off the players, completed from the memory (the
-// fight it is in, the traits of the gate's cache) and the enemies; a join without a target it sees waits as unseen
-inline JoinAnswer AnswerJoin(JoinInput input, std::vector<JoinEnemy> const& enemies, FightMemory const& memory,
-                             uint32_t fightId, float roll, FightRuleValues const& values)
+inline JoinAnswer AnswerFor(JoinInput const& input, std::vector<JoinEnemy> const& enemies, FightMemory const& memory,
+                            float roll, FightRuleValues const& values)
 {
-    input.inOtherFight = memory.fightId != 0 && memory.fightId != fightId;
-    input.pickable = Pickable(enemies);
-    input.goalValue = 0.0f;  // WP7b: the goal's value
-    input.aggression = memory.aggression;
-    input.helpfulness = memory.helpfulness;
-    input.caution = memory.caution;
-
     JoinAnswer answer;
     answer.pickable = input.pickable;
     answer.decision = DecideJoin(input, roll, values);
@@ -312,6 +304,26 @@ inline JoinAnswer AnswerJoin(JoinInput input, std::vector<JoinEnemy> const& enem
     return answer;
 }
 
+// A bystander's answer for fight `fightId`: the input the glue read off the players, completed from the memory (the
+// fight it is in, the traits of the gate's cache) and the enemies; a join without a target it sees waits as unseen.
+// A bot that would join at the best roll but sees no enemy it may pick waits before rolling, so no roll is spent
+// while the enemies are out of sight
+inline JoinAnswer AnswerJoin(JoinInput input, std::vector<JoinEnemy> const& enemies, FightMemory const& memory,
+                             uint32_t fightId, float roll, FightRuleValues const& values)
+{
+    input.inOtherFight = memory.fightId != 0 && memory.fightId != fightId;
+    input.pickable = Pickable(enemies);
+    input.goalValue = 0.0f;  // WP7b: the goal's value
+    input.aggression = memory.aggression;
+    input.helpfulness = memory.helpfulness;
+    input.caution = memory.caution;
+
+    JoinAnswer const sure = AnswerFor(input, enemies, memory, 0.0f, values);
+    if (sure.decision.refusal == Refusal::Unseen)
+        return sure;
+    return AnswerFor(input, enemies, memory, roll, values);
+}
+
 // A join gives the bot its target in the fight and how it comes in
 inline void NoteJoin(FightMemory& memory, JoinAnswer const& answer, uint32_t fightId, uint32_t nowMs)
 {
@@ -325,6 +337,109 @@ inline void NoteJoin(FightMemory& memory, JoinAnswer const& answer, uint32_t fig
 inline bool IsJoinTarget(FightMemory const& memory, uint64_t guid, uint32_t nowMs)
 {
     return guid && memory.joinGuid == guid && nowMs - memory.joinMs < JOIN_TARGET_MS;
+}
+
+// The reason a joiner picks a new target in its fight by (its first one's dead or gone): as it came in
+constexpr JoinWhy JoinWhyOf(CameIn cameIn)
+{
+    if (cameIn == CameIn::Group)
+        return JoinWhy::Group;
+    if (cameIn == CameIn::Master)
+        return JoinWhy::Master;
+    return JoinWhy::Chance;
+}
+
+// --- Ending a fight (WP6) ---
+
+// A retreat (and a timeout's or stalemate's disengage) moves the bot away this long
+constexpr uint32_t RETREAT_MS = 15 * MS_PER_SECOND;
+// Once a chase is over the winner leaves the retreated enemy alone this long (unless it attacks the winner)
+constexpr uint32_t LEFT_ALONE_MS = 30 * MS_PER_SECOND;
+// The calm-area answer is asked again after GATE_REFRESH_MS or once the bot moved this far
+constexpr float CALM_MOVE_YARDS = 20.0f;
+
+inline bool CalmDue(FightMemory const& memory, float x, float y, uint32_t nowMs)
+{
+    return !memory.calmKnown || nowMs - memory.calmCheckMs >= GATE_REFRESH_MS ||
+           std::hypot(x - memory.calmX, y - memory.calmY) > CALM_MOVE_YARDS;
+}
+
+inline void NoteCalm(FightMemory& memory, bool calm, float x, float y, uint32_t nowMs)
+{
+    memory.calmKnown = true;
+    memory.calm = calm;
+    memory.calmCheckMs = nowMs;
+    memory.calmX = x;
+    memory.calmY = y;
+}
+
+// The bot moves away from (x, y) for RETREAT_MS: a retreat by the rules from fight `fightId`, or a disengage at the
+// end of a fight. Either way it drops its fight's targets
+inline void StartRetreat(FightMemory& memory, uint32_t fightId, bool disengage, float x, float y, uint32_t nowMs)
+{
+    memory.retreating = true;
+    memory.disengaging = disengage;
+    memory.retreatFightId = fightId;
+    memory.retreatStartMs = nowMs;
+    memory.retreatUntilMs = nowMs + RETREAT_MS;
+    memory.retreatX = x;
+    memory.retreatY = y;
+    memory.startGuid = 0;
+    memory.joinGuid = 0;
+}
+
+inline bool Retreating(FightMemory const& memory, uint32_t nowMs)
+{
+    return memory.retreating && nowMs - memory.retreatStartMs < memory.retreatUntilMs - memory.retreatStartMs;
+}
+
+// The bot is in the fight it retreated from: it does not rejoin it
+inline bool RetreatedFromFight(FightMemory const& memory)
+{
+    return memory.retreatFightId != 0 && memory.fightId == memory.retreatFightId;
+}
+
+// The book saw this bot attack `guid`, a retreated enemy of its fight (centre and radius then): a chase starts,
+// unless it is the chase already running or one just over
+inline void NoteChase(FightMemory& memory, uint64_t guid, float x, float y, float radius, uint32_t nowMs)
+{
+    if (memory.chaseGuid == guid && (!memory.chaseOver || nowMs - memory.chaseOverMs < LEFT_ALONE_MS))
+        return;
+    memory.chaseGuid = guid;
+    memory.chaseStartMs = nowMs;
+    memory.chaseX = x;
+    memory.chaseY = y;
+    memory.chaseRadius = radius;
+    memory.chaseOver = false;
+}
+
+// Whether the bot (at x, y) must stop chasing its target `guid` now: the chase's time or its yards beyond the fight
+// passed the bot's limit (ChaseLimitFor). A chase not looked at for longer than its limit and the leave-alone time
+// is forgotten
+inline bool CheckChase(FightMemory& memory, uint64_t guid, float x, float y, uint32_t nowMs, ChaseLimit const& limit)
+{
+    if (!guid || memory.chaseGuid != guid)
+        return false;
+    if (memory.chaseOver)
+        return nowMs - memory.chaseOverMs < LEFT_ALONE_MS;
+    uint32_t const chaseMs = nowMs - memory.chaseStartMs;
+    if (chaseMs >= limit.ms + LEFT_ALONE_MS)
+    {
+        memory.chaseGuid = 0;
+        return false;
+    }
+    float const beyond = std::hypot(x - memory.chaseX, y - memory.chaseY) - memory.chaseRadius;
+    if (!ChaseOver(chaseMs, beyond, limit))
+        return false;
+    memory.chaseOver = true;
+    memory.chaseOverMs = nowMs;
+    return true;
+}
+
+// A chase over: the winner leaves `guid` alone for a while
+inline bool ChaseLeftAlone(FightMemory const& memory, uint64_t guid, uint32_t nowMs)
+{
+    return guid && memory.chaseGuid == guid && memory.chaseOver && nowMs - memory.chaseOverMs < LEFT_ALONE_MS;
 }
 
 struct Point

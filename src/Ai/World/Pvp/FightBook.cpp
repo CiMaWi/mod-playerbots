@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "AiObjectContext.h"
 #include "BotTraitMgr.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
@@ -89,6 +90,9 @@ struct FightRow
     bool starterReal = false;
     FightReason reason = FightReason::AttackOnSight;
     bool tagged = false;
+    // The bystanders' kept join answers and those beyond the full list
+    uint32 answers = 0;
+    uint32 refused = 0;
 };
 
 // One map's book; `book` belongs to the map's update thread, the snapshot to its lock
@@ -265,6 +269,67 @@ void ReadGate(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 nowMs
     RefreshGate(memory, facts, nowMs);
 }
 
+// The calm-area answer at the bot's place (InAnyCalmArea over its map's ended fights), asked again when due
+void ReadCalm(Player* bot, FightMemory& memory, uint32 nowMs, FightRuleValues const& values)
+{
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    if (!CalmDue(memory, x, y, nowMs))
+        return;
+    std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false);
+    NoteCalm(memory, entry && InAnyCalmArea(entry->book.Ended(), x, y, nowMs, values), x, y, nowMs);
+}
+
+// The bot stops attacking (a retreat, a disengage): no victim, no current target
+void DropFightTarget(PlayerbotAI* botAI, Player* bot)
+{
+    bot->AttackStop();
+    botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
+}
+
+// What a participant sees of its fight: the strength of its side's alive participants (itself included) and of the
+// enemies it sees, and the centre of those enemies
+struct SideView
+{
+    float own = 0.0f;
+    float other = 0.0f;
+    uint32 enemies = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+SideView ViewOf(Player* bot, Fight const& fight, FightRuleValues const& values)
+{
+    uint32 const level = bot->GetLevel();
+    auto const strength = [&](Player const* player)
+    { return Strength(level, player->GetLevel(), player->GetHealthPct() / 100.0f, values); };
+    SideView view;
+    view.own = strength(bot);
+    for (FightParticipant const& participant : fight.participants)
+    {
+        Player* const player = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(participant.guid));
+        if (!player || player == bot || !player->IsInWorld() || !player->IsAlive())
+            continue;
+        if (player->GetTeamId() == bot->GetTeamId())
+        {
+            view.own += strength(player);
+            continue;
+        }
+        if (!bot->CanSeeOrDetect(player))
+            continue;
+        view.other += strength(player);
+        view.x += player->GetPositionX();
+        view.y += player->GetPositionY();
+        ++view.enemies;
+    }
+    if (view.enemies)
+    {
+        view.x /= static_cast<float>(view.enemies);
+        view.y /= static_cast<float>(view.enemies);
+    }
+    return view;
+}
+
 // The bot's side's share of the strength it sees within ScanYards: the alive players of both sides around it, the
 // bot and the target included (enemies only when the bot can see them)
 float OddsAround(Player* bot, Player* enemy, FightRuleValues const& values)
@@ -387,6 +452,8 @@ void NoteCombatRefs(Player* player, uint32 nowMs)
 
 void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
 {
+    bool const disengage =
+        fight.cause == EndCause::Timeout || fight.cause == EndCause::Stalemate || fight.cause == EndCause::StalemateCap;
     Player* row = ObjectAccessor::GetPlayer(map, ObjectGuid(fight.starter));
     for (FightParticipant const& participant : fight.participants)
     {
@@ -395,14 +462,27 @@ void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
             continue;
         if (!row)
             row = player;
-        if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player))
+        PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player);
+        FightMemory* const memory = botAI ? botAI->fightMemory.get() : nullptr;
+        if (!memory)
+            continue;
+        if (memory->fightId == fight.id)
         {
-            if (botAI->fightMemory && botAI->fightMemory->fightId == fight.id)
-            {
-                botAI->fightMemory->fightId = 0;
-                botAI->fightMemory->hasFought = true;
-                botAI->fightMemory->lastFightEndMs = nowMs;
-            }
+            memory->fightId = 0;
+            memory->hasFought = true;
+            memory->lastFightEndMs = nowMs;
+        }
+        if (memory->joinFightId == fight.id)
+        {
+            memory->joinGuid = 0;
+            memory->joinFightId = 0;
+        }
+        // A timeout or stalemate ends a fight that is still on: its bots disengage (they step away and note no PvP
+        // combat for a while, so its tail opens no new fight; an enemy that keeps hitting gets one)
+        if (disengage && player->IsAlive() && player->GetCombatManager().HasPvPCombat())
+        {
+            StartRetreat(*memory, fight.id, true, fight.centreX, fight.centreY, nowMs);
+            DropFightTarget(botAI, player);
         }
     }
 
@@ -463,6 +543,8 @@ void Publish(BookEntry& entry, uint32 nowMs)
         row.starterReal = starter && starter->real;
         row.reason = fight.reason;
         row.tagged = fight.tagged;
+        row.answers = fight.decidedCount;
+        row.refused = fight.refusedDecisions;
         rows.push_back(row);
     }
 
@@ -495,6 +577,27 @@ void RecordJoin(Player* bot, uint32 fightId, JoinAnswer const& answer, JoinInput
     alternatives.Add({"pickable", static_cast<float>(answer.pickable)});
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::FightJoin, decision.join ? CHOICE_JOIN : CHOICE_PASS,
                        decision.join ? Word(decision.why) : Word(decision.refusal), decision.p, alternatives, fightId);
+}
+
+// A bystander of a fight whose decided list is full, counted once for it
+void CountRefused(FightBook& book, Fight const& fight, FightMemory& memory)
+{
+    if (memory.refusedFightId == fight.id)
+        return;
+    memory.refusedFightId = fight.id;
+    book.CountRefusedDecision(fight.id);
+}
+
+// Whether the bystander would join `fighters`' fight whatever it rolls: its master or a member of its group is in it,
+// or a participant attacks it
+bool AlwaysJoins(PlayerbotAI* botAI, Player* bot, std::vector<Player*> const& fighters)
+{
+    Player* const master = botAI->GetMaster();
+    Group* const group = bot->GetGroup();
+    for (Player* const fighter : fighters)
+        if (fighter == master || (group && fighter->GetGroup() == group) || Attacks(fighter, bot))
+            return true;
+    return false;
 }
 
 // One bystander of `fight` (`fighters`: its participants on the map) answers once (WP.7): what it sees of the fight
@@ -555,8 +658,15 @@ void AskBystander(FightBook& book, Fight const& fight, std::vector<Player*> cons
     input.odds = OddsShare(own, other);
 
     JoinAnswer const answer = AnswerJoin(input, enemies, memory, fight.id, static_cast<float>(rand_norm()), values);
-    if (!answer.decided || !book.NoteDecided(fight.id, bot->GetGUID().GetRawValue()))
+    if (!answer.decided)
         return;
+    // A full list keeps no more answers; a join of the bot's group, master or self-defence still counts
+    bool const always = answer.decision.join && answer.decision.why != JoinWhy::Chance;
+    if (!book.NoteDecided(fight.id, bot->GetGUID().GetRawValue()) && !always)
+    {
+        CountRefused(book, fight, memory);
+        return;
+    }
     if (answer.decision.join)
         NoteJoin(memory, answer, fight.id, nowMs);
     RecordJoin(bot, fight.id, answer, input);
@@ -594,10 +704,97 @@ void AskBystanders(Map* map, FightBook& book, uint32 nowMs)
             if (bot->IsInFlight() || fight.Find(guid) || fight.HasDecided(guid))
                 continue;
             PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
-            if (botAI && StartsByRules(botAI))
-                AskBystander(book, fight, fighters, botAI, bot, nowMs, values);
+            if (!botAI || !StartsByRules(botAI))
+                continue;
+            // A full fight asks only those that join whatever they roll (once: a joiner walking in is not asked again)
+            if (fight.decidedCount >= MAX_DECIDED)
+            {
+                if (botAI->fightMemory->joinFightId == fight.id)
+                    continue;
+                if (!AlwaysJoins(botAI, bot, fighters))
+                {
+                    CountRefused(book, fight, *botAI->fightMemory);
+                    continue;
+                }
+            }
+            AskBystander(book, fight, fighters, botAI, bot, nowMs, values);
         }
     }
+}
+
+// A participant in PvP combat (the book's tick): whether it is in PvP combat with an enemy participant of its fight
+// (the hit clock). A persistent bot attacking a retreated enemy of its fight chases it from now (NoteChase)
+bool ProbeSides(FightBook const& book, FightParticipant const& participant, Player* player, uint32 nowMs)
+{
+    Fight const* const fight = book.FindFightOf(participant.guid);
+    if (!fight)
+        return false;
+    auto const enemyOf = [&](Unit* unit) -> FightParticipant const*
+    {
+        Player* const enemy = unit ? unit->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+        FightParticipant const* const other = enemy ? fight->Find(enemy->GetGUID().GetRawValue()) : nullptr;
+        return other && other->side != participant.side ? other : nullptr;
+    };
+
+    bool sides = false;
+    for (auto const& [guid, reference] : player->GetCombatManager().GetPvPCombatRefs())
+    {
+        sides = enemyOf(reference->GetOther(player)) != nullptr;
+        if (sides)
+            break;
+    }
+
+    FightParticipant const* const victim = enemyOf(player->GetVictim());
+    if (victim && victim->retreated && !IsForced(player->GetGUID(), nowMs))
+        if (FightMemory* const memory = MemoryOf(player, nowMs))
+            NoteChase(*memory, victim->guid, fight->centreX, fight->centreY, fight->radius, nowMs);
+    return sides;
+}
+
+// Once a second while the bot is in PvP combat: a participant that starts by the rules retreats when its health is
+// low and its side is losing (ShouldRetreat over what it sees of its fight); while it retreats it moves away from the
+// enemies it sees
+void CheckRetreat(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 nowMs)
+{
+    if (!memory.fightId || !bot->IsAlive())
+        return;
+    bool const retreating = Retreating(memory, nowMs);
+    if (retreating && memory.disengaging)
+        return;
+    bool const fromThis = memory.retreatFightId == memory.fightId;
+    if (fromThis && !retreating)
+        return;
+    if (!StartsByRules(botAI))
+        return;
+    std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false);
+    Fight const* const fight = entry ? entry->book.FindFight(memory.fightId) : nullptr;
+    if (!fight || !fight->Find(bot->GetGUID().GetRawValue()))
+        return;
+
+    FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
+    SideView const view = ViewOf(bot, *fight, values);
+    if (fromThis)
+    {
+        if (view.enemies)
+        {
+            memory.retreatX = view.x;
+            memory.retreatY = view.y;
+        }
+        return;
+    }
+
+    if (GateDue(memory, nowMs))
+        ReadGate(botAI, bot, memory, nowMs);
+    float const health = bot->GetHealthPct() / 100.0f;
+    if (!view.enemies || !ShouldRetreat(health, OddsShare(view.own, view.other), memory.caution, values))
+        return;
+
+    uint32 const fightId = entry->book.MarkRetreated(bot->GetGUID().GetRawValue(), nowMs);
+    StartRetreat(memory, fightId, false, view.x, view.y, nowMs);
+    DropFightTarget(botAI, bot);
+    if (WorldLog::Active())
+        EventLog::Emit(bot, EVENT_FIGHT_RETREAT, SOURCE_RETREAT, fightId,
+                       static_cast<int64>(std::lround(health * 100.0f)));
 }
 
 void TickBook(Map* map, uint32 diff)
@@ -617,21 +814,29 @@ void TickBook(Map* map, uint32 diff)
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp book") : nullptr);
     uint32 const nowMs = getMSTime();
     entry->book.SetBounds(FightBounds::From(sPlayerbotAIConfig.WorldPvp));
+    FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
+    FightBook const& book = entry->book;
     std::vector<Fight> ended;
     entry->book.Tick(
         nowMs,
-        [map](FightParticipant& participant)
+        [map, &book, nowMs](FightParticipant& participant)
         {
             Player* const player = ObjectAccessor::GetPlayer(map, ObjectGuid(participant.guid));
-            if (!player || !player->IsInWorld())
+            participant.here = player && player->IsInWorld();
+            participant.sideCombat = false;
+            if (!participant.here)
                 return false;
+            participant.alive = player->IsAlive();
             participant.x = player->GetPositionX();
             participant.y = player->GetPositionY();
             participant.zone = player->GetZoneId();
             participant.area = player->GetAreaId();
-            return player->GetCombatManager().HasPvPCombat();
+            if (!player->GetCombatManager().HasPvPCombat())
+                return false;
+            participant.sideCombat = ProbeSides(book, participant, player, nowMs);
+            return true;
         },
-        ended);
+        [&values](FightClock const& clock) { return CheckFightEnd(clock, values); }, ended);
     for (Fight const& fight : ended)
         EmitEnd(map, fight, nowMs);
     if (!entry->book.Active().empty() && ElapsedMs(entry->joinCheckMs, nowMs) >= JOIN_CHECK_MS)
@@ -724,6 +929,8 @@ std::vector<std::string> Describe(PlayerbotAI* botAI, Player* bot, FightMemory* 
     bool const byRules = StartsByRules(botAI);
     if (byRules && GateDue(*memory, nowMs))
         ReadGate(botAI, bot, *memory, nowMs);
+    if (byRules)
+        ReadCalm(bot, *memory, nowMs, values);
     StartBot const startBot = MakeStartBot(*memory, nowMs);
     lines.back() += Acore::StringFormat(
         " gate {} aggression {:.2f} caution {:.2f} p_now {:.3f} picked {} join {}",
@@ -731,6 +938,10 @@ std::vector<std::string> Describe(PlayerbotAI* botAI, Player* bot, FightMemory* 
         StartProbability(StartRate(startBot.aggression, values), startBot.sinceChanceMs, values),
         IsPicked(*memory, memory->startGuid, nowMs) ? ObjectGuid(memory->startGuid).GetCounter() : 0,
         IsJoinTarget(*memory, memory->joinGuid, nowMs) ? ObjectGuid(memory->joinGuid).GetCounter() : 0);
+    // WP6: the calm-area answer, the fight it retreats (or disengages) from now, the enemy it chases
+    lines.back() += Acore::StringFormat(" calm {} retreat {} chase {}{}", memory->calmKnown && memory->calm ? 1 : 0,
+                                        Retreating(*memory, nowMs) ? memory->retreatFightId : 0,
+                                        ObjectGuid(memory->chaseGuid).GetCounter(), memory->chaseOver ? " over" : "");
     for (uint32 index = 0; index < memory->Count(); ++index)
     {
         RecentEnemy const& enemy = (*memory)[index];
@@ -910,9 +1121,11 @@ bool ScanGated(PlayerbotAI* botAI)
     uint32 const nowMs = getMSTime();
     if (IsPicked(memory, memory.startGuid, nowMs))
         return false;
+    FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
     if (GateDue(memory, nowMs))
         ReadGate(botAI, botAI->GetBot(), memory, nowMs);
-    if (GateOf(memory, nowMs, FightRuleValues(sPlayerbotAIConfig.WorldPvp)) == Refusal::None)
+    ReadCalm(botAI->GetBot(), memory, nowMs, values);
+    if (GateOf(memory, nowMs, values) == Refusal::None)
         return false;
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp scan gated")
@@ -939,6 +1152,7 @@ bool AcceptByRules(PlayerbotAI* botAI, Unit* unit, char const* refusal)
         return false;
     if (GateDue(*memory, nowMs))
         ReadGate(botAI, bot, *memory, nowMs);
+    ReadCalm(bot, *memory, nowMs, values);
     // A bot that cannot start a fight now meets nobody (no fight_start row)
     if (GateOf(*memory, nowMs, values) != Refusal::None)
         return false;
@@ -981,11 +1195,81 @@ bool IsPickedTarget(PlayerbotAI* botAI, Unit* unit)
 
 Player* JoinTarget(PlayerbotAI* botAI)
 {
-    FightMemory const* const memory = botAI ? botAI->fightMemory.get() : nullptr;
-    if (!memory || !IsJoinTarget(*memory, memory->joinGuid, getMSTime()))
+    FightMemory* const memory = botAI ? botAI->fightMemory.get() : nullptr;
+    if (!memory || !memory->joinFightId)
         return nullptr;
-    Player* const enemy = ObjectAccessor::GetPlayer(botAI->GetBot()->GetMap(), ObjectGuid(memory->joinGuid));
-    return enemy && enemy->IsAlive() ? enemy : nullptr;
+    uint32 const nowMs = getMSTime();
+    bool const fresh = IsJoinTarget(*memory, memory->joinGuid, nowMs);
+    if ((!fresh && memory->fightId != memory->joinFightId) || memory->retreatFightId == memory->joinFightId ||
+        !StartsByRules(botAI))
+        return nullptr;
+    Player* const bot = botAI->GetBot();
+    std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false);
+    Fight const* const fight = entry ? entry->book.FindFight(memory->joinFightId) : nullptr;
+    if (!fight)
+        return nullptr;
+
+    Player* const enemy = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(memory->joinGuid));
+    if (fresh && enemy && enemy->IsAlive() && fight->Find(memory->joinGuid) &&
+        !ChaseLeftAlone(*memory, memory->joinGuid, nowMs))
+        return enemy;
+
+    // Its target is dead, gone or left alone, or the bot is in the fight it joined: the nearest enemy participant it
+    // sees and may pick for the reason it came in
+    std::vector<JoinEnemy> enemies;
+    for (FightParticipant const& participant : fight->participants)
+    {
+        Player* const player = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(participant.guid));
+        if (!player || !player->IsInWorld() || !player->IsAlive() || player->GetTeamId() == bot->GetTeamId() ||
+            ChaseLeftAlone(*memory, participant.guid, nowMs))
+            continue;
+        JoinEnemy candidate;
+        candidate.guid = participant.guid;
+        candidate.yards = bot->GetDistance(player);
+        candidate.colour = WorldPvp::ColourOf(bot->GetLevel(), player->GetLevel());
+        candidate.visible = bot->CanSeeOrDetect(player);
+        candidate.attacking = Attacks(player, bot);
+        enemies.push_back(candidate);
+    }
+    uint64 const target = PickJoinTarget(enemies, JoinWhyOf(memory->joinCameIn));
+    if (!target)
+        return nullptr;
+    memory->joinGuid = target;
+    memory->joinMs = nowMs;
+    return ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(target));
+}
+
+bool ChaseEnds(PlayerbotAI* botAI, Unit* target)
+{
+    FightMemory* const memory = botAI && target ? botAI->fightMemory.get() : nullptr;
+    if (!memory || !memory->chaseGuid || memory->chaseGuid != target->GetGUID().GetRawValue())
+        return false;
+    Player* const bot = botAI->GetBot();
+    if (Attacks(target, bot))
+        return false;
+
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp chase") : nullptr);
+    ChaseLimit const limit =
+        ChaseLimitFor(memory->aggression, memory->courtesy, FightRuleValues(sPlayerbotAIConfig.WorldPvp));
+    return CheckChase(*memory, memory->chaseGuid, bot->GetPositionX(), bot->GetPositionY(), getMSTime(), limit);
+}
+
+bool LeftAlone(PlayerbotAI* botAI, Unit* unit)
+{
+    FightMemory const* const memory = botAI && unit ? botAI->fightMemory.get() : nullptr;
+    if (!memory || Attacks(unit, botAI->GetBot()))
+        return false;
+    return RetreatedFromFight(*memory) || ChaseLeftAlone(*memory, unit->GetGUID().GetRawValue(), getMSTime());
+}
+
+bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y)
+{
+    FightMemory const* const memory = botAI ? botAI->fightMemory.get() : nullptr;
+    if (!memory || !Retreating(*memory, getMSTime()))
+        return false;
+    x = memory->retreatX;
+    y = memory->retreatY;
+    return true;
 }
 
 bool RequestsWaiting() { return requestCount.load(std::memory_order_relaxed) != 0; }
@@ -1004,7 +1288,10 @@ void OnBotTick(PlayerbotAI* botAI, Player* bot)
 
     memory->lastCombatCheckMs = nowMs;
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks") : nullptr);
-    NoteCombatRefs(bot, nowMs);
+    // A disengaging bot notes no PvP combat: the ended fight's tail would open a new one at once
+    if (!Retreating(*memory, nowMs) || !memory->disengaging)
+        NoteCombatRefs(bot, nowMs);
+    CheckRetreat(botAI, bot, *memory, nowMs);
 }
 
 void MarkForced(ObjectGuid guid)
@@ -1045,12 +1332,12 @@ bool HandleListCommand(ChatHandler* handler)
             lines.push_back(Acore::StringFormat(
                 "FIGHT {} map {} instance {} age {} at {:.0f} {:.0f} radius {:.0f} alliance {} dead {} horde {} dead "
                 "{} "
-                "starter {} {} reason {} tag {}",
+                "starter {} {} reason {} tag {} answers {} refused {}",
                 row.id, entry->mapId, entry->instanceId, row.ageSeconds, row.x, row.y, row.radius,
                 row.counts[static_cast<size_t>(Side::Alliance)], row.deaths[static_cast<size_t>(Side::Alliance)],
                 row.counts[static_cast<size_t>(Side::Horde)], row.deaths[static_cast<size_t>(Side::Horde)],
                 ObjectGuid(row.starter).GetCounter(), row.starterReal ? "real" : "bot", Word(row.reason),
-                row.tagged ? "pvptest" : "-"));
+                row.tagged ? "pvptest" : "-", row.answers, row.refused));
     }
 
     handler->PSendSysMessage("FIGHT list: {} active, {} ended in the last {} min, {} maps", lines.size(), ended,

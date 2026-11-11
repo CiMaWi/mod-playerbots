@@ -8,13 +8,17 @@
 // with its starter, target and reason; joins into the fight of a participant and into the nearest fight within its
 // radius; a second cluster as a new fight; sides, deaths, the end by combat over after the end grace and by the
 // safety cap; the bounds (fights per map, participants per fight, the ended ring's calm time); the PvpTest tag; the id
-// counter; the fight memory's meetings and its eviction; the end rows' anchor when nobody is left on the map.
+// counter; the fight memory's meetings and its eviction; the end rows' anchor when nobody is left on the map. The
+// rules' ends (WP6, with FightRules.h's CheckFightEnd as the judge): timeout after NoHitSeconds without a hit between
+// the sides (length to that hit), stalemate, wiped by deaths, absence or retreat (a retreated participant still in
+// PvP combat keeps its side), the grace beside them; MarkRetreated.
 #include <cstdint>
 #include <iostream>
 #include <set>
 #include <string>
 
 #include "FightBookRules.h"
+#include "FightRules.h"
 
 using WorldPvp::CameIn;
 using WorldPvp::Combatant;
@@ -74,6 +78,27 @@ struct SetProbe
     std::set<uint64_t> const& fighting;
     bool operator()(FightParticipant const& participant) const { return fighting.count(participant.guid) != 0; }
 };
+
+// The rules' probe: `side` in PvP combat with the other side, `outside` in PvP combat with someone else only, `dead`
+// dead, `gone` off the map
+struct StateProbe
+{
+    std::set<uint64_t> const& side;
+    std::set<uint64_t> const& outside;
+    std::set<uint64_t> const& dead;
+    std::set<uint64_t> const& gone;
+    bool operator()(FightParticipant& participant) const
+    {
+        participant.here = gone.count(participant.guid) == 0;
+        participant.alive = dead.count(participant.guid) == 0;
+        participant.sideCombat = participant.here && side.count(participant.guid) != 0;
+        return participant.sideCombat || (participant.here && outside.count(participant.guid) != 0);
+    }
+};
+
+WorldPvp::FightRuleValues const RULES{};
+
+WorldPvp::FightEndCheck Judge(WorldPvp::FightClock const& clock) { return WorldPvp::CheckFightEnd(clock, RULES); }
 
 void CheckStartAndJoins()
 {
@@ -301,6 +326,97 @@ void CheckEndAnchor()
 }
 }  // namespace
 
+void CheckRuleEnds()
+{
+    std::set<uint64_t> const none;
+    std::set<uint64_t> const both = {1, 2};
+    std::vector<Fight> ended;
+
+    {
+        std::atomic<uint32_t> ids{0};
+        FightBook book(DefaultBounds(), ids);
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(2, Side::Horde, 10, 0), 0);
+        book.Tick(10 * SECOND, StateProbe{both, none, none, none}, Judge, ended);
+        book.Tick(39 * SECOND, StateProbe{none, both, none, none}, Judge, ended);
+        Check(ended.empty(), "PvP combat with others only: no timeout before NoHitSeconds");
+        book.Tick(40 * SECOND, StateProbe{none, both, none, none}, Judge, ended);
+        Check(ended.size() == 1 && ended.back().cause == EndCause::Timeout && ended.back().endMs == 10 * SECOND,
+              "no hit between the sides for NoHitSeconds: timeout, its length to the last such hit");
+    }
+    {
+        std::atomic<uint32_t> ids{0};
+        FightBook book(DefaultBounds(), ids);
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(2, Side::Horde, 10, 0), 0);
+        book.Tick(20 * SECOND, StateProbe{none, both, none, none}, Judge, ended);
+        book.OnCombat(Bot(2, Side::Horde, 10, 0), Bot(1, Side::Alliance, 0, 0), 25 * SECOND);
+        book.Tick(54 * SECOND, StateProbe{none, both, none, none}, Judge, ended);
+        Check(book.Active().size() == 1, "a noted combat between the sides restarts the hit clock");
+        book.Tick(55 * SECOND, StateProbe{none, both, none, none}, Judge, ended);
+        Check(ended.back().cause == EndCause::Timeout && ended.back().endMs == 25 * SECOND, "timeout from that hit");
+    }
+    {
+        std::atomic<uint32_t> ids{0};
+        FightBook book(DefaultBounds(), ids);
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(2, Side::Horde, 10, 0), 0);
+        for (uint32_t second = 1; second < 300; second += 20)
+            book.Tick(second * SECOND, StateProbe{both, none, none, none}, Judge, ended);
+        book.Tick(299 * SECOND, StateProbe{both, none, none, none}, Judge, ended);
+        Check(book.Active().size() == 1, "hits between the sides: no end before StalemateSeconds");
+        book.Tick(300 * SECOND, StateProbe{both, none, none, none}, Judge, ended);
+        Check(ended.back().cause == EndCause::Stalemate && ended.back().endMs == 300 * SECOND,
+              "a fight as old as StalemateSeconds ends as stalemate");
+    }
+    {
+        std::atomic<uint32_t> ids{0};
+        FightBook book(DefaultBounds(), ids);
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(2, Side::Horde, 10, 0), 0);
+        book.Tick(5 * SECOND, StateProbe{std::set<uint64_t>{1}, none, std::set<uint64_t>{2}, none}, Judge, ended);
+        Check(ended.back().cause == EndCause::Wiped && ended.back().endMs == 5 * SECOND,
+              "a side all dead: wiped at once");
+    }
+    {
+        std::atomic<uint32_t> ids{0};
+        FightBook book(DefaultBounds(), ids);
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(2, Side::Horde, 10, 0), 0);
+        book.Tick(2 * SECOND, StateProbe{both, none, none, std::set<uint64_t>{2}}, Judge, ended);
+        Check(ended.back().cause == EndCause::Wiped, "a side all gone from the map: wiped");
+    }
+    {
+        std::atomic<uint32_t> ids{0};
+        FightBook book(DefaultBounds(), ids);
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(2, Side::Horde, 10, 0), 0);
+        book.OnCombat(Bot(3, Side::Alliance, 5, 0), Bot(2, Side::Horde, 10, 0), SECOND);
+        uint32_t const fightId = book.Active().front().id;
+        Check(book.MarkRetreated(2, 3 * SECOND) == fightId && book.Active().front().Find(2)->retreated &&
+                  book.Active().front().Find(2)->retreatedMs == 3 * SECOND,
+              "MarkRetreated marks the participant and names its fight");
+        Check(book.MarkRetreated(99, 3 * SECOND) == 0, "MarkRetreated of a guid in no fight: 0");
+        book.Tick(4 * SECOND, StateProbe{both, none, none, none}, Judge, ended);
+        Check(book.Active().size() == 1, "a retreated participant still in PvP combat keeps its side in the fight");
+        book.Tick(5 * SECOND, StateProbe{std::set<uint64_t>{1}, none, none, none}, Judge, ended);
+        Check(ended.back().cause == EndCause::Wiped && ended.back().endMs == 5 * SECOND,
+              "its side all retreated and out of PvP combat: wiped");
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(4, Side::Horde, 10, 0), 6 * SECOND);
+        book.MarkRetreated(1, 7 * SECOND);
+        Fight const* const fight = book.FindFightOf(1);
+        WorldPvp::FightClock clock = FightBook::ClockOf(*fight, 7 * SECOND);
+        Check(clock.active[static_cast<size_t>(Side::Alliance)] == 1, "ClockOf: in PvP combat at the last tick counts");
+        book.Tick(8 * SECOND, StateProbe{none, std::set<uint64_t>{4}, none, none}, Judge, ended);
+        Check(ended.back().cause == EndCause::Wiped, "the retreater's side is out once it leaves PvP combat");
+    }
+    {
+        std::atomic<uint32_t> ids{0};
+        FightBook book(DefaultBounds(), ids);
+        book.OnCombat(Bot(1, Side::Alliance, 0, 0), Bot(2, Side::Horde, 10, 0), 0);
+        book.Tick(SECOND, StateProbe{both, none, none, none}, Judge, ended);
+        book.Tick(10 * SECOND, StateProbe{none, none, none, none}, Judge, ended);
+        Check(book.Active().size() == 1, "the grace still holds beside the rules' ends");
+        book.Tick(11 * SECOND, StateProbe{none, none, none, none}, Judge, ended);
+        Check(ended.back().cause == EndCause::CombatOver && ended.back().endMs == SECOND,
+              "nobody in PvP combat for the grace: combat_over before the timeout");
+    }
+}
+
 int main()
 {
     CheckStartAndJoins();
@@ -311,6 +427,7 @@ int main()
     CheckBounds();
     CheckMemory();
     CheckEndAnchor();
+    CheckRuleEnds();
     std::cout << "fight-book-selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
 }

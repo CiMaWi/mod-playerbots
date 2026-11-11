@@ -620,21 +620,6 @@ inline bool ChaseOver(uint32_t chaseMs, float yardsBeyond, ChaseLimit const& lim
     return chaseMs >= limit.ms || yardsBeyond >= limit.yards;
 }
 
-// A fight's clock: its age, the time since the last hit between the sides, and the participants per side still in
-// it (alive, not retreated, not gone)
-struct FightClock
-{
-    uint32_t ageMs = 0;
-    uint32_t sinceHitMs = 0;
-    std::array<uint32_t, SIDE_COUNT> active{};
-};
-
-struct FightEndCheck
-{
-    bool ends = false;
-    EndCause cause = EndCause::CombatOver;
-};
-
 // Whether a fight ends now by the rules: one side out (wiped), no hit between the sides for NoHitSeconds (timeout),
 // or older than StalemateSeconds (stalemate). When both timeouts are due the one reached first is the cause. The
 // book's end grace and its safety cap still apply on their own

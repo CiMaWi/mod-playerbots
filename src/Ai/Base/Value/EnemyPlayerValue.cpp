@@ -27,6 +27,34 @@ constexpr char const* REFUSAL_NOT_FLAGGED = "not_flagged";
 constexpr char const* REFUSAL_EXCLUSION = "exclusion";
 constexpr char const* REFUSAL_NOT_VISIBLE = "not_visible";
 constexpr char const* REFUSAL_MASTER = "master";
+
+// Today's target checks on an enemy player after the parent's filter: the scan's and the join target's
+char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit)
+{
+    bool inCannon = botAI->IsInVehicle(false, true);
+    Player* enemy = dynamic_cast<Player*>(unit);
+    if (!enemy || !botAI->IsOpposing(enemy))
+        return REFUSAL_NOT_TARGET;
+    if (!enemy->IsPvP())
+        return REFUSAL_NOT_FLAGGED;
+    if (sPlayerbotAIConfig.IsPvpProhibited(enemy->GetZoneId(), enemy->GetAreaId()))
+        return REFUSAL_EXCLUSION;
+    if (enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2) ||
+        (!inCannon && enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE)))
+        return REFUSAL_NOT_TARGET;
+    // Stealth and invisibility: !enemy->HasStealthAura() && !enemy->HasInvisibilityAura() is left to the sight check
+    if (!(bot->InBattleground() ? bot->CanSeeOrDetect(enemy) : enemy->CanSeeOrDetect(bot)))
+        return REFUSAL_NOT_VISIBLE;
+    if (enemy->HasSpiritOfRedemptionAura())
+        return REFUSAL_NOT_TARGET;
+
+    // If with master, only attack if master is PvP flagged
+    Player* master = botAI->GetMaster();
+    if (master && !master->IsPvP() && !master->IsFFAPvP())
+        return REFUSAL_MASTER;
+
+    return nullptr;
+}
 }  // namespace
 
 bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
@@ -55,30 +83,7 @@ char const* NearestEnemyPlayersValue::Refusal(Unit* unit, bool byRules)
     // Apply parent's filtering first (includes level difference checks)
     if (!byRules && !PossibleTargetsValue::AcceptUnit(unit))
         return REFUSAL_FILTERED;
-
-    bool inCannon = botAI->IsInVehicle(false, true);
-    Player* enemy = dynamic_cast<Player*>(unit);
-    if (!enemy || !botAI->IsOpposing(enemy))
-        return REFUSAL_NOT_TARGET;
-    if (!enemy->IsPvP())
-        return REFUSAL_NOT_FLAGGED;
-    if (sPlayerbotAIConfig.IsPvpProhibited(enemy->GetZoneId(), enemy->GetAreaId()))
-        return REFUSAL_EXCLUSION;
-    if (enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2) ||
-        (!inCannon && enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE)))
-        return REFUSAL_NOT_TARGET;
-    // Stealth and invisibility: !enemy->HasStealthAura() && !enemy->HasInvisibilityAura() is left to the sight check
-    if (!(bot->InBattleground() ? bot->CanSeeOrDetect(enemy) : enemy->CanSeeOrDetect(bot)))
-        return REFUSAL_NOT_VISIBLE;
-    if (enemy->HasSpiritOfRedemptionAura())
-        return REFUSAL_NOT_TARGET;
-
-    // If with master, only attack if master is PvP flagged
-    Player* master = botAI->GetMaster();
-    if (master && !master->IsPvP() && !master->IsFFAPvP())
-        return REFUSAL_MASTER;
-
-    return nullptr;
+    return EnemyRefusal(botAI, bot, unit);
 }
 
 Unit* EnemyPlayerValue::Calculate()
@@ -111,7 +116,8 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& [guid, combatRef] : bot->GetCombatManager().GetPvPCombatRefs())
     {
         Unit* pTarget = combatRef->GetOther(bot);
-        if (IsUnavailableCombatTarget(bot, pTarget))
+        // World PvP (WP6): not in a fight the bot retreated from, nor an enemy whose chase just ended
+        if (IsUnavailableCombatTarget(bot, pTarget) || WorldPvp::LeftAlone(botAI, pTarget))
             continue;
         if (pTarget == pVictim || !pTarget->IsPlayer() ||
             !(bot->InBattleground() ? bot->CanSeeOrDetect(pTarget) : pTarget->CanSeeOrDetect(bot)) ||
@@ -137,10 +143,11 @@ Unit* EnemyPlayerValue::Calculate()
         return *targets.begin();
     }
 
-    // World PvP (WP5): the target in the fight the rules let this bot join
+    // World PvP (WP5): the target in the fight the rules let this bot join, when today's checks of step 2 pass on it
     if (Player* const joined = WorldPvp::JoinTarget(botAI))
         if (joined != pVictim && !IsUnavailableCombatTarget(bot, joined) && !exclusions.count(joined->GetGUID()) &&
-            bot->IsWithinDist(joined, VISIBILITY_DISTANCE_NORMAL))
+            bot->IsWithinDist(joined, VISIBILITY_DISTANCE_NORMAL) && !EnemyRefusal(botAI, bot, joined) &&
+            bot->IsWithinLOSInMap(joined) && std::fabs(bot->GetPositionZ() - joined->GetPositionZ()) < 30.0f)
             return joined;
 
     // 2. Find enemy player in range. A bot that starts fights by the rules and cannot start one now skips it; the

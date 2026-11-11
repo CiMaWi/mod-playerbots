@@ -32,6 +32,7 @@
 #include "StuckTriggers.h"
 #include "TravelTriggers.h"
 #include "WaitForAttackTriggers.h"
+#include "WorldPvpStrategy.h"
 
 class PlayerbotAI;
 
@@ -113,6 +114,7 @@ public:
         creators["melee on me"] = &TriggerContext::melee_on_me;
         creators["prep drink"] = &TriggerContext::prep_drink;
         creators["safe to drink"] = &TriggerContext::safe_to_drink;
+        creators["world pvp retreat"] = &TriggerContext::world_pvp_retreat;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
         creators["enemy player near"] = &TriggerContext::enemy_player_near;
 
@@ -384,6 +386,7 @@ private:
     static Trigger* melee_on_me(PlayerbotAI* botAI) { return new MeleeOnMeTrigger(botAI); }
     static Trigger* prep_drink(PlayerbotAI* botAI) { return new PrepDrinkTrigger(botAI); }
     static Trigger* safe_to_drink(PlayerbotAI* botAI) { return new SafeToDrinkTrigger(botAI); }
+    static Trigger* world_pvp_retreat(PlayerbotAI* botAI) { return new WorldPvpRetreatTrigger(botAI); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }
     static Trigger* enemy_player_near(PlayerbotAI* botAI) { return new EnemyPlayerNear(botAI); }
     static Trigger* wsg_support_threat(PlayerbotAI* botAI) { return new WsgSupportThreat(botAI); }

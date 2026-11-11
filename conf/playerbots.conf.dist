@@ -2217,8 +2217,8 @@ Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 # within its radius (FightRadiusYards at the start, following the participants up to FightRadiusMaxYards), holds at
 # most MaxParticipants, a map at most MaxActiveFights; one still in PvP combat after MaxFightMinutes ends as
 # stalemate_cap. A fight ends as combat_over once none of its participants has been in PvP combat for
-# EndGraceSeconds (combat within the grace continues the same fight; its length runs to the last PvP combat). The
-# other world PvP numbers are declared in src/Ai/World/Pvp/WorldPvpConfig.h and come here with the steps that read
+# EndGraceSeconds (combat within the grace continues the same fight; its length runs to the last PvP combat; the
+# rules' ends below come first). The other world PvP numbers are declared in src/Ai/World/Pvp/WorldPvpConfig.h and come here with the steps that read
 # them. (Ranges: MeetingMemorySeconds 0-86400; RecentEnemies 1-32; MaxActiveFights 1-1000; MaxParticipants 2-1000;
 # FightRadiusYards and FightRadiusMaxYards 1-2000; MaxFightMinutes 1-1440; EndGraceSeconds 0-600; CalmMinutes
 # 0-1440.) Defaults: 600, 16, 32, 40, 40, 150, 30, 10, 15
@@ -2273,15 +2273,15 @@ Playerbots.WorldPvp.Colour.OrangeCareful = 0
 Playerbots.WorldPvp.JoinYards = 60
 
 # The shape weights of the fight rules (src/Ai/World/Pvp/FightRules.h), read now so lab nights can tune them (the
-# start uses OddsCaution, joining the Join weights; retreat comes with WP6). OddsCaution: a bot needs its
+# start uses OddsCaution, joining the Join weights, the retreat the Retreat weights). OddsCaution: a bot needs its
 # side's share of the strength it sees to be 0.5 + OddsCaution x its caution (-1..+1) for its full start chance.
 # A bystander joins a fight with Join.Base x (1 + Join.Aggression x aggression) x (1 + Join.Helpfulness x
 # helpfulness, when its side is losing or a player of its faction is the target) x (1 - Join.Goal x the value of
-# its current goal, 0..1); bad odds lower it by caution. A participant retreats below 30 % x (1 +
-# Retreat.CautionHealth x caution) health while its side's share is below 0.5 + Retreat.CautionOdds x caution,
-# never while its side is ahead. A value out of range keeps the default. (Ranges: OddsCaution 0-0.5; the Join
-# weights 0-1; Retreat.CautionHealth 0-1; Retreat.CautionOdds 0-0.5.) Defaults: 0.12, 0.4, 0.75, 0.75, 0.75, 0.5,
-# 0.1
+# its current goal, 0..1); bad odds lower it by caution. A participant retreats (Ending a fight, below) when its
+# health is below Retreat.HealthPercent x (1 + Retreat.CautionHealth x caution) while its side's share of the
+# strength it sees is below Retreat.Odds + Retreat.CautionOdds x caution, never above 0.5 (never while its side is
+# ahead). A value out of range keeps the default. (Ranges: OddsCaution 0-0.5; the Join weights 0-1;
+# Retreat.CautionHealth 0-1; Retreat.CautionOdds 0-0.5.) Defaults: 0.12, 0.4, 0.75, 0.75, 0.75, 0.5, 0.1
 Playerbots.WorldPvp.OddsCaution = 0.12
 Playerbots.WorldPvp.Join.Base = 0.4
 Playerbots.WorldPvp.Join.Aggression = 0.75
@@ -2289,6 +2289,26 @@ Playerbots.WorldPvp.Join.Helpfulness = 0.75
 Playerbots.WorldPvp.Join.Goal = 0.75
 Playerbots.WorldPvp.Retreat.CautionHealth = 0.5
 Playerbots.WorldPvp.Retreat.CautionOdds = 0.1
+
+# Ending a fight (persistent bots in the open world). A participant that starts fights by the rules retreats when
+# its health is low and its side is losing by what it sees (the retreat lines above, Retreat.HealthPercent and
+# Retreat.Odds): it drops its target, moves away from the enemies for 15 s and does not rejoin that fight (it still
+# defends itself). A winner chasing a retreated enemy stops after ChaseSeconds or ChaseYards beyond the fight's
+# radius, both x (1 + 0.5 x aggression - 0.5 x courtesy), and leaves it alone for 30 s unless it attacks. A fight
+# ends wiped as soon as one side has nobody on the map, alive and not retreated (a retreated participant still in
+# PvP combat counts: the chase is part of the fight); as timeout after NoHitSeconds without a hit between the sides
+# (its length to that hit); as stalemate after StalemateSeconds; then the bots still in PvP combat disengage (they
+# step away for 15 s). No bot starts a fight within CalmYards of where a fight ended in the last CalmMinutes (from
+# its own place; joining and self-defence still happen there). (Ranges: Retreat.HealthPercent 1-100; Retreat.Odds
+# 0-0.5; ChaseSeconds 0-600; ChaseYards 0-2000; NoHitSeconds 1-600; StalemateSeconds 1-86400; CalmYards 0-2000.)
+# Defaults: 30, 0.5, 15, 40, 30, 300, 200
+Playerbots.WorldPvp.Retreat.HealthPercent = 30
+Playerbots.WorldPvp.Retreat.Odds = 0.5
+Playerbots.WorldPvp.ChaseSeconds = 15
+Playerbots.WorldPvp.ChaseYards = 40
+Playerbots.WorldPvp.NoHitSeconds = 30
+Playerbots.WorldPvp.StalemateSeconds = 300
+Playerbots.WorldPvp.CalmYards = 200
 
 # The lab fixtures `.playerbots fight ready <bot>` (its next chance starts a fight when the hard rules pass) and
 # `.playerbots fight meet <bot> <enemy bot>` (places the enemy beside the bot, PvP flagged, without an attack): a

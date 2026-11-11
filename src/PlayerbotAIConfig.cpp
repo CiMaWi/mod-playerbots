@@ -1287,6 +1287,13 @@ bool PlayerbotAIConfig::Initialize()
         pvpRange("Join.Goal", WorldPvp.JoinGoal, 0.0f, 1.0f);
         pvpRange("Retreat.CautionHealth", WorldPvp.RetreatCautionHealth, 0.0f, 1.0f);
         pvpRange("Retreat.CautionOdds", WorldPvp.RetreatCautionOdds, 0.0f, 0.5f);
+        pvpNumber("Retreat.HealthPercent", WorldPvp.RetreatHealthPercent, 1, 100);
+        pvpRange("Retreat.Odds", WorldPvp.RetreatOdds, 0.0f, 0.5f);
+        pvpNumber("ChaseSeconds", WorldPvp.ChaseSeconds, 0, MaxGraceSeconds);
+        pvpNumber("ChaseYards", WorldPvp.ChaseYards, 0, MaxRadiusYards);
+        pvpNumber("NoHitSeconds", WorldPvp.NoHitSeconds, 1, MaxGraceSeconds);
+        pvpNumber("StalemateSeconds", WorldPvp.StalemateSeconds, 1, DAY);
+        pvpNumber("CalmYards", WorldPvp.CalmYards, 0, MaxRadiusYards);
     }
 
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults

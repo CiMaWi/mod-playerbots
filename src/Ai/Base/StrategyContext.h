@@ -63,6 +63,7 @@
 #include "UsePotionsStrategy.h"
 #include "WaitForAttackStrategy.h"
 #include "WorldPacketHandlerStrategy.h"
+#include "WorldPvpStrategy.h"
 
 class StrategyContext : public NamedObjectContext<Strategy>
 {
@@ -100,6 +101,7 @@ public:
         creators["tactic pillar"] = &StrategyContext::tactic_pillar;
         creators["tactic kite"] = &StrategyContext::tactic_kite;
         creators["tactic drink"] = &StrategyContext::tactic_drink;
+        creators["world pvp"] = &StrategyContext::world_pvp;
         creators["pvp trinket"] = &StrategyContext::pvp_trinket;
         creators["tactic dispel"] = &StrategyContext::tactic_dispel;
         creators["threat"] = &StrategyContext::threat;
@@ -177,6 +179,7 @@ private:
     static Strategy* tactic_pillar(PlayerbotAI* botAI) { return new TacticPillarStrategy(botAI); }
     static Strategy* tactic_kite(PlayerbotAI* botAI) { return new TacticKiteStrategy(botAI); }
     static Strategy* tactic_drink(PlayerbotAI* botAI) { return new TacticDrinkStrategy(botAI); }
+    static Strategy* world_pvp(PlayerbotAI* botAI) { return new WorldPvpStrategy(botAI); }
     static Strategy* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketStrategy(botAI); }
     static Strategy* tactic_dispel(PlayerbotAI* botAI) { return new TacticDispelStrategy(botAI); }
     static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }

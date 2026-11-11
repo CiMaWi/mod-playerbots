@@ -13,9 +13,13 @@
 // resurrections; the nearest graveyard. Joining (WP5): the waiting refusals (dead, in another fight, unseen, too far,
 // no enemy in sight) and the kept answers (not own side, all red, roll), the always-joins (defence, group, master)
 // and the followers that join only them, the chance's shape, grey joinable and red excluded, the join target's
-// freshness, the book's once-per-fight answers (bounded) and the group joiner's word.
+// freshness, the book's once-per-fight answers (bounded) and the group joiner's word. Ending (WP6): a won roll is not
+// lost while no enemy is in sight; the retreat's inputs and state, the chase over by time and by distance
+// (aggression longer, courtesy shorter) and the leave-alone time, the calm-area cache (distance, time) and the
+// ended ring's order; a joiner's reason to pick again.
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <initializer_list>
 #include <iostream>
 #include <string>
@@ -518,8 +522,11 @@ void CheckJoinBook()
     Check(!book.NoteDecided(fightId + 99, 50), "no answer for a fight that is gone");
     for (uint64_t guid = 51; book.Active().front().decidedCount < MAX_DECIDED; ++guid)
         book.NoteDecided(fightId, guid);
-    Check(!book.NoteDecided(fightId, 999) && book.RefusedDecisions() == 1 && book.NoteDecided(fightId, 50),
-          "a full decided list takes no more answers (counted)");
+    Check(!book.NoteDecided(fightId, 999) && book.RefusedDecisions() == 0 && book.NoteDecided(fightId, 50),
+          "a full decided list takes no more answers");
+    book.CountRefusedDecision(fightId);
+    Check(book.RefusedDecisions() == 1 && book.Active().front().refusedDecisions == 1,
+          "a bystander beyond a full list is counted for the book and the fight");
 
     Combatant member;
     member.guid = 3;
@@ -536,6 +543,114 @@ void CheckJoinBook()
     chance.guid = 5;
     note = book.OnCombat(chance, horde, now + SECOND);
     Check(note.joinCount == 1 && note.joins[0].cameIn == CameIn::Joined, "a chance joiner: joined");
+}
+
+void CheckJoinSureRoll()
+{
+    FightMemory const solo = Ready(LOGIN + HOUR);
+    std::vector<JoinEnemy> hidden = Enemies({Colour::Yellow});
+    hidden[0].visible = false;
+    JoinAnswer answer = AnswerJoin(Bystander(), hidden, solo, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.refusal == Refusal::Unseen && !answer.decided,
+          "no enemy in sight: the bystander waits before rolling (a bad roll is not kept)");
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.join && answer.target == 100, "once an enemy is in sight the roll can still join");
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), solo, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.refusal == Refusal::Roll && answer.decided, "with an enemy in sight a lost roll is kept");
+    Check(JoinWhyOf(CameIn::Group) == JoinWhy::Group && JoinWhyOf(CameIn::Master) == JoinWhy::Master &&
+              JoinWhyOf(CameIn::Joined) == JoinWhy::Chance,
+          "a joiner picks again for the reason it came in");
+}
+
+void CheckRetreat()
+{
+    Check(ShouldRetreat(0.2f, OddsShare(1.0f, 3.0f), 0.0f, VALUES), "low health, losing: retreat");
+    Check(!ShouldRetreat(0.2f, OddsShare(3.0f, 1.0f), 0.0f, VALUES), "low health, ahead: no retreat");
+    Check(!ShouldRetreat(0.5f, OddsShare(1.0f, 3.0f), 0.0f, VALUES), "losing at half health: no retreat");
+    Check(ShouldRetreat(0.4f, OddsShare(1.0f, 3.0f), 1.0f, VALUES) &&
+              !ShouldRetreat(0.4f, OddsShare(1.0f, 3.0f), -1.0f, VALUES),
+          "a careful bot retreats earlier than a daring one");
+
+    uint32_t const now = LOGIN + HOUR;
+    FightMemory memory = Ready(now);
+    memory.fightId = FIGHT;
+    memory.startGuid = ENEMY;
+    memory.joinGuid = ENEMY;
+    StartRetreat(memory, FIGHT, false, 10.0f, 20.0f, now);
+    Check(Retreating(memory, now + RETREAT_MS - 1) && !Retreating(memory, now + RETREAT_MS),
+          "a retreat lasts RETREAT_MS");
+    Check(!memory.disengaging && memory.retreatX == 10.0f && memory.retreatY == 20.0f && !memory.startGuid &&
+              !memory.joinGuid,
+          "a retreat drops the picked and joined targets and keeps where the threat is");
+    Check(RetreatedFromFight(memory), "the bot is in the fight it retreated from");
+    memory.fightId = 0;
+    Check(!RetreatedFromFight(memory), "once that fight ended it is not");
+    StartRetreat(memory, FIGHT, true, 0.0f, 0.0f, now);
+    Check(memory.disengaging && Retreating(memory, now), "a disengage is a retreat that notes no combat");
+}
+
+void CheckChase()
+{
+    uint32_t const now = LOGIN + HOUR;
+    ChaseLimit const limit = ChaseLimitFor(0.0f, 0.0f, VALUES);
+    Check(limit.ms == 15 * SECOND && limit.yards == 40.0f, "the plain chase: 15 s, 40 yd beyond the fight");
+    Check(ChaseLimitFor(1.0f, 0.0f, VALUES).ms > limit.ms && ChaseLimitFor(0.0f, 1.0f, VALUES).ms < limit.ms,
+          "aggression lengthens the chase, courtesy shortens it");
+
+    FightMemory memory = Ready(now);
+    NoteChase(memory, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    Check(!CheckChase(memory, ENEMY + 1, 0.0f, 0.0f, now + 20 * SECOND, limit), "another target is no chase");
+    NoteChase(memory, ENEMY, 50.0f, 50.0f, 40.0f, now + 5 * SECOND);
+    Check(memory.chaseStartMs == now && memory.chaseX == 0.0f, "a running chase is not restarted");
+    Check(!CheckChase(memory, ENEMY, 70.0f, 0.0f, now + limit.ms - 1, limit), "inside the limits the chase goes on");
+    Check(CheckChase(memory, ENEMY, 70.0f, 0.0f, now + limit.ms, limit) && memory.chaseOver,
+          "the chase is over by time");
+    Check(ChaseLeftAlone(memory, ENEMY, now + limit.ms + LEFT_ALONE_MS - 1) &&
+              !ChaseLeftAlone(memory, ENEMY, now + limit.ms + LEFT_ALONE_MS),
+          "the winner leaves it alone for LEFT_ALONE_MS");
+    NoteChase(memory, ENEMY, 0.0f, 0.0f, 40.0f, now + limit.ms + SECOND);
+    Check(memory.chaseOver, "no new chase of it while left alone");
+
+    FightMemory far = Ready(now);
+    NoteChase(far, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    Check(!CheckChase(far, ENEMY, 79.0f, 0.0f, now + SECOND, limit), "39 yd beyond the fight: on");
+    Check(CheckChase(far, ENEMY, 80.0f, 0.0f, now + SECOND, limit), "40 yd beyond the fight: over by distance");
+
+    FightMemory daring = Ready(now);
+    NoteChase(daring, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    Check(!CheckChase(daring, ENEMY, 0.0f, 0.0f, now + limit.ms, ChaseLimitFor(1.0f, 0.0f, VALUES)),
+          "an aggressive winner chases longer");
+
+    FightMemory stale = Ready(now);
+    NoteChase(stale, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    Check(!CheckChase(stale, ENEMY, 0.0f, 0.0f, now + limit.ms + LEFT_ALONE_MS, limit) && !stale.chaseGuid,
+          "a chase not looked at for its limit and the leave-alone time is forgotten");
+}
+
+void CheckCalm()
+{
+    uint32_t const now = LOGIN + HOUR;
+    FightMemory memory = Ready(now);
+    Check(CalmDue(memory, 0.0f, 0.0f, now), "an unknown calm answer is due");
+    NoteCalm(memory, true, 0.0f, 0.0f, now);
+    Check(!CalmDue(memory, 10.0f, 0.0f, now + GATE_REFRESH_MS - 1), "kept a while at about the same place");
+    Check(CalmDue(memory, 0.0f, 0.0f, now + GATE_REFRESH_MS), "asked again after GATE_REFRESH_MS");
+    Check(CalmDue(memory, CALM_MOVE_YARDS + 1.0f, 0.0f, now + SECOND), "asked again after a move");
+    Check(Gate(memory, now) == Refusal::Calm, "a bot in a calm area starts nothing");
+    NoteCalm(memory, false, 0.0f, 0.0f, now);
+    Check(Gate(memory, now) == Refusal::None, "outside it the gate opens");
+
+    std::deque<EndedFight> ring;
+    EndedFight old;
+    old.endMs = now - VALUES.calmMs - SECOND;
+    old.x = 1000.0f;
+    ring.push_back(old);
+    EndedFight fresh;
+    fresh.endMs = now - SECOND;
+    ring.push_back(fresh);
+    Check(InAnyCalmArea(ring, VALUES.calmYards, 0.0f, now, VALUES), "within CalmYards of a fresh end: calm");
+    Check(!InAnyCalmArea(ring, VALUES.calmYards + 1.0f, 0.0f, now, VALUES), "beyond CalmYards: not calm");
+    Check(!InAnyCalmArea(ring, 1000.0f, 0.0f, now, VALUES), "an end older than CalmMinutes: not calm");
 }
 
 int main()
@@ -555,6 +670,10 @@ int main()
     CheckJoinChance();
     CheckJoinMemory();
     CheckJoinBook();
+    CheckJoinSureRoll();
+    CheckRetreat();
+    CheckChase();
+    CheckCalm();
     std::cout << "fight-wiring-selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
 }

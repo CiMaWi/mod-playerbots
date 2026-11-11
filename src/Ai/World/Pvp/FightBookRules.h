@@ -24,6 +24,13 @@
 // resurrections, and a bot's fight memory. Player-free: the glue (FightBook.cpp) turns players into Combatants and
 // owns the threads; tests/fight-book-selftest.cpp proves the rules. A book is read and changed only on its map's
 // update thread, a memory only on its bot's.
+// Its clocks (WP6): lastHitMs is the last tick a participant was in PvP combat, which the core keeps up about 5 s after
+// the last hit; lastSideHitMs the last noted combat between the sides (or a tick with two enemy participants in PvP
+// combat with each other). A fight ends wiped as soon as a side has nobody here, alive and not retreated; combat_over
+// after EndGraceSeconds without PvP combat (length to the last PvP combat, so the 5 s tail is in it, the grace not);
+// timeout after NoHitSeconds without a hit between the sides (length to that hit, tail included), which ends only
+// fights whose participants stay in PvP combat with others; stalemate at StalemateSeconds; stalemate_cap at
+// MaxFightMinutes.
 namespace WorldPvp
 {
 enum class Side : uint8_t
@@ -127,6 +134,10 @@ struct FightParticipant
     uint32_t retreatedMs = 0;
     uint8_t deaths = 0;
     bool inCombat = true;  // at the last tick
+    // The last tick's probe (WP6): on the fight's map, alive, in PvP combat with an enemy participant of the fight
+    bool here = true;
+    bool alive = true;
+    bool sideCombat = false;
     // Where the book last saw it on the fight's map (the end row's place when nobody is left there)
     float x = 0.0f;
     float y = 0.0f;
@@ -155,6 +166,8 @@ struct Fight
     // The bystanders that decided whether to join it, once each (WP5); a full list takes no more
     std::array<uint64_t, MAX_DECIDED> decided{};
     uint32_t decidedCount = 0;
+    // The bystanders beyond a full list, each counted once
+    uint32_t refusedDecisions = 0;
 
     bool HasDecided(uint64_t guid) const
     {
@@ -278,6 +291,22 @@ struct CombatNote
     std::array<JoinNote, 2> joins{};
 };
 
+// A fight's clock (WP6): its age, the time since the last hit between the sides, and the participants per side still in
+// it: here, alive and not retreated (a retreated one counts while it is still in PvP combat: the chase is the fight's)
+struct FightClock
+{
+    uint32_t ageMs = 0;
+    uint32_t sinceHitMs = 0;
+    std::array<uint32_t, SIDE_COUNT> active{};
+};
+
+// The rules' end of a fight (FightRules.h's CheckFightEnd)
+struct FightEndCheck
+{
+    bool ends = false;
+    EndCause cause = EndCause::CombatOver;
+};
+
 class FightBook
 {
 public:
@@ -299,6 +328,8 @@ public:
         {
             aggressorFight->lastHitMs = nowMs;
             otherFight->lastHitMs = nowMs;
+            if (aggressorFight == otherFight)
+                aggressorFight->lastSideHitMs = nowMs;
             note.fightId = aggressorFight->id;
             return note;
         }
@@ -330,6 +361,7 @@ public:
         fight.id = _ids.fetch_add(1, std::memory_order_relaxed) + 1;
         fight.startMs = nowMs;
         fight.lastHitMs = nowMs;
+        fight.lastSideHitMs = nowMs;
         fight.radius = _bounds.radius;
         fight.starter = aggressor.guid;
         fight.target = other.guid;
@@ -353,36 +385,52 @@ public:
     }
 
     // Once a second on the map thread. probe(participant) tells whether the participant is still in PvP combat on
-    // this map (false when gone) and may update its x and y. A fight none of whose participants has been in PvP
-    // combat for the end grace ends as combat_over, its length running to the last PvP combat (combat within the
-    // grace continues it); one older than the safety cap ends as stalemate_cap. Ended fights are moved to `ended`
-    // and kept as calm areas for the calm time.
-    template <typename Probe>
-    void Tick(uint32_t nowMs, Probe&& probe, std::vector<Fight>& ended)
+    // this map (false when gone) and may update its place and its here, alive and sideCombat flags; judge(clock)
+    // gives the rules' end (CheckFightEnd). A fight ends wiped as soon as the judge says so; else as combat_over once
+    // none of its participants has been in PvP combat for the end grace, its length running to the last PvP combat
+    // (combat within the grace continues it); else by the judge's timeout (length to the last hit between the sides)
+    // or stalemate; else as stalemate_cap at the safety cap. Ended fights are moved to `ended` and kept as calm
+    // areas for the calm time.
+    template <typename Probe, typename Judge>
+    void Tick(uint32_t nowMs, Probe&& probe, Judge&& judge, std::vector<Fight>& ended)
     {
         for (size_t index = 0; index < _active.size();)
         {
             Fight& fight = _active[index];
             bool anyInCombat = false;
+            bool sideCombat = false;
             for (FightParticipant& participant : fight.participants)
             {
                 participant.inCombat = probe(participant);
                 anyInCombat = anyInCombat || participant.inCombat;
+                sideCombat = sideCombat || (participant.inCombat && participant.sideCombat);
             }
             if (anyInCombat)
                 fight.lastHitMs = nowMs;
+            if (sideCombat)
+                fight.lastSideHitMs = nowMs;
             Reshape(fight);
 
-            bool const capped = nowMs - fight.startMs >= _bounds.maxFightMs;
+            FightEndCheck const rules = judge(ClockOf(fight, nowMs));
+            bool const wiped = rules.ends && rules.cause == EndCause::Wiped;
             bool const over = !anyInCombat && nowMs - fight.lastHitMs >= _bounds.endGraceMs;
-            if (!over && !capped)
+            bool const capped = nowMs - fight.startMs >= _bounds.maxFightMs;
+            if (!rules.ends && !over && !capped)
             {
                 ++index;
                 continue;
             }
 
-            fight.endMs = over ? fight.lastHitMs : nowMs;
-            fight.cause = over ? EndCause::CombatOver : EndCause::StalemateCap;
+            if (wiped || (!over && rules.ends))
+            {
+                fight.cause = rules.cause;
+                fight.endMs = rules.cause == EndCause::Timeout ? fight.lastSideHitMs : nowMs;
+            }
+            else
+            {
+                fight.endMs = over ? fight.lastHitMs : nowMs;
+                fight.cause = over ? EndCause::CombatOver : EndCause::StalemateCap;
+            }
             // The calm area counts from the close, so the ring stays in closing order
             EndedFight calm;
             calm.id = fight.id;
@@ -403,7 +451,32 @@ public:
             _ended.pop_front();
     }
 
+    // Without the rules' ends: the end grace and the safety cap only
+    template <typename Probe>
+    void Tick(uint32_t nowMs, Probe&& probe, std::vector<Fight>& ended)
+    {
+        Tick(nowMs, std::forward<Probe>(probe), [](FightClock const&) { return FightEndCheck{}; }, ended);
+    }
+
+    static FightClock ClockOf(Fight const& fight, uint32_t nowMs)
+    {
+        FightClock clock;
+        clock.ageMs = nowMs - fight.startMs;
+        clock.sinceHitMs = nowMs - fight.lastSideHitMs;
+        for (FightParticipant const& participant : fight.participants)
+            if (participant.here && participant.alive && (!participant.retreated || participant.inCombat))
+                ++clock.active[static_cast<size_t>(participant.side)];
+        return clock;
+    }
+
     Fight const* FindFightOf(uint64_t guid) const { return const_cast<FightBook*>(this)->FightOf(guid); }
+    Fight const* FindFight(uint32_t fightId) const
+    {
+        for (Fight const& fight : _active)
+            if (fight.id == fightId)
+                return &fight;
+        return nullptr;
+    }
     std::vector<Fight> const& Active() const { return _active; }
     std::deque<EndedFight> const& Ended() const { return _ended; }
     std::vector<Resurrection> const& Resurrections() const { return _resurrections; }
@@ -428,19 +501,37 @@ public:
         return NEVER_MS;
     }
     // A bystander of active fight `fightId` gave its join answer (WP5); false when the fight is gone or its decided
-    // list is full (counted: that fight takes no more answers)
+    // list is full (that fight takes no more answers; the glue counts the bystander once, CountRefusedDecision)
     bool NoteDecided(uint32_t fightId, uint64_t guid)
     {
         for (Fight& fight : _active)
-        {
-            if (fight.id != fightId)
-                continue;
-            if (fight.NoteDecided(guid))
-                return true;
-            ++_refusedDecisions;
-            return false;
-        }
+            if (fight.id == fightId)
+                return fight.NoteDecided(guid);
         return false;
+    }
+
+    void CountRefusedDecision(uint32_t fightId)
+    {
+        ++_refusedDecisions;
+        for (Fight& fight : _active)
+            if (fight.id == fightId)
+                ++fight.refusedDecisions;
+    }
+
+    // A participant retreats from its fight (WP6): from now on it counts for its side only while it is still in PvP
+    // combat. The fight's id, 0 when the guid is in none
+    uint32_t MarkRetreated(uint64_t guid, uint32_t nowMs)
+    {
+        Fight* const fight = FightOf(guid);
+        FightParticipant* const participant = fight ? fight->Find(guid) : nullptr;
+        if (!participant)
+            return 0;
+        if (!participant->retreated)
+        {
+            participant->retreated = true;
+            participant->retreatedMs = nowMs;
+        }
+        return fight->id;
     }
 
     uint32_t RefusedFights() const { return _refusedFights; }
@@ -475,6 +566,7 @@ private:
     void Join(Fight& fight, Combatant const& combatant, CameIn cameIn, uint32_t nowMs, CombatNote& note)
     {
         fight.lastHitMs = nowMs;
+        fight.lastSideHitMs = nowMs;
         note.fightId = fight.id;
         note.reason = fight.reason;
         if (fight.Find(combatant.guid))
@@ -653,14 +745,26 @@ public:
     uint32_t joinMs = 0;
     CameIn joinCameIn = CameIn::Joined;
 
-    // WP6: the retreat, the chase (its target, start and where it began) and the calm-area answer at a place
+    // A full fight this bystander was counted for once (WP5: the fight's refused answers)
+    uint32_t refusedFightId = 0;
+
+    // WP6: the retreat (from which fight, since and until when, away from where the threat is; a disengage is a
+    // timeout's or stalemate's end, not a retreat by the rules), the chase of a retreated enemy (its target, start,
+    // the fight's centre and radius then; once over the bot leaves it alone for a while) and the calm-area answer
     bool retreating = false;
+    bool disengaging = false;
+    uint32_t retreatStartMs = 0;
     uint32_t retreatUntilMs = 0;
     uint32_t retreatFightId = 0;
+    float retreatX = 0.0f;
+    float retreatY = 0.0f;
     uint64_t chaseGuid = 0;
     uint32_t chaseStartMs = 0;
     float chaseX = 0.0f;
     float chaseY = 0.0f;
+    float chaseRadius = 0.0f;
+    bool chaseOver = false;
+    uint32_t chaseOverMs = 0;
     bool calmKnown = false;
     bool calm = false;
     uint32_t calmCheckMs = 0;

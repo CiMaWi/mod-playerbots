@@ -5,7 +5,9 @@
  */
 
 #include "InvalidTargetValue.h"
+
 #include "AttackersValue.h"
+#include "FightBook.h"
 #include "Playerbots.h"
 #include "PvpValues.h"
 #include "Unit.h"
@@ -14,6 +16,10 @@ bool InvalidTargetValue::Calculate()
 {
     Unit* target = AI_VALUE(Unit*, qualifier);
     if (IsUnavailableCombatTarget(bot, target))
+        return true;
+
+    // World PvP (WP6): a winner stops chasing a retreated enemy at its chase limit
+    if (target && target->IsPlayer() && qualifier == "current target" && WorldPvp::ChaseEnds(botAI, target))
         return true;
 
     Unit* enemy = AI_VALUE(Unit*, "enemy player target");

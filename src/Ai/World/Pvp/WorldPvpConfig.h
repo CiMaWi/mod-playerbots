@@ -72,11 +72,11 @@ struct WorldPvpConfig
     // A player resurrected this recently, or within GraveyardYards of a graveyard or spirit healer, is left alone
     uint32_t ResurrectedSeconds = 300;
     uint32_t GraveyardYards = 80;
-    // No new fight within CalmYards of a fight that ended in the last CalmMinutes (read now: the ended fights' ring)
+    // No new fight within CalmYards of a fight that ended in the last CalmMinutes (read: the bot's own place)
     uint32_t CalmYards = 200;
     uint32_t CalmMinutes = 15;
 
-    // --- Joining, retreating and ending (WP5/WP6 read) ---
+    // --- Joining, retreating and ending (read) ---
     // A bystander within JoinYards of a fight's nearest participant may join it (read)
     uint32_t JoinYards = 60;
     // A bystander's join chance (read: the nights tune them): JoinBase x (1 + JoinAggression x aggression) x (1 +
@@ -87,8 +87,7 @@ struct WorldPvpConfig
     float JoinHelpfulness = 0.75f;
     float JoinGoal = 0.75f;
     // Retreat below RetreatHealthPercent x (1 + RetreatCautionHealth x caution) health while its side's odds are
-    // below RetreatOdds + RetreatCautionOdds x caution, never above even odds (read: the cautions, the nights tune
-    // them)
+    // below RetreatOdds + RetreatCautionOdds x caution, never above even odds (read: the nights tune them)
     uint32_t RetreatHealthPercent = 30;
     float RetreatCautionHealth = 0.5f;
     float RetreatOdds = 0.5f;
