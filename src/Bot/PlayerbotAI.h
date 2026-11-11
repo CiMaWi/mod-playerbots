@@ -76,6 +76,11 @@ namespace WorldLog
 struct BotLog;
 }
 
+namespace WorldPvp
+{
+class FightMemory;
+}
+
 enum StrategyType : uint32;
 
 enum HealingItemId
@@ -859,6 +864,8 @@ public:
     NewRpgInfo rpgInfo;
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
+    // World PvP's fight memory (FightBookRules.h), lazily
+    std::unique_ptr<WorldPvp::FightMemory> fightMemory;
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);
     void RecordQuestCompleted(uint32 questId);
