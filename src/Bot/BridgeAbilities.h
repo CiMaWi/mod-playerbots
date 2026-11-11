@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -124,6 +125,11 @@ std::span<AbilityRow const> AbilityRows();
 
 // Regroup, Pull, AssignRole and DungeonClear: wire verbs with no safe playerbots effect; Execute answers Unavailable.
 bool IsUnavailable(Intent operation);
+
+// The wire's verb of an operation: its row's name, else the word the four without a row have on the wire; empty for
+// a value outside the enum. FindIntent is the inverse: a row by name, then the four; none for any other word.
+char const* IntentWord(Intent operation);
+std::optional<Intent> FindIntent(std::string_view word);
 
 // The refusals every row may give, in check order (Battleground, Travelling, Dead).
 std::span<Refusal const> CommonRefusals();
@@ -277,8 +283,10 @@ struct AbilityData
 // The acts in table order, then the topics in table order. Allocates: call it on a request, not per tick.
 std::vector<AbilityData> Catalogue();
 
-// The canonical text of a catalogue: a format line, then per row one line per part in AbilityData's order, the
-// fields tab-separated and enums as words. CatalogueHash is its FNV-1a 64 (TextHash).
+// The canonical text of a catalogue: the format line (CatalogueVersion), the steps line (MaxSteps, the most steps one
+// order takes), then per row one line per part in AbilityData's order, the fields tab-separated and enums as words.
+// CatalogueHash is its FNV-1a 64 (TextHash). Bump CatalogueVersion when the layout changes.
+constexpr unsigned CatalogueVersion = 1;
 std::string CatalogueText(std::vector<AbilityData> const& catalogue);
 uint64_t CatalogueHash(std::vector<AbilityData> const& catalogue);
 uint64_t TextHash(std::string_view text);

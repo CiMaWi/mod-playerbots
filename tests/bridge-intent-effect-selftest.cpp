@@ -2072,6 +2072,33 @@ int main()
         }
         Check(PlayerbotBridge::RefusalWords(static_cast<Refusal>(99)).Code == Refusal::None,
               "an unknown refusal reads as none");
+        // LC3: every operation has its own wire word, its row's name or one of the four without a row, and the word
+        // finds it again; the module parses the wire's verbs with these.
+        std::set<std::string> verbs;
+        bool verbsRoundTrip = true;
+        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        {
+            Intent const operation = static_cast<Intent>(value);
+            std::string const word = PlayerbotBridge::IntentWord(operation);
+            AbilityRow const* row = PlayerbotBridge::FindRow(operation);
+            verbsRoundTrip = verbsRoundTrip && !word.empty() && verbs.insert(word).second &&
+                             PlayerbotBridge::FindIntent(word) == operation &&
+                             (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
+        }
+        Check(verbsRoundTrip && verbs.size() == 22, "every operation has its own wire word, and the word finds it");
+        // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
+        char const* const wireVerbs[] = {
+            "follow",        "stay",          "flee",        "regroup",    "attack_own_target", "pull",
+            "mark",          "focus_healing", "assign_role", "save_mana",  "formation",         "position",
+            "dungeon_clear", "go_to",         "quest",       "errands",    "set_hearth",        "grind_here",
+            "gather_here",   "meet_at",       "pause_plan",  "resume_plan"};
+        bool oldWords = std::size(wireVerbs) == verbs.size();
+        for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
+            oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
+        Check(oldWords && !*PlayerbotBridge::IntentWord(static_cast<Intent>(22)) && !PlayerbotBridge::FindIntent("") &&
+                  !PlayerbotBridge::FindIntent("Follow") && !PlayerbotBridge::FindIntent("follow ") &&
+                  !PlayerbotBridge::FindIntent("inventory") && !PlayerbotBridge::FindIntent("regroups"),
+              "every operation keeps its old wire word; no other word, and no topic, is a verb");
         Check(PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Mark), OrderField::Icon) &&
                   PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
                   !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
@@ -2175,11 +2202,13 @@ int main()
         }
         Check(fieldsPlain, "no catalogue field holds a tab or line break, nor a choice a comma");
         std::size_t const lines = static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
-        std::size_t expectedLines = 1;
+        std::size_t expectedLines = 2;
         for (AbilityData const& entry : catalogue)
             expectedLines += 6 + entry.Params.size() + entry.Refusals.size();
         auto const holds = [&text](char const* part) { return text.find(part) != std::string::npos; };
-        Check(text.rfind("catalogue\t1\n", 0) == 0 && holds("\nact\tfollow\t") && holds("\ntopic\tplaces\t") &&
+        // LC3: the steps line follows the format line, so the hash covers the most steps an order takes.
+        Check(text.rfind("catalogue\t1\nsteps\t3\nact\tfollow\t", 0) == 0 && PlayerbotBridge::CatalogueVersion == 1 &&
+                  PlayerbotBridge::MaxSteps == 3 && holds("\ntopic\tplaces\t") &&
                   holds("\nparam\ticon\tchoice\tThe raid icon to put on it.\tstar,circle,") &&
                   holds("\nrefusal\tnot_with_you\tWe are not travelling together.\n") &&
                   holds("\neffect\tmana_save\n") && holds("\ndone\tgoal_ends\n") &&

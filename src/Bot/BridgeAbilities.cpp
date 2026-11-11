@@ -396,7 +396,16 @@ constexpr Refusal PlanRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld};
 
 constexpr Refusal Common[] = {Refusal::Battleground, Refusal::Travelling, Refusal::Dead};
 
-constexpr Intent NoEffect[] = {Intent::Regroup, Intent::Pull, Intent::AssignRole, Intent::DungeonClear};
+// The verbs without a row, with their words on the wire.
+struct NoEffectVerb
+{
+    Intent Operation;
+    char const* Word;
+};
+constexpr NoEffectVerb NoEffect[] = {{Intent::Regroup, "regroup"},
+                                     {Intent::Pull, "pull"},
+                                     {Intent::AssignRole, "assign_role"},
+                                     {Intent::DungeonClear, "dungeon_clear"}};
 
 // Indexed by Refusal; the words and sentences the bridge wire already uses.
 constexpr RefusalText RefusalTexts[] = {
@@ -714,7 +723,32 @@ std::span<AbilityRow const> AbilityRows() { return Rows; }
 
 bool IsUnavailable(Intent operation)
 {
-    return std::find(std::begin(NoEffect), std::end(NoEffect), operation) != std::end(NoEffect);
+    return std::any_of(std::begin(NoEffect), std::end(NoEffect),
+                       [operation](NoEffectVerb const& verb) { return verb.Operation == operation; });
+}
+
+char const* IntentWord(Intent operation)
+{
+    if (AbilityRow const* row = FindRow(operation))
+        return row->Name;
+
+    for (NoEffectVerb const& verb : NoEffect)
+        if (verb.Operation == operation)
+            return verb.Word;
+
+    return "";
+}
+
+std::optional<Intent> FindIntent(std::string_view word)
+{
+    if (AbilityRow const* row = FindRow(word))
+        return row->Operation;
+
+    for (NoEffectVerb const& verb : NoEffect)
+        if (word == verb.Word)
+            return verb.Operation;
+
+    return std::nullopt;
 }
 
 std::span<Refusal const> CommonRefusals() { return Common; }
@@ -739,8 +773,6 @@ Part LastingPart(Intent operation)
 
 namespace
 {
-// Bump when CatalogueText's layout changes.
-constexpr char const* CatalogueFormat = "catalogue\t1\n";
 constexpr uint64_t FnvOffset = 14695981039346656037ull;
 constexpr uint64_t FnvPrime = 1099511628211ull;
 
@@ -821,7 +853,9 @@ std::vector<AbilityData> Catalogue()
 
 std::string CatalogueText(std::vector<AbilityData> const& catalogue)
 {
-    std::string text = CatalogueFormat;
+    std::string text;
+    Line(text, {"catalogue", std::to_string(CatalogueVersion)});
+    Line(text, {"steps", std::to_string(MaxSteps)});
     for (AbilityData const& entry : catalogue)
     {
         Line(text, {KindWord(entry.Kind), entry.Name, entry.Sentence});
