@@ -63,6 +63,9 @@ constexpr float TRANSPORT_ARRIVE_YARDS = 10.0f;    // off the transport this clo
 constexpr float WAIT_RETURN_YARDS = 15.0f;         // waiting further from the dock node, the bot walks back to it
 // PlayerbotAI adds a passenger once a second: a departure without the bot counts as a miss after this
 constexpr std::uint32_t MISS_GRACE_MS = 2500;
+// Riding, one scan may miss the passenger (a cross-map ship's far teleport, that once-a-second check): the bot is off
+// the transport only when this many scans in a row saw it off
+constexpr std::uint8_t OFF_SCANS = 2;
 constexpr std::uint8_t HOP_AFTER_MISSES = 3;  // misses before the one last-resort hop onto the deck (WT.14)
 constexpr std::uint32_t HOP_TRY_MS = 3000;    // the boarding walk's time at a docking before the hop
 constexpr float HOP_MAX_YARDS = 20.0f;  // the hop only crosses the gap: the bot this close to the transport's centre
@@ -375,6 +378,7 @@ struct Trip
     std::uint32_t departedMs{0};
     std::uint8_t misses{0};
     bool hopped{false};
+    std::uint8_t offScans{0};  // Ride, Leave: the scans in a row that saw the bot off the transport
     std::vector<TransportNote> transportNotes;
 };
 
@@ -573,6 +577,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.departedMs = 0;
     trip.misses = 0;
     trip.hopped = false;
+    trip.offScans = 0;
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
@@ -651,6 +656,10 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
     bool const aboard = seen.aboard != 0 && seen.aboard == leg.object;
     if (seen.transport.scanned)
         NoteSight(trip, seen.transport);
+    if (aboard)
+        trip.offScans = 0;
+    else if (riding && seen.transport.scanned)
+        trip.offScans = static_cast<std::uint8_t>(std::min(trip.offScans + 1, 255));
 
     if (!aboard && within(leg.to, TRANSPORT_ARRIVE_YARDS))
     {
@@ -683,6 +692,9 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
     }
     if (riding)
     {
+        // Seen off by fewer than OFF_SCANS scans in a row: no walk off the deck yet
+        if (trip.offScans < OFF_SCANS)
+            return {Act::Wait, leg.to, FailReason::None};
         // Off the transport short of the leg's end: the rest is a walk on the ground
         if (trip.boarding == Boarding::Ride)
             enter(Boarding::Leave);

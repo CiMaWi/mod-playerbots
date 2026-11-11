@@ -765,8 +765,11 @@ void CheckTransport()
     Decision const off = StepLeg(trip, On({1, 1000.0f, 1030.0f, 3.0f}, 700000, SHIP, Sight(SHIP_AT_B, false)));
     Check(off.act == Act::Disembark && Near(off.target, PIER_B) && trip.boarding == Boarding::Leave,
           "transport: docked at the end: walks off");
-    Decision const ashore = StepLeg(trip, On({1, 1000.0f, 1015.0f, 0.0f}, 701000, 0));
-    Check(ashore.act == Act::Walk && Near(ashore.target, PIER_B), "transport: off the deck short of the end: walks on");
+    Check(StepLeg(trip, On({1, 1000.0f, 1018.0f, 0.0f}, 700500, 0, Sight(SHIP_AT_B, false))).act == Act::Wait,
+          "transport: off the deck on one scan: no walk yet");
+    Decision const ashore = StepLeg(trip, On({1, 1000.0f, 1015.0f, 0.0f}, 701000, 0, Sight(SHIP_AT_B, false)));
+    Check(ashore.act == Act::Walk && Near(ashore.target, PIER_B),
+          "transport: off the deck on two scans short of the end: walks on");
     Decision const next = TravelLegs::Advance(trip, On(PIER_B, 702000, 0), NodeAt);
     Check(next.act == Act::Walk && trip.legIdx == 1 && Noted(trip, 2, TransportEvent::Arrived, SHIP, 695) &&
               trip.transportNotes.size() == 3,
@@ -880,11 +883,41 @@ void CheckTransport()
     Trip fell = StartedTrip({ShipLeg()});
     StepLeg(fell, On(DECK, 2000, SHIP));
     StepLeg(fell, On(SEA_1, 3000, SHIP, Sight(SEA_1, true)));
-    Decision const swim = StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 4000, 0));
+    StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 4000, 0, Gone()));
+    Decision const swim = StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 5000, 0, Gone()));
     Check(swim.act == Act::Walk && fell.boarding == Boarding::Leave &&
-              StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 64000, 0)).act == Act::Walk &&
-              StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 64001, 0)).reason == FailReason::Timeout,
+              StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 65000, 0)).act == Act::Walk &&
+              StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 65001, 0)).reason == FailReason::Timeout,
           "transport: off it short of the end: walks, Fail(timeout) after 60 s");
+
+    // At sea one scan may miss the passenger (a cross-map ship's far teleport): no walk off the deck; only two scans
+    // in a row off count
+    Trip blink = StartedTrip({ShipLeg()});
+    StepLeg(blink, On(DECK, 2000, SHIP));
+    StepLeg(blink, On(SEA_0, 3000, SHIP, Sight(SEA_0, true)));
+    bool const heldOnce = StepLeg(blink, On(SEA_1, 4000, 0, Sight(SEA_1, true))).act == Act::Wait &&
+                          StepLeg(blink, On(SEA_1, 4500, 0)).act == Act::Wait && blink.boarding == Boarding::Ride;
+    bool const heldAgain = StepLeg(blink, On(SEA_1, 4800, SHIP)).act == Act::Wait &&
+                           StepLeg(blink, On(SEA_1, 5000, 0, Sight(SEA_1, true))).act == Act::Wait &&
+                           blink.boarding == Boarding::Ride;
+    Check(heldOnce && heldAgain, "transport: off on one scan at sea (also again after aboard): rides on, no walk");
+    Check(StepLeg(blink, On(SEA_1, 6000, 0, Sight(SEA_1, true))).act == Act::Walk && blink.boarding == Boarding::Leave,
+          "transport: off on two scans in a row at sea: off it, walks");
+
+    // Undercity's lower lift doors (20651/20654/20657) are transports whose stops lie 8.1 yd apart in z: the leg ends
+    // at once on the dock node, in either direction, without a wait
+    Point const doorLow{0, 1595.21f, 178.693f, -40.5223f};
+    Point const doorHigh{0, 1595.21f, 178.693f, -32.392f};
+    Leg door = MakeLeg(LegType::Transport, doorLow, doorHigh, {}, 11.667f);
+    door.object = 20654;
+    Trip doorUp = StartedTrip({door});
+    Check(StepLeg(doorUp, On({0, 1599.0f, 180.0f, -40.6f}, 2000, 0)).act == Act::Done,
+          "transport: a door link from the ground: done on reaching its dock node");
+    door.from = doorHigh;
+    door.to = doorLow;
+    Trip doorDown = StartedTrip({door});
+    Check(StepLeg(doorDown, On({0, 1599.0f, 180.0f, -40.6f}, 2000, 0)).act == Act::Done,
+          "transport: a door link from its upper stop: done on the ground below it");
 
     // A missed exit rides the round trip; wrong maps
     Trip stay = StartedTrip({ShipLeg()});
