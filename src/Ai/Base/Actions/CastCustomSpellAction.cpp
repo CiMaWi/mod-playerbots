@@ -156,6 +156,13 @@ bool CastCustomSpellAction::Execute(Event event)
     else
         spellName << "self";
 
+    // A cast through this action (an order, a duel, a disenchant) dismounts first, as the client does for a player: the
+    // core refuses a mounted player's cast (SPELL_FAILED_NOT_MOUNTED) unless the spell allows it. Never on a flight
+    // path or in the air on a flying mount, where a dismount would be a fall (as CastHearth)
+    if (bot->IsMounted() && !bot->IsInFlight() && !bot->IsFlying() &&
+        !spellInfo->HasAttribute(SPELL_ATTR0_ALLOW_WHILE_MOUNTED))
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+
     if (!bot->GetTrader() && !botAI->CanCastSpell(spell, target, true, itemTarget))
     {
         msg << "Cannot cast " << spellName.str();

@@ -1062,9 +1062,6 @@ void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::
         alternatives.Add({"walk_direct", WorldLogFormat::WalkSeconds(yards, bot->GetSpeed(MOVE_RUN))});
     }
     alternatives.Add({"legs", static_cast<float>(legs)});
-    // No route kept within the walk level cap: this one walks past creatures above it (TravelRoute::Search)
-    if (route.overCap)
-        alternatives.Add({"over_cap", 1.0f});
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Route, legs ? chain.View() : "here",
                        data.trip.replans ? "replan" : "search", route.totalSeconds, alternatives, data.tripId);
 }
