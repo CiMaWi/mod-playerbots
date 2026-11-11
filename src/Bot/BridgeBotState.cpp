@@ -14,6 +14,7 @@
 #include "Bag.h"
 #include "BridgeAbilities.h"
 #include "BridgeBotTopics.h"
+#include "BridgeNames.h"
 #include "DBCStores.h"
 #include "Group.h"
 #include "LootObjectStack.h"
@@ -379,5 +380,43 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::stri
     if (items.size() > BotStateTopicMaxItems)
         items.resize(BotStateTopicMaxItems);
     return true;
+}
+
+std::vector<NameCandidate> CarriedItemNames(Player* bot)
+{
+    std::vector<NameCandidate> candidates;
+    auto const add = [&candidates](Item* item)
+    {
+        if (item)
+            candidates.push_back({item->GetTemplate()->Name1, item->GetEntry(), 0.0f});
+    };
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        add(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        add(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                add(bag->GetItemByPos(static_cast<uint8>(slot)));
+    return candidates;
+}
+
+std::vector<NameCandidate> KnownSpellNames(Player* bot)
+{
+    std::vector<NameCandidate> candidates;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active || !known->IsInSpec(bot->GetActiveSpec()))
+            continue;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+        if (!spell || spell->IsPassive() || spell->HasAttribute(SPELL_ATTR0_DO_NOT_DISPLAY) ||
+            spell->SpellFamilyName == SPELLFAMILY_GENERIC || !spell->SpellName[0])
+            continue;
+        SpellInfo const* next = spell->GetNextRankSpell();
+        if (next && bot->HasSpell(next->Id))
+            continue;
+        candidates.push_back({spell->SpellName[0], spellId, 0.0f});
+    }
+    return candidates;
 }
 }  // namespace PlayerbotBridge

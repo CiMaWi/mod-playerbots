@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -88,7 +89,8 @@ enum class Refusal : uint8_t
     NoRoute,       // GoTo, MeetAt: no route from the bot to the place.
     NoSuchQuest,   // Quest: not in the bot's log, or failed.
     NothingHere,   // Errands, SetHearth, GrindHere, GatherHere: nothing to do here.
-    AlreadyThere   // GoTo, MeetAt: the bot is at the place.
+    AlreadyThere,  // GoTo, MeetAt: the bot is at the place.
+    UnknownName    // Attack, mark, focus healing, quest: nothing of that name the bot sees or has in its log.
 };
 
 // Formation only: the wire shapes, mapped to playerbots formations (close -> near, spread -> far, line -> line).
@@ -124,9 +126,24 @@ struct Order
     std::string PlaceName = {};
     // Quest only: the quest id; 0 otherwise.
     uint32_t QuestId = 0;
+    // A unit's or quest's name instead of Target or QuestId (exactly one of the two), at most MaxName characters:
+    // Execute looks it up among what the bot sees or has in its log; empty otherwise. A place name stays in PlaceName.
+    std::string TargetName = {};
+    std::string QuestName = {};
 };
 
 constexpr std::size_t MaxPlaceName = 64;
+constexpr std::size_t MaxName = MaxPlaceName;
+
+// LC.7: the most steps one order holds.
+constexpr std::size_t MaxSteps = 3;
+
+// What one step of an order came to; Why as Execute's why.
+struct StepOutcome
+{
+    Result Outcome = Result::Rejected;
+    Refusal Why = Refusal::None;
+};
 
 // The lasting part of a bot a delivered order changes; None for the one-shot verbs. Follow and Stay change the same
 // strategies and named positions, so they share Movement and a plan ledger keys them as one part.
@@ -216,9 +233,18 @@ private:
 // safety, never who leads the bot: the bot in the world, a bot, not in a battleground, not in flight, alive; the
 // partner online, allowed (PartnerAllowed) and of the bot's team; the captured group still the bot's; then each verb's
 // own rule (the goal verbs': Intent's list). why, when given, receives the reason of a Rejected result and None for
-// every other result.
+// every other result. A unit, quest or place given by name is looked up only after the common and group rules and
+// then passes the same checks as an id. One step of the order below.
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize,
                Refusal* why = nullptr);
+
+// One order of 1 to MaxSteps steps for one bot and partner, run in order as one command: every step's shape and the
+// shared bot, partner, group and visibility distance are checked first, then authorize is called once; each step then
+// re-reads the facts, passes its own checks and writes its event. A step that is not Applied ends the order. The result
+// is Applied when every step applied, else the ending step's. outcomes, when given, receives one entry per step that
+// ran after the admission, in order (empty when the order was refused before it).
+Result Execute(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
+               std::vector<StepOutcome>* outcomes = nullptr);
 
 // Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within VisibilityDistance of
 // the bot, and reached by a complete navmesh path from the bot no longer than twice that radius. The partner plays no

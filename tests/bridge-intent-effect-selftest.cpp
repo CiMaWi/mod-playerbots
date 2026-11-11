@@ -65,6 +65,12 @@ public:
         return result;
     }
 
+    static Result RunSteps(std::vector<Order> const& steps, std::function<bool()> const& authorize,
+                           std::vector<PlayerbotBridge::StepOutcome>* outcomes)
+    {
+        PlayerbotBridge::PostMapJoin phase;
+        return PlayerbotBridge::Execute(phase, std::span<Order const>(steps), authorize, outcomes);
+    }
     static bool Reachable(Order const& order, bool worker = false)
     {
         PlayerbotBridge::PostMapJoin phase;
@@ -140,6 +146,9 @@ struct Fixture
     Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
     int Authorizations = 0;
     Refusal Why = Refusal::None;
+    // LC2: a stepped order's outcomes and its BridgeAct events.
+    std::vector<PlayerbotBridge::StepOutcome> Outcomes;
+    int Events = 0;
 
     Fixture()
     {
@@ -233,6 +242,22 @@ struct Fixture
         if (result == Result::Rejected && Why != Refusal::None)
             seenRefusals[Command.Operation].insert(Why);
 
+        return result;
+    }
+
+    Result RunSteps(std::vector<Order> const& steps)
+    {
+        int const events = bridgeActs;
+        Outcomes.assign(1, {Result::Applied, static_cast<Refusal>(99)});
+        Result const result = OllamaBotRandomChatter::RunSteps(
+            steps,
+            [&]
+            {
+                ++Authorizations;
+                return true;
+            },
+            &Outcomes);
+        Events = bridgeActs - events;
         return result;
     }
 
@@ -1623,6 +1648,353 @@ int main()
                   "a refused admission reaches no planner");
         }
     }
+    // LC2: names for targets. A unit, quest or place given by name is looked up among what the bot perceives or
+    // knows, then passes the same gate as an id (mutants: a name taken without the gate, an unknown name applied,
+    // names looked up before the common rule).
+    {
+        auto const named = [](Fixture& f)
+        {
+            f.Target.Name = "Defias Thug";
+            f.Target.X = 30.0f;
+            f.Other.Name = "Brannoc";
+            f.AI.Values.Npcs.Data = {f.Target.Guid};
+            f.AI.Values.Friends.Data = {f.Other.Guid, f.Human.Guid};
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}, {f.Other.Guid, "Brannoc"}};
+            f.Command.Target = 0;
+            f.Command.TargetName = "defias thug";
+        };
+        {
+            Fixture f;
+            named(f);
+            Check(f.Run() == Result::Applied && f.Party.Marked == f.Target.Guid && f.Party.Icons[6] == f.Target.Guid &&
+                      f.Authorizations == 1,
+                  "a mark by name marks the unit of that name");
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.Operation = Intent::AttackOwnTarget;
+            f.Command.TargetName = "Defias Thug";
+            Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+                  "an attack by name attacks the unit of that name");
+        }
+        {
+            Fixture f;
+            named(f);
+            f.OneShot(Intent::FocusHealing);
+            f.Command.Target = 0;
+            f.Command.TargetName = "BRANNOC";
+            // A group member is found by name without being among the units the bot keeps as values.
+            f.AI.Values.Friends.Data.clear();
+            Check(f.Run() == Result::Applied && f.AI.Values.FocusHeal.Get() == std::list<ObjectGuid>{f.Other.Guid},
+                  "focus healing by name heals the group member of that name first");
+        }
+        for (Intent operation : {Intent::AttackOwnTarget, Intent::Mark, Intent::FocusHealing})
+        {
+            Fixture f;
+            named(f);
+            f.OneShot(operation);
+            f.Command.Target = 0;
+            f.Command.TargetName = "Hogger";
+            f.Refused(Refusal::UnknownName);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Target.Seen = false;
+            f.Refused(Refusal::TargetNotVisible);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.TargetName = "de";
+            f.Refused(Refusal::UnknownName);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.TargetName = std::string(PlayerbotBridge::MaxName, 'a');
+            f.Refused(Refusal::UnknownName);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.TargetName = "Hogger";
+            f.Bot.Alive = false;
+            f.Refused(Refusal::Dead);
+        }
+        {
+            Fixture f;
+            named(f);
+            Ungrouped(f);
+            f.Command.TargetName = "Hogger";
+            f.Refused(Refusal::NotInGroup);
+        }
+        // Two of one name and a nearer part of the name: the nearer of the exact ones; a part when none is exact.
+        for (bool exact : {true, false})
+        {
+            Fixture f;
+            named(f);
+            Unit twin;
+            twin.Guid = ObjectGuid(6);
+            twin.Name = "Defias Thug";
+            twin.X = 10.0f;
+            Unit leader;
+            leader.Guid = ObjectGuid(7);
+            leader.Name = "Defias Thug Leader";
+            leader.X = 1.0f;
+            ObjectAccessor::Units[6] = &twin;
+            ObjectAccessor::Units[7] = &leader;
+            f.AI.Values.Possible.Data = {f.Target.Guid, leader.Guid, twin.Guid};
+            f.Command.TargetName = exact ? "Defias Thug" : "thug";
+            Check(f.Run() == Result::Applied && f.Party.Marked == (exact ? twin.Guid : leader.Guid),
+                  "an exact name beats a nearer part of one, two of one name go to the nearer, else the nearest part");
+        }
+        // A quest by its title, among the bot's log.
+        objectMgr.Quests = {{62, {"The Fargodeep Mine"}}, {40, {"A Fishy Peril"}}};
+        std::vector<std::pair<char const*, uint32_t>> const quests = {
+            {"the fargodeep mine", 62}, {"Fishy", 40}, {"Westfall Stew", 0}, {"The Jasperlode Mine", 0}};
+        for (auto const& [title, quest] : quests)
+        {
+            Fixture f;
+            f.Command.Operation = Intent::Quest;
+            f.Command.Target = 0;
+            f.Command.QuestName = title;
+            f.Bot.QuestLog = {40, 0, 999, 62};
+            bridgeCalls = 0;
+            bridgeAnswer = Planner::GoalApply::BridgeAnswer::Done;
+            bridgeQuest = 99;
+            if (!quest)
+            {
+                f.Refused(Refusal::UnknownName);
+                Check(bridgeCalls == 0, "an unknown quest title reaches no planner");
+                continue;
+            }
+            Check(f.Run() == Result::Applied && bridgeCalls == 1 && bridgeQuest == quest,
+                  "a quest by its title hands the planner the log quest's id");
+        }
+        // A place by name: the known place, on the bot's map before another's, under the planner's name for it; a
+        // literal or an unknown name as given, for the planner's own rule.
+        std::vector<std::pair<char const*, char const*>> const places = {{"Thunder Bluff", "thunderbluff"},
+                                                                         {"ORGRIMMAR", "orgrimmar"},
+                                                                         {"hill", "razorhill"},
+                                                                         {"1.5,2,3,0", "1.5,2,3,0"},
+                                                                         {"Atlantis", "Atlantis"}};
+        for (Intent operation : {Intent::GoTo, Intent::MeetAt})
+            for (auto const& [text, place] : places)
+            {
+                Fixture f;
+                f.Command.Operation = operation;
+                f.Command.Target = 0;
+                f.Command.PlaceName = text;
+                // Beside Sentinel Hill's spot, but on Kalimdor: Razor Hill is the nearer hill.
+                f.Bot.X = -10600.0f;
+                f.Bot.Y = 1100.0f;
+                bridgeCalls = 0;
+                bridgeAnswer = Planner::GoalApply::BridgeAnswer::Done;
+                bridgePlace = "unset";
+                Check(f.Run() == Result::Applied && bridgeCalls == 1 && bridgePlace == place,
+                      "a place by name reaches the planner under its own name, a literal or unknown one as given");
+            }
+        // A unit or quest comes as an id or a name, never both and never neither; no name on a verb without one.
+        std::vector<std::function<void(Fixture&)>> const malformed = {
+            [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
+            [](Fixture& f) { f.Command.TargetName.clear(); },
+            [](Fixture& f) { f.Command.TargetName = std::string(PlayerbotBridge::MaxName + 1, 'a'); },
+            [](Fixture& f) { f.Command.QuestName = "A Fishy Peril"; },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::Stay;
+                f.Command.TargetName = "Defias Thug";
+            },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::Quest;
+                f.Command.TargetName.clear();
+                f.Command.QuestId = 40;
+                f.Command.QuestName = "A Fishy Peril";
+            },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::Quest;
+                f.Command.TargetName.clear();
+                f.Command.QuestName = std::string(PlayerbotBridge::MaxName + 1, 'a');
+            },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::GoTo;
+                f.Command.TargetName.clear();
+                f.Command.PlaceName = "goldshire";
+                f.Command.QuestName = "A Fishy Peril";
+            }};
+        for (auto const& change : malformed)
+        {
+            Fixture f;
+            named(f);
+            change(f);
+            f.Denied();
+            Check(f.Authorizations == 0, "a malformed name is refused before the admission");
+        }
+    }
+    // LC2: an order of up to three steps, in order as one command: one admission, then per step its facts, its gate
+    // and its event; a step that is not applied ends the order (mutants: authorize per step, a refused step not
+    // ending the order, the gate skipped after the first step, four steps).
+    {
+        using Steps = std::vector<Order>;
+        auto const stayOf = [](Fixture& f)
+        {
+            Order stay = f.Command;
+            stay.Operation = Intent::Stay;
+            stay.Target = 0;
+            return stay;
+        };
+        auto const outcomesAre = [](Fixture const& f, std::vector<std::pair<Result, Refusal>> const& expected)
+        {
+            if (f.Outcomes.size() != expected.size())
+                return false;
+            for (std::size_t index = 0; index < expected.size(); ++index)
+                if (f.Outcomes[index].Outcome != expected[index].first ||
+                    f.Outcomes[index].Why != expected[index].second)
+                    return false;
+            return true;
+        };
+        {
+            Fixture f;
+            Check(f.RunSteps({stayOf(f), f.Command}) == Result::Applied &&
+                      outcomesAre(f, {{Result::Applied, Refusal::None}, {Result::Applied, Refusal::None}}) &&
+                      f.Events == 2 && f.Authorizations == 1 && f.AI.Resets == 1 && marks == 1 &&
+                      f.Party.Marked == f.Target.Guid,
+                  "two steps applied: one admission, an event and an effect each");
+        }
+        {
+            Fixture f;
+            Check(f.RunSteps({stayOf(f), f.Command, f.Command}) == Result::Applied && f.Outcomes.size() == 3 &&
+                      f.Events == 3 && f.Authorizations == 1 && marks == 2,
+                  "three steps applied");
+        }
+        {
+            Fixture f;
+            f.Target.Seen = false;
+            Check(
+                f.RunSteps({stayOf(f), f.Command}) == Result::Rejected &&
+                    outcomesAre(f, {{Result::Applied, Refusal::None}, {Result::Rejected, Refusal::TargetNotVisible}}) &&
+                    f.Events == 2 && f.AI.Resets == 1 && marks == 0,
+                "a refused second step: the first stays applied, the order is refused with the second's reason");
+        }
+        {
+            Fixture f;
+            f.Target.Seen = false;
+            Check(f.RunSteps({f.Command, stayOf(f)}) == Result::Rejected &&
+                      outcomesAre(f, {{Result::Rejected, Refusal::TargetNotVisible}}) && f.Events == 1 &&
+                      mutations == 0 && f.AI.Resets == 0,
+                  "a refused first step ends the order: the second never runs");
+        }
+        {
+            Fixture f;
+            f.Party.MarkResult = false;
+            Check(f.RunSteps({f.Command, stayOf(f)}) == Result::Failed &&
+                      outcomesAre(f, {{Result::Failed, Refusal::None}}) && f.Events == 1 && f.AI.Resets == 0,
+                  "a failed step ends the order");
+        }
+        {
+            Fixture f;
+            f.Party.Outsider = f.Human.Guid;
+            Order formation = stayOf(f);
+            formation.Operation = Intent::Formation;
+            formation.Shape = FormationShape::Close;
+            Check(f.RunSteps({stayOf(f), formation}) == Result::Rejected &&
+                      outcomesAre(f, {{Result::Applied, Refusal::None}, {Result::Rejected, Refusal::NotInGroup}}) &&
+                      f.AI.Values.Formation.Loads == 0,
+                  "each step passes its own gate: the second's group rule refuses it");
+        }
+        // Refused before anything runs: no step, four, a malformed or unavailable later step, another scope.
+        std::vector<std::pair<Result, std::function<Steps(Fixture&)>>> const before = {
+            {Result::Rejected, [](Fixture&) { return Steps{}; }},
+            {Result::Rejected, [&](Fixture& f) { return Steps{stayOf(f), f.Command, f.Command, f.Command}; }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order bad = f.Command;
+                 bad.Icon = 99;
+                 return Steps{stayOf(f), bad};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order bad = f.Command;
+                 bad.Target = 0;
+                 return Steps{stayOf(f), bad};
+             }},
+            {Result::Unavailable,
+             [&](Fixture& f)
+             {
+                 Order regroup = stayOf(f);
+                 regroup.Operation = Intent::Regroup;
+                 return Steps{stayOf(f), regroup};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.Bot = f.Other.Guid.Value;
+                 return Steps{stayOf(f), other};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.Controller = f.Other.Guid.Value;
+                 return Steps{stayOf(f), other};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.Group = 0;
+                 return Steps{stayOf(f), other};
+             }},
+            {Result::Rejected, [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.VisibilityDistance = 40.0f;
+                 return Steps{stayOf(f), other};
+             }}};
+        for (auto const& [expected, make] : before)
+        {
+            Fixture f;
+            Check(f.RunSteps(make(f)) == expected && f.Outcomes.empty() && f.Events == 0 && f.Authorizations == 0 &&
+                      mutations == 0 && marks == 0,
+                  "an order with no step, four, a bad step or two scopes is refused before anything runs");
+        }
+        // One step is the old order: the same result and reason.
+        std::vector<std::function<void(Fixture&)>> const variants = {[](Fixture&) {},
+                                                                     [](Fixture& f) { f.Target.Seen = false; },
+                                                                     [](Fixture& f) { f.Bot.Alive = false; },
+                                                                     [](Fixture& f) { f.Party.MarkResult = false; },
+                                                                     [](Fixture& f) { f.Command.Icon = 99; },
+                                                                     [](Fixture& f)
+                                                                     {
+                                                                         f.Command.Operation = Intent::Regroup;
+                                                                         f.Command.Target = 0;
+                                                                     }};
+        for (auto const& change : variants)
+        {
+            Result old = Result::Applied;
+            Refusal oldWhy = Refusal::None;
+            {
+                Fixture f;
+                change(f);
+                old = f.Run();
+                oldWhy = f.Why;
+            }
+            Fixture f;
+            change(f);
+            Result const result = f.RunSteps({f.Command});
+            Refusal const why =
+                result == Result::Rejected && !f.Outcomes.empty() ? f.Outcomes.back().Why : Refusal::None;
+            Check(result == old && why == oldWhy, "a one-step order is the old order");
+        }
+    }
     // LC1a: the ability table. Every row has every part; the eighteen verbs with an effect have a row and the four
     // without one have none; each row applied above and gave each refusal it lists, and no other.
     {
@@ -1689,7 +2061,7 @@ int main()
                       "a row gives no refusal it does not list");
         }
         std::set<std::string> words;
-        for (int value = 0; value <= static_cast<int>(Refusal::AlreadyThere); ++value)
+        for (int value = 0; value <= static_cast<int>(Refusal::UnknownName); ++value)
         {
             PlayerbotBridge::RefusalText const& text = PlayerbotBridge::RefusalWords(static_cast<Refusal>(value));
             Check(static_cast<int>(text.Code) == value && filled(text.Word) && words.insert(text.Word).second &&
