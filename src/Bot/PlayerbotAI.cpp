@@ -32,6 +32,8 @@
 #include "Engine.h"
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
+#include "FightBook.h"
+#include "FightBookRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
 #include "GameTime.h"
@@ -818,6 +820,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // The world log's recorder: a position a second (one compare between them)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
+
+    // World PvP's records (WP1): the bot's PvP combat for its map's fight book and the fight commands' requests (a
+    // relaxed load and one empty() check while neither is there)
+    if (WorldPvp::RequestsWaiting() || !bot->GetCombatManager().GetPvPCombatRefs().empty())
+        WorldPvp::OnBotTick(this, bot);
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;

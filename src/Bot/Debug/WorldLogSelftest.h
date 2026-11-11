@@ -431,7 +431,7 @@ inline void CheckDecisions(Checker& checker)
     std::string kinds;
     for (size_t kind = 0; kind <= DECISION_KIND_COUNT; ++kind)
         kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');
-    checker.Equal(kinds, "rpg_status route trip errand inn upkeep death circuit goal other ",
+    checker.Equal(kinds, "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join other ",
                   "a word per decision kind");
 
     std::string value;

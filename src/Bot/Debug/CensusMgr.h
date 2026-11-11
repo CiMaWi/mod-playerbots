@@ -99,6 +99,10 @@ namespace EventLog
 {
 // One event row (type, source, id, amount and the player's place); id: item/quest/spell/skill id or 0
 void Emit(Player* bot, char const* type, char const* source, uint32 id = 0, int64 amount = 0);
+// The same row for a player that need not be on the map (its guid counter and a place it was seen at); not in the
+// bot's recorder ring
+void EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id = 0,
+            int64 amount = 0);
 // Honesty tag for a shortcut site: type is "Honesty" + kind; source names the site. Same row format.
 void Honesty(Player* bot, char const* kind, char const* source, uint32 id = 0, int64 amount = 0);
 }  // namespace EventLog

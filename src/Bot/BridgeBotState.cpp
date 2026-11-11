@@ -7,22 +7,34 @@
 #include "BridgeBotState.h"
 
 #include <algorithm>
+#include <chrono>
+#include <optional>
 #include <thread>
 
 #include "Bag.h"
+#include "BridgeBotTopics.h"
 #include "DBCStores.h"
 #include "Group.h"
 #include "LootObjectStack.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
+#include "PlannerService.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
+#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "RouteService.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "ThreadCheck.h"
+#include "Timer.h"
+#include "TravelGraph.h"
 #include "TravelMgr.h"
+#include "TravelPlaces.h"
+#include "World.h"
 
 namespace PlayerbotBridge
 {
@@ -134,6 +146,82 @@ void ReadSpells(Player* bot, std::vector<BotStateItem>& items)
     for (auto& spell : spells)
         items.push_back(std::move(spell.second));
 }
+
+// The planner topics read the view the bot's map thread published; out of the planner's scope (a real master, not
+// persistent, Planner.Goals off) the planner sets no goal, so they show none
+Topics::PlanInput PlanInputOf(Player* bot, PlayerbotAI* ai)
+{
+    Topics::PlanInput in;
+    in.inScope = sPlayerbotAIConfig.WorldTravel.PlannerGoals && !ai->HasGameClientMaster() &&
+                 PlayerbotFactory::KeepsPossessions(bot);
+    in.seen = in.inScope && Planner::PublishedPlan(bot->GetGUID().GetRawValue(), in.view);
+    in.nowMs = getMSTime();
+    in.x = bot->GetPositionX();
+    in.y = bot->GetPositionY();
+    in.z = bot->GetPositionZ();
+    in.open = [bot](uint32 quest) { return bot->GetQuestStatus(quest) == QUEST_STATUS_INCOMPLETE; };
+    in.title = [](uint32 quest)
+    {
+        Quest const* questTemplate = sObjectMgr->GetQuestTemplate(quest);
+        return questTemplate ? questTemplate->GetTitle() : std::string();
+    };
+    return in;
+}
+
+void ReadBags(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
+{
+    Topics::PlanInput const plan = PlanInputOf(bot, ai);
+    Topics::BagsInput in;
+    in.freeSlots = bot->GetFreeInventorySpace();
+    in.slots = INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START;
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            in.slots += bag->GetBagSize();
+    in.plan = &plan;
+    Topics::BagsItems(in, items);
+}
+
+void ReadPlaces(Player* bot, std::vector<BotStateItem>& items)
+{
+    TravelRoute::Snapshot const snapshot = TravelRoute::FillSnapshot(bot, 0);
+    Topics::PlacesInput in;
+    in.bot = snapshot.position;
+    in.hasHearthstone = snapshot.hasHearthstone;
+    in.hearthCooldownMs = snapshot.hearthCooldownMs;
+    in.hearthArea = AreaName(bot->m_homebindAreaId);
+    for (uint32 node = 1; node <= TravelRoute::TAXI_MASK_SIZE * 32; ++node)
+        if (snapshot.KnowsTaxiNode(node))
+            if (TaxiNodesEntry const* entry = sTaxiNodesStore.LookupEntry(node))
+            {
+                char const* name = entry->name[sWorld->GetDefaultDbcLocale()];
+                in.known.push_back({node,
+                                    name && *name ? name : entry->name[LOCALE_enUS],
+                                    {entry->map_id, entry->x, entry->y, entry->z}});
+            }
+    Topics::PlacesItems(in, items);
+}
+
+// One search on this thread, as a route worker would run it (RouteService.h): its PerfMonitor row is the cost
+void ReadRoute(Player* bot, std::string const& argument, std::vector<BotStateItem>& items)
+{
+    Topics::RouteInput in;
+    std::optional<TravelRoute::Point> const goal = TravelPlaces::Resolve(argument);
+    in.known = goal.has_value();
+    TravelPlaces::Place const* named = TravelPlaces::Find(argument);
+    in.place = named ? named->name : "position";
+    if (goal)
+    {
+        auto const started = std::chrono::steady_clock::now();
+        TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *goal);
+        std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
+        in.route = TravelRoute::Search(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams());
+        auto const us =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+        if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "bridge route topic"))
+            row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
+    }
+    Topics::RouteItems(in, items);
+}
 }  // namespace
 
 bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotStateFacts& facts)
@@ -229,6 +317,12 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
 
 bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vector<BotStateItem>& items)
 {
+    return ReadBotStateTopic(botGuid, topic, std::string(), items);
+}
+
+bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::string const& argument,
+                       std::vector<BotStateItem>& items)
+{
     items.clear();
     if (std::this_thread::get_id() != PlayerbotThreadCheck::worldThread.load(std::memory_order_relaxed))
         return false;
@@ -252,6 +346,24 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vect
             break;
         case BotStateTopic::Spells:
             ReadSpells(bot, items);
+            break;
+        case BotStateTopic::Plan:
+            Topics::PlanItems(PlanInputOf(bot, ai), items);
+            break;
+        case BotStateTopic::Options:
+            Topics::OptionsItems(PlanInputOf(bot, ai), items);
+            break;
+        case BotStateTopic::Route:
+            ReadRoute(bot, argument, items);
+            break;
+        case BotStateTopic::QuestPlan:
+            Topics::QuestPlanItems(PlanInputOf(bot, ai), items);
+            break;
+        case BotStateTopic::Bags:
+            ReadBags(bot, ai, items);
+            break;
+        case BotStateTopic::Places:
+            ReadPlaces(bot, items);
             break;
         default:
             return false;

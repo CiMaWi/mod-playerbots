@@ -2219,6 +2219,52 @@ Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 # (0-100). Default: 0
 Playerbots.Upkeep.HandoutShare = 0
 
+# World PvP of persistent bots in the open world (battlegrounds, arenas and dungeons keep their own rules). Every
+# open-world map keeps a fight book: its active fights (a cluster of PvP combat with two sides, its starter and
+# reason, participants, deaths and end), shown by `.playerbots fight list`, and its ended fights for CalmMinutes.
+# Each bot remembers the enemy players it saw; one not seen for MeetingMemorySeconds is a new meeting (a fight_start
+# row in the world log); RecentEnemies is how many it remembers (the oldest is forgotten). A fight takes in combat
+# within its radius (FightRadiusYards at the start, following the participants up to FightRadiusMaxYards), holds at
+# most MaxParticipants, a map at most MaxActiveFights; one still in PvP combat after MaxFightMinutes ends as
+# stalemate_cap. A fight ends as combat_over once none of its participants has been in PvP combat for
+# EndGraceSeconds (combat within the grace continues the same fight; its length runs to the last PvP combat). The
+# other world PvP numbers are declared in src/Ai/World/Pvp/WorldPvpConfig.h and come here with the steps that read
+# them. (Ranges: MeetingMemorySeconds 0-86400; RecentEnemies 1-32; MaxActiveFights 1-1000; MaxParticipants 2-1000;
+# FightRadiusYards and FightRadiusMaxYards 1-2000; MaxFightMinutes 1-1440; EndGraceSeconds 0-600; CalmMinutes
+# 0-1440.) Defaults: 600, 16, 32, 40, 40, 150, 30, 10, 15
+Playerbots.WorldPvp.MeetingMemorySeconds = 600
+Playerbots.WorldPvp.RecentEnemies = 16
+Playerbots.WorldPvp.Book.MaxActiveFights = 32
+Playerbots.WorldPvp.Book.MaxParticipants = 40
+Playerbots.WorldPvp.Book.FightRadiusYards = 40
+Playerbots.WorldPvp.Book.FightRadiusMaxYards = 150
+Playerbots.WorldPvp.Book.MaxFightMinutes = 30
+Playerbots.WorldPvp.Book.EndGraceSeconds = 10
+Playerbots.WorldPvp.CalmMinutes = 15
+
+# The shape weights of the fight rules (src/Ai/World/Pvp/FightRules.h), read now so lab nights can tune them; the
+# bots use them once the rules are wired (start: WP4, joining: WP5, retreat: WP6). OddsCaution: a bot needs its
+# side's share of the strength it sees to be 0.5 + OddsCaution x its caution (-1..+1) for its full start chance.
+# A bystander joins a fight with Join.Base x (1 + Join.Aggression x aggression) x (1 + Join.Helpfulness x
+# helpfulness, when its side is losing or a player of its faction is the target) x (1 - Join.Goal x the value of
+# its current goal, 0..1); bad odds lower it by caution. A participant retreats below 30 % x (1 +
+# Retreat.CautionHealth x caution) health while its side's share is below 0.5 + Retreat.CautionOdds x caution,
+# never while its side is ahead. A value out of range keeps the default. (Ranges: OddsCaution 0-0.5; the Join
+# weights 0-1; Retreat.CautionHealth 0-1; Retreat.CautionOdds 0-0.5.) Defaults: 0.12, 0.4, 0.75, 0.75, 0.75, 0.5,
+# 0.1
+Playerbots.WorldPvp.OddsCaution = 0.12
+Playerbots.WorldPvp.Join.Base = 0.4
+Playerbots.WorldPvp.Join.Aggression = 0.75
+Playerbots.WorldPvp.Join.Helpfulness = 0.75
+Playerbots.WorldPvp.Join.Goal = 0.75
+Playerbots.WorldPvp.Retreat.CautionHealth = 0.5
+Playerbots.WorldPvp.Retreat.CautionOdds = 0.1
+
+# The lab fixtures `.playerbots fight ready <bot>` (its next chance starts a fight when the hard rules pass) and
+# `.playerbots fight meet <bot> <enemy bot>` (places the enemy beside the bot, PvP flagged, without an attack): a
+# switch for test servers. (Range: 0-1.) Default: 0
+Playerbots.WorldPvp.TestCommands = 0
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600
