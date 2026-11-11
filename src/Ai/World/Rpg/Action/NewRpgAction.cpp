@@ -470,8 +470,24 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     switch (status)
     {
         case RPG_IDLE:
+        {
+            // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback
+            Planner::IdleStep const step =
+                Planner::OnIdle(botAI, bot,
+                                [this](uint32 questId)
+                                {
+                                    std::vector<POIInfo> poiInfo;
+                                    return !botAI->lowPriorityQuest.contains(questId) &&
+                                           GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
+                                });
+            if (step.started)
+                return true;
+            if (step.wait)
+                return false;
             return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
-                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER});
+                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER},
+                                      step.reason);
+        }
 
         case RPG_GO_GRIND:
         {
@@ -1061,7 +1077,13 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
-        uint32 rndIdx = urand(0, poiInfo.size() - 1);
+        // A planner bot goes to the point nearest its plan's tasks for the quest, others to a random one
+        std::vector<std::pair<float, float>> points;
+        points.reserve(poiInfo.size());
+        for (POIInfo const& poi : poiInfo)
+            points.emplace_back(poi.pos.x, poi.pos.y);
+        int const planned = Planner::PlannedPoi(botAI, questId, points);
+        uint32 rndIdx = planned >= 0 ? static_cast<uint32>(planned) : urand(0, poiInfo.size() - 1);
         G3D::Vector2 nearestPoi = poiInfo[rndIdx].pos;
         int32 objectiveIdx = poiInfo[rndIdx].objectiveIdx;
 

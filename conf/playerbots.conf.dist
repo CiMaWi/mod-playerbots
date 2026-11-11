@@ -2199,11 +2199,14 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # live crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
 # 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000; NoopSeconds 0-3600, 0 = off;
 # Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
+# Goals: persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next
+# activity from the planner's ranked goals; 0 = every bot picks as before (a test switch). Default: 1
 Playerbots.WorldTravel.Planner.Threads = 2
 Playerbots.WorldTravel.Planner.SnapshotMinutes = 5
 Playerbots.WorldTravel.Planner.ResultStaleSeconds = 30
 Playerbots.WorldTravel.Planner.RecheckYards = 100
 Playerbots.WorldTravel.Planner.NoopSeconds = 0
+Playerbots.WorldTravel.Planner.Goals = 1
 Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the

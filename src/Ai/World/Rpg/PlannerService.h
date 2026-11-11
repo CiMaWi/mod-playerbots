@@ -8,9 +8,11 @@
 #define _PLAYERBOT_PLANNERSERVICE_H
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "PlannerIndexes.h"
@@ -37,6 +39,26 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due. O(1) unless a snapshot is built
 void PlannerHook(PlayerbotAI* botAI, Player* bot);
+
+// The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
+// current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or
+// it falls back to the weighted pick with the reason word for its rpg_status row. `workable` is today's test that a
+// log quest has an objective to go to (its points of interest)
+struct IdleStep
+{
+    bool started{false};
+    bool wait{false};
+    char const* reason{"weights"};
+};
+IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
+// The bot's map thread: the quest is on its plan's keep list (OrganizeQuestLog keeps it); false without a plan
+bool KeepsQuest(PlayerbotAI* botAI, std::uint32_t quest);
+// The bot's map thread: of a log quest's points of interest (x, y) the one nearest the plan's tasks for it; -1 = none
+int PlannedPoi(PlayerbotAI* botAI, std::uint32_t quest, std::vector<std::pair<float, float>> const& points);
+// Any thread: the bot (raw guid) pursues an external goal (bridge or group): the manager leaves it alone
+bool HasExternalGoal(std::uint64_t bot);
+// `playerbots planner goal <bot>`: the bot's group, goal, last ranking and fallback as its map thread published them
+bool HandleGoalCommand(ChatHandler* handler, char const* args);
 // The lines of `playerbots planner status`
 std::vector<std::string> PlannerStatus();
 
@@ -81,6 +103,10 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args);
 // The questing circuit (WT13b, PlannerQuests.cpp; the planner in QuestCircuit.h)
 struct CircuitWeights;
 struct QuestProgress;
+namespace Goals
+{
+struct Situation;
+}
 // The calling thread: a circuit job over the published quest index, indexes, statistics and crowding, with the core's
 // grey level difference taken here. Answers a CircuitAnswer; none when no plan was made or the index was not ready
 Compute CircuitCompute(CircuitWeights const& weights, std::vector<std::uint32_t> const& protectedQuests,
@@ -93,6 +119,10 @@ bool HandleCircuitCommand(ChatHandler* handler, char const* args);
 // The goal model (WT14, GoalModel.h): the ranked goals with reasons
 // World thread: the synthetic checks plus the real-data scenarios (the circuit harness's places, synthetic spots)
 bool RunGoalsHarness(ChatHandler* handler);
+// The calling thread: a goals job (PlanGoals) over the published data, with the plan's kept quests protected and the
+// log quests' progress. Answers a GoalsAnswer, also for a failed ranking; none when the quest index was not ready
+Compute GoalsCompute(std::vector<std::uint32_t> const& protectedQuests, std::vector<QuestProgress> const& progress,
+                     Goals::Situation const& situation);
 // `playerbots planner goals selftest | <player name>`: the harness, or the ranked goals of an online player (read
 // only; writes a `goal` decision row when the world log is on)
 bool HandleGoalsCommand(ChatHandler* handler, char const* args);

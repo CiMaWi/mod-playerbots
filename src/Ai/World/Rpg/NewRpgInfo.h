@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
+#include <memory>
 #include <unordered_set>
 
 #include "Define.h"
@@ -26,6 +27,11 @@
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
 class Player;
+
+namespace Planner::GoalApply
+{
+struct BotGoals;  // GoalInterface.h
+}
 
 struct NewRpgInfo
 {
@@ -154,6 +160,7 @@ struct NewRpgInfo
         bool snapshotDue{true};    // the situation changed or a goal ended since the last snapshot
         bool wasIdle{false};
         bool pending{false};  // a job is out; its result is taken before the next one is submitted
+        std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
     };
     PlannerState planner;
 

@@ -299,6 +299,7 @@ inline CircuitWeights CircuitWeightsFor(Model const& model)
 // The bot's hub as the circuit sees it
 struct HereInfo
 {
+    // NO_HUB: PlanGoals finds it from the circuit's home camp (CircuitHub; the live bots)
     std::uint32_t hub{0};
     std::uint32_t zoneLow{0};  // the zone's level bracket, 0/0 = unknown
     std::uint32_t zoneHigh{0};
@@ -452,6 +453,10 @@ struct Option
     std::string reason;
     std::vector<std::string> traitNotes;
 };
+
+// The reason of the option that stands for the circuit at the bot's own hub; a quest option with another reason
+// names a delivery or a move to another hub or camp in the zone (GoalApply::RoleOf)
+constexpr char const* CIRCUIT_REASON = "circuit";
 
 // <kind>:<target>, the target with its type where the kind does not say it (money:spot_7, move_zone:camp_21)
 inline std::string ChoiceWord(Option const& option)
@@ -706,10 +711,15 @@ private:
             Option option;
             option.kind = GoalKind::Quest;
             option.target = here.hub;
+            if (here.hub == NO_HUB && plan->homeCamp != NO_CAMP)
+            {
+                option.target = plan->homeCamp;  // a circuit outside every hub's core: its home camp names it
+                option.targetType = TargetType::Camp;
+            }
             option.place = plan->start;
             option.minutes = plan->minutes;
             option.expected = plan->value;
-            option.reason = "circuit";
+            option.reason = CIRCUIT_REASON;
             option.crowd = CompetingCrowd(here.competingBots);
             Apply(option, Factor(W().thoroughness, THOROUGH_QUEST_SPAN), W().thoroughness, "thorough", "hasty");
             ApplyHome(option, here.home);
@@ -1094,7 +1104,18 @@ struct GoalPlan
 {
     CircuitPlan circuit;
     Ranked ranked;
+    std::uint32_t hub{NO_HUB};  // the bot's hub as the plan saw it (Situation::here.hub)
 };
+
+// The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
+inline std::uint32_t CircuitHub(CircuitPlan const& circuit, CircuitContext const& context)
+{
+    if (circuit.homeCamp == NO_CAMP || !context.quests || !context.indexes ||
+        circuit.homeCamp >= context.quests->camps.size())
+        return NO_HUB;
+    std::optional<Nearby> const hub = CampHub(context.quests->camps[circuit.homeCamp], *context.indexes);
+    return hub ? hub->index : NO_HUB;
+}
 
 // A carried quest the bot can turn in now: complete in its log, or one with no objective but the turn-in (a take
 // carried to its ender). One with objectives left is no delivery yet: its ender is no goal until they are done
@@ -1158,6 +1179,9 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     Model const model = Prepare(bot, situation);
     context.weights = CircuitWeightsFor(model);
     plan.circuit = PlanCircuit(bot, context);
+    if (situation.here.hub == NO_HUB)
+        situation.here.hub = CircuitHub(plan.circuit, context);
+    plan.hub = situation.here.hub;
     situation.circuit = &plan.circuit;
     if (situation.deliveries.empty())
         situation.deliveries = Deliveries(bot, context, plan.circuit, model.runSpeed);
