@@ -11,9 +11,10 @@
 
 // The numbers of world PvP for persistent bots in the open world (Playerbots.WorldPvp.*), read once at config load
 // (PlayerbotAIConfig::WorldPvp); the initial values are the defaults. Every option of the world PvP plan is declared
-// here at once so that later steps never touch PlayerbotAIConfig.h; the values are the plan's estimates until WP3
-// tunes them. Only the members marked "read" are read from the config now (conf.dist documents those); the others
-// keep their defaults until the step named beside them reads them. Player-free (the selftests include it).
+// here at once so that later steps never touch PlayerbotAIConfig.h; WP3b's encounter harness
+// (tests/fight-encounter-selftest.cpp) checked the defaults, the fight rules (FightRules.h) take theirs from here.
+// Only the members marked "read" are read from the config now (conf.dist documents those); the others keep their
+// defaults until the step named beside them reads them. Player-free (the selftests include it).
 struct WorldPvpConfig
 {
     // --- The fight book and the fight memory (WP1, read) ---
@@ -43,10 +44,13 @@ struct WorldPvpConfig
     // Minimum time since this bot's last fight before its next chance can start one
     uint32_t MinGapMinutes = 30;
     // Aggression to rate: no starts below AggressionOffBelow; one start per HoursAtZero hours at aggression 0, one per
-    // HoursAtOne at +1; the chance's probability never exceeds ChanceCap
+    // HoursAtOne at +1 (HoursAtZero / 4: the budget curve is exactly 4^a times the rate at 0, WP.2, WP.16); the
+    // chance's probability never exceeds ChanceCap. A chance starts at most one fight and the cap trims long quiet
+    // times, so bots start less often than the rate: 3.4 h realises about once per 4 h at aggression 0 (WP3b's
+    // harness: 4.3 h at the lab's density, 3.8 h at 2x and 4x), and +1 starts only about twice as often as 0
     float AggressionOffBelow = -0.5f;
-    float HoursAtZero = 4.0f;
-    float HoursAtOne = 1.0f;
+    float HoursAtZero = 3.4f;
+    float HoursAtOne = 0.85f;
     float ChanceCap = 1.0f / 3.0f;
     // Colour factors of the chance (grey and red never start a fight); orange goes from OrangeDaring for a daring bot
     // to OrangeCareful for a careful one
@@ -59,6 +63,9 @@ struct WorldPvpConfig
     bool Courtesy = true;
     // A grudge multiplies the chance against its enemy
     float GrudgeFactor = 3.0f;
+    // The odds a bot needs for its full chance (its side's share of the strength it sees): 0.5 + OddsCaution x its
+    // caution (-1..+1); the chance falls to 0 a little below that (read: the nights tune it)
+    float OddsCaution = 0.12f;
 
     // --- No camping and calm areas (WP7 read) ---
     // A player resurrected this recently, or within GraveyardYards of a graveyard or spirit healer, is left alone
@@ -71,9 +78,20 @@ struct WorldPvpConfig
     // --- Joining, retreating and ending (WP5/WP6 read) ---
     // A bystander within JoinYards of a fight may join it
     uint32_t JoinYards = 60;
-    // Retreat below this health percent when its side's odds are below RetreatOdds (placeholders until WP3)
+    // A bystander's join chance (read: the nights tune them): JoinBase x (1 + JoinAggression x aggression) x (1 +
+    // JoinHelpfulness x helpfulness when its side is losing or a player of its faction is the target) x (1 - JoinGoal
+    // x its goal's value, 0..1); bad odds lower it by caution
+    float JoinBase = 0.4f;
+    float JoinAggression = 0.75f;
+    float JoinHelpfulness = 0.75f;
+    float JoinGoal = 0.75f;
+    // Retreat below RetreatHealthPercent x (1 + RetreatCautionHealth x caution) health while its side's odds are
+    // below RetreatOdds + RetreatCautionOdds x caution, never above even odds (read: the cautions, the nights tune
+    // them)
     uint32_t RetreatHealthPercent = 30;
+    float RetreatCautionHealth = 0.5f;
     float RetreatOdds = 0.5f;
+    float RetreatCautionOdds = 0.1f;
     // A chase ends after ChaseSeconds or ChaseYards beyond the fight's radius
     uint32_t ChaseSeconds = 15;
     uint32_t ChaseYards = 40;

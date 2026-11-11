@@ -7,7 +7,7 @@
 // Standalone check of the world PvP fight rules (src/Ai/World/Pvp/FightRules.h): the colours against a copy of the
 // core's formulas, the start rate and its cap, every refusal of a start and a join, the objective exception, the soft
 // factors' directions, joining, retreat, the chase, the timeouts, the calm area, the ghost's wait, the avoid time and
-// the grudges. The encounter harness at 1x, 2x and 4x is WP3b's. Build (Git Bash, module root):
+// the grudges; tests/fight-encounter-selftest.cpp is the encounter harness. Build (Git Bash, module root):
 //   clang-cl /nologo /std:c++20 /EHsc /W4 /WX /Od /I src/Ai/World/Pvp tests/fight-rules-selftest.cpp
 #include <array>
 #include <cmath>
@@ -148,14 +148,26 @@ void CheckColours()
 
 void CheckRate()
 {
-    FightRuleValues const values;
-    Check(WorldPvp::StartRate(-1.0f, values) == 0.0f && WorldPvp::StartRate(-0.51f, values) == 0.0f &&
-              WorldPvp::StartRate(-0.5f, values) == 0.0f,
+    // The curve's arithmetic at the plan's 4 h (the default rate is tuned below it, see WorldPvpConfig.h)
+    WorldPvpConfig plan;
+    plan.HoursAtZero = 4.0f;
+    plan.HoursAtOne = 1.0f;
+    FightRuleValues const curve(plan);
+    Check(WorldPvp::StartRate(-1.0f, curve) == 0.0f && WorldPvp::StartRate(-0.51f, curve) == 0.0f &&
+              WorldPvp::StartRate(-0.5f, curve) == 0.0f,
           "no rate at or below -0.5");
-    Check(Near(WorldPvp::StartRate(-0.25f, values), 0.125f), "linear between -0.5 and 0");
-    Check(Near(WorldPvp::StartRate(0.0f, values), 0.25f), "once per 4 h at 0");
-    Check(Near(WorldPvp::StartRate(0.5f, values), 0.5f), "4^a per 4 h above 0");
-    Check(Near(WorldPvp::StartRate(1.0f, values), 1.0f), "once per hour at +1, four times the rate at 0");
+    Check(Near(WorldPvp::StartRate(-0.25f, curve), 0.125f), "linear between -0.5 and 0");
+    Check(Near(WorldPvp::StartRate(0.0f, curve), 0.25f), "once per 4 h at 0");
+    Check(Near(WorldPvp::StartRate(0.5f, curve), 0.5f), "4^a per 4 h above 0");
+    Check(Near(WorldPvp::StartRate(1.0f, curve), 1.0f), "once per hour at +1, four times the rate at 0");
+
+    FightRuleValues const values;
+    Check(Near(WorldPvp::StartRate(0.0f, values), 1.0f / WorldPvpConfig{}.HoursAtZero) &&
+              Near(WorldPvp::StartRate(1.0f, values), 1.0f / WorldPvpConfig{}.HoursAtOne),
+          "the defaults' rate at 0 and +1");
+    Check(Near(WorldPvp::StartRate(1.0f, values) / WorldPvp::StartRate(0.0f, values), 4.0f, 1.0e-4f) &&
+              Near(WorldPvp::StartRate(0.5f, values) / WorldPvp::StartRate(0.0f, values), 2.0f, 1.0e-4f),
+          "the defaults' budget is 4^a times the rate at 0 (WP.16)");
 
     bool rising = true;
     for (int step = -100; step < 100; ++step)
@@ -164,10 +176,10 @@ void CheckRate()
             rising = false;
     Check(rising, "the rate never falls with aggression");
 
-    // Many small chances add up to the rate: 24 chances 10 min apart over 4 h at aggression 0 leave exp(-1) chance
+    // Many small chances add up to the rate: 24 chances 10 min apart over 4 h at the plan's rate leave exp(-1) chance
     // of no start, as one draw over 4 h would
     float noStart = 1.0f;
-    float const rate = WorldPvp::StartRate(0.0f, values);
+    float const rate = WorldPvp::StartRate(0.0f, curve);
     for (int chance = 0; chance < 24; ++chance)
         noStart *= 1.0f - WorldPvp::StartProbability(rate, 10 * MINUTE, values);
     Check(Near(noStart, std::exp(-1.0f), 1.0e-3f), "busy-zone chances add up to the rate");
@@ -187,6 +199,13 @@ void CheckRate()
     Check(Near(WorldPvp::StartProbability(1.0f, 12 * HOUR, values), 1.0f / 3.0f), "the cap holds at +1");
     Check(Near(WorldPvp::StartProbability(0.25f, 6 * MINUTE, values), 1.0f - std::exp(-0.025f)),
           "a short gap gives 1 - exp(-rate dt)");
+
+    StartBot odd = ReadyBot();
+    odd.aggression = std::nanf("");
+    odd.sinceChanceMs = 12 * HOUR;
+    StartDecision const nan = WorldPvp::DecideStart(odd, ReadyTarget(), 0.0f, values);
+    Check(WorldPvp::StartRate(odd.aggression, values) == 0.0f && !nan.start && nan.refusal == Refusal::Peaceable,
+          "an aggression that is not a number never starts");
 }
 
 void CheckStartRefusals()
@@ -260,9 +279,13 @@ void CheckStartRefusals()
     target.colour = Colour::Yellow;
     target.sinceResurrectionMs = MINUTE;
     Check(refusal(ReadyBot(), target) == Refusal::Resurrected, "a grudge never camps");
+    target.sinceResurrectionMs = WorldPvp::NEVER_MS;
+    target.colour = Colour::Red;
+    Check(refusal(ReadyBot(), target) == Refusal::Red, "a grudge never starts on red");
+    target.colour = Colour::Yellow;
     bot = ReadyBot();
     bot.sinceFightEndMs = MINUTE;
-    Check(refusal(bot, ReadyTarget()) == Refusal::Gap, "a grudge keeps the gap");
+    Check(target.grudge > 0.0f && refusal(bot, target) == Refusal::Gap, "a grudge keeps the gap");
     bot = ReadyBot();
     bot.sinceChanceMs = 12 * HOUR;
     target = ReadyTarget();
@@ -439,8 +462,12 @@ void CheckEnding()
     Check(WorldPvp::ShouldRetreat(0.2f, 0.3f, 0.0f, values), "low health and losing: retreat");
     Check(!WorldPvp::ShouldRetreat(0.8f, 0.1f, 0.0f, values), "high health: stay");
     Check(!WorldPvp::ShouldRetreat(0.1f, 0.7f, 0.0f, values), "winning: stay");
-    Check(WorldPvp::ShouldRetreat(0.4f, 0.55f, 1.0f, values) && !WorldPvp::ShouldRetreat(0.4f, 0.55f, -1.0f, values),
+    Check(WorldPvp::ShouldRetreat(0.4f, 0.45f, 1.0f, values) && !WorldPvp::ShouldRetreat(0.4f, 0.45f, -1.0f, values),
           "careful bots retreat earlier");
+    Check(!WorldPvp::ShouldRetreat(0.05f, 0.55f, 1.0f, values) && !WorldPvp::ShouldRetreat(0.05f, 0.5f, 1.0f, values),
+          "nobody retreats while its side is not losing");
+    Check(WorldPvp::ShouldRetreat(0.1f, 0.45f, 0.0f, values) && !WorldPvp::ShouldRetreat(0.1f, 0.45f, -1.0f, values),
+          "daring bots stay until the odds are worse");
 
     ChaseLimit const neutral = WorldPvp::ChaseLimitFor(0.0f, 0.0f, values);
     ChaseLimit const keen = WorldPvp::ChaseLimitFor(1.0f, 0.0f, values);
@@ -544,19 +571,36 @@ void CheckDeathAndGrudges()
 
 void CheckConfig()
 {
+    // One source for the defaults: FightRuleValues() is WorldPvpConfig{}'s values in rule units
     WorldPvpConfig config;
-    FightRuleValues const values = FightRuleValues::From(config);
-    FightRuleValues const defaults;
-    Check(values.rollAgainMs == defaults.rollAgainMs && values.minGapMs == defaults.minGapMs &&
-              values.chanceCap == defaults.chanceCap && values.resurrectedMs == defaults.resurrectedMs &&
-              values.calmMs == defaults.calmMs && values.calmYards == defaults.calmYards &&
-              values.retreatHealth == defaults.retreatHealth && values.chaseMs == defaults.chaseMs &&
-              values.noHitMs == defaults.noHitMs && values.stalemateMs == defaults.stalemateMs &&
-              values.ghostSpiritHealerMs == defaults.ghostSpiritHealerMs && values.avoidMaxMs == defaults.avoidMaxMs &&
-              values.grudgeHalfLifeDays == defaults.grudgeHalfLifeDays,
-          "the rule values from the config's defaults equal the header defaults");
+    FightRuleValues const values;
+    Check(values.rollAgainMs == config.RollAgainSeconds * SECOND && values.minGapMs == config.MinGapMinutes * MINUTE &&
+              values.chanceCap == config.ChanceCap && values.joinBase == config.JoinBase &&
+              values.oddsCaution == config.OddsCaution && values.retreatOdds == config.RetreatOdds &&
+              values.retreatCautionHealth == config.RetreatCautionHealth &&
+              Near(values.retreatHealth, static_cast<float>(config.RetreatHealthPercent) / 100.0f),
+          "the rule values are the config's, in rule units");
     config.HoursAtZero = 2.0f;
-    Check(Near(WorldPvp::StartRate(0.0f, FightRuleValues::From(config)), 0.5f), "HoursAtZero sets the rate");
+    Check(Near(WorldPvp::StartRate(0.0f, FightRuleValues(config)), 0.5f), "HoursAtZero sets the rate");
+
+    // Out-of-range options cannot break the rules' properties
+    WorldPvpConfig wild;
+    wild.YellowFactor = 2.0f;
+    wild.OrangeDaring = 3.0f;
+    wild.GreenFactor = -1.0f;
+    wild.RetreatOdds = 0.8f;
+    wild.RetreatCautionOdds = 0.4f;
+    wild.JoinBase = 5.0f;
+    wild.GrudgeFactor = std::nanf("");
+    FightRuleValues const clamped(wild);
+    Check(clamped.yellowFactor == 1.0f && clamped.orangeDaring == 1.0f && clamped.greenFactor == 0.0f &&
+              clamped.joinBase == 1.0f && clamped.grudgeFactor == 1.0f,
+          "colour factors, the join base and the grudge factor are clamped");
+    StartBot bot = ReadyBot();
+    bot.sinceChanceMs = 12 * HOUR;
+    Check(WorldPvp::DecideStart(bot, ReadyTarget(), 0.99f, clamped).p <= 1.0f / 3.0f + EPSILON,
+          "a configured yellow factor above 1 keeps the first chance at most 1/3");
+    Check(!WorldPvp::ShouldRetreat(0.0f, 0.55f, 1.0f, clamped), "a configured retreat line stays below even odds");
     Check(WorldPvp::Word(Refusal::AllRed) == std::string("all_red") &&
               WorldPvp::Word(Refusal::RolledRecently) == std::string("rolled_recently") &&
               WorldPvp::Word(Colour::Orange) == std::string("orange"),

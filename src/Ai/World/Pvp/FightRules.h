@@ -20,13 +20,16 @@
 // far a winner chases, when a fight times out, the calm areas, the ghost's wait, grudges and the capture-point
 // exception. Pure functions of what a player could see (levels, health, numbers, places, times, traits as -1..+1);
 // no Player, no globals, no allocation, O(1): the caller passes pre-counted sums. tests/fight-rules-selftest.cpp
-// proves them; WP4-WP9 call them.
+// proves them, tests/fight-encounter-selftest.cpp runs them for a population at 1x, 2x and 4x; WP4-WP9 call them.
 //
 // The start rate (WP.2): 0 at or below AggressionOffBelow, linear from there to r0 = 1 / HoursAtZero at aggression 0,
-// then geometric to r1 = 1 / HoursAtOne at +1: rate(a) = r0 * (r1 / r0)^a, i.e. 4^a per 4 h with the defaults. Over
-// aggression ~ N(0, 0.45) it averages about 0.27 per hour before the gap and the cap. At a chance the base
-// probability is 1 - exp(-rate * dt), dt the bot's play time since its last chance, capped at ChanceCap. The soft
-// factors multiply the capped base; all are at most 1 except the grudge's, and the result is at most 1.
+// then geometric to r1 = 1 / HoursAtOne at +1: rate(a) = r0 * (r1 / r0)^a. At a chance the base probability is
+// 1 - exp(-rate * dt), dt the bot's play time since its last chance, capped at ChanceCap. The soft factors multiply
+// the capped base; all are at most 1 except the grudge's, and the result is at most 1. A chance starts at most one
+// fight and the cap trims long quiet times, so the realised starts fall below the rate where chances are rare; the
+// HoursAtZero default is tuned for about once per 4 h at aggression 0 (tests/fight-encounter-selftest.cpp), and
+// HoursAtOne keeps the budget at +1 exactly four times that at 0 (WP.16: "four times" is the budget's ratio; the
+// cap and the gap let +1 start only about twice as often as 0).
 namespace WorldPvp
 {
 constexpr float MS_PER_HOUR = 3600.0f * 1000.0f;
@@ -42,63 +45,65 @@ constexpr int MAX_STRENGTH_LEVEL_GAP = 20;
 // The shortest chase, as a share of the configured one
 constexpr float MIN_CHASE_SCALE = 0.25f;
 
-// The values of the rules: the configured ones in the units the rules use, and the shape weights the plan marks [E]
-// (header defaults; WP3b tunes them in its harness)
+// The values of the rules in the units the rules use. Every configured value comes from WorldPvpConfig, whose
+// initialisers are the only defaults (FightRuleValues() reads WorldPvpConfig{}); the structural shape weights [E]
+// stay header constants until a night shows a need to tune them
 struct FightRuleValues
 {
-    // Meetings and chances
-    float scanYards = 40.0f;
-    uint32_t rollAgainMs = 10 * MS_PER_MINUTE;
-    uint32_t minGapMs = 30 * MS_PER_MINUTE;
-    float aggressionOffBelow = -0.5f;
-    float hoursAtZero = 4.0f;
-    float hoursAtOne = 1.0f;
-    float chanceCap = 1.0f / 3.0f;
-    float greenFactor = 0.5f;
-    float yellowFactor = 1.0f;
-    float orangeDaring = 1.0f;
-    float orangeCareful = 0.0f;
-    bool courtesy = true;
-    float grudgeFactor = 3.0f;
-    // No camping and calm areas
-    uint32_t resurrectedMs = 5 * MS_PER_MINUTE;
-    float graveyardYards = 80.0f;
-    float calmYards = 200.0f;
-    uint32_t calmMs = 15 * MS_PER_MINUTE;
-    // Joining, retreating and ending
-    float joinYards = 60.0f;
-    float retreatHealth = 0.3f;
-    float retreatOdds = 0.5f;
-    uint32_t chaseMs = 15 * MS_PER_SECOND;
-    float chaseYards = 40.0f;
-    uint32_t noHitMs = 30 * MS_PER_SECOND;
-    uint32_t stalemateMs = 5 * MS_PER_MINUTE;
-    // Death
-    float ghostEnemyYards = 40.0f;
-    uint32_t ghostRecheckMs = 15 * MS_PER_SECOND;
-    uint32_t ghostSpiritHealerMs = 5 * MS_PER_MINUTE;
-    uint32_t avoidMinMs = 30 * MS_PER_MINUTE;
-    uint32_t avoidMaxMs = 60 * MS_PER_MINUTE;
-    // Grudges
-    uint32_t maxGrudges = 5;
-    float grudgeHalfLifeDays = 3.0f;
-
-    // Shape weights [E]
-    // Strength of one player to the viewer: health x levelStep^(level - viewer level)
-    float levelStep = 1.1f;
+    // Meetings and chances; the colour factors are at most 1, so only a grudge lifts a chance above the cap
+    float scanYards{};
+    uint32_t rollAgainMs{};
+    uint32_t minGapMs{};
+    float aggressionOffBelow{};
+    float hoursAtZero{};
+    float hoursAtOne{};
+    float chanceCap{};
+    float greenFactor{};
+    float yellowFactor{};
+    float orangeDaring{};
+    float orangeCareful{};
+    bool courtesy{};
+    float grudgeFactor{};
     // The odds share a bot needs for the full chance: 0.5 + oddsCaution x caution; the chance falls to 0 oddsRamp
     // below it (the most careful bot never starts at even odds, the most daring one starts outnumbered)
-    float oddsCaution = 0.12f;
-    float oddsRamp = 0.12f;
+    float oddsCaution{};
+    // No camping and calm areas
+    uint32_t resurrectedMs{};
+    float graveyardYards{};
+    float calmYards{};
+    uint32_t calmMs{};
     // Join chance: joinBase x (1 + joinAggression x aggression) x (1 + joinHelpfulness x helpfulness when its side
     // is losing or a player of its faction is the target) x the caution at bad odds x (1 - joinGoal x goal value)
-    float joinBase = 0.4f;
-    float joinAggression = 0.75f;
-    float joinHelpfulness = 0.75f;
-    float joinGoal = 0.75f;
-    // Retreat lines: retreatHealth x (1 + retreatCautionHealth x caution), retreatOdds + retreatCautionOdds x caution
-    float retreatCautionHealth = 0.5f;
-    float retreatCautionOdds = 0.1f;
+    float joinYards{};
+    float joinBase{};
+    float joinAggression{};
+    float joinHelpfulness{};
+    float joinGoal{};
+    // Retreat lines: health below retreatHealth x (1 + retreatCautionHealth x caution) and the odds below
+    // min(0.5, retreatOdds + retreatCautionOdds x caution), so never while its side is ahead
+    float retreatHealth{};
+    float retreatCautionHealth{};
+    float retreatOdds{};
+    float retreatCautionOdds{};
+    // The chase and the timeouts
+    uint32_t chaseMs{};
+    float chaseYards{};
+    uint32_t noHitMs{};
+    uint32_t stalemateMs{};
+    // Death
+    float ghostEnemyYards{};
+    uint32_t ghostRecheckMs{};
+    uint32_t ghostSpiritHealerMs{};
+    uint32_t avoidMinMs{};
+    uint32_t avoidMaxMs{};
+    // Grudges
+    uint32_t maxGrudges{};
+    float grudgeHalfLifeDays{};
+
+    // Structural shape weights [E]
+    // Strength of one player to the viewer: health x levelStep^(level - viewer level)
+    float levelStep = 1.1f;
+    float oddsRamp = 0.12f;
     // Chase scale: 1 + chaseAggression x aggression - chaseCourtesy x courtesy (at least MIN_CHASE_SCALE)
     float chaseAggression = 0.5f;
     float chaseCourtesy = 0.5f;
@@ -108,41 +113,48 @@ struct FightRuleValues
     float grudgePatience = 0.5f;
     float grudgeForgetBelow = 0.1f;
 
-    static FightRuleValues From(WorldPvpConfig const& config)
+    explicit FightRuleValues(WorldPvpConfig const& config = WorldPvpConfig{})
     {
-        FightRuleValues values;
-        values.scanYards = static_cast<float>(config.ScanYards);
-        values.rollAgainMs = config.RollAgainSeconds * MS_PER_SECOND;
-        values.minGapMs = config.MinGapMinutes * MS_PER_MINUTE;
-        values.aggressionOffBelow = config.AggressionOffBelow;
-        values.hoursAtZero = config.HoursAtZero;
-        values.hoursAtOne = config.HoursAtOne;
-        values.chanceCap = std::clamp(config.ChanceCap, 0.0f, 1.0f);
-        values.greenFactor = config.GreenFactor;
-        values.yellowFactor = config.YellowFactor;
-        values.orangeDaring = config.OrangeDaring;
-        values.orangeCareful = config.OrangeCareful;
-        values.courtesy = config.Courtesy;
-        values.grudgeFactor = std::max(config.GrudgeFactor, 1.0f);
-        values.resurrectedMs = config.ResurrectedSeconds * MS_PER_SECOND;
-        values.graveyardYards = static_cast<float>(config.GraveyardYards);
-        values.calmYards = static_cast<float>(config.CalmYards);
-        values.calmMs = config.CalmMinutes * MS_PER_MINUTE;
-        values.joinYards = static_cast<float>(config.JoinYards);
-        values.retreatHealth = static_cast<float>(config.RetreatHealthPercent) / 100.0f;
-        values.retreatOdds = config.RetreatOdds;
-        values.chaseMs = config.ChaseSeconds * MS_PER_SECOND;
-        values.chaseYards = static_cast<float>(config.ChaseYards);
-        values.noHitMs = config.NoHitSeconds * MS_PER_SECOND;
-        values.stalemateMs = config.StalemateSeconds * MS_PER_SECOND;
-        values.ghostEnemyYards = static_cast<float>(config.GhostEnemyYards);
-        values.ghostRecheckMs = std::max<uint32_t>(config.GhostRecheckSeconds, 1) * MS_PER_SECOND;
-        values.ghostSpiritHealerMs = config.GhostSpiritHealerSeconds * MS_PER_SECOND;
-        values.avoidMinMs = config.AvoidMinMinutes * MS_PER_MINUTE;
-        values.avoidMaxMs = std::max(config.AvoidMaxMinutes, config.AvoidMinMinutes) * MS_PER_MINUTE;
-        values.maxGrudges = config.MaxGrudges;
-        values.grudgeHalfLifeDays = static_cast<float>(config.GrudgeHalfLifeDays);
-        return values;
+        auto const share = [](float value, float maximum)
+        { return std::isfinite(value) ? std::clamp(value, 0.0f, maximum) : 0.0f; };
+        scanYards = static_cast<float>(config.ScanYards);
+        rollAgainMs = config.RollAgainSeconds * MS_PER_SECOND;
+        minGapMs = config.MinGapMinutes * MS_PER_MINUTE;
+        aggressionOffBelow = config.AggressionOffBelow;
+        hoursAtZero = config.HoursAtZero;
+        hoursAtOne = config.HoursAtOne;
+        chanceCap = share(config.ChanceCap, 1.0f);
+        greenFactor = share(config.GreenFactor, 1.0f);
+        yellowFactor = share(config.YellowFactor, 1.0f);
+        orangeDaring = share(config.OrangeDaring, 1.0f);
+        orangeCareful = share(config.OrangeCareful, 1.0f);
+        courtesy = config.Courtesy;
+        grudgeFactor = std::isfinite(config.GrudgeFactor) ? std::max(config.GrudgeFactor, 1.0f) : 1.0f;
+        oddsCaution = share(config.OddsCaution, EVEN_ODDS);
+        resurrectedMs = config.ResurrectedSeconds * MS_PER_SECOND;
+        graveyardYards = static_cast<float>(config.GraveyardYards);
+        calmYards = static_cast<float>(config.CalmYards);
+        calmMs = config.CalmMinutes * MS_PER_MINUTE;
+        joinYards = static_cast<float>(config.JoinYards);
+        joinBase = share(config.JoinBase, 1.0f);
+        joinAggression = share(config.JoinAggression, 1.0f);
+        joinHelpfulness = share(config.JoinHelpfulness, 1.0f);
+        joinGoal = share(config.JoinGoal, 1.0f);
+        retreatHealth = static_cast<float>(std::min<uint32_t>(config.RetreatHealthPercent, 100)) / 100.0f;
+        retreatCautionHealth = share(config.RetreatCautionHealth, 1.0f);
+        retreatOdds = share(config.RetreatOdds, EVEN_ODDS);
+        retreatCautionOdds = share(config.RetreatCautionOdds, EVEN_ODDS);
+        chaseMs = config.ChaseSeconds * MS_PER_SECOND;
+        chaseYards = static_cast<float>(config.ChaseYards);
+        noHitMs = config.NoHitSeconds * MS_PER_SECOND;
+        stalemateMs = config.StalemateSeconds * MS_PER_SECOND;
+        ghostEnemyYards = static_cast<float>(config.GhostEnemyYards);
+        ghostRecheckMs = std::max<uint32_t>(config.GhostRecheckSeconds, 1) * MS_PER_SECOND;
+        ghostSpiritHealerMs = config.GhostSpiritHealerSeconds * MS_PER_SECOND;
+        avoidMinMs = config.AvoidMinMinutes * MS_PER_MINUTE;
+        avoidMaxMs = std::max(config.AvoidMaxMinutes, config.AvoidMinMinutes) * MS_PER_MINUTE;
+        maxGrudges = config.MaxGrudges;
+        grudgeHalfLifeDays = static_cast<float>(config.GrudgeHalfLifeDays);
     }
 };
 
@@ -322,9 +334,11 @@ struct StartDecision
     FightReason reason = FightReason::Budget;
 };
 
-// Starts per hour of play at this aggression (-1..+1)
+// Starts per hour of play at this aggression (-1..+1); 0 for a value that is not a number
 inline float StartRate(float aggression, FightRuleValues const& values)
 {
+    if (!std::isfinite(aggression))
+        return 0.0f;
     float const atZero = values.hoursAtZero > 0.0f ? 1.0f / values.hoursAtZero : 0.0f;
     float const atOne = values.hoursAtOne > 0.0f ? 1.0f / values.hoursAtOne : atZero;
     float const a = std::clamp(aggression, -1.0f, 1.0f);
@@ -338,8 +352,10 @@ inline float StartRate(float aggression, FightRuleValues const& values)
 // The base probability of a chance after `sinceChanceMs` of play at `rate` per hour, capped at the chance cap
 inline float StartProbability(float rate, uint32_t sinceChanceMs, FightRuleValues const& values)
 {
+    if (!(rate > 0.0f))
+        return 0.0f;
     float const hours = static_cast<float>(sinceChanceMs) / MS_PER_HOUR;
-    return std::min(values.chanceCap, static_cast<float>(-std::expm1(-rate * hours)));
+    return std::min(static_cast<float>(-std::expm1(-rate * hours)), values.chanceCap);
 }
 
 inline float ColourFactor(Colour colour, float caution, FightRuleValues const& values)
@@ -568,12 +584,13 @@ inline JoinDecision DecideJoin(JoinInput const& input, float roll, FightRuleValu
 // --- Ending a fight ---
 
 // A participant retreats when its health is low and its side is losing (its share of the visible strength of the
-// alive participants, so deaths count through the numbers); careful bots retreat earlier
+// alive participants, so deaths count through the numbers, below even): careful bots retreat at higher health, daring
+// ones only when clearly losing
 inline bool ShouldRetreat(float health, float odds, float caution, FightRuleValues const& values)
 {
     float const c = std::clamp(caution, -1.0f, 1.0f);
     float const healthLine = values.retreatHealth * (1.0f + values.retreatCautionHealth * c);
-    float const oddsLine = values.retreatOdds + values.retreatCautionOdds * c;
+    float const oddsLine = std::min(EVEN_ODDS, values.retreatOdds + values.retreatCautionOdds * c);
     return health < healthLine && odds < oddsLine;
 }
 

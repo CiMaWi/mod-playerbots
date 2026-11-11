@@ -1258,6 +1258,19 @@ bool PlayerbotAIConfig::Initialize()
         pvpNumber("CalmMinutes", WorldPvp.CalmMinutes, 0, MaxPvpMinutes);
         WorldPvp.TestCommands =
             sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.TestCommands", WorldPvp.TestCommands, false);
+        // The shape weights of the fight rules the nights tune (FightRules.h clamps them again)
+        auto const pvpWeight = [](char const* key, float& value, float maximum)
+        {
+            float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
+            value = read >= 0.0f && read <= maximum ? read : std::clamp(value, 0.0f, maximum);
+        };
+        pvpWeight("OddsCaution", WorldPvp.OddsCaution, 0.5f);
+        pvpWeight("Join.Base", WorldPvp.JoinBase, 1.0f);
+        pvpWeight("Join.Aggression", WorldPvp.JoinAggression, 1.0f);
+        pvpWeight("Join.Helpfulness", WorldPvp.JoinHelpfulness, 1.0f);
+        pvpWeight("Join.Goal", WorldPvp.JoinGoal, 1.0f);
+        pvpWeight("Retreat.CautionHealth", WorldPvp.RetreatCautionHealth, 1.0f);
+        pvpWeight("Retreat.CautionOdds", WorldPvp.RetreatCautionOdds, 0.5f);
     }
 
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults
