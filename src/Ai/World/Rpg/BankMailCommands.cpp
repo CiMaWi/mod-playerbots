@@ -15,6 +15,7 @@
 #include "Log.h"
 #include "MailRulesInput.h"
 #include "MailRulesSelftest.h"
+#include "MailVisit.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -74,6 +75,48 @@ bool HandleMailStatusCommand(ChatHandler* handler, char const* args)
         handler->PSendSysMessage("  {}", DescribeVerdict(plan.verdicts[i]));
     if (plan.verdicts.size() > MAILS_SHOWN)
         handler->PSendSysMessage("  ... {} more mails", plan.verdicts.size() - MAILS_SHOWN);
+    return true;
+}
+
+bool HandleMailVisitCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    in >> name;
+    if (name.empty())
+    {
+        handler->PSendSysMessage("MAIL visits: {} (usage: playerbots mail visit <bot name>)", MailVisitCounters());
+        return true;
+    }
+    std::string const asked = name;
+    Player* bot = normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+    PlayerbotAI* botAI = bot && bot->IsInWorld() ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!botAI)
+    {
+        handler->SendErrorMessage("MAIL visit: no bot {} online", asked);
+        return false;
+    }
+
+    // Lab fixtures, arena bots and bots with a real master keep today's behaviour (the chat command `mail`)
+    char const* refusal = nullptr;
+    if (!PlayerbotFactory::KeepsPossessions(bot))
+        refusal = "the bot does not keep its possessions (not a persistent bot)";
+    else if (!bot->IsAlive())
+        refusal = "the bot is dead";
+    else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+        refusal = "the bot has no new rpg strategy";
+    else if (botAI->rpgInfo.bankMail.mailVisit.phase != MailVisitPhase::None)
+        refusal = "a visit runs already";
+    // World thread, between the map updates: the bot's place and its visit state are read and set at rest
+    std::optional<MailboxSpot> const spot = refusal ? std::nullopt : FindMailboxSpot(bot, refusal);
+    if (!spot || !BeginMailVisit(botAI, *spot))
+    {
+        handler->SendErrorMessage("MAIL visit {}: refused, {}", bot->GetName(), refusal ? refusal : "no visit");
+        return false;
+    }
+
+    handler->PSendSysMessage("MAIL visit {}: started at ({:.0f}, {:.0f}) on map {}, {:.0f} yd away", bot->GetName(),
+                             spot->x, spot->y, spot->mapId, spot->distance);
     return true;
 }
 

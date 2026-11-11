@@ -273,6 +273,7 @@ public:
         creators["inn bind"] = &TriggerContext::inn_bind;
         creators["travel status"] = &TriggerContext::travel_status;
         creators["inventory pressure"] = &TriggerContext::inventory_pressure;
+        creators["mail visit active"] = &TriggerContext::mail_visit_active;
         creators["can self resurrect"] = &TriggerContext::can_self_resurrect;
         creators["can fish"] = &TriggerContext::can_fish;
         creators["can use fishing bobber"] = &TriggerContext::can_use_fishing_bobber;
@@ -509,6 +510,7 @@ private:
     static Trigger* errands_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_ERRANDS); }
     static Trigger* travel_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_TRAVEL); }
     static Trigger* inventory_pressure(PlayerbotAI* botAI) { return new InventoryPressureTrigger(botAI); }
+    static Trigger* mail_visit_active(PlayerbotAI* botAI) { return new MailVisitActiveTrigger(botAI); }
     static Trigger* inn_bind(PlayerbotAI* botAI) { return new InnBindTrigger(botAI); }
     static Trigger* can_self_resurrect(PlayerbotAI* botAI) { return new SelfResurrectTrigger(botAI); }
     static Trigger* can_fish(PlayerbotAI* botAI) { return new CanFishTrigger(botAI); }

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "MailRules.h"
 #include "ObjectGuid.h"
 
 class Player;
@@ -48,26 +49,34 @@ struct BankKnowledge
 
 enum class MailVisitPhase : uint8
 {
-    None,     // no visit
-    Walk,     // on the way to the mailbox
-    List,     // at the mailbox, the mail list asked for
-    Take,     // a take (money or an item) sent, its answer awaited
-    Finished  // the visit's row written; cleared on the next update
+    None,  // no visit
+    Walk,  // on the way to the mailbox
+    List,  // at the mailbox: the next step is planned from the live list and queued
+    Take   // a step queued (mark read, take, delete), its answer awaited
 };
 
+// One mailbox visit (MailVisit.h). The plan is recomputed from the live list at every step; this keeps only what
+// the list cannot tell: the steps already answered and the takes the server refused, so nothing is sent twice.
 struct MailVisitState
 {
     MailVisitPhase phase{MailVisitPhase::None};
-    ObjectGuid mailbox;  // the mailbox object; resolved at each use
+    uint32 mapId{0};  // the mailbox's spawn, from the planner's service index
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+    ObjectGuid mailbox;  // found once the bot stands near the spawn; resolved at each use
     uint32 startedMs{0};
-    uint32 deadlineMs{0};
-    uint32 stepMs{0};  // when the current step was sent (BankMailConfig::VisitStepSeconds)
-    uint32 mailId{0};  // the mail the current step works on
-    bool answerPending{false};
+    uint32 limitMs{0};   // the visit's whole time, the walk included (BankMailConfig::MailVisitDeadlineSeconds)
+    uint32 stepTick{0};  // the world tick (game time ms) the awaited step was queued in; answered in a later tick
+    Step awaiting;
+    uint32 moneyBefore{0};              // the bot's copper when the awaited step was queued
+    MailOptions options;                // mails per visit and this visit's refused takes
+    std::vector<Step> answered;         // never queued again on this visit
+    std::vector<MailVerdict> verdicts;  // the first plan's mails, with what was really taken from each
+    bool planned{false};
     uint32 mailsOpened{0};
     uint32 moneyTaken{0};  // copper
     uint32 itemsTaken{0};
-    uint32 itemsLeft{0};  // left in the mail for lack of bag space
 };
 
 enum class BankVisitPhase : uint8

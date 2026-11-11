@@ -14,6 +14,11 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
+bool MailVisitActiveTrigger::IsActive()
+{
+    return botAI->rpgInfo.bankMail.mailVisit.phase != BankMail::MailVisitPhase::None;
+}
+
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
     switch (botAI->rpgInfo.GetStatus())

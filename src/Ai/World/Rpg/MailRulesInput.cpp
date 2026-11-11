@@ -93,10 +93,20 @@ std::vector<MailIn> BuildMailIn(PlayerbotAI* botAI)
         in.unread = !(mail->checked & MAIL_CHECK_MASK_READ);
         in.hasText = (mail->checked & MAIL_CHECK_MASK_HAS_BODY) != 0;
         in.money = mail->money;
+        bool unresolved = false;
         for (MailItemInfo const& info : mail->items)
-            if (Item const* item = bot->GetMItem(info.item_guid))
-                in.items.push_back(ReadMailItem(botAI, info.item_guid, item, sellMultiplier));
-        mails.push_back(std::move(in));
+        {
+            Item const* item = bot->GetMItem(info.item_guid);
+            if (!item)
+            {
+                unresolved = true;
+                break;
+            }
+            in.items.push_back(ReadMailItem(botAI, info.item_guid, item, sellMultiplier));
+        }
+        // A mail whose item the core did not load would look empty and be deleted with it: the bot does not see it
+        if (!unresolved)
+            mails.push_back(std::move(in));
     }
     return mails;
 }

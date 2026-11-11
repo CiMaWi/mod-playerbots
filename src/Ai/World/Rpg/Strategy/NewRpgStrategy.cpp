@@ -108,6 +108,15 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // A running mailbox visit holds the bot until it ends: above the errand start and the status update
+    triggers.push_back(
+        new TriggerNode(
+            "mail visit active",
+            {
+                NextAction("new rpg mail visit", 13.0f)
+            }
+        )
+    );
     triggers.push_back(
         new TriggerNode(
             "inn bind",
