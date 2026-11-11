@@ -10,6 +10,7 @@
 #include "CellImpl.h"
 #include "CensusMgr.h"
 #include "ChatHelper.h"
+#include "CheckMountStateAction.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
 #include "GossipDef.h"
@@ -1576,6 +1577,92 @@ void LogWalkLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, Trave
               TravelLegs::MountWord(record), record.mountedTicks, record.ticks, combat);
 }
 
+constexpr float FLY_SAMPLE_YARDS = 50.0f;  // the real-height check samples the ground ahead this far apart
+constexpr uint32 FLY_SAMPLES_MAX = 8;      // and at most this often per waypoint
+
+// A fly leg's end (WU10): its trip rows, fly_leg when done or fly_leg_failed (as walk_leg: how the bot went, its
+// seconds in combat, its seconds against the estimate; a failed takeoff's row has why instead of how the bot went),
+// then fly_height (raised when the real-height check lifted a waypoint, else planned): the highest z flown, against
+// the plan's highest z, its levels and the raises
+void LogFlyLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, TravelLegs::LegRecord const& record,
+               uint32 nowMs, uint32 elapsedMs, uint16 climbs, float peakZ, char const* how, bool done,
+               char const* why = nullptr)
+{
+    TravelRoute::Leg const& leg = data.trip.legs[index];
+    float const seconds = static_cast<float>(elapsedMs) / 1000.0f;
+    float const combat = TravelLegs::CombatSeconds(record, nowMs);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, done ? "fly_leg" : "fly_leg_failed",
+                       why ? why : TravelLegs::MountWord(record), combat,
+                       {{"seconds", seconds}, {"estimate", leg.seconds}, {"leg", static_cast<float>(index + 1)}},
+                       data.tripId);
+    float plannedZ = leg.to.z;
+    for (TravelRoute::Point const& point : leg.flightPoints)
+        plannedZ = std::max(plannedZ, point.z);
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::Trip, "fly_height", climbs ? "raised" : "planned", peakZ,
+        {{"max_z", plannedZ}, {"levels", static_cast<float>(leg.flightLevels)}, {"climbs", static_cast<float>(climbs)}},
+        data.tripId);
+    LOG_DEBUG("playerbots",
+              "[Route] {} fly leg {}/{} {}: {:.0f} yd straight, {:.0f} yd planned at {} levels up to z {:.0f}, flown "
+              "up to z {:.0f} with {} raises in {:.0f} s, estimate {:.0f} s, {:.0f} s in combat",
+              bot->GetName(), index + 1, data.trip.legs.size(), how, TravelRoute::Distance(leg.from, leg.to),
+              leg.flightYards, leg.flightLevels, plannedZ, peakZ, climbs, seconds, leg.seconds, combat);
+}
+
+// The real-height check's samples (WU10): the ground between the bot and its next waypoint in the air, buildings
+// included (vmap), searched down from far above the flight line so a roof above it counts too
+std::vector<float> SampleFlightGround(Player* bot, TravelRoute::Point const& target)
+{
+    float const fromX = bot->GetPositionX();
+    float const fromY = bot->GetPositionY();
+    float const yards = std::hypot(target.x - fromX, target.y - fromY);
+    uint32 const count = std::clamp<uint32>(static_cast<uint32>(yards / FLY_SAMPLE_YARDS) + 1, 1, FLY_SAMPLES_MAX);
+    float const top = std::max(target.z, bot->GetPositionZ()) + TravelLegs::FLY_RAISE_CAP_YARDS;
+    std::vector<float> samples;
+    samples.reserve(count);
+    for (uint32 i = 1; i <= count; ++i)
+    {
+        float const share = static_cast<float>(i) / static_cast<float>(count);
+        samples.push_back(bot->GetMapHeight(fromX + (target.x - fromX) * share, fromY + (target.y - fromY) * share, top,
+                                            true, 2.0f * TravelLegs::FLY_RAISE_CAP_YARDS));
+    }
+    return samples;
+}
+
+// A fly leg's mount (WU10): off a ground mount, then the engine's own mount action, which gives a bot without a real
+// master a flying mount where the area allows flying. A try in combat, while casting or where the bot cannot take off
+// is skipped and does not count (the follower asks again; the last fails the leg at once); a counted try that starts
+// no cast leaves its word for the fly_leg_failed row (no_strategy: no mount strategy; refused: the action was useless,
+// impossible or failed)
+bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 nowMs)
+{
+    if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(true) || CheckMountStateAction::NoTakeoffHere(bot))
+        return true;
+    TravelLegs::NoteMountTry(trip, nowMs);
+    if (bot->isMoving())
+        bot->StopMoving();
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    if (!botAI->HasStrategy("mount", BOT_STATE_NON_COMBAT))
+        trip.mountWhy = "no_strategy";
+    else if (!botAI->DoSpecificAction("check mount state", Event(), true))
+        trip.mountWhy = "refused";
+    else
+        trip.mountWhy = "";
+    return true;
+}
+
+// Why a fly leg's takeoff failed (the fly_leg_failed row's word): where the bot stands (NoTakeoffHere's words), else
+// the last try's refusal, else what the tries left: a ground mount (ground_mount) or none after the cast (no_mount)
+char const* TakeoffWord(Player* bot, TravelLegs::Trip const& trip)
+{
+    if (char const* here = CheckMountStateAction::NoTakeoffHere(bot))
+        return here;
+    if (*trip.mountWhy)
+        return trip.mountWhy;
+    return bot->IsMounted() ? "ground_mount" : "no_mount";
+}
+
 // The world log's route decision (only when it is on): the leg chain without no-op walks, why it was searched,
 // its seconds; weighed against a straight walk at run speed (when the chain is not one walk on the same map) and its
 // leg count. The route service returns one route, so no other route is searched for the row.
@@ -1610,7 +1697,11 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     auto* data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (!data)
         return false;
-    if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, bot->IsInFlight()))
+    // A trip never ends in the air: on a taxi or on its own fly leg it goes past the deadline
+    bool const flyLeg = data->trip.legIdx < data->trip.legs.size() &&
+                        data->trip.legs[data->trip.legIdx].type == TravelRoute::LegType::Fly;
+    if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds,
+                                 bot->IsInFlight() || (flyLeg && bot->IsFlying())))
     {
         EndTrip(*data, "deadline", "abort:deadline");
         return true;
@@ -1635,6 +1726,15 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     TravelLegs::Observation seen;
     seen.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     seen.inFlight = bot->IsInFlight();
+    seen.flyingMount = bot->IsMounted() && (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura());
+    // Flying flags count only on the flying mount: a dismount in the air can leave them (no client sends the landing)
+    seen.flying = seen.flyingMount && bot->IsFlying() && !seen.inFlight;
+    // Before a fly leg's takeoff: may the bot mount a flyer and lift off here (a no-fly spot fails the leg at once).
+    // Read also on the walk leg before it, so the tick that ends the walk and starts the flight already knows
+    auto const isFly = [&](size_t idx)
+    { return idx < data->trip.legs.size() && data->trip.legs[idx].type == TravelRoute::LegType::Fly; };
+    if (!data->trip.seenInFlight && (isFly(data->trip.legIdx) || isFly(data->trip.legIdx + 1)))
+        seen.takeoffHere = !CheckMountStateAction::NoTakeoffHere(bot);
     seen.money = bot->GetMoney();
     seen.stuck = data->stuck;
     seen.nowMs = getMSTime();
@@ -1643,7 +1743,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     TravelLegs::LegRecord const recordBefore = trip.record;  // Advance starts a new leg's record
     uint32 const legBefore = trip.legIdx;
     uint32 const legStartBefore = trip.legStartMs;
-    TravelLegs::Decision const next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
+    uint16 const climbsBefore = trip.climbs;
+    float const peakBefore = trip.peakZ;
+    TravelLegs::Decision next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
     // The legs passed this tick (no-op walks are no legs to a reader): id the trip, amount the leg's seconds
     for (uint32 i = legBefore; i < trip.legIdx && i < trip.legs.size(); ++i)
     {
@@ -1653,6 +1755,18 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), data->tripId, seconds);
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Walk)
             LogWalkLeg(bot, *data, i, recordBefore, seen.nowMs, seen.nowMs - legStartBefore, "done", true);
+        if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Fly)
+        {
+            LogFlyLeg(bot, *data, i, recordBefore, seen.nowMs, seen.nowMs - legStartBefore, climbsBefore, peakBefore,
+                      "done", true);
+            CheckMountStateAction::LandAndDismount(bot);
+        }
+    }
+    // Once per waypoint in the air: the real ground ahead (the flight map has no buildings) may lift it
+    if (next.act == TravelLegs::Act::Fly && TravelLegs::NeedsHeightCheck(trip))
+    {
+        TravelLegs::CheckHeight(data->trip, SampleFlightGround(bot, trip.waypoints[trip.next].at));
+        next.target = trip.waypoints[trip.next].at;
     }
     switch (next.act)
     {
@@ -1666,6 +1780,14 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
             return TalkFlightMaster(*data);
         case TravelLegs::Act::UseHearth:
             return UseHearth(*data);
+        case TravelLegs::Act::Mount:
+            return MountToFly(bot, botAI, data->trip, seen.nowMs);
+        case TravelLegs::Act::Fly:
+            // On the flying mount MoveTo gives the bot the flying flags and a straight line to the point, no path;
+            // a move still running keeps the follower in charge
+            MoveTo(next.target.mapId, next.target.x, next.target.y, next.target.z, false, false, false, true,
+                   MovementPriority::MOVEMENT_NORMAL, true);
+            return true;
         case TravelLegs::Act::Ride:
             // As the random flight status does: nothing else to do in the air
             ContinueCrossMapTaxi();
@@ -1695,6 +1817,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     request.noDirect = data.trip.noDirect;
     // The walks this bot died on twice (TravelLegs::NoteDeath): their graph edges are left out, for its trip only
     request.avoidEdges = data.trip.avoidEdges;
+    // After a failed fly leg the trip's later routes walk (TravelLegs::AfterFailure)
+    request.noFly = data.trip.noFly;
     if (!TravelRoute::RouteService::Instance().Submit(bot->GetGUID().GetRawValue(), request,
                                                       TravelRoute::ConfiguredParams()))
     {
@@ -1883,6 +2007,21 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         uint32 const now = getMSTime();
         LogWalkLeg(bot, data, trip.legIdx, trip.record, now, now - trip.legStartMs,
                    reason == TravelLegs::FailReason::Timeout ? "timed out" : TravelLegs::FailWord(reason), false);
+    }
+    // A failed fly leg's rows; down away from its end after the takeoff is a fall (or a dismount in the air): its
+    // height above the ground now. A bot that fails in the air flies on along the next route's ground waypoints
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly)
+    {
+        uint32 const now = getMSTime();
+        LogFlyLeg(bot, data, trip.legIdx, trip.record, now, now - trip.legStartMs, trip.climbs, trip.peakZ,
+                  reason == TravelLegs::FailReason::Timeout ? "timed out" : TravelLegs::FailWord(reason), false,
+                  reason == TravelLegs::FailReason::Takeoff ? TakeoffWord(bot, trip) : nullptr);
+        if (reason == TravelLegs::FailReason::Landing)
+        {
+            float const ground = bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            float const height = ground > INVALID_HEIGHT ? std::max(0.0f, bot->GetPositionZ() - ground) : 0.0f;
+            EventLog::Emit(bot, Upkeep::EVENT_FLIGHT_FALL, "fall", data.tripId, std::lround(height));
+        }
     }
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Hearth)
         data.noHearth = true;

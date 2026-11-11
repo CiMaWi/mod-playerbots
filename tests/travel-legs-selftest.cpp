@@ -12,9 +12,12 @@
 // flight and after a replan, the Travel event sources, and the named places of `playerbots route go` (TravelPlaces.h;
 // their graph check is in route-rules-selftest). Also what a stuck walk leaves out of the trip's later routes (a direct
 // walk, the first hop, the goal hop; a second stuck walk at one waypoint ends the trip) and the late answers asked
-// again. Deaths on a leg (the second fails it, the third ends the trip) and a leg's mount and combat record.
+// again. Deaths on a leg (the second fails it, the third ends the trip) and a leg's mount and combat record. Fly legs
+// (own flying mount): their waypoints, takeoff, height check, landing, failures and the replan without flying.
+#include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <variant>
 #include <vector>
@@ -107,6 +110,10 @@ char const* ActWord(Act act)
             return "hearth";
         case Act::Ride:
             return "ride";
+        case Act::Mount:
+            return "mount";
+        case Act::Fly:
+            return "fly";
         case Act::Wait:
             return "wait";
         case Act::Done:
@@ -544,12 +551,13 @@ void CheckFlightFailureAndDeadline()
 void CheckEventSources()
 {
     bool legs = true;
-    for (LegType const type : {LegType::Walk, LegType::Portal, LegType::Flight, LegType::Transport, LegType::Hearth})
+    for (LegType const type :
+         {LegType::Walk, LegType::Portal, LegType::Flight, LegType::Transport, LegType::Hearth, LegType::Fly})
         legs = legs && std::string(TravelLegs::LegDoneSource(type)) ==
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
     bool reasons = true;
-    for (int r = 0; r <= static_cast<int>(FailReason::Death); ++r)
+    for (int r = 0; r <= static_cast<int>(FailReason::Takeoff); ++r)
     {
         FailReason const reason = static_cast<FailReason>(r);
         std::string const word = TravelLegs::FailWord(reason);
@@ -619,6 +627,159 @@ void CheckDeathsAndRecord()
           "record: a new leg starts anew, a running combat counts from the leg change");
 }
 
+// A fly leg on map 1: takeoff at z 10, flight points at 80, 80, 90, landing at z 12 600 yd on; 40 s, clearance 30 yd
+Leg FlyLeg()
+{
+    Leg leg = MakeLeg(LegType::Fly, {1, 0.0f, 0.0f, 10.0f}, {1, 600.0f, 0.0f, 12.0f}, {}, 40.0f);
+    leg.flightPoints = {{1, 0.0f, 0.0f, 10.0f},
+                        {1, 100.0f, 0.0f, 80.0f},
+                        {1, 300.0f, 0.0f, 80.0f},
+                        {1, 500.0f, 0.0f, 90.0f},
+                        {1, 600.0f, 0.0f, 12.0f}};
+    leg.flightClearance = 30.0f;
+    return leg;
+}
+
+Observation Flying(Point bot, std::uint32_t nowMs, bool mounted, bool flying)
+{
+    Observation seen = At(bot, nowMs);
+    seen.flyingMount = mounted;
+    seen.flying = flying;
+    return seen;
+}
+
+// Fly legs: the derived climb and descent points, the takeoff (mount, tried again every 5 s), the waypoints in the
+// air, the real-height check (a building raises the next waypoint, capped, once per waypoint, never the landing), the
+// landing at the end (Done) or away from it (Landing), the leg's timeout, the takeoff's failures (at once where the bot
+// cannot take off, after FLY_MOUNT_TRIES real mount tries; a skipped try does not count), a wrong map, and the replan
+// after a failed fly leg without flying (noFly)
+void CheckFlyLeg()
+{
+    using TravelLegs::Recovery;
+    using TravelLegs::RequiredZ;
+    Leg const leg = FlyLeg();
+    std::vector<TravelLegs::Waypoint> const points = TravelLegs::Waypoints(leg, NodeAt);
+    auto const about = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
+    Check(points.size() == 7 && points[0].at.z == 10.0f && about(points[1].at.x, 30.0f) && points[1].at.z == 80.0f &&
+              points[2].at.x == 100.0f && about(points[5].at.x, 570.0f) && points[5].at.z == 90.0f &&
+              points[6].at.x == 600.0f && points[6].at.z == 12.0f,
+          "fly: takeoff, a climb point 30 yd on at the first height, the flight, a descent point 30 yd before the "
+          "landing at the last height, the landing");
+    Leg bare = leg;
+    bare.flightPoints.clear();
+    Check(TravelLegs::Waypoints(bare, NodeAt).size() == 2, "fly: without a planned flight, its two ends");
+    Check(TravelLegs::LegTimeoutMs(leg) == 140 * 1000, "fly: timeout 40 s x 2 + 60 s");
+
+    Check(RequiredZ({}, 80.0f, 30.0f) == 80.0f, "height: no samples, no raise");
+    Check(RequiredZ({60.0f}, 80.0f, 30.0f) == 80.0f, "height: 20 yd above the ground ahead is enough");
+    Check(RequiredZ({70.0f}, 80.0f, 30.0f) == 100.0f, "height: 10 yd above a roof climbs to the roof + 30 yd");
+    Check(RequiredZ({70.0f}, 80.0f, 5.0f) == 85.0f, "height: the clearance is at least 15 yd");
+    Check(RequiredZ({5000.0f}, 80.0f, 30.0f) == 330.0f, "height: a raise is capped 250 yd above the plan");
+    Check(RequiredZ({-200000.0f, std::numeric_limits<float>::quiet_NaN()}, 80.0f, 30.0f) == 80.0f,
+          "height: invalid samples are no ground");
+
+    // Take off, climb, fly with a building in the way, land at the end
+    Trip trip = StartedTrip({leg}, 0);
+    Point const takeoff = leg.from;
+    Check(TravelLegs::StepLeg(trip, Flying(takeoff, 1000, false, false)).act == Act::Mount,
+          "fly: on foot it mounts first");
+    TravelLegs::NoteMountTry(trip, 1000);
+    Check(TravelLegs::StepLeg(trip, Flying(takeoff, 3000, false, false)).act == Act::Wait,
+          "fly: no second mount cast within 5 s");
+    Check(TravelLegs::StepLeg(trip, Flying(takeoff, 6000, false, false)).act == Act::Mount,
+          "fly: the mount is tried again after 5 s");
+    TravelLegs::NoteMountTry(trip, 6000);
+    Decision const up = TravelLegs::StepLeg(trip, Flying(takeoff, 7000, true, false));
+    Check(up.act == Act::Fly && about(up.target.x, 30.0f) && up.target.z == 80.0f,
+          "fly: mounted, it climbs to the climb point");
+    Check(TravelLegs::NeedsHeightCheck(trip), "fly: the height check is due for the climb point");
+    Check(!TravelLegs::CheckHeight(trip, {20.0f, 40.0f}) && !TravelLegs::NeedsHeightCheck(trip) && trip.climbs == 0,
+          "fly: open ground below: no raise, one check per waypoint");
+    Decision const air = TravelLegs::StepLeg(trip, Flying({1, 28.0f, 0.0f, 75.0f}, 9000, true, true));
+    Check(air.act == Act::Fly && air.target.x == 100.0f && trip.seenInFlight && trip.peakZ == 75.0f,
+          "fly: past the climb point it heads for the first flight point");
+    Check(TravelLegs::CheckHeight(trip, {60.0f, 110.0f, TravelLegs::FLY_NO_GROUND - 1.0f}) && trip.climbs == 1 &&
+              trip.waypoints[trip.next].at.z == 140.0f,
+          "fly: a 110 yd building ahead raises the waypoint to 110 + 30 yd");
+    Check(!TravelLegs::CheckHeight(trip, {500.0f}) && trip.climbs == 1, "fly: a waypoint is checked once");
+    Decision const over = TravelLegs::StepLeg(trip, Flying({1, 100.0f, 0.0f, 138.0f}, 20000, true, true));
+    Check(over.act == Act::Fly && over.target.x == 300.0f && trip.peakZ == 138.0f,
+          "fly: over the building, on to the next flight point");
+    Decision const past = TravelLegs::StepLeg(trip, Flying({1, 500.0f, 0.0f, 90.0f}, 40000, true, true));
+    Check(past.act == Act::Fly && past.target.x == 570.0f && past.target.z == 90.0f,
+          "fly: a waypoint passed counts, then the descent point");
+    Trip atLanding = trip;
+    atLanding.next = 6;
+    Check(!TravelLegs::NeedsHeightCheck(atLanding), "fly: the landing is never raised");
+    Check(TravelLegs::StepLeg(trip, Flying({1, 600.0f, 0.0f, 13.0f}, 50000, true, false)).act == Act::Done,
+          "fly: the landing reached: done");
+
+    // Down near the end (within 30 yd) is done; down elsewhere after the takeoff fails as landing
+    Trip near = StartedTrip({leg}, 0);
+    TravelLegs::StepLeg(near, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
+    Check(TravelLegs::StepLeg(near, Flying({1, 590.0f, 10.0f, 12.0f}, 30000, true, false)).act == Act::Done,
+          "fly: down within 30 yd of the end: done");
+    Trip fell = StartedTrip({leg}, 0);
+    TravelLegs::StepLeg(fell, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
+    Decision const down = TravelLegs::StepLeg(fell, Flying({1, 300.0f, 0.0f, 10.0f}, 20000, false, false));
+    Check(down.act == Act::Fail && down.reason == FailReason::Landing, "fly: down away from the end fails as landing");
+    Check(TravelLegs::AfterFailure(fell, FailReason::Landing) == Recovery::Replan && fell.noFly && fell.replans == 1,
+          "fly: a failed fly leg replans without flying");
+
+    // The leg's timeout in the air; the takeoff's failures; a wrong map
+    Trip slow = StartedTrip({leg}, 0);
+    TravelLegs::StepLeg(slow, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
+    Decision const late = TravelLegs::StepLeg(slow, Flying({1, 300.0f, 50.0f, 80.0f}, 141000, true, true));
+    Check(late.act == Act::Fail && late.reason == FailReason::Timeout, "fly: past 140 s in the air: timeout");
+    Trip tries = StartedTrip({leg}, 0);
+    bool triedThrice = true;
+    for (std::uint32_t const at : {1000u, 6000u, 11000u})
+    {
+        triedThrice = triedThrice && TravelLegs::StepLeg(tries, Flying(takeoff, at, false, false)).act == Act::Mount;
+        TravelLegs::NoteMountTry(tries, at);
+    }
+    Check(triedThrice && tries.mountTries == 3, "fly: three real mount tries 5 s apart");
+    Check(TravelLegs::StepLeg(tries, Flying(takeoff, 13000, false, false)).act == Act::Wait,
+          "fly: the third try's cast gets its 5 s");
+    Decision const unmounted = TravelLegs::StepLeg(tries, Flying(takeoff, 16000, false, false));
+    Check(unmounted.act == Act::Fail && unmounted.reason == FailReason::Takeoff,
+          "fly: no flying mount after three real tries: takeoff");
+    Trip skipped = StartedTrip({leg}, 0);
+    bool askedAgain = true;
+    for (std::uint32_t at = 1000; at <= 61000; at += 1000)
+        askedAgain = askedAgain && TravelLegs::StepLeg(skipped, Flying(takeoff, at, false, false)).act == Act::Mount;
+    Check(askedAgain && skipped.mountTries == 0, "fly: tries the glue skipped (combat, a cast) do not count");
+    Trip inside = StartedTrip({leg}, 0);
+    Observation indoors = Flying(takeoff, 1000, false, false);
+    indoors.takeoffHere = false;
+    Decision const noTakeoff = TravelLegs::StepLeg(inside, indoors);
+    Check(noTakeoff.act == Act::Fail && noTakeoff.reason == FailReason::Takeoff && inside.mountTries == 0,
+          "fly: no takeoff where the bot stands (indoors, no-fly area, water) fails at once");
+    Trip overCity = StartedTrip({leg}, 0);
+    TravelLegs::StepLeg(overCity, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
+    Observation aloft = Flying({1, 150.0f, 0.0f, 80.0f}, 9000, true, true);
+    aloft.takeoffHere = false;
+    Check(TravelLegs::StepLeg(overCity, aloft).act == Act::Fly, "fly: in the air the spot below does not matter");
+    Trip moved = StartedTrip({leg}, 0);
+    Decision const away = TravelLegs::StepLeg(moved, Flying({0, 50.0f, 0.0f, 80.0f}, 5000, true, true));
+    Check(away.act == Act::Fail && away.reason == FailReason::WrongMap, "fly: on another map: wrong map");
+
+    // noFly only after a fly leg's own failure; a stuck report on a fly leg avoids no node
+    Trip walking = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[2], {0, 1, 2}, 30.0f)});
+    Check(TravelLegs::AfterFailure(walking, FailReason::Timeout) == Recovery::Replan && !walking.noFly,
+          "fly: a failed walk keeps flying");
+    Trip unanswered = StartedTrip({leg}, 0);
+    TravelLegs::AfterFailure(unanswered, FailReason::NoAnswer);
+    Check(!unanswered.noFly, "fly: a late route answer keeps flying");
+    Trip stuck = StartedTrip({leg}, 0);
+    Check(!TravelLegs::NoteStuck(stuck) && stuck.avoid.empty() && !stuck.noDirect,
+          "fly: a stuck report on a fly leg avoids nothing");
+    Check(std::string(TravelLegs::LegDoneSource(LegType::Fly)) == "leg_done:fly" &&
+              std::string(TravelLegs::LegFailedSource(FailReason::Takeoff)) == "leg_failed:takeoff" &&
+              std::string(TravelLegs::AbortSource(FailReason::Takeoff)) == "abort:takeoff",
+          "fly: event words");
+}
+
 void CheckPlaces()
 {
     auto const thunderBluff = TravelPlaces::Resolve("Thunder Bluff");
@@ -675,6 +836,7 @@ int main()
     CheckFlightFailureAndDeadline();
     CheckEventSources();
     CheckDeathsAndRecord();
+    CheckFlyLeg();
     CheckPlaces();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

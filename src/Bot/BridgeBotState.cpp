@@ -214,7 +214,8 @@ void ReadRoute(Player* bot, std::string const& argument, std::vector<BotStateIte
         auto const started = std::chrono::steady_clock::now();
         TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *goal);
         std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
-        in.route = TravelRoute::Search(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams());
+        // The ground route (no fly legs): flight searches run only on the route service's workers (contract C3)
+        in.route = TravelRoute::GroundSearch(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams());
         auto const us =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
         if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "bridge route topic"))

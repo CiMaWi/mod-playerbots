@@ -8,6 +8,7 @@
 #include "PlayerbotsDatabase.h"
 #include "AreaDefines.h"
 #include "BattleGroundTactics.h"
+#include "BattlefieldMgr.h"
 #include "BattlegroundEY.h"
 #include "BattlegroundWS.h"
 #include "DBCStores.h"
@@ -265,7 +266,7 @@ void CheckMountStateAction::Dismount()
     ClearStaleFlightFlags();
 }
 
-void CheckMountStateAction::ClearStaleFlightFlags()
+static void ClearStaleFlightFlagsOf(Player* bot)
 {
     if (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura())
         return;
@@ -276,6 +277,20 @@ void CheckMountStateAction::ClearStaleFlightFlags()
         if (!bot->IsRooted())
             bot->SendMovementFlagUpdate();
     }
+}
+
+void CheckMountStateAction::ClearStaleFlightFlags() { ClearStaleFlightFlagsOf(bot); }
+
+void CheckMountStateAction::LandAndDismount(Player* bot)
+{
+    if (!bot || !bot->IsInWorld())
+        return;
+    if (bot->isMoving())
+        bot->StopMoving();
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    ClearStaleFlightFlagsOf(bot);
+    CompleteDismount(bot);
 }
 
 void CheckMountStateAction::CompleteDismount(Player* bot)
@@ -496,22 +511,47 @@ bool CheckMountStateAction::ShouldDismountForMaster(Player* master) const
     return !isMasterMounted && bot->IsMounted();
 }
 
-static bool BotCanUseFlyingMount(Player const* bot)
+bool CheckMountStateAction::RidingAllowsFlying(Player const* bot, uint32 virtualMapId)
 {
     if (bot->GetPureSkillValue(SKILL_RIDING) < 225)
         return false;
+    return virtualMapId != MAP_NORTHREND || bot->HasSpell(SPELL_COLD_WEATHER_FLYING);
+}
 
+int32 CheckMountStateAction::FlyingMountSpeed(Player const* bot)
+{
+    MountData const data = CollectMountData(bot);
+    auto const flying = data.allSpells.find(1);
+    if (flying == data.allSpells.end() || flying->second.empty())
+        return 0;
+    // The scaling Winged Steed's own points are not its flight speed: at least the slow flyer's
+    return std::max(flying->second.rbegin()->first, 149);
+}
+
+static bool BotCanUseFlyingMount(Player const* bot)
+{
     AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetAreaId());
     if (!area || !area->IsFlyable())
         return false;
     if (area->flags & AREA_FLAG_NO_FLY_ZONE)
         return false;
 
-    uint32 const vmap = GetVirtualMapForMapAndZone(bot->GetMapId(), bot->GetZoneId());
-    if (vmap == MAP_NORTHREND && !bot->HasSpell(SPELL_COLD_WEATHER_FLYING))
-        return false;
+    uint32 const virtualMapId = GetVirtualMapForMapAndZone(bot->GetMapId(), bot->GetZoneId());
+    return CheckMountStateAction::RidingAllowsFlying(bot, virtualMapId);
+}
 
-    return true;
+char const* CheckMountStateAction::NoTakeoffHere(Player const* bot)
+{
+    if (bot->InBattleground() || !BotCanUseFlyingMount(bot))
+        return "no_fly_area";
+    if (Battlefield const* battlefield = sBattlefieldMgr->GetBattlefieldToZoneId(bot->GetZoneId()))
+        if (!battlefield->CanFlyIn())
+            return "battle";
+    if (!bot->IsOutdoors())
+        return "indoors";
+    if (bot->IsInWater())
+        return "water";
+    return nullptr;
 }
 
 int32 CheckMountStateAction::CalculateMasterMountSpeed(Player* master) const

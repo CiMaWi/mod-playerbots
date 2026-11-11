@@ -13,6 +13,7 @@
 // by time: time only fails it. A failed leg asks for a new route (at most MAX_REPLANS per trip), never a teleport.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <utility>
 #include <variant>
@@ -52,6 +53,14 @@ constexpr std::size_t AVOID_NODES = 4;                // route ends a trip leave
 constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leaves out after deaths on them
 constexpr std::uint8_t LEG_DEATHS = 2;                // deaths on one leg fail it (FailReason::Death)
 constexpr std::uint8_t TRIP_DEATHS = 3;               // deaths on one trip end it
+// Fly legs (own flying mount, WU10)
+constexpr float FLY_WAYPOINT_YARDS = 25.0f;  // a flight waypoint is reached this close (3D)
+constexpr float FLY_CLIMB_YARDS = 30.0f;     // the climb after the takeoff and the descent before the landing
+constexpr std::uint8_t FLY_MOUNT_TRIES = 3;  // real mount tries (NoteMountTry) before the takeoff fails
+constexpr std::uint32_t FLY_MOUNT_RETRY_MS = 5 * 1000;  // a mount cast is tried again after this
+constexpr float FLY_MIN_CLEARANCE_YARDS = 15.0f;        // the real-height check: at least this above the ground ahead
+constexpr float FLY_RAISE_CAP_YARDS = 250.0f;           // a raise lifts a waypoint at most this far above the plan
+constexpr float FLY_NO_GROUND = -50000.0f;              // a height sample at or below: no ground found there
 
 enum class Act : std::uint8_t
 {
@@ -60,6 +69,8 @@ enum class Act : std::uint8_t
     TalkFlightMaster,  // at the flight master of the leg's start: learn the node, pay, take off
     UseHearth,         // the hearthstone leg: cast it (wait for the cooldown and the cast)
     Ride,              // in flight (a cross-map flight continues)
+    Mount,             // a fly leg: mount a mount that flies here, where the bot stands
+    Fly,               // a fly leg: MoveTo(target) with its z on the flying mount (no path generation in the air)
     Wait,              // nothing to do this tick (a sent trigger or an activated taxi takes effect)
     Done,              // the leg ended (Advance starts the next one)
     Arrived,           // the last leg ended
@@ -81,7 +92,8 @@ enum class FailReason : std::uint8_t
     Taxi,         // no flight master at the leg's start, the path is not discovered, or the core refused the taxi
     Hearth,       // the hearthstone is missing or its cast failed
     OffMesh,      // the bot stands off the walkable mesh (MoveFarTo's off-mesh check): no walk can start there
-    Death         // the bot died LEG_DEATHS times on the leg or TRIP_DEATHS times on the trip (NoteLife)
+    Death,        // the bot died LEG_DEATHS times on the leg or TRIP_DEATHS times on the trip (NoteLife)
+    Takeoff       // a fly leg: no takeoff where the bot stands, or no flying mount after FLY_MOUNT_TRIES tries
 };
 
 inline char const* FailWord(FailReason reason)
@@ -116,6 +128,8 @@ inline char const* FailWord(FailReason reason)
             return "off_mesh";
         case FailReason::Death:
             return "death";
+        case FailReason::Takeoff:
+            return "takeoff";
     }
     return "?";
 }
@@ -137,6 +151,8 @@ inline char const* LegDoneSource(LegType type)
             return "leg_done:transport";
         case LegType::Hearth:
             return "leg_done:hearth";
+        case LegType::Fly:
+            return "leg_done:fly";
     }
     return "leg_done:?";
 }
@@ -173,6 +189,8 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:off_mesh";
         case FailReason::Death:
             return "leg_failed:death";
+        case FailReason::Takeoff:
+            return "leg_failed:takeoff";
     }
     return "leg_failed:?";
 }
@@ -209,6 +227,8 @@ inline char const* AbortSource(FailReason reason)
             return "abort:off_mesh";
         case FailReason::Death:
             return "abort:death";
+        case FailReason::Takeoff:
+            return "abort:takeoff";
     }
     return "abort:?";
 }
@@ -223,16 +243,20 @@ struct Waypoint
 struct Observation
 {
     Point bot;
-    bool inFlight{false};
-    std::uint32_t money{0};  // copper
-    bool stuck{false};       // MoveFarTo gave the current waypoint up (a traveller does not go IDLE there)
-    std::uint32_t nowMs{0};  // getMSTime()
+    bool inFlight{false};     // on a taxi
+    bool flyingMount{false};  // on a mount that flies here (a fly leg's takeoff)
+    bool flying{false};       // in the air on it (MOVEMENTFLAG_FLYING); no taxi
+    bool takeoffHere{true};   // a fly leg: the bot may mount a flyer and lift off where it stands (outdoors, a flying
+                              // area by its real area, not in water, no battle)
+    std::uint32_t money{0};   // copper
+    bool stuck{false};        // MoveFarTo gave the current waypoint up (a traveller does not go IDLE there)
+    std::uint32_t nowMs{0};   // getMSTime()
 };
 
 struct Decision
 {
     Act act{Act::Wait};
-    Point target;  // Walk: where to; UseTrigger, TalkFlightMaster: the leg's start; Ride: the leg's end
+    Point target;  // Walk, Fly: where to; UseTrigger, TalkFlightMaster, Mount: the leg's start; Ride: the leg's end
     FailReason reason{FailReason::None};
 };
 
@@ -259,7 +283,17 @@ struct Trip
     bool approached{false};     // portal: the bot reached the trigger's node; from there it heads for the trigger
     bool triggered{false};      // portal: the area trigger was sent
     bool taxiActivated{false};  // flight: the taxi was taken (fare paid)
-    bool seenInFlight{false};   // flight: the bot was seen in flight
+    bool seenInFlight{false};   // flight: the bot was seen in flight; fly: in the air
+    // fly: the waypoint the real-height check looked at last (NeedsHeightCheck), its raises, the highest z flown, the
+    // real mount tries and the last one's time (NoteMountTry), and why the last try did not start a cast ("": it did;
+    // the glue's word for the fly_leg_failed row)
+    std::uint32_t heightChecked{0};
+    std::uint16_t climbs{0};
+    float peakZ{0.0f};
+    std::uint8_t mountTries{0};
+    std::uint32_t mountTriedMs{0};
+    char const* mountWhy{""};
+    bool noFly{false};  // after a failed fly leg: later routes of the trip fly no more (Request::noFly)
     std::uint8_t replans{0};
     std::uint8_t resubmits{0};         // route requests asked again after a late or lost answer (Resubmit)
     std::vector<std::uint32_t> avoid;  // after stuck walks: nodes later routes neither start nor end at (NoteStuck)
@@ -335,6 +369,7 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
         case LegType::Portal:
             return PORTAL_TIMEOUT_MS;
         case LegType::Flight:
+        case LegType::Fly:
             return static_cast<std::uint32_t>(leg.seconds * FLIGHT_TIMEOUT_FACTOR * 1000.0f) + LEG_SLACK_MS;
         case LegType::Hearth:
             // The route's seconds hold the cooldown wait and the cast
@@ -344,11 +379,56 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
     }
 }
 
+// A fly leg's points (WU9 review NOTE 3): the takeoff, a climb point FLY_CLIMB_YARDS on at the first flight point's
+// height, the planned flight points, a descent point FLY_CLIMB_YARDS before the landing at the last one's height, and
+// the landing. The plan's takeoff and landing ramps are straight lines over the first and last gap that no terrain
+// check saw: the bot climbs and descends steeply near the ends instead
+inline std::vector<Waypoint> FlyWaypoints(Leg const& leg)
+{
+    std::vector<Point> const& planned = leg.flightPoints;
+    if (planned.size() < 3)
+        return {{leg.from, NO_NODE}, {leg.to, NO_NODE}};
+    auto const toward = [](Point const& from, Point const& to, float z)
+    {
+        float const gap = std::hypot(to.x - from.x, to.y - from.y);
+        float const share = gap > 0.0f ? std::min(FLY_CLIMB_YARDS, gap / 2.0f) / gap : 0.0f;
+        return Point{from.mapId, from.x + (to.x - from.x) * share, from.y + (to.y - from.y) * share, z};
+    };
+    Point const& takeoff = planned.front();
+    Point const& landing = planned.back();
+    std::vector<Waypoint> points;
+    points.reserve(planned.size() + 2);
+    points.push_back({takeoff, NO_NODE});
+    points.push_back({toward(takeoff, planned[1], planned[1].z), NO_NODE});
+    for (std::size_t k = 1; k + 1 < planned.size(); ++k)
+        points.push_back({planned[k], NO_NODE});
+    points.push_back({toward(landing, planned[planned.size() - 2], planned[planned.size() - 2].z), NO_NODE});
+    points.push_back({landing, NO_NODE});
+    return points;
+}
+
+// The real-height check's rule (the follower samples the ground ahead on the map thread, buildings included, once per
+// reached waypoint): a target below the highest sample + FLY_MIN_CLEARANCE_YARDS climbs to that sample + the bot's
+// clearance, at most FLY_RAISE_CAP_YARDS above the plan; samples at or below FLY_NO_GROUND are no ground
+inline float RequiredZ(std::vector<float> const& samples, float plannedZ, float clearance)
+{
+    float highest = FLY_NO_GROUND;
+    for (float const sample : samples)
+        if (std::isfinite(sample) && sample > highest)
+            highest = sample;
+    if (highest <= FLY_NO_GROUND || plannedZ >= highest + FLY_MIN_CLEARANCE_YARDS)
+        return plannedZ;
+    return std::min(highest + std::max(clearance, FLY_MIN_CLEARANCE_YARDS), plannedZ + FLY_RAISE_CAP_YARDS);
+}
+
 // The points a leg passes: its start, then for a walk every graph node in order, then its end. Points within
-// SAME_POINT_YARDS of the previous one merge (a leg starting or ending on a node). nodeAt(index) -> Point
+// SAME_POINT_YARDS of the previous one merge (a leg starting or ending on a node). A fly leg's: FlyWaypoints.
+// nodeAt(index) -> Point
 template <class NodeAt>
 std::vector<Waypoint> Waypoints(Leg const& leg, NodeAt const& nodeAt)
 {
+    if (leg.type == LegType::Fly)
+        return FlyWaypoints(leg);
     std::vector<Waypoint> points{{leg.from, NO_NODE}};
     auto const add = [&points](Point const& at, std::uint32_t node)
     {
@@ -416,11 +496,23 @@ inline void NoteTick(Trip& trip, bool mounted)
         ++trip.record.mountedTicks;
 }
 
-// The leg's seconds in combat until now (a running stretch included)
+// A fly leg's mount try that really happened (the glue skips tries in combat or while casting: those do not count)
+inline void NoteMountTry(Trip& trip, std::uint32_t nowMs)
+{
+    if (trip.mountTries < 255)
+        ++trip.mountTries;
+    trip.mountTriedMs = nowMs;
+}
+
+// The leg's time in combat until now (a running stretch included)
+inline std::uint32_t CombatMs(LegRecord const& record, std::uint32_t nowMs)
+{
+    return record.combatMs + (record.combatSinceMs ? nowMs - record.combatSinceMs : 0);
+}
+
 inline float CombatSeconds(LegRecord const& record, std::uint32_t nowMs)
 {
-    std::uint32_t const ms = record.combatMs + (record.combatSinceMs ? nowMs - record.combatSinceMs : 0);
-    return static_cast<float>(ms) / 1000.0f;
+    return static_cast<float>(CombatMs(record, nowMs)) / 1000.0f;
 }
 
 // How the bot went on the leg, from its follower ticks: foot (never mounted), mounted (always), part
@@ -447,6 +539,12 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.triggered = false;
     trip.taxiActivated = false;
     trip.seenInFlight = false;
+    trip.heightChecked = 0;
+    trip.climbs = 0;
+    trip.peakZ = 0.0f;
+    trip.mountTries = 0;
+    trip.mountTriedMs = 0;
+    trip.mountWhy = "";
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
@@ -534,6 +632,57 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
                 return {Act::Walk, leg.from, FailReason::None};
             return {Act::TalkFlightMaster, leg.from, FailReason::None};
         }
+        case LegType::Fly:
+        {
+            if (seen.bot.mapId != leg.to.mapId)
+                return fail(FailReason::WrongMap);
+            std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
+            // The landing (on the ground) is reached within WAYPOINT_YARDS, a point in the air within
+            // FLY_WAYPOINT_YARDS
+            auto const reached = [&](std::uint32_t index)
+            { return within(trip.waypoints[index].at, index + 1 == count ? WAYPOINT_YARDS : FLY_WAYPOINT_YARDS); };
+            for (std::uint32_t passed = 0; passed < WAYPOINTS_PER_TICK && trip.next < count; ++passed)
+            {
+                if (reached(trip.next))
+                    ++trip.next;
+                else if (trip.next + 1 < count && reached(trip.next + 1))
+                    trip.next += 2;
+                else
+                    break;
+            }
+            if (trip.next >= count)
+                return {Act::Done, leg.to, FailReason::None};
+            if (seen.flying)
+            {
+                trip.peakZ = trip.seenInFlight ? std::max(trip.peakZ, seen.bot.z) : seen.bot.z;
+                trip.seenInFlight = true;
+            }
+            else if (trip.seenInFlight)
+            {
+                // Down after the takeoff: landed at the end, or fell or was dismounted on the way
+                if (within(leg.to, LANDING_YARDS))
+                    return {Act::Done, leg.to, FailReason::None};
+                return fail(FailReason::Landing);
+            }
+            if (legMs > LegTimeoutMs(leg))
+                return fail(FailReason::Timeout);
+            if (!trip.seenInFlight)
+            {
+                // No takeoff where the bot stands fails at once: the next route starts no fly leg there
+                if (!seen.takeoffHere)
+                    return fail(FailReason::Takeoff);
+                if (!seen.flyingMount)
+                {
+                    // A try asked for but skipped by the glue (combat, a cast) is asked for again next tick
+                    if (trip.mountTries && seen.nowMs - trip.mountTriedMs < FLY_MOUNT_RETRY_MS)
+                        return {Act::Wait, leg.from, FailReason::None};
+                    if (trip.mountTries >= FLY_MOUNT_TRIES)
+                        return fail(FailReason::Takeoff);
+                    return {Act::Mount, leg.from, FailReason::None};
+                }
+            }
+            return {Act::Fly, trip.waypoints[trip.next].at, FailReason::None};
+        }
         case LegType::Hearth:
         {
             // The hearthstone's teleport is a far teleport (the trip survives it): done on the bind's map near the bind
@@ -584,7 +733,7 @@ inline bool NoteStuck(Trip& trip)
     if (trip.legIdx >= trip.legs.size() || trip.waypoints.empty())
         return false;
     LegType const type = trip.legs[trip.legIdx].type;
-    if (type == LegType::Hearth)
+    if (type == LegType::Hearth || type == LegType::Fly)
         return false;  // no walk
     // A walk heads for its next waypoint, a portal or flight leg for its start
     std::uint32_t const last = static_cast<std::uint32_t>(trip.waypoints.size() - 1);
@@ -654,9 +803,12 @@ inline void NoteDeath(Trip& trip)
 // After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
 // at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
 // the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
-// Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it
+// Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it. A failed fly leg:
+// the trip's later routes walk (noFly), else the replan would offer the same flight
 inline Recovery AfterFailure(Trip& trip, FailReason reason)
 {
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly && reason != FailReason::NoAnswer)
+        trip.noFly = true;
     std::uint32_t const combatSinceMs = trip.record.combatSinceMs;
     trip.record = LegRecord{};  // the failed leg's record ends (a running combat stretch goes on)
     trip.record.combatSinceMs = combatSinceMs;
@@ -669,6 +821,29 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason)
         NoteDeath(trip);
     ++trip.replans;
     return Recovery::Replan;
+}
+
+// A fly leg's real-height check is due: the bot heads for a waypoint in the air the check has not looked at yet
+inline bool NeedsHeightCheck(Trip const& trip)
+{
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly &&
+           trip.next + 1 < trip.waypoints.size() && trip.heightChecked != trip.next;
+}
+
+// The check's result: the ground samples along the way to the next waypoint (RequiredZ) raise it when a building or
+// a hill the height map missed stands in the way; true when raised (counted in climbs)
+inline bool CheckHeight(Trip& trip, std::vector<float> const& samples)
+{
+    if (!NeedsHeightCheck(trip))
+        return false;
+    trip.heightChecked = trip.next;
+    Point& target = trip.waypoints[trip.next].at;
+    float const z = RequiredZ(samples, target.z, trip.legs[trip.legIdx].flightClearance);
+    if (z <= target.z)
+        return false;
+    target.z = z;
+    trip.climbs = static_cast<std::uint16_t>(std::min(trip.climbs + 1, 0xFFFF));
+    return true;
 }
 
 // A flight leg's first hop (its first two graph nodes), the edge a failed taxi start is reported on;

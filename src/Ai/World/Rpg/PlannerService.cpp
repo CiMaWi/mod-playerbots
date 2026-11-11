@@ -964,7 +964,8 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
         RowTimer const timer("bridge route order");
         TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *at);
         std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
-        return TravelRoute::Search(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams()).ok;
+        // The ground route answers "is there a route" (fly legs never change it): no flight search on a map thread
+        return TravelRoute::GroundSearch(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams()).ok;
     };
     BridgeAnswer const answer = GoalApply::BridgeCheck(order, facts);
     if (answer != BridgeAnswer::Done)
