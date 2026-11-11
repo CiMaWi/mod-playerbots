@@ -4,6 +4,11 @@
  * or (at your option) any later version.
  */
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <limits>
+
 #include "AcquaintanceMgr.h"
 #include "ActivityBudget.h"
 #include "ArenaRecruit.h"
@@ -24,6 +29,7 @@
 #include "NaturalTrace.h"
 #include "NewRpgAction.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
@@ -197,6 +203,7 @@ public:
             {"selftest", TravelGraph::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"go", HandleRouteGoCommand, SEC_GAMEMASTER, Console::Yes},
             {"stop", HandleRouteStopCommand, SEC_GAMEMASTER, Console::Yes},
+            {"transport", HandleRouteTransportCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsPlannerCommandTable = {
@@ -353,6 +360,103 @@ public:
         handler->PSendSysMessage("ROUTE go: {} -> {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered; see [Route] {} travel to {}",
                                  target.GetName(), order.place, dest->mapId, dest->x, dest->y, dest->z,
                                  target.GetName(), order.place);
+        TravelOrders::Post(bot->GetGUID(), std::move(order));
+        return true;
+    }
+
+    static std::string LowerCase(std::string text)
+    {
+        std::transform(text.begin(), text.end(), text.begin(),
+                       [](unsigned char letter) { return static_cast<char>(std::tolower(letter)); });
+        return text;
+    }
+
+    // A transport link's name: its gameobject's ("Ship (The Bravery)", "Subway", "Undervator")
+    static std::string TransportName(uint32 entry)
+    {
+        GameObjectTemplate const* info = sObjectMgr->GetGameObjectTemplate(entry);
+        return info && !info->name.empty() ? info->name : "transport " + std::to_string(entry);
+    }
+
+    // `playerbots route transport <bot> <name>|<entry>` (WT19, tests): sends a persistent bot over a transport. The
+    // travel graph's transport links of that gameobject entry, or with that part of its name (any case); of them the
+    // one starting nearest the bot on its map, else the first. The order's destination is that link's end: the route
+    // search picks the way (its [Route] line shows whether it takes the transport). A Deeprun Tram car starts on map
+    // 369: from Stormwind or Ironforge name the car's entry
+    static bool HandleRouteTransportCommand(ChatHandler* handler, PlayerIdentifier target, Tail name)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        TravelGraph const& graph = TravelGraph::Instance();
+        char const* refusal = nullptr;
+        if (!graph.IsReady())
+            refusal = "the travel graph is not ready";
+        else if (!PlayerbotFactory::KeepsPossessions(bot))
+            refusal = "not a persistent bot (honest travel, random bot, no real master)";
+        else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+            refusal = "the bot does not run the new rpg strategy";
+        else if (!bot->IsAlive())
+            refusal = "dead";
+        else if (bot->IsInFlight())
+            refusal = "in flight";
+        else if (bot->GetMap()->Instanceable())
+            refusal = "in an instance";
+        if (refusal)
+        {
+            handler->SendErrorMessage("ROUTE transport: {} refused: {}", target.GetName(), refusal);
+            return false;
+        }
+
+        std::string const text = LowerCase(std::string(name));
+        bool const byEntry = !text.empty() && std::all_of(text.begin(), text.end(),
+                                                          [](unsigned char letter) { return std::isdigit(letter); });
+        uint32 const entry = byEntry ? static_cast<uint32>(std::strtoul(text.c_str(), nullptr, 10)) : 0;
+        TravelGraphLink const* chosen = nullptr;
+        float chosenYards = std::numeric_limits<float>::max();
+        std::vector<uint32> entries;  // every transport of the graph, for the usage line
+        for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
+        {
+            TravelGraphLink const& link = graph.GetLink(i);
+            if (link.type != TravelLinkType::Transport)
+                continue;
+            if (std::find(entries.begin(), entries.end(), link.object) == entries.end())
+                entries.push_back(link.object);
+            bool const matches =
+                byEntry ? link.object == entry
+                        : !text.empty() && LowerCase(TransportName(link.object)).find(text) != std::string::npos;
+            if (!matches)
+                continue;
+            TravelGraphNode const& from = graph.GetNode(link.from);
+            float const yards = from.mapId == bot->GetMapId() ? bot->GetExactDist(from.x, from.y, from.z)
+                                                              : std::numeric_limits<float>::max();
+            if (!chosen || yards < chosenYards)
+            {
+                chosen = &link;
+                chosenYards = yards;
+            }
+        }
+        if (!chosen)
+        {
+            std::string names;
+            for (uint32 known : entries)
+                names += (names.empty() ? "" : ", ") + TransportName(known) + " " + std::to_string(known);
+            handler->SendErrorMessage("Usage: .playerbots route transport <bot> <name>|<entry>; transports: {}", names);
+            return false;
+        }
+
+        TravelGraphNode const& from = graph.GetNode(chosen->from);
+        TravelGraphNode const& to = graph.GetNode(chosen->to);
+        TravelOrder order;
+        order.dest = WorldPosition(to.mapId, to.x, to.y, to.z);
+        order.place = TransportName(chosen->object);
+        order.postedMs = getMSTime();
+        handler->PSendSysMessage(
+            "ROUTE transport: {} -> {} {} from node {} ({}, {:.0f}, {:.0f}, {:.0f}) to node {} ({}, "
+            "{:.0f}, {:.0f}, {:.0f}) ordered; see [Route] {} travel to {}",
+            target.GetName(), order.place, chosen->object, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId,
+            to.x, to.y, to.z, target.GetName(), order.place);
         TravelOrders::Post(bot->GetGUID(), std::move(order));
         return true;
     }
