@@ -30,6 +30,7 @@
 #include "QuestStatEvents.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
+#include "TravelLegRules.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 
@@ -294,6 +295,17 @@ char const* PvpPlace(Player* player)
     return player->InBattleground() ? "battleground" : "world";
 }
 
+// A travelling bot's death counts on its trip and leg at the death itself (WT10e-2c round 3): counted at the engine
+// change, a bot revived and killed again before its next AI tick never left the dead engine, and that death was lost
+void NoteTravelDeath(Player* killed)
+{
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(killed);
+    if (!botAI)
+        return;
+    if (auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
+        TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
+}
+
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
 void EmitFromScope(Player* player, char const* type, uint32 id, int64 amount)
 {
@@ -430,6 +442,7 @@ public:
             return;
 
         Planner::QuestStatDeath(killed);
+        NoteTravelDeath(killed);
         if (killer == killed)
         {
             EventLog::Emit(killed, "Death", "environment", 0, ONE_EVENT);
@@ -449,6 +462,7 @@ public:
             return;
 
         Planner::QuestStatDeath(killed);
+        NoteTravelDeath(killed);
         ObjectGuid const owner = killer->GetOwnerGUID();
         if (!owner.IsPlayer())
         {

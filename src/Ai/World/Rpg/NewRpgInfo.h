@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
+#include <memory>
 #include <unordered_set>
 
 #include "Define.h"
@@ -26,6 +27,11 @@
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
 class Player;
+
+namespace Planner::GoalApply
+{
+struct BotGoals;  // GoalInterface.h
+}
 
 struct NewRpgInfo
 {
@@ -112,12 +118,29 @@ struct NewRpgInfo
         uint8 bindTries{0};    // an inn errand: binds tried in front of the innkeeper
         uint32 tripId{0};      // the world log's trip id (WL7)
     };
-    // RPG_ERRANDS: a trip to a vendor to sell, repair and maybe buy a bag
+    // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
+    // every errand assigned there: sell, buy (a bag by worth) and repair at its vendor, turn in completed quests
+    struct ErrandTurnIn
+    {
+        uint32 questId{0};
+        uint32 ender{0};  // the creature or object entry that takes it
+        bool enderIsObject{false};
+    };
+    struct ErrandStop
+    {
+        WorldPosition pos{};
+        uint32 vendorEntry{0};  // the vendor of this stop; 0 = none
+        std::vector<ErrandTurnIn> turnIns;
+    };
     struct Errands
     {
-        uint32 vendorEntry{0};
-        WorldPosition vendorPos{};
-        ObjectGuid vendor;  // the creature, found near vendorPos on arrival
+        std::vector<ErrandStop> stops;
+        uint8 stop{0};           // the stop the bot walks to or works at
+        bool arrived{false};     // the bot reached the current stop
+        bool vendorDone{false};  // the current stop's vendor part is done (or its vendor is gone)
+        ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
+        bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
+        uint32 vendorEntry{0};   // the trip's first vendor (the census, the Inventory rows)
         uint32 moneyAtStart{0};
     };
     struct Idle
@@ -137,6 +160,7 @@ struct NewRpgInfo
         bool snapshotDue{true};    // the situation changed or a goal ended since the last snapshot
         bool wasIdle{false};
         bool pending{false};  // a job is out; its result is taken before the next one is submitted
+        std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
     };
     PlannerState planner;
 
@@ -194,7 +218,7 @@ struct NewRpgInfo
     void ChangeToDoGather();
     void ChangeToRest();
     void ChangeToTravel(WorldPosition dest, std::string place = {});
-    void ChangeToErrands(uint32 vendorEntry, WorldPosition vendorPos, uint32 money);
+    void ChangeToErrands(std::vector<ErrandStop> stops, uint32 money);
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);
     void Reset();
