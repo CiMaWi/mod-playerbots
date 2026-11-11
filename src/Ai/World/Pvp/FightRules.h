@@ -34,9 +34,6 @@ namespace WorldPvp
 {
 constexpr float MS_PER_HOUR = 3600.0f * 1000.0f;
 constexpr float SECONDS_PER_DAY = 86400.0f;
-// "Never" for the time-since inputs, and "none in reach" for the distance inputs
-constexpr uint32_t NEVER_MS = UINT32_MAX;
-constexpr float FAR_YARDS = 1.0e9f;
 // A side's share of the visible strength at even odds, and the health below which a target counts as weakened
 constexpr float EVEN_ODDS = 0.5f;
 constexpr float HALF_HEALTH = 0.5f;

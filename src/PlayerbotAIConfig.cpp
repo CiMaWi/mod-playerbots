@@ -1258,19 +1258,35 @@ bool PlayerbotAIConfig::Initialize()
         pvpNumber("CalmMinutes", WorldPvp.CalmMinutes, 0, MaxPvpMinutes);
         WorldPvp.TestCommands =
             sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.TestCommands", WorldPvp.TestCommands, false);
-        // The shape weights of the fight rules the nights tune (FightRules.h clamps them again)
-        auto const pvpWeight = [](char const* key, float& value, float maximum)
+        // The fight rules' values (FightRules.h clamps them again); a value out of range keeps the default
+        auto const pvpRange = [](char const* key, float& value, float minimum, float maximum)
         {
             float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
-            value = read >= 0.0f && read <= maximum ? read : std::clamp(value, 0.0f, maximum);
+            value = read >= minimum && read <= maximum ? read : value;
         };
-        pvpWeight("OddsCaution", WorldPvp.OddsCaution, 0.5f);
-        pvpWeight("Join.Base", WorldPvp.JoinBase, 1.0f);
-        pvpWeight("Join.Aggression", WorldPvp.JoinAggression, 1.0f);
-        pvpWeight("Join.Helpfulness", WorldPvp.JoinHelpfulness, 1.0f);
-        pvpWeight("Join.Goal", WorldPvp.JoinGoal, 1.0f);
-        pvpWeight("Retreat.CautionHealth", WorldPvp.RetreatCautionHealth, 1.0f);
-        pvpWeight("Retreat.CautionOdds", WorldPvp.RetreatCautionOdds, 0.5f);
+        constexpr uint32 MaxScanYards = 200;
+        constexpr float MaxHours = 1000.0f;
+        constexpr float MinHours = 0.01f;
+        pvpNumber("ScanYards", WorldPvp.ScanYards, 1, MaxScanYards);
+        pvpNumber("RollAgainSeconds", WorldPvp.RollAgainSeconds, 0, DAY);
+        pvpNumber("MinGapMinutes", WorldPvp.MinGapMinutes, 0, MaxPvpMinutes);
+        pvpNumber("GraveyardYards", WorldPvp.GraveyardYards, 0, MaxRadiusYards);
+        pvpRange("AggressionOffBelow", WorldPvp.AggressionOffBelow, -1.0f, 1.0f);
+        pvpRange("HoursAtZero", WorldPvp.HoursAtZero, MinHours, MaxHours);
+        pvpRange("HoursAtOne", WorldPvp.HoursAtOne, MinHours, MaxHours);
+        pvpRange("ChanceCap", WorldPvp.ChanceCap, 0.0f, 1.0f);
+        pvpRange("Colour.Green", WorldPvp.GreenFactor, 0.0f, 1.0f);
+        pvpRange("Colour.Yellow", WorldPvp.YellowFactor, 0.0f, 1.0f);
+        pvpRange("Colour.OrangeDaring", WorldPvp.OrangeDaring, 0.0f, 1.0f);
+        pvpRange("Colour.OrangeCareful", WorldPvp.OrangeCareful, 0.0f, 1.0f);
+        WorldPvp.Courtesy = sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.Courtesy", WorldPvp.Courtesy, false);
+        pvpRange("OddsCaution", WorldPvp.OddsCaution, 0.0f, 0.5f);
+        pvpRange("Join.Base", WorldPvp.JoinBase, 0.0f, 1.0f);
+        pvpRange("Join.Aggression", WorldPvp.JoinAggression, 0.0f, 1.0f);
+        pvpRange("Join.Helpfulness", WorldPvp.JoinHelpfulness, 0.0f, 1.0f);
+        pvpRange("Join.Goal", WorldPvp.JoinGoal, 0.0f, 1.0f);
+        pvpRange("Retreat.CautionHealth", WorldPvp.RetreatCautionHealth, 0.0f, 1.0f);
+        pvpRange("Retreat.CautionOdds", WorldPvp.RetreatCautionOdds, 0.0f, 0.5f);
     }
 
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults

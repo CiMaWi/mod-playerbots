@@ -9,6 +9,7 @@
 #include "AttackersValue.h"
 #include "CellImpl.h"
 #include "DBCStructure.h"
+#include "FightBook.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Playerbots.h"
@@ -71,6 +72,11 @@ bool PossibleTargetsValue::AcceptUnit(Unit* unit)
         // Skip restrictions if in duel with this player
         if (bot->duel && bot->duel->Opponent == unit)
             return true;
+
+        // World PvP (WP4): a bot that starts fights by the rules attacks another player only in a fight it is in or as
+        // the target the rules picked (their colours replace the level filter below)
+        if (WorldPvp::StartsByRules(botAI))
+            return bot->IsInCombatWith(unit) || WorldPvp::IsPickedTarget(botAI, unit);
 
         // Capital cities - no restrictions
         uint32 zoneId = bot->GetZoneId();

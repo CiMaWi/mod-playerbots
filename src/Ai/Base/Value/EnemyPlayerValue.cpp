@@ -31,10 +31,14 @@ constexpr char const* REFUSAL_MASTER = "master";
 
 bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
 {
-    // World PvP (WP1) records each enemy player a persistent bot newly meets, with what today's rules did to it;
-    // nothing here changes the result
+    // World PvP (WP4): a bot that starts fights by the rules takes only the enemy they picked at a meeting
+    if (WorldPvp::StartsByRules(botAI))
+        return unit->IsPlayer() && WorldPvp::AcceptByRules(botAI, unit, Refusal(unit, true));
+
+    // Today's scan; WP1 records each enemy player a persistent bot (a PvpTest fighter) newly meets, with what today's
+    // rules did to it
     Player* const met = WorldPvp::NewMeeting(botAI, unit);
-    char const* refusal = Refusal(unit);
+    char const* refusal = Refusal(unit, false);
     if (met)
     {
         if (refusal == REFUSAL_FILTERED)
@@ -44,10 +48,12 @@ bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
     return !refusal;
 }
 
-char const* NearestEnemyPlayersValue::Refusal(Unit* unit)
+char const* NearestEnemyPlayersValue::Refusal(Unit* unit, bool byRules)
 {
+    if (byRules && !AttackersValue::IsPossibleTarget(unit, bot, range))
+        return REFUSAL_NOT_TARGET;
     // Apply parent's filtering first (includes level difference checks)
-    if (!PossibleTargetsValue::AcceptUnit(unit))
+    if (!byRules && !PossibleTargetsValue::AcceptUnit(unit))
         return REFUSAL_FILTERED;
 
     bool inCannon = botAI->IsInVehicle(false, true);
@@ -77,7 +83,7 @@ char const* NearestEnemyPlayersValue::Refusal(Unit* unit)
 
 Unit* EnemyPlayerValue::Calculate()
 {
-    // Today's enemy scan (with the nearest enemy players' refresh when due): world PvP's before number for WP4
+    // The enemy scan (with the nearest enemy players' refresh when due); WorldPvp scan gated counts the skipped step 2
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp scan") : nullptr);
     bool controllingCannon = false;
     bool controllingVehicle = false;
@@ -131,9 +137,12 @@ Unit* EnemyPlayerValue::Calculate()
         return *targets.begin();
     }
 
-    // 2. Find enemy player in range.
+    // 2. Find enemy player in range. A bot that starts fights by the rules and cannot start one now skips it; the
+    // enemy the rules picked is attacked from the full distance (the rules weighed the odds already)
 
-    GuidVector players = AI_VALUE(GuidVector, "nearest enemy players");
+    bool const byRules = WorldPvp::StartsByRules(botAI);
+    GuidVector const players =
+        byRules && WorldPvp::ScanGated(botAI) ? GuidVector() : AI_VALUE(GuidVector, "nearest enemy players");
     float const maxAggroDistance = GetMaxAttackDistance();
     for (auto const& gTarget : players)
     {
@@ -164,10 +173,11 @@ Unit* EnemyPlayerValue::Calculate()
 
         // Aggro weak enemies from further away.
         // If controlling mobile vehicle only agro close enemies (otherwise will never reach objective)
-        uint32 const aggroDistance = passenger                                                        ? 30.0f
-                                     : controllingVehicle                                             ? 5.0f
-                                     : (controllingCannon || bot->GetHealth() > pTarget->GetHealth()) ? maxAggroDistance
-                                                                                                      : 20.0f;
+        uint32 const aggroDistance = passenger            ? 30.0f
+                                     : controllingVehicle ? 5.0f
+                                     : (controllingCannon || byRules || bot->GetHealth() > pTarget->GetHealth())
+                                         ? maxAggroDistance
+                                         : 20.0f;
         if (!bot->IsWithinDist(pTarget, aggroDistance))
             continue;
 

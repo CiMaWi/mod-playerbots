@@ -36,7 +36,7 @@ struct WorldPvpConfig
     // Test switch for `.playerbots fight ready|meet` (labs only)
     bool TestCommands = false;
 
-    // --- Meetings and chances (WP3/WP4 read) ---
+    // --- Meetings and chances (WP4, read; GrudgeFactor WP9) ---
     // The yards within which an enemy is a meeting and the odds are counted
     uint32_t ScanYards = 40;
     // An enemy rolled for is not rolled for again for this long
@@ -45,9 +45,10 @@ struct WorldPvpConfig
     uint32_t MinGapMinutes = 30;
     // Aggression to rate: no starts below AggressionOffBelow; one start per HoursAtZero hours at aggression 0, one per
     // HoursAtOne at +1 (HoursAtZero / 4: the budget curve is exactly 4^a times the rate at 0, WP.2, WP.16); the
-    // chance's probability never exceeds ChanceCap. A chance starts at most one fight and the cap trims long quiet
-    // times, so bots start less often than the rate: 3.4 h realises about once per 4 h at aggression 0 (WP3b's
-    // harness: 4.3 h at the lab's density, 3.8 h at 2x and 4x), and +1 starts only about twice as often as 0
+    // chance's probability never exceeds ChanceCap. "Once per 4 h" and "four times" describe this budget curve
+    // before the soft factors: a chance starts at most one fight, the cap trims long quiet times and the colour,
+    // courtesy and odds factors lower it, so real starts are rarer (WP.16; WP3b's harness: about once per 4 h at
+    // aggression 0 before the soft factors, +1 about twice as often as 0)
     float AggressionOffBelow = -0.5f;
     float HoursAtZero = 3.4f;
     float HoursAtOne = 0.85f;

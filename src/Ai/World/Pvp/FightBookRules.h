@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -87,6 +88,12 @@ constexpr char const* Word(EndCause value) { return END_CAUSE_WORDS[static_cast<
 constexpr uint32_t MS_PER_SECOND = 1000;
 constexpr uint32_t MS_PER_MINUTE = 60 * MS_PER_SECOND;
 constexpr uint32_t COUNT_LIMIT = 255;
+// "Never" for the time-since inputs, and "none in reach" for the distance inputs
+constexpr uint32_t NEVER_MS = std::numeric_limits<uint32_t>::max();
+constexpr float FAR_YARDS = 1.0e9f;
+// The bystanders of one fight whose join answer the fight keeps (WP5, WP.7), and a map's kept resurrections (WP7)
+constexpr uint32_t MAX_DECIDED = 64;
+constexpr uint32_t MAX_RESURRECTIONS = 256;
 
 // One side of a combat as the glue sees it at the moment: a player (real or bot) with its place
 struct Combatant
@@ -101,6 +108,8 @@ struct Combatant
     uint32_t area = 0;
     // A PvpTest fighter (WP.6): its fights are tagged so the checks leave them out
     bool forced = false;
+    // The reason of a fight this bot starts on the other: the rules' (budget, grudge) when they picked the other
+    FightReason start = FightReason::AttackOnSight;
 };
 
 struct FightParticipant
@@ -112,6 +121,7 @@ struct FightParticipant
     CameIn cameIn = CameIn::Joined;
     uint32_t joinedMs = 0;
     bool retreated = false;  // WP6
+    uint32_t retreatedMs = 0;
     uint8_t deaths = 0;
     bool inCombat = true;  // at the last tick
     // Where the book last saw it on the fight's map (the end row's place when nobody is left there)
@@ -127,6 +137,8 @@ struct Fight
     uint32_t startMs = 0;
     // The last time a participant was in PvP combat (or a combat or kill was noted)
     uint32_t lastHitMs = 0;
+    // The last hit between the sides (WP6's no-hit timeout)
+    uint32_t lastSideHitMs = 0;
     float centreX = 0.0f;
     float centreY = 0.0f;
     float radius = 0.0f;
@@ -137,6 +149,24 @@ struct Fight
     std::vector<FightParticipant> participants;
     uint32_t endMs = 0;
     EndCause cause = EndCause::CombatOver;
+    // The bystanders that decided whether to join it, once each (WP5); a full list takes no more
+    std::array<uint64_t, MAX_DECIDED> decided{};
+    uint32_t decidedCount = 0;
+
+    bool HasDecided(uint64_t guid) const
+    {
+        return std::find(decided.begin(), decided.begin() + decidedCount, guid) != decided.begin() + decidedCount;
+    }
+
+    bool NoteDecided(uint64_t guid)
+    {
+        if (HasDecided(guid))
+            return true;
+        if (decidedCount >= MAX_DECIDED)
+            return false;
+        decided[decidedCount++] = guid;
+        return true;
+    }
 
     FightParticipant* Find(uint64_t guid)
     {
@@ -184,7 +214,7 @@ struct EndedFight
     bool tagged = false;
 };
 
-// A recent resurrection on the map (WP7 fills them; declared now)
+// A recent resurrection on the map (WP7 notes them)
 struct Resurrection
 {
     uint64_t guid = 0;
@@ -202,6 +232,7 @@ struct FightBounds
     uint32_t maxFightMs = 30 * MS_PER_MINUTE;
     uint32_t endGraceMs = 10 * MS_PER_SECOND;
     uint32_t calmMs = 15 * MS_PER_MINUTE;
+    uint32_t resurrectedMs = 300 * MS_PER_SECOND;
 
     static FightBounds From(WorldPvpConfig const& config)
     {
@@ -213,17 +244,18 @@ struct FightBounds
         bounds.maxFightMs = std::max<uint32_t>(config.MaxFightMinutes, 1) * MS_PER_MINUTE;
         bounds.endGraceMs = config.EndGraceSeconds * MS_PER_SECOND;
         bounds.calmMs = config.CalmMinutes * MS_PER_MINUTE;
+        bounds.resurrectedMs = config.ResurrectedSeconds * MS_PER_SECOND;
         return bounds;
     }
 };
 
 // The reason of a fight its aggressor starts: a forced PvpTest fighter on either side makes it pvptest, a real
-// aggressor real_player, else a bot started it by today's attack on sight (WP4 adds the budget and the others)
+// aggressor real_player, else the bot's own (the rules' budget or grudge, attack_on_sight for today's scan)
 inline FightReason StartReason(Combatant const& aggressor, Combatant const& other)
 {
     if (aggressor.forced || other.forced)
         return FightReason::PvpTest;
-    return aggressor.real ? FightReason::RealPlayer : FightReason::AttackOnSight;
+    return aggressor.real ? FightReason::RealPlayer : aggressor.start;
 }
 
 struct JoinNote
@@ -372,6 +404,26 @@ public:
     std::vector<Fight> const& Active() const { return _active; }
     std::deque<EndedFight> const& Ended() const { return _ended; }
     std::vector<Resurrection> const& Resurrections() const { return _resurrections; }
+
+    // A player resurrected on this map now (its latest only); the oldest beyond MAX_RESURRECTIONS and those older
+    // than the bounds' resurrected time are dropped
+    void NoteResurrection(uint64_t guid, float x, float y, uint32_t nowMs)
+    {
+        std::erase_if(_resurrections, [&](Resurrection const& resurrection)
+                      { return resurrection.guid == guid || nowMs - resurrection.ms >= _bounds.resurrectedMs; });
+        if (_resurrections.size() >= MAX_RESURRECTIONS)
+            _resurrections.erase(_resurrections.begin());
+        _resurrections.push_back({guid, nowMs, x, y});
+    }
+
+    // How long ago `guid` was resurrected here, NEVER_MS when not within the resurrected time
+    uint32_t ResurrectedMsAgo(uint64_t guid, uint32_t nowMs) const
+    {
+        for (Resurrection const& resurrection : _resurrections)
+            if (resurrection.guid == guid && nowMs - resurrection.ms < _bounds.resurrectedMs)
+                return nowMs - resurrection.ms;
+        return NEVER_MS;
+    }
     uint32_t RefusedFights() const { return _refusedFights; }
     uint32_t RefusedParticipants() const { return _refusedParticipants; }
 
@@ -466,7 +518,8 @@ struct RecentEnemy
 {
     uint64_t guid = 0;
     uint32_t seenMs = 0;
-    uint32_t rolledMs = 0;  // WP3/WP4: the last roll for this enemy
+    uint32_t rolledMs = 0;  // WP4: the last roll for this enemy
+    bool rolled = false;
 };
 
 // A bot's fight memory (in its PlayerbotAI, touched only on its map thread): the enemies it saw recently and its
@@ -517,6 +570,28 @@ public:
     uint32_t Count() const { return _count; }
     RecentEnemy const& operator[](uint32_t index) const { return _enemies[index]; }
 
+    // Since this bot last rolled for `guid` (NEVER_MS: not remembered or never rolled for)
+    uint32_t SinceRolled(uint64_t guid, uint32_t nowMs) const
+    {
+        for (uint32_t index = 0; index < _count; ++index)
+            if (_enemies[index].guid == guid)
+                return _enemies[index].rolled ? nowMs - _enemies[index].rolledMs : NEVER_MS;
+        return NEVER_MS;
+    }
+
+    // Marks a remembered enemy as rolled for now
+    void MarkRolled(uint64_t guid, uint32_t nowMs)
+    {
+        for (uint32_t index = 0; index < _count; ++index)
+        {
+            if (_enemies[index].guid != guid)
+                continue;
+            _enemies[index].rolledMs = nowMs;
+            _enemies[index].rolled = true;
+            return;
+        }
+    }
+
     // The fight the bot is in (0: none), and when its last fight ended
     uint32_t fightId = 0;
     bool hasFought = false;
@@ -530,6 +605,51 @@ public:
     bool persistentKnown = false;
     uint32_t persistentCheckMs = 0;
     uint32_t lastCombatCheckMs = 0;
+    // When the memory was made (the bot's login): the first chance's play time counts from there
+    uint32_t bornMs = 0;
+
+    // WP4: the target the rules picked at a chance (0: none), when and why; the scan attacks it while it is fresh
+    uint64_t startGuid = 0;
+    uint32_t startMs = 0;
+    FightReason startReason = FightReason::Budget;
+    // WP4: the bot-side gate values, refreshed every few seconds: outside the prohibited zones, a real player as its
+    // master or in its group, a bot group's member that is not its leader, the nearest graveyard, the traits (-1..+1)
+    bool gateKnown = false;
+    uint32_t gateMs = 0;
+    bool openWorld = false;
+    bool realPlayer = false;
+    bool groupMember = false;
+    float graveyardYards = FAR_YARDS;
+    float aggression = 0.0f;
+    float caution = 0.0f;
+    float helpfulness = 0.0f;
+    float courtesy = 0.0f;
+    float patience = 0.0f;
+
+    // WP5: the fight the bot decided to join and its target, when; the last join check
+    uint64_t joinGuid = 0;
+    uint32_t joinFightId = 0;
+    uint32_t joinMs = 0;
+    uint32_t joinCheckMs = 0;
+
+    // WP6: the retreat, the chase (its target, start and where it began) and the calm-area answer at a place
+    bool retreating = false;
+    uint32_t retreatUntilMs = 0;
+    uint32_t retreatFightId = 0;
+    uint64_t chaseGuid = 0;
+    uint32_t chaseStartMs = 0;
+    float chaseX = 0.0f;
+    float chaseY = 0.0f;
+    bool calmKnown = false;
+    bool calm = false;
+    uint32_t calmCheckMs = 0;
+    float calmX = 0.0f;
+    float calmY = 0.0f;
+
+    // WP7: the ghost's wait near its corpse
+    bool ghostWaiting = false;
+    uint32_t ghostSinceMs = 0;
+    uint32_t ghostNextCheckMs = 0;
 
 private:
     std::array<RecentEnemy, MAX_RECENT_ENEMIES> _enemies{};
