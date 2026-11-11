@@ -2244,11 +2244,11 @@ Playerbots.WorldPvp.CalmMinutes = 15
 # HoursAtZero hours at 0, once per HoursAtOne at +1 (4^a in between). "Once per 4 h" and "four times" describe this
 # budget curve: real starts are rarer, as a chance starts at most one fight, the cap trims long quiet times and the
 # soft factors lower it: the colour (Colour.Green, Colour.Yellow; orange from Colour.OrangeDaring for the most daring
-# bot to Colour.OrangeCareful for the most careful one), Courtesy (a courteous bot leaves an enemy alone that fights a
-# monster or is below half health) and the odds (OddsCaution below). (Ranges: ScanYards 1-200; RollAgainSeconds
-# 0-86400; MinGapMinutes 0-1440; GraveyardYards 0-2000; AggressionOffBelow -1-1; HoursAtZero and HoursAtOne
-# 0.01-1000; ChanceCap and the colour factors 0-1; Courtesy 0-1.) Defaults: 40, 600, 30, 80, -0.5, 3.4, 0.85, 0.333,
-# 0.5, 1, 1, 0, 1
+# bot to Colour.OrangeCareful for the most careful one), the bot's courtesy (a courteous bot leaves an enemy alone
+# that fights a monster or is below half health) and the odds (OddsCaution below). (Ranges: ScanYards 1-200;
+# RollAgainSeconds 0-86400; MinGapMinutes 0-1440; GraveyardYards 0-2000; AggressionOffBelow -1-1; HoursAtZero and
+# HoursAtOne 0.01-1000; ChanceCap and the colour factors 0-1.) Defaults: 40, 600, 30, 80, -0.5, 3.4, 0.85, 0.333,
+# 0.5, 1, 1, 0
 Playerbots.WorldPvp.ScanYards = 40
 Playerbots.WorldPvp.RollAgainSeconds = 600
 Playerbots.WorldPvp.MinGapMinutes = 30
@@ -2261,10 +2261,19 @@ Playerbots.WorldPvp.Colour.Green = 0.5
 Playerbots.WorldPvp.Colour.Yellow = 1
 Playerbots.WorldPvp.Colour.OrangeDaring = 1
 Playerbots.WorldPvp.Colour.OrangeCareful = 0
-Playerbots.WorldPvp.Courtesy = 1
+
+# Joining a fight (persistent bots in the open world). A bot within JoinYards of a fight's nearest participant that
+# is not in it decides once per fight whether to join (the fight book asks every 3 s; a bot that is dead, in another
+# fight or cannot see the fight is asked again later). It always joins when a participant attacks it, its group is
+# in the fight or its real master is; it may pick any enemy then. By chance (the Join weights below) only a bot that
+# could start fights itself joins (not with a real player, not a bot group's member that is not its leader, outside
+# Playerbots.PvpProhibitedZoneIds), on an enemy that is not red to it (grey ones too); when every enemy is red it
+# stays out. Joining spends no budget; the bot's MinGapMinutes counts from the end of the fight. (Range: 1-200.)
+# Default: 60
+Playerbots.WorldPvp.JoinYards = 60
 
 # The shape weights of the fight rules (src/Ai/World/Pvp/FightRules.h), read now so lab nights can tune them (the
-# start uses OddsCaution; joining comes with WP5, retreat with WP6). OddsCaution: a bot needs its
+# start uses OddsCaution, joining the Join weights; retreat comes with WP6). OddsCaution: a bot needs its
 # side's share of the strength it sees to be 0.5 + OddsCaution x its caution (-1..+1) for its full start chance.
 # A bystander joins a fight with Join.Base x (1 + Join.Aggression x aggression) x (1 + Join.Helpfulness x
 # helpfulness, when its side is losing or a player of its faction is the target) x (1 - Join.Goal x the value of

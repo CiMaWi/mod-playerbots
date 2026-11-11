@@ -14,10 +14,10 @@ class Player;
 class PlayerbotAI;
 class Unit;
 
-// World PvP (WP1, WP4): the fight book of each open-world map (FightBookRules.h holds its rules), the bots' fight
-// memories and meetings, the start of fights by the fight rules (FightRules.h, fed by FightWiring.h), the fight events
-// and the `playerbots fight` commands. Persistent bots in the open world; battlegrounds, arenas and dungeons have no
-// book and keep today's attack on sight.
+// World PvP (WP1, WP4, WP5): the fight book of each open-world map (FightBookRules.h holds its rules), the bots' fight
+// memories and meetings, the start and the joining of fights by the fight rules (FightRules.h, fed by
+// FightWiring.h), the fight events and the `playerbots fight` commands. Persistent bots in the open world;
+// battlegrounds, arenas and dungeons have no book and keep today's attack on sight.
 namespace WorldPvp
 {
 // The bot's map thread (cheap): whether this bot starts fights by the rules: a persistent bot on an open-world map
@@ -33,8 +33,12 @@ bool ScanGated(PlayerbotAI* botAI);
 // gate is open is decided here once (DecideStart; its fight_start row); `refusal` is the word of today's target check
 // that failed on the enemy, nullptr when it is an attackable, PvP-flagged enemy the bot can see
 bool AcceptByRules(PlayerbotAI* botAI, Unit* unit, char const* refusal);
-// PossibleTargetsValue::AcceptUnit: whether `unit` is the player the rules picked for this bot to attack
+// PossibleTargetsValue::AcceptUnit: whether `unit` is the player the rules picked for this bot to attack, at a meeting
+// or as the target of a fight it decided to join
 bool IsPickedTarget(PlayerbotAI* botAI, Unit* unit);
+// EnemyPlayerValue::Calculate: the enemy of the fight this bot decided to join (the fight book's tick asks the
+// bystanders of its fights once each, WP5), while fresh, alive and on its map; else nullptr
+Player* JoinTarget(PlayerbotAI* botAI);
 
 // NearestEnemyPlayersValue::AcceptUnit for the other bots, the bot's map thread: the enemy player when `unit` is one
 // this persistent bot (a PvpTest fighter) meets now (in sight, not seen in the last MeetingMemorySeconds; remembered

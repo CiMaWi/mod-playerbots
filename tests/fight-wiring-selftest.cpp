@@ -10,10 +10,16 @@
 // of the target, peaceable, gap, grey, red, resurrected, rolled recently, roll); calm and the objective stay neutral;
 // a ready bot's chance starts; the chance clock and the rolled-at time change only on a chance; the first chance
 // counts from login; orange by caution; the picked target's freshness; the fight's decided list and the book's
-// resurrections; the nearest graveyard.
+// resurrections; the nearest graveyard. Joining (WP5): the waiting refusals (dead, in another fight, unseen, too far,
+// no enemy in sight) and the kept answers (not own side, all red, roll), the always-joins (defence, group, master)
+// and the followers that join only them, the chance's shape, grey joinable and red excluded, the join target's
+// freshness, the book's once-per-fight answers (bounded) and the group joiner's word.
+#include <atomic>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "FightWiring.h"
 
@@ -293,6 +299,245 @@ void CheckGraveyards()
 }
 }  // namespace
 
+// A bystander as the glue reads it: alive, it sees the fight 20 yd away, its side is in it
+JoinInput Bystander()
+{
+    JoinInput input;
+    input.yards = 20.0f;
+    return input;
+}
+
+// Enemy participants 10, 15, 20 ... yd away with guids 100, 101, ...
+std::vector<JoinEnemy> Enemies(std::initializer_list<Colour> colours)
+{
+    std::vector<JoinEnemy> enemies;
+    for (Colour const colour : colours)
+    {
+        JoinEnemy enemy;
+        enemy.guid = 100 + enemies.size();
+        enemy.yards = 10.0f + 5.0f * static_cast<float>(enemies.size());
+        enemy.colour = colour;
+        enemies.push_back(enemy);
+    }
+    return enemies;
+}
+
+constexpr uint32_t FIGHT = 7;
+
+void CheckJoinWaits()
+{
+    FightMemory const solo = Ready(LOGIN + HOUR);
+    std::vector<JoinEnemy> const yellow = Enemies({Colour::Yellow});
+
+    JoinInput dead = Bystander();
+    dead.alive = false;
+    JoinAnswer answer = AnswerJoin(dead, yellow, solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::Dead && !answer.decided && !answer.decision.join,
+          "a dead bystander waits");
+
+    FightMemory busy = solo;
+    busy.fightId = FIGHT + 1;
+    answer = AnswerJoin(Bystander(), yellow, busy, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::InFight && !answer.decided, "a bystander in another fight waits");
+    busy.fightId = FIGHT;
+    Check(AnswerJoin(Bystander(), yellow, busy, FIGHT, 0.0f, VALUES).decision.join, "its own fight is no other fight");
+
+    JoinInput unseen = Bystander();
+    unseen.visible = false;
+    answer = AnswerJoin(unseen, yellow, solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::Unseen && !answer.decided, "a bystander that cannot see the fight waits");
+
+    JoinInput far = Bystander();
+    far.yards = VALUES.joinYards + 1.0f;
+    answer = AnswerJoin(far, yellow, solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::TooFar && !answer.decided, "a bystander beyond JoinYards waits");
+
+    std::vector<JoinEnemy> hidden = yellow;
+    hidden[0].visible = false;
+    answer = AnswerJoin(Bystander(), hidden, solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::Unseen && !answer.decided && !answer.target,
+          "a join with no enemy in sight waits as unseen");
+}
+
+void CheckJoinAnswers()
+{
+    FightMemory const solo = Ready(LOGIN + HOUR);
+
+    JoinInput alone = Bystander();
+    alone.ownSide = false;
+    JoinAnswer answer = AnswerJoin(alone, Enemies({Colour::Yellow}), solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::NotOwnSide && answer.decided, "a fight without its side: kept pass");
+
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Red, Colour::Red}), solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::AllRed && answer.decided && answer.pickable == 0,
+          "every enemy red: it stays out");
+
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), solo, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.refusal == Refusal::Roll && answer.decided && !answer.decision.join && answer.target == 0,
+          "a lost roll is a kept pass");
+
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.join && answer.decision.why == JoinWhy::Chance && answer.decided && answer.target == 100,
+          "a won roll joins on the enemy");
+
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Grey}), solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.join && answer.target == 100, "a grey enemy may be joined on (no lower-level limit)");
+
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Red, Colour::Yellow}), solo, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.join && answer.target == 101 && answer.pickable == 1,
+          "a chance join never picks the red enemy, even the nearer one");
+}
+
+void CheckJoinAlways()
+{
+    FightMemory const solo = Ready(LOGIN + HOUR);
+    std::vector<JoinEnemy> mixed = Enemies({Colour::Red, Colour::Yellow, Colour::Green});
+    mixed[1].attacking = true;
+
+    JoinInput attacked = Bystander();
+    attacked.attacked = true;
+    JoinAnswer answer = AnswerJoin(attacked, mixed, solo, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.join && answer.decision.why == JoinWhy::Defence && answer.decision.p == 1.0f &&
+              answer.target == 101,
+          "an attacked bot defends itself against its attacker");
+
+    JoinInput group = Bystander();
+    group.groupFight = true;
+    answer = AnswerJoin(group, Enemies({Colour::Red}), solo, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.join && answer.decision.why == JoinWhy::Group && answer.target == 100,
+          "its group's fight: it joins, a red enemy too");
+
+    JoinInput master = Bystander();
+    master.masterFight = true;
+    answer = AnswerJoin(master, Enemies({Colour::Yellow}), solo, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.join && answer.decision.why == JoinWhy::Master, "its real master's fight: it joins");
+
+    GateFacts real;
+    real.realMaster = true;
+    FightMemory const follower = Ready(LOGIN + HOUR, real);
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), follower, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::RealPlayer && !answer.decision.join && !answer.decided,
+          "a bot with a real master joins nothing by chance and waits for the master");
+    answer = AnswerJoin(master, Enemies({Colour::Yellow}), follower, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.join && answer.decision.why == JoinWhy::Master, "...and joins the master's fight");
+
+    GateFacts member;
+    member.inGroup = true;
+    FightMemory const bot = Ready(LOGIN + HOUR, member);
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), bot, FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::NotLeader && !answer.decided,
+          "a bot group's member waits for its leader");
+    answer = AnswerJoin(group, Enemies({Colour::Yellow}), bot, FIGHT, 0.999f, VALUES);
+    Check(answer.decision.join && answer.decision.why == JoinWhy::Group, "...and joins its group's fight");
+
+    GateFacts prohibited;
+    prohibited.prohibited = true;
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), Ready(LOGIN + HOUR, prohibited), FIGHT, 0.0f, VALUES);
+    Check(answer.decision.refusal == Refusal::NotOpenWorld && !answer.decided, "a prohibited zone: no chance join");
+
+    JoinInput deadMember = group;
+    deadMember.alive = false;
+    Check(AnswerJoin(deadMember, Enemies({Colour::Yellow}), bot, FIGHT, 0.0f, VALUES).decision.refusal == Refusal::Dead,
+          "a dead member does not join its group's fight");
+}
+
+void CheckJoinChance()
+{
+    auto const p = [](JoinInput const& input, GateFacts const& facts)
+    {
+        return AnswerJoin(input, Enemies({Colour::Yellow}), Ready(LOGIN + HOUR, facts), FIGHT, 0.999f, VALUES)
+            .decision.p;
+    };
+    GateFacts daring;
+    daring.aggression = 1.0f;
+    GateFacts meek;
+    meek.aggression = -1.0f;
+    Check(p(Bystander(), daring) > p(Bystander(), GateFacts{}) && p(Bystander(), GateFacts{}) > p(Bystander(), meek),
+          "the chance rises with aggression");
+
+    JoinInput losing = Bystander();
+    losing.odds = 0.3f;
+    GateFacts helpful;
+    helpful.helpfulness = 1.0f;
+    GateFacts selfish;
+    selfish.helpfulness = -1.0f;
+    GateFacts brave;
+    brave.caution = -1.0f;
+    Check(p(losing, helpful) > p(losing, selfish), "helpfulness raises it when its side is losing");
+    JoinInput targeted = Bystander();
+    targeted.factionTargeted = true;
+    Check(p(targeted, helpful) > p(Bystander(), helpful), "helpfulness raises it when a player of its faction is hit");
+    GateFacts careful;
+    careful.caution = 1.0f;
+    Check(p(losing, careful) < p(losing, brave) && p(losing, GateFacts{}) < p(Bystander(), GateFacts{}),
+          "bad odds and caution lower it");
+
+    JoinInput goal = Bystander();
+    goal.goalValue = 1.0f;
+    Check(p(goal, GateFacts{}) == p(Bystander(), GateFacts{}), "the goal's value stays neutral (WP7b)");
+}
+
+void CheckJoinMemory()
+{
+    uint32_t const now = LOGIN + HOUR;
+    FightMemory memory = Ready(now);
+    JoinInput group = Bystander();
+    group.groupFight = true;
+    JoinAnswer answer = AnswerJoin(group, Enemies({Colour::Yellow}), memory, FIGHT, 0.0f, VALUES);
+    NoteJoin(memory, answer, FIGHT, now);
+    Check(memory.joinFightId == FIGHT && memory.joinCameIn == CameIn::Group && IsJoinTarget(memory, 100, now),
+          "a group join keeps its target, fight and word");
+    Check(IsJoinTarget(memory, 100, now + JOIN_TARGET_MS - 1) && !IsJoinTarget(memory, 100, now + JOIN_TARGET_MS),
+          "the join target stays fresh JOIN_TARGET_MS");
+    Check(!IsJoinTarget(memory, 101, now) && !IsJoinTarget(memory, 0, now), "only the join target");
+    Check(!IsPicked(memory, 100, now), "a join is no start pick");
+
+    answer = AnswerJoin(Bystander(), Enemies({Colour::Yellow}), memory, FIGHT, 0.0f, VALUES);
+    NoteJoin(memory, answer, FIGHT, now);
+    Check(memory.joinCameIn == CameIn::Joined, "a chance join comes in as joined");
+    Check(PickFor(JoinWhy::Master) == Pick::Group && PickFor(JoinWhy::Chance) == Pick::Join &&
+              CameInFor(JoinWhy::Master) == CameIn::Master && CameInFor(JoinWhy::Defence) == CameIn::Joined,
+          "the pick and word per reason");
+    Check(std::string(Word(JoinWhy::Group)) == "group" && std::string(Word(JoinWhy::Chance)) == "chance",
+          "the join words");
+}
+
+void CheckJoinBook()
+{
+    std::atomic<uint32_t> ids{0};
+    FightBook book(FightBounds::From(WorldPvpConfig{}), ids);
+    uint32_t const now = LOGIN;
+    Combatant alliance;
+    alliance.guid = 1;
+    Combatant horde;
+    horde.guid = 2;
+    horde.side = Side::Horde;
+    uint32_t const fightId = book.OnCombat(alliance, horde, now).fightId;
+    Check(fightId != 0 && book.NoteDecided(fightId, 50) && book.Active().front().HasDecided(50),
+          "the book keeps a bystander's answer");
+    Check(!book.NoteDecided(fightId + 99, 50), "no answer for a fight that is gone");
+    for (uint64_t guid = 51; book.Active().front().decidedCount < MAX_DECIDED; ++guid)
+        book.NoteDecided(fightId, guid);
+    Check(!book.NoteDecided(fightId, 999) && book.RefusedDecisions() == 1 && book.NoteDecided(fightId, 50),
+          "a full decided list takes no more answers (counted)");
+
+    Combatant member;
+    member.guid = 3;
+    member.joinedAs = CameIn::Group;
+    CombatNote note = book.OnCombat(member, horde, now + SECOND);
+    Check(note.joinCount == 1 && note.joins[0].cameIn == CameIn::Group &&
+              book.Active().front().Find(3)->cameIn == CameIn::Group,
+          "a group joiner that attacks into the fight comes in as group");
+    Combatant passer;
+    passer.guid = 4;
+    note = book.OnCombat(horde, passer, now + SECOND);
+    Check(note.joinCount == 1 && note.joins[0].cameIn == CameIn::Targeted, "a player a participant attacks: targeted");
+    Combatant chance;
+    chance.guid = 5;
+    note = book.OnCombat(chance, horde, now + SECOND);
+    Check(note.joinCount == 1 && note.joins[0].cameIn == CameIn::Joined, "a chance joiner: joined");
+}
+
 int main()
 {
     CheckWho();
@@ -304,6 +549,12 @@ int main()
     CheckOddsGate();
     CheckBookAdditions();
     CheckGraveyards();
+    CheckJoinWaits();
+    CheckJoinAnswers();
+    CheckJoinAlways();
+    CheckJoinChance();
+    CheckJoinMemory();
+    CheckJoinBook();
     std::cout << "fight-wiring-selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
 }

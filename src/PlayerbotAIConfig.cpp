@@ -1279,8 +1279,8 @@ bool PlayerbotAIConfig::Initialize()
         pvpRange("Colour.Yellow", WorldPvp.YellowFactor, 0.0f, 1.0f);
         pvpRange("Colour.OrangeDaring", WorldPvp.OrangeDaring, 0.0f, 1.0f);
         pvpRange("Colour.OrangeCareful", WorldPvp.OrangeCareful, 0.0f, 1.0f);
-        WorldPvp.Courtesy = sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.Courtesy", WorldPvp.Courtesy, false);
         pvpRange("OddsCaution", WorldPvp.OddsCaution, 0.0f, 0.5f);
+        pvpNumber("JoinYards", WorldPvp.JoinYards, 1, MaxScanYards);
         pvpRange("Join.Base", WorldPvp.JoinBase, 0.0f, 1.0f);
         pvpRange("Join.Aggression", WorldPvp.JoinAggression, 0.0f, 1.0f);
         pvpRange("Join.Helpfulness", WorldPvp.JoinHelpfulness, 0.0f, 1.0f);

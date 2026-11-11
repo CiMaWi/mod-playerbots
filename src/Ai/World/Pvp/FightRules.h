@@ -491,6 +491,12 @@ enum class JoinWhy : uint8_t
     Chance
 };
 
+constexpr std::array<char const*, 5> JOIN_WHY_WORDS = {"none", "defence", "group", "master", "chance"};
+
+static_assert(static_cast<size_t>(JoinWhy::Chance) + 1 == JOIN_WHY_WORDS.size(), "JOIN_WHY_WORDS must match JoinWhy");
+
+constexpr char const* Word(JoinWhy value) { return JOIN_WHY_WORDS[static_cast<size_t>(value)]; }
+
 // A bystander and the fight near it; the bot decides once per fight and the caller keeps the answer (WP.7)
 struct JoinInput
 {

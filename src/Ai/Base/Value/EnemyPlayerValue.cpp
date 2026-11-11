@@ -137,6 +137,12 @@ Unit* EnemyPlayerValue::Calculate()
         return *targets.begin();
     }
 
+    // World PvP (WP5): the target in the fight the rules let this bot join
+    if (Player* const joined = WorldPvp::JoinTarget(botAI))
+        if (joined != pVictim && !IsUnavailableCombatTarget(bot, joined) && !exclusions.count(joined->GetGUID()) &&
+            bot->IsWithinDist(joined, VISIBILITY_DISTANCE_NORMAL))
+            return joined;
+
     // 2. Find enemy player in range. A bot that starts fights by the rules and cannot start one now skips it; the
     // enemy the rules picked is attacked from the full distance (the rules weighed the odds already)
 

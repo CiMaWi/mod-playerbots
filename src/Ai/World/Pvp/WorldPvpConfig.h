@@ -59,8 +59,8 @@ struct WorldPvpConfig
     float YellowFactor = 1.0f;
     float OrangeDaring = 1.0f;
     float OrangeCareful = 0.0f;
-    // Courtesy: a bot leaves an enemy alone that is busy with something else (fighting a mob, low health, mounted on
-    // a flight path); the exact rules are WP3's
+    // Courtesy: a courteous bot leaves an enemy alone that is busy with something else (fighting a mob, low health);
+    // a rule factor, not an option: only the encounter harness turns it off for its old-rules arm
     bool Courtesy = true;
     // A grudge multiplies the chance against its enemy
     float GrudgeFactor = 3.0f;
@@ -77,7 +77,7 @@ struct WorldPvpConfig
     uint32_t CalmMinutes = 15;
 
     // --- Joining, retreating and ending (WP5/WP6 read) ---
-    // A bystander within JoinYards of a fight may join it
+    // A bystander within JoinYards of a fight's nearest participant may join it (read)
     uint32_t JoinYards = 60;
     // A bystander's join chance (read: the nights tune them): JoinBase x (1 + JoinAggression x aggression) x (1 +
     // JoinHelpfulness x helpfulness when its side is losing or a player of its faction is the target) x (1 - JoinGoal
@@ -138,8 +138,9 @@ constexpr char const* SOURCE_SIDES = "sides";
 // FightRetreat's source word (WP6)
 constexpr char const* SOURCE_RETREAT = "retreat";
 
-// The fight_start decision row's choices
+// The fight_start and fight_join decision rows' choices
 constexpr char const* CHOICE_START = "start";
+constexpr char const* CHOICE_JOIN = "join";
 constexpr char const* CHOICE_PASS = "pass";
 }  // namespace WorldPvp
 

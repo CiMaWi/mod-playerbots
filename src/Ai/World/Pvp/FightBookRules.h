@@ -35,7 +35,8 @@ enum class Side : uint8_t
 constexpr size_t SIDE_COUNT = 2;
 
 // How a participant came into its fight (FightJoin's source word): the starter, the starter's first target, a player
-// that attacked a participant, a player a participant attacked; group, master and bridge come with WP5/WP12
+// that attacked a participant, a player a participant attacked, a bot that joined its group's or real master's fight
+// (WP5); bridge comes with WP12
 enum class CameIn : uint8_t
 {
     Started,
@@ -110,6 +111,8 @@ struct Combatant
     bool forced = false;
     // The reason of a fight this bot starts on the other: the rules' (budget, grudge) when they picked the other
     FightReason start = FightReason::AttackOnSight;
+    // How this bot comes into a fight by attacking one of it: group or master when it joined that fight for them
+    CameIn joinedAs = CameIn::Joined;
 };
 
 struct FightParticipant
@@ -304,7 +307,7 @@ public:
         {
             Fight& fight = aggressorFight ? *aggressorFight : *otherFight;
             Combatant const& newcomer = aggressorFight ? other : aggressor;
-            Join(fight, newcomer, aggressorFight ? CameIn::Targeted : CameIn::Joined, nowMs, note);
+            Join(fight, newcomer, aggressorFight ? CameIn::Targeted : aggressor.joinedAs, nowMs, note);
             return note;
         }
 
@@ -312,7 +315,7 @@ public:
         float const midY = (aggressor.y + other.y) * 0.5f;
         if (Fight* const nearest = NearestWithin(midX, midY))
         {
-            Join(*nearest, aggressor, CameIn::Joined, nowMs, note);
+            Join(*nearest, aggressor, aggressor.joinedAs, nowMs, note);
             Join(*nearest, other, CameIn::Targeted, nowMs, note);
             return note;
         }
@@ -424,8 +427,25 @@ public:
                 return nowMs - resurrection.ms;
         return NEVER_MS;
     }
+    // A bystander of active fight `fightId` gave its join answer (WP5); false when the fight is gone or its decided
+    // list is full (counted: that fight takes no more answers)
+    bool NoteDecided(uint32_t fightId, uint64_t guid)
+    {
+        for (Fight& fight : _active)
+        {
+            if (fight.id != fightId)
+                continue;
+            if (fight.NoteDecided(guid))
+                return true;
+            ++_refusedDecisions;
+            return false;
+        }
+        return false;
+    }
+
     uint32_t RefusedFights() const { return _refusedFights; }
     uint32_t RefusedParticipants() const { return _refusedParticipants; }
+    uint32_t RefusedDecisions() const { return _refusedDecisions; }
 
 private:
     Fight* FightOf(uint64_t guid)
@@ -512,6 +532,7 @@ private:
     std::vector<Resurrection> _resurrections;
     uint32_t _refusedFights = 0;
     uint32_t _refusedParticipants = 0;
+    uint32_t _refusedDecisions = 0;
 };
 
 struct RecentEnemy
@@ -626,11 +647,11 @@ public:
     float courtesy = 0.0f;
     float patience = 0.0f;
 
-    // WP5: the fight the bot decided to join and its target, when; the last join check
+    // WP5: the fight the bot decided to join, its target, when and how it comes in
     uint64_t joinGuid = 0;
     uint32_t joinFightId = 0;
     uint32_t joinMs = 0;
-    uint32_t joinCheckMs = 0;
+    CameIn joinCameIn = CameIn::Joined;
 
     // WP6: the retreat, the chase (its target, start and where it began) and the calm-area answer at a place
     bool retreating = false;
