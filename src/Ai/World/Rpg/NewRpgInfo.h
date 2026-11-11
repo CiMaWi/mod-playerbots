@@ -150,6 +150,8 @@ struct NewRpgInfo
     uint32 stuckAvoidTs{0};
     WorldPosition stuckBotPos;  // where the bot stood at that Stuck event
     uint32 stuckRepeats{0};     // give-ups in a row at the same obstacle (WorldTravel::NextStuckRepeats)
+    WorldPosition offMeshPos;   // where the last off-mesh recovery left the bot (seen, no_poly): it backs off there
+    uint32 offMeshTs{0};        // its time; 0 = none (WorldTravel::OffMeshBackoff)
     // END MOVE_FAR
 
     // GHOST (SpiritHealerAction): the last spirit healer search and the last fallback teleport

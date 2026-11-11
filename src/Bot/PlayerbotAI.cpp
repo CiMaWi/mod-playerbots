@@ -59,7 +59,6 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
-#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
@@ -69,6 +68,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PositionValue.h"
+#include "QuestStatEvents.h"
 #include "RBAC.h"
 #include "RaceMgr.h"
 #include "RandomPlayerbotMgr.h"
@@ -2301,6 +2301,13 @@ void PlayerbotAI::ChangeEngine(BotState type)
         currentEngine = engine;
         currentState = type;
         ReInitCurrentEngine();
+        // A travelling bot's combat stretches and deaths (WT.23): its route follower runs in neither engine
+        if (auto* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data))
+            TravelLegs::NoteLife(travel->trip,
+                                 type == BOT_STATE_COMBAT ? TravelLegs::Life::Combat
+                                 : type == BOT_STATE_DEAD ? TravelLegs::Life::Dead
+                                                          : TravelLegs::Life::Calm,
+                                 getMSTime());
 
         switch (type)
         {
@@ -9376,7 +9383,9 @@ void PlayerbotAI::RecordQuestDropped(uint32 questId, QuestDropReason reason)
     ++rpgStatistic.questDropped;
     if (sPlayerbotAIConfig.CollectDetailedQuestStats)
         ++rpgStatistic.byQuest[questId].dropped[static_cast<size_t>(reason)];
-    Planner::QuestStatDropped(bot, questId);
+    // An abandoned quest stays in the log at low priority; its later drop is the same leave and counted once
+    if (!lowPriorityQuest.contains(questId))
+        Planner::QuestStatDropped(bot, questId);
 }
 
 void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason)

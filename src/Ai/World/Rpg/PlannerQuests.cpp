@@ -5,12 +5,17 @@
  */
 
 // The server side of the quest index (travel plan WT13a): the world-thread gather, the worker build, the published
-// index and the GM query; and the population's quest statistics: the events, the load, the flush and the view
+// index and the GM query; and the population's quest statistics: the events, the load, the flush and the view.
+// The questing circuit's job wrapper, its real-place harness and `planner circuit` (WT13b; the planner: QuestCircuit.h)
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <unordered_set>
@@ -21,6 +26,7 @@
 #include "GameObjectData.h"
 #include "Log.h"
 #include "NewRpgInfo.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerService.h"
@@ -29,11 +35,17 @@
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "QuestCircuit.h"
+#include "QuestCircuitHarness.h"
+#include "QuestCircuitLog.h"
 #include "QuestDef.h"
 #include "QuestIndex.h"
+#include "QuestLevelRules.h"
 #include "QuestStats.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
+#include "World.h"
+#include "WorldLog.h"
 
 namespace Planner
 {
@@ -43,6 +55,9 @@ static_assert(QuestType::ELITE == QUEST_TYPE_ELITE && QuestType::PVP == QUEST_TY
                   QuestType::RAID_25 == QUEST_TYPE_RAID_25,
               "the planner's quest types are the core's");
 static_assert(POI_FIRST_ITEM == QUEST_OBJECTIVES_COUNT, "item POIs follow the creature or object slots");
+static_assert(Circuit::MAX_LEVELS_ABOVE == QUEST_MAX_LEVELS_ABOVE_BOT, "the circuit's level limit is today's");
+static_assert(Circuit::SLOT_COMPLETE == static_cast<uint32>(QUEST_STATE_COMPLETE),
+              "the circuit reads the log slot's complete flag");
 
 namespace
 {
@@ -440,6 +455,197 @@ void SendPlaces(ChatHandler* handler, QuestIndex const& quests, PlannerIndexes c
     if (list.size() > QUERY_PLACES)
         handler->PSendSysMessage("  ... and {} more {} spawns", list.size() - QUERY_PLACES, role);
 }
+
+// The circuit harness's real places (WT13b): at fixed map coordinates among the quest givers, checked against the
+// quest index when the harness runs (the givers within the hub's reach, the nearest camp)
+struct CircuitPlace
+{
+    char const* name;
+    uint8 level;
+    uint8 race;
+    uint8 cls;
+    uint8 team;  // 0 Alliance, 1 Horde
+    uint32 mapId;
+    float x;
+    float y;
+    float z;
+};
+
+// Goldshire's quests are levels 7-10: at level 12 they are grey (grey difference 4) and only deliveries are left, so
+// the human is 9 (the coordinator's call after the WT13b review)
+constexpr std::array<CircuitPlace, 3> CIRCUIT_PLACES{{
+    {"goldshire-9-human", 9, RACE_HUMAN, CLASS_WARRIOR, 0, 0, -9465.0f, 40.0f, 57.0f},
+    {"crossroads-22-orc", 22, RACE_ORC, CLASS_WARRIOR, 1, 1, -441.0f, -2596.0f, 92.0f},
+    {"gromgol-35-troll", 35, RACE_TROLL, CLASS_HUNTER, 1, 0, -12370.0f, 175.0f, 4.0f},
+}};
+constexpr uint32 CIRCUIT_TIMING_RUNS = 50;      // plans per real scenario behind the job time's p50/p95
+constexpr float CIRCUIT_CAMP_YARDS = 300.0f;    // the nearest quest camp to a place is looked for this far
+constexpr std::size_t CIRCUIT_CAMPS_TRIED = 8;  // camps tried for one with quests, nearest first
+constexpr uint16 CIRCUIT_BAG_SLOTS = 16;        // the synthetic bot's free bag slots
+
+// The published data a circuit job reads, taken on the calling thread with the core's grey level difference
+struct CircuitData
+{
+    std::shared_ptr<PlannerIndexes const> indexes;
+    std::shared_ptr<QuestIndex const> quests;
+    std::shared_ptr<QuestStatsView const> stats;
+    std::shared_ptr<CrowdingSnapshot const> crowding;
+    uint32 greyDiff{Circuit::GREY_DIFF};
+
+    // The pointers stay valid while this data (or a copy of its shared pointers) lives
+    CircuitContext Context() const
+    {
+        CircuitContext context;
+        context.quests = quests.get();
+        context.indexes = indexes.get();
+        context.stats = stats.get();
+        context.crowding = crowding.get();
+        context.greyDiff = greyDiff;
+        return context;
+    }
+};
+
+CircuitData CircuitDataNow()
+{
+    CircuitData data;
+    data.indexes = IndexesReady() ? Indexes() : nullptr;
+    data.quests = QuestsReady() ? Quests() : nullptr;
+    data.stats = QuestStats();
+    data.crowding = Crowding();
+    data.greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF);
+    return data;
+}
+
+Snapshot CircuitBot(CircuitPlace const& place, Place const& start)
+{
+    Snapshot bot;
+    bot.level = place.level;
+    bot.race = place.race;
+    bot.cls = place.cls;
+    bot.team = place.team;
+    bot.position = start;
+    bot.runSpeed = Circuit::DEFAULT_RUN_SPEED;
+    bot.bagSlots = CIRCUIT_BAG_SLOTS;
+    bot.bagFree = CIRCUIT_BAG_SLOTS;
+    return bot;
+}
+
+// The place's start: its own position when a quest giver stands within the hub's reach, else the nearest camp that
+// gives quests. False when neither has a giver within the hub's reach
+bool CircuitStart(QuestIndex const& quests, CircuitPlace const& place, Place& start, std::string& text)
+{
+    start = {place.mapId, place.x, place.y, place.z};
+    std::size_t givers = quests.GiversNear(place.mapId, place.x, place.y, Circuit::HUB_GIVER_YARDS).size();
+    std::string where = Acore::StringFormat("({:.0f}, {:.0f}) on map {}", place.x, place.y, place.mapId);
+    std::string camp = Acore::StringFormat("no camp with quests within {:.0f} yd", CIRCUIT_CAMP_YARDS);
+    for (Nearby const& nearby :
+         quests.NearestCamps(place.mapId, place.x, place.y, place.z, CIRCUIT_CAMPS_TRIED, CIRCUIT_CAMP_YARDS))
+    {
+        QuestCamp const& found = quests.camps[nearby.index];
+        if (found.quests.empty())
+            continue;
+        camp =
+            Acore::StringFormat("camp {} ({} quests, {} places, radius {:.0f} yd, zone {}) at {:.0f} yd", nearby.index,
+                                found.quests.size(), found.places.size(), found.radius, found.zoneId, nearby.distance);
+        if (!givers)
+        {
+            start = {place.mapId, found.x, found.y, found.z};
+            givers = quests.GiversNear(place.mapId, found.x, found.y, Circuit::HUB_GIVER_YARDS).size();
+            where = Acore::StringFormat("the camp's centre ({:.0f}, {:.0f})", found.x, found.y);
+        }
+        break;
+    }
+    text = Acore::StringFormat("{} quest givers within {:.0f} yd of {}; nearest {}", givers, Circuit::HUB_GIVER_YARDS,
+                               where, camp);
+    return givers > 0;
+}
+
+// The synthetic bot's history: every quest grey for its level, as a bot that levelled through the world has done
+// (prerequisites of the hub's chains met; the grey ones skipped either way), ascending as the index
+std::vector<uint32> GreyHistory(QuestIndex const& quests, uint8 level, uint32 greyDiff)
+{
+    std::vector<uint32> ids;
+    for (QuestRecord const& quest : quests.quests)
+        if (quest.level > 0 &&
+            static_cast<int32>(level) > Circuit::QuestLevel(quest, level) + static_cast<int32>(greyDiff))
+            ids.push_back(quest.id);
+    return ids;
+}
+
+// Every quest the givers within the hub's reach offer, sorted: rewarded, they make the hub dry
+std::vector<uint32> HubQuests(QuestIndex const& quests, Place const& at)
+{
+    std::vector<uint32> ids;
+    for (uint32 const place : quests.GiversNear(at.map, at.x, at.y, Circuit::HUB_GIVER_YARDS))
+        for (uint32 const id : quests.QuestsGivenAt(place))
+            ids.push_back(id);
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
+}
+
+// Log quests for the full-log fixture, ascending: every objective on another map than the place's (work the bot
+// cannot do from the hub), grey for its level or not, never a repeatable, elite, group, instance or exclusive quest,
+// and none that a hub quest names (prerequisite, breadcrumb), so the hub offers what it offers to an empty log
+std::vector<uint32> FarQuests(QuestIndex const& quests, CircuitPlace const& place, std::vector<uint32> const& hub,
+                              uint32 greyDiff, bool grey, std::size_t count)
+{
+    std::vector<uint32> named;
+    for (uint32 const id : hub)
+        if (QuestRecord const* quest = quests.Find(id))
+        {
+            named.push_back(static_cast<uint32>(quest->prev < 0 ? -quest->prev : quest->prev));
+            named.push_back(quest->breadcrumbFor);
+        }
+    std::vector<uint32> ids;
+    for (QuestRecord const& quest : quests.quests)
+    {
+        if (ids.size() >= count)
+            break;
+        bool const isGrey =
+            static_cast<int32>(place.level) > Circuit::QuestLevel(quest, place.level) + static_cast<int32>(greyDiff);
+        bool const above =
+            Circuit::QuestLevel(quest, place.level) > static_cast<int32>(place.level) + Circuit::MAX_LEVELS_ABOVE;
+        if (quest.level <= 0 || isGrey != grey || above || quest.exclusiveGroup ||
+            (quest.flags & (Circuit::REPEAT_FLAGS | Circuit::GROUP_FLAGS | Circuit::INSTANCE_FLAGS)) ||
+            std::binary_search(hub.begin(), hub.end(), quest.id) ||
+            std::find(named.begin(), named.end(), quest.id) != named.end())
+            continue;
+        bool placed = false;
+        bool elsewhere = true;
+        for (QuestObjective const& objective : quest.objectives)
+            for (AreaPoint const& area : objective.areas)
+            {
+                placed = placed || objective.kind != ObjectiveKind::Turnin;
+                elsewhere = elsewhere && area.mapId != place.mapId;
+            }
+        if (placed && elsewhere)
+            ids.push_back(quest.id);
+    }
+    return ids;
+}
+
+QuestSlot LogSlot(uint32 quest, uint32 state)
+{
+    QuestSlot slot;
+    slot.quest = quest;
+    slot.state = state;
+    return slot;
+}
+
+void AddChecks(std::vector<CircuitHarness::Check>& checks, std::vector<CircuitHarness::Check> const& more)
+{
+    checks.insert(checks.end(), more.begin(), more.end());
+}
+
+void AddPlanLines(std::vector<std::string>& lines, std::string const& name, CircuitHarness::Report const& report)
+{
+    lines.push_back(Acore::StringFormat(
+        "{} (hub camp {}):", name,
+        report.plan.homeCamp == NO_CAMP ? std::string("none") : std::to_string(report.plan.homeCamp)));
+    for (std::string const& line : CircuitHarness::PlanLines(report.plan, report.baselineYards))
+        lines.push_back("  " + line);
+}
 }  // namespace
 
 void StartQuestIndex()
@@ -668,6 +874,216 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
                                  areas.empty() ? "" : ": ", areas);
     }
     SendQuestStats(handler, id);
+    return true;
+}
+
+Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const& protectedQuests,
+                       std::vector<QuestProgress> const& progress)
+{
+    CircuitData data = CircuitDataNow();
+    CircuitContext context = data.Context();
+    context.weights = weights;
+    context.protectedQuests = protectedQuests;
+    context.progress = progress;
+    return [data = std::move(data), context = std::move(context)](Snapshot const& snapshot) -> std::optional<Payload>
+    {
+        if (!data.quests)
+            return std::nullopt;
+        auto plan = std::make_shared<CircuitPlan const>(PlanCircuit(snapshot, context));
+        if (!plan->ok)
+            return std::nullopt;
+        return Payload{CircuitAnswer{std::move(plan)}};
+    };
+}
+
+bool RunCircuitHarness(ChatHandler* handler)
+{
+    if (!IndexesReady() || !QuestsReady())
+    {
+        handler->SendErrorMessage("PLANNER circuit selftest: not ready (see `playerbots planner indexes`)");
+        return false;
+    }
+    auto const started = std::chrono::steady_clock::now();
+    CircuitData const data = CircuitDataNow();
+    CircuitContext const context = data.Context();
+    QuestIndex const& quests = *data.quests;
+    std::vector<CircuitHarness::Check> checks;
+    std::vector<std::string> plans;
+    for (CircuitPlace const& place : CIRCUIT_PLACES)
+    {
+        Place start;
+        std::string text;
+        bool const found = CircuitStart(quests, place, start, text);
+        checks.push_back({found, std::string(place.name) + ": " + text});
+        if (!found)
+            continue;
+
+        // An empty log at the hub after a levelled bot's history: most fitting quests taken, only fitting ones, the log
+        // within its limit, one turn-in batch
+        CircuitHarness::Scenario scenario{place.name, CircuitBot(place, start), context, {}};
+        scenario.bot.rewardedQuests = GreyHistory(quests, place.level, data.greyDiff);
+        CircuitHarness::Report const report = CircuitHarness::RunScenario(scenario, CIRCUIT_TIMING_RUNS);
+        AddChecks(checks, report.checks);
+        AddPlanLines(plans, scenario.name, report);
+        if (&place == &CIRCUIT_PLACES.front())
+        {
+            AddChecks(checks, CircuitHarness::GuardChecks(scenario));
+            std::optional<Payload> const answer = CircuitCompute(CircuitWeights{}, {}, {})(scenario.bot);
+            CircuitAnswer const* circuit = answer ? std::get_if<CircuitAnswer>(&*answer) : nullptr;
+            bool const same = circuit && circuit->plan &&
+                              CircuitHarness::PlanSummary(*circuit->plan) == CircuitHarness::PlanSummary(report.plan);
+            checks.push_back({same, scenario.name + ": the job wrapper answers the same plan"});
+        }
+        std::vector<uint32> const hub = HubQuests(quests, start);
+
+        // The next circuit with the carried quests done in the log (review 2, finding A): they stay out of the loop,
+        // which visits the same ender camps
+        if (!report.plan.carried.empty())
+        {
+            CircuitHarness::Scenario carrying{scenario.name + "-carrying", scenario.bot, context, {}};
+            for (uint32 const id : report.plan.carried)
+                carrying.bot.quests.push_back(LogSlot(id, Circuit::SLOT_COMPLETE));
+            carrying.expect.minTake = 0;
+            carrying.expect.carried = report.plan.carried;
+            carrying.expect.checkEnderCamps = true;
+            carrying.expect.enderCamps = report.plan.enderCamps;
+            CircuitHarness::Report const carryingReport = CircuitHarness::RunScenario(carrying, CIRCUIT_TIMING_RUNS);
+            AddChecks(checks, carryingReport.checks);
+            AddPlanLines(plans, carrying.name, carryingReport);
+        }
+
+        // A full log of quests from another map and a grey one: the grey one goes, far ones make room for every quest
+        // the empty log took, a protected far one stays
+        std::vector<uint32> const fillers = FarQuests(quests, place, hub, data.greyDiff, false, QUEST_LOG_SLOTS - 1);
+        std::vector<uint32> const grey = FarQuests(quests, place, hub, data.greyDiff, true, 1);
+        bool const fixture = fillers.size() == QUEST_LOG_SLOTS - 1 && grey.size() == 1;
+        checks.push_back({fixture, Acore::StringFormat("{}-full-log: {} far quests and {} grey one fill the log",
+                                                       scenario.name, fillers.size(), grey.size())});
+        if (fixture)
+        {
+            CircuitHarness::Scenario full{scenario.name + "-full-log", scenario.bot, context, {}};
+            std::erase(full.bot.rewardedQuests, grey.front());
+            for (uint32 const id : fillers)
+                full.bot.quests.push_back(LogSlot(id, 0));
+            full.bot.quests.push_back(LogSlot(grey.front(), 0));
+            full.context.protectedQuests = {fillers.front()};
+            full.expect.exactTake = true;
+            full.expect.take = CircuitHarness::TakenIds(report.plan);
+            full.expect.minTake = 0;
+            full.expect.checkAbandon = true;
+            full.expect.abandonFrom.assign(fillers.begin() + 1, fillers.end());
+            full.expect.abandonFrom.push_back(grey.front());
+            full.expect.abandonMust = grey;
+            full.expect.keep = {fillers.front()};
+            CircuitHarness::Report const fullReport = CircuitHarness::RunScenario(full, CIRCUIT_TIMING_RUNS);
+            AddChecks(checks, fullReport.checks);
+            AddPlanLines(plans, full.name, fullReport);
+
+            // The log full of those quests done (review 3, finding 1): complete quests are never abandoned and none is
+            // turned in here, so the hub's quests wait for log space that only delivering frees. No slot frees at a
+            // chain or camp, so the bot moves on only to deliver (reviews 4 and 5); with every ender on another map no
+            // delivery is in reach, so it finds nowhere. The generic checks hold it to that and follow its moves
+            CircuitHarness::Scenario done{scenario.name + "-full-log-done", scenario.bot, context, {}};
+            for (std::size_t i = 0; i + Circuit::LOG_RESERVE < QUEST_LOG_SLOTS; ++i)
+                done.bot.quests.push_back(LogSlot(fillers[i], Circuit::SLOT_COMPLETE));
+            done.expect.exactTake = true;
+            done.expect.minTake = 0;
+            CircuitHarness::ExactAbandon(done.expect, {});
+            CircuitHarness::Report const doneReport = CircuitHarness::RunScenario(done, CIRCUIT_TIMING_RUNS);
+            AddChecks(checks, doneReport.checks);
+            AddPlanLines(plans, done.name, doneReport);
+        }
+
+        // The same hub with every quest its givers offer rewarded: the bot moves on
+        CircuitHarness::Scenario dry{scenario.name + "-dry", scenario.bot, context, {}};
+        std::vector<uint32> done;
+        std::set_union(scenario.bot.rewardedQuests.begin(), scenario.bot.rewardedQuests.end(), hub.begin(), hub.end(),
+                       std::back_inserter(done));
+        dry.bot.rewardedQuests = std::move(done);
+        dry.expect.minTake = 0;
+        dry.expect.moveInBracket = true;
+        CircuitHarness::Report const dryReport = CircuitHarness::RunScenario(dry, CIRCUIT_TIMING_RUNS);
+        AddChecks(checks, dryReport.checks);
+        AddPlanLines(plans, dry.name, dryReport);
+
+        // The dry hub with the log full of the far quests, none protected (review 5, finding 1): any hub that wants a
+        // slot gives one of them up, so the bot still moves on, and the generic checks see it take there
+        if (fixture)
+        {
+            CircuitHarness::Scenario dryFull{scenario.name + "-dry-full-log", dry.bot, context, {}};
+            for (uint32 const id : fillers)
+            {
+                std::erase(dryFull.bot.rewardedQuests, id);
+                dryFull.bot.quests.push_back(LogSlot(id, 0));
+            }
+            dryFull.expect.minTake = 0;
+            dryFull.expect.moveInBracket = true;
+            CircuitHarness::ExactAbandon(dryFull.expect, {});
+            CircuitHarness::Report const dryFullReport = CircuitHarness::RunScenario(dryFull, CIRCUIT_TIMING_RUNS);
+            AddChecks(checks, dryFullReport.checks);
+            AddPlanLines(plans, dryFull.name, dryFullReport);
+        }
+    }
+
+    std::size_t failed = 0;
+    for (CircuitHarness::Check const& check : checks)
+    {
+        failed += check.pass ? 0 : 1;
+        handler->PSendSysMessage("{} {}", check.pass ? "PASS" : "FAIL", check.text);
+    }
+    for (std::string const& line : plans)
+        handler->PSendSysMessage("{}", line);
+    std::string const summary =
+        Acore::StringFormat("PLANNER circuit selftest: {}, {} checks, {} failed, in {} ms (grey difference {})",
+                            failed ? "FAIL" : "PASS", checks.size(), failed, MsSince(started), data.greyDiff);
+    handler->PSendSysMessage("{}", summary);
+    LOG_INFO("playerbots", "{}", summary);
+    return !failed;
+}
+
+bool HandleCircuitCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string word;
+    in >> word;
+    if (word.empty())
+    {
+        handler->SendErrorMessage("Usage: playerbots planner circuit selftest | <player name>");
+        return false;
+    }
+    // The summary line carries the verdict; false here would only add the usage text
+    if (word == "selftest")
+    {
+        RunCircuitHarness(handler);
+        return true;
+    }
+    if (!IndexesReady() || !QuestsReady())
+    {
+        handler->SendErrorMessage("PLANNER circuit: not ready (see `playerbots planner indexes`)");
+        return false;
+    }
+    std::string name = word;
+    Player* player = normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+    if (!player || !player->IsInWorld())
+    {
+        handler->SendErrorMessage("PLANNER circuit: no player {} online", word);
+        return false;
+    }
+    // Read only, on the world thread between map updates; the log quests' elapsed minutes come with WT16
+    CircuitData const data = CircuitDataNow();
+    Snapshot const snapshot = FillSnapshot(player, 0);
+    CircuitPlan const plan = PlanCircuit(snapshot, data.Context());
+    // The world log's decision rows of this plan (kind circuit); WT16 emits the same rows where it applies plans
+    if (WorldLog::Active())
+        for (CircuitLog::Row const& row : CircuitLog::Rows(plan))
+            WorldLog::Decision(player, WorldLogFormat::DecisionKind::Circuit, row.choice, row.reason, row.value);
+    handler->PSendSysMessage("CIRCUIT {}: level {}, map {} ({:.0f}, {:.0f}), {} log quests, hub camp {}",
+                             player->GetName(), snapshot.level, snapshot.position.map, snapshot.position.x,
+                             snapshot.position.y, snapshot.quests.size(),
+                             plan.homeCamp == NO_CAMP ? std::string("none") : std::to_string(plan.homeCamp));
+    float const baseline = plan.ok ? BaselineYards(plan, *data.quests) : 0.0f;
+    for (std::string const& line : CircuitHarness::PlanLines(plan, baseline))
+        handler->PSendSysMessage("  {}", line);
     return true;
 }
 }  // namespace Planner

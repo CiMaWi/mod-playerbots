@@ -15,6 +15,7 @@
 
 #include "PlannerIndexes.h"
 #include "PlannerPool.h"
+#include "QuestStatEvents.h"
 
 class ChatHandler;
 class Player;
@@ -77,15 +78,21 @@ std::string QuestIndexStatus();
 // `playerbots planner quest <id> | stats | flush`: the quest's entry and statistics, the book's state, a flush now
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
 
+// The questing circuit (WT13b, PlannerQuests.cpp; the planner in QuestCircuit.h)
+struct CircuitWeights;
+struct QuestProgress;
+// The calling thread: a circuit job over the published quest index, indexes, statistics and crowding, with the core's
+// grey level difference taken here. Answers a CircuitAnswer; none when no plan was made or the index was not ready
+Compute CircuitCompute(CircuitWeights const& weights, std::vector<std::uint32_t> const& protectedQuests,
+                       std::vector<QuestProgress> const& progress);
+// World thread: the real-place scenarios (Goldshire, the Crossroads, Grom'gol, each also with a dry hub); true = pass
+bool RunCircuitHarness(ChatHandler* handler);
+// `playerbots planner circuit selftest | <player name>`: the harness, or the plan for an online player (read only)
+bool HandleCircuitCommand(ChatHandler* handler, char const* args);
+
 // The population's quest statistics (WT13a, PlannerQuests.cpp; rules and book in QuestStats.h). StartQuestIndex
 // loads the stored totals; events before that are not counted
-// Map threads: the bot's quest events, persistent random bots only; O(1) under one short lock, no DB
-void QuestStatAccepted(Player* bot, std::uint32_t questId);
-void QuestStatRewarded(Player* bot, std::uint32_t questId);
-void QuestStatAbandoned(Player* bot, std::uint32_t questId);
-void QuestStatDropped(Player* bot, std::uint32_t questId);
-// A death counts for the quest the bot's rpg status is doing
-void QuestStatDeath(Player* bot);
+// The events QuestStatAccepted ... QuestStatDeath are declared in QuestStatEvents.h
 // Any thread: the last published view (after the load and each flush); a reader keeps its copy alive
 std::shared_ptr<QuestStatsView const> QuestStats();
 // World thread: writes the changed cells asynchronously and publishes a new view; returns the rows taken

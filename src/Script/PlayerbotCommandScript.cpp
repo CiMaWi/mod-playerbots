@@ -207,6 +207,7 @@ public:
             {"service", Planner::HandleServiceCommand, SEC_GAMEMASTER, Console::Yes},
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsWorldLogCommandTable = {
