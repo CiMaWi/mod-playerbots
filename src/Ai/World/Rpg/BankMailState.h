@@ -1,0 +1,136 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef _PLAYERBOT_BANKMAILSTATE_H
+#define _PLAYERBOT_BANKMAILSTATE_H
+
+#include <vector>
+
+#include "Define.h"
+#include "ObjectGuid.h"
+
+class Player;
+class PlayerbotAI;
+
+// What a bot knows about its mail and its bank, and the state of a mailbox or bank visit (bank-mail plan). Held per
+// bot in NewRpgInfo::bankMail, outside the RPG status: a visit is stepped from any status and a status reset keeps it.
+// A bot knows that mail waits and what it expects from it, not what is inside (WB.4).
+namespace BankMail
+{
+struct MailKnowledge
+{
+    uint16 waiting{0};         // unread mails delivered to its box, counted from the mail list (CountWaitingMail)
+    uint32 seenCopper{0};      // worth the bot saw in mail it read and left in the box; in memory only
+    uint32 expectedCopper{0};  // worth of the mail it expects (sent to itself, a sale); 0 until something fills it
+    uint32 refreshedMs{0};     // when waiting was last counted; 0 = never
+};
+
+// An item the bot keeps in its bank for a later level
+struct KeptItem
+{
+    uint32 entry{0};
+    uint32 count{0};
+    uint32 laterWorth{0};  // copper it is worth to the bot at dueLevel
+    uint8 dueLevel{0};
+};
+
+struct BankKnowledge
+{
+    std::vector<KeptItem> kept;  // empty until a keep rule fills it
+    uint16 freeSlots{0};         // free bank item slots (the 28; bank bags are not counted)
+    uint32 dueCount{0};          // kept items the bot has reached the level for
+    uint32 dueWorth{0};
+    bool built{false};  // set at login (BuildBankKnowledge)
+};
+
+enum class MailVisitPhase : uint8
+{
+    None,     // no visit
+    Walk,     // on the way to the mailbox
+    List,     // at the mailbox, the mail list asked for
+    Take,     // a take (money or an item) sent, its answer awaited
+    Finished  // the visit's row written; cleared on the next update
+};
+
+struct MailVisitState
+{
+    MailVisitPhase phase{MailVisitPhase::None};
+    ObjectGuid mailbox;  // the mailbox object; resolved at each use
+    uint32 startedMs{0};
+    uint32 deadlineMs{0};
+    uint32 stepMs{0};  // when the current step was sent (BankMailConfig::VisitStepSeconds)
+    uint32 mailId{0};  // the mail the current step works on
+    bool answerPending{false};
+    uint32 mailsOpened{0};
+    uint32 moneyTaken{0};  // copper
+    uint32 itemsTaken{0};
+    uint32 itemsLeft{0};  // left in the mail for lack of bag space
+};
+
+enum class BankVisitPhase : uint8
+{
+    None,
+    Walk,      // on the way to the banker
+    Deposit,   // at the banker, putting items in
+    Withdraw,  // taking due items out
+    Finished
+};
+
+struct BankVisitState
+{
+    BankVisitPhase phase{BankVisitPhase::None};
+    ObjectGuid banker;  // resolved at each use
+    uint32 startedMs{0};
+    uint32 deadlineMs{0};
+    uint32 stepMs{0};
+    uint32 deposited{0};
+    uint32 withdrawn{0};
+};
+
+struct BotBankMail
+{
+    MailKnowledge mail;
+    BankKnowledge bank;
+    MailVisitState mailVisit;
+    BankVisitState bankVisit;
+};
+
+// The kept items due at the bot's level: their number and worth
+inline void SumDueItems(BankKnowledge& bank, uint8 level)
+{
+    bank.dueCount = 0;
+    bank.dueWorth = 0;
+    for (KeptItem const& item : bank.kept)
+    {
+        if (item.dueLevel > level)
+            continue;
+        bank.dueCount += item.count;
+        bank.dueWorth += item.laterWorth;
+    }
+}
+
+// A far teleport or a PlayerbotAI::Reset(true) rebuilds NewRpgInfo (TravelLegs::AfterReset keeps only the route
+// requests). The bot's knowledge (waiting mail, seen worth, bank slots, kept items) survives it; a mailbox or bank
+// visit does not: the bot is no longer where the visit was walking or standing, so the visit ends without a row.
+inline BotBankMail AfterReset(BotBankMail const& before)
+{
+    BotBankMail after;
+    after.mail = before.mail;
+    after.bank = before.bank;
+    return after;
+}
+
+// Mail list reads (Player::GetMails) happen only on the bot's own map thread inside its AI update or on the world
+// thread; never on a planner worker, never for another bot from a map thread, and no Mail* is kept past the call.
+uint16 CountWaitingMail(Player const* bot);
+void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail);
+
+// At login, on the world thread: the bank's free slots and the waiting mail, from what the character load brought
+// (no query)
+void BuildBankKnowledge(PlayerbotAI* botAI);
+}  // namespace BankMail
+
+#endif

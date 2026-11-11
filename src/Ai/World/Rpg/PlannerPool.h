@@ -112,6 +112,14 @@ struct Snapshot
     std::uint32_t deaths{0};  // not filled yet: no cheap per-bot death count exists
     Goal currentGoal;         // WT16 fills the goals
     std::vector<Goal> recentGoals;
+    // What the bot knows of its mail and bank (BankMail::BotBankMail); the mail count is renewed with each snapshot
+    std::uint16_t mailWaiting{0};
+    std::uint32_t mailSeenCopper{0};
+    std::uint32_t mailExpectedCopper{0};
+    std::uint32_t bankKeptCount{0};
+    std::uint32_t bankDueCount{0};
+    std::uint32_t bankDueWorth{0};
+    std::uint16_t bankFreeSlots{0};
 
     std::size_t ApproxBytes() const
     {
@@ -968,6 +976,17 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
         check(typical.ApproxBytes() < TYPICAL_BYTES, "a typical snapshot stays under 8 KB");
         notes.push_back("snapshot bytes: worst " + std::to_string(worst.ApproxBytes()) + ", typical " +
                         std::to_string(typical.ApproxBytes()));
+
+        Snapshot known;
+        check(!known.mailWaiting && !known.mailSeenCopper && !known.mailExpectedCopper && !known.bankKeptCount &&
+                  !known.bankDueCount && !known.bankDueWorth && !known.bankFreeSlots,
+              "a new snapshot knows no mail and no bank");
+        known.mailWaiting = 3;
+        known.bankDueWorth = 4500;
+        known.bankFreeSlots = 28;
+        Snapshot const copied = known;
+        check(copied.mailWaiting == 3 && copied.bankDueWorth == 4500 && copied.bankFreeSlots == 28,
+              "a copied snapshot keeps the mail and bank fields");
     }
     return checks;
 }

@@ -1625,7 +1625,8 @@ void PlayerbotAI::HandleTeleportAck()
 
         // reset AI state after teleport; a trip in progress goes on (a portal or a cross-map flight leg ends here)
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
-        NewRpgInfo const kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
+        NewRpgInfo kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
+        kept.bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // knowledge stays, a mail or bank visit ends
         rpgInfo.bot = nullptr;  // the reset notes no status change; the teleport does, once
         Reset(true);
         rpgInfo = kept;
@@ -1729,7 +1730,9 @@ void PlayerbotAI::Reset(bool full)
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
         Player* const rpgBot = rpgInfo.bot;  // null inside a far teleport's reset
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
+        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);
         rpgInfo = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, false);  // keeps the route request ids
+        rpgInfo.bankMail = bankMail;  // knowledge stays, a mail or bank visit ends
         rpgInfo.bot = rpgBot;
         WorldLog::StatusReason const reasonScope("reset");
         WorldLog::NoteStatus(rpgBot, statusBefore, rpgInfo.GetStatus());

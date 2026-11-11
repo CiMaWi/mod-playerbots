@@ -9,6 +9,7 @@
 
 #include <unordered_set>
 
+#include "BankMailState.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -139,6 +140,9 @@ struct NewRpgInfo
         bool pending{false};  // a job is out; its result is taken before the next one is submitted
     };
     PlannerState planner;
+    // Mail and bank knowledge and visits (BankMailState.h); Reset() keeps it, so a visit survives a status change;
+    // a far teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
+    BankMail::BotBankMail bankMail;
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};

@@ -6,6 +6,7 @@
 
 #include "PlayerbotMgr.h"
 #include "PlayerbotsDatabase.h"
+#include "BankMailState.h"
 #include "BotProfileMgr.h"
 #include "BotTraitMgr.h"
 #include "BroadcastHelper.h"
@@ -559,6 +560,9 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         LOG_DEBUG("mod-playerbots", "PlayerbotAI is null for bot with GUID: {}", bot->GetGUID().GetRawValue());
         return;
     }
+
+    // World thread: the bank and the mail as the character load brought them, so the AI never queries them
+    BankMail::BuildBankKnowledge(botAI);
 
     Player* master = botAI->GetMaster();
 

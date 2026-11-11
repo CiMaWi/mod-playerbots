@@ -13,6 +13,7 @@
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "BankMailConfig.h"
 #include "BotAttributes.h"
 #include "DBCEnums.h"
 #include "NaturalCastConfig.h"
@@ -550,6 +551,8 @@ public:
     PathConfig NaturalPath;
     // Playerbots.WorldTravel.*: honest travel of persistent bots (sight rule, corpse runs, stuck spots)
     WorldTravelConfig WorldTravel;
+    // Playerbots.BankMail.*: persistent bots' mail and bank visits
+    BankMailConfig BankMail;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
     LosConfig TacticLos;
     PillarConfig TacticPillar;
