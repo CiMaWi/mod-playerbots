@@ -221,6 +221,7 @@ public:
         static ChatCommandTable playerbotsBankCommandTable = {
             {"status", BankMail::HandleBankStatusCommand, SEC_PLAYER, Console::Yes},
             {"selftest", BankMail::HandleBankSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"visit", BankMail::HandleBankVisitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsWorldLogCommandTable = {

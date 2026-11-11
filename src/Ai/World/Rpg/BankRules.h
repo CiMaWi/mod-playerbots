@@ -27,7 +27,8 @@
 //
 // The bank visit and the knowledge use (signatures kept stable):
 //   KeepAnswer DecideKeep(KeepItemIn const& item, KeepBotIn const& bot);   // the providers and the rule
-//   BankPlan PlanBankVisit(BankIn const& in);                             // withdraw steps, then deposit steps
+//   BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& refused = {});
+//                                                    // withdraw steps, then deposit steps; refused items stay put
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
 //   char const* ChoiceWord(BankChoice), ReasonWord(BankReason);           // the `bank` decision row's words
 // BankRulesInput.h builds BankIn from the live bags and bank (BuildBankIn) and refreshes the bot's BankKnowledge.
@@ -151,7 +152,8 @@ enum class BankReason : uint8_t
     Released,      // in the bank but no longer worth more later: withdrawn to be sold or used as an ordinary item
     KeptForLevel,  // kept for a level the bot has not reached
     BankFull,      // kept, but the bank has no room left for it
-    NoSpace        // to be withdrawn, but the bags have no room for it
+    NoSpace,       // to be withdrawn, but the bags have no room for it
+    Refused        // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit
 };
 
 inline char const* ChoiceWord(BankChoice choice)
@@ -181,6 +183,8 @@ inline char const* ReasonWord(BankReason reason)
             return "kept_for_level";
         case BankReason::BankFull:
             return "bank_full";
+        case BankReason::Refused:
+            return "refused";
         default:
             return "no_space";
     }
@@ -205,6 +209,7 @@ struct BankVerdict
     bool inBank = false;  // where the item lies before the visit
     uint8_t bag = 0;
     uint8_t slot = 0;
+    uint32_t itemGuid = 0;
     uint32_t entry = 0;
     uint32_t count = 0;
     uint32_t laterWorth = 0;  // 0 for a released item
@@ -317,6 +322,7 @@ inline BankVerdict MakeVerdict(BankItemIn const& in, KeepAnswer const& answer, b
     verdict.inBank = inBank;
     verdict.bag = in.bag;
     verdict.slot = in.slot;
+    verdict.itemGuid = in.item.itemGuid;
     verdict.entry = in.item.entry;
     verdict.count = in.item.count;
     verdict.laterWorth = answer.laterWorth;
@@ -330,13 +336,19 @@ inline BankStep MakeStep(BankItemIn const& in, BankChoice kind)
 {
     return {kind, in.bag, in.slot, in.item.itemGuid, in.item.entry, in.item.count};
 }
+
+inline bool IsRefused(std::vector<uint32_t> const& refused, BankItemIn const& in)
+{
+    return std::find(refused.begin(), refused.end(), in.item.itemGuid) != refused.end();
+}
 }  // namespace BankRulesDetail
 
 // What a bot does at a banker now. Withdrawals come first: due items by later worth, then released items by what
 // they fetch, each while the bags have room. Deposits follow: the bags' kept items that are not due, by later worth,
 // while the bank has room, counting the slots the withdrawals freed. When the bank is full the lowest-worth kept items
-// stay in the bags; nothing already banked is taken out to make room.
-inline BankPlan PlanBankVisit(BankIn const& in)
+// stay in the bags; nothing already banked is taken out to make room. An item in refused (low guids the core
+// refused to move on this visit) stays where it is and takes no room.
+inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& refused = {})
 {
     using namespace BankRulesDetail;
     BankPlan plan;
@@ -362,6 +374,13 @@ inline BankPlan PlanBankVisit(BankIn const& in)
 
     auto withdraw = [&](Decided const& decided, BankReason reason, uint32_t& counter)
     {
+        if (IsRefused(refused, *decided.item))
+        {
+            plan.verdicts.push_back(
+                MakeVerdict(*decided.item, decided.answer, true, BankChoice::Leave, BankReason::Refused));
+            ++plan.leftInBank;
+            return;
+        }
         if (!TakeRoom(bagSpace, decided.item->item))
         {
             plan.verdicts.push_back(
@@ -401,6 +420,13 @@ inline BankPlan PlanBankVisit(BankIn const& in)
     SortByLaterWorth(dueInBags);
     for (Decided const& decided : deposit)
     {
+        if (IsRefused(refused, *decided.item))
+        {
+            plan.verdicts.push_back(
+                MakeVerdict(*decided.item, decided.answer, false, BankChoice::Keep, BankReason::Refused));
+            ++plan.keptInBags;
+            continue;
+        }
         if (TakeRoom(bankSpace, decided.item->item))
         {
             plan.steps.push_back(MakeStep(*decided.item, BankChoice::Deposit));

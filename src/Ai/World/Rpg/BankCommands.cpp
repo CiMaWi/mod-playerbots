@@ -6,6 +6,7 @@
 
 #include "BankCommands.h"
 
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankRulesSelftest.h"
+#include "BankVisit.h"
 #include "Chat.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
@@ -87,6 +89,51 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args)
         handler->PSendSysMessage("  {} ({})", DescribeVerdict(plan.verdicts[i]), ItemName(plan.verdicts[i].entry));
     if (plan.verdicts.size() > LINES_SHOWN)
         handler->PSendSysMessage("  ... {} more", plan.verdicts.size() - LINES_SHOWN);
+    return true;
+}
+
+bool HandleBankVisitCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    in >> name;
+    if (name.empty())
+    {
+        handler->PSendSysMessage("BANK visits: {} (usage: playerbots bank visit <bot name>)", BankVisitCounters());
+        return true;
+    }
+    std::string const asked = name;
+    Player* bot = normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+    PlayerbotAI* botAI = bot && bot->IsInWorld() ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!botAI)
+    {
+        handler->SendErrorMessage("BANK visit: no bot {} online", asked);
+        return false;
+    }
+
+    // Lab fixtures, arena bots and bots with a real master keep today's behaviour (the chat command `bank`); a bot
+    // runs one visit at a time
+    char const* refusal = nullptr;
+    if (!PlayerbotFactory::KeepsPossessions(bot))
+        refusal = "the bot does not keep its possessions (not a persistent bot)";
+    else if (!bot->IsAlive())
+        refusal = "the bot is dead";
+    else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+        refusal = "the bot has no new rpg strategy";
+    else if (botAI->rpgInfo.bankMail.bankVisit.phase != BankVisitPhase::None)
+        refusal = "a visit runs already";
+    else if (botAI->rpgInfo.bankMail.mailVisit.phase != MailVisitPhase::None)
+        refusal = "a mailbox visit runs";
+    // World thread, between the map updates: the bot's place and its visit state are read and set at rest
+    std::optional<BankerSpot> const spot = refusal ? std::nullopt : FindBankerSpot(bot, refusal);
+    if (!spot || !BeginBankVisit(botAI, *spot))
+    {
+        handler->SendErrorMessage("BANK visit {}: refused, {}", bot->GetName(), refusal ? refusal : "no visit");
+        return false;
+    }
+
+    handler->PSendSysMessage("BANK visit {}: started at ({:.0f}, {:.0f}) on map {}, {:.0f} yd away", bot->GetName(),
+                             spot->x, spot->y, spot->mapId, spot->distance);
     return true;
 }
 

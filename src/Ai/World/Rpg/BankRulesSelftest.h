@@ -330,6 +330,69 @@ inline void CheckStacks(Checker& checker)
     checker.Check(Moves(PlanBankVisit(back), {{BankChoice::Withdraw, 802}}),
                   "a due stack is withdrawn onto a partial bag stack");
 }
+
+// A banker visit's move as the core makes it, for single items: the item leaves its slot for a free one on the other
+// side (BankVisit.cpp plans again before every move)
+inline void Apply(BankIn& in, BankStep const& step)
+{
+    bool const withdraw = step.kind == BankChoice::Withdraw;
+    std::vector<BankItemIn>& from = withdraw ? in.bank : in.bags;
+    std::vector<BankItemIn>& to = withdraw ? in.bags : in.bank;
+    auto moved = std::find_if(from.begin(), from.end(),
+                              [&step](BankItemIn const& item) { return item.item.itemGuid == step.itemGuid; });
+    if (moved == from.end())
+        return;
+    BankItemIn item = *moved;
+    from.erase(moved);
+    item.slot = static_cast<uint8_t>((withdraw ? BACKPACK_SLOT : BANK_SLOT) + to.size());
+    to.push_back(item);
+    BagSpace& freed = withdraw ? in.bankSpace : in.bagSpace;
+    BagSpace& taken = withdraw ? in.bagSpace : in.bankSpace;
+    ++freed.freeSlots;
+    --taken.freeSlots;
+}
+
+// The visit's refused moves: the core said no to a move the rule allowed; the item stays and takes no room
+inline void CheckRefused(Checker& checker)
+{
+    BankIn const in = MakeIn(10, {}, {Gear(901, 10), Gear(902, 10)}, 1, 26);
+    BankPlan const first = PlanBankVisit(in);
+    BankPlan const refused = PlanBankVisit(in, {901});
+    checker.Show("two due items, one bag slot", first);
+    checker.Show("the same after the core refused the first", refused);
+    checker.Check(Moves(first, {{BankChoice::Withdraw, 901}}) && Is(first, 902, BankChoice::Leave, BankReason::NoSpace),
+                  "one bag slot: the first by entry is withdrawn, the other has no room");
+    checker.Check(
+        Moves(refused, {{BankChoice::Withdraw, 902}}) && Is(refused, 901, BankChoice::Leave, BankReason::Refused),
+        "a refused withdrawal stays in the bank and leaves its bag slot to the next");
+
+    BankIn const deposit = MakeIn(10, {Gear(903, 13)}, {}, 0, BANK_ITEM_SLOTS);
+    BankPlan const kept = PlanBankVisit(deposit, {903});
+    checker.Show("a kept item whose deposit the core refused", kept);
+    checker.Check(kept.steps.empty() && Is(kept, 903, BankChoice::Keep, BankReason::Refused) &&
+                      kept.bankFreeAfter == BANK_ITEM_SLOTS,
+                  "a refused deposit stays in the bags and takes no bank slot");
+}
+
+// The visit plans again after every move (WB5 review note 2): the bag slot a deposit frees lets a due item out
+inline void CheckReplan(Checker& checker)
+{
+    BankIn in = MakeIn(10, {Gear(905, 13)}, {Gear(904, 10)}, 0, 1);
+    BankPlan const first = PlanBankVisit(in);
+    checker.Show("full bags, one bank slot, a due item in the bank, a kept item in the bags", first);
+    checker.Check(Moves(first, {{BankChoice::Deposit, 905}}) && Is(first, 904, BankChoice::Leave, BankReason::NoSpace),
+                  "the first plan deposits; the due item has no bag room yet");
+    Apply(in, first.steps.front());
+    BankPlan const second = PlanBankVisit(in);
+    checker.Show("planned again after the deposit", second);
+    checker.Check(
+        Moves(second, {{BankChoice::Withdraw, 904}}) && Is(second, 905, BankChoice::Leave, BankReason::KeptForLevel),
+        "the freed bag slot takes the due item; the deposited one stays");
+    Apply(in, second.steps.front());
+    BankPlan const third = PlanBankVisit(in);
+    checker.Check(third.steps.empty() && Is(third, 904, BankChoice::Keep, BankReason::Due),
+                  "after both moves nothing is left to move: the visit ends");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -349,6 +412,8 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckOrder(checker);
     CheckSwap(checker);
     CheckStacks(checker);
+    CheckRefused(checker);
+    CheckReplan(checker);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;

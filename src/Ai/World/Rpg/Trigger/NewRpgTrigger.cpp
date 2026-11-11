@@ -19,6 +19,11 @@ bool MailVisitActiveTrigger::IsActive()
     return botAI->rpgInfo.bankMail.mailVisit.phase != BankMail::MailVisitPhase::None;
 }
 
+bool BankVisitActiveTrigger::IsActive()
+{
+    return botAI->rpgInfo.bankMail.bankVisit.phase != BankMail::BankVisitPhase::None;
+}
+
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
     switch (botAI->rpgInfo.GetStatus())

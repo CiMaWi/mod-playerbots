@@ -9,6 +9,7 @@
 
 #include <vector>
 
+#include "BankRules.h"
 #include "Define.h"
 #include "MailRules.h"
 #include "ObjectGuid.h"
@@ -81,20 +82,29 @@ struct MailVisitState
 
 enum class BankVisitPhase : uint8
 {
-    None,
-    Walk,      // on the way to the banker
-    Deposit,   // at the banker, putting items in
-    Withdraw,  // taking due items out
-    Finished
+    None,  // no visit
+    Walk,  // on the way to the banker
+    Move   // at the banker: one item moved per tick, planned from the live bags and bank
 };
 
+// One banker visit (BankVisit.h). Items move in place, so the plan is recomputed from the live bags and bank before
+// every move; this keeps only what they cannot tell: the items already moved or refused, so none is tried twice, and
+// the first plan's items with what was really done with each (the `bank` decision rows).
 struct BankVisitState
 {
     BankVisitPhase phase{BankVisitPhase::None};
-    ObjectGuid banker;  // resolved at each use
+    uint32 mapId{0};  // the banker's spawn, from the planner's service index
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+    uint32 entry{0};    // the banker's creature template, looked for near the spawn
+    ObjectGuid banker;  // found once the bot stands near the spawn; resolved at each use
     uint32 startedMs{0};
-    uint32 deadlineMs{0};
-    uint32 stepMs{0};
+    uint32 limitMs{0};                  // the visit's whole time, the walk included (BankVisitDeadlineSeconds)
+    std::vector<uint32> moved;          // item low guids moved on this visit
+    std::vector<uint32> refused;        // item low guids the core refused to move
+    std::vector<BankVerdict> verdicts;  // the first plan's items, with what was really done with each
+    bool planned{false};
     uint32 deposited{0};
     uint32 withdrawn{0};
 };
