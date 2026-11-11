@@ -25,9 +25,10 @@ protected:
 
 namespace WorldTravel
 {
-// A persistent bot alone in the open world, alive and out of combat, in an RPG status an errand may interrupt (the
-// trigger and the destroy rule share it)
-bool ErrandMayStart(PlayerbotAI* botAI);
+// A persistent bot alone in the open world, alive, out of combat and not sick, in an RPG status an errand may interrupt
+// (UpkeepRules.h ErrandMayStart; needDue: for a due upkeep need, which may also end questing). The triggers and the
+// destroy rule share it
+bool ErrandMayStart(PlayerbotAI* botAI, bool needDue = false);
 // Map thread: the repair need makes an errand worth a trip of its own (UpkeepNeedRules.h RepairErrandDue)
 bool RepairErrandWanted(Player* bot);
 // Map thread: a consumable stock is due and the gold pays a lot of it (UpkeepNeedRules.h StockErrandDue); one

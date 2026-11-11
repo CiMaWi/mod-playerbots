@@ -105,14 +105,14 @@ constexpr bool Granted(bool keepsPossessions, bool honest, uint32_t guidCounter,
     return !keepsPossessions || !honest || InShare(guidCounter, sharePercent);
 }
 
-// Resurrection sickness, which the core's spirit healer path casts (Player::ResurrectPlayer): while it lasts a bot does
-// nothing that needs fighting; it rests or runs errands (upkeep plan §3.5, one gate in the RPG status pick until WU16
-// gives the planner "sick until")
+// Resurrection sickness, which the core's spirit healer path casts (Player::ResurrectPlayer): while it lasts a bot
+// rests (upkeep plan §3.5; the status pick, the status update and the errand start until WU16 gives the planner "sick
+// until")
 constexpr uint32_t SPELL_RESURRECTION_SICKNESS = 15007;
 
 // The NewRpgStatus values whose activity fights (PlayerbotAIConfig.h; NewRpgBaseAction.cpp asserts them): grinding and
-// the wander that picks a grind target, quests, outdoor PvP and gathering among mobs. Rest, travel, flights, errands
-// and the npc wander (and the camp walk that ends in it) stay open to a sick bot
+// the wander that picks a grind target, quests, outdoor PvP and gathering among mobs. A bot that needs rest (low on
+// health or mana with nothing to eat or drink, §3.6) picks none of them
 constexpr uint32_t RPG_STATUS_GO_GRIND = 1;
 constexpr uint32_t RPG_STATUS_WANDER_RANDOM = 3;
 constexpr uint32_t RPG_STATUS_DO_QUEST = 5;
@@ -124,8 +124,54 @@ constexpr uint32_t RPG_STATUS_FIGHT_MASK = (1u << RPG_STATUS_GO_GRIND) | (1u << 
 
 constexpr bool StatusFights(uint32_t status) { return status < 32 && ((RPG_STATUS_FIGHT_MASK >> status) & 1u) != 0; }
 
-// The status pick's sick gate: a sick bot never enters a status that fights
-constexpr bool StatusAllowed(uint32_t status, bool sick) { return !sick || !StatusFights(status); }
+// A sick bot rests (WU8b-fix 2): revived at the spirit healer, a bot that walked off again (to a vendor, a camp, an
+// npc, on a trip) went back through the mobs that had killed it, again and again (WU8b: about 40 deaths while sick in
+// each session). Only rest and the idle status that picks it stay open; rest lasts until the sickness ends, as players
+// wait at the graveyard
+constexpr uint32_t RPG_STATUS_IDLE = 0;
+constexpr uint32_t RPG_STATUS_GO_CAMP = 2;
+constexpr uint32_t RPG_STATUS_WANDER_NPC = 4;
+constexpr uint32_t RPG_STATUS_REST = 7;
+constexpr uint32_t RPG_STATUS_ERRANDS = 11;
+constexpr uint32_t RPG_STATUS_SICK_OPEN_MASK = (1u << RPG_STATUS_IDLE) | (1u << RPG_STATUS_REST);
+
+// The sick gate of the status pick, the status update and the errand start: a sick bot is only idle or rests
+constexpr bool StatusAllowed(uint32_t status, bool sick)
+{
+    return !sick || (status < 32 && ((RPG_STATUS_SICK_OPEN_MASK >> status) & 1u) != 0);
+}
+
+// The status pick: a sick bot rests, a bot that needs rest picks no status that fights
+constexpr bool StatusPickable(uint32_t status, bool sick, bool needsRest)
+{
+    return StatusAllowed(status, sick) && !(needsRest && StatusFights(status));
+}
+
+// The status update ends every status a sick bot may not stay in (an errand or a trip as given up), except a flight in
+// the air: the bot lands, goes idle and then rests
+constexpr bool SickEndsStatus(uint32_t status, bool sick, bool inFlight)
+{
+    return !inFlight && !StatusAllowed(status, sick);
+}
+
+// Rest ends after its duration (persisted), a sick bot's rest only once the sickness has ended
+constexpr bool RestEnds(bool persisted, bool sick) { return persisted && !sick; }
+
+// The RPG statuses an errand may interrupt (WT3b): those without a goal of their own. A due upkeep need (gear due for
+// repair, a due stock the gold pays) also ends questing: a hunter without arrows goes and buys them, as a player
+// would; full bags alone do not (a questing bot destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick
+// bot starts no errand
+constexpr uint32_t RPG_STATUS_ERRAND_INTERRUPTS_MASK = (1u << RPG_STATUS_IDLE) | (1u << RPG_STATUS_GO_GRIND) |
+                                                       (1u << RPG_STATUS_GO_CAMP) | (1u << RPG_STATUS_WANDER_RANDOM) |
+                                                       (1u << RPG_STATUS_WANDER_NPC) | (1u << RPG_STATUS_REST) |
+                                                       (1u << RPG_STATUS_DO_GATHER);
+
+constexpr bool ErrandMayStart(uint32_t status, bool needDue, bool sick)
+{
+    bool const interrupts = status < 32 && (((RPG_STATUS_ERRAND_INTERRUPTS_MASK >> status) & 1u) != 0 ||
+                                            (needDue && status == RPG_STATUS_DO_QUEST));
+    return interrupts && StatusAllowed(RPG_STATUS_ERRANDS, sick);
+}
 
 // Event types of honest upkeep (.claude/docs/world-log.md in the hub)
 constexpr char const* EVENT_TRAINER_VISIT = "TrainerVisit";  // spells learned, cost

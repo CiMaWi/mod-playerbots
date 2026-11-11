@@ -122,7 +122,7 @@ inline char const* FailWord(FailReason reason)
 
 // Travel event sources (EventLog::Emit(bot, "Travel", source, ...); literals, as the log keeps the pointer's text):
 // "start", "arrived", "leg_done:<leg type>", "leg_failed:<reason>", "abort:<reason>" and the aborts that are no failed
-// leg: "abort:deadline", "abort:no_service", "abort:stopped"
+// leg: "abort:deadline", "abort:no_service", "abort:stopped", "abort:sick"
 inline char const* LegDoneSource(LegType type)
 {
     switch (type)

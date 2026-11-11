@@ -1155,14 +1155,18 @@ static_assert(uint32(RPG_GO_GRIND) == Upkeep::RPG_STATUS_GO_GRIND &&
                   uint32(RPG_OUTDOOR_PVP) == Upkeep::RPG_STATUS_OUTDOOR_PVP &&
                   uint32(RPG_DO_GATHER) == Upkeep::RPG_STATUS_DO_GATHER && RPG_STATUS_END <= 32,
               "UpkeepRules.h's fighting statuses follow NewRpgStatus");
+static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP) == Upkeep::RPG_STATUS_GO_CAMP &&
+                  uint32(RPG_WANDER_NPC) == Upkeep::RPG_STATUS_WANDER_NPC &&
+                  uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS,
+              "UpkeepRules.h's errand statuses follow NewRpgStatus");
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)
 {
     WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
-    // A bot with resurrection sickness picks no status that fights (upkeep §3.5); with none left it rests. So does a
-    // bot low on health or mana with nothing to eat or drink (no food cheat): it rests without eating (§3.6)
+    // A bot with resurrection sickness rests (upkeep §3.5). A bot low on health or mana with nothing to eat or drink
+    // (no food cheat) picks no status that fights; with none left it rests without eating (§3.6)
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     bool const hungry = AI_VALUE2(uint8, "health", "self target") < sPlayerbotAIConfig.LowHealth &&
                         !AI_VALUE2(uint32, "item count", "food");
@@ -1172,7 +1176,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     bool const needsRest = (hungry || thirsty) && !bot->IsInCombat() && !Upkeep::FoodCheat(botAI);
     for (NewRpgStatus status : candidateStatus)
     {
-        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusAllowed(status, sick || needsRest))
+        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusPickable(status, sick, needsRest))
             continue;
 
         if (CheckRpgStatusAvailable(status))

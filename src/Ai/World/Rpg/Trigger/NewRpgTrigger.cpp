@@ -12,27 +12,17 @@
 #include "RandomPlayerbotMgr.h"
 #include "Timer.h"
 #include "UpkeepNeedRules.h"
+#include "UpkeepRules.h"
 #include "WorldTravelRules.h"
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
-bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
+bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
 {
-    switch (botAI->rpgInfo.GetStatus())
-    {
-        case RPG_IDLE:
-        case RPG_WANDER_RANDOM:
-        case RPG_WANDER_NPC:
-        case RPG_GO_GRIND:
-        case RPG_GO_CAMP:
-        case RPG_REST:
-        case RPG_DO_GATHER:
-            break;
-        default:
-            return false;
-    }
-
     Player* bot = botAI->GetBot();
+    if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
+        return false;
+
     return RandomPlayerbotMgr::HonestTravel() && !IsRealPlayer(botAI->GetMaster()) && !bot->IsInCombat() &&
            bot->IsAlive() && !bot->GetGroup() && !bot->GetMap()->Instanceable();
 }
@@ -63,14 +53,15 @@ bool WorldTravel::StockErrandWanted(PlayerbotAI* botAI)
 
 bool InventoryPressureTrigger::IsActive()
 {
-    if (!WorldTravel::ErrandMayStart(botAI) || !sRandomPlayerbotMgr.IsRandomBot(bot))
+    // A due need may also end questing, full bags may not (Upkeep::ErrandMayStart)
+    if (!WorldTravel::ErrandMayStart(botAI, true) || !sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 
     // Full bags, or the needs (upkeep §3.3: one call from the errand check) after the retry time: the repair first,
     // then a due consumable stock (one snapshot)
     WorldTravel::SlotMeasure const& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     uint32 const nowMs = getMSTime();
-    if (WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs))
+    if (WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs) && WorldTravel::ErrandMayStart(botAI))
         return true;
 
     return WorldTravel::ErrandRetryOver(measure, nowMs) &&

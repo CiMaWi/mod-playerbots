@@ -65,8 +65,9 @@
 
 namespace
 {
-// Ends the bot's errand: stamps the errand check, measures t from a visited vendor and records the run
-void FinishErrands(PlayerbotAI* botAI, bool visited)
+// Ends the bot's errand: stamps the errand check, measures t from a visited vendor and records the run; an errand given
+// up records abortSource (a literal: errand_abort, or errand_sick when the sickness ended it)
+void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource = "errand_abort")
 {
     WorldLog::StatusReason const reasonScope("finished");
     NewRpgInfo& info = botAI->rpgInfo;
@@ -87,9 +88,29 @@ void FinishErrands(PlayerbotAI* botAI, bool visited)
                        int64(bot->GetMoney()) - int64(data->moneyAtStart));
     }
     else
-        EventLog::Emit(bot, "Inventory", "errand_abort", data->vendorEntry, int64(minutes));
+        EventLog::Emit(bot, "Inventory", abortSource, data->vendorEntry, int64(minutes));
 
     info.ChangeToIdle();
+}
+
+// The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
+constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
+
+// Gives the bot's trip up: the Travel event (source "abort:<reason>", a literal), the trip's abort decision, idle
+void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* why, char const* source)
+{
+    Player* bot = botAI->GetBot();
+    if (data.place.empty())
+        LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
+    else
+        LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
+    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
+    EventLog::Emit(bot, "Travel", source, data.tripId, seconds);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort",
+                       WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX), static_cast<float>(seconds),
+                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
+    WorldLog::StatusReason const reasonScope("abort");
+    botAI->rpgInfo.ChangeToIdle();
 }
 
 // The stock per upkeep kind now as the needs count it (one snapshot: the kept grade reads the level and the equipped
@@ -462,6 +483,8 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     char const* refusal = nullptr;
     if (!bot->IsAlive())
         refusal = "dead";
+    else if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+        refusal = "sick";  // a sick bot rests (upkeep §3.5)
     else if (bot->IsInFlight())
         refusal = "in flight";
     else if (bot->GetMap()->Instanceable())
@@ -525,10 +548,16 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return true;
     }
     NewRpgStatus status = info.GetStatus();
-    // Resurrection sickness (upkeep §3.5): a bot in a status that fights leaves it and rests; the status pick keeps
-    // it out of such statuses until the sickness ends
-    if (Upkeep::StatusFights(status) && bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+    // Resurrection sickness (upkeep §3.5): a sick bot rests until the sickness ends. Any other status ends, an errand
+    // and a trip as given up (errand_sick, abort:sick); a flight in the air lands first. The status pick, the errand
+    // start and the travel orders keep it resting
+    bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight()))
     {
+        if (status == RPG_ERRANDS)
+            FinishErrands(botAI, false, "errand_sick");
+        else if (auto const* trip = std::get_if<NewRpgInfo::Travel>(&info.data))
+            GiveTripUp(botAI, *trip, "sick", "abort:sick");
         WorldLog::StatusReason const reasonScope("sick");
         info.ChangeToRest();
         bot->SetStandState(UNIT_STAND_STATE_SIT);
@@ -614,8 +643,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_REST:
         {
-            // REST -> IDLE
-            if (info.HasStatusPersisted(statusRestDuration))
+            // REST -> IDLE; a sick bot's rest lasts until the sickness ends
+            if (Upkeep::RestEnds(info.HasStatusPersisted(statusRestDuration), sick))
             {
                 WorldLog::StatusReason const reasonScope("timeout");
                 info.ChangeToIdle();
@@ -943,6 +972,13 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         weighed = {{"sellable", static_cast<float>(sellableSlots)}, {"free_slots", static_cast<float>(freeSlots)}};
     float const walkSeconds = walkMinutes * MINUTE;
     bool const repairWorth = repairing || stocking;
+    // Full bags alone do not end questing (the trigger let a questing bot through for a due need that the vendor pick
+    // did not keep): a questing bot destroys by worth instead
+    if (!repairWorth && !WorldTravel::ErrandMayStart(botAI))
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "questing", walkSeconds, weighed);
+        return false;
+    }
     WorldTravel::TripInput const trip =
         WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], freeSlots,
                                    sellableSlots, walkMinutes, config.ErrandNextStopMinutes);
@@ -1287,9 +1323,6 @@ void LogWalkLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, Trave
               seconds, seconds > 0.0f ? path / seconds : 0.0f, leg.seconds, TravelRoute::Distance(at, leg.to),
               TravelLegs::MountWord(record), record.mountedTicks, record.ticks, combat);
 }
-
-// The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
-constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
 
 // The world log's route decision (only when it is on): the leg chain without no-op walks, why it was searched,
 // its seconds; weighed against a straight walk at run speed (when the chain is not one walk on the same map) and its
@@ -1712,17 +1745,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
 
 void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source)
 {
-    if (data.place.empty())
-        LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
-    else
-        LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
-    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
-    EventLog::Emit(bot, "Travel", source, data.tripId, seconds);
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort",
-                       WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX), static_cast<float>(seconds),
-                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
-    WorldLog::StatusReason const reasonScope("abort");
-    botAI->rpgInfo.ChangeToIdle();
+    GiveTripUp(botAI, data, why, source);
 }
 
 bool NewRpgStartInnAction::Execute(Event /*event*/)
