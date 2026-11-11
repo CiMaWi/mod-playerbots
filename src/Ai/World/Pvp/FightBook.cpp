@@ -18,6 +18,7 @@
 
 #include "CensusMgr.h"
 #include "Chat.h"
+#include "Creature.h"
 #include "FightBookRules.h"
 #include "Formulas.h"
 #include "Log.h"
@@ -537,7 +538,8 @@ class FightBookPlayerScript : public PlayerScript
 {
 public:
     FightBookPlayerScript()
-        : PlayerScript("FightBookPlayerScript", {PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_ENTER_COMBAT})
+        : PlayerScript("FightBookPlayerScript", {PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE,
+                                                 PLAYERHOOK_ON_PLAYER_ENTER_COMBAT})
     {
     }
 
@@ -549,6 +551,18 @@ public:
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks")
                                                         : nullptr);
         NoteCombat(killer, killed, getMSTime(), true);
+    }
+
+    // The player's map thread; a killing blow by a player's pet, totem or guardian counts for its owner. The core
+    // calls this hook instead of OnPlayerPVPKill when the killer is a creature, so no death is counted twice
+    void OnPlayerKilledByCreature(Creature* killer, Player* killed) override
+    {
+        Player* const owner = killer ? killer->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+        if (!owner || !killed || owner == killed || !HasBook(killed->GetMap()))
+            return;
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks")
+                                                        : nullptr);
+        NoteCombat(owner, killed, getMSTime(), true);
     }
 
     // The player's map thread, when it enters combat at all: the first hit of a fight, while the aggressor is
