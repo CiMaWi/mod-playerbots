@@ -8,6 +8,7 @@
 #include "ChatHelper.h"
 #include "Event.h"
 #include "Mail.h"
+#include "MailVisit.h"
 #include "Playerbots.h"
 
 std::map<std::string, MailProcessor*> MailAction::processors;
@@ -94,10 +95,7 @@ public:
             out << mail->subject << ", |cffffff00" << ChatHelper::formatMoney(mail->money) << "|cff00ff00 processed";
             botAI->TellMaster(out.str());
 
-            WorldPacket packet;
-            packet << mailbox;
-            packet << mail->messageID;
-            bot->GetSession()->HandleMailTakeMoney(packet);
+            BankMail::QueueTakeMoney(bot, mailbox, mail->messageID);
             RemoveMail(bot, mail->messageID, mailbox);
         }
         else if (!mail->items.empty())
@@ -109,17 +107,12 @@ public:
 
             for (std::vector<uint32>::iterator i = guids.begin(); i != guids.end(); ++i)
             {
-                WorldPacket packet;
-                packet << mailbox;
-                packet << mail->messageID;
-                packet << *i;
-
                 Item* item = bot->GetMItem(*i);
 
                 std::ostringstream out;
                 out << mail->subject << ", " << ChatHelper::FormatItem(item->GetTemplate()) << "|cff00ff00 processed";
 
-                bot->GetSession()->HandleMailTakeItem(packet);
+                BankMail::QueueTakeItem(bot, mailbox, mail->messageID, *i);
                 botAI->TellMaster(out.str());
             }
 
@@ -318,11 +311,8 @@ bool MailAction::Execute(Event event)
 
 void MailProcessor::RemoveMail(Player* bot, uint32 id, ObjectGuid mailbox)
 {
-    WorldPacket packet;
-    packet << mailbox;
-    packet << id;
-    packet << (uint32)0;  // mailTemplateId
-    bot->GetSession()->HandleMailDelete(packet);
+    // Queued on the session: the handler runs on the world thread after this call, so the effect comes a tick later
+    BankMail::QueueDelete(bot, mailbox, id);
 }
 
 ObjectGuid MailProcessor::FindMailbox(PlayerbotAI* botAI)
