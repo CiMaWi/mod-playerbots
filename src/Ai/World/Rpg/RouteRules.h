@@ -29,11 +29,6 @@
 // - the request's avoided nodes are no start or goal node, and noDirect drops the straight walk from the bot (the
 //   bot's own stuck walks of the trip: their start or goal hop is no graph edge to flag); its avoided edges (the
 //   trip's walks where the bot died twice) are not used
-// - a walk link with hostile mobs, or the other faction's creatures, more than WALK_LEVEL_CAP levels above the bot is
-//   no edge (WT10e-2: a low-level bot does not walk through a zone that kills it); below the cap WalkModifier weighs
-//   them. When that leaves no route, the search runs again without the cap (Result::overCap): the stored levels are
-//   noisy (links in every start area read 60-80, probably hidden trigger creatures), and a start area must stay
-//   walkable
 
 #include <algorithm>
 #include <array>
@@ -67,8 +62,7 @@ constexpr float FULL_PURSE_SECONDS = 3600.0f;  // at thrift 100, a fare of all o
 // A route answer's life from its request: the service keeps it, the follower waits for it and applies it this long
 constexpr std::uint32_t ANSWER_KEEP_MS = 60 * 1000;
 constexpr std::uint16_t STUCK_SKIP_FLAGS = 3;  // an edge flagged this often within the avoid window is skipped
-constexpr int WALK_LEVEL_CAP = 10;         // a walk link's creatures more than this many levels above the bot: no edge
-constexpr float STUCK_NODE_YARDS = 10.0f;  // a stuck walk's destination this close to a node was a graph leg
+constexpr float STUCK_NODE_YARDS = 10.0f;      // a stuck walk's destination this close to a node was a graph leg
 constexpr std::size_t STUCK_QUEUE_MAX = 4096;  // reports waiting for the world thread; more are dropped
 constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
 constexpr float UNREACHED = std::numeric_limits<float>::infinity();
@@ -192,7 +186,6 @@ struct Result
     std::vector<Leg> legs;  // consecutive walk links merge into one leg, consecutive flights into one
     float totalSeconds{0.0f};
     std::uint32_t expandedNodes{0};
-    bool overCap{false};  // no route within the walk level cap: this one walks past creatures above it
 };
 
 // Copper the route's flights cost together: the search keeps it within the snapshot's money
@@ -287,28 +280,16 @@ inline float WalkModifier(TravelGraphLink const& link, Snapshot const& bot)
     return modifier;
 }
 
-// A walk the bot does not take: hostile mobs or the other faction's creatures near it more than WALK_LEVEL_CAP levels
-// above the bot (maxCreature indexed as in WalkModifier)
-inline bool WalkCapped(TravelGraphLink const& link, Snapshot const& bot)
-{
-    int const level = bot.level;
-    return static_cast<int>(link.maxCreature[0]) - level > WALK_LEVEL_CAP ||
-           static_cast<int>(link.maxCreature[bot.team == 0 ? 2 : 1]) - level > WALK_LEVEL_CAP;
-}
-
 // The seconds of one graph link for this bot, before stuck flags; negative when the bot cannot use it. fare gets the
 // copper a flight costs; a fare above the whole purse is refused here, Search also counts the fares paid before it
 inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, Snapshot const& bot,
-                         Params const& params, float runSpeed, float swimSpeed, std::uint32_t& fare,
-                         bool levelCap = true)
+                         Params const& params, float runSpeed, float swimSpeed, std::uint32_t& fare)
 {
     fare = 0;
     switch (link.type)
     {
         case TravelLinkType::Walk:
         {
-            if (levelCap && WalkCapped(link, bot))
-                return -1.0f;
             float const swim = std::clamp(link.swim, 0.0f, link.distance);
             return ((link.distance - swim) / runSpeed + swim / swimSpeed) * WalkModifier(link, bot);
         }
@@ -344,8 +325,7 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
 // charges a taxi chain's whole fare up front (Player::ActivateTaxiPathTo: money < totalcost fails) and every flight
 // of a route draws on the same purse. The returned route's RouteFare is within the money; with one label per vertex a
 // way that is slower but cheaper in copper can be missed when the purse is tight (then the route walks more)
-inline Result SearchPass(TravelGraph const& graph, Request const& request, StuckEdges const& stuck,
-                         Params const& params, bool levelCap)
+inline Result Search(TravelGraph const& graph, Request const& request, StuckEdges const& stuck, Params const& params)
 {
     Result result;
     if (!graph.IsReady())
@@ -498,7 +478,7 @@ inline Result SearchPass(TravelGraph const& graph, Request const& request, Stuck
         for (TravelGraphLink const& link : graph.LinksOf(vertex))
         {
             std::uint32_t fare = 0;
-            float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare, levelCap);
+            float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
             if (seconds < 0.0f)
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
@@ -583,21 +563,8 @@ inline Result SearchPass(TravelGraph const& graph, Request const& request, Stuck
     {
         Request walking = request;
         walking.snapshot.money = 0;
-        return SearchPass(graph, walking, stuck, params, levelCap);
+        return Search(graph, walking, stuck, params);
     }
-    return result;
-}
-
-// The search within the walk level cap; with no route there, again without it (the stored creature levels are noisy:
-// a start area must stay walkable). Both passes count their expanded vertices
-inline Result Search(TravelGraph const& graph, Request const& request, StuckEdges const& stuck, Params const& params)
-{
-    Result capped = SearchPass(graph, request, stuck, params, true);
-    if (capped.ok || capped.failure != Failure::NoRoute)
-        return capped;
-    Result result = SearchPass(graph, request, stuck, params, false);
-    result.overCap = result.ok;
-    result.expandedNodes += capped.expandedNodes;
     return result;
 }
 
@@ -1180,20 +1147,8 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     check(chained, "h) no route with a flight leg of several hops among 600 random pairs");
     if (!twoLegs)
         notes.push_back("h) no route with two separate flight legs among the random pairs");
-    // j) The walk level cap (WT10e-2). A level-1 bot in each race's start area walks to its first town (within the
-    //    cap, or past it when the start area's links read higher levels: the second pass); a level-26 Horde bot at
-    //    Tarren Mill (WT10e-1's Iolgie) bound for Silvermoon walks no link above the cap unless the route says so; a
-    //    level-80 bot is never over it; and an edge the trip avoids after deaths is not used
-    auto const cappedWalks = [&graph](Result const& route, Snapshot const& bot)
-    {
-        std::size_t capped = 0;
-        for (Leg const& leg : route.legs)
-            for (std::size_t i = 1; leg.type == LegType::Walk && i < leg.nodes.size(); ++i)
-                for (TravelGraphLink const& link : graph.LinksOf(leg.nodes[i - 1]))
-                    if (link.to == leg.nodes[i] && link.type == TravelLinkType::Walk && WalkCapped(link, bot))
-                        ++capped;
-        return capped;
-    };
+    // j) Start areas and avoided edges (WT10e-2): a level-1 bot in each race's start area walks to its first town (a
+    //    route the graph lacks is noted), and an edge the trip avoids after deaths is not used
     struct StartArea
     {
         char const* name;
@@ -1219,38 +1174,21 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         fresh.level = 1;
         Request const request{fresh, area.town};
         Result const route = Search(graph, request, StuckEdges{}, aStar);
-        std::string const label = std::string("j) level 1, ") + area.name + (route.overCap ? " (over the cap)" : "");
-        // The cap removes no route: one the graph lacks for a level-80 bot too is a gap in the graph, not the cap's
-        Snapshot grown = fresh;
-        grown.level = 80;
-        Result const reference = Search(graph, Request{grown, area.town}, StuckEdges{}, aStar);
-        check(route.ok == reference.ok, label + ": the level cap removes the route");
+        std::string const label = std::string("j) level 1, ") + area.name;
         if (route.ok)
-        {
             sound(route, request, label);
-            check(route.overCap || cappedWalks(route, fresh) == 0, label + ": a walk link above the level cap");
-        }
         else
-            notes.push_back(label + ": no route at level 1 or 80 (" + FailureWord(route.failure) + ")");
+            notes.push_back(label + ": no route (" + FailureWord(route.failure) + ")");
     }
-    Snapshot iolgie;
-    iolgie.position = {0, 2.7f, -857.9f, 58.9f};  // Tarren Mill
-    iolgie.team = 1;
-    iolgie.level = 26;
-    iolgie.money = 10000;
-    Request const toSilvermoon{iolgie, {530, 9738.0f, -7454.0f, 13.6f}};
-    Result const silvermoon = Search(graph, toSilvermoon, StuckEdges{}, aStar);
-    if (sound(silvermoon, toSilvermoon,
-              std::string("j) level 26, Tarren Mill -> Silvermoon") + (silvermoon.overCap ? " (over the cap)" : "")))
-        check(silvermoon.overCap || cappedWalks(silvermoon, iolgie) == 0,
-              "j) Tarren Mill -> Silvermoon: a walk link above the level cap");
-    Snapshot veteran = iolgie;
+    Snapshot veteran;
+    veteran.position = {0, 2.7f, -857.9f, 58.9f};  // Tarren Mill
+    veteran.team = 1;
     veteran.level = 80;
-    Request const veteranTrip{veteran, toSilvermoon.goal};
+    veteran.money = 10000;
+    Request const veteranTrip{veteran, {530, 9738.0f, -7454.0f, 13.6f}};  // Silvermoon
     Result const unbounded = Search(graph, veteranTrip, StuckEdges{}, aStar);
     if (sound(unbounded, veteranTrip, "j) level 80, Tarren Mill -> Silvermoon"))
     {
-        check(!unbounded.overCap, "j) a level 80 bot is over the walk level cap");
         Request avoiding = veteranTrip;
         for (Leg const& leg : unbounded.legs)
             if (leg.type == LegType::Walk && leg.nodes.size() >= 2 && avoiding.avoidEdges.empty())
@@ -1264,26 +1202,6 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         notes.push_back("j) avoided edge: " +
                         (around.ok ? describe(around) : std::string(FailureWord(around.failure))));
     }
-    TravelGraphLink steep;
-    steep.type = TravelLinkType::Walk;
-    steep.distance = 100.0f;
-    steep.maxCreature[0] = 37;
-    std::uint32_t fare = 0;
-    check(LinkSeconds(graph, steep, iolgie, aStar, 7.0f, 4.72f, fare) < 0.0f,
-          "j) a level 26 bot may walk past level 37 mobs");
-    check(LinkSeconds(graph, steep, iolgie, aStar, 7.0f, 4.72f, fare, false) > 0.0f,
-          "j) the second pass may not walk past level 37 mobs");
-    steep.maxCreature[0] = 36;
-    check(LinkSeconds(graph, steep, iolgie, aStar, 7.0f, 4.72f, fare) > 0.0f,
-          "j) a level 26 bot may not walk past level 36 mobs");
-    steep.maxCreature[0] = 0;
-    steep.maxCreature[1] = 37;
-    check(LinkSeconds(graph, steep, iolgie, aStar, 7.0f, 4.72f, fare) < 0.0f,
-          "j) a Horde bot may walk past Alliance creatures 11 levels up");
-    steep.maxCreature[1] = 0;
-    steep.maxCreature[2] = 37;
-    check(LinkSeconds(graph, steep, iolgie, aStar, 7.0f, 4.72f, fare) > 0.0f,
-          "j) a Horde bot may not walk past its own faction's creatures");
     return checks;
 }
 }  // namespace TravelRoute

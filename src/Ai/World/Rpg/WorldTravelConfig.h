@@ -46,6 +46,8 @@ struct WorldTravelConfig
     uint32 PlannerRecheckYards = 100;
     // The no-op job's interval per bot, 0 = none: a test switch that proves the planner's machinery (WT16 removes it)
     uint32 PlannerNoopSeconds = 0;
+    // WT16: planner bots take their goals from the planner; off = every bot keeps the weighted pick (a test switch)
+    bool PlannerGoals = true;
     // WT12b: how often the live crowding data for the planner is rebuilt
     uint32 CrowdingRefreshSeconds = 5;
 };

@@ -26,6 +26,7 @@
 #include "ObjectMgr.h"
 #include "OutdoorPvPMgr.h"
 #include "PathGenerator.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -769,6 +770,10 @@ bool NewRpgBaseAction::OrganizeQuestLog()
         if (!questId)
             continue;
 
+        // A planner bot keeps its plan's quests: a carried quest is delivered in another zone (WT16)
+        if (Planner::KeepsQuest(botAI, questId))
+            continue;
+
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         const int64_t botZoneId = this->bot->GetZoneId();
 
@@ -796,11 +801,11 @@ bool NewRpgBaseAction::OrganizeQuestLog()
     if (dropped >= 8)
         return true;
 
-    // clear quests log
+    // clear quests log (but a planner bot's planned quests)
     for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
-        if (!questId)
+        if (!questId || Planner::KeepsQuest(botAI, questId))
             continue;
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
@@ -1148,7 +1153,7 @@ static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_ERRANDS =
                   RPG_DO_GATHER == 9 && RPG_REST == 7,
               "WorldLog::RPG_STATUS_WORDS follows NewRpgStatus");
 
-bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)
+bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason)
 {
     WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
@@ -1301,7 +1306,8 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     };
     bool const started = startStatus(chosenStatus);
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(chosenStatus),
-                       started ? "weights" : "no_target", static_cast<float>(chosenWeight), alternatives);
+                       started ? (reason ? reason : "weights") : "no_target", static_cast<float>(chosenWeight),
+                       alternatives);
     return started;
 }
 

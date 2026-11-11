@@ -1356,6 +1356,8 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Planner.RecheckYards", WorldTravel.PlannerRecheckYards, MaxTravelYards);
         WorldTravel.PlannerRecheckYards = std::max<uint32>(WorldTravel.PlannerRecheckYards, MinRecheckYards);
         travelNumber("Planner.NoopSeconds", WorldTravel.PlannerNoopSeconds, MaxNoopSeconds);
+        WorldTravel.PlannerGoals =
+            sConfigMgr->GetOption<bool>("Playerbots.WorldTravel.Planner.Goals", WorldTravel.PlannerGoals, false);
         travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
         WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }

@@ -442,6 +442,20 @@ World ChainVariant(bool noArea)
     return w;
 }
 
+// Elwynn and the Barrens with the breadcrumb 117 worth more than the Barrens' far quests 330-349 and less than 350-369
+// (WT14 fix): a carried take weighed against the idle quests a full log gives up for it
+World DeliveryVariant()
+{
+    World w;
+    BuildElwynn(w);
+    BuildBarrens(w);
+    for (QuestRecord& quest : w.gather.quests)
+        if (quest.id == 117)
+            quest.xpBase = 1100;
+    SetZones(w);
+    return w;
+}
+
 Snapshot Bot(std::uint8_t level, std::uint8_t race, std::uint8_t cls, std::uint8_t team, std::uint32_t map, Point2 at)
 {
     Snapshot bot;
@@ -662,6 +676,64 @@ int main()
     fullTurnIn.expect.moveCamp = NO_CAMP;
     Run(fullTurnIn, false);
 
+    // A log of 20 far quests (another map, each worth 1200; WT14 fix): the hub's quests push the five cheapest out,
+    // the carried 117 (a delivery worth 100) pushes none out and waits at the hub for log space
+    CircuitHarness::Scenario cheapDelivery{
+        "goldshire-12-full-log-cheap-delivery", Bot(12, HUMAN, WARRIOR, 0, EASTERN, GOLDSHIRE), base, {}};
+    cheapDelivery.bot.rewardedQuests = {113, 120};
+    for (std::uint32_t id = 350; id < 370; ++id)
+        cheapDelivery.bot.quests.push_back(Slot(id));
+    cheapDelivery.expect.exactTake = true;
+    cheapDelivery.expect.take = {101, 102, 103, 104, 105, 110, 114, 124};
+    cheapDelivery.expect.notTake = {117};
+    CircuitHarness::ExactAbandon(cheapDelivery.expect, {350, 351, 352, 353, 354});
+    Run(cheapDelivery, false);
+
+    // The same full log (23 far quests) with 117 worth 1100: the hub's quests push out 330-337, then 117 pushes out
+    // 338 (worth 1000) but no 350 quest (worth 1200)
+    World const deliveryWorld = DeliveryVariant();
+    QuestIndex const deliveryQuests = QuestIndex::Build(deliveryWorld.gather);
+    PlannerIndexes const deliveryIndexes = PlannerIndexes::Build(deliveryWorld.services);
+    CircuitHarness::Scenario dearDelivery = cheapDelivery;
+    dearDelivery.name = "goldshire-12-full-log-dear-delivery";
+    dearDelivery.context.quests = &deliveryQuests;
+    dearDelivery.context.indexes = &deliveryIndexes;
+    dearDelivery.bot.quests.clear();
+    for (std::uint32_t id = 330; id < 340; ++id)
+        dearDelivery.bot.quests.push_back(Slot(id));
+    for (std::uint32_t id = 350; id < 363; ++id)
+        dearDelivery.bot.quests.push_back(Slot(id));
+    dearDelivery.expect.take = {101, 102, 103, 104, 105, 110, 114, 117, 124};
+    dearDelivery.expect.notTake = {};
+    dearDelivery.expect.carried = {117};
+    CircuitHarness::ExactAbandon(dearDelivery.expect, {330, 331, 332, 333, 334, 335, 336, 337, 338});
+    for (std::uint32_t id = 350; id < 363; ++id)
+        dearDelivery.expect.keep.push_back(id);
+    Run(dearDelivery, false);
+
+    // Log quests the quest index does not know (WT14 fix): they would hold their slots for good, so they go; a
+    // protected one stays
+    CircuitHarness::Scenario unindexed = goldshire;
+    unindexed.name = "goldshire-12-unindexed";
+    unindexed.bot.quests.push_back(Slot(999));
+    unindexed.bot.quests.push_back(Slot(998, Circuit::SLOT_COMPLETE));
+    unindexed.bot.quests.push_back(Slot(997));
+    unindexed.context.protectedQuests.push_back(997);
+    CircuitHarness::ExactAbandon(unindexed.expect, {121, 998, 999});
+    unindexed.expect.keep = {122, 123, 997};
+    Run(unindexed, false);
+    {
+        CircuitPlan const plan = PlanCircuit(unindexed.bot, unindexed.context);
+        std::size_t named = 0;
+        for (CircuitAbandon const& abandon : plan.abandon)
+            named += (abandon.quest == 998 || abandon.quest == 999) && abandon.reason == AbandonReason::Unindexed;
+        Check(named == 2, unindexed.name + ": 998 and 999 abandoned as not in the quest index");
+        std::vector<CircuitLog::Row> const rows = CircuitLog::Rows(plan);
+        Check(std::any_of(rows.begin(), rows.end(), [](CircuitLog::Row const& row)
+                          { return row.choice == "abandon:999" && row.reason == "unindexed"; }),
+              unindexed.name + ": decision row abandon:999 unindexed");
+    }
+
     // A full log of done quests with a chain nearer than the deliveries (review 4, finding 1): 112, 117 and 201 end
     // at Sentinel Hill, the rest on Kalimdor; done quests free no slot at Eastvale, so the chain 130 there offers
     // nothing a full log could take, and the bot delivers at Sentinel Hill instead of walking between the two
@@ -871,7 +943,9 @@ int main()
     // bracket is still worth the walk, there two of them make room for 501 and 502
     CircuitHarness::Scenario crossroadsDryFull = crossroadsDry;
     crossroadsDryFull.name = "crossroads-dry-full-log-far";
-    for (std::uint32_t id = 401; id < 424; ++id)
+    for (std::uint32_t const id : {401u, 402u, 403u, 404u})
+        crossroadsDryFull.bot.quests.push_back(Slot(id));
+    for (std::uint32_t id = 430; id < 449; ++id)
         crossroadsDryFull.bot.quests.push_back(Slot(id));
     CircuitHarness::ExactAbandon(crossroadsDryFull.expect, {});
     Run(crossroadsDryFull, false);

@@ -142,12 +142,13 @@ enum class AbandonReason : std::uint8_t
     Grey,
     Overtime,
     Deaths,
-    LogSpace,  // the log is full and the bot cannot work on the quest from here
+    LogSpace,   // the log is full and the bot cannot work on the quest from here
+    Unindexed,  // the quest index has no record of it: the planner can neither work on nor deliver it
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(AbandonReason::Count)> ABANDON_NAMES = {
     "grey, nothing left in reach", "far over the usual time", "far over the usual deaths",
-    "log space: not doable from here (far away, or elite/group solo)"};
+    "log space: not doable from here (far away, or elite/group solo)", "not in the quest index"};
 
 enum class MoveReason : std::uint8_t
 {
@@ -219,6 +220,7 @@ struct CircuitMove
     std::uint32_t quest{0};  // the chain's or breadcrumb's quest
     float seconds{0.0f};
     std::string word;  // Nowhere: the failed test as a log word (QuestCircuitLog.h)
+    Place place;       // the target camp
 };
 
 struct CircuitPlan
@@ -558,6 +560,8 @@ private:
             _logIds.push_back(slot.quest);
             if (QuestRecord const* record = _quests.Find(slot.quest))
                 _log.push_back({slot, record});
+            else
+                _unindexed.push_back(slot.quest);
         }
         std::sort(_logIds.begin(), _logIds.end());
         std::sort(_log.begin(), _log.end(),
@@ -777,9 +781,13 @@ private:
         return std::find(_abandoned.begin(), _abandoned.end(), quest) != _abandoned.end();
     }
 
-    // Grey quests not finished soon; quests far over the population's time or deaths. Never a protected quest
+    // Quests the index does not know (they would hold a slot for good); grey quests not finished soon; quests far over
+    // the population's time or deaths. Never a protected quest
     void Abandon()
     {
+        for (std::uint32_t const id : _unindexed)
+            if (!Contains(_protected, id))
+                AbandonQuest(id, AbandonReason::Unindexed);
         for (LogQuest const& quest : _log)
         {
             std::uint32_t const id = quest.slot.quest;
@@ -877,7 +885,7 @@ private:
                 groups.push_back(group);
             wanted.push_back(std::move(candidate));
         }
-        MakeRoom(wanted.size());
+        MakeRoom(wanted);
         std::size_t const free = FreeSlots();
         for (Candidate& candidate : wanted)
         {
@@ -909,25 +917,27 @@ private:
             Reason("skip " + std::to_string(skip.quest) + ": " + SkipName(skip.reason));
     }
 
-    // The log's free slots after its abandons, keeping LOG_RESERVE free
-    std::size_t FreeSlots() const
+    // The log's free slots after its abandons and `more` abandons still to come, keeping LOG_RESERVE free
+    std::size_t FreeSlots(std::size_t more = 0) const
     {
-        std::size_t const used = _logIds.size() - std::min(_logIds.size(), _abandoned.size());
+        std::size_t const used = _logIds.size() - std::min(_logIds.size(), _abandoned.size() + more);
         return QUEST_LOG_SLOTS > used + LOG_RESERVE ? QUEST_LOG_SLOTS - used - LOG_RESERVE : 0;
     }
 
     // A full log: the quests the bot cannot work on from here (far away, or elite/group while solo) give their slots
     // to the hub's, lowest value first, beyond the slots that complete log quests turned in here free (the hub's
     // quests wait for those; quests this trip completes are not counted, the conservative side).
+    // A quest worked here always gets the slot. A carried take (a delivery to another hub, also not worked here)
+    // gets it only when it is worth more than the quests it pushes out; else it stays at the hub for log space.
     // Quests it can do here are kept (a later trip does them); never a complete or protected quest
-    void MakeRoom(std::size_t wanted)
+    void MakeRoom(std::vector<Candidate>& wanted)
     {
         std::size_t freed = 0;  // complete log quests turned in on a loop from here
         for (LogQuest const& quest : _log)
             if ((quest.slot.state & SLOT_COMPLETE) && !Abandoned(quest.slot.quest) &&
                 TurnsInHere(Locate(*quest.record, &quest.slot)))
                 ++freed;
-        if (wanted <= FreeSlots() + freed)
+        if (wanted.size() <= FreeSlots() + freed)
             return;
         std::vector<std::pair<float, std::uint32_t>> idle;  // value, quest
         for (LogQuest const& quest : _log)
@@ -939,11 +949,28 @@ private:
                 idle.emplace_back(Value(*quest.record), id);
         }
         std::sort(idle.begin(), idle.end());
-        for (auto const& entry : idle)
+        std::size_t next = 0;  // the cheapest idle quest still in the log
+        std::size_t kept = 0;  // wanted quests that have a slot
+        for (auto it = wanted.begin(); it != wanted.end();)
         {
-            if (wanted <= FreeSlots() + freed)
-                break;
-            AbandonQuest(entry.second, AbandonReason::LogSpace);
+            std::size_t give = 0;  // idle quests this one's slot costs (more than one where the reserve swallows some)
+            while (kept >= FreeSlots(give) + freed && next + give < idle.size())
+                ++give;
+            if (kept >= FreeSlots(give) + freed)
+                return;  // no room even without every idle quest: the rest wait for log space (Choose)
+            float pushedOut = 0.0f;
+            for (std::size_t i = next; i < next + give; ++i)
+                pushedOut += idle[i].first;
+            if (it->carried && give > 0 && !(it->value > pushedOut))
+            {
+                Skip(it->record->id, SkipReason::LogFull);
+                it = wanted.erase(it);
+                continue;
+            }
+            for (; give > 0; --give)
+                AbandonQuest(idle[next++].second, AbandonReason::LogSpace);
+            ++kept;
+            ++it;
         }
     }
 
@@ -1478,6 +1505,7 @@ private:
         {
             QuestCamp const& camp = _quests.camps[best.camp];
             best.zone = camp.zoneId;
+            best.place = CampPlace(camp);
             if (_context.indexes)
                 if (std::optional<Nearby> const hub = CampHub(camp, *_context.indexes))
                     best.hub = hub->index;
@@ -1617,6 +1645,7 @@ private:
     std::vector<std::uint32_t> _rewarded;
     std::vector<std::uint32_t> _protected;
     std::vector<std::uint32_t> _logIds;
+    std::vector<std::uint32_t> _unindexed;  // log quests without an index record
     std::vector<LogQuest> _log;
     std::vector<std::int32_t> _takenGroups;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> _offered;

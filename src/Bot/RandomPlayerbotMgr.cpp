@@ -32,6 +32,7 @@
 #include "NewRpgStrategy.h"
 #include "ObjectGuid.h"
 #include "PerfMonitor.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -1930,7 +1931,8 @@ bool RandomPlayerbotMgr::IsBusy(Player* bot)
     WorldTravel::BusyInput in;
     in.Honest = HonestTravel();
     in.RealMaster = botAI->HasGameClientMaster();
-    in.HasGoal = false;  // the goal arrives with WT16
+    // An external goal (the bridge's or a group's) keeps the bot; the planner's own goals do not (WT20)
+    in.HasGoal = Planner::HasExternalGoal(bot->GetGUID().GetRawValue());
     in.InCombat = bot->IsInCombat();
     in.Dead = !bot->IsAlive();
     in.Grouped = bot->GetGroup() != nullptr;

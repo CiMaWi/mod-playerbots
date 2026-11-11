@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_BRIDGEINTENTEFFECT_H
 #define PLAYERBOTS_BRIDGEINTENTEFFECT_H
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -17,6 +18,21 @@ class OllamaBotRandomChatter;
 
 namespace PlayerbotBridge
 {
+// The verbs, append only (the wire's order). The goal verbs (WT18a, from GoTo on) hand the planner a goal of source
+// bridge (Planner::BridgeGoal): it outranks the bot's own until it ends, a new bridge goal replaces it, and a group's
+// goal is never replaced. Each refuses before any change with a reason:
+//   GoTo (go_to), PlaceName: a trip to a known place or x,y,z,map (RPG_TRAVEL); UnknownPlace, AlreadyThere,
+//     NoRoute (one route search), CannotNow inside an instance.
+//   Quest (quest), QuestId: work or turn in a log quest (DO_QUEST); NoSuchQuest when it is not in the log or failed.
+//   Errands (errands): an errand trip near the bot (RPG_ERRANDS); SetHearth (set_hearth): a trip to the nearest
+//     fitting inn on its map and a bind there; NothingHere when no stop or inn is in reach.
+//   GrindHere (grind_here), GatherHere (gather_here): around the bot (RPG_GO_GRIND, RPG_DO_GATHER); NothingHere in a
+//     town or an inn, or without herbalism or mining; CannotNow inside an instance.
+//   MeetAt (meet_at), PlaceName: GoTo with the meeting as its reason.
+//   PausePlan (pause_plan): the bot's plan stops, the bot stands idle until ResumePlan (resume_plan) or ten minutes;
+//     ResumePlan also ends a bridge goal.
+//   Every goal verb: NotPlanner when the planner does not run the bot (Planner.Goals off, a real master such as a
+//   player's group, not persistent), GoalHeld when a group's goal holds the slot.
 enum class Intent : uint8_t
 {
     Follow,
@@ -31,7 +47,16 @@ enum class Intent : uint8_t
     SaveMana,
     Formation,
     Position,
-    DungeonClear
+    DungeonClear,
+    GoTo,
+    Quest,
+    Errands,
+    SetHearth,
+    GrindHere,
+    GatherHere,
+    MeetAt,
+    PausePlan,
+    ResumePlan
 };
 
 enum class Result : uint8_t
@@ -56,7 +81,14 @@ enum class Refusal : uint8_t
     Unreachable,       // Position: not on the bot's map, not near it, or no complete short path from it.
     TargetNotVisible,  // Attack, mark, focus healing: the bot does not see the target.
     NoTarget,          // Attack: the target is not the bot's own.
-    CannotNow          // The verb's own state rule (mounted, no opponent, raid marking, not a healer, ...).
+    CannotNow,     // The verb's own state rule (mounted, no opponent, raid marking, not a healer, an instance, ...).
+    NotPlanner,    // Goal verbs: the planner does not run the bot.
+    GoalHeld,      // Goal verbs: a group's goal holds the bot.
+    UnknownPlace,  // GoTo, MeetAt: no such place.
+    NoRoute,       // GoTo, MeetAt: no route from the bot to the place.
+    NoSuchQuest,   // Quest: not in the bot's log, or failed.
+    NothingHere,   // Errands, SetHearth, GrindHere, GatherHere: nothing to do here.
+    AlreadyThere   // GoTo, MeetAt: the bot is at the place.
 };
 
 // Formation only: the wire shapes, mapped to playerbots formations (close -> near, spread -> far, line -> line).
@@ -88,7 +120,13 @@ struct Order
     FormationShape Shape = FormationShape::None;
     // SaveMana only: true saves mana at the class level the "save mana *" command picks, false spends freely (1.0).
     bool Enabled = false;
+    // GoTo and MeetAt only: a known place's name or "x,y,z,map", at most MaxPlaceName characters; empty otherwise.
+    std::string PlaceName = {};
+    // Quest only: the quest id; 0 otherwise.
+    uint32_t QuestId = 0;
 };
+
+constexpr std::size_t MaxPlaceName = 64;
 
 // The lasting part of a bot a delivered order changes; None for the one-shot verbs. Follow and Stay change the same
 // strategies and named positions, so they share Movement and a plan ledger keys them as one part.
@@ -192,7 +230,8 @@ private:
 // DS.14: the bot acts as itself in a conversation with the partner (Order::Controller). Execute checks plausibility and
 // safety, never who leads the bot: the bot in the world, a bot, not in a battleground, not in flight, alive; the
 // partner online, allowed (PartnerAllowed) and of the bot's team; the captured group still the bot's; then each verb's
-// own rule. why, when given, receives the reason of a Rejected result and None for every other result.
+// own rule (the goal verbs': Intent's list). why, when given, receives the reason of a Rejected result and None for
+// every other result.
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize,
                Refusal* why = nullptr);
 

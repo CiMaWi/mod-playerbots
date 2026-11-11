@@ -208,6 +208,8 @@ public:
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
+            {"goals", Planner::HandleGoalsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsWorldLogCommandTable = {

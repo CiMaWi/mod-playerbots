@@ -10,6 +10,7 @@
 #include <list>
 
 #include "AttackAction.h"
+#include "BridgeGoals.h"
 #include "FollowActions.h"
 #include "Group.h"
 #include "MovementActions.h"
@@ -65,6 +66,56 @@ bool PartnerAllowed(Player* partner)
 bool NeedsTarget(Intent operation)
 {
     return operation == Intent::AttackOwnTarget || operation == Intent::Mark || operation == Intent::FocusHealing;
+}
+
+using Planner::GoalApply::BridgeAnswer;
+using Planner::GoalApply::BridgeOrder;
+
+bool IsGoal(Intent operation) { return operation >= Intent::GoTo && operation <= Intent::ResumePlan; }
+
+// Only a trip names a place, only a quest order a quest
+bool NeedsPlace(Intent operation) { return operation == Intent::GoTo || operation == Intent::MeetAt; }
+
+// The goal verbs in the planner's order (BridgeGoals.h), the same sequence
+constexpr BridgeOrder GoalOrderOf(Intent operation)
+{
+    return static_cast<BridgeOrder>(static_cast<uint8_t>(operation) - static_cast<uint8_t>(Intent::GoTo));
+}
+static_assert(GoalOrderOf(Intent::GoTo) == BridgeOrder::GoTo && GoalOrderOf(Intent::Quest) == BridgeOrder::Quest &&
+              GoalOrderOf(Intent::Errands) == BridgeOrder::Errands &&
+              GoalOrderOf(Intent::SetHearth) == BridgeOrder::SetHearth &&
+              GoalOrderOf(Intent::GrindHere) == BridgeOrder::GrindHere &&
+              GoalOrderOf(Intent::GatherHere) == BridgeOrder::GatherHere &&
+              GoalOrderOf(Intent::MeetAt) == BridgeOrder::MeetAt &&
+              GoalOrderOf(Intent::PausePlan) == BridgeOrder::Pause &&
+              GoalOrderOf(Intent::ResumePlan) == BridgeOrder::Resume);
+
+// The planner checks the bot's scope, the slot's holder and the order's own rule before it changes anything
+Result GoalOnce(PlayerbotAI* ai, Player* bot, Order const& order, Refusal& why)
+{
+    switch (Planner::BridgeGoal(ai, bot, GoalOrderOf(order.Operation), order.PlaceName, order.QuestId))
+    {
+        case BridgeAnswer::Done:
+            return Result::Applied;
+        case BridgeAnswer::NotPlanner:
+            return Refuse(why, Refusal::NotPlanner);
+        case BridgeAnswer::GoalHeld:
+            return Refuse(why, Refusal::GoalHeld);
+        case BridgeAnswer::UnknownPlace:
+            return Refuse(why, Refusal::UnknownPlace);
+        case BridgeAnswer::NoRoute:
+            return Refuse(why, Refusal::NoRoute);
+        case BridgeAnswer::NoSuchQuest:
+            return Refuse(why, Refusal::NoSuchQuest);
+        case BridgeAnswer::NothingHere:
+            return Refuse(why, Refusal::NothingHere);
+        case BridgeAnswer::AlreadyThere:
+            return Refuse(why, Refusal::AlreadyThere);
+        case BridgeAnswer::CannotNow:
+            return Refuse(why, Refusal::CannotNow);
+        default:
+            return Result::Failed;
+    }
 }
 
 char const* FormationName(FormationShape shape)
@@ -465,6 +516,15 @@ Result ExecuteOrder(PostMapJoin const& phase, Order const& order, std::function<
         case Intent::FocusHealing:
         case Intent::SaveMana:
         case Intent::Formation:
+        case Intent::GoTo:
+        case Intent::Quest:
+        case Intent::Errands:
+        case Intent::SetHearth:
+        case Intent::GrindHere:
+        case Intent::GatherHere:
+        case Intent::MeetAt:
+        case Intent::PausePlan:
+        case Intent::ResumePlan:
             break;
         // No safe playerbots effect: pull and regroup (DS.9), no role setter, and dungeon clear is another module.
         case Intent::Regroup:
@@ -476,9 +536,11 @@ Result ExecuteOrder(PostMapJoin const& phase, Order const& order, std::function<
             return Result::Rejected;
     }
 
-    // A stray target, shape or enable flag on another verb is a mapping error, never an ignored field.
+    // A stray target, shape, enable flag, place or quest on another verb is a mapping error, never an ignored field.
     if (!order.Bot || !order.Controller || order.Bot == order.Controller ||
         NeedsTarget(order.Operation) != (order.Target != 0) ||
+        NeedsPlace(order.Operation) != !order.PlaceName.empty() || order.PlaceName.size() > MaxPlaceName ||
+        (order.Operation == Intent::Quest) != (order.QuestId != 0) ||
         (order.Operation == Intent::Formation) != (FormationName(order.Shape) != nullptr) ||
         (order.Enabled && order.Operation != Intent::SaveMana) || !std::isfinite(order.VisibilityDistance) ||
         order.VisibilityDistance <= 0.0f || (order.Operation == Intent::Mark && order.Icon > 7) ||
@@ -505,6 +567,10 @@ Result ExecuteOrder(PostMapJoin const& phase, Order const& order, std::function<
 
     if (!bot->IsAlive())
         return Refuse(why, Refusal::Dead);
+
+    // A goal is the bot's own business: no group needed; the planner's scope keeps out a bot a player leads.
+    if (IsGoal(order.Operation))
+        return GoalOnce(ai, bot, order, why);
 
     // Following and the group settings are group play: the partner shares the bot's group. Stay, flee, a position
     // and an attack need no group; a mark and focus healing need the bot's own group.

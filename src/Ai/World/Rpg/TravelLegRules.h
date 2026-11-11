@@ -237,8 +237,8 @@ struct Decision
 };
 
 // What the current leg saw of the bot: follower ticks mounted, time in combat and deaths. The follower counts the
-// ticks; PlayerbotAI's engine changes (NoteLife) count combat and deaths, because the follower runs in neither the
-// combat nor the dead engine
+// ticks; NoteLife counts combat (PlayerbotAI's engine changes) and deaths (CensusMgr's death hooks), because the
+// follower runs in neither the combat nor the dead engine
 struct LegRecord
 {
     std::uint32_t ticks{0};
@@ -388,8 +388,8 @@ enum class Life : std::uint8_t
     Dead
 };
 
-// An engine change of a travelling bot (map thread): closes a running combat stretch, opens one in combat, and counts
-// a death for the trip and, while a leg runs, for the leg
+// A travelling bot's engine change or death (map thread): closes a running combat stretch, opens one in combat, and
+// counts a death for the trip and, while a leg runs, for the leg
 inline void NoteLife(Trip& trip, Life life, std::uint32_t nowMs)
 {
     LegRecord& record = trip.record;
