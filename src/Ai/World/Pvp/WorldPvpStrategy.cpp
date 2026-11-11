@@ -57,6 +57,12 @@ bool WorldPvpRetreatAction::Execute(Event /*event*/)
     uint32 const nowMs = getMSTime();
     if (bot->isMoving() && nowMs - _stepMs < STEP_HOLD_MS && bot->GetExactDist2d(_stepX, _stepY) > STEP_DONE_YARDS)
         return true;
+    // A bot that cannot move (rooted, stunned) or finds every direction blocked gives the retreat up and fights
+    if (!IsMovingAllowed())
+    {
+        WorldPvp::GiveUpRetreat(botAI);
+        return false;
+    }
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp retreat")
                                                     : nullptr);
@@ -68,6 +74,7 @@ bool WorldPvpRetreatAction::Execute(Event /*event*/)
     for (float delta = FAN_STEP; delta <= FAN_LIMIT + 0.01f; delta += FAN_STEP)
         if (StepTo(away + delta, nowMs) || StepTo(away - delta, nowMs))
             return true;
+    WorldPvp::GiveUpRetreat(botAI);
     return false;
 }
 

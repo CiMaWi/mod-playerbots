@@ -242,6 +242,13 @@ float GraveyardYards(WorldObject const* object)
 // The bot-side gate values (FightWiring.h's RefreshGate, every GATE_REFRESH_MS)
 void ReadGate(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 nowMs)
 {
+    if (memory.fightId)
+    {
+        std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false);
+        Fight const* const fight = entry ? entry->book.FindFight(memory.fightId) : nullptr;
+        ForgetFightElsewhere(memory, fight && fight->Find(bot->GetGUID().GetRawValue()), nowMs);
+    }
+
     GateFacts facts;
     facts.prohibited = sPlayerbotAIConfig.IsPvpProhibited(bot->GetZoneId(), bot->GetAreaId());
     Player* const master = botAI->GetMaster();
@@ -267,6 +274,13 @@ void ReadGate(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 nowMs
         facts.patience = TraitRules::Unit(*traits, TraitRules::Trait::Patience);
     }
     RefreshGate(memory, facts, nowMs);
+}
+
+// The guid of the bot's real master, 0 for none (WP.6: the bot follows it)
+uint64 RealMasterOf(PlayerbotAI* botAI, Player* bot)
+{
+    Player* const master = botAI->GetMaster();
+    return master && master != bot && IsRealPlayer(master) ? master->GetGUID().GetRawValue() : 0;
 }
 
 // The calm-area answer at the bot's place (InAnyCalmArea over its map's ended fights), asked again when due
@@ -452,8 +466,6 @@ void NoteCombatRefs(Player* player, uint32 nowMs)
 
 void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
 {
-    bool const disengage =
-        fight.cause == EndCause::Timeout || fight.cause == EndCause::Stalemate || fight.cause == EndCause::StalemateCap;
     Player* row = ObjectAccessor::GetPlayer(map, ObjectGuid(fight.starter));
     for (FightParticipant const& participant : fight.participants)
     {
@@ -477,9 +489,11 @@ void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
             memory->joinGuid = 0;
             memory->joinFightId = 0;
         }
-        // A timeout or stalemate ends a fight that is still on: its bots disengage (they step away and note no PvP
-        // combat for a while, so its tail opens no new fight; an enemy that keeps hitting gets one)
-        if (disengage && player->IsAlive() && player->GetCombatManager().HasPvPCombat())
+        // A timeout or stalemate ends a fight that is still on: its bots by the rules disengage (they step away and
+        // note no PvP combat for a while, so its tail opens no new fight; an enemy that keeps hitting gets one)
+        if (player->IsAlive() &&
+            Disengages(fight.cause, StartsByRules(botAI), player->GetCombatManager().HasPvPCombat(),
+                       FollowsMaster(fight, RealMasterOf(botAI, player))))
         {
             StartRetreat(*memory, fight.id, true, fight.centreX, fight.centreY, nowMs);
             DropFightTarget(botAI, player);
@@ -724,15 +738,12 @@ void AskBystanders(Map* map, FightBook& book, uint32 nowMs)
 
 // A participant in PvP combat (the book's tick): whether it is in PvP combat with an enemy participant of its fight
 // (the hit clock). A persistent bot attacking a retreated enemy of its fight chases it from now (NoteChase)
-bool ProbeSides(FightBook const& book, FightParticipant const& participant, Player* player, uint32 nowMs)
+bool ProbeSides(Fight const& fight, FightParticipant const& participant, Player* player, uint32 nowMs)
 {
-    Fight const* const fight = book.FindFightOf(participant.guid);
-    if (!fight)
-        return false;
     auto const enemyOf = [&](Unit* unit) -> FightParticipant const*
     {
         Player* const enemy = unit ? unit->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
-        FightParticipant const* const other = enemy ? fight->Find(enemy->GetGUID().GetRawValue()) : nullptr;
+        FightParticipant const* const other = enemy ? fight.Find(enemy->GetGUID().GetRawValue()) : nullptr;
         return other && other->side != participant.side ? other : nullptr;
     };
 
@@ -747,7 +758,7 @@ bool ProbeSides(FightBook const& book, FightParticipant const& participant, Play
     FightParticipant const* const victim = enemyOf(player->GetVictim());
     if (victim && victim->retreated && !IsForced(player->GetGUID(), nowMs))
         if (FightMemory* const memory = MemoryOf(player, nowMs))
-            NoteChase(*memory, victim->guid, fight->centreX, fight->centreY, fight->radius, nowMs);
+            NoteChase(*memory, victim->guid, fight.centreX, fight.centreY, fight.radius, nowMs);
     return sides;
 }
 
@@ -786,7 +797,8 @@ void CheckRetreat(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 n
     if (GateDue(memory, nowMs))
         ReadGate(botAI, bot, memory, nowMs);
     float const health = bot->GetHealthPct() / 100.0f;
-    if (!view.enemies || !ShouldRetreat(health, OddsShare(view.own, view.other), memory.caution, values))
+    if (!view.enemies || !ShouldRetreat(health, OddsShare(view.own, view.other), memory.caution, values) ||
+        FollowsMaster(*fight, RealMasterOf(botAI, bot)))
         return;
 
     uint32 const fightId = entry->book.MarkRetreated(bot->GetGUID().GetRawValue(), nowMs);
@@ -817,9 +829,10 @@ void TickBook(Map* map, uint32 diff)
     FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
     FightBook const& book = entry->book;
     std::vector<Fight> ended;
+    size_t holding = 0;
     entry->book.Tick(
         nowMs,
-        [map, &book, nowMs](FightParticipant& participant)
+        [map, &book, &holding, nowMs](FightParticipant& participant)
         {
             Player* const player = ObjectAccessor::GetPlayer(map, ObjectGuid(participant.guid));
             participant.here = player && player->IsInWorld();
@@ -833,7 +846,8 @@ void TickBook(Map* map, uint32 diff)
             participant.area = player->GetAreaId();
             if (!player->GetCombatManager().HasPvPCombat())
                 return false;
-            participant.sideCombat = ProbeSides(book, participant, player, nowMs);
+            Fight const* const fight = FightHolding(book.Active(), participant, holding);
+            participant.sideCombat = fight && ProbeSides(*fight, participant, player, nowMs);
             return true;
         },
         [&values](FightClock const& clock) { return CheckFightEnd(clock, values); }, ended);
@@ -1242,7 +1256,7 @@ Player* JoinTarget(PlayerbotAI* botAI)
 bool ChaseEnds(PlayerbotAI* botAI, Unit* target)
 {
     FightMemory* const memory = botAI && target ? botAI->fightMemory.get() : nullptr;
-    if (!memory || !memory->chaseGuid || memory->chaseGuid != target->GetGUID().GetRawValue())
+    if (!memory || !memory->chaseGuid || memory->chaseGuid != target->GetGUID().GetRawValue() || !StartsByRules(botAI))
         return false;
     Player* const bot = botAI->GetBot();
     if (Attacks(target, bot))
@@ -1257,19 +1271,30 @@ bool ChaseEnds(PlayerbotAI* botAI, Unit* target)
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit)
 {
     FightMemory const* const memory = botAI && unit ? botAI->fightMemory.get() : nullptr;
-    if (!memory || Attacks(unit, botAI->GetBot()))
+    if (!memory)
         return false;
-    return RetreatedFromFight(*memory) || ChaseLeftAlone(*memory, unit->GetGUID().GetRawValue(), getMSTime());
+    uint64 const guid = unit->GetGUID().GetRawValue();
+    uint32 const nowMs = getMSTime();
+    // Cheap first: most bots have neither state; a battleground, arena or PvpTest fight keeps today's targets
+    if (!LeavesAlone(*memory, guid, false, nowMs) || !StartsByRules(botAI))
+        return false;
+    return LeavesAlone(*memory, guid, Attacks(unit, botAI->GetBot()), nowMs);
 }
 
 bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y)
 {
     FightMemory const* const memory = botAI ? botAI->fightMemory.get() : nullptr;
-    if (!memory || !Retreating(*memory, getMSTime()))
+    if (!memory || !Retreating(*memory, getMSTime()) || !StartsByRules(botAI))
         return false;
     x = memory->retreatX;
     y = memory->retreatY;
     return true;
+}
+
+void GiveUpRetreat(PlayerbotAI* botAI)
+{
+    if (botAI && botAI->fightMemory)
+        GiveUpRetreat(*botAI->fightMemory);
 }
 
 bool RequestsWaiting() { return requestCount.load(std::memory_order_relaxed) != 0; }

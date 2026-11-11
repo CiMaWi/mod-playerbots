@@ -45,11 +45,14 @@ Player* JoinTarget(PlayerbotAI* botAI);
 // attacks: the chase's time or yards beyond the fight passed the bot's limit (ChaseLimitFor: aggression lengthens
 // it, courtesy shortens it); an enemy attacking the bot is never dropped. O(1) unless `target` is the chased one
 bool ChaseEnds(PlayerbotAI* botAI, Unit* target);
-// EnemyPlayerValue::Calculate: whether this bot leaves `unit` alone: it retreated from the fight it is in, or its
-// chase of `unit` just ended; never an enemy attacking it (self-defence)
+// EnemyPlayerValue::Calculate: whether this bot, starting by the rules, leaves `unit` alone: it retreated from the
+// fight it is in, or its chase of `unit` just ended; never an enemy attacking it (self-defence)
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
-// The "world pvp retreat" trigger and action: while this bot retreats (or disengages), the place it moves away from
+// The "world pvp retreat" trigger and action: while this bot retreats (or disengages) by the rules, the place it moves
+// away from
 bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y);
+// The retreat action could not move the bot (rooted, every direction blocked): it gives the retreat up
+void GiveUpRetreat(PlayerbotAI* botAI);
 
 // NearestEnemyPlayersValue::AcceptUnit for the other bots, the bot's map thread: the enemy player when `unit` is one
 // this persistent bot (a PvpTest fighter) meets now (in sight, not seen in the last MeetingMemorySeconds; remembered

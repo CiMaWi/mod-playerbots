@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "FightBookRules.h"
@@ -440,6 +442,65 @@ inline bool CheckChase(FightMemory& memory, uint64_t guid, float x, float y, uin
 inline bool ChaseLeftAlone(FightMemory const& memory, uint64_t guid, uint32_t nowMs)
 {
     return guid && memory.chaseGuid == guid && memory.chaseOver && nowMs - memory.chaseOverMs < LEFT_ALONE_MS;
+}
+
+// A bot follows its real master (WP.6): while the master (`masterGuid`, 0 for none) fights in `fight`, the bot
+// neither retreats nor disengages from it
+inline bool FollowsMaster(Fight const& fight, uint64_t masterGuid)
+{
+    FightParticipant const* const master = masterGuid ? fight.Find(masterGuid) : nullptr;
+    return master && master->inCombat;
+}
+
+// A timeout, stalemate or stalemate_cap disengages a participant bot that starts by the rules (persistent, not
+// PvpTest's) and is still in PvP combat, unless it follows its master; wiped and combat_over leave nothing to undo
+inline bool Disengages(EndCause cause, bool byRules, bool inPvpCombat, bool followsMaster)
+{
+    bool const stillOn = cause == EndCause::Timeout || cause == EndCause::Stalemate || cause == EndCause::StalemateCap;
+    return stillOn && byRules && inPvpCombat && !followsMaster;
+}
+
+// The bot's fight is not one its map's book holds now (`held`): it left the map while the fight went on, or the
+// fight ended without it there. The fight is over for the bot, so it neither stays out of it nor counts as in a fight
+inline void ForgetFightElsewhere(FightMemory& memory, bool held, uint32_t nowMs)
+{
+    if (!memory.fightId || held)
+        return;
+    memory.fightId = 0;
+    memory.hasFought = true;
+    memory.lastFightEndMs = nowMs;
+}
+
+// The retreat cannot move (rooted, or every direction blocked): the bot gives it up and fights where it stands. After
+// a retreat by the rules it still does not rejoin that fight's other enemies
+inline void GiveUpRetreat(FightMemory& memory) { memory.retreating = false; }
+
+// Whether the bot leaves `guid` alone: it retreated from the fight it is in, or its chase of `guid` just ended; never
+// an enemy attacking it (self-defence)
+inline bool LeavesAlone(FightMemory const& memory, uint64_t guid, bool attacksBot, uint32_t nowMs)
+{
+    return !attacksBot && (RetreatedFromFight(memory) || ChaseLeftAlone(memory, guid, nowMs));
+}
+
+// The active fight whose participant list holds `participant` (the book's probe visits each fight's participants in
+// turn, so `last`, the index found before, nearly always is it): O(1) instead of a search through every participant
+inline Fight const* FightHolding(std::vector<Fight> const& active, FightParticipant const& participant, size_t& last)
+{
+    auto const holds = [&participant](Fight const& fight)
+    {
+        FightParticipant const* const first = fight.participants.data();
+        return std::less_equal<>()(first, &participant) &&
+               std::less<>()(&participant, first + fight.participants.size());
+    };
+    if (last < active.size() && holds(active[last]))
+        return &active[last];
+    for (size_t index = 0; index < active.size(); ++index)
+        if (holds(active[index]))
+        {
+            last = index;
+            return &active[index];
+        }
+    return nullptr;
 }
 
 struct Point

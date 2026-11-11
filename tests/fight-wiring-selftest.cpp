@@ -589,6 +589,72 @@ void CheckRetreat()
     Check(memory.disengaging && Retreating(memory, now), "a disengage is a retreat that notes no combat");
 }
 
+// The review fixes: who disengages, the master rule, a fight left behind on another map, a retreat given up, the
+// leave-alone gate, the probe's fight lookup
+void CheckEndGates()
+{
+    Check(Disengages(EndCause::Timeout, true, true, false) && Disengages(EndCause::Stalemate, true, true, false) &&
+              Disengages(EndCause::StalemateCap, true, true, false),
+          "timeout, stalemate and stalemate_cap disengage a bot by the rules in PvP combat");
+    Check(!Disengages(EndCause::Wiped, true, true, false) && !Disengages(EndCause::CombatOver, true, true, false),
+          "wiped and combat_over disengage nobody");
+    Check(!Disengages(EndCause::Stalemate, false, true, false),
+          "a non-persistent bot or PvpTest fighter does not disengage (not by the rules)");
+    Check(!Disengages(EndCause::Stalemate, true, false, false), "a bot out of PvP combat has nothing to disengage");
+    Check(!Disengages(EndCause::Stalemate, true, true, true), "a bot whose master fights on does not disengage");
+
+    constexpr uint64_t MASTER = 5;
+    Fight fight;
+    FightParticipant master;
+    master.guid = MASTER;
+    master.inCombat = true;
+    fight.participants.push_back(master);
+    Check(FollowsMaster(fight, MASTER), "the real master fights in the fight: the bot follows it");
+    fight.participants.front().inCombat = false;
+    Check(!FollowsMaster(fight, MASTER), "the master out of PvP combat: the bot decides for itself");
+    Check(!FollowsMaster(fight, MASTER + 1) && !FollowsMaster(fight, 0),
+          "a master outside the fight, or none: the bot decides for itself");
+
+    uint32_t const now = LOGIN + HOUR;
+    FightMemory memory = Ready(now);
+    memory.fightId = FIGHT;
+    ForgetFightElsewhere(memory, true, now);
+    Check(memory.fightId == FIGHT, "a fight the map's book holds stays the bot's");
+    StartRetreat(memory, FIGHT, false, 0.0f, 0.0f, now);
+    ForgetFightElsewhere(memory, false, now + MINUTE);
+    Check(!memory.fightId && memory.hasFought && memory.lastFightEndMs == now + MINUTE,
+          "a fight left on another map is over for the bot (the gap counts from now)");
+    Check(!RetreatedFromFight(memory) && Gate(memory, now + MINUTE) != Refusal::InFight,
+          "so it is neither kept out of that fight nor in_fight");
+
+    FightMemory rooted = Ready(now);
+    rooted.fightId = FIGHT;
+    StartRetreat(rooted, FIGHT, false, 0.0f, 0.0f, now);
+    GiveUpRetreat(rooted);
+    Check(!Retreating(rooted, now + SECOND), "a retreat that cannot move is given up");
+    Check(RetreatedFromFight(rooted), "after it the bot still does not rejoin that fight");
+    Check(LeavesAlone(rooted, ENEMY, false, now) && !LeavesAlone(rooted, ENEMY, true, now),
+          "it leaves the fight's enemies alone, except one attacking it");
+    Check(!LeavesAlone(Ready(now), ENEMY, false, now), "a bot with neither state leaves nobody alone");
+
+    std::vector<Fight> active(3);
+    for (size_t index = 0; index < active.size(); ++index)
+        for (uint64_t guid = 1; guid <= 3; ++guid)
+        {
+            FightParticipant participant;
+            participant.guid = index * 10 + guid;
+            active[index].participants.push_back(participant);
+        }
+    size_t last = 0;
+    Check(FightHolding(active, active[0].participants[2], last) == &active[0] && last == 0,
+          "the probe finds the first fight's participant");
+    Check(FightHolding(active, active[2].participants[0], last) == &active[2] && last == 2,
+          "and the next fight's, remembering it");
+    Check(FightHolding(active, active[2].participants[1], last) == &active[2], "the remembered fight first");
+    FightParticipant stranger;
+    Check(!FightHolding(active, stranger, last), "a participant of no active fight: none");
+}
+
 void CheckChase()
 {
     uint32_t const now = LOGIN + HOUR;
@@ -672,6 +738,7 @@ int main()
     CheckJoinBook();
     CheckJoinSureRoll();
     CheckRetreat();
+    CheckEndGates();
     CheckChase();
     CheckCalm();
     std::cout << "fight-wiring-selftest: " << passed << " passed, " << failed << " failed\n";
