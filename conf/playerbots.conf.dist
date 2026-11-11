@@ -2213,10 +2213,12 @@ Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 # row in the world log); RecentEnemies is how many it remembers (the oldest is forgotten). A fight takes in combat
 # within its radius (FightRadiusYards at the start, following the participants up to FightRadiusMaxYards), holds at
 # most MaxParticipants, a map at most MaxActiveFights; one still in PvP combat after MaxFightMinutes ends as
-# stalemate_cap. The other world PvP numbers are declared in src/Ai/World/Pvp/WorldPvpConfig.h and come here with
-# the steps that read them. (Ranges: MeetingMemorySeconds 0-86400; RecentEnemies 1-32; MaxActiveFights 1-1000;
-# MaxParticipants 2-1000; FightRadiusYards and FightRadiusMaxYards 1-2000; MaxFightMinutes 1-1440; CalmMinutes
-# 0-1440.) Defaults: 600, 16, 32, 40, 40, 150, 30, 15
+# stalemate_cap. A fight ends as combat_over once none of its participants has been in PvP combat for
+# EndGraceSeconds (combat within the grace continues the same fight; its length runs to the last PvP combat). The
+# other world PvP numbers are declared in src/Ai/World/Pvp/WorldPvpConfig.h and come here with the steps that read
+# them. (Ranges: MeetingMemorySeconds 0-86400; RecentEnemies 1-32; MaxActiveFights 1-1000; MaxParticipants 2-1000;
+# FightRadiusYards and FightRadiusMaxYards 1-2000; MaxFightMinutes 1-1440; EndGraceSeconds 0-600; CalmMinutes
+# 0-1440.) Defaults: 600, 16, 32, 40, 40, 150, 30, 10, 15
 Playerbots.WorldPvp.MeetingMemorySeconds = 600
 Playerbots.WorldPvp.RecentEnemies = 16
 Playerbots.WorldPvp.Book.MaxActiveFights = 32
@@ -2224,6 +2226,7 @@ Playerbots.WorldPvp.Book.MaxParticipants = 40
 Playerbots.WorldPvp.Book.FightRadiusYards = 40
 Playerbots.WorldPvp.Book.FightRadiusMaxYards = 150
 Playerbots.WorldPvp.Book.MaxFightMinutes = 30
+Playerbots.WorldPvp.Book.EndGraceSeconds = 10
 Playerbots.WorldPvp.CalmMinutes = 15
 
 # The lab fixtures `.playerbots fight ready <bot>` (its next chance starts a fight when the hard rules pass) and

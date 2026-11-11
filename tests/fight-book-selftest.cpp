@@ -6,9 +6,9 @@
 
 // Standalone check of the world PvP fight book (src/Ai/World/Pvp/FightBookRules.h) over synthetic fights: a new fight
 // with its starter, target and reason; joins into the fight of a participant and into the nearest fight within its
-// radius; a second cluster as a new fight; sides, deaths, the end by combat over and by the safety cap; the bounds
-// (fights per map, participants per fight, the ended ring's calm time); the PvpTest tag; the id counter; the fight
-// memory's meetings and its eviction; the end rows' anchor when nobody is left on the map.
+// radius; a second cluster as a new fight; sides, deaths, the end by combat over after the end grace and by the
+// safety cap; the bounds (fights per map, participants per fight, the ended ring's calm time); the PvpTest tag; the id
+// counter; the fight memory's meetings and its eviction; the end rows' anchor when nobody is left on the map.
 #include <cstdint>
 #include <iostream>
 #include <set>
@@ -150,13 +150,16 @@ void CheckDeathsAndEnd()
     Check(ended.empty() && book.Active().size() == 1, "still fighting: no end");
     fighting.clear();
     book.Tick(8 * SECOND, SetProbe{fighting}, ended);
+    Check(ended.empty(), "no PvP combat within the end grace: no end yet");
+    uint32_t const closeMs = 7 * SECOND + DefaultBounds().endGraceMs;
+    book.Tick(closeMs, SetProbe{fighting}, ended);
     Check(ended.size() == 1 && ended[0].cause == EndCause::CombatOver && book.Active().empty(),
-          "no PvP combat left ends the fight");
-    Check(ended[0].endMs - ended[0].startMs == 8 * SECOND, "the fight's length");
+          "no PvP combat for the end grace ends the fight");
+    Check(ended[0].endMs - ended[0].startMs == 7 * SECOND, "the fight's length runs to the last PvP combat");
     Check(book.Ended().size() == 1 && book.Ended().front().id == 42, "the ended fight is kept as a calm area");
     Check(!book.FindFightOf(1), "an ended fight's participants are free");
 
-    book.Tick(8 * SECOND + DefaultBounds().calmMs + 1, SetProbe{fighting}, ended);
+    book.Tick(closeMs + DefaultBounds().calmMs + 1, SetProbe{fighting}, ended);
     Check(book.Ended().empty(), "the calm area is dropped after the calm time");
 }
 
@@ -171,6 +174,54 @@ void CheckSafetyCap()
     Check(ended.empty(), "below the cap the fight goes on");
     book.Tick(DefaultBounds().maxFightMs, SetProbe{fighting}, ended);
     Check(ended.size() == 1 && ended[0].cause == EndCause::StalemateCap, "the safety cap ends a fight");
+}
+
+// A pause shorter than the end grace keeps one fight (new combat continues it); a longer one ends it, and the next
+// combat is a new fight. Grace 0 ends at the first tick without PvP combat; the cap within the grace is a stalemate.
+void CheckEndGrace()
+{
+    std::atomic<uint32_t> ids{0};
+    FightBook book(DefaultBounds(), ids);
+    uint32_t const graceMs = DefaultBounds().endGraceMs;
+    Check(graceMs == 10 * SECOND, "the end grace defaults to 10 s");
+    Combatant const alliance = Bot(1, Side::Alliance, 0, 0);
+    Combatant const horde = Bot(2, Side::Horde, 10, 0);
+    book.OnCombat(alliance, horde, 0);
+    std::set<uint64_t> fighting = {1, 2};
+    std::set<uint64_t> const none;
+    std::vector<Fight> ended;
+    book.Tick(SECOND, SetProbe{fighting}, ended);
+    book.Tick(SECOND + graceMs - SECOND, SetProbe{none}, ended);
+    Check(ended.empty() && book.Active().size() == 1, "a pause shorter than the grace: the fight goes on");
+    CombatNote const again = book.OnCombat(horde, alliance, graceMs);
+    Check(!again.started && again.fightId == 1, "combat within the grace continues the same fight");
+    CombatNote const near = book.OnCombat(Bot(3, Side::Alliance, 5, 5), Bot(4, Side::Horde, 15, 5), graceMs);
+    Check(!near.started && near.fightId == 1, "a new pair within the radius during the grace joins the fight");
+    book.Tick(graceMs + graceMs - SECOND, SetProbe{none}, ended);
+    Check(ended.empty(), "the grace counts from the last combat noted");
+    book.Tick(graceMs + graceMs, SetProbe{none}, ended);
+    Check(ended.size() == 1 && ended[0].id == 1 && ended[0].cause == EndCause::CombatOver &&
+              ended[0].endMs == graceMs && ended[0].participants.size() == 4,
+          "a pause as long as the grace ends the one fight, all four in it");
+    CombatNote const later = book.OnCombat(alliance, horde, 3 * graceMs);
+    Check(later.started && later.fightId == 2, "combat after the end is a new fight");
+
+    WorldPvpConfig config;
+    config.EndGraceSeconds = 0;
+    FightBook quick(FightBounds::From(config), ids);
+    quick.OnCombat(alliance, horde, 0);
+    std::vector<Fight> quickEnded;
+    quick.Tick(SECOND, SetProbe{none}, quickEnded);
+    Check(quickEnded.size() == 1 && quickEnded[0].cause == EndCause::CombatOver,
+          "grace 0: the first tick without PvP combat ends the fight");
+
+    FightBook capped(DefaultBounds(), ids);
+    capped.OnCombat(alliance, horde, 0);
+    std::vector<Fight> cappedEnded;
+    capped.Tick(DefaultBounds().maxFightMs - SECOND, SetProbe{fighting}, cappedEnded);
+    capped.Tick(DefaultBounds().maxFightMs, SetProbe{none}, cappedEnded);
+    Check(cappedEnded.size() == 1 && cappedEnded[0].cause == EndCause::StalemateCap,
+          "the safety cap reached within the grace ends the fight as stalemate_cap");
 }
 
 void CheckBounds()
@@ -196,7 +247,7 @@ void CheckBounds()
     for (uint64_t pair = 0; pair < WorldPvp::MAX_ENDED_FIGHTS + 10; ++pair)
     {
         ring.OnCombat(Bot(100 + 2 * pair, Side::Alliance, 0, 0), Bot(101 + 2 * pair, Side::Horde, 5, 0), 0);
-        ring.Tick(SECOND, SetProbe{none}, ended);
+        ring.Tick(DefaultBounds().endGraceMs, SetProbe{none}, ended);
     }
     Check(ring.Ended().size() == WorldPvp::MAX_ENDED_FIGHTS, "the ended ring is bounded");
 }
@@ -256,6 +307,7 @@ int main()
     CheckReasonsAndTag();
     CheckDeathsAndEnd();
     CheckSafetyCap();
+    CheckEndGrace();
     CheckBounds();
     CheckMemory();
     CheckEndAnchor();

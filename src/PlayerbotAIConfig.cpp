@@ -1245,6 +1245,7 @@ bool PlayerbotAIConfig::Initialize()
         constexpr uint32 MaxBookCount = 1000;
         constexpr uint32 MaxRadiusYards = 2000;
         constexpr uint32 MaxPvpMinutes = 24 * 60;
+        constexpr uint32 MaxGraceSeconds = 600;
         WorldPvp = WorldPvpConfig{};
         pvpNumber("MeetingMemorySeconds", WorldPvp.MeetingMemorySeconds, 0, DAY);
         pvpNumber("RecentEnemies", WorldPvp.RecentEnemies, 1, WorldPvp::MAX_RECENT_ENEMIES);
@@ -1253,6 +1254,7 @@ bool PlayerbotAIConfig::Initialize()
         pvpNumber("Book.FightRadiusYards", WorldPvp.FightRadiusYards, 1, MaxRadiusYards);
         pvpNumber("Book.FightRadiusMaxYards", WorldPvp.FightRadiusMaxYards, 1, MaxRadiusYards);
         pvpNumber("Book.MaxFightMinutes", WorldPvp.MaxFightMinutes, 1, MaxPvpMinutes);
+        pvpNumber("Book.EndGraceSeconds", WorldPvp.EndGraceSeconds, 0, MaxGraceSeconds);
         pvpNumber("CalmMinutes", WorldPvp.CalmMinutes, 0, MaxPvpMinutes);
         WorldPvp.TestCommands =
             sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.TestCommands", WorldPvp.TestCommands, false);

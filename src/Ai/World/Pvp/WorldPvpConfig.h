@@ -29,6 +29,9 @@ struct WorldPvpConfig
     uint32_t FightRadiusMaxYards = 150;
     // The safety cap: a fight still in PvP combat after this long ends as stalemate_cap (none runs forever)
     uint32_t MaxFightMinutes = 30;
+    // A fight ends as combat_over once none of its participants has been in PvP combat for this long; combat within
+    // the grace continues the same fight (a short pause, a re-engage)
+    uint32_t EndGraceSeconds = 10;
     // Test switch for `.playerbots fight ready|meet` (labs only)
     bool TestCommands = false;
 

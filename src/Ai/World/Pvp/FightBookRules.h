@@ -200,6 +200,7 @@ struct FightBounds
     float radius = 40.0f;
     float radiusMax = 150.0f;
     uint32_t maxFightMs = 30 * MS_PER_MINUTE;
+    uint32_t endGraceMs = 10 * MS_PER_SECOND;
     uint32_t calmMs = 15 * MS_PER_MINUTE;
 
     static FightBounds From(WorldPvpConfig const& config)
@@ -210,6 +211,7 @@ struct FightBounds
         bounds.radius = static_cast<float>(std::max<uint32_t>(config.FightRadiusYards, 1));
         bounds.radiusMax = std::max(bounds.radius, static_cast<float>(config.FightRadiusMaxYards));
         bounds.maxFightMs = std::max<uint32_t>(config.MaxFightMinutes, 1) * MS_PER_MINUTE;
+        bounds.endGraceMs = config.EndGraceSeconds * MS_PER_SECOND;
         bounds.calmMs = config.CalmMinutes * MS_PER_MINUTE;
         return bounds;
     }
@@ -316,9 +318,10 @@ public:
     }
 
     // Once a second on the map thread. probe(participant) tells whether the participant is still in PvP combat on
-    // this map (false when gone) and may update its x and y. A fight none of whose participants is in PvP combat ends
-    // as combat_over, one older than the safety cap as stalemate_cap; ended fights are moved to `ended` and kept as
-    // calm areas for the calm time.
+    // this map (false when gone) and may update its x and y. A fight none of whose participants has been in PvP
+    // combat for the end grace ends as combat_over, its length running to the last PvP combat (combat within the
+    // grace continues it); one older than the safety cap ends as stalemate_cap. Ended fights are moved to `ended`
+    // and kept as calm areas for the calm time.
     template <typename Probe>
     void Tick(uint32_t nowMs, Probe&& probe, std::vector<Fight>& ended)
     {
@@ -336,14 +339,16 @@ public:
             Reshape(fight);
 
             bool const capped = nowMs - fight.startMs >= _bounds.maxFightMs;
-            if (anyInCombat && !capped)
+            bool const over = !anyInCombat && nowMs - fight.lastHitMs >= _bounds.endGraceMs;
+            if (!over && !capped)
             {
                 ++index;
                 continue;
             }
 
-            fight.endMs = nowMs;
-            fight.cause = anyInCombat ? EndCause::StalemateCap : EndCause::CombatOver;
+            fight.endMs = over ? fight.lastHitMs : nowMs;
+            fight.cause = over ? EndCause::CombatOver : EndCause::StalemateCap;
+            // The calm area counts from the close, so the ring stays in closing order
             EndedFight calm;
             calm.id = fight.id;
             calm.endMs = nowMs;
