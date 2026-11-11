@@ -113,7 +113,8 @@ protected:
     const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
 };
 
-// Chooses the nearest friendly vendor on the bot's map and starts an errand there when the trip is worth it
+// Plans a trip (WorldTravel::PlanTrip): the errands the providers offer go to friendly vendors and quest enders near
+// the bot, each stop only when its errands are worth its detour; starts the trip when it has a stop
 class NewRpgStartErrandsAction : public NewRpgBaseAction
 {
 public:
@@ -121,7 +122,8 @@ public:
     bool Execute(Event event) override;
 };
 
-// Walks to the errand's vendor, sells, buys and repairs there, then goes IDLE
+// Walks the trip's stops; at each it sells, buys and repairs at the vendor and turns in the completed quests whose
+// ender stands there, then goes IDLE
 class NewRpgErrandsAction : public NewRpgBaseAction
 {
 public:
