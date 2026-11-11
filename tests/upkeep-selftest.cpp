@@ -5,7 +5,8 @@
  */
 
 // Standalone check of the upkeep rules (src/Ai/World/Rpg/UpkeepRules.h): the predicate over a table of bots, kinds
-// and shares, the handout share by guid (stable, monotone, near its percent) and the kind table.
+// and shares, the handout share by guid (stable, monotone, near its percent), the kind table and the sick gate of the
+// RPG status pick (a table of status x sick).
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -129,12 +130,59 @@ void CheckKinds()
     Check(std::string_view(Upkeep::KindWord(static_cast<UpkeepKind>(Upkeep::KIND_COUNT))) == "Other",
           "a kind out of range is Other");
 
-    // Only Gold is honest so far (honest travel); every other kind is still handed out
+    // Gold (honest travel), Repair and Resurrect (WU5) are honest; every other kind is still handed out
     size_t honest = 0;
     for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
         honest += rule.honest ? 1 : 0;
-    Check(honest == 1 && Upkeep::IsHonest(UpkeepKind::Gold), "only Gold is honest");
+    Check(honest == 3 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
+              Upkeep::IsHonest(UpkeepKind::Resurrect),
+          "Gold, Repair and Resurrect are honest");
+    Check(!Upkeep::IsHonest(UpkeepKind::Food) && !Upkeep::IsHonest(UpkeepKind::TrainerSpell),
+          "Food and trainer spells are still handed out");
     Check(!Upkeep::IsHonest(static_cast<UpkeepKind>(Upkeep::KIND_COUNT)), "a kind out of range is not honest");
+
+    // The predicate over the flipped kinds' table entries
+    using Upkeep::Granted;
+    for (UpkeepKind const kind : {UpkeepKind::Repair, UpkeepKind::Resurrect})
+    {
+        std::string const word = Upkeep::KindWord(kind);
+        bool const honestKind = Upkeep::IsHonest(kind);
+        Check(!Granted(true, honestKind, 7, 0), word + ": a persistent bot outside the share pays");
+        Check(Granted(true, honestKind, 7, 100), word + ": share 100 keeps the handout");
+        Check(Granted(false, honestKind, 7, 0), word + ": a bot that does not keep its possessions keeps it");
+    }
+}
+
+// NewRpgStatus as PlayerbotAIConfig.h numbers it (NewRpgBaseAction.cpp asserts the fighting ones)
+void CheckSickGate()
+{
+    struct Row
+    {
+        uint32_t status;
+        char const* word;
+        bool fights;
+    };
+    Row const rows[] = {
+        {0, "idle", false},       {1, "go_grind", true},  {2, "go_camp", false}, {3, "wander_random", true},
+        {4, "wander_npc", false}, {5, "do_quest", true},  {6, "flight", false},  {7, "rest", false},
+        {8, "outdoor_pvp", true}, {9, "do_gather", true}, {10, "travel", false}, {11, "errands", false},
+    };
+    std::cout << "Sick gate (status: healthy / sick):\n";
+    for (Row const& row : rows)
+    {
+        bool const healthy = Upkeep::StatusAllowed(row.status, false);
+        bool const sick = Upkeep::StatusAllowed(row.status, true);
+        std::cout << "  " << row.word << ": " << (healthy ? "allowed" : "refused") << " / "
+                  << (sick ? "allowed" : "refused") << "\n";
+        Check(Upkeep::StatusFights(row.status) == row.fights,
+              std::string(row.word) + (row.fights ? " fights" : " does not fight"));
+        Check(healthy, std::string(row.word) + " is open to a healthy bot");
+        Check(sick == !row.fights,
+              std::string(row.word) + (row.fights ? " is closed" : " stays open") + " to a sick bot");
+    }
+    Check(Upkeep::StatusAllowed(7, true) && Upkeep::StatusAllowed(11, true),
+          "a sick bot can always rest or run an errand");
+    Check(!Upkeep::StatusFights(32) && !Upkeep::StatusFights(1000), "a status out of range never fights");
 }
 }  // namespace
 
@@ -143,6 +191,7 @@ int main()
     CheckPredicate();
     CheckShare();
     CheckKinds();
+    CheckSickGate();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

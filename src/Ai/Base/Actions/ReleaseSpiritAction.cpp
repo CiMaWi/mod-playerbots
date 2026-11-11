@@ -18,6 +18,24 @@
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
 #include "Upkeep.h"
+#include "WorldLog.h"
+#include "WorldTravelRules.h"
+
+namespace
+{
+// The death decision row of a persistent bot (upkeep §3.14): the corpse run while runs are left. Once they are used up
+// SpiritHealerAction writes the row as the spirit healer revives the bot
+void LogCorpseRun(PlayerbotAI* botAI, Player* bot, uint32 deathCount)
+{
+    if (bot->InBattleground() || !RandomPlayerbotMgr::HonestTravel() || botAI->HasGameClientMaster() ||
+        WorldTravel::CorpseRunsExhausted(deathCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures))
+        return;
+
+    uint32 const deaths = deathCount / WorldTravel::DEATH_COUNT_PER_DEATH;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "corpse_run", deaths <= 1 ? "first_run" : "retry",
+                       static_cast<float>(deaths));
+}
+}  // namespace
 
 // ReleaseSpiritAction implementation
 bool ReleaseSpiritAction::Execute(Event event)
@@ -50,6 +68,7 @@ bool ReleaseSpiritAction::Execute(Event event)
     botAI->TellMasterNoFacing(message);
 
     IncrementDeathCount();
+    LogCorpseRun(botAI, bot, AI_VALUE(uint32, "death count"));
     if (Upkeep::Granted(bot, UpkeepKind::Repair))
     {
         bot->DurabilityRepairAll(false, 1.0f, false);
@@ -95,6 +114,7 @@ void ReleaseSpiritAction::LogRelease(std::string const& releaseMsg) const
 bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 {
     IncrementDeathCount();
+    LogCorpseRun(botAI, bot, AI_VALUE(uint32, "death count"));
     if (Upkeep::Granted(bot, UpkeepKind::Repair))
     {
         bot->DurabilityRepairAll(false, 1.0f, false);

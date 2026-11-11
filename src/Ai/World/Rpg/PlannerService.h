@@ -35,6 +35,26 @@ void StartPlanner();
 void StopPlanner();
 // Map thread only: the bot as the planner sees it (WT.11)
 Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion);
+
+// The wear of the bot's equipped items, as the snapshot and the repair errand read it (items that never wear skipped)
+struct GearWear
+{
+    std::uint8_t durabilityPercent{100};  // equipped durability over its maximum
+    std::uint8_t lowestPercent{100};      // the most worn equipped item
+    std::uint8_t broken{0};               // equipped items at durability 0
+};
+// Map thread only: one pass over the equipment slots
+GearWear ReadGearWear(Player* bot);
+
+// What DurabilityRepairAll(true, 1.0f, false) charges, the core's formula without a reputation discount: the whole
+// repair and its cheapest worn item (0 when nothing is worn)
+struct RepairPrice
+{
+    std::uint32_t total{0};
+    std::uint32_t cheapest{0};
+};
+// Map thread only: one pass over the items DurabilityRepairAll repairs
+RepairPrice PriceRepair(Player* bot);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due. O(1) unless a snapshot is built
 void PlannerHook(PlayerbotAI* botAI, Player* bot);

@@ -618,6 +618,22 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
     }
 }
 
+// The repair need's due rule (§3.5): an equipped item is broken or the most worn one is below REPAIR_DUE_PERCENT
+constexpr bool RepairDue(std::uint8_t brokenItems, std::uint8_t lowestDurabilityPercent)
+{
+    return brokenItems > 0 || lowestDurabilityPercent < REPAIR_DUE_PERCENT;
+}
+
+// The repair need makes an errand worth a trip of its own (WT3b's errand check, until WT15): it is due and the bot's
+// gold pays at least one worn item. Repair is first in Fund's order, so it gets all the gold; Player::DurabilityRepair
+// repairs an item only when the gold pays it whole, so gold below the cheapest worn item would buy a trip for nothing.
+// After the visit every item left worn costs more than the gold left, so the rule does not send the bot again
+constexpr bool RepairErrandDue(std::uint8_t brokenItems, std::uint8_t lowestDurabilityPercent,
+                               std::uint64_t cheapestItemCopper, std::uint64_t money)
+{
+    return RepairDue(brokenItems, lowestDurabilityPercent) && cheapestItemCopper > 0 && money >= cheapestItemCopper;
+}
+
 // Short gold is spent in the fixed order: each need takes what is left (a bot repairs what it can, learns what it can)
 inline void Fund(NeedList& list)
 {
@@ -646,7 +662,7 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
         need.order = NeedOrder::Repair;
         need.kind = UpkeepKind::Repair;
         need.copper = snapshot.repairCost;
-        need.due = snapshot.brokenItems > 0 || snapshot.lowestDurabilityPercent < REPAIR_DUE_PERCENT;
+        need.due = RepairDue(snapshot.brokenItems, snapshot.lowestDurabilityPercent);
         need.units = 1;
         need.without = "fights with worn or broken gear";
         list.needs.push_back(need);

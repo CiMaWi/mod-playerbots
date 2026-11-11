@@ -56,8 +56,8 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Reagent", false},
     {"Poison", false},      // a rogue's InitConsumables
     {"Consumable", false},  // potions, weapon oils and stones
-    {"Repair", false},
-    {"Resurrect", false},     // in place, or at the spirit healer without sickness and durability loss
+    {"Repair", true},
+    {"Resurrect", true},      // in place, or at the spirit healer without sickness and durability loss
     {"TrainerSpell", false},  // class and trainer spells
     {"WeaponSkill", false},   // InitSkills
     {"Riding", false},        // the riding ranks by level (InitSkills)
@@ -105,10 +105,32 @@ constexpr bool Granted(bool keepsPossessions, bool honest, uint32_t guidCounter,
     return !keepsPossessions || !honest || InShare(guidCounter, sharePercent);
 }
 
+// Resurrection sickness, which the core's spirit healer path casts (Player::ResurrectPlayer): while it lasts a bot does
+// nothing that needs fighting; it rests or runs errands (upkeep plan §3.5, one gate in the RPG status pick until WU16
+// gives the planner "sick until")
+constexpr uint32_t SPELL_RESURRECTION_SICKNESS = 15007;
+
+// The NewRpgStatus values whose activity fights (PlayerbotAIConfig.h; NewRpgBaseAction.cpp asserts them): grinding and
+// the wander that picks a grind target, quests, outdoor PvP and gathering among mobs. Rest, travel, flights, errands
+// and the npc wander (and the camp walk that ends in it) stay open to a sick bot
+constexpr uint32_t RPG_STATUS_GO_GRIND = 1;
+constexpr uint32_t RPG_STATUS_WANDER_RANDOM = 3;
+constexpr uint32_t RPG_STATUS_DO_QUEST = 5;
+constexpr uint32_t RPG_STATUS_OUTDOOR_PVP = 8;
+constexpr uint32_t RPG_STATUS_DO_GATHER = 9;
+constexpr uint32_t RPG_STATUS_FIGHT_MASK = (1u << RPG_STATUS_GO_GRIND) | (1u << RPG_STATUS_WANDER_RANDOM) |
+                                           (1u << RPG_STATUS_DO_QUEST) | (1u << RPG_STATUS_OUTDOOR_PVP) |
+                                           (1u << RPG_STATUS_DO_GATHER);
+
+constexpr bool StatusFights(uint32_t status) { return status < 32 && ((RPG_STATUS_FIGHT_MASK >> status) & 1u) != 0; }
+
+// The status pick's sick gate: a sick bot never enters a status that fights
+constexpr bool StatusAllowed(uint32_t status, bool sick) { return !sick || !StatusFights(status); }
+
 // Event types of honest upkeep (.claude/docs/world-log.md in the hub)
 constexpr char const* EVENT_TRAINER_VISIT = "TrainerVisit";  // spells learned, cost
 constexpr char const* EVENT_RIDING_BOUGHT = "RidingBought";  // rank, cost, mount
-constexpr char const* EVENT_SICK = "Sick";
+constexpr char const* EVENT_SICK = "Sick";                   // src spirit_healer, id the spell, amount its duration ms
 constexpr char const* EVENT_NEED_SHORT = "NeedShort";  // src = the kind word, amount; when a shortfall begins and ends
 constexpr char const* EVENT_FLIGHT_FALL = "FlightFall";
 }  // namespace Upkeep

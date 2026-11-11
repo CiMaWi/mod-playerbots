@@ -45,6 +45,7 @@
 #include "TravelGraph.h"
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
+#include "UpkeepRules.h"
 #include "WaypointMovementGenerator.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
@@ -397,6 +398,15 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return true;
     }
     NewRpgStatus status = info.GetStatus();
+    // Resurrection sickness (upkeep §3.5): a bot in a status that fights leaves it and rests; the status pick keeps
+    // it out of such statuses until the sickness ends
+    if (Upkeep::StatusFights(status) && bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+    {
+        WorldLog::StatusReason const reasonScope("sick");
+        info.ChangeToRest();
+        bot->SetStandState(UNIT_STAND_STATE_SIT);
+        return true;
+    }
     switch (status)
     {
         case RPG_IDLE:
@@ -656,31 +666,56 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     WorldTravel::StampErrandCheck(measure, getMSTime());
     measure.HasVendor = false;
 
-    // The nearest vendor on the bot's map that trades with the bot (startup cache; no route to other maps yet)
+    // The nearest vendor on the bot's map that trades with the bot (startup cache; no route to other maps yet); for
+    // the repair need (upkeep §3.3) the nearest one that repairs
     uint32 const mapId = bot->GetMapId();
     std::vector<TravelMgr::VendorInfo> const& vendors = TravelMgr::instance().GetVendors(mapId);
     uint32 vendorEntry = 0;
     WorldPosition vendorPos;
     float vendorYards = std::numeric_limits<float>::max();
     uint32 refused = 0;
-    for (TravelMgr::VendorInfo const& vendor : vendors)
+    auto const findVendor = [&](bool repairer)
     {
-        float const yards =
-            bot->GetExactDist(vendor.loc.GetPositionX(), vendor.loc.GetPositionY(), vendor.loc.GetPositionZ());
-        if (yards >= vendorYards)
-            continue;
-
-        // The core's interact test (Player::GetNPCIfCanInteractWith): the vendor's reaction must be above Unfriendly.
-        // A template without a reputation faction is judged by the template relation, not refused as Neutral.
-        if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(vendor.factionTemplate), bot) <= REP_UNFRIENDLY)
+        vendorEntry = 0;
+        vendorYards = std::numeric_limits<float>::max();
+        refused = 0;
+        for (TravelMgr::VendorInfo const& vendor : vendors)
         {
-            ++refused;
-            continue;
-        }
+            float const yards =
+                bot->GetExactDist(vendor.loc.GetPositionX(), vendor.loc.GetPositionY(), vendor.loc.GetPositionZ());
+            if (yards >= vendorYards)
+                continue;
 
-        vendorEntry = vendor.entry;
-        vendorPos = WorldPosition(vendor.loc);
-        vendorYards = yards;
+            if (repairer)
+            {
+                CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(vendor.entry);
+                if (!proto || !(proto->npcflag & UNIT_NPC_FLAG_REPAIR))
+                    continue;
+            }
+
+            // The core's interact test (Player::GetNPCIfCanInteractWith): the vendor's reaction must be above
+            // Unfriendly. A template without a reputation faction is judged by the template relation, not refused as
+            // Neutral.
+            if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(vendor.factionTemplate), bot) <=
+                REP_UNFRIENDLY)
+            {
+                ++refused;
+                continue;
+            }
+
+            vendorEntry = vendor.entry;
+            vendorPos = WorldPosition(vendor.loc);
+            vendorYards = yards;
+        }
+    };
+
+    bool repairing = WorldTravel::RepairErrandWanted(bot);
+    findVendor(repairing);
+    if (repairing && !vendorEntry)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_repairer", 0.0f);
+        repairing = false;
+        findVendor(false);
     }
 
     if (!vendorEntry)
@@ -691,7 +726,21 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         return false;
     }
 
-    float const walkMinutes = WorldTravel::WalkMinutes(vendorYards, bot->GetSpeed(MOVE_RUN));
+    float walkMinutes = WorldTravel::WalkMinutes(vendorYards, bot->GetSpeed(MOVE_RUN));
+    if (repairing && walkMinutes > WorldTravel::ERRAND_MAX_WALK_MINUTES)
+    {
+        // Too far for a repair trip: the plain vendor choice, as for a bot without a repairer
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "too_far",
+                           static_cast<float>(Planner::PriceRepair(bot).total));
+        repairing = false;
+        findVendor(false);
+        if (!vendorEntry)
+        {
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "no_vendor", 0.0f);
+            return false;
+        }
+        walkMinutes = WorldTravel::WalkMinutes(vendorYards, bot->GetSpeed(MOVE_RUN));
+    }
     measure.HasVendor = true;
     measure.VendorMapId = mapId;
     measure.VendorX = vendorPos.GetPositionX();
@@ -709,13 +758,21 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
     // The world log's decision row: walk seconds to the vendor, the sellable stacks and the free slots it weighed
+    // The repair need is worth a trip by itself within the walk limit, whatever the bags hold
+    uint32 const repairCopper = repairing ? Planner::PriceRepair(bot).total : 0;
     WorldLogFormat::Alternatives weighed;
-    if (WorldLog::Active())
+    if (WorldLog::Active() && repairing)
+        weighed = {{"repair_copper", static_cast<float>(repairCopper)},
+                   {"lowest_durability", static_cast<float>(Planner::ReadGearWear(bot).lowestPercent)},
+                   {"sellable", static_cast<float>(sellableSlots)}};
+    else if (WorldLog::Active())
         weighed = {{"sellable", static_cast<float>(sellableSlots)}, {"free_slots", static_cast<float>(freeSlots)}};
     float const walkSeconds = walkMinutes * MINUTE;
-    if (!WorldTravel::TripWorthIt(
-            WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], freeSlots,
-                                       sellableSlots, walkMinutes, config.ErrandNextStopMinutes)))
+    bool const repairWorth = repairing;
+    WorldTravel::TripInput const trip =
+        WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], freeSlots,
+                                   sellableSlots, walkMinutes, config.ErrandNextStopMinutes);
+    if (!repairWorth && !WorldTravel::TripWorthIt(trip))
     {
         LOG_DEBUG("playerbots",
                   "[New RPG] {} errands: trip not worth it (vendor {} at {:.0f} yd, {:.1f} walk min, {} sellable, {} "
@@ -726,7 +783,11 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
 
     botAI->rpgInfo.ChangeToErrands(vendorEntry, vendorPos, bot->GetMoney());
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor", "worth_it", walkSeconds, weighed);
+    if (repairWorth)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "repair", "due", static_cast<float>(repairCopper),
+                           weighed);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor", repairWorth ? "repair_due" : "worth_it",
+                       walkSeconds, weighed);
     return true;
 }
 
@@ -779,7 +840,9 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
         botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
 
-    if (vendor->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))
+    // "can repair" wants the whole repair within the money kept for it; gear due for repair gets what the gold pays
+    if (vendor->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) &&
+        (AI_VALUE(bool, "can repair") || WorldTravel::RepairErrandWanted(bot)))
         botAI->DoSpecificAction("repair", Event("repair"), true);
 
     FinishErrands(botAI, true);

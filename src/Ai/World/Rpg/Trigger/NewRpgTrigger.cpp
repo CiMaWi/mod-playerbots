@@ -6,10 +6,12 @@
 
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
+#include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "Timer.h"
+#include "UpkeepNeedRules.h"
 #include "WorldTravelRules.h"
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
@@ -35,14 +37,30 @@ bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
            bot->IsAlive() && !bot->GetGroup() && !bot->GetMap()->Instanceable();
 }
 
+bool WorldTravel::RepairErrandWanted(Player* bot)
+{
+    // The wear first: the price pass runs only for gear that is due
+    Planner::GearWear const wear = Planner::ReadGearWear(bot);
+    if (!UpkeepNeeds::RepairDue(wear.broken, wear.lowestPercent))
+        return false;
+
+    return UpkeepNeeds::RepairErrandDue(wear.broken, wear.lowestPercent, Planner::PriceRepair(bot).cheapest,
+                                        bot->GetMoney());
+}
+
 bool InventoryPressureTrigger::IsActive()
 {
     if (!WorldTravel::ErrandMayStart(botAI))
         return false;
 
+    // Full bags, or the repair need (upkeep §3.3: one call from the errand check), both after the retry time
     WorldTravel::SlotMeasure const& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
-    return WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), getMSTime()) &&
-           sRandomPlayerbotMgr.IsRandomBot(bot);
+    uint32 const nowMs = getMSTime();
+    if (!WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs) &&
+        !(WorldTravel::ErrandRetryOver(measure, nowMs) && WorldTravel::RepairErrandWanted(bot)))
+        return false;
+
+    return sRandomPlayerbotMgr.IsRandomBot(bot);
 }
 
 bool InnBindTrigger::IsActive()

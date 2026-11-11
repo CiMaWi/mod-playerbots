@@ -10,7 +10,8 @@
 // rarely travels, artisan riding for a rich level-80 collector only, the reserve growing towards an expensive level
 // and the shortfall, the unknown pet diet, and gold+currency mounts never priced. Class mounts and Swift Flight Form
 // come with training once the riding rank is known; a collector's want never moves the reserve; a frugal bot never
-// buys a rank and reports a shortfall in the same list.
+// buys a rank and reports a shortfall in the same list. The repair need (WU5): due below 30 % or with a broken item,
+// an errand of its own when the gold pays a worn item and the errand retry is over, and short gold repairs first.
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -349,6 +350,91 @@ void RepairBeforeFood(UpkeepIndex const& index)
     Check(food && food->item == ITEM_GOOD_BREAD, "food is the best bread for the level");
 }
 
+void RepairDueRule()
+{
+    std::cout << "Scenario: the repair need's due rule and the repair errand\n";
+    struct Case
+    {
+        std::uint8_t broken;
+        std::uint8_t lowest;
+        bool due;
+        char const* what;
+    };
+    Case const cases[] = {
+        {0, 29, true, "due below 30 %"},
+        {1, 80, true, "due with a broken item"},
+        {0, 30, false, "not due at 30 % with nothing broken"},
+        {0, 100, false, "not due with unworn gear"},
+    };
+    for (Case const& c : cases)
+    {
+        std::cout << "    broken " << int(c.broken) << ", lowest " << int(c.lowest)
+                  << " %: " << (RepairDue(c.broken, c.lowest) ? "due" : "not due") << "\n";
+        Check(RepairDue(c.broken, c.lowest) == c.due, c.what);
+    }
+
+    struct ErrandCase
+    {
+        std::uint8_t broken;
+        std::uint8_t lowest;
+        std::uint64_t cheapest;
+        std::uint64_t money;
+        bool errand;
+        char const* what;
+    };
+    ErrandCase const errands[] = {
+        {0, 10, 120, 5000, true, "worn gear and the gold for it: an errand"},
+        {1, 0, 120, 120, true, "a broken item and gold for exactly the cheapest item: an errand"},
+        {1, 0, 120, 119, false, "gold below the cheapest worn item: no trip for nothing"},
+        {1, 0, 120, 0, false, "no gold: no errand, the bot keeps playing"},
+        {0, 60, 120, 5000, false, "gear not due: no errand"},
+        {1, 0, 0, 5000, false, "nothing priced: no errand"},
+    };
+    for (ErrandCase const& c : errands)
+    {
+        bool const errand = RepairErrandDue(c.broken, c.lowest, c.cheapest, c.money);
+        std::cout << "    broken " << int(c.broken) << ", lowest " << int(c.lowest) << " %, cheapest item "
+                  << c.cheapest << " c, gold " << c.money << " c: " << (errand ? "errand" : "no errand") << "\n";
+        Check(errand == c.errand, c.what);
+    }
+
+    // The trigger asks RepairErrandDue only after the errand retry time, as the bag errand does
+    WorldTravel::SlotMeasure measure;
+    Check(WorldTravel::ErrandRetryOver(measure, 1000), "never checked: the repair errand may start");
+    WorldTravel::StampErrandCheck(measure, 1000);
+    Check(!WorldTravel::ErrandRetryOver(measure, 1000 + WorldTravel::ERRAND_RETRY_MS - 1),
+          "inside the retry time: the repair errand waits");
+    Check(WorldTravel::ErrandRetryOver(measure, 1000 + WorldTravel::ERRAND_RETRY_MS),
+          "after the retry time: the repair errand may start again");
+    Check(!WorldTravel::ErrandDue(measure, 100, 1000 + WorldTravel::ERRAND_RETRY_MS - 1) &&
+              WorldTravel::ErrandDue(measure, 100, 1000 + WorldTravel::ERRAND_RETRY_MS),
+          "full bags keep the same retry time");
+}
+
+void PartialRepair(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a broken item, gold for a part of the repair, food and training waiting\n";
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 30, 30, 30);
+    bot.brokenItems = 2;
+    bot.lowestDurabilityPercent = 0;
+    bot.repairCost = 450;
+    SetStock(bot, UpkeepStock::Food, 0);
+    NeedList const list = Show("warrior, 30 copper, repair 450 copper, no food", bot, index, Rates(30));
+    Need const* repair = Find(list, NeedOrder::Repair);
+    Need const* food = Find(list, NeedOrder::FoodWater, UpkeepStock::Food);
+    Check(repair && &list.needs.front() == repair && repair->due, "repair is first and due");
+    Check(repair && repair->funded == 30 && repair->funded < repair->copper, "all the gold goes to the repair");
+    Check(food && food->funded == 0, "food waits until the repair is paid");
+    Check(list.shortfall > 0, "the missing gold is a shortfall for the planner");
+
+    bot.brokenItems = 0;
+    bot.lowestDurabilityPercent = 30;
+    NeedList const worn = ComputeNeeds(bot, index, Rates(30));
+    Need const* wornRepair = Find(worn, NeedOrder::Repair);
+    Check(wornRepair && !wornRepair->due && wornRepair->funded == 30,
+          "worn gear at 30 % is a need, not due: it joins a trip that passes and is still funded first");
+}
+
 void AmmoAndWater(UpkeepIndex const& index)
 {
     std::cout << "Scenario: a hunter low on ammo, a mage\n";
@@ -653,6 +739,8 @@ int main()
               << " h at 40, " << RidingHorizonHours(70) << " h at 70, " << RidingHorizonHours(80) << " h at 80\n";
     UpkeepIndex const index = Fixture();
     RepairBeforeFood(index);
+    RepairDueRule();
+    PartialRepair(index);
     AmmoAndWater(index);
     PetDiet(index);
     Training(index);

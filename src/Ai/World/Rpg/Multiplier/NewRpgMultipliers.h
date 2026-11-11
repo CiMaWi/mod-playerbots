@@ -18,4 +18,14 @@ public:
     float GetValue(Action* action) override;
 };
 
+// Drops "attack anything" while the bot has resurrection sickness (upkeep plan 3.5): the generic grind strategy
+// would otherwise start fights in every RPG status, also rest and errands.
+class NewRpgSickMultiplier : public Multiplier
+{
+public:
+    NewRpgSickMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "new rpg sick") {}
+
+    float GetValue(Action* action) override;
+};
+
 #endif

@@ -104,17 +104,13 @@ uint32 RepairCost(Item const* item)
     return std::max<uint32>(uint32(copper * sWorld->getRate(RATE_REPAIRCOST)), 1);
 }
 
-// The items DurabilityRepairAll repairs: equipped, the backpack, the bags themselves and the items in them
-uint32 RepairCostAll(Player* bot)
+void AddRepair(RepairPrice& price, Item const* item)
 {
-    uint32 total = 0;
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        total += RepairCost(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
-    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
-        if (Bag const* bag = bot->GetBagByPos(bagSlot))
-            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-                total += RepairCost(bag->GetItemByPos(static_cast<uint8>(slot)));
-    return total;
+    uint32 const copper = RepairCost(item);
+    if (!copper)
+        return;
+    price.total += copper;
+    price.cheapest = price.cheapest ? std::min(price.cheapest, copper) : copper;
 }
 
 void FillBags(Player* bot, Snapshot& snapshot)
@@ -144,28 +140,11 @@ void FillBags(Player* bot, Snapshot& snapshot)
     }
     snapshot.bagFree = static_cast<uint16>(free);
 
-    uint64 durability = 0;
-    uint64 maxDurability = 0;
-    uint64 lowest = PERCENT;
-    uint32 broken = 0;
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-        {
-            uint32 const current = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
-            uint32 const most = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
-            durability += current;
-            maxDurability += most;
-            if (!most)
-                continue;  // never wears
-            lowest = std::min<uint64>(lowest, static_cast<uint64>(current) * PERCENT / most);
-            if (!current)
-                ++broken;
-        }
-    snapshot.durabilityPercent =
-        static_cast<uint8>(maxDurability ? std::min<uint64>(durability * PERCENT / maxDurability, PERCENT) : PERCENT);
-    snapshot.lowestDurabilityPercent = static_cast<uint8>(lowest);
-    snapshot.brokenItems = static_cast<uint8>(broken);
-    snapshot.repairCost = RepairCostAll(bot);
+    GearWear const wear = ReadGearWear(bot);
+    snapshot.durabilityPercent = wear.durabilityPercent;
+    snapshot.lowestDurabilityPercent = wear.lowestPercent;
+    snapshot.brokenItems = wear.broken;
+    snapshot.repairCost = PriceRepair(bot).total;
 }
 
 void FillQuests(Player* bot, Snapshot& snapshot)
@@ -200,6 +179,46 @@ Snapshot TimedSnapshot(Player* bot, uint32 stateVersion)
     return snapshot;
 }
 }  // namespace
+
+GearWear ReadGearWear(Player* bot)
+{
+    uint64 durability = 0;
+    uint64 maxDurability = 0;
+    uint64 lowest = PERCENT;
+    uint32 broken = 0;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+        {
+            uint32 const current = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+            uint32 const most = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+            durability += current;
+            maxDurability += most;
+            if (!most)
+                continue;  // never wears
+            lowest = std::min<uint64>(lowest, static_cast<uint64>(current) * PERCENT / most);
+            if (!current)
+                ++broken;
+        }
+    GearWear wear;
+    wear.durabilityPercent =
+        static_cast<uint8>(maxDurability ? std::min<uint64>(durability * PERCENT / maxDurability, PERCENT) : PERCENT);
+    wear.lowestPercent = static_cast<uint8>(lowest);
+    wear.broken = static_cast<uint8>(broken);
+    return wear;
+}
+
+// The items DurabilityRepairAll repairs: equipped, the backpack, the bags themselves and the items in them
+RepairPrice PriceRepair(Player* bot)
+{
+    RepairPrice price;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        AddRepair(price, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag const* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                AddRepair(price, bag->GetItemByPos(static_cast<uint8>(slot)));
+    return price;
+}
 
 PlannerPool& Pool()
 {

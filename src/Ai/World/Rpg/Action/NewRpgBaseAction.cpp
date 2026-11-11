@@ -41,6 +41,7 @@
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "UpkeepRules.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
@@ -1147,15 +1148,23 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
 static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_ERRANDS == 11 && RPG_TRAVEL == 10 &&
                   RPG_DO_GATHER == 9 && RPG_REST == 7,
               "WorldLog::RPG_STATUS_WORDS follows NewRpgStatus");
+static_assert(uint32(RPG_GO_GRIND) == Upkeep::RPG_STATUS_GO_GRIND &&
+                  uint32(RPG_WANDER_RANDOM) == Upkeep::RPG_STATUS_WANDER_RANDOM &&
+                  uint32(RPG_DO_QUEST) == Upkeep::RPG_STATUS_DO_QUEST &&
+                  uint32(RPG_OUTDOOR_PVP) == Upkeep::RPG_STATUS_OUTDOOR_PVP &&
+                  uint32(RPG_DO_GATHER) == Upkeep::RPG_STATUS_DO_GATHER && RPG_STATUS_END <= 32,
+              "UpkeepRules.h's fighting statuses follow NewRpgStatus");
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)
 {
     WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
+    // A bot with resurrection sickness picks no status that fights (upkeep §3.5); with none left it rests
+    bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     for (NewRpgStatus status : candidateStatus)
     {
-        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0)
+        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusAllowed(status, sick))
             continue;
 
         if (CheckRpgStatusAvailable(status))
