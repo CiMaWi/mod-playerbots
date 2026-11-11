@@ -17,6 +17,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "StatsWeightCalculator.h"
+#include "Upkeep.h"
 
 namespace
 {
@@ -64,6 +65,9 @@ bool BuyAction::Execute(Event event)
     bool const honestBags = buyUseful && RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) &&
                             !IsRealPlayer(botAI->GetMaster());
     bool boughtBag = false;
+    // A bot not granted them gets its consumables and a hunter's ammo from its shopping list (upkeep §3.6), not here
+    bool const shopsAmmo = bot->getClass() == CLASS_HUNTER && !Upkeep::Granted(bot, UpkeepKind::Ammo);
+    bool const consumablesGranted = Upkeep::Granted(bot, UpkeepKind::Consumable);
     for (GuidVector::iterator i = vendors.begin(); i != vendors.end(); ++i)
     {
         ObjectGuid vendorguid = *i;
@@ -156,6 +160,10 @@ bool BuyAction::Execute(Event event)
                         break;
                     }
 
+                    // Any usage: an ammo upgrade is EQUIP
+                    if (shopsAmmo && proto->Class == ITEM_CLASS_PROJECTILE)
+                        break;
+
                     ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", tItem->item);
 
                     uint32 invType = proto->InventoryType;
@@ -205,7 +213,8 @@ bool BuyAction::Execute(Event event)
                             needMoneyFor = NeedMoneyFor::anything;
                             break;
                         case ITEM_USAGE_USE:
-                            needMoneyFor = NeedMoneyFor::consumables;
+                            if (consumablesGranted)
+                                needMoneyFor = NeedMoneyFor::consumables;
                             break;
                         case ITEM_USAGE_SKILL:
                             needMoneyFor = NeedMoneyFor::tradeskill;

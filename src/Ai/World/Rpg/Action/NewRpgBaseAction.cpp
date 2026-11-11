@@ -41,6 +41,7 @@
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "Upkeep.h"
 #include "UpkeepRules.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
@@ -1160,11 +1161,18 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
-    // A bot with resurrection sickness picks no status that fights (upkeep §3.5); with none left it rests
+    // A bot with resurrection sickness picks no status that fights (upkeep §3.5); with none left it rests. So does a
+    // bot low on health or mana with nothing to eat or drink (no food cheat): it rests without eating (§3.6)
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    bool const hungry = AI_VALUE2(uint8, "health", "self target") < sPlayerbotAIConfig.LowHealth &&
+                        !AI_VALUE2(uint32, "item count", "food");
+    bool const thirsty = AI_VALUE2(bool, "has mana", "self target") &&
+                         AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana &&
+                         !AI_VALUE2(uint32, "item count", "drink");
+    bool const needsRest = (hungry || thirsty) && !bot->IsInCombat() && !Upkeep::FoodCheat(botAI);
     for (NewRpgStatus status : candidateStatus)
     {
-        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusAllowed(status, sick))
+        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusAllowed(status, sick || needsRest))
             continue;
 
         if (CheckRpgStatusAvailable(status))

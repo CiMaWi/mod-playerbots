@@ -208,8 +208,13 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
     bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
     bool had = keepsPossessions && HasHearthstone(bot);
 
-    factory.CleanupConsumables();
-    NoteHearthstoneLoss(bot, had, "cleanup consumables");
+    // The cleanup clears the way for the restock below: a bot not granted it keeps what it bought (the five
+    // consumable kinds are honest together, UpkeepRules.h)
+    if (Upkeep::Granted(bot, UpkeepKind::Consumable, keepsPossessions))
+    {
+        factory.CleanupConsumables();
+        NoteHearthstoneLoss(bot, had, "cleanup consumables");
+    }
 
     Upkeep::HandOut(bot, UpkeepKind::Ammo, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitAmmo(); });
     Upkeep::HandOut(bot, UpkeepKind::Reagent, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitReagents(); });

@@ -8,6 +8,7 @@
 
 #include "CensusMgr.h"
 #include "Player.h"
+#include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 
@@ -25,4 +26,15 @@ bool Upkeep::Granted(Player* bot, UpkeepKind kind, bool keepsPossessions)
 void Upkeep::Note(Player* bot, UpkeepKind kind, char const* source, uint32 id, int64 amount)
 {
     EventLog::Honesty(bot, KindWord(kind), source, id, amount);
+}
+
+bool Upkeep::FoodCheat(PlayerbotAI* botAI)
+{
+    return botAI && botAI->HasCheat(BotCheatMask::food) && Granted(botAI->GetBot(), UpkeepKind::Food);
+}
+
+uint32 Upkeep::EquippedAmmoId(Player const* bot)
+{
+    uint32 const ammo = bot->GetUInt32Value(PLAYER_AMMO_ID);
+    return ammo && bot->HasItemCount(ammo, 1) ? ammo : 0;
 }

@@ -39,6 +39,7 @@
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Trainer.h"
+#include "Upkeep.h"
 #include "UpkeepIndex.h"
 #include "UpkeepNeedRules.h"
 
@@ -448,8 +449,9 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         if (ItemTemplate const* proto = ranged->GetTemplate())
             if (proto->Class == ITEM_CLASS_WEAPON)
                 snapshot.ammoSubClass = AmmoFor(proto->SubClass);
-    // The equipped ammo: the item usage keeps only ammo at least as good, so only that counts and is bought (WU6)
-    if (uint32 const ammo = bot->GetUInt32Value(PLAYER_AMMO_ID))
+    // The equipped ammo: the item usage keeps only ammo at least as good, so only that counts and is bought (WU6);
+    // an empty quiver counts as none equipped (the item usage's own rule)
+    if (uint32 const ammo = Upkeep::EquippedAmmoId(bot))
         if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(ammo))
             snapshot.ammoDamage = AmmoDamage(proto);
 

@@ -995,25 +995,34 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Ammo");
     LOG_DEBUG("playerbots", "Initializing ammo...");
-    InitAmmo();
+    // The consumables are a fresh kit's at a wipe; a keeper's re-randomize leaves what it bought, looted or made, and
+    // only a bot granted the kind (outside the keepers, or in the handout share) gets it again, as that kind's handout
+    auto const consumableKit = [this, wipe, keepsPossessions](UpkeepKind kind, auto&&... inits)
+    {
+        if (wipe)
+            (inits(), ...);
+        else
+            Upkeep::HandOut(bot, kind, keepsPossessions, "factory_randomize", inits...);
+    };
+    consumableKit(UpkeepKind::Ammo, [this] { InitAmmo(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Food");
     LOG_DEBUG("playerbots", "Initializing food...");
-    InitFood();
+    consumableKit(UpkeepKind::Food, [this] { InitFood(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Potions");
     LOG_DEBUG("playerbots", "Initializing potions...");
-    InitPotions();
+    consumableKit(UpkeepKind::Consumable, [this] { InitPotions(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reagents");
     LOG_DEBUG("playerbots", "Initializing reagents...");
-    InitReagents();
+    consumableKit(UpkeepKind::Reagent, [this] { InitReagents(); });
     if (pmo)
         pmo->finish();
 
@@ -1049,7 +1058,9 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Consumable");
     LOG_DEBUG("playerbots", "Initializing consumables...");
-    InitConsumables();
+    // A rogue's consumables are its poisons
+    consumableKit(bot->getClass() == CLASS_ROGUE ? UpkeepKind::Poison : UpkeepKind::Consumable,
+                  [this] { InitConsumables(); });
     if (pmo)
         pmo->finish();
 
@@ -4613,10 +4624,10 @@ std::vector<uint32> PlayerbotFactory::GetCurrentGemsCount()
 
 void PlayerbotFactory::InitFood()
 {
-    if (botAI && botAI->HasCheat(BotCheatMask::food))
-    {
+    // Only a bot that eats without items skips the food: a persistent bot outside the share gets its fresh kit
+    if (Upkeep::FoodCheat(botAI))
         return;
-    }
+
     std::unordered_map<uint32, std::vector<uint32>> items;
     ItemTemplateContainer const* itemTemplateContainer = sObjectMgr->GetItemTemplateStore();
     for (ItemTemplateContainer::const_iterator i = itemTemplateContainer->begin(); i != itemTemplateContainer->end();

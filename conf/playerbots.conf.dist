@@ -664,6 +664,8 @@ Playerbots.AutoGearScoreLimit = 0
 # "raid" (bots use certain cheats implemented into raid strategies)
 # To use multiple cheats, separate them by commas below (e.g., to enable all, use "gold,health,mana,power,raid,taxi")
 # Default: food, taxi, and raid are enabled
+# "food" no longer feeds persistent bots (random bots that keep their possessions under honest travel, outside
+# Playerbots.Upkeep.HandoutShare): they eat and drink what they bought, looted or conjured, and rest without it
 Playerbots.BotCheats = "food,taxi,raid"
 
 # List of attunement quests (comma-separated list of quest IDs) that are automatically completed for all bots.

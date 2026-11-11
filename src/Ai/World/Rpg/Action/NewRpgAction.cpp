@@ -1006,7 +1006,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 
     // The vendor visit of the npc wander: the use measure before anything changes the bags, then sell by worth,
     // repair, a persistent bot's shopping list (upkeep §3.3: repair first, then the stock in its order) and the
-    // generic buy (a bag by worth; until WU7 it still tops consumables up by usage), all paid
+    // generic buy (gear, a bag by worth; consumables and a hunter's ammo only for a bot granted them), all paid
     constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
     bool const shopping =
         RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) && !IsRealPlayer(botAI->GetMaster());

@@ -51,11 +51,11 @@ struct KindRule
 
 constexpr size_t KIND_COUNT = 20;
 constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
-    {"Food", false},  // food and water
-    {"Ammo", false},
-    {"Reagent", false},
-    {"Poison", false},      // a rogue's InitConsumables
-    {"Consumable", false},  // potions, weapon oils and stones
+    {"Food", true},  // food and water
+    {"Ammo", true},
+    {"Reagent", true},
+    {"Poison", true},      // a rogue's InitConsumables
+    {"Consumable", true},  // potions, weapon oils and stones
     {"Repair", true},
     {"Resurrect", true},      // in place, or at the spirit healer without sickness and durability loss
     {"TrainerSpell", false},  // class and trainer spells
