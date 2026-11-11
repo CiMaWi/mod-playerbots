@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <iterator>
 #include <list>
 
@@ -712,6 +713,130 @@ Part LastingPart(Intent operation)
 
 namespace
 {
+// Bump when CatalogueText's layout changes.
+constexpr char const* CatalogueFormat = "catalogue\t1\n";
+constexpr uint64_t FnvOffset = 14695981039346656037ull;
+constexpr uint64_t FnvPrime = 1099511628211ull;
+
+constexpr char const* const AbilityKindWords[] = {"act", "topic"};
+constexpr char const* const ParamKindWords[] = {"unit", "place", "item", "spell", "quest", "choice", "flag", "count"};
+constexpr char const* const PartWords[] = {"none", "movement", "formation", "mana_save", "focus_heal"};
+constexpr char const* const CompletionWords[] = {"at_once", "holds", "arrived", "target_gone", "goal_ends"};
+static_assert(std::size(AbilityKindWords) == static_cast<std::size_t>(AbilityKind::Topic) + 1);
+static_assert(std::size(ParamKindWords) == static_cast<std::size_t>(ParamKind::Count) + 1);
+static_assert(std::size(PartWords) == static_cast<std::size_t>(Part::FocusHeal) + 1);
+static_assert(std::size(CompletionWords) == static_cast<std::size_t>(Completion::GoalEnds) + 1);
+
+template <std::size_t Size, typename Enum>
+char const* WordOf(char const* const (&words)[Size], Enum value)
+{
+    std::size_t const index = static_cast<std::size_t>(value);
+    return index < Size ? words[index] : "";
+}
+
+std::vector<ParamData> ParamsOf(std::span<ParamRow const> params)
+{
+    std::vector<ParamData> data;
+    for (ParamRow const& param : params)
+        data.push_back({param.Name, param.Kind, param.Sentence, {param.Choices.begin(), param.Choices.end()}});
+
+    return data;
+}
+
+RefusalData RefusalOf(Refusal reason)
+{
+    RefusalText const& text = RefusalWords(reason);
+    return {text.Code, text.Word, text.Sentence};
+}
+
+void Line(std::string& text, std::initializer_list<std::string_view> fields)
+{
+    char const* separator = "";
+    for (std::string_view field : fields)
+    {
+        text.append(separator).append(field);
+        separator = "\t";
+    }
+    text.push_back('\n');
+}
+}  // namespace
+
+std::vector<AbilityData> Catalogue()
+{
+    std::vector<AbilityData> catalogue;
+    catalogue.reserve(std::size(Rows) + std::size(TopicTable));
+    for (AbilityRow const& row : Rows)
+    {
+        AbilityData& entry = catalogue.emplace_back();
+        entry.Kind = AbilityKind::Act;
+        entry.Name = row.Name;
+        entry.Sentence = row.Sentence;
+        entry.Params = ParamsOf(row.Params);
+        for (Refusal reason : Common)
+            entry.Refusals.push_back(RefusalOf(reason));
+        for (Refusal reason : row.Refusals)
+            entry.Refusals.push_back(RefusalOf(reason));
+        entry.Lasting = row.Lasting;
+        entry.Done = row.Done;
+        entry.StatePhrase = row.StatePhrase;
+        entry.Event = ActEventType;
+    }
+    for (TopicRow const& row : TopicTable)
+    {
+        AbilityData& entry = catalogue.emplace_back();
+        entry.Kind = AbilityKind::Topic;
+        entry.Name = row.Name;
+        entry.Sentence = row.Sentence;
+        entry.Params = ParamsOf(row.Params);
+        entry.Limit = row.Limit;
+    }
+    return catalogue;
+}
+
+std::string CatalogueText(std::vector<AbilityData> const& catalogue)
+{
+    std::string text = CatalogueFormat;
+    for (AbilityData const& entry : catalogue)
+    {
+        Line(text, {KindWord(entry.Kind), entry.Name, entry.Sentence});
+        for (ParamData const& param : entry.Params)
+        {
+            std::string choices;
+            for (std::string const& choice : param.Choices)
+                choices.append(choices.empty() ? "" : ",").append(choice);
+            Line(text, {"param", param.Name, KindWord(param.Kind), param.Sentence, choices});
+        }
+        for (RefusalData const& refusal : entry.Refusals)
+            Line(text, {"refusal", refusal.Word, refusal.Sentence});
+        Line(text, {"effect", PartWord(entry.Lasting)});
+        Line(text, {"done", CompletionWord(entry.Done)});
+        Line(text, {"state", entry.StatePhrase});
+        Line(text, {"event", entry.Event});
+        Line(text, {"limit", std::to_string(entry.Limit)});
+    }
+    return text;
+}
+
+uint64_t CatalogueHash(std::vector<AbilityData> const& catalogue) { return TextHash(CatalogueText(catalogue)); }
+
+uint64_t TextHash(std::string_view text)
+{
+    uint64_t hash = FnvOffset;
+    for (char c : text)
+    {
+        hash ^= static_cast<uint8_t>(c);
+        hash *= FnvPrime;
+    }
+    return hash;
+}
+
+char const* KindWord(AbilityKind kind) { return WordOf(AbilityKindWords, kind); }
+char const* KindWord(ParamKind kind) { return WordOf(ParamKindWords, kind); }
+char const* PartWord(Part part) { return WordOf(PartWords, part); }
+char const* CompletionWord(Completion done) { return WordOf(CompletionWords, done); }
+
+namespace
+{
 // The common rule, then the row's: its group rule, a unit it names seen by the bot, its check, its effect.
 Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
 {
@@ -782,7 +907,7 @@ Result ExecuteOrder(PostMapJoin const& phase, Order const& order, std::function<
     ActFacts act{phase, order, ai, bot, partner, group, nullptr};
     Result const result = RunRow(*row, act, why);
     // One event for each order the facts admit: applied, failed or refused (id: the refusal, else 0).
-    EventLog::Emit(bot, "BridgeAct", row->Name, static_cast<uint32>(result == Result::Rejected ? why : Refusal::None),
+    EventLog::Emit(bot, ActEventType, row->Name, static_cast<uint32>(result == Result::Rejected ? why : Refusal::None),
                    static_cast<int64>(result));
     return result;
 }

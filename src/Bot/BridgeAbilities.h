@@ -7,15 +7,21 @@
 #ifndef PLAYERBOTS_BRIDGEABILITIES_H
 #define PLAYERBOTS_BRIDGEABILITIES_H
 
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
+#include "BridgeBotState.h"
 #include "BridgeIntentEffect.h"
 
-// The abilities a conversation partner can ask a bot for, one row each: the one list Execute runs. A new verb is one
-// Intent value and one row (with its check and effect) in BridgeAbilities.cpp. Plain data and no game type, so a
-// selftest or a module wire can read the table.
+// The abilities a conversation partner can ask a bot for, one row each: the acts Execute runs and the topics
+// ReadBotStateTopic reads. A new verb is one Intent value and one row (with its check and effect) in
+// BridgeAbilities.cpp; a new topic is one BotStateTopic value, one row below and its reader in BridgeBotState.cpp.
+// Plain data and no game type, so a selftest or a module wire can read the table.
 namespace PlayerbotBridge
 {
 enum class ParamKind : uint8_t
@@ -103,8 +109,13 @@ struct AbilityRow
     Completion Done;
     // 6. How doing it reads in the bot's state; {name} stands for the parameter of that name.
     char const* StatePhrase;
-    // 7. The selftest proves each row applies and gives each listed refusal; the world log has its BridgeAct event.
+    // 7. The selftest proves each row applies and gives each listed refusal. Each applied, failed or refused order
+    //    writes one ActEventType event to the world log: source word Name, id the Refusal (0 when none), amount the
+    //    Result.
 };
+
+// The world log's event type for an order (CensusMgr.h EventLog).
+constexpr char const* ActEventType = "BridgeAct";
 
 // Null for a verb without a row: the four without an effect (IsUnavailable) and any value outside the enum.
 AbilityRow const* FindRow(Intent operation);
@@ -121,6 +132,162 @@ std::span<Refusal const> CommonRefusals();
 RefusalText const& RefusalWords(Refusal reason);
 
 bool Takes(AbilityRow const& row, OrderField field);
+
+// A topic is a read: beyond an online bot (else ReadBotStateTopic answers false) it has no check and no refusal,
+// changes nothing, is done at once, has no state phrase and writes no world-log event. BridgeBotState.h describes
+// its items.
+struct TopicRow
+{
+    BotStateTopic Topic;
+    // 1. The name (the wire's topic word) and one sentence for the model.
+    char const* Name;
+    char const* Sentence;
+    // 2. The argument, for a topic that takes one.
+    std::span<ParamRow const> Params;
+    // The most items the topic returns.
+    std::size_t Limit;
+};
+
+inline constexpr ParamRow RouteParams[] = {
+    {"place", ParamKind::Place, OrderField::PlaceName, "A known place's name, or x,y,z,map.", {}}};
+
+// The topics in the wire's order (BotStateTopic's).
+inline constexpr TopicRow TopicTable[] = {
+    {.Topic = BotStateTopic::Inventory,
+     .Name = "inventory",
+     .Sentence = "The items you wear and carry, equipped ones first.",
+     .Params = {},
+     .Limit = BotStateTopicMaxItems},
+    {.Topic = BotStateTopic::Quests,
+     .Name = "quests",
+     .Sentence = "The quests in your log and how far along each one is.",
+     .Params = {},
+     .Limit = BotStateTopicMaxItems},
+    {.Topic = BotStateTopic::Cooldowns,
+     .Name = "cooldowns",
+     .Sentence = "Your spells still cooling down, longest first.",
+     .Params = {},
+     .Limit = BotStateTopicMaxItems},
+    {.Topic = BotStateTopic::Strategies,
+     .Name = "strategies",
+     .Sentence = "The habits you follow in and out of a fight.",
+     .Params = {},
+     .Limit = BotStateTopicMaxItems},
+    {.Topic = BotStateTopic::Spells,
+     .Name = "spells",
+     .Sentence = "The class spells you know, each at its highest rank.",
+     .Params = {},
+     .Limit = BotStateTopicMaxItems},
+    {.Topic = BotStateTopic::Plan,
+     .Name = "plan",
+     .Sentence = "What you are doing now, why, and your next stops.",
+     .Params = {},
+     .Limit = 8},
+    {.Topic = BotStateTopic::Options,
+     .Name = "options",
+     .Sentence = "The choices you weighed for what to do next.",
+     .Params = {},
+     .Limit = 5},
+    {.Topic = BotStateTopic::Route,
+     .Name = "route",
+     .Sentence = "How you would travel to a place: the whole trip, then each leg.",
+     .Params = RouteParams,
+     .Limit = 12},
+    {.Topic = BotStateTopic::QuestPlan,
+     .Name = "quest_plan",
+     .Sentence = "The quests you plan to take, do and turn in, in walking order.",
+     .Params = {},
+     .Limit = 12},
+    {.Topic = BotStateTopic::Bags,
+     .Name = "bags",
+     .Sentence = "The room left in your bags, and when you plan to sell or buy a bag.",
+     .Params = {},
+     .Limit = 6},
+    {.Topic = BotStateTopic::Places,
+     .Name = "places",
+     .Sentence = "Where your hearthstone is bound and the flight points you know.",
+     .Params = {},
+     .Limit = 24}};
+
+constexpr bool TopicTableInOrder()
+{
+    for (std::size_t index = 0; index < std::size(TopicTable); ++index)
+        if (static_cast<std::size_t>(TopicTable[index].Topic) != index)
+            return false;
+
+    return static_cast<std::size_t>(BotStateTopic::Places) + 1 == std::size(TopicTable);
+}
+static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
+
+// Null for a value outside the enum.
+constexpr TopicRow const* FindTopic(BotStateTopic topic)
+{
+    std::size_t const index = static_cast<std::size_t>(topic);
+    return index < std::size(TopicTable) ? &TopicTable[index] : nullptr;
+}
+
+constexpr TopicRow const* FindTopic(std::string_view name)
+{
+    for (TopicRow const& row : TopicTable)
+        if (name == row.Name)
+            return &row;
+
+    return nullptr;
+}
+
+constexpr std::span<TopicRow const> TopicRows() { return TopicTable; }
+
+// The catalogue: the table as plain values, for the module's wire and the bridge.
+enum class AbilityKind : uint8_t
+{
+    Act,
+    Topic
+};
+
+struct ParamData
+{
+    std::string Name;
+    ParamKind Kind = ParamKind::Unit;
+    std::string Sentence;
+    std::vector<std::string> Choices;
+};
+
+struct RefusalData
+{
+    Refusal Code = Refusal::None;
+    std::string Word;
+    std::string Sentence;
+};
+
+// One row, its parts in the order of AbilityRow; a topic leaves 3 to 7 empty (Lasting None, Done AtOnce).
+struct AbilityData
+{
+    AbilityKind Kind = AbilityKind::Act;
+    std::string Name;
+    std::string Sentence;
+    std::vector<ParamData> Params;
+    std::vector<RefusalData> Refusals;  // An act's: the common ones, then its own, in check order
+    Part Lasting = Part::None;
+    Completion Done = Completion::AtOnce;
+    std::string StatePhrase;
+    std::string Event;      // ActEventType for an act (source word: Name)
+    std::size_t Limit = 0;  // A topic's most items
+};
+
+// The acts in table order, then the topics in table order. Allocates: call it on a request, not per tick.
+std::vector<AbilityData> Catalogue();
+
+// The canonical text of a catalogue: a format line, then per row one line per part in AbilityData's order, the
+// fields tab-separated and enums as words. CatalogueHash is its FNV-1a 64 (TextHash).
+std::string CatalogueText(std::vector<AbilityData> const& catalogue);
+uint64_t CatalogueHash(std::vector<AbilityData> const& catalogue);
+uint64_t TextHash(std::string_view text);
+
+// The snake_case words of the catalogue's enums; empty for a value outside the enum.
+char const* KindWord(AbilityKind kind);
+char const* KindWord(ParamKind kind);
+char const* PartWord(Part part);
+char const* CompletionWord(Completion done);
 }  // namespace PlayerbotBridge
 
 #endif

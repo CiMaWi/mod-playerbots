@@ -75,7 +75,11 @@ change, confirm:
   `src/Bot/BridgeIntentEffect.h` and one row in `src/Bot/BridgeAbilities.cpp` (name, sentence, parameters, group
   rule, check, refusals, effect, lasting part, completion, state phrase). `Execute` does not change; the row's effect
   calls the playerbots action or planner goal, and `tests/bridge-intent-effect-selftest.cpp` must see the row apply
-  and give every refusal it lists.
+  and give every refusal it lists. Something a partner can ask a bot about is a topic: one `BotStateTopic` value
+  (append only) in `src/Bot/BridgeBotState.h`, one row in `TopicTable` (`src/Bot/BridgeAbilities.h`: name,
+  sentence, argument, limit) and its reader in `Readers` (`src/Bot/BridgeBotState.cpp`). `Catalogue()` returns
+  both tables as plain values and `CatalogueHash` their FNV-1a 64; a new row changes the hash, which is how the
+  bridge sees the change.
 - Every `NextAction("...")`, `TriggerNode("...")`, and `engine->addStrategy("...")` matches a
   registered creator exactly. Default strategy sets live in `src/Bot/Factory/AiFactory.cpp`;
   instance strategies are added and removed in balance by `ApplyInstanceStrategies()`.

@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "Bag.h"
+#include "BridgeAbilities.h"
 #include "BridgeBotTopics.h"
 #include "DBCStores.h"
 #include "Group.h"
@@ -222,6 +223,49 @@ void ReadRoute(Player* bot, std::string const& argument, std::vector<BotStateIte
     }
     Topics::RouteItems(in, items);
 }
+
+// What a topic's reader gets
+struct TopicSource
+{
+    Player* Bot;
+    PlayerbotAI* Ai;
+    std::string const& Argument;
+};
+
+using Items = std::vector<BotStateItem>;
+
+struct TopicReader
+{
+    BotStateTopic Topic;
+    void (*Read)(TopicSource const& source, Items& items);
+};
+
+// Each topic row's reader (BridgeAbilities.h TopicTable), in the rows' order
+constexpr TopicReader Readers[] = {
+    {BotStateTopic::Inventory, [](TopicSource const& in, Items& items) { ReadInventory(in.Bot, items); }},
+    {BotStateTopic::Quests, [](TopicSource const& in, Items& items) { ReadQuests(in.Bot, items); }},
+    {BotStateTopic::Cooldowns, [](TopicSource const& in, Items& items) { ReadCooldowns(in.Bot, items); }},
+    {BotStateTopic::Strategies, [](TopicSource const& in, Items& items) { ReadStrategies(in.Ai, items); }},
+    {BotStateTopic::Spells, [](TopicSource const& in, Items& items) { ReadSpells(in.Bot, items); }},
+    {BotStateTopic::Plan,
+     [](TopicSource const& in, Items& items) { Topics::PlanItems(PlanInputOf(in.Bot, in.Ai), items); }},
+    {BotStateTopic::Options,
+     [](TopicSource const& in, Items& items) { Topics::OptionsItems(PlanInputOf(in.Bot, in.Ai), items); }},
+    {BotStateTopic::Route, [](TopicSource const& in, Items& items) { ReadRoute(in.Bot, in.Argument, items); }},
+    {BotStateTopic::QuestPlan,
+     [](TopicSource const& in, Items& items) { Topics::QuestPlanItems(PlanInputOf(in.Bot, in.Ai), items); }},
+    {BotStateTopic::Bags, [](TopicSource const& in, Items& items) { ReadBags(in.Bot, in.Ai, items); }},
+    {BotStateTopic::Places, [](TopicSource const& in, Items& items) { ReadPlaces(in.Bot, items); }}};
+
+constexpr bool ReadersInOrder()
+{
+    for (std::size_t index = 0; index < std::size(Readers); ++index)
+        if (Readers[index].Topic != TopicTable[index].Topic)
+            return false;
+
+    return std::size(Readers) == std::size(TopicTable);
+}
+static_assert(ReadersInOrder(), "one reader per topic row, in the rows' order");
 }  // namespace
 
 bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotStateFacts& facts)
@@ -328,46 +372,10 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::stri
         return false;
     Player* bot = ObjectAccessor::FindConnectedPlayer(botGuid);
     PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
-    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI())
+    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI() || !FindTopic(topic))
         return false;
-    switch (topic)
-    {
-        case BotStateTopic::Inventory:
-            ReadInventory(bot, items);
-            break;
-        case BotStateTopic::Quests:
-            ReadQuests(bot, items);
-            break;
-        case BotStateTopic::Cooldowns:
-            ReadCooldowns(bot, items);
-            break;
-        case BotStateTopic::Strategies:
-            ReadStrategies(ai, items);
-            break;
-        case BotStateTopic::Spells:
-            ReadSpells(bot, items);
-            break;
-        case BotStateTopic::Plan:
-            Topics::PlanItems(PlanInputOf(bot, ai), items);
-            break;
-        case BotStateTopic::Options:
-            Topics::OptionsItems(PlanInputOf(bot, ai), items);
-            break;
-        case BotStateTopic::Route:
-            ReadRoute(bot, argument, items);
-            break;
-        case BotStateTopic::QuestPlan:
-            Topics::QuestPlanItems(PlanInputOf(bot, ai), items);
-            break;
-        case BotStateTopic::Bags:
-            ReadBags(bot, ai, items);
-            break;
-        case BotStateTopic::Places:
-            ReadPlaces(bot, items);
-            break;
-        default:
-            return false;
-    }
+
+    Readers[static_cast<std::size_t>(topic)].Read({bot, ai, argument}, items);
     if (items.size() > BotStateTopicMaxItems)
         items.resize(BotStateTopicMaxItems);
     return true;

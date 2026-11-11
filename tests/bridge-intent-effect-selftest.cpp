@@ -26,8 +26,12 @@
 #include "PositionAction-body.inc"
 // clang-format on
 
+using PlayerbotBridge::AbilityData;
+using PlayerbotBridge::AbilityKind;
 using PlayerbotBridge::AbilityRow;
 using PlayerbotBridge::Baseline;
+using PlayerbotBridge::BotStateTopic;
+using PlayerbotBridge::Completion;
 using PlayerbotBridge::FormationShape;
 using PlayerbotBridge::Intent;
 using PlayerbotBridge::Order;
@@ -38,6 +42,7 @@ using PlayerbotBridge::Part;
 using PlayerbotBridge::Refusal;
 using PlayerbotBridge::RestoreResult;
 using PlayerbotBridge::Result;
+using PlayerbotBridge::TopicRow;
 
 static_assert(!std::is_default_constructible_v<PlayerbotBridge::PostMapJoin>);
 static_assert(!std::is_copy_constructible_v<PlayerbotBridge::PostMapJoin>);
@@ -1699,6 +1704,179 @@ int main()
                   PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
                   !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
               "a row takes the fields of its parameters only");
+
+        // LC1b: the topic rows. Every topic has a row, in the wire's order and under the wire's word
+        // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
+        char const* const wireTopics[] = {"inventory", "quests", "cooldowns",  "strategies", "spells", "plan",
+                                          "options",   "route",  "quest_plan", "bags",       "places"};
+        std::span<TopicRow const> const topics = PlayerbotBridge::TopicRows();
+        Check(topics.size() == std::size(wireTopics), "eleven topic rows");
+        for (std::size_t index = 0; index < topics.size(); ++index)
+        {
+            TopicRow const& row = topics[index];
+            BotStateTopic const topic = static_cast<BotStateTopic>(index);
+            Check(row.Topic == topic && PlayerbotBridge::FindTopic(topic) == &row &&
+                      PlayerbotBridge::FindTopic(row.Name) == &row && std::string_view(row.Name) == wireTopics[index],
+                  "a topic row is found by its topic and by the wire's word for it");
+            Check(filled(row.Sentence) && row.Limit > 0 && row.Limit <= PlayerbotBridge::BotStateTopicMaxItems,
+                  "a topic row has a sentence and a limit within the reader's cap");
+            bool const route = topic == BotStateTopic::Route;
+            Check(row.Params.size() == (route ? 1u : 0u) &&
+                      (!route || (row.Params[0].Kind == ParamKind::Place && filled(row.Params[0].Name) &&
+                                  filled(row.Params[0].Sentence) && row.Params[0].Choices.empty())),
+                  "only route takes an argument, a place");
+            Check(!PlayerbotBridge::FindRow(row.Name) && names.insert(row.Name).second,
+                  "no two rows, act or topic, share a name");
+        }
+        Check(!PlayerbotBridge::FindTopic(static_cast<BotStateTopic>(topics.size())) &&
+                  !PlayerbotBridge::FindTopic("Places") && !PlayerbotBridge::FindTopic(""),
+              "no topic row for a value outside the enum or an unknown name");
+
+        // LC1b: the catalogue is the acts, then the topics, each entry its row's parts as plain values.
+        std::vector<AbilityData> const catalogue = PlayerbotBridge::Catalogue();
+        Check(catalogue.size() == rows.size() + topics.size(), "the catalogue holds every act and topic row");
+        auto const sameParams =
+            [](std::vector<PlayerbotBridge::ParamData> const& data, std::span<ParamRow const> params)
+        {
+            if (data.size() != params.size())
+                return false;
+            for (std::size_t index = 0; index < data.size(); ++index)
+                if (data[index].Name != params[index].Name || data[index].Kind != params[index].Kind ||
+                    data[index].Sentence != params[index].Sentence ||
+                    data[index].Choices !=
+                        std::vector<std::string>(params[index].Choices.begin(), params[index].Choices.end()))
+                    return false;
+            return true;
+        };
+        for (std::size_t index = 0; index < rows.size() && index < catalogue.size(); ++index)
+        {
+            AbilityRow const& row = rows[index];
+            AbilityData const& entry = catalogue[index];
+            std::vector<Refusal> expected(common.begin(), common.end());
+            expected.insert(expected.end(), row.Refusals.begin(), row.Refusals.end());
+            std::vector<Refusal> codes;
+            for (PlayerbotBridge::RefusalData const& refusal : entry.Refusals)
+            {
+                codes.push_back(refusal.Code);
+                Check(refusal.Word == PlayerbotBridge::RefusalWords(refusal.Code).Word &&
+                          refusal.Sentence == PlayerbotBridge::RefusalWords(refusal.Code).Sentence,
+                      "a catalogue refusal carries its word and sentence");
+            }
+            Check(entry.Kind == AbilityKind::Act && entry.Name == row.Name && entry.Sentence == row.Sentence &&
+                      sameParams(entry.Params, row.Params),
+                  "an act's entry has its row's name, sentence and parameters, in table order");
+            Check(codes == expected, "an act's entry has the common refusals, then its row's, in check order");
+            Check(entry.Lasting == row.Lasting && entry.Done == row.Done && entry.StatePhrase == row.StatePhrase &&
+                      entry.Event == "BridgeAct" && entry.Event == PlayerbotBridge::ActEventType && entry.Limit == 0,
+                  "an act's entry has its row's lasting part, completion, state phrase and event");
+        }
+        for (std::size_t index = 0; index < topics.size() && rows.size() + index < catalogue.size(); ++index)
+        {
+            TopicRow const& row = topics[index];
+            AbilityData const& entry = catalogue[rows.size() + index];
+            Check(entry.Kind == AbilityKind::Topic && entry.Name == row.Name && entry.Sentence == row.Sentence &&
+                      sameParams(entry.Params, row.Params) && entry.Limit == row.Limit,
+                  "a topic's entry has its row's name, sentence, argument and limit, in table order");
+            Check(entry.Refusals.empty() && entry.Lasting == Part::None && entry.Done == Completion::AtOnce &&
+                      entry.StatePhrase.empty() && entry.Event.empty(),
+                  "a topic's entry has no refusal, lasting part, state phrase or event");
+        }
+
+        // LC1b: the canonical text and its hash.
+        std::string const text = PlayerbotBridge::CatalogueText(catalogue);
+        auto const plain = [](std::string const& field, char const* forbidden)
+        { return field.find_first_of(forbidden) == std::string::npos; };
+        char const* const breaks = "\t\n";
+        bool fieldsPlain = true;
+        for (AbilityData const& entry : catalogue)
+        {
+            fieldsPlain = fieldsPlain && plain(entry.Name, breaks) && plain(entry.Sentence, breaks) &&
+                          plain(entry.StatePhrase, breaks);
+            for (PlayerbotBridge::ParamData const& param : entry.Params)
+            {
+                fieldsPlain = fieldsPlain && plain(param.Name, breaks) && plain(param.Sentence, breaks);
+                for (std::string const& choice : param.Choices)
+                    fieldsPlain = fieldsPlain && !choice.empty() && plain(choice, "\t\n,");
+            }
+            for (PlayerbotBridge::RefusalData const& refusal : entry.Refusals)
+                fieldsPlain = fieldsPlain && plain(refusal.Word, breaks) && plain(refusal.Sentence, breaks);
+        }
+        Check(fieldsPlain, "no catalogue field holds a tab or line break, nor a choice a comma");
+        std::size_t const lines = static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+        std::size_t expectedLines = 1;
+        for (AbilityData const& entry : catalogue)
+            expectedLines += 6 + entry.Params.size() + entry.Refusals.size();
+        auto const holds = [&text](char const* part) { return text.find(part) != std::string::npos; };
+        Check(text.rfind("catalogue\t1\n", 0) == 0 && holds("\nact\tfollow\t") && holds("\ntopic\tplaces\t") &&
+                  holds("\nparam\ticon\tchoice\tThe raid icon to put on it.\tstar,circle,") &&
+                  holds("\nrefusal\tnot_with_you\tWe are not travelling together.\n") &&
+                  holds("\neffect\tmana_save\n") && holds("\ndone\tgoal_ends\n") &&
+                  holds("\nstate\tattacking {target}\n") && holds("\nevent\tBridgeAct\n") && holds("\nlimit\t24\n") &&
+                  lines == expectedLines,
+              "the catalogue text is its format line, then one line per part, enums as words");
+        Check(PlayerbotBridge::TextHash("") == 0xcbf29ce484222325ull &&
+                  PlayerbotBridge::TextHash("a") == 0xaf63dc4c8601ec8cull &&
+                  PlayerbotBridge::TextHash("foobar") == 0x85944171f73967e8ull,
+              "the text hash is FNV-1a 64");
+        // The words, one past the last value included (empty): the wire reads them.
+        auto const wordsOf = [](auto word, int last)
+        {
+            std::string joined;
+            for (int value = 0; value <= last + 1; ++value)
+                joined.append(word(value)).append(" ");
+            return joined;
+        };
+        Check(wordsOf([](int value) { return PlayerbotBridge::KindWord(static_cast<ParamKind>(value)); },
+                      static_cast<int>(ParamKind::Count)) == "unit place item spell quest choice flag count  " &&
+                  wordsOf([](int value) { return PlayerbotBridge::KindWord(static_cast<AbilityKind>(value)); },
+                          static_cast<int>(AbilityKind::Topic)) == "act topic  " &&
+                  wordsOf([](int value) { return PlayerbotBridge::PartWord(static_cast<Part>(value)); },
+                          static_cast<int>(Part::FocusHeal)) == "none movement formation mana_save focus_heal  " &&
+                  wordsOf([](int value) { return PlayerbotBridge::CompletionWord(static_cast<Completion>(value)); },
+                          static_cast<int>(Completion::GoalEnds)) == "at_once holds arrived target_gone goal_ends  ",
+              "the catalogue's enum words, and none for a value outside an enum");
+        std::uint64_t const hash = PlayerbotBridge::CatalogueHash(catalogue);
+        Check(hash == PlayerbotBridge::TextHash(text) &&
+                  PlayerbotBridge::CatalogueHash(PlayerbotBridge::Catalogue()) == hash,
+              "the catalogue hash is its text's, the same on every call");
+        Check(catalogue.size() > 4 && catalogue[4].Name == "mark" && catalogue[4].Params.size() == 2 &&
+                  catalogue.back().Kind == AbilityKind::Topic,
+              "the hash changes below are made on mark and the last topic");
+        using Change = void (*)(std::vector<AbilityData>&);
+        Change const changes[] = {
+            [](std::vector<AbilityData>& c) { c[4].Kind = AbilityKind::Topic; },
+            [](std::vector<AbilityData>& c) { c[4].Name += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Sentence += "."; },
+            [](std::vector<AbilityData>& c)
+            {
+                c[4].Name += c[4].Sentence.substr(0, 1);
+                c[4].Sentence.erase(0, 1);
+            },
+            [](std::vector<AbilityData>& c) { c[4].Params[0].Name += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Params[0].Kind = ParamKind::Item; },
+            [](std::vector<AbilityData>& c) { c[4].Params[0].Sentence += "."; },
+            [](std::vector<AbilityData>& c) { c[4].Params[1].Choices[0] += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Params[1].Choices.pop_back(); },
+            [](std::vector<AbilityData>& c) { c[4].Params.pop_back(); },
+            [](std::vector<AbilityData>& c) { c[4].Refusals[0].Word += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Refusals[0].Sentence += "."; },
+            [](std::vector<AbilityData>& c) { c[4].Refusals.pop_back(); },
+            [](std::vector<AbilityData>& c) { c[4].Lasting = Part::Formation; },
+            [](std::vector<AbilityData>& c) { c[4].Done = Completion::Holds; },
+            [](std::vector<AbilityData>& c) { c[4].StatePhrase += "."; },
+            [](std::vector<AbilityData>& c) { c[4].Event.clear(); },
+            [](std::vector<AbilityData>& c) { c.back().Limit += 1; },
+            [](std::vector<AbilityData>& c) { std::swap(c[3], c[4]); },
+            [](std::vector<AbilityData>& c) { c.pop_back(); },
+        };
+        for (Change change : changes)
+        {
+            std::vector<AbilityData> changed = catalogue;
+            change(changed);
+            Check(PlayerbotBridge::CatalogueHash(changed) != hash, "every part of every entry changes the hash");
+        }
+        std::cout << "catalogue " << catalogue.size() << " rows, " << text.size() << " bytes, hash " << std::hex << hash
+                  << std::dec << '\n';
     }
     std::cout << "PASS " << checks << " checks\n";
 }
