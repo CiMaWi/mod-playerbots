@@ -39,6 +39,9 @@ constexpr std::uint32_t SUBCLASS_FOOD = 5;
 constexpr std::uint32_t SUBCLASS_CONSUMABLE_OTHER = 8;  // rogue poisons
 constexpr std::uint32_t SUBCLASS_ARROW = 2;
 constexpr std::uint32_t SUBCLASS_BULLET = 3;
+constexpr std::uint32_t SUBCLASS_WEAPON_BOW = 2;  // of the weapon class: the ranged weapons that fire ammo
+constexpr std::uint32_t SUBCLASS_WEAPON_GUN = 3;
+constexpr std::uint32_t SUBCLASS_WEAPON_CROSSBOW = 18;
 constexpr std::uint32_t SUBCLASS_MOUNT = 5;  // of CLASS_MISC
 constexpr std::uint32_t CATEGORY_FOOD = 11;  // Spells[0].SpellCategory, as UseItemAction reads it
 constexpr std::uint32_t CATEGORY_DRINK = 59;
@@ -46,6 +49,15 @@ constexpr std::uint32_t FOOD_TYPE_MAX = 8;  // FoodType 1..8; a pet eats it when
 constexpr std::uint32_t CLASS_MASK_ROGUE = 1u << 3;
 constexpr std::uint32_t CLASS_MASK_PLAYABLE = 0x5FF;  // CLASSMASK_ALL_PLAYABLE
 }  // namespace UpkeepItem
+
+// The ammo a ranged weapon fires: bows and crossbows arrows, guns bullets; 0 for none (thrown weapons, wands, none)
+constexpr std::uint8_t AmmoFor(std::uint32_t weaponSubClass)
+{
+    using namespace UpkeepItem;
+    if (weaponSubClass == SUBCLASS_WEAPON_BOW || weaponSubClass == SUBCLASS_WEAPON_CROSSBOW)
+        return static_cast<std::uint8_t>(SUBCLASS_ARROW);
+    return weaponSubClass == SUBCLASS_WEAPON_GUN ? static_cast<std::uint8_t>(SUBCLASS_BULLET) : 0;
+}
 
 constexpr std::size_t UPKEEP_CLASS_SLOTS = 12;  // class ids 1..11 (MAX_CLASSES)
 constexpr std::size_t UPKEEP_RACE_SLOTS = 12;   // race ids 1..11 (RACE_DRAENEI + 1)
@@ -100,6 +112,7 @@ struct UpkeepItemFacts
     std::uint32_t requiredSkillRank{0};
     std::uint32_t requiredFaction{0};
     std::uint32_t requiredFactionRank{0};
+    std::uint32_t ammoDamage{0};  // projectiles: (Damage[0] min + max) x 1000 / 2, as ItemUsageValue compares ammo
 };
 
 constexpr std::uint8_t DietBit(std::uint32_t foodType)
@@ -198,7 +211,26 @@ struct SpellFit
 struct ReagentUse
 {
     std::uint32_t item{0};
-    std::uint8_t cls{0};  // a class whose trainer spells use it
+    std::uint8_t cls{0};       // a class whose trainer spells use it
+    std::uint32_t spellId{0};  // the class trainer spell that uses it, or teaches the spell that does
+};
+
+// A class trainer spell that uses a reagent: its position in the class's list, so the snapshot's known bits tell
+// whether the bot can cast it (UpkeepIndex::ReagentSpells)
+struct ReagentSpell
+{
+    std::uint8_t cls{0};
+    std::uint32_t item{0};
+    std::uint32_t position{0};
+
+    bool operator<(ReagentSpell const& other) const
+    {
+        return std::tie(cls, item, position) < std::tie(other.cls, other.item, other.position);
+    }
+    bool operator==(ReagentSpell const& other) const
+    {
+        return cls == other.cls && item == other.item && position == other.position;
+    }
 };
 
 // Plain copies of the core's stores, taken on the world thread; the worker reads only these
@@ -281,6 +313,8 @@ struct VendorOffer
     std::uint32_t requiredFactionRank{0};
     std::uint32_t extendedCost{0};  // the vendor row's ItemExtendedCost: 0 = gold only, else currency on top
     std::uint8_t diet{0};           // pet food: its diet bit
+    std::uint8_t subClass{0};       // the item's subclass (ammo: arrow 2, bullet 3)
+    std::uint32_t damage{0};        // ammo: UpkeepItemFacts::ammoDamage
     bool limited{false};            // the vendor restocks it (maxcount); stock is not tracked here
 
     // Payable in gold alone; the needs rules price only these (UpkeepNeedRules.h)
@@ -324,6 +358,7 @@ public:
     std::vector<UpkeepTrainer> trainers;  // by key
     std::array<std::vector<VendorOffer>, UPKEEP_STOCK_COUNT> offers;      // by required level, item, vendor
     std::vector<std::pair<std::uint32_t, std::uint32_t>> reagentClasses;  // item, class mask; by item
+    std::vector<ReagentSpell> reagentSpells;                              // by class, item and position
     UpkeepStats stats;
 
     static UpkeepIndex Build(UpkeepGather&& input)
@@ -364,6 +399,17 @@ public:
         return it != reagentClasses.end() && it->first == item ? it->second : 0;
     }
 
+    // The class's trainer spells that use the reagent, as a range of reagentSpells (empty: none does)
+    std::pair<std::vector<ReagentSpell>::const_iterator, std::vector<ReagentSpell>::const_iterator> ReagentSpells(
+        std::uint8_t cls, std::uint32_t item) const
+    {
+        auto const first = std::lower_bound(reagentSpells.begin(), reagentSpells.end(), ReagentSpell{cls, item, 0});
+        auto last = first;
+        while (last != reagentSpells.end() && last->cls == cls && last->item == item)
+            ++last;
+        return {first, last};
+    }
+
     // StockKinds plus Reagent when the class's trainer spells use the item
     std::uint8_t KindsOf(UpkeepItemFacts const& item, std::uint8_t cls) const
     {
@@ -379,7 +425,8 @@ public:
     {
         std::size_t bytes = sizeof(UpkeepIndex) + lists.capacity() * sizeof(TrainerList) +
                             trainers.capacity() * sizeof(UpkeepTrainer) +
-                            reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>);
+                            reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>) +
+                            reagentSpells.capacity() * sizeof(ReagentSpell);
         for (TrainerList const& list : lists)
             bytes +=
                 list.spells.capacity() * sizeof(TrainerSpell) +
@@ -523,6 +570,17 @@ private:
                 reagentClasses.push_back({item, mask});
         reagentClasses.shrink_to_fit();
         stats.reagentItems = static_cast<std::uint32_t>(reagentClasses.size());
+        // The positions in the class lists (built before) of the spells that use each reagent
+        for (ReagentUse const& use : input.reagents)
+        {
+            TrainerList const* list = use.item && use.spellId ? ClassList(use.cls) : nullptr;
+            std::size_t const position = list ? list->Find(use.spellId) : TrainerList::NOT_FOUND;
+            if (position != TrainerList::NOT_FOUND)
+                reagentSpells.push_back({use.cls, use.item, static_cast<std::uint32_t>(position)});
+        }
+        std::sort(reagentSpells.begin(), reagentSpells.end());
+        reagentSpells.erase(std::unique(reagentSpells.begin(), reagentSpells.end()), reagentSpells.end());
+        reagentSpells.shrink_to_fit();
     }
 
     void BuildOffers(UpkeepGather const& input)
@@ -570,6 +628,8 @@ private:
                 offer.requiredFaction = item.requiredFaction;
                 offer.requiredFactionRank = item.requiredFactionRank;
                 offer.diet = DietBit(item.foodType);
+                offer.subClass = static_cast<std::uint8_t>(item.subClass);
+                offer.damage = item.ammoDamage;
                 offer.limited = sold.maxCount != 0;
                 offer.extendedCost = sold.extendedCost;
                 offers[kind].push_back(offer);

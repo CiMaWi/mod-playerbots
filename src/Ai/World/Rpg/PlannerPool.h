@@ -81,8 +81,11 @@ struct StockItem
 {
     std::uint32_t item{0};
     std::uint32_t count{0};
-    std::uint8_t kinds{0};  // a bit per UpkeepStock
-    std::uint8_t diet{0};   // the pet food bit (FoodType - 1); 0 = no pet eats it
+    std::uint8_t kinds{0};     // a bit per UpkeepStock
+    std::uint8_t diet{0};      // the pet food bit (FoodType - 1); 0 = no pet eats it
+    std::uint8_t subClass{0};  // the item's subclass: ammo counts only the ranged weapon's (arrow 2, bullet 3)
+    std::uint8_t level{0};     // the item's required level: poison counts only the grade the bot keeps
+    std::uint32_t damage{0};   // ammo: its damage x 1000 as the item usage compares it (UpkeepItemFacts::ammoDamage)
 };
 
 struct Goal
@@ -132,6 +135,8 @@ struct Snapshot
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
     std::vector<StockItem> stock;                     // the backpack and every bag, one entry per item id
     std::uint8_t petDiet{0};                          // the hunter pet's diet (bit FoodType - 1); 0 = unknown
+    std::uint8_t ammoSubClass{0};                     // the equipped ranged weapon's ammo: arrow 2, bullet 3; 0 = none
+    std::uint32_t ammoDamage{0};                      // the equipped ammo's (PLAYER_AMMO_ID) damage x 1000; 0 = none
     std::uint32_t upkeepVersion{0};                   // the upkeep index the bit sets align to; 0 = none yet
     std::vector<std::uint64_t> knownClassSpells;      // bit i: the class trainer list's spell i is known
     std::vector<std::uint64_t> knownRidingSpells;     // the same over the riding trainer list

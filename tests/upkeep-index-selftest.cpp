@@ -134,6 +134,7 @@ UpkeepGather Synthetic()
     UpkeepItemFacts water = Item(ITEM_WATER, CLASS_CONSUMABLE, SUBCLASS_FOOD, 5, 1, 1);
     water.spellCategory = CATEGORY_DRINK;
     UpkeepItemFacts arrow = Item(ITEM_ARROW, CLASS_PROJECTILE, SUBCLASS_ARROW, 10, 200, 1);
+    arrow.ammoDamage = 2500;
     UpkeepItemFacts poison = Item(ITEM_POISON, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE_OTHER, 25, 1, 20);
     poison.allowableClass = CLASS_MASK_ROGUE;
     UpkeepItemFacts powder = Item(ITEM_POWDER, CLASS_MISC, 1, 1000, 1, 0);
@@ -157,7 +158,11 @@ UpkeepGather Synthetic()
         {VENDOR_REAGENT, ITEM_HORSE, 0, 0, 0, true},
         {VENDOR_NONE, ITEM_SWORD, 0, 0, 0, true},
     };
-    input.reagents = {{ITEM_POWDER, CLASS_MAGE}, {ITEM_RUNE, CLASS_MAGE}, {ITEM_POWDER, CLASS_MAGE}};
+    // The spells that use them: twice the same, one on no list (no position)
+    input.reagents = {{ITEM_POWDER, CLASS_MAGE, SPELL_ARCANE_INTELLECT},
+                      {ITEM_RUNE, CLASS_MAGE, SPELL_TELEPORT},
+                      {ITEM_POWDER, CLASS_MAGE, SPELL_ARCANE_INTELLECT},
+                      {ITEM_RUNE, CLASS_MAGE, 99999}};
     input.emptyVendors = 1;
     input.missingItems = 2;
     return input;
@@ -256,6 +261,10 @@ void CheckOffers(UpkeepIndex const& index)
               index.Offers(UpkeepStock::PetFood).front().diet == DietBit(4),
           "bread is food and pet food, with its diet bit");
     Check(index.Offers(UpkeepStock::Water).size() == 1, "water listed twice at one vendor is one offer");
+    Check(index.Offers(UpkeepStock::Ammo).size() == 1 &&
+              index.Offers(UpkeepStock::Ammo).front().subClass == UpkeepItem::SUBCLASS_ARROW &&
+              index.Offers(UpkeepStock::Ammo).front().damage == 2500,
+          "the ammo offer carries its subclass (arrows) and damage");
     Check(index.Offers(UpkeepStock::Ammo).size() == 1 && s.currencyOnly == 1,
           "currency-only arrows are skipped and counted");
     VendorOffer const& poison = index.Offers(UpkeepStock::Poison).front();
@@ -283,12 +292,18 @@ void CheckOffers(UpkeepIndex const& index)
     Check(index.KindsOf(powder, CLASS_MAGE) == StockBit(UpkeepStock::Reagent) &&
               index.KindsOf(powder, CLASS_WARRIOR) == 0,
           "a reagent counts as stock only for the classes that use it");
+    auto const [runeFirst, runeLast] = index.ReagentSpells(CLASS_MAGE, ITEM_RUNE);
+    auto const [warriorFirst, warriorLast] = index.ReagentSpells(CLASS_WARRIOR, ITEM_POWDER);
+    TrainerList const* mageList = index.ClassList(CLASS_MAGE);
+    Check(index.reagentSpells.size() == 2 && runeLast - runeFirst == 1 && mageList &&
+              runeFirst->position == mageList->Find(SPELL_TELEPORT) && warriorFirst == warriorLast,
+          "each reagent knows the class list position of the spell that uses it (once; none off the list)");
 }
 
 bool SameIndex(UpkeepIndex const& a, UpkeepIndex const& b)
 {
     if (a.lists.size() != b.lists.size() || a.trainers.size() != b.trainers.size() ||
-        a.reagentClasses != b.reagentClasses)
+        a.reagentClasses != b.reagentClasses || a.reagentSpells != b.reagentSpells)
         return false;
     for (std::size_t i = 0; i < a.lists.size(); ++i)
         if (a.lists[i].kind != b.lists[i].kind || a.lists[i].requirement != b.lists[i].requirement ||

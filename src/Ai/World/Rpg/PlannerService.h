@@ -21,6 +21,11 @@ class ChatHandler;
 class Player;
 class PlayerbotAI;
 
+namespace UpkeepNeeds
+{
+struct NeedRates;
+}
+
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
@@ -113,6 +118,9 @@ std::vector<std::string> UpkeepIndexStatus();
 // pass over the bags and one HasSpell per trainer spell of the class and riding lists (the class-and-race fit and the
 // off-list abilities are precomputed in the index)
 void FillUpkeep(Player* bot, Snapshot& snapshot);
+// The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
+// the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
+UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
 // `playerbots planner needs <bot>`: an online bot's needs, reserve and shortfall (UpkeepNeedRules.h), from a snapshot
 // taken on the world thread while no map updates
 bool HandleNeedsCommand(ChatHandler* handler, char const* args);

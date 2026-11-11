@@ -30,10 +30,13 @@ namespace WorldTravel
 bool ErrandMayStart(PlayerbotAI* botAI);
 // Map thread: the repair need makes an errand worth a trip of its own (UpkeepNeedRules.h RepairErrandDue)
 bool RepairErrandWanted(Player* bot);
+// Map thread: a consumable stock is due and the gold pays a lot of it (UpkeepNeedRules.h StockErrandDue); one
+// snapshot and needs list, for the errand check after its retry time only
+bool StockErrandWanted(PlayerbotAI* botAI);
 }  // namespace WorldTravel
 
-// A persistent bot with full bags or gear due for repair, in an RPG status it may leave, due for an errand check
-// (ItemWorthRules.h ErrandDue and ErrandRetryOver)
+// A persistent bot with full bags, gear due for repair or a due consumable stock, in an RPG status it may leave, due
+// for an errand check (ItemWorthRules.h ErrandDue and ErrandRetryOver)
 class InventoryPressureTrigger : public Trigger
 {
 public:

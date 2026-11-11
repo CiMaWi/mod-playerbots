@@ -51,7 +51,10 @@ static_assert(UpkeepItem::CLASS_CONSUMABLE == ITEM_CLASS_CONSUMABLE &&
                   UpkeepItem::SUBCLASS_CONSUMABLE_OTHER == ITEM_SUBCLASS_CONSUMABLE_OTHER &&
                   UpkeepItem::SUBCLASS_ARROW == ITEM_SUBCLASS_ARROW &&
                   UpkeepItem::SUBCLASS_BULLET == ITEM_SUBCLASS_BULLET &&
-                  UpkeepItem::SUBCLASS_MOUNT == ITEM_SUBCLASS_JUNK_MOUNT,
+                  UpkeepItem::SUBCLASS_MOUNT == ITEM_SUBCLASS_JUNK_MOUNT &&
+                  UpkeepItem::SUBCLASS_WEAPON_BOW == ITEM_SUBCLASS_WEAPON_BOW &&
+                  UpkeepItem::SUBCLASS_WEAPON_GUN == ITEM_SUBCLASS_WEAPON_GUN &&
+                  UpkeepItem::SUBCLASS_WEAPON_CROSSBOW == ITEM_SUBCLASS_WEAPON_CROSSBOW,
               "the upkeep index's item classes are the core's");
 static_assert(UpkeepItem::CLASS_MASK_PLAYABLE == CLASSMASK_ALL_PLAYABLE &&
                   UpkeepItem::CLASS_MASK_ROGUE == 1u << (CLASS_ROGUE - 1) && UPKEEP_CLASS_SLOTS == MAX_CLASSES &&
@@ -91,6 +94,12 @@ uint32 MsSince(std::chrono::steady_clock::time_point start)
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
 }
 
+// Ammo damage as ItemUsageValue::QueryItemUsageForAmmo compares it (the same expression and truncation)
+uint32 AmmoDamage(ItemTemplate const* proto)
+{
+    return static_cast<uint32>((proto->Damage[0].DamageMin + proto->Damage[0].DamageMax) * 1000 / 2);
+}
+
 UpkeepItemFacts FactsOf(ItemTemplate const* proto)
 {
     UpkeepItemFacts facts;
@@ -109,6 +118,7 @@ UpkeepItemFacts FactsOf(ItemTemplate const* proto)
     facts.requiredSkillRank = proto->RequiredSkillRank;
     facts.requiredFaction = proto->RequiredReputationFaction;
     facts.requiredFactionRank = proto->RequiredReputationRank;
+    facts.ammoDamage = proto->Class == ITEM_CLASS_PROJECTILE ? AmmoDamage(proto) : 0;
     return facts;
 }
 
@@ -120,7 +130,7 @@ void AddReagents(uint32 spellId, uint8 cls, std::vector<ReagentUse>& reagents)
         return;
     for (int32 const reagent : info->Reagent)
         if (reagent > 0)
-            reagents.push_back({static_cast<uint32>(reagent), cls});
+            reagents.push_back({static_cast<uint32>(reagent), cls, spellId});
     for (SpellEffectInfo const& effect : info->GetEffects())
     {
         if (effect.Effect != SPELL_EFFECT_LEARN_SPELL || !effect.TriggerSpell)
@@ -128,7 +138,7 @@ void AddReagents(uint32 spellId, uint8 cls, std::vector<ReagentUse>& reagents)
         if (SpellInfo const* learned = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
             for (int32 const reagent : learned->Reagent)
                 if (reagent > 0)
-                    reagents.push_back({static_cast<uint32>(reagent), cls});
+                    reagents.push_back({static_cast<uint32>(reagent), cls, spellId});
     }
 }
 
@@ -290,7 +300,9 @@ void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, ui
             entry.count += item->GetCount();
             return;
         }
-    snapshot.stock.push_back({facts.item, item->GetCount(), kinds, DietBit(facts.foodType)});
+    snapshot.stock.push_back({facts.item, item->GetCount(), kinds, DietBit(facts.foodType),
+                              static_cast<uint8>(facts.subClass),
+                              static_cast<uint8>(std::min<uint32>(facts.requiredLevel, 255)), facts.ammoDamage});
 }
 
 // The known bits (the trainer's Known state: the spell, or every spell it teaches) and the can-learn bits (its
@@ -431,6 +443,15 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
             if (CreatureTemplate const* creature = pet->GetCreatureTemplate())
                 if (CreatureFamilyEntry const* family = sCreatureFamilyStore.LookupEntry(creature->family))
                     snapshot.petDiet = static_cast<uint8>(family->petFoodMask);
+    // The ammo the ranged weapon fires: only that ammo counts and is bought (WU6)
+    if (Item const* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+        if (ItemTemplate const* proto = ranged->GetTemplate())
+            if (proto->Class == ITEM_CLASS_WEAPON)
+                snapshot.ammoSubClass = AmmoFor(proto->SubClass);
+    // The equipped ammo: the item usage keeps only ammo at least as good, so only that counts and is bought (WU6)
+    if (uint32 const ammo = bot->GetUInt32Value(PLAYER_AMMO_ID))
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(ammo))
+            snapshot.ammoDamage = AmmoDamage(proto);
 
     // Every bag counts: quivers, ammo pouches and soul bags hold stock too
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
@@ -458,6 +479,23 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
     if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner snapshot upkeep"))
         row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
+}
+
+UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot)
+{
+    UpkeepNeeds::NeedRates rates;
+    // The bot's own rates over its rolling measure, as a bag purchase reads them (BuyAction.cpp)
+    WorldTravel::SlotMeasure const& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::SlotRates const slotRates = WorldTravel::CurrentRates(
+        measure, sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(snapshot.level)]);
+    rates.earnCopperPerMinute = slotRates.EarnCopperPerMinute;
+    if (snapshot.walkMinutesPerHour > 0.0f)
+        rates.walkMinutesPerHour = snapshot.walkMinutesPerHour;
+    rates.flightMinutesPerHour = snapshot.flightMinutesPerHour;
+    rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
+    UpkeepNeeds::FillUse(rates, measure);
+    return rates;
 }
 
 bool HandleNeedsCommand(ChatHandler* handler, char const* args)
@@ -488,22 +526,28 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     // threads), so no map thread touches the bot while the snapshot reads it, as for every GM command on a player
     PLAYERBOT_CHECK_WORLD_THREAD("planner needs");
     Snapshot const snapshot = FillSnapshot(bot, 0);
-    UpkeepNeeds::NeedRates rates;
-    // The bot's own rates over its rolling measure, as a bag purchase reads them (BuyAction.cpp)
-    WorldTravel::SlotRates const slotRates = WorldTravel::CurrentRates(
-        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(),
-        sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(snapshot.level)]);
-    rates.earnCopperPerMinute = slotRates.EarnCopperPerMinute;
-    if (snapshot.walkMinutesPerHour > 0.0f)
-        rates.walkMinutesPerHour = snapshot.walkMinutesPerHour;
-    rates.flightMinutesPerHour = snapshot.flightMinutesPerHour;
-    rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
+    UpkeepNeeds::NeedRates const rates = BotNeedRates(botAI, snapshot);
     UpkeepNeeds::NeedList const list = UpkeepNeeds::ComputeNeeds(snapshot, *index, rates);
     handler->PSendSysMessage(
         "PLANNER needs of {}: level {}, class {}, e {} c/min, walk {} min/h, durability {}% "
         "(lowest {}%, {} broken), {} stock entries",
         bot->GetName(), snapshot.level, snapshot.cls, rates.earnCopperPerMinute, rates.walkMinutesPerHour,
         snapshot.durabilityPercent, snapshot.lowestDurabilityPercent, snapshot.brokenItems, snapshot.stock.size());
+    // The use per hour the stock targets read: measured from stock falls between vendor visits, else the default
+    std::string use;
+    for (std::size_t kind = 0; kind < UPKEEP_STOCK_COUNT; ++kind)
+    {
+        UpkeepStock const stock = static_cast<UpkeepStock>(kind);
+        if (stock == UpkeepStock::Mount)
+            continue;
+        bool const measured = rates.usePerHour[kind] > 0.0f;
+        use += Acore::StringFormat(
+            "{}{} {:.1f} ({})", use.empty() ? "" : ", ", UPKEEP_STOCK_NAMES[kind],
+            measured ? rates.usePerHour[kind] : UpkeepNeeds::DefaultUsePerHour(snapshot.cls, snapshot.level, stock),
+            measured ? "measured" : "default");
+    }
+    handler->PSendSysMessage("PLANNER   use per hour: {}; ranged ammo subclass {}, equipped ammo damage {:.1f}", use,
+                             snapshot.ammoSubClass, snapshot.ammoDamage / 1000.0f);
     for (std::string const& line : UpkeepNeeds::DescribeAll(list))
         handler->PSendSysMessage("PLANNER   {}", line);
 

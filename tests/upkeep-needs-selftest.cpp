@@ -12,9 +12,14 @@
 // come with training once the riding rank is known; a collector's want never moves the reserve; a frugal bot never
 // buys a rank and reports a shortfall in the same list. The repair need (WU5): due below 30 % or with a broken item,
 // an errand of its own when the gold pays a worn item and the errand retry is over, and short gold repairs first.
+// Shopping (WU6): ammo of the ranged weapon's type only, a due stock as an errand of its own when the gold pays a lot,
+// the shopping list in the fixed order within each need's funded share, the vendor covering the most due needs (the
+// nearest on a tie, repairers only for a repair), and the use per hour measured from stock falls between visits.
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ItemWorthRules.h"
@@ -57,11 +62,20 @@ constexpr std::uint32_t VENDOR_ARMS = 5001;
 constexpr std::uint32_t VENDOR_REAGENT = 5002;
 constexpr std::uint32_t VENDOR_STABLE = 5003;
 constexpr std::uint32_t VENDOR_MOUNTS = 5004;
+constexpr std::uint32_t VENDOR_GENERAL = 5005;  // bread and arrows
+constexpr std::uint32_t VENDOR_POISON = 5006;   // two poisons of one grade, the bigger lot dearer per unit
 
 constexpr std::uint32_t ITEM_BREAD = 4540;
 constexpr std::uint32_t ITEM_GOOD_BREAD = 4542;
 constexpr std::uint32_t ITEM_WATER = 159;
 constexpr std::uint32_t ITEM_ARROW = 2512;
+constexpr std::uint32_t ITEM_RAZOR_ARROW = 3030;   // level 25, at the weapon vendor only
+constexpr std::uint32_t ITEM_TERRORSHAFT = 41586;  // level 75, at the weapon vendor, worse than the level 72 arrows
+constexpr std::uint32_t ITEM_SARONITE = 41165;     // Saronite Razorheads: level 72, the handout's, sold by no vendor
+constexpr std::uint32_t ITEM_INSTANT_1 = 6947;     // level 20
+constexpr std::uint32_t ITEM_INSTANT_2 = 6949;     // level 28, lot 1
+constexpr std::uint32_t ITEM_DEADLY_1 = 2892;      // level 28, lot 5, dearer per unit, at the stable only
+constexpr std::uint32_t ITEM_BULLET = 2516;        // cheaper than the arrows: a bow must still never get them
 constexpr std::uint32_t ITEM_MEAT = 117;
 constexpr std::uint32_t ITEM_POWDER = 17020;
 constexpr std::uint32_t ITEM_HORSE = 2414;
@@ -85,6 +99,15 @@ constexpr std::uint32_t SPELL_SWIFT_FLIGHT_FORM = 40120;
 constexpr std::uint32_t SPELL_FELSTEED = 1710;  // a learn spell
 constexpr std::uint32_t SPELL_FELSTEED_TAUGHT = 5784;
 constexpr std::uint32_t SPELL_DREADSTEED = 23161;
+constexpr std::uint32_t SPELL_MAGE_POWDER = 2010;  // the mage's level 10 spell uses the powder
+
+// Ammo damage x 1000 as the item usage compares it (world DB: Terrorshaft 46.5, Saronite Razorheads 67.5)
+constexpr std::uint32_t DAMAGE_ARROW = 2500;
+constexpr std::uint32_t DAMAGE_BULLET = 2500;
+constexpr std::uint32_t DAMAGE_RAZOR = 7500;
+constexpr std::uint32_t DAMAGE_TERRORSHAFT = 46500;
+constexpr std::uint32_t DAMAGE_SARONITE = 67500;
+constexpr std::uint8_t ARROWS = static_cast<std::uint8_t>(UpkeepItem::SUBCLASS_ARROW);
 
 constexpr std::uint32_t GOLD = COPPER_PER_GOLD;
 constexpr std::uint8_t MEAT_DIET = 1;  // FoodType 1
@@ -180,12 +203,31 @@ UpkeepIndex Fixture()
     UpkeepItemFacts meat = Item(ITEM_MEAT, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
     meat.foodType = 1;
     UpkeepItemFacts arrow = Item(ITEM_ARROW, CLASS_PROJECTILE, SUBCLASS_ARROW, 10, 200, 1);
+    arrow.ammoDamage = DAMAGE_ARROW;
+    UpkeepItemFacts bullet = Item(ITEM_BULLET, CLASS_PROJECTILE, SUBCLASS_BULLET, 5, 200, 1);
+    bullet.ammoDamage = DAMAGE_BULLET;
+    UpkeepItemFacts razor = Item(ITEM_RAZOR_ARROW, CLASS_PROJECTILE, SUBCLASS_ARROW, 10, 200, 25);
+    razor.ammoDamage = DAMAGE_RAZOR;
+    UpkeepItemFacts terrorshaft = Item(ITEM_TERRORSHAFT, CLASS_PROJECTILE, SUBCLASS_ARROW, 1000, 200, 75);
+    terrorshaft.ammoDamage = DAMAGE_TERRORSHAFT;
+    std::vector<UpkeepItemFacts> poisons = {
+        Item(ITEM_INSTANT_1, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE_OTHER, 50, 1, 20),
+        Item(ITEM_INSTANT_2, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE_OTHER, 100, 1, 28),
+        Item(ITEM_DEADLY_1, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE_OTHER, 600, 5, 28)};
+    for (UpkeepItemFacts& poison : poisons)
+        poison.allowableClass = CLASS_MASK_ROGUE;
     UpkeepItemFacts powder = Item(ITEM_POWDER, CLASS_MISC, 1, 1000, 1, 0);
     input.items = {bread,
                    goodBread,
                    water,
                    meat,
                    arrow,
+                   bullet,
+                   razor,
+                   terrorshaft,
+                   poisons[0],
+                   poisons[1],
+                   poisons[2],
                    powder,
                    Mount(ITEM_HORSE, 1 * GOLD, 75, RACE_HUMAN),
                    Mount(ITEM_WOLF, 1 * GOLD / 2, 75, RACE_ORC),
@@ -199,6 +241,14 @@ UpkeepIndex Fixture()
         {VENDOR_INN, ITEM_WATER, 0, 0, 0, true},
         {VENDOR_STABLE, ITEM_MEAT, 0, 0, 0, true},
         {VENDOR_ARMS, ITEM_ARROW, 0, 0, 0, true},
+        {VENDOR_ARMS, ITEM_BULLET, 0, 0, 0, true},
+        {VENDOR_ARMS, ITEM_RAZOR_ARROW, 0, 0, 0, true},
+        {VENDOR_ARMS, ITEM_TERRORSHAFT, 0, 0, 0, true},
+        {VENDOR_POISON, ITEM_INSTANT_1, 0, 0, 0, true},
+        {VENDOR_POISON, ITEM_INSTANT_2, 0, 0, 0, true},
+        {VENDOR_STABLE, ITEM_DEADLY_1, 0, 0, 0, true},
+        {VENDOR_GENERAL, ITEM_BREAD, 0, 0, 0, true},
+        {VENDOR_GENERAL, ITEM_ARROW, 0, 0, 0, true},
         {VENDOR_REAGENT, ITEM_POWDER, 0, 0, 0, true},
         {VENDOR_MOUNTS, ITEM_HORSE, 0, 0, 0, true},
         {VENDOR_MOUNTS, ITEM_WOLF, 0, 0, 0, true},
@@ -207,7 +257,7 @@ UpkeepIndex Fixture()
         {VENDOR_MOUNTS, ITEM_FAST_GRYPHON, 0, 0, 0, true},
         {VENDOR_MOUNTS, ITEM_BADGE_GRYPHON, 0, 0, 2400, true},  // gold and badges
     };
-    input.reagents = {{ITEM_POWDER, CLASS_MAGE}};
+    input.reagents = {{ITEM_POWDER, CLASS_MAGE, SPELL_MAGE_POWDER}};
     UpkeepIndex index = UpkeepIndex::Build(std::move(input));
     index.version = 7;
     return index;
@@ -256,11 +306,19 @@ Snapshot Bot(UpkeepIndex const& index, std::uint8_t cls, std::uint8_t level, std
     }
     if (skill)
         bot.skills.push_back({SKILL_RIDING, skill, skill});
-    // Stock at its target unless a scenario says otherwise: only the need under test shows
+    // Hunters carry a bow with the level 1 arrows equipped; stock at its target unless a scenario says otherwise:
+    // only the need under test shows
+    if (cls == CLASS_HUNTER)
+    {
+        bot.ammoSubClass = ARROWS;
+        bot.ammoDamage = DAMAGE_ARROW;
+    }
     NeedRates const rates;
     for (UpkeepStock const kind : {UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::Ammo, UpkeepStock::Reagent})
         if (std::uint32_t const target = StockTarget(bot, rates, kind))
-            bot.stock.push_back({1000u + static_cast<std::uint32_t>(kind), target, StockBit(kind), 0});
+            bot.stock.push_back({1000u + static_cast<std::uint32_t>(kind), target, StockBit(kind), 0,
+                                 kind == UpkeepStock::Ammo ? bot.ammoSubClass : std::uint8_t(0), level,
+                                 kind == UpkeepStock::Ammo ? bot.ammoDamage : 0u});
     return bot;
 }
 
@@ -277,7 +335,9 @@ void SetStock(Snapshot& bot, UpkeepStock kind, std::uint32_t count, std::uint8_t
     for (StockItem& entry : bot.stock)
         if (entry.kinds & StockBit(kind))
             entry.count = 0;
-    bot.stock.push_back({2000u + static_cast<std::uint32_t>(kind), count, StockBit(kind), diet});
+    bool const ammo = kind == UpkeepStock::Ammo;
+    bot.stock.push_back({2000u + static_cast<std::uint32_t>(kind), count, StockBit(kind), diet,
+                         ammo ? bot.ammoSubClass : std::uint8_t(0), bot.level, ammo ? bot.ammoDamage : 0u});
 }
 
 TraitRules::BotTraits Traits(int thrift, int thoroughness, bool collector)
@@ -469,7 +529,7 @@ void PetDiet(UpkeepIndex const& index)
     NeedList const with = Show("hunter, meat-eating pet, no meat", known, index, Rates(30));
     Need const* petFood = Find(with, NeedOrder::FoodWater, UpkeepStock::PetFood);
     Check(petFood && petFood->due && petFood->item == ITEM_MEAT, "a known diet with no matching food is a need");
-    known.stock.push_back({ITEM_MEAT, 50, StockBit(UpkeepStock::PetFood), MEAT_DIET});
+    known.stock.push_back({ITEM_MEAT, 50, StockBit(UpkeepStock::PetFood), MEAT_DIET, 0});
     Check(!Find(ComputeNeeds(known, index, Rates(30)), NeedOrder::FoodWater, UpkeepStock::PetFood),
           "enough food of the diet: no need");
 }
@@ -720,6 +780,345 @@ void FrugalBuy(UpkeepIndex const& index)
     Check(clean, "it never buys the rank and reports a shortfall in the same list");
 }
 
+void AmmoType(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: the ammo of the ranged weapon (WU3 review NOTE 8)\n";
+    Check(AmmoFor(UpkeepItem::SUBCLASS_WEAPON_BOW) == UpkeepItem::SUBCLASS_ARROW &&
+              AmmoFor(UpkeepItem::SUBCLASS_WEAPON_CROSSBOW) == UpkeepItem::SUBCLASS_ARROW &&
+              AmmoFor(UpkeepItem::SUBCLASS_WEAPON_GUN) == UpkeepItem::SUBCLASS_BULLET && AmmoFor(16) == 0 &&
+              AmmoFor(0) == 0,
+          "bows and crossbows fire arrows, guns bullets, thrown weapons and wands none");
+    Snapshot bow = Bot(index, CLASS_HUNTER, 30, 100 * GOLD, 30);
+    SetStock(bow, UpkeepStock::Ammo, 0);
+    bow.stock.push_back({ITEM_BULLET, 2000, StockBit(UpkeepStock::Ammo), 0,
+                         static_cast<std::uint8_t>(UpkeepItem::SUBCLASS_BULLET), 1, DAMAGE_BULLET});
+    NeedList const bowNeeds = Show("hunter with a bow, 2000 bullets and no arrows", bow, index, Rates(30));
+    Need const* arrows = Find(bowNeeds, NeedOrder::Ammo);
+    Check(Stock(bow, UpkeepStock::Ammo) == 0 && arrows && arrows->due && arrows->item == ITEM_RAZOR_ARROW,
+          "the bullets do not count for a bow and the need buys arrows, not the cheaper bullets");
+    bool bulletOffered = false;
+    for (VendorOffer const& offer : index.Offers(UpkeepStock::Ammo))
+        bulletOffered = bulletOffered || (offer.item == ITEM_BULLET && OfferFits(offer, bow, UpkeepStock::Ammo));
+    Check(!bulletOffered, "no bullet offer fits a hunter with a bow");
+    Snapshot gun = bow;
+    gun.ammoSubClass = static_cast<std::uint8_t>(UpkeepItem::SUBCLASS_BULLET);
+    gun.ammoDamage = DAMAGE_BULLET;
+    Check(Stock(gun, UpkeepStock::Ammo) == 2000 && !Find(ComputeNeeds(gun, index, Rates(30)), NeedOrder::Ammo),
+          "with a gun the bullets count: no ammo need");
+    gun.stock.clear();
+    NeedList const gunNeeds = ComputeNeeds(gun, index, Rates(30));
+    Need const* bullets = Find(gunNeeds, NeedOrder::Ammo);
+    Check(bullets && bullets->item == ITEM_BULLET, "an empty gun hunter buys bullets");
+    Snapshot none = bow;
+    none.ammoSubClass = 0;
+    Check(!Find(ComputeNeeds(none, index, Rates(30)), NeedOrder::Ammo), "a hunter without a ranged weapon: no ammo");
+}
+
+void StockErrand(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a low stock makes the errand due (the same call as the repair)\n";
+    Snapshot hunter = Bot(index, CLASS_HUNTER, 30, 100 * GOLD, 30);
+    SetStock(hunter, UpkeepStock::Ammo, 50);
+    NeedList const due = ComputeNeeds(hunter, index, Rates(30));
+    Need const* ammo = Find(due, NeedOrder::Ammo);
+    Check(ammo && ammo->lotSize == 200 && ammo->lotPrice == 10 && ammo->target > 0 && StockErrandDue(due) &&
+              PayableKinds(due, true) == StockBit(UpkeepStock::Ammo),
+          "ammo below a quarter of its target with gold for a lot: the errand is due");
+    hunter.money = 5;
+    NeedList const poor = ComputeNeeds(hunter, index, Rates(30));
+    Check(!StockErrandDue(poor) && !PayableKinds(poor, true), "gold below one lot: no errand (it would buy nothing)");
+    hunter.money = 100 * GOLD;
+    SetStock(hunter, UpkeepStock::Ammo, StockTarget(hunter, NeedRates{}, UpkeepStock::Ammo) / 2);
+    NeedList const half = ComputeNeeds(hunter, index, Rates(30));
+    Check(Find(half, NeedOrder::Ammo) && !StockErrandDue(half) &&
+              PayableKinds(half, false) == StockBit(UpkeepStock::Ammo),
+          "half the target: a need that joins a trip, no errand of its own");
+}
+
+bool CopperWithinFunded(std::vector<ShopLine> const& lines)
+{
+    bool within = true;
+    for (ShopLine const& line : lines)
+    {
+        within = within && line.copper <= line.funded && line.copper == std::uint64_t(line.lots) * line.lotPrice;
+        std::cout << "    " << Describe(line) << "\n";
+    }
+    return within;
+}
+
+ShopLine const* Line(std::vector<ShopLine> const& lines, UpkeepStock kind)
+{
+    for (ShopLine const& line : lines)
+        if (line.kind == kind)
+            return &line;
+    return nullptr;
+}
+
+void ShoppingOrder(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: two needs and gold for one buy by the order (ammo, food and water, reagents)\n";
+    Snapshot hunter = Bot(index, CLASS_HUNTER, 10, 100 * GOLD, 10);
+    SetStock(hunter, UpkeepStock::Ammo, 0);
+    SetStock(hunter, UpkeepStock::Food, 0);
+    NeedList const rich = ComputeNeeds(hunter, index, Rates(10));
+    Need const* ammoNeed = Find(rich, NeedOrder::Ammo);
+    hunter.money = static_cast<std::uint32_t>(ammoNeed ? ammoNeed->copper : 0) + 20;  // under one 25c bread
+    NeedList const hunterNeeds = Show("hunter, no arrows, no food, gold for the arrows", hunter, index, Rates(10));
+    std::cout << "   at the general goods vendor (bread and arrows):\n";
+    std::vector<ShopLine> const general = PlanShopping(hunterNeeds, index, hunter, VENDOR_GENERAL);
+    bool const within = CopperWithinFunded(general);
+    ShopLine const* ammo = Line(general, UpkeepStock::Ammo);
+    ShopLine const* food = Line(general, UpkeepStock::Food);
+    Check(ammo && ammo->outcome == ShopOutcome::Buy && ammo->item == ITEM_ARROW &&
+              std::uint64_t(ammo->lots) * ammo->lotSize >= ammo->units && food &&
+              food->outcome == ShopOutcome::Budget && food->funded < food->lotPrice,
+          "the hunter buys the arrows to the target; the food gets less than a lot and is skipped for the budget");
+    Check(within, "every line spends at most its funded share, in whole lots");
+    std::vector<ShopLine> const arms = PlanShopping(hunterNeeds, index, hunter, VENDOR_ARMS);
+    Check(Line(arms, UpkeepStock::Food) && Line(arms, UpkeepStock::Food)->outcome == ShopOutcome::NotSold,
+          "the weapon vendor sells no food: not sold");
+
+    Snapshot mage = Bot(index, CLASS_MAGE, 12, 100 * GOLD, 12);
+    mage.stock.clear();
+    NeedRates measured = Rates(12);
+    measured.usePerHour[static_cast<std::size_t>(UpkeepStock::Food)] = 4.0f;  // a mage that eats bought food
+    NeedList const mageRich = ComputeNeeds(mage, index, measured);
+    Need const* foodNeed = Find(mageRich, NeedOrder::FoodWater, UpkeepStock::Food);
+    mage.money = static_cast<std::uint32_t>(foodNeed ? foodNeed->copper : 0) + 500;  // under one 10s powder
+    NeedList const mageNeeds =
+        Show("mage with a measured food use, no food, no powder, gold for the food", mage, index, measured);
+    Need const* reagent = Find(mageNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent);
+    std::cout << "   at the inn, then at the reagent vendor:\n";
+    std::vector<ShopLine> const inn = PlanShopping(mageNeeds, index, mage, VENDOR_INN);
+    std::vector<ShopLine> const reagents = PlanShopping(mageNeeds, index, mage, VENDOR_REAGENT);
+    bool const mageWithin = CopperWithinFunded(inn) && CopperWithinFunded(reagents);
+    Check(foodNeed && foodNeed->target == 12 && Line(inn, UpkeepStock::Food) &&
+              Line(inn, UpkeepStock::Food)->outcome == ShopOutcome::Buy && reagent && reagent->funded == 500 &&
+              Line(reagents, UpkeepStock::Reagent) &&
+              Line(reagents, UpkeepStock::Reagent)->outcome == ShopOutcome::Budget,
+          "the measured use replaces the mage's default 0; food before reagents, the powder skipped for the budget");
+    Check(mageWithin, "the mage's lines spend at most their funded shares");
+}
+
+void KeptItems(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: only what the generic sell keeps (WU6 review finding 1)\n";
+    Snapshot novice = Bot(index, CLASS_MAGE, 9, 100 * GOLD, 9);
+    novice.stock.clear();
+    Snapshot adept = Bot(index, CLASS_MAGE, 12, 100 * GOLD, 12);
+    adept.stock.clear();
+    Snapshot warrior = Bot(index, CLASS_WARRIOR, 30, 100 * GOLD, 30);
+    warrior.stock.clear();
+    NeedList const noviceNeeds = Show("mage before the powder's spell, empty bags", novice, index, Rates(9));
+    NeedList const adeptNeeds = ComputeNeeds(adept, index, Rates(12));
+    NeedList const warriorNeeds = ComputeNeeds(warrior, index, Rates(30));
+    Check(!ReagentKnown(index, novice, ITEM_POWDER) && !Find(noviceNeeds, NeedOrder::ReagentPoison) &&
+              !StockErrandDue(noviceNeeds) &&
+              !VendorCover(index, novice, noviceNeeds, StockBit(UpkeepStock::Reagent)).count(VENDOR_REAGENT),
+          "a reagent of a spell the mage has not learned: no need, no errand, no vendor covers it");
+    Check(ReagentKnown(index, adept, ITEM_POWDER) && Find(adeptNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent),
+          "the spell learned: the reagent need");
+    Check(!Find(warriorNeeds, NeedOrder::ReagentPoison), "a class no spell of which uses the powder: no need");
+
+    Snapshot hunter = Bot(index, CLASS_HUNTER, 30, 100 * GOLD, 30);
+    SetStock(hunter, UpkeepStock::Ammo, 0);
+    hunter.ammoDamage = 0;
+    hunter.stock.push_back({ITEM_ARROW, 2000, StockBit(UpkeepStock::Ammo), 0, ARROWS, 1, DAMAGE_ARROW});
+    NeedList const hunterNeeds =
+        Show("hunter at 30 with 2000 level 1 arrows, no ammo equipped", hunter, index, Rates(30));
+    Need const* ammo = Find(hunterNeeds, NeedOrder::Ammo);
+    std::vector<ShopLine> const general = PlanShopping(hunterNeeds, index, hunter, VENDOR_GENERAL);
+    std::vector<ShopLine> const arms = PlanShopping(hunterNeeds, index, hunter, VENDOR_ARMS);
+    std::unordered_map<std::uint32_t, std::uint8_t> const ammoCover =
+        VendorCover(index, hunter, hunterNeeds, StockBit(UpkeepStock::Ammo));
+    std::cout << "   at the general goods vendor, then at the weapon vendor:\n";
+    bool const within = CopperWithinFunded(general) && CopperWithinFunded(arms);
+    Check(ammo && ammo->due && ammo->keptGrade == DAMAGE_RAZOR && ammo->item == ITEM_RAZOR_ARROW &&
+              Stock(hunter, UpkeepStock::Ammo, ammo->keptGrade) == 0,
+          "none equipped: the best offer's grade, the old arrows do not count, a due need of the new grade");
+    Check(within && Line(general, UpkeepStock::Ammo) &&
+              Line(general, UpkeepStock::Ammo)->outcome == ShopOutcome::NotSold && Line(arms, UpkeepStock::Ammo) &&
+              Line(arms, UpkeepStock::Ammo)->outcome == ShopOutcome::Buy &&
+              Line(arms, UpkeepStock::Ammo)->item == ITEM_RAZOR_ARROW && !ammoCover.count(VENDOR_GENERAL) &&
+              ammoCover.count(VENDOR_ARMS),
+          "the general vendor's old grade is not bought and does not cover the need; the weapon vendor's is");
+
+    Snapshot rogue = Bot(index, CLASS_ROGUE, 30, 300, 30);
+    SetStock(rogue, UpkeepStock::Poison, 0);
+    rogue.stock.push_back({ITEM_INSTANT_1, 10, StockBit(UpkeepStock::Poison), 0, 0, 20});
+    NeedList const rogueNeeds = Show("rogue at 30 with 10 rank 1 poisons, 3 silver", rogue, index, Rates(30));
+    Need const* poison = Find(rogueNeeds, NeedOrder::ReagentPoison, UpkeepStock::Poison);
+    std::unordered_map<std::uint32_t, std::uint8_t> const poisonCover =
+        VendorCover(index, rogue, rogueNeeds, StockBit(UpkeepStock::Poison));
+    std::vector<ShopLine> const stable = PlanShopping(rogueNeeds, index, rogue, VENDOR_STABLE);
+    std::cout << "   at the stable (only the dearer lot of 5 for 6 silver):\n";
+    CopperWithinFunded(stable);
+    Check(poison && poison->item == ITEM_INSTANT_2 && poison->keptGrade == 28 && poison->lotPrice == 100 &&
+              StockPayable(*poison) && poison->funded < 600,
+          "rank 1 does not count beside the rank 2 grade; the gold pays the poison vendor's lot");
+    Check(poisonCover.count(VENDOR_POISON) && !poisonCover.count(VENDOR_STABLE) && Line(stable, UpkeepStock::Poison) &&
+              Line(stable, UpkeepStock::Poison)->outcome == ShopOutcome::Budget,
+          "the stable's own lot is beyond the funded share: it covers nothing (a visit there would skip for budget)");
+    rogue.stock.push_back({ITEM_INSTANT_2, 10, StockBit(UpkeepStock::Poison), 0, 0, 28});
+    Check(!Find(ComputeNeeds(rogue, index, Rates(30)), NeedOrder::ReagentPoison, UpkeepStock::Poison),
+          "10 of the kept grade: no poison need");
+}
+
+void EquippedAmmo(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: ammo judged against the equipped ammo's damage (WU6 review 2 finding 1)\n";
+    Snapshot hunter = Bot(index, CLASS_HUNTER, 76, 1000 * GOLD, 76);
+    SetStock(hunter, UpkeepStock::Ammo, 0);
+    hunter.ammoDamage = DAMAGE_SARONITE;
+    hunter.stock.push_back({ITEM_SARONITE, 6000, StockBit(UpkeepStock::Ammo), 0, ARROWS, 72, DAMAGE_SARONITE});
+    NeedList const needs =
+        Show("hunter at 76 with 6000 equipped level 72 arrows (damage 67.5)", hunter, index, Rates(76));
+    bool terrorshaftFits = false;
+    for (VendorOffer const& offer : index.Offers(UpkeepStock::Ammo))
+        terrorshaftFits =
+            terrorshaftFits || (offer.item == ITEM_TERRORSHAFT && OfferFits(offer, hunter, UpkeepStock::Ammo));
+    Check(!terrorshaftFits && !BestOffer(index, hunter, UpkeepStock::Ammo),
+          "the vendor's level 75 arrows (damage 46.5) are worse than the equipped: no offer fits");
+    Check(Stock(hunter, UpkeepStock::Ammo, KeptGrade(hunter, nullptr, UpkeepStock::Ammo)) == 6000 &&
+              !Find(needs, NeedOrder::Ammo) && !StockErrandDue(needs) &&
+              !VendorCover(index, hunter, needs, StockBit(UpkeepStock::Ammo)).count(VENDOR_ARMS) &&
+              !Line(PlanShopping(needs, index, hunter, VENDOR_ARMS), UpkeepStock::Ammo),
+          "the 6000 count; no ammo need, no errand, no cover, nothing to buy at the weapon vendor");
+    SetStock(hunter, UpkeepStock::Ammo, 0);
+    NeedList const empty = ComputeNeeds(hunter, index, Rates(76));
+    Check(!Find(empty, NeedOrder::Ammo) && !StockErrandDue(empty),
+          "the equipped arrows used up: still no need (the item usage would sell every offer)");
+
+    Snapshot worse = Bot(index, CLASS_HUNTER, 76, 1000 * GOLD, 76);
+    SetStock(worse, UpkeepStock::Ammo, 100);
+    NeedList const worseNeeds =
+        Show("hunter at 76 with 100 equipped level 1 arrows (damage 2.5)", worse, index, Rates(76));
+    Need const* ammo = Find(worseNeeds, NeedOrder::Ammo);
+    std::vector<ShopLine> const arms = PlanShopping(worseNeeds, index, worse, VENDOR_ARMS);
+    std::cout << "   at the weapon vendor:\n";
+    bool const within = CopperWithinFunded(arms);
+    ShopLine const* line = Line(arms, UpkeepStock::Ammo);
+    Check(ammo && ammo->due && ammo->item == ITEM_TERRORSHAFT && ammo->keptGrade == DAMAGE_ARROW &&
+              Stock(worse, UpkeepStock::Ammo, ammo->keptGrade) == 100 &&
+              VendorCover(index, worse, worseNeeds, StockBit(UpkeepStock::Ammo)).count(VENDOR_ARMS) && within && line &&
+              line->outcome == ShopOutcome::Buy && line->item == ITEM_TERRORSHAFT && line->lots > 0,
+          "worse ammo equipped: the due need buys the vendor's better arrows (the item usage equips them)");
+    SetStock(worse, UpkeepStock::Ammo, 6000);
+    Check(!Find(ComputeNeeds(worse, index, Rates(76)), NeedOrder::Ammo),
+          "6000 of the worse equipped arrows count: no need, the better grade waits for a low stock");
+}
+
+void VendorChoice(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: the vendor that covers the due needs\n";
+    Snapshot hunter = Bot(index, CLASS_HUNTER, 10, 100 * GOLD, 10);
+    SetStock(hunter, UpkeepStock::Ammo, 0);
+    SetStock(hunter, UpkeepStock::Food, 0);
+    NeedList const needs = ComputeNeeds(hunter, index, Rates(10));
+    std::uint8_t const due = PayableKinds(needs, true);
+    std::uint8_t const unmet = PayableKinds(needs, false);
+    std::unordered_map<std::uint32_t, std::uint8_t> const cover = VendorCover(index, hunter, needs, due | unmet);
+    auto const covers = [&cover](std::uint32_t entry)
+    {
+        auto const found = cover.find(entry);
+        return found == cover.end() ? std::uint8_t(0) : found->second;
+    };
+    std::uint8_t const ammo = StockBit(UpkeepStock::Ammo);
+    std::uint8_t const food = StockBit(UpkeepStock::Food);
+    Check(due == (ammo | food) && covers(VENDOR_INN) == food && covers(VENDOR_ARMS) == ammo &&
+              covers(VENDOR_GENERAL) == (ammo | food) && !covers(VENDOR_MOUNTS),
+          "the cover: the inn food, the weapon vendor ammo, the general goods vendor both");
+    constexpr float LIMIT = 10.0f;
+    std::vector<VendorCandidate> near = {{VENDOR_INN, 2.0f, false, covers(VENDOR_INN)},
+                                         {VENDOR_ARMS, 3.0f, true, covers(VENDOR_ARMS)},
+                                         {VENDOR_GENERAL, 6.0f, false, covers(VENDOR_GENERAL)},
+                                         {VENDOR_MOUNTS, 1.0f, false, covers(VENDOR_MOUNTS)}};
+    auto const entry = [&near](std::size_t at) { return at == NO_VENDOR ? 0u : near[at].entry; };
+    std::size_t const picked = PickVendor(near, false, due, unmet, LIMIT);
+    std::cout << "    inn 2 min (food), weapons 3 min (ammo, repairs), general 6 min (both), mounts 1 min: "
+              << entry(picked) << "\n";
+    Check(entry(picked) == VENDOR_GENERAL, "the vendor covering both due needs wins over two nearer ones");
+    Check(entry(PickVendor(near, true, due, unmet, LIMIT)) == VENDOR_ARMS,
+          "a repair trip keeps to repairers (WU5), whatever the others cover");
+    near[2].walkMinutes = 12.0f;
+    Check(entry(PickVendor(near, false, due, unmet, LIMIT)) == VENDOR_INN,
+          "the general vendor beyond the walk limit: a tie of one due need each goes to the nearest");
+    Check(entry(PickVendor(near, false, 0, 0, std::numeric_limits<float>::max())) == VENDOR_MOUNTS,
+          "no needs and no limit: the nearest vendor (the bags' errand)");
+    std::vector<VendorCandidate> const far = {{VENDOR_INN, 11.0f, false, food}};
+    Check(PickVendor(far, false, due, unmet, LIMIT) == NO_VENDOR, "nothing within the walk limit: no vendor");
+}
+
+void UseMeasure()
+{
+    std::cout << "Scenario: the use per hour from stock falls between visits\n";
+    WorldTravel::SlotMeasure measure;
+    StockLevels levels;
+    levels.basis.fill(1);
+    std::size_t const ammo = static_cast<std::size_t>(UpkeepStock::Ammo);
+    std::size_t const food = static_cast<std::size_t>(UpkeepStock::Food);
+    std::size_t const water = static_cast<std::size_t>(UpkeepStock::Water);
+    std::size_t const petFood = static_cast<std::size_t>(UpkeepStock::PetFood);
+    std::uint32_t const start = 0xFFFFFFFFu - 60000u;  // the millisecond clock wraps during the test
+    constexpr std::uint32_t MINUTE_MS = 60000;
+    levels.count[ammo] = 1000;
+    levels.count[food] = 20;
+    levels.count[water] = 20;
+    levels.count[petFood] = 40;
+    levels.basis[petFood] = MEAT_DIET;
+    SampleUse(measure, levels, CLASS_HUNTER, 10, start);
+    Check(measure.UsePerHour[ammo] == 0.0f, "no sample before the first visit's end");
+    NoteStock(measure, levels, start);
+    StockLevels later = levels;
+    later.count[ammo] = 900;
+    SampleUse(measure, later, CLASS_HUNTER, 10, start + 5 * MINUTE_MS);
+    Check(measure.UsePerHour[ammo] == 0.0f, "5 minutes apart: no sample (window 10 min)");
+    later.count[ammo] = 700;
+    later.count[food] = 25;    // looted
+    later.count[water] = 18;   // a mage would not count this
+    later.count[petFood] = 0;  // the pet out of sight (mounted): no diet, no pet food counted
+    later.basis[petFood] = 0;
+    SampleUse(measure, later, CLASS_HUNTER, 10, start + 30 * MINUTE_MS);
+    std::cout << "    after 30 min: ammo " << measure.UsePerHour[ammo] << "/h, food " << measure.UsePerHour[food]
+              << "/h, water " << measure.UsePerHour[water] << "/h\n";
+    Check(measure.UsePerHour[ammo] > 599.0f && measure.UsePerHour[ammo] < 601.0f,
+          "300 arrows in 30 minutes across the clock wrap: 600 per hour");
+    Check(measure.UsePerHour[food] == 0.0f && measure.UsePerHour[water] > 3.9f && measure.UsePerHour[water] < 4.1f,
+          "the looted food gives no sample; 2 water in 30 minutes: 4 per hour");
+    Check(measure.UsePerHour[petFood] == 0.0f, "the pet out of sight reads no pet food: no sample (basis 0)");
+    NoteStock(measure, later, start + 30 * MINUTE_MS);
+    StockLevels hour = later;
+    hour.count[ammo] = 500;
+    hour.count[petFood] = 30;
+    hour.basis[petFood] = MEAT_DIET;
+    SampleUse(measure, hour, CLASS_HUNTER, 10, start + 90 * MINUTE_MS);
+    Check(measure.UsePerHour[ammo] > 399.0f && measure.UsePerHour[ammo] < 401.0f,
+          "a second sample (200 per hour) averages with the first: 400 per hour");
+    Check(measure.UsePerHour[petFood] == 0.0f, "the pet back: a rise from the noted 0 gives no sample either");
+    NoteStock(measure, hour, start + 90 * MINUTE_MS);
+    StockLevels gun = hour;
+    gun.count[ammo] = 0;  // a gun now: the arrows no longer count
+    gun.basis[ammo] = static_cast<std::uint32_t>(UpkeepItem::SUBCLASS_BULLET) | 1u << 8;
+    SampleUse(measure, gun, CLASS_HUNTER, 10, start + 120 * MINUTE_MS);
+    Check(measure.UsePerHour[ammo] > 399.0f && measure.UsePerHour[ammo] < 401.0f,
+          "the ranged weapon changed type: the arrows' fall to 0 gives no sample");
+    WorldTravel::SlotMeasure mage;
+    NoteStock(mage, levels, start);
+    SampleUse(mage, later, CLASS_MAGE, 10, start + 30 * MINUTE_MS);
+    Check(mage.UsePerHour[water] == 0.0f && mage.UsePerHour[ammo] == 0.0f,
+          "a mage's water and ammo are not measured (no default use)");
+    Snapshot bot;
+    bot.cls = CLASS_HUNTER;
+    bot.level = 10;
+    bot.ammoSubClass = static_cast<std::uint8_t>(UpkeepItem::SUBCLASS_ARROW);
+    NeedRates rates;
+    std::uint32_t const byDefault = StockTarget(bot, rates, UpkeepStock::Ammo);
+    FillUse(rates, measure);
+    std::uint32_t const byMeasure = StockTarget(bot, rates, UpkeepStock::Ammo);
+    std::cout << "    ammo target: " << byDefault << " by default, " << byMeasure << " measured\n";
+    Check(byDefault == 600 && byMeasure == 1200, "the measured use replaces the default in the target (3 h)");
+}
+
 void StaleBits(UpkeepIndex const& index)
 {
     std::cout << "Scenario: a snapshot of an older index\n";
@@ -752,6 +1151,13 @@ int main()
     WantNoFlip(index);
     FrugalBuy(index);
     StaleBits(index);
+    AmmoType(index);
+    KeptItems(index);
+    EquippedAmmo(index);
+    StockErrand(index);
+    ShoppingOrder(index);
+    VendorChoice(index);
+    UseMeasure();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

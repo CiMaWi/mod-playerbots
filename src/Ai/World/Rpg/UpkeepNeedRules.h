@@ -9,11 +9,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ItemWorthRules.h"
@@ -126,6 +129,10 @@ struct Need
     std::uint32_t vendor{0};                // a vendor entry that sells it (0 = any repairer)
     std::uint32_t trainer{0};               // a trainer key that teaches it
     std::uint32_t levelsBehind{0};          // training: levels since the oldest waiting spell
+    std::uint32_t target{0};                // consumables: the stock target
+    std::uint32_t lotSize{1};               // consumables: the best offer's lot (buyCount) ...
+    std::uint32_t lotPrice{0};              // ... and its price
+    std::uint32_t keptGrade{0};             // ammo and poison: the grade the bot keeps (KeptGrade)
     char const* without{""};                // what going without costs the bot
 };
 
@@ -254,10 +261,15 @@ inline float TrainingSpan(float thoroughness)
     return TRAINING_SPAN_LEVELS + (TRAINING_SPAN_LEVELS - TRAINING_SPAN_CARELESS) * thoroughness;
 }
 
-// The vendor offers a bot may buy for a stock kind: gold only, its level, class, race, skill; no reputation rows
+// The vendor offers a bot may buy for a stock kind: gold only, its level, class, race, skill; no reputation rows;
+// ammo of the ranged weapon's type (arrows for bows and crossbows, bullets for guns) and at least as good as the
+// equipped ammo (the item usage sells worse ammo: ItemUsageValue::QueryItemUsageForAmmo)
 inline bool OfferFits(VendorOffer const& offer, Snapshot const& snapshot, UpkeepStock kind)
 {
     if (!offer.GoldOnly() || offer.requiredLevel > snapshot.level || offer.requiredFaction)
+        return false;
+    if (kind == UpkeepStock::Ammo &&
+        (!snapshot.ammoSubClass || offer.subClass != snapshot.ammoSubClass || offer.damage < snapshot.ammoDamage))
         return false;
     if (offer.requiredSkill && SkillValue(snapshot, offer.requiredSkill) < offer.requiredSkillRank)
         return false;
@@ -268,35 +280,90 @@ inline bool OfferFits(VendorOffer const& offer, Snapshot const& snapshot, Upkeep
     return kind != UpkeepStock::PetFood || (offer.diet & snapshot.petDiet);
 }
 
-// The best item for the bot's level (the highest required level), the cheapest per unit among those
-inline VendorOffer const* BestOffer(UpkeepIndex const& index, Snapshot const& snapshot, UpkeepStock kind)
+// The snapshot's bit sets align to this index
+inline bool BitsAlign(UpkeepIndex const& index, Snapshot const& snapshot)
+{
+    return snapshot.upkeepVersion && snapshot.upkeepVersion == index.version;
+}
+
+// A reagent of a class spell the bot knows (the index's reagent spells against the snapshot's known bits). The
+// generic sell keeps only the reagents of spells the bot has (ItemUsageValue::IsItemNeededForUsefullSpell): one for a
+// spell not learned yet would be sold at the next visit
+inline bool ReagentKnown(UpkeepIndex const& index, Snapshot const& snapshot, std::uint32_t item)
+{
+    if (!BitsAlign(index, snapshot))
+        return false;
+    auto const [first, last] = index.ReagentSpells(snapshot.cls, item);
+    for (auto it = first; it != last; ++it)
+        if (Planner::HasSpellBit(snapshot.knownClassSpells, it->position))
+            return true;
+    return false;
+}
+
+// OfferFits, and a reagent only for a spell the bot knows
+inline bool OfferUsable(UpkeepIndex const& index, VendorOffer const& offer, Snapshot const& snapshot, UpkeepStock kind)
+{
+    return OfferFits(offer, snapshot, kind) &&
+           (kind != UpkeepStock::Reagent || ReagentKnown(index, snapshot, offer.item));
+}
+
+// The better offer for the bot's level: the higher required level, then the cheaper per unit
+inline bool BetterOffer(VendorOffer const& offer, VendorOffer const* best)
+{
+    if (!best || offer.requiredLevel > best->requiredLevel)
+        return true;
+    // Cheaper per unit: price / count below the best's, cross-multiplied
+    return offer.requiredLevel == best->requiredLevel &&
+           static_cast<std::uint64_t>(offer.buyPrice) * best->buyCount <
+               static_cast<std::uint64_t>(best->buyPrice) * offer.buyCount;
+}
+
+// The best item for the bot's level (BetterOffer) among the usable offers; at one vendor entry when vendorEntry is set
+inline VendorOffer const* BestOffer(UpkeepIndex const& index, Snapshot const& snapshot, UpkeepStock kind,
+                                    std::uint32_t vendorEntry = 0)
 {
     VendorOffer const* best = nullptr;
     for (VendorOffer const& offer : index.Offers(kind))
-    {
-        if (!OfferFits(offer, snapshot, kind))
-            continue;
-        if (!best || offer.requiredLevel > best->requiredLevel)
-        {
+        if ((!vendorEntry || offer.vendorEntry == vendorEntry) && BetterOffer(offer, best) &&
+            OfferUsable(index, offer, snapshot, kind))
             best = &offer;
-            continue;
-        }
-        // Cheaper per unit: price / count below the best's, cross-multiplied
-        if (offer.requiredLevel == best->requiredLevel &&
-            static_cast<std::uint64_t>(offer.buyPrice) * best->buyCount <
-                static_cast<std::uint64_t>(best->buyPrice) * offer.buyCount)
-            best = &offer;
-    }
     return best;
 }
 
-inline std::uint32_t Stock(Snapshot const& snapshot, UpkeepStock kind)
+// The grades the generic sell keeps by (ItemUsageValue): ammo by its damage, poison by its level (IsBestPoison keeps
+// the highest item level of a family; a rogue poison's item level is its required level); 0 for the other kinds
+inline bool Graded(UpkeepStock kind) { return kind == UpkeepStock::Ammo || kind == UpkeepStock::Poison; }
+
+inline std::uint32_t OfferGrade(VendorOffer const& offer, UpkeepStock kind)
 {
-    if (kind != UpkeepStock::PetFood)
-        return snapshot.StockCount(Planner::StockBit(kind));
+    return kind == UpkeepStock::Ammo ? offer.damage : kind == UpkeepStock::Poison ? offer.requiredLevel : 0;
+}
+
+inline std::uint32_t StockGrade(Planner::StockItem const& entry, UpkeepStock kind)
+{
+    return kind == UpkeepStock::Ammo ? entry.damage : kind == UpkeepStock::Poison ? entry.level : 0;
+}
+
+// The grade the bot keeps of ammo and poison: only items of at least this grade count as stock and are bought, as
+// the generic sell sells ammo worse than the equipped ammo and every poison but the best of its family. Ammo: the
+// equipped ammo's damage (OfferFits refuses worse offers, so equipped ammo better than every offer leaves no need),
+// with none equipped the best offer's; poison: the best offer's level; 0 (every item) for the other kinds
+inline std::uint32_t KeptGrade(Snapshot const& snapshot, VendorOffer const* best, UpkeepStock kind)
+{
+    if (kind == UpkeepStock::Ammo && snapshot.ammoDamage)
+        return snapshot.ammoDamage;
+    return best ? OfferGrade(*best, kind) : 0;
+}
+
+// Pet food counts what the pet eats, ammo only what the ranged weapon fires; nothing below minGrade (KeptGrade)
+inline std::uint32_t Stock(Snapshot const& snapshot, UpkeepStock kind, std::uint32_t minGrade = 0)
+{
+    std::uint8_t const bit = Planner::StockBit(kind);
     std::uint32_t total = 0;
     for (Planner::StockItem const& entry : snapshot.stock)
-        if ((entry.kinds & Planner::StockBit(kind)) && (entry.diet & snapshot.petDiet))
+        if ((entry.kinds & bit) && StockGrade(entry, kind) >= minGrade &&
+            (kind != UpkeepStock::PetFood || (entry.diet & snapshot.petDiet)) &&
+            (kind != UpkeepStock::Ammo || (snapshot.ammoSubClass && entry.subClass == snapshot.ammoSubClass)))
             total += entry.count;
     return total;
 }
@@ -356,19 +423,28 @@ inline UpkeepKind KindOf(UpkeepStock kind)
     }
 }
 
-// A consumable the bot is below its target on; a pet's diet of 0 is unknown, never "eats nothing"
+// A consumable the bot is below its target on; a pet's diet of 0 is unknown, never "eats nothing"; a hunter without
+// a bow, crossbow or gun needs no ammo; a reagent only for a spell the bot knows; ammo and poison count only the
+// grade the bot keeps
 inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates,
                          UpkeepStock kind)
 {
-    if (kind == UpkeepStock::PetFood && !snapshot.petDiet)
+    if ((kind == UpkeepStock::PetFood && !snapshot.petDiet) || (kind == UpkeepStock::Ammo && !snapshot.ammoSubClass))
         return;
     std::uint32_t const target = StockTarget(snapshot, rates, kind);
-    std::uint32_t const stock = Stock(snapshot, kind);
-    if (!target || stock >= target)
+    if (!target)
         return;
-    VendorOffer const* offer = BestOffer(index, snapshot, kind);
+    // Ammo and poison: the best offer first, the kept grade decides what counts
+    bool const graded = Graded(kind);
+    VendorOffer const* offer = graded ? BestOffer(index, snapshot, kind) : nullptr;
+    std::uint32_t const keptGrade = graded ? KeptGrade(snapshot, offer, kind) : 0;
+    std::uint32_t const stock = Stock(snapshot, kind, keptGrade);
+    if (stock >= target)
+        return;
+    if (!graded)
+        offer = BestOffer(index, snapshot, kind);
     if (!offer)
-        return;  // nothing the bot may buy: no need it could meet
+        return;  // nothing the bot may buy (for a reagent: no spell it knows uses one): no need it could meet
     Need need;
     need.order = OrderOf(kind);
     need.kind = KindOf(kind);
@@ -377,15 +453,13 @@ inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot cons
     need.copper = offer->PriceFor(need.units);
     need.due = static_cast<float>(stock) < static_cast<float>(target) * STOCK_LOW_SHARE;
     need.item = offer->item;
-    need.vendor = offer->vendorEntry;
+    need.vendor = offer->vendorEntry;  // trusted for stock needs only (a riding need's mount vendor ignores the race)
+    need.target = target;
+    need.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
+    need.lotPrice = offer->buyPrice;
+    need.keptGrade = keptGrade;
     need.without = WithoutWord(kind);
     list.needs.push_back(need);
-}
-
-// The snapshot's bit sets align to this index
-inline bool BitsAlign(UpkeepIndex const& index, Snapshot const& snapshot)
-{
-    return snapshot.upkeepVersion && snapshot.upkeepVersion == index.version;
 }
 
 // A class spell's skill and ability requirements against what the bot knows. A skill the snapshot carries (riding,
@@ -730,6 +804,295 @@ inline std::string Describe(RankValue const& value)
            (value.bought ? ": BUY" : ": wait");
 }
 
+// The stock errand (WU6, §3.6): a consumable stock below a quarter of its target makes an errand worth a trip of its
+// own when the gold Fund gives it pays at least one lot; else the trip would buy nothing (as RepairErrandDue)
+inline bool StockPayable(Need const& need)
+{
+    return need.stock != UpkeepStock::Count && need.lotPrice > 0 && need.funded >= need.lotPrice;
+}
+
+inline bool StockErrandDue(NeedList const& list)
+{
+    for (Need const& need : list.needs)
+        if (need.due && StockPayable(need))
+            return true;
+    return false;
+}
+
+// The stock kinds (a bit per UpkeepStock) the gold pays a lot of: the due ones, or the others below their target
+inline std::uint8_t PayableKinds(NeedList const& list, bool due)
+{
+    std::uint8_t kinds = 0;
+    for (Need const& need : list.needs)
+        if (StockPayable(need) && need.due == due)
+            kinds |= Planner::StockBit(need.stock);
+    return kinds;
+}
+
+// A vendor's best offer of the need's kind meets it: of the kept grade, and the funded share pays a lot of it
+inline bool ShopPays(Need const& need, VendorOffer const& offer)
+{
+    return OfferGrade(offer, need.stock) >= need.keptGrade && need.funded >= offer.buyPrice;
+}
+
+// The stock kinds among `kinds` each vendor entry can sell the bot now: its best offer of the kind (the one
+// PlanShopping buys there) meets the need (ShopPays), so a vendor chosen for a need never answers it with `budget`
+// or `not_sold`
+inline std::unordered_map<std::uint32_t, std::uint8_t> VendorCover(UpkeepIndex const& index, Snapshot const& snapshot,
+                                                                   NeedList const& list, std::uint8_t kinds)
+{
+    std::unordered_map<std::uint32_t, std::uint8_t> cover;
+    std::unordered_map<std::uint32_t, VendorOffer const*> best;
+    for (Need const& need : list.needs)
+    {
+        if (need.stock == UpkeepStock::Count || need.stock == UpkeepStock::Mount ||
+            !(kinds & Planner::StockBit(need.stock)))
+            continue;
+        best.clear();
+        for (VendorOffer const& offer : index.Offers(need.stock))
+        {
+            VendorOffer const*& at = best[offer.vendorEntry];
+            if (BetterOffer(offer, at) && OfferUsable(index, offer, snapshot, need.stock))
+                at = &offer;
+        }
+        for (auto const& [entry, offer] : best)
+            if (offer && ShopPays(need, *offer))
+                cover[entry] |= Planner::StockBit(need.stock);
+    }
+    return cover;
+}
+
+// A vendor the errand may choose: one that trades with the bot, its walk and what it covers (VendorCover)
+struct VendorCandidate
+{
+    std::uint32_t entry{0};
+    float walkMinutes{0.0f};
+    bool repairer{false};
+    std::uint8_t covers{0};
+};
+
+constexpr std::size_t NO_VENDOR = std::numeric_limits<std::size_t>::max();
+
+// The errand's vendor (§3.6): among the candidates within maxWalkMinutes (repairers only when the repair is wanted),
+// the one covering the most due kinds, then the most other payable kinds, then the nearest. With no kinds and no walk
+// limit it is the nearest vendor. NO_VENDOR when none qualifies
+inline std::size_t PickVendor(std::vector<VendorCandidate> const& candidates, bool repairerOnly, std::uint8_t dueKinds,
+                              std::uint8_t unmetKinds, float maxWalkMinutes)
+{
+    std::size_t best = NO_VENDOR;
+    int bestDue = 0;
+    int bestUnmet = 0;
+    for (std::size_t at = 0; at < candidates.size(); ++at)
+    {
+        VendorCandidate const& candidate = candidates[at];
+        if (candidate.walkMinutes > maxWalkMinutes || (repairerOnly && !candidate.repairer))
+            continue;
+        int const due = std::popcount(static_cast<unsigned>(candidate.covers & dueKinds));
+        int const unmet = std::popcount(static_cast<unsigned>(candidate.covers & unmetKinds));
+        if (best != NO_VENDOR)
+        {
+            bool const better = due != bestDue       ? due > bestDue
+                                : unmet != bestUnmet ? unmet > bestUnmet
+                                                     : candidate.walkMinutes < candidates[best].walkMinutes;
+            if (!better)
+                continue;
+        }
+        best = at;
+        bestDue = due;
+        bestUnmet = unmet;
+    }
+    return best;
+}
+
+enum class ShopOutcome : std::uint8_t
+{
+    Buy,
+    Budget,  // the gold Fund left the need pays less than one lot
+    NotSold  // the vendor has no offer of the kind the bot may buy
+};
+
+// One line of the shopping list at one vendor
+struct ShopLine
+{
+    UpkeepStock kind{UpkeepStock::Count};
+    ShopOutcome outcome{ShopOutcome::NotSold};
+    bool due{false};
+    std::uint32_t item{0};
+    std::uint32_t lots{0};  // to buy: Player::BuyItemFromVendorSlot's count
+    std::uint32_t lotSize{1};
+    std::uint32_t lotPrice{0};
+    std::uint32_t units{0};  // wanted: up to the target
+    std::uint32_t target{0};
+    std::uint64_t funded{0};
+    std::uint64_t copper{0};  // lots x lotPrice, never above funded
+    std::uint64_t wanted{0};  // the price up to the target: this vendor's, the best offer's when it sells none
+};
+
+constexpr std::uint32_t MAX_LOTS_PER_PURCHASE = 255;  // BuyItemFromVendorSlot's count is a uint8
+
+// The shopping list at a vendor (§3.6, §3.3): each stock need in Fund's order, the vendor's best offer of its kind
+// (BestOffer at this vendor: a lower level item it sells is fine, but ammo and poison of the kept grade only), whole
+// lots up to the target and within the need's funded share. Training and riding are not bought here
+inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex const& index, Snapshot const& snapshot,
+                                          std::uint32_t vendorEntry)
+{
+    std::vector<ShopLine> lines;
+    for (Need const& need : list.needs)
+    {
+        if (need.stock == UpkeepStock::Count || need.stock == UpkeepStock::Mount)
+            continue;
+        ShopLine line;
+        line.kind = need.stock;
+        line.due = need.due;
+        line.units = need.units;
+        line.target = need.target;
+        line.funded = need.funded;
+        line.item = need.item;
+        line.wanted = need.copper;
+        VendorOffer const* offer = BestOffer(index, snapshot, need.stock, vendorEntry);
+        if (!offer || OfferGrade(*offer, need.stock) < need.keptGrade)
+        {
+            lines.push_back(line);
+            continue;
+        }
+        line.item = offer->item;
+        line.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
+        line.lotPrice = offer->buyPrice;
+        line.wanted = offer->PriceFor(need.units);
+        std::uint64_t lots = (need.units + line.lotSize - 1) / line.lotSize;
+        if (line.lotPrice)
+            lots = std::min<std::uint64_t>(lots, need.funded / line.lotPrice);
+        line.lots = static_cast<std::uint32_t>(std::min<std::uint64_t>(lots, MAX_LOTS_PER_PURCHASE));
+        line.copper = static_cast<std::uint64_t>(line.lots) * line.lotPrice;
+        line.outcome = line.lots ? ShopOutcome::Buy : ShopOutcome::Budget;
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+// The world log's word for a stock kind (upkeep decision rows)
+inline char const* ShopWord(UpkeepStock kind)
+{
+    constexpr std::array<char const*, Planner::UPKEEP_STOCK_COUNT> WORDS = {"food",   "water",    "ammo", "reagent",
+                                                                            "poison", "pet_food", "mount"};
+    return kind == UpkeepStock::Count ? "none" : WORDS[static_cast<std::size_t>(kind)];
+}
+
+inline char const* OutcomeWord(ShopOutcome outcome)
+{
+    switch (outcome)
+    {
+        case ShopOutcome::Buy:
+            return "buy";
+        case ShopOutcome::Budget:
+            return "budget";
+        default:
+            return "not_sold";
+    }
+}
+
+inline std::string Describe(ShopLine const& line)
+{
+    std::string text = std::string(ShopWord(line.kind)) + ": " + OutcomeWord(line.outcome) +
+                       (line.due ? " (stock low)" : " (top up)") + ", item " + std::to_string(line.item);
+    if (line.outcome != ShopOutcome::NotSold)
+        text += ", " + std::to_string(line.lots) + " lots of " + std::to_string(line.lotSize) + " at " +
+                Money(line.lotPrice) + " = " + Money(line.copper);
+    return text + ", wants " + std::to_string(line.units) + " to target " + std::to_string(line.target) + ", funded " +
+           Money(line.funded);
+}
+
+// The measured use (WU6): between two vendor visits nothing but loot and handouts adds stock, so a fall over the
+// elapsed time is the bot's use; a rise gives no sample. Only the kinds the bot's class uses by default are measured
+// (a mage's conjured food falls too, but a mage never buys food)
+constexpr std::uint32_t USE_WINDOW_MS = 10 * 60 * 1000;  // a shorter span between visits gives no sample [E]
+constexpr float USE_MS_PER_HOUR = 3600000.0f;
+static_assert(WorldTravel::SlotMeasure::USE_KINDS == Planner::UPKEEP_STOCK_COUNT, "the slot measure's use slots");
+
+// The stock per kind as the needs count it, and what it was counted by: a fall is use only when both ends share the
+// basis (a pet out of sight reads no pet food, a gun no arrows, new equipped ammo none of the old)
+struct StockLevels
+{
+    std::array<std::uint32_t, Planner::UPKEEP_STOCK_COUNT> count{};
+    std::array<std::uint32_t, Planner::UPKEEP_STOCK_COUNT> basis{};  // 0 = unknown: no sample
+};
+
+// The pet's diet, the ammo type and kept grade (the equipped ammo's damage), the poison grade; 1 for the kinds counted
+// the same way always. A damage x 1000 below 2^24 fits beside the subclass
+inline std::uint32_t StockBasis(Snapshot const& snapshot, UpkeepStock kind, std::uint32_t keptGrade)
+{
+    switch (kind)
+    {
+        case UpkeepStock::PetFood:
+            return snapshot.petDiet;
+        case UpkeepStock::Ammo:
+            return snapshot.ammoSubClass ? snapshot.ammoSubClass | keptGrade << 8 : 0;
+        case UpkeepStock::Mount:
+            return 0;
+        default:
+            return 1 | keptGrade << 8;  // keptGrade is 0 but for poison
+    }
+}
+
+// Without an index poison counts every grade, and so does ammo with none equipped
+inline StockLevels LevelsOf(UpkeepIndex const* index, Snapshot const& snapshot)
+{
+    StockLevels levels;
+    for (std::size_t slot = 0; slot < Planner::UPKEEP_STOCK_COUNT; ++slot)
+    {
+        UpkeepStock const kind = static_cast<UpkeepStock>(slot);
+        if (kind == UpkeepStock::Mount)
+            continue;
+        std::uint32_t const keptGrade =
+            Graded(kind) ? KeptGrade(snapshot, index ? BestOffer(*index, snapshot, kind) : nullptr, kind) : 0;
+        levels.count[slot] = Stock(snapshot, kind, keptGrade);
+        levels.basis[slot] = StockBasis(snapshot, kind, keptGrade);
+    }
+    return levels;
+}
+
+inline bool UseMeasured(std::uint8_t cls, std::uint8_t level, UpkeepStock kind)
+{
+    return kind != UpkeepStock::Mount && DefaultUsePerHour(cls, level, kind) > 0.0f;
+}
+
+// At a visit, before anything is sold or bought: each measured kind whose stock fell since the last visit's end, on
+// the same non-zero basis, gives a sample, fall / hours, averaged with the old value as RollWindow does
+inline void SampleUse(WorldTravel::SlotMeasure& measure, StockLevels const& now, std::uint8_t cls, std::uint8_t level,
+                      std::uint32_t nowMs)
+{
+    if (!measure.UseNoted)
+        return;
+    std::uint32_t const elapsed = nowMs - measure.UseNotedMs;
+    if (elapsed < USE_WINDOW_MS)
+        return;
+    float const hours = static_cast<float>(elapsed) / USE_MS_PER_HOUR;
+    for (std::size_t slot = 0; slot < Planner::UPKEEP_STOCK_COUNT; ++slot)
+    {
+        if (!UseMeasured(cls, level, static_cast<UpkeepStock>(slot)) || !now.basis[slot] ||
+            now.basis[slot] != measure.UseBasis[slot] || now.count[slot] >= measure.UseStock[slot])
+            continue;
+        float const sample = static_cast<float>(measure.UseStock[slot] - now.count[slot]) / hours;
+        float& use = measure.UsePerHour[slot];
+        use = use > 0.0f ? (use + sample) / 2.0f : sample;
+    }
+}
+
+// At the visit's end: the stock the next sample starts from
+inline void NoteStock(WorldTravel::SlotMeasure& measure, StockLevels const& now, std::uint32_t nowMs)
+{
+    measure.UseNoted = true;
+    measure.UseNotedMs = nowMs;
+    measure.UseStock = now.count;
+    measure.UseBasis = now.basis;
+}
+
+inline void FillUse(NeedRates& rates, WorldTravel::SlotMeasure const& measure)
+{
+    for (std::size_t slot = 0; slot < Planner::UPKEEP_STOCK_COUNT; ++slot)
+        rates.usePerHour[slot] = measure.UsePerHour[slot];
+}
+
 inline std::vector<std::string> DescribeAll(NeedList const& list)
 {
     std::vector<std::string> lines;
@@ -767,6 +1130,8 @@ inline std::vector<std::string> TuningLines()
             f(HOURS_PER_LEVEL[3]) + "/" + f(HOURS_PER_LEVEL[4]) + " plus " + f(MAX_LEVEL_HORIZON_HOURS) +
             " h at the cap; want: collector " + f(COLLECTOR_WANT_SHARE) + ", spendthrift " + f(SPENDTHRIFT_WANT_SHARE) +
             " x -thrift of the free gold, for purchases only (worth alone decides the reserve)",
+        "use measured from stock falls between vendor visits at least " + std::to_string(USE_WINDOW_MS / 60000) +
+            " min apart, averaged with the old value; a stock errand when a due stock's gold pays a lot",
     };
 }
 }  // namespace UpkeepNeeds
