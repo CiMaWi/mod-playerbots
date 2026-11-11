@@ -15,6 +15,7 @@
 
 #include "Chat.h"
 #include "DBCStores.h"
+#include "FlightMap.h"
 #include "GameEventMgr.h"
 #include "GameObjectData.h"
 #include "Log.h"
@@ -482,6 +483,8 @@ std::vector<std::string> IndexStatus()
         lines.push_back(Acore::StringFormat("PLANNER crowding: no snapshot yet; travel graph {}", graph));
     lines.push_back(QuestIndexStatus());
     for (std::string const& line : UpkeepIndexStatus())
+        lines.push_back(line);
+    for (std::string const& line : FlightMapStatus())
         lines.push_back(line);
     return lines;
 }
