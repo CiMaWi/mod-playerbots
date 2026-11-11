@@ -71,6 +71,11 @@ change, confirm:
   strategy names in `src/Ai/Base/StrategyContext.h` or the class context. `getName()` is unique.
 - Chat-driven features are registered in `src/Ai/Base/ChatActionContext.h` and
   `ChatTriggerContext.h` and handled in `ChatCommandHandlerStrategy.cpp`.
+- Something a conversation partner can ask a bot to do is an ability: one `Intent` value (append only) in
+  `src/Bot/BridgeIntentEffect.h` and one row in `src/Bot/BridgeAbilities.cpp` (name, sentence, parameters, group
+  rule, check, refusals, effect, lasting part, completion, state phrase). `Execute` does not change; the row's effect
+  calls the playerbots action or planner goal, and `tests/bridge-intent-effect-selftest.cpp` must see the row apply
+  and give every refusal it lists.
 - Every `NextAction("...")`, `TriggerNode("...")`, and `engine->addStrategy("...")` matches a
   registered creator exactly. Default strategy sets live in `src/Bot/Factory/AiFactory.cpp`;
   instance strategies are added and removed in balance by `ApplyInstanceStrategies()`.

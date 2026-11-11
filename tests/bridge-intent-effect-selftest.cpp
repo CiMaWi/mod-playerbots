@@ -8,24 +8,32 @@
 // AttackAction, StayAction, FleeAction and MoveToPositionAction::ExecuteExactPosition method bodies; FollowAction,
 // MovementAction::MoveAway/MoveTo and PathGenerator are counting doubles; the formation, mana save level and focus heal
 // values are plain doubles. It does not replace a decision path with a parallel guard implementation.
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
+#include <span>
 #include <type_traits>
 
 // clang-format off
 #include "J6b1-game-fixture.h"
 #include "BridgeIntentEffect.cpp"
+#include "BridgeAbilities.cpp"
 #include "AttackAction-body.inc"
 #include "StayAction-body.inc"
 #include "FleeAction-body.inc"
 #include "PositionAction-body.inc"
 // clang-format on
 
+using PlayerbotBridge::AbilityRow;
 using PlayerbotBridge::Baseline;
 using PlayerbotBridge::FormationShape;
 using PlayerbotBridge::Intent;
 using PlayerbotBridge::Order;
+using PlayerbotBridge::OrderField;
+using PlayerbotBridge::ParamKind;
+using PlayerbotBridge::ParamRow;
 using PlayerbotBridge::Part;
 using PlayerbotBridge::Refusal;
 using PlayerbotBridge::RestoreResult;
@@ -109,6 +117,10 @@ void Check(bool value, char const* label)
     }
 }
 
+// LC1a: what Fixture::Run saw per verb, for the ability table's checks at the end.
+std::map<Intent, std::set<Refusal>> seenRefusals;
+std::set<Intent> seenApplied;
+
 struct Fixture
 {
     Player Bot;
@@ -188,6 +200,7 @@ struct Fixture
     {
         // A value outside the enum: a result that leaves the reason unwritten fails the check below.
         Why = static_cast<Refusal>(99);
+        int const events = bridgeActs;
         Result const result = OllamaBotRandomChatter::Run(
             Command,
             [&]
@@ -197,6 +210,24 @@ struct Fixture
             },
             false, &Why);
         Check(result == Result::Rejected || Why == Refusal::None, "a result other than a refusal carries no reason");
+        // LC1a: one BridgeAct event for each order the facts admit (applied, failed, or refused with a reason) and
+        // none for an order refused before them.
+        bool const decided = result == Result::Applied || result == Result::Failed ||
+                             (result == Result::Rejected && Why != Refusal::None);
+        Check(bridgeActs - events == (decided ? 1 : 0), "one BridgeAct event per decided order, none before the facts");
+        if (decided)
+        {
+            AbilityRow const* row = PlayerbotBridge::FindRow(Command.Operation);
+            Check(row && bridgeActType == "BridgeAct" && bridgeActSource == row->Name && bridgeActBot == &Bot &&
+                      bridgeActId == static_cast<uint32>(Why) && bridgeActAmount == static_cast<int64>(result),
+                  "the BridgeAct event names the bot, the verb, the refusal and the result");
+        }
+        if (result == Result::Applied)
+            seenApplied.insert(Command.Operation);
+
+        if (result == Result::Rejected && Why != Refusal::None)
+            seenRefusals[Command.Operation].insert(Why);
+
         return result;
     }
 
@@ -1586,6 +1617,88 @@ int main()
             Check(OllamaBotRandomChatter::Run(f.Command, [] { return false; }) == Result::Rejected && bridgeCalls == 0,
                   "a refused admission reaches no planner");
         }
+    }
+    // LC1a: the ability table. Every row has every part; the eighteen verbs with an effect have a row and the four
+    // without one have none; each row applied above and gave each refusal it lists, and no other.
+    {
+        std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
+        Check(rows.size() == 18, "eighteen rows");
+        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        {
+            Intent const operation = static_cast<Intent>(value);
+            Check((PlayerbotBridge::FindRow(operation) != nullptr) != PlayerbotBridge::IsUnavailable(operation),
+                  "every verb has a row or is one of the four without an effect");
+        }
+        Check(!PlayerbotBridge::FindRow(static_cast<Intent>(255)) &&
+                  !PlayerbotBridge::IsUnavailable(static_cast<Intent>(255)) && !PlayerbotBridge::FindRow("regroup") &&
+                  !PlayerbotBridge::FindRow("") && !PlayerbotBridge::FindRow("Follow"),
+              "no row for a value outside the enum, a verb without an effect or an unknown name");
+        std::span<Refusal const> const common = PlayerbotBridge::CommonRefusals();
+        Check(std::vector<Refusal>(common.begin(), common.end()) ==
+                  std::vector<Refusal>{Refusal::Battleground, Refusal::Travelling, Refusal::Dead},
+              "the common refusals in check order");
+        auto const filled = [](char const* text) { return text && *text; };
+        auto const listed = [](std::span<Refusal const> list, Refusal reason)
+        { return std::find(list.begin(), list.end(), reason) != list.end(); };
+        std::set<std::string> names;
+        for (AbilityRow const& row : rows)
+        {
+            Check(PlayerbotBridge::FindRow(row.Operation) == &row && PlayerbotBridge::FindRow(row.Name) == &row &&
+                      names.insert(row.Name).second,
+                  "a row is found by its verb and by its own name");
+            Check(filled(row.Name) && filled(row.Sentence) && filled(row.StatePhrase) && row.Effect,
+                  "a row has its name, sentence, state phrase and effect");
+            Check((row.Group == PlayerbotBridge::GroupRule::None) == (row.GroupRefusal == Refusal::None) &&
+                      (row.Group == PlayerbotBridge::GroupRule::None || listed(row.Refusals, row.GroupRefusal)),
+                  "a group rule has its refusal, and the row lists it");
+            std::set<std::string> params;
+            for (ParamRow const& param : row.Params)
+            {
+                Check(filled(param.Name) && filled(param.Sentence) && params.insert(param.Name).second,
+                      "a parameter has its own name and a sentence");
+                Check((param.Kind == ParamKind::Choice) == !param.Choices.empty() &&
+                          std::all_of(param.Choices.begin(), param.Choices.end(), filled),
+                      "a choice and only a choice has its words");
+            }
+            std::string_view const phrase = row.StatePhrase;
+            for (std::size_t open = phrase.find('{'); open != std::string_view::npos; open = phrase.find('{', open + 1))
+            {
+                std::size_t const close = phrase.find('}', open);
+                Check(close != std::string_view::npos &&
+                          params.count(std::string(phrase.substr(open + 1, close - open - 1))) == 1,
+                      "a state phrase names only the row's parameters");
+            }
+            for (Refusal reason : row.Refusals)
+                Check(reason != Refusal::None && !listed(common, reason) &&
+                          PlayerbotBridge::RefusalWords(reason).Code == reason,
+                      "a row lists only its own refusals");
+            Check(PlayerbotBridge::LastingPart(row.Operation) == row.Lasting, "the lasting part is the row's");
+            Check(seenApplied.count(row.Operation) == 1, "every row applies in this selftest");
+            std::set<Refusal> const& seen = seenRefusals[row.Operation];
+            for (Refusal reason : row.Refusals)
+                Check(seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
+            // The planner double gives any goal verb any answer; the planner's own rule is BridgeCheck's.
+            bool const goal = row.Operation >= Intent::GoTo;
+            for (Refusal reason : seen)
+                Check(goal || listed(row.Refusals, reason) || listed(common, reason),
+                      "a row gives no refusal it does not list");
+        }
+        std::set<std::string> words;
+        for (int value = 0; value <= static_cast<int>(Refusal::AlreadyThere); ++value)
+        {
+            PlayerbotBridge::RefusalText const& text = PlayerbotBridge::RefusalWords(static_cast<Refusal>(value));
+            Check(static_cast<int>(text.Code) == value && filled(text.Word) && words.insert(text.Word).second &&
+                      std::all_of(text.Word, text.Word + std::strlen(text.Word),
+                                  [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; }) &&
+                      filled(text.Sentence) == (value != 0),
+                  "every refusal has its own snake_case word and, but for none, a sentence");
+        }
+        Check(PlayerbotBridge::RefusalWords(static_cast<Refusal>(99)).Code == Refusal::None,
+              "an unknown refusal reads as none");
+        Check(PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Mark), OrderField::Icon) &&
+                  PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
+                  !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
+              "a row takes the fields of its parameters only");
     }
     std::cout << "PASS " << checks << " checks\n";
 }

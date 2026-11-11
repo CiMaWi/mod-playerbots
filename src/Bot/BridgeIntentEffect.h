@@ -139,23 +139,8 @@ enum class Part : uint8_t
     FocusHeal
 };
 
-constexpr Part LastingPart(Intent operation)
-{
-    switch (operation)
-    {
-        case Intent::Follow:
-        case Intent::Stay:
-            return Part::Movement;
-        case Intent::Formation:
-            return Part::Formation;
-        case Intent::SaveMana:
-            return Part::ManaSave;
-        case Intent::FocusHealing:
-            return Part::FocusHeal;
-        default:
-            return Part::None;
-    }
-}
+// The verb's lasting part (its row in BridgeAbilities.h); None for a one-shot verb and a verb without a row.
+Part LastingPart(Intent operation);
 
 struct NamedPosition
 {
