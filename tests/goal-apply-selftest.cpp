@@ -457,6 +457,228 @@ int main()
         Check(mutantRuns == 6, "(mutant: route by kind, stall by target) the circuit runs at every idle");
     }
 
+    // WT18a: the XP exemption. A grind, gather or money run that gained XP ends without a stall; a quest run's XP is no
+    // progress (a kill on the way), and a grind with neither XP nor a log change stalls
+    {
+        BotGoals goals;
+        BeginRun(goals, 50, 7, 1000, XpIsProgress(Goals::GoalKind::Grind));
+        Check(goals.run.startXp == 1000 && goals.run.xpCounts, "a grind's run keeps its XP at the start");
+        EndRun(goals, 7, 1400);
+        Check(!goals.run.running && MayStart(goals, 50, 7),
+              "a grind that gained XP does not stall (mutant: XP ignored)");
+        BeginRun(goals, 50, 7, 1400, true);
+        EndRun(goals, 7, 1400);
+        Check(!MayStart(goals, 50, 7), "a grind without XP and without a log change stalls");
+        BeginRun(goals, 51, 7, 1400, XpIsProgress(Goals::GoalKind::Gather));
+        EndRun(goals, 7, 1500);
+        Check(MayStart(goals, 51, 7) && !MayStart(goals, 50, 7),
+              "a gather that gained XP does not stall, the grind's stall stays (mutant: XP lifts every stall)");
+        BeginRun(goals, 52, 7, 1500, XpIsProgress(Goals::GoalKind::Quest));
+        EndRun(goals, 7, 1900);
+        Check(!MayStart(goals, 52, 7),
+              "a quest goal's XP is no progress: it stalls (mutant: XP counts for every kind)");
+        Check(XpIsProgress(Goals::GoalKind::Money) && !XpIsProgress(Goals::GoalKind::TravelElsewhere) &&
+                  !XpIsProgress(Goals::GoalKind::Rest),
+              "money counts its XP, a trip and a rest do not");
+        std::uint64_t const levelUp = std::uint64_t{11} << 32;
+        BeginRun(goals, 53, 7, (std::uint64_t{10} << 32) | 9000, true);
+        EndRun(goals, 7, levelUp);
+        Check(MayStart(goals, 53, 7), "a level gained (XP back to 0) is still XP gained in the level and XP number");
+    }
+
+    // WT18a: the bridge's goal orders through the plausibility gate
+    {
+        std::array<BridgeOrder, 9> const orders = {
+            BridgeOrder::GoTo,      BridgeOrder::Quest,     BridgeOrder::Errands,
+            BridgeOrder::SetHearth, BridgeOrder::GrindHere, BridgeOrder::GatherHere,
+            BridgeOrder::MeetAt,    BridgeOrder::Pause,     BridgeOrder::Resume};
+        int searches = 0;
+        bool found = true;
+        BridgeFacts open;
+        open.inScope = true;
+        open.placeKnown = true;
+        open.questInLog = true;
+        open.canGather = true;
+        open.route = [&searches, &found]
+        {
+            ++searches;
+            return found;
+        };
+        bool allPass = true;
+        for (BridgeOrder order : orders)
+            allPass = allPass && BridgeCheck(order, open) == BridgeAnswer::Done;
+        Check(allPass && searches == 2, "every order passes in a plain case; only the two trips search a route");
+        auto const answer = [&](BridgeOrder order, auto change)
+        {
+            BridgeFacts facts = open;
+            change(facts);
+            searches = 0;
+            return BridgeCheck(order, facts);
+        };
+        bool scope = true;
+        bool held = true;
+        for (BridgeOrder order : orders)
+        {
+            scope = scope && answer(order, [](BridgeFacts& f) { f.inScope = false; }) == BridgeAnswer::NotPlanner &&
+                    searches == 0;
+            held =
+                held &&
+                answer(order, [](BridgeFacts& f) { f.current = GoalOf(Goals::GoalKind::Grind, 3, Source::Group); }) ==
+                    BridgeAnswer::GoalHeld &&
+                searches == 0;
+        }
+        Check(scope, "outside the planner's scope every order is not_planner, before a search (mutant: scope ignored)");
+        Check(held, "a group's goal holds the slot against every order (mutant: the bridge replaces a group's goal)");
+        Check(answer(BridgeOrder::GoTo, [](BridgeFacts& f)
+                     { f.current = GoalOf(Goals::GoalKind::Grind, 3, Source::Bridge); }) == BridgeAnswer::Done &&
+                  answer(BridgeOrder::GrindHere, [](BridgeFacts& f)
+                         { f.current = GoalOf(Goals::GoalKind::Quest, 3, Source::Planner); }) == BridgeAnswer::Done,
+              "the bridge's own goal and the planner's give way");
+        for (BridgeOrder trip : {BridgeOrder::GoTo, BridgeOrder::MeetAt})
+        {
+            Check(answer(trip, [](BridgeFacts& f) { f.placeKnown = false; }) == BridgeAnswer::UnknownPlace &&
+                      searches == 0,
+                  "an unknown place is refused before a search (mutant: no unknown_place)");
+            Check(answer(trip, [](BridgeFacts& f) { f.there = true; }) == BridgeAnswer::AlreadyThere && searches == 0,
+                  "a bot at the place is already there (mutant: no already_there)");
+            Check(answer(trip, [](BridgeFacts& f) { f.openWorld = false; }) == BridgeAnswer::CannotNow && searches == 0,
+                  "no trip from inside an instance");
+            found = false;
+            Check(answer(trip, [](BridgeFacts&) {}) == BridgeAnswer::NoRoute && searches == 1,
+                  "no route: no_route after one search (mutant: no no_route)");
+            found = true;
+            Check(answer(trip, [](BridgeFacts& f) { f.route = nullptr; }) == BridgeAnswer::NoRoute,
+                  "without a route search no trip passes");
+        }
+        Check(answer(BridgeOrder::Quest, [](BridgeFacts& f) { f.questInLog = false; }) == BridgeAnswer::NoSuchQuest,
+              "a quest not in the log is no_such_quest (mutant: no no_such_quest)");
+        Check(answer(BridgeOrder::GoTo, [](BridgeFacts& f) { f.questInLog = false; }) == BridgeAnswer::Done &&
+                  answer(BridgeOrder::Quest, [](BridgeFacts& f) { f.placeKnown = false; }) == BridgeAnswer::Done,
+              "each order checks only its own facts");
+        Check(answer(BridgeOrder::GrindHere, [](BridgeFacts& f) { f.canGrind = false; }) == BridgeAnswer::NothingHere &&
+                  answer(BridgeOrder::GatherHere, [](BridgeFacts& f) { f.canGather = false; }) ==
+                      BridgeAnswer::NothingHere,
+              "nothing to grind in a town, nothing to gather without a skill (mutant: no nothing_here)");
+        Check(
+            answer(BridgeOrder::GrindHere, [](BridgeFacts& f) { f.openWorld = false; }) == BridgeAnswer::CannotNow &&
+                answer(BridgeOrder::GatherHere, [](BridgeFacts& f) { f.openWorld = false; }) == BridgeAnswer::CannotNow,
+            "no grind or gather inside an instance");
+
+        Place const here{0, 1.0f, 2.0f, 3.0f};
+        Place const at{1, 10.0f, 20.0f, 30.0f};
+        Active const go = BridgeGoalFor(BridgeOrder::GoTo, here, at, 0, 500);
+        Active const meet = BridgeGoalFor(BridgeOrder::MeetAt, here, at, 0, 500);
+        Check(go.kind == Goals::GoalKind::TravelElsewhere && go.source == Source::Bridge && go.place.map == 1 &&
+                  go.place.x == 10.0f && go.reason == "go_to" && go.startedMs == 500 &&
+                  ExecutorFor(go, Reach{}) == Executor::Travel,
+              "go_to: a bridge trip to the place (mutant: planner source)");
+        Check(meet.kind == Goals::GoalKind::TravelElsewhere && meet.reason == "meet_at" && meet.place.map == 1,
+              "meet_at: the same trip with the meeting as its reason");
+        Active const quest = BridgeGoalFor(BridgeOrder::Quest, here, at, 77, 500);
+        Reach working;
+        working.workable = true;
+        working.sameMap = true;
+        Reach done;
+        done.deliverable = true;
+        done.sameMap = true;
+        Reach stuck;
+        stuck.sameMap = true;
+        Active plannerQuest = quest;
+        plannerQuest.source = Source::Planner;
+        Check(quest.kind == Goals::GoalKind::Quest && quest.target == 77 &&
+                  quest.targetType == Goals::TargetType::Quest && quest.place.map == 0 &&
+                  ExecutorFor(quest, working) == Executor::Deliver && ExecutorFor(quest, done) == Executor::Deliver &&
+                  ExecutorFor(plannerQuest, working) == Executor::None && ExecutorFor(quest, stuck) == Executor::None,
+              "quest: an external quest goal works or turns in its quest; a planner delivery only delivers");
+        Active const grind = BridgeGoalFor(BridgeOrder::GrindHere, here, at, 0, 500);
+        Active const gather = BridgeGoalFor(BridgeOrder::GatherHere, here, at, 0, 500);
+        Check(grind.kind == Goals::GoalKind::Grind && grind.place.map == 0 && grind.place.x == 1.0f &&
+                  ExecutorFor(grind, Reach{}) == Executor::Grind && gather.kind == Goals::GoalKind::Gather &&
+                  ExecutorFor(gather, Reach{}) == Executor::Gather && grind.reason == "grind_here",
+              "grind_here and gather_here: around the bot's own position");
+        Check(Goals::IsInterlude(BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0).kind) &&
+                  BridgeGoalFor(BridgeOrder::SetHearth, here, at, 0, 0).kind == Goals::GoalKind::Hearth &&
+                  !BridgeGoalFor(BridgeOrder::Pause, here, at, 0, 0).Is() &&
+                  !BridgeGoalFor(BridgeOrder::Resume, here, at, 0, 0).Is(),
+              "errands and set_hearth are interludes; a pause and a resume set no goal");
+
+        BotGoals goals;
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
+        goals.paused = true;
+        goals.switchTo = Goals::Option{};
+        Check(TakeBridgeGoal(goals, grind) && goals.slot.Query().source == Source::Bridge && !goals.paused &&
+                  !goals.switchTo,
+              "a bridge goal replaces the planner's, ends a pause and drops a pending switch");
+        Check(!goals.slot.Cancel(Source::Planner) && goals.slot.Query().Is(), "the planner never cancels it");
+        Check(TakeBridgeGoal(goals, go) && goals.slot.Query().kind == Goals::GoalKind::TravelElsewhere,
+              "a new bridge goal replaces the bridge's");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Grind, 2, Source::Group));
+        Check(!TakeBridgeGoal(goals, go) && goals.slot.Query().source == Source::Group,
+              "a group's goal is never replaced (mutant: the bridge replaces a group's goal)");
+        BotGoals errand;
+        errand.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
+        Check(TakeBridgeGoal(errand, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0)) && errand.slot.End() &&
+                  errand.slot.Query().source == Source::Planner,
+              "an errand trip interrupts the planner's goal, which goes on after it");
+
+        BotGoals pausing;
+        pausing.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
+        BeginRun(pausing, 40, 5);
+        Check(BridgePause(pausing, true, 1000) && !pausing.slot.Query().Is() && pausing.paused &&
+                  !pausing.run.running && !pausing.stalled,
+              "a pause ends the planner's goal without a stall");
+        Check(StillPaused(pausing, 1000 + PAUSE_MS - 1) && pausing.paused, "a paused bot waits");
+        Check(!StillPaused(pausing, 1000 + PAUSE_MS) && !pausing.paused, "a pause ends by itself after PAUSE_MS");
+        BotGoals wrapped;
+        BridgePause(wrapped, true, 0xFFFFFF00u);
+        Check(StillPaused(wrapped, 0xFFFFFF80u) && StillPaused(wrapped, 0x100u),
+              "the pause's age survives the clock's wrap");
+
+        // The published view: OnIdle publishes a stale one for a bot of either group (a weighted bot has no job)
+        BotGoals viewed;
+        Check(!ViewStale(viewed), "a fresh bot's view is current");
+        TakeBridgeGoal(viewed, grind);
+        Check(ViewStale(viewed), "a bridge goal makes the view stale");
+        MarkPublished(viewed);
+        Check(!ViewStale(viewed) && !viewed.slot.Cancel(Source::Planner) && !ViewStale(viewed),
+              "a published view is current; a refused cancel changes nothing");
+        Check(!viewed.slot.End() && ViewStale(viewed),
+              "a bridge goal's end makes the view stale (mutant: a weighted bot keeps showing its ended goal)");
+        MarkPublished(viewed);
+        viewed.slot.End();
+        Check(!ViewStale(viewed), "an empty slot's end changes nothing");
+        BridgePause(viewed, true, 100);
+        MarkPublished(viewed);
+        Check(StillPaused(viewed, 100 + PAUSE_MS - 1) && !ViewStale(viewed), "a pause that goes on keeps the view");
+        Check(!StillPaused(viewed, 100 + PAUSE_MS) && ViewStale(viewed),
+              "a pause's end by itself makes the view stale (mutant: the bot stays busy)");
+        BotGoals resumed;
+        TakeBridgeGoal(resumed, grind);
+        MarkPublished(resumed);
+        Check(BridgePause(resumed, false, 0) && ViewStale(resumed), "a resume's cancel of the bridge goal shows");
+        BotGoals interlude;
+        interlude.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
+        TakeBridgeGoal(interlude, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0));
+        MarkPublished(interlude);
+        Check(interlude.slot.End() && ViewStale(interlude), "an interlude's end, its goal going on, shows");
+        BotGoals resuming;
+        TakeBridgeGoal(resuming, grind);
+        BridgePause(resuming, true, 10);
+        TakeBridgeGoal(resuming, grind);
+        resuming.situationChanged = false;
+        Check(BridgePause(resuming, false, 20) && !resuming.slot.Query().Is() && !resuming.paused &&
+                  resuming.situationChanged,
+              "a resume ends the bridge's goal and asks for a fresh plan");
+        BotGoals own;
+        own.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
+        Check(!BridgePause(own, false, 0) && own.slot.Query().Is(), "a resume keeps the planner's own goal");
+        BotGoals group;
+        group.slot.Set(GoalOf(Goals::GoalKind::Grind, 2, Source::Group));
+        Check(!BridgePause(group, true, 0) && group.slot.Query().Is() && !group.paused &&
+                  !BridgePause(group, false, 0) && group.slot.Query().Is(),
+              "a pause or a resume leaves a group's goal (mutant: pause cancels a group goal)");
+    }
+
     // The accept times the snapshot lacks
     {
         SeenQuests seen;

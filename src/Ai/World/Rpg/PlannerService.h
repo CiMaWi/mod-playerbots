@@ -55,8 +55,16 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_
 bool KeepsQuest(PlayerbotAI* botAI, std::uint32_t quest);
 // The bot's map thread: of a log quest's points of interest (x, y) the one nearest the plan's tasks for it; -1 = none
 int PlannedPoi(PlayerbotAI* botAI, std::uint32_t quest, std::vector<std::pair<float, float>> const& points);
-// Any thread: the bot (raw guid) pursues an external goal (bridge or group): the manager leaves it alone
+// Any thread: the bot (raw guid) pursues an external goal (bridge or group) or its plan is paused: the manager leaves
+// it alone
 bool HasExternalGoal(std::uint64_t bot);
+namespace GoalApply
+{
+struct PlanView;
+}
+// Any thread: a copy of the bot's (raw guid) published goal and plan (the bridge's plan topics); false when the planner
+// never saw the bot
+bool PublishedPlan(std::uint64_t bot, GoalApply::PlanView& view);
 // `playerbots planner goal <bot>`: the bot's group, goal, last ranking and fallback as its map thread published them
 bool HandleGoalCommand(ChatHandler* handler, char const* args);
 // The lines of `playerbots planner status`

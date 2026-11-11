@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "BridgeGoals.h"
 #include "GoalModel.h"
 
 // WT16: the goals interface (3.12) and the rules for applying the planner's answers. Player-free, so the offline
@@ -125,6 +126,7 @@ public:
         else if (!Goals::IsInterlude(goal.kind))
             _previous.reset();
         _current = std::move(goal);
+        ++_changes;
         return true;
     }
 
@@ -144,12 +146,15 @@ public:
             return false;
         _current = {};
         _previous.reset();
+        ++_changes;
         return true;
     }
 
     // The goal's executor ended. True when an interlude ended and the goal it interrupted goes on
     bool End()
     {
+        if (_current.Is() || _previous)
+            ++_changes;
         if (_previous)  // set only while an interlude holds the slot
         {
             _current = std::move(*_previous);
@@ -163,9 +168,13 @@ public:
 
     bool HasExternal() const { return _current.Is() && IsExternal(_current.source); }
 
+    // Counts the slot's changes (set, cancel, end): a published view older than the count is stale (ViewStale)
+    std::uint32_t Changes() const { return _changes; }
+
 private:
     Active _current;
     std::optional<Active> _previous;
+    std::uint32_t _changes{0};
 };
 
 // What starts a goal of this kind: today's statuses are the executors. None: no executor reachable from the planner
@@ -203,6 +212,7 @@ struct Reach
     bool deliverable{false};  // its quest is complete; on its map: the circuit's turn-in test (not low priority, a POI)
     bool sameMap{false};      // its place is on the bot's map
     bool there{false};        // its place is within GIVER_YARDS
+    bool workable{false};     // its quest is in the log and not complete yet
 };
 
 inline Executor ExecutorFor(Active const& goal, Reach const& reach)
@@ -215,8 +225,9 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
                 case QuestRole::Circuit:
                     return Executor::Circuit;
                 case QuestRole::Delivery:
+                    // An external quest goal also works its quest (DO_QUEST); the planner's deliveries only deliver
                     if (!reach.deliverable)
-                        return Executor::None;  // nothing left to deliver
+                        return IsExternal(goal.source) && reach.workable ? Executor::Deliver : Executor::None;
                     return reach.sameMap ? Executor::Deliver : Executor::Travel;
                 default:  // the next plan there offers its circuit
                     return reach.there ? Executor::None : Executor::Travel;
@@ -462,13 +473,24 @@ struct Stalled
     std::vector<std::uint64_t> keys;  // GoalKey, oldest first
 };
 
-// The goal in the slot (no interlude) while its executor runs: its key and the log signature when it started
+// The goals whose product is experience or money: a grind or a gather gains XP without a log change
+inline bool XpIsProgress(Goals::GoalKind kind)
+{
+    return kind == Goals::GoalKind::Grind || kind == Goals::GoalKind::Gather || kind == Goals::GoalKind::Money;
+}
+
+// The goal in the slot (no interlude) while its executor runs: its key, the log signature and the experience (level
+// and XP, XpNow) when it started
 struct Run
 {
     std::uint64_t key{0};
     std::uint64_t startLog{0};
+    std::uint64_t startXp{0};
+    bool xpCounts{false};  // XpIsProgress(kind): XP gained is progress
     bool running{false};
 };
+
+constexpr std::uint32_t PAUSE_MS = 10 * 60 * 1000;  // a paused plan goes on by itself after this long
 
 // Of the quest's points of interest the one nearest to any of the plan's tasks for it; -1 when the plan has none
 inline int NearestToTasks(CircuitPlan const& plan, std::uint32_t quest,
@@ -554,8 +576,24 @@ struct BotGoals
     std::uint32_t lastFallbackMs{0};
     bool situationChanged{false};  // level, zone, life or group changed since the last plan
     SeenQuests seen;
-    std::optional<Goals::External> external;  // an external goal for the next job (WT18 sets it)
+    std::optional<Goals::External> external;  // an external goal for the next job
     Source externalSource{Source::Bridge};
+    bool paused{false};  // the bridge paused the bot's plan (BridgePause)
+    std::uint32_t pausedMs{0};
+    std::uint32_t publishedChanges{0};  // the slot's change count and the pause as last published (MarkPublished)
+    bool publishedPaused{false};
+};
+
+// A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on
+// another thread; the plan is immutable and the copy keeps it alive
+struct PlanView
+{
+    Active goal;
+    std::shared_ptr<Goals::GoalPlan const> plan;
+    std::uint32_t planMs{0};
+    bool jobOut{false};
+    Fallback lastFallback{Fallback::None};
+    bool paused{false};  // the bridge paused the bot's plan
 };
 
 // A checked plan replaces the old one. The current goal's own progress (QuestGoal) stays
@@ -579,15 +617,16 @@ inline bool MayStart(BotGoals const& goals, std::uint64_t key, std::uint64_t log
 }
 
 // A goal (no interlude) starts: its run and its circuit progress start anew
-inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log)
+inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std::uint64_t xp = 0, bool xpCounts = false)
 {
     goals.quest = {};
-    goals.run = {key, log, true};
+    goals.run = {key, log, xp, xpCounts, true};
 }
 
 // The running goal's executor ended: its key stalls when the log is as it was at the goal's start; a changed log
-// lifts every stall
-inline void EndRun(BotGoals& goals, std::uint64_t log)
+// lifts every stall. A grind, gather or money goal that gained XP made progress: it does not stall, and the others
+// stay stalled (a kill on the way lifts nothing)
+inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
 {
     if (!goals.run.running)
         return;
@@ -597,6 +636,8 @@ inline void EndRun(BotGoals& goals, std::uint64_t log)
         goals.stalled.reset();
         return;
     }
+    if (goals.run.xpCounts && xp > goals.run.startXp)
+        return;
     if (!goals.stalled || goals.stalled->log != log)
         goals.stalled = Stalled{log, {}};
     std::vector<std::uint64_t>& keys = goals.stalled->keys;
@@ -605,6 +646,160 @@ inline void EndRun(BotGoals& goals, std::uint64_t log)
     if (keys.size() >= MAX_STALLED)
         keys.erase(keys.begin());
     keys.push_back(goals.run.key);
+}
+
+// The bridge's goal orders (WT18a, BridgeGoals.h). A group's goal holds the slot against the bridge (the group plays
+// together); the planner's goal and the bridge's own give way
+inline bool HeldAgainstBridge(Active const& current) { return current.Is() && current.source == Source::Group; }
+
+constexpr std::array<char const*, 9> BRIDGE_REASONS = {
+    "go_to", "quest", "errands", "set_hearth", "grind_here", "gather_here", "meet_at", "pause_plan", "resume_plan"};
+
+inline char const* BridgeReason(BridgeOrder order)
+{
+    auto const index = static_cast<std::size_t>(order);
+    return index < BRIDGE_REASONS.size() ? BRIDGE_REASONS[index] : "bridge";
+}
+
+// What an order meets in the bot, read on the world thread after the map join. The route is searched last, only for
+// a trip every other check let through
+struct BridgeFacts
+{
+    bool inScope{false};          // Planner.Goals on, the planner saw the bot in scope, no real master, persistent
+    Active current;               // the goal in the slot
+    bool placeKnown{false};       // a trip's place resolved
+    bool there{false};            // the place is on the bot's map within GIVER_YARDS
+    bool openWorld{true};         // the bot is not in an instance
+    bool questInLog{false};       // the quest is in the log and has not failed
+    bool canGrind{true};          // the bot is not resting (a town or an inn)
+    bool canGather{false};        // herbalism or mining
+    std::function<bool()> route;  // a route from the bot to the place exists
+};
+
+// The plausibility gate's order: scope, the holder, then the order's own rule; Done lets the order through
+inline BridgeAnswer BridgeCheck(BridgeOrder order, BridgeFacts const& facts)
+{
+    if (!facts.inScope)
+        return BridgeAnswer::NotPlanner;
+    if (HeldAgainstBridge(facts.current))
+        return BridgeAnswer::GoalHeld;
+    switch (order)
+    {
+        case BridgeOrder::GoTo:
+        case BridgeOrder::MeetAt:
+            if (!facts.placeKnown)
+                return BridgeAnswer::UnknownPlace;
+            if (facts.there)
+                return BridgeAnswer::AlreadyThere;
+            if (!facts.openWorld)
+                return BridgeAnswer::CannotNow;
+            return facts.route && facts.route() ? BridgeAnswer::Done : BridgeAnswer::NoRoute;
+        case BridgeOrder::Quest:
+            return facts.questInLog ? BridgeAnswer::Done : BridgeAnswer::NoSuchQuest;
+        case BridgeOrder::GrindHere:
+            if (!facts.openWorld)
+                return BridgeAnswer::CannotNow;
+            return facts.canGrind ? BridgeAnswer::Done : BridgeAnswer::NothingHere;
+        case BridgeOrder::GatherHere:
+            if (!facts.openWorld)
+                return BridgeAnswer::CannotNow;
+            return facts.canGather ? BridgeAnswer::Done : BridgeAnswer::NothingHere;
+        default:
+            return BridgeAnswer::Done;
+    }
+}
+
+// The goal an order sets (none for a pause or a resume): here is the bot's position, at a trip's resolved place
+inline Active BridgeGoalFor(BridgeOrder order, Place const& here, Place const& at, std::uint32_t quest,
+                            std::uint32_t nowMs)
+{
+    Active goal;
+    goal.source = Source::Bridge;
+    goal.reason = BridgeReason(order);
+    goal.place = here;
+    goal.startedMs = nowMs;
+    switch (order)
+    {
+        case BridgeOrder::GoTo:
+        case BridgeOrder::MeetAt:
+            goal.kind = Goals::GoalKind::TravelElsewhere;
+            goal.place = at;
+            break;
+        case BridgeOrder::Quest:
+            goal.kind = Goals::GoalKind::Quest;
+            goal.target = quest;
+            goal.targetType = Goals::TargetType::Quest;
+            break;
+        case BridgeOrder::Errands:
+            goal.kind = Goals::GoalKind::Errand;
+            break;
+        case BridgeOrder::SetHearth:
+            goal.kind = Goals::GoalKind::Hearth;
+            break;
+        case BridgeOrder::GrindHere:
+            goal.kind = Goals::GoalKind::Grind;
+            break;
+        case BridgeOrder::GatherHere:
+            goal.kind = Goals::GoalKind::Gather;
+            break;
+        default:
+            break;
+    }
+    return goal;
+}
+
+// A started bridge goal takes the slot: a pause ends, a replan's pending switch is dropped. False (nothing changed)
+// when a group's goal holds the slot
+inline bool TakeBridgeGoal(BotGoals& goals, Active goal)
+{
+    if (HeldAgainstBridge(goals.slot.Query()) || !goals.slot.Set(std::move(goal)))
+        return false;
+    goals.paused = false;
+    goals.switchTo.reset();
+    return true;
+}
+
+// Pause ends the goal in the slot without a stall and holds the plan; Resume ends a pause and a bridge goal and asks
+// for a fresh plan. A group's goal stays. True when the bot's current executor must stop
+inline bool BridgePause(BotGoals& goals, bool pause, std::uint32_t nowMs)
+{
+    Active const& current = goals.slot.Query();
+    if (HeldAgainstBridge(current))
+        return false;
+    bool const bridgeGoal = current.Is() && current.source == Source::Bridge;
+    if (pause || bridgeGoal)
+    {
+        goals.slot.Cancel(Source::Bridge);
+        goals.run.running = false;
+        goals.switchTo.reset();
+    }
+    goals.paused = pause;
+    goals.pausedMs = pause ? nowMs : 0;
+    goals.situationChanged = goals.situationChanged || !pause;
+    return pause || bridgeGoal;
+}
+
+// An idle bot's plan is still paused; a pause older than PAUSE_MS ends here
+inline bool StillPaused(BotGoals& goals, std::uint32_t nowMs)
+{
+    if (goals.paused && nowMs - goals.pausedMs < PAUSE_MS)
+        return true;
+    goals.paused = false;
+    return false;
+}
+
+// The published view no longer shows the bot's slot or pause: a goal's end or a pause's end publishes at the next
+// idle, in either group (a weighted bot has no planner job whose answer would publish it later)
+inline bool ViewStale(BotGoals const& goals)
+{
+    return goals.slot.Changes() != goals.publishedChanges || goals.paused != goals.publishedPaused;
+}
+
+// The view of this slot and pause is published
+inline void MarkPublished(BotGoals& goals)
+{
+    goals.publishedChanges = goals.slot.Changes();
+    goals.publishedPaused = goals.paused;
 }
 }  // namespace Planner::GoalApply
 

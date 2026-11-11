@@ -22,6 +22,7 @@
 #include "GoalModelLog.h"
 #include "Group.h"
 #include "Log.h"
+#include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -31,9 +32,12 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "QuestCircuitLog.h"
+#include "RouteService.h"
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "TravelGraph.h"
+#include "TravelPlaces.h"
 #include "WorldLog.h"
 
 namespace Planner
@@ -188,6 +192,7 @@ struct GoalView
 {
     bool weighted{false};
     GoalApply::Active goal;
+    std::shared_ptr<Goals::GoalPlan const> plan;  // shared with the bot's BotGoals, immutable
     std::vector<OptionLine> options;
     std::string failure;
     uint32 planMs{0};
@@ -195,21 +200,23 @@ struct GoalView
     std::size_t questsStarted{0};
     GoalApply::Fallback lastFallback{GoalApply::Fallback::None};
     uint32 lastFallbackMs{0};
+    bool paused{false};
 };
 
 std::mutex viewsMutex;
 std::unordered_map<uint64, GoalView> views;  // by raw guid; a bot's entry is replaced, never erased (bounded)
 
-// The PerfMonitor row of the hook itself: two clock reads, only while the monitor is on
-class HookTimer
+// A PerfMonitor row's time for one scope (the hook, a bridge order's route search): two clock reads, only while the
+// monitor is on
+class RowTimer
 {
 public:
-    HookTimer() : _row(sPerfMonitor.acquire(PERF_MON_TOTAL, "planner hook"))
+    explicit RowTimer(char const* name) : _row(sPerfMonitor.acquire(PERF_MON_TOTAL, name))
     {
         if (_row)
             _started = std::chrono::steady_clock::now();
     }
-    ~HookTimer()
+    ~RowTimer()
     {
         if (_row)
             _row->Record(static_cast<uint64>(std::max<long long>(
@@ -217,8 +224,8 @@ public:
                     .count(),
                 0)));
     }
-    HookTimer(HookTimer const&) = delete;
-    HookTimer& operator=(HookTimer const&) = delete;
+    RowTimer(RowTimer const&) = delete;
+    RowTimer& operator=(RowTimer const&) = delete;
 
 private:
     PerformanceData* _row;
@@ -242,11 +249,13 @@ std::string ChoiceOf(GoalApply::Active const& goal)
     return Goals::ChoiceWord(option);
 }
 
-void Publish(Player* bot, GoalApply::BotGoals const& goals)
+void Publish(Player* bot, GoalApply::BotGoals& goals)
 {
+    GoalApply::MarkPublished(goals);
     GoalView view;
     view.weighted = Weighted(bot);
     view.goal = goals.slot.Query();
+    view.plan = goals.plan;
     if (goals.plan)
     {
         Goals::Ranked const& ranked = goals.plan->ranked;
@@ -259,6 +268,7 @@ void Publish(Player* bot, GoalApply::BotGoals const& goals)
     view.questsStarted = goals.quest.started.size();
     view.lastFallback = goals.lastFallback;
     view.lastFallbackMs = goals.lastFallbackMs;
+    view.paused = goals.paused;
     std::lock_guard<std::mutex> lock(viewsMutex);
     views[bot->GetGUID().GetRawValue()] = std::move(view);
 }
@@ -306,6 +316,9 @@ uint64 LogNow(Player* bot)
     }
     return GoalApply::LogSignature(quests, bot->GetLevel(), items);
 }
+
+// The level and XP as one number that grows with every XP gained (GoalApply::EndRun's grind and gather progress)
+uint64 XpNow(Player* bot) { return (static_cast<uint64>(bot->GetLevel()) << 32) | bot->GetUInt32Value(PLAYER_XP); }
 
 // Where the goal's place and quest are for the bot (GoalApply::ExecutorFor). A delivery on the bot's map passes the
 // circuit's turn-in test: no reward POI here or a turn-in that failed there (low priority) does not start
@@ -437,7 +450,7 @@ bool StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Go
             return false;
         }
         before.emplace(goals.run, std::move(goals.quest));
-        GoalApply::BeginRun(goals, key, log);
+        GoalApply::BeginRun(goals, key, log, XpNow(bot), GoalApply::XpIsProgress(goal.kind));
     }
     if (!StartGoal(botAI, bot, goals, goal, executor, tests))
     {
@@ -629,7 +642,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
 
 void PlannerHook(PlayerbotAI* botAI, Player* bot)
 {
-    HookTimer const timer;
+    RowTimer const timer("planner hook");
     // The scope (KeepsPossessions: lookups in the random bot lists) is checked again only when the state key
     // changes; a real master takes a bot through a group invite, which changes the key. Bit 31 keeps the verdict
     NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
@@ -750,9 +763,14 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
                            [bot, &workable](uint32 quest)
                            { return bot->GetQuestStatus(quest) == QUEST_STATUS_COMPLETE && workable(quest); }};
 
+    // A plan the bridge paused: the bot stands idle until resumed (GoalApply::StillPaused)
+    if (GoalApply::StillPaused(goals, now))
+        return {false, true, nullptr};
+
     // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
-    // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start
-    if (!weighted && config.PlannerGoals && goals.slot.Query().Is() && !goals.switchTo)
+    // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start. An
+    // external goal goes on in the weighted group too: it has no planner goals, but the bridge may set one
+    if ((!weighted || goals.slot.HasExternal()) && config.PlannerGoals && goals.slot.Query().Is() && !goals.switchTo)
     {
         GoalApply::Active const current = goals.slot.Query();
         if (GoalApply::RunsCircuit(current) && goals.run.running && StartQuest(botAI, bot, goals, tests))
@@ -762,7 +780,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             return {true, false, nullptr};
         }
         if (goals.run.running && !Goals::IsInterlude(current.kind))
-            GoalApply::EndRun(goals, LogNow(bot));
+            GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
         if (goals.slot.End())
         {
             GoalApply::Active const resumed = goals.slot.Query();
@@ -774,10 +792,14 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
                 return {true, false, nullptr};
             }
             if (goals.run.running)
-                GoalApply::EndRun(goals, LogNow(bot));
+                GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
             goals.slot.End();
         }
     }
+
+    // A goal's or a pause's end above shows now: a weighted bot answers Weights below and has no job to publish it
+    if (GoalApply::ViewStale(goals))
+        Publish(bot, goals);
 
     GoalApply::IdleInput in;
     in.weighted = weighted;
@@ -840,7 +862,105 @@ bool HasExternalGoal(uint64 bot)
 {
     std::lock_guard<std::mutex> lock(viewsMutex);
     auto const view = views.find(bot);
-    return view != views.end() && view->second.goal.Is() && GoalApply::IsExternal(view->second.goal.source);
+    return view != views.end() &&
+           (view->second.paused || (view->second.goal.Is() && GoalApply::IsExternal(view->second.goal.source)));
+}
+
+GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BridgeOrder order,
+                                   std::string const& place, uint32 quest)
+{
+    using GoalApply::BridgeAnswer;
+    using GoalApply::BridgeOrder;
+    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    GoalApply::BridgeFacts facts;
+    // The planner's scope as OnIdle sees it: only there does the goal go on and end
+    facts.inScope =
+        sPlayerbotAIConfig.WorldTravel.PlannerGoals && (state.stateKey & STATE_SCOPE_BIT) && InScopeNow(botAI, bot);
+    if (facts.inScope && state.goals)
+        facts.current = state.goals->slot.Query();
+    bool const trip = order == BridgeOrder::GoTo || order == BridgeOrder::MeetAt;
+    std::optional<TravelRoute::Point> const at = trip ? TravelPlaces::Resolve(place) : std::nullopt;
+    facts.placeKnown = at.has_value();
+    facts.there = at && at->mapId == bot->GetMapId() && bot->GetDistance2d(at->x, at->y) <= GoalApply::GIVER_YARDS;
+    facts.openWorld = !bot->GetMap()->Instanceable();
+    QuestStatus const status = quest ? bot->GetQuestStatus(quest) : QUEST_STATUS_NONE;
+    facts.questInLog = status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE;
+    facts.canGrind = !bot->HasPlayerFlag(PLAYER_FLAGS_RESTING);
+    facts.canGather = botAI->HasSkill(SKILL_HERBALISM) || botAI->HasSkill(SKILL_MINING);
+    // One search on this thread, as the route topic runs it; its PerfMonitor row is "bridge route order"
+    facts.route = [bot, &at]
+    {
+        RowTimer const timer("bridge route order");
+        TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *at);
+        std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
+        return TravelRoute::Search(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams()).ok;
+    };
+    BridgeAnswer const answer = GoalApply::BridgeCheck(order, facts);
+    if (answer != BridgeAnswer::Done)
+        return answer;
+
+    uint32 const now = getMSTime();
+    GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
+    if (order == BridgeOrder::Pause || order == BridgeOrder::Resume)
+    {
+        if (GoalApply::BridgePause(goals, order == BridgeOrder::Pause, now))
+            botAI->rpgInfo.ChangeToIdle();
+        if (order == BridgeOrder::Resume)
+            state.snapshotDue = true;
+        Publish(bot, goals);
+        return BridgeAnswer::Done;
+    }
+
+    Place const here = PlaceOf(bot);
+    GoalApply::Active goal =
+        GoalApply::BridgeGoalFor(order, here, at ? Place{at->mapId, at->x, at->y, at->z} : here, quest, now);
+    // An errand trip and an inn trip are planned by their own start actions, as their triggers start them
+    if (order == BridgeOrder::Errands || order == BridgeOrder::SetHearth)
+    {
+        bool const started = order == BridgeOrder::Errands ? NewRpgStartErrandsAction(botAI).Execute(Event())
+                                                           : NewRpgStartInnAction(botAI).Execute(Event());
+        if (!started)
+            return BridgeAnswer::NothingHere;
+        GoalApply::TakeBridgeGoal(goals, std::move(goal));
+        Publish(bot, goals);
+        return BridgeAnswer::Done;
+    }
+
+    // The bridge's order is the partner's wish: no stall check (GoalApply::MayStart), but its run is judged at its end
+    QuestTests const tests{[](uint32) { return false; }, [](uint32) { return false; }};
+    GoalApply::Reach reach;
+    reach.sameMap = true;
+    reach.deliverable = status == QUEST_STATUS_COMPLETE;
+    reach.workable = status == QUEST_STATUS_INCOMPLETE;
+    GoalApply::Executor const executor = GoalApply::ExecutorFor(goal, reach);
+    GoalApply::Run const before = goals.run;
+    GoalApply::QuestGoal progress = std::move(goals.quest);
+    GoalApply::BeginRun(goals, GoalApply::GoalKey(goal, executor, 0), LogNow(bot), XpNow(bot),
+                        GoalApply::XpIsProgress(goal.kind));
+    if (executor == GoalApply::Executor::None || !StartGoal(botAI, bot, goals, goal, executor, tests))
+    {
+        goals.run = before;
+        goals.quest = std::move(progress);
+        return BridgeAnswer::Failed;
+    }
+    GoalApply::TakeBridgeGoal(goals, std::move(goal));
+    Publish(bot, goals);
+    return BridgeAnswer::Done;
+}
+
+bool PublishedPlan(uint64 bot, GoalApply::PlanView& out)
+{
+    std::lock_guard<std::mutex> lock(viewsMutex);
+    auto const view = views.find(bot);
+    if (view == views.end())
+        return false;
+    out.goal = view->second.goal;
+    out.plan = view->second.plan;
+    out.planMs = view->second.planMs;
+    out.jobOut = view->second.jobOut;
+    out.lastFallback = view->second.lastFallback;
+    out.paused = view->second.paused;
+    return true;
 }
 
 bool HandleGoalCommand(ChatHandler* handler, char const* args)
