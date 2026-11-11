@@ -21,7 +21,7 @@
 //   take:<quest>            reason value_per_minute, or delivery_elsewhere for a carried quest; value = value per
 //   minute defer:<quest>           reason log_full, too_far, risky, no_area, elite_group_solo or later_trip; value 0
 //   defer:more              the deferrals beyond the cap, value = their count
-//   abandon:<quest>         reason grey, overtime, deaths or log_space; value 0
+//   abandon:<quest>         reason grey, overtime, deaths, log_space or unindexed; value 0
 //   move:<chain|delivery|bracket>:camp<N>[:q<quest>]  reason chain_quest_takeable_there, delivery, zone_bracket
 //   move:nowhere            reason target_not_actionable, log_full_no_delivery or no_target; value = 0
 // The move row's value is the walk seconds.
@@ -61,6 +61,8 @@ inline char const* AbandonWord(AbandonReason reason)
             return "overtime";
         case AbandonReason::Deaths:
             return "deaths";
+        case AbandonReason::Unindexed:
+            return "unindexed";
         default:
             return "log_space";
     }

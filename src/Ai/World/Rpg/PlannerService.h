@@ -90,6 +90,13 @@ bool RunCircuitHarness(ChatHandler* handler);
 // `playerbots planner circuit selftest | <player name>`: the harness, or the plan for an online player (read only)
 bool HandleCircuitCommand(ChatHandler* handler, char const* args);
 
+// The goal model (WT14, GoalModel.h): the ranked goals with reasons
+// World thread: the synthetic checks plus the real-data scenarios (the circuit harness's places, synthetic spots)
+bool RunGoalsHarness(ChatHandler* handler);
+// `playerbots planner goals selftest | <player name>`: the harness, or the ranked goals of an online player (read
+// only; writes a `goal` decision row when the world log is on)
+bool HandleGoalsCommand(ChatHandler* handler, char const* args);
+
 // The population's quest statistics (WT13a, PlannerQuests.cpp; rules and book in QuestStats.h). StartQuestIndex
 // loads the stored totals; events before that are not counted
 // The events QuestStatAccepted ... QuestStatDeath are declared in QuestStatEvents.h

@@ -24,6 +24,9 @@
 #include "Chat.h"
 #include "DBCStores.h"
 #include "GameObjectData.h"
+#include "GoalModel.h"
+#include "GoalModelHarness.h"
+#include "GoalModelLog.h"
 #include "Log.h"
 #include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
@@ -953,7 +956,8 @@ bool RunCircuitHarness(ChatHandler* handler)
         }
 
         // A full log of quests from another map and a grey one: the grey one goes, far ones make room for every quest
-        // the empty log took, a protected far one stays
+        // the empty log took to work here (a delivery only when worth more than the far quests it pushes out, so it
+        // may wait for log space), a protected far one stays
         std::vector<uint32> const fillers = FarQuests(quests, place, hub, data.greyDiff, false, QUEST_LOG_SLOTS - 1);
         std::vector<uint32> const grey = FarQuests(quests, place, hub, data.greyDiff, true, 1);
         bool const fixture = fillers.size() == QUEST_LOG_SLOTS - 1 && grey.size() == 1;
@@ -967,9 +971,12 @@ bool RunCircuitHarness(ChatHandler* handler)
                 full.bot.quests.push_back(LogSlot(id, 0));
             full.bot.quests.push_back(LogSlot(grey.front(), 0));
             full.context.protectedQuests = {fillers.front()};
-            full.expect.exactTake = true;
-            full.expect.take = CircuitHarness::TakenIds(report.plan);
-            full.expect.minTake = 0;
+            std::vector<uint32> worked;  // the empty log's takes worked here
+            for (CircuitTake const& take : report.plan.take)
+                if (!take.carried)
+                    worked.push_back(take.quest);
+            std::sort(worked.begin(), worked.end());
+            full.expect.minTake = worked.size();
             full.expect.checkAbandon = true;
             full.expect.abandonFrom.assign(fillers.begin() + 1, fillers.end());
             full.expect.abandonFrom.push_back(grey.front());
@@ -977,6 +984,13 @@ bool RunCircuitHarness(ChatHandler* handler)
             full.expect.keep = {fillers.front()};
             CircuitHarness::Report const fullReport = CircuitHarness::RunScenario(full, CIRCUIT_TIMING_RUNS);
             AddChecks(checks, fullReport.checks);
+            std::vector<uint32> const was = CircuitHarness::TakenIds(report.plan);
+            std::vector<uint32> const fullTaken = CircuitHarness::TakenIds(fullReport.plan);
+            bool const keepsWorked = std::includes(fullTaken.begin(), fullTaken.end(), worked.begin(), worked.end());
+            bool const onlyEmpty = std::includes(was.begin(), was.end(), fullTaken.begin(), fullTaken.end());
+            checks.push_back({keepsWorked && onlyEmpty,
+                              Acore::StringFormat("{}-full-log: takes {}: each the empty log works here, none it left",
+                                                  scenario.name, CircuitHarness::IdList(fullTaken))});
             AddPlanLines(plans, full.name, fullReport);
 
             // The log full of those quests done (review 3, finding 1): complete quests are never abandoned and none is
@@ -1084,6 +1098,209 @@ bool HandleCircuitCommand(ChatHandler* handler, char const* args)
     float const baseline = plan.ok ? BaselineYards(plan, *data.quests) : 0.0f;
     for (std::string const& line : CircuitHarness::PlanLines(plan, baseline))
         handler->PSendSysMessage("  {}", line);
+    return true;
+}
+
+// WT14-2: the goal model on real data. The circuit, hubs, quests and services are the real indexes at the circuit
+// harness's places; the grind spots and the herb node are synthetic (the world has no spot or node index yet, WT16)
+namespace
+{
+constexpr float GOALS_SPOT_XP = 60.0f;  // synthetic grind spots: XP and copper per kill
+constexpr float GOALS_SPOT_COPPER = 30.0f;
+constexpr float GOALS_NODE_COPPER = 400.0f;  // synthetic herb node: what its yield sells for
+constexpr uint32 GOALS_SPOT_ID = 9001;
+constexpr uint32 GOALS_SPOT_GREY_ID = 9002;
+constexpr uint32 GOALS_NODE_ID = 9101;
+constexpr uint32 GOALS_ZONE_SPAN = 5;  // the synthetic zone bracket around the bot's level
+constexpr uint32 GOALS_FLUSH = 1000000;
+
+Goals::Situation GoalsSituation(Snapshot const& bot, Place const& start)
+{
+    Goals::Situation situation = GoalHarness::Base();
+    situation.here.zoneLow = bot.level > GOALS_ZONE_SPAN ? bot.level - GOALS_ZONE_SPAN : 1;
+    situation.here.zoneHigh = bot.level + GOALS_ZONE_SPAN;
+    uint32 const level = bot.level;
+    Goals::GrindSpot spot =
+        GoalHarness::Spot(GOALS_SPOT_ID, GOALS_SPOT_XP, GOALS_SPOT_COPPER, level > 1 ? level - 1 : 1, level + 1);
+    spot.place = start;
+    Goals::GrindSpot grey = spot;
+    grey.id = GOALS_SPOT_GREY_ID;
+    grey.minLevel = 1;
+    grey.maxLevel = std::max(Goals::GreyLevel(level), 1u);
+    situation.spots = {spot, grey};
+    Goals::GatherNode node;
+    node.id = GOALS_NODE_ID;
+    node.skill = GoalHarness::HERBALISM;
+    node.place = start;
+    node.walkMinutes = 1.0f;
+    node.copperWorth = GOALS_NODE_COPPER;
+    situation.nodes = {node};
+    return situation;
+}
+
+std::string GoalsLine(Goals::Ranked const& ranked)
+{
+    return Acore::StringFormat("  ranked: {}", GoalHarness::Summary(ranked));
+}
+
+// A real option names a hub, camp, spot, node, quest, vendor, item or inn, never the no-hub or no-camp marker, and a
+// move to a camp leads there, not back to where the circuit ends
+bool GoalTargetsOk(Goals::GoalPlan const& plan)
+{
+    for (Goals::Option const& option : plan.ranked.options)
+    {
+        if (option.target == NO_HUB || option.target == NO_CAMP)
+            return false;
+        if (option.targetType == Goals::TargetType::Camp && option.place.x == plan.circuit.returnTo.x &&
+            option.place.y == plan.circuit.returnTo.y)
+            return false;
+    }
+    return true;
+}
+}  // namespace
+
+bool RunGoalsHarness(ChatHandler* handler)
+{
+    auto const started = std::chrono::steady_clock::now();
+    std::vector<GoalHarness::Check> checks = GoalHarness::SyntheticChecks();
+    std::size_t const synthetic = checks.size();
+    std::vector<std::string> lines;
+    if (!IndexesReady() || !QuestsReady())
+        checks.push_back({"real: data", false, "indexes or quests not ready (see `playerbots planner indexes`)"});
+    else
+    {
+        CircuitData const data = CircuitDataNow();
+        CircuitContext const context = data.Context();
+        for (CircuitPlace const& place : CIRCUIT_PLACES)
+        {
+            Place start;
+            std::string text;
+            bool const found = CircuitStart(*data.quests, place, start, text);
+            std::string const name = std::string("real ") + place.name;
+            if (!found)
+            {
+                checks.push_back({name + ": start", false, text});
+                continue;
+            }
+            Snapshot bot = CircuitBot(place, start);
+            bot.rewardedQuests = GreyHistory(*data.quests, place.level, data.greyDiff);
+            bot.money = GOALS_FLUSH;
+            Goals::GoalPlan const flush = Goals::PlanGoals(bot, context, GoalsSituation(bot, start));
+            Goals::GoalPlan const again = Goals::PlanGoals(bot, context, GoalsSituation(bot, start));
+            lines.push_back(name + " flush");
+            lines.push_back(GoalsLine(flush.ranked));
+            checks.push_back(
+                {name + ": a flush bot's ranking is made, with the circuit among its options",
+                 flush.ranked.ok && (!flush.circuit.ok || GoalHarness::Has(flush.ranked, Goals::GoalKind::Quest)),
+                 GoalHarness::Summary(flush.ranked)});
+            checks.push_back({name + ": a flush bot does not choose money-making",
+                              flush.ranked.ok && !flush.ranked.options.empty() &&
+                                  flush.ranked.options.front().kind != Goals::GoalKind::Money,
+                              GoalHarness::Summary(flush.ranked)});
+            checks.push_back({name + ": the same input gives the same ranking",
+                              GoalHarness::SameList(flush.ranked, again.ranked), "determinism"});
+            bot.money = 0;
+            Goals::GoalPlan const broke = Goals::PlanGoals(bot, context, GoalsSituation(bot, start));
+            lines.push_back(name + " broke");
+            lines.push_back(GoalsLine(broke.ranked));
+            checks.push_back({name + ": a broke bot weighs money-making",
+                              broke.ranked.ok && GoalHarness::Has(broke.ranked, Goals::GoalKind::Money),
+                              GoalHarness::Summary(broke.ranked)});
+            std::vector<GoalLog::Row> const rows = GoalLog::Rows(broke.ranked);
+            bool const rowOk = rows.size() == 1 && !broke.ranked.options.empty() &&
+                               rows[0].choice == Goals::ChoiceWord(broke.ranked.options.front());
+            checks.push_back({name + ": the ranking maps to one goal row", rowOk,
+                              rows.empty() ? std::string("no row") : rows[0].choice + " " + rows[0].reason});
+            // A dry hub: every quest of the hub done; the moves are the circuit harness's proof, here the ranking
+            Snapshot dry = bot;
+            std::vector<uint32> const hub = HubQuests(*data.quests, start);
+            std::vector<uint32> done;
+            std::set_union(dry.rewardedQuests.begin(), dry.rewardedQuests.end(), hub.begin(), hub.end(),
+                           std::back_inserter(done));
+            dry.rewardedQuests = std::move(done);
+            dry.money = GOALS_FLUSH;
+            Goals::GoalPlan const dryPlan = Goals::PlanGoals(dry, context, GoalsSituation(dry, start));
+            lines.push_back(name + " dry hub");
+            lines.push_back(GoalsLine(dryPlan.ranked));
+            checks.push_back({name + ": a dry hub still ranks goals",
+                              dryPlan.ranked.ok && !dryPlan.ranked.options.empty(),
+                              GoalHarness::Summary(dryPlan.ranked)});
+            checks.push_back({name + ": every option names a real target",
+                              GoalTargetsOk(flush) && GoalTargetsOk(broke) && GoalTargetsOk(dryPlan),
+                              GoalHarness::Summary(dryPlan.ranked)});
+        }
+    }
+    std::size_t failed = 0;
+    for (GoalHarness::Check const& check : checks)
+    {
+        failed += check.pass ? 0 : 1;
+        handler->PSendSysMessage("{} {}: {}", check.pass ? "PASS" : "FAIL", check.name, check.text);
+    }
+    for (std::string const& line : lines)
+        handler->PSendSysMessage("{}", line);
+    std::string const summary = Acore::StringFormat(
+        "PLANNER goals selftest: {}, {} checks ({} synthetic), {} failed, in {} ms, rank {:.1f} us",
+        failed ? "FAIL" : "PASS", checks.size(), synthetic, failed, MsSince(started), GoalHarness::RankMicroseconds());
+    handler->PSendSysMessage("{}", summary);
+    LOG_INFO("playerbots", "{}", summary);
+    return !failed;
+}
+
+bool HandleGoalsCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string word;
+    in >> word;
+    if (word.empty())
+    {
+        handler->SendErrorMessage("Usage: playerbots planner goals selftest | <player name>");
+        return false;
+    }
+    if (word == "selftest")
+    {
+        RunGoalsHarness(handler);
+        return true;
+    }
+    if (!IndexesReady() || !QuestsReady())
+    {
+        handler->SendErrorMessage("PLANNER goals: not ready (see `playerbots planner indexes`)");
+        return false;
+    }
+    std::string name = word;
+    Player* player = normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+    if (!player || !player->IsInWorld())
+    {
+        handler->SendErrorMessage("PLANNER goals: no player {} online", word);
+        return false;
+    }
+    // Read only, on the world thread: the circuit and the Situation inputs the world gives now (health, mana); grind
+    // spots, nodes, vendors and inns are WT16's inputs. A caller offers a hearth option only when
+    // WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
+    CircuitData const data = CircuitDataNow();
+    Snapshot const snapshot = FillSnapshot(player, 0);
+    Goals::Situation situation;
+    situation.healthPercent = player->GetHealthPct();
+    uint32 const maxMana = player->GetMaxPower(POWER_MANA);
+    situation.manaPercent =
+        maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana) : -1.0f;
+    Goals::GoalPlan const plan = Goals::PlanGoals(snapshot, data.Context(), std::move(situation));
+    if (WorldLog::Active())
+        for (GoalLog::Row const& row : GoalLog::Rows(plan.ranked))
+        {
+            WorldLogFormat::Alternatives alternatives;
+            for (GoalLog::Alt const& alt : row.alternatives)
+                alternatives.Add({alt.choice, alt.value});
+            WorldLog::Decision(player, WorldLogFormat::DecisionKind::Goal, row.choice, row.reason, row.value,
+                               alternatives);
+        }
+    handler->PSendSysMessage("GOALS {}: level {}, map {} ({:.0f}, {:.0f}), money {}, need factor {:.2f}, {} considered",
+                             player->GetName(), snapshot.level, snapshot.position.map, snapshot.position.x,
+                             snapshot.position.y, snapshot.money, plan.ranked.need.factor, plan.ranked.considered);
+    if (!plan.ranked.ok)
+        handler->PSendSysMessage("  no ranking: {}", plan.ranked.failure);
+    for (Goals::Option const& option : plan.ranked.options)
+        handler->PSendSysMessage("  {} {:.1f}/min over {:.1f} min: {}", Goals::ChoiceWord(option),
+                                 option.valuePerMinute, option.minutes, option.reason);
     return true;
 }
 }  // namespace Planner
