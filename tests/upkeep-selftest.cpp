@@ -130,22 +130,31 @@ void CheckKinds()
     Check(std::string_view(Upkeep::KindWord(static_cast<UpkeepKind>(Upkeep::KIND_COUNT))) == "Other",
           "a kind out of range is Other");
 
-    // Gold (honest travel), Repair and Resurrect (WU5), the five consumable kinds (WU7) are honest; every other kind
-    // is still handed out
+    // Gold (honest travel), Repair and Resurrect (WU5), the five consumable kinds (WU7), Attunement, Key, Reputation,
+    // Glyph and Talent (WU18) are honest; every other kind is still handed out
     size_t honest = 0;
     for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
         honest += rule.honest ? 1 : 0;
-    Check(honest == 8 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
+    Check(honest == 13 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
               Upkeep::IsHonest(UpkeepKind::Resurrect),
           "Gold, Repair, Resurrect and the five consumable kinds are honest");
-    Check(!Upkeep::IsHonest(UpkeepKind::TrainerSpell) && !Upkeep::IsHonest(UpkeepKind::Pet),
-          "trainer spells and pets are still handed out");
+    Check(Upkeep::IsHonest(UpkeepKind::Attunement) && Upkeep::IsHonest(UpkeepKind::Key) &&
+              Upkeep::IsHonest(UpkeepKind::Reputation) && Upkeep::IsHonest(UpkeepKind::Glyph) &&
+              Upkeep::IsHonest(UpkeepKind::Talent),
+          "attunements, keys, reputation, glyphs and the talent reset are honest");
+    Check(!Upkeep::IsHonest(UpkeepKind::TrainerSpell) && !Upkeep::IsHonest(UpkeepKind::Pet) &&
+              !Upkeep::IsHonest(UpkeepKind::WeaponSkill) && !Upkeep::IsHonest(UpkeepKind::Riding) &&
+              !Upkeep::IsHonest(UpkeepKind::Mount) && !Upkeep::IsHonest(UpkeepKind::SpecialSpell) &&
+              !Upkeep::IsHonest(UpkeepKind::ClassQuest),
+          "trainer spells, pets, skills, mounts and class-quest spells are still handed out");
     Check(!Upkeep::IsHonest(static_cast<UpkeepKind>(Upkeep::KIND_COUNT)), "a kind out of range is not honest");
 
     // The predicate over the flipped kinds' table entries
     using Upkeep::Granted;
-    for (UpkeepKind const kind : {UpkeepKind::Repair, UpkeepKind::Resurrect, UpkeepKind::Food, UpkeepKind::Ammo,
-                                  UpkeepKind::Reagent, UpkeepKind::Poison, UpkeepKind::Consumable})
+    for (UpkeepKind const kind :
+         {UpkeepKind::Repair, UpkeepKind::Resurrect, UpkeepKind::Food, UpkeepKind::Ammo, UpkeepKind::Reagent,
+          UpkeepKind::Poison, UpkeepKind::Consumable, UpkeepKind::Attunement, UpkeepKind::Key, UpkeepKind::Reputation,
+          UpkeepKind::Glyph, UpkeepKind::Talent})
     {
         std::string const word = Upkeep::KindWord(kind);
         bool const honestKind = Upkeep::IsHonest(kind);

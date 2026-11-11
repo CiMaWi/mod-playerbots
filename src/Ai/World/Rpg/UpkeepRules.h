@@ -65,12 +65,12 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"SpecialSpell", false},
     {"ClassQuest", false},  // spells of class quests the bot never did
     {"Pet", false},         // pet and pet talents
-    {"Glyph", false},
-    {"Key", false},  // keyring
-    {"Reputation", false},
-    {"Attunement", false},  // completed attunement quests
+    {"Glyph", true},
+    {"Key", true},  // keyring
+    {"Reputation", true},
+    {"Attunement", true},  // completed attunement quests
     {"Gold", true},
-    {"Talent", false},  // the talent reset below the persistence level
+    {"Talent", true},  // the talent reset below the persistence level
 }};
 
 constexpr char const* KindWord(UpkeepKind kind)

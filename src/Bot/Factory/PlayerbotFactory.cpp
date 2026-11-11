@@ -886,20 +886,30 @@ void PlayerbotFactory::Randomize(bool incremental)
     // if (pmo)
     //     pmo->finish();
 
+    // The consumables are a fresh kit's at a wipe; a keeper's re-randomize leaves what it bought, looted or made, and
+    // only a bot granted the kind (outside the keepers, or in the handout share) gets it again, as that kind's handout
+    auto const consumableKit = [this, wipe, keepsPossessions](UpkeepKind kind, auto&&... inits)
+    {
+        if (wipe)
+            (inits(), ...);
+        else
+            Upkeep::HandOut(bot, kind, keepsPossessions, "factory_randomize", inits...);
+    };
+
     if (sPlayerbotAIConfig.RandomBotPreQuests)
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Quests");
         // Rewards every quest again (money too) and then clears the bags: creation only for a bot that keeps them
         if (wipe)
             InitInstanceQuests();
-        InitAttunementQuests();
+        consumableKit(UpkeepKind::Attunement, [this] { InitAttunementQuests(); });
         if (pmo)
             pmo->finish();
     }
     else
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Quests");
-        InitAttunementQuests();
+        consumableKit(UpkeepKind::Attunement, [this] { InitAttunementQuests(); });
         if (pmo)
             pmo->finish();
     }
@@ -943,7 +953,7 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reputation");
     LOG_DEBUG("playerbots", "Initializing reputation...");
-    InitReputation();
+    consumableKit(UpkeepKind::Reputation, [this] { InitReputation(); });
     if (pmo)
         pmo->finish();
 
@@ -995,15 +1005,6 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Ammo");
     LOG_DEBUG("playerbots", "Initializing ammo...");
-    // The consumables are a fresh kit's at a wipe; a keeper's re-randomize leaves what it bought, looted or made, and
-    // only a bot granted the kind (outside the keepers, or in the handout share) gets it again, as that kind's handout
-    auto const consumableKit = [this, wipe, keepsPossessions](UpkeepKind kind, auto&&... inits)
-    {
-        if (wipe)
-            (inits(), ...);
-        else
-            Upkeep::HandOut(bot, kind, keepsPossessions, "factory_randomize", inits...);
-    };
     consumableKit(UpkeepKind::Ammo, [this] { InitAmmo(); });
     if (pmo)
         pmo->finish();
@@ -1028,7 +1029,7 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Keys");
     LOG_DEBUG("playerbots", "Initializing keys...");
-    InitKeyring();
+    consumableKit(UpkeepKind::Key, [this] { InitKeyring(); });
     if (pmo)
         pmo->finish();
 
@@ -1065,7 +1066,7 @@ void PlayerbotFactory::Randomize(bool incremental)
         pmo->finish();
 
     LOG_DEBUG("playerbots", "Initializing glyphs...");
-    InitGlyphs();
+    consumableKit(UpkeepKind::Glyph, [this] { InitGlyphs(); });
     // bot->SaveToDB(false, false);
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Guilds");
@@ -1137,8 +1138,7 @@ void PlayerbotFactory::Refresh()
     // Refresh never creates: a bot that keeps its possessions is only restocked, with the kinds Upkeep grants it
     bool const keepsPossessions = KeepsPossessions(bot);
     constexpr char const* source = "factory_refresh";
-    if (Upkeep::Granted(bot, UpkeepKind::Attunement, keepsPossessions))
-        InitAttunementQuests();
+    Upkeep::HandOut(bot, UpkeepKind::Attunement, keepsPossessions, source, [this] { InitAttunementQuests(); });
     if (!keepsPossessions)
         ClearInventory();
     else if (!bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
