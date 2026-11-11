@@ -659,6 +659,8 @@ constexpr AbilityRow Rows[] = {
      .Done = Completion::AtOnce,
      .StatePhrase = "back to my own plans"}};
 
+static_assert(std::size(Rows) + std::size(NoEffect) == IntentCount, "every Intent has a row or a word without one");
+
 // Execute's body below it: one outcome per step that ran after the admission.
 Result ExecuteSteps(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
                     std::vector<StepOutcome>& outcomes);

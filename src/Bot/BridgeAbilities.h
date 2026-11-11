@@ -126,6 +126,10 @@ std::span<AbilityRow const> AbilityRows();
 // Regroup, Pull, AssignRole and DungeonClear: wire verbs with no safe playerbots effect; Execute answers Unavailable.
 bool IsUnavailable(Intent operation);
 
+// The number of Intent values: the rows' verbs and the four without one (BridgeAbilities.cpp checks it against the
+// table). A new verb is appended to Intent, given its row and counted here; mod-ollama-chat asserts its own count.
+constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::ResumePlan) + 1;
+
 // The wire's verb of an operation: its row's name, else the word the four without a row have on the wire; empty for
 // a value outside the enum. FindIntent is the inverse: a row by name, then the four; none for any other word.
 char const* IntentWord(Intent operation);

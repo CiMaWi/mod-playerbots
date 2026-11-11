@@ -74,7 +74,10 @@ change, confirm:
 - Something a conversation partner can ask a bot to do is an ability: one `Intent` value (append only) in
   `src/Bot/BridgeIntentEffect.h` and one row in `src/Bot/BridgeAbilities.cpp` (name, sentence, parameters, group
   rule, check, refusals, effect, lasting part, completion, state phrase). `Execute` does not change; the row's effect
-  calls the playerbots action or planner goal, and `tests/bridge-intent-effect-selftest.cpp` must see the row apply
+  calls the playerbots action or planner goal; `IntentCount` (`src/Bot/BridgeAbilities.h`) counts the new value,
+  and mod-ollama-chat needs a `ChannelIntent` value, its `ChannelIntentCount` and a `BridgeIntentPairs` entry
+  (`mod-ollama-chat_handler.cpp`; static_asserts fail until all agree), after which its stepped wire takes the act
+  from the catalogue; and `tests/bridge-intent-effect-selftest.cpp` must see the row apply
   and give every refusal it lists. A unit, quest or place parameter takes a name as well as an id: `RunRow` looks
   it up (`src/Bot/BridgeNames.h`) after the common and group rules, and a row taking a unit or quest lists
   `UnknownName`. Something a partner can ask a bot about is a topic: one `BotStateTopic` value (append only) in

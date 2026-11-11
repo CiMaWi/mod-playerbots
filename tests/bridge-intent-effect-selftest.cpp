@@ -2183,6 +2183,9 @@ int main()
 
         // LC1b: the canonical text and its hash.
         std::string const text = PlayerbotBridge::CatalogueText(catalogue);
+        // LC3: mod-ollama-chat sends the catalogue whole, at most 24,576 encoded bytes, about 1.42 times this text (an
+        // answer over its budget drops the catalogue query). Past this bound a new row needs the query paged first.
+        Check(text.size() <= 16384, "the catalogue text stays within the module's answer budget");
         auto const plain = [](std::string const& field, char const* forbidden)
         { return field.find_first_of(forbidden) == std::string::npos; };
         char const* const breaks = "\t\n";
