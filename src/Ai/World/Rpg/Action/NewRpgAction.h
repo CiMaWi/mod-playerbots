@@ -174,6 +174,7 @@ struct TravelOrder
     std::string place;  // the name in the log lines
     bool stop{false};   // end the bot's trip instead
     uint32 postedMs{0};
+    int16 hold{-1};  // the new HoldRules mask (`route hold|release`), applied before the trip; -1 = no change
 };
 
 namespace TravelOrders

@@ -21,6 +21,7 @@
 #include "DBCStores.h"
 #include "FightBook.h"
 #include "GuildTaskMgr.h"
+#include "HoldRules.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
 #include "MatchLog.h"
@@ -204,6 +205,8 @@ public:
             {"go", HandleRouteGoCommand, SEC_GAMEMASTER, Console::Yes},
             {"stop", HandleRouteStopCommand, SEC_GAMEMASTER, Console::Yes},
             {"transport", HandleRouteTransportCommand, SEC_GAMEMASTER, Console::Yes},
+            {"hold", HandleRouteHoldCommand, SEC_GAMEMASTER, Console::Yes},
+            {"release", HandleRouteReleaseCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsPlannerCommandTable = {
@@ -498,6 +501,58 @@ public:
         order.postedMs = getMSTime();
         TravelOrders::Post(botAI->GetBot()->GetGUID(), std::move(order));
         handler->PSendSysMessage("ROUTE stop: {} ordered", target.GetName());
+        return true;
+    }
+
+    // A test's hold (HoldRules, functional tests): posted like a travel order, so the bot's map thread applies it
+    static void PostHold(PlayerbotAI* botAI, uint8 mask)
+    {
+        TravelOrder order;
+        order.hold = mask;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI->GetBot()->GetGUID(), std::move(order));
+    }
+
+    // `playerbots route hold <bot>`: the bot ends its status and chooses nothing on its own (no planner goal, random
+    // status, errand, inn bind or hearth); orders (`route go|transport|stop`) still run, then it holds again
+    static bool HandleRouteHoldCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        PostHold(botAI, HoldRules::ALL);
+        handler->PSendSysMessage("ROUTE hold: {} ordered", target.GetName());
+        return true;
+    }
+
+    // `playerbots route release <bot> [planner|status|errand|hearth ...]`: the named choices stay off; none = full
+    static bool HandleRouteReleaseCommand(ChatHandler* handler, PlayerIdentifier target, Tail choices)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        uint8 mask = 0;
+        std::string_view rest(choices);
+        while (!rest.empty())
+        {
+            size_t const start = rest.find_first_not_of(' ');
+            if (start == std::string_view::npos)
+                break;
+            rest.remove_prefix(start);
+            size_t const end = rest.find(' ');
+            std::string_view const word = rest.substr(0, end);
+            uint8 const bit = HoldRules::ParseChoice(word);
+            if (!bit)
+            {
+                handler->SendErrorMessage("ROUTE release: unknown choice '{}' ({})", std::string(word),
+                                          HoldRules::CHOICE_NAMES);
+                return false;
+            }
+            mask |= bit;
+            rest.remove_prefix(end == std::string_view::npos ? rest.size() : end);
+        }
+        PostHold(botAI, mask);
+        handler->PSendSysMessage("ROUTE release: {} ordered (kept off: {})", target.GetName(), HoldRules::Format(mask));
         return true;
     }
 

@@ -40,6 +40,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "HoldRules.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
@@ -6845,6 +6846,8 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
     {
         return GetAiObjectContext()->FormatValues();
     }
+    else if (command == "hold")
+        return "hold " + HoldRules::Format(rpgInfo.heldChoices);
     else if (command == "travel")
     {
         std::ostringstream out;

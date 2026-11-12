@@ -16,6 +16,7 @@
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "HoldRules.h"
 #include "IVMapMgr.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
@@ -384,25 +385,54 @@ std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
 std::atomic<uint32> travelOrdersWaiting{0};                // travelOrders.size(): the map threads' cheap check
 
+// A GM order ends the bot's trip: the Travel event and the trip decision with the word (stopped, held)
+void EndTripByOrder(Player* bot, NewRpgInfo& info, NewRpgInfo::Travel const& data, char const* word)
+{
+    LOG_INFO("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), word);
+    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
+    std::string const source = std::string("abort:") + word;
+    EventLog::Emit(bot, "Travel", source.c_str(), data.tripId, seconds);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", word, static_cast<float>(seconds),
+                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
+    info.ChangeToIdle();
+}
+
+// A test's hold or release (HoldRules): a hold ends the current status unless a trip order comes with it, so the
+// bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit
+void ApplyHold(Player* bot, NewRpgInfo& info, uint8 mask, bool tripFollows)
+{
+    info.heldChoices = mask;
+    info.planner.snapshotDue = true;
+    LOG_INFO("playerbots", "[Route] {} hold: {}", bot->GetName(), HoldRules::Format(mask));
+    if (!mask || tripFollows)
+        return;
+    WorldLog::StatusReason const reasonScope("hold");
+    if (auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data))
+        EndTripByOrder(bot, info, *data, "held");
+    else
+        info.ChangeToIdle();
+}
+
 // A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
 bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 {
-    WorldLog::StatusReason const reasonScope("order");
     NewRpgInfo& info = botAI->rpgInfo;
+    bool const trip = HoldRules::HasTrip(order);
+    bool const held = order.hold != HoldRules::NO_CHANGE;
+    if (held)
+        ApplyHold(bot, info, static_cast<uint8>(order.hold), trip);
+    if (!trip)
+        return held;
+    WorldLog::StatusReason const reasonScope("order");
     if (order.stop)
     {
         auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data);
         if (!data)
         {
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
-            return false;
+            return held;
         }
-        LOG_INFO("playerbots", "[Route] {} gives the trip up: stopped", bot->GetName());
-        uint32 const seconds = GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS;
-        EventLog::Emit(bot, "Travel", "abort:stopped", data->tripId, seconds);
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", "stopped", static_cast<float>(seconds),
-                           {{"replans", static_cast<float>(data->trip.replans)}}, data->tripId);
-        info.ChangeToIdle();
+        EndTripByOrder(bot, info, *data, "stopped");
         return true;
     }
 
@@ -416,7 +446,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     if (refusal)
     {
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
-        return false;
+        return held;
     }
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
@@ -428,7 +458,10 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 void TravelOrders::Post(ObjectGuid bot, TravelOrder order)
 {
     std::lock_guard<std::mutex> guard(travelOrdersLock);
-    travelOrders[bot] = std::move(order);
+    // A hold and a trip posted before the bot's next update both stay (HoldRules::Merge)
+    auto const [it, added] = travelOrders.try_emplace(bot, order);
+    if (!added)
+        HoldRules::Merge(it->second, std::move(order));
     travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
 }
 
@@ -476,18 +509,23 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     {
         case RPG_IDLE:
         {
+            // A test's hold (HoldRules): a held choice is not made; an order above was taken all the same
+            HoldRules::IdleGate const gate = HoldRules::GateOf(info.heldChoices);
+            if (!gate.planner && !gate.status)
+                return false;
             // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback
-            Planner::IdleStep const step =
-                Planner::OnIdle(botAI, bot,
-                                [this](uint32 questId)
-                                {
-                                    std::vector<POIInfo> poiInfo;
-                                    return !botAI->lowPriorityQuest.contains(questId) &&
-                                           GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
-                                });
+            Planner::IdleStep step;
+            if (gate.planner)
+                step = Planner::OnIdle(botAI, bot,
+                                       [this](uint32 questId)
+                                       {
+                                           std::vector<POIInfo> poiInfo;
+                                           return !botAI->lowPriorityQuest.contains(questId) &&
+                                                  GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
+                                       });
             if (step.started)
                 return true;
-            if (step.wait)
+            if (step.wait || !gate.status)
                 return false;
             return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
                                        RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER},
@@ -1760,7 +1798,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     // discovered nodes (the snapshot's taxi mask), their fares within the purse (the search's fare budget). The
     // hearthstone is a leg while its stone is in the bags and it is ready or cooling for at most the wait cap (the
     // search); not again after a hearth leg of this trip failed
-    snapshot.hasHearthstone = snapshot.hasHearthstone && !data.noHearth;
+    snapshot.hasHearthstone =
+        snapshot.hasHearthstone && !data.noHearth && HoldRules::HearthAllowed(botAI->rpgInfo.heldChoices);
     snapshot.allowTransport = true;
     TravelRoute::Request request;
     request.snapshot = snapshot;
