@@ -166,20 +166,23 @@ public:
 };
 
 // GM orders for RPG_TRAVEL (`playerbots route go|stop`, tests): the command posts on the world thread, the bot's map
-// thread takes its order in NewRpgStatusUpdateAction (one atomic load per tick while no order waits). An order not
-// taken within a minute (the bot is not in the rpg strategy, or logged out) is dropped
+// thread takes its order at its next AI update (TakeAndApply from PlayerbotAI::UpdateAIInternal: one atomic load per
+// tick while no order waits; a trip waits until the bot is out of combat, a hold never). An order not taken within a
+// minute (the bot is not in the rpg strategy, logged out or fighting) is dropped
 struct TravelOrder
 {
     WorldPosition dest{};
     std::string place;  // the name in the log lines
     bool stop{false};   // end the bot's trip instead
     uint32 postedMs{0};
+    int16 hold{-1};  // the new HoldRules mask (`route hold|release`), applied before the trip; -1 = no change
 };
 
 namespace TravelOrders
 {
 void Post(ObjectGuid bot, TravelOrder order);
-bool Take(ObjectGuid bot, TravelOrder& order);
+bool Take(ObjectGuid bot, bool inCombat, TravelOrder& order);
+bool TakeAndApply(PlayerbotAI* botAI, Player* bot);  // on the bot's map thread: the order taken and applied
 }  // namespace TravelOrders
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction

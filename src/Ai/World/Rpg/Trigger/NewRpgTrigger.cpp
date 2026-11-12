@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "HoldRules.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
 #include "PlayerbotAI.h"
@@ -16,6 +17,8 @@ bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
+    if (!HoldRules::ErrandAllowed(botAI->rpgInfo.heldChoices))
+        return false;
     switch (botAI->rpgInfo.GetStatus())
     {
         case RPG_IDLE:

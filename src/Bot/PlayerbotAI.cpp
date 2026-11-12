@@ -40,6 +40,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "HoldRules.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
@@ -54,6 +55,7 @@
 #include "NaturalPath.h"
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
+#include "NewRpgAction.h"
 #include "NewRpgStrategy.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -1317,6 +1319,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     }
 
     HandleCommands();
+    TravelOrders::TakeAndApply(this, bot);  // a GM order (route go, hold, release) at the next update
 
     // logout if logout timer is ready or if instant logout is possible
     if (bot->GetSession()->IsLoggingOut())
@@ -6845,6 +6848,8 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
     {
         return GetAiObjectContext()->FormatValues();
     }
+    else if (command == "hold")
+        return "hold " + HoldRules::Format(rpgInfo.heldChoices);
     else if (command == "travel")
     {
         std::ostringstream out;
