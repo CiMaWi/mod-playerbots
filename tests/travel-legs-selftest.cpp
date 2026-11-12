@@ -547,6 +547,18 @@ void CheckFlightFailureAndDeadline()
     Check(!TravelLegs::PastDeadline(bound + 1, 2000.0f, false), "deadline: a replan's longer estimate moves the bound");
     Check(TravelLegs::PastDeadline(TravelLegs::TRIP_SLACK_MS + 1, 0.0f, false),
           "deadline: before the first answer the slack alone");
+    Check(!TravelLegs::PastDeadline(bound + 1, 1000.0f, false, true),
+          "deadline: held while a replan is pending after a failed leg");
+    Check(TravelLegs::PastDeadline(bound + 1, 1000.0f, false, false),
+          "deadline: the trip's first request (no failed leg) is not held");
+    // The hold is bounded: every failure spends a replan, and the fourth ends the trip whatever the deadline says
+    {
+        Trip held = StartedTrip({MakeLeg(LegType::Walk, START, NODES[0], {0}, 30.0f)});
+        int replans = 0;
+        while (TravelLegs::AfterFailure(held, FailReason::NoAnswer) == TravelLegs::Recovery::Replan)
+            ++replans;
+        Check(replans == TravelLegs::MAX_REPLANS, "deadline: a pending replan hold ends by the MAX_REPLANS abort");
+    }
 }
 
 void CheckEventSources()
@@ -1117,6 +1129,14 @@ void CheckBoarding()
     TravelLegs::SetQuay(lift, nullptr);
     Check(lift.quaySought && !lift.hasQuay && Near(TravelLegs::WaitPoint(lift, lift.legs[0]), LIFT_TOP),
           "boarding: an elevator waits at its stop node");
+
+    // A nav mesh tile that never loads: after QUAY_UNKNOWN_LOOKS looks the node stays, not unsought forever
+    Trip tile = StartedTrip({ShipLeg()});
+    TravelLegs::NoteQuayUnknown(tile);
+    TravelLegs::NoteQuayUnknown(tile);
+    Check(!tile.quaySought, "quay: two unknown looks are asked again");
+    TravelLegs::NoteQuayUnknown(tile);
+    Check(tile.quaySought && !tile.hasQuay, "quay: the third unknown look leaves the node as the wait point");
 }
 }  // namespace
 

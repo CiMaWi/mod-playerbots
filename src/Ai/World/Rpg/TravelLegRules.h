@@ -48,6 +48,7 @@ constexpr std::uint32_t HEARTH_SLACK_MS = 30 * 1000;  // a hearth leg's time bey
 constexpr std::uint32_t REPLAN_DELAY_MS = 2000;       // the failed leg's stuck report reaches the published book first
 constexpr std::uint32_t LEGS_PER_TICK = 4;            // finished legs passed in one tick at most
 constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;       // reached waypoints passed in one tick at most
+constexpr std::uint8_t QUAY_UNKNOWN_LOOKS = 3;        // quay looks on an unloaded nav mesh tile before the node stays
 constexpr std::uint8_t MAX_RESUBMITS = 3;             // route requests asked again per trip after a late or lost answer
 constexpr std::size_t AVOID_NODES = 4;                // route ends a trip leaves out after stuck walks
 constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leaves out (deaths, timed-out transports)
@@ -423,7 +424,8 @@ struct Trip
     Point quay;
     bool hasQuay{false};
     bool quaySought{false};
-    bool boardMoveSent{false};  // Board: the walk onto the deck went out at this docking (WantsBoardMove)
+    std::uint8_t quayUnknown{0};  // looks that found no nav mesh tile (NoteQuayUnknown)
+    bool boardMoveSent{false};    // Board: the walk onto the deck went out at this docking (WantsBoardMove)
     std::vector<TransportNote> transportNotes;
     OffFirst offFirst;  // the whole trip's (StartLeg leaves it)
 };
@@ -628,6 +630,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.quay = Point{};
     trip.hasQuay = false;
     trip.quaySought = false;
+    trip.quayUnknown = 0;
     trip.boardMoveSent = false;
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
@@ -685,6 +688,14 @@ inline void SetQuay(Trip& trip, Point const* quay)
     trip.hasQuay = quay != nullptr;
     if (quay)
         trip.quay = *quay;
+}
+
+// A quay look found no nav mesh tile: asked again a scan later, but after QUAY_UNKNOWN_LOOKS the node stays (no quay),
+// so a tile that never loads does not leave the bot standing without an attempt
+inline void NoteQuayUnknown(Trip& trip)
+{
+    if (++trip.quayUnknown >= QUAY_UNKNOWN_LOOKS)
+        SetQuay(trip, nullptr);
 }
 
 // Where a transport leg's bot walks to and waits: the quay once found, else the dock node
@@ -1158,9 +1169,12 @@ inline std::uint32_t TripDeadlineMs(float estimateSeconds)
 // The deadline counts from the current route's start against that route's estimate (a replan starts a new bound;
 // MAX_REPLANS bounds their number) and waits while the bot rides (in flight or aboard a transport): it cannot leave
 // the taxi or a ship at sea, so ending the trip there would only drop the legs after the landing
-inline bool PastDeadline(std::uint32_t routeMs, float routeSeconds, bool riding)
+// A replan pending (a leg failed, the new route has not arrived: replanPending) holds it too, because the dead leg's
+// time still counts against the old route. The hold is bounded: the pending route ends by its answer, or by NoAnswer
+// (MAX_RESUBMITS) failing the leg again, and MAX_REPLANS aborts the trip. The trip's first request is no replan
+inline bool PastDeadline(std::uint32_t routeMs, float routeSeconds, bool riding, bool replanPending = false)
 {
-    return !riding && routeMs > TripDeadlineMs(routeSeconds);
+    return !riding && !replanPending && routeMs > TripDeadlineMs(routeSeconds);
 }
 
 // PlayerbotAI::Reset(true) renews the bot's RPG state, also after every far teleport (HandleTeleportAck). What

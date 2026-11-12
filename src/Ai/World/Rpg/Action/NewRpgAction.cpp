@@ -1409,7 +1409,10 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, uint32 nowMs)
     NavMeshSnap::Result const result =
         NavMeshSnap::Nearest(bot->GetMap(), x, y, z, EXIT_ACROSS_YARDS, EXIT_VERTICAL_YARDS, NAV_GROUND);
     if (result == NavMeshSnap::Result::Unknown)
+    {
+        TravelLegs::NoteQuayUnknown(trip);
         return;
+    }
     TravelRoute::Point const quay{leg.from.mapId, x, y, z};
     TravelLegs::SetQuay(trip, result == NavMeshSnap::Result::Found ? &quay : nullptr);
     if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
@@ -1619,7 +1622,8 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     }
     Transport* const ridden = bot->GetTransport();
     bool const riding = bot->IsInFlight() || ridden || AtTransportLeg(data->trip);
-    if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, riding))
+    bool const replanPending = data->failedMs && data->trip.legs.empty();
+    if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, riding, replanPending))
     {
         EndTrip(*data, "deadline", "abort:deadline");
         return true;
