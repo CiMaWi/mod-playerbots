@@ -152,7 +152,8 @@ private:
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
     bool Arrive(NewRpgInfo::Travel& data);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
-    void EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source);
+    // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
+    void EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source);
 };
 
 // Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its
