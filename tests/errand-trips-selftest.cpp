@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-// Offline proof of trips and errands (travel plan WT15, WT.6): the scenarios of ErrandHarness.h on synthetic bots and
-// stops, each about the stops a trip makes and the errands it does or refuses.
+// Offline proof of trips and errands (travel plan WT15, WT.6; the upkeep needs as providers, WU12): the scenarios of
+// ErrandHarness.h on synthetic bots and stops, each about the stops a trip makes and the errands it does or refuses.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/errand-trips-selftest.cpp
 
 #include <cstdio>

@@ -9,6 +9,7 @@
 
 #include "UseItemAction.h"
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 const uint16 SPELL_TRAVEL_FORM = 783;
@@ -58,6 +59,10 @@ public:
     static char const* CastFlyingMount(Player* bot, PlayerbotAI* botAI);
     // A travel fly leg's end: off the mount, the stale flying flags cleared, down on the ground
     static void LandAndDismount(Player* bot);
+    // The floor below the bot as {ground, water surface}: the ground with MAX_FALL_DISTANCE search (vmap too), the
+    // water over it (TravelLegs::FLY_NO_GROUND: none). The one sampler of a fly leg's descent, a dismount's log and
+    // the body a killed flyer lies on (TravelLegs::BodyZ takes the higher of the two)
+    static std::pair<float, float> FloorBelow(Player* bot);
     static void LoadPreferredMounts();
 
 private:

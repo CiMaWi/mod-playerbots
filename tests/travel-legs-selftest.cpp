@@ -967,6 +967,38 @@ void CheckDescent()
           "descent: over the sea down to its surface, not the seabed");
     Check(isFloor(TravelLegs::StartDescent(trip, up, 120.0f, 40.0f, true, 70000).target, 120.0f),
           "descent: ground above the water's level is the floor");
+    // WU12b: an abort after a fly leg failed in the air comes down before the trip ends (WU11c review NOTE 1)
+    Trip abortTrip = StartedTrip({FlyLeg()}, 0);
+    abortTrip.seenInFlight = true;
+    Decision const aDown = TravelLegs::AbortDescent(abortTrip, FailReason::Timeout, up, 90.0f, none, true, 80000);
+    Check(aDown.act == Act::Descend && isFloor(aDown.target, 90.0f) && abortTrip.descending &&
+              abortTrip.endAfterDescent && abortTrip.endReason == FailReason::Timeout &&
+              !TravelLegs::EndsAfterDescent(abortTrip, aDown),
+          "abort descent: 113 yd up on the flying mount, down first; the trip does not end yet");
+    Decision const aOn = TravelLegs::StepDescent(abortTrip, {1, 300.0f, 0.0f, 150.0f}, true, 85000);
+    Check(aOn.act == Act::Descend && !TravelLegs::EndsAfterDescent(abortTrip, aOn),
+          "abort descent: on the way down the trip stays");
+    Decision const aDone = TravelLegs::StepDescent(abortTrip, {1, 300.0f, 0.0f, 94.0f}, true, 90000);
+    Check(aDone.act == Act::Done && TravelLegs::EndsAfterDescent(abortTrip, aDone) &&
+              abortTrip.endReason == FailReason::Timeout,
+          "abort descent: down within AIRBORNE_YARDS, the trip ends with its reason");
+    TravelLegs::AbortDescent(abortTrip, FailReason::Landing, up, 90.0f, none, true, 100000);
+    Decision const aLate = TravelLegs::StepDescent(abortTrip, up, true, 100001 + TravelLegs::DESCENT_TIMEOUT_MS);
+    Check(aLate.act == Act::Fail && TravelLegs::EndsAfterDescent(abortTrip, aLate),
+          "abort descent: a descent that times out ends the trip too");
+    Decision const aFall = TravelLegs::AbortDescent(abortTrip, FailReason::Landing, up, 90.0f, none, false, 110000);
+    Check(aFall.act == Act::Fall && !abortTrip.descending && TravelLegs::EndsAfterDescent(abortTrip, aFall),
+          "abort descent: without a flying mount it falls and the trip ends");
+    Decision const aGround =
+        TravelLegs::AbortDescent(abortTrip, FailReason::Landing, {1, 300.0f, 0.0f, 94.0f}, 90.0f, none, true, 120000);
+    Check(aGround.act == Act::Done && !abortTrip.descending && TravelLegs::EndsAfterDescent(abortTrip, aGround),
+          "abort descent: already on the floor, the trip ends at once");
+    Trip abortWalk = StartedTrip(FullRoute());
+    Check(TravelLegs::AbortDescent(abortWalk, FailReason::Stuck, up, 90.0f, none, true, 130000).act == Act::Done &&
+              !abortWalk.descending,
+          "abort descent: a walk leg has no descent, the trip ends at once");
+    TravelLegs::StartDescent(abortTrip, up, 90.0f, none, true, 140000);
+    Check(!abortTrip.endAfterDescent, "abort descent: a replan's descent (StartDescent) does not end the trip");
     Check(std::string(TravelLegs::ActWord(Act::Descend)) == "descend" &&
               std::string(TravelLegs::ActWord(Act::Fall)) == "fall",
           "descent: the acts' words for the hold line");

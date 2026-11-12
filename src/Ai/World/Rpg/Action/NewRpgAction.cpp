@@ -5,6 +5,18 @@
  */
 
 #include "NewRpgAction.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+
 #include "AreaDefines.h"
 #include "BroadcastHelper.h"
 #include "CellImpl.h"
@@ -13,6 +25,7 @@
 #include "CheckMountStateAction.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "G3D/Vector2.h"
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -56,18 +69,8 @@
 #include "WaypointMovementGenerator.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
-#include "WorldTravelRules.h"
 #include "WorldPacket.h"
-#include "G3D/Vector2.h"
-#include <algorithm>
-#include <atomic>
-#include <bit>
-#include <cmath>
-#include <cstdlib>
-#include <limits>
-#include <memory>
-#include <mutex>
-#include <unordered_map>
+#include "WorldTravelRules.h"
 
 namespace
 {
@@ -247,20 +250,37 @@ WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc)
     return {loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()};
 }
 
-// The equipped gear's durability in percent (as the planner snapshot counts it)
-uint32 EquippedDurabilityPercent(Player* bot)
+// The spawns on the bot's map of the trainer an upkeep need names (the index's entries of its key) that trade with
+// the bot, the nearest TRAINER_STOPS within reach: the trip's stops with that service
+void AddTrainerStops(Player* bot, Planner::UpkeepIndex const& index, uint32 key, uint32 service, float reachYards,
+                     std::vector<WorldTravel::ServiceStop>& stops)
 {
-    uint64 durability = 0;
-    uint64 maxDurability = 0;
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-        {
-            durability += item->GetUInt32Value(ITEM_FIELD_DURABILITY);
-            maxDurability += item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
-        }
-    return static_cast<uint32>(
-        maxDurability ? std::min<uint64>(durability * WorldTravel::PERCENT / maxDurability, WorldTravel::PERCENT)
-                      : WorldTravel::PERCENT);
+    constexpr std::size_t TRAINER_STOPS = 3;
+    auto const trainer = std::find_if(index.trainers.begin(), index.trainers.end(),
+                                      [key](Planner::UpkeepTrainer const& known) { return known.key == key; });
+    if (!key || trainer == index.trainers.end())
+        return;
+
+    std::vector<std::pair<float, TravelMgr::TrainerInfo const*>> spawns;
+    for (TravelMgr::TrainerInfo const& spawn : TravelMgr::instance().GetTrainers(bot->GetMapId()))
+    {
+        // The vendors' interact test (NewRpgStartErrandsAction::Execute)
+        if (!std::binary_search(trainer->entries.begin(), trainer->entries.end(), spawn.entry) ||
+            bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(spawn.factionTemplate), bot) <= REP_UNFRIENDLY)
+            continue;
+
+        float const yards =
+            bot->GetExactDist(spawn.loc.GetPositionX(), spawn.loc.GetPositionY(), spawn.loc.GetPositionZ());
+        if (yards <= reachYards)
+            spawns.emplace_back(yards, &spawn);
+    }
+    std::sort(spawns.begin(), spawns.end(),
+              [](std::pair<float, TravelMgr::TrainerInfo const*> const& a,
+                 std::pair<float, TravelMgr::TrainerInfo const*> const& b) { return a.first < b.first; });
+    if (spawns.size() > TRAINER_STOPS)
+        spawns.resize(TRAINER_STOPS);
+    for (std::pair<float, TravelMgr::TrainerInfo const*> const& at : spawns)
+        stops.push_back({at.second->entry, ErrandPlaceOf(at.second->loc), service});
 }
 
 // The bot's completed quests with the nearest ender on its map (the planner's quest index; none before it is built)
@@ -911,8 +931,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 {
     WorldLog::StatusReason const reasonScope("errand");
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
-    // The causes the trigger saw: full bags (read before the stamp), the repair, a due stock
-    bool const bagsFull = AI_VALUE(uint8, "bag space") >= WorldTravel::ERRAND_PRESSURE_PERCENT;
+    // The repair need the trigger saw (its wear test first)
     bool const repairWanted = WorldTravel::RepairErrandWanted(bot);
     WorldTravel::StampErrandCheck(measure, getMSTime());
     measure.HasVendor = false;
@@ -944,7 +963,6 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     float const reachYards = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
     std::vector<TravelMgr::VendorInfo> const& vendors = TravelMgr::instance().GetVendors(mapId);
     std::vector<UpkeepNeeds::VendorCandidate> candidates;
-    std::vector<TravelMgr::VendorInfo const*> candidateInfo;
     TravelMgr::VendorInfo const* nearest = nullptr;
     float nearestYards = std::numeric_limits<float>::max();
     std::vector<std::pair<float, TravelMgr::VendorInfo const*>> inReach;
@@ -966,7 +984,6 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         candidates.push_back({vendor.entry, WorldTravel::WalkMinutes(yards, runSpeed),
                               proto && (proto->npcflag & UNIT_NPC_FLAG_REPAIR),
                               covered != cover.end() ? covered->second : uint8(0)});
-        candidateInfo.push_back(&vendor);
         if (yards < nearestYards)
         {
             nearest = &vendor;
@@ -976,11 +993,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             inReach.emplace_back(yards, &vendor);
     }
 
-    // The repair need: the repairers within the walk limit, the one covering the most stock needs first; a due stock:
-    // the vendor within the walk limit covering the most due stock. Both are worth a trip by themselves; else the
-    // trip planner weighs the bags and the other errands
+    // The needs the trip planner cannot answer, once per errand check: the repair with no repairer on the map or none
+    // within the walk limit; each due stock no vendor in reach sells, too far or on no vendor of this map
     float constexpr ANY_WALK = std::numeric_limits<float>::max();
-    std::size_t pick = UpkeepNeeds::NO_VENDOR;
     bool repairing = repairWanted;
     if (repairing)
     {
@@ -992,44 +1007,36 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         }
         else if (candidates[nearestRepairer].walkMinutes > WorldTravel::ERRAND_MAX_WALK_MINUTES)
         {
-            // Too far for a repair trip: the plain vendor choice, as for a bot without a repairer
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "too_far",
                                static_cast<float>(Planner::PriceRepair(bot).total));
             repairing = false;
         }
-        else
-            pick =
-                UpkeepNeeds::PickVendor(candidates, true, dueKinds, unmetKinds, WorldTravel::ERRAND_MAX_WALK_MINUTES);
     }
 
-    bool stocking = false;
-    if (!repairing && dueKinds)
+    uint8 dueInReach = 0;
+    for (UpkeepNeeds::VendorCandidate const& candidate : candidates)
+        if (candidate.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
+            dueInReach |= static_cast<uint8>(candidate.covers & dueKinds);
+    UpkeepNeeds::Need const* training = nullptr;
+    UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest
+    for (UpkeepNeeds::Need const& need : needs.needs)
     {
-        pick = UpkeepNeeds::PickVendor(candidates, false, dueKinds, unmetKinds, WorldTravel::ERRAND_MAX_WALK_MINUTES);
-        stocking = pick != UpkeepNeeds::NO_VENDOR && (candidates[pick].covers & dueKinds);
-        if (!stocking)
-        {
-            // Once per errand check: each due stock no vendor in reach sells, too far or on no vendor of this map
-            pick = UpkeepNeeds::NO_VENDOR;
-            for (UpkeepNeeds::Need const& need : needs.needs)
-            {
-                if (!need.due || !UpkeepNeeds::StockPayable(need))
-                    continue;
-                uint8 const bit = Planner::StockBit(need.stock);
-                bool const onMap = std::any_of(candidates.begin(), candidates.end(),
-                                               [bit](UpkeepNeeds::VendorCandidate const& c) { return c.covers & bit; });
-                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", onMap ? "too_far" : "no_vendor",
-                                   static_cast<float>(need.copper),
-                                   {{UpkeepNeeds::ShopWord(need.stock), static_cast<float>(need.units)},
-                                    {"funded", static_cast<float>(need.funded)}},
-                                   need.item);
-            }
-            // The due stock was the only cause: no vendor in reach sells it for the gold, so no trip (it would buy
-            // nothing and repeat after the retry time)
-            if (!bagsFull && !repairWanted)
-                return false;
-        }
+        if (need.kind == UpkeepKind::TrainerSpell)
+            training = &need;
+        else if (need.kind == UpkeepKind::Riding && !riding)
+            riding = &need;
+        uint8 const bit = Planner::StockBit(need.stock);
+        if (!need.due || !UpkeepNeeds::StockPayable(need) || (dueInReach & bit))
+            continue;
+        bool const onMap = std::any_of(candidates.begin(), candidates.end(),
+                                       [bit](UpkeepNeeds::VendorCandidate const& c) { return c.covers & bit; });
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", onMap ? "too_far" : "no_vendor",
+                           static_cast<float>(need.copper),
+                           {{UpkeepNeeds::ShopWord(need.stock), static_cast<float>(need.units)},
+                            {"funded", static_cast<float>(need.funded)}},
+                           need.item);
     }
+    bool const needDue = repairing || dueInReach || (training && training->due) || riding;
 
     if (!nearest)
     {
@@ -1055,38 +1062,10 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                 ++sellableSlots;
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
 
-    // The repair need and a due stock are worth a trip by themselves within the walk limit, whatever the bags hold:
-    // one stop at the vendor the pick chose (WU12 makes them the trip planner's errand providers)
-    if (pick != UpkeepNeeds::NO_VENDOR && (repairing || stocking))
-    {
-        UpkeepNeeds::VendorCandidate const& chosen = candidates[pick];
-        uint32 const repairCopper = repairing ? Planner::PriceRepair(bot).total : 0;
-        // The world log's decision row: walk seconds to the vendor and what the need weighed
-        WorldLogFormat::Alternatives weighed;
-        if (WorldLog::Active() && repairing)
-            weighed = {{"repair_copper", static_cast<float>(repairCopper)},
-                       {"lowest_durability", static_cast<float>(Planner::ReadGearWear(bot).lowestPercent)},
-                       {"sellable", static_cast<float>(sellableSlots)}};
-        else if (WorldLog::Active())
-            weighed = {{"due_kinds", static_cast<float>(std::popcount(static_cast<unsigned>(dueKinds)))},
-                       {"covered", static_cast<float>(std::popcount(static_cast<unsigned>(chosen.covers)))},
-                       {"sellable", static_cast<float>(sellableSlots)}};
-
-        std::vector<NewRpgInfo::ErrandStop> stops(1);
-        stops.front().pos = WorldPosition(candidateInfo[pick]->loc);
-        stops.front().vendorEntry = chosen.entry;
-        botAI->rpgInfo.ChangeToErrands(std::move(stops), bot->GetMoney());
-        if (repairing)
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "repair", "due",
-                               static_cast<float>(repairCopper), weighed);
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor", repairing ? "repair_due" : "stock_due",
-                           chosen.walkMinutes * MINUTE, weighed);
-        return true;
-    }
-
-    // Full bags alone do not end questing (the trigger let a questing bot through for a due need that the vendor pick
-    // did not keep): a questing bot destroys by worth instead
-    if (!WorldTravel::ErrandMayStart(botAI))
+    // Full bags alone do not end questing (the trigger let a questing bot through for a due need): a questing bot
+    // plans its due needs only, without one it destroys by worth instead
+    bool const questing = !WorldTravel::ErrandMayStart(botAI);
+    if (questing && !needDue)
     {
         WorldLogFormat::Alternatives weighed;
         if (WorldLog::Active())
@@ -1106,24 +1085,43 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     snapshot.BagHorizonHours = band.BagHorizonHours;
     snapshot.FreeSlots = freeSlots;
     snapshot.SellableSlots = sellableSlots;
-    snapshot.DurabilityPercent = EquippedDurabilityPercent(bot);
     snapshot.MinutesToNextStop = static_cast<float>(config.ErrandNextStopMinutes);
+    // The needs (one list, WU.4), each an errand provider's input; the stops that answer them carry its service
+    snapshot.RepairDue = repairing;
+    snapshot.DueStock = dueKinds;
+    snapshot.OtherStock = unmetKinds;
+    if (training)
+        snapshot.Training = {training->units, training->levelsBehind, training->due, training->item};
+    if (riding)
+        snapshot.Riding = {riding->item, riding->vendor};
+    // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
     std::sort(inReach.begin(), inReach.end(),
               [](std::pair<float, TravelMgr::VendorInfo const*> const& a,
                  std::pair<float, TravelMgr::VendorInfo const*> const& b) { return a.first < b.first; });
-    if (inReach.size() > VENDOR_STOPS)
-        inReach.resize(VENDOR_STOPS);
+    std::size_t plainStops = 0;
+    std::size_t needStops = 0;
     for (std::pair<float, TravelMgr::VendorInfo const*> const& vendor : inReach)
     {
-        WorldTravel::ServiceStop stop;
-        stop.Id = vendor.second->entry;
-        stop.Place = ErrandPlaceOf(vendor.second->loc);
-        stop.Services = WorldTravel::SERVICE_VENDOR;
-        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(stop.Id);
-        if (creature && (creature->npcflag & UNIT_NPC_FLAG_REPAIR))
-            stop.Services |= WorldTravel::SERVICE_REPAIR;
-        snapshot.Stops.push_back(stop);
+        uint32 const entry = vendor.second->entry;
+        auto const covered = cover.find(entry);
+        uint8 const covers = covered != cover.end() ? covered->second : uint8(0);
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+        bool const repairs = creature && (creature->npcflag & UNIT_NPC_FLAG_REPAIR);
+        // A stop answers a need only when it covers a due kind, repairs while a repair is due, or sells the mount
+        bool const answers = (covers & dueKinds) || (repairing && repairs) ||
+                             (snapshot.Riding.MountVendor && entry == snapshot.Riding.MountVendor);
+        std::size_t& count = answers ? needStops : plainStops;
+        if (count >= VENDOR_STOPS)
+            continue;
+
+        ++count;
+        snapshot.Stops.push_back(
+            {entry, ErrandPlaceOf(vendor.second->loc), WorldTravel::VendorServices(snapshot, entry, repairs, covers)});
     }
+    if (index && training)
+        AddTrainerStops(bot, *index, training->trainer, WorldTravel::SERVICE_TRAINER, reachYards, snapshot.Stops);
+    if (index && riding)
+        AddTrainerStops(bot, *index, riding->trainer, WorldTravel::SERVICE_RIDING_TRAINER, reachYards, snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
 
     // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay
@@ -1131,13 +1129,19 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     request.Start = {mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
-    WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(
-        request, snapshot.Stops, WorldTravel::CollectOffers(snapshot, WorldTravel::TravelProviders()));
+    std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TravelProviders());
+    if (questing)
+        offers.erase(std::remove_if(offers.begin(), offers.end(),
+                                    [](WorldTravel::ErrandOffer const& offer) { return !offer.Due; }),
+                     offers.end());
+    WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(request, snapshot.Stops, offers);
 
     std::vector<NewRpgInfo::ErrandStop> stops;
     float tripMinutes = 0.0f;
     std::size_t errandCount = 0;
     bool anyVendor = false;
+    bool anyTrainer = false;
+    std::array<bool, WorldTravel::ERRAND_KIND_COUNT> due{};  // a due need's errand is on the trip, by kind
     for (WorldTravel::TripStop const& tripStop : plan.Stops)
     {
         NewRpgInfo::ErrandStop stop;
@@ -1147,9 +1151,18 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             stop.vendorEntry = tripStop.Id;
             anyVendor = true;
         }
+        if (tripStop.Services & (WorldTravel::SERVICE_TRAINER | WorldTravel::SERVICE_RIDING_TRAINER))
+        {
+            stop.trainerEntry = tripStop.Id;
+            anyTrainer = true;
+        }
         for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
+        {
             if (errand.Kind == WorldTravel::ErrandKind::TurnIn)
                 stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
+            if (errand.Due)
+                due[static_cast<std::size_t>(errand.Kind)] = true;
+        }
         tripMinutes += tripStop.DetourMinutes;
         errandCount += tripStop.Errands.size();
         stops.push_back(std::move(stop));
@@ -1175,8 +1188,27 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
 
     botAI->rpgInfo.ChangeToErrands(std::move(stops), bot->GetMoney());
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, anyVendor ? "vendor" : "turn_in", "worth_it",
-                       tripMinutes * MINUTE, weighed);
+    auto const dueOnTrip = [&due](WorldTravel::ErrandKind kind) { return due[static_cast<std::size_t>(kind)]; };
+    if (dueOnTrip(WorldTravel::ErrandKind::Repair))
+    {
+        uint32 const repairCopper = Planner::PriceRepair(bot).total;
+        WorldLogFormat::Alternatives repairWeighed;
+        if (WorldLog::Active())
+            repairWeighed = {{"repair_copper", static_cast<float>(repairCopper)},
+                             {"lowest_durability", static_cast<float>(Planner::ReadGearWear(bot).lowestPercent)},
+                             {"sellable", static_cast<float>(sellableSlots)}};
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "repair", "due", static_cast<float>(repairCopper),
+                           repairWeighed);
+    }
+    // The errand row's reason: the first due need on the trip in the fixed order
+    char const* const reason = dueOnTrip(WorldTravel::ErrandKind::Repair)  ? "repair_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Shop)  ? "stock_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Train) ? "train_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Ride)  ? "ride_due"
+                                                                           : "worth_it";
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
+                       anyVendor ? "vendor" : (anyTrainer ? "trainer" : "turn_in"), reason, tripMinutes * MINUTE,
+                       weighed);
     // The errands the trip leaves out: the detour rule's refusals (detour_not_worth, too_far, no_stop)
     if (WorldLog::Active())
         for (WorldTravel::Refusal const& refusal : plan.Refused)
@@ -1314,6 +1346,17 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             data->visited = true;
         }
         stop.turnIns.pop_back();
+        return true;
+    }
+
+    // The trainer part of the stop: the trip walks there; learning at the trainer is not built yet
+    if (stop.trainerEntry)
+    {
+        Creature const* trainer = bot->FindNearestCreature(stop.trainerEntry, VENDOR_SEARCH_YARDS);
+        LOG_DEBUG("playerbots", "[New RPG] {} trainer visit: WU13 (trainer {} {})", bot->GetName(), stop.trainerEntry,
+                  trainer ? "found" : "not found");
+        stop.trainerEntry = 0;
+        data->visited = true;  // the trip reached its trainer: not an errand_abort
         return true;
     }
 
@@ -1834,19 +1877,6 @@ bool OnFlyingMount(Player* bot)
     return bot->IsMounted() && (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura());
 }
 
-// The ground below the bot and the surface of the water over it (TravelLegs::FLY_NO_GROUND: none), as the floor a
-// body lies on (ReleaseSpiritAction's LayBodyOnFloor, TravelLegs::BodyZ)
-std::pair<float, float> FloorBelow(Player* bot)
-{
-    float const x = bot->GetPositionX();
-    float const y = bot->GetPositionY();
-    float const groundZ = bot->GetMapHeight(x, y, bot->GetPositionZ(), true, MAX_FALL_DISTANCE);
-    LiquidData const water =
-        groundZ > TravelLegs::FLY_NO_GROUND
-            ? bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, groundZ, bot->GetCollisionHeight(), {})
-            : LiquidData();
-    return {groundZ, water.Status != LIQUID_MAP_NO_WATER ? water.Level : TravelLegs::FLY_NO_GROUND};
-}
 }  // namespace
 
 bool NewRpgTravelAction::Execute(Event /*event*/)
@@ -1859,7 +1889,7 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     bool const flyLeg = data->trip.legIdx < data->trip.legs.size() &&
                         data->trip.legs[data->trip.legIdx].type == TravelRoute::LegType::Fly;
     Transport* const ridden = bot->GetTransport();
-    bool const riding = bot->IsInFlight() || (flyLeg && bot->IsFlying()) || ridden || AtTransportLeg(data->trip) ||
+    bool const riding = bot->IsInFlight() || (flyLeg && OnFlyingMount(bot)) || ridden || AtTransportLeg(data->trip) ||
                         data->trip.descending;
     if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, riding))
     {
@@ -2292,18 +2322,17 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     // A takeoff refused where the bot stands keeps flying: the replan starts no flight at this spot (AddFlyLegs)
     bool const spotClosed =
         reason == TravelLegs::FailReason::Takeoff && CheckMountStateAction::NoTakeoffHere(bot) != nullptr;
-    if (TravelLegs::AfterFailure(trip, reason, spotClosed) == TravelLegs::Recovery::Abort)
-    {
-        EndTrip(data, TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
-        return true;
-    }
+    bool const aborts = TravelLegs::AfterFailure(trip, reason, spotClosed) == TravelLegs::Recovery::Abort;
     // A fly leg failed in the air (no client gravity holds a bot up where it failed, and every walk replan failed at
-    // that spot): on its flying mount it flies straight down to the floor, without one it falls; then the replan
+    // that spot): on its flying mount it flies straight down to the floor, without one it falls; then the replan. An
+    // aborting trip comes down too and ends once it is down (FlyDown; WU12b: it hovered where the leg failed)
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly)
     {
-        auto const [groundZ, waterZ] = FloorBelow(bot);
+        auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
+        bool const flyingMount = OnFlyingMount(bot);
         TravelLegs::Decision const down =
-            TravelLegs::StartDescent(trip, BotPoint(bot), groundZ, waterZ, OnFlyingMount(bot), getMSTime());
+            aborts ? TravelLegs::AbortDescent(trip, reason, BotPoint(bot), groundZ, waterZ, flyingMount, getMSTime())
+                   : TravelLegs::StartDescent(trip, BotPoint(bot), groundZ, waterZ, flyingMount, getMSTime());
         if (down.act != TravelLegs::Act::Done)
         {
             LOG_INFO("playerbots",
@@ -2313,7 +2342,14 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
                      bot->GetPositionZ() - down.target.z, bot->GetAreaId(), bot->GetPositionX(), bot->GetPositionY(),
                      bot->GetPositionZ(), down.act == TravelLegs::Act::Descend ? "flies down" : "falls");
             FlyDown(data, down);
+            if (aborts)
+                return true;  // the trip ends in FlyDown, now or once it is down
         }
+    }
+    if (aborts)
+    {
+        EndTrip(data, TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
+        return true;
     }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "replan", TravelLegs::FailWord(reason),
                        static_cast<float>(legSeconds), {{"leg", static_cast<float>(trip.legIdx + 1)}}, data.tripId);
@@ -2333,6 +2369,9 @@ bool NewRpgTravelAction::FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision 
     trip.lastAct = down.act;
     trip.lastTarget = down.target;
     trip.lastActMs = now;
+    // An aborting trip ends once the descent is over, whatever ended it (down, fell, gave up)
+    bool const endsTrip = TravelLegs::EndsAfterDescent(trip, down);
+    TravelLegs::FailReason const endReason = trip.endReason;
     switch (down.act)
     {
         case TravelLegs::Act::Descend:
@@ -2345,23 +2384,26 @@ bool NewRpgTravelAction::FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision 
                      bot->GetName(), getMSTimeDiff(trip.descentStartMs, now) / IN_MILLISECONDS, bot->GetAreaId(),
                      bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
             CheckMountStateAction::LandAndDismount(bot);
-            return true;
+            break;
         case TravelLegs::Act::Fall:
             // As a player falls (the fall's damage too): the mount's aura and the flying flags go first
             LOG_INFO("playerbots", "[Route] {} falls {:.0f} yd without a flying mount in area {} at ({:.0f}, {:.0f})",
                      bot->GetName(), bot->GetPositionZ() - down.target.z, bot->GetAreaId(), bot->GetPositionX(),
                      bot->GetPositionY());
             CheckMountStateAction::LandAndDismount(bot);
-            return true;
+            break;
         case TravelLegs::Act::Fail:
             // The replan starts where the bot is
             LOG_INFO("playerbots", "[Route] {} gives the flight down up ({}) at z {:.0f}, floor {:.0f}, in area {}",
                      bot->GetName(), TravelLegs::FailWord(down.reason), bot->GetPositionZ(), trip.descentTo.z,
                      bot->GetAreaId());
-            return true;
+            break;
         default:
-            return true;
+            break;
     }
+    if (endsTrip)
+        EndTrip(data, TravelLegs::FailWord(endReason), TravelLegs::AbortSource(endReason));
+    return true;
 }
 
 bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)

@@ -819,6 +819,17 @@ inline bool StockErrandDue(NeedList const& list)
     return false;
 }
 
+// A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training, a
+// riding rank bought. The repair is the trigger's own test first (RepairErrandDue reads the cheapest item's price)
+inline bool AnyErrandDue(NeedList const& list)
+{
+    for (Need const& need : list.needs)
+        if (need.due &&
+            (StockPayable(need) || need.kind == UpkeepKind::TrainerSpell || need.kind == UpkeepKind::Riding))
+            return true;
+    return false;
+}
+
 // The stock kinds (a bit per UpkeepStock) the gold pays a lot of: the due ones, or the others below their target
 inline std::uint8_t PayableKinds(NeedList const& list, bool due)
 {

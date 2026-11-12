@@ -6,6 +6,7 @@
 
 #include "ReleaseSpiritAction.h"
 #include "CensusMgr.h"
+#include "CheckMountStateAction.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "GameGraveyard.h"
@@ -48,13 +49,7 @@ void LayBodyOnFloor(Player* bot)
     float const x = bot->GetPositionX();
     float const y = bot->GetPositionY();
     float const z = bot->GetPositionZ();
-    float const groundZ = bot->GetMapHeight(x, y, z, true, MAX_FALL_DISTANCE);
-    // The water over the ground (the sea's surface, not its floor); none where the ground is dry or not found
-    LiquidData const water =
-        groundZ > TravelLegs::FLY_NO_GROUND
-            ? bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, groundZ, bot->GetCollisionHeight(), {})
-            : LiquidData();
-    float const waterZ = water.Status != LIQUID_MAP_NO_WATER ? water.Level : TravelLegs::FLY_NO_GROUND;
+    auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
     float const bodyZ = TravelLegs::BodyZ(z, groundZ, waterZ);
     if (bodyZ == z)
         return;

@@ -89,8 +89,10 @@ constexpr float NEAR_VENDOR_MINUTES = 2.0f;
 constexpr float VISIT_MINUTES = 1.0f;
 constexpr std::uint32_t ORDER_PRESSURE_PERCENT = 15;  // an orderly bot sells this much earlier, an untidy one later
 constexpr std::uint32_t PRESSURE_MIN_PERCENT = 50;
-using WorldTravel::REPAIR_MINUTES_SAVED;  // the errand rules own the repair worth (WT15)
-using WorldTravel::REPAIR_PERCENT;
+// The repair option's worth: the minutes a bot below this durability would lose to broken gear (the errands' repair
+// need is UpkeepNeeds::RepairDue)
+constexpr std::uint8_t REPAIR_PERCENT = 20;
+constexpr float REPAIR_MINUTES_SAVED = 10.0f;
 constexpr std::uint32_t BAG_BUDGET_PERCENT = 50;
 
 constexpr float REST_BASE = 0.5f;  // rests below this share of health or mana, caution raises it, drive lowers it

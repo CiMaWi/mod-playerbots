@@ -283,15 +283,9 @@ void CheckMountStateAction::Dismount()
         float const x = bot->GetPositionX();
         float const y = bot->GetPositionY();
         float const z = bot->GetPositionZ();
-        float terrainZ = bot->GetMapHeight(x, y, z, false);
-        if (terrainZ > INVALID_HEIGHT)
-        {
-            LiquidData const water =
-                bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, terrainZ, bot->GetCollisionHeight(), {});
-            if (water.Status != LIQUID_MAP_NO_WATER)
-                terrainZ = std::max(terrainZ, water.Level);
-        }
-        if (terrainZ > INVALID_HEIGHT && z - terrainZ > TravelLegs::AIRBORNE_YARDS)
+        auto const [groundZ, waterZ] = FloorBelow(bot);
+        float const terrainZ = std::max(groundZ, waterZ);
+        if (terrainZ > TravelLegs::FLY_NO_GROUND && z - terrainZ > TravelLegs::AIRBORNE_YARDS)
         {
             Unit* const target = AI_VALUE(Unit*, "current target");
             LOG_INFO("playerbots",
@@ -325,6 +319,19 @@ static void ClearStaleFlightFlagsOf(Player* bot)
 }
 
 void CheckMountStateAction::ClearStaleFlightFlags() { ClearStaleFlightFlagsOf(bot); }
+
+std::pair<float, float> CheckMountStateAction::FloorBelow(Player* bot)
+{
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    float const groundZ = bot->GetMapHeight(x, y, bot->GetPositionZ(), true, MAX_FALL_DISTANCE);
+    // The water over the ground (the sea's surface, not its floor); none where the ground is dry or not found
+    LiquidData const water =
+        groundZ > TravelLegs::FLY_NO_GROUND
+            ? bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, groundZ, bot->GetCollisionHeight(), {})
+            : LiquidData();
+    return {groundZ, water.Status != LIQUID_MAP_NO_WATER ? water.Level : TravelLegs::FLY_NO_GROUND};
+}
 
 void CheckMountStateAction::LandAndDismount(Player* bot)
 {

@@ -121,7 +121,8 @@ struct NewRpgInfo
         uint32 transportScanMs{0};
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
-    // every errand assigned there: sell, buy (a bag by worth) and repair at its vendor, turn in completed quests
+    // every errand assigned there: sell, buy (a bag by worth, the shopping list) and repair at its vendor, turn in
+    // completed quests, visit a trainer
     struct ErrandTurnIn
     {
         uint32 questId{0};
@@ -131,7 +132,8 @@ struct NewRpgInfo
     struct ErrandStop
     {
         WorldPosition pos{};
-        uint32 vendorEntry{0};  // the vendor of this stop; 0 = none
+        uint32 vendorEntry{0};   // the vendor of this stop; 0 = none
+        uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
         std::vector<ErrandTurnIn> turnIns;
     };
     struct Errands

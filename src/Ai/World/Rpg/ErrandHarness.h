@@ -12,9 +12,11 @@
 #include <vector>
 
 #include "ErrandRules.h"
+#include "UpkeepNeedRules.h"
 
-// The trip planner's scenarios (travel plan WT15): synthetic bots and stops, one check per decision about which stops a
-// trip makes and which errands it does or refuses there. Shared by tests/errand-trips-selftest.cpp. Player-free
+// The trip planner's scenarios (travel plan WT15, the upkeep needs as providers WU12): synthetic bots and stops, one
+// check per decision about which stops a trip makes and which errands it does or refuses there. Shared by
+// tests/errand-trips-selftest.cpp. Player-free
 namespace WorldTravel
 {
 namespace ErrandHarness
@@ -30,7 +32,16 @@ constexpr uint32_t HUB_QUEST = 301;
 constexpr uint32_t FAR_QUEST = 302;
 constexpr uint32_t BAG_ITEM = 4496;
 constexpr uint32_t BANKER = 501;
-constexpr uint32_t FLUSH = 100000;  // copper
+constexpr uint32_t TRAINER = 601;  // the bot's class trainer
+constexpr uint32_t FAR_TRAINER = 602;
+constexpr uint32_t RIDING_TRAINER = 603;
+constexpr uint32_t MOUNT_VENDOR = 604;        // sells the mount of the bot's race
+constexpr uint32_t OTHER_MOUNT_VENDOR = 605;  // sells another race's mount, cheaper
+constexpr uint32_t CLASS_SPELL = 6673;
+constexpr uint8_t RACE_HUMAN = 1;
+constexpr uint8_t RACE_ORC = 2;
+constexpr uint32_t CHEAPEST_REPAIR = 200;  // copper, the cheapest worn item
+constexpr uint32_t FLUSH = 100000;         // copper
 // A later plan's errand and service, appended after the travel plan's (the bank, WB)
 constexpr ErrandKind BANK_KIND = static_cast<ErrandKind>(ERRAND_KIND_COUNT);
 constexpr uint32_t SERVICE_BANK = 1u << 16;
@@ -108,7 +119,7 @@ inline std::string Describe(TripPlan const& plan)
 inline void OneHub(std::vector<Check>& checks)
 {
     ErrandSnapshot bot = Bot(0, 12);
-    bot.DurabilityPercent = 10;
+    bot.RepairDue = true;
     bot.Stops = {{REPAIR_HUB, At(300.0f, 0.0f), SERVICE_VENDOR | SERVICE_REPAIR},
                  {PLAIN_VENDOR, At(-200.0f, 0.0f), SERVICE_VENDOR}};
     bot.Completed = {{HUB_QUEST, ENDER, false, At(315.0f, 10.0f), 600.0f}};
@@ -164,20 +175,24 @@ inline void DetourRefused(std::vector<Check>& checks)
         Describe(richPlan));
 }
 
-// Two errands each worth less than the detour, worth more together: one stop does both
+// Two errands each worth less than the detour, worth more together: one stop does both (a sale and a turn-in whose
+// ender stands at the vendor, worth the detour less half the sale)
 inline void TwoAtOneStop(std::vector<Check>& checks)
 {
     ErrandSnapshot bot = Bot(6, 3);
     bot.Level = 45;  // band 2: r 25, t 8, e 250
     bot.Rates = CurrentRates(SlotMeasure{}, DEFAULT_SLOT_BANDS[LevelBand(bot.Level)]);
-    bot.DurabilityPercent = 5;
     bot.Stops = {{REPAIR_HUB, At(150.0f, 0.0f), SERVICE_VENDOR | SERVICE_REPAIR}};
+    std::vector<ErrandOffer> const sale = CollectOffers(bot, TravelProviders());
+    float const saleWorth = sale.empty() ? 0.0f : sale[0].WorthCopper;
+    float const cost = DetourCost(bot.Rates, WalkMinutes(150.0f, RUN_YARDS_PER_SECOND));
+    bot.Completed = {{HUB_QUEST, ENDER, false, At(150.0f, 0.0f), cost - saleWorth / 2.0f}};
     ErrandSnapshot sellOnly = bot;
-    sellOnly.DurabilityPercent = PERCENT;
-    ErrandSnapshot repairOnly = bot;
-    repairOnly.SellableSlots = 0;
-    bool const aloneRefused =
-        Plan(sellOnly, Request(sellOnly)).Stops.empty() && Plan(repairOnly, Request(repairOnly)).Stops.empty();
+    sellOnly.Completed.clear();
+    ErrandSnapshot turnInOnly = bot;
+    turnInOnly.SellableSlots = 0;
+    bool const aloneRefused = saleWorth > 0.0f && Plan(sellOnly, Request(sellOnly)).Stops.empty() &&
+                              Plan(turnInOnly, Request(turnInOnly)).Stops.empty();
     TripPlan const plan = Plan(bot, Request(bot));
     bool const both =
         aloneRefused && plan.Stops.size() == 1 && plan.Stops[0].Errands.size() == 2 && plan.Refused.empty();
@@ -220,7 +235,7 @@ inline void SaleRuleKept(std::vector<Check>& checks)
 inline void NoStop(std::vector<Check>& checks)
 {
     ErrandSnapshot bot = Bot(10, 0);
-    bot.DurabilityPercent = 0;
+    bot.RepairDue = true;
     bot.Stops = {{PLAIN_VENDOR, At(100.0f, 0.0f), SERVICE_VENDOR}};
     TripPlan const plan = Plan(bot, Request(bot));
     bool const refused = plan.Stops.empty() && plan.Refused.size() == 1 &&
@@ -263,6 +278,150 @@ inline void LaterProvider(std::vector<Check>& checks)
         banked && sold && plan.Refused.empty() && std::string(ErrandKindName(BANK_KIND)) == "other", Describe(plan));
 }
 
+// The repair need's due rule is WU5's (UpkeepNeeds::RepairErrandDue): worn below 30 % and the gold pays an item
+inline void RepairByNeed(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Stops = {{REPAIR_HUB, At(300.0f, 0.0f), SERVICE_VENDOR | SERVICE_REPAIR}};
+    bot.RepairDue = UpkeepNeeds::RepairErrandDue(0, 25, CHEAPEST_REPAIR, bot.Money);
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const taken = plan.Stops.size() == 1 && plan.Stops[0].Id == REPAIR_HUB &&
+                       HasErrand(plan.Stops[0], ErrandKind::Repair) && plan.Refused.empty();
+    Add(checks, "repair: gear at 25 % is due and gets its own stop at a repairer", taken, Describe(plan));
+
+    ErrandSnapshot worn = bot;
+    worn.RepairDue = UpkeepNeeds::RepairErrandDue(0, 30, CHEAPEST_REPAIR, bot.Money);
+    ErrandSnapshot poor = bot;
+    poor.Money = CHEAPEST_REPAIR - 1;
+    poor.RepairDue = UpkeepNeeds::RepairErrandDue(1, 0, CHEAPEST_REPAIR, poor.Money);
+    TripPlan const wornPlan = Plan(worn, Request(worn));
+    TripPlan const poorPlan = Plan(poor, Request(poor));
+    bool const none =
+        wornPlan.Stops.empty() && wornPlan.Refused.empty() && poorPlan.Stops.empty() && poorPlan.Refused.empty();
+    Add(checks, "repair: no offer at 30 % or when the gold pays no item", none,
+        Describe(wornPlan) + "; " + Describe(poorPlan));
+}
+
+// The shopping need: one stop at the vendor covering the most due kinds; a kind not due never opens a detour
+inline void ShopByCover(std::vector<Check>& checks)
+{
+    uint8_t const food = Planner::StockBit(Planner::UpkeepStock::Food);
+    uint8_t const water = Planner::StockBit(Planner::UpkeepStock::Water);
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.DueStock = food | water;
+    bot.Stops = {{PLAIN_VENDOR, At(200.0f, 0.0f), VendorServices(bot, PLAIN_VENDOR, false, food)},
+                 {ROAD_VENDOR, At(900.0f, 0.0f), VendorServices(bot, ROAD_VENDOR, false, food | water)}};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const covering = plan.Stops.size() == 1 && plan.Stops[0].Id == ROAD_VENDOR &&
+                          plan.Stops[0].Errands.size() == 2 && HasErrand(plan.Stops[0], ErrandKind::Shop) &&
+                          plan.Refused.empty();
+    Add(checks, "shop: of two vendors the one covering more due kinds is the stop", covering, Describe(plan));
+
+    ErrandSnapshot low = bot;
+    low.DueStock = 0;
+    low.OtherStock = food;
+    TripPlan const lowPlan = Plan(low, Request(low));
+    bool const refused = lowPlan.Stops.empty() && lowPlan.Refused.size() == 1 &&
+                         lowPlan.Refused[0].Offer.Kind == ErrandKind::Shop &&
+                         std::string(lowPlan.Refused[0].Reason) == "detour_not_worth";
+    Add(checks, "shop: a stock below target but not due opens no detour", refused, Describe(lowPlan));
+}
+
+// Training not yet due joins a trip that passes the class trainer anyway, at no detour
+inline void TrainingJoins(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Training = {1, 1, false, CLASS_SPELL};
+    TripStop trainer;
+    trainer.Place = At(800.0f, 0.0f);
+    trainer.Services = SERVICE_TRAINER;
+    trainer.Id = TRAINER;
+    TripPlan const plan = Plan(bot, Request(bot, {trainer}));
+    bool const joined = plan.Stops.size() == 1 && plan.Stops[0].OnRoute && plan.Stops[0].DetourMinutes == 0.0f &&
+                        HasErrand(plan.Stops[0], ErrandKind::Train) && plan.Refused.empty();
+    Add(checks, "train: training not due joins a trip that passes a trainer", joined, Describe(plan));
+}
+
+// Due training (levels behind reach the span) is a trip of its own, to one trainer: the nearer of two
+inline void TrainingTrip(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Training = {3, 2, true, CLASS_SPELL};
+    bot.Stops = {{FAR_TRAINER, At(-2500.0f, 0.0f), SERVICE_TRAINER}, {TRAINER, At(1500.0f, 0.0f), SERVICE_TRAINER}};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const own = plan.Stops.size() == 1 && !plan.Stops[0].OnRoute && plan.Stops[0].Id == TRAINER &&
+                     HasErrand(plan.Stops[0], ErrandKind::Train) && plan.Refused.empty();
+    Add(checks, "train: a trip of its own once enough levels wait, to the nearer trainer only", own, Describe(plan));
+}
+
+// Training not due with the trainer off the route: the detour is refused, the route stays
+inline void TrainingRefused(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Training = {1, 1, false, CLASS_SPELL};
+    bot.Stops = {{TRAINER, At(600.0f, 300.0f), SERVICE_TRAINER}};
+    TripStop destination;
+    destination.Place = At(1200.0f, 0.0f);
+    destination.Services = SERVICE_QUEST_ENDER;
+    TripPlan const plan = Plan(bot, Request(bot, {destination}));
+    bool const refused = plan.Stops.size() == 1 && plan.Stops[0].OnRoute && plan.Refused.size() == 1 &&
+                         plan.Refused[0].Offer.Kind == ErrandKind::Train &&
+                         std::string(plan.Refused[0].Reason) == "detour_not_worth";
+    Add(checks, "train: a detour for training not due is refused", refused, Describe(plan));
+
+    ErrandSnapshot due = bot;
+    due.Training.Due = true;
+    TripPlan const duePlan = Plan(due, Request(due, {destination}));
+    bool const taken =
+        duePlan.Stops.size() == 2 && HasErrand(duePlan.Stops[0], ErrandKind::Train) && duePlan.Refused.empty();
+    Add(checks, "train: the same trainer is a detour once training is due", taken, Describe(duePlan));
+}
+
+// A riding rank bought: one trip to the riding trainer and the mount vendor of the bot's race (PriceMount's choice
+// of two vendors 200 yd apart, the other race's mount is cheaper)
+inline void RidingTrip(std::vector<Check>& checks)
+{
+    UpkeepNeeds::RidingRank const& rank = UpkeepNeeds::RIDING_RANKS[0];
+    Planner::VendorOffer human;
+    human.vendorEntry = MOUNT_VENDOR;
+    human.item = 2411;
+    human.buyPrice = 80000;
+    human.raceMask = UpkeepNeeds::RaceBit(RACE_HUMAN);
+    human.requiredSkillRank = rank.skill;
+    Planner::VendorOffer orc = human;
+    orc.vendorEntry = OTHER_MOUNT_VENDOR;
+    orc.item = 1132;
+    orc.buyPrice = 70000;
+    orc.raceMask = UpkeepNeeds::RaceBit(RACE_ORC);
+    Planner::UpkeepIndex index;
+    index.offers[static_cast<std::size_t>(Planner::UpkeepStock::Mount)] = {orc, human};
+    Planner::Snapshot snapshot;
+    snapshot.race = RACE_HUMAN;
+    UpkeepNeeds::RankValue value;
+    value.rank = rank;
+    UpkeepNeeds::PriceMount(index, snapshot, value);
+
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Riding = {rank.spellId, value.mountVendor};
+    bot.Stops = {{RIDING_TRAINER, At(1000.0f, 0.0f), SERVICE_RIDING_TRAINER},
+                 {OTHER_MOUNT_VENDOR, At(1000.0f, -200.0f), VendorServices(bot, OTHER_MOUNT_VENDOR, false, 0)},
+                 {MOUNT_VENDOR, At(1000.0f, 200.0f), VendorServices(bot, MOUNT_VENDOR, false, 0)}};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool trainer = false;
+    bool vendor = false;
+    bool other = false;
+    for (TripStop const& stop : plan.Stops)
+    {
+        trainer = trainer || (stop.Id == RIDING_TRAINER && HasErrand(stop, ErrandKind::Ride));
+        vendor = vendor || (stop.Id == MOUNT_VENDOR && HasErrand(stop, ErrandKind::Ride));
+        other = other || stop.Id == OTHER_MOUNT_VENDOR;
+    }
+    bool const both = value.mountVendor == MOUNT_VENDOR && plan.Stops.size() == 2 && trainer && vendor && !other &&
+                      plan.Refused.empty();
+    Add(checks, "ride: a riding trip visits the riding trainer and the mount vendor of the bot's race", both,
+        "mount vendor " + std::to_string(value.mountVendor) + "; " + Describe(plan));
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -273,6 +432,12 @@ inline std::vector<Check> SyntheticChecks()
     SaleRuleKept(checks);
     NoStop(checks);
     LaterProvider(checks);
+    RepairByNeed(checks);
+    ShopByCover(checks);
+    TrainingJoins(checks);
+    TrainingTrip(checks);
+    TrainingRefused(checks);
+    RidingTrip(checks);
     return checks;
 }
 }  // namespace ErrandHarness

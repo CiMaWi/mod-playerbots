@@ -38,7 +38,7 @@ bool WorldTravel::RepairErrandWanted(Player* bot)
                                         bot->GetMoney());
 }
 
-bool WorldTravel::StockErrandWanted(PlayerbotAI* botAI)
+bool WorldTravel::NeedErrandWanted(PlayerbotAI* botAI)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
@@ -48,7 +48,7 @@ bool WorldTravel::StockErrandWanted(PlayerbotAI* botAI)
     Planner::Snapshot const snapshot = Planner::FillSnapshot(botAI->GetBot(), 0);
     UpkeepNeeds::NeedList const list =
         UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
-    return UpkeepNeeds::StockErrandDue(list);
+    return UpkeepNeeds::AnyErrandDue(list);
 }
 
 bool InventoryPressureTrigger::IsActive()
@@ -57,15 +57,15 @@ bool InventoryPressureTrigger::IsActive()
     if (!WorldTravel::ErrandMayStart(botAI, true) || !sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 
-    // Full bags, or the needs (upkeep §3.3: one call from the errand check) after the retry time: the repair first,
-    // then a due consumable stock (one snapshot)
+    // Full bags, or the needs (upkeep §3.3, the errand check's providers) after the retry time: the repair first,
+    // then a due stock, training or riding rank (one snapshot)
     WorldTravel::SlotMeasure const& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     uint32 const nowMs = getMSTime();
     if (WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs) && WorldTravel::ErrandMayStart(botAI))
         return true;
 
     return WorldTravel::ErrandRetryOver(measure, nowMs) &&
-           (WorldTravel::RepairErrandWanted(bot) || WorldTravel::StockErrandWanted(botAI));
+           (WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI));
 }
 
 bool InnBindTrigger::IsActive()

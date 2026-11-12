@@ -493,6 +493,9 @@ struct Trip
     bool descending{false};
     Point descentTo;
     std::uint32_t descentStartMs{0};
+    // The trip is aborting (AfterFailure) and ends once the descent is over (AbortDescent, EndsAfterDescent), why
+    bool endAfterDescent{false};
+    FailReason endReason{FailReason::None};
     // The follower's last decision and its time (the glue notes them for the case's hold line)
     Act lastAct{Act::Wait};
     Point lastTarget;
@@ -1258,6 +1261,7 @@ inline Decision StartDescent(Trip& trip, Point const& bot, float groundZ, float 
                              std::uint32_t nowMs)
 {
     trip.descending = false;
+    trip.endAfterDescent = false;
     Decision const done{Act::Done, bot, FailReason::None};
     if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Fly)
         return done;
@@ -1293,6 +1297,24 @@ inline Decision StepDescent(Trip& trip, Point const& bot, bool flyingMount, std:
         return {Act::Fail, bot, FailReason::Timeout};
     trip.descending = true;
     return {Act::Descend, floor, FailReason::None};
+}
+
+// An aborting trip (AfterFailure: Abort) whose failed leg was a fly leg comes down first, as StartDescent decides, and
+// ends once it is down (WU12b, WU11c review NOTE 1: it hovered where the leg failed). The result is StartDescent's;
+// EndsAfterDescent says when the trip ends: at once for Done (nothing to descend), after the flight down or the fall
+inline Decision AbortDescent(Trip& trip, FailReason reason, Point const& bot, float groundZ, float waterZ,
+                             bool flyingMount, std::uint32_t nowMs)
+{
+    Decision const down = StartDescent(trip, bot, groundZ, waterZ, flyingMount, nowMs);
+    trip.endAfterDescent = true;
+    trip.endReason = reason;
+    return down;
+}
+
+// The descent's decision ends the aborting trip: every act but Descend (Done, Fall, Fail)
+inline bool EndsAfterDescent(Trip const& trip, Decision const& down)
+{
+    return trip.endAfterDescent && down.act != Act::Descend;
 }
 
 // A fly leg's real-height check is due: the bot heads for a waypoint in the air the check has not looked at yet
