@@ -83,6 +83,25 @@ inline float Distance(Point const& a, Point const& b)
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// A straight walk off the graph (start to goal, to or from an end's nearest nodes, bind point to goal) climbs at most
+// its horizontal run plus a step: a cliff or a tower top is no straight walk however close it is (Thunder Bluff's
+// mesa is 53 yd across from its base and 68 yd up)
+constexpr float CLIMB_STEP_YARDS = 4.0f;
+
+inline bool StraightWalk(Point const& a, Point const& b)
+{
+    return std::fabs(a.z - b.z) <= std::hypot(a.x - b.x, a.y - b.y) + CLIMB_STEP_YARDS;
+}
+
+// An off-graph walk's seconds price its climb: a straight line up a steep slope is no run at full speed, and a graph
+// way (a ramp, an elevator) should win where there is one (Thunder Bluff's foot: 74 yd across and 66 yd up)
+constexpr float CLIMB_COST_FACTOR = 2.0f;
+
+inline float WalkSeconds(Point const& a, Point const& b, float runSpeed)
+{
+    return (Distance(a, b) + CLIMB_COST_FACTOR * std::fabs(a.z - b.z)) / runSpeed;
+}
+
 // What the search knows of the bot: plain data, filled on the bot's map thread (WT7b's FillSnapshot)
 struct Snapshot
 {
@@ -343,7 +362,8 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
     { return std::find(request.avoidNodes.begin(), request.avoidNodes.end(), node) != request.avoidNodes.end(); };
     std::erase_if(startNodes, avoided);
     std::erase_if(goalNodes, avoided);
-    bool const direct = !request.noDirect && start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS;
+    bool const direct = !request.noDirect && start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS &&
+                        StraightWalk(start, goal);
     if (startNodes.empty() && !direct)
     {
         result.failure = Failure::NoStartNode;
@@ -447,7 +467,12 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
         open.push({next + rest, next, to});
     };
     auto const walkTo = [&](std::uint32_t from, std::uint32_t to)
-    { relax(from, to, Distance(pointOf(from), pointOf(to)) / runSpeed, NO_LINK, Step::Walk, 0); };
+    {
+        Point const a = pointOf(from);
+        Point const b = pointOf(to);
+        if (StraightWalk(a, b))
+            relax(from, to, WalkSeconds(a, b, runSpeed), NO_LINK, Step::Walk, 0);
+    };
 
     best[source] = 0.0f;
     open.push({estimate(source), 0.0f, source});
@@ -467,7 +492,8 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
             for (std::uint32_t const node : vertex == source ? startNodes : bindNodes)
                 walkTo(vertex, node);
             if (vertex == source ? direct
-                                 : bot.hearth.mapId == goal.mapId && Distance(bot.hearth, goal) <= DIRECT_YARDS)
+                                 : bot.hearth.mapId == goal.mapId && Distance(bot.hearth, goal) <= DIRECT_YARDS &&
+                                       StraightWalk(bot.hearth, goal))
                 walkTo(vertex, target);
             if (vertex == source && hearth)
                 relax(source, bind, HEARTH_CAST_SECONDS + static_cast<float>(bot.hearthCooldownMs) / 1000.0f, NO_LINK,
@@ -1202,6 +1228,52 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         notes.push_back("j) avoided edge: " +
                         (around.ok ? describe(around) : std::string(FailureWord(around.failure))));
     }
+
+    // k) No straight walk climbs a cliff (WT43): from Thunder Bluff's foot to its mesa, 53 yd across and 68 yd up, the
+    //    way is not one walk leg; a gentle slope of the same length still is. From the elevator scenario's start (74 yd
+    //    across, 66 yd up: inside the cutoff) the priced climb makes the elevator win.
+    Point const bluffFoot{1, -1290.7f, 172.0f, 67.4f};
+    Point const liftStart{1, -1279.9f, 195.38f, 69.44f};
+    Point const bluffTop{1, -1274.74f, 121.51f, 134.98f};
+    check(!StraightWalk(bluffFoot, bluffTop) && !StraightWalk(bluffTop, bluffFoot),
+          "k) a 68 yd climb over 53 yd is a straight walk");
+    check(StraightWalk(bluffFoot, {1, -1274.74f, 121.51f, 100.0f}), "k) a 33 yd rise over 53 yd is no straight walk");
+    check(StraightWalk({1, 0.0f, 0.0f, 0.0f}, {1, 0.5f, 0.0f, 3.0f}), "k) a step beside a node is no straight walk");
+    Snapshot climber;
+    climber.position = bluffFoot;
+    climber.team = 1;
+    climber.level = 10;
+    climber.money = 10000;
+    climber.allowTransport = true;
+    Request const climb{climber, bluffTop};
+    Result const climbed = Search(graph, climb, StuckEdges{}, aStar);
+    auto const nodeAt = [&graph](std::uint32_t index) -> Point
+    {
+        TravelGraphNode const& node = graph.GetNode(index);
+        return {node.mapId, node.x, node.y, node.z};
+    };
+    bool cliffWalk = false;
+    for (Leg const& leg : climbed.legs)
+    {
+        if (leg.type != LegType::Walk)
+            continue;
+        // The off-graph pieces of a walk leg: its start to its first node and its last node to its end
+        Point const first = leg.nodes.empty() ? leg.to : nodeAt(leg.nodes.front());
+        Point const last = leg.nodes.empty() ? leg.from : nodeAt(leg.nodes.back());
+        cliffWalk = cliffWalk || !StraightWalk(leg.from, first) || !StraightWalk(last, leg.to);
+    }
+    check(!cliffWalk, "k) Thunder Bluff foot -> mesa walks straight up the cliff");
+    notes.push_back("k) Thunder Bluff foot -> mesa: " +
+                    (climbed.ok ? describe(climbed) : std::string(FailureWord(climbed.failure))));
+    check(WalkSeconds(liftStart, bluffTop, 7.0f) > 2.0f * Distance(liftStart, bluffTop) / 7.0f,
+          "k) a steep walk is priced as a level one");
+    climber.position = liftStart;
+    Result const lifted = Search(graph, Request{climber, bluffTop}, StuckEdges{}, aStar);
+    bool const byLift = lifted.ok && std::any_of(lifted.legs.begin(), lifted.legs.end(),
+                                                 [](Leg const& leg) { return leg.type == LegType::Transport; });
+    check(byLift, "k) the elevator scenario's start walks straight up to the mesa");
+    notes.push_back("k) elevator scenario start -> mesa: " +
+                    (lifted.ok ? describe(lifted) : std::string(FailureWord(lifted.failure))));
     return checks;
 }
 }  // namespace TravelRoute

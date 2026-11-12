@@ -7,6 +7,7 @@
 #include "NewRpgAction.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -1380,13 +1381,20 @@ PassengerMotion Intent(Player const& bot, Transport const& transport, MotionKind
     return motion;
 }
 
-void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion)
+// A boarding walks straight onto the deck; an exit walks across the deck to its edge (via) and on to the quay
+void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion,
+                        std::optional<Point> const& via = std::nullopt)
 {
     if (bot.IsSitState())
         bot.SetStandState(UNIT_STAND_STATE_STAND);
     bot.GetMotionMaster()->Clear();
     Movement::MoveSplineInit init(&bot);
-    init.MoveTo(motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z, false, false);
+    if (via)
+        init.MovebyPath({{bot.GetPositionX(), bot.GetPositionY(), bot.GetPositionZ()},
+                         {via->X, via->Y, via->Z},
+                         {motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z}});
+    else
+        init.MoveTo(motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z, false, false);
     if (init.Launch() <= 0)
         return;
     motion.Spline = bot.movespline->GetId();
@@ -1405,31 +1413,80 @@ std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& dat
     return result;
 }
 
+// A failed exit or quay search, for the debug log: the hull box, the count of each failed check and its first sample
+void LogCrossingSearch(Player const& bot, NewRpgInfo::Travel const& data, Transport const& transport, char const* kind,
+                       TravelLifecycle::CrossingTally const& tally)
+{
+    static constexpr std::array<char const*, TravelLifecycle::CrossingTally::REASONS> NAMES = {
+        "accepted", "no_shore", "no_deck",  "on_hull",  "height",   "distance",
+        "ground",   "onward",   "crossing", "corridor", "deck_walk"};
+    TravelLifecycle::Footprint const hull = TransportGeometry::Hull(bot, transport);
+    TransportGeometry::GroundGeometry const geometry{bot, &transport};
+    std::string reasons;
+    for (std::size_t i = 0; i < NAMES.size(); ++i)
+    {
+        if (!tally.Counts[i])
+            continue;
+        auto const& sample = *tally.First[i];
+        reasons +=
+            Acore::StringFormat(" {}={}@{:.2f},{:.2f},{:.2f}>{:.2f},{:.2f},{:.2f}", NAMES[i], tally.Counts[i],
+                                sample.From.X, sample.From.Y, sample.From.Z, sample.To.X, sample.To.Y, sample.To.Z);
+        if (i == static_cast<std::size_t>(TravelLifecycle::CrossingCheck::Crossing))
+            reasons += Acore::StringFormat(
+                "/{}", TransportGeometry::GroundGeometry::BlockName(geometry.CrossingBlock(sample.From, sample.To)));
+    }
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] crossing_search bot={} trip={} leg={} kind={} entry={} map={} at={:.2f},{:.2f},{:.2f} "
+              "origin={:.2f},{:.2f},{:.2f} o={:.3f} hull={:.1f},{:.1f},{:.1f}..{:.1f},{:.1f},{:.1f}{}",
+              bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, kind, transport.GetEntry(), bot.GetMapId(),
+              bot.GetPositionX(), bot.GetPositionY(), bot.GetPositionZ(), transport.GetPositionX(),
+              transport.GetPositionY(), transport.GetPositionZ(), transport.GetOrientation(), hull.Low.X, hull.Low.Y,
+              hull.Low.Z, hull.High.X, hull.High.Y, hull.High.Z, reasons);
+    // The exit probe: per bearing (degrees from the route's side), the candidate that got furthest through the checks
+    for (std::size_t turn = 0; turn < tally.Bearings.size(); ++turn)
+    {
+        auto const& furthest = tally.Bearings[turn];
+        if (!furthest)
+            continue;
+        int const side = static_cast<int>((turn + 1) / 2) * (turn % 2 ? 1 : -1);
+        std::string block;
+        if (furthest->Check == TravelLifecycle::CrossingCheck::Crossing)
+            block = Acore::StringFormat("/{}", TransportGeometry::GroundGeometry::BlockName(
+                                                   geometry.CrossingBlock(furthest->From, furthest->To)));
+        LOG_DEBUG("playerbots",
+                  "[TravelLifecycle] exit_probe bot={} trip={} bearing={} at={:.0f} check={}{} "
+                  "from={:.2f},{:.2f},{:.2f} to={:.2f},{:.2f},{:.2f}",
+                  bot.GetGUID().GetCounter(), data.tripId, side * 15, furthest->Distance,
+                  NAMES[static_cast<std::size_t>(furthest->Check)], block, furthest->From.X, furthest->From.Y,
+                  furthest->From.Z, furthest->To.X, furthest->To.Y, furthest->To.Z);
+    }
+}
+
 void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, Point const& toward)
 {
     if (data.passengerMotion || data.trip.exitSought || !PrepareTransportMove(bot))
         return;
     bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
-    std::optional<TransportGeometry::ExitFloorRejection> rejectedFloor;
-    auto const exit = TransportGeometry::FindExit(bot, ridden, toward, trace ? &rejectedFloor : nullptr);
-    if (rejectedFloor)
-    {
-        auto const& ground = rejectedFloor->Ground;
-        LOG_DEBUG("playerbots",
-                  "[TravelLifecycle] exit_floor bot={} trip={} leg={} generation={} tick_ms={} entry={} map={} "
-                  "expected={} candidate={:.3f},{:.3f},{:.3f} deck_z={:.3f} reason=below_deck",
-                  bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, data.trip.legStartMs, getMSTime(),
-                  ridden.GetEntry(), bot.GetMapId(), ridden.GetGUID().GetRawValue(), ground.X, ground.Y, ground.Z,
-                  rejectedFloor->DeckZ);
-    }
+    TravelLifecycle::CrossingTally tally;
+    auto const exit = TransportGeometry::FindExit(bot, ridden, toward, trace ? &tally : nullptr);
     if (exit)
     {
+        if (trace)
+            LOG_DEBUG("playerbots",
+                      "[TravelLifecycle] exit_path bot={} trip={} leg={} entry={} map={} at={:.2f},{:.2f},{:.2f} "
+                      "deck={:.2f},{:.2f},{:.2f} ground={:.2f},{:.2f},{:.2f} onward={:.2f},{:.2f},{:.2f}",
+                      bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, ridden.GetEntry(), bot.GetMapId(),
+                      bot.GetPositionX(), bot.GetPositionY(), bot.GetPositionZ(), exit->Deck.X, exit->Deck.Y,
+                      exit->Deck.Z, exit->Ground.X, exit->Ground.Y, exit->Ground.Z, exit->Onward.X, exit->Onward.Y,
+                      exit->Onward.Z);
         PassengerMotion motion = Intent(bot, ridden, MotionKind::Exit, exit->Ground);
-        motion.ExitFrom = TransportGeometry::PositionOf(bot);
+        motion.ExitFrom = exit->Deck;
         motion.Onward = exit->Onward;
-        IssueTransportMove(bot, data, motion);
+        IssueTransportMove(bot, data, motion, exit->Deck);
         return;
     }
+    if (trace)
+        LogCrossingSearch(bot, data, ridden, "exit", tally);
     data.trip.exitSought = true;
     EventLog::Emit(&bot, TravelLegs::TRANSPORT_EVENT_TYPE,
                    TravelLegs::TransportSource(TravelLegs::TransportEvent::NoExit), ridden.GetEntry(), 0);
@@ -1506,12 +1563,16 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
         return;
 
     Point const from = TransportGeometry::PositionOf(*bot);
+    bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
+    TravelLifecycle::CrossingTally tally;
     auto const shore = TravelLifecycle::FindQuay(TransportGeometry::GroundGeometry{*bot, transport}, from,
-                                                 TransportGeometry::PositionOf(*transport));
+                                                 TransportGeometry::PositionOf(*transport), trace ? &tally : nullptr);
     if (!shore)
     {
         TravelLegs::SetQuay(trip, nullptr);
         LOG_DEBUG("playerbots", "[Route] {} found no reachable boarding floor for {}", bot->GetName(), leg.object);
+        if (trace)
+            LogCrossingSearch(*bot, data, *transport, "quay", tally);
         return;
     }
 

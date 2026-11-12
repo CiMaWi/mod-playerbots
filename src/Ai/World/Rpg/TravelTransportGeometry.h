@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <optional>
 
 #include "GameObjectModel.h"
@@ -95,17 +96,17 @@ inline Footprint Hull(Player const& bot, Transport const& transport)
             std::max(0.6f, bot.GetObjectSize())};
 }
 
-inline std::optional<float> DeckHeight(Transport const& transport, uint32 phase, Point const& point)
+// The transport's surface under a point: the first model hit of a ray from rise above the point down to drop below it
+inline std::optional<float> DeckHeight(Transport const& transport, uint32 phase, Point const& point, float rise = 6.0f,
+                                       float drop = 12.0f)
 {
-    constexpr float RISE_YARDS = 6.0f;
-    constexpr float DROP_YARDS = 12.0f;
     if (!transport.m_model)
         return std::nullopt;
-    float distance = RISE_YARDS + DROP_YARDS;
-    G3D::Ray const ray(G3D::Vector3(point.X, point.Y, point.Z + RISE_YARDS), G3D::Vector3(0.0f, 0.0f, -1.0f));
+    float distance = rise + drop;
+    G3D::Ray const ray(G3D::Vector3(point.X, point.Y, point.Z + rise), G3D::Vector3(0.0f, 0.0f, -1.0f));
     if (!transport.m_model->intersectRay(ray, distance, false, phase, VMAP::ModelIgnoreFlags::Nothing))
         return std::nullopt;
-    return point.Z + RISE_YARDS - distance;
+    return point.Z + rise - distance;
 }
 
 struct GroundGeometry
@@ -121,9 +122,9 @@ struct GroundGeometry
         return point;
     }
 
-    std::optional<Point> ShoreAt(Point const& seed) const
+    std::optional<Point> ShoreAt(Point const& seed, float vertical = TravelLifecycle::DOCK_FLOOR_YARDS) const
     {
-        auto shore = SnapGround(seed, 0.45f, TravelLifecycle::DOCK_FLOOR_YARDS);
+        auto shore = SnapGround(seed, 0.45f, vertical);
         if (!shore)
             return std::nullopt;
         // Use the fixed collision floor at the mesh point. The dynamic tree can include the ship itself.
@@ -134,32 +135,27 @@ struct GroundGeometry
         return shore;
     }
 
-    std::optional<Point> DeckFrom(Point const& shore) const
+    std::optional<Point> DeckFrom(Point const& shore, float inset = TravelLifecycle::BOARD_DECK_INSET_YARDS) const
     {
-        constexpr float STEP_YARDS = 2.0f;
-        constexpr float INWARD_YARDS = 4.0f;
-        constexpr float PROBE_YARDS = 100.0f;
-        Point const origin = PositionOf(*Surface);
-        float const dx = origin.X - shore.X;
-        float const dy = origin.Y - shore.Y;
-        float const yards = std::hypot(dx, dy);
-        if (yards > PROBE_YARDS)
-            return std::nullopt;
         uint32 const phase = Bot.GetPhaseMask();
-        for (float along = STEP_YARDS; along < yards; along += STEP_YARDS)
-        {
-            float const part = along / yards;
-            auto const edge = DeckHeight(*Surface, phase, {shore.X + dx * part, shore.Y + dy * part, shore.Z});
-            if (!edge)
-                continue;
-            float const inward = std::min((along + INWARD_YARDS) / yards, 1.0f);
-            Point const deck{shore.X + dx * inward, shore.Y + dy * inward, *edge};
-            if (auto const height = DeckHeight(*Surface, phase, deck))
-                return Point{deck.X, deck.Y, *height};
-        }
-        if (auto const height = DeckHeight(*Surface, phase, {origin.X, origin.Y, shore.Z}))
-            return Point{origin.X, origin.Y, *height};
-        return std::nullopt;
+        return TravelLifecycle::DeckPointFrom(shore, PositionOf(*Surface), inset,
+                                              [&](Point const& point) { return DeckHeight(*Surface, phase, point); });
+    }
+
+    // Off the hull: the transport model has no surface under the point or within the bot's reach around it. The
+    // model's bounding box cannot stand in for this: a ship's box spans its masts, rigging and bowsprit.
+    bool OffHull(Point const& point) const
+    {
+        if (!Surface || !Surface->m_model)
+            return true;
+        uint32 const phase = Bot.GetPhaseMask();
+        float const reach = std::max(0.6f, Bot.GetObjectSize());
+        constexpr std::array<float, 5> AROUND_X = {0.0f, 1.0f, -1.0f, 0.0f, 0.0f};
+        constexpr std::array<float, 5> AROUND_Y = {0.0f, 0.0f, 0.0f, 1.0f, -1.0f};
+        for (std::size_t i = 0; i < AROUND_X.size(); ++i)
+            if (DeckHeight(*Surface, phase, {point.X + AROUND_X[i] * reach, point.Y + AROUND_Y[i] * reach, point.Z}))
+                return false;
+        return true;
     }
 
     bool OnGround(Point const& point) const
@@ -208,32 +204,79 @@ struct GroundGeometry
         return true;
     }
 
-    bool CrossingClear(Point const& start, Point const& end) const
+    enum class Block : uint8
+    {
+        Clear,
+        Short,
+        Hull,
+        Sight,
+        Unsupported
+    };
+
+    static char const* BlockName(Block block)
+    {
+        switch (block)
+        {
+            case Block::Clear:
+                return "clear";
+            case Block::Short:
+                return "short";
+            case Block::Hull:
+                return "hull";
+            case Block::Sight:
+                return "sight";
+            case Block::Unsupported:
+                return "unsupported";
+        }
+        return "unknown";
+    }
+
+    bool CrossingClear(Point const& start, Point const& end) const { return CrossingBlock(start, end) == Block::Clear; }
+
+    // The walk across the deck to its edge, along the deck's surface: on the deck, the transport's own model is the
+    // only obstacle.
+    bool DeckWalkClear(Point const& start, Point const& end) const
+    {
+        if (!Surface || !Surface->m_model)
+            return true;
+        uint32 const phase = Bot.GetPhaseMask();
+        float const radius = std::max(0.35f, Bot.GetObjectSize() * 0.5f);
+        return TravelLifecycle::FollowDeck(
+            start, end, radius,
+            [&](Point const& top, float drop) { return DeckHeight(*Surface, phase, top, 0.0f, drop); },
+            [&](Point const& a, Point const& b) { return ModelBlocks({a.X, a.Y, a.Z}, {b.X, b.Y, b.Z}); });
+    }
+
+    bool ModelBlocks(G3D::Vector3 const& a, G3D::Vector3 const& b) const
+    {
+        if (!Surface || !Surface->m_model)
+            return false;
+        float distance = (b - a).length();
+        G3D::Ray const ray(a, (b - a) / distance);
+        return Surface->m_model->intersectRay(ray, distance, false, Bot.GetPhaseMask(),
+                                              VMAP::ModelIgnoreFlags::Nothing);
+    }
+
+    Block CrossingBlock(Point const& start, Point const& end) const
     {
         float const dx = end.X - start.X;
         float const dy = end.Y - start.Y;
         float const length = std::hypot(dx, dy);
         if (length < 0.1f)
-            return false;
+            return Block::Short;
         float const radius = std::max(0.35f, Bot.GetObjectSize() * 0.5f);
         for (float const side : {0.0f, -radius, radius})
         {
             float const x = -dy / length * side;
             float const y = dx / length * side;
-            constexpr float BODY_YARDS = 0.65f;
-            G3D::Vector3 const a(start.X + x, start.Y + y, start.Z + BODY_YARDS);
-            G3D::Vector3 const b(end.X + x, end.Y + y, end.Z + BODY_YARDS);
-            if (Surface && Surface->m_model)
-            {
-                float distance = (b - a).length();
-                G3D::Ray const ray(a, (b - a) / distance);
-                if (Surface->m_model->intersectRay(ray, distance, false, Bot.GetPhaseMask(),
-                                                   VMAP::ModelIgnoreFlags::Nothing))
-                    return false;
-            }
+            float const level = TravelLifecycle::CrossingRayHeight(start, end);
+            G3D::Vector3 const a(start.X + x, start.Y + y, level);
+            G3D::Vector3 const b(end.X + x, end.Y + y, level);
+            if (ModelBlocks(a, b))
+                return Block::Hull;
             if (!Bot.GetMap()->isInLineOfSight(a.x, a.y, a.z, b.x, b.y, b.z, Bot.GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
                                                VMAP::ModelIgnoreFlags::Nothing))
-                return false;
+                return Block::Sight;
         }
         // A clear ray over water or empty air is only useful at a short boarding gap.
         constexpr float MAX_UNSUPPORTED_YARDS = 3.0f;
@@ -247,74 +290,28 @@ struct GroundGeometry
             if (std::fabs(floor - z) <= 1.0f)
                 supportedAt = distance;
             if (distance - supportedAt >= MAX_UNSUPPORTED_YARDS)
-                return false;
+                return Block::Unsupported;
         }
-        return true;
+        return Block::Clear;
     }
 };
 
-struct Exit
-{
-    Point Ground;
-    Point Onward;
-};
-
-struct ExitFloorRejection
-{
-    Point Ground;
-    float DeckZ;
-};
-
-// Sample eight bearings starting toward the route. Along each bearing, start just outside the padded model box.
-inline std::optional<Exit> FindExit(Player const& bot, Transport const& transport, Point const& toward,
-                                    std::optional<ExitFloorRejection>* rejectedFloor = nullptr)
+// The exit search runs around the transport's origin from where the bot stands (TravelLifecycle::FindExit).
+inline std::optional<TravelLifecycle::ExitPath> FindExit(Player const& bot, Transport const& transport,
+                                                         Point const& toward,
+                                                         TravelLifecycle::CrossingTally* tally = nullptr)
 {
     if (!Available(bot, transport))
         return std::nullopt;
-    GroundGeometry const geometry{bot, &transport};
-    Footprint const hull = Hull(bot, transport);
-    Point const from = PositionOf(bot);
-    float const angle = std::atan2(toward.Y - from.Y, toward.X - from.X);
-    for (int const bearing : {0, 1, -1, 2, -2, 3, -3, 4})
-    {
-        float const direction = angle + static_cast<float>(bearing) * 0.78539816f;
-        float const dx = std::cos(direction);
-        float const dy = std::sin(direction);
-        for (float distance = 2.0f; distance <= TravelLifecycle::CROSSING_YARDS; distance += 2.0f)
-        {
-            Point const seed{from.X + dx * distance, from.Y + dy * distance, from.Z};
-            if (!hull.Outside(seed))
-                continue;
-            auto const ground = geometry.SnapGround(seed, 1.0f, TravelLifecycle::EXIT_SEARCH_VERTICAL_YARDS);
-            if (!ground)
-                continue;
-            if (std::fabs(ground->Z - from.Z) > TravelLifecycle::DOCK_FLOOR_YARDS)
-            {
-                if (rejectedFloor && !*rejectedFloor && ground->Z < from.Z && hull.Outside(*ground))
-                    *rejectedFloor = ExitFloorRejection{*ground, from.Z};
-                continue;
-            }
-            // If the next ground waypoint is close, prove that corridor. Otherwise prove access into the platform.
-            auto const routeGround =
-                TravelLifecycle::DistanceSquared(*ground, toward) <= 25.0f * 25.0f && hull.Outside(toward)
-                    ? geometry.SnapGround(toward, 1.0f, TravelLifecycle::DOCK_FLOOR_YARDS)
-                    : std::nullopt;
-            auto const onward = routeGround
-                                    ? routeGround
-                                    : geometry.SnapGround({ground->X + dx * 4.0f, ground->Y + dy * 4.0f, ground->Z},
-                                                          1.5f, TravelLifecycle::DOCK_FLOOR_YARDS);
-            if (onward && TravelLifecycle::AcceptExit(geometry, hull, from, *ground, *onward))
-                return Exit{*ground, *onward};
-        }
-    }
-    return std::nullopt;
+    return TravelLifecycle::FindExit(GroundGeometry{bot, &transport}, PositionOf(bot), PositionOf(transport), toward,
+                                     tally);
 }
 
 inline bool ConfirmExit(Player const& bot, Transport const& transport, TravelLifecycle::PassengerMotion const& motion)
 {
     return AtIssuedDock(bot, transport, motion) &&
-           TravelLifecycle::AcceptExit(GroundGeometry{bot, &transport}, Hull(bot, transport), motion.ExitFrom,
-                                       PositionOf(bot), motion.Onward);
+           TravelLifecycle::AcceptExit(GroundGeometry{bot, &transport}, motion.ExitFrom, PositionOf(bot),
+                                       motion.Onward);
 }
 }  // namespace TravelTransportGeometry
 

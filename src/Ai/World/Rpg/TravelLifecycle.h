@@ -7,7 +7,10 @@
 #ifndef PLAYERBOTS_TRAVEL_LIFECYCLE_H
 #define PLAYERBOTS_TRAVEL_LIFECYCLE_H
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -23,8 +26,26 @@ struct Point
 };
 
 constexpr float CROSSING_YARDS = 25.0f;
-constexpr float EXIT_SEARCH_VERTICAL_YARDS = 10.0f;
 constexpr float DOCK_FLOOR_YARDS = 2.0f;
+constexpr float CROSSING_BODY_YARDS = 0.65f;
+// The step from a deck edge up or down to the quay on an exit: a jump (apex 1.64 yd at the client's 7.96 yd/s take-off
+// and 19.29 yd/s^2 gravity) plus the navmesh's step (walkableClimb 4 cells x 0.267 yd = 1.07 yd) reaches 2.7 yd. Booty
+// Bay's pier lies 2.04 yd above the docked ship's deck edge.
+constexpr float EXIT_STEP_YARDS = 2.5f;
+// How far inside the deck's edge a crossing starts. Boarding walks 4 yd onto the deck; an exit starts 1 yd inside the
+// edge: 4 yd in from a 2-yd edge step lands on the centre of a zeppelin's gondola (about 7 yd radius), behind its rail.
+constexpr float BOARD_DECK_INSET_YARDS = 4.0f;
+constexpr float EXIT_DECK_INSET_YARDS = 1.0f;
+// The highest step between two yard samples of a walk across a deck (the navmesh's walkableClimb, 4 cells)
+constexpr float DECK_CLIMB_YARDS = 1.07f;
+
+// The body ray of a boarding or exit crossing runs level, this high above the higher end. A ray from the lower end's
+// body height to the higher end's would pass through the deck's own floor while still over it (a step up of 1.7 yd
+// onto a zeppelin's deck from its tower crosses the deck plane before it ends).
+inline float CrossingRayHeight(Point const& start, Point const& end)
+{
+    return std::max(start.Z, end.Z) + CROSSING_BODY_YARDS;
+}
 
 inline float DistanceSquared(Point const& a, Point const& b)
 {
@@ -59,25 +80,177 @@ struct Footprint
     }
 };
 
-template <class Geometry>
-bool AcceptBoard(Geometry const& geometry, Point const& shore, Point const& deck)
+// The first check a boarding or exit candidate fails; the tally of a failed search goes to the debug trace.
+enum class CrossingCheck : std::uint8_t
 {
-    return std::fabs(shore.Z - deck.Z) <= DOCK_FLOOR_YARDS &&
-           DistanceSquared(shore, deck) <= CROSSING_YARDS * CROSSING_YARDS && geometry.OnGround(shore) &&
-           geometry.CrossingClear(shore, deck);
+    Accepted,
+    NoShore,
+    NoDeck,
+    OnHull,
+    Height,
+    Distance,
+    Ground,
+    Onward,
+    Crossing,
+    Corridor,
+    DeckWalk,
+    Count
+};
+
+struct CrossingTally
+{
+    struct Sample
+    {
+        Point From;
+        Point To;
+    };
+    static constexpr std::size_t REASONS = static_cast<std::size_t>(CrossingCheck::Count);
+    std::array<std::uint32_t, REASONS> Counts{};
+    std::array<std::optional<Sample>, REASONS> First{};
+
+    // The exit probe: per bearing of the exit search, the candidate that got furthest through the checks (the nearest
+    // one of equal progress). The checks run in the enum's order.
+    struct Furthest
+    {
+        CrossingCheck Check = CrossingCheck::NoShore;
+        float Distance = 0.0f;
+        Point From;
+        Point To;
+    };
+    static constexpr std::size_t BEARINGS = 24;
+    std::array<std::optional<Furthest>, BEARINGS> Bearings{};
+
+    void NoteBearing(std::size_t bearing, CrossingCheck check, float distance, Point const& from, Point const& to)
+    {
+        auto& slot = Bearings[bearing];
+        if (!slot || check > slot->Check)
+            slot = Furthest{check, distance, from, to};
+    }
+
+    void Note(CrossingCheck check, Point const& from, Point const& to)
+    {
+        std::size_t const index = static_cast<std::size_t>(check);
+        ++Counts[index];
+        if (!First[index])
+            First[index] = Sample{from, to};
+    }
+};
+
+inline void Note(CrossingTally* tally, CrossingCheck check, Point const& from, Point const& to)
+{
+    if (tally)
+        tally->Note(check, from, to);
+}
+
+// The deck point a crossing starts from: on the line from the shore toward the transport's origin, the first sample
+// with deck under it, then the inset further in. The search steps no further than the inset, so the point lies between
+// one and two insets inside the edge (boarding: 4 to 6 yd; exit: 1 to 2 yd). Without an edge on that line, the origin.
+template <class DeckAt>
+std::optional<Point> DeckPointFrom(Point const& shore, Point const& origin, float inset, DeckAt const& deckAt)
+{
+    constexpr float STEP_YARDS = 2.0f;
+    constexpr float PROBE_YARDS = 100.0f;
+    float const step = std::min(STEP_YARDS, inset);
+    float const dx = origin.X - shore.X;
+    float const dy = origin.Y - shore.Y;
+    float const yards = std::hypot(dx, dy);
+    if (yards > PROBE_YARDS)
+        return std::nullopt;
+    for (float along = step; along < yards; along += step)
+    {
+        float const part = along / yards;
+        auto const edge = deckAt(Point{shore.X + dx * part, shore.Y + dy * part, shore.Z});
+        if (!edge)
+            continue;
+        float const inward = std::min((along + inset) / yards, 1.0f);
+        Point const deck{shore.X + dx * inward, shore.Y + dy * inward, *edge};
+        if (auto const height = deckAt(deck))
+            return Point{deck.X, deck.Y, *height};
+    }
+    if (auto const height = deckAt(Point{origin.X, origin.Y, shore.Z}))
+        return Point{origin.X, origin.Y, *height};
+    return std::nullopt;
+}
+
+// The walk across a deck follows its surface yard by yard: the surface under each step, looked for from one climb above
+// the last step down to a drop of two climbs, and the body rays between two steps level above the higher one. One level
+// ray at the bot's height over a 16-yd walk runs into the deck's own camber or a raised quarterdeck. deckAt(top, drop)
+// is the surface height at or below top within drop; blocks(a, b) is the transport's model between two points.
+template <class DeckAt, class Blocks>
+bool FollowDeck(Point const& start, Point const& end, float radius, DeckAt const& deckAt, Blocks const& blocks)
+{
+    float const dx = end.X - start.X;
+    float const dy = end.Y - start.Y;
+    float const length = std::hypot(dx, dy);
+    if (length < 0.1f)
+        return true;
+    unsigned const steps = static_cast<unsigned>(std::ceil(length));
+    Point last = start;
+    for (unsigned step = 1; step <= steps; ++step)
+    {
+        float const part = static_cast<float>(step) / static_cast<float>(steps);
+        Point const top{start.X + dx * part, start.Y + dy * part, last.Z + DECK_CLIMB_YARDS};
+        auto const surface = deckAt(top, 3.0f * DECK_CLIMB_YARDS);
+        if (!surface)
+            return false;
+        Point const next{top.X, top.Y, *surface};
+        float const level = CrossingRayHeight(last, next);
+        for (float const side : {0.0f, -radius, radius})
+        {
+            float const x = -dy / length * side;
+            float const y = dx / length * side;
+            if (blocks(Point{last.X + x, last.Y + y, level}, Point{next.X + x, next.Y + y, level}))
+                return false;
+        }
+        last = next;
+    }
+    return true;
 }
 
 template <class Geometry>
-std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, Point const& origin)
+CrossingCheck CheckBoard(Geometry const& geometry, Point const& shore, Point const& deck)
+{
+    if (std::fabs(shore.Z - deck.Z) > DOCK_FLOOR_YARDS)
+        return CrossingCheck::Height;
+    if (DistanceSquared(shore, deck) > CROSSING_YARDS * CROSSING_YARDS)
+        return CrossingCheck::Distance;
+    if (!geometry.OnGround(shore))
+        return CrossingCheck::Ground;
+    if (!geometry.CrossingClear(shore, deck))
+        return CrossingCheck::Crossing;
+    return CrossingCheck::Accepted;
+}
+
+template <class Geometry>
+bool AcceptBoard(Geometry const& geometry, Point const& shore, Point const& deck)
+{
+    return CheckBoard(geometry, shore, deck) == CrossingCheck::Accepted;
+}
+
+template <class Geometry>
+std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, Point const& origin,
+                              CrossingTally* tally = nullptr)
 {
     auto const tryShore = [&](Point const& seed) -> std::optional<Point>
     {
         auto const shore = geometry.ShoreAt(seed);
         if (!shore)
+        {
+            Note(tally, CrossingCheck::NoShore, approach, seed);
             return std::nullopt;
+        }
         auto const deck = geometry.DeckFrom(*shore);
-        if (deck && AcceptBoard(geometry, *shore, *deck) && geometry.ConnectedGround(approach, *shore))
+        if (!deck)
+        {
+            Note(tally, CrossingCheck::NoDeck, *shore, origin);
+            return std::nullopt;
+        }
+        CrossingCheck check = CheckBoard(geometry, *shore, *deck);
+        if (check == CrossingCheck::Accepted && !geometry.ConnectedGround(approach, *shore))
+            check = CrossingCheck::Corridor;
+        if (check == CrossingCheck::Accepted)
             return shore;
+        Note(tally, check, *shore, *deck);
         return std::nullopt;
     };
     if (auto const shore = tryShore(approach))
@@ -99,14 +272,108 @@ std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, P
 }
 
 // The mesh adapter supplies actual ground and a complete ground corridor. The deck crossing is checked separately.
+// Off the hull means no transport surface under the point (the geometry's model test, not the model's bounding box).
 template <class Geometry>
-bool AcceptExit(Geometry const& geometry, Footprint const& hull, Point const& from, Point const& ground,
-                Point const& onward)
+CrossingCheck CheckExit(Geometry const& geometry, Point const& from, Point const& ground, Point const& onward)
 {
-    return hull.Outside(ground) && hull.Outside(onward) && std::fabs(ground.Z - from.Z) <= DOCK_FLOOR_YARDS &&
-           DistanceSquared(from, ground) <= CROSSING_YARDS * CROSSING_YARDS && geometry.OnGround(ground) &&
-           DistanceSquared(ground, onward) >= 2.0f * 2.0f && geometry.CrossingClear(from, ground) &&
-           geometry.ConnectedGround(ground, onward);
+    if (!geometry.OffHull(ground) || !geometry.OffHull(onward))
+        return CrossingCheck::OnHull;
+    if (std::fabs(ground.Z - from.Z) > EXIT_STEP_YARDS)
+        return CrossingCheck::Height;
+    if (DistanceSquared(from, ground) > CROSSING_YARDS * CROSSING_YARDS)
+        return CrossingCheck::Distance;
+    if (!geometry.OnGround(ground))
+        return CrossingCheck::Ground;
+    if (DistanceSquared(ground, onward) < 2.0f * 2.0f)
+        return CrossingCheck::Onward;
+    if (!geometry.CrossingClear(from, ground))
+        return CrossingCheck::Crossing;
+    if (!geometry.ConnectedGround(ground, onward))
+        return CrossingCheck::Corridor;
+    return CrossingCheck::Accepted;
+}
+
+template <class Geometry>
+bool AcceptExit(Geometry const& geometry, Point const& from, Point const& ground, Point const& onward)
+{
+    return CheckExit(geometry, from, ground, onward) == CrossingCheck::Accepted;
+}
+
+struct ExitPath
+{
+    Point Deck;    // the deck edge, reached across the deck
+    Point Ground;  // the quay beyond it
+    Point Onward;  // the ground that proves the quay leads on
+};
+
+// The exit is the boarding search in reverse: a quay on the ring around the transport's origin at the deck's floor
+// (bearings from the route's side first), its deck edge (FindQuay's DeckFrom), the walk across the deck to that edge
+// and the crossing from the edge to the quay. One straight ray from wherever the bot stands crosses the whole deck
+// (masts, hatches, the far railing) and finds nothing when the quay lies on the side opposite to where the bot boarded.
+// The quay may lie a step (EXIT_STEP_YARDS) above or below the deck; the deck edge lies 1 yd inside the deck.
+template <class Geometry>
+std::optional<ExitPath> FindExit(Geometry const& geometry, Point const& from, Point const& origin, Point const& toward,
+                                 CrossingTally* tally = nullptr)
+{
+    constexpr unsigned BEARINGS = CrossingTally::BEARINGS;
+    constexpr float BEARING_STEP = 0.26179939f;
+    constexpr float ONWARD_YARDS = 4.0f;
+    float const angle = std::atan2(toward.Y - origin.Y, toward.X - origin.X);
+    bool const towardOffHull = geometry.OffHull(toward);
+    for (unsigned turn = 0; turn < BEARINGS; ++turn)
+    {
+        int const side = static_cast<int>((turn + 1) / 2) * (turn % 2 ? 1 : -1);
+        float const direction = angle + static_cast<float>(side) * BEARING_STEP;
+        float const dx = std::cos(direction);
+        float const dy = std::sin(direction);
+        for (float distance = 1.0f; distance <= CROSSING_YARDS; distance += 1.0f)
+        {
+            auto const reject = [&](CrossingCheck check, Point const& start, Point const& end)
+            {
+                Note(tally, check, start, end);
+                if (tally)
+                    tally->NoteBearing(turn, check, distance, start, end);
+            };
+            Point const seed{origin.X + dx * distance, origin.Y + dy * distance, from.Z};
+            auto const ground = geometry.ShoreAt(seed, EXIT_STEP_YARDS);
+            if (!ground)
+            {
+                reject(CrossingCheck::NoShore, from, seed);
+                continue;
+            }
+            auto const deck = geometry.DeckFrom(*ground, EXIT_DECK_INSET_YARDS);
+            if (!deck)
+            {
+                reject(CrossingCheck::NoDeck, *ground, origin);
+                continue;
+            }
+            // The route's next ground point when it is near and off the hull, else a step further out
+            auto onward = towardOffHull && DistanceSquared(*ground, toward) <= CROSSING_YARDS * CROSSING_YARDS
+                              ? geometry.SnapGround(toward, 1.0f, DOCK_FLOOR_YARDS)
+                              : std::nullopt;
+            if (!onward)
+                onward = geometry.SnapGround({ground->X + dx * ONWARD_YARDS, ground->Y + dy * ONWARD_YARDS, ground->Z},
+                                             1.5f, DOCK_FLOOR_YARDS);
+            if (!onward)
+            {
+                reject(CrossingCheck::Onward, *deck, *ground);
+                continue;
+            }
+            CrossingCheck const check = CheckExit(geometry, *deck, *ground, *onward);
+            if (check != CrossingCheck::Accepted)
+            {
+                reject(check, *deck, *ground);
+                continue;
+            }
+            if (!geometry.DeckWalkClear(from, *deck))
+            {
+                reject(CrossingCheck::DeckWalk, from, *deck);
+                continue;
+            }
+            return ExitPath{*deck, *ground, *onward};
+        }
+    }
+    return std::nullopt;
 }
 
 enum class MotionKind : std::uint8_t

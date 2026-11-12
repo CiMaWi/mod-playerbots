@@ -46,7 +46,10 @@ struct GroundGeometry
     bool Ground = true;
     bool Corridor = true;
     bool Crossing = true;
+    // The transport's surface as seen from above, padded by the bot's reach (the runtime casts rays at the model)
+    Footprint Surface = HULL;
 
+    bool OffHull(Point const& point) const { return Surface.Outside(point); }
     bool OnGround(Point const&) const { return Ground; }
     bool ConnectedGround(Point const&, Point const&) const { return Corridor; }
     bool CrossingClear(Point const&, Point const&) const { return Crossing; }
@@ -94,7 +97,7 @@ struct Adapter
     bool ConfirmExit(PassengerMotion const& motion)
     {
         Calls.push_back("confirm_exit");
-        return AcceptExit(Geometry, HULL, motion.ExitFrom, Spline.Position, motion.Onward);
+        return AcceptExit(Geometry, motion.ExitFrom, Spline.Position, motion.Onward);
     }
 
     void SettleOldFrame()
@@ -322,23 +325,46 @@ void CheckRideAndExit()
 void CheckGeometry()
 {
     GroundGeometry geometry;
-    Check(!AcceptExit(geometry, HULL, DECK, {5.5f, 6.0f, 7.6f}, ONWARD),
+    Check(!AcceptExit(geometry, DECK, {5.5f, 6.0f, 7.6f}, ONWARD),
           "NAV_GROUND beneath the tram is inside the padded model footprint");
-    Check(!AcceptExit(geometry, HULL, DECK, {6.5f, 6.0f, 8.0f}, ONWARD),
-          "ground outside the car still needs body clearance");
-    Check(!AcceptExit(geometry, HULL, DECK, {7.0f, 6.0f, 5.9f}, ONWARD),
-          "outside ground below the dock floor is rejected");
+    Check(!AcceptExit(geometry, DECK, {6.5f, 6.0f, 8.0f}, ONWARD), "ground outside the car still needs body clearance");
+    Check(!AcceptExit(geometry, DECK, {7.0f, 6.0f, 5.4f}, ONWARD),
+          "outside ground more than an exit's step (2.5 yd) below the deck is rejected");
     geometry.Ground = false;
-    Check(!AcceptExit(geometry, HULL, DECK, PLATFORM, ONWARD), "unknown or water mesh cannot stand in for ground");
+    Check(!AcceptExit(geometry, DECK, PLATFORM, ONWARD), "unknown or water mesh cannot stand in for ground");
     geometry.Ground = true;
     geometry.Corridor = false;
-    Check(!AcceptExit(geometry, HULL, DECK, PLATFORM, ONWARD),
+    Check(!AcceptExit(geometry, DECK, PLATFORM, ONWARD),
           "a shortcut or partial route without a real ground corridor cannot authorize exit");
     geometry.Corridor = true;
     geometry.Crossing = false;
-    Check(!AcceptExit(geometry, HULL, DECK, PLATFORM, ONWARD), "a blocked deck crossing rejects reachable ground");
+    Check(!AcceptExit(geometry, DECK, PLATFORM, ONWARD), "a blocked deck crossing rejects reachable ground");
     geometry.Crossing = true;
-    Check(AcceptExit(geometry, HULL, DECK, PLATFORM, ONWARD), "clear same-floor ground leads into the platform");
+    Check(AcceptExit(geometry, DECK, PLATFORM, ONWARD), "clear same-floor ground leads into the platform");
+
+    // WT43: a ship's model box spans its masts, rigging and bowsprit (Booty Bay: 114 x 83 yd around a deck of about
+    // 40 x 10). The quay beside the deck lies inside that box but under no part of the ship: it is off the hull.
+    constexpr Footprint SHIP_BOX{{-60.0f, -40.0f, -5.0f}, {55.0f, 43.0f, 40.0f}, 0.6f};
+    constexpr Footprint SHIP_DECK{{-20.0f, -5.0f, 0.0f}, {20.0f, 5.0f, 8.0f}, 0.6f};
+    constexpr Point SHIP_FROM{0.0f, 3.0f, 6.1f};
+    constexpr Point QUAY{0.0f, 8.0f, 6.0f};
+    constexpr Point QUAY_ONWARD{0.0f, 14.0f, 6.0f};
+    geometry.Surface = SHIP_DECK;
+    Check(!SHIP_BOX.Outside(QUAY) && AcceptExit(geometry, SHIP_FROM, QUAY, QUAY_ONWARD),
+          "ground beside the deck inside the ship's model box is a valid exit");
+    Check(!AcceptExit(geometry, SHIP_FROM, {0.0f, 5.2f, 6.0f}, QUAY_ONWARD),
+          "ground within the bot's reach of the deck edge is still on the hull");
+    Check(CheckExit(geometry, SHIP_FROM, QUAY, {0.0f, -4.0f, 6.0f}) == CrossingCheck::OnHull,
+          "an onward point back on the deck is on the hull");
+
+    // WT43: the crossing's body ray runs level above the higher end. Orgrimmar's tower top (z 53.64) under the
+    // zeppelin's deck (z 55.35): a ray rising from 54.29 to 56.0 passed through the deck plane while still over it.
+    constexpr Point TOWER{1319.32f, -4658.10f, 53.64f};
+    constexpr Point ZEPPELIN_DECK{1318.11f, -4652.0f, 55.35f};
+    float const level = CrossingRayHeight(TOWER, ZEPPELIN_DECK);
+    Check(std::fabs(level - 56.0f) < 0.001f && level > ZEPPELIN_DECK.Z,
+          "a boarding ray onto a higher deck runs above the deck, not into it");
+    Check(CrossingRayHeight(ZEPPELIN_DECK, TOWER) == level, "boarding and exit rays of one crossing run at one height");
 }
 
 void CheckQuay()
@@ -383,6 +409,139 @@ void CheckQuay()
     Check(geometry.UpperCorridorChecks > 0, "the upper boarding candidate fails the normal ground corridor");
     geometry.LowerAvailable = false;
     Check(!FindQuay(geometry, approach, origin), "the disconnected upper candidate alone cannot choose a quay");
+}
+
+// WT43: the exit is the boarding search in reverse. A ship's deck spans |y| < 5 around its origin; the bot stands
+// where it boarded (y = 3), the quay lies on the far side (y <= -7). The straight crossing from the bot crosses the
+// far railing; the crossing from the far deck edge is clear.
+void CheckExitSearch()
+{
+    struct ExitGeometry
+    {
+        Point Bot{0.0f, 3.0f, 6.1f};
+        Footprint Deck{{-20.0f, -5.0f, 0.0f}, {20.0f, 5.0f, 8.0f}, 0.6f};
+        bool DeckWalk = true;
+        mutable float Vertical = 0.0f;
+        mutable float Inset = 0.0f;
+
+        static bool OnQuay(Point const& point) { return point.Y <= -7.0f && std::fabs(point.X) <= 20.0f; }
+        std::optional<Point> ShoreAt(Point const& seed, float vertical) const
+        {
+            Vertical = vertical;
+            bool const floor = std::fabs(seed.Z - 6.0f) <= vertical;
+            return OnQuay(seed) && floor ? std::optional<Point>(Point{seed.X, seed.Y, 6.0f}) : std::nullopt;
+        }
+        std::optional<Point> SnapGround(Point point, float, float) const
+        {
+            return OnQuay(point) ? std::optional<Point>(point) : std::nullopt;
+        }
+        std::optional<Point> DeckFrom(Point const& shore, float inset) const
+        {
+            Inset = inset;
+            float const inward = shore.Y < 0.0f ? -1.0f : 1.0f;
+            return Point{shore.X, inward, 6.1f};
+        }
+        bool OffHull(Point const& point) const { return Deck.Outside(point); }
+        bool OnGround(Point const& point) const { return OnQuay(point); }
+        bool ConnectedGround(Point const& start, Point const& end) const { return OnQuay(start) && OnQuay(end); }
+        bool CrossingClear(Point const& start, Point const&) const { return DistanceSquared(start, Bot) > 0.01f; }
+        bool DeckWalkClear(Point const&, Point const&) const { return DeckWalk; }
+    } geometry;
+
+    Point const origin{0.0f, 0.0f, 0.0f};
+    Point const toward{0.0f, -40.0f, 6.0f};
+    Check(!AcceptExit(geometry, geometry.Bot, {0.0f, -8.0f, 6.0f}, {0.0f, -12.0f, 6.0f}),
+          "the straight crossing from where the bot boarded is blocked by the far railing");
+    auto const exit = FindExit(geometry, geometry.Bot, origin, toward);
+    Check(exit && exit->Deck.Y == -1.0f && exit->Ground.Y <= -7.0f && std::fabs(exit->Ground.X) < 0.01f,
+          "the exit crosses the deck to the edge facing the route and steps onto the quay there");
+    Check(exit && AcceptExit(geometry, exit->Deck, exit->Ground, exit->Onward),
+          "the found exit passes the confirmation from its deck edge");
+    Check(geometry.Inset == EXIT_DECK_INSET_YARDS && geometry.Vertical == EXIT_STEP_YARDS,
+          "the exit search asks for the deck point 1 yd inside the edge and a quay within a step of the deck");
+    Point const edge{0.0f, -1.0f, 6.1f};
+    Check(AcceptExit(geometry, edge, {0.0f, -8.0f, 8.14f}, {0.0f, -12.0f, 8.14f}),
+          "Booty Bay: a pier 2.04 yd above the deck edge is within an exit's step");
+    Check(CheckExit(geometry, edge, {0.0f, -8.0f, 8.7f}, {0.0f, -12.0f, 8.7f}) == CrossingCheck::Height,
+          "a quay 2.6 yd above the deck edge is beyond an exit's step");
+    Check(exit && geometry.OffHull(exit->Onward) && exit->Onward.Y < exit->Ground.Y,
+          "the onward point leads away from the hull");
+    Point const nearRoute{3.0f, -14.0f, 6.0f};
+    auto const nearExit = FindExit(geometry, geometry.Bot, origin, nearRoute);
+    Check(nearExit && nearExit->Onward.X == nearRoute.X && nearExit->Onward.Y == nearRoute.Y,
+          "a near route point off the hull is the onward point");
+
+    geometry.DeckWalk = false;
+    CrossingTally tally;
+    Check(!FindExit(geometry, geometry.Bot, origin, toward, &tally) &&
+              tally.Counts[static_cast<std::size_t>(CrossingCheck::DeckWalk)] > 0,
+          "a blocked walk across the deck rejects the edge and is counted");
+    Check(
+        tally.Bearings[0] && tally.Bearings[0]->Check == CrossingCheck::DeckWalk && tally.Bearings[0]->Distance == 7.0f,
+        "the probe keeps, for the route's bearing, the nearest candidate that got furthest (the deck walk at 7 yd)");
+    geometry.DeckWalk = true;
+    Check(!FindExit(geometry, {0.0f, 3.0f, 12.0f}, origin, toward),
+          "the search looks for the quay at the deck's floor, not a dock floor below it");
+}
+
+// WT43: Tirisfal's gondola (deck at 98.46 within 7 yd of the origin's XY), its platform 10 yd out. Boarding's 4-yd
+// inset after a 2-yd edge step puts the deck point 2 yd from the centre, behind the rail; an exit's 1-yd inset keeps it
+// 1 to 2 yd inside the edge.
+void CheckDeckPoint()
+{
+    Point const origin{0.0f, 0.0f, 114.97f};
+    Point const shore{10.0f, 0.0f, 97.0f};
+    auto const gondola = [&](Point const& point) -> std::optional<float>
+    {
+        if (std::hypot(point.X - origin.X, point.Y - origin.Y) <= 7.0f)
+            return 98.46f;
+        return std::nullopt;
+    };
+    auto const board = DeckPointFrom(shore, origin, BOARD_DECK_INSET_YARDS, gondola);
+    Check(board && std::fabs(board->X - 2.0f) < 0.01f && board->Z == 98.46f,
+          "boarding's deck point stays where it was: 4 yd past the first 2-yd step on the deck");
+    auto const exit = DeckPointFrom(shore, origin, EXIT_DECK_INSET_YARDS, gondola);
+    Check(exit && exit->X >= 5.0f && exit->X <= 6.0f && exit->Z == 98.46f,
+          "an exit's deck point stays on the gondola 1 to 2 yd inside its edge, not at its centre");
+    Check(!DeckPointFrom({200.0f, 0.0f, 97.0f}, origin, EXIT_DECK_INSET_YARDS, gondola),
+          "a shore beyond the probe range has no deck point");
+}
+
+// WT43: Booty Bay's walk across the ship's deck. The deck is cambered (0.8 yd higher at the middle of a 16-yd walk) and
+// a crate stands 1.5 yd high on the walk in the second case. The model blocks a ray that runs below its surface.
+void CheckDeckWalk()
+{
+    bool crate = false;
+    auto const camber = [](float x) { return 6.1f + 0.8f * (1.0f - (x / 8.0f) * (x / 8.0f)); };
+    auto const surface = [&](float x) { return crate && std::fabs(x) <= 1.0f ? camber(x) + 1.5f : camber(x); };
+    auto const deckAt = [&](Point const& top, float drop) -> std::optional<float>
+    {
+        if (std::fabs(top.X) > 8.5f || std::fabs(top.Y) > 5.0f)
+            return std::nullopt;
+        float const z = surface(top.X) <= top.Z ? surface(top.X) : camber(top.X);
+        return top.Z - z <= drop ? std::optional<float>(z) : std::nullopt;
+    };
+    auto const blocks = [&](Point const& a, Point const& b)
+    {
+        for (int i = 0; i <= 20; ++i)
+        {
+            float const part = static_cast<float>(i) / 20.0f;
+            float const x = a.X + (b.X - a.X) * part;
+            if (std::fabs(x) <= 8.0f && a.Z + (b.Z - a.Z) * part < surface(x))
+                return true;
+        }
+        return false;
+    };
+    Point const bot{-8.0f, 0.0f, 6.1f};
+    Point const edge{8.0f, 0.0f, 6.1f};
+    float const level = CrossingRayHeight(bot, edge);
+    Check(blocks({bot.X, bot.Y, level}, {edge.X, edge.Y, level}),
+          "one level ray at the bot's body height runs into the deck's camber (round 3's deck_walk rejection)");
+    Check(FollowDeck(bot, edge, 0.35f, deckAt, blocks), "the walk along the deck's surface crosses the camber");
+    crate = true;
+    Check(!FollowDeck(bot, edge, 0.35f, deckAt, blocks), "a crate 1.5 yd high on the walk blocks it");
+    crate = false;
+    Check(!FollowDeck(bot, {12.0f, 0.0f, 6.1f}, 0.35f, deckAt, blocks), "a walk past the deck's end has no surface");
 }
 
 void CheckDiscardedOwner()
@@ -1297,6 +1456,9 @@ int main()
     CheckRideAndExit();
     CheckGeometry();
     CheckQuay();
+    CheckExitSearch();
+    CheckDeckPoint();
+    CheckDeckWalk();
     CheckDiscardedOwner();
     CheckIneligibleMaintenance();
     CheckUnconsumedBoardTransfer();
