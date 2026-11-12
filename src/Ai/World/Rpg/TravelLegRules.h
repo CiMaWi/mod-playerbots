@@ -418,6 +418,12 @@ struct Trip
     bool hopped{false};
     std::uint8_t offScans{0};  // Ride, Leave, Ashore: the scans in a row that saw the bot off the transport
     bool exitSought{false};    // Leave: the follower looked for the ground beside the deck (its first look is logged)
+    // WT19-e: a ship's or zeppelin's dock node is its own stop (over the water or in the air), so the bot walks to and
+    // waits on the ground beside it (the quay; the follower looks once a leg, SetQuay); without one at the node
+    Point quay;
+    bool hasQuay{false};
+    bool quaySought{false};
+    bool boardMoveSent{false};  // Board: the walk onto the deck went out at this docking (WantsBoardMove)
     std::vector<TransportNote> transportNotes;
     OffFirst offFirst;  // the whole trip's (StartLeg leaves it)
 };
@@ -619,6 +625,10 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.hopped = false;
     trip.offScans = 0;
     trip.exitSought = false;
+    trip.quay = Point{};
+    trip.hasQuay = false;
+    trip.quaySought = false;
+    trip.boardMoveSent = false;
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
@@ -668,6 +678,22 @@ inline std::uint32_t TransportRideMs(Trip const& trip, Leg const& leg)
     return LEG_SLACK_MS + RIDE_PERIODS * TransportPeriodMs(trip, leg);
 }
 
+// The follower's look for the quay beside the current transport leg's dock node: found, or none (the node stays)
+inline void SetQuay(Trip& trip, Point const* quay)
+{
+    trip.quaySought = true;
+    trip.hasQuay = quay != nullptr;
+    if (quay)
+        trip.quay = *quay;
+}
+
+// Where a transport leg's bot walks to and waits: the quay once found, else the dock node
+inline Point const& WaitPoint(Trip const& trip, Leg const& leg) { return trip.hasQuay ? trip.quay : leg.from; }
+
+// Board: one straight walk onto the deck per docking, a new one only once the last ended (a walk sent anew every
+// scan restarts it towards a point probed from wherever the bot then is)
+inline bool WantsBoardMove(Trip const& trip, bool botMoving) { return !trip.boardMoveSent || !botMoving; }
+
 // The hop may come at this docking: the follower then asks whether a real player sees it (TransportSight::unseen)
 inline bool WantsSightCheck(Trip const& trip)
 {
@@ -675,10 +701,10 @@ inline bool WantsSightCheck(Trip const& trip)
            trip.boarding == Boarding::Board && trip.misses >= HOP_AFTER_MISSES && !trip.hopped;
 }
 
-// A transport leg (WT19): walk to the dock node, wait, board the docked transport, ride, walk off where it stands at
-// the leg's end. A departure without the bot is a miss and the bot waits for the next one; after HOP_AFTER_MISSES
-// misses one hop onto the deck, only unseen. The end node is the transport's own stop (its centre), so a leave ends
-// the leg once the bot is off the transport, wherever beside it. Events go to trip.transportNotes
+// A transport leg (WT19): walk to the waiting point (WaitPoint), wait, board the docked transport, ride, walk off
+// where it stands at the leg's end. A departure without the bot is a miss and the bot waits for the next one; after
+// HOP_AFTER_MISSES misses one hop onto the deck, only unseen. The end node is the transport's own stop (its centre),
+// so a leave ends the leg once the bot is off the transport, wherever beside it. Events go to trip.transportNotes
 inline Decision StepTransport(Trip& trip, Observation const& seen)
 {
     Leg const& leg = trip.legs[trip.legIdx];
@@ -764,21 +790,27 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         return fail(FailReason::Timeout);
     if (seen.bot.mapId != leg.from.mapId)
         return fail(FailReason::WrongMap);
+    Point const& waitAt = WaitPoint(trip, leg);
     if (trip.boarding == Boarding::Approach)
     {
-        if (!within(leg.from, WAYPOINT_YARDS))
-            return {Act::Walk, leg.from, FailReason::None};
+        if (!within(waitAt, WAYPOINT_YARDS))
+            return {Act::Walk, waitAt, FailReason::None};
+        // At the dock node before the follower looked for the quay (the walk leg before ended there and this leg
+        // began in the same tick): no wait there yet, the look comes on a later tick
+        if (!trip.quaySought)
+            return {Act::Wait, waitAt, FailReason::None};
         note(TransportEvent::Attempt, seconds(trip.legStartMs));
         trip.waitSinceMs = nowMs;
         enter(Boarding::Wait);
     }
-    Decision const wait{within(leg.from, WAIT_RETURN_YARDS) ? Act::Wait : Act::Walk, leg.from, FailReason::None};
+    Decision const wait{within(waitAt, WAIT_RETURN_YARDS) ? Act::Wait : Act::Walk, waitAt, FailReason::None};
     bool const docked = DockedAt(trip, leg.from);
     if (trip.boarding == Boarding::Wait)
     {
         if (!docked)
             return wait;
         trip.departed = false;
+        trip.boardMoveSent = false;
         enter(Boarding::Board);
     }
     if (docked)
@@ -799,7 +831,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         trip.departedMs = nowMs;
     }
     if (nowMs - trip.departedMs < MISS_GRACE_MS)
-        return {Act::Wait, leg.from, FailReason::None};
+        return {Act::Wait, waitAt, FailReason::None};
     trip.misses = static_cast<std::uint8_t>(std::min(trip.misses + 1, 255));
     note(TransportEvent::Missed, trip.misses);
     enter(Boarding::Wait);

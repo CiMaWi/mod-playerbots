@@ -735,6 +735,15 @@ bool Noted(Trip const& trip, std::size_t index, TravelLegs::TransportEvent event
            trip.transportNotes[index].entry == entry && trip.transportNotes[index].amount == amount;
 }
 
+// A trip whose first leg is a transport leg the follower already looked at for a quay and found none (SeekQuay): the
+// bot waits at the dock node
+Trip SoughtTrip(std::vector<Leg> legs, std::uint32_t nowMs = 1000)
+{
+    Trip trip = StartedTrip(std::move(legs), nowMs);
+    TravelLegs::SetQuay(trip, nullptr);
+    return trip;
+}
+
 void CheckTransport()
 {
     using TravelLegs::Boarding;
@@ -742,7 +751,7 @@ void CheckTransport()
     using TravelLegs::TransportEvent;
 
     // A ship across maps: approach, wait, board, ride, walk off, done; the next leg starts
-    Trip trip = StartedTrip({ShipLeg(), MakeLeg(LegType::Walk, PIER_B, NODES[4], {3, 4}, 15.0f)});
+    Trip trip = SoughtTrip({ShipLeg(), MakeLeg(LegType::Walk, PIER_B, NODES[4], {3, 4}, 15.0f)});
     Decision const approach = StepLeg(trip, On({0, 70.0f, 0.0f, 0.0f}, 2000, 0));
     Check(approach.act == Act::Walk && Near(approach.target, PIER_A) && trip.boarding == Boarding::Approach,
           "transport: walks to the dock node first");
@@ -777,7 +786,7 @@ void CheckTransport()
           "transport: off the deck on two scans after the leave: arrived (694 s aboard), the next leg starts");
 
     // The passenger list catching up within the grace after the departure is no miss
-    Trip late = StartedTrip({ShipLeg()});
+    Trip late = SoughtTrip({ShipLeg()});
     StepLeg(late, On(PIER_A, 2000, 0, Sight(SHIP_AT_A, false)));
     Check(late.boarding == Boarding::Board, "transport: at the dock node while it stands: boards at once");
     Check(StepLeg(late, On(DECK, 3000, 0, Sight({0, 140.0f, 0.0f, 0.0f}, true))).act == Act::Wait && !late.misses,
@@ -786,7 +795,7 @@ void CheckTransport()
           "transport: aboard within the grace: no miss");
 
     // Departures without the bot: each a miss after the grace, then the next departure; no hop before the third miss
-    Trip missing = StartedTrip({ShipLeg()});
+    Trip missing = SoughtTrip({ShipLeg()});
     bool boardsOnly = true;
     bool counted = true;
     std::uint32_t nowMs = 2000;
@@ -837,7 +846,7 @@ void CheckTransport()
           "transport: a new leg counts anew; the notes wait for the follower");
 
     // An elevator (static): its stop is where it stood still for two scans at the floor
-    Trip lift = StartedTrip({LiftLeg()});
+    Trip lift = SoughtTrip({LiftLeg()});
     Point const down{0, 505.0f, 500.0f, 10.0f};
     Point const half{0, 505.0f, 500.0f, 30.0f};
     Point const up{0, 505.0f, 500.0f, 50.0f};
@@ -887,15 +896,15 @@ void CheckTransport()
     Check(TravelLegs::LegTimeoutMs(ShipLeg()) == 2460000,
           "transport timeout: 60 s + 5 x 480 s before the period is read");
     Check(TravelLegs::LegTimeoutMs(LiftLeg()) == 210000, "elevator timeout: the fallback period is at least 30 s");
-    Trip idle = StartedTrip({ShipLeg()}, 0);
+    Trip idle = SoughtTrip({ShipLeg()}, 0);
     Check(StepLeg(idle, On(PIER_A, 2460000, 0, Gone())).act == Act::Wait, "transport: waits 2460 s for its transport");
     Check(StepLeg(idle, On(PIER_A, 2460001, 0)).reason == FailReason::Timeout, "transport: Fail(timeout) after that");
-    Trip period = StartedTrip({ShipLeg()}, 0);
+    Trip period = SoughtTrip({ShipLeg()}, 0);
     StepLeg(period, On(PIER_A, 1000, 0, Sight(SEA_0, true, false, false, 300000)));
     Check(StepLeg(period, On(PIER_A, 1560000, 0, Gone())).act == Act::Wait &&
               StepLeg(period, On(PIER_A, 1560001, 0)).reason == FailReason::Timeout,
           "transport: a read period of 300 s: 60 s + 5 x 300 s");
-    Trip ride = StartedTrip({ShipLeg()}, 0);
+    Trip ride = SoughtTrip({ShipLeg()}, 0);
     StepLeg(ride, On(PIER_A, 2400000, 0));
     StepLeg(ride, On(DECK, 2450000, SHIP, Sight(SHIP_AT_A, false)));
     Check(StepLeg(ride, On(SEA_0, 2500000, SHIP, Sight(SEA_0, true))).act == Act::Wait,
@@ -957,7 +966,7 @@ void CheckTransport()
     StepLeg(astray, On(DECK, 2000, SHIP));
     Check(StepLeg(astray, On({2, 0.0f, 0.0f, 0.0f}, 3000, SHIP)).reason == FailReason::WrongMap,
           "transport: aboard on a third map: wrong map");
-    Trip other = StartedTrip({ShipLeg()});
+    Trip other = SoughtTrip({ShipLeg()});
     Check(StepLeg(other, On(PIER_A, 2000, SHIP + 1)).act == Act::Wait && other.boarding == Boarding::Wait,
           "transport: on another transport is not aboard the leg's");
 
@@ -1038,6 +1047,77 @@ void CheckOffFirst()
           "off first: no second wait on a trip after a period aboard");
     Check(std::string(TravelLegs::TransportSource(TransportEvent::OffFirst)) == "off_first", "off first: its word");
 }
+
+// WT19-e: a ship's dock node is its own stop (over the water), so the bot walks to the quay beside it, attempts and
+// waits there and boards from there with one walk per docking (the follower's WantsBoardMove); a miss sends it back
+// to wait and the next docking walks anew. Elevators keep their stop node
+void CheckBoarding()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::StepLeg;
+    using TravelLegs::TransportEvent;
+    Point const quay{0, 118.0f, 12.0f, 5.0f};  // 17.7 yd from the ship's stop SHIP_AT_A, 5 yd above the water
+    Leg stopLeg = MakeLeg(LegType::Transport, SHIP_AT_A, SHIP_AT_B, {1, 3}, 240.0f);
+    stopLeg.object = SHIP;
+
+    Trip bare = StartedTrip({stopLeg});
+    Decision const toStop = StepLeg(bare, On(quay, 2000, 0));
+    Check(toStop.act == Act::Walk && Near(toStop.target, SHIP_AT_A) && bare.boarding == Boarding::Approach,
+          "boarding: without a quay the bot walks to the stop node");
+
+    Trip trip = StartedTrip({stopLeg});
+    TravelLegs::SetQuay(trip, &quay);
+    Decision const approach = StepLeg(trip, On({0, 70.0f, 0.0f, 0.0f}, 2000, 0));
+    Check(approach.act == Act::Walk && Near(approach.target, quay) && trip.quaySought,
+          "boarding: walks to the quay, not to the ship's stop over the water");
+    Check(StepLeg(trip, On(quay, 3000, 0, Gone())).act == Act::Wait && trip.boarding == Boarding::Wait &&
+              Noted(trip, 0, TransportEvent::Attempt, SHIP, 2),
+          "boarding: at the quay: attempt (2 s walk), waits");
+    Decision const back = StepLeg(trip, On({0, 70.0f, 0.0f, 0.0f}, 3500, 0, Gone()));
+    Check(back.act == Act::Walk && Near(back.target, quay), "boarding: drawn off while waiting: back to the quay");
+    Decision const board = StepLeg(trip, On(quay, 5000, 0, Sight(SHIP_AT_A, false)));
+    Check(board.act == Act::Board && Near(board.target, SHIP_AT_A) && trip.boarding == Boarding::Board &&
+              TravelLegs::WantsBoardMove(trip, true),
+          "boarding: docked at its stop: boards from the quay, the first walk goes out even while moving");
+    trip.boardMoveSent = true;  // the follower sent it
+    Check(!TravelLegs::WantsBoardMove(trip, true), "boarding: no new walk while the last one goes on");
+    Check(TravelLegs::WantsBoardMove(trip, false), "boarding: a new walk once the last one ended short of the deck");
+    Point const walking{0, 122.0f, 6.0f, 4.0f};
+    Check(StepLeg(trip, On(walking, 6000, 0, Sight({0, 131.0f, 0.0f, 0.0f}, true))).act == Act::Wait && !trip.misses,
+          "boarding: the ship leaves while the bot walks in: no miss within the grace");
+    Check(StepLeg(trip, On(walking, 8400, 0)).act == Act::Wait && !trip.misses, "boarding: 2.4 s later: still no miss");
+    Decision const missed = StepLeg(trip, On(walking, 8600, 0, Sight({0, 160.0f, 0.0f, 0.0f}, true)));
+    Check(missed.act == Act::Wait && trip.misses == 1 && trip.boarding == Boarding::Wait &&
+              Noted(trip, 1, TransportEvent::Missed, SHIP, 1),
+          "boarding: not aboard after the grace: a miss, waits beside the quay");
+    StepLeg(trip, On(quay, 100000, 0, Sight(SHIP_AT_A, false)));
+    Check(trip.boarding == Boarding::Board && !trip.boardMoveSent,
+          "boarding: the next docking: boards with a new walk");
+    Check(StepLeg(trip, On(walking, 102000, SHIP, Sight(SHIP_AT_A, false))).act == Act::Wait &&
+              trip.boarding == Boarding::Ride,
+          "boarding: aboard from the walk: rides");
+
+    // WT21's case: the walk leg before ends at the ship's stop and the ship leg begins in the same tick, before the
+    // follower looked for the quay: no attempt and no wait there, then the walk to the quay
+    Point const atStop{0, 129.0f, 0.0f, 0.0f};  // 1 yd from SHIP_AT_A, in the water
+    Trip chained = StartedTrip({MakeLeg(LegType::Walk, PIER_A, SHIP_AT_A, {}, 10.0f), stopLeg});
+    Decision const handover = TravelLegs::Advance(chained, On(atStop, 2000, 0), NodeAt);
+    Check(handover.act == Act::Wait && chained.legIdx == 1 && chained.boarding == Boarding::Approach &&
+              !chained.quaySought && chained.transportNotes.empty(),
+          "boarding: a walk leg ends at the ship's stop: no attempt and no wait there before the quay is looked for");
+    TravelLegs::SetQuay(chained, &quay);
+    Decision const toQuay = StepLeg(chained, On(atStop, 3000, 0));
+    Check(toQuay.act == Act::Walk && Near(toQuay.target, quay) && chained.boarding == Boarding::Approach,
+          "boarding: the quay found a tick later: walks from the stop to the quay");
+    Check(StepLeg(chained, On(quay, 5000, 0, Gone())).act == Act::Wait && chained.boarding == Boarding::Wait &&
+              Noted(chained, 0, TransportEvent::Attempt, SHIP, 3),
+          "boarding: at the quay: attempt (3 s since the leg began), waits");
+
+    Trip lift = StartedTrip({LiftLeg()});
+    TravelLegs::SetQuay(lift, nullptr);
+    Check(lift.quaySought && !lift.hasQuay && Near(TravelLegs::WaitPoint(lift, lift.legs[0]), LIFT_TOP),
+          "boarding: an elevator waits at its stop node");
+}
 }  // namespace
 
 int main()
@@ -1056,6 +1136,7 @@ int main()
     CheckPlaces();
     CheckTransport();
     CheckOffFirst();
+    CheckBoarding();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

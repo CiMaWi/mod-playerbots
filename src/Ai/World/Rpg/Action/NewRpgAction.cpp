@@ -12,6 +12,7 @@
 #include "ChatHelper.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "GameObjectModel.h"
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -19,6 +20,7 @@
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
+#include "ModelIgnoreFlags.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
@@ -1243,10 +1245,13 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index)
 }
 
 // Transport legs (WT19): the deck point is probed in steps of DECK_STEP_YARDS from the bot towards the transport's
-// centre, only within DECK_PROBE_YARDS of it; the bot heads DECK_INWARD_YARDS past the deck's edge
+// centre, only within DECK_PROBE_YARDS of it; the bot heads DECK_INWARD_YARDS past the deck's edge. The deck is the
+// model's top surface from DECK_RISE_YARDS above to DECK_DROP_YARDS below the bot (WT19-e)
 constexpr float DECK_STEP_YARDS = 2.0f;
 constexpr float DECK_PROBE_YARDS = 100.0f;
-constexpr float DECK_INWARD_YARDS = 2.0f;
+constexpr float DECK_INWARD_YARDS = 4.0f;
+constexpr float DECK_RISE_YARDS = 6.0f;
+constexpr float DECK_DROP_YARDS = 12.0f;
 constexpr float HOP_LIFT_YARDS = 0.5f;  // the hop lands this far above the deck point (as the off-mesh snap does)
 // The walk off at the leg's end heads for the nearest ground (no water) this far beside and above or below the bot
 constexpr float EXIT_ACROSS_YARDS = 25.0f;
@@ -1283,9 +1288,24 @@ Transport* FindLegTransport(Player* bot, TravelRoute::Leg const& leg)
     return best;
 }
 
+// The top of the transport's model at (x, y) from DECK_RISE_YARDS above z down to DECK_DROP_YARDS below it: the
+// surface a bot stands on there. PlayerbotAI's passenger check casts from 2 yd above the bot, so a point at the bot's
+// own height under a higher deck, or in the water below one, never makes it a passenger
+std::optional<float> DeckHeight(Transport* transport, uint32 phaseMask, float x, float y, float z)
+{
+    if (!transport->m_model)
+        return std::nullopt;
+    float distance = DECK_RISE_YARDS + DECK_DROP_YARDS;
+    G3D::Ray const ray(G3D::Vector3(x, y, z + DECK_RISE_YARDS), G3D::Vector3(0.0f, 0.0f, -1.0f));
+    if (!transport->m_model->intersectRay(ray, distance, false, phaseMask, VMAP::ModelIgnoreFlags::Nothing))
+        return std::nullopt;
+    return z + DECK_RISE_YARDS - distance;
+}
+
 // Where the bot boards: decks are off the mesh, so a ship's or zeppelin's deck is probed from the bot towards its
-// centre at the bot's height (Map::GetTransportForPos, moving transports only) and the bot heads a little past the
-// edge; an elevator or tram car is boarded towards its centre. Without a hit the centre
+// centre (DeckHeight) and the bot heads DECK_INWARD_YARDS past the edge, at the deck's height there; an elevator or
+// tram car is boarded towards its centre. Without a hit (also within DECK_STEP_YARDS of it) the centre, at the deck's
+// height there when the model has one within reach
 Position DeckPoint(Player* bot, Transport* transport)
 {
     float const botX = bot->GetPositionX();
@@ -1295,18 +1315,22 @@ Position DeckPoint(Player* bot, Transport* transport)
     float const dy = transport->GetPositionY() - botY;
     float const yards = std::sqrt(dx * dx + dy * dy);
     Position deck(transport->GetPositionX(), transport->GetPositionY(), z, bot->GetOrientation());
-    if (transport->IsStaticTransport() || yards < DECK_STEP_YARDS || yards > DECK_PROBE_YARDS)
+    if (transport->IsStaticTransport() || yards > DECK_PROBE_YARDS)
         return deck;
-    Map* map = bot->GetMap();
+    uint32 const phaseMask = bot->GetPhaseMask();
     for (float along = DECK_STEP_YARDS; along < yards; along += DECK_STEP_YARDS)
     {
         float const part = along / yards;
-        if (map->GetTransportForPos(bot->GetPhaseMask(), botX + dx * part, botY + dy * part, z, nullptr) != transport)
+        std::optional<float> const edge = DeckHeight(transport, phaseMask, botX + dx * part, botY + dy * part, z);
+        if (!edge)
             continue;
         float const inward = std::min((along + DECK_INWARD_YARDS) / yards, 1.0f);
-        deck.Relocate(botX + dx * inward, botY + dy * inward, z);
-        break;
+        float const x = botX + dx * inward;
+        float const y = botY + dy * inward;
+        deck.Relocate(x, y, DeckHeight(transport, phaseMask, x, y, *edge).value_or(*edge));
+        return deck;
     }
+    deck.m_positionZ = DeckHeight(transport, phaseMask, deck.GetPositionX(), deck.GetPositionY(), z).value_or(z);
     return deck;
 }
 
@@ -1358,6 +1382,76 @@ void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, float moved)
               "static {}, {:.1f} yd moved since the last scan (-1: none)",
               bot->GetName(), leg.object, sight.at.mapId, std::sqrt(dx * dx + dy * dy), leg.to.mapId, trip.still,
               sight.moving, sight.isStatic, moved);
+}
+
+// The quay of a ship's or zeppelin's leg (WT19-e, TravelLegs::SetQuay): the nearest ground (no water) beside its dock
+// node, as the walk off at the end looks for it. Once a leg, on the leg's map while approaching; a nav mesh tile not
+// loaded yet is looked at again a scan later. Elevators and the tram wait at their stop node
+void SeekQuay(Player* bot, NewRpgInfo::Travel& data, uint32 nowMs)
+{
+    TravelLegs::Trip& trip = data.trip;
+    if (trip.legIdx >= trip.legs.size() || trip.quaySought || trip.boarding != TravelLegs::Boarding::Approach)
+        return;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type != TravelRoute::LegType::Transport || bot->GetMapId() != leg.from.mapId ||
+        getMSTimeDiff(data.transportScanMs, nowMs) < TravelLegs::TRANSPORT_SCAN_MS)
+        return;
+    data.transportScanMs = nowMs;
+    GameObjectTemplate const* const info = sObjectMgr->GetGameObjectTemplate(leg.object);
+    if (!info || info->type != GAMEOBJECT_TYPE_MO_TRANSPORT)
+    {
+        TravelLegs::SetQuay(trip, nullptr);
+        return;
+    }
+    float x = leg.from.x;
+    float y = leg.from.y;
+    float z = leg.from.z;
+    NavMeshSnap::Result const result =
+        NavMeshSnap::Nearest(bot->GetMap(), x, y, z, EXIT_ACROSS_YARDS, EXIT_VERTICAL_YARDS, NAV_GROUND);
+    if (result == NavMeshSnap::Result::Unknown)
+        return;
+    TravelRoute::Point const quay{leg.from.mapId, x, y, z};
+    TravelLegs::SetQuay(trip, result == NavMeshSnap::Result::Found ? &quay : nullptr);
+    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    if (trip.hasQuay)
+        LOG_DEBUG("playerbots",
+                  "[Route] {} waits for transport {} on the ground {:.1f} yd from its stop ({:.1f} yd up)",
+                  bot->GetName(), leg.object, TravelRoute::Distance(leg.from, quay), z - leg.from.z);
+    else
+        LOG_DEBUG("playerbots", "[Route] {} waits for transport {} at its stop: no ground beside it", bot->GetName(),
+                  leg.object);
+}
+
+// A Board walk, for the debug log: the deck point, the bot's height and the distance
+void LogBoardMove(Player* bot, uint32 entry, Position const& deck)
+{
+    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    LOG_DEBUG("playerbots",
+              "[Route] {} boards transport {}: deck point ({:.1f}, {:.1f}, {:.1f}), bot z {:.1f}, {:.1f} yd",
+              bot->GetName(), entry, deck.GetPositionX(), deck.GetPositionY(), deck.GetPositionZ(), bot->GetPositionZ(),
+              bot->GetExactDist(deck));
+}
+
+// A miss this tick, for the debug log: whether the bot stood over the hull (the passenger check's test) or beside it
+void LogMisses(Player* bot, TravelLegs::Trip const& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    for (TravelLegs::TransportNote const& note : trip.transportNotes)
+    {
+        if (note.event != TravelLegs::TransportEvent::Missed)
+            continue;
+        Transport* const transport = FindLegTransport(bot, trip.legs[trip.legIdx]);
+        bool const onHull = transport && bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(),
+                                                                           bot->GetPositionY(), bot->GetPositionZ(),
+                                                                           nullptr) == transport;
+        LOG_DEBUG("playerbots", "[Route] {} missed transport {} (miss {}): {}, {:.1f} yd from its centre, bot z {:.1f}",
+                  bot->GetName(), note.entry, note.amount, onHull ? "over the hull" : "off the hull",
+                  transport ? bot->GetExactDist2d(transport) : -1.0f, bot->GetPositionZ());
+        return;
+    }
 }
 
 // A scan of the transport: where it is, whether a ship or zeppelin moved since the scan before (trip.sight), its
@@ -1561,6 +1655,7 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     seen.nowMs = getMSTime();
     seen.aboard = ridden ? ridden->GetEntry() : 0;
     TravelLegs::Trip const& trip = data->trip;
+    SeekQuay(bot, *data, seen.nowMs);
     // The transport scan (WT19): once a TRANSPORT_SCAN_MS while a transport leg is past its approach, on the bot's
     // map only. The deck point and the Transport* live for this tick only
     std::optional<Position> deck;
@@ -1589,6 +1684,7 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     uint32 const legStartBefore = trip.legStartMs;
     uint32 const dockSinceBefore = trip.waitSinceMs;  // a transport leg: the bot's arrival at the dock
     TravelLegs::Decision const next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
+    LogMisses(bot, trip);
     SendTransportNotes(bot, data->trip);
     if (seen.transport.scanned && ridden && trip.legIdx == legBefore && trip.boarding == TravelLegs::Boarding::Ride &&
         sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
@@ -1626,9 +1722,13 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
             ContinueCrossMapTaxi();
             return false;
         case TravelLegs::Act::Board:
-            // Towards the deck point of this tick's scan; between scans the walk goes on
-            if (deck)
+            // Towards the deck point of this tick's scan; a new walk only once the last one ended
+            if (deck && TravelLegs::WantsBoardMove(trip, !bot->movespline->Finalized()))
+            {
+                data->trip.boardMoveSent = true;
+                LogBoardMove(bot, trip.legs[trip.legIdx].object, *deck);
                 StraightMove(bot, deck->GetPositionX(), deck->GetPositionY(), deck->GetPositionZ());
+            }
             return true;
         case TravelLegs::Act::Hop:
             // Only on a scan tick (it needs the sight check), so the deck point is this tick's
