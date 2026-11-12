@@ -34,6 +34,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
+#include "PlayerbotSpellRepository.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -82,6 +83,8 @@ enum class UpkeepIndexState : uint8
 };
 
 constexpr double BYTES_PER_MB = 1024.0 * 1024.0;
+// Winged Steed of the Ebon Blade, a flyer that scales from a ground speed (CheckMountStateAction's CollectMountData)
+constexpr uint32 SPELL_WINGED_STEED = 54729;
 constexpr uint32 PUBLISHED_VERSION = 1;  // built once; a later rebuild would publish the next version
 constexpr std::array<char const*, UPKEEP_CLASS_SLOTS> CLASS_NAMES = {
     "", "warrior", "paladin", "hunter", "rogue", "priest", "death knight", "shaman", "mage", "warlock", "", "druid"};
@@ -433,6 +436,32 @@ std::vector<std::string> UpkeepIndexStatus()
             Acore::StringFormat("PLANNER upkeep vendors per kind: {}", KindCounts(s))};
 }
 
+namespace
+{
+// The riding skill the best known mount of each kind needs (AddRiding: a rank is done with its mount): one pass over
+// the spell map of a bot with riding skill, the mounts as CheckMountStateAction's CollectMountData tells them
+void FillMounts(Player* bot, Snapshot& snapshot)
+{
+    if (!bot->GetPureSkillValue(SKILL_RIDING))
+        return;
+    for (auto const& [spellId, entry] : bot->GetSpellMap())
+    {
+        if (entry->State == PLAYERSPELL_REMOVED || !entry->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->Effects[0].ApplyAuraName != SPELL_AURA_MOUNTED || info->IsPassive())
+            continue;
+        // Winged Steed of the Ebon Blade scales from a ground speed: a flyer
+        bool const flying = info->Effects[1].ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED ||
+                            info->Effects[2].ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED ||
+                            spellId == SPELL_WINGED_STEED;
+        uint16 const skill = static_cast<uint16>(PlayerbotSpellRepository::Instance().GetRequiredRidingSkill(info));
+        uint16& best = flying ? snapshot.flyingMountSkill : snapshot.groundMountSkill;
+        best = std::max(best, skill);
+    }
+}
+}  // namespace
+
 void FillUpkeep(Player* bot, Snapshot& snapshot)
 {
     auto const started = std::chrono::steady_clock::now();
@@ -472,6 +501,7 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         TrainerList const* riding = index->RidingList(bot->getRace(true));
         FillKnown(bot, classList, snapshot.knownClassSpells, snapshot.canLearnClassSpells);
         FillKnown(bot, riding, snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
+        FillMounts(bot, snapshot);
         if (classList)
             snapshot.offListMetClassSpells =
                 OffListMet(*classList, riding, [bot](uint32 spellId) { return bot->HasSpell(spellId); });
@@ -492,9 +522,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     WorldTravel::SlotRates const slotRates = WorldTravel::CurrentRates(
         measure, sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(snapshot.level)]);
     rates.earnCopperPerMinute = slotRates.EarnCopperPerMinute;
-    if (snapshot.walkMinutesPerHour > 0.0f)
-        rates.walkMinutesPerHour = snapshot.walkMinutesPerHour;
-    rates.flightMinutesPerHour = snapshot.flightMinutesPerHour;
+    UpkeepNeeds::FillTravel(rates, measure);
     rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
     UpkeepNeeds::FillUse(rates, measure);
     return rates;
@@ -530,11 +558,15 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     Snapshot const snapshot = FillSnapshot(bot, 0);
     UpkeepNeeds::NeedRates const rates = BotNeedRates(botAI, snapshot);
     UpkeepNeeds::NeedList const list = UpkeepNeeds::ComputeNeeds(snapshot, *index, rates);
+    bool const measured =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().HasTravel;
     handler->PSendSysMessage(
-        "PLANNER needs of {}: level {}, class {}, e {} c/min, walk {} min/h, durability {}% "
-        "(lowest {}%, {} broken), {} stock entries",
-        bot->GetName(), snapshot.level, snapshot.cls, rates.earnCopperPerMinute, rates.walkMinutesPerHour,
-        snapshot.durabilityPercent, snapshot.lowestDurabilityPercent, snapshot.brokenItems, snapshot.stock.size());
+        "PLANNER needs of {}: level {}, class {}, e {} c/min, travel {}: walk {} min/h, flight {} min/h, northrend "
+        "{} min/h, mounts ground {} flying {}, durability {}% (lowest {}%, {} broken), {} stock entries",
+        bot->GetName(), snapshot.level, snapshot.cls, rates.earnCopperPerMinute, measured ? "measured" : "default",
+        rates.walkMinutesPerHour, rates.flightMinutesPerHour, rates.northrendFlightMinutesPerHour,
+        snapshot.groundMountSkill, snapshot.flyingMountSkill, snapshot.durabilityPercent,
+        snapshot.lowestDurabilityPercent, snapshot.brokenItems, snapshot.stock.size());
     // The use per hour the stock targets read: measured from stock falls between vendor visits, else the default
     std::string use;
     for (std::size_t kind = 0; kind < UPKEEP_STOCK_COUNT; ++kind)

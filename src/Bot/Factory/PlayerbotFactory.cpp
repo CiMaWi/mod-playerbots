@@ -3179,13 +3179,31 @@ bool PlayerbotFactory::ApplyStartingHistory()
         }
     }
 
-    bool const changed = hearthstone || nodesAdded || rebound || equipped || replaced || removed;
+    // The riding ranks and the mounts a player of this level has (WU14), by the factory's thresholds; a rank or a
+    // mount type the bot has stays, and the riding skill is not reset
+    uint32 const ridingTier = StartingHistory::RidingTier(
+        level, {sPlayerbotAIConfig.UseGroundMountAtMinLevel, sPlayerbotAIConfig.UseFastGroundMountAtMinLevel,
+                sPlayerbotAIConfig.UseFlyMountAtMinLevel, sPlayerbotAIConfig.UseFastFlyMountAtMinLevel});
+    uint32 ranks = 0;
+    for (uint32 tier = 0; tier < ridingTier; ++tier)
+    {
+        uint32 const spell = StartingHistory::RIDING_HISTORY_SPELLS[tier];
+        if (bot->HasSpell(spell))
+            continue;
+
+        bot->learnSpell(spell);
+        Upkeep::Note(bot, UpkeepKind::Riding, "starting_history", spell);
+        ++ranks;
+    }
+    uint32 const mounts = ridingTier ? InitMounts("starting_history") : 0;
+
+    bool const changed = hearthstone || nodesAdded || rebound || equipped || replaced || removed || ranks || mounts;
     if (changed || keptFactory)
         LOG_INFO("playerbots",
                  "[History] {} level {}: hearthstone {}, flight nodes +{}, bind {}, bags equipped {} replaced {} "
-                 "removed {}, factory bags kept (contents did not fit) {}",
+                 "removed {}, factory bags kept (contents did not fit) {}, riding +{}, mounts +{}",
                  bot->GetName(), level, hearthstone ? "given" : "had", nodesAdded, bind, equipped, replaced, removed,
-                 keptFactory);
+                 keptFactory, ranks, mounts);
 
     return changed;
 }
@@ -4396,7 +4414,7 @@ void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bo
     bot->DurabilityRepairAll(false, 1.0f, false);
 }
 
-void PlayerbotFactory::InitMounts()
+uint32 PlayerbotFactory::InitMounts(char const* source)
 {
     uint32 firstmount = sPlayerbotAIConfig.UseGroundMountAtMinLevel;
     uint32 secondmount = sPlayerbotAIConfig.UseFastGroundMountAtMinLevel;
@@ -4404,7 +4422,7 @@ void PlayerbotFactory::InitMounts()
     uint32 fourthmount = sPlayerbotAIConfig.UseFastFlyMountAtMinLevel;
 
     if (bot->GetLevel() < firstmount)
-        return;
+        return 0;
 
     uint32 const ridingSkill = bot->GetPureSkillValue(SKILL_RIDING);
     std::map<uint8, std::map<uint32, std::vector<uint32>>> mounts;
@@ -4484,6 +4502,7 @@ void PlayerbotFactory::InitMounts()
     mounts[bot->getRace()][2] = fslow;
     mounts[bot->getRace()][3] = ffast;
 
+    uint32 learned = 0;
     for (uint32 type = 0; type < 4; type++)
     {
         bool hasMount = false;
@@ -4516,11 +4535,13 @@ void PlayerbotFactory::InitMounts()
         if (spell)
         {
             bot->learnSpell(spell);
-            Upkeep::Note(bot, UpkeepKind::Mount, "factory_mount", spell);
+            Upkeep::Note(bot, UpkeepKind::Mount, source, spell);
+            ++learned;
             LOG_DEBUG("playerbots", "Bot {} ({}) learned {} mount {}", bot->GetGUID().ToString().c_str(),
                       bot->GetLevel(), type == 0 ? "slow" : (type == 1 ? "fast" : "flying"), spell);
         }
     }
+    return learned;
 }
 
 void PlayerbotFactory::UnbindInstance()

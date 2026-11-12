@@ -7,6 +7,7 @@
 // Standalone check of the starting history rules (src/Ai/World/Rpg/StartingHistoryRules.h): flights only between
 // discovered nodes, the history's flight points for fixed levels and races of both factions, the inn choice, the bag
 // table by level and the bag slot steps that replace only factory bags.
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <set>
@@ -146,6 +147,25 @@ void CheckFactory()
     Check(!StartingHistory::FactoryApplies(false, 55, 0), "not a persistent random bot");
 }
 
+// The riding ranks and mount types by level, with the default thresholds (conf: 20, 40, 60, 70)
+void CheckRiding()
+{
+    using StartingHistory::RIDING_HISTORY_SPELLS;
+    using StartingHistory::RidingTier;
+    std::array<uint32_t, 4> const thresholds = {20, 40, 60, 70};
+    Check(RidingTier(19, thresholds) == 0, "riding: none at 19");
+    Check(RidingTier(20, thresholds) == 1 && RIDING_HISTORY_SPELLS[0] == 33388,
+          "riding: apprentice and the slow mount at 20");
+    Check(RidingTier(39, thresholds) == 1, "riding: still apprentice at 39");
+    Check(RidingTier(40, thresholds) == 2 && RIDING_HISTORY_SPELLS[1] == 33391,
+          "riding: journeyman and the fast mount at 40");
+    Check(RidingTier(60, thresholds) == 3 && RIDING_HISTORY_SPELLS[2] == 34090, "riding: expert and a flyer at 60");
+    Check(RidingTier(70, thresholds) == 4 && RIDING_HISTORY_SPELLS[3] == 34091,
+          "riding: artisan and the fast flyer at 70");
+    Check(RidingTier(80, thresholds) == 4, "riding: nothing above artisan at 80");
+    Check(RidingTier(50, {20, 60, 40, 70}) == 1, "riding: a threshold below an unmet earlier one gives nothing");
+}
+
 void CheckWipe()
 {
     uint32_t const played = StartingHistory::NEW_CHARACTER_PLAYED_SECONDS;
@@ -178,6 +198,7 @@ int main()
     CheckBags();
     CheckFactory();
     CheckWipe();
+    CheckRiding();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

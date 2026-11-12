@@ -173,6 +173,7 @@ struct RidingAt
 {
     uint32_t Spell = 0;
     uint32_t MountVendor = 0;  // the vendor entry of the race's cheapest mount; 0 for cold weather flying
+    bool Learn = true;         // the rank is to learn; false: the rank is known, only its mount is missing
 };
 
 // What the providers read: filled on the bot's map thread, never a Player
@@ -305,7 +306,8 @@ inline void ProvideTraining(ErrandSnapshot const& snapshot, std::vector<ErrandOf
     offers.push_back(offer);
 }
 
-// A riding rank bought (§3.8): one trip to the riding trainer and the race's mount vendor
+// A riding rank bought (§3.8): one trip to the riding trainer and the race's mount vendor; a known rank whose mount
+// is missing (WU14) goes to the mount vendor alone
 inline void ProvideRiding(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
     if (!snapshot.Riding.Spell)
@@ -317,7 +319,8 @@ inline void ProvideRiding(ErrandSnapshot const& snapshot, std::vector<ErrandOffe
     offer.WorthCopper = DueWorth(snapshot.Rates);
     offer.Id = snapshot.Riding.Spell;
     offer.Due = true;
-    offers.push_back(offer);
+    if (snapshot.Riding.Learn)
+        offers.push_back(offer);
     if (!snapshot.Riding.MountVendor)
         return;
 
@@ -325,6 +328,10 @@ inline void ProvideRiding(ErrandSnapshot const& snapshot, std::vector<ErrandOffe
     offer.Target = snapshot.Riding.MountVendor;
     offers.push_back(offer);
 }
+
+// The errand check on a map without a vendor that trades with the bot (WU12 NOTE 4): a trainer need still plans its
+// trip (class training or a riding rank, their trainers are stops of their own); without one it is skipped
+constexpr bool ErrandCheckPlans(bool vendorOnMap, bool trainerWanted) { return vendorOnMap || trainerWanted; }
 
 // A bag ShouldBuyBag takes; buying it now gains its slots until the next vendor stop (as the goal model's bag offer)
 inline void ProvideBags(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)

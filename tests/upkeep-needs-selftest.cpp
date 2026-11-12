@@ -308,7 +308,14 @@ Snapshot Bot(UpkeepIndex const& index, std::uint8_t cls, std::uint8_t level, std
         Mark(bot.knownRidingSpells, *ridingList, spell);
         for (RidingRank const& rank : RIDING_RANKS)
             if (rank.spellId == spell)
+            {
                 skill = std::max(skill, rank.skill);
+                // The mount of each rank it knows, as the factory gives it (a scenario takes it away)
+                if (rank.kind == RideKind::Ground)
+                    bot.groundMountSkill = std::max(bot.groundMountSkill, rank.skill);
+                else if (rank.kind == RideKind::Air)
+                    bot.flyingMountSkill = std::max(bot.flyingMountSkill, rank.skill);
+            }
     }
     if (skill)
         bot.skills.push_back({SKILL_RIDING, skill, skill});
@@ -366,11 +373,38 @@ NeedRates Rates(std::uint8_t level, float walkMinutesPerHour = DEFAULT_WALK_MINU
     return rates;
 }
 
+// The rates of a bot whose slot measure took an hour of legs (WU14): walk minutes on the ground outside flying areas,
+// sky minutes walked in Outland's open flying areas (walking and where a flyer flies) and north minutes walked under
+// Northrend's open sky without cold weather flying; the rest of the hour without travel
+NeedRates Measured(std::uint8_t level, float walk, float sky = 0.0f, float north = 0.0f)
+{
+    using WorldTravel::LegKind;
+    using WorldTravel::LegShares;
+    constexpr std::uint32_t START = 1000;
+    constexpr std::uint32_t MAP_OUTLAND = 530;
+    NeedRates rates = Rates(level);
+    WorldTravel::SlotMeasure measure;
+    std::uint32_t now = START;
+    auto const leg = [&measure, &now](std::uint8_t shares, float minutes)
+    {
+        std::uint32_t const ms = static_cast<std::uint32_t>(minutes * 60000.0f);
+        now += ms;
+        WorldTravel::NoteTravelLeg(measure, shares, ms, now);
+    };
+    leg(LegShares(LegKind::Walk, 0, false, false), walk);
+    leg(LegShares(LegKind::Walk, MAP_OUTLAND, true, false), sky);
+    leg(LegShares(LegKind::Walk, WorldTravel::TRAVEL_MAP_NORTHREND, true, false), north);
+    WorldTravel::NoteTravelLeg(measure, 0, 0, START + WorldTravel::MS_PER_HOUR);
+    FillTravel(rates, measure);
+    return rates;
+}
+
 NeedList Show(std::string const& who, Snapshot const& bot, UpkeepIndex const& index, NeedRates const& rates)
 {
     NeedList const list = ComputeNeeds(bot, index, rates);
     std::cout << " " << who << " (level " << int(bot.level) << ", e " << rates.earnCopperPerMinute << " c/min, walk "
-              << rates.walkMinutesPerHour << " min/h):\n";
+              << rates.walkMinutesPerHour << " min/h, flight " << rates.flightMinutesPerHour << ", northrend "
+              << rates.northrendFlightMinutesPerHour << "):\n";
     for (std::string const& line : DescribeAll(list))
         std::cout << "    " << line << "\n";
     return list;
@@ -622,6 +656,158 @@ void FlyingRiding(UpkeepIndex const& index)
     Check(!Rank(collector, SPELL_COLD_WEATHER)->eligible || !Rank(collector, SPELL_COLD_WEATHER)->bought ||
               Rank(collector, SPELL_COLD_WEATHER)->want > 0,
           "cold weather flying is worth nothing without flying legs, only a want");
+}
+
+// The first level from 'from' on at which the bot buys the rank with these travel minutes (0 = never)
+template <typename MakeBot, typename MakeRates>
+std::uint8_t FirstBuy(UpkeepIndex const& index, std::uint8_t from, std::uint32_t spell, MakeBot makeBot,
+                      MakeRates makeRates)
+{
+    for (std::uint8_t level = from; level <= LEVEL_CAP; ++level)
+        if (Buys(ComputeNeeds(makeBot(level), index, makeRates(level)), spell))
+            return level;
+    return 0;
+}
+
+// The WU3 riding scenarios against the measured travel shares (WU14's exit), and where ranks show BUY with them
+void MeasuredRiding(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: riding by the measured travel shares\n";
+    NeedRates unmeasured = Rates(40);
+    unmeasured.walkMinutesPerHour = 0.0f;
+    FillTravel(unmeasured, WorldTravel::SlotMeasure{});
+    Check(unmeasured.walkMinutesPerHour == 0.0f && Rates(40).walkMinutesPerHour == DEFAULT_WALK_MINUTES_PER_HOUR,
+          "without a closed window the measure changes nothing: the default walk share stays");
+    NeedRates const half = Measured(40, 30.0f);
+    Check(half.walkMinutesPerHour == 30.0f && half.flightMinutesPerHour == 0.0f, "30 minutes walked: 30 min/h");
+
+    Snapshot const traveller = Bot(index, CLASS_WARRIOR, 40, 200 * GOLD, 40, {SPELL_APPRENTICE});
+    Check(Buys(Show("warrior at 40 that walked 50 of the last 60 minutes", traveller, index, Measured(40, 50.0f)),
+               SPELL_JOURNEYMAN),
+          "a heavy walker buys journeyman riding at 40");
+    Check(!Buys(ComputeNeeds(traveller, index, Measured(40, 30.0f)), SPELL_JOURNEYMAN),
+          "one walking 30 min/h does not yet");
+    std::cout << "  journeyman riding (200 gold, apprentice known) bought from level, by measured walk share:";
+    for (float const walk : {20.0f, 30.0f, 40.0f, 48.0f, 50.0f, 60.0f})
+        std::cout << " " << walk << " min/h -> "
+                  << int(FirstBuy(
+                         index, 40, SPELL_JOURNEYMAN, [&index](std::uint8_t level)
+                         { return Bot(index, CLASS_WARRIOR, level, 200 * GOLD, level, {SPELL_APPRENTICE}); },
+                         [walk](std::uint8_t level) { return Measured(level, walk); }));
+    std::cout << " (0 = never)\n";
+    std::cout << "  apprentice riding (200 gold) bought from level, by measured walk share:";
+    std::uint8_t rare = 0;
+    for (float const walk : {3.0f, 10.0f, 30.0f, 60.0f})
+    {
+        std::uint8_t const first = FirstBuy(
+            index, 20, SPELL_APPRENTICE,
+            [&index](std::uint8_t level) { return Bot(index, CLASS_WARRIOR, level, 200 * GOLD, level); },
+            [walk](std::uint8_t level) { return Measured(level, walk); });
+        std::cout << " " << walk << " min/h -> " << int(first);
+        if (walk == 3.0f)
+            rare = first;
+    }
+    std::cout << "\n";
+    Check(
+        Buys(ComputeNeeds(Bot(index, CLASS_WARRIOR, 20, 100 * GOLD, 20), index, Measured(20, 30.0f)), SPELL_APPRENTICE),
+        "a bot walking 30 min/h buys apprentice riding at 20");
+    Check(rare > 20, "one that rarely travels (3 min/h) buys it later");
+
+    std::vector<std::uint32_t> const ground = {SPELL_APPRENTICE, SPELL_JOURNEYMAN};
+    Snapshot const grounded = Bot(index, CLASS_WARRIOR, 60, 2000 * GOLD, 60, ground);
+    NeedList const noSky =
+        Show("warrior at 60, journeyman, never under open sky", grounded, index, Measured(60, 40.0f));
+    Check(Rank(noSky, SPELL_EXPERT) && Rank(noSky, SPELL_EXPERT)->savedMinutes == 0.0f &&
+              !Rank(noSky, SPELL_EXPERT)->bought,
+          "no flight share: expert riding saves nothing");
+    NeedList const sky = Show("the same warrior, 30 of 40 minutes walked in Outland's open sky", grounded, index,
+                              Measured(60, 10.0f, 30.0f));
+    Check(Rank(sky, SPELL_EXPERT) && Rank(sky, SPELL_EXPERT)->savedMinutes > 0.0f,
+          "walks under open sky: expert riding saves the flight time");
+    std::cout << "  expert riding (2000 gold, journeyman known) bought from level, by measured flight share:";
+    for (float const flight : {10.0f, 30.0f, 50.0f})
+        std::cout << " " << flight << " min/h -> "
+                  << int(FirstBuy(
+                         index, 60, SPELL_EXPERT, [&index, &ground](std::uint8_t level)
+                         { return Bot(index, CLASS_WARRIOR, level, 2000 * GOLD, level, ground); },
+                         [flight](std::uint8_t level) { return Measured(level, 0.0f, flight); }));
+    std::cout << " (0 = never)\n";
+
+    std::vector<std::uint32_t> const expert = {SPELL_APPRENTICE, SPELL_JOURNEYMAN, SPELL_EXPERT};
+    NeedList const levelling =
+        Show("warrior at 70 with expert riding, 6000 gold, flying 40 min/h",
+             Bot(index, CLASS_WARRIOR, 70, 6000 * GOLD, 70, expert), index, Measured(70, 10.0f, 40.0f));
+    Check(Rank(levelling, SPELL_ARTISAN) && Rank(levelling, SPELL_ARTISAN)->savedMinutes > 0.0f &&
+              !Rank(levelling, SPELL_ARTISAN)->bought,
+          "a levelling bot at 70 with 6000 gold does not buy artisan riding by its flight share");
+    Snapshot const north = Bot(index, CLASS_WARRIOR, 77, 2000 * GOLD, 77, expert);
+    NeedList const cold = Show("warrior at 77 with expert riding, 30 min/h under Northrend's sky", north, index,
+                               Measured(77, 10.0f, 0.0f, 30.0f));
+    Check(Rank(cold, SPELL_COLD_WEATHER) && Rank(cold, SPELL_COLD_WEATHER)->savedMinutes > 0.0f,
+          "the Northrend share gives cold weather flying a worth");
+    RankValue const* dry = Rank(ComputeNeeds(north, index, Measured(77, 40.0f)), SPELL_COLD_WEATHER);
+    Check(dry && dry->savedMinutes == 0.0f, "without legs in Northrend it saves nothing");
+
+    // WU3-fix reserve limits: with flight minutes the air rank waits for the ground rank below it, and two ranks of
+    // one list share the gold
+    Snapshot climber = Bot(index, CLASS_WARRIOR, 60, 2000 * GOLD, 60, {SPELL_APPRENTICE});
+    climber.traits = Traits(0, 0, true);
+    NeedList const both =
+        Show("collector at 60 with apprentice riding, 2000 gold, walking 60 min/h (30 under open sky)", climber, index,
+             Measured(60, 30.0f, 30.0f));
+    Check(Buys(both, SPELL_JOURNEYMAN) && Rank(both, SPELL_EXPERT) && !Rank(both, SPELL_EXPERT)->bought,
+          "journeyman first: expert riding needs its skill, whatever the flight share");
+    Snapshot tight = climber;
+    tight.money = static_cast<std::uint32_t>(Rank(both, SPELL_JOURNEYMAN)->Price()) + 1 * GOLD;
+    NeedList const one =
+        Show("the same collector with gold for journeyman alone", tight, index, Measured(60, 30.0f, 30.0f));
+    std::uint64_t riding = 0;
+    for (Need const& need : one.needs)
+        if (need.order == NeedOrder::Riding)
+            riding += need.copper;
+    Check(Buys(one, SPELL_JOURNEYMAN) && riding <= tight.money, "only the nearer rank is bought, within the gold");
+}
+
+// The riding need stays until the bot has the rank and a mount for it (WU14): a known rank without its mount is the
+// need, priced at the mount, with no trainer
+void MountMissing(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a known rank without its mount\n";
+    Snapshot walker = Bot(index, CLASS_WARRIOR, 20, 100 * GOLD, 20, {SPELL_APPRENTICE});
+    walker.groundMountSkill = 0;
+    NeedList const horse = Show("warrior at 20 with apprentice riding, no mount", walker, index, Rates(20));
+    Need const* need = Find(horse, NeedOrder::Riding);
+    RankValue const* apprentice = Rank(horse, SPELL_APPRENTICE);
+    Check(need && need->item == SPELL_APPRENTICE && need->copper == 1 * GOLD && need->trainer == 0 &&
+              need->vendor == VENDOR_MOUNTS && apprentice && apprentice->known && apprentice->training == 0,
+          "the rank known, the horse missing: the need is the horse alone, at the mount vendor");
+    Check(apprentice && apprentice->savedMinutes == DEFAULT_WALK_MINUTES_PER_HOUR * (1.0f - 1.0f / 1.6f),
+          "a rank without its mount carries nobody: the horse saves the rank's whole time");
+    Check(!Find(ComputeNeeds(Bot(index, CLASS_WARRIOR, 20, 100 * GOLD, 20, {SPELL_APPRENTICE}), index, Rates(20)),
+                NeedOrder::Riding),
+          "with rank and mount the need is done");
+
+    Snapshot slow = Bot(index, CLASS_WARRIOR, 40, 200 * GOLD, 40, {SPELL_APPRENTICE, SPELL_JOURNEYMAN});
+    slow.groundMountSkill = 75;
+    NeedList const fast =
+        Show("warrior at 40 with journeyman riding and the slow horse only", slow, index, Measured(40, 50.0f));
+    need = Find(fast, NeedOrder::Riding);
+    Check(need && need->item == SPELL_JOURNEYMAN && need->copper == 10 * GOLD && need->trainer == 0,
+          "journeyman known on a slow horse: the fast horse is the need");
+    Snapshot poor = slow;
+    poor.money = 1 * GOLD;
+    NeedList const unfunded = ComputeNeeds(poor, index, Measured(40, 50.0f));
+    Check(!Find(unfunded, NeedOrder::Riding) && unfunded.reserveRiding == 10 * GOLD,
+          "without the gold the mount is no purchase: it waits in the reserve");
+
+    Snapshot flyer = Bot(index, CLASS_WARRIOR, 70, 1000 * GOLD, 70, {SPELL_APPRENTICE, SPELL_JOURNEYMAN, SPELL_EXPERT});
+    flyer.flyingMountSkill = 0;
+    NeedList const wings = Show("warrior at 70 with expert riding, no flyer, 40 min/h under open sky", flyer, index,
+                                Measured(70, 10.0f, 40.0f));
+    RankValue const* gryphon = Rank(wings, SPELL_EXPERT);
+    Check(gryphon && gryphon->known && gryphon->Price() == 50 * GOLD && Buys(wings, SPELL_EXPERT) &&
+              Rank(wings, SPELL_ARTISAN) && !Rank(wings, SPELL_ARTISAN)->bought,
+          "expert known without a flyer: the gryphon is the need, artisan waits for it");
 }
 
 void ReserveAndShortfall(UpkeepIndex const& index)
@@ -1214,6 +1400,37 @@ void TrainingBuying(UpkeepIndex const& index)
     Check(buy.positions.empty() && buy.total == 0, "nothing learnable: nothing bought");
 }
 
+void RidingFunded(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a riding rank bought against the scaled reserve but funded short is no errand\n";
+    // A spendthrift's reserve is scaled down, Fund pays the unscaled needs first (a stock need that is not due
+    // included): between the two the rank shows BUY with a funded share below its price
+    std::uint64_t shortAt = 0;
+    std::uint64_t paidAt = 0;
+    bool consistent = true;
+    for (std::uint64_t copper = 0; copper <= 300 * GOLD; copper += 50)
+    {
+        Snapshot bot = Bot(index, CLASS_WARRIOR, 40, static_cast<std::uint32_t>(copper), 40, {SPELL_APPRENTICE});
+        bot.traits = Traits(TraitRules::MIN_VALUE, 0, false);
+        SetStock(bot, UpkeepStock::Food, StockTarget(bot, NeedRates{}, UpkeepStock::Food) / 2);
+        NeedList const list = ComputeNeeds(bot, index, Rates(40, 50.0f));
+        Need const* riding = Find(list, NeedOrder::Riding);
+        if (!riding)
+            continue;
+        bool const stockDue = StockErrandDue(list);
+        bool const due = RidingErrandDue(*riding);
+        consistent = consistent && due == (riding->funded >= riding->copper) && (stockDue || AnyErrandDue(list) == due);
+        if (!due && !shortAt)
+            shortAt = copper;
+        if (due && !paidAt)
+            paidAt = copper;
+    }
+    std::cout << "    shows BUY but funded short from " << Money(shortAt) << ", errand due from " << Money(paidAt)
+              << "\n";
+    Check(shortAt && paidAt > shortAt && consistent,
+          "the rank shows BUY with a funded share below its price: not an errand; once funded whole it is");
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1232,10 +1449,13 @@ int main()
     TrainingBuying(index);
     GroundRiding(index);
     FlyingRiding(index);
+    MeasuredRiding(index);
+    MountMissing(index);
     ReserveAndShortfall(index);
     ClassMounts(index);
     LearnSpellMount(index);
     WantNoFlip(index);
+    RidingFunded(index);
     FrugalBuy(index);
     StaleBits(index);
     AmmoType(index);

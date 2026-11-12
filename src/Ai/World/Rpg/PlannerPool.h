@@ -145,8 +145,10 @@ struct Snapshot
     // Bit i: the abilities the class list's spell i needs that are on neither list (talents, racials, quest spells
     // such as Summon Warhorse) are all known
     std::vector<std::uint64_t> offListMetClassSpells;
-    float walkMinutesPerHour{0.0f};    // not filled yet: the travel shares are measured later (WU14)
-    float flightMinutesPerHour{0.0f};  // not filled yet
+    // The riding skill the bot's best known mount of each kind needs; a riding rank is complete with a mount of its
+    // skill or better (WU14). The travel shares are no snapshot fields: the needs read them from the slot measure
+    std::uint16_t groundMountSkill{0};
+    std::uint16_t flyingMountSkill{0};
 
     std::uint32_t StockCount(std::uint8_t kindBit) const
     {

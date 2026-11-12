@@ -465,6 +465,52 @@ inline void RidingTrip(std::vector<Check>& checks)
                       plan.Refused.empty();
     Add(checks, "ride: a riding trip visits the riding trainer and the mount vendor of the bot's race", both,
         "mount vendor " + std::to_string(value.mountVendor) + "; " + Describe(plan));
+
+    // A known rank whose mount is missing (WU14): the mount vendor alone, the trainer is no stop
+    ErrandSnapshot mountOnly = bot;
+    mountOnly.Riding.Learn = false;
+    TripPlan const mountPlan = Plan(mountOnly, Request(mountOnly));
+    bool const vendorAlone = mountPlan.Stops.size() == 1 && mountPlan.Stops[0].Id == MOUNT_VENDOR &&
+                             HasErrand(mountPlan.Stops[0], ErrandKind::Ride) && mountPlan.Refused.empty();
+    Add(checks, "ride: a known rank without its mount goes to the mount vendor only", vendorAlone, Describe(mountPlan));
+}
+
+// A map with no vendor that trades with the bot (WU12 NOTE 4): the riding rank still plans its trainer stop, the mount
+// waits (no stop sells it); without a trainer need the errand check is skipped. An unfunded rank is no need: no trip
+inline void RidingWithoutVendor(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Riding = {UpkeepNeeds::RIDING_RANKS[0].spellId, MOUNT_VENDOR};
+    bot.Stops = {{RIDING_TRAINER, At(1000.0f, 0.0f), SERVICE_RIDING_TRAINER}};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const trainerOnly = ErrandCheckPlans(false, true) && !ErrandCheckPlans(false, false) &&
+                             plan.Stops.size() == 1 && plan.Stops[0].Id == RIDING_TRAINER &&
+                             HasErrand(plan.Stops[0], ErrandKind::Ride) && plan.Refused.size() == 1 &&
+                             plan.Refused[0].Offer.Service == SERVICE_MOUNT_VENDOR;
+    Add(checks, "ride: on a map without vendors the riding trainer is still a trip", trainerOnly, Describe(plan));
+
+    // The errand check takes the riding need into the snapshot only when its funded gold pays it whole
+    // (RidingErrandDue); a rank that shows BUY against the thrift-scaled reserve but is funded short plans no trip
+    UpkeepNeeds::Need need;
+    need.kind = UpkeepKind::Riding;
+    need.due = true;
+    need.copper = 80000;
+    need.item = UpkeepNeeds::RIDING_RANKS[0].spellId;
+    need.vendor = MOUNT_VENDOR;
+    need.funded = need.copper - 1;
+    ErrandSnapshot unfunded = bot;
+    unfunded.Riding = {};
+    if (UpkeepNeeds::RidingErrandDue(need))
+        unfunded.Riding = {need.item, need.vendor};
+    TripPlan const none = Plan(unfunded, Request(unfunded));
+    need.funded = need.copper;
+    ErrandSnapshot paid = bot;
+    paid.Riding = {};
+    if (UpkeepNeeds::RidingErrandDue(need))
+        paid.Riding = {need.item, need.vendor};
+    TripPlan const some = Plan(paid, Request(paid));
+    Add(checks, "ride: a rank the funded gold does not pay plans no trip, one it pays does",
+        none.Stops.empty() && none.Refused.empty() && !some.Stops.empty(), Describe(none) + " / " + Describe(some));
 }
 
 inline std::vector<Check> SyntheticChecks()
@@ -484,6 +530,7 @@ inline std::vector<Check> SyntheticChecks()
     TrainingTrip(checks);
     TrainingRefused(checks);
     RidingTrip(checks);
+    RidingWithoutVendor(checks);
     return checks;
 }
 }  // namespace ErrandHarness

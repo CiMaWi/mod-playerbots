@@ -155,6 +155,118 @@ uint32 BuyLots(Player* bot, Creature* vendor, uint32 slot, uint32 item, uint32 l
     return bought;
 }
 
+// A bot that buys at vendors (the shopping list, a riding rank and its mount): a random bot in honest travel without a
+// real player as master. The riding errand is taken only for such a bot, so a rank is never taught where the mount
+// could not be bought (a known rank without its mount keeps the need open)
+bool BuysAtVendors(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    return RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) &&
+           !IsRealPlayer(botAI->GetMaster());
+}
+
+// The riding need's mount at the vendor that sells it (upkeep §3.8, WU14): a fresh need list (the shopping spent
+// gold), the rank bought by worth whose mount this vendor sells, bought through the core's purchase at its gold-only
+// row within the need's funded share and learned as the item's own use learns it (the learning spell in its second
+// spell; the item is used up). A rank not known yet waits, as the core's item test wants the riding skill: the next
+// errand check sends the bot for the mount alone. A mount item the bot carries already is learned, not bought again
+void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, Planner::UpkeepIndex const& index)
+{
+    Player* bot = botAI->GetBot();
+    Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
+    UpkeepNeeds::NeedList const needs =
+        UpkeepNeeds::ComputeNeeds(snapshot, index, Planner::BotNeedRates(botAI, snapshot));
+    uint32 const entry = vendor->GetEntry();
+    UpkeepNeeds::Need const* need = nullptr;
+    for (UpkeepNeeds::Need const& each : needs.needs)
+        if (each.kind == UpkeepKind::Riding && each.vendor == entry)
+        {
+            need = &each;
+            break;
+        }
+    UpkeepNeeds::RankValue const* value = nullptr;
+    for (UpkeepNeeds::RankValue const& each : needs.ranks)
+        if (need && each.bought && each.rank.spellId == need->item)
+            value = &each;
+    if (!need || !value || !value->mountItem)
+        return;
+
+    uint32 const item = value->mountItem;
+    auto const skip = [bot, need, item](char const* reason)
+    {
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Upkeep, "skip", reason, static_cast<float>(need->copper),
+            {{"funded", static_cast<float>(need->funded)}, {"gold", static_cast<float>(bot->GetMoney())}}, item);
+    };
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    uint32 const learn =
+        proto && proto->Spells[1].SpellTrigger == ITEM_SPELLTRIGGER_LEARN_SPELL_ID ? proto->Spells[1].SpellId : 0;
+    if (!value->known || !learn || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+    {
+        skip(value->known ? "mount_unusable" : "mount_no_rank");
+        return;
+    }
+
+    // A mount the bot knows already is never bought again
+    if (bot->HasSpell(learn))
+    {
+        skip("mount_known");
+        return;
+    }
+
+    uint32 const moneyBefore = bot->GetMoney();
+    if (!bot->HasItemCount(item, 1, false))
+    {
+        VendorItemData const* rows = vendor->GetVendorItems();
+        uint32 const count = rows ? rows->GetItemCount() : 0;
+        uint32 slot = count;  // the vendor's own row of the mount, payable in gold and in stock
+        for (uint32 at = 0; at < count; ++at)
+        {
+            VendorItem const* row = rows->GetItem(at);
+            if (row && row->item == item && !row->ExtendedCost &&
+                (!row->maxcount || vendor->GetVendorItemCurrentCount(row)))
+            {
+                slot = at;
+                break;
+            }
+        }
+        // The core's price (Player::BuyItemFromVendorSlot: the buy price with the reputation discount)
+        uint64 const price = static_cast<uint64>(
+            std::floor(static_cast<float>(proto->BuyPrice) * bot->GetReputationPriceDiscount(vendor)));
+        if (slot == count)
+        {
+            skip("not_sold");
+            return;
+        }
+        if (price > need->funded)
+        {
+            skip("budget");
+            return;
+        }
+        if (!BuyLots(bot, vendor, slot, item, 1))
+        {
+            skip("refused");
+            return;
+        }
+    }
+
+    uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+    bot->learnSpell(learn);
+    if (!bot->HasSpell(learn))
+    {
+        // The item stays in the bags: the next visit learns it without paying again
+        skip("not_learned");
+        return;
+    }
+
+    bot->DestroyItemCount(item, 1, true);
+    EventLog::Emit(bot, Upkeep::EVENT_RIDING_BOUGHT, "mount", item, int64(paid));
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "buy",
+                       static_cast<float>(value->Price()) <= value->worth ? "worth" : "want", static_cast<float>(paid),
+                       {{"mount", static_cast<float>(value->rank.skill)}, {"funded", static_cast<float>(need->funded)}},
+                       item);
+}
+
 // The shopping list at the errand's vendor (upkeep WU6, §3.6): the needs from a fresh snapshot (the sell and the
 // repair changed the gold), each stock in Fund's order bought in whole lots within its funded share (PlanShopping),
 // the vendor's own rows rechecked (gold only, a limited row's live count). An item the bot's item usage would sell
@@ -245,6 +357,12 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
                             {"funded", static_cast<float>(line.funded)}},
                            line.item);
     }
+
+    // The riding need's mount, when this vendor sells it (WU14), with the gold the stock left
+    uint32 const entry = vendor->GetEntry();
+    if (std::any_of(needs.needs.begin(), needs.needs.end(), [entry](UpkeepNeeds::Need const& need)
+                    { return need.kind == UpkeepKind::Riding && need.vendor == entry; }))
+        MountAtVendor(botAI, vendor, *index);
 }
 
 // The class trainer visit of an errand stop (upkeep §3.7): the class spells up to the bot's level that this trainer
@@ -334,6 +452,71 @@ void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature)
                        {{"spells", static_cast<float>(need.units)},
                         {"funded", static_cast<float>(need.funded)},
                         {"gold", static_cast<float>(bot->GetMoney())}},
+                       creature->GetEntry());
+}
+
+// The riding trainer visit of an errand stop (upkeep §3.8, WU14): the rank of the riding need (one per trip, the
+// lowest), taught and paid through the core's trainer path at the reputation price when the need's funded share pays
+// the rank and its mount (the purchase decided both; the mount follows at the mount vendor). The core's own test
+// (CanTeachSpell) runs before the teach and reads it back; a visit teaches at most once. One TrainerVisit event per
+// visit; a RidingBought event and an upkeep row for the rank
+void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
+{
+    Player* bot = botAI->GetBot();
+    std::shared_ptr<Planner::UpkeepIndex const> const index =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    Trainer::Trainer* trainer = sObjectMgr->GetTrainer(creature->GetEntry());
+    UpkeepNeeds::Need need;
+    UpkeepNeeds::RankValue value;
+    if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Mount &&
+        trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
+    {
+        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
+        UpkeepNeeds::NeedList const needs =
+            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        for (UpkeepNeeds::Need const& each : needs.needs)
+            if (UpkeepNeeds::RidingErrandDue(each) && each.trainer)
+            {
+                need = each;
+                break;
+            }
+        for (UpkeepNeeds::RankValue const& each : needs.ranks)
+            if (need.item && each.bought && each.rank.spellId == need.item)
+                value = each;
+    }
+
+    Trainer::Spell const* spell = need.item && value.bought ? trainer->GetSpell(need.item) : nullptr;
+    uint32 const moneyBefore = bot->GetMoney();
+    char const* refusal = "ride_none";  // this trainer teaches no rank the bot buys
+    if (spell)
+    {
+        uint64 const price = UpkeepNeeds::TrainerPrice(spell->MoneyCost, bot->GetReputationPriceDiscount(creature));
+        if (!trainer->CanTeachSpell(bot, spell))
+            refusal = "ride_refused";
+        else if (price + value.mount > need.funded)
+            refusal = "ride_short";
+        else
+        {
+            trainer->TeachSpell(creature, bot, spell->SpellId);
+            refusal = trainer->CanTeachSpell(bot, spell) ? "ride_refused" : nullptr;
+        }
+    }
+
+    uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+    EventLog::Emit(bot, Upkeep::EVENT_TRAINER_VISIT, "riding", creature->GetEntry(), int64(paid));
+    if (!refusal)
+    {
+        EventLog::Emit(bot, Upkeep::EVENT_RIDING_BOUGHT, "rank", spell->SpellId, int64(paid));
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Upkeep, "buy",
+            static_cast<float>(value.Price()) <= value.worth ? "worth" : "want", static_cast<float>(paid),
+            {{"rank", static_cast<float>(value.rank.skill)}, {"funded", static_cast<float>(need.funded)}},
+            spell->SpellId);
+        return;
+    }
+
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", refusal, static_cast<float>(need.copper),
+                       {{"funded", static_cast<float>(need.funded)}, {"gold", static_cast<float>(bot->GetMoney())}},
                        creature->GetEntry());
 }
 
@@ -1120,12 +1303,13 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         if (candidate.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
             dueInReach |= static_cast<uint8>(candidate.covers & dueKinds);
     UpkeepNeeds::Need const* training = nullptr;
-    UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest
+    UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest the funded gold pays
+    bool const buysAtVendors = BuysAtVendors(botAI);
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
         if (need.kind == UpkeepKind::TrainerSpell)
             training = &need;
-        else if (need.kind == UpkeepKind::Riding && !riding)
+        else if (!riding && buysAtVendors && UpkeepNeeds::RidingErrandDue(need))
             riding = &need;
         uint8 const bit = Planner::StockBit(need.stock);
         if (!need.due || !UpkeepNeeds::StockPayable(need) || (dueInReach & bit))
@@ -1142,7 +1326,10 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     bool const trainingDue = training && UpkeepNeeds::TrainingErrandDue(*training);
     bool const needDue = repairing || dueInReach || trainingDue || riding;
 
-    if (!nearest)
+    // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training or a
+    // riding rank to learn plans its trainer trip
+    bool const trainerWanted = index && ((trainingDue && training->trainer) || (riding && riding->trainer));
+    if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
                   bot->GetName(), mapId, vendors.size(), refused);
@@ -1150,12 +1337,15 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         return false;
     }
 
-    float const walkMinutes = WorldTravel::WalkMinutes(nearestYards, runSpeed);
-    measure.HasVendor = true;
-    measure.VendorMapId = mapId;
-    measure.VendorX = nearest->loc.GetPositionX();
-    measure.VendorY = nearest->loc.GetPositionY();
-    measure.VendorZ = nearest->loc.GetPositionZ();
+    float const walkMinutes = nearest ? WorldTravel::WalkMinutes(nearestYards, runSpeed) : 0.0f;
+    if (nearest)
+    {
+        measure.HasVendor = true;
+        measure.VendorMapId = mapId;
+        measure.VendorX = nearest->loc.GetPositionX();
+        measure.VendorY = nearest->loc.GetPositionY();
+        measure.VendorZ = nearest->loc.GetPositionZ();
+    }
 
     // The stacks the sell action would take from the general slots (as the destroy rule counts them)
     uint32 sellableSlots = 0;
@@ -1197,7 +1387,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (training)
         snapshot.Training = {training->units, training->levelsBehind, trainingDue, training->item};
     if (riding)
-        snapshot.Riding = {riding->item, riding->vendor};
+        snapshot.Riding = {riding->item, riding->vendor, riding->trainer != 0};
     // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
     std::sort(inReach.begin(), inReach.end(),
               [](std::pair<float, TravelMgr::VendorInfo const*> const& a,
@@ -1232,7 +1422,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         WorldTravel::JoinTrainers(snapshot.Stops, trainerStops, WorldTravel::SERVICE_TRAINER);
         snapshot.Stops.insert(snapshot.Stops.end(), trainerStops.begin(), trainerStops.end());
     }
-    if (index && riding)
+    if (index && riding && riding->trainer)
         AddTrainerStops(TrainerSpawns(bot, *index, riding->trainer, reachYards), WorldTravel::SERVICE_RIDING_TRAINER,
                         snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
@@ -1297,6 +1487,12 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                    {"errands", static_cast<float>(errandCount)}};
     if (stops.empty())
     {
+        if (!nearest)
+        {
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "no_vendor", 0.0f, weighed);
+            return false;
+        }
+
         LOG_DEBUG("playerbots",
                   "[New RPG] {} errands: trip not worth it (nearest vendor {} at {:.0f} yd, {:.1f} walk min, {} "
                   "sellable, {} free slots, {} errands refused)",
@@ -1396,8 +1592,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         // repair, a persistent bot's shopping list (upkeep §3.3: repair first, then the stock in its order) and the
         // generic buy (gear, a bag by worth; consumables and a hunter's ammo only for a bot granted them), all paid
         constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
-        bool const shopping = RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) &&
-                              !IsRealPlayer(botAI->GetMaster());
+        bool const shopping = BuysAtVendors(botAI);
         WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
         if (shopping)
             UpkeepNeeds::SampleUse(measure, StockLevelsOf(bot), bot->getClass(), bot->GetLevel(), getMSTime());
@@ -1469,29 +1664,24 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         return true;
     }
 
-    // The trainer part of the stop. A riding trainer is a walk-only visit until WU14 buys the rank; a class trainer
-    // stands at the stop or up to STOP_JOIN_YARDS from it (a vendor stop that passes it): the bot walks into reach and
-    // learns. Either way the trip reached its trainer: not an errand_abort
+    // The trainer part of the stop: a class or riding trainer stands at the stop or up to STOP_JOIN_YARDS from it (a
+    // vendor stop that passes it): the bot walks into reach and learns. Either way the trip reached its trainer: not an
+    // errand_abort
     if (stop.trainerEntry)
     {
         uint32 const entry = stop.trainerEntry;
-        if (stop.trainerRiding)
-        {
-            LOG_DEBUG("playerbots", "[New RPG] {} riding trainer visit: WU14 (trainer {})", bot->GetName(), entry);
-        }
+        Creature* trainer = bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
+        // A walk that is still going on keeps the stop (MoveWorldObjectTo is false while it waits); only a path that
+        // fails gives the trainer up
+        if (trainer && !IsWithinInteractionDist(trainer) &&
+            (MoveWorldObjectTo(trainer->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
+            return true;
+        if (trainer && IsWithinInteractionDist(trainer) && stop.trainerRiding)
+            RideAtTrainer(botAI, trainer);
+        else if (trainer && IsWithinInteractionDist(trainer))
+            TrainAtTrainer(botAI, trainer);
         else
-        {
-            Creature* trainer = bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
-            // A walk that is still going on keeps the stop (MoveWorldObjectTo is false while it waits); only a path
-            // that fails gives the trainer up
-            if (trainer && !IsWithinInteractionDist(trainer) &&
-                (MoveWorldObjectTo(trainer->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
-                return true;
-            if (trainer && IsWithinInteractionDist(trainer))
-                TrainAtTrainer(botAI, trainer);
-            else
-                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_trainer", 0.0f, {}, entry);
-        }
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_trainer", 0.0f, {}, entry);
         stop.trainerEntry = 0;
         data->visited = true;
         return true;
@@ -2014,6 +2204,23 @@ bool OnFlyingMount(Player* bot)
     return bot->IsMounted() && (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura());
 }
 
+// A done or failed walk or fly leg's time into the bot's travel shares (upkeep WU14, the riding ranks' worth); the
+// area where it ended tells whether a flying mount would fly there (FlightMap's open areas)
+void NoteTravelShares(PlayerbotAI* botAI, Player* bot, TravelRoute::LegType type, uint32 legMs, uint32 nowMs)
+{
+    constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
+    WorldTravel::LegKind const kind = type == TravelRoute::LegType::Walk  ? WorldTravel::LegKind::Walk
+                                      : type == TravelRoute::LegType::Fly ? WorldTravel::LegKind::Fly
+                                                                          : WorldTravel::LegKind::Other;
+    AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetAreaId());
+    bool const open = area && area->IsFlyable() && !(area->flags & AREA_FLAG_NO_FLY_ZONE) &&
+                      area->ID != AREA_WINTERGRASP && area->zone != AREA_WINTERGRASP;
+    uint8 const shares = WorldTravel::LegShares(kind, bot->GetMapId(), open, bot->HasSpell(SPELL_COLD_WEATHER_FLYING));
+    WorldTravel::SlotMeasure& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::NoteTravelLeg(measure, shares, legMs, nowMs);
+}
+
 }  // namespace
 
 bool NewRpgTravelAction::Execute(Event /*event*/)
@@ -2127,6 +2334,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
             continue;
         uint32 const seconds = i == legBefore ? (seen.nowMs - legStartBefore) / IN_MILLISECONDS : 0;
         EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), data->tripId, seconds);
+        if (i == legBefore &&
+            (trip.legs[i].type == TravelRoute::LegType::Walk || trip.legs[i].type == TravelRoute::LegType::Fly))
+            NoteTravelShares(botAI, bot, trip.legs[i].type, seen.nowMs - legStartBefore, seen.nowMs);
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Walk)
             LogWalkLeg(bot, *data, i, recordBefore, seen.nowMs, seen.nowMs - legStartBefore, "done", true);
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Fly)
@@ -2405,6 +2615,12 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     uint32 const legSeconds =
         trip.legIdx < trip.legs.size() ? GetMSTimeDiffToNow(trip.legStartMs) / IN_MILLISECONDS : 0;
     EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), data.tripId, legSeconds);
+    if (trip.legIdx < trip.legs.size() && (trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk ||
+                                           trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly))
+    {
+        uint32 const now = getMSTime();
+        NoteTravelShares(botAI, bot, trip.legs[trip.legIdx].type, now - trip.legStartMs, now);
+    }
     // A failed walk's row before AfterFailure starts the next record
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk)
     {

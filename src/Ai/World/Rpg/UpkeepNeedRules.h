@@ -148,6 +148,7 @@ struct RankValue
     std::uint32_t mountVendor{0};
     std::uint32_t currencyMounts{0};  // mounts of its skill that also cost currency: never the bot's price
     std::uint8_t reqLevel{0};
+    bool known{false};         // the rank is known, its mount is missing: the price is the mount alone
     bool eligible{false};      // the level and the riding skill allow it now
     float savedMinutes{0.0f};  // per hour of play
     float worth{0.0f};         // savedMinutes x e x horizon, copper
@@ -163,8 +164,9 @@ struct NeedRates
 {
     float earnCopperPerMinute{0.0f};  // e (WorldTravel::SlotRates)
     float ridingHorizonHours{0.0f};   // 0 = RidingHorizonHours(level)
+    // The travel shares (FillTravel, the slot measure's TravelShare): the default walk share until measured
     float walkMinutesPerHour{DEFAULT_WALK_MINUTES_PER_HOUR};
-    float flightMinutesPerHour{0.0f};  // flying legs (WU9-WU10); 0 until then
+    float flightMinutesPerHour{0.0f};  // legs where a flying mount flies (fly legs, walk legs in open flying areas)
     float northrendFlightMinutesPerHour{0.0f};
     std::array<float, Planner::UPKEEP_STOCK_COUNT> usePerHour{};  // a bot's measured use; 0 = the default
     std::uint32_t trainingReserveLevels{2};                       // UpkeepConfig::TrainingReserveLevels
@@ -624,7 +626,18 @@ inline std::uint64_t Scaled(NeedList const& list, std::uint64_t copper)
 // Riding ranks by worth (WU.5): the travel minutes a rank saves per hour of play, times e, times the horizon; a
 // collector or a spendthrift wants it on top. Bought (a need) when its price is at most worth plus want and the gold
 // covers it beside the thrift-scaled reserve for nearer needs with this rank in it. The next rank within reach joins
-// the reserve when its worth alone pays for it: the want grows with free gold, so it never moves the reserve (WU.4)
+// the reserve when its worth alone pays for it: the want grows with free gold, so it never moves the reserve (WU.4).
+// A rank is done when the bot has it and a mount of its skill or better (WU14): a known rank without its mount stays
+// the need, priced at the mount alone, and carries nobody (a mount bought late is worth what the rank and mount were)
+inline bool RankMounted(Snapshot const& snapshot, RidingRank const& rank)
+{
+    if (rank.kind == RideKind::Ground)
+        return snapshot.groundMountSkill >= rank.skill;
+    if (rank.kind == RideKind::Air)
+        return snapshot.flyingMountSkill >= rank.skill;
+    return true;  // cold weather flying needs no mount of its own
+}
+
 inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates,
                       std::uint64_t nearer)
 {
@@ -636,7 +649,8 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
     for (RidingRank const& rank : RIDING_RANKS)
     {
         std::size_t const position = riding->Find(rank.spellId);
-        if (position == TrainerList::NOT_FOUND || !Planner::HasSpellBit(snapshot.knownRidingSpells, position))
+        if (position == TrainerList::NOT_FOUND || !Planner::HasSpellBit(snapshot.knownRidingSpells, position) ||
+            !RankMounted(snapshot, rank))
             continue;
         if (rank.kind == RideKind::Ground)
             ground = std::max(ground, rank.speed);
@@ -657,16 +671,24 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
     for (RidingRank const& rank : RIDING_RANKS)
     {
         std::size_t const position = riding->Find(rank.spellId);
-        if (position == TrainerList::NOT_FOUND || Planner::HasSpellBit(snapshot.knownRidingSpells, position) ||
-            !Planner::HasSpellBit(snapshot.canLearnRidingSpells, position))
+        if (position == TrainerList::NOT_FOUND || !Planner::HasSpellBit(snapshot.canLearnRidingSpells, position))
+            continue;
+        bool const known = Planner::HasSpellBit(snapshot.knownRidingSpells, position);
+        bool const mounted = RankMounted(snapshot, rank);
+        if (known && mounted)
             continue;
         TrainerSpell const& spell = riding->spells[position];
         RankValue value;
         value.rank = rank;
         value.position = position;
-        value.training = spell.moneyCost;
+        value.known = known;
+        value.training = known ? 0 : spell.moneyCost;
         value.reqLevel = spell.reqLevel;
-        PriceMount(index, snapshot, value);
+        if (!mounted)
+            PriceMount(index, snapshot, value);
+        // A known rank whose mount no vendor sells for gold leaves nothing to buy
+        if (known && !value.mountItem)
+            continue;
         bool const skillMet = !spell.reqSkillLine || SkillValue(snapshot, spell.reqSkillLine) >= spell.reqSkillRank;
         value.eligible = spell.reqLevel <= snapshot.level && skillMet;
         if (rank.kind == RideKind::Ground)
@@ -698,7 +720,7 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
             need.units = 1;
             need.item = rank.spellId;
             need.vendor = value.mountVendor;
-            need.trainer = TrainerFor(index, Planner::TrainerKind::Mount, riding->requirement);
+            need.trainer = known ? 0 : TrainerFor(index, Planner::TrainerKind::Mount, riding->requirement);
             need.without = "walks the long legs";
             list.needs.push_back(need);
         }
@@ -737,6 +759,15 @@ constexpr bool RepairErrandDue(std::uint8_t brokenItems, std::uint8_t lowestDura
 constexpr bool TrainingErrandDue(Need const& need)
 {
     return need.due && need.cheapest > 0 && need.funded >= need.cheapest;
+}
+
+// The riding need makes an errand worth a trip of its own only when its funded share pays it whole (the rank and its
+// mount, or the mount alone). The purchase is judged against the thrift-scaled reserve, Fund pays the unscaled needs
+// before riding, so a spendthrift's rank can show BUY with a funded share below its price; the trainer and the vendor
+// refuse that, the gold does not change, and the trip would repeat. The visit's reputation price is never above copper
+constexpr bool RidingErrandDue(Need const& need)
+{
+    return need.kind == UpkeepKind::Riding && need.due && need.copper > 0 && need.funded >= need.copper;
 }
 
 // The game's price of a trainer spell for a bot whose reputation gives this price factor (Trainer::TeachSpell:
@@ -888,10 +919,10 @@ inline std::string Describe(RankValue const& value)
 {
     return std::string(value.rank.name) + ": price " + Money(value.Price()) + " (training " + Money(value.training) +
            ", mount " + Money(value.mount) + (value.currencyMounts ? ", currency mounts skipped" : "") + "), level " +
-           std::to_string(value.reqLevel) + (value.eligible ? "" : " (not yet)") + ", saves " +
-           std::to_string(value.savedMinutes) + " min/h, worth " + Money(static_cast<std::uint64_t>(value.worth)) +
-           ", want " + Money(static_cast<std::uint64_t>(value.want)) + (value.reserved ? ", reserved" : "") +
-           (value.bought ? ": BUY" : ": wait");
+           std::to_string(value.reqLevel) + (value.known ? " (known, mount missing)" : "") +
+           (value.eligible ? "" : " (not yet)") + ", saves " + std::to_string(value.savedMinutes) + " min/h, worth " +
+           Money(static_cast<std::uint64_t>(value.worth)) + ", want " + Money(static_cast<std::uint64_t>(value.want)) +
+           (value.reserved ? ", reserved" : "") + (value.bought ? ": BUY" : ": wait");
 }
 
 // The stock errand (WU6, §3.6): a consumable stock below a quarter of its target makes an errand worth a trip of its
@@ -909,15 +940,15 @@ inline bool StockErrandDue(NeedList const& list)
     return false;
 }
 
-// A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training
-// the gold pays (TrainingErrandDue), a riding rank bought. The repair is the trigger's own test first (RepairErrandDue
-// reads the cheapest item's price)
+// A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training the
+// gold pays (TrainingErrandDue), a riding rank the funded gold pays (RidingErrandDue). The repair is the trigger's own
+// test first (RepairErrandDue reads the cheapest item's price)
 inline bool AnyErrandDue(NeedList const& list)
 {
     for (Need const& need : list.needs)
         if (need.kind == UpkeepKind::TrainerSpell
                 ? TrainingErrandDue(need)
-                : (need.due && (StockPayable(need) || need.kind == UpkeepKind::Riding)))
+                : (need.kind == UpkeepKind::Riding ? RidingErrandDue(need) : need.due && StockPayable(need)))
             return true;
     return false;
 }
@@ -1194,6 +1225,16 @@ inline void FillUse(NeedRates& rates, WorldTravel::SlotMeasure const& measure)
 {
     for (std::size_t slot = 0; slot < Planner::UPKEEP_STOCK_COUNT; ++slot)
         rates.usePerHour[slot] = measure.UsePerHour[slot];
+}
+
+// The measured travel shares (WU14); before the first window closes the defaults stay (walk 30 min/h, no flight)
+inline void FillTravel(NeedRates& rates, WorldTravel::SlotMeasure const& measure)
+{
+    if (!measure.HasTravel)
+        return;
+    rates.walkMinutesPerHour = measure.TravelMinutesPerHour[WorldTravel::TRAVEL_WALK];
+    rates.flightMinutesPerHour = measure.TravelMinutesPerHour[WorldTravel::TRAVEL_FLIGHT];
+    rates.northrendFlightMinutesPerHour = measure.TravelMinutesPerHour[WorldTravel::TRAVEL_NORTHREND];
 }
 
 inline std::vector<std::string> DescribeAll(NeedList const& list)
