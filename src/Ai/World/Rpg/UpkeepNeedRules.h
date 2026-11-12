@@ -129,6 +129,7 @@ struct Need
     std::uint32_t vendor{0};                // a vendor entry that sells it (0 = any repairer)
     std::uint32_t trainer{0};               // a trainer key that teaches it
     std::uint32_t levelsBehind{0};          // training: levels since the oldest waiting spell
+    std::uint64_t cheapest{0};              // training: the cheapest waiting spell with no waiting prerequisite
     std::uint32_t target{0};                // consumables: the stock target
     std::uint32_t lotSize{1};               // consumables: the best offer's lot (buyCount) ...
     std::uint32_t lotPrice{0};              // ... and its price
@@ -533,8 +534,26 @@ inline std::uint32_t TrainerFor(UpkeepIndex const& index, Planner::TrainerKind k
     return 0;
 }
 
+// A required ability of the spell is another waiting spell (on the list, or taught by one), so the core's trainer
+// refuses the spell until that one is bought (TrainingPurchase skips it the same way)
+inline bool NeedsWaitingSpell(TrainerList const& trainer, std::vector<std::size_t> const& spells,
+                              TrainerSpell const& spell)
+{
+    for (std::uint32_t const ability : spell.reqAbility)
+    {
+        if (!ability)
+            continue;
+        std::size_t const found = trainer.Find(ability);
+        std::size_t const onClass = found != TrainerList::NOT_FOUND ? found : trainer.Teacher(ability);
+        if (onClass != TrainerList::NOT_FOUND && std::find(spells.begin(), spells.end(), onClass) != spells.end())
+            return true;
+    }
+    return false;
+}
+
 // Training: the spells of this level are a need, due when the oldest waits trainingSpan levels; the reserve holds
-// them and the next trainingReserveLevels levels' spells
+// them and the next trainingReserveLevels levels' spells. The cheapest price is taken over the spells that need no
+// other waiting spell first: only those can be bought on the first visit
 inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates)
 {
     TrainerList const* trainer = index.ClassList(snapshot.cls);
@@ -556,6 +575,8 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
         if (spell.reqLevel > snapshot.level)
             continue;
         need.copper += spell.moneyCost;
+        if ((!need.cheapest || spell.moneyCost < need.cheapest) && !NeedsWaitingSpell(*trainer, spells, spell))
+            need.cheapest = spell.moneyCost;
         ++need.units;
         oldest = std::min(oldest, spell.reqLevel);
         if (!need.item)
@@ -708,6 +729,75 @@ constexpr bool RepairErrandDue(std::uint8_t brokenItems, std::uint8_t lowestDura
     return RepairDue(brokenItems, lowestDurabilityPercent) && cheapestItemCopper > 0 && money >= cheapestItemCopper;
 }
 
+// The training need makes an errand worth a trip of its own: it is due and its funded gold pays the cheapest waiting
+// spell that needs no other waiting one (as RepairErrandDue; the core's trainer path sells a spell for its whole
+// price, and refuses a rank before its prerequisite, so a cheap rank behind a dearer one does not count). After the
+// visit every spell left that can be bought costs more than the gold left, so the rule does not send the bot again.
+// A reputation discount only makes the spells cheaper, so the test never sends a bot that cannot pay
+constexpr bool TrainingErrandDue(Need const& need)
+{
+    return need.due && need.cheapest > 0 && need.funded >= need.cheapest;
+}
+
+// The game's price of a trainer spell for a bot whose reputation gives this price factor (Trainer::TeachSpell:
+// int32(MoneyCost * reputationDiscount))
+constexpr std::uint32_t TrainerPrice(std::uint32_t moneyCost, float discount)
+{
+    return static_cast<std::uint32_t>(static_cast<float>(moneyCost) * discount);
+}
+
+// What a trainer visit learns: the positions, in the order they are taught, and the gold they cost
+struct TrainingBuy
+{
+    std::vector<std::size_t> positions;
+    std::uint64_t total{0};
+};
+
+// The spells a visit buys (§3.7): of the learnable class spells up to the bot's level, in level order (stable by list
+// position), each one the gold left pays, at the game's price. A spell the gold does not pay is skipped and the cheaper
+// later ones are still bought; it stays a need. A spell whose required ability on the list is learnable but was not
+// bought is skipped too (the core's trainer refuses it)
+inline TrainingBuy TrainingPurchase(TrainerList const& list, std::vector<std::size_t> const& learnable,
+                                    std::uint32_t level, std::uint64_t money, float discount)
+{
+    std::vector<std::size_t> order;
+    for (std::size_t const position : learnable)
+        if (position < list.spells.size() && list.spells[position].reqLevel <= level)
+            order.push_back(position);
+    std::stable_sort(order.begin(), order.end(), [&list](std::size_t a, std::size_t b)
+                     { return list.spells[a].reqLevel < list.spells[b].reqLevel; });
+
+    TrainingBuy buy;
+    std::vector<std::uint64_t> bought(Planner::SpellBits(list.spells.size()).size(), 0);
+    for (std::size_t const position : order)
+    {
+        TrainerSpell const& spell = list.spells[position];
+        std::uint64_t const price = TrainerPrice(spell.moneyCost, discount);
+        if (price > money - buy.total)
+            continue;
+
+        bool chained = true;
+        for (std::uint32_t const ability : spell.reqAbility)
+        {
+            if (!ability)
+                continue;
+            std::size_t const found = list.Find(ability);
+            std::size_t const onClass = found != TrainerList::NOT_FOUND ? found : list.Teacher(ability);
+            if (onClass != TrainerList::NOT_FOUND &&
+                std::find(learnable.begin(), learnable.end(), onClass) != learnable.end() &&
+                !Planner::HasSpellBit(bought, onClass))
+                chained = false;
+        }
+        if (!chained)
+            continue;
+
+        Planner::SetSpellBit(bought, position);
+        buy.positions.push_back(position);
+        buy.total += price;
+    }
+    return buy;
+}
+
 // Short gold is spent in the fixed order: each need takes what is left (a bot repairs what it can, learns what it can)
 inline void Fund(NeedList& list)
 {
@@ -819,13 +909,15 @@ inline bool StockErrandDue(NeedList const& list)
     return false;
 }
 
-// A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training, a
-// riding rank bought. The repair is the trigger's own test first (RepairErrandDue reads the cheapest item's price)
+// A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training
+// the gold pays (TrainingErrandDue), a riding rank bought. The repair is the trigger's own test first (RepairErrandDue
+// reads the cheapest item's price)
 inline bool AnyErrandDue(NeedList const& list)
 {
     for (Need const& need : list.needs)
-        if (need.due &&
-            (StockPayable(need) || need.kind == UpkeepKind::TrainerSpell || need.kind == UpkeepKind::Riding))
+        if (need.kind == UpkeepKind::TrainerSpell
+                ? TrainingErrandDue(need)
+                : (need.due && (StockPayable(need) || need.kind == UpkeepKind::Riding)))
             return true;
     return false;
 }

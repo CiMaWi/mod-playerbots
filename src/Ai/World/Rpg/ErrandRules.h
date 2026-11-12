@@ -128,6 +128,8 @@ struct ServiceStop
     uint32_t Id = 0;  // the creature entry
     ErrandPlace Place;
     uint32_t Services = 0;
+    uint32_t Trainer = 0;  // the class trainer's entry when this stop takes training because the trainer stands within
+                           // STOP_JOIN_YARDS (a vendor stop); 0 = none, or the stop is the trainer's own (Id)
 };
 
 struct CompletedQuest
@@ -392,6 +394,7 @@ struct TripStop
     ErrandPlace Place;
     uint32_t Services = 0;
     uint32_t Id = 0;       // the service stop's entry; 0 for a placed errand's own place
+    uint32_t Trainer = 0;  // the trainer to visit at this stop when it is not the stop's own entry (ServiceStop)
     bool OnRoute = false;  // a stop the bot makes anyway
     float DetourMinutes = 0.0f;
     std::vector<ErrandOffer> Errands;
@@ -425,6 +428,26 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
         return Yards(stop.Place, offer.Place) <= STOP_JOIN_YARDS;
 
     return offer.Service && (stop.Services & offer.Service) == offer.Service;
+}
+
+// A stop with a trainer within STOP_JOIN_YARDS takes the training of that trainer, as an errand place within that
+// distance is done at the stop: the stop gets the trainer service and the trainer's entry (the bot walks the few yards
+// on arrival). The first trainer in the order given wins; a stop that already has one, or is a trainer's own, keeps it
+inline void JoinTrainers(std::vector<ServiceStop>& stops, std::vector<ServiceStop> const& trainers, uint32_t service)
+{
+    for (ServiceStop& stop : stops)
+    {
+        if (stop.Trainer || (stop.Services & service))
+            continue;
+
+        for (ServiceStop const& trainer : trainers)
+            if (Yards(stop.Place, trainer.Place) <= STOP_JOIN_YARDS)
+            {
+                stop.Services |= service;
+                stop.Trainer = trainer.Id;
+                break;
+            }
+    }
 }
 
 // The yards that passing `place` adds at the best point of the route, and that point. After the last stop the walk
@@ -472,10 +495,10 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
     // The candidate places: the known service stops, then each errand's own place
     std::vector<TripStop> candidates;
     for (ServiceStop const& service : known)
-        candidates.push_back({service.Place, service.Services, service.Id, false, 0.0f, {}});
+        candidates.push_back({service.Place, service.Services, service.Id, service.Trainer, false, 0.0f, {}});
     for (ErrandOffer const& offer : offers)
         if (offer.Placed)
-            candidates.push_back({offer.Place, offer.Service, offer.Target, false, 0.0f, {}});
+            candidates.push_back({offer.Place, offer.Service, offer.Target, 0, false, 0.0f, {}});
 
     join();
     for (std::size_t detours = 0; detours < MAX_DETOUR_STOPS; ++detours)

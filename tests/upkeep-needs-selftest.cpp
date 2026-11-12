@@ -56,6 +56,7 @@ constexpr std::uint32_t TRAINER_HUNTER = 120;
 constexpr std::uint32_t TRAINER_PALADIN = 130;
 constexpr std::uint32_t TRAINER_DRUID = 140;
 constexpr std::uint32_t TRAINER_WARLOCK = 150;
+constexpr std::uint32_t TRAINER_PRIEST = 160;
 constexpr std::uint32_t TRAINER_RIDING = 300;
 constexpr std::uint32_t VENDOR_INN = 5000;
 constexpr std::uint32_t VENDOR_ARMS = 5001;
@@ -189,10 +190,15 @@ UpkeepIndex Fixture()
          {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0), RidingSpell(SPELL_JOURNEYMAN, 50 * GOLD, 40, 75),
           RidingSpell(SPELL_EXPERT, 250 * GOLD, 60, 150), RidingSpell(SPELL_ARTISAN, 5000 * GOLD, 70, 225),
           RidingSpell(SPELL_COLD_WEATHER, 1000 * GOLD, 77, 225)}});
-    input.trainerEntries = {{TRAINER_WARRIOR, TRAINER_WARRIOR}, {TRAINER_MAGE, TRAINER_MAGE},
-                            {TRAINER_HUNTER, TRAINER_HUNTER},   {TRAINER_PALADIN, TRAINER_PALADIN},
-                            {TRAINER_DRUID, TRAINER_DRUID},     {TRAINER_WARLOCK, TRAINER_WARLOCK},
-                            {TRAINER_RIDING, TRAINER_RIDING}};
+    // priest trainer rows from acore_world: 25315 costs 6500 and needs 10929, which costs 42000
+    TrainerSpell dearPrerequisite = Spell(10929, 42000, 52);
+    TrainerSpell cheapRank = Spell(25315, 6500, 58);
+    cheapRank.reqAbility[0] = 10929;
+    input.trainers.push_back({TRAINER_PRIEST, TrainerKind::Class, CLASS_PRIEST, {dearPrerequisite, cheapRank}});
+    input.trainerEntries = {{TRAINER_PRIEST, TRAINER_PRIEST},   {TRAINER_WARRIOR, TRAINER_WARRIOR},
+                            {TRAINER_MAGE, TRAINER_MAGE},       {TRAINER_HUNTER, TRAINER_HUNTER},
+                            {TRAINER_PALADIN, TRAINER_PALADIN}, {TRAINER_DRUID, TRAINER_DRUID},
+                            {TRAINER_WARLOCK, TRAINER_WARLOCK}, {TRAINER_RIDING, TRAINER_RIDING}};
 
     UpkeepItemFacts bread = Item(ITEM_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
     bread.spellCategory = CATEGORY_FOOD;
@@ -1129,6 +1135,85 @@ void StaleBits(UpkeepIndex const& index)
 }
 }  // namespace
 
+// Due training makes a trip only when the funded gold pays the cheapest waiting spell (WU13: RepairErrandDue's rule)
+void TrainingGold(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: the gold test of due training\n";
+    // Mage level 12, trained to 9: 2010 (2000), 2012 (2400) and rank 2 (2100, 900) wait, and are due
+    Snapshot poor = Bot(index, CLASS_MAGE, 12, 800, 9);
+    NeedList const list = ComputeNeeds(poor, index, Rates(12));
+    Need const* need = Find(list, NeedOrder::Training);
+    Check(need && need->due && need->cheapest == 2000 && need->funded == 800,
+          "the need is due, its cheapest buyable spell costs 2000 (rank 2 at 900 needs 2010) and the gold pays 800");
+    Check(need && !TrainingErrandDue(*need) && !AnyErrandDue(list), "gold below the cheapest spell: no errand");
+    Snapshot rankOnly = Bot(index, CLASS_MAGE, 12, 900, 9);
+    NeedList const behind = ComputeNeeds(rankOnly, index, Rates(12));
+    need = Find(behind, NeedOrder::Training);
+    Check(need && !TrainingErrandDue(*need) && !AnyErrandDue(behind),
+          "gold for rank 2 only: no errand (the visit would buy nothing, so the trip would repeat)");
+    Snapshot paying = Bot(index, CLASS_MAGE, 12, 2000, 9);
+    NeedList const payable = ComputeNeeds(paying, index, Rates(12));
+    need = Find(payable, NeedOrder::Training);
+    Check(need && need->cheapest == 2000 && TrainingErrandDue(*need) && AnyErrandDue(payable),
+          "gold for the first rank: the errand is due");
+    Snapshot priest = Bot(index, CLASS_PRIEST, 58, 6500, 51);
+    NeedList const priestPoor = ComputeNeeds(priest, index, Rates(58));
+    need = Find(priestPoor, NeedOrder::Training);
+    Check(need && need->due && need->cheapest == 42000 && !TrainingErrandDue(*need),
+          "priest 25315 (6500) needs 10929 (42000): 6500 gold buys no trip");
+    priest.money = 42000;
+    NeedList const priestRich = ComputeNeeds(priest, index, Rates(58));
+    need = Find(priestRich, NeedOrder::Training);
+    Check(need && TrainingErrandDue(*need), "42000 pays the prerequisite: the trip is due");
+    Snapshot close = Bot(index, CLASS_MAGE, 11, 100 * GOLD, 9);
+    NeedList const notDue = ComputeNeeds(close, index, Rates(11));
+    need = Find(notDue, NeedOrder::Training);
+    Check(need && !need->due && need->cheapest > 0 && !TrainingErrandDue(*need) && !AnyErrandDue(notDue),
+          "rich but not due: no errand of its own");
+}
+
+// What a visit buys: level order within the gold, at the game's price, a skipped spell stays a need
+void TrainingBuying(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a trainer visit's purchase\n";
+    Snapshot bot = Bot(index, CLASS_MAGE, 12, 0, 9);
+    TrainerList const& list = *index.ClassList(CLASS_MAGE);
+    std::vector<std::size_t> const learnable =
+        Learnable(list, index.RidingList(bot.race), bot, bot.knownClassSpells, bot.canLearnClassSpells, 12);
+    auto const spells = [&list](TrainingBuy const& buy)
+    {
+        std::string text;
+        for (std::size_t const position : buy.positions)
+            text += std::to_string(list.spells[position].spellId) + " ";
+        return text;
+    };
+    Check(learnable.size() == 3, "three spells wait: 2010, 2012 and the second rank 2100");
+
+    TrainingBuy buy = TrainingPurchase(list, learnable, 12, 100 * GOLD, 1.0f);
+    Check(buy.positions.size() == 3 && buy.total == 5300 && spells(buy) == "2010 2012 2100 ",
+          "rich: all three, in level order, at full price: " + spells(buy));
+
+    buy = TrainingPurchase(list, learnable, 12, 2900, 1.0f);
+    Check(
+        spells(buy) == "2010 2100 " && buy.total == 2900 && learnable.size() - buy.positions.size() == 1,
+        "gold for two of three: 2010 and rank 2 (2012 does not fit and is skipped), 2012 stays a need: " + spells(buy));
+
+    buy = TrainingPurchase(list, learnable, 12, 1000, 1.0f);
+    Check(buy.positions.empty() && buy.total == 0,
+          "gold for rank 2 only: it is not bought without its first rank (the core would refuse it)");
+
+    buy = TrainingPurchase(list, learnable, 12, 1500, 0.5f);
+    Check(spells(buy) == "2010 2100 " && buy.total == 1450,
+          "a reputation discount of half: 1000 + 450 fits 1500 where full price buys nothing: " + spells(buy));
+    Check(TrainerPrice(901, 0.5f) == 450 && TrainerPrice(900, 1.0f) == 900,
+          "the price rounds down, as the core's int32");
+
+    buy = TrainingPurchase(list, learnable, 10, 100 * GOLD, 1.0f);
+    Check(spells(buy) == "2010 ", "a spell above the bot's level is not bought");
+    buy = TrainingPurchase(list, {}, 12, 100 * GOLD, 1.0f);
+    Check(buy.positions.empty() && buy.total == 0, "nothing learnable: nothing bought");
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1143,6 +1228,8 @@ int main()
     AmmoAndWater(index);
     PetDiet(index);
     Training(index);
+    TrainingGold(index);
+    TrainingBuying(index);
     GroundRiding(index);
     FlyingRiding(index);
     ReserveAndShortfall(index);

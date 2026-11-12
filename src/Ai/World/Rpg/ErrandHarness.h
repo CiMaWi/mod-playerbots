@@ -342,6 +342,51 @@ inline void TrainingJoins(std::vector<Check>& checks)
     Add(checks, "train: training not due joins a trip that passes a trainer", joined, Describe(plan));
 }
 
+// A vendor stop with the class trainer within STOP_JOIN_YARDS takes training too (WU12 NOTE 3): the stop keeps its own
+// entry and carries the trainer's. A vendor farther from the trainer does not, and a trainer's own stop is not retagged
+inline void TrainingAtVendor(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Training = {1, 1, false, CLASS_SPELL};
+    std::vector<ServiceStop> const trainers = {{TRAINER, At(800.0f, 0.0f), SERVICE_TRAINER}};
+    std::vector<ServiceStop> stops = {{PLAIN_VENDOR, At(830.0f, 0.0f), SERVICE_VENDOR},
+                                      {ROAD_VENDOR, At(900.0f, 0.0f), SERVICE_VENDOR},
+                                      {REPAIR_HUB, At(840.0f, 0.0f), SERVICE_VENDOR | SERVICE_REPAIR},
+                                      {TRAINER, At(800.0f, 0.0f), SERVICE_TRAINER}};
+    JoinTrainers(stops, trainers, SERVICE_TRAINER);
+    bool const tagged = (stops[0].Services & SERVICE_TRAINER) && stops[0].Trainer == TRAINER &&
+                        stops[0].Id == PLAIN_VENDOR && (stops[0].Services & SERVICE_VENDOR);
+    bool const edge = (stops[2].Services & SERVICE_TRAINER) && stops[2].Trainer == TRAINER;  // 40 yd exactly
+    bool const apart = !(stops[1].Services & SERVICE_TRAINER) && stops[1].Trainer == 0;      // 100 yd
+    bool const own = stops[3].Trainer == 0 && stops[3].Services == SERVICE_TRAINER;
+    Add(checks, "train: a vendor within 40 yd of the trainer carries its service and entry", tagged && edge,
+        "stop 0 trainer " + std::to_string(stops[0].Trainer) + ", stop 2 trainer " + std::to_string(stops[2].Trainer));
+    Add(checks, "train: a vendor 100 yd from the trainer does not, the trainer's own stop is untouched", apart && own,
+        "stop 1 trainer " + std::to_string(stops[1].Trainer));
+
+    auto const asRoute = [](ServiceStop const& stop)
+    {
+        TripStop route;
+        route.Place = stop.Place;
+        route.Services = stop.Services;
+        route.Id = stop.Id;
+        route.Trainer = stop.Trainer;
+        return route;
+    };
+    bot.Stops = stops;
+    TripPlan const joined = Plan(bot, Request(bot, {asRoute(stops[0])}));
+    bool const joins = joined.Stops.size() == 1 && joined.Stops[0].OnRoute && joined.Stops[0].Id == PLAIN_VENDOR &&
+                       joined.Stops[0].Trainer == TRAINER && HasErrand(joined.Stops[0], ErrandKind::Train) &&
+                       joined.Refused.empty();
+    Add(checks, "train: training not due joins a route vendor stop that carries the trainer", joins, Describe(joined));
+
+    TripPlan const apartPlan = Plan(bot, Request(bot, {asRoute(stops[1])}));
+    bool const refused = apartPlan.Stops.size() == 1 && apartPlan.Stops[0].Trainer == 0 &&
+                         !HasErrand(apartPlan.Stops[0], ErrandKind::Train) && apartPlan.Refused.size() == 1 &&
+                         apartPlan.Refused[0].Offer.Kind == ErrandKind::Train;
+    Add(checks, "train: a route vendor 100 yd from the trainer takes no training", refused, Describe(apartPlan));
+}
+
 // Due training (levels behind reach the span) is a trip of its own, to one trainer: the nearer of two
 inline void TrainingTrip(std::vector<Check>& checks)
 {
@@ -435,6 +480,7 @@ inline std::vector<Check> SyntheticChecks()
     RepairByNeed(checks);
     ShopByCover(checks);
     TrainingJoins(checks);
+    TrainingAtVendor(checks);
     TrainingTrip(checks);
     TrainingRefused(checks);
     RidingTrip(checks);

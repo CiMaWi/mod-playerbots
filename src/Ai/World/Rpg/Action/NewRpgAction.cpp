@@ -50,6 +50,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
@@ -60,6 +61,7 @@
 #include "SharedDefines.h"
 #include "StartingHistoryRules.h"
 #include "Timer.h"
+#include "Trainer.h"
 #include "Transport.h"
 #include "TravelGraph.h"
 #include "TravelLegRules.h"
@@ -245,21 +247,112 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
     }
 }
 
+// The class trainer visit of an errand stop (upkeep §3.7): the class spells up to the bot's level that this trainer
+// teaches the bot, in level order within the training need's funded share (recomputed here, so repair and stock keep
+// theirs), each taught and paid through the core's trainer path at the reputation price. The core's own test
+// (CanTeachSpell) runs per spell at the teach, so a second rank whose first this visit teaches is taught after it; each
+// spell is taught at most once. One TrainerVisit event and one upkeep row per visit
+void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature)
+{
+    Player* bot = botAI->GetBot();
+    std::shared_ptr<Planner::UpkeepIndex const> const index =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    Trainer::Trainer* trainer = sObjectMgr->GetTrainer(creature->GetEntry());
+    Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
+    Planner::TrainerList const* list = index ? index->ClassList(snapshot.cls) : nullptr;
+    UpkeepNeeds::Need need;
+    if (index && trainer && list && UpkeepNeeds::BitsAlign(*index, snapshot) && trainer->IsTrainerValidForPlayer(bot))
+    {
+        UpkeepNeeds::NeedList const needs =
+            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        for (UpkeepNeeds::Need const& each : needs.needs)
+            if (each.kind == UpkeepKind::TrainerSpell)
+                need = each;
+    }
+
+    uint32 const moneyBefore = bot->GetMoney();
+    uint32 learned = 0;
+    UpkeepNeeds::TrainingBuy buy;
+    if (need.units)
+    {
+        std::vector<std::size_t> const learnable =
+            UpkeepNeeds::Learnable(*list, index->RidingList(snapshot.race), snapshot, snapshot.knownClassSpells,
+                                   snapshot.canLearnClassSpells, snapshot.level);
+        std::vector<std::size_t> taught;
+        for (std::size_t const position : learnable)
+        {
+            Trainer::Spell const* spell = trainer->GetSpell(list->spells[position].spellId);
+            if (spell && PlayerbotFactory::IsTrainerSpellAllowedForBot(bot, trainer, spell))
+                taught.push_back(position);
+        }
+
+        float const discount = bot->GetReputationPriceDiscount(creature);
+        buy = UpkeepNeeds::TrainingPurchase(*list, taught, snapshot.level, need.funded, discount);
+        std::vector<std::size_t> waiting = buy.positions;
+        for (bool progress = true; progress && !waiting.empty();)
+        {
+            progress = false;
+            for (auto it = waiting.begin(); it != waiting.end();)
+            {
+                Trainer::Spell const* spell = trainer->GetSpell(list->spells[*it].spellId);
+                if (spell && !trainer->CanTeachSpell(bot, spell))
+                {
+                    ++it;
+                    continue;
+                }
+
+                uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+                if (spell && paid <= need.funded &&
+                    UpkeepNeeds::TrainerPrice(spell->MoneyCost, discount) <= need.funded - paid)
+                {
+                    trainer->TeachSpell(creature, bot, spell->SpellId);
+                    if (!trainer->CanTeachSpell(bot, spell))
+                        ++learned;
+                    progress = true;
+                }
+                it = waiting.erase(it);
+            }
+        }
+    }
+
+    uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+    EventLog::Emit(bot, Upkeep::EVENT_TRAINER_VISIT, "class", creature->GetEntry(), int64(paid));
+    if (learned)
+    {
+        char const* const reason = need.funded < need.copper ? "short" : (need.due ? "due" : "joined");
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "train", reason, static_cast<float>(paid),
+                           {{"spells", static_cast<float>(learned)},
+                            {"left", static_cast<float>(need.units > learned ? need.units - learned : 0)},
+                            {"funded", static_cast<float>(need.funded)}},
+                           creature->GetEntry());
+        return;
+    }
+
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip",
+                       need.units && buy.positions.empty() && need.funded < need.copper ? "train_short" : "train_none",
+                       static_cast<float>(need.copper),
+                       {{"spells", static_cast<float>(need.units)},
+                        {"funded", static_cast<float>(need.funded)},
+                        {"gold", static_cast<float>(bot->GetMoney())}},
+                       creature->GetEntry());
+}
+
 WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc)
 {
     return {loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()};
 }
 
 // The spawns on the bot's map of the trainer an upkeep need names (the index's entries of its key) that trade with
-// the bot, the nearest TRAINER_STOPS within reach: the trip's stops with that service
-void AddTrainerStops(Player* bot, Planner::UpkeepIndex const& index, uint32 key, uint32 service, float reachYards,
-                     std::vector<WorldTravel::ServiceStop>& stops)
+// the bot, the nearest TRAINER_STOPS within reach
+std::vector<TravelMgr::TrainerInfo const*> TrainerSpawns(Player* bot, Planner::UpkeepIndex const& index, uint32 key,
+                                                         float reachYards)
 {
     constexpr std::size_t TRAINER_STOPS = 3;
+    std::vector<TravelMgr::TrainerInfo const*> result;
     auto const trainer = std::find_if(index.trainers.begin(), index.trainers.end(),
                                       [key](Planner::UpkeepTrainer const& known) { return known.key == key; });
     if (!key || trainer == index.trainers.end())
-        return;
+        return result;
 
     std::vector<std::pair<float, TravelMgr::TrainerInfo const*>> spawns;
     for (TravelMgr::TrainerInfo const& spawn : TravelMgr::instance().GetTrainers(bot->GetMapId()))
@@ -280,7 +373,16 @@ void AddTrainerStops(Player* bot, Planner::UpkeepIndex const& index, uint32 key,
     if (spawns.size() > TRAINER_STOPS)
         spawns.resize(TRAINER_STOPS);
     for (std::pair<float, TravelMgr::TrainerInfo const*> const& at : spawns)
-        stops.push_back({at.second->entry, ErrandPlaceOf(at.second->loc), service});
+        result.push_back(at.second);
+    return result;
+}
+
+// The trainer spawns as the trip's stops with that service
+void AddTrainerStops(std::vector<TravelMgr::TrainerInfo const*> const& spawns, uint32 service,
+                     std::vector<WorldTravel::ServiceStop>& stops)
+{
+    for (TravelMgr::TrainerInfo const* spawn : spawns)
+        stops.push_back({spawn->entry, ErrandPlaceOf(spawn->loc), service});
 }
 
 // The bot's completed quests with the nearest ender on its map (the planner's quest index; none before it is built)
@@ -1036,7 +1138,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                             {"funded", static_cast<float>(need.funded)}},
                            need.item);
     }
-    bool const needDue = repairing || dueInReach || (training && training->due) || riding;
+    // Due training makes a trip only when the gold pays a spell (UpkeepNeeds::TrainingErrandDue, as AnyErrandDue)
+    bool const trainingDue = training && UpkeepNeeds::TrainingErrandDue(*training);
+    bool const needDue = repairing || dueInReach || trainingDue || riding;
 
     if (!nearest)
     {
@@ -1091,7 +1195,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     snapshot.DueStock = dueKinds;
     snapshot.OtherStock = unmetKinds;
     if (training)
-        snapshot.Training = {training->units, training->levelsBehind, training->due, training->item};
+        snapshot.Training = {training->units, training->levelsBehind, trainingDue, training->item};
     if (riding)
         snapshot.Riding = {riding->item, riding->vendor};
     // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
@@ -1119,9 +1223,18 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             {entry, ErrandPlaceOf(vendor.second->loc), WorldTravel::VendorServices(snapshot, entry, repairs, covers)});
     }
     if (index && training)
-        AddTrainerStops(bot, *index, training->trainer, WorldTravel::SERVICE_TRAINER, reachYards, snapshot.Stops);
+    {
+        // A vendor stop with a class trainer within STOP_JOIN_YARDS takes training too, and the trainer part of the
+        // stop goes to that trainer; the trainer's own spawns are stops as well
+        std::vector<WorldTravel::ServiceStop> trainerStops;
+        AddTrainerStops(TrainerSpawns(bot, *index, training->trainer, reachYards), WorldTravel::SERVICE_TRAINER,
+                        trainerStops);
+        WorldTravel::JoinTrainers(snapshot.Stops, trainerStops, WorldTravel::SERVICE_TRAINER);
+        snapshot.Stops.insert(snapshot.Stops.end(), trainerStops.begin(), trainerStops.end());
+    }
     if (index && riding)
-        AddTrainerStops(bot, *index, riding->trainer, WorldTravel::SERVICE_RIDING_TRAINER, reachYards, snapshot.Stops);
+        AddTrainerStops(TrainerSpawns(bot, *index, riding->trainer, reachYards), WorldTravel::SERVICE_RIDING_TRAINER,
+                        snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
 
     // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay
@@ -1151,9 +1264,16 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             stop.vendorEntry = tripStop.Id;
             anyVendor = true;
         }
-        if (tripStop.Services & (WorldTravel::SERVICE_TRAINER | WorldTravel::SERVICE_RIDING_TRAINER))
+        // The class trainer is visited at the one stop that took the training errand (the first trainer stop of the
+        // trip); a riding trainer at each of its stops
+        bool const trains =
+            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
+                        { return errand.Kind == WorldTravel::ErrandKind::Train; });
+        bool const classTrainer = (tripStop.Services & WorldTravel::SERVICE_TRAINER) && trains;
+        if (classTrainer || (tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
         {
-            stop.trainerEntry = tripStop.Id;
+            stop.trainerEntry = tripStop.Trainer ? tripStop.Trainer : tripStop.Id;
+            stop.trainerRiding = !classTrainer;
             anyTrainer = true;
         }
         for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
@@ -1349,14 +1469,31 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         return true;
     }
 
-    // The trainer part of the stop: the trip walks there; learning at the trainer is not built yet
+    // The trainer part of the stop. A riding trainer is a walk-only visit until WU14 buys the rank; a class trainer
+    // stands at the stop or up to STOP_JOIN_YARDS from it (a vendor stop that passes it): the bot walks into reach and
+    // learns. Either way the trip reached its trainer: not an errand_abort
     if (stop.trainerEntry)
     {
-        Creature const* trainer = bot->FindNearestCreature(stop.trainerEntry, VENDOR_SEARCH_YARDS);
-        LOG_DEBUG("playerbots", "[New RPG] {} trainer visit: WU13 (trainer {} {})", bot->GetName(), stop.trainerEntry,
-                  trainer ? "found" : "not found");
+        uint32 const entry = stop.trainerEntry;
+        if (stop.trainerRiding)
+        {
+            LOG_DEBUG("playerbots", "[New RPG] {} riding trainer visit: WU14 (trainer {})", bot->GetName(), entry);
+        }
+        else
+        {
+            Creature* trainer = bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
+            // A walk that is still going on keeps the stop (MoveWorldObjectTo is false while it waits); only a path
+            // that fails gives the trainer up
+            if (trainer && !IsWithinInteractionDist(trainer) &&
+                (MoveWorldObjectTo(trainer->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
+                return true;
+            if (trainer && IsWithinInteractionDist(trainer))
+                TrainAtTrainer(botAI, trainer);
+            else
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_trainer", 0.0f, {}, entry);
+        }
         stop.trainerEntry = 0;
-        data->visited = true;  // the trip reached its trainer: not an errand_abort
+        data->visited = true;
         return true;
     }
 
