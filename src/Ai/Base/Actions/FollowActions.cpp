@@ -128,16 +128,8 @@ bool FollowAction::Execute(Event /*event*/)
 
         if (transport && map && bot->GetTransport() != transport)
         {
-            float const botProbeZ = std::max(bot->GetPositionZ(), transport->GetPositionZ());
-            Transport* botSurfaceTransport = GetTransportForPosTolerant(map, bot, bot->GetPhaseMask(),
-                bot->GetPositionX(), bot->GetPositionY(), botProbeZ);
-
-            if (botSurfaceTransport == transport)
-            {
-                transport->AddPassenger(bot, true);
-                bot->StopMovingOnCurrentPos();
+            if (botAI->ReconcileFollowPassenger(*transport))
                 return true;
-            }
 
             float const boardingAssistDistance = 60.0f;
             float const dist2d = ServerFacade::instance().GetDistance2d(bot, master);

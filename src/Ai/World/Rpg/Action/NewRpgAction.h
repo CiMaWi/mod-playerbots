@@ -142,15 +142,17 @@ class NewRpgTravelAction : public NewRpgBaseAction
 public:
     NewRpgTravelAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg travel") {}
     bool Execute(Event event) override;
+    static bool ConsumeScheduledWork(PlayerbotAI* botAI);
 
 private:
+    bool StepTravel(NewRpgInfo::Travel* data, TravelProgress::Overdue overdue);
     bool RequestRoute(NewRpgInfo::Travel& data);
     bool TakeRoute(NewRpgInfo::Travel& data);
     bool UsePortal(NewRpgInfo::Travel& data);
     bool TalkFlightMaster(NewRpgInfo::Travel& data);
     bool UseHearth(NewRpgInfo::Travel& data);
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
-    bool Arrive(NewRpgInfo::Travel& data);
+    bool Arrive(NewRpgInfo::Travel& data, bool stuck = false);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
     void EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source);

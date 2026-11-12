@@ -12,6 +12,8 @@
 #include "BattlegroundWS.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "GridTerrainData.h"
+#include "LootInteraction.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
@@ -67,7 +69,7 @@ MountData CollectMountData(Player const* bot)
     return data;
 }
 
-bool CheckMountStateAction::Execute(Event /*event*/)
+bool CheckMountStateAction::Execute(Event event)
 {
     // Forced flight dismount:
     // Bots get stale flight movement flags after a forced dismount (e.g: Dalaran) because the post landing dismount cleanup
@@ -82,7 +84,28 @@ bool CheckMountStateAction::Execute(Event /*event*/)
             bot->GetPositionZ() - floorZ <= PARACHUTE_LAND_THRESHOLD)
             bot->RemoveAurasByType(SPELL_AURA_FEATHER_FALL);
     }
-    ClearStaleFlightFlags();
+    if (!botAI->HasPendingDismount())
+        ClearStaleFlightFlags();
+
+    auto const tryMount = [&]
+    {
+        auto path = PlayerbotAI::MountPath::None;
+        if (event.getPacket().GetOpcode() == SMSG_FORCE_RUN_SPEED_CHANGE)
+            path = PlayerbotAI::MountPath::Packet;
+        else if (event.GetSource() == "timer")
+            path = PlayerbotAI::MountPath::Timer;
+        if (!LootInteraction::MountAllowed(botAI->HasLootInteraction(), bool(bot->GetLootGUID())))
+        {
+            botAI->TraceTravelMount(path, false);
+            return false;
+        }
+
+        bool const wasMounted = bot->IsMounted();
+        bool const mounted = Mount();
+        if (mounted && !wasMounted)
+            botAI->TraceTravelMount(path, true);
+        return mounted;
+    };
 
     // Determine if there are no attackers
     bool noAttackers = !AI_VALUE2(bool, "combat", "self target") || !AI_VALUE(uint8, "attacker count");
@@ -127,7 +150,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
     if (!noRealMaster && !inBattleground)
     {
         if (ShouldFollowMasterMountState(master, noAttackers, shouldMount))
-            return Mount();
+            return tryMount();
 
         else if (ShouldDismountForMaster(master) && bot->IsMounted())
         {
@@ -141,7 +164,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
     // No real master (random bot or SelfBot) OR bot in BG
     if ((noRealMaster || inBattleground) && !bot->IsMounted() &&
         noAttackers && shouldMount && !bot->IsInCombat())
-        return Mount();
+        return tryMount();
 
     if (!bot->IsFlying() && shouldDismount && bot->IsMounted() &&
         (enemy || dps || (!noAttackers && bot->IsInCombat())))
@@ -261,8 +284,6 @@ void CheckMountStateAction::Dismount()
 
     WorldPacket emptyPacket;
     bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
-
-    ClearStaleFlightFlags();
 }
 
 void CheckMountStateAction::ClearStaleFlightFlags()
@@ -280,15 +301,18 @@ void CheckMountStateAction::ClearStaleFlightFlags()
 
 void CheckMountStateAction::CompleteDismount(Player* bot)
 {
-    if (!bot || !bot->IsInWorld())
+    if (!bot->IsAlive() || bot->IsMounted() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport() ||
+        bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) || bot->HasIncreaseMountedFlightSpeedAura() ||
+        bot->HasFlyAura() || !bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_DISABLE_GRAVITY))
         return;
 
     float const x = bot->GetPositionX();
     float const y = bot->GetPositionY();
     float const startZ = bot->GetPositionZ();
 
-    float groundZ = startZ;
-    bot->UpdateAllowedPositionZ(x, y, groundZ);
+    float const groundZ = bot->GetMapHeight(x, y, startZ, true, MAX_FALL_DISTANCE);
+    if (groundZ <= INVALID_HEIGHT || startZ - groundZ <= 0.1f)
+        return;
 
     bot->GetMotionMaster()->MoveFall();
     MovementInfo fallInfo = bot->m_movementInfo;

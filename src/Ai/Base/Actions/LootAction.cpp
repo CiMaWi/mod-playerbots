@@ -73,7 +73,7 @@ bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* 
 
 bool LootAction::Execute(Event /*event*/)
 {
-    if (AI_VALUE(LootObjectStack*, "available loot")->IsLootPending() || bot->GetLootGUID() ||
+    if (AI_VALUE(LootObjectStack*, "available loot")->HasInteraction() || bot->GetLootGUID() ||
         bot->IsNonMeleeSpellCast(false))
         return false;
 
@@ -81,20 +81,15 @@ bool LootAction::Execute(Event /*event*/)
     if (lootObject.IsEmpty() || !AI_VALUE(LootObjectStack*, "available loot")->CanAttemptLoot(lootObject.guid))
         return false;
 
-    LootObject prevLoot = AI_VALUE(LootObject, "loot target");
-    if (!prevLoot.IsEmpty() && prevLoot.guid != lootObject.guid)
-    {
-        WorldPacket* packet = new WorldPacket(CMSG_LOOT_RELEASE, 8);
-        *packet << prevLoot.guid;
-        bot->GetSession()->QueuePacket(packet);
-    }
-
     context->GetValue<LootObject>("loot target")->Set(lootObject);
     return true;
 }
 
 bool LootAction::isUseful()
 {
+    if (AI_VALUE(LootObjectStack*, "available loot")->HasInteraction())
+        return false;
+
     if (!sPlayerbotAIConfig.FreeMethodLoot && bot->GetGroup() && bot->GetGroup()->GetLootMethod() == FREE_FOR_ALL &&
         !IsSelfBot(bot))
         return false;
@@ -137,57 +132,76 @@ enum ProfessionSpells
     TAILORING = 3908
 };
 
-bool OpenLootAction::Execute(Event /*event*/)
+bool OpenLootAction::Execute(Event /*event*/) { return TryOpen(false) != LootInteraction::Attempt::Failed; }
+
+struct OpenLootAction::InteractionAdapter
+{
+    OpenLootAction& Action;
+    Player& Bot;
+    LootObjectStack& Stack;
+    LootObject Target;
+    bool Encounter;
+    uint32 AttemptMs = 0;
+
+    bool Admit()
+    {
+        if (Target.IsEmpty() || !Stack.CanAttemptLoot(Target.guid) || !Target.IsAtInteractDistance(&Bot))
+            return false;
+        GameObject* const object = Action.botAI->GetGameObject(Target.guid);
+        if (!Target.IsLootPossible(&Bot) || (object && object->GetGoState() != GO_STATE_READY))
+        {
+            if (Stack.InteractionGuid() == Target.guid)
+                Stack.Cancel("invalid");
+            return false;
+        }
+        AttemptMs = getMSTime();
+        return Stack.PrepareLoot(Target.guid, Encounter, AttemptMs);
+    }
+
+    bool PrepareMotion()
+    {
+        if (Bot.isMoving())
+        {
+            Bot.StopMoving();
+            Action.botAI->SetNextCheckDelay(sPlayerbotAIConfig.LootDelay);
+            Stack.Trace("prepare", "stop");
+            return true;
+        }
+
+        if (Bot.IsMounted())
+        {
+            Bot.RemoveAurasByType(SPELL_AURA_MOUNTED);
+            Action.botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
+            Stack.Trace("prepare", "ground_dismount");
+            return true;
+        }
+
+        return false;
+    }
+
+    bool Request() { return Action.RequestLoot(Target); }
+    void Begin() { Stack.BeginLoot(Target.guid, AttemptMs); }
+    void Defer() { Stack.Cancel("dry"); }
+};
+
+LootInteraction::Attempt OpenLootAction::TryOpen(bool encounter)
 {
     LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
-    if (availableLoot->IsLootPending() || bot->GetLootGUID() || bot->IsNonMeleeSpellCast(false))
-        return false;
+    if (encounter && bot->IsAlive() && botAI->CanMove() && availableLoot->ConsumeExpiry())
+        return LootInteraction::Attempt::Prepared;
 
-    LootObject lootObject = AI_VALUE(LootObject, "loot target");
-    if (!availableLoot->CanAttemptLoot(lootObject.guid))
-        return false;
+    if (availableLoot->IsLootPending() || bot->GetLootGUID() || bot->IsNonMeleeSpellCast(false) ||
+        (!encounter && bot->IsInCombat()) || !bot->IsAlive() || !botAI->CanMove() || bot->IsFlying() ||
+        bot->Unit::IsFalling() || bot->GetTransport() || bot->GetVehicle())
+        return LootInteraction::Attempt::Failed;
 
-    // DoLoot stops the bot first, which means "try again", not a failure; deferring after that
-    // stop would make the bot walk away and come back. Only a dry failure at rest defers.
-    bool const wasMoving = bot->isMoving();
-    bool const wasMounted = bot->IsMounted();
-
-    bool const result = DoLoot(lootObject);
-    if (result)
-        availableLoot->BeginLoot(lootObject.guid);
-    else if (!lootObject.IsEmpty() && !wasMoving && !wasMounted)
-    {
-        availableLoot->DeferLoot(lootObject.guid);
-        if (AI_VALUE(LootObject, "loot target").guid == lootObject.guid)
-            context->GetValue<LootObject>("loot target")->Set(LootObject());
-    }
-
-    return result;
+    InteractionAdapter adapter{*this, *bot, *availableLoot, AI_VALUE(LootObject, "loot target"), encounter};
+    return LootInteraction::Execute(adapter);
 }
 
-bool OpenLootAction::DoLoot(LootObject& lootObject)
+bool OpenLootAction::RequestLoot(LootObject& lootObject)
 {
-    if (lootObject.IsEmpty() || !lootObject.IsLootPossible(bot))
-        return false;
-
     Creature* creature = botAI->GetCreature(lootObject.guid);
-    if (creature && !bot->IsWithinDistInMap(creature, INTERACTION_DISTANCE))
-        return false;
-
-    if (bot->isMoving())
-    {
-        bot->StopMoving();
-        botAI->SetNextCheckDelay(sPlayerbotAIConfig.LootDelay);
-        return false;
-    }
-
-    if (bot->IsMounted())
-    {
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-        botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
-        return false;
-    }
-
     if (creature && creature->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE))
     {
         WorldPacket* packet = new WorldPacket(CMSG_LOOT, 8);
@@ -216,22 +230,6 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
                 return botAI->HasSkill(SKILL_SKINNING) ? botAI->CastSpell(SKINNING, creature) : false;
         }
     }
-
-    GameObject* go = botAI->GetGameObject(lootObject.guid);
-    if (go && !go->IsAtInteractDistance(bot))
-        return false;
-
-    if (go && (go->GetGoState() != GO_STATE_READY))
-        return false;
-
-    // This prevents dungeon chests like Tribunal Chest (Halls of Stone) from being ninja'd by the bots.
-    // Quest objects carry the same flag but are gated on quest state, which ActivateToQuest answers.
-    if (go && go->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_INTERACT_COND) && !go->ActivateToQuest(bot))
-        return false;
-
-    // This prevents raid chests like Gunship Armory (ICC) from being ninja'd by the bots
-    if (go && go->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE))
-        return false;
 
     if (lootObject.reqItem)
     {
@@ -441,17 +439,14 @@ bool StoreLootAction::Execute(Event event)
     ObjectGuid currentLoot = bot->GetLootGUID();
     if (loot_type == LOOT_NONE)
     {
-        availableLoot->RetryLoot(guid);
-        if (AI_VALUE(LootObject, "loot target").guid == guid)
-            context->GetValue<LootObject>("loot target")->Set(LootObject());
+        if (availableLoot->InteractionGuid() == guid && availableLoot->IsLootPending() &&
+            !availableLoot->InteractionExpired())
+            availableLoot->Cancel("response_error");
         return false;
     }
 
-    if (currentLoot && currentLoot != guid)
-    {
-        availableLoot->CancelLoot(guid);
+    if (currentLoot != guid)
         return false;
-    }
 
     if (p.size() < 14)
         return false;
@@ -461,10 +456,8 @@ bool StoreLootAction::Execute(Event event)
     if (p.size() - p.rpos() < size_t(items) * 22)
         return false;
 
-    availableLoot->LootOpened(guid);
-
-    if (!currentLoot)
-        bot->SetLootGUID(guid);
+    if (!availableLoot->LootOpened(guid) && !availableLoot->AcceptUnsolicitedLoot(guid))
+        return false;
 
     if (gold > 0)
     {
@@ -572,20 +565,10 @@ bool StoreLootAction::Execute(Event event)
         BroadcastHelper::BroadcastLootingItem(botAI, bot, proto);
     }
 
-    // Nothing storable: defer instead of reopening the window in a loop.
-    if (autostored == 0 && guid.IsGameObject())
-        availableLoot->DeferLoot(guid);
-    else
-        availableLoot->Remove(guid);
-
     if (AI_VALUE(LootObject, "loot target").guid == guid)
         context->GetValue<LootObject>("loot target")->Set(LootObject());
 
-    // release loot
-    WorldPacket* packet = new WorldPacket(CMSG_LOOT_RELEASE, 8);
-    *packet << guid;
-    bot->GetSession()->QueuePacket(packet);
-    // bot->GetSession()->HandleLootReleaseOpcode(packet);
+    availableLoot->CompleteResponse(guid, gold, autostored);
     return true;
 }
 

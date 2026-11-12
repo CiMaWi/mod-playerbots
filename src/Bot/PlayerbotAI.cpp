@@ -5,6 +5,17 @@
  */
 
 #include "PlayerbotAI.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <string>
+
 #include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "ArenaCcSpells.h"
@@ -36,6 +47,7 @@
 #include "FightBookRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
+#include "GameObjectModel.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -43,11 +55,15 @@
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
+#include "Log.h"
 #include "LogLevelAction.h"
 #include "LootObjectStack.h"
+#include "Map.h"
 #include "MapMgr.h"
 #include "MatchTrace.h"
+#include "ModelIgnoreFlags.h"
 #include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "NaturalCast.h"
 #include "NaturalMove.h"
@@ -67,6 +83,7 @@
 #include "PlayerbotTextMgr.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
+#include "PointMovementGenerator.h"
 #include "PositionValue.h"
 #include "QuestStatEvents.h"
 #include "RBAC.h"
@@ -83,21 +100,14 @@
 #include "SpellInfo.h"
 #include "ThreadCheck.h"
 #include "Transport.h"
+#include "TravelTransportGeometry.h"
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
+#include "WorldLog.h"
 #include "WorldLogBotState.h"
 #include "WorldLogStatus.h"
 #include "WsgRouteState.h"
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cmath>
-#include <limits>
-#include <map>
-#include <mutex>
-#include <sstream>
-#include <string>
 
 namespace
 {
@@ -797,7 +807,369 @@ void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
                   FocusSourceName(source), pick ? pick->GetGUID().GetCounter() : 0, own.GetCounter(), moon.GetCounter(),
                   nowMs);
 }
+
+struct TravelTraceIdentity
+{
+    uint32 Trip;
+    uint32 Leg;
+    uint32 Generation;
+};
+
+std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel)
+{
+    if (!travel || travel->place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return std::nullopt;
+    return TravelTraceIdentity{travel->tripId, travel->trip.legIdx, travel->trip.legStartMs};
+}
+
+void LogTravelGate(Player const& player, TravelTraceIdentity const& trace, uint32 nowMs, char const* gate)
+{
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] gate bot={} trip={} leg={} generation={} tick_ms={} outcome={} combat={} control={} "
+              "taxi={}",
+              player.GetGUID().GetCounter(), trace.Trip, trace.Leg, trace.Generation, nowMs, gate, player.IsInCombat(),
+              !player.HasUnitState(UNIT_STATE_LOST_CONTROL), player.IsInFlight());
+}
+
+char const* ContactName(TravelLifecycle::Contact contact)
+{
+    using TravelLifecycle::Contact;
+    switch (contact)
+    {
+        case Contact::Unavailable:
+            return "unavailable";
+        case Contact::OffSurface:
+            return "off_surface";
+        case Contact::AboveDeck:
+            return "above_deck";
+        case Contact::Feet:
+            return "feet";
+    }
+    return "unavailable";
+}
+
+char const* MotionStateName(TravelLifecycle::MotionState state)
+{
+    using TravelLifecycle::MotionState;
+    switch (state)
+    {
+        case MotionState::None:
+            return "none";
+        case MotionState::Moving:
+            return "moving";
+        case MotionState::Reached:
+            return "reached";
+        case MotionState::Cancelled:
+            return "cancelled";
+    }
+    return "none";
+}
+
+char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
+{
+    using TravelLifecycle::Outcome;
+    switch (outcome)
+    {
+        case Outcome::Pending:
+            return "pending";
+        case Outcome::Boarded:
+            return "boarded";
+        case Outcome::Exited:
+            return "exited";
+        case Outcome::Cancelled:
+            return "cancelled";
+        case Outcome::Lost:
+            return "lost";
+    }
+    return "pending";
+}
+
+class PassengerAdapter
+{
+public:
+    PassengerAdapter(Player& player, std::optional<TravelTraceIdentity> trace) : _player(player), _trace(trace) {}
+
+    TravelLifecycle::Membership ReadMembership() const { return TravelTransportGeometry::ReadMembership(_player); }
+
+    TravelLifecycle::SplineObservation ReadSpline() const
+    {
+        return TravelTransportGeometry::SplineControl{_player}.ReadSpline();
+    }
+
+    TravelLifecycle::Surface Probe(uint64 expected, bool riding)
+    {
+        using TravelLifecycle::Contact;
+        Transport* surface = expected ? Resolve(expected) : LegacyBotProbe();
+        if (!surface)
+            return {expected, 0, expected ? Contact::Unavailable : Contact::OffSurface};
+
+        uint64 const guid = surface->GetGUID().GetRawValue();
+        uint32 const entry = surface->GetEntry();
+        if (!surface->m_model || !surface->isSpawned() || !_player.InSamePhase(surface))
+            return {guid, entry, Contact::Unavailable};
+        if (!riding && _player.IsFlying())
+            return {guid, entry, Contact::OffSurface};
+
+        constexpr float RAY_RISE_YARDS = 0.5f;
+        constexpr float FEET_DROP_YARDS = 0.8f;
+        constexpr float AIRBORNE_DROP_YARDS = 8.0f;
+        G3D::Vector3 const origin(_player.GetPositionX(), _player.GetPositionY(),
+                                  _player.GetPositionZ() + RAY_RISE_YARDS);
+        G3D::Ray const ray(origin, G3D::Vector3(0.0f, 0.0f, -1.0f));
+        bool const airborne = riding && (_player.Unit::IsFalling() || !_player.movespline->Finalized());
+        float distance = RAY_RISE_YARDS + (airborne ? AIRBORNE_DROP_YARDS : FEET_DROP_YARDS);
+        if (!surface->m_model->intersectRay(ray, distance, false, _player.GetPhaseMask(),
+                                            VMAP::ModelIgnoreFlags::Nothing))
+            return {guid, entry, Contact::OffSurface};
+        return {guid, entry, distance <= RAY_RISE_YARDS + FEET_DROP_YARDS ? Contact::Feet : Contact::AboveDeck};
+    }
+
+    TravelLifecycle::DockState ObserveDock(TravelLifecycle::PassengerMotion const& motion) const
+    {
+        using TravelLifecycle::DockState;
+        Transport const* const transport = Resolve(motion.Transport);
+        if (!transport || !TravelTransportGeometry::Available(_player, *transport))
+            return DockState::Unavailable;
+        return TravelLifecycle::SameDock(motion.Dock, TravelTransportGeometry::PoseOf(*transport))
+                   ? DockState::Still
+                   : DockState::Departed;
+    }
+
+    bool ConfirmExit(TravelLifecycle::PassengerMotion const& motion) const
+    {
+        Transport const* const transport = _player.GetTransport();
+        return transport && TravelTransportGeometry::ConfirmExit(_player, *transport, motion);
+    }
+
+    void SettleOldFrame() { _player.StopMoving(); }
+
+    void Attach(uint64 guid)
+    {
+        if (Transport* transport = Resolve(guid))
+            transport->AddPassenger(&_player, true);
+    }
+
+    void Detach(uint64 guid)
+    {
+        Transport* transport = _player.GetTransport();
+        if (transport && transport->GetGUID().GetRawValue() == guid)
+            transport->RemovePassenger(&_player, true);
+    }
+
+    void PublishFrame()
+    {
+        if (!_player.IsRooted())
+            _player.SendMovementFlagUpdate();
+    }
+
+    template <class Reconcile>
+    void Observe(uint32 nowMs, uint32 gapMs, TravelLifecycle::PassengerMotion const* motion, Reconcile reconcile)
+    {
+        auto const observe = [&]
+        {
+            PerfMonitorScope scope(
+                PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Maintenance") : nullptr);
+            return reconcile();
+        };
+        if (!_trace)
+        {
+            observe();
+            return;
+        }
+
+        Transport const* legacyNull = nullptr;
+        Transport const* legacyBot = nullptr;
+        if (ReadMembership().Available)
+        {
+            legacyNull = LegacyProbe(nullptr);
+            legacyBot = LegacyBotProbe();
+        }
+
+        auto const spline = ReadSpline();
+        Transport const* transport = _player.GetTransport();
+        if (!transport && motion && ReadMembership().Available)
+            transport = Resolve(motion->Transport);
+        uint32 const period = transport ? TravelTransportGeometry::Period(*transport) : 0;
+        Position const local = _player.m_movementInfo.transport.pos;
+        TravelLifecycle::Sample const sample = observe();
+        TravelLifecycle::Point const endpoint = motion ? motion->Endpoint : TravelLifecycle::Point{};
+        LOG_DEBUG("playerbots",
+                  "[TravelLifecycle] sample bot={} trip={} leg={} generation={} tick_ms={} probe_gap_ms={} map={} "
+                  "world={:.3f},{:.3f},{:.3f} local={:.3f},{:.3f},{:.3f} expected={} entry={} legacy_null={} "
+                  "legacy_bot={} surface={} contact={} motion={} spline={} frame={} endpoint={:.3f},{:.3f},{:.3f} "
+                  "spline_now={} spline_finalized={} motion_result={} before={} after={} result={} available={} "
+                  "period_ms={} dock={}",
+                  _player.GetGUID().GetCounter(), _trace->Trip, _trace->Leg, _trace->Generation, nowMs, gapMs,
+                  spline.Map, spline.Position.X, spline.Position.Y, spline.Position.Z, local.GetPositionX(),
+                  local.GetPositionY(), local.GetPositionZ(), motion ? motion->Transport : 0,
+                  motion ? motion->Entry : sample.Observed.Entry, legacyNull ? legacyNull->GetGUID().GetRawValue() : 0,
+                  legacyBot ? legacyBot->GetGUID().GetRawValue() : 0, sample.Observed.Guid,
+                  ContactName(sample.Observed.Where),
+                  motion ? (motion->Kind == TravelLifecycle::MotionKind::Board ? "board" : "exit") : "none",
+                  motion ? motion->Spline : 0, spline.Local ? "local" : "world", endpoint.X, endpoint.Y, endpoint.Z,
+                  spline.Id, spline.Finalized, MotionStateName(sample.Motion), sample.Before.Guid, sample.After.Guid,
+                  motion ? PassengerOutcomeName(motion->Result) : "none", sample.After.Available, period,
+                  sample.Dock == TravelLifecycle::DockState::Still      ? "still"
+                  : sample.Dock == TravelLifecycle::DockState::Departed ? "departed"
+                                                                        : "unavailable");
+    }
+
+private:
+    Transport* Resolve(uint64 guid) const
+    {
+        Transport* transport = _player.GetTransport();
+        if (!transport || transport->GetGUID().GetRawValue() != guid)
+            transport = _player.GetMap()->GetTransport(ObjectGuid(guid));
+        return transport && transport->IsInWorld() && transport->FindMap() == _player.FindMap() ? transport : nullptr;
+    }
+
+    Transport* LegacyProbe(Player* reference) const
+    {
+        return _player.GetMap()->GetTransportForPos(_player.GetPhaseMask(), _player.GetPositionX(),
+                                                    _player.GetPositionY(), _player.GetPositionZ(), reference);
+    }
+
+    Transport* LegacyBotProbe()
+    {
+        if (!_legacyBot)
+            _legacyBot = LegacyProbe(&_player);
+        return *_legacyBot;
+    }
+
+    Player& _player;
+    std::optional<TravelTraceIdentity> _trace;
+    std::optional<Transport*> _legacyBot;
+};
 }  // namespace
+
+bool PlayerbotAI::ReconcileFollowPassenger(Transport const& expected)
+{
+    if (expected.IsStaticTransport())
+        return false;
+
+    PassengerAdapter adapter(*bot, std::nullopt);
+    TravelLifecycle::Sample const sample = TravelLifecycle::Reconcile(
+        adapter, nullptr, TravelLifecycle::MotionState::None, expected.GetGUID().GetRawValue());
+    return !sample.Before.Guid && sample.After.Available && sample.After.Guid == expected.GetGUID().GetRawValue();
+}
+
+bool PlayerbotAI::LootInteractionExpired() const
+{
+    return activeLootInteraction && activeLootInteraction->InteractionExpired();
+}
+
+bool PlayerbotAI::ConsumeLootExpiry()
+{
+    return activeLootInteraction && bot->IsAlive() && !bot->IsInCombat() && CanMove() &&
+           activeLootInteraction->ConsumeExpiry();
+}
+
+void PlayerbotAI::CancelLootInteraction(std::string_view reason)
+{
+    if (activeLootInteraction)
+        activeLootInteraction->Cancel(reason);
+}
+
+void PlayerbotAI::TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot,
+                                         uint32 interaction, std::string_view path, float yards,
+                                         std::optional<std::pair<uint32, uint32>> leg)
+{
+    if (!NaturalTrace::IsSelected(bot) || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+
+    auto const* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
+    uint32 const trip = travel ? travel->tripId : 0;
+    auto const [index, generation] = leg.value_or(
+        travel && travel->CurrentLeg() ? std::pair{travel->trip.legIdx, travel->trip.legStartMs} : std::pair{0u, 0u});
+    LOG_DEBUG("playerbots",
+              "[TravelInteraction] bot={} tick_ms={} at_ms={} trip={} leg={} event={} loot={} interaction={} path={} "
+              "detail={} mounted={} obligation={} generation={} request={} yards={:.2f}",
+              bot->GetGUID().GetCounter(), getMSTime(), WorldLog::NowMs(), trip, index, event, loot.GetRawValue(),
+              interaction, path, detail, uint32(bot->IsMounted()), trip, generation,
+              travel ? travel->route.requestId : 0, yards);
+}
+
+static std::string_view MountPathWord(PlayerbotAI::MountPath path)
+{
+    return path == PlayerbotAI::MountPath::Packet ? "packet" : "timer";
+}
+
+void PlayerbotAI::TraceTravelMount(MountPath path, bool accepted)
+{
+    if (path == MountPath::None || !NaturalTrace::IsSelected(bot))
+        return;
+
+    ObjectGuid const loot = activeLootInteraction ? activeLootInteraction->InteractionGuid() : bot->GetLootGUID();
+    uint32 const generation = activeLootInteraction ? activeLootInteraction->InteractionGeneration() : 0;
+    TraceTravelInteraction(accepted ? "mount_accept" : "mount_veto", accepted ? "issued" : "loot", loot, generation,
+                           MountPathWord(path));
+    if (accepted)
+    {
+        tracedMount = path;
+        tracedMountAt = getMSTime();
+    }
+}
+
+TravelProgress::Motion PlayerbotAI::ReadTravelWalk(bool checkPosition) const
+{
+    auto const& spline = *bot->movespline;
+    auto* const master = bot->GetMotionMaster();
+    auto const* point =
+        master && !master->empty() ? dynamic_cast<PointMovementGenerator<Player>*>(master->top()) : nullptr;
+    TravelProgress::Motion motion{spline.GetId(), !spline.Finalized(), 0.0f, false, 0};
+    if (!point || !spline.Initialized() || spline.onTransport || spline.isFalling() || spline.isCyclic() ||
+        bot->GetTransport() || bot->GetVehicle() || bot->IsInFlight())
+        return motion;
+    motion.Generator = reinterpret_cast<std::uintptr_t>(point);
+    motion.Destination.mapId = bot->GetMapId();
+    point->GetDestination(motion.Destination.x, motion.Destination.y, motion.Destination.z);
+    motion.PositionMatches = true;
+    if (checkPosition)
+    {
+        auto const position = spline.ComputePosition();
+        float const tolerance = TravelProgress::SPLINE_POSITION_TOLERANCE_YARDS;
+        motion.PositionMatches = bot->GetExactDistSq(position.x, position.y, position.z) <= tolerance * tolerance;
+    }
+    motion.Yards = spline.Velocity() * static_cast<float>(spline.timePassed()) / 1000.0f;
+    return motion;
+}
+
+void PlayerbotAI::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove)
+{
+    using TravelProgress::Owner;
+    auto& progress = travel.progress;
+    if (revalidate)
+        progress.Suspend();
+
+    auto const* leg = travel.CurrentLeg();
+    bool const combat = bot->IsInCombat();
+    bool const passenger =
+        travel.PassengerOwnsProgress() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
+    bool const external = passenger || bot->IsInFlight() || bot->GetVehicle() || travel.route.waiting;
+    Owner owner = Owner::Exempt;
+    if (combat)
+        owner = Owner::Combat;
+    else if (bot->IsAlive() && !external)
+    {
+        if (!canMove)
+            owner = Owner::Control;
+        else if (HasLootInteraction())
+            owner = Owner::Loot;
+        else
+            owner = !leg || leg->type == TravelRoute::LegType::Walk ? Owner::Walk : Owner::Leg;
+    }
+    auto const sample =
+        TravelProgress::Maintain(progress, {nowMs, owner, combat, CompletedLootInteractions()}, travel.trip,
+                                 travel.route, travel.routeSeconds, [&] { return ReadTravelWalk(true); });
+    if (sample.Selected)
+        TraceTravelInteraction("route_selected", travel.bindInn ? "inn" : "order");
+    if (sample.CombatChanged)
+        TraceTravelInteraction(combat ? "combat_begin" : "combat_end", "combat");
+    if (sample.LootCompleted)
+        TraceTravelInteraction("route_progress", "loot");
+    if (sample.Yards > 0.0f)
+        TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
+}
 
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
@@ -810,7 +1182,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // Early return if bot is in invalid state
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
+    {
+        passengerCadence.Revalidate = true;
+        pendingDismount.store(false, std::memory_order_relaxed);
+        tracedMount = MountPath::None;
         return;
+    }
 
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
@@ -845,8 +1222,44 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G2g: the jump test drives a frozen test bot (no engine runs); one bool test idle
     if (jumpTest)
     {
+        passengerCadence.Revalidate = true;
         StepJumpTest(getMSTime());
         return;
+    }
+
+    uint32 const maintenanceMs = getMSTime();
+    auto* const travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
+    auto const traceTravel = TravelTraceFor(travel);
+    bool const revalidateProgress = passengerCadence.Revalidate;
+    PassengerAdapter passenger(*bot, traceTravel);
+    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
+                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
+    if (HasPendingDismount())
+    {
+        if (!bot->IsAlive() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport())
+            pendingDismount.store(false, std::memory_order_relaxed);
+        else if (CanMove() && !bot->IsRooted() && pendingDismount.exchange(false, std::memory_order_relaxed))
+            CheckMountStateAction::CompleteDismount(bot);
+    }
+    if (activeLootInteraction || travel)
+    {
+        PerfMonitorScope scope(
+            travel && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Progress") : nullptr);
+        bool const canMove = CanMove();
+        if (activeLootInteraction)
+            activeLootInteraction->Observe(maintenanceMs, canMove);
+        if (travel)
+            ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
+    }
+    if (tracedMount != MountPath::None)
+    {
+        if (bot->IsMounted())
+        {
+            TraceTravelInteraction("mount_state", "mounted", ObjectGuid::Empty, 0, MountPathWord(tracedMount));
+            tracedMount = MountPath::None;
+        }
+        else if (maintenanceMs - tracedMountAt >= LootInteraction::PhaseMs)
+            tracedMount = MountPath::None;
     }
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
@@ -895,10 +1308,22 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     bool doMinimalReaction = minimal || !AllowActivity(REACT_ACTIVITY);
     if (UpdateAIReaction(elapsed, doMinimalReaction, !bot->IsInFlight()))
+    {
+        if (traceTravel)
+            LogTravelGate(*bot, *traceTravel, maintenanceMs,
+                          doMinimalReaction ? "reaction_minimal" : "reaction_active");
         return;
+    }
 
     if (!CanUpdateAI())
+    {
+        if (traceTravel)
+            LogTravelGate(*bot, *traceTravel, maintenanceMs, "action_delay");
         return;
+    }
+
+    if (traceTravel)
+        LogTravelGate(*bot, *traceTravel, maintenanceMs, "pre_action");
 
     RefreshNaturalTiming();
 
@@ -975,6 +1400,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     Spell* currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
     if (!currentSpell)
         currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+
+    if (LootInteractionExpired() && activeLootInteraction->OwnsCast(currentSpell))
+    {
+        bot->InterruptSpell(currentSpell->GetCurrentContainer());
+        currentSpell = nullptr;
+    }
 
     if (currentSpell)
     {
@@ -1101,32 +1532,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         }
 
         spellInterruptRequested = false;
-    }
-
-    // Handle transport check delay
-    if (nextTransportCheck > elapsed)
-        nextTransportCheck -= elapsed;
-    else
-        nextTransportCheck = 0;
-
-    if (!nextTransportCheck)
-    {
-        nextTransportCheck = 1000;
-        Transport* newTransport = bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(),
-                                                                    bot->GetPositionY(), bot->GetPositionZ(), bot);
-
-        if (newTransport != bot->GetTransport())
-        {
-            LOG_DEBUG("playerbots", "Bot {} is on a transport", bot->GetName());
-
-            if (bot->GetTransport())
-                bot->GetTransport()->RemovePassenger(bot, true);
-
-            if (newTransport)
-                newTransport->AddPassenger(bot, true);
-
-            bot->StopMovingOnCurrentPos();
-        }
     }
 
     // Update the bot's group status (moved to helper function)
@@ -1631,16 +2036,7 @@ void PlayerbotAI::HandleTeleportAck()
             EvaluateHealerDpsStrategy();
 
         // reset AI state after teleport; a trip in progress goes on (a portal or a cross-map flight leg ends here)
-        NewRpgStatus const statusBefore = rpgInfo.GetStatus();
-        NewRpgInfo const kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
-        rpgInfo.bot = nullptr;  // the reset notes no status change; the teleport does, once
-        Reset(true);
-        rpgInfo = kept;
-        rpgInfo.bot = bot;
-        {
-            WorldLog::StatusReason const reasonScope("teleport");
-            WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
-        }
+        Reset(true, true);
 
         // clear movement only AFTER teleport is finalized and bot is in world. Skip during a taxi map-transfer
         if (bot->IsInWorld() && bot->GetMotionMaster() && !bot->IsInFlight())
@@ -1687,10 +2083,17 @@ void PlayerbotAI::HandleTeleportAck()
     }
 }
 
-void PlayerbotAI::Reset(bool full)
+void PlayerbotAI::Reset(bool full, bool farTeleport)
 {
+    CancelLootInteraction("reset");
+    pendingDismount.store(false, std::memory_order_relaxed);
+    tracedMount = MountPath::None;
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
+    {
+        if (farTeleport)
+            rpgInfo.ResetState(true);
         return;
+    }
 
     WorldSession* botWorldSessionPtr = bot->GetSession();
     bool logout = botWorldSessionPtr->ShouldLogOut(time(nullptr));
@@ -1734,12 +2137,10 @@ void PlayerbotAI::Reset(bool full)
             ->setTarget(TravelMgr::instance().nullTravelDestination, TravelMgr::instance().nullWorldPosition, true);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setStatus(TRAVEL_STATUS_EXPIRED);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
-        Player* const rpgBot = rpgInfo.bot;  // null inside a far teleport's reset
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
-        rpgInfo = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, false);  // keeps the route request ids
-        rpgInfo.bot = rpgBot;
-        WorldLog::StatusReason const reasonScope("reset");
-        WorldLog::NoteStatus(rpgBot, statusBefore, rpgInfo.GetStatus());
+        rpgInfo.ResetState(farTeleport);
+        WorldLog::StatusReason const reasonScope(farTeleport ? "teleport" : "reset");
+        WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
     }
 
     aiObjectContext->GetValue<GuidSet&>("ignore rpg target")->Get().clear();
@@ -2241,7 +2642,7 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             p >> guid.ReadAsPacked();
             if (guid != bot->GetGUID())
                 return;
-            CheckMountStateAction::CompleteDismount(bot);
+            pendingDismount.store(true, std::memory_order_relaxed);
             return;
         }
         default:
@@ -2437,6 +2838,12 @@ void PlayerbotAI::DoNextAction(bool min)
     }
 
     bool minimal = !this->AllowActivity();
+    if (LootInteractionExpired() && !minimal && !min && currentState == BOT_STATE_NON_COMBAT &&
+        !HasStrategy("new rpg", BOT_STATE_NON_COMBAT) && ConsumeLootExpiry())
+        return;
+
+    if (auto const trace = TravelTraceFor(std::get_if<NewRpgInfo::Travel>(&rpgInfo.data)))
+        LogTravelGate(*bot, *trace, getMSTime(), minimal || min ? "action_minimal" : "action_full");
 
     currentEngine->DoNextAction(nullptr, 0, (minimal || min));
 

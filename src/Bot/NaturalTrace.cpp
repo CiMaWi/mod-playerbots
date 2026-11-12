@@ -1067,6 +1067,8 @@ void PushEvent(uint64 guid, Row const& row)
 uint64 UnitCounter(Unit const* unit) { return unit ? unit->GetGUID().GetCounter() : 0; }
 }  // namespace
 
+bool NaturalTrace::IsSelected(Player const* player) { return Any() && TracedGuid(player) != 0; }
+
 void NaturalTrace::Sample(Player* player)
 {
     uint64 const guid = player->GetGUID().GetCounter();
