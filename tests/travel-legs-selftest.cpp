@@ -14,6 +14,8 @@
 // walk, the first hop, the goal hop; a second stuck walk at one waypoint ends the trip) and the late answers asked
 // again. Deaths on a leg (the second fails it, the third ends the trip) and a leg's mount and combat record. Fly legs
 // (own flying mount): their waypoints, takeoff, height check, landing, failures and the replan without flying.
+// Transport legs (WT19): a ship across maps and an elevator through their states, misses, the last-resort hop and its
+// conditions, the timeouts, wrong maps and the Transport event words.
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -114,6 +116,12 @@ char const* ActWord(Act act)
             return "mount";
         case Act::Fly:
             return "fly";
+        case Act::Board:
+            return "board";
+        case Act::Hop:
+            return "hop";
+        case Act::Disembark:
+            return "disembark";
         case Act::Wait:
             return "wait";
         case Act::Done:
@@ -430,8 +438,6 @@ void CheckPredicates()
         {MakeLeg(LegType::Hearth, NODES[0], bind, {}, 10.0f), MakeLeg(LegType::Walk, bind, GOAL, {}, 50.0f)});
     Check(TravelLegs::Advance(hearthThenWalk, At(bind, 12000), NodeAt).act == Act::Walk && hearthThenWalk.legIdx == 1,
           "hearth: the walk after it starts on the bind's map");
-    Trip ship = StartedTrip({MakeLeg(LegType::Transport, NODES[0], NODES[1], {0, 1}, 120.0f)});
-    Check(TravelLegs::StepLeg(ship, At(NODES[0], 2000)).reason == FailReason::Unsupported, "transport: unsupported");
 
     // A route of no-op walks only has arrived
     Trip none = StartedTrip({MakeLeg(LegType::Walk, GOAL, GOAL, {}, 0.0f)});
@@ -940,6 +946,299 @@ void CheckBodyZ()
     Check(TravelLegs::BodyZ(150.0f, 40.0f, 10.0f) == 40.0f, "body: ground above the water's level is the floor");
     Check(TravelLegs::BodyZ(150.0f, none, 0.0f) == 0.0f, "body: water with no ground found is the floor");
 }
+
+// Transport legs (WT19): a ship from pier A (map 0) to pier B (map 1) and an elevator from its top to its bottom
+std::uint32_t const SHIP = 164871;
+std::uint32_t const LIFT = 4170;
+Point const PIER_A = NODES[1];
+Point const PIER_B = NODES[3];
+Point const SHIP_AT_A{0, 130.0f, 0.0f, 0.0f};      // stopped 30 yd off pier A
+Point const SHIP_AT_B{1, 1000.0f, 1040.0f, 0.0f};  // 40 yd off pier B
+Point const DECK{0, 112.0f, 0.0f, 2.0f};           // 12 yd from pier A, 18 yd from the ship's centre
+Point const SEA_0{0, 2000.0f, 0.0f, 0.0f};
+Point const SEA_1{1, 3000.0f, 1000.0f, 0.0f};
+Point const LIFT_TOP{0, 500.0f, 500.0f, 50.0f};
+Point const LIFT_BOTTOM{0, 500.0f, 500.0f, 10.0f};
+
+Leg ShipLeg()
+{
+    Leg leg = MakeLeg(LegType::Transport, PIER_A, PIER_B, {1, 3}, 240.0f);
+    leg.object = SHIP;
+    return leg;
+}
+
+Leg LiftLeg()
+{
+    Leg leg = MakeLeg(LegType::Transport, LIFT_TOP, LIFT_BOTTOM, {}, 8.6f);
+    leg.object = LIFT;
+    return leg;
+}
+
+// A scan that found the transport at `at`
+TravelLegs::TransportSight Sight(Point at, bool moving, bool isStatic = false, bool unseen = false,
+                                 std::uint32_t periodMs = 0)
+{
+    TravelLegs::TransportSight sight;
+    sight.scanned = true;
+    sight.found = true;
+    sight.moving = moving;
+    sight.isStatic = isStatic;
+    sight.unseen = unseen;
+    sight.periodMs = periodMs;
+    sight.at = at;
+    return sight;
+}
+
+TravelLegs::TransportSight Gone()
+{
+    TravelLegs::TransportSight sight;
+    sight.scanned = true;
+    return sight;
+}
+
+Observation On(Point bot, std::uint32_t nowMs, std::uint32_t aboard, TravelLegs::TransportSight sight = {})
+{
+    Observation seen = At(bot, nowMs);
+    seen.aboard = aboard;
+    seen.transport = sight;
+    return seen;
+}
+
+bool Near(Point const& a, Point const& b) { return a.mapId == b.mapId && TravelRoute::Distance(a, b) < 0.01f; }
+
+bool Noted(Trip const& trip, std::size_t index, TravelLegs::TransportEvent event, std::uint32_t entry,
+           std::uint32_t amount)
+{
+    return index < trip.transportNotes.size() && trip.transportNotes[index].event == event &&
+           trip.transportNotes[index].entry == entry && trip.transportNotes[index].amount == amount;
+}
+
+void CheckTransport()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::StepLeg;
+    using TravelLegs::TransportEvent;
+
+    // A ship across maps: approach, wait, board, ride, walk off, done; the next leg starts
+    Trip trip = StartedTrip({ShipLeg(), MakeLeg(LegType::Walk, PIER_B, NODES[4], {3, 4}, 15.0f)});
+    Decision const approach = StepLeg(trip, On({0, 70.0f, 0.0f, 0.0f}, 2000, 0));
+    Check(approach.act == Act::Walk && Near(approach.target, PIER_A) && trip.boarding == Boarding::Approach,
+          "transport: walks to the dock node first");
+    Check(StepLeg(trip, On(PIER_A, 3000, 0, Gone())).act == Act::Wait && trip.boarding == Boarding::Wait &&
+              Noted(trip, 0, TransportEvent::Attempt, SHIP, 2),
+          "transport: at the dock node: attempt (2 s walk), waits");
+    Check(StepLeg(trip, On(PIER_A, 4000, 0, Sight(SHIP_AT_A, true))).act == Act::Wait,
+          "transport: a ship under way beside the dock is not docked");
+    Check(StepLeg(trip, On(PIER_A, 4500, 0, Sight({0, 400.0f, 0.0f, 0.0f}, false))).act == Act::Wait,
+          "transport: a ship stopped 300 yd away is not docked here");
+    Decision const board = StepLeg(trip, On(PIER_A, 5000, 0, Sight(SHIP_AT_A, false)));
+    Check(board.act == Act::Board && Near(board.target, SHIP_AT_A) && trip.boarding == Boarding::Board,
+          "transport: boards the docked ship (target: its position)");
+    Check(StepLeg(trip, On(DECK, 6000, 0)).act == Act::Board, "transport: between scans the last scan holds");
+    Check(StepLeg(trip, On(DECK, 7000, SHIP, Sight(SHIP_AT_A, false))).act == Act::Wait &&
+              trip.boarding == Boarding::Ride && Noted(trip, 1, TransportEvent::Boarded, SHIP, 4),
+          "transport: aboard: rides (boarded after 4 s at the dock)");
+    Check(StepLeg(trip, On(SEA_0, 500000, SHIP, Sight(SEA_0, true))).act == Act::Wait,
+          "transport: aboard at sea: waits");
+    Check(StepLeg(trip, On(SEA_1, 600000, SHIP, Sight(SEA_1, true))).act == Act::Wait,
+          "transport: the ride goes on on the end's map");
+    Decision const off = StepLeg(trip, On({1, 1000.0f, 1030.0f, 3.0f}, 700000, SHIP, Sight(SHIP_AT_B, false)));
+    Check(off.act == Act::Disembark && Near(off.target, PIER_B) && trip.boarding == Boarding::Leave,
+          "transport: docked at the end: walks off");
+    Check(StepLeg(trip, On({1, 1000.0f, 1018.0f, 0.0f}, 700500, 0, Sight(SHIP_AT_B, false))).act == Act::Wait,
+          "transport: off the deck on one scan: no walk yet");
+    Decision const ashore = StepLeg(trip, On({1, 1000.0f, 1015.0f, 0.0f}, 701000, 0, Sight(SHIP_AT_B, false)));
+    Check(ashore.act == Act::Walk && Near(ashore.target, PIER_B),
+          "transport: off the deck on two scans short of the end: walks on");
+    Decision const next = TravelLegs::Advance(trip, On(PIER_B, 702000, 0), NodeAt);
+    Check(next.act == Act::Walk && trip.legIdx == 1 && Noted(trip, 2, TransportEvent::Arrived, SHIP, 695) &&
+              trip.transportNotes.size() == 3,
+          "transport: done at the end (695 s aboard), the next leg starts");
+
+    // The passenger list catching up within the grace after the departure is no miss
+    Trip late = StartedTrip({ShipLeg()});
+    StepLeg(late, On(PIER_A, 2000, 0, Sight(SHIP_AT_A, false)));
+    Check(late.boarding == Boarding::Board, "transport: at the dock node while it stands: boards at once");
+    Check(StepLeg(late, On(DECK, 3000, 0, Sight({0, 140.0f, 0.0f, 0.0f}, true))).act == Act::Wait && !late.misses,
+          "transport: departed: waits out the grace");
+    Check(StepLeg(late, On(DECK, 4000, SHIP)).act == Act::Wait && late.boarding == Boarding::Ride && !late.misses,
+          "transport: aboard within the grace: no miss");
+
+    // Departures without the bot: each a miss after the grace, then the next departure; no hop before the third miss
+    Trip missing = StartedTrip({ShipLeg()});
+    bool boardsOnly = true;
+    bool counted = true;
+    std::uint32_t nowMs = 2000;
+    for (std::uint8_t miss = 1; miss <= TravelLegs::HOP_AFTER_MISSES; ++miss)
+    {
+        boardsOnly =
+            boardsOnly &&
+            StepLeg(missing, On(PIER_A, nowMs, 0, Sight(SHIP_AT_A, false, false, true))).act == Act::Board &&
+            StepLeg(missing, On(DECK, nowMs + 4000, 0, Sight(SHIP_AT_A, false, false, true))).act == Act::Board &&
+            !TravelLegs::WantsSightCheck(missing);
+        Decision const grace = StepLeg(missing, On(DECK, nowMs + 5000, 0, Sight({0, 160.0f, 0.0f, 0.0f}, true)));
+        Decision const gone = StepLeg(missing, On(DECK, nowMs + 8000, 0));
+        counted = counted && grace.act == Act::Wait && gone.act == Act::Wait && missing.misses == miss &&
+                  missing.boarding == Boarding::Wait &&
+                  Noted(missing, missing.transportNotes.size() - 1, TransportEvent::Missed, SHIP, miss);
+        nowMs += 300000;
+    }
+    Check(boardsOnly, "transport: before the third miss no hop and no sight check, unseen or not");
+    Check(counted && missing.transportNotes.size() == 4, "transport: three departures without the bot: three misses");
+    Decision const back = StepLeg(missing, On({0, 140.0f, 0.0f, 0.0f}, nowMs - 1000, 0));
+    Check(back.act == Act::Walk && Near(back.target, PIER_A), "transport: waiting 40 yd off the dock node: walks back");
+
+    // The fourth docking: the hop only after HOP_TRY_MS of boarding, unseen, within HOP_MAX_YARDS, on a scan; once
+    Check(StepLeg(missing, On(PIER_A, nowMs, 0, Sight(SHIP_AT_A, false, false, true))).act == Act::Board &&
+              TravelLegs::WantsSightCheck(missing),
+          "transport: after three misses: boards first and asks for the sight check");
+    Check(StepLeg(missing, On(DECK, nowMs + 2000, 0, Sight(SHIP_AT_A, false, false, true))).act == Act::Board,
+          "transport: no hop before HOP_TRY_MS");
+    Check(StepLeg(missing, On(DECK, nowMs + 4000, 0, Sight(SHIP_AT_A, false, false, false))).act == Act::Board,
+          "transport: no hop while a real player sees it");
+    Check(StepLeg(missing, On(PIER_A, nowMs + 4500, 0, Sight(SHIP_AT_A, false, false, true))).act == Act::Board,
+          "transport: no hop from 30 yd (more than HOP_MAX_YARDS)");
+    Check(StepLeg(missing, On(DECK, nowMs + 5000, 0)).act == Act::Board, "transport: no hop between scans");
+    Decision const hop = StepLeg(missing, On(DECK, nowMs + 6000, 0, Sight(SHIP_AT_A, false, false, true)));
+    Check(hop.act == Act::Hop && Near(hop.target, SHIP_AT_A) && missing.hopped &&
+              Noted(missing, 4, TransportEvent::Hop, SHIP, 3),
+          "transport: the hop: unseen, close, after three misses, counted with them");
+    Check(StepLeg(missing, On(DECK, nowMs + 7000, 0, Sight(SHIP_AT_A, false, false, true))).act == Act::Board &&
+              !TravelLegs::WantsSightCheck(missing),
+          "transport: one hop per leg");
+    Check(StepLeg(missing, On(SHIP_AT_A, nowMs + 8000, SHIP, Sight(SHIP_AT_A, false))).act == Act::Wait &&
+              missing.boarding == Boarding::Ride && Noted(missing, 5, TransportEvent::Boarded, SHIP, 908),
+          "transport: aboard after the hop (boarded: seconds since the bot reached the dock)");
+    std::size_t const notes = missing.transportNotes.size();
+    TravelLegs::StartLeg(missing, 0, nowMs + 9000, NodeAt);
+    Check(!missing.misses && !missing.hopped && missing.boarding == Boarding::Approach &&
+              missing.transportNotes.size() == notes,
+          "transport: a new leg counts anew; the notes wait for the follower");
+
+    // An elevator (static): its stop is where it stood still for two scans at the floor
+    Trip lift = StartedTrip({LiftLeg()});
+    Point const down{0, 505.0f, 500.0f, 10.0f};
+    Point const half{0, 505.0f, 500.0f, 30.0f};
+    Point const up{0, 505.0f, 500.0f, 50.0f};
+    StepLeg(lift, On(LIFT_TOP, 2000, 0, Sight(down, false, true)));
+    Check(StepLeg(lift, On(LIFT_TOP, 3000, 0, Sight(down, false, true))).act == Act::Wait,
+          "elevator: standing at the other floor is not docked here");
+    Check(StepLeg(lift, On(LIFT_TOP, 4000, 0, Sight(half, false, true))).act == Act::Wait, "elevator: on its way");
+    Check(StepLeg(lift, On(LIFT_TOP, 5000, 0, Sight(up, false, true))).act == Act::Wait,
+          "elevator: one scan at the floor is no stop (it may pass)");
+    Check(StepLeg(lift, On(LIFT_TOP, 6000, 0, Sight(up, false, true))).act == Act::Board,
+          "elevator: still at the floor for two scans: boards");
+    Check(StepLeg(lift, On(up, 7000, LIFT, Sight(up, false, true))).act == Act::Wait && lift.boarding == Boarding::Ride,
+          "elevator: aboard at the top: rides (the top is not the end)");
+    StepLeg(lift, On(half, 9000, LIFT, Sight(half, false, true)));
+    Check(StepLeg(lift, On(down, 11000, LIFT, Sight(down, false, true))).act == Act::Wait,
+          "elevator: first scan at the bottom: not yet stopped");
+    Decision const liftOff = StepLeg(lift, On(down, 12000, LIFT, Sight(down, false, true)));
+    Check(liftOff.act == Act::Disembark && Near(liftOff.target, LIFT_BOTTOM),
+          "elevator: stands at the bottom: walks off");
+    Check(StepLeg(lift, On(LIFT_BOTTOM, 13000, 0)).act == Act::Done && Noted(lift, 2, TransportEvent::Arrived, LIFT, 6),
+          "elevator: done at the bottom (6 s aboard)");
+
+    // Timeouts: off the transport WAIT_PERIODS periods (fallback: twice the leg's seconds, at least 30 s), aboard none
+    // but RIDE_PERIODS from the boarding, ashore short of the end LEG_SLACK_MS
+    Check(TravelLegs::LegTimeoutMs(ShipLeg()) == 2460000,
+          "transport timeout: 60 s + 5 x 480 s before the period is read");
+    Check(TravelLegs::LegTimeoutMs(LiftLeg()) == 210000, "elevator timeout: the fallback period is at least 30 s");
+    Trip idle = StartedTrip({ShipLeg()}, 0);
+    Check(StepLeg(idle, On(PIER_A, 2460000, 0, Gone())).act == Act::Wait, "transport: waits 2460 s for its transport");
+    Check(StepLeg(idle, On(PIER_A, 2460001, 0)).reason == FailReason::Timeout, "transport: Fail(timeout) after that");
+    Trip period = StartedTrip({ShipLeg()}, 0);
+    StepLeg(period, On(PIER_A, 1000, 0, Sight(SEA_0, true, false, false, 300000)));
+    Check(StepLeg(period, On(PIER_A, 1560000, 0, Gone())).act == Act::Wait &&
+              StepLeg(period, On(PIER_A, 1560001, 0)).reason == FailReason::Timeout,
+          "transport: a read period of 300 s: 60 s + 5 x 300 s");
+    Trip ride = StartedTrip({ShipLeg()}, 0);
+    StepLeg(ride, On(PIER_A, 2400000, 0));
+    StepLeg(ride, On(DECK, 2450000, SHIP, Sight(SHIP_AT_A, false)));
+    Check(StepLeg(ride, On(SEA_0, 2500000, SHIP, Sight(SEA_0, true))).act == Act::Wait,
+          "transport: aboard past the wait bound: rides");
+    Check(StepLeg(ride, On(SEA_0, 2450000 + 1020000, SHIP)).act == Act::Wait &&
+              StepLeg(ride, On(SEA_0, 2450000 + 1020001, SHIP)).reason == FailReason::Timeout,
+          "transport: aboard: Fail(timeout) 60 s + 2 x 480 s after the boarding");
+    Trip fell = StartedTrip({ShipLeg()});
+    StepLeg(fell, On(DECK, 2000, SHIP));
+    StepLeg(fell, On(SEA_1, 3000, SHIP, Sight(SEA_1, true)));
+    StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 4000, 0, Gone()));
+    Decision const swim = StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 5000, 0, Gone()));
+    Check(swim.act == Act::Walk && fell.boarding == Boarding::Leave &&
+              StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 65000, 0)).act == Act::Walk &&
+              StepLeg(fell, On({1, 1000.0f, 1030.0f, 0.0f}, 65001, 0)).reason == FailReason::Timeout,
+          "transport: off it short of the end: walks, Fail(timeout) after 60 s");
+
+    // At sea one scan may miss the passenger (a cross-map ship's far teleport): no walk off the deck; only two scans
+    // in a row off count
+    Trip blink = StartedTrip({ShipLeg()});
+    StepLeg(blink, On(DECK, 2000, SHIP));
+    StepLeg(blink, On(SEA_0, 3000, SHIP, Sight(SEA_0, true)));
+    bool const heldOnce = StepLeg(blink, On(SEA_1, 4000, 0, Sight(SEA_1, true))).act == Act::Wait &&
+                          StepLeg(blink, On(SEA_1, 4500, 0)).act == Act::Wait && blink.boarding == Boarding::Ride;
+    bool const heldAgain = StepLeg(blink, On(SEA_1, 4800, SHIP)).act == Act::Wait &&
+                           StepLeg(blink, On(SEA_1, 5000, 0, Sight(SEA_1, true))).act == Act::Wait &&
+                           blink.boarding == Boarding::Ride;
+    Check(heldOnce && heldAgain, "transport: off on one scan at sea (also again after aboard): rides on, no walk");
+    Check(StepLeg(blink, On(SEA_1, 6000, 0, Sight(SEA_1, true))).act == Act::Walk && blink.boarding == Boarding::Leave,
+          "transport: off on two scans in a row at sea: off it, walks");
+
+    // Undercity's lower lift doors (20651/20654/20657) are transports whose stops lie 8.1 yd apart in z: the leg ends
+    // at once on the dock node, in either direction, without a wait
+    Point const doorLow{0, 1595.21f, 178.693f, -40.5223f};
+    Point const doorHigh{0, 1595.21f, 178.693f, -32.392f};
+    Leg door = MakeLeg(LegType::Transport, doorLow, doorHigh, {}, 11.667f);
+    door.object = 20654;
+    Trip doorUp = StartedTrip({door});
+    Check(StepLeg(doorUp, On({0, 1599.0f, 180.0f, -40.6f}, 2000, 0)).act == Act::Done,
+          "transport: a door link from the ground: done on reaching its dock node");
+    door.from = doorHigh;
+    door.to = doorLow;
+    Trip doorDown = StartedTrip({door});
+    Check(StepLeg(doorDown, On({0, 1599.0f, 180.0f, -40.6f}, 2000, 0)).act == Act::Done,
+          "transport: a door link from its upper stop: done on the ground below it");
+
+    // A missed exit rides the round trip; wrong maps
+    Trip stay = StartedTrip({ShipLeg()});
+    StepLeg(stay, On(DECK, 2000, SHIP));
+    StepLeg(stay, On(SHIP_AT_B, 3000, SHIP, Sight(SHIP_AT_B, false)));
+    Check(stay.boarding == Boarding::Leave &&
+              StepLeg(stay, On(SEA_1, 4000, SHIP, Sight(SEA_1, true))).act == Act::Wait &&
+              stay.boarding == Boarding::Ride,
+          "transport: still aboard when it leaves the end: rides on");
+    Trip lost = StartedTrip({ShipLeg()});
+    Check(StepLeg(lost, On(NODES[4], 2000, 0)).reason == FailReason::WrongMap,
+          "transport: off the transport on another map than the start's: wrong map");
+    Trip astray = StartedTrip({ShipLeg()});
+    StepLeg(astray, On(DECK, 2000, SHIP));
+    Check(StepLeg(astray, On({2, 0.0f, 0.0f, 0.0f}, 3000, SHIP)).reason == FailReason::WrongMap,
+          "transport: aboard on a third map: wrong map");
+    Trip other = StartedTrip({ShipLeg()});
+    Check(StepLeg(other, On(PIER_A, 2000, SHIP + 1)).act == Act::Wait && other.boarding == Boarding::Wait,
+          "transport: on another transport is not aboard the leg's");
+
+    // A timed-out transport leg replans without its link; a walk's timeout leaves no edge out
+    Trip failedShip = StartedTrip({ShipLeg()});
+    Check(TravelLegs::AfterFailure(failedShip, FailReason::Timeout) == TravelLegs::Recovery::Replan &&
+              failedShip.avoidEdges.size() == 1 && failedShip.avoidEdges[0] == std::make_pair(1u, 3u),
+          "transport: a timed-out leg leaves its link out of the next route");
+    Trip failedWalk = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[1], {0, 1}, 30.0f)});
+    Check(TravelLegs::AfterFailure(failedWalk, FailReason::Timeout) == TravelLegs::Recovery::Replan &&
+              failedWalk.avoidEdges.empty(),
+          "a walk's timeout leaves no edge out");
+
+    // The Transport words
+    Check(std::string(TravelLegs::TransportSource(TransportEvent::Attempt)) == "attempt" &&
+              std::string(TravelLegs::TransportSource(TransportEvent::Boarded)) == "boarded" &&
+              std::string(TravelLegs::TransportSource(TransportEvent::Arrived)) == "arrived" &&
+              std::string(TravelLegs::TransportSource(TransportEvent::Missed)) == "missed" &&
+              std::string(TravelLegs::TransportSource(TransportEvent::Hop)) == "hop" &&
+              std::string(TravelLegs::TRANSPORT_EVENT_TYPE) == "Transport" &&
+              std::string(TravelLegs::HOP_HONESTY_KIND) == "Teleport" &&
+              std::string(TravelLegs::HOP_HONESTY_SOURCE) == "transport_hop",
+          "transport: event words");
+}
 }  // namespace
 
 int main()
@@ -961,6 +1260,7 @@ int main()
     CheckInTheAir();
     CheckCombatLanding();
     CheckBodyZ();
+    CheckTransport();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }
