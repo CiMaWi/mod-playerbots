@@ -590,6 +590,9 @@ public:
     Aura* GetAura(std::string const spellName, Unit* unit, bool checkIsOwner = false, bool checkDuration = false,
                   int checkStack = -1);
     bool CastSpell(uint32 spellId, Unit* target, Item* itemTarget = nullptr);
+    // The core's SpellCastResult when the last CastSpell(spellId, target) failed in Spell::prepare(), else -1 (upkeep
+    // WU11b fix 7: why a flying mount the cast check allowed was not cast); read right after the call
+    int32 LastPrepareResult() const { return lastPrepareResult; }
     bool CastSpell(uint32 spellId, float x, float y, float z, Item* itemTarget = nullptr);
     bool canDispel(SpellInfo const* spellInfo, uint32 dispelType);
 
@@ -961,6 +964,7 @@ protected:
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;
+    int32 lastPrepareResult = -1;  // LastPrepareResult
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
     PvpTestCcCounters pvpTestCc;
     std::array<uint32, PVPTEST_TACTIC_COUNT> pvpTestTactics{};

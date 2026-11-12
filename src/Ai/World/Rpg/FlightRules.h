@@ -20,12 +20,34 @@
 // over it. The search is a grid A* whose cost is the distance flown plus a surcharge per yard climbed, so a low ridge
 // is flown over and a high range around or through a pass; grid zigzags are cut into straight segments where that
 // passes no higher ground; the route holds its height in stretches (a climb, a few level stretches, a descent). The
-// map holds terrain and liquid surfaces only, no buildings: the follower checks the real height at each waypoint.
+// map holds terrain and liquid surfaces only, no buildings: the follower checks the real height at each waypoint;
+// only the cells under a model floating in the air are closed (FloatsOver).
 // Game-free: tests/flight-rules-selftest.cpp builds this header alone.
 namespace FlightRules
 {
 // A cell no bot flies over: a no-fly or non-flying area, no terrain file, or no valid height
 constexpr std::int16_t CLOSED = std::numeric_limits<std::int16_t>::min();
+// A point this far above its open cell's ground floats on a platform (Dalaran over Crystalsong Forest): the map's
+// terrain areas say nothing of the WMO's no-fly areas up there
+constexpr float PLATFORM_YARDS = 100.0f;
+// A WMO whose lowest point is this far above a cell's ground floats over it (WU11b fix 12: Zul'Drak's necropolis
+// Voltarus, 95 yd over Zeramas; the Nexus' platforms over Coldarra): a plan at the surrounding ground's level flies
+// into it, the core's indoor check takes the mount, the bot comes down
+constexpr float FLOATING_MODEL_YARDS = 50.0f;
+
+// The cell lies under a model floating in the air (its lowest point modelBottom): the flight map closes it, so routes
+// pass around the model as around a no-fly area. A model standing on the ground (its bottom at or below the ground,
+// or a bridge low over a river) leaves it to the follower's real-height check
+inline bool FloatsOver(float modelBottom, float cellGround) { return modelBottom - cellGround > FLOATING_MODEL_YARDS; }
+
+// A place on a platform where a bot may take off and land (WU11b fix 7, Krasus' Landing): a taxi node whose WMO area
+// lets a bot mount a flyer there, found when the map is built (FlightMap.cpp)
+struct TakeoffSpot
+{
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+};
 
 struct FlightPoint
 {
@@ -62,11 +84,13 @@ struct HeightMap
     std::int32_t height{0};  // cells along y
     // The highest ground (terrain or liquid surface) per cell in whole yards, rounded up, or CLOSED; y * width + x
     std::vector<std::int16_t> ground;
+    std::vector<TakeoffSpot> takeoffs;  // the platforms' takeoff spots
     // Build facts for the log and the status lines
     std::uint32_t files{0};
     std::uint32_t buildMs{0};
     std::uint32_t openCells{0};
-    std::uint32_t closedCells{0};  // inside the box
+    std::uint32_t closedCells{0};    // inside the box
+    std::uint32_t floatingCells{0};  // closed under a floating model (FloatsOver), before the crop
     std::int32_t minGround{0};
     std::int32_t maxGround{0};
 
@@ -85,7 +109,10 @@ struct HeightMap
 
     bool Open(std::int32_t cx, std::int32_t cy) const { return Ground(cx, cy) != CLOSED; }
     bool IsOpen(float x, float y) const { return !Empty() && Open(CellX(x), CellY(y)); }
-    std::size_t Bytes() const { return sizeof(HeightMap) + ground.capacity() * sizeof(std::int16_t); }
+    std::size_t Bytes() const
+    {
+        return sizeof(HeightMap) + ground.capacity() * sizeof(std::int16_t) + takeoffs.capacity() * sizeof(TakeoffSpot);
+    }
 
     // After the cells are filled: the open and closed counts and the ground range
     void Finish()
@@ -917,6 +944,11 @@ inline std::uint32_t Selftest(std::vector<std::string>& failures, std::vector<st
               !CanFlyBetween(noFly, {500.0f, 3200.0f, 0.0f}, {3200.0f, 3200.0f, 0.0f}),
           "CanFlyBetween: open ends only");
     check(flat.Bytes() < 32 * 1024 && flat.openCells == SIDE * SIDE && noFly.closedCells > 0, "map: sizes and counts");
+    // Voltarus' lowest point 334 over Zeramas' ground near 239; a building's foot below its hillside; a bridge 20 yd
+    // over a river's surface; the edge itself
+    check(FloatsOver(334.0f, 239.0f) && !FloatsOver(230.0f, 239.0f) && !FloatsOver(20.0f, 0.0f) &&
+              !FloatsOver(FLOATING_MODEL_YARDS, 0.0f) && FloatsOver(FLOATING_MODEL_YARDS + 0.5f, 0.0f),
+          "FloatsOver: a floating model only");
     return checks;
 }
 }  // namespace FlightRules

@@ -51,6 +51,11 @@ public:
     // no_fly_area (its real area, WMO areas such as Dalaran's included, has no flying; riding; a battleground),
     // battle (a battlefield's zone in battle), indoors, water
     static char const* NoTakeoffHere(Player const* bot);
+    // A travel fly leg's mount: the fastest flying mount the bot knows and may cast now, a preferred one first. ""
+    // when a cast started, else why not: no_mount (none known for its riding), refused (the cast check refused all).
+    // Not through Execute: its current-target, master and below-the-floor rules are for mounting on the move, and they
+    // refused a bot that stood still on open ground (WU11b: Tarae in Dragonblight)
+    static char const* CastFlyingMount(Player* bot, PlayerbotAI* botAI);
     // A travel fly leg's end: off the mount, the stale flying flags cleared, down on the ground
     static void LandAndDismount(Player* bot);
     static void LoadPreferredMounts();

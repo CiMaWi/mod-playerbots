@@ -15,6 +15,7 @@
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
+#include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "QuestLevelRules.h"
@@ -283,10 +284,15 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     // live node it passes, or a quest POI change) skips this gate:
     // letting the old spline finish would keep walking the bot
     // toward a target it no longer has.
+    //
+    // A finalized move spline is no move to wait for, whatever the
+    // movement flags say: they can stay "moving" after the spline
+    // ended (WU11b fix 13: Throke in the air, moving 71 s after its
+    // last move), and the gate held such a bot forever.
     if (!newDest)
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
-        if (bot->isMoving() && lastMove.lastMoveToMapId == bot->GetMapId())
+        if (bot->isMoving() && !bot->movespline->Finalized() && lastMove.lastMoveToMapId == bot->GetMapId())
         {
             float remaining = bot->GetExactDist(lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ);
             if (remaining > 10.0f)

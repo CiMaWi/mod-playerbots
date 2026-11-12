@@ -13,12 +13,15 @@
 #include "BattlegroundWS.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "Map.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "Spell.h"
 #include "SpellAuraEffects.h"
+#include "TravelLegRules.h"
 
 static constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
 static constexpr float PARACHUTE_LAND_THRESHOLD = 15.0f;
@@ -84,6 +87,11 @@ bool CheckMountStateAction::Execute(Event /*event*/)
             bot->RemoveAurasByType(SPELL_AURA_FEATHER_FALL);
     }
     ClearStaleFlightFlags();
+    // In the air by the real height, not the flag alone: a bot on its flyer on the ground keeps the flag
+    bool const inTheAir =
+        bot->IsFlying() &&
+        TravelLegs::InTheAir(bot->GetPositionZ(),
+                             bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()));
 
     // Determine if there are no attackers
     bool noAttackers = !AI_VALUE2(bool, "combat", "self target") || !AI_VALUE(uint8, "attacker count");
@@ -100,7 +108,9 @@ bool CheckMountStateAction::Execute(Event /*event*/)
         float combatReach = bot->GetCombatReach() + currentTarget->GetCombatReach();
         float distanceToTarget = bot->GetExactDist(currentTarget);
 
-        shouldDismount = (distanceToTarget <= dismountDistance + combatReach);
+        // Not in the air: the bot would fall (WU11b: Nennaro, attacked 36 yd up on a fly leg's climb, came down 13 s
+        // after the takeoff); it flies on or lands first
+        shouldDismount = !inTheAir && distanceToTarget <= dismountDistance + combatReach;
         shouldMount = (distanceToTarget > mountDistance + combatReach);
     }
     else
@@ -144,8 +154,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
         noAttackers && shouldMount && !bot->IsInCombat())
         return Mount();
 
-    if (!bot->IsFlying() && shouldDismount && bot->IsMounted() &&
-        (enemy || dps || (!noAttackers && bot->IsInCombat())))
+    if (!inTheAir && shouldDismount && bot->IsMounted() && (enemy || dps || (!noAttackers && bot->IsInCombat())))
     {
         Dismount();
         return true;
@@ -257,6 +266,34 @@ bool CheckMountStateAction::Mount()
 
 void CheckMountStateAction::Dismount()
 {
+    // A flyer dismounted more than AIRBORNE_YARDS above the terrain (WU11b fix 11: Hudohrgand lost its mount about
+    // 45 yd from its takeoff over Honor Hold, not in combat, right after this action ran; the logs could not show
+    // why): the probe that judged it on the ground, its target and fight, for the log only. The terrain counts with
+    // the water over it (fix 12: a bot swimming at the sea's surface is not above the seabed)
+    if (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura())
+    {
+        float const x = bot->GetPositionX();
+        float const y = bot->GetPositionY();
+        float const z = bot->GetPositionZ();
+        float terrainZ = bot->GetMapHeight(x, y, z, false);
+        if (terrainZ > INVALID_HEIGHT)
+        {
+            LiquidData const water =
+                bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, terrainZ, bot->GetCollisionHeight(), {});
+            if (water.Status != LIQUID_MAP_NO_WATER)
+                terrainZ = std::max(terrainZ, water.Level);
+        }
+        if (terrainZ > INVALID_HEIGHT && z - terrainZ > TravelLegs::AIRBORNE_YARDS)
+        {
+            Unit* const target = AI_VALUE(Unit*, "current target");
+            LOG_INFO("playerbots",
+                     "[Route] {} dismounts {:.0f} yd above the terrain or water in area {} at ({:.0f}, {:.0f}, "
+                     "{:.0f}): floor {:.0f}, flying {}, combat {}, target {} at {:.0f} yd",
+                     bot->GetName(), z - terrainZ, bot->GetAreaId(), x, y, z, bot->GetMapHeight(x, y, z),
+                     bot->IsFlying(), bot->IsInCombat(), target ? target->GetName() : "none",
+                     target ? bot->GetExactDist(target) : 0.0f);
+        }
+    }
     if (bot->isMoving())
         bot->StopMoving();
 
@@ -552,6 +589,55 @@ char const* CheckMountStateAction::NoTakeoffHere(Player const* bot)
     if (bot->IsInWater())
         return "water";
     return nullptr;
+}
+
+char const* CheckMountStateAction::CastFlyingMount(Player* bot, PlayerbotAI* botAI)
+{
+    // A cast the check allowed that still did not start (rare, WU11b: Hellengi's three silent refusals): why, for
+    // the log only. A shapeshift form the mount cannot be cast in (WU11b fix 9: the druids Pilge and Barilas, prepare
+    // result 68, SPELL_FAILED_NOT_SHAPESHIFT) is left first, as a player cancels it; never in the air
+    auto const cast = [bot, botAI](uint32 spellId) -> char const*
+    {
+        ShapeshiftForm const form = bot->GetShapeshiftForm();
+        if (form != FORM_NONE && !bot->IsFlying())
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+                if (info->CheckShapeshift(form) != SPELL_CAST_OK)
+                    bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+        if (botAI->CastSpell(spellId, bot))
+            return "";
+        LOG_INFO("playerbots",
+                 "[Route] {} flying mount {} not cast: prepare result {}, stand state {}, moving {}, flying {}",
+                 bot->GetName(), spellId, botAI->LastPrepareResult(), bot->getStandState(), bot->isMoving(),
+                 bot->IsFlying());
+        return "refused";
+    };
+    auto const preferred = mountCache.find(bot->GetGUID().GetRawValue());
+    if (preferred != mountCache.end())
+        for (uint32 const spellId : preferred->second.flightMounts)
+            if (botAI->CanCastSpell(spellId, bot))
+                return cast(spellId);
+
+    MountData const data = CollectMountData(bot);
+    auto const flying = data.allSpells.find(1);
+    if (flying == data.allSpells.end() || flying->second.empty())
+        return "no_mount";
+    for (auto speed = flying->second.rbegin(); speed != flying->second.rend(); ++speed)
+        for (uint32 const spellId : speed->second)
+            if (botAI->CanCastSpell(spellId, bot))
+                return cast(spellId);
+    // Why, for the log only (rare: a fly leg's counted try): the core's cast check of the fastest one
+    uint32 const fastest = flying->second.rbegin()->second.front();
+    SpellCastResult result = SPELL_FAILED_UNKNOWN;
+    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(fastest))
+    {
+        Spell spell(bot, info, TRIGGERED_NONE);
+        spell.m_targets.SetUnitTarget(bot);
+        result = spell.CheckCast(true);
+    }
+    LOG_INFO("playerbots", "[Route] {} flying mount {} refused: cast result {}, moving {}, lost control {}",
+             bot->GetName(), fastest, static_cast<uint32>(result), bot->isMoving(),
+             bot->HasUnitState(UNIT_STATE_LOST_CONTROL));
+    return "refused";
 }
 
 int32 CheckMountStateAction::CalculateMasterMountSpeed(Player* master) const

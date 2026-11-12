@@ -11,12 +11,17 @@
 #include "Action.h"
 #include "CensusMgr.h"
 #include "Chat.h"
+#include "LastMovementValue.h"
+#include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 #include "StringFormat.h"
 #include "Timer.h"
 #include "WorldLog.h"
@@ -82,6 +87,34 @@ WorldLogFormat::RecorderPosition PositionOf(Player* bot, uint32 nowMs, int32 rpg
     return position;
 }
 
+// What holds the bot's AI and move at a case (a still bot in the air, WU11b): the UpdateAI gates (the engine's state,
+// the check delay, a cast still preparing) and the move's state (motion type, spline, flags, the last MoveTo). Runs
+// before those gates, so a case of a bot whose engine stopped still names the gate; none of them set points to the
+// reaction engine
+void LogCaseHold(Player* bot, uint64 caseId, uint32 nowMs)
+{
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+
+    Spell const* spell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!spell)
+        spell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    LastMovement const& lastMove = botAI->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get();
+    LOG_DEBUG("playerbots",
+              "[WorldLog] case {} hold of {}: state {}, in combat {}, check delay {} (last {} ms), spell {} state {}, "
+              "last prepare {}; motion {}, moving {}, spline done {}, flying {}, mounted {}, can move {}, z {:.1f}; "
+              "last move to ({:.1f}, {:.1f}, {:.1f}) {} ms ago, delay {:.0f} ms, priority {}",
+              caseId, bot->GetName(), static_cast<int>(botAI->GetState()), bot->IsInCombat(),
+              botAI->IsActionDurationActive(), botAI->GetLastCheckDelay(), spell ? spell->GetSpellInfo()->Id : 0,
+              spell ? static_cast<int>(spell->getState()) : -1, botAI->LastPrepareResult(),
+              static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()), bot->isMoving(),
+              bot->movespline->Finalized(), bot->IsFlying(), bot->IsMounted(), botAI->CanMove(), bot->GetPositionZ(),
+              lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ,
+              lastMove.msTime ? getMSTimeDiff(lastMove.msTime, nowMs) : 0, lastMove.lastdelayTime,
+              static_cast<int>(lastMove.priority));
+}
+
 // The due case as one chunk on the recorder stream (dropped whole and counted when it would pass the queue cap). A case
 // counts as written only once the queue took it; a refused one counts as dropped.
 void DumpCase(Player* bot, Recorder& recorder, uint32 nowMs)
@@ -109,6 +142,7 @@ void DumpCase(Player* bot, Recorder& recorder, uint32 nowMs)
 
     LOG_DEBUG("playerbots", "[WorldLog] case {} of {}: {} rows, {} bytes{}", caseId, bot->GetName(), count, bytes,
               queued ? "" : ", dropped (queue full)");
+    LogCaseHold(bot, caseId, nowMs);
 
     if (pmo)
         pmo->finish();

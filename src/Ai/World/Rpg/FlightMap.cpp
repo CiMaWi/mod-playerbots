@@ -11,19 +11,29 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <thread>
+#include <unordered_set>
 
+#include "AreaDefines.h"
 #include "DBCStores.h"
 #include "GridDefines.h"
 #include "GridTerrainData.h"
 #include "Log.h"
+#include "MapTree.h"
+#include "ModelInstance.h"
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlayerbotAIConfig.h"
 #include "StringFormat.h"
+#include "VMapDefinitions.h"
+#include "VMapMgr2.h"
 #include "World.h"
+#include "WorldModel.h"
 
 namespace Planner
 {
@@ -50,16 +60,30 @@ constexpr int32 AREAS = 16;                // area ids per grid side
 constexpr float COLLISION_HEIGHT = 2.0f;   // only for the liquid lookup
 constexpr double CORNER_INSET = 0.01;      // a square's V9 corner sample, just inside the square
 constexpr double BYTES_PER_KB = 1024.0;
+constexpr float WMO_PROBE_YARDS = 1.0f;   // a taxi node's WMO area is read this far above the node
+constexpr uint32 MOGP_OUTDOOR = 0x8;      // a WMO group's outdoor flag, as Map::GetFullTerrainStatusForPosition
+constexpr uint32 WMO_AREA_OUTDOOR = 0x4;  // WMOAreaTable flags overriding it
+constexpr uint32 WMO_AREA_INDOOR = 0x2;
 
 std::atomic<FlightMapState> flightState{FlightMapState::NotStarted};
 std::atomic<bool> flightStop{false};
 std::thread flightLoader;
 SharedSlot<FlightRules::FlightMapSet> flightBook;
 
+struct TaxiSpot
+{
+    uint32 node;
+    uint32 mapId;
+    float x;
+    float y;
+    float z;
+};
+
 struct LoaderInput
 {
     std::string dataPath;
-    std::vector<bool> openArea;  // by area id: a flying area (IsFlyable) without the no-fly flag
+    std::vector<bool> openArea;       // by area id: a flying area (IsFlyable) without the no-fly flag
+    std::vector<TaxiSpot> taxiSpots;  // the flying maps' taxi nodes: candidates for takeoff spots on platforms
     FlightRules::FlightParams params;
 };
 
@@ -76,9 +100,83 @@ double WorldAt(int32 grid, double step, int32 steps)
     return SIZE_OF_GRIDS * (CENTER_GRID_ID - (static_cast<double>(grid) * steps + step) / steps);
 }
 
+// The cells under a model floating in the air (WU11b fix 12: four fly legs from Dragonblight into Zul'Drak, planned
+// at the plateau's level, flew into the necropolis Voltarus over Zeramas; the core's indoor check took the mount and
+// the bots came down), closed as a no-fly area's: each WMO spawn of the map's vmap tiles (the spawn records only, no
+// model is loaded) whose lowest point FloatsOver a cell's ground. A WMO with a taxi node in its box is a platform the
+// bots fly to (Dalaran: Krasus' Landing, the platform rule and MarkTakeoffs) and stays open. Returns the cells closed
+uint32 CloseUnderFloatingModels(FlyingMap const& flying, LoaderInput const& input, double origin, double cell,
+                                int32 side, std::vector<float> const& highest, std::vector<uint8>& closed)
+{
+    auto const cellAt = [origin, cell, side](float v)
+    { return std::clamp<int32>(static_cast<int32>(std::floor((v - origin) / cell)), 0, side - 1); };
+    std::string const base = input.dataPath + "vmaps/";
+    std::unordered_set<uint32> seen;  // a model crossing tiles is in each tile's file
+    uint32 count = 0;
+    for (uint32 tileX = 0; tileX < static_cast<uint32>(GRIDS); ++tileX)
+        for (uint32 tileY = 0; tileY < static_cast<uint32>(GRIDS); ++tileY)
+        {
+            if (flightStop.load(std::memory_order_relaxed))
+                return count;
+            std::string const file = base + VMAP::StaticMapTree::getTileFileName(flying.id, tileX, tileY);
+            FILE* tile = std::fopen(file.c_str(), "rb");
+            if (!tile)
+                continue;
+            // As StaticMapTree::LoadMapTile reads it: the magic, the spawn count, each spawn and its tree index
+            char magic[8];
+            uint32 spawns = 0;
+            bool ok = std::fread(magic, 1, sizeof(magic), tile) == sizeof(magic) &&
+                      std::memcmp(magic, VMAP::VMAP_MAGIC, sizeof(magic)) == 0 &&
+                      std::fread(&spawns, sizeof(spawns), 1, tile) == 1;
+            for (uint32 i = 0; ok && i < spawns; ++i)
+            {
+                VMAP::ModelSpawn spawn;
+                uint32 treeIndex = 0;
+                ok = VMAP::ModelSpawn::readFromFile(tile, spawn) &&
+                     std::fread(&treeIndex, sizeof(treeIndex), 1, tile) == 1;
+                if (!ok || (spawn.flags & VMAP::MOD_M2) || !(spawn.flags & VMAP::MOD_HAS_BOUND) ||
+                    !seen.insert(spawn.ID).second)
+                    continue;
+                // The bounds are in the vmap's axes; the conversion is its own inverse
+                G3D::Vector3 const a = VMAP::VMapMgr2::convertPositionToInternalRep(
+                    spawn.iBound.low().x, spawn.iBound.low().y, spawn.iBound.low().z);
+                G3D::Vector3 const b = VMAP::VMapMgr2::convertPositionToInternalRep(
+                    spawn.iBound.high().x, spawn.iBound.high().y, spawn.iBound.high().z);
+                float const minX = std::min(a.x, b.x);
+                float const maxX = std::max(a.x, b.x);
+                float const minY = std::min(a.y, b.y);
+                float const maxY = std::max(a.y, b.y);
+                float const bottom = std::min(a.z, b.z);
+                float const top = std::max(a.z, b.z);
+                bool const platform = std::any_of(input.taxiSpots.begin(), input.taxiSpots.end(),
+                                                  [&](TaxiSpot const& spot)
+                                                  {
+                                                      return spot.mapId == flying.id && spot.x >= minX &&
+                                                             spot.x <= maxX && spot.y >= minY && spot.y <= maxY &&
+                                                             spot.z >= bottom && spot.z <= top;
+                                                  });
+                if (platform)
+                    continue;
+                for (int32 cy = cellAt(minY); cy <= cellAt(maxY); ++cy)
+                    for (int32 cx = cellAt(minX); cx <= cellAt(maxX); ++cx)
+                    {
+                        size_t const index = static_cast<size_t>(cy) * side + cx;
+                        if (closed[index] || !(highest[index] > MIN_HEIGHT) ||
+                            !FlightRules::FloatsOver(bottom, highest[index]))
+                            continue;
+                        closed[index] = 1;
+                        ++count;
+                    }
+            }
+            std::fclose(tile);
+        }
+    return count;
+}
+
 // One map's height map: the highest valid terrain or liquid sample per cell, closed where any of the cell's area
-// samples is not a flying area or has the no-fly flag, or the cell has no terrain above the map floor (MIN_HEIGHT:
-// the void around Outland's islands); cropped to the open cells' box.
+// samples is not a flying area or has the no-fly flag, where a model floats over it (CloseUnderFloatingModels), or
+// the cell has no terrain above the map floor (MIN_HEIGHT: the void around Outland's islands); cropped to the open
+// cells' box.
 // False when the shutdown stopped it
 bool BuildMap(FlyingMap const& flying, LoaderInput const& input, FlightRules::HeightMap& out, uint32& unreadable)
 {
@@ -146,6 +244,9 @@ bool BuildMap(FlyingMap const& flying, LoaderInput const& input, FlightRules::He
                         closed[cellOf(x, y)] = 1;
                 }
         }
+    out.floatingCells = CloseUnderFloatingModels(flying, input, origin, cell, side, highest, closed);
+    if (flightStop.load(std::memory_order_relaxed))
+        return false;
 
     int32 minX = side;
     int32 minY = side;
@@ -183,6 +284,64 @@ bool BuildMap(FlyingMap const& flying, LoaderInput const& input, FlightRules::He
     return true;
 }
 
+// The taxi nodes on platforms (WU11b fix 7: Krasus' Landing over Dalaran's no-fly city): a node more than
+// PLATFORM_YARDS above its open cell's ground is a takeoff spot when the WMO area under it lets a bot take off there,
+// outdoors in a flying area without the no-fly flag (CheckMountStateAction::NoTakeoffHere's rule). The height map
+// knows only the terrain's areas; the map's vmap tree, read here on its own for the platforms' tiles and dropped
+// after, knows the WMO's
+void MarkTakeoffs(FlyingMap const& flying, LoaderInput const& input, FlightRules::HeightMap& map)
+{
+    std::unique_ptr<VMAP::StaticMapTree> tree;
+    std::unordered_set<uint32> tiles;
+    for (TaxiSpot const& spot : input.taxiSpots)
+    {
+        if (spot.mapId != flying.id || !map.IsOpen(spot.x, spot.y) ||
+            spot.z - map.Ground(map.CellX(spot.x), map.CellY(spot.y)) <= FlightRules::PLATFORM_YARDS)
+            continue;
+        if (!tree)
+        {
+            tree = std::make_unique<VMAP::StaticMapTree>(flying.id, input.dataPath + "vmaps");
+            if (!tree->InitMap(VMAP::VMapMgr2::getMapFileName(flying.id)))
+            {
+                LOG_ERROR("playerbots", "Flight map: no vmap tree of map {} ({}) under {}vmaps; no takeoff spots",
+                          flying.id, flying.name, input.dataPath);
+                return;
+            }
+        }
+        // The vmap tile of a point, as its terrain file (WorldAt)
+        uint32 const tileX = static_cast<uint32>(
+            std::clamp<int32>(static_cast<int32>(std::floor(CENTER_GRID_ID - spot.x / SIZE_OF_GRIDS)), 0, GRIDS - 1));
+        uint32 const tileY = static_cast<uint32>(
+            std::clamp<int32>(static_cast<int32>(std::floor(CENTER_GRID_ID - spot.y / SIZE_OF_GRIDS)), 0, GRIDS - 1));
+        if (tiles.insert(VMAP::StaticMapTree::packTileID(tileX, tileY)).second)
+            tree->LoadMapTile(tileX, tileY);
+        VMAP::LocationInfo info;
+        G3D::Vector3 const probe =
+            VMAP::VMapMgr2::convertPositionToInternalRep(spot.x, spot.y, spot.z + WMO_PROBE_YARDS);
+        uint32 area = 0;
+        bool outdoors = false;
+        if (tree->GetLocationInfo(probe, info) && info.hitModel && info.hitInstance)
+        {
+            outdoors = (info.hitModel->GetMogpFlags() & MOGP_OUTDOOR) != 0;
+            if (WMOAreaTableEntry const* wmo =
+                    GetWMOAreaTableEntryByTripple(info.rootId, info.hitInstance->adtId, info.hitModel->GetWmoID()))
+            {
+                area = wmo->areaId;
+                if (wmo->Flags & WMO_AREA_OUTDOOR)
+                    outdoors = true;
+                else if (wmo->Flags & WMO_AREA_INDOOR)
+                    outdoors = false;
+            }
+        }
+        bool const takeoff = area && outdoors && area < input.openArea.size() && input.openArea[area];
+        LOG_INFO("playerbots", "Flight map: taxi node {} at ({:.1f}, {:.1f}, {:.1f}) on a platform, WMO area {} {}: {}",
+                 spot.node, spot.x, spot.y, spot.z, area, outdoors ? "outdoors" : "indoors",
+                 takeoff ? "a takeoff spot" : "no takeoff");
+        if (takeoff)
+            map.takeoffs.push_back({spot.x, spot.y, spot.z});
+    }
+}
+
 char const* MapName(uint32 mapId)
 {
     for (FlyingMap const& flying : FLYING_MAPS)
@@ -194,10 +353,11 @@ char const* MapName(uint32 mapId)
 std::string MapLine(FlightRules::HeightMap const& map)
 {
     return Acore::StringFormat(
-        "{} (map {}): {}x{} cells of {:.1f} yd, {} open, {} closed, ground {}..{} yd, {} "
-        "terrain files, built in {} ms, {:.1f} KB",
+        "{} (map {}): {}x{} cells of {:.1f} yd, {} open, {} closed ({} under floating models), ground {}..{} yd, "
+        "{} terrain files, {} takeoff spots on platforms, built in {} ms, {:.1f} KB",
         MapName(map.mapId), map.mapId, map.width, map.height, map.cellYards, map.openCells, map.closedCells,
-        map.minGround, map.maxGround, map.files, map.buildMs, static_cast<double>(map.Bytes()) / BYTES_PER_KB);
+        map.floatingCells, map.minGround, map.maxGround, map.files, map.takeoffs.size(), map.buildMs,
+        static_cast<double>(map.Bytes()) / BYTES_PER_KB);
 }
 
 void LoadFlightMaps(LoaderInput const& input)
@@ -219,6 +379,8 @@ void LoadFlightMaps(LoaderInput const& input)
                 LOG_INFO("playerbots", "Flight map: stopped by the shutdown");
                 return;
             }
+            if (!map.Empty())
+                MarkTakeoffs(flying, input, map);
             map.buildMs = ElapsedMs(mapStarted);
             if (unreadable)
                 LOG_ERROR("playerbots", "Flight map: {} unreadable terrain files for map {} ({})", unreadable,
@@ -258,13 +420,22 @@ void StartFlightMap()
     input.dataPath = sWorld->GetDataPath();
     input.openArea.assign(sAreaTableStore.GetNumRows(), false);
     uint32 flyable = 0;
+    // Wintergrasp (the zone and its areas) stays closed too: its battle every few hours takes the flying mounts
+    // (Restricted Flight Area), so a leg planned in peace can end in a fall (WU11b fix 14: Ermini over Flamewatch
+    // Tower); the bots fly around it
     for (uint32 id = 0; id < sAreaTableStore.GetNumRows(); ++id)
         if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(id))
-            if (area->IsFlyable() && !(area->flags & AREA_FLAG_NO_FLY_ZONE))
+            if (area->IsFlyable() && !(area->flags & AREA_FLAG_NO_FLY_ZONE) && area->ID != AREA_WINTERGRASP &&
+                area->zone != AREA_WINTERGRASP)
             {
                 input.openArea[id] = true;
                 ++flyable;
             }
+    for (uint32 id = 0; id < sTaxiNodesStore.GetNumRows(); ++id)
+        if (TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(id))
+            for (FlyingMap const& flying : FLYING_MAPS)
+                if (node->map_id == flying.id)
+                    input.taxiSpots.push_back({node->ID, node->map_id, node->x, node->y, node->z});
     UpkeepConfig const& upkeep = sPlayerbotAIConfig.Upkeep;
     input.params.cellYards = static_cast<float>(upkeep.HeightCellYards);
     input.params.stretchYards = static_cast<float>(upkeep.FlightStretchYards);

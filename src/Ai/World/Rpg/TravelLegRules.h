@@ -43,6 +43,7 @@ constexpr std::uint32_t LEG_SLACK_MS = 60 * 1000;
 constexpr std::uint32_t PORTAL_TIMEOUT_MS = 20 * 1000;
 constexpr std::uint32_t TRIP_SLACK_MS = 10 * 60 * 1000;  // the current route's estimate x 3 + this
 constexpr std::uint8_t MAX_REPLANS = 3;       // new routes per trip after failed legs; then the trip is given up
+constexpr std::uint8_t MAX_SPOT_FAILS = 4;    // takeoffs refused where the bot stands that replan outside MAX_REPLANS
 constexpr float HEARTH_ARRIVE_YARDS = 40.0f;  // a hearth leg is done within this of the bind point
 constexpr std::uint32_t HEARTH_SLACK_MS = 30 * 1000;  // a hearth leg's time beyond its cooldown wait and cast
 constexpr std::uint32_t REPLAN_DELAY_MS = 2000;       // the failed leg's stuck report reaches the published book first
@@ -54,13 +55,35 @@ constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leav
 constexpr std::uint8_t LEG_DEATHS = 2;                // deaths on one leg fail it (FailReason::Death)
 constexpr std::uint8_t TRIP_DEATHS = 3;               // deaths on one trip end it
 // Fly legs (own flying mount, WU10)
-constexpr float FLY_WAYPOINT_YARDS = 25.0f;  // a flight waypoint is reached this close (3D)
-constexpr float FLY_CLIMB_YARDS = 30.0f;     // the climb after the takeoff and the descent before the landing
-constexpr std::uint8_t FLY_MOUNT_TRIES = 3;  // real mount tries (NoteMountTry) before the takeoff fails
+constexpr float FLY_WAYPOINT_YARDS = 25.0f;    // a flight waypoint is reached this close (3D)
+constexpr float FLY_CLIMB_YARDS = 30.0f;       // the climb after the takeoff and the descent before the landing
+constexpr float LANDING_CHECK_YARDS = 150.0f;  // the landing spot is checked from this close (2D; NeedsLandingCheck)
+constexpr float LANDING_SEARCH_YARDS = 60.0f;  // an indoor landing moves at most this far back along the flight
+constexpr float LANDING_STEP_YARDS = 4.0f;     // the outdoor search's step
+constexpr std::uint8_t FLY_MOUNT_TRIES = 3;    // real mount tries (NoteMountTry) before the takeoff fails
 constexpr std::uint32_t FLY_MOUNT_RETRY_MS = 5 * 1000;  // a mount cast is tried again after this
 constexpr float FLY_MIN_CLEARANCE_YARDS = 15.0f;        // the real-height check: at least this above the ground ahead
 constexpr float FLY_RAISE_CAP_YARDS = 250.0f;           // a raise lifts a waypoint at most this far above the plan
 constexpr float FLY_NO_GROUND = -50000.0f;              // a height sample at or below: no ground found there
+constexpr float AIRBORNE_YARDS = 5.0f;                  // a bot with the flying flag this far above the floor flies
+
+// A bot with the flying flag at z over the floor floorZ (the map's height below it) is in the air (WU11b fix 8). A bot
+// sitting on its flyer on the ground keeps the flag (bots send no landing packet, and the stale-flag cleanup waits for
+// the mount's aura to go), and the core refuses a mounted player's attack: the flag alone kept such a bot mounted in a
+// fight until it died (Seyo at Agmar's Hammer). No floor found: the flag decides.
+inline bool InTheAir(float z, float floorZ) { return floorZ <= FLY_NO_GROUND || z - floorZ > AIRBORNE_YARDS; }
+
+// The height a bot killed at z leaves its body at (WU11b fix 10), groundZ the map's ground below it and waterZ the
+// surface of the water over that ground (FLY_NO_GROUND: none). A player's body falls to the floor (its client falls
+// it); a bot's stayed where it died, and its revival at the corpse dropped it to its death (Daenlean, killed 117 yd
+// up). The floor is the higher of ground and water surface: a body over the sea floats (fix 10 moved Almaadon 569 yd
+// down to the seabed), one that died swimming stays. More than AIRBORNE_YARDS above a found floor: the floor; else
+// where it is.
+inline float BodyZ(float z, float groundZ, float waterZ)
+{
+    float const floorZ = std::max(groundZ, waterZ);
+    return floorZ > FLY_NO_GROUND && z - floorZ > AIRBORNE_YARDS ? floorZ : z;
+}
 
 enum class Act : std::uint8_t
 {
@@ -284,6 +307,8 @@ struct Trip
     bool triggered{false};      // portal: the area trigger was sent
     bool taxiActivated{false};  // flight: the taxi was taken (fare paid)
     bool seenInFlight{false};   // flight: the bot was seen in flight; fly: in the air
+    // fly: in combat after the takeoff (NoteLife); coming down away from the end then is a combat landing, not a fall
+    bool foughtInFlight{false};
     // fly: the waypoint the real-height check looked at last (NeedsHeightCheck), its raises, the highest z flown, the
     // real mount tries and the last one's time (NoteMountTry), and why the last try did not start a cast ("": it did;
     // the glue's word for the fly_leg_failed row)
@@ -293,8 +318,11 @@ struct Trip
     std::uint8_t mountTries{0};
     std::uint32_t mountTriedMs{0};
     char const* mountWhy{""};
+    // fly: the landing spot was checked for the open sky (NeedsLandingCheck, MoveLanding)
+    bool landingChecked{false};
     bool noFly{false};  // after a failed fly leg: later routes of the trip fly no more (Request::noFly)
     std::uint8_t replans{0};
+    std::uint8_t spotFails{0};         // takeoffs refused where the bot stood that replanned flying (AfterFailure)
     std::uint8_t resubmits{0};         // route requests asked again after a late or lost answer (Resubmit)
     std::vector<std::uint32_t> avoid;  // after stuck walks: nodes later routes neither start nor end at (NoteStuck)
     bool noDirect{false};              // after a stuck walk towards the goal: no straight walk from the bot to it
@@ -479,7 +507,11 @@ inline void NoteLife(Trip& trip, Life life, std::uint32_t nowMs)
         record.combatSinceMs = 0;
     }
     if (life == Life::Combat)
+    {
         record.combatSinceMs = std::max<std::uint32_t>(nowMs, 1);
+        if (trip.seenInFlight && trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly)
+            trip.foughtInFlight = true;
+    }
     else if (life == Life::Dead)
     {
         trip.deaths = static_cast<std::uint8_t>(std::min(trip.deaths + 1, 255));
@@ -523,6 +555,15 @@ inline char const* MountWord(LegRecord const& record)
     return record.mountedTicks >= record.ticks ? "mounted" : "part";
 }
 
+// The FlightFall row's word for a fly leg that came down away from its end (FailReason::Landing), by the bot's height
+// above the ground then: combat when it fought after the takeoff and is on the ground (WU11b fix 9: Olina, attacked
+// on the descent, dismounted to fight), else fall (fallen or dismounted in the air; Daenlean, killed in the air and
+// revived 117 yd up, fought too)
+inline char const* LandingWord(Trip const& trip, float heightYards)
+{
+    return trip.foughtInFlight && heightYards <= AIRBORNE_YARDS ? "combat" : "fall";
+}
+
 // Killed too often: LEG_DEATHS on the leg or TRIP_DEATHS on the trip fail the leg as FailReason::Death
 inline bool DiedTooOften(Trip const& trip) { return trip.record.deaths >= LEG_DEATHS || trip.deaths >= TRIP_DEATHS; }
 
@@ -539,7 +580,9 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.triggered = false;
     trip.taxiActivated = false;
     trip.seenInFlight = false;
+    trip.foughtInFlight = false;
     trip.heightChecked = 0;
+    trip.landingChecked = false;
     trip.climbs = 0;
     trip.peakZ = 0.0f;
     trip.mountTries = 0;
@@ -804,14 +847,25 @@ inline void NoteDeath(Trip& trip)
 // at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
 // the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
 // Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it. A failed fly leg:
-// the trip's later routes walk (noFly), else the replan would offer the same flight
-inline Recovery AfterFailure(Trip& trip, FailReason reason)
+// the trip's later routes walk (noFly), else the replan would offer the same flight. A takeoff refused where the bot
+// stands (spotClosed: a no-fly area, a battle, indoors, water) keeps flying: the replan's snapshot closes that spot
+// (Snapshot::takeoffHere, AddFlyLegs), so the bot walks to the next open point and tries there. Such replans have their
+// own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is
+// an ordinary takeoff failure
+inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
 {
-    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly && reason != FailReason::NoAnswer)
+    bool const spotRetry = reason == FailReason::Takeoff && spotClosed && trip.spotFails < MAX_SPOT_FAILS;
+    bool const keepsFlying = reason == FailReason::NoAnswer || spotRetry;
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly && !keepsFlying)
         trip.noFly = true;
     std::uint32_t const combatSinceMs = trip.record.combatSinceMs;
     trip.record = LegRecord{};  // the failed leg's record ends (a running combat stretch goes on)
     trip.record.combatSinceMs = combatSinceMs;
+    if (spotRetry)
+    {
+        ++trip.spotFails;
+        return Recovery::Replan;
+    }
     if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || reason == FailReason::OffMesh ||
         (reason == FailReason::Death && trip.deaths >= TRIP_DEATHS) || trip.replans >= MAX_REPLANS)
         return Recovery::Abort;
@@ -843,6 +897,84 @@ inline bool CheckHeight(Trip& trip, std::vector<float> const& samples)
         return false;
     target.z = z;
     trip.climbs = static_cast<std::uint16_t>(std::min(trip.climbs + 1, 0xFFFF));
+    return true;
+}
+
+// The landing spot's check (WU11b): a fly leg planned onto an indoor goal (an inn's floor) comes down on the roof
+// above it, more than LANDING_YARDS from the leg's end. Once per fly leg, on the descent within LANDING_CHECK_YARDS
+// (2D) of the landing, where the bot has the landing's grid loaded, the follower asks whether the landing lies under
+// the open sky (the flight map cannot tell: indoors is a WMO property)
+inline bool NeedsLandingCheck(Trip const& trip, Point const& bot)
+{
+    if (trip.landingChecked || trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Fly ||
+        trip.waypoints.size() < 3 || trip.next + 2 < trip.waypoints.size())
+        return false;
+    Point const& landing = trip.waypoints.back().at;
+    return bot.mapId == landing.mapId && std::hypot(bot.x - landing.x, bot.y - landing.y) <= LANDING_CHECK_YARDS;
+}
+
+// The points the check looks at: back from the landing towards the last flight point every LANDING_STEP_YARDS, at
+// most LANDING_SEARCH_YARDS, at the landing's height; the farthest first, the landing last
+inline std::vector<Point> LandingLine(Trip const& trip)
+{
+    std::vector<Waypoint> const& points = trip.waypoints;
+    if (points.size() < 3)
+        return {};
+    Point const& landing = points.back().at;
+    Point const& before = points[points.size() - 3].at;
+    float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
+    std::size_t const steps =
+        gap > 0.0f ? static_cast<std::size_t>(std::min(gap, LANDING_SEARCH_YARDS) / LANDING_STEP_YARDS) : 0;
+    std::vector<Point> line;
+    line.reserve(steps + 1);
+    for (std::size_t k = steps; k > 0; --k)
+    {
+        float const share = static_cast<float>(k) * LANDING_STEP_YARDS / gap;
+        line.push_back({landing.mapId, landing.x + (before.x - landing.x) * share,
+                        landing.y + (before.y - landing.y) * share, landing.z});
+    }
+    line.push_back(landing);
+    return line;
+}
+
+// outdoors(point) -> may a bot stand there under the open sky. The landing (the line's last point) when it is
+// outdoors or no point is, else the outdoor point nearest to it
+template <class Outdoors>
+std::size_t LandingIndex(std::vector<Point> const& line, Outdoors const& outdoors)
+{
+    for (std::size_t k = line.size(); k-- > 0;)
+        if (outdoors(line[k]))
+            return k;
+    return line.empty() ? 0 : line.size() - 1;
+}
+
+// Marks the check done. A landing more than SAME_POINT_YARDS from the planned one ends the fly leg there, with the
+// descent point moved before it, and a walk leg from there to the planned end follows (the walk in). True when moved
+inline bool MoveLanding(Trip& trip, Point const& landing)
+{
+    trip.landingChecked = true;
+    if (trip.legIdx >= trip.legs.size() || trip.waypoints.size() < 3)
+        return false;
+    Leg& fly = trip.legs[trip.legIdx];
+    Point const planned = fly.to;
+    if (fly.type != LegType::Fly || landing.mapId != planned.mapId || Distance(landing, planned) <= SAME_POINT_YARDS)
+        return false;
+    std::size_t const count = trip.waypoints.size();
+    Point const before = trip.waypoints[count - 3].at;
+    float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
+    float const share = gap > 0.0f ? std::min(FLY_CLIMB_YARDS, gap / 2.0f) / gap : 0.0f;
+    trip.waypoints[count - 2].at = {landing.mapId, landing.x + (before.x - landing.x) * share,
+                                    landing.y + (before.y - landing.y) * share, before.z};
+    trip.waypoints[count - 1].at = landing;
+    fly.to = landing;
+    if (!fly.flightPoints.empty())
+        fly.flightPoints.back() = landing;
+    Leg walk;
+    walk.type = LegType::Walk;
+    walk.from = landing;
+    walk.to = planned;
+    walk.seconds = Distance(landing, planned) / WALK_FLOOR_SPEED;
+    trip.legs.insert(trip.legs.begin() + trip.legIdx + 1, std::move(walk));
     return true;
 }
 

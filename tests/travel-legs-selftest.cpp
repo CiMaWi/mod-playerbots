@@ -648,6 +648,44 @@ Observation Flying(Point bot, std::uint32_t nowMs, bool mounted, bool flying)
     return seen;
 }
 
+// An indoor landing (WU11b, Golyn at Garadar's inn): checked once near the end, the landing moves to the outdoor
+// point nearest to it back along the flight, the descent point before it, and a walk leg in to the planned end follows
+void CheckLanding()
+{
+    Trip trip = StartedTrip({FlyLeg()}, 0);
+    Check(!TravelLegs::NeedsLandingCheck(trip, {1, 590.0f, 0.0f, 90.0f}), "landing: checked before the descent");
+    trip.next = 5;  // heading for the descent point
+    trip.seenInFlight = true;
+    Check(!TravelLegs::NeedsLandingCheck(trip, {1, 300.0f, 0.0f, 90.0f}), "landing: checked 300 yd out");
+    Check(TravelLegs::NeedsLandingCheck(trip, {1, 500.0f, 0.0f, 90.0f}), "landing: not checked on the descent");
+    std::vector<Point> const line = TravelLegs::LandingLine(trip);
+    Check(line.size() == 16 && line.back().x == 600.0f && std::fabs(line.front().x - 540.0f) < 0.01f &&
+              line[1].x > line[0].x && line.front().z == 12.0f,
+          "landing: the line does not run from 60 yd back to the landing, 4 yd apart, at its height");
+    auto const house = [](Point const& at) { return at.x < 590.0f; };  // indoors within 10 yd of the landing
+    std::size_t const index = TravelLegs::LandingIndex(line, house);
+    Check(index + 1 < line.size() && std::fabs(line[index].x - 588.0f) < 0.01f,
+          "landing: indoors, not the outdoor point nearest to the landing");
+    Check(TravelLegs::LandingIndex(line, [](Point const&) { return true; }) + 1 == line.size() &&
+              TravelLegs::LandingIndex(line, [](Point const&) { return false; }) + 1 == line.size(),
+          "landing: outdoors or no outdoor point, not the planned landing");
+
+    Trip kept = trip;
+    Check(!TravelLegs::MoveLanding(kept, kept.waypoints.back().at) && kept.landingChecked && kept.legs.size() == 1 &&
+              !TravelLegs::NeedsLandingCheck(kept, {1, 595.0f, 0.0f, 20.0f}),
+          "landing: the planned landing changed the leg or is checked again");
+    Point const outside{1, line[index].x, 0.0f, 11.0f};
+    Check(TravelLegs::MoveLanding(trip, outside) && trip.legs.size() == 2 && trip.legs[0].to.x == outside.x &&
+              trip.legs[0].flightPoints.back().x == outside.x && trip.waypoints.back().at.x == outside.x &&
+              std::fabs(trip.waypoints[5].at.x - (outside.x - 30.0f)) < 0.01f && trip.waypoints[5].at.z == 90.0f &&
+              trip.legs[1].type == LegType::Walk && trip.legs[1].from.x == outside.x && trip.legs[1].to.x == 600.0f,
+          "landing: not moved 12 yd back with the descent before it and a walk in");
+    Decision const in =
+        TravelLegs::Advance(trip, Flying({1, outside.x + 1.0f, 0.0f, 11.0f}, 30000, true, false), NodeAt);
+    Check(trip.legIdx == 1 && in.act == Act::Walk && in.target.x == 600.0f,
+          "landing: down at the moved landing, the bot does not walk in");
+}
+
 // Fly legs: the derived climb and descent points, the takeoff (mount, tried again every 5 s), the waypoints in the
 // air, the real-height check (a building raises the next waypoint, capped, once per waypoint, never the landing), the
 // landing at the end (Done) or away from it (Landing), the leg's timeout, the takeoff's failures (at once where the bot
@@ -755,6 +793,27 @@ void CheckFlyLeg()
     Decision const noTakeoff = TravelLegs::StepLeg(inside, indoors);
     Check(noTakeoff.act == Act::Fail && noTakeoff.reason == FailReason::Takeoff && inside.mountTries == 0,
           "fly: no takeoff where the bot stands (indoors, no-fly area, water) fails at once");
+    Check(TravelLegs::AfterFailure(inside, FailReason::Takeoff, true) == Recovery::Replan && !inside.noFly &&
+              inside.replans == 0 && inside.spotFails == 1,
+          "fly: a takeoff refused where the bot stands replans and keeps flying");
+    Check(TravelLegs::AfterFailure(tries, FailReason::Takeoff) == Recovery::Replan && tries.noFly,
+          "fly: a takeoff without a flying mount replans without flying");
+    Trip city = StartedTrip({leg}, 0);
+    bool keptFlying = true;
+    for (std::uint8_t i = 0; i < TravelLegs::MAX_SPOT_FAILS; ++i)
+        keptFlying = keptFlying && TravelLegs::AfterFailure(city, FailReason::Takeoff, true) == Recovery::Replan;
+    Check(keptFlying && !city.noFly && city.replans == 0,
+          "fly: refused takeoffs where the bot stands replan flying outside the replan budget (closed city nodes)");
+    Check(TravelLegs::AfterFailure(city, FailReason::Takeoff, true) == Recovery::Replan && city.noFly &&
+              city.replans == 1 && city.spotFails == TravelLegs::MAX_SPOT_FAILS,
+          "fly: a spot failure past MAX_SPOT_FAILS replans without flying and spends a replan");
+    Trip spent = StartedTrip({leg}, 0);
+    spent.replans = TravelLegs::MAX_REPLANS;
+    Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Replan && !spent.noFly,
+          "fly: a spot failure replans flying after the replans are spent");
+    spent.spotFails = TravelLegs::MAX_SPOT_FAILS;
+    Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Abort,
+          "fly: with both bounds spent the trip ends");
     Trip overCity = StartedTrip({leg}, 0);
     TravelLegs::StepLeg(overCity, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
     Observation aloft = Flying({1, 150.0f, 0.0f, 80.0f}, 9000, true, true);
@@ -821,6 +880,66 @@ void CheckPlaces()
           "places: both continents and both factions");
     Check(TravelPlaces::Names().find("darnassus") != std::string::npos, "places: the usage lists the names");
 }
+
+// WU11b fix 8: a bot on its flyer is in the air by its height over the floor, not by the flying flag (Seyo stood on
+// the ground with the flag and never dismounted to fight)
+void CheckInTheAir()
+{
+    Check(!TravelLegs::InTheAir(118.2f, 117.9f), "in the air: not on the ground (0.3 yd over the floor, Seyo)");
+    Check(!TravelLegs::InTheAir(95.0f, 90.0f), "in the air: not at AIRBORNE_YARDS (5 yd)");
+    Check(TravelLegs::InTheAir(95.5f, 90.0f), "in the air: just above AIRBORNE_YARDS");
+    Check(TravelLegs::InTheAir(126.0f, 90.0f), "in the air: 36 yd up on the climb (Nennaro)");
+    Check(!TravelLegs::InTheAir(10.0f, 12.0f), "in the air: not under a floor (a sample above the bot)");
+    Check(TravelLegs::InTheAir(500.0f, -200000.0f), "in the air: no floor found (INVALID_HEIGHT), the flag decides");
+    Check(TravelLegs::InTheAir(500.0f, -100000.0f), "in the air: no vmap floor (VMAP_INVALID_HEIGHT_VALUE)");
+}
+
+// WU11b fix 9: a fly leg that comes down after a fight in the air is a combat landing, not a fall (Olina, attacked on
+// the descent); combat before the takeoff or on another leg type does not count
+void CheckCombatLanding()
+{
+    using TravelLegs::Life;
+    Trip quiet = StartedTrip({FlyLeg()}, 0);
+    quiet.seenInFlight = true;
+    Check(std::string(TravelLegs::LandingWord(quiet, 0.0f)) == "fall", "combat landing: no fight, a fall");
+    Trip ground = StartedTrip({FlyLeg()}, 0);
+    TravelLegs::NoteLife(ground, Life::Combat, 1000);
+    TravelLegs::NoteLife(ground, Life::Calm, 5000);
+    ground.seenInFlight = true;
+    Check(!ground.foughtInFlight && std::string(TravelLegs::LandingWord(ground, 0.0f)) == "fall",
+          "combat landing: a fight before the takeoff is no combat landing");
+    Trip fought = StartedTrip({FlyLeg()}, 0);
+    fought.seenInFlight = true;
+    TravelLegs::NoteLife(fought, Life::Combat, 2000);
+    TravelLegs::NoteLife(fought, Life::Calm, 18000);
+    Check(fought.foughtInFlight && std::string(TravelLegs::LandingWord(fought, 0.0f)) == "combat",
+          "combat landing: a fight after the takeoff, on the ground (Olina)");
+    Check(std::string(TravelLegs::LandingWord(fought, 117.0f)) == "fall",
+          "combat landing: a fight, then down 117 yd in the air, is a fall (Daenlean)");
+    fought.legs.push_back(FlyLeg());
+    TravelLegs::StartLeg(fought, 1, 20000, NodeAt);
+    Check(!fought.foughtInFlight, "combat landing: a new leg starts without the fight");
+    Trip walking = StartedTrip(FullRoute());
+    walking.seenInFlight = true;
+    TravelLegs::NoteLife(walking, Life::Combat, 3000);
+    Check(!walking.foughtInFlight, "combat landing: only on a fly leg");
+}
+
+void CheckBodyZ()
+{
+    float const none = TravelLegs::FLY_NO_GROUND;
+    Check(TravelLegs::BodyZ(192.0f, 75.0f, none) == 75.0f, "body: killed 117 yd up lies on the floor (Daenlean)");
+    Check(TravelLegs::BodyZ(78.0f, 75.0f, none) == 78.0f, "body: within AIRBORNE_YARDS of the floor stays");
+    Check(TravelLegs::BodyZ(75.0f, 75.0f, none) == 75.0f, "body: on the floor stays");
+    Check(TravelLegs::BodyZ(70.0f, 75.0f, none) == 70.0f, "body: below the probe's floor (a cave) stays");
+    Check(TravelLegs::BodyZ(192.0f, none, none) == 192.0f, "body: no floor found stays");
+    Check(TravelLegs::BodyZ(192.0f, -100000.0f, none) == 192.0f, "body: the map's invalid height stays");
+    Check(TravelLegs::BodyZ(69.0f, -500.0f, 0.0f) == 0.0f, "body: killed over the sea floats on it (Almaadon)");
+    Check(TravelLegs::BodyZ(-3.0f, -500.0f, 0.0f) == -3.0f, "body: died swimming below the surface stays");
+    Check(TravelLegs::BodyZ(2.0f, -500.0f, 0.0f) == 2.0f, "body: within AIRBORNE_YARDS of the surface stays");
+    Check(TravelLegs::BodyZ(150.0f, 40.0f, 10.0f) == 40.0f, "body: ground above the water's level is the floor");
+    Check(TravelLegs::BodyZ(150.0f, none, 0.0f) == 0.0f, "body: water with no ground found is the floor");
+}
 }  // namespace
 
 int main()
@@ -837,7 +956,11 @@ int main()
     CheckEventSources();
     CheckDeathsAndRecord();
     CheckFlyLeg();
+    CheckLanding();
     CheckPlaces();
+    CheckInTheAir();
+    CheckCombatLanding();
+    CheckBodyZ();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

@@ -1577,8 +1577,10 @@ void LogWalkLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, Trave
               TravelLegs::MountWord(record), record.mountedTicks, record.ticks, combat);
 }
 
-constexpr float FLY_SAMPLE_YARDS = 50.0f;  // the real-height check samples the ground ahead this far apart
-constexpr uint32 FLY_SAMPLES_MAX = 8;      // and at most this often per waypoint
+constexpr float FLY_SAMPLE_YARDS = 50.0f;     // the real-height check samples the ground ahead this far apart
+constexpr float LANDING_PROBE_YARDS = 5.0f;   // the landing check searches the ground down from this above the landing
+constexpr float LANDING_PROBE_DEPTH = 40.0f;  // and this far down
+constexpr uint32 FLY_SAMPLES_MAX = 8;         // and at most this often per waypoint
 
 // A fly leg's end (WU10): its trip rows, fly_leg when done or fly_leg_failed (as walk_leg: how the bot went, its
 // seconds in combat, its seconds against the estimate; a failed takeoff's row has why instead of how the bot went),
@@ -1629,26 +1631,65 @@ std::vector<float> SampleFlightGround(Player* bot, TravelRoute::Point const& tar
     return samples;
 }
 
-// A fly leg's mount (WU10): off a ground mount, then the engine's own mount action, which gives a bot without a real
-// master a flying mount where the area allows flying. A try in combat, while casting or where the bot cannot take off
-// is skipped and does not count (the follower asks again; the last fails the leg at once); a counted try that starts
-// no cast leaves its word for the fly_leg_failed row (no_strategy: no mount strategy; refused: the action was useless,
-// impossible or failed)
+// The landing's open-sky check (TravelLegs::NeedsLandingCheck): each point of the landing line on the ground below it,
+// searched down from LANDING_PROBE_YARDS above the landing's height (a roof higher up is not the ground there), and
+// outdoors there by the map's terrain status (WMO areas count). True when the landing moved (TravelLegs::MoveLanding)
+bool CheckLanding(Player* bot, TravelLegs::Trip& trip)
+{
+    Map* map = bot->GetMap();
+    std::vector<TravelRoute::Point> line = TravelLegs::LandingLine(trip);
+    if (!map || line.empty())
+        return TravelLegs::MoveLanding(trip, trip.waypoints.empty() ? TravelRoute::Point{} : trip.waypoints.back().at);
+    uint32 const phase = bot->GetPhaseMask();
+    for (TravelRoute::Point& point : line)
+        point.z = map->GetHeight(phase, point.x, point.y, point.z + LANDING_PROBE_YARDS, true, LANDING_PROBE_DEPTH);
+    float const collision = bot->GetCollisionHeight();
+    auto const outdoors = [&](TravelRoute::Point const& point)
+    {
+        if (point.z <= INVALID_HEIGHT)
+            return false;
+        PositionFullTerrainStatus status;
+        map->GetFullTerrainStatusForPosition(phase, point.x, point.y, point.z, collision, status);
+        return status.outdoors;
+    };
+    std::size_t const index = TravelLegs::LandingIndex(line, outdoors);
+    TravelRoute::Point const planned = trip.waypoints.back().at;
+    if (!TravelLegs::MoveLanding(trip, index + 1 == line.size() ? planned : line[index]))
+        return false;
+    LOG_DEBUG("playerbots",
+              "[Route] {} landing at ({:.0f}, {:.0f}, {:.0f}) is indoors: lands {:.0f} yd back at ({:.0f}, {:.0f}, "
+              "{:.0f}) and walks in",
+              bot->GetName(), planned.x, planned.y, planned.z, TravelRoute::Distance(planned, line[index]),
+              line[index].x, line[index].y, line[index].z);
+    return true;
+}
+
+// A fly leg's mount (WU10): off a ground mount, then the bot's fastest flying mount (CheckMountStateAction::
+// CastFlyingMount; the engine's "check mount state" refused a bot standing still on open ground, WU11b). A try in
+// combat, while casting or where the bot cannot take off is skipped and does not count (the follower asks again; the
+// last fails the leg at once); so is a try while the bot moves or sits: the cast checks refuse it in the tick of the
+// stop (WU11b: Edhoon's "cast result 255, moving true"), so it stops or stands up now and casts on a later tick. A
+// counted try that starts no cast leaves its word for the fly_leg_failed row (no_strategy: no mount strategy;
+// no_mount: no flying mount known; refused: the cast check refused every one)
 bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 nowMs)
 {
     if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(true) || CheckMountStateAction::NoTakeoffHere(bot))
         return true;
+    if (bot->isMoving() || !bot->IsStandState())
+    {
+        if (bot->isMoving())
+            bot->StopMoving();
+        if (!bot->IsStandState())
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+        return true;
+    }
     TravelLegs::NoteMountTry(trip, nowMs);
-    if (bot->isMoving())
-        bot->StopMoving();
     if (bot->IsMounted())
         bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
     if (!botAI->HasStrategy("mount", BOT_STATE_NON_COMBAT))
         trip.mountWhy = "no_strategy";
-    else if (!botAI->DoSpecificAction("check mount state", Event(), true))
-        trip.mountWhy = "refused";
     else
-        trip.mountWhy = "";
+        trip.mountWhy = CheckMountStateAction::CastFlyingMount(bot, botAI);
     return true;
 }
 
@@ -1688,7 +1729,8 @@ void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::
     }
     alternatives.Add({"legs", static_cast<float>(legs)});
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Route, legs ? chain.View() : "here",
-                       data.trip.replans ? "replan" : "search", route.totalSeconds, alternatives, data.tripId);
+                       data.trip.replans || data.trip.spotFails ? "replan" : "search", route.totalSeconds, alternatives,
+                       data.tripId);
 }
 }  // namespace
 
@@ -1768,6 +1810,11 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         TravelLegs::CheckHeight(data->trip, SampleFlightGround(bot, trip.waypoints[trip.next].at));
         next.target = trip.waypoints[trip.next].at;
     }
+    // Once per fly leg near its end: an indoor landing (an inn's floor under its roof) moves to the outdoor spot
+    // nearest to it back along the flight, and the bot walks in from there
+    if (next.act == TravelLegs::Act::Fly && TravelLegs::NeedsLandingCheck(trip, seen.bot) &&
+        CheckLanding(bot, data->trip))
+        next.target = trip.waypoints[trip.next].at;
     switch (next.act)
     {
         case TravelLegs::Act::Arrived:
@@ -2020,7 +2067,17 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         {
             float const ground = bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
             float const height = ground > INVALID_HEIGHT ? std::max(0.0f, bot->GetPositionZ() - ground) : 0.0f;
-            EventLog::Emit(bot, Upkeep::EVENT_FLIGHT_FALL, "fall", data.tripId, std::lround(height));
+            char const* const word = TravelLegs::LandingWord(trip, height);
+            EventLog::Emit(bot, Upkeep::EVENT_FLIGHT_FALL, word, data.tripId, std::lround(height));
+            // What brought it down (WU11b fix 7: Elyvia and Meldel, both in Zul'Drak's area 4310): a fight after the
+            // takeoff (combat) or not (fall), the mount, its flight aura and the flying flag now, the core's indoor
+            // state (its vmap indoor check takes an outdoor-only mount: fix 10's lead for area 4310), the height and area
+            LOG_INFO("playerbots",
+                     "[Route] {} came down on fly leg {}/{} ({}): mounted {}, flight aura {}, flying {}, outdoors {}, "
+                     "{:.0f} yd above the ground in area {} at ({:.0f}, {:.0f}, {:.0f})",
+                     bot->GetName(), trip.legIdx + 1, trip.legs.size(), word, bot->IsMounted(),
+                     bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura(), bot->IsFlying(), bot->IsOutdoors(),
+                     height, bot->GetAreaId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         }
     }
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Hearth)
@@ -2042,7 +2099,10 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         }
     }
 
-    if (TravelLegs::AfterFailure(trip, reason) == TravelLegs::Recovery::Abort)
+    // A takeoff refused where the bot stands keeps flying: the replan starts no flight at this spot (AddFlyLegs)
+    bool const spotClosed =
+        reason == TravelLegs::FailReason::Takeoff && CheckMountStateAction::NoTakeoffHere(bot) != nullptr;
+    if (TravelLegs::AfterFailure(trip, reason, spotClosed) == TravelLegs::Recovery::Abort)
     {
         EndTrip(data, TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
         return true;

@@ -314,9 +314,11 @@ void NoteTravelDeath(Player* killed)
     if (!travel)
         return;
     TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
-    // A death on a fly leg (upkeep WU10): FlightFall death, amount the leg's number
+    // A death on a fly leg after its takeoff (upkeep WU10): FlightFall death, amount the leg's number. A bot killed on
+    // the ground before it took off (WU11b fix 7: Glettla, killed at Valgarde by the mob that had killed it there
+    // before) died a ground death, counted by its Death row only
     TravelLegs::Trip const& trip = travel->trip;
-    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly)
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly && trip.seenInFlight)
         EventLog::Emit(killed, Upkeep::EVENT_FLIGHT_FALL, "death", travel->tripId, trip.legIdx + 1);
 }
 

@@ -9,7 +9,9 @@
 #include "Corpse.h"
 #include "Event.h"
 #include "GameGraveyard.h"
+#include "GridTerrainData.h"
 #include "Log.h"
+#include "Map.h"
 #include "NearestNpcsValue.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
@@ -17,6 +19,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "TravelLegRules.h"
 #include "Upkeep.h"
 #include "WorldLog.h"
 #include "WorldTravelRules.h"
@@ -34,6 +37,32 @@ void LogCorpseRun(PlayerbotAI* botAI, Player* bot, uint32 deathCount)
     uint32 const deaths = deathCount / WorldTravel::DEATH_COUNT_PER_DEATH;
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "corpse_run", deaths <= 1 ? "first_run" : "retry",
                        static_cast<float>(deaths));
+}
+
+// A bot killed in the air lies on the floor below before the release makes its corpse (TravelLegs::BodyZ), as a
+// player's body falls: the corpse, the ghost's way back and the revival at the corpse keep that spot
+void LayBodyOnFloor(Player* bot)
+{
+    if (bot->GetTransport())
+        return;
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    float const z = bot->GetPositionZ();
+    float const groundZ = bot->GetMapHeight(x, y, z, true, MAX_FALL_DISTANCE);
+    // The water over the ground (the sea's surface, not its floor); none where the ground is dry or not found
+    LiquidData const water =
+        groundZ > TravelLegs::FLY_NO_GROUND
+            ? bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, groundZ, bot->GetCollisionHeight(), {})
+            : LiquidData();
+    float const waterZ = water.Status != LIQUID_MAP_NO_WATER ? water.Level : TravelLegs::FLY_NO_GROUND;
+    float const bodyZ = TravelLegs::BodyZ(z, groundZ, waterZ);
+    if (bodyZ == z)
+        return;
+    LOG_INFO("playerbots",
+             "Bot {} <{}> killed {:.0f} yd above the floor in area {}: the body lies at ({:.0f}, {:.0f}, "
+             "{:.0f})",
+             bot->GetGUID().ToString(), bot->GetName(), z - bodyZ, bot->GetAreaId(), x, y, bodyZ);
+    bot->UpdatePosition(x, y, bodyZ, bot->GetOrientation(), true);
 }
 }  // namespace
 
@@ -76,6 +105,7 @@ bool ReleaseSpiritAction::Execute(Event event)
     }
     LogRelease("released");
 
+    LayBodyOnFloor(bot);
     WorldPacket releasePacket(CMSG_REPOP_REQUEST);
     releasePacket << uint8(0);
     bot->GetSession()->HandleRepopRequestOpcode(releasePacket);
@@ -122,6 +152,7 @@ bool AutoReleaseSpiritAction::Execute(Event /*event*/)
     }
     LogRelease("auto released");
 
+    LayBodyOnFloor(bot);
     WorldPacket packet(CMSG_REPOP_REQUEST);
     packet << uint8(0);
     bot->GetSession()->HandleRepopRequestOpcode(packet);
