@@ -14,8 +14,9 @@
 
 // A test's hold on a bot (`playerbots route hold|release`, functional tests): the choices a held bot does not make on
 // its own. Kept in NewRpgInfo::heldChoices (not saved), read only where the bot already decides: the idle status
-// update, the planner hook, the errand triggers' gate, the hearth snapshots and the grind multiplier. Orders are taken before the idle gate,
-// so a held bot runs an order and holds again when it ends (arrived, abort, stop). Player-free for the selftest
+// update, the planner hook, the errand triggers' gate, the hearth snapshots and the grind multiplier. Orders are taken
+// before the idle gate, so a held bot runs an order and holds again when it ends (arrived, abort, stop). Player-free
+// for the selftest
 namespace HoldRules
 {
 constexpr std::uint8_t PLANNER = 1;  // planner goals and jobs
