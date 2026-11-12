@@ -26,6 +26,16 @@
 static constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
 static constexpr float PARACHUTE_LAND_THRESHOLD = 15.0f;
 
+// On a flying mount (or in a flight form) and in the air by the real height (TravelLegs::InTheAir), flag or not
+// (WU11c: a flight aura applied in the air sets CAN_FLY only, so Meldel flew without the flying flag)
+static bool FlyerInTheAir(Player* bot)
+{
+    if (!bot->HasIncreaseMountedFlightSpeedAura() && !bot->HasFlyAura())
+        return false;
+    return TravelLegs::InTheAir(bot->GetPositionZ(),
+                                bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()));
+}
+
 // Preferred mounts per bot, loaded once at startup by LoadPreferredMounts()
 std::unordered_map<uint32, PreferredMountCache> CheckMountStateAction::mountCache;
 
@@ -87,11 +97,9 @@ bool CheckMountStateAction::Execute(Event /*event*/)
             bot->RemoveAurasByType(SPELL_AURA_FEATHER_FALL);
     }
     ClearStaleFlightFlags();
-    // In the air by the real height, not the flag alone: a bot on its flyer on the ground keeps the flag
-    bool const inTheAir =
-        bot->IsFlying() &&
-        TravelLegs::InTheAir(bot->GetPositionZ(),
-                             bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()));
+    // In the air by the real height, not the flag: a bot on its flyer on the ground keeps the flag, one in the air
+    // may lack it
+    bool const inTheAir = FlyerInTheAir(bot);
 
     // Determine if there are no attackers
     bool noAttackers = !AI_VALUE2(bool, "combat", "self target") || !AI_VALUE(uint8, "attacker count");
@@ -595,11 +603,12 @@ char const* CheckMountStateAction::CastFlyingMount(Player* bot, PlayerbotAI* bot
 {
     // A cast the check allowed that still did not start (rare, WU11b: Hellengi's three silent refusals): why, for
     // the log only. A shapeshift form the mount cannot be cast in (WU11b fix 9: the druids Pilge and Barilas, prepare
-    // result 68, SPELL_FAILED_NOT_SHAPESHIFT) is left first, as a player cancels it; never in the air
+    // result 68, SPELL_FAILED_NOT_SHAPESHIFT) is left first, as a player cancels it; never in the air (by the height:
+    // a stale flag on the ground kept Seyo's form)
     auto const cast = [bot, botAI](uint32 spellId) -> char const*
     {
         ShapeshiftForm const form = bot->GetShapeshiftForm();
-        if (form != FORM_NONE && !bot->IsFlying())
+        if (form != FORM_NONE && !FlyerInTheAir(bot))
             if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
                 if (info->CheckShapeshift(form) != SPELL_CAST_OK)
                     bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);

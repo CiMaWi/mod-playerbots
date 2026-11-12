@@ -98,42 +98,6 @@ std::vector<Leg> FullRoute()
     };
 }
 
-char const* ActWord(Act act)
-{
-    switch (act)
-    {
-        case Act::Walk:
-            return "walk";
-        case Act::UseTrigger:
-            return "trigger";
-        case Act::TalkFlightMaster:
-            return "talk";
-        case Act::UseHearth:
-            return "hearth";
-        case Act::Ride:
-            return "ride";
-        case Act::Mount:
-            return "mount";
-        case Act::Fly:
-            return "fly";
-        case Act::Board:
-            return "board";
-        case Act::Hop:
-            return "hop";
-        case Act::Disembark:
-            return "disembark";
-        case Act::Wait:
-            return "wait";
-        case Act::Done:
-            return "done";
-        case Act::Arrived:
-            return "arrived";
-        case Act::Fail:
-            return "fail";
-    }
-    return "?";
-}
-
 Observation At(Point bot, std::uint32_t nowMs, std::uint32_t money = 10000, bool inFlight = false, bool stuck = false)
 {
     Observation seen;
@@ -947,6 +911,67 @@ void CheckBodyZ()
     Check(TravelLegs::BodyZ(150.0f, none, 0.0f) == 0.0f, "body: water with no ground found is the floor");
 }
 
+// WU11c: a fly leg that failed in the air comes down before the replan: on its flying mount straight down to the floor
+// (the higher of ground and water), without one it falls (Balthas, Farnin, Elyvia hovered where the leg failed and
+// every walk replan failed at that spot)
+void CheckDescent()
+{
+    using TravelLegs::Recovery;
+    float const none = TravelLegs::FLY_NO_GROUND;
+    Point const up{1, 300.0f, 0.0f, 202.7f};
+    auto const isFloor = [](Point const& at, float z)
+    { return at.mapId == 1 && at.x == 300.0f && at.y == 0.0f && at.z == z; };
+
+    Trip walk = StartedTrip(FullRoute());
+    Check(TravelLegs::StartDescent(walk, up, 90.0f, none, true, 5000).act == Act::Done && !walk.descending,
+          "descent: only after a fly leg");
+
+    Trip trip = StartedTrip({FlyLeg()}, 0);
+    trip.seenInFlight = true;
+    Check(TravelLegs::AfterFailure(trip, FailReason::Landing) == Recovery::Replan && trip.noFly,
+          "descent: the failed fly leg replans walking (AfterFailure first, as LegFailed calls them)");
+    Decision const start = TravelLegs::StartDescent(trip, up, 90.0f, none, true, 5000);
+    Check(start.act == Act::Descend && isFloor(start.target, 90.0f) && trip.descending && trip.descentStartMs == 5000,
+          "descent: 113 yd up on the flying mount, straight down to the ground below (Elyvia)");
+    Decision const on = TravelLegs::StepDescent(trip, {1, 300.0f, 0.0f, 150.0f}, true, 20000);
+    Check(on.act == Act::Descend && isFloor(on.target, 90.0f) && trip.descending, "descent: 60 yd up, on down");
+    Decision const down = TravelLegs::StepDescent(trip, {1, 300.0f, 0.0f, 94.0f}, true, 30000);
+    Check(down.act == Act::Done && isFloor(down.target, 90.0f) && !trip.descending,
+          "descent: within AIRBORNE_YARDS of the floor it is down (the glue lands it)");
+    Check(TravelLegs::StepDescent(trip, up, true, 31000).act == Act::Done, "descent: none running, nothing to do");
+
+    TravelLegs::StartDescent(trip, up, 90.0f, none, true, 40000);
+    Decision const lost = TravelLegs::StepDescent(trip, {1, 300.0f, 0.0f, 150.0f}, false, 45000);
+    Check(lost.act == Act::Fall && isFloor(lost.target, 90.0f) && !trip.descending,
+          "descent: the flying mount gone on the way, it falls the rest");
+    TravelLegs::StartDescent(trip, up, 90.0f, none, true, 50000);
+    Check(TravelLegs::StepDescent(trip, up, true, 50000 + TravelLegs::DESCENT_TIMEOUT_MS).act == Act::Descend,
+          "descent: still on at DESCENT_TIMEOUT_MS");
+    Decision const late = TravelLegs::StepDescent(trip, up, true, 50001 + TravelLegs::DESCENT_TIMEOUT_MS);
+    Check(late.act == Act::Fail && late.reason == FailReason::Timeout && !trip.descending,
+          "descent: past DESCENT_TIMEOUT_MS it gives up, the replan starts where the bot is");
+    TravelLegs::StartDescent(trip, up, 90.0f, none, true, 60000);
+    Decision const away = TravelLegs::StepDescent(trip, {0, 300.0f, 0.0f, 150.0f}, true, 61000);
+    Check(away.act == Act::Fail && away.reason == FailReason::WrongMap && !trip.descending,
+          "descent: on another map it ends");
+
+    Decision const fall = TravelLegs::StartDescent(trip, up, 90.0f, none, false, 70000);
+    Check(fall.act == Act::Fall && isFloor(fall.target, 90.0f) && !trip.descending,
+          "descent: without a flying mount it falls to the floor");
+    Check(TravelLegs::StartDescent(trip, {1, 300.0f, 0.0f, 94.0f}, 90.0f, none, true, 70000).act == Act::Done &&
+              !trip.descending,
+          "descent: within AIRBORNE_YARDS of the floor nothing to do");
+    Check(TravelLegs::StartDescent(trip, up, none, none, true, 70000).act == Act::Done && !trip.descending,
+          "descent: no floor found, nothing to do");
+    Check(isFloor(TravelLegs::StartDescent(trip, up, -500.0f, 0.0f, true, 70000).target, 0.0f) && trip.descending,
+          "descent: over the sea down to its surface, not the seabed");
+    Check(isFloor(TravelLegs::StartDescent(trip, up, 120.0f, 40.0f, true, 70000).target, 120.0f),
+          "descent: ground above the water's level is the floor");
+    Check(std::string(TravelLegs::ActWord(Act::Descend)) == "descend" &&
+              std::string(TravelLegs::ActWord(Act::Fall)) == "fall",
+          "descent: the acts' words for the hold line");
+}
+
 // Transport legs (WT19): a ship from pier A (map 0) to pier B (map 1) and an elevator from its top to its bottom
 std::uint32_t const SHIP = 164871;
 std::uint32_t const LIFT = 4170;
@@ -1260,6 +1285,7 @@ int main()
     CheckInTheAir();
     CheckCombatLanding();
     CheckBodyZ();
+    CheckDescent();
     CheckTransport();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

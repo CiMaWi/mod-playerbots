@@ -717,6 +717,8 @@ public:
     // Natural reaction (Playerbots.Natural.Reaction.*, NaturalReaction.h): ln(median) and spread of the bot's reaction
     // time, cached by SetPvpSkill for every skilled bot (read only while the option is on)
     ReactionState const& GetReactionState() const { return reactionState; }
+    // The reaction engine, for the world log's case hold line (null before the engines are made)
+    ReactionEngine const* GetReactionEngine() const { return reactionEngine; }
     // G0h3's reaction types: the choice, load, ease, think, anticipation and queue prices from the bot's attributes,
     // cached by SetPvpSkill (all 0 at skill 0)
     ReactionTypeState const& GetReactionTypes() const { return reactionTypes; }

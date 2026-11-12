@@ -20,6 +20,7 @@
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
+#include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
@@ -1820,6 +1821,32 @@ void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::
                        data.trip.replans || data.trip.spotFails ? "replan" : "search", route.totalSeconds, alternatives,
                        data.tripId);
 }
+
+// The bot's place as the travel rules see it
+TravelRoute::Point BotPoint(Player* bot)
+{
+    return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+}
+
+// Mounted with a flight aura (TravelLegs::Observation::flyingMount)
+bool OnFlyingMount(Player* bot)
+{
+    return bot->IsMounted() && (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura());
+}
+
+// The ground below the bot and the surface of the water over it (TravelLegs::FLY_NO_GROUND: none), as the floor a
+// body lies on (ReleaseSpiritAction's LayBodyOnFloor, TravelLegs::BodyZ)
+std::pair<float, float> FloorBelow(Player* bot)
+{
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    float const groundZ = bot->GetMapHeight(x, y, bot->GetPositionZ(), true, MAX_FALL_DISTANCE);
+    LiquidData const water =
+        groundZ > TravelLegs::FLY_NO_GROUND
+            ? bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, groundZ, bot->GetCollisionHeight(), {})
+            : LiquidData();
+    return {groundZ, water.Status != LIQUID_MAP_NO_WATER ? water.Level : TravelLegs::FLY_NO_GROUND};
+}
 }  // namespace
 
 bool NewRpgTravelAction::Execute(Event /*event*/)
@@ -1827,12 +1854,13 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     auto* data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (!data)
         return false;
-    // A trip never ends in the air: on a taxi or on its own fly leg it goes past the deadline. Aboard or at a
-    // transport's dock the deadline waits; the leg's end takes that time off the route (below)
+    // A trip never ends in the air: on a taxi, on its own fly leg or on the flight down after one it goes past the
+    // deadline. Aboard or at a transport's dock the deadline waits; the leg's end takes that time off the route (below)
     bool const flyLeg = data->trip.legIdx < data->trip.legs.size() &&
                         data->trip.legs[data->trip.legIdx].type == TravelRoute::LegType::Fly;
     Transport* const ridden = bot->GetTransport();
-    bool const riding = bot->IsInFlight() || (flyLeg && bot->IsFlying()) || ridden || AtTransportLeg(data->trip);
+    bool const riding = bot->IsInFlight() || (flyLeg && bot->IsFlying()) || ridden || AtTransportLeg(data->trip) ||
+                        data->trip.descending;
     if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, riding))
     {
         EndTrip(*data, "deadline", "abort:deadline");
@@ -1842,6 +1870,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     // again once the bot is back): the leg fails, its edge is avoided; the third death ends the trip
     if (TravelLegs::DiedTooOften(data->trip))
         return LegFailed(*data, TravelLegs::FailReason::Death);
+    // A fly leg failed in the air: down to the floor before the replan
+    if (data->trip.descending)
+        return FlyDown(*data, TravelLegs::StepDescent(data->trip, BotPoint(bot), OnFlyingMount(bot), getMSTime()));
     if (data->route.waiting)
         return TakeRoute(*data);
     if (data->trip.legs.empty())
@@ -1856,9 +1887,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         return LegFailed(*data, TravelLegs::FailReason::OffMesh);
 
     TravelLegs::Observation seen;
-    seen.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    seen.bot = BotPoint(bot);
     seen.inFlight = bot->IsInFlight();
-    seen.flyingMount = bot->IsMounted() && (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura());
+    seen.flyingMount = OnFlyingMount(bot);
     // Flying flags count only on the flying mount: a dismount in the air can leave them (no client sends the landing)
     seen.flying = seen.flyingMount && bot->IsFlying() && !seen.inFlight;
     // Before a fly leg's takeoff: may the bot mount a flyer and lift off here (a no-fly spot fails the leg at once).
@@ -1952,6 +1983,10 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     if (next.act == TravelLegs::Act::Fly && TravelLegs::NeedsLandingCheck(trip, seen.bot) &&
         CheckLanding(bot, data->trip))
         next.target = trip.waypoints[trip.next].at;
+    // For the case's hold line: what the follower did last, and when
+    data->trip.lastAct = next.act;
+    data->trip.lastTarget = next.target;
+    data->trip.lastActMs = seen.nowMs;
     switch (next.act)
     {
         case TravelLegs::Act::Arrived:
@@ -1993,6 +2028,8 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
             return true;
         case TravelLegs::Act::Fail:
             return LegFailed(*data, next.reason);
+        case TravelLegs::Act::Descend:  // StartDescent's and StepDescent's only (FlyDown)
+        case TravelLegs::Act::Fall:
         case TravelLegs::Act::Wait:
         case TravelLegs::Act::Done:
             return true;
@@ -2209,7 +2246,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
                    reason == TravelLegs::FailReason::Timeout ? "timed out" : TravelLegs::FailWord(reason), false);
     }
     // A failed fly leg's rows; down away from its end after the takeoff is a fall (or a dismount in the air): its
-    // height above the ground now. A bot that fails in the air flies on along the next route's ground waypoints
+    // height above the ground now. A bot that fails in the air comes down before the replan (StartDescent, below)
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly)
     {
         uint32 const now = getMSTime();
@@ -2260,6 +2297,24 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         EndTrip(data, TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
         return true;
     }
+    // A fly leg failed in the air (no client gravity holds a bot up where it failed, and every walk replan failed at
+    // that spot): on its flying mount it flies straight down to the floor, without one it falls; then the replan
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly)
+    {
+        auto const [groundZ, waterZ] = FloorBelow(bot);
+        TravelLegs::Decision const down =
+            TravelLegs::StartDescent(trip, BotPoint(bot), groundZ, waterZ, OnFlyingMount(bot), getMSTime());
+        if (down.act != TravelLegs::Act::Done)
+        {
+            LOG_INFO("playerbots",
+                     "[Route] {} fly leg {}/{} failed ({}) {:.0f} yd above the floor in area {} at ({:.0f}, {:.0f}, "
+                     "{:.0f}): {}",
+                     bot->GetName(), trip.legIdx + 1, trip.legs.size(), TravelLegs::FailWord(reason),
+                     bot->GetPositionZ() - down.target.z, bot->GetAreaId(), bot->GetPositionX(), bot->GetPositionY(),
+                     bot->GetPositionZ(), down.act == TravelLegs::Act::Descend ? "flies down" : "falls");
+            FlyDown(data, down);
+        }
+    }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "replan", TravelLegs::FailWord(reason),
                        static_cast<float>(legSeconds), {{"leg", static_cast<float>(trip.legIdx + 1)}}, data.tripId);
     trip.legs.clear();
@@ -2269,6 +2324,44 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     data.stuck = false;
     data.failedMs = std::max<uint32>(getMSTime(), 1);  // 0 = no failed leg
     return true;
+}
+
+bool NewRpgTravelAction::FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision const& down)
+{
+    TravelLegs::Trip& trip = data.trip;
+    uint32 const now = getMSTime();
+    trip.lastAct = down.act;
+    trip.lastTarget = down.target;
+    trip.lastActMs = now;
+    switch (down.act)
+    {
+        case TravelLegs::Act::Descend:
+            // Straight down on the flying mount, as the fly leg's follower moves (no path generation in the air)
+            MoveTo(down.target.mapId, down.target.x, down.target.y, down.target.z, false, false, false, true,
+                   MovementPriority::MOVEMENT_NORMAL, true);
+            return true;
+        case TravelLegs::Act::Done:
+            LOG_INFO("playerbots", "[Route] {} flew down to the floor in {} s, area {} at ({:.0f}, {:.0f}, {:.0f})",
+                     bot->GetName(), getMSTimeDiff(trip.descentStartMs, now) / IN_MILLISECONDS, bot->GetAreaId(),
+                     bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            CheckMountStateAction::LandAndDismount(bot);
+            return true;
+        case TravelLegs::Act::Fall:
+            // As a player falls (the fall's damage too): the mount's aura and the flying flags go first
+            LOG_INFO("playerbots", "[Route] {} falls {:.0f} yd without a flying mount in area {} at ({:.0f}, {:.0f})",
+                     bot->GetName(), bot->GetPositionZ() - down.target.z, bot->GetAreaId(), bot->GetPositionX(),
+                     bot->GetPositionY());
+            CheckMountStateAction::LandAndDismount(bot);
+            return true;
+        case TravelLegs::Act::Fail:
+            // The replan starts where the bot is
+            LOG_INFO("playerbots", "[Route] {} gives the flight down up ({}) at z {:.0f}, floor {:.0f}, in area {}",
+                     bot->GetName(), TravelLegs::FailWord(down.reason), bot->GetPositionZ(), trip.descentTo.z,
+                     bot->GetAreaId());
+            return true;
+        default:
+            return true;
+    }
 }
 
 bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)

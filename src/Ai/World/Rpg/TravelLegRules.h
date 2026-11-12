@@ -65,12 +65,16 @@ constexpr std::uint32_t FLY_MOUNT_RETRY_MS = 5 * 1000;  // a mount cast is tried
 constexpr float FLY_MIN_CLEARANCE_YARDS = 15.0f;        // the real-height check: at least this above the ground ahead
 constexpr float FLY_RAISE_CAP_YARDS = 250.0f;           // a raise lifts a waypoint at most this far above the plan
 constexpr float FLY_NO_GROUND = -50000.0f;              // a height sample at or below: no ground found there
-constexpr float AIRBORNE_YARDS = 5.0f;                  // a bot with the flying flag this far above the floor flies
+constexpr float AIRBORNE_YARDS = 5.0f;                  // a bot on its flyer this far above the floor flies
 
-// A bot with the flying flag at z over the floor floorZ (the map's height below it) is in the air (WU11b fix 8). A bot
-// sitting on its flyer on the ground keeps the flag (bots send no landing packet, and the stale-flag cleanup waits for
-// the mount's aura to go), and the core refuses a mounted player's attack: the flag alone kept such a bot mounted in a
-// fight until it died (Seyo at Agmar's Hammer). No floor found: the flag decides.
+// The flight down after a fly leg failed in the air takes at most this (StepDescent)
+constexpr std::uint32_t DESCENT_TIMEOUT_MS = 90 * 1000;
+
+// A bot on a flying mount at z over the floor floorZ (the map's height below it) is in the air (WU11b fix 8). A bot
+// sitting on its flyer on the ground keeps the flying flag (bots send no landing packet, and the stale-flag cleanup
+// waits for the mount's aura to go), and the core refuses a mounted player's attack: the flag alone kept such a bot
+// mounted in a fight until it died (Seyo at Agmar's Hammer). The height decides for every flyer, flag or not (WU11c: a
+// flight aura applied in the air sets CAN_FLY only, Meldel). No floor found: in the air (a fall kills).
 inline bool InTheAir(float z, float floorZ) { return floorZ <= FLY_NO_GROUND || z - floorZ > AIRBORNE_YARDS; }
 
 // The height a bot killed at z leaves its body at (WU11b fix 10), groundZ the map's ground below it and waterZ the
@@ -119,6 +123,8 @@ enum class Act : std::uint8_t
     Board,             // transport: a straight walk (decks are off the mesh) onto the docked transport at target
     Hop,               // transport: the last-resort hop onto the deck near target (unseen, counted: WT.14)
     Disembark,         // transport: a straight walk off the transport, docked at the leg's end, to target
+    Descend,           // a failed fly leg, in the air: MoveTo(target) down to the floor on the flying mount
+    Fall,              // a failed fly leg, in the air without a flying mount: it falls to target (CompleteDismount)
     Wait,              // nothing to do this tick (a sent trigger or an activated taxi takes effect)
     Done,              // the leg ended (Advance starts the next one)
     Arrived,           // the last leg ended
@@ -143,6 +149,47 @@ enum class FailReason : std::uint8_t
     Death,        // the bot died LEG_DEATHS times on the leg or TRIP_DEATHS times on the trip (NoteLife)
     Takeoff       // a fly leg: no takeoff where the bot stands, or no flying mount after FLY_MOUNT_TRIES tries
 };
+
+// The follower's act for the logs (the case's hold line, the selftest's traces)
+inline char const* ActWord(Act act)
+{
+    switch (act)
+    {
+        case Act::Walk:
+            return "walk";
+        case Act::UseTrigger:
+            return "trigger";
+        case Act::TalkFlightMaster:
+            return "talk";
+        case Act::UseHearth:
+            return "hearth";
+        case Act::Ride:
+            return "ride";
+        case Act::Mount:
+            return "mount";
+        case Act::Fly:
+            return "fly";
+        case Act::Board:
+            return "board";
+        case Act::Hop:
+            return "hop";
+        case Act::Disembark:
+            return "disembark";
+        case Act::Descend:
+            return "descend";
+        case Act::Fall:
+            return "fall";
+        case Act::Wait:
+            return "wait";
+        case Act::Done:
+            return "done";
+        case Act::Arrived:
+            return "arrived";
+        case Act::Fail:
+            return "fail";
+    }
+    return "?";
+}
 
 inline char const* FailWord(FailReason reason)
 {
@@ -442,6 +489,14 @@ struct Trip
     bool hopped{false};
     std::uint8_t offScans{0};  // Ride, Leave: the scans in a row that saw the bot off the transport
     std::vector<TransportNote> transportNotes;
+    // After a fly leg failed in the air (StartDescent): the bot flies down to descentTo before the replan
+    bool descending{false};
+    Point descentTo;
+    std::uint32_t descentStartMs{0};
+    // The follower's last decision and its time (the glue notes them for the case's hold line)
+    Act lastAct{Act::Wait};
+    Point lastTarget;
+    std::uint32_t lastActMs{0};
 };
 
 // The route request the follower waits for (the bot's latest; RouteService answers older ones too)
@@ -1192,6 +1247,52 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
         NoteTransportTimeout(trip);
     ++trip.replans;
     return Recovery::Replan;
+}
+
+// After a fly leg failed and the trip replans (WU11c, WU11b review 2): a bot has no client gravity, so one still up
+// stays where the leg failed and every walk replan fails at that spot (Balthas, Farnin no_progress; Elyvia three
+// fell_or_swimming 200 yd up) until the trip ends. More than AIRBORNE_YARDS above its floor (the higher of ground and
+// water, as BodyZ) it comes down first: on its flying mount by a straight flight down (Descend, StepDescent goes on),
+// without one it falls as a player does (Fall). Done: not a fly leg, on the floor, or no floor found
+inline Decision StartDescent(Trip& trip, Point const& bot, float groundZ, float waterZ, bool flyingMount,
+                             std::uint32_t nowMs)
+{
+    trip.descending = false;
+    Decision const done{Act::Done, bot, FailReason::None};
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Fly)
+        return done;
+    float const floorZ = BodyZ(bot.z, groundZ, waterZ);
+    if (floorZ >= bot.z)
+        return done;
+    Point const floor{bot.mapId, bot.x, bot.y, floorZ};
+    if (!flyingMount)
+        return {Act::Fall, floor, FailReason::None};
+    trip.descending = true;
+    trip.descentTo = floor;
+    trip.descentStartMs = nowMs;
+    return {Act::Descend, floor, FailReason::None};
+}
+
+// The flight down's tick: Done within AIRBORNE_YARDS of the floor (the glue lands the bot), Fall when the flying mount
+// is gone on the way, Fail on another map (WrongMap) or after DESCENT_TIMEOUT_MS (Timeout: the replan starts where the
+// bot is, as before WU11c), else Descend on. Only Descend keeps the descent
+inline Decision StepDescent(Trip& trip, Point const& bot, bool flyingMount, std::uint32_t nowMs)
+{
+    if (!trip.descending)
+        return {Act::Done, bot, FailReason::None};
+    Point const floor = trip.descentTo;
+    trip.descending = false;
+    if (bot.mapId != floor.mapId)
+        return {Act::Fail, bot, FailReason::WrongMap};
+    if (bot.z - floor.z <= AIRBORNE_YARDS)
+        return {Act::Done, floor, FailReason::None};
+    Point const below{bot.mapId, bot.x, bot.y, floor.z};
+    if (!flyingMount)
+        return {Act::Fall, below, FailReason::None};
+    if (nowMs - trip.descentStartMs > DESCENT_TIMEOUT_MS)  // unsigned: wraps as getMSTimeDiff does
+        return {Act::Fail, bot, FailReason::Timeout};
+    trip.descending = true;
+    return {Act::Descend, floor, FailReason::None};
 }
 
 // A fly leg's real-height check is due: the bot heads for a waypoint in the air the check has not looked at yet
