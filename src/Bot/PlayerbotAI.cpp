@@ -55,6 +55,7 @@
 #include "NaturalPath.h"
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
+#include "NewRpgAction.h"
 #include "NewRpgStrategy.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -1318,6 +1319,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     }
 
     HandleCommands();
+    TravelOrders::TakeAndApply(this, bot);  // a GM order (route go, hold, release) at the next update
 
     // logout if logout timer is ready or if instant logout is possible
     if (bot->GetSession()->IsLoggingOut())

@@ -7,7 +7,9 @@
 // Offline proof of a test's hold on a bot (travel plan WT39, HoldRules.h): a held bot's idle update picks no goal,
 // status or errand; an order is taken while held; the bot holds again after the trip ends (arrived, abort, stop); a
 // partial release keeps the named choices off; a hold and a trip posted before the next update both survive.
-// The model bot below follows NewRpgStatusUpdateAction::Execute: the order intake first, then the idle gate.
+// WT39b: a held bot seeks no grind target; a hold is taken at the next AI update even in combat, a trip once out of it.
+// The model bot below follows PlayerbotAI::UpdateAIInternal's order intake (TravelOrders::TakeAndApply), then
+// NewRpgStatusUpdateAction::Execute's idle gate.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/test-hold-selftest.cpp
 
 #include <cstdio>
@@ -59,6 +61,7 @@ struct ModelBot
     std::uint8_t mask{0};
     Status status{Status::Idle};
     std::optional<Order> pending;
+    bool inCombat{false};
 
     void Post(Order order)
     {
@@ -71,7 +74,7 @@ struct ModelBot
     // The status update: an order first (its hold, then its trip), then the idle gate
     Step Update(bool plannerHasGoal = true)
     {
-        if (pending)
+        if (pending && TakeNow(*pending, inCombat))
         {
             Order const order = std::move(*pending);
             pending.reset();
@@ -213,6 +216,42 @@ void TestMerge()
     other.Post(Go("stormwind"));
     Check(!other.pending->stop && other.pending->place == "stormwind", "merge: a later go replaces the stop");
 }
+void TestGrind()
+{
+    ModelBot bot;
+    Check(GrindAllowed(bot.mask), "free: the bot grinds");
+    bot.Post(Hold(ALL));
+    bot.Update();
+    Check(!GrindAllowed(bot.mask), "held: no new grind target");
+    bot.Post(Go("goldshire"));
+    bot.Update();
+    Check(bot.status == Status::Travel && !GrindAllowed(bot.mask), "held on an order's trip: no new grind target");
+    bot.Post(Hold(HEARTH));  // `route release <bot> hearth`
+    bot.Update();
+    Check(GrindAllowed(bot.mask), "partial release (hearth kept off): the bot grinds again");
+}
+
+void TestTakeAtNextUpdate()
+{
+    ModelBot bot;
+    bot.status = Status::Wander;
+    bot.inCombat = true;
+    bot.Post(Hold(ALL));
+    Check(bot.Update() == Step::Order && bot.mask == ALL && bot.status == Status::Idle,
+          "hold: applied at the next update, also in combat");
+    bot.Post(Go("goldshire"));
+    Check(bot.Update() == Step::Nothing && bot.pending, "trip: waits while the bot fights");
+    bot.inCombat = false;
+    Check(bot.Update() == Step::Order && bot.status == Status::Travel, "trip: taken at the first update out of combat");
+    ModelBot merged;
+    merged.inCombat = true;
+    merged.Post(Hold(ALL));
+    merged.Post(Go("goldshire"));
+    Check(merged.Update() != Step::Order && merged.pending, "hold with a trip: both wait for the end of combat");
+    merged.inCombat = false;
+    Check(merged.Update() == Step::Order && merged.mask == ALL && merged.status == Status::Travel,
+          "hold with a trip: both at the first update out of combat");
+}
 }  // namespace
 
 int main()
@@ -222,6 +261,8 @@ int main()
     TestOrderWhileHeld();
     TestRelease();
     TestMerge();
+    TestGrind();
+    TestTakeAtNextUpdate();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

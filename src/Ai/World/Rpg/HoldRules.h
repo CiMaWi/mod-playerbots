@@ -14,7 +14,7 @@
 
 // A test's hold on a bot (`playerbots route hold|release`, functional tests): the choices a held bot does not make on
 // its own. Kept in NewRpgInfo::heldChoices (not saved), read only where the bot already decides: the idle status
-// update, the planner hook, the errand triggers' gate and the hearth snapshots. Orders are taken before the idle gate,
+// update, the planner hook, the errand triggers' gate, the hearth snapshots and the grind multiplier. Orders are taken before the idle gate,
 // so a held bot runs an order and holds again when it ends (arrived, abort, stop). Player-free for the selftest
 namespace HoldRules
 {
@@ -67,6 +67,9 @@ struct IdleGate
 inline IdleGate GateOf(std::uint8_t mask) { return {!(mask & PLANNER), !(mask & STATUS)}; }
 inline bool ErrandAllowed(std::uint8_t mask) { return !(mask & ERRAND); }
 inline bool HearthAllowed(std::uint8_t mask) { return !(mask & HEARTH); }
+// A held status also stops grinding ("attack anything" picks no new mob); combat with what attacks the bot, loot,
+// food and drink stay
+inline bool GrindAllowed(std::uint8_t mask) { return !(mask & STATUS); }
 
 // A pending order (TravelOrder) gains a hold change and/or a trip; a second post merges with the first, so `route hold`
 // then `route go` before the bot's next update keeps both. The later trip or stop replaces an earlier one
@@ -74,6 +77,14 @@ template <typename Order>
 bool HasTrip(Order const& order)
 {
     return order.stop || !order.place.empty();
+}
+
+// The bot's AI update takes its order at once (TravelOrders::TakeAndApply); only a trip or stop waits until the bot is
+// out of combat, a hold or release never waits
+template <typename Order>
+bool TakeNow(Order const& order, bool inCombat)
+{
+    return !inCombat || !HasTrip(order);
 }
 
 template <typename Order>

@@ -465,7 +465,15 @@ void TravelOrders::Post(ObjectGuid bot, TravelOrder order)
     travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
 }
 
-bool TravelOrders::Take(ObjectGuid bot, TravelOrder& order)
+bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
+{
+    if (!travelOrdersWaiting.load(std::memory_order_acquire) || !botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+        return false;
+    TravelOrder order;
+    return Take(bot->GetGUID(), bot->IsInCombat(), order) && ApplyTravelOrder(botAI, bot, order);
+}
+
+bool TravelOrders::Take(ObjectGuid bot, bool inCombat, TravelOrder& order)
 {
     if (!travelOrdersWaiting.load(std::memory_order_acquire))
         return false;
@@ -485,7 +493,7 @@ bool TravelOrders::Take(ObjectGuid bot, TravelOrder& order)
     }
     auto const found = travelOrders.find(bot);
     bool taken = false;
-    if (found != travelOrders.end())
+    if (found != travelOrders.end() && HoldRules::TakeNow(found->second, inCombat))
     {
         order = std::move(found->second);
         travelOrders.erase(found);
@@ -499,17 +507,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
     Planner::PlannerHook(botAI, bot);
-    {
-        TravelOrder order;
-        if (TravelOrders::Take(bot->GetGUID(), order) && ApplyTravelOrder(botAI, bot, order))
-            return true;
-    }
+    // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAIInternal)
     NewRpgStatus status = info.GetStatus();
     switch (status)
     {
         case RPG_IDLE:
         {
-            // A test's hold (HoldRules): a held choice is not made; an order above was taken all the same
+            // A test's hold (HoldRules): a held choice is not made; an order was taken all the same
             HoldRules::IdleGate const gate = HoldRules::GateOf(info.heldChoices);
             if (!gate.planner && !gate.status)
                 return false;
