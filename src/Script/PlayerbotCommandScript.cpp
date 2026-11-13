@@ -42,6 +42,7 @@
 #include "PvpTest.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "RouteQuery.h"
 #include "ScriptMgr.h"
 #include "Tactics.h"
 #include "TestPlayer.h"
@@ -207,6 +208,7 @@ public:
             {"transport", HandleRouteTransportCommand, SEC_GAMEMASTER, Console::Yes},
             {"hold", HandleRouteHoldCommand, SEC_GAMEMASTER, Console::Yes},
             {"release", HandleRouteReleaseCommand, SEC_GAMEMASTER, Console::Yes},
+            {"query", RouteQuery::HandleCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsPlannerCommandTable = {
