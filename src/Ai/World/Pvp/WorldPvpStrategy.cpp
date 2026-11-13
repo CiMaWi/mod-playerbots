@@ -102,16 +102,19 @@ bool WorldPvpRetreatAction::StepTo(float angle, uint32 nowMs, bool& blocked)
     float z = bot->GetPositionZ();
     bool exact = true;
     blocked = false;
-    if (!bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
-                                                        bot->GetPositionZ(), x, y, z))
+    bool const clear = bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
+                                                                      bot->GetPositionZ(), x, y, z);
+    // The straight line ends at (x, y): at the first collision, or, with no collision, where the navmesh ends (a
+    // ledge, a slope too steep, most walls). An end right in front blocks the direction either way: a step there does
+    // not move the bot, and taken every tick it kept the other directions untried for the whole retreat
+    if (bot->GetExactDist2d(x, y) < STEP_BLOCKED_YARDS)
     {
-        // The first collision lies at (x, y): a wall right in front blocks the direction, a farther one is walked
-        // around on a path to the unclipped point
-        if (bot->GetExactDist2d(x, y) < STEP_BLOCKED_YARDS)
-        {
-            blocked = true;
-            return false;
-        }
+        blocked = true;
+        return false;
+    }
+    if (!clear)
+    {
+        // A farther collision is walked around on a path to the unclipped point
         x = bot->GetPositionX() + std::cos(angle) * STEP_YARDS;
         y = bot->GetPositionY() + std::sin(angle) * STEP_YARDS;
         z = bot->GetPositionZ();
