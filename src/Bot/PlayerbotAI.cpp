@@ -887,6 +887,20 @@ char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
     return "pending";
 }
 
+// A ship or zeppelin between its stops (MotionTransport::IsMoving is private): the core holds it at a stop frame while
+// its path timer lies in that frame's [ArriveTime, DepartureTime)
+bool UnderWay(Transport const& transport)
+{
+    MotionTransport const* const ship = transport.ToMotionTransport();
+    if (!ship || !ship->GetPeriod() || ship->GetKeyFrames().size() <= 1)
+        return false;
+    uint32 const timer = ship->GetPathProgress() % ship->GetPeriod();
+    for (KeyFrame const& frame : ship->GetKeyFrames())
+        if (frame.IsStopFrame() && frame.ArriveTime <= timer && timer < frame.DepartureTime)
+            return false;
+    return true;
+}
+
 class PassengerAdapter
 {
 public:
@@ -911,6 +925,10 @@ public:
         if (!surface->m_model || !surface->isSpawned() || !_player.InSamePhase(surface))
             return {guid, entry, Contact::Unavailable};
         if (!riding && _player.IsFlying())
+            return {guid, entry, Contact::OffSurface};
+        // A bot with no boarding of its own (no expected vessel) is not taken aboard by a hull sweeping through its
+        // spot on the pier or in the water (WT54-9, F1): only a vessel at its stop takes a still bot aboard
+        if (!riding && !expected && UnderWay(*surface))
             return {guid, entry, Contact::OffSurface};
 
         constexpr float RAY_RISE_YARDS = 0.5f;

@@ -1508,10 +1508,16 @@ void AimApproachEnd(Player* bot, TravelRoute::Point& end, TravelRoute::Leg const
                 auto const plain = GroundBesideStop(bot->GetMap(), stop, stop.Z);
                 if (plain && transport->m_model)
                 {
-                    auto const measured = MeasureDeckDrop(*transport, bot->GetPhaseMask());
-                    drop = measured && plain->Z < stop.Z - TravelLifecycle::DOCK_FLOOR_YARDS ? *measured : 0.0f;
-                    std::lock_guard<std::mutex> guard(deckDropLock);
-                    deckDrops.emplace(leg.object, *drop);
+                    // A failed measurement over a hanging stop is not kept: the next scan measures again
+                    bool const overGround = plain->Z < stop.Z - TravelLifecycle::DOCK_FLOOR_YARDS;
+                    std::optional<float> const measured =
+                        overGround ? MeasureDeckDrop(*transport, bot->GetPhaseMask()) : std::optional<float>(0.0f);
+                    if (measured)
+                    {
+                        drop = measured;
+                        std::lock_guard<std::mutex> guard(deckDropLock);
+                        deckDrops.emplace(leg.object, *drop);
+                    }
                 }
             }
     bool const hangs = drop && *drop > TravelLifecycle::DOCK_FLOOR_YARDS;
@@ -1959,7 +1965,8 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
         return;
     // At its transport's dock the bot waits on foot (WT54-7; TravelKeepsOnFoot keeps it so): Thunder Bluff's zeppelin
     // left while the bot spent the scan after its docking on the dismount
-    if (trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport && bot->IsMounted() && !bot->IsInCombat())
+    if (trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport && bot->IsMounted() && !bot->IsFlying() &&
+        !bot->IsInCombat())
     {
         WorldPacket emptyPacket;
         bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
