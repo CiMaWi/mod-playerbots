@@ -12,12 +12,15 @@
 #include <vector>
 
 class ObjectGuid;
+class Player;
 
 // DS.14/J5f: raw facts about a bot for one conversation-bridge request. Read on the world thread while map threads
 // are idle (the chat hook, a wake submit, the post-map-join update), from stored values and Player fields only;
 // nothing here scans the world. The bridge module filters and bounds them before anything reaches a model.
 namespace PlayerbotBridge
 {
+struct NameCandidate;  // BridgeNames.h
+
 struct BotStateFacts
 {
     float healthPct = 0.0f;
@@ -131,6 +134,12 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vect
 // The same with the topic's argument: Route's place; the other topics ignore it.
 bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::string const& argument,
                        std::vector<BotStateItem>& items);
+
+// LC2: what an order's item or spell name may mean, for ResolveName, when a row takes one (none does yet). World
+// thread, an online bot: the items it wears and carries as the inventory topic lists them (Id the item entry), and
+// the spells it can cast as the spells topic lists them (Id the spell id, the highest known rank).
+std::vector<NameCandidate> CarriedItemNames(Player* bot);
+std::vector<NameCandidate> KnownSpellNames(Player* bot);
 }  // namespace PlayerbotBridge
 
 #endif
