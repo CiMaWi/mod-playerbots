@@ -506,6 +506,7 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 
         LOG_DEBUG("playerbots", "Bot {} logged out", bot->GetName().c_str());
 
+        BankMail::EndVisits(botAI, BankMail::VisitEnd::Logout);  // with its row, before the AI goes
         LabCopyMgr::Instance().OnLogout(bot);
         bot->SaveToDB(false, false);
 

@@ -146,13 +146,13 @@ void FillBankMail(Player* bot, Snapshot& snapshot)
         return;
     BankMail::BotBankMail& known = botAI->rpgInfo.bankMail;
     BankMail::RefreshMailKnowledge(bot, known.mail);
-    BankMail::SumDueItems(known.bank, bot->GetLevel());
+    BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     snapshot.mailWaiting = known.mail.waiting;
     snapshot.mailSeenCopper = known.mail.seenCopper;
     snapshot.mailExpectedCopper = known.mail.expectedCopper;
     snapshot.bankKeptCount = static_cast<uint32>(known.bank.kept.size());
-    snapshot.bankDueCount = known.bank.dueCount;
-    snapshot.bankDueWorth = known.bank.dueWorth;
+    snapshot.bankDueCount = due.count;
+    snapshot.bankDueWorth = due.worth;
     snapshot.bankFreeSlots = known.bank.freeSlots;
 }
 

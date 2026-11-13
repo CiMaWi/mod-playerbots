@@ -105,10 +105,17 @@ bool HandleMailVisitCommand(ChatHandler* handler, char const* args)
         refusal = "the bot is dead";
     else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
         refusal = "the bot has no new rpg strategy";
-    else if (botAI->rpgInfo.bankMail.mailVisit.phase != MailVisitPhase::None)
-        refusal = "a visit runs already";
+    else
+        refusal = VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Mail);
     // World thread, between the map updates: the bot's place and its visit state are read and set at rest
     std::optional<MailboxSpot> const spot = refusal ? std::nullopt : FindMailboxSpot(bot, refusal);
+    // A test command (WB.12): the bot stands near a mailbox; getting to a far one is the travel errand's job
+    if (spot && !WithinVisitReach(spot->distance))
+    {
+        handler->SendErrorMessage("MAIL visit {}: refused, {} (the nearest mailbox is {:.0f} yd away, reach {:.0f} yd)",
+                                  bot->GetName(), VISIT_TOO_FAR, spot->distance, VISIT_COMMAND_REACH_YARDS);
+        return false;
+    }
     if (!spot || !BeginMailVisit(botAI, *spot))
     {
         handler->SendErrorMessage("MAIL visit {}: refused, {}", bot->GetName(), refusal ? refusal : "no visit");

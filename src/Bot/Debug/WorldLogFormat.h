@@ -88,6 +88,8 @@ constexpr char const* EVENT_LEVEL = "Level";
 // free bank slots after. PackVisitCounts puts each count, capped at VISIT_COUNT_MAX, into VISIT_COUNT_BITS bits.
 constexpr char const* EVENT_MAIL_VISIT = "MailVisit";
 constexpr char const* EVENT_BANK_VISIT = "BankVisit";
+// A visit's start (src = mail or bank, id = the spot's map, amount = yards to the spot): started = the two end rows
+constexpr char const* EVENT_VISIT_START = "VisitStart";
 constexpr uint32_t VISIT_COUNT_BITS = 10;
 constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
 

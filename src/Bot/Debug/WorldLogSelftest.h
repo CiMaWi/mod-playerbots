@@ -329,9 +329,10 @@ inline void CheckSegments(Checker& checker)
 // reason scope nests and restores
 inline void CheckEventWords(Checker& checker)
 {
-    constexpr std::string_view FACT_TYPES[] = {
-        "XpGain", "Kill",   "QuestAccept", "QuestAbandon", "Equip",  "SkillUp",        "SpellLearn",    "TaxiNode",
-        "Flight", "Hearth", "MapChange",   "Resurrect",    "Status", EVENT_MAIL_VISIT, EVENT_BANK_VISIT};
+    constexpr std::string_view FACT_TYPES[] = {"XpGain", "Kill",           "QuestAccept",    "QuestAbandon",
+                                               "Equip",  "SkillUp",        "SpellLearn",     "TaxiNode",
+                                               "Flight", "Hearth",         "MapChange",      "Resurrect",
+                                               "Status", EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START};
     bool fields = true;
     for (std::string_view const type : FACT_TYPES)
     {

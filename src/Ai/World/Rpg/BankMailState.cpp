@@ -10,10 +10,13 @@
 #include <limits>
 
 #include "BankRulesInput.h"
+#include "BankVisit.h"
 #include "GameTime.h"
 #include "Mail.h"
+#include "MailVisit.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
 
@@ -53,5 +56,57 @@ void BuildBankKnowledge(PlayerbotAI* botAI)
     RefreshBankKnowledge(botAI);
     known.bank.built = true;
     RefreshMailKnowledge(bot, known.mail);
+}
+
+std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounters const& ended)
+{
+    auto const count = [&ended](VisitEnd end) { return ended[static_cast<size_t>(end)].load(); };
+    uint32 interrupted = 0;
+    std::string each;
+    for (size_t i = 0; i < VISIT_END_COUNT; ++i)
+    {
+        VisitEnd const end = static_cast<VisitEnd>(i);
+        if (!IsInterruption(end))
+            continue;
+        interrupted += count(end);
+        each += Acore::StringFormat("{}{} {}", each.empty() ? "" : ", ", VisitEndWord(kind, end), count(end));
+    }
+    return Acore::StringFormat("started {}, done {}, timed out {}, {} {}, interrupted {} ({})", started,
+                               count(VisitEnd::Done), count(VisitEnd::Timeout),
+                               kind == VisitKind::Mail ? "no mailbox" : "no banker", count(VisitEnd::NoSpot),
+                               interrupted, each);
+}
+
+VisitWatchIn WatchInOf(Player const* bot, uint32 mapId, uint32 startedMs, uint32 limitMs)
+{
+    return VisitWatchIn{bot->IsAlive(), bot->IsInCombat(), bot->GetMapId() == mapId,
+                        getMSTimeDiff(startedMs, getMSTime()), limitMs};
+}
+
+void WatchVisits(PlayerbotAI* botAI)
+{
+    Player const* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return;
+
+    BotBankMail const& state = botAI->rpgInfo.bankMail;
+    if (state.mailVisit.phase != MailVisitPhase::None)
+    {
+        MailVisitState const& visit = state.mailVisit;
+        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
+            EndMailVisit(botAI, *end);
+    }
+    if (state.bankVisit.phase != BankVisitPhase::None)
+    {
+        BankVisitState const& visit = state.bankVisit;
+        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
+            EndBankVisit(botAI, *end);
+    }
+}
+
+void EndVisits(PlayerbotAI* botAI, VisitEnd end)
+{
+    EndMailVisit(botAI, end);
+    EndBankVisit(botAI, end);
 }
 }  // namespace BankMail

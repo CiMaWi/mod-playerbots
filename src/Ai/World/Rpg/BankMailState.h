@@ -7,12 +7,16 @@
 #ifndef _PLAYERBOT_BANKMAILSTATE_H
 #define _PLAYERBOT_BANKMAILSTATE_H
 
+#include <array>
+#include <atomic>
+#include <string>
 #include <vector>
 
 #include "BankRules.h"
 #include "Define.h"
 #include "MailRules.h"
 #include "ObjectGuid.h"
+#include "VisitLifecycle.h"
 
 class Player;
 class PlayerbotAI;
@@ -39,13 +43,12 @@ struct KeptItem
     uint8 dueLevel{0};
 };
 
+// The items due now are read at the reader's level (DueAt), not stored: a level change makes them due
 struct BankKnowledge
 {
     std::vector<KeptItem> kept;  // the bank items the keep rule keeps now, by later worth (BankRulesInput.h)
     uint16 freeSlots{0};         // free bank item slots (the 28; bank bags are not counted)
-    uint32 dueCount{0};          // kept items the bot has reached the level for
-    uint32 dueWorth{0};
-    bool built{false};  // set at login (BuildBankKnowledge)
+    bool built{false};           // set at login (BuildBankKnowledge)
 };
 
 enum class MailVisitPhase : uint8
@@ -117,23 +120,22 @@ struct BotBankMail
     BankVisitState bankVisit;
 };
 
-// The kept items due at the bot's level: their number and worth
-inline void SumDueItems(BankKnowledge& bank, uint8 level)
+// A visit of either kind runs: the one test the AI update makes while none does
+inline bool VisitRuns(BotBankMail const& state)
 {
-    bank.dueCount = 0;
-    bank.dueWorth = 0;
-    for (KeptItem const& item : bank.kept)
-    {
-        if (item.dueLevel > level)
-            continue;
-        bank.dueCount += item.count;
-        bank.dueWorth += item.laterWorth;
-    }
+    return state.mailVisit.phase != MailVisitPhase::None || state.bankVisit.phase != BankVisitPhase::None;
+}
+
+// One visit at a time per bot: why a visit of the kind may not start now, or nullptr
+inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
+{
+    return VisitStartRefusal(kind, state.mailVisit.phase != MailVisitPhase::None,
+                             state.bankVisit.phase != BankVisitPhase::None);
 }
 
 // A far teleport or a PlayerbotAI::Reset(true) rebuilds NewRpgInfo (TravelLegs::AfterReset keeps only the route
-// requests). The bot's knowledge (waiting mail, seen worth, bank slots, kept items) survives it; a mailbox or bank
-// visit does not: the bot is no longer where the visit was walking or standing, so the visit ends without a row.
+// requests). The bot's knowledge (waiting mail, seen worth, bank slots, kept items) survives it; a running visit
+// was ended with its row just before (EndVisits), so nothing of it is left to keep.
 inline BotBankMail AfterReset(BotBankMail const& before)
 {
     BotBankMail after;
@@ -150,6 +152,19 @@ void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail);
 // At login, on the world thread: the bank's kept items and free slots and the waiting mail, from what the character
 // load brought (no query)
 void BuildBankKnowledge(PlayerbotAI* botAI);
+
+// The visits ended since the server start, by kind and end (any thread)
+using VisitEndCounters = std::array<std::atomic<uint32>, VISIT_END_COUNT>;
+std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounters const& ended);
+
+// The watch's facts about a visit to a spot on mapId that started at startedMs
+VisitWatchIn WatchInOf(Player const* bot, uint32 mapId, uint32 startedMs, uint32 limitMs);
+// The bot's map thread, in every AI update while a visit runs, whatever engine runs (the stepping engine does not run
+// in combat or dead): ends a visit at its deadline, at death or on another map, with its row
+void WatchVisits(PlayerbotAI* botAI);
+// The world thread or the bot's map thread, before its state is dropped (a far teleport, Reset(true), a logout):
+// ends a running visit of either kind with its row
+void EndVisits(PlayerbotAI* botAI, VisitEnd end);
 }  // namespace BankMail
 
 #endif

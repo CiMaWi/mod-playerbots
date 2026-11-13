@@ -810,6 +810,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
         return;
 
+    // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
+    // does not run (in combat, dead); one test while no visit runs
+    if (BankMail::VisitRuns(rpgInfo.bankMail))
+        BankMail::WatchVisits(this);
+
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
     if (flying != WorldLog::InFlight(worldLog))
@@ -1624,9 +1629,10 @@ void PlayerbotAI::HandleTeleportAck()
             EvaluateHealerDpsStrategy();
 
         // reset AI state after teleport; a trip in progress goes on (a portal or a cross-map flight leg ends here)
+        BankMail::EndVisits(this, BankMail::VisitEnd::Teleport);  // with its row, before AfterReset drops the state
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
         NewRpgInfo kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
-        kept.bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // knowledge stays, a mail or bank visit ends
+        kept.bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
         rpgInfo.bot = nullptr;  // the reset notes no status change; the teleport does, once
         Reset(true);
         rpgInfo = kept;
@@ -1730,9 +1736,10 @@ void PlayerbotAI::Reset(bool full)
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
         Player* const rpgBot = rpgInfo.bot;  // null inside a far teleport's reset
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
+        BankMail::EndVisits(this, BankMail::VisitEnd::Reset);  // with its row; AfterReset keeps the knowledge
         BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);
         rpgInfo = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, false);  // keeps the route request ids
-        rpgInfo.bankMail = bankMail;  // knowledge stays, a mail or bank visit ends
+        rpgInfo.bankMail = bankMail;
         rpgInfo.bot = rpgBot;
         WorldLog::StatusReason const reasonScope("reset");
         WorldLog::NoteStatus(rpgBot, statusBefore, rpgInfo.GetStatus());

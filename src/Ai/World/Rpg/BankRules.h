@@ -30,6 +30,7 @@
 //   BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& refused = {});
 //                                                    // withdraw steps, then deposit steps; refused items stay put
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
+//   DueTotal DueAt(std::vector<Kept> const& kept, uint8_t level);         // the kept items due at the level
 //   char const* ChoiceWord(BankChoice), ReasonWord(BankReason);           // the `bank` decision row's words
 // BankRulesInput.h builds BankIn from the live bags and bank (BuildBankIn) and refreshes the bot's BankKnowledge.
 namespace BankMail
@@ -239,6 +240,28 @@ struct KeptEntry
     uint8_t dueLevel = 0;
     char const* provider = "";
 };
+
+struct DueTotal
+{
+    uint32_t count = 0;
+    uint32_t worth = 0;
+};
+
+// The kept items due at the level (KeptEntry, BankKnowledge's KeptItem). Read at the reader's level, never stored: a
+// level change makes an item due without any bank move
+template <typename Kept>
+inline DueTotal DueAt(std::vector<Kept> const& kept, uint8_t level)
+{
+    DueTotal due;
+    for (Kept const& item : kept)
+    {
+        if (item.dueLevel > level)
+            continue;
+        due.count += item.count;
+        due.worth += item.laterWorth;
+    }
+    return due;
+}
 
 namespace BankRulesDetail
 {

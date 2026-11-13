@@ -61,22 +61,14 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args)
     // printed beside what the bot knows (BankKnowledge, rebuilt at login and after a visit)
     BankIn const bank = BuildBankIn(botAI);
     std::vector<KeptEntry> const kept = KeptInBank(bank);
-    uint32 dueCount = 0;
-    uint32 dueWorth = 0;
-    for (KeptEntry const& entry : kept)
-    {
-        if (entry.dueLevel > bank.bot.level)
-            continue;
-        dueCount += entry.count;
-        dueWorth += entry.laterWorth;
-    }
+    DueTotal const due = DueAt(kept, bank.bot.level);
     BankKnowledge const& known = botAI->rpgInfo.bankMail.bank;
     handler->PSendSysMessage(
         "BANK {}: kept {} (due {}, worth {}), free slots {}/{}, level {}, keeps possessions {}; "
         "known: {} kept, {} due, {} free{}",
-        bot->GetName(), kept.size(), dueCount, dueWorth, bank.bankSpace.freeSlots, BANK_ITEM_SLOTS, bank.bot.level,
-        PlayerbotFactory::KeepsPossessions(bot) ? "yes" : "no", known.kept.size(), known.dueCount, known.freeSlots,
-        known.built ? "" : " (not built)");
+        bot->GetName(), kept.size(), due.count, due.worth, bank.bankSpace.freeSlots, BANK_ITEM_SLOTS, bank.bot.level,
+        PlayerbotFactory::KeepsPossessions(bot) ? "yes" : "no", known.kept.size(),
+        DueAt(known.kept, bank.bot.level).count, known.freeSlots, known.built ? "" : " (not built)");
     for (size_t i = 0; i < kept.size() && i < LINES_SHOWN; ++i)
         handler->PSendSysMessage("  kept {} {} x{}: later {} at level {} ({})", kept[i].entry, ItemName(kept[i].entry),
                                  kept[i].count, kept[i].laterWorth, kept[i].dueLevel, kept[i].provider);
@@ -120,12 +112,17 @@ bool HandleBankVisitCommand(ChatHandler* handler, char const* args)
         refusal = "the bot is dead";
     else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
         refusal = "the bot has no new rpg strategy";
-    else if (botAI->rpgInfo.bankMail.bankVisit.phase != BankVisitPhase::None)
-        refusal = "a visit runs already";
-    else if (botAI->rpgInfo.bankMail.mailVisit.phase != MailVisitPhase::None)
-        refusal = "a mailbox visit runs";
+    else
+        refusal = VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Bank);
     // World thread, between the map updates: the bot's place and its visit state are read and set at rest
     std::optional<BankerSpot> const spot = refusal ? std::nullopt : FindBankerSpot(bot, refusal);
+    // A test command (WB.12): the bot stands near a banker; getting to a far one is the travel errand's job
+    if (spot && !WithinVisitReach(spot->distance))
+    {
+        handler->SendErrorMessage("BANK visit {}: refused, {} (the nearest banker is {:.0f} yd away, reach {:.0f} yd)",
+                                  bot->GetName(), VISIT_TOO_FAR, spot->distance, VISIT_COMMAND_REACH_YARDS);
+        return false;
+    }
     if (!spot || !BeginBankVisit(botAI, *spot))
     {
         handler->SendErrorMessage("BANK visit {}: refused, {}", bot->GetName(), refusal ? refusal : "no visit");

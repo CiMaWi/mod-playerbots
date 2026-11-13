@@ -362,6 +362,5 @@ void RefreshBankKnowledge(PlayerbotAI* botAI)
     for (KeptEntry const& entry : KeptInBank(in))
         known.kept.push_back({entry.entry, entry.count, entry.laterWorth, entry.dueLevel});
     known.freeSlots = static_cast<uint16>(in.bankSpace.freeSlots);
-    SumDueItems(known, bot->GetLevel());
 }
 }  // namespace BankMail

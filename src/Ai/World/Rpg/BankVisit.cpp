@@ -40,9 +40,7 @@ constexpr float BANKER_SEARCH_YARDS = 20.0f;
 constexpr size_t BANKER_CANDIDATES = 32;
 
 std::atomic<uint32> visitsStarted{0};
-std::atomic<uint32> visitsDone{0};
-std::atomic<uint32> visitsTimedOut{0};
-std::atomic<uint32> visitsWithoutBanker{0};
+VisitEndCounters visitsEnded{};
 
 bool Contains(std::vector<uint32> const& guids, uint32 guid)
 {
@@ -155,9 +153,10 @@ void WriteBankRows(Player* bot, BankVisitState const& visit)
                            row.entry);
 }
 
-void EndBankVisit(PlayerbotAI* botAI, Player* bot, char const* how, std::atomic<uint32>& counter)
+void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end)
 {
     BankVisitState& visit = botAI->rpgInfo.bankMail.bankVisit;
+    char const* how = VisitEndWord(VisitKind::Bank, end);
     // Bank read: the bot's own map thread inside its AI update (BankRulesInput.h)
     RefreshBankKnowledge(botAI);
     uint32 const freeAfter = botAI->rpgInfo.bankMail.bank.freeSlots;
@@ -170,9 +169,9 @@ void EndBankVisit(PlayerbotAI* botAI, Player* bot, char const* how, std::atomic<
               getMSTimeDiff(visit.startedMs, getMSTime()) / IN_MILLISECONDS);
 
     // A withdrawn upgrade is put on now; the item it replaces stays in the bags for the sell action
-    bool const equip = visit.withdrawn > 0;
+    bool const equip = visit.withdrawn > 0 && EquipsAfter(end);
     visit = BankVisitState{};
-    ++counter;
+    ++visitsEnded[static_cast<size_t>(end)];
     if (equip)
         botAI->DoSpecificAction("equip upgrades packet action");
 }
@@ -213,7 +212,7 @@ std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
 
 bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
 {
-    if (!botAI || botAI->rpgInfo.bankMail.bankVisit.phase != BankVisitPhase::None)
+    if (!botAI || VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Bank))
         return false;
 
     BankVisitState& visit = botAI->rpgInfo.bankMail.bankVisit;
@@ -227,6 +226,8 @@ bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
     visit.startedMs = getMSTime();
     visit.limitMs = sPlayerbotAIConfig.BankMail.BankVisitDeadlineSeconds * IN_MILLISECONDS;
     ++visitsStarted;
+    EventLog::Emit(botAI->GetBot(), WorldLogFormat::EVENT_VISIT_START, "bank", spot.mapId,
+                   static_cast<int64>(spot.distance));
     return true;
 }
 
@@ -239,14 +240,9 @@ BankVisitStep StepBankVisit(PlayerbotAI* botAI)
 
     BankVisitState& visit = botAI->rpgInfo.bankMail.bankVisit;
     step.result = BankVisitResult::Ended;
-    if (getMSTimeDiff(visit.startedMs, getMSTime()) >= visit.limitMs)
+    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
     {
-        EndBankVisit(botAI, bot, BANK_VISIT_TIMEOUT, visitsTimedOut);
-        return step;
-    }
-    if (bot->GetMapId() != visit.mapId)
-    {
-        EndBankVisit(botAI, bot, BANK_VISIT_NO_BANKER, visitsWithoutBanker);
+        EndVisit(botAI, bot, *end);
         return step;
     }
 
@@ -266,7 +262,7 @@ BankVisitStep StepBankVisit(PlayerbotAI* botAI)
         Creature const* found = bot->FindNearestCreature(visit.entry, BANKER_SEARCH_YARDS);
         if (!found)
         {
-            EndBankVisit(botAI, bot, BANK_VISIT_NO_BANKER, visitsWithoutBanker);
+            EndVisit(botAI, bot, VisitEnd::NoSpot);
             return step;
         }
         visit.banker = found->GetGUID();
@@ -276,7 +272,7 @@ BankVisitStep StepBankVisit(PlayerbotAI* botAI)
     Creature const* banker = bot->GetMap()->GetCreature(visit.banker);
     if (!banker || !banker->IsAlive() || banker->GetReactionTo(bot) <= REP_UNFRIENDLY)
     {
-        EndBankVisit(botAI, bot, BANK_VISIT_NO_BANKER, visitsWithoutBanker);
+        EndVisit(botAI, bot, VisitEnd::NoSpot);
         return step;
     }
     // The bank handlers' own check (WorldSession::CanUseBank)
@@ -302,7 +298,7 @@ BankVisitStep StepBankVisit(PlayerbotAI* botAI)
                              [&visit](BankStep const& planned) { return !Contains(visit.moved, planned.itemGuid); });
     if (next == plan.steps.end())
     {
-        EndBankVisit(botAI, bot, BANK_VISIT_DONE, visitsDone);
+        EndVisit(botAI, bot, VisitEnd::Done);
         return step;
     }
 
@@ -312,9 +308,12 @@ BankVisitStep StepBankVisit(PlayerbotAI* botAI)
     return step;
 }
 
-std::string BankVisitCounters()
+void EndBankVisit(PlayerbotAI* botAI, VisitEnd end)
 {
-    return Acore::StringFormat("started {}, done {}, timed out {}, no banker {}", visitsStarted.load(),
-                               visitsDone.load(), visitsTimedOut.load(), visitsWithoutBanker.load());
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (bot && botAI->rpgInfo.bankMail.bankVisit.phase != BankVisitPhase::None)
+        EndVisit(botAI, bot, end);
 }
+
+std::string BankVisitCounters() { return DescribeVisitCounters(VisitKind::Bank, visitsStarted.load(), visitsEnded); }
 }  // namespace BankMail

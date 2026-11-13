@@ -13,6 +13,7 @@
 #include "Define.h"
 #include "MailRules.h"
 #include "ObjectGuid.h"
+#include "VisitLifecycle.h"
 
 class Player;
 class PlayerbotAI;
@@ -21,7 +22,7 @@ class PlayerbotAI;
 // rules (MailRules.h) say one step at a time, wait for each answer, finish. Every step is a client packet queued on
 // the bot's session; the world thread runs its handler when it drains the session (PlayerbotHolder::HandleBotPackets,
 // after the map updates), so the answer shows in the mail list from the bot's next tick on. The state is
-// NewRpgInfo::bankMail.mailVisit (BankMailState.h); a far teleport or a full reset ends a visit (BankMail::AfterReset).
+// NewRpgInfo::bankMail.mailVisit (BankMailState.h); every end writes its row (VisitLifecycle.h).
 //
 // Used unchanged by the chat command (MailAction) and the trips (signatures kept stable):
 //   bool QueueMarkRead(Player* bot, ObjectGuid const& mailbox, uint32 mailId);
@@ -35,11 +36,6 @@ class PlayerbotAI;
 // Each Queue* returns false without a session; none calls a handler, and none reads the mail list.
 namespace BankMail
 {
-// The words of the MailVisit row (how the visit ended)
-constexpr char const* MAIL_VISIT_DONE = "done";
-constexpr char const* MAIL_VISIT_TIMEOUT = "timeout";
-constexpr char const* MAIL_VISIT_NO_MAILBOX = "no_mailbox";
-
 // A mailbox's spawn: the planner's service index entry nearest the bot on its map
 struct MailboxSpot
 {
@@ -77,10 +73,12 @@ bool QueueMailStep(Player* bot, ObjectGuid const& mailbox, Step const& step);
 
 // World thread or the bot's map thread: the nearest mailbox spawn on the bot's map; refusal names why there is none
 std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal);
-// World thread or the bot's map thread: starts a visit to the spot; false while a visit runs
+// World thread or the bot's map thread: starts a visit to the spot; false while a visit of either kind runs
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot);
 // The bot's map thread, inside its AI update (reads its mail list): one step of the visit
 MailVisitStep StepMailVisit(PlayerbotAI* botAI);
+// World thread or the bot's map thread (reads its mail list): ends a running visit with its row; nothing without one
+void EndMailVisit(PlayerbotAI* botAI, VisitEnd end);
 
 // Visits started and ended since the server start, by how they ended (any thread)
 std::string MailVisitCounters();

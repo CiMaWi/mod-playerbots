@@ -42,9 +42,7 @@ constexpr float MAILBOX_SEARCH_YARDS = 20.0f;
 constexpr size_t MAIL_PACKET_BYTES = sizeof(uint64) + sizeof(uint32);
 
 std::atomic<uint32> visitsStarted{0};
-std::atomic<uint32> visitsDone{0};
-std::atomic<uint32> visitsTimedOut{0};
-std::atomic<uint32> visitsWithoutMailbox{0};
+VisitEndCounters visitsEnded{};
 
 bool Queue(Player* bot, OpcodeClient opcode, ObjectGuid const& mailbox, uint32 mailId, std::optional<uint32> last)
 {
@@ -138,9 +136,10 @@ void WriteMailRows(Player* bot, MailVisitState const& visit, VisitPlan const& la
     }
 }
 
-void EndVisit(PlayerbotAI* botAI, Player* bot, char const* how, std::atomic<uint32>& counter, VisitPlan const* last)
+void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end, VisitPlan const* last)
 {
     MailVisitState& visit = botAI->rpgInfo.bankMail.mailVisit;
+    char const* how = VisitEndWord(VisitKind::Mail, end);
     VisitPlan computed;
     if (!last && visit.planned)
     {
@@ -163,9 +162,9 @@ void EndVisit(PlayerbotAI* botAI, Player* bot, char const* how, std::atomic<uint
     if (last)
         known.seenCopper = last->seenAfter;
     RefreshMailKnowledge(bot, known);
-    bool const equip = visit.itemsTaken > 0;
+    bool const equip = visit.itemsTaken > 0 && EquipsAfter(end);
     visit = MailVisitState{};
-    ++counter;
+    ++visitsEnded[static_cast<size_t>(end)];
     if (equip)
         botAI->DoSpecificAction("equip upgrades packet action");
 }
@@ -233,7 +232,7 @@ std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal)
 
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
 {
-    if (!botAI || botAI->rpgInfo.bankMail.mailVisit.phase != MailVisitPhase::None)
+    if (!botAI || VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Mail))
         return false;
 
     MailVisitState& visit = botAI->rpgInfo.bankMail.mailVisit;
@@ -247,6 +246,8 @@ bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
     visit.limitMs = sPlayerbotAIConfig.BankMail.MailVisitDeadlineSeconds * IN_MILLISECONDS;
     visit.options = BuildMailOptions();
     ++visitsStarted;
+    EventLog::Emit(botAI->GetBot(), WorldLogFormat::EVENT_VISIT_START, "mail", spot.mapId,
+                   static_cast<int64>(spot.distance));
     return true;
 }
 
@@ -259,14 +260,9 @@ MailVisitStep StepMailVisit(PlayerbotAI* botAI)
 
     MailVisitState& visit = botAI->rpgInfo.bankMail.mailVisit;
     step.result = MailVisitResult::Ended;
-    if (getMSTimeDiff(visit.startedMs, getMSTime()) >= visit.limitMs)
+    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
     {
-        EndVisit(botAI, bot, MAIL_VISIT_TIMEOUT, visitsTimedOut, nullptr);
-        return step;
-    }
-    if (bot->GetMapId() != visit.mapId)
-    {
-        EndVisit(botAI, bot, MAIL_VISIT_NO_MAILBOX, visitsWithoutMailbox, nullptr);
+        EndVisit(botAI, bot, *end, nullptr);
         return step;
     }
 
@@ -298,7 +294,7 @@ MailVisitStep StepMailVisit(PlayerbotAI* botAI)
         GameObject const* found = bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_MAILBOX, MAILBOX_SEARCH_YARDS);
         if (!found)
         {
-            EndVisit(botAI, bot, MAIL_VISIT_NO_MAILBOX, visitsWithoutMailbox, nullptr);
+            EndVisit(botAI, bot, VisitEnd::NoSpot, nullptr);
             return step;
         }
         visit.mailbox = found->GetGUID();
@@ -306,7 +302,7 @@ MailVisitStep StepMailVisit(PlayerbotAI* botAI)
 
     if (!bot->GetMap()->GetGameObject(visit.mailbox))
     {
-        EndVisit(botAI, bot, MAIL_VISIT_NO_MAILBOX, visitsWithoutMailbox, nullptr);
+        EndVisit(botAI, bot, VisitEnd::NoSpot, nullptr);
         return step;
     }
     // The handlers' own check (WorldSession::CanOpenMailBox): out of reach they ignore the packet
@@ -340,7 +336,7 @@ MailVisitStep StepMailVisit(PlayerbotAI* botAI)
                              });
     if (next == plan.steps.end())
     {
-        EndVisit(botAI, bot, MAIL_VISIT_DONE, visitsDone, &plan);
+        EndVisit(botAI, bot, VisitEnd::Done, &plan);
         return step;
     }
 
@@ -357,9 +353,12 @@ MailVisitStep StepMailVisit(PlayerbotAI* botAI)
     return step;
 }
 
-std::string MailVisitCounters()
+void EndMailVisit(PlayerbotAI* botAI, VisitEnd end)
 {
-    return Acore::StringFormat("started {}, done {}, timed out {}, no mailbox {}", visitsStarted.load(),
-                               visitsDone.load(), visitsTimedOut.load(), visitsWithoutMailbox.load());
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (bot && botAI->rpgInfo.bankMail.mailVisit.phase != MailVisitPhase::None)
+        EndVisit(botAI, bot, end, nullptr);
 }
+
+std::string MailVisitCounters() { return DescribeVisitCounters(VisitKind::Mail, visitsStarted.load(), visitsEnded); }
 }  // namespace BankMail

@@ -393,6 +393,24 @@ inline void CheckReplan(Checker& checker)
     checker.Check(third.steps.empty() && Is(third, 904, BankChoice::Keep, BankReason::Due),
                   "after both moves nothing is left to move: the visit ends");
 }
+
+// The due list after a level change (WB7b: `bank status` showed `known ... 0 due` while the live rule saw 1 due). The
+// knowledge was built at the old level and its due count stored then; read at the new level it shows the item due
+inline void CheckDueAfterLevelChange(Checker& checker)
+{
+    BankIn in = MakeIn(10, {}, {Gear(906, 11)}, 4, 27);
+    std::vector<KeptEntry> const known = KeptInBank(in);
+    DueTotal const storedAtBuild = DueAt(known, in.bot.level);
+    in.bot.level = 11;
+    DueTotal const live = DueAt(KeptInBank(in), in.bot.level);
+    DueTotal const read = DueAt(known, in.bot.level);
+    checker.Note("level 10 -> 11, a bank item due at 11: stored at the build " + std::to_string(storedAtBuild.count) +
+                 " due, live " + std::to_string(live.count) + " due, the knowledge read at 11 " +
+                 std::to_string(read.count) + " due");
+    checker.Check(known.size() == 1 && storedAtBuild.count == 0, "kept at level 10 for level 11, not due yet");
+    checker.Check(live.count == 1 && read.count == 1 && read.worth == live.worth,
+                  "after the level change the knowledge read at the new level shows the due item");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -414,6 +432,7 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckStacks(checker);
     CheckRefused(checker);
     CheckReplan(checker);
+    CheckDueAfterLevelChange(checker);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;

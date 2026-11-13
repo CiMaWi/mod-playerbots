@@ -12,6 +12,7 @@
 
 #include "Define.h"
 #include "ObjectGuid.h"
+#include "VisitLifecycle.h"
 
 class Player;
 class PlayerbotAI;
@@ -20,7 +21,7 @@ class PlayerbotAI;
 // no longer kept, deposit what is kept (BankRules.h), equip, finish. Items move in place on the bot's map thread
 // through the core's own checks (CanStoreItem, CanBankItem), as the core's bank handlers do; no packet is queued, so
 // the plan is recomputed from the live bags and bank before every move. The state is NewRpgInfo::bankMail.bankVisit
-// (BankMailState.h); a far teleport or a full reset ends a visit (BankMail::AfterReset).
+// (BankMailState.h); every end writes its row (VisitLifecycle.h).
 //
 // Used by the GM command and, later, the trips (signatures kept stable):
 //   std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal);
@@ -28,11 +29,6 @@ class PlayerbotAI;
 //   BankVisitStep StepBankVisit(PlayerbotAI* botAI);
 namespace BankMail
 {
-// The words of the BankVisit row (how the visit ended)
-constexpr char const* BANK_VISIT_DONE = "done";
-constexpr char const* BANK_VISIT_TIMEOUT = "timeout";
-constexpr char const* BANK_VISIT_NO_BANKER = "no_banker";
-
 // A banker's spawn: the planner's service index entry nearest the bot on its map that serves the bot's faction
 struct BankerSpot
 {
@@ -65,10 +61,12 @@ struct BankVisitStep
 // World thread or the bot's map thread: the nearest banker spawn on the bot's map whose faction serves the bot;
 // refusal names why there is none
 std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal);
-// World thread or the bot's map thread: starts a visit to the spot; false while a bank visit runs
+// World thread or the bot's map thread: starts a visit to the spot; false while a visit of either kind runs
 bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot);
 // The bot's map thread, inside its AI update (reads and moves its items): one step of the visit
 BankVisitStep StepBankVisit(PlayerbotAI* botAI);
+// World thread or the bot's map thread (reads its bank): ends a running visit with its row; nothing without one
+void EndBankVisit(PlayerbotAI* botAI, VisitEnd end);
 
 // Visits started and ended since the server start, by how they ended (any thread)
 std::string BankVisitCounters();
