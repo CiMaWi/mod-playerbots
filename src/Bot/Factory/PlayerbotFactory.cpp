@@ -3661,9 +3661,13 @@ void PlayerbotFactory::InitSkills()
     //uint32 maxValue = level * 5; //not used, line marked for removal.
     bot->UpdateSkillsForLevel();
 
-    // The riding ranks by level replace the skill, so a rank the bot bought stays only when riding is not granted
+    // The riding ranks by level replace the skill, so a rank the bot bought stays only when riding is not granted.
+    // Dropping the skill also drops Cold Weather Flying, which is no rank: a bot that knew it keeps it (WU26b: every
+    // level-up of a granted bot at 77 or above lost it and kept the bot on the ground in Northrend)
     if (Upkeep::Granted(bot, UpkeepKind::Riding))
     {
+        constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
+        bool const coldWeather = bot->HasSpell(SPELL_COLD_WEATHER_FLYING);
         bot->SetSkill(SKILL_RIDING, 0, 0, 0);
         if (bot->GetLevel() >= sPlayerbotAIConfig.UseGroundMountAtMinLevel)
             bot->learnSpell(33388);
@@ -3673,6 +3677,8 @@ void PlayerbotFactory::InitSkills()
             bot->learnSpell(34090);
         if (bot->GetLevel() >= sPlayerbotAIConfig.UseFastFlyMountAtMinLevel)
             bot->learnSpell(34091);
+        if (coldWeather && bot->GetPureSkillValue(SKILL_RIDING))
+            bot->learnSpell(SPELL_COLD_WEATHER_FLYING);
         Upkeep::Note(bot, UpkeepKind::Riding, "factory_riding");
     }
 
