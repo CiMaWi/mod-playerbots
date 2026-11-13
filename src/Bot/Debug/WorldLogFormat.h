@@ -83,6 +83,27 @@ constexpr int32_t RPG_STATUS_HUMAN = -1;
 
 constexpr char const* EVENT_LEVEL = "Level";
 
+// Bank and mail visits (one row at a visit's end; src = how it ended). MailVisit: id packs mails opened, items taken
+// and items left for lack of space, amount = copper taken. BankVisit: id packs items deposited and withdrawn, amount =
+// free bank slots after. PackVisitCounts puts each count, capped at VISIT_COUNT_MAX, into VISIT_COUNT_BITS bits.
+constexpr char const* EVENT_MAIL_VISIT = "MailVisit";
+constexpr char const* EVENT_BANK_VISIT = "BankVisit";
+// A visit's start (src = mail or bank, id = the spot's map, amount = yards to the spot): started = the two end rows
+constexpr char const* EVENT_VISIT_START = "VisitStart";
+constexpr uint32_t VISIT_COUNT_BITS = 10;
+constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
+
+constexpr uint32_t PackVisitCounts(uint32_t first, uint32_t second, uint32_t third = 0)
+{
+    return std::min(first, VISIT_COUNT_MAX) | std::min(second, VISIT_COUNT_MAX) << VISIT_COUNT_BITS |
+           std::min(third, VISIT_COUNT_MAX) << (2 * VISIT_COUNT_BITS);
+}
+
+constexpr uint32_t VisitCount(uint32_t id, uint32_t index)
+{
+    return id >> (index * VISIT_COUNT_BITS) & VISIT_COUNT_MAX;
+}
+
 constexpr char const* META_START = "start";
 constexpr char const* META_STOP = "stop";
 constexpr char const* META_RELOAD = "reload";
@@ -392,12 +413,14 @@ enum class DecisionKind : uint8_t
     Circuit,
     Goal,
     FightStart,  // world PvP (WP1): one row per meeting
-    FightJoin    // world PvP (WP5): one row per bystander and fight
+    FightJoin,   // world PvP (WP5): one row per bystander and fight
+    Mail,
+    Bank
 };
 
-constexpr size_t DECISION_KIND_COUNT = 9;
+constexpr size_t DECISION_KIND_COUNT = 11;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status", "route", "trip", "errand", "inn", "circuit", "goal", "fight_start", "fight_join"};
+    "rpg_status", "route", "trip", "errand", "inn", "circuit", "goal", "fight_start", "fight_join", "mail", "bank"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {
