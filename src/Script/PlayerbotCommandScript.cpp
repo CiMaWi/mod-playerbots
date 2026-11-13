@@ -41,6 +41,8 @@
 #include "PvpTest.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "RouteCheck.h"
+#include "RouteQuery.h"
 #include "ScriptMgr.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
@@ -200,6 +202,10 @@ public:
             {"resize", Population::HandleResizeCommand, SEC_CONSOLE, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsRouteCheckCommandTable = {
+            {"links", RouteCheck::HandleLinksCommand, SEC_PLAYER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsRouteCommandTable = {
             {"status", TravelGraph::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", TravelGraph::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
@@ -212,6 +218,8 @@ public:
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
             {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
+            {"query", RouteQuery::HandleCommand, SEC_PLAYER, Console::Yes},
+            {"check", playerbotsRouteCheckCommandTable},
         };
 
         static ChatCommandTable playerbotsPlannerCommandTable = {
