@@ -220,7 +220,7 @@ void CheckReady()
     StartTarget const target = MakeStartTarget(orange, memory, ENEMY, now);
     StartDecision const decision = DecideMeeting(memory, bot, target, ENEMY, 0.99f, now, VALUES);
     Check(decision.start && decision.p == 1.0f, "a ready bot's chance starts (p 1)");
-    Check(!memory.ready, "the chance clears ready");
+    Check(memory.ready, "ready stays (a constraint row, cleared by its order)");
 }
 
 void CheckOrangeByCaution()

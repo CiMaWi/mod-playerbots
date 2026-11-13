@@ -404,11 +404,14 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
+void NoOp(Player& /*bot*/) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
     {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
+    {TestConstraints::FIGHTREADY, NoOp, NoOp},
+    {TestConstraints::JOINROLL, NoOp, NoOp},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 

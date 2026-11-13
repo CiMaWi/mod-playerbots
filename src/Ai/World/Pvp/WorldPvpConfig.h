@@ -33,8 +33,6 @@ struct WorldPvpConfig
     // A fight ends as combat_over once none of its participants has been in PvP combat for this long; combat within
     // the grace continues the same fight (a short pause, a re-engage)
     uint32_t EndGraceSeconds = 10;
-    // Test switch for `.playerbots fight ready|meet` (labs only)
-    bool TestCommands = false;
 
     // --- Meetings and chances (WP4, read; GrudgeFactor WP9) ---
     // The yards within which an enemy is a meeting and the odds are counted

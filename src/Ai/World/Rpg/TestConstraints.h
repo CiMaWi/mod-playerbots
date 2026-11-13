@@ -21,12 +21,14 @@
 // selftest line
 namespace TestConstraints
 {
-constexpr std::uint16_t PLANNER = 1;    // planner goals and jobs
-constexpr std::uint16_t STATUS = 2;     // the weighted random status pick
-constexpr std::uint16_t ERRAND = 4;     // vendor errands and inn binds
-constexpr std::uint16_t HEARTH = 8;     // hearth legs, the off-mesh hearth and the planner's inn goal
-constexpr std::uint16_t NOFIGHT = 16;   // starts no fight; creatures ignore the bot and its pets
-constexpr std::uint16_t NODAMAGE = 32;  // takes no damage
+constexpr std::uint16_t PLANNER = 1;      // planner goals and jobs
+constexpr std::uint16_t STATUS = 2;       // the weighted random status pick
+constexpr std::uint16_t ERRAND = 4;       // vendor errands and inn binds
+constexpr std::uint16_t HEARTH = 8;       // hearth legs, the off-mesh hearth and the planner's inn goal
+constexpr std::uint16_t NOFIGHT = 16;     // starts no fight; creatures ignore the bot and its pets
+constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
+constexpr std::uint16_t FIGHTREADY = 64;  // its chances start a fight when the hard rules pass (world PvP)
+constexpr std::uint16_t JOINROLL = 128;   // a bystander's join roll always wins (world PvP)
 
 enum class Kind : std::uint8_t
 {
@@ -49,6 +51,8 @@ constexpr Row ROWS[] = {
     {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
     {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
+    {"fightready", Kind::State, FIGHTREADY, "a chance starts a fight when the hard rules pass (p 1, never peaceable)"},
+    {"joinroll", Kind::State, JOINROLL, "a bystander's join roll always wins (defence, group, master unchanged)"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -142,6 +146,9 @@ inline bool HearthAllowed(std::uint16_t set) { return !(set & HEARTH); }
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
+// Read where the fight book decides (FightBook.cpp); their apply and undo do nothing
+inline bool FightReady(std::uint16_t set) { return (set & FIGHTREADY) != 0; }
+inline bool JoinRoll(std::uint16_t set) { return (set & JOINROLL) != 0; }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

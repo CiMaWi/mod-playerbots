@@ -91,8 +91,12 @@ void ApplyNoDamage(ModelUnits& units)
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
 
+void NoOp(ModelUnits& /*units*/) {}
+
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
-                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage}};
+                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+                                              {FIGHTREADY, NoOp, NoOp},
+                                              {JOINROLL, NoOp, NoOp}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -223,6 +227,12 @@ bool RowWorks(Row const& row)
                !StartsFights(NOFIGHT) && StartsFights(HOLD | NODAMAGE);
     if (name == "nodamage")
         return applied.god && !applied.botImmune && !units.god;
+    // Read by the fight book only: nothing to apply, and no other row reads it
+    if (name == "fightready")
+        return !applied.god && !applied.botImmune && FightReady(FIGHTREADY) && !FightReady(HOLD | NOFIGHT | JOINROLL) &&
+               StartsFights(FIGHTREADY);
+    if (name == "joinroll")
+        return !applied.god && !applied.botImmune && JoinRoll(JOINROLL) && !JoinRoll(HOLD | NOFIGHT | FIGHTREADY);
     return false;
 }
 
@@ -243,7 +253,8 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(Names() == "planner, status, errand, hearth, nofight, nodamage", "names: every row for refusals");
+    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, fightready, joinroll",
+          "names: every row for refusals");
 }
 
 void TestHeldIdle()
@@ -307,6 +318,12 @@ void TestRelease()
     bot.Update();
     Check(bot.set == NOFIGHT && HearthAllowed(bot.set), "full release: no choice row kept");
     Check(bot.units.botImmune && !StartsFights(bot.set), "release: a state row stays (nofight)");
+    ModelBot ready;
+    ready.Post(On(HOLD | FIGHTREADY | JOINROLL));
+    ready.Update();
+    ready.Post(Release(0));
+    ready.Update();
+    Check(ready.set == (FIGHTREADY | JOINROLL), "release: fightready and joinroll stay");
     ModelBot moving;
     moving.status = Status::Travel;
     moving.Post(Release(0));

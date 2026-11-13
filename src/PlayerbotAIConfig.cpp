@@ -1256,8 +1256,6 @@ bool PlayerbotAIConfig::Initialize()
         pvpNumber("Book.MaxFightMinutes", WorldPvp.MaxFightMinutes, 1, MaxPvpMinutes);
         pvpNumber("Book.EndGraceSeconds", WorldPvp.EndGraceSeconds, 0, MaxGraceSeconds);
         pvpNumber("CalmMinutes", WorldPvp.CalmMinutes, 0, MaxPvpMinutes);
-        WorldPvp.TestCommands =
-            sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.TestCommands", WorldPvp.TestCommands, false);
         // The fight rules' values (FightRules.h clamps them again); a value out of range keeps the default
         auto const pvpRange = [](char const* key, float& value, float minimum, float maximum)
         {

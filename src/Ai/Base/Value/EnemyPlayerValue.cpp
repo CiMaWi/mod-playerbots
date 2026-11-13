@@ -29,8 +29,10 @@ constexpr char const* REFUSAL_EXCLUSION = "exclusion";
 constexpr char const* REFUSAL_NOT_VISIBLE = "not_visible";
 constexpr char const* REFUSAL_MASTER = "master";
 
-// Today's target checks on an enemy player after the parent's filter: the scan's and the join target's
-char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit)
+// Today's target checks on an enemy player after the parent's filter: the scan's and the join target's. Outside
+// battlegrounds today's scan takes only enemies who can see the bot; a target the rules picked or let the bot join
+// (`byRules`) needs the bot's own sight of it, so a rogue that stealthed beside its pick still attacks it (WP4b)
+char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit, bool const byRules)
 {
     bool inCannon = botAI->IsInVehicle(false, true);
     Player* enemy = dynamic_cast<Player*>(unit);
@@ -44,7 +46,7 @@ char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit)
         (!inCannon && enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE)))
         return REFUSAL_NOT_TARGET;
     // Stealth and invisibility: !enemy->HasStealthAura() && !enemy->HasInvisibilityAura() is left to the sight check
-    if (!(bot->InBattleground() ? bot->CanSeeOrDetect(enemy) : enemy->CanSeeOrDetect(bot)))
+    if (!((byRules || bot->InBattleground()) ? bot->CanSeeOrDetect(enemy) : enemy->CanSeeOrDetect(bot)))
         return REFUSAL_NOT_VISIBLE;
     if (enemy->HasSpiritOfRedemptionAura())
         return REFUSAL_NOT_TARGET;
@@ -84,7 +86,7 @@ char const* NearestEnemyPlayersValue::Refusal(Unit* unit, bool byRules)
     // Apply parent's filtering first (includes level difference checks)
     if (!byRules && !PossibleTargetsValue::AcceptUnit(unit))
         return REFUSAL_FILTERED;
-    return EnemyRefusal(botAI, bot, unit);
+    return EnemyRefusal(botAI, bot, unit, byRules);
 }
 
 Unit* EnemyPlayerValue::Calculate()
@@ -152,7 +154,7 @@ Unit* EnemyPlayerValue::Calculate()
     // World PvP (WP5): the target in the fight the rules let this bot join, when today's checks of step 2 pass on it
     if (Player* const joined = WorldPvp::JoinTarget(botAI))
         if (joined != pVictim && !IsUnavailableCombatTarget(bot, joined) && !exclusions.count(joined->GetGUID()) &&
-            bot->IsWithinDist(joined, VISIBILITY_DISTANCE_NORMAL) && !EnemyRefusal(botAI, bot, joined) &&
+            bot->IsWithinDist(joined, VISIBILITY_DISTANCE_NORMAL) && !EnemyRefusal(botAI, bot, joined, true) &&
             bot->IsWithinLOSInMap(joined) && std::fabs(bot->GetPositionZ() - joined->GetPositionZ()) < 30.0f)
             return joined;
 

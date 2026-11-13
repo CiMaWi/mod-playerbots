@@ -42,6 +42,7 @@
 #include "Random.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -60,8 +61,6 @@ constexpr uint32 FORCED_TTL_MS = 30 * MINUTE * IN_MILLISECONDS;
 // A command's request waits this long for the bot's tick; an answer is shown for this long
 constexpr uint32 REQUEST_TTL_MS = 60 * IN_MILLISECONDS;
 constexpr uint32 ANSWER_TTL_MS = 10 * MINUTE * IN_MILLISECONDS;
-// `fight meet` places the enemy this many yards in front of the bot
-constexpr float MEET_YARDS = 3.0f;
 // FightStart and FightEnd sides packing (world-log.md)
 constexpr uint32 TARGET_SHIFT = 16;
 constexpr uint32 LEVEL_SHIFT = 8;
@@ -124,7 +123,6 @@ std::atomic<uint32> forcedCount{0};
 struct Request
 {
     bool show = false;
-    bool ready = false;
     uint32 postedMs = 0;
 };
 
@@ -198,6 +196,7 @@ FightMemory* MemoryOf(PlayerbotAI* botAI, uint32 nowMs)
         memory->persistentKnown = true;
         memory->persistentCheckMs = nowMs;
     }
+    memory->ready = TestConstraints::FightReady(botAI->rpgInfo.constraints);
     return memory->persistent ? memory.get() : nullptr;
 }
 
@@ -408,11 +407,57 @@ void EmitJoins(CombatNote const& note, Player* first, Player* second, uint32 now
     }
 }
 
+// A new fight's FightStart row (when it started) and its joins
+void EmitNote(CombatNote const& note, Player* aggressor, Player* other, uint32 nowMs)
+{
+    if (!note.fightId)
+        return;
+
+    if (note.started && WorldLog::Active())
+    {
+        int64 const packed = (static_cast<int64>(other->GetGUID().GetCounter()) << TARGET_SHIFT) |
+                             (static_cast<int64>(other->GetLevel()) << LEVEL_SHIFT) | ColourOf(aggressor, other);
+        EventLog::Emit(aggressor, EVENT_FIGHT_START, Word(note.reason), note.fightId, packed);
+    }
+    EmitJoins(note, aggressor, other, nowMs);
+}
+
+// The alive group leader of `member` on its map when the rules had it pick `guid` (still fresh), else nullptr: a
+// member following its leader's attack may hit the picked enemy first
+Player* PickingLeader(Player* member, uint64 guid, uint32 nowMs)
+{
+    Group* const group = member->GetGroup();
+    if (!group || group->GetLeaderGUID() == member->GetGUID())
+        return nullptr;
+
+    Player* const leader = ObjectAccessor::GetPlayer(member->GetMap(), group->GetLeaderGUID());
+    FightMemory* const memory = leader && leader->IsAlive() ? MemoryOf(leader, nowMs) : nullptr;
+    return memory && IsPicked(*memory, guid, nowMs) ? leader : nullptr;
+}
+
+// Whether a group member of `member` is among the fight's participants: a member following its group into the fight
+// comes in for the group, as a bystander deciding for its group's fight does (WP5)
+bool GroupInFight(Player* member, Fight const& fight)
+{
+    Group* const group = member->GetGroup();
+    if (!group)
+        return false;
+
+    uint64 const self = member->GetGUID().GetRawValue();
+    for (FightParticipant const& participant : fight.participants)
+        if (participant.guid != self && group->IsMember(ObjectGuid(participant.guid)))
+            return true;
+    return false;
+}
+
 // PvP combat (or a kill: `first` the killer) between two players on one open-world map; recorded when one of them is a
-// persistent bot or already fights in a recorded fight. Duels and same-side combat are not fights
+// persistent bot or already fights in a recorded fight. Duels, same-side combat and combat with a dead player (its pet
+// fights on) are not fights
 void NoteCombat(Player* first, Player* second, uint32 nowMs, bool kill)
 {
     if (first == second || first->GetTeamId() == second->GetTeamId() || first->GetMap() != second->GetMap())
+        return;
+    if (!kill && (!first->IsAlive() || !second->IsAlive()))
         return;
     if (first->duel && first->duel->Opponent == second)
         return;
@@ -438,18 +483,28 @@ void NoteCombat(Player* first, Player* second, uint32 nowMs, bool kill)
     if (aggressorMemory && IsJoinTarget(*aggressorMemory, otherCombatant.guid, nowMs))
         aggressorCombatant.joinedAs = aggressorMemory->joinCameIn;
 
-    CombatNote const note = kill ? book.OnKill(aggressorCombatant, otherCombatant, nowMs)
-                                 : book.OnCombat(aggressorCombatant, otherCombatant, nowMs);
-    if (!note.fightId)
-        return;
-
-    if (note.started && WorldLog::Active())
+    // A member hitting first the enemy its leader picked: the leader starts the fight, the member joins it for the
+    // group
+    if (!kill && !aggressorCombatant.real && aggressorCombatant.start == FightReason::AttackOnSight &&
+        !book.FindFightOf(aggressorCombatant.guid) && !book.FindFightOf(otherCombatant.guid))
     {
-        int64 const packed = (static_cast<int64>(other->GetGUID().GetCounter()) << TARGET_SHIFT) |
-                             (static_cast<int64>(other->GetLevel()) << LEVEL_SHIFT) | ColourOf(aggressor, other);
-        EventLog::Emit(aggressor, EVENT_FIGHT_START, Word(note.reason), note.fightId, packed);
+        if (Player* const leader = PickingLeader(aggressor, otherCombatant.guid, nowMs))
+        {
+            Combatant leaderCombatant = MakeCombatant(leader, nowMs);
+            leaderCombatant.start = MemoryOf(leader, nowMs)->startReason;
+            EmitNote(book.OnCombat(leaderCombatant, otherCombatant, nowMs), leader, other, nowMs);
+            aggressorCombatant.joinedAs = CameIn::Group;
+        }
     }
-    EmitJoins(note, aggressor, other, nowMs);
+    // A member hitting an enemy of its group's fight before its join check came round (WP4b group-b15)
+    if (aggressorCombatant.joinedAs == CameIn::Joined && !book.FindFightOf(aggressorCombatant.guid))
+        if (Fight const* const fight = book.FindFightOf(otherCombatant.guid))
+            if (GroupInFight(aggressor, *fight))
+                aggressorCombatant.joinedAs = CameIn::Group;
+
+    EmitNote(kill ? book.OnKill(aggressorCombatant, otherCombatant, nowMs)
+                  : book.OnCombat(aggressorCombatant, otherCombatant, nowMs),
+             aggressor, other, nowMs);
 }
 
 // Every enemy player (or its pet) `player` is in PvP combat with
@@ -671,7 +726,9 @@ void AskBystander(FightBook& book, Fight const& fight, std::vector<Player*> cons
     }
     input.odds = OddsShare(own, other);
 
-    JoinAnswer const answer = AnswerJoin(input, enemies, memory, fight.id, static_cast<float>(rand_norm()), values);
+    // A test's joinroll bot always wins the roll (the refusals before it stand)
+    float const roll = TestConstraints::JoinRoll(botAI->rpgInfo.constraints) ? 0.0f : static_cast<float>(rand_norm());
+    JoinAnswer const answer = AnswerJoin(input, enemies, memory, fight.id, roll, values);
     if (!answer.decided)
         return;
     // A full list keeps no more answers; a join of the bot's group, master or self-defence still counts
@@ -882,12 +939,11 @@ bool TakeRequest(ObjectGuid guid, Request& request, uint32 nowMs)
     return taken;
 }
 
-void PostRequest(ObjectGuid guid, bool show, bool ready)
+void PostRequest(ObjectGuid guid, bool show)
 {
     std::lock_guard lock(requestLock);
     Request& request = requests[guid];
     request.show = request.show || show;
-    request.ready = request.ready || ready;
     request.postedMs = getMSTime();
     requestCount.store(static_cast<uint32>(requests.size()), std::memory_order_relaxed);
 }
@@ -973,14 +1029,6 @@ void ServeRequest(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
         return;
 
     FightMemory* const memory = MemoryOf(botAI, nowMs);
-    if (request.ready)
-    {
-        if (memory)
-            memory->ready = true;
-        LOG_INFO("playerbots", "[WorldPvp] FIGHT ready: {} {}", bot->GetName(),
-                 memory ? "is ready (its next chance starts a fight when the hard rules pass)"
-                        : "refused: not a persistent bot");
-    }
     if (!request.show)
         return;
 
@@ -997,14 +1045,6 @@ void ServeRequest(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
             ++it;
     }
     answers[bot->GetGUID()] = {std::move(lines), nowMs};
-}
-
-bool TestCommandsRefused(ChatHandler* handler, char const* command)
-{
-    if (sPlayerbotAIConfig.WorldPvp.TestCommands)
-        return false;
-    handler->SendErrorMessage("FIGHT {}: refused: Playerbots.WorldPvp.TestCommands is 0 (labs only)", command);
-    return true;
 }
 
 class FightBookMapScript : public AllMapScript
@@ -1387,7 +1427,7 @@ bool HandleBotCommand(ChatHandler* handler, PlayerbotAI* botAI)
                 handler->PSendSysMessage("{}", line);
         }
     }
-    PostRequest(bot->GetGUID(), true, false);
+    PostRequest(bot->GetGUID(), true);
     handler->PSendSysMessage(
         "FIGHT bot: {} asked; it answers on its next update ([WorldPvp] in the server log, and "
         "here on the next call)",
@@ -1395,50 +1435,6 @@ bool HandleBotCommand(ChatHandler* handler, PlayerbotAI* botAI)
     return true;
 }
 
-bool HandleReadyCommand(ChatHandler* handler, PlayerbotAI* botAI)
-{
-    if (TestCommandsRefused(handler, "ready"))
-        return false;
-
-    Player* const bot = botAI->GetBot();
-    PostRequest(bot->GetGUID(), false, true);
-    handler->PSendSysMessage("FIGHT ready: {} ordered; see [WorldPvp] FIGHT ready: {}", bot->GetName(), bot->GetName());
-    return true;
-}
-
-bool HandleMeetCommand(ChatHandler* handler, PlayerbotAI* botAI, PlayerbotAI* enemyAI)
-{
-    if (TestCommandsRefused(handler, "meet"))
-        return false;
-
-    Player* const bot = botAI->GetBot();
-    Player* const enemy = enemyAI->GetBot();
-    char const* refusal = nullptr;
-    if (bot == enemy || bot->GetTeamId() == enemy->GetTeamId())
-        refusal = "the two bots are not of opposite sides";
-    else if (!bot->IsAlive() || !enemy->IsAlive())
-        refusal = "dead";
-    else if (bot->IsInFlight() || enemy->IsInFlight())
-        refusal = "in flight";
-    else if (!HasBook(bot->GetMap()))
-        refusal = "the bot is not in the open world";
-    if (refusal)
-    {
-        handler->SendErrorMessage("FIGHT meet: {} and {} refused: {}", bot->GetName(), enemy->GetName(), refusal);
-        return false;
-    }
-
-    // A few yards in front of the bot, facing it; no attack is ordered (the placed-enemy fixture, labs only)
-    float const facing = bot->GetOrientation();
-    float const x = bot->GetPositionX() + MEET_YARDS * std::cos(facing);
-    float const y = bot->GetPositionY() + MEET_YARDS * std::sin(facing);
-    float const z = bot->GetPositionZ();
-    enemy->UpdatePvP(true, true);
-    enemy->TeleportTo(bot->GetMapId(), x, y, z, Position::NormalizeOrientation(facing + static_cast<float>(M_PI)));
-    handler->PSendSysMessage("FIGHT meet: {} placed beside {} (map {} {:.0f} {:.0f} {:.0f}), PvP flagged, no attack",
-                             enemy->GetName(), bot->GetName(), bot->GetMapId(), x, y, z);
-    return true;
-}
 }  // namespace WorldPvp
 
 void AddFightBookScripts()

@@ -709,7 +709,7 @@ public:
     uint32_t fightId = 0;
     bool hasFought = false;
     uint32_t lastFightEndMs = 0;
-    // WP4: the last chance and the lab's "ready" flag (`.playerbots fight ready`: the next chance starts a fight)
+    // WP4: the last chance and the test constraint fightready (MemoryOf copies it: its chances start a fight)
     bool hasChance = false;
     uint32_t lastChanceMs = 0;
     bool ready = false;

@@ -72,11 +72,9 @@ void MarkForced(ObjectGuid guid);
 void ClearForced(ObjectGuid guid);
 
 // `.playerbots fight ...` (world thread): list (the GM's map, or every map from the console), bot (its memory, answered
-// by its next tick), ready and meet (labs only: Playerbots.WorldPvp.TestCommands)
+// by its next tick); `fight ready` is the test constraint fightready (PlayerbotCommandScript.cpp)
 bool HandleListCommand(ChatHandler* handler);
 bool HandleBotCommand(ChatHandler* handler, PlayerbotAI* botAI);
-bool HandleReadyCommand(ChatHandler* handler, PlayerbotAI* botAI);
-bool HandleMeetCommand(ChatHandler* handler, PlayerbotAI* botAI, PlayerbotAI* enemyAI);
 }  // namespace WorldPvp
 
 void AddFightBookScripts();

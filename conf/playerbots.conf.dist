@@ -2311,11 +2311,6 @@ Playerbots.WorldPvp.NoHitSeconds = 30
 Playerbots.WorldPvp.StalemateSeconds = 300
 Playerbots.WorldPvp.CalmYards = 200
 
-# The lab fixtures `.playerbots fight ready <bot>` (its next chance starts a fight when the hard rules pass) and
-# `.playerbots fight meet <bot> <enemy bot>` (places the enemy beside the bot, PvP flagged, without an attack): a
-# switch for test servers. (Range: 0-1.) Default: 0
-Playerbots.WorldPvp.TestCommands = 0
-
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600
