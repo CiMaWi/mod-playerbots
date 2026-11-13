@@ -155,8 +155,8 @@ inline void Note(CrossingTally* tally, CrossingCheck check, Point const& from, P
         tally->Note(check, from, to);
 }
 
-// The deck point a crossing starts from: on the line from the shore toward a point over the deck (boarding: the
-// transport's origin; exit: the hull's centre), the first sample with deck under it, then the inset further in, no
+// The deck point a crossing starts from: on the line from the shore toward a point over the deck (the hull's centre:
+// a transport's origin need not lie over its deck), the first sample with deck under it, then the inset further in, no
 // further than that point. The search steps no further than the inset, so the point lies between one and two insets
 // inside the edge (boarding: 4 to 6 yd; exit: 1 to 2 yd). Without an edge on that line, the point aimed at.
 template <class DeckAt>
@@ -340,8 +340,10 @@ bool AcceptBoard(Geometry const& geometry, Point const& shore, Point const& deck
     return CheckBoard(geometry, shore, deck) == CrossingCheck::Accepted;
 }
 
+// The quay a bot boards from: where it stands, else on the ring around the transport's origin at its floor; its deck
+// point lies toward the hull's centre (a zeppelin's origin lies on its gondola's rail: a line toward it ends there)
 template <class Geometry>
-std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, Point const& origin,
+std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, Point const& origin, Point const& centre,
                               CrossingTally* tally = nullptr)
 {
     auto const tryShore = [&](Point const& seed) -> std::optional<Point>
@@ -352,10 +354,10 @@ std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, P
             Note(tally, CrossingCheck::NoShore, approach, seed);
             return std::nullopt;
         }
-        auto const deck = geometry.DeckFrom(*shore);
+        auto const deck = geometry.DeckFrom(*shore, BOARD_DECK_INSET_YARDS, centre);
         if (!deck)
         {
-            Note(tally, CrossingCheck::NoDeck, *shore, origin);
+            Note(tally, CrossingCheck::NoDeck, *shore, centre);
             return std::nullopt;
         }
         CrossingCheck check = CheckBoard(geometry, *shore, *deck);
@@ -630,6 +632,24 @@ struct Membership
     std::uint32_t Entry = 0;
     bool Available = false;
 };
+
+// Before a passenger attach (ported from mod-playerbots PR #2747, MovementAction::ClearTransportState, by Keleborn):
+// the core's AddPassenger deadlocks the map when the bot still points at a transport whose passenger set lacks it, and
+// RemovePassenger clears the pointer only for a listed passenger. A listed passenger of the target stays; any other
+// prior transport frame is cleared first.
+enum class AttachStep : std::uint8_t
+{
+    Attach,
+    ClearThenAttach,
+    Keep
+};
+
+inline AttachStep StepAttach(bool hasPrior, bool priorIsTarget, bool listedOnPrior)
+{
+    if (!hasPrior)
+        return AttachStep::Attach;
+    return priorIsTarget && listedOnPrior ? AttachStep::Keep : AttachStep::ClearThenAttach;
+}
 
 inline std::optional<Outcome> PassengerOutcome(PassengerMotion const& motion, Membership const& membership)
 {

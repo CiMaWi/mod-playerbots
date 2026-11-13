@@ -148,10 +148,10 @@ struct GroundGeometry
         return shore;
     }
 
-    // Boarding's deck point lies toward the transport's origin
+    // Boarding's deck point lies toward the hull's centre, as the exit's does
     std::optional<Point> DeckFrom(Point const& shore) const
     {
-        return DeckFrom(shore, TravelLifecycle::BOARD_DECK_INSET_YARDS, PositionOf(*Surface));
+        return DeckFrom(shore, TravelLifecycle::BOARD_DECK_INSET_YARDS, HullCentre(*Surface));
     }
 
     std::optional<Point> DeckFrom(Point const& shore, float inset, Point const& toward) const

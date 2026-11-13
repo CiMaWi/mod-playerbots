@@ -386,8 +386,12 @@ void CheckQuay()
             return std::nullopt;
         }
 
-        std::optional<Point> DeckFrom(Point const& shore) const
+        mutable std::optional<Point> Toward;
+        mutable float Inset = 0.0f;
+        std::optional<Point> DeckFrom(Point const& shore, float inset, Point const& toward) const
         {
+            Toward = toward;
+            Inset = inset;
             float const floor = shore.Z == Lower.Z ? 101.220f : 115.757f;
             return Point{2062.599f, 235.264f, floor};
         }
@@ -405,11 +409,29 @@ void CheckQuay()
 
     Point const approach{2061.870f, 247.465f, 100.636f};
     Point const origin{2062.599f, 235.264f, 117.734f};
-    auto const quay = FindQuay(geometry, approach, origin);
+    Point const centre{2054.949f, 227.384f, 117.734f};  // the Thundercaller's bounds centre, local (-7.65, -7.88)
+    auto const quay = FindQuay(geometry, approach, origin, centre);
     Check(quay && quay->Z == geometry.Lower.Z, "an origin above the deck does not exclude the reachable lower floor");
     Check(geometry.UpperCorridorChecks > 0, "the upper boarding candidate fails the normal ground corridor");
+    Check(geometry.Toward && geometry.Toward->X == centre.X && geometry.Toward->Y == centre.Y,
+          "the boarding deck point aims at the hull's centre, not the origin on the gondola's rail");
+    Check(geometry.Inset == BOARD_DECK_INSET_YARDS, "the boarding deck point lies the boarding inset inside the edge");
     geometry.LowerAvailable = false;
-    Check(!FindQuay(geometry, approach, origin), "the disconnected upper candidate alone cannot choose a quay");
+    Check(!FindQuay(geometry, approach, origin, centre), "the disconnected upper candidate alone cannot choose a quay");
+}
+
+// The attach guard ported from PR #2747: a stale transport frame is cleared before AddPassenger, a listed passenger
+// of the target stays
+void CheckAttachGuard()
+{
+    Check(StepAttach(false, false, false) == AttachStep::Attach, "no prior transport: attach");
+    Check(StepAttach(true, true, true) == AttachStep::Keep, "already a listed passenger of the target: no attach");
+    Check(StepAttach(true, true, false) == AttachStep::ClearThenAttach,
+          "a stale pointer at the target (not in its passenger set) is cleared before the attach");
+    Check(StepAttach(true, false, true) == AttachStep::ClearThenAttach,
+          "a passenger of another transport leaves it before the attach");
+    Check(StepAttach(true, false, false) == AttachStep::ClearThenAttach,
+          "a stale pointer at another transport is cleared before the attach");
 }
 
 // WT43: the exit is the boarding search in reverse. A ship's deck spans |y| < 5 around its origin; the bot stands
@@ -1697,6 +1719,7 @@ int main()
     CheckRideAndExit();
     CheckGeometry();
     CheckQuay();
+    CheckAttachGuard();
     CheckExitSearch();
     CheckDeckPoint();
     CheckDeckWalk();

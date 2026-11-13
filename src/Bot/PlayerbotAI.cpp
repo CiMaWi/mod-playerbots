@@ -946,10 +946,29 @@ public:
 
     void SettleOldFrame() { _player.StopMoving(); }
 
+    // Ported from mod-playerbots PR #2747 (MovementAction::ClearTransportState, by Keleborn): a stale transport
+    // pointer is cleared by hand before AddPassenger, which deadlocks the map on one (TravelLifecycle::StepAttach)
     void Attach(uint64 guid)
     {
-        if (Transport* transport = Resolve(guid))
-            transport->AddPassenger(&_player, true);
+        Transport* const transport = Resolve(guid);
+        if (!transport)
+            return;
+        Transport* const prior = _player.GetTransport();
+        TravelLifecycle::AttachStep const step = TravelLifecycle::StepAttach(
+            prior != nullptr, prior == transport, prior && prior->GetPassengers().count(&_player) > 0);
+        if (step == TravelLifecycle::AttachStep::Keep)
+            return;
+        if (step == TravelLifecycle::AttachStep::ClearThenAttach)
+        {
+            prior->RemovePassenger(&_player, true);
+            if (_player.GetTransport())
+            {
+                _player.SetTransport(nullptr);
+                _player.m_movementInfo.RemoveMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
+                _player.m_movementInfo.transport.guid.Clear();
+            }
+        }
+        transport->AddPassenger(&_player, true);
     }
 
     void Detach(uint64 guid)
