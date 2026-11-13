@@ -391,8 +391,46 @@ void CheckWords(std::vector<BotTraits> const& bots)
     mild.Values[Index(Trait::Greed)] = -TraitRules::STRONG;
     mild.Values[Index(Trait::Piety)] = TraitRules::NOTICEABLE - 1;
     std::vector<std::string> const words = TraitRules::Describe(mild);
-    Check(words.size() == 2 && words[0] == "very content" && words[1] == "rather careful",
+    Check(words.size() == 2 && words[0] == "very content" && words[1] == "somewhat careful",
           "thresholds: 30 noticeable, 65 strong, 29 silent");
+
+    // LC9: four grades at their bounds, negatives mirror, no digit in any word
+    struct Bound
+    {
+        int Value;
+        char const* Caution;     // "very careful" / "extremely careful" style trait
+        char const* Aggression;  // a trait with special strong words
+    };
+    constexpr Bound BOUNDS[] = {{29, "", ""},
+                                {30, "somewhat careful", "somewhat combative"},
+                                {44, "somewhat careful", "somewhat combative"},
+                                {45, "rather careful", "rather combative"},
+                                {64, "rather careful", "rather combative"},
+                                {65, "very careful", "belligerent"},
+                                {84, "very careful", "belligerent"},
+                                {85, "extremely careful", "belligerent"},
+                                {100, "extremely careful", "belligerent"}};
+    bool grades = true;
+    bool mirrored = true;
+    bool wordsClean = true;
+    for (Bound const& bound : BOUNDS)
+    {
+        grades &= TraitRules::Word(Trait::Caution, bound.Value) == bound.Caution;
+        grades &= TraitRules::Word(Trait::Aggression, bound.Value) == bound.Aggression;
+        mirrored &= TraitRules::Word(Trait::Caution, -bound.Value).empty() == (std::string_view(bound.Caution).empty());
+        mirrored &=
+            TraitRules::Word(Trait::Aggression, -bound.Value).empty() == (std::string_view(bound.Aggression).empty());
+        for (std::size_t i = 0; i < TraitRules::TRAIT_COUNT; ++i)
+            for (int const sign : {-1, 1})
+                wordsClean &= bound.Value < TraitRules::NOTICEABLE ||
+                              CleanWord(TraitRules::Word(static_cast<Trait>(i), sign * bound.Value));
+    }
+
+    Check(grades, "grades: somewhat 30-44, rather 45-64, very 65-84, extremely 85 and up; special words stay");
+    Check(mirrored, "a negative value gets a word exactly where the positive does");
+    Check(TraitRules::Word(Trait::Caution, -85) == "reckless" && TraitRules::Word(Trait::Caution, -65) == "reckless",
+          "the strong pole's special word stays");
+    Check(wordsClean, "no word of any trait and grade holds a digit or a banned term");
     Check(TraitRules::Unit(mild, Trait::Greed) == -0.65f, "the accessor maps -65 to -0.65");
 
     Trait found = Trait::Drive;

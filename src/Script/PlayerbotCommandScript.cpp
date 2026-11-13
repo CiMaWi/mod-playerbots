@@ -19,6 +19,7 @@
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
+#include "BridgeBotFacts.h"
 #include "BridgeBotState.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
@@ -269,6 +270,7 @@ public:
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts)
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
+            {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -753,6 +755,40 @@ public:
         handler->PSendSysMessage("MOUNT {} {}", target.GetName(), facts.mountName.empty() ? "none" : facts.mountName);
         for (std::string const& deed : facts.deeds)
             handler->PSendSysMessage("DEED {} {}", target.GetName(), deed);
+        return true;
+    }
+
+    // LC9: the bot's lasting facts as the conversation bridge reads them (lab tests; the wire carries them from LC10):
+    // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> useful <text>", "FACT <bot>
+    // servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot> relatives
+    // none". Console only, like `bridge state`.
+    static bool HandleBridgeFactsCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+
+        PlayerbotBridge::BotFacts facts;
+        if (!PlayerbotBridge::ReadBotFacts(target.GetGUID(), facts))
+        {
+            handler->SendErrorMessage("{}: no facts (only the console reads them, for a bot in the world)",
+                                      target.GetName());
+            return false;
+        }
+
+        std::string const& name = target.GetName();
+        handler->PSendSysMessage("Bridge facts of {}", name);
+        handler->PSendSysMessage("FACT {} phrase {}", name, facts.phrase);
+        for (auto const& [craft, rank] : facts.crafts)
+            handler->PSendSysMessage("FACT {} craft {} {}", name, craft, rank);
+        for (std::string const& useful : facts.useful)
+            handler->PSendSysMessage("FACT {} useful {}", name, useful);
+        for (std::string const& servant : facts.servants)
+            handler->PSendSysMessage("FACT {} servant {}", name, servant);
+        for (auto const& [faction, word] : facts.standing)
+            handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
+        handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
+        handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
         return true;
     }
 
