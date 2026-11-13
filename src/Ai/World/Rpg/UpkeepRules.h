@@ -179,6 +179,10 @@ constexpr char const* EVENT_RIDING_BOUGHT = "RidingBought";  // rank, cost, moun
 constexpr char const* EVENT_SICK = "Sick";                   // src spirit_healer, id the spell, amount its duration ms
 constexpr char const* EVENT_NEED_SHORT = "NeedShort";  // src = the kind word, amount; when a shortfall begins and ends
 constexpr char const* EVENT_FLIGHT_FALL = "FlightFall";
+// Batch G (class quests, WU20a-WU21c), registered at once so later steps touch no wide header
+constexpr char const* EVENT_PET_TAMED = "PetTamed";                          // a hunter tamed a beast: id the creature
+constexpr char const* SOURCE_CLASS_QUEST_GIVEN_UP = "class_quest_given_up";  // a grant after the bot gave the quest up
+constexpr char const* REASON_CLASS_QUEST = "class_quest";  // a goal or circuit row the class-quest bonus decided
 }  // namespace Upkeep
 
 #endif

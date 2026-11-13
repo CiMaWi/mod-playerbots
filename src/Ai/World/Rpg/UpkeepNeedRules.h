@@ -112,7 +112,8 @@ enum class NeedOrder : std::uint8_t
     FoodWater,
     ReagentPoison,
     Training,
-    Riding
+    Riding,
+    Pet  // batch G (WU21b): a hunter's pet and its stable; no need of this order yet
 };
 
 // One thing the bot must or wants to pay for
@@ -977,7 +978,8 @@ inline std::string Money(std::uint64_t copper)
 
 inline char const* OrderWord(NeedOrder order)
 {
-    constexpr std::array<char const*, 6> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding"};
+    constexpr std::array<char const*, 7> WORDS = {"repair", "ammo", "food and water", "reagents", "training",
+                                                  "riding", "pet"};
     return WORDS[static_cast<std::size_t>(order)];
 }
 
