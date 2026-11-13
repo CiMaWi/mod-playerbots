@@ -4,12 +4,12 @@
  * or (at your option) any later version.
  */
 
-#include "HoldRules.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldTravelRules.h"
 
@@ -17,7 +17,7 @@ bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
-    if (!HoldRules::ErrandAllowed(botAI->rpgInfo.heldChoices))
+    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
         return false;
     switch (botAI->rpgInfo.GetStatus())
     {

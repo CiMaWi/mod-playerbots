@@ -13,7 +13,6 @@
 #include "GatherNodeMgr.h"
 #include "GossipDef.h"
 #include "GridTerrainData.h"
-#include "HoldRules.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
 #include "NewRpgHelpers.h"
@@ -41,6 +40,7 @@
 #include "RouteRules.h"
 #include "SharedDefines.h"
 #include "StatsWeightCalculator.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "WorldLog.h"
@@ -133,7 +133,7 @@ void NewRpgBaseAction::RecoverOffMesh()
     // The hearthstone when it is ready: the stone's own spell, no bot teleport and no sight check
     char const* refusal = nullptr;
     float castResult = 0.0f;
-    bool const hearthReady = HoldRules::HearthAllowed(botAI->rpgInfo.heldChoices) &&
+    bool const hearthReady = TestConstraints::HearthAllowed(botAI->rpgInfo.constraints) &&
                              bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) &&
                              !bot->HasSpellCooldown(HEARTHSTONE_CAST_SPELL) && !bot->IsInCombat() &&
                              !bot->IsNonMeleeSpellCast(false);
