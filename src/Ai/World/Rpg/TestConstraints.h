@@ -21,12 +21,13 @@
 // selftest line
 namespace TestConstraints
 {
-constexpr std::uint16_t PLANNER = 1;    // planner goals and jobs
-constexpr std::uint16_t STATUS = 2;     // the weighted random status pick
-constexpr std::uint16_t ERRAND = 4;     // vendor errands and inn binds
-constexpr std::uint16_t HEARTH = 8;     // hearth legs, the off-mesh hearth and the planner's inn goal
-constexpr std::uint16_t NOFIGHT = 16;   // starts no fight; creatures ignore the bot and its pets
-constexpr std::uint16_t NODAMAGE = 32;  // takes no damage
+constexpr std::uint16_t PLANNER = 1;      // planner goals and jobs
+constexpr std::uint16_t STATUS = 2;       // the weighted random status pick
+constexpr std::uint16_t ERRAND = 4;       // vendor errands and inn binds
+constexpr std::uint16_t HEARTH = 8;       // hearth legs, the off-mesh hearth and the planner's inn goal
+constexpr std::uint16_t NOFIGHT = 16;     // starts no fight; creatures ignore the bot and its pets
+constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
+constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d; other plans use 64, 128)
 
 enum class Kind : std::uint8_t
 {
@@ -49,6 +50,7 @@ constexpr Row ROWS[] = {
     {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
     {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
+    {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -142,6 +144,9 @@ inline bool HearthAllowed(std::uint16_t set) { return !(set & HEARTH); }
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
+// nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
+// the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
+inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
