@@ -133,6 +133,8 @@ bool QuestsReady();
 std::string QuestIndexStatus();
 // `playerbots planner quest <id> | stats | flush`: the quest's entry and statistics, the book's state, a flush now
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
+// `playerbots planner questuse <quest>`: which item or spell the quest uses on which target (upkeep plan WU20b)
+bool HandleQuestUseCommand(ChatHandler* handler, char const* args);
 
 // The upkeep index (upkeep plan WU2, PlannerUpkeep.cpp; records and rules in UpkeepIndex.h)
 // World thread, once after StartQuestIndex: gathers the trainers, the vendor stock and the class reagents, builds the

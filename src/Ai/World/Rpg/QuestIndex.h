@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "PlannerIndexes.h"
+#include "QuestUseRules.h"
 
 // The planner's quest index (travel plan WT13a, PLAN 3.9): every quest with its givers and enders, limits, objectives
 // with their areas and chain links, built once on a worker from a copy the world thread gathered. No game header:
@@ -202,6 +203,7 @@ struct QuestGather
     std::vector<TargetSpawn> targets;
     std::vector<PoiInput> pois;
     std::vector<TriggerInput> triggers;
+    QuestUseGather uses;          // source items with an on-use spell and their targets (WU20b)
     std::uint32_t unresolved{0};  // places without a zone
 };
 
@@ -304,6 +306,7 @@ public:
     std::vector<QuestRecord> quests;  // ascending id
     std::vector<QuestPlace> places;   // canonical order: map, position, entry
     std::vector<QuestCamp> camps;     // in the order of their first cell
+    QuestUseTable uses;               // what to use where, per quest
     QuestIndexStats stats;
 
     static QuestIndex Build(QuestGather input)
@@ -316,6 +319,7 @@ public:
         index.BuildCamps();
         index.BuildGiverGrid();
         index.BuildUnlocks();
+        index.BuildUses(std::move(input.uses));
         index.CountStats();
         index.stats.estimatedBytes = index.EstimateBytes();
         return index;
@@ -428,6 +432,9 @@ public:
         for (auto const& [map, list] : _campsByMap)
             bytes += NODE_BYTES + Detail::VectorBytes(list);
         bytes += _giverBounds.size() * NODE_BYTES;
+        bytes += Detail::VectorBytes(uses.rules);
+        for (QuestUseRule const& rule : uses.rules)
+            bytes += Detail::VectorBytes(rule.entries);
         return bytes;
     }
 
@@ -685,6 +692,24 @@ private:
         }
         for (auto& [id, list] : _unlocks)
             Detail::SortUnique(list);
+    }
+
+    void BuildUses(QuestUseGather input)
+    {
+        std::vector<UseQuest> list;
+        list.reserve(quests.size());
+        for (QuestRecord const& quest : quests)
+        {
+            UseQuest use{quest.id, quest.classMask, {}};
+            for (QuestObjective const& objective : quest.objectives)
+                use.goals.emplace_back(objective.kind == ObjectiveKind::Kill     ? UseGoalKind::Kill
+                                       : objective.kind == ObjectiveKind::Object ? UseGoalKind::Object
+                                       : objective.kind == ObjectiveKind::Item   ? UseGoalKind::Item
+                                                                                 : UseGoalKind::Other,
+                                       objective.target);
+            list.push_back(std::move(use));
+        }
+        uses = QuestUseTable::Build(std::move(input), list);
     }
 
     void CountStats()
