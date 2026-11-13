@@ -470,15 +470,35 @@ inline void ForgetFightElsewhere(FightMemory& memory, bool held, uint32_t nowMs)
     memory.lastFightEndMs = nowMs;
 }
 
-// The retreat cannot move (rooted, or every direction blocked): the bot gives it up and fights where it stands. After
-// a retreat by the rules it still does not rejoin that fight's other enemies
+// The retreat's turn after it tried `tried` directions, `blocked` of them blocked by the collision check: it is given
+// up only when every direction is blocked. A bot that cannot move now (rooted, stunned) or whose last move still runs
+// (its delay not over, so a new move is refused) waits: the retreat's window bounds the wait
+inline bool GivesUpRetreat(uint32_t blocked, uint32_t tried) { return tried != 0 && blocked == tried; }
+
+// The bot gives the retreat up and fights where it stands. After a retreat by the rules it still does not rejoin that
+// fight's other enemies
 inline void GiveUpRetreat(FightMemory& memory) { memory.retreating = false; }
 
-// Whether the bot leaves `guid` alone: it retreated from the fight it is in, or its chase of `guid` just ended; never
-// an enemy attacking it (self-defence)
+// Whether the bot leaves `guid` alone: it retreated from the fight it is in, it disengages from a fight that ended (a
+// timeout or stalemate: its PvP combat with that fight's enemies would start a new fight at once), or its chase of
+// `guid` just ended; never an enemy attacking it (self-defence)
 inline bool LeavesAlone(FightMemory const& memory, uint64_t guid, bool attacksBot, uint32_t nowMs)
 {
-    return !attacksBot && (RetreatedFromFight(memory) || ChaseLeftAlone(memory, guid, nowMs));
+    return !attacksBot && (RetreatedFromFight(memory) || (memory.disengaging && Retreating(memory, nowMs)) ||
+                           ChaseLeftAlone(memory, guid, nowMs));
+}
+
+// Who is the aggressor of PvP combat between two players: the killer (`first` on a kill); else the one that picked the
+// other at a meeting while the other did not pick it (a caster's first spell sets no victim, WP6 timeout-b70); else
+// the one attacking the other while the other does not attack it (at the first hit the target has not answered yet);
+// else `first`
+inline bool SecondIsAggressor(bool kill, bool firstPicked, bool secondPicked, bool firstAttacks, bool secondAttacks)
+{
+    if (kill)
+        return false;
+    if (firstPicked != secondPicked)
+        return secondPicked;
+    return secondAttacks && !firstAttacks;
 }
 
 // The active fight whose participant list holds `participant` (the book's probe visits each fight's participants in

@@ -16,7 +16,8 @@
 // freshness, the book's once-per-fight answers (bounded) and the group joiner's word. Ending (WP6): a won roll is not
 // lost while no enemy is in sight; the retreat's inputs and state, the chase over by time and by distance
 // (aggression longer, courtesy shorter) and the leave-alone time, the calm-area cache (distance, time) and the
-// ended ring's order; a joiner's reason to pick again.
+// ended ring's order; a joiner's reason to pick again; the retreat given up only on walls everywhere, a disengage
+// leaving the ended fight's enemies alone, the aggressor by the meeting's pick (WP6-2).
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -636,6 +637,24 @@ void CheckEndGates()
     Check(LeavesAlone(rooted, ENEMY, false, now) && !LeavesAlone(rooted, ENEMY, true, now),
           "it leaves the fight's enemies alone, except one attacking it");
     Check(!LeavesAlone(Ready(now), ENEMY, false, now), "a bot with neither state leaves nobody alone");
+
+    // WP6-2: the retreat waits, only walls everywhere give it up; a disengage leaves the ended fight's enemies alone;
+    // the aggressor by the meeting's pick
+    Check(GivesUpRetreat(17, 17) && !GivesUpRetreat(16, 17) && !GivesUpRetreat(0, 17) && !GivesUpRetreat(0, 0),
+          "a retreat is given up only when the collision check blocks every direction it tried");
+    FightMemory parted = Ready(now);
+    StartRetreat(parted, FIGHT, true, 0.0f, 0.0f, now);
+    Check(LeavesAlone(parted, ENEMY, false, now + SECOND) && !LeavesAlone(parted, ENEMY, true, now + SECOND),
+          "a disengaging bot leaves every enemy alone that does not attack it");
+    Check(!LeavesAlone(parted, ENEMY, false, now + RETREAT_MS), "once the disengage is over, it leaves nobody alone");
+    GiveUpRetreat(parted);
+    Check(!LeavesAlone(parted, ENEMY, false, now + SECOND), "nor after a disengage given up");
+    Check(!SecondIsAggressor(true, false, true, false, true), "a kill: the killer (first) is the aggressor");
+    Check(SecondIsAggressor(false, false, true, true, false) && !SecondIsAggressor(false, true, false, false, true),
+          "the one that picked the other at a meeting is the aggressor, whoever has the victim set");
+    Check(SecondIsAggressor(false, false, false, false, true) && !SecondIsAggressor(false, true, true, true, true) &&
+              !SecondIsAggressor(false, false, false, false, false),
+          "no pick, or both: the one attacking an enemy that does not answer, else the first");
 
     std::vector<Fight> active(3);
     for (size_t index = 0; index < active.size(); ++index)

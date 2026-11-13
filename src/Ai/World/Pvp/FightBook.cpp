@@ -466,17 +466,22 @@ void NoteCombat(Player* first, Player* second, uint32 nowMs, bool kill)
     if (!entry)
         return;
 
-    // The aggressor: the killer, else the one attacking the other while the other does not attack it (at the first
-    // hit the target has not answered yet), else `first`
-    bool const secondAggressor = !kill && Attacks(second, first) && !Attacks(first, second);
+    // The aggressor (SecondIsAggressor): the killer, else the one that picked the other at a meeting, else the one
+    // attacking the other while the other does not attack it, else `first`
+    FightMemory* const firstMemory = MemoryOf(first, nowMs);
+    FightMemory* const secondMemory = MemoryOf(second, nowMs);
+    bool const firstPicked = firstMemory && IsPicked(*firstMemory, second->GetGUID().GetRawValue(), nowMs);
+    bool const secondPicked = secondMemory && IsPicked(*secondMemory, first->GetGUID().GetRawValue(), nowMs);
+    bool const secondAggressor =
+        SecondIsAggressor(kill, firstPicked, secondPicked, Attacks(first, second), Attacks(second, first));
     Player* const aggressor = secondAggressor ? second : first;
     Player* const other = secondAggressor ? first : second;
     Combatant aggressorCombatant = MakeCombatant(aggressor, nowMs);
     Combatant const otherCombatant = MakeCombatant(other, nowMs);
     FightBook& book = entry->book;
-    FightMemory* const aggressorMemory = MemoryOf(aggressor, nowMs);
-    if (!aggressorMemory && !MemoryOf(other, nowMs) && !book.FindFightOf(aggressorCombatant.guid) &&
-        !book.FindFightOf(otherCombatant.guid))
+    FightMemory* const aggressorMemory = secondAggressor ? secondMemory : firstMemory;
+    if (!aggressorMemory && !(secondAggressor ? firstMemory : secondMemory) &&
+        !book.FindFightOf(aggressorCombatant.guid) && !book.FindFightOf(otherCombatant.guid))
         return;
     if (aggressorMemory && IsPicked(*aggressorMemory, otherCombatant.guid, nowMs))
         aggressorCombatant.start = aggressorMemory->startReason;

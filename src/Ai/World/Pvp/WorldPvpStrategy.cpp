@@ -10,6 +10,7 @@
 
 #include "Event.h"
 #include "FightBook.h"
+#include "FightWiring.h"
 #include "Map.h"
 #include "PerfMonitor.h"
 #include "Player.h"
@@ -23,6 +24,8 @@ constexpr float STEP_YARDS = 20.0f;
 constexpr uint32 STEP_HOLD_MS = 4 * IN_MILLISECONDS;
 // A step this close to its end is done
 constexpr float STEP_DONE_YARDS = 2.0f;
+// A direction whose first collision lies this close is blocked
+constexpr float STEP_BLOCKED_YARDS = 3.0f;
 constexpr float FAN_STEP = static_cast<float>(M_PI) / 8.0f;
 constexpr float FAN_LIMIT = static_cast<float>(M_PI) / 2.0f;
 }  // namespace
@@ -57,36 +60,58 @@ bool WorldPvpRetreatAction::Execute(Event /*event*/)
     uint32 const nowMs = getMSTime();
     if (bot->isMoving() && nowMs - _stepMs < STEP_HOLD_MS && bot->GetExactDist2d(_stepX, _stepY) > STEP_DONE_YARDS)
         return true;
-    // A bot that cannot move (rooted, stunned) or finds every direction blocked gives the retreat up and fights
+    // A bot that cannot move now (rooted, stunned, feared) waits and may fight back meanwhile; the window bounds it
     if (!IsMovingAllowed())
-    {
-        WorldPvp::GiveUpRetreat(botAI);
         return false;
-    }
+    // The last combat move (the rotation's approach, a step's end) still runs its delay, so a new move is refused:
+    // the turn is held and the next tick steps
+    if (IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
+        return true;
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp retreat")
                                                     : nullptr);
     float const dx = bot->GetPositionX() - fromX;
     float const dy = bot->GetPositionY() - fromY;
     float const away = dx * dx + dy * dy > 1.0f ? std::atan2(dy, dx) : bot->GetOrientation() + static_cast<float>(M_PI);
-    if (StepTo(away, nowMs))
+    uint32 tried = 0;
+    uint32 blocked = 0;
+    auto const step = [&](float angle)
+    {
+        bool wall = false;
+        bool const taken = StepTo(angle, nowMs, wall);
+        ++tried;
+        blocked += wall ? 1 : 0;
+        return taken;
+    };
+    if (step(away))
         return true;
     for (float delta = FAN_STEP; delta <= FAN_LIMIT + 0.01f; delta += FAN_STEP)
-        if (StepTo(away + delta, nowMs) || StepTo(away - delta, nowMs))
+        if (step(away + delta) || step(away - delta))
             return true;
+    // Only walls in every direction give the retreat up (the bot fights where it stands); a refused move holds
+    if (!WorldPvp::GivesUpRetreat(blocked, tried))
+        return true;
     WorldPvp::GiveUpRetreat(botAI);
     return false;
 }
 
-bool WorldPvpRetreatAction::StepTo(float angle, uint32 nowMs)
+bool WorldPvpRetreatAction::StepTo(float angle, uint32 nowMs, bool& blocked)
 {
     float x = bot->GetPositionX() + std::cos(angle) * STEP_YARDS;
     float y = bot->GetPositionY() + std::sin(angle) * STEP_YARDS;
     float z = bot->GetPositionZ();
     bool exact = true;
+    blocked = false;
     if (!bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
                                                         bot->GetPositionZ(), x, y, z))
     {
+        // The first collision lies at (x, y): a wall right in front blocks the direction, a farther one is walked
+        // around on a path to the unclipped point
+        if (bot->GetExactDist2d(x, y) < STEP_BLOCKED_YARDS)
+        {
+            blocked = true;
+            return false;
+        }
         x = bot->GetPositionX() + std::cos(angle) * STEP_YARDS;
         y = bot->GetPositionY() + std::sin(angle) * STEP_YARDS;
         z = bot->GetPositionZ();

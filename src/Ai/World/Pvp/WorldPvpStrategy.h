@@ -49,7 +49,8 @@ public:
     bool Execute(Event event) override;
 
 private:
-    bool StepTo(float angle, uint32 nowMs);
+    // One step at `angle`, true when taken; `blocked`: the collision check finds a wall right in front that way
+    bool StepTo(float angle, uint32 nowMs, bool& blocked);
 
     uint32 _stepMs = 0;
     float _stepX = 0.0f;
