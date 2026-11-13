@@ -8,28 +8,41 @@
 // AttackAction, StayAction, FleeAction and MoveToPositionAction::ExecuteExactPosition method bodies; FollowAction,
 // MovementAction::MoveAway/MoveTo and PathGenerator are counting doubles; the formation, mana save level and focus heal
 // values are plain doubles. It does not replace a decision path with a parallel guard implementation.
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
+#include <span>
 #include <type_traits>
 
 // clang-format off
 #include "J6b1-game-fixture.h"
 #include "BridgeIntentEffect.cpp"
+#include "BridgeAbilities.cpp"
 #include "AttackAction-body.inc"
 #include "StayAction-body.inc"
 #include "FleeAction-body.inc"
 #include "PositionAction-body.inc"
 // clang-format on
 
+using PlayerbotBridge::AbilityData;
+using PlayerbotBridge::AbilityKind;
+using PlayerbotBridge::AbilityRow;
 using PlayerbotBridge::Baseline;
+using PlayerbotBridge::BotStateTopic;
+using PlayerbotBridge::Completion;
 using PlayerbotBridge::FormationShape;
 using PlayerbotBridge::Intent;
 using PlayerbotBridge::Order;
+using PlayerbotBridge::OrderField;
+using PlayerbotBridge::ParamKind;
+using PlayerbotBridge::ParamRow;
 using PlayerbotBridge::Part;
 using PlayerbotBridge::Refusal;
 using PlayerbotBridge::RestoreResult;
 using PlayerbotBridge::Result;
+using PlayerbotBridge::TopicRow;
 
 static_assert(!std::is_default_constructible_v<PlayerbotBridge::PostMapJoin>);
 static_assert(!std::is_copy_constructible_v<PlayerbotBridge::PostMapJoin>);
@@ -52,6 +65,12 @@ public:
         return result;
     }
 
+    static Result RunSteps(std::vector<Order> const& steps, std::function<bool()> const& authorize,
+                           std::vector<PlayerbotBridge::StepOutcome>* outcomes)
+    {
+        PlayerbotBridge::PostMapJoin phase;
+        return PlayerbotBridge::Execute(phase, std::span<Order const>(steps), authorize, outcomes);
+    }
     static bool Reachable(Order const& order, bool worker = false)
     {
         PlayerbotBridge::PostMapJoin phase;
@@ -109,6 +128,10 @@ void Check(bool value, char const* label)
     }
 }
 
+// LC1a: what Fixture::Run saw per verb, for the ability table's checks at the end.
+std::map<Intent, std::set<Refusal>> seenRefusals;
+std::set<Intent> seenApplied;
+
 struct Fixture
 {
     Player Bot;
@@ -123,6 +146,9 @@ struct Fixture
     Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
     int Authorizations = 0;
     Refusal Why = Refusal::None;
+    // LC2: a stepped order's outcomes and its BridgeAct events.
+    std::vector<PlayerbotBridge::StepOutcome> Outcomes;
+    int Events = 0;
 
     Fixture()
     {
@@ -188,6 +214,7 @@ struct Fixture
     {
         // A value outside the enum: a result that leaves the reason unwritten fails the check below.
         Why = static_cast<Refusal>(99);
+        int const events = bridgeActs;
         Result const result = OllamaBotRandomChatter::Run(
             Command,
             [&]
@@ -197,6 +224,40 @@ struct Fixture
             },
             false, &Why);
         Check(result == Result::Rejected || Why == Refusal::None, "a result other than a refusal carries no reason");
+        // LC1a: one BridgeAct event for each order the facts admit (applied, failed, or refused with a reason) and
+        // none for an order refused before them.
+        bool const decided = result == Result::Applied || result == Result::Failed ||
+                             (result == Result::Rejected && Why != Refusal::None);
+        Check(bridgeActs - events == (decided ? 1 : 0), "one BridgeAct event per decided order, none before the facts");
+        if (decided)
+        {
+            AbilityRow const* row = PlayerbotBridge::FindRow(Command.Operation);
+            Check(row && bridgeActType == "BridgeAct" && bridgeActSource == row->Name && bridgeActBot == &Bot &&
+                      bridgeActId == static_cast<uint32>(Why) && bridgeActAmount == static_cast<int64>(result),
+                  "the BridgeAct event names the bot, the verb, the refusal and the result");
+        }
+        if (result == Result::Applied)
+            seenApplied.insert(Command.Operation);
+
+        if (result == Result::Rejected && Why != Refusal::None)
+            seenRefusals[Command.Operation].insert(Why);
+
+        return result;
+    }
+
+    Result RunSteps(std::vector<Order> const& steps)
+    {
+        int const events = bridgeActs;
+        Outcomes.assign(1, {Result::Applied, static_cast<Refusal>(99)});
+        Result const result = OllamaBotRandomChatter::RunSteps(
+            steps,
+            [&]
+            {
+                ++Authorizations;
+                return true;
+            },
+            &Outcomes);
+        Events = bridgeActs - events;
         return result;
     }
 
@@ -509,20 +570,40 @@ int main()
                                                                      f.AI.Passenger = false;
                                                                  },
                                                                  [](Fixture& f) { f.Bot.Valid = false; },
-                                                                 [](Fixture&) { waitForAttack = true; },
-                                                                 [](Fixture& f)
-                                                                 {
-                                                                     f.AI.Values.Current.Data = &f.Target;
-                                                                     f.Bot.Victim = &f.Target;
-                                                                     f.Bot.State = UNIT_STATE_MELEE_ATTACKING;
-                                                                     f.AI.State = BOT_STATE_COMBAT;
-                                                                 }};
+                                                                 [](Fixture&) { waitForAttack = true; }};
     for (auto const& fail : attackFailures)
     {
         Fixture f;
         f.Command.Operation = Intent::AttackOwnTarget;
         fail(f);
         f.Denied(Result::Failed);
+    }
+    // An attack on the unit the bot already fights is in effect: applied, with no new attack (also while waiting)
+    for (bool const wait : {false, true})
+    {
+        Fixture f;
+        f.Command.Operation = Intent::AttackOwnTarget;
+        f.AI.Values.Current.Data = &f.Target;
+        f.Bot.Victim = &f.Target;
+        f.Bot.State = UNIT_STATE_MELEE_ATTACKING;
+        f.AI.State = BOT_STATE_COMBAT;
+        waitForAttack = wait;
+        Check(f.Run() == Result::Applied, "an attack already under way is applied");
+        Check(attacks == 0 && mutations == 0, "an attack under way starts no new attack");
+    }
+    {
+        Fixture f;
+        f.Command.Operation = Intent::AttackOwnTarget;
+        f.Bot.Victim = &f.Other;
+        Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+              "a bot fighting another unit turns on its target");
+    }
+    {
+        Fixture f;
+        f.Command.Operation = Intent::AttackOwnTarget;
+        f.Bot.Target = f.Other.Guid;
+        f.Bot.Victim = &f.Target;
+        Check(f.Run() == Result::Applied && attacks == 0, "the unit fought is the bot's own target, selected or not");
     }
     {
         Fixture f;
@@ -978,7 +1059,9 @@ int main()
         Fixture f;
         f.OneShot(Intent::Follow);
         followResult = false;
-        Check(f.Run() == Result::Failed && follows == 1 && f.Authorizations == 1, "follow failure one attempt");
+        Check(
+            f.Run() == Result::Applied && follows == 1 && f.Authorizations == 1 && f.AI.Strategies == FollowStrategies,
+            "a refused move leaves the follow applied");
     }
     {
         Fixture f;
@@ -1586,6 +1669,699 @@ int main()
             Check(OllamaBotRandomChatter::Run(f.Command, [] { return false; }) == Result::Rejected && bridgeCalls == 0,
                   "a refused admission reaches no planner");
         }
+    }
+    // LC2: names for targets. A unit, quest or place given by name is looked up among what the bot perceives or
+    // knows, then passes the same gate as an id (mutants: a name taken without the gate, an unknown name applied,
+    // names looked up before the common rule).
+    {
+        auto const named = [](Fixture& f)
+        {
+            f.Target.Name = "Defias Thug";
+            f.Target.X = 30.0f;
+            f.Other.Name = "Brannoc";
+            f.AI.Values.Npcs.Data = {f.Target.Guid};
+            f.AI.Values.Friends.Data = {f.Other.Guid, f.Human.Guid};
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}, {f.Other.Guid, "Brannoc"}};
+            f.Command.Target = 0;
+            f.Command.TargetName = "defias thug";
+        };
+        {
+            Fixture f;
+            named(f);
+            Check(f.Run() == Result::Applied && f.Party.Marked == f.Target.Guid && f.Party.Icons[6] == f.Target.Guid &&
+                      f.Authorizations == 1,
+                  "a mark by name marks the unit of that name");
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.Operation = Intent::AttackOwnTarget;
+            f.Command.TargetName = "Defias Thug";
+            Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+                  "an attack by name attacks the unit of that name");
+        }
+        {
+            Fixture f;
+            named(f);
+            f.OneShot(Intent::FocusHealing);
+            f.Command.Target = 0;
+            f.Command.TargetName = "BRANNOC";
+            // A group member is found by name without being among the units the bot keeps as values.
+            f.AI.Values.Friends.Data.clear();
+            Check(f.Run() == Result::Applied && f.AI.Values.FocusHeal.Get() == std::list<ObjectGuid>{f.Other.Guid},
+                  "focus healing by name heals the group member of that name first");
+        }
+        for (Intent operation : {Intent::AttackOwnTarget, Intent::Mark, Intent::FocusHealing})
+        {
+            Fixture f;
+            named(f);
+            f.OneShot(operation);
+            f.Command.Target = 0;
+            f.Command.TargetName = "Hogger";
+            f.Refused(Refusal::UnknownName);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Target.Seen = false;
+            f.Refused(Refusal::TargetNotVisible);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.TargetName = "de";
+            f.Refused(Refusal::UnknownName);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.TargetName = std::string(PlayerbotBridge::MaxName, 'a');
+            f.Refused(Refusal::UnknownName);
+        }
+        {
+            Fixture f;
+            named(f);
+            f.Command.TargetName = "Hogger";
+            f.Bot.Alive = false;
+            f.Refused(Refusal::Dead);
+        }
+        {
+            Fixture f;
+            named(f);
+            Ungrouped(f);
+            f.Command.TargetName = "Hogger";
+            f.Refused(Refusal::NotInGroup);
+        }
+        // Two of one name and a nearer part of the name: the nearer of the exact ones; a part when none is exact.
+        for (bool exact : {true, false})
+        {
+            Fixture f;
+            named(f);
+            Unit twin;
+            twin.Guid = ObjectGuid(6);
+            twin.Name = "Defias Thug";
+            twin.X = 10.0f;
+            Unit leader;
+            leader.Guid = ObjectGuid(7);
+            leader.Name = "Defias Thug Leader";
+            leader.X = 1.0f;
+            ObjectAccessor::Units[6] = &twin;
+            ObjectAccessor::Units[7] = &leader;
+            f.AI.Values.Possible.Data = {f.Target.Guid, leader.Guid, twin.Guid};
+            f.Bot.Target = ObjectGuid();  // No own target among the candidates: the nearest rule alone.
+            f.Command.TargetName = exact ? "Defias Thug" : "thug";
+            Check(f.Run() == Result::Applied && f.Party.Marked == (exact ? twin.Guid : leader.Guid),
+                  "an exact name beats a nearer part of one, two of one name go to the nearer, else the nearest part");
+        }
+        // The bot's own target counts as the nearest of its name: the unit fought, then the selection, never the bot
+        // itself and never a dead one; a part of a name still loses to an exact one.
+        {
+            auto const twins = [](Fixture& f, Unit& twin)
+            {
+                twin.Guid = ObjectGuid(6);
+                twin.Name = "Defias Thug";
+                twin.X = 10.0f;
+                ObjectAccessor::Units[6] = &twin;
+                f.AI.Values.Possible.Data = {f.Target.Guid, twin.Guid};
+                f.Command.TargetName = "Defias Thug";
+            };
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Command.Operation = Intent::AttackOwnTarget;
+                Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+                      "the selected unit of a name wins over a nearer one");
+            }
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Bot.Target = twin.Guid;
+                f.Bot.Victim = &f.Target;
+                Check(f.Run() == Result::Applied && f.Party.Marked == f.Target.Guid,
+                      "the unit fought wins over the selection");
+            }
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Bot.Victim = &f.Target;
+                f.Target.Alive = false;
+                Check(f.Run() == Result::Applied && f.Party.Marked == twin.Guid, "a dead own target is not the answer");
+            }
+            {
+                Fixture f;
+                named(f);
+                f.Bot.Name = "Defias Thug";
+                f.Bot.Target = f.Bot.Guid;
+                Check(f.Run() == Result::Applied && f.Party.Marked == f.Target.Guid,
+                      "a bot that selects itself is not its own target");
+            }
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Target.Name = "Defias Thug Leader";
+                Check(f.Run() == Result::Applied && f.Party.Marked == twin.Guid,
+                      "an exact name beats a selected part of one");
+            }
+        }
+        // A quest by its title, among the bot's log.
+        objectMgr.Quests = {{62, {"The Fargodeep Mine"}}, {40, {"A Fishy Peril"}}};
+        std::vector<std::pair<char const*, uint32_t>> const quests = {
+            {"the fargodeep mine", 62}, {"Fishy", 40}, {"Westfall Stew", 0}, {"The Jasperlode Mine", 0}};
+        for (auto const& [title, quest] : quests)
+        {
+            Fixture f;
+            f.Command.Operation = Intent::Quest;
+            f.Command.Target = 0;
+            f.Command.QuestName = title;
+            f.Bot.QuestLog = {40, 0, 999, 62};
+            bridgeCalls = 0;
+            bridgeAnswer = Planner::GoalApply::BridgeAnswer::Done;
+            bridgeQuest = 99;
+            if (!quest)
+            {
+                f.Refused(Refusal::UnknownName);
+                Check(bridgeCalls == 0, "an unknown quest title reaches no planner");
+                continue;
+            }
+            Check(f.Run() == Result::Applied && bridgeCalls == 1 && bridgeQuest == quest,
+                  "a quest by its title hands the planner the log quest's id");
+        }
+        // A place by name: the known place, on the bot's map before another's, under the planner's name for it; a
+        // literal or an unknown name as given, for the planner's own rule.
+        std::vector<std::pair<char const*, char const*>> const places = {{"Thunder Bluff", "thunderbluff"},
+                                                                         {"ORGRIMMAR", "orgrimmar"},
+                                                                         {"hill", "razorhill"},
+                                                                         {"1.5,2,3,0", "1.5,2,3,0"},
+                                                                         {"Atlantis", "Atlantis"}};
+        for (Intent operation : {Intent::GoTo, Intent::MeetAt})
+            for (auto const& [text, place] : places)
+            {
+                Fixture f;
+                f.Command.Operation = operation;
+                f.Command.Target = 0;
+                f.Command.PlaceName = text;
+                // Beside Sentinel Hill's spot, but on Kalimdor: Razor Hill is the nearer hill.
+                f.Bot.X = -10600.0f;
+                f.Bot.Y = 1100.0f;
+                bridgeCalls = 0;
+                bridgeAnswer = Planner::GoalApply::BridgeAnswer::Done;
+                bridgePlace = "unset";
+                Check(f.Run() == Result::Applied && bridgeCalls == 1 && bridgePlace == place,
+                      "a place by name reaches the planner under its own name, a literal or unknown one as given");
+            }
+        // A unit or quest comes as an id or a name, never both and never neither; no name on a verb without one.
+        std::vector<std::function<void(Fixture&)>> const malformed = {
+            [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
+            [](Fixture& f) { f.Command.TargetName.clear(); },
+            [](Fixture& f) { f.Command.TargetName = std::string(PlayerbotBridge::MaxName + 1, 'a'); },
+            [](Fixture& f) { f.Command.QuestName = "A Fishy Peril"; },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::Stay;
+                f.Command.TargetName = "Defias Thug";
+            },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::Quest;
+                f.Command.TargetName.clear();
+                f.Command.QuestId = 40;
+                f.Command.QuestName = "A Fishy Peril";
+            },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::Quest;
+                f.Command.TargetName.clear();
+                f.Command.QuestName = std::string(PlayerbotBridge::MaxName + 1, 'a');
+            },
+            [](Fixture& f)
+            {
+                f.Command.Operation = Intent::GoTo;
+                f.Command.TargetName.clear();
+                f.Command.PlaceName = "goldshire";
+                f.Command.QuestName = "A Fishy Peril";
+            }};
+        for (auto const& change : malformed)
+        {
+            Fixture f;
+            named(f);
+            change(f);
+            f.Denied();
+            Check(f.Authorizations == 0, "a malformed name is refused before the admission");
+        }
+    }
+    // LC2: an order of up to three steps, in order as one command: one admission, then per step its facts, its gate
+    // and its event; a step that is not applied ends the order (mutants: authorize per step, a refused step not
+    // ending the order, the gate skipped after the first step, four steps).
+    {
+        using Steps = std::vector<Order>;
+        auto const stayOf = [](Fixture& f)
+        {
+            Order stay = f.Command;
+            stay.Operation = Intent::Stay;
+            stay.Target = 0;
+            return stay;
+        };
+        auto const outcomesAre = [](Fixture const& f, std::vector<std::pair<Result, Refusal>> const& expected)
+        {
+            if (f.Outcomes.size() != expected.size())
+                return false;
+            for (std::size_t index = 0; index < expected.size(); ++index)
+                if (f.Outcomes[index].Outcome != expected[index].first ||
+                    f.Outcomes[index].Why != expected[index].second)
+                    return false;
+            return true;
+        };
+        {
+            Fixture f;
+            Check(f.RunSteps({stayOf(f), f.Command}) == Result::Applied &&
+                      outcomesAre(f, {{Result::Applied, Refusal::None}, {Result::Applied, Refusal::None}}) &&
+                      f.Events == 2 && f.Authorizations == 1 && f.AI.Resets == 1 && marks == 1 &&
+                      f.Party.Marked == f.Target.Guid,
+                  "two steps applied: one admission, an event and an effect each");
+        }
+        {
+            Fixture f;
+            Check(f.RunSteps({stayOf(f), f.Command, f.Command}) == Result::Applied && f.Outcomes.size() == 3 &&
+                      f.Events == 3 && f.Authorizations == 1 && marks == 2,
+                  "three steps applied");
+        }
+        {
+            Fixture f;
+            f.Target.Seen = false;
+            Check(
+                f.RunSteps({stayOf(f), f.Command}) == Result::Rejected &&
+                    outcomesAre(f, {{Result::Applied, Refusal::None}, {Result::Rejected, Refusal::TargetNotVisible}}) &&
+                    f.Events == 2 && f.AI.Resets == 1 && marks == 0,
+                "a refused second step: the first stays applied, the order is refused with the second's reason");
+        }
+        {
+            Fixture f;
+            f.Target.Seen = false;
+            Check(f.RunSteps({f.Command, stayOf(f)}) == Result::Rejected &&
+                      outcomesAre(f, {{Result::Rejected, Refusal::TargetNotVisible}}) && f.Events == 1 &&
+                      mutations == 0 && f.AI.Resets == 0,
+                  "a refused first step ends the order: the second never runs");
+        }
+        {
+            Fixture f;
+            f.Party.MarkResult = false;
+            Check(f.RunSteps({f.Command, stayOf(f)}) == Result::Failed &&
+                      outcomesAre(f, {{Result::Failed, Refusal::None}}) && f.Events == 1 && f.AI.Resets == 0,
+                  "a failed step ends the order");
+        }
+        {
+            Fixture f;
+            f.Party.Outsider = f.Human.Guid;
+            Order formation = stayOf(f);
+            formation.Operation = Intent::Formation;
+            formation.Shape = FormationShape::Close;
+            Check(f.RunSteps({stayOf(f), formation}) == Result::Rejected &&
+                      outcomesAre(f, {{Result::Applied, Refusal::None}, {Result::Rejected, Refusal::NotInGroup}}) &&
+                      f.AI.Values.Formation.Loads == 0,
+                  "each step passes its own gate: the second's group rule refuses it");
+        }
+        // Refused before anything runs: no step, four, a malformed or unavailable later step, another scope.
+        std::vector<std::pair<Result, std::function<Steps(Fixture&)>>> const before = {
+            {Result::Rejected, [](Fixture&) { return Steps{}; }},
+            {Result::Rejected, [&](Fixture& f) { return Steps{stayOf(f), f.Command, f.Command, f.Command}; }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order bad = f.Command;
+                 bad.Icon = 99;
+                 return Steps{stayOf(f), bad};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order bad = f.Command;
+                 bad.Target = 0;
+                 return Steps{stayOf(f), bad};
+             }},
+            {Result::Unavailable,
+             [&](Fixture& f)
+             {
+                 Order regroup = stayOf(f);
+                 regroup.Operation = Intent::Regroup;
+                 return Steps{stayOf(f), regroup};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.Bot = f.Other.Guid.Value;
+                 return Steps{stayOf(f), other};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.Controller = f.Other.Guid.Value;
+                 return Steps{stayOf(f), other};
+             }},
+            {Result::Rejected,
+             [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.Group = 0;
+                 return Steps{stayOf(f), other};
+             }},
+            {Result::Rejected, [&](Fixture& f)
+             {
+                 Order other = f.Command;
+                 other.VisibilityDistance = 40.0f;
+                 return Steps{stayOf(f), other};
+             }}};
+        for (auto const& [expected, make] : before)
+        {
+            Fixture f;
+            Check(f.RunSteps(make(f)) == expected && f.Outcomes.empty() && f.Events == 0 && f.Authorizations == 0 &&
+                      mutations == 0 && marks == 0,
+                  "an order with no step, four, a bad step or two scopes is refused before anything runs");
+        }
+        // One step is the old order: the same result and reason.
+        std::vector<std::function<void(Fixture&)>> const variants = {[](Fixture&) {},
+                                                                     [](Fixture& f) { f.Target.Seen = false; },
+                                                                     [](Fixture& f) { f.Bot.Alive = false; },
+                                                                     [](Fixture& f) { f.Party.MarkResult = false; },
+                                                                     [](Fixture& f) { f.Command.Icon = 99; },
+                                                                     [](Fixture& f)
+                                                                     {
+                                                                         f.Command.Operation = Intent::Regroup;
+                                                                         f.Command.Target = 0;
+                                                                     }};
+        for (auto const& change : variants)
+        {
+            Result old = Result::Applied;
+            Refusal oldWhy = Refusal::None;
+            {
+                Fixture f;
+                change(f);
+                old = f.Run();
+                oldWhy = f.Why;
+            }
+            Fixture f;
+            change(f);
+            Result const result = f.RunSteps({f.Command});
+            Refusal const why =
+                result == Result::Rejected && !f.Outcomes.empty() ? f.Outcomes.back().Why : Refusal::None;
+            Check(result == old && why == oldWhy, "a one-step order is the old order");
+        }
+    }
+    // LC1a: the ability table. Every row has every part; the eighteen verbs with an effect have a row and the four
+    // without one have none; each row applied above and gave each refusal it lists, and no other.
+    {
+        std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
+        Check(rows.size() == 18, "eighteen rows");
+        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        {
+            Intent const operation = static_cast<Intent>(value);
+            Check((PlayerbotBridge::FindRow(operation) != nullptr) != PlayerbotBridge::IsUnavailable(operation),
+                  "every verb has a row or is one of the four without an effect");
+        }
+        Check(!PlayerbotBridge::FindRow(static_cast<Intent>(255)) &&
+                  !PlayerbotBridge::IsUnavailable(static_cast<Intent>(255)) && !PlayerbotBridge::FindRow("regroup") &&
+                  !PlayerbotBridge::FindRow("") && !PlayerbotBridge::FindRow("Follow"),
+              "no row for a value outside the enum, a verb without an effect or an unknown name");
+        std::span<Refusal const> const common = PlayerbotBridge::CommonRefusals();
+        Check(std::vector<Refusal>(common.begin(), common.end()) ==
+                  std::vector<Refusal>{Refusal::Battleground, Refusal::Travelling, Refusal::Dead},
+              "the common refusals in check order");
+        auto const filled = [](char const* text) { return text && *text; };
+        auto const listed = [](std::span<Refusal const> list, Refusal reason)
+        { return std::find(list.begin(), list.end(), reason) != list.end(); };
+        std::set<std::string> names;
+        for (AbilityRow const& row : rows)
+        {
+            Check(PlayerbotBridge::FindRow(row.Operation) == &row && PlayerbotBridge::FindRow(row.Name) == &row &&
+                      names.insert(row.Name).second,
+                  "a row is found by its verb and by its own name");
+            Check(filled(row.Name) && filled(row.Sentence) && filled(row.StatePhrase) && row.Effect,
+                  "a row has its name, sentence, state phrase and effect");
+            Check((row.Group == PlayerbotBridge::GroupRule::None) == (row.GroupRefusal == Refusal::None) &&
+                      (row.Group == PlayerbotBridge::GroupRule::None || listed(row.Refusals, row.GroupRefusal)),
+                  "a group rule has its refusal, and the row lists it");
+            std::set<std::string> params;
+            for (ParamRow const& param : row.Params)
+            {
+                Check(filled(param.Name) && filled(param.Sentence) && params.insert(param.Name).second,
+                      "a parameter has its own name and a sentence");
+                Check((param.Kind == ParamKind::Choice) == !param.Choices.empty() &&
+                          std::all_of(param.Choices.begin(), param.Choices.end(), filled),
+                      "a choice and only a choice has its words");
+            }
+            std::string_view const phrase = row.StatePhrase;
+            for (std::size_t open = phrase.find('{'); open != std::string_view::npos; open = phrase.find('{', open + 1))
+            {
+                std::size_t const close = phrase.find('}', open);
+                Check(close != std::string_view::npos &&
+                          params.count(std::string(phrase.substr(open + 1, close - open - 1))) == 1,
+                      "a state phrase names only the row's parameters");
+            }
+            for (Refusal reason : row.Refusals)
+                Check(reason != Refusal::None && !listed(common, reason) &&
+                          PlayerbotBridge::RefusalWords(reason).Code == reason,
+                      "a row lists only its own refusals");
+            Check(PlayerbotBridge::LastingPart(row.Operation) == row.Lasting, "the lasting part is the row's");
+            Check(seenApplied.count(row.Operation) == 1, "every row applies in this selftest");
+            std::set<Refusal> const& seen = seenRefusals[row.Operation];
+            for (Refusal reason : row.Refusals)
+                Check(seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
+            // The planner double gives any goal verb any answer; the planner's own rule is BridgeCheck's.
+            bool const goal = row.Operation >= Intent::GoTo;
+            for (Refusal reason : seen)
+                Check(goal || listed(row.Refusals, reason) || listed(common, reason),
+                      "a row gives no refusal it does not list");
+        }
+        std::set<std::string> words;
+        for (int value = 0; value <= static_cast<int>(Refusal::UnknownName); ++value)
+        {
+            PlayerbotBridge::RefusalText const& text = PlayerbotBridge::RefusalWords(static_cast<Refusal>(value));
+            Check(static_cast<int>(text.Code) == value && filled(text.Word) && words.insert(text.Word).second &&
+                      std::all_of(text.Word, text.Word + std::strlen(text.Word),
+                                  [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; }) &&
+                      filled(text.Sentence) == (value != 0),
+                  "every refusal has its own snake_case word and, but for none, a sentence");
+        }
+        Check(PlayerbotBridge::RefusalWords(static_cast<Refusal>(99)).Code == Refusal::None,
+              "an unknown refusal reads as none");
+        // LC3: every operation has its own wire word, its row's name or one of the four without a row, and the word
+        // finds it again; the module parses the wire's verbs with these.
+        std::set<std::string> verbs;
+        bool verbsRoundTrip = true;
+        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        {
+            Intent const operation = static_cast<Intent>(value);
+            std::string const word = PlayerbotBridge::IntentWord(operation);
+            AbilityRow const* row = PlayerbotBridge::FindRow(operation);
+            verbsRoundTrip = verbsRoundTrip && !word.empty() && verbs.insert(word).second &&
+                             PlayerbotBridge::FindIntent(word) == operation &&
+                             (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
+        }
+        Check(verbsRoundTrip && verbs.size() == 22, "every operation has its own wire word, and the word finds it");
+        // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
+        char const* const wireVerbs[] = {
+            "follow",        "stay",          "flee",        "regroup",    "attack_own_target", "pull",
+            "mark",          "focus_healing", "assign_role", "save_mana",  "formation",         "position",
+            "dungeon_clear", "go_to",         "quest",       "errands",    "set_hearth",        "grind_here",
+            "gather_here",   "meet_at",       "pause_plan",  "resume_plan"};
+        bool oldWords = std::size(wireVerbs) == verbs.size();
+        for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
+            oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
+        Check(oldWords && !*PlayerbotBridge::IntentWord(static_cast<Intent>(22)) && !PlayerbotBridge::FindIntent("") &&
+                  !PlayerbotBridge::FindIntent("Follow") && !PlayerbotBridge::FindIntent("follow ") &&
+                  !PlayerbotBridge::FindIntent("inventory") && !PlayerbotBridge::FindIntent("regroups"),
+              "every operation keeps its old wire word; no other word, and no topic, is a verb");
+        Check(PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Mark), OrderField::Icon) &&
+                  PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
+                  !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
+              "a row takes the fields of its parameters only");
+
+        // LC1b: the topic rows. Every topic has a row, in the wire's order and under the wire's word
+        // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
+        char const* const wireTopics[] = {"inventory", "quests", "cooldowns",  "strategies", "spells", "plan",
+                                          "options",   "route",  "quest_plan", "bags",       "places"};
+        std::span<TopicRow const> const topics = PlayerbotBridge::TopicRows();
+        Check(topics.size() == std::size(wireTopics), "eleven topic rows");
+        for (std::size_t index = 0; index < topics.size(); ++index)
+        {
+            TopicRow const& row = topics[index];
+            BotStateTopic const topic = static_cast<BotStateTopic>(index);
+            Check(row.Topic == topic && PlayerbotBridge::FindTopic(topic) == &row &&
+                      PlayerbotBridge::FindTopic(row.Name) == &row && std::string_view(row.Name) == wireTopics[index],
+                  "a topic row is found by its topic and by the wire's word for it");
+            Check(filled(row.Sentence) && row.Limit > 0 && row.Limit <= PlayerbotBridge::BotStateTopicMaxItems,
+                  "a topic row has a sentence and a limit within the reader's cap");
+            bool const route = topic == BotStateTopic::Route;
+            Check(row.Params.size() == (route ? 1u : 0u) &&
+                      (!route || (row.Params[0].Kind == ParamKind::Place && filled(row.Params[0].Name) &&
+                                  filled(row.Params[0].Sentence) && row.Params[0].Choices.empty())),
+                  "only route takes an argument, a place");
+            Check(!PlayerbotBridge::FindRow(row.Name) && names.insert(row.Name).second,
+                  "no two rows, act or topic, share a name");
+        }
+        Check(!PlayerbotBridge::FindTopic(static_cast<BotStateTopic>(topics.size())) &&
+                  !PlayerbotBridge::FindTopic("Places") && !PlayerbotBridge::FindTopic(""),
+              "no topic row for a value outside the enum or an unknown name");
+
+        // LC1b: the catalogue is the acts, then the topics, each entry its row's parts as plain values.
+        std::vector<AbilityData> const catalogue = PlayerbotBridge::Catalogue();
+        Check(catalogue.size() == rows.size() + topics.size(), "the catalogue holds every act and topic row");
+        auto const sameParams =
+            [](std::vector<PlayerbotBridge::ParamData> const& data, std::span<ParamRow const> params)
+        {
+            if (data.size() != params.size())
+                return false;
+            for (std::size_t index = 0; index < data.size(); ++index)
+                if (data[index].Name != params[index].Name || data[index].Kind != params[index].Kind ||
+                    data[index].Sentence != params[index].Sentence ||
+                    data[index].Choices !=
+                        std::vector<std::string>(params[index].Choices.begin(), params[index].Choices.end()))
+                    return false;
+            return true;
+        };
+        for (std::size_t index = 0; index < rows.size() && index < catalogue.size(); ++index)
+        {
+            AbilityRow const& row = rows[index];
+            AbilityData const& entry = catalogue[index];
+            std::vector<Refusal> expected(common.begin(), common.end());
+            expected.insert(expected.end(), row.Refusals.begin(), row.Refusals.end());
+            std::vector<Refusal> codes;
+            for (PlayerbotBridge::RefusalData const& refusal : entry.Refusals)
+            {
+                codes.push_back(refusal.Code);
+                Check(refusal.Word == PlayerbotBridge::RefusalWords(refusal.Code).Word &&
+                          refusal.Sentence == PlayerbotBridge::RefusalWords(refusal.Code).Sentence,
+                      "a catalogue refusal carries its word and sentence");
+            }
+            Check(entry.Kind == AbilityKind::Act && entry.Name == row.Name && entry.Sentence == row.Sentence &&
+                      sameParams(entry.Params, row.Params),
+                  "an act's entry has its row's name, sentence and parameters, in table order");
+            Check(codes == expected, "an act's entry has the common refusals, then its row's, in check order");
+            Check(entry.Lasting == row.Lasting && entry.Done == row.Done && entry.StatePhrase == row.StatePhrase &&
+                      entry.Event == "BridgeAct" && entry.Event == PlayerbotBridge::ActEventType && entry.Limit == 0,
+                  "an act's entry has its row's lasting part, completion, state phrase and event");
+        }
+        for (std::size_t index = 0; index < topics.size() && rows.size() + index < catalogue.size(); ++index)
+        {
+            TopicRow const& row = topics[index];
+            AbilityData const& entry = catalogue[rows.size() + index];
+            Check(entry.Kind == AbilityKind::Topic && entry.Name == row.Name && entry.Sentence == row.Sentence &&
+                      sameParams(entry.Params, row.Params) && entry.Limit == row.Limit,
+                  "a topic's entry has its row's name, sentence, argument and limit, in table order");
+            Check(entry.Refusals.empty() && entry.Lasting == Part::None && entry.Done == Completion::AtOnce &&
+                      entry.StatePhrase.empty() && entry.Event.empty(),
+                  "a topic's entry has no refusal, lasting part, state phrase or event");
+        }
+
+        // LC1b: the canonical text and its hash.
+        std::string const text = PlayerbotBridge::CatalogueText(catalogue);
+        // LC3: mod-ollama-chat sends the catalogue whole, at most 24,576 encoded bytes, about 1.42 times this text (an
+        // answer over its budget drops the catalogue query). Past this bound a new row needs the query paged first.
+        Check(text.size() <= 16384, "the catalogue text stays within the module's answer budget");
+        auto const plain = [](std::string const& field, char const* forbidden)
+        { return field.find_first_of(forbidden) == std::string::npos; };
+        char const* const breaks = "\t\n";
+        bool fieldsPlain = true;
+        for (AbilityData const& entry : catalogue)
+        {
+            fieldsPlain = fieldsPlain && plain(entry.Name, breaks) && plain(entry.Sentence, breaks) &&
+                          plain(entry.StatePhrase, breaks);
+            for (PlayerbotBridge::ParamData const& param : entry.Params)
+            {
+                fieldsPlain = fieldsPlain && plain(param.Name, breaks) && plain(param.Sentence, breaks);
+                for (std::string const& choice : param.Choices)
+                    fieldsPlain = fieldsPlain && !choice.empty() && plain(choice, "\t\n,");
+            }
+            for (PlayerbotBridge::RefusalData const& refusal : entry.Refusals)
+                fieldsPlain = fieldsPlain && plain(refusal.Word, breaks) && plain(refusal.Sentence, breaks);
+        }
+        Check(fieldsPlain, "no catalogue field holds a tab or line break, nor a choice a comma");
+        std::size_t const lines = static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+        std::size_t expectedLines = 2;
+        for (AbilityData const& entry : catalogue)
+            expectedLines += 6 + entry.Params.size() + entry.Refusals.size();
+        auto const holds = [&text](char const* part) { return text.find(part) != std::string::npos; };
+        // LC3: the steps line follows the format line, so the hash covers the most steps an order takes.
+        Check(text.rfind("catalogue\t1\nsteps\t3\nact\tfollow\t", 0) == 0 && PlayerbotBridge::CatalogueVersion == 1 &&
+                  PlayerbotBridge::MaxSteps == 3 && holds("\ntopic\tplaces\t") &&
+                  holds("\nparam\ticon\tchoice\tThe raid icon to put on it.\tstar,circle,") &&
+                  holds("\nrefusal\tnot_with_you\tWe are not travelling together.\n") &&
+                  holds("\neffect\tmana_save\n") && holds("\ndone\tgoal_ends\n") &&
+                  holds("\nstate\tattacking {target}\n") && holds("\nevent\tBridgeAct\n") && holds("\nlimit\t24\n") &&
+                  lines == expectedLines,
+              "the catalogue text is its format line, then one line per part, enums as words");
+        Check(PlayerbotBridge::TextHash("") == 0xcbf29ce484222325ull &&
+                  PlayerbotBridge::TextHash("a") == 0xaf63dc4c8601ec8cull &&
+                  PlayerbotBridge::TextHash("foobar") == 0x85944171f73967e8ull,
+              "the text hash is FNV-1a 64");
+        // The words, one past the last value included (empty): the wire reads them.
+        auto const wordsOf = [](auto word, int last)
+        {
+            std::string joined;
+            for (int value = 0; value <= last + 1; ++value)
+                joined.append(word(value)).append(" ");
+            return joined;
+        };
+        Check(wordsOf([](int value) { return PlayerbotBridge::KindWord(static_cast<ParamKind>(value)); },
+                      static_cast<int>(ParamKind::Count)) == "unit place item spell quest choice flag count  " &&
+                  wordsOf([](int value) { return PlayerbotBridge::KindWord(static_cast<AbilityKind>(value)); },
+                          static_cast<int>(AbilityKind::Topic)) == "act topic  " &&
+                  wordsOf([](int value) { return PlayerbotBridge::PartWord(static_cast<Part>(value)); },
+                          static_cast<int>(Part::FocusHeal)) == "none movement formation mana_save focus_heal  " &&
+                  wordsOf([](int value) { return PlayerbotBridge::CompletionWord(static_cast<Completion>(value)); },
+                          static_cast<int>(Completion::GoalEnds)) == "at_once holds arrived target_gone goal_ends  ",
+              "the catalogue's enum words, and none for a value outside an enum");
+        std::uint64_t const hash = PlayerbotBridge::CatalogueHash(catalogue);
+        Check(hash == PlayerbotBridge::TextHash(text) &&
+                  PlayerbotBridge::CatalogueHash(PlayerbotBridge::Catalogue()) == hash,
+              "the catalogue hash is its text's, the same on every call");
+        Check(catalogue.size() > 4 && catalogue[4].Name == "mark" && catalogue[4].Params.size() == 2 &&
+                  catalogue.back().Kind == AbilityKind::Topic,
+              "the hash changes below are made on mark and the last topic");
+        using Change = void (*)(std::vector<AbilityData>&);
+        Change const changes[] = {
+            [](std::vector<AbilityData>& c) { c[4].Kind = AbilityKind::Topic; },
+            [](std::vector<AbilityData>& c) { c[4].Name += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Sentence += "."; },
+            [](std::vector<AbilityData>& c)
+            {
+                c[4].Name += c[4].Sentence.substr(0, 1);
+                c[4].Sentence.erase(0, 1);
+            },
+            [](std::vector<AbilityData>& c) { c[4].Params[0].Name += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Params[0].Kind = ParamKind::Item; },
+            [](std::vector<AbilityData>& c) { c[4].Params[0].Sentence += "."; },
+            [](std::vector<AbilityData>& c) { c[4].Params[1].Choices[0] += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Params[1].Choices.pop_back(); },
+            [](std::vector<AbilityData>& c) { c[4].Params.pop_back(); },
+            [](std::vector<AbilityData>& c) { c[4].Refusals[0].Word += "s"; },
+            [](std::vector<AbilityData>& c) { c[4].Refusals[0].Sentence += "."; },
+            [](std::vector<AbilityData>& c) { c[4].Refusals.pop_back(); },
+            [](std::vector<AbilityData>& c) { c[4].Lasting = Part::Formation; },
+            [](std::vector<AbilityData>& c) { c[4].Done = Completion::Holds; },
+            [](std::vector<AbilityData>& c) { c[4].StatePhrase += "."; },
+            [](std::vector<AbilityData>& c) { c[4].Event.clear(); },
+            [](std::vector<AbilityData>& c) { c.back().Limit += 1; },
+            [](std::vector<AbilityData>& c) { std::swap(c[3], c[4]); },
+            [](std::vector<AbilityData>& c) { c.pop_back(); },
+        };
+        for (Change change : changes)
+        {
+            std::vector<AbilityData> changed = catalogue;
+            change(changed);
+            Check(PlayerbotBridge::CatalogueHash(changed) != hash, "every part of every entry changes the hash");
+        }
+        std::cout << "catalogue " << catalogue.size() << " rows, " << text.size() << " bytes, hash " << std::hex << hash
+                  << std::dec << '\n';
     }
     std::cout << "PASS " << checks << " checks\n";
 }

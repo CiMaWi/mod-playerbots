@@ -19,7 +19,6 @@
 #include "CcTacticStrategy.h"
 #include "ChangeStrategyAction.h"
 #include "ChangeTalentsAction.h"
-#include "CheckMailAction.h"
 #include "CheckValuesAction.h"
 #include "ChooseRpgTargetAction.h"
 #include "ChooseTargetActions.h"
@@ -50,7 +49,9 @@
 #include "MoveToTravelTargetAction.h"
 #include "MovementActions.h"
 #include "NewRpgAction.h"
+#include "NewRpgBankVisitAction.h"
 #include "NewRpgDoGather.h"
+#include "NewRpgMailVisitAction.h"
 #include "NewRpgOutdoorPvP.h"
 #include "NonCombatActions.h"
 #include "OutfitAction.h"
@@ -174,7 +175,6 @@ public:
         creators["set behind"] = &ActionContext::set_behind;
         creators["attack duel opponent"] = &ActionContext::attack_duel_opponent;
         creators["drop target"] = &ActionContext::drop_target;
-        creators["check mail"] = &ActionContext::check_mail;
         creators["say"] = &ActionContext::say;
         creators["reveal gathering item"] = &ActionContext::reveal_gathering_item;
         creators["outfit"] = &ActionContext::outfit;
@@ -309,6 +309,8 @@ public:
         creators["new rpg start inn"] = &ActionContext::new_rpg_start_inn;
         creators["new rpg errands"] = &ActionContext::new_rpg_errands;
         creators["new rpg travel"] = &ActionContext::new_rpg_travel;
+        creators["new rpg mail visit"] = &ActionContext::new_rpg_mail_visit;
+        creators["new rpg bank visit"] = &ActionContext::new_rpg_bank_visit;
         creators["wait for attack keep safe distance"] = &ActionContext::wait_for_attack_keep_safe_distance;
     }
 
@@ -329,7 +331,6 @@ private:
     static Action* move_random(PlayerbotAI* botAI) { return new MoveRandomAction(botAI); }
     static Action* check_values(PlayerbotAI* botAI) { return new CheckValuesAction(botAI); }
     static Action* greet(PlayerbotAI* botAI) { return new GreetAction(botAI); }
-    static Action* check_mail(PlayerbotAI* botAI) { return new CheckMailAction(botAI); }
     static Action* drop_target(PlayerbotAI* botAI) { return new DropTargetAction(botAI); }
     static Action* attack_duel_opponent(PlayerbotAI* botAI) { return new AttackDuelOpponentAction(botAI); }
     static Action* guard(PlayerbotAI* botAI) { return new GuardAction(botAI); }
@@ -538,6 +539,8 @@ private:
     static Action* new_rpg_start_inn(PlayerbotAI* botAI) { return new NewRpgStartInnAction(botAI); }
     static Action* new_rpg_errands(PlayerbotAI* botAI) { return new NewRpgErrandsAction(botAI); }
     static Action* new_rpg_travel(PlayerbotAI* botAI) { return new NewRpgTravelAction(botAI); }
+    static Action* new_rpg_mail_visit(PlayerbotAI* botAI) { return new NewRpgMailVisitAction(botAI); }
+    static Action* new_rpg_bank_visit(PlayerbotAI* botAI) { return new NewRpgBankVisitAction(botAI); }
     static Action* wait_for_attack_keep_safe_distance(PlayerbotAI* botAI) { return new WaitForAttackKeepSafeDistanceAction(botAI); }
 };
 

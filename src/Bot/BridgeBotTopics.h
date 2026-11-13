@@ -19,6 +19,7 @@
 #include <string_view>
 #include <vector>
 
+#include "BridgeAbilities.h"
 #include "BridgeBotState.h"
 #include "GoalInterface.h"
 #include "RouteRules.h"
@@ -28,34 +29,14 @@ namespace PlayerbotBridge::Topics
 namespace Goals = Planner::Goals;
 namespace GoalApply = Planner::GoalApply;
 
-constexpr std::size_t PLAN_LIMIT = 8;
-constexpr std::size_t OPTIONS_LIMIT = 5;
-constexpr std::size_t ROUTE_LIMIT = 12;
-constexpr std::size_t QUEST_PLAN_LIMIT = 12;
-constexpr std::size_t BAGS_LIMIT = 6;
-constexpr std::size_t PLACES_LIMIT = 24;
 constexpr float SECONDS_CAP = 1.0e9f;
 constexpr std::uint32_t MS_PER_SECOND = 1000;
 
+// The topic row's limit (BridgeAbilities.h)
 constexpr std::size_t Limit(BotStateTopic topic)
 {
-    switch (topic)
-    {
-        case BotStateTopic::Plan:
-            return PLAN_LIMIT;
-        case BotStateTopic::Options:
-            return OPTIONS_LIMIT;
-        case BotStateTopic::Route:
-            return ROUTE_LIMIT;
-        case BotStateTopic::QuestPlan:
-            return QUEST_PLAN_LIMIT;
-        case BotStateTopic::Bags:
-            return BAGS_LIMIT;
-        case BotStateTopic::Places:
-            return PLACES_LIMIT;
-        default:
-            return BotStateTopicMaxItems;
-    }
+    TopicRow const* row = FindTopic(topic);
+    return row ? row->Limit : BotStateTopicMaxItems;
 }
 
 // The row kinds (BotStateItem::code) of each topic

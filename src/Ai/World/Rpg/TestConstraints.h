@@ -29,6 +29,7 @@ constexpr std::uint16_t NOFIGHT = 16;     // starts no fight; creatures ignore t
 constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
 constexpr std::uint16_t FIGHTREADY = 64;  // its chances start a fight when the hard rules pass (world PvP)
 constexpr std::uint16_t JOINROLL = 128;   // a bystander's join roll always wins (world PvP)
+constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d; other plans use 64, 128)
 
 enum class Kind : std::uint8_t
 {
@@ -53,6 +54,7 @@ constexpr Row ROWS[] = {
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
     {"fightready", Kind::State, FIGHTREADY, "a chance starts a fight when the hard rules pass (p 1, never peaceable)"},
     {"joinroll", Kind::State, JOINROLL, "a bystander's join roll always wins (defence, group, master unchanged)"},
+    {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -149,6 +151,9 @@ inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
 // Read where the fight book decides (FightBook.cpp); their apply and undo do nothing
 inline bool FightReady(std::uint16_t set) { return (set & FIGHTREADY) != 0; }
 inline bool JoinRoll(std::uint16_t set) { return (set & JOINROLL) != 0; }
+// nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
+// the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
+inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
