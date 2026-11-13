@@ -1214,6 +1214,20 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             return MoveRandomNear(15.0f);
         }
 
+        // The sale finds its vendor only in sight. In reach, the walk up to the vendor ends first, and one still out
+        // of sight (Undercity's ramp above Jeremiah Payson, Dalaran's stairs: WB8b runs 5 and 8) gets a few steps
+        // toward it at most; then the bot sells as it stands
+        if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+            return false;
+
+        constexpr uint8 MAX_SIGHT_STEPS = 3;
+        if (data->sightSteps < MAX_SIGHT_STEPS && !bot->IsWithinLOSInMap(vendor))
+        {
+            ++data->sightSteps;
+            if (MoveWorldObjectTo(data->vendor, 1.0f))
+                return true;
+        }
+
         constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
         botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
         // A bag bought earlier may lie inside the bag it should replace, where the swap always fails
@@ -1286,6 +1300,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     data->arrived = false;
     data->vendorDone = false;
     data->vendor = ObjectGuid();
+    data->sightSteps = 0;
     return true;
 }
 
