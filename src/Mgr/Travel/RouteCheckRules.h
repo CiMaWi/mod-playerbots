@@ -437,8 +437,8 @@ inline std::string LinkValue(LinkVerdict const& verdict, WalkResult const& fwd, 
     return text;
 }
 
-// distance < 0: no polygon within the search box. steep: a polygon bots may not walk on (NAV_GROUND_STEEP) lies
-// within OFFMESH_LIMIT
+// distance < 0: no polygon within the search box. steep: the nearest polygon of any kind is steep (NAV_GROUND_STEEP)
+// and lies within OFFMESH_LIMIT
 inline std::string OffMeshValue(float distance, bool steep)
 {
     char text[64];

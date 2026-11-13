@@ -47,9 +47,15 @@ using Clock = std::chrono::steady_clock;
 
 constexpr std::chrono::milliseconds SLICE{20};  // world-thread time per slice; slices come at most every 50 ms
 constexpr std::uint32_t CONTINENTS[] = {0, 1, 530, 571};
-// The bots' polygons (PathGenerator::CreateFilter for a headless player): ground and water, no steep slopes
-constexpr std::uint16_t BOT_EXCLUDE = NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP;
+// The bots' polygons (PathGenerator::CreateFilter for a headless player, core v21): ground, steep ground and water;
+// no lava, slime or fatigue water; steep ground and water cost more
+constexpr std::uint16_t BOT_INCLUDE = NAV_GROUND | NAV_GROUND_STEEP | NAV_WATER;
+constexpr std::uint16_t BOT_EXCLUDE = NAV_MAGMA | NAV_SLIME | NAV_DEEP_WATER;
+constexpr float BOT_STEEP_COST = 40.0f;
 constexpr float BOT_WATER_COST = 5.0f;
+// The v20 model (`model=v20`): ground and water, no steep slopes, no steep cost
+constexpr std::uint16_t BOT_INCLUDE_V20 = NAV_GROUND | NAV_WATER;
+constexpr std::uint16_t BOT_EXCLUDE_V20 = NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP;
 
 // The path owner: PathGenerator needs a WorldObject on the map, not a unit. Never added to the map or the world;
 // as no creature it gets the player filter (the bots' exclusions are set on top) and NORMAL|NOT_USING_PATH for a hole
@@ -89,6 +95,7 @@ struct Job
     std::vector<std::string> rows;
     std::vector<std::string> notes;  // per map: grids created, tiles loaded
     std::vector<std::string> summary;
+    bool v20Model{false};         // `model=v20`: the v20 bots' polygons (no steep ground) instead of the v21 ones
     bool pairsMode{false};        // `route check pairs`: the listed point pairs instead of the graph's links
     std::vector<PairSpec> pairs;  // sorted by map
     std::size_t nextPair{0};
@@ -104,6 +111,18 @@ std::mutex jobMutex;  // the console and the slices both run on the world thread
 Job job;
 
 char const* Title() { return job.pairsMode ? "pairs" : "links"; }
+
+// Takes the `model=v20` word out of the arguments; true when it was there
+bool TakeModel(std::string& text, std::vector<std::string>& words)
+{
+    auto const it = std::find(words.begin(), words.end(), "model=v20");
+    if (it == words.end())
+        return false;
+    words.erase(it);
+    std::size_t const at = text.find("model=v20");
+    text.erase(at, 9);
+    return true;
+}
 
 Vec At(TravelGraphNode const& node) { return {node.x, node.y, node.z}; }
 
@@ -237,8 +256,8 @@ MeshAnswer MeshDistance(Map* map, Vec const& at)
     };
     MeshAnswer answer;
     dtQueryFilter bots;
-    bots.setIncludeFlags(NAV_GROUND | NAV_WATER);
-    bots.setExcludeFlags(BOT_EXCLUDE);
+    bots.setIncludeFlags(job.v20Model ? BOT_INCLUDE_V20 : BOT_INCLUDE);
+    bots.setExcludeFlags(job.v20Model ? BOT_EXCLUDE_V20 : BOT_EXCLUDE);
     dtPolyRef ref = 0;
     answer.distance = nearest(bots, ref);
     if (answer.distance >= 0.0f && answer.distance <= OFFMESH_LISTED)
@@ -288,7 +307,9 @@ WalkResult WalkDirection(Probe const* probe, Vec const& a, Vec const& b, std::mt
         {
             // As a bot's MovePoint asks: smooth path, no forced destination; the bots' polygons
             PathGenerator path(probe);
-            path.SetExcludeFlags(BOT_EXCLUDE);
+            path.SetExcludeFlags(job.v20Model ? BOT_EXCLUDE_V20 : BOT_EXCLUDE);
+            if (!job.v20Model)
+                path.SetNavTerrainCost(NAV_GROUND_STEEP, BOT_STEEP_COST);
             path.SetNavTerrainCost(NAV_WATER, BOT_WATER_COST);
             WalkAnswer answer;
             answer.result = path.CalculatePath(at.x, at.y, at.z, target.x, target.y, target.z, false);
@@ -443,7 +464,8 @@ void Finish(TravelGraph const& graph)
         EndMap();  // stopped inside a map: its partial counts
     std::string const stamp = Acore::Time::TimeToTimestampStr(GameTime::GetGameTime(), "%Y%m%d-%H%M%S");
     std::filesystem::path const file =
-        std::filesystem::path(sLog->GetLogsDir()) / (std::string("route-check-") + Title() + "-" + stamp + ".tsv");
+        std::filesystem::path(sLog->GetLogsDir()) /
+        (std::string("route-check-") + Title() + (job.v20Model ? "-v20model-" : "-") + stamp + ".tsv");
     double const elapsed = Seconds(Clock::now() - job.started);
     TravelGraphStats const& stats = graph.Stats();
     std::string const prefix = std::string("ROUTE check ") + Title() + ": ";
@@ -463,7 +485,8 @@ void Finish(TravelGraph const& graph)
     std::ofstream out(file, std::ios::binary);
     if (out)
     {
-        out << "# route check " << Title() << " (PLAN navigation §3.2 check 3), " << stamp << "\n";
+        out << "# route check " << Title() << (job.v20Model ? " [model v20]" : " [model v21]")
+            << " (PLAN navigation §3.2 check 3), " << stamp << "\n";
         out << "# graph: " << stats.nodes << " nodes, " << stats.links << " links ("
             << stats.linksByType[static_cast<int>(TravelLinkType::Walk)] << " walk), " << stats.points
             << " path points\n";
@@ -606,7 +629,9 @@ bool StartJob(ChatHandler* handler, std::vector<std::uint32_t> const& maps, std:
 bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
 {
     std::lock_guard<std::mutex> guard(jobMutex);
-    std::vector<std::string> const words = Words(args);
+    std::string argText = args ? args : "";
+    std::vector<std::string> words = Words(argText.c_str());
+    bool const v20Model = TakeModel(argText, words);
     if (HandleStatusStop(handler, words))
         return true;
     if (job.running)
@@ -629,7 +654,7 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
         unsigned long const mapId = std::strtoul(words[0].c_str(), &end, 10);
         if (!end || *end)
         {
-            handler->SendErrorMessage("ROUTE check links: usage: [map [count]] | all | status | stop");
+            handler->SendErrorMessage("ROUTE check links: usage: [map [count]] | all | status | stop (+ model=v20)");
             return false;
         }
         // CreateBaseMap asserts on a map id the DBC does not know: refuse it here
@@ -643,6 +668,7 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
             limit = static_cast<std::uint32_t>(std::strtoul(words[1].c_str(), nullptr, 10));
     }
     job = Job();
+    job.v20Model = v20Model;
     job.limit = limit;
     return StartJob(handler, maps, limit ? Acore::StringFormat(", first {} walk links each", limit) : "");
 }
@@ -651,7 +677,11 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
 bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
 {
     std::lock_guard<std::mutex> guard(jobMutex);
-    std::vector<std::string> const words = Words(args);
+    std::string path = args ? args : "";
+    std::vector<std::string> words = Words(path.c_str());
+    bool const v20Model = TakeModel(path, words);
+    while (!path.empty() && path.back() == ' ')
+        path.pop_back();
     if (HandleStatusStop(handler, words))
         return true;
     if (job.running)
@@ -660,7 +690,6 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
                                  Title());
         return true;
     }
-    std::string path = args ? args : "";
     path = path.substr(path.find_first_not_of(' ') == std::string::npos ? 0 : path.find_first_not_of(' '));
     std::ifstream in{std::filesystem::path(path)};
     if (words.empty() || !in)
@@ -701,6 +730,7 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
             maps.push_back(pair.mapId);
     job = Job();
     job.pairsMode = true;
+    job.v20Model = v20Model;
     std::size_t const count = pairs.size();
     job.pairs = std::move(pairs);
     return StartJob(handler, maps, Acore::StringFormat(", {} pairs, {} lines skipped", count, skipped));
