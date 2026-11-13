@@ -21,7 +21,6 @@
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
 #include "Group.h"
-#include "HoldRules.h"
 #include "Log.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
@@ -36,6 +35,7 @@
 #include "RouteService.h"
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
@@ -571,7 +571,7 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, NewRpgInfo::PlannerState& stat
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
     // A test keeping the hearth off: no hearth or inn goal either (GoalModel AddHearth)
-    if (!HoldRules::HearthAllowed(botAI->rpgInfo.heldChoices))
+    if (!TestConstraints::HearthAllowed(botAI->rpgInfo.constraints))
         snapshot.hasHearthstone = false;
     GoalApply::Active const& current = goals.slot.Query();
     snapshot.currentGoal = {static_cast<uint32>(current.kind), current.target, current.startedMs};
@@ -661,8 +661,8 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     }
     if (!(state.stateKey & STATE_SCOPE_BIT))
         return;
-    // A test's hold on the planner (HoldRules): no jobs, no goals taken
-    if (!HoldRules::GateOf(botAI->rpgInfo.heldChoices).planner)
+    // A test's hold on the planner (TestConstraints): no jobs, no goals taken
+    if (!TestConstraints::GateOf(botAI->rpgInfo.constraints).planner)
         return;
 
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;

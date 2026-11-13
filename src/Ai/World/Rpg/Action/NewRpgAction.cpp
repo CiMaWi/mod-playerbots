@@ -16,7 +16,6 @@
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
-#include "HoldRules.h"
 #include "IVMapMgr.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
@@ -48,6 +47,7 @@
 #include "RpgNavMeshSnap.h"
 #include "SharedDefines.h"
 #include "StartingHistoryRules.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "Transport.h"
 #include "TravelGraph.h"
@@ -380,10 +380,39 @@ namespace
 {
 constexpr uint32 HEARTHSTONE_SPELL = 8690;
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
+constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
 
 std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
-std::atomic<uint32> travelOrdersWaiting{0};                // travelOrders.size(): the map threads' cheap check
+
+// nofight: creatures neither attack an immune-to-NPC unit nor are attacked by it (Unit::_IsValidAttackTarget); setting
+// the flag ends the unit's PvE combat
+void SetNoFight(Unit* unit, bool on)
+{
+    if (unit && unit->IsImmuneToNPC() != on)
+        unit->SetImmuneToNPC(on);
+}
+
+void NoFight(Player& bot, bool on)
+{
+    SetNoFight(&bot, on);
+    for (Unit* controlled : bot.m_Controlled)
+        SetNoFight(controlled, on);
+}
+
+void ApplyNoFight(Player& bot) { NoFight(bot, true); }
+void UndoNoFight(Player& bot) { NoFight(bot, false); }
+void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
+void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
+
+// The state rows' apply and undo (TestConstraints::ROWS)
+constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
+    {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
+    {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
+};
+static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
+
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);  // beside the transport legs' deck helpers
 
 // A GM order ends the bot's trip: the Travel event and the trip decision with the word (stopped, held)
 void EndTripByOrder(Player* bot, NewRpgInfo& info, NewRpgInfo::Travel const& data, char const* word)
@@ -397,14 +426,21 @@ void EndTripByOrder(Player* bot, NewRpgInfo& info, NewRpgInfo::Travel const& dat
     info.ChangeToIdle();
 }
 
-// A test's hold or release (HoldRules): a hold ends the current status unless a trip order comes with it, so the
-// bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit
-void ApplyHold(Player* bot, NewRpgInfo& info, uint8 mask, bool tripFollows)
+// A test's constraint change: the state rows applied or undone, one Constraint row whose amount is the ms from the
+// command to the take (also on an idle bot). A choice row turning on ends the current status unless a trip comes with
+// it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit
+void ApplyConstraints(Player* bot, NewRpgInfo& info, TravelOrder const& order, bool tripFollows)
 {
-    info.heldChoices = mask;
+    uint16 const before = info.constraints;
+    uint16 const after = TestConstraints::Next(before, order.on, order.off);
+    info.constraints = after;
     info.planner.snapshotDue = true;
-    LOG_INFO("playerbots", "[Route] {} hold: {}", bot->GetName(), HoldRules::Format(mask));
-    if (!mask || tripFollows)
+    TestConstraints::ChangeStates(STATE_OPS, *bot, before, after);
+    std::string const set = TestConstraints::Format(after);
+    uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
+    LOG_INFO("playerbots", "[Route] {} constraints: {} (taken after {} ms)", bot->GetName(), set, latencyMs);
+    EventLog::Emit(bot, CONSTRAINT_EVENT_TYPE, set.c_str(), 0, latencyMs);
+    if (!TestConstraints::EndsStatus(before, after) || tripFollows)
         return;
     WorldLog::StatusReason const reasonScope("hold");
     if (auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data))
@@ -417,12 +453,15 @@ void ApplyHold(Player* bot, NewRpgInfo& info, uint8 mask, bool tripFollows)
 bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 {
     NewRpgInfo& info = botAI->rpgInfo;
-    bool const trip = HoldRules::HasTrip(order);
-    bool const held = order.hold != HoldRules::NO_CHANGE;
-    if (held)
-        ApplyHold(bot, info, static_cast<uint8>(order.hold), trip);
+    bool const trip = TestConstraints::HasTrip(order);
+    bool const constrained = order.on || order.off;
+    if (constrained)
+        ApplyConstraints(bot, info, order, trip);
+    if (order.aboard)
+        PlaceAboard(botAI, bot, order.aboard);
+    bool const applied = constrained || order.aboard;
     if (!trip)
-        return held;
+        return applied;
     WorldLog::StatusReason const reasonScope("order");
     if (order.stop)
     {
@@ -430,7 +469,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         if (!data)
         {
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
-            return held;
+            return applied;
         }
         EndTripByOrder(bot, info, *data, "stopped");
         return true;
@@ -446,40 +485,19 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     if (refusal)
     {
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
-        return held;
+        return applied;
     }
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
     info.ChangeToTravel(order.dest, order.place);
     return true;
 }
-}  // namespace
 
-void TravelOrders::Post(ObjectGuid bot, TravelOrder order)
+// The bot's order when it may take it now (TestConstraints::TakeNow); the bot's hint stays while its order waits.
+// Orders nobody took in time are dropped on any take, and logged: the bot logged out or fought for a minute
+bool TakeOrder(PlayerbotAI* botAI, ObjectGuid bot, bool inCombat, TravelOrder& order)
 {
     std::lock_guard<std::mutex> guard(travelOrdersLock);
-    // A hold and a trip posted before the bot's next update both stay (HoldRules::Merge)
-    auto const [it, added] = travelOrders.try_emplace(bot, order);
-    if (!added)
-        HoldRules::Merge(it->second, std::move(order));
-    travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
-}
-
-bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
-{
-    if (!travelOrdersWaiting.load(std::memory_order_acquire) || !botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
-        return false;
-    TravelOrder order;
-    return Take(bot->GetGUID(), bot->IsInCombat(), order) && ApplyTravelOrder(botAI, bot, order);
-}
-
-bool TravelOrders::Take(ObjectGuid bot, bool inCombat, TravelOrder& order)
-{
-    if (!travelOrdersWaiting.load(std::memory_order_acquire))
-        return false;
-    std::lock_guard<std::mutex> guard(travelOrdersLock);
-    // Orders nobody took in time are dropped on any take, also a miss (so no order keeps every bot at the lock), and
-    // logged: the bot is not in the new rpg strategy, logged out or in combat
     for (auto it = travelOrders.begin(); it != travelOrders.end();)
     {
         if (GetMSTimeDiffToNow(it->second.postedMs) <= TRAVEL_ORDER_TTL_MS)
@@ -492,29 +510,61 @@ bool TravelOrders::Take(ObjectGuid bot, bool inCombat, TravelOrder& order)
         it = travelOrders.erase(it);
     }
     auto const found = travelOrders.find(bot);
-    bool taken = false;
-    if (found != travelOrders.end() && HoldRules::TakeNow(found->second, inCombat))
+    bool const taken = found != travelOrders.end() && TestConstraints::TakeNow(found->second, inCombat);
+    bool const waiting = found != travelOrders.end() && !taken;
+    if (taken)
     {
         order = std::move(found->second);
         travelOrders.erase(found);
-        taken = true;
     }
-    travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
+    botAI->orderPosted.store(waiting, std::memory_order_release);
     return taken;
+}
+}  // namespace
+
+void TravelOrders::Post(PlayerbotAI* botAI, TravelOrder order)
+{
+    std::lock_guard<std::mutex> guard(travelOrdersLock);
+    // A hold and a trip posted before the bot's next update both stay (TestConstraints::Merge)
+    auto const [it, added] = travelOrders.try_emplace(botAI->GetBot()->GetGUID(), order);
+    if (!added)
+        TestConstraints::Merge(it->second, std::move(order));
+    botAI->orderPosted.store(true, std::memory_order_release);
+}
+
+bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
+{
+    if (!botAI->orderPosted.load(std::memory_order_acquire))
+        return false;
+    TravelOrder order;
+    if (!TakeOrder(botAI, bot->GetGUID(), bot->IsInCombat(), order))
+        return false;
+    if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+    {
+        LOG_INFO("playerbots", "[Route] {} order '{}' refused: the bot does not run the new rpg strategy",
+                 bot->GetName(), order.place);
+        return false;
+    }
+    return ApplyTravelOrder(botAI, bot, order);
+}
+
+void TravelOrders::KeepConstraints(Player* bot, uint16 constraints)
+{
+    TestConstraints::KeepStates(STATE_OPS, *bot, constraints);
 }
 
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
     Planner::PlannerHook(botAI, bot);
-    // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAIInternal)
+    // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAI)
     NewRpgStatus status = info.GetStatus();
     switch (status)
     {
         case RPG_IDLE:
         {
-            // A test's hold (HoldRules): a held choice is not made; an order was taken all the same
-            HoldRules::IdleGate const gate = HoldRules::GateOf(info.heldChoices);
+            // A test's hold (TestConstraints): a held choice is not made; an order was taken all the same
+            TestConstraints::IdleGate const gate = TestConstraints::GateOf(info.constraints);
             if (!gate.planner && !gate.status)
                 return false;
             // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback
@@ -1376,6 +1426,69 @@ Position DeckPoint(Player* bot, Transport* transport)
     return deck;
 }
 
+// A ship or zeppelin at a stop it keeps for the attach's deadline (MotionTransport::IsMoving is private: its key
+// frames, as MotionTransport::Update reads them)
+bool Docked(MotionTransport const& ship)
+{
+    uint32 const period = ship.GetPeriod();
+    if (!period)
+        return false;
+    uint32 const timer = ship.GetPathProgress() % period;
+    for (KeyFrame const& frame : ship.GetKeyFrames())
+        if (timer >= frame.ArriveTime && timer + PlayerbotAI::ABOARD_DEADLINE_MS < frame.DepartureTime)
+            return true;
+    return false;
+}
+
+// `route aboard` (tests): the bot is stood on the deck of the docked ship or zeppelin of that entry nearest it on its
+// map, at the boarding deck point from where it stands (the test puts it on the dock first). No explicit attach:
+// AddPassenger takes the current position as the offset, so PlayerbotAI's passenger check attaches it after the
+// teleport (BeginAboard). Refused: absent (none on the map), not_mo (an elevator), away (not at a stop), no_deck
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
+{
+    Transport* transport = nullptr;
+    float nearest = std::numeric_limits<float>::max();
+    for (Transport* candidate : bot->GetMap()->GetAllTransports())
+    {
+        if (!candidate->IsInWorld() || candidate->GetEntry() != entry)
+            continue;
+        float const yards = candidate->GetExactDist2d(bot);
+        if (yards < nearest)
+        {
+            transport = candidate;
+            nearest = yards;
+        }
+    }
+    MotionTransport const* ship = transport ? transport->ToMotionTransport() : nullptr;
+    Position deck;
+    char const* refusal = nullptr;
+    if (!transport)
+        refusal = "absent";
+    else if (!ship)
+        refusal = "not_mo";
+    else if (!Docked(*ship))
+        refusal = "away";
+    else
+    {
+        deck = DeckPoint(bot, transport);
+        if (bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), deck.GetPositionX(), deck.GetPositionY(),
+                                              deck.GetPositionZ(), bot) != transport)
+            refusal = "no_deck";
+    }
+    if (refusal)
+    {
+        LOG_INFO("playerbots", "[Route] {} aboard {} refused: {}", bot->GetName(), entry, refusal);
+        std::string const source = std::string("refused:") + refusal;
+        EventLog::Emit(bot, PlayerbotAI::ABOARD_EVENT_TYPE, source.c_str(), entry);
+        return;
+    }
+    LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry,
+             deck.GetPositionX(), deck.GetPositionY(), deck.GetPositionZ());
+    bot->NearTeleportTo(deck.GetPositionX(), deck.GetPositionY(), deck.GetPositionZ() + HOP_LIFT_YARDS,
+                        bot->GetOrientation());
+    botAI->BeginAboard(entry);
+}
+
 // Board and Disembark: a straight walk (no path: decks are off the mesh), as FollowAction boards a master's ship.
 // PlayerbotAI makes the bot a passenger of the transport it stands on, or none, within a second
 void StraightMove(Player* bot, float x, float y, float z)
@@ -1803,7 +1916,7 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     // hearthstone is a leg while its stone is in the bags and it is ready or cooling for at most the wait cap (the
     // search); not again after a hearth leg of this trip failed
     snapshot.hasHearthstone =
-        snapshot.hasHearthstone && !data.noHearth && HoldRules::HearthAllowed(botAI->rpgInfo.heldChoices);
+        snapshot.hasHearthstone && !data.noHearth && TestConstraints::HearthAllowed(botAI->rpgInfo.constraints);
     snapshot.allowTransport = true;
     TravelRoute::Request request;
     request.snapshot = snapshot;

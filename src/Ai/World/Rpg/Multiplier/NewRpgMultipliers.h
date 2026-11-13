@@ -10,7 +10,7 @@
 #include "Multiplier.h"
 
 // Drops "attack anything" while a giver the current RPG status would visit is nearby, so the status action runs, and
-// while a test holds the bot's status (HoldRules::GrindAllowed).
+// while a test keeps the bot from fights (TestConstraints nofight).
 class NewRpgQuestGiverMultiplier : public Multiplier
 {
 public:
