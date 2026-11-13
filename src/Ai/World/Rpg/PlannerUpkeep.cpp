@@ -183,6 +183,17 @@ UpkeepGather GatherUpkeep()
     std::sort(creatures.begin(), creatures.end(),
               [](auto const& a, auto const& b) { return a.first < b.first; });  // the trainer keys are deterministic
 
+    // The vendor entries with a spawn the bots can visit: on a random-bot map, outside a game event (as GatherWorld).
+    // The needs price their stock at the best offer of any listed vendor, and the funded share is capped at that
+    // price, so an event-only vendor (Brewfest's Barleybrew Dark at 50c a unit) left every inn's 5-lot unpaid
+    std::unordered_set<uint32> const botMaps(sPlayerbotAIConfig.RandomBotMaps.begin(),
+                                             sPlayerbotAIConfig.RandomBotMaps.end());
+    std::unordered_set<ObjectGuid::LowType> const creatureEvents = EventCreatureSpawns();
+    std::unordered_set<uint32> placedVendors;
+    for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
+        if (botMaps.count(data.mapid) && !creatureEvents.count(guid))
+            placedVendors.insert(data.id);
+
     std::unordered_map<Trainer::Trainer const*, uint32> trainerKeys;  // the core keeps one object per trainer id
     std::unordered_set<uint32> itemsSeen;
     for (auto const& [entry, creature] : creatures)
@@ -233,7 +244,7 @@ UpkeepGather GatherUpkeep()
             input.trainerEntries.emplace_back(entry, known->second);
         }
 
-        if (!(creature->npcflag & UNIT_NPC_FLAG_VENDOR))
+        if (!(creature->npcflag & UNIT_NPC_FLAG_VENDOR) || !placedVendors.count(entry))
             continue;
         VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry);
         if (!items)
