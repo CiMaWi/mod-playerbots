@@ -1964,9 +1964,15 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
     if (trip.legIdx >= trip.legs.size() || trip.boarding != TravelLegs::Boarding::Approach)
         return;
     // At its transport's dock the bot waits on foot (WT54-7; TravelKeepsOnFoot keeps it so): Thunder Bluff's zeppelin
-    // left while the bot spent the scan after its docking on the dismount
-    if (trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport && bot->IsMounted() && !bot->IsFlying() &&
-        !bot->IsInCombat())
+    // left while the bot spent the scan after its docking on the dismount. A flying mount's flag stays set on the
+    // ground (WT54-11: Ditlis at Valiance Keep, held as "flying" for 800 s): only a bot in the air keeps its mount
+    auto const airborne = [bot]
+    {
+        float const ground = bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        return bot->IsFlying() && bot->GetPositionZ() - ground > TravelLifecycle::DOCK_FLOOR_YARDS;
+    };
+    if (trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport && bot->IsMounted() && !bot->IsInCombat() &&
+        !airborne())
     {
         WorldPacket emptyPacket;
         bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
@@ -1997,13 +2003,33 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
     if (transport)
         SeeTransport(bot, transport, trip, sight);
     TravelLegs::NoteSight(trip, sight);
+    // A traced bot at its transport leg that does not look for its quay this scan, for the debug log (WT54-11: walk
+    // done, no quay in 800 s at Valiance Keep): the reason, the scan's still verdict and the vessel's yards to the dock
+    auto const holdQuay = [&](char const* reason)
+    {
+        if (approachWalk || data.place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+            return;
+        float const dock = transport ? transport->GetExactDist2d(leg.from.x, leg.from.y) : -1.0f;
+        if (transport && !trip.still && dock > TravelLegs::SHIP_DOCK_YARDS)
+            return;  // under way far off: the common case of a wait
+        LOG_DEBUG("playerbots",
+                  "[TravelLifecycle] quay_hold bot={} trip={} leg={} entry={} reason={} still={} dock={:.1f} "
+                  "at={:.2f},{:.2f},{:.2f}",
+                  bot->GetGUID().GetCounter(), data.tripId, trip.legIdx, leg.object, reason, trip.still ? 1 : 0, dock,
+                  bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    };
     if (!transport || !TravelLegs::DockedAt(trip, leg.from))
     {
         trip.quaySought = false;
+        holdQuay(transport ? "undocked" : "no_transport");
         return;
     }
     if (trip.quaySought || !ReadyForTransportMove(*bot))
+    {
+        char const* const hold = TransportMoveHold(*bot);
+        holdQuay(trip.quaySought ? "sought" : (hold ? hold : "hold"));
         return;
+    }
 
     TransportGeometry::GroundGeometry const geometry{*bot, transport};
     Point from = TransportGeometry::PositionOf(*bot);

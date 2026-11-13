@@ -9883,6 +9883,11 @@ void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason
 
 uint32 PlayerbotAI::GetReactDelay()
 {
+    // A bot on a ship's, zeppelin's or lift's leg checks as often as its follower scans the transport (WT54-11): a
+    // stop lasts seconds, and at a rest area's 2-20 s, or a slow skill's stretch, bots waiting on Thunder Bluff's tower
+    // slept through the zeppelin's stop, riders through their far stop, and a scan pair never saw Kamagua's ship still
+    if (!bot->IsInCombat() && TravelKeepsOnFoot(this))
+        return TravelLegs::TRANSPORT_SCAN_MS;
     // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
