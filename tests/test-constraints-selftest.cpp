@@ -312,6 +312,11 @@ void TestRelease()
     moving.Post(Release(0));
     moving.Update();
     Check(moving.status == Status::Travel, "release: does not end the current trip");
+    Check(FreesErrands(HOLD, PLANNER | STATUS | HEARTH) && FreesErrands(ERRAND | NOFIGHT, NOFIGHT),
+          "release: clearing the errand row frees the errand checks");
+    Check(!FreesErrands(HOLD, HOLD) && !FreesErrands(0, 0) && !FreesErrands(HOLD & ~ERRAND, 0) &&
+              !FreesErrands(0, ERRAND),
+          "release: the errand checks stay as they are unless the errand row turns off");
 }
 
 void TestStates()

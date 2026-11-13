@@ -883,13 +883,16 @@ void EndTripByOrder(Player* bot, NewRpgInfo& info, NewRpgInfo::Travel const& dat
 
 // A test's constraint change: the state rows applied or undone, one Constraint row whose amount is the ms from the
 // command to the take (also on an idle bot). A choice row turning on ends the current status unless a trip comes with
-// it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit
-void ApplyConstraints(Player* bot, NewRpgInfo& info, TravelOrder const& order, bool tripFollows)
+// it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit; the
+// errand row turning off forgets the last errand check (TestConstraints::FreesErrands)
+void ApplyConstraints(PlayerbotAI* botAI, Player* bot, NewRpgInfo& info, TravelOrder const& order, bool tripFollows)
 {
     uint16 const before = info.constraints;
     uint16 const after = TestConstraints::Next(before, order.on, order.off);
     info.constraints = after;
     info.planner.snapshotDue = true;
+    if (TestConstraints::FreesErrands(before, after))
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
     TestConstraints::ChangeStates(STATE_OPS, *bot, before, after);
     std::string const set = TestConstraints::Format(after);
     uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
@@ -911,7 +914,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
     if (constrained)
-        ApplyConstraints(bot, info, order, trip);
+        ApplyConstraints(botAI, bot, info, order, trip);
     if (order.aboard)
         PlaceAboard(botAI, bot, order.aboard);
     bool const applied = constrained || order.aboard;

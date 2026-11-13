@@ -129,6 +129,11 @@ inline std::uint16_t Next(std::uint16_t set, std::uint16_t on, std::uint16_t off
 // row changing never does
 inline bool EndsStatus(std::uint16_t before, std::uint16_t after) { return (after & ~before & CHOICES) != 0; }
 
+// The errand row turning off frees the errand checks at once: the retry wait after the last check (ERRAND_RETRY_MS,
+// ItemWorthRules.h) starts over from no check, so a check from before the hold does not delay the released bot's first
+// errand by up to five minutes
+inline bool FreesErrands(std::uint16_t before, std::uint16_t after) { return (before & ~after & ERRAND) != 0; }
+
 // The gates. What an idle bot's status update may do on its own
 struct IdleGate
 {
