@@ -49,6 +49,8 @@ enum class State : std::uint8_t
 // (a class quest beats most camps and pays a detour of a few quests' worth) but finite, so a far trip still loses to
 // levelling where the bot is (WU.16). A tuning value read from the nights: time from unlock to done (NOTES watchlist)
 constexpr float UNLOCK_BONUS_LEVEL_SHARE = 0.25f;
+constexpr char const* REASON_WORD =
+    "class_quest";                          // the goal and circuit rows' reason (UpkeepRules REASON_CLASS_QUEST)
 constexpr std::uint32_t GIVE_UP_LIMIT = 2;  // a quest given up this often gets no bonus (its grant is WU21a's)
 constexpr int MAX_CHAIN = 16;               // chain steps walked back from a class quest
 

@@ -260,6 +260,7 @@ QuestRecord RecordOf(Quest const* quest)
     record.xpBase = quest->XPValue(at);
     record.copperReward = quest->GetRewOrReqMoney(at);
     record.prev = quest->GetPrevQuestId();
+    record.prevAny.assign(quest->prevQuests.begin(), quest->prevQuests.end());
     record.next = quest->GetNextQuestId();
     record.nextInChain = quest->GetNextQuestInChain();
     record.exclusiveGroup = quest->GetExclusiveGroup();
@@ -900,6 +901,22 @@ Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const&
     };
 }
 
+// The class-quest table's spells the bot's class trainer teaches (upkeep WU20a): their quests are ordinary ones
+static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
+{
+    std::vector<uint32> taught;
+    TrainerList const* list = upkeep.ClassList(cls);
+    if (!list)
+        return taught;
+    for (ClassQuests::Entry const& entry : ClassQuests::TABLE)
+        if (entry.learns && (list->Find(entry.learns) != TrainerList::NOT_FOUND ||
+                             list->Teacher(entry.learns) != TrainerList::NOT_FOUND))
+            taught.push_back(entry.learns);
+    std::sort(taught.begin(), taught.end());
+    taught.erase(std::unique(taught.begin(), taught.end()), taught.end());
+    return taught;
+}
+
 Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<QuestProgress> const& progress,
                      Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates)
 {
@@ -920,6 +937,8 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
         {
             // The needs list on the worker: its reserve and shortfall feed the need factor (upkeep WU16, §3.10)
             Goals::Situation filled = situation;
+            if (upkeep && filled.governed)
+                filled.trainerTaught = ClassTrainerTaught(*upkeep, snapshot.cls);
             if (upkeep)
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(UpkeepNeeds::ComputeNeeds(snapshot, *upkeep, rates)));
             plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, filled));

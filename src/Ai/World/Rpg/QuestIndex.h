@@ -135,6 +135,9 @@ struct QuestRecord
     std::vector<std::uint32_t> givers;  // indices into QuestIndex::places, ascending
     std::vector<std::uint32_t> enders;
     std::vector<QuestObjective> objectives;
+    // The core's prevQuests (PrevQuestId and every quest naming this one as its NextQuestId): one positive rewarded or
+    // one negative active opens it (Player::SatisfyQuestPreviousQuest); empty in synthetic records, which give prev
+    std::vector<std::int32_t> prevAny;
 
     bool Has(std::uint16_t flag) const { return (flags & flag) != 0; }
 };
@@ -672,6 +675,9 @@ private:
         {
             if (quest.prev > 0)
                 _unlocks[static_cast<std::uint32_t>(quest.prev)].push_back(quest.id);
+            for (std::int32_t const prev : quest.prevAny)
+                if (prev > 0)
+                    _unlocks[static_cast<std::uint32_t>(prev)].push_back(quest.id);
             if (quest.next)
                 _unlocks[quest.id].push_back(quest.next);
             if (quest.nextInChain)

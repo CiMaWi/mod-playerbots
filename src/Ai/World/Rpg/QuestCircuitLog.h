@@ -19,7 +19,8 @@
 // plan to rows (no Player, no WorldLog), so the offline selftest checks it and WT16 emits the same rows where it
 // applies plans. choice and reason are words of [a-z0-9_:]; the numbers in a choice are quest ids and camp indexes:
 // clang-format off
-//   take:<quest>            reason value_per_minute, or delivery_elsewhere for a carried quest; value = per minute
+//   take:<quest>            reason value_per_minute, delivery_elsewhere for a carried quest or class_quest for one
+//                           with the class-quest unlock bonus (upkeep WU20a); value = per minute
 //   defer:<quest>           reason log_full, too_far, risky, no_area, elite_group_solo or later_trip; value 0
 //   defer:more              the deferrals beyond the cap, value = their count
 //   abandon:<quest>         reason grey, overtime, deaths, log_space or unindexed; value 0
@@ -99,7 +100,10 @@ inline std::vector<Row> Rows(CircuitPlan const& plan)
     if (!plan.ok)
         return rows;
     for (CircuitTake const& take : plan.take)
-        rows.push_back({"take:" + std::to_string(take.quest), take.carried ? "delivery_elsewhere" : "value_per_minute",
+        rows.push_back({"take:" + std::to_string(take.quest),
+                        take.classQuest ? ClassQuests::REASON_WORD
+                        : take.carried  ? "delivery_elsewhere"
+                                        : "value_per_minute",
                         take.valuePerMinute});
 
     std::vector<Row> defers;

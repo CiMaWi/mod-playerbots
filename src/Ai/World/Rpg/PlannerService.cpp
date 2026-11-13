@@ -20,6 +20,7 @@
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
 #include "Chat.h"
+#include "ClassQuestRules.h"
 #include "DBCStores.h"
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
@@ -568,6 +569,7 @@ void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
     Goals::ReplanInput in;
     in.current = {current.kind, current.target, current.valuePerMinute, false, false, current.targetType};
     in.fresh = &goals.plan->ranked;
+    in.plain = goals.plan->plain ? &*goals.plan->plain : nullptr;
     in.delta.situation = situation;
     in.nowMs = now;
     in.lastPlanMs = goals.lastPlanMs;
@@ -618,7 +620,25 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     Publish(bot, goals);
 }
 
-Goals::Situation SituationOf(Player* bot, GoalApply::BotGoals const& goals)
+// The class-quest table's spells the bot knows, for its class only: O(table), once per goals job (upkeep WU20a)
+std::vector<uint32> KnownClassQuestSpells(Player* bot)
+{
+    std::vector<uint32> known;
+    uint32 const cls = bot->getClass();
+    for (ClassQuests::Entry const& entry : ClassQuests::TABLE)
+    {
+        if (entry.classMask && cls && !((entry.classMask >> (cls - 1)) & 1u))
+            continue;
+        for (uint32 const spell : {entry.learns, entry.rewardSpell})
+            if (spell && bot->HasSpell(spell))
+                known.push_back(spell);
+    }
+    std::sort(known.begin(), known.end());
+    known.erase(std::unique(known.begin(), known.end()), known.end());
+    return known;
+}
+
+Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals const& goals)
 {
     Goals::Situation situation;
     situation.here.hub = NO_HUB;  // the job finds it from its circuit (Goals::CircuitHub)
@@ -628,6 +648,14 @@ Goals::Situation SituationOf(Player* bot, GoalApply::BotGoals const& goals)
                                               static_cast<float>(maxMana)
                                         : -1.0f;
     situation.external = goals.external;
+    // Class quests (upkeep WU20a): a governed bot's facts for the unlock bonus; the job adds the trainer's spells
+    situation.governed = GoalApply::Governed(PlayerbotFactory::KeepsPossessions(bot), bot->GetGUID().GetCounter(),
+                                             botAI->HasGameClientMaster());
+    if (situation.governed)
+    {
+        situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+        situation.knownClassQuestSpells = KnownClassQuestSpells(bot);
+    }
     return situation;
 }
 
@@ -647,7 +675,7 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, NewRpgInfo::PlannerState& stat
         log.push_back(slot.quest);
     GoalApply::UpdateSeen(goals.seen, std::move(log), now);
     // The needs rates read the bot's slot measure here; the job computes the needs list from them (upkeep WU16)
-    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(bot, goals),
+    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(botAI, bot, goals),
                                    BotNeedRates(botAI, snapshot));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);

@@ -19,7 +19,7 @@
 // plan. One row per ranking: the best option, its next ones as alt1..alt3 (their value per minute):
 //   choice  <kind>:<target>, e.g. grind:12, quest:30, money:spot_7, move_zone:camp_21, quest:quest_40, rest:0
 //           (kind words of KIND_WORDS; the target type of TARGET_WORDS where the kind does not say what the id is)
-//   reason  the option's reason word (gold_short, circuit_dry, delivery ...), [a-z0-9_:]
+//   reason  the option's reason word (gold_short, circuit_dry, delivery, class_quest ...), [a-z0-9_:]
 //   value   the option's value per minute (XP-equivalent units), 0 for an unusable number
 // A failed ranking gives none:0 with the failure as the reason. Trait numbers never appear (C4).
 namespace Planner::GoalLog

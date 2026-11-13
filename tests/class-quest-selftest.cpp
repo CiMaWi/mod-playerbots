@@ -17,6 +17,8 @@
 
 #include "ClassQuestRules.h"
 #include "GoalInterface.h"
+#include "GoalModelHarness.h"
+#include "QuestCircuitLog.h"
 
 using namespace Planner::ClassQuests;
 
@@ -268,6 +270,342 @@ void Invariant(std::uint32_t seed)
     Check(first.empty() && bonuses > 0, "J3: the bonus only and always where the rule says" +
                                             (first.empty() ? std::string() : ": first counterexample " + first));
 }
+
+// ---- The planner wiring (WU20a-2): a synthetic hub planned end to end by Goals::PlanGoals ----
+namespace G = Planner::Goals;
+namespace GH = Planner::GoalHarness;
+
+constexpr std::uint32_t HUB_GIVER = 93001, FAR_GIVER = 93002, CLASS_QUEST = 1498, CLASS_PREV = 1505;
+constexpr std::uint32_t GATE = 93011, GATED = 93010, ORDINARY = 95001, ORDINARY_COUNT = 5;
+constexpr float FAR_YARDS = 1600.0f;
+
+// A hub with five kill quests near its giver; Path of Defense (1498) at the hub or 1600 yards away; GATED opened only
+// by GATE naming it as its NextQuestId (the core's prevQuests, the 1795 gap)
+Planner::QuestIndex World(bool classAtHub, Planner::Snapshot const& bot)
+{
+    Planner::QuestGather gather;
+    Planner::Place const& at = bot.position;
+    float const hx = at.x, hy = at.y + 5.0f;
+    float const cx = classAtHub ? hx : hx + FAR_YARDS, cy = hy;
+    gather.places.push_back({at.map, hx, hy, 0.0f, HUB_GIVER, false, bot.zone, bot.area, Planner::NO_CAMP});
+    if (!classAtHub)
+        gather.places.push_back({at.map, cx, cy, 0.0f, FAR_GIVER, false, bot.zone, bot.area, Planner::NO_CAMP});
+    std::uint32_t target = 94001;
+    auto const add = [&](std::uint32_t id, std::uint32_t xp, std::uint32_t giver, float x, float y)
+    {
+        Planner::QuestRecord quest;
+        quest.id = id;
+        quest.level = 10;
+        quest.minLevel = 8;
+        quest.xpBase = xp;
+        quest.objectives.push_back({Planner::ObjectiveKind::Kill, target, 6u, 0, {}});
+        for (float const offset : {-8.0f, 0.0f, 8.0f})
+            gather.targets.push_back({target, false, at.map, x + offset, y + offset, 0.0f});
+        gather.relations.push_back({id, giver, false, false});
+        gather.relations.push_back({id, giver, false, true});
+        gather.quests.push_back(std::move(quest));
+        ++target;
+    };
+    for (std::uint32_t i = 0; i < ORDINARY_COUNT; ++i)
+        add(ORDINARY + i, 450 + 50 * i, HUB_GIVER, hx + 60.0f + 25.0f * i, hy - 40.0f + 20.0f * i);
+    add(CLASS_QUEST, 550, classAtHub ? HUB_GIVER : FAR_GIVER, cx + 70.0f, cy + 30.0f);
+    gather.quests.back().minLevel = 10;
+    gather.quests.back().classMask = 1;
+    gather.quests.back().raceMask = 690;
+    gather.quests.back().prevAny = {static_cast<std::int32_t>(CLASS_PREV)};
+    add(GATE, 400, HUB_GIVER, hx - 60.0f, hy + 50.0f);
+    add(GATED, 500, HUB_GIVER, hx - 70.0f, hy - 50.0f);
+    gather.quests.back().prevAny = {static_cast<std::int32_t>(GATE)};
+    return Planner::QuestIndex::Build(std::move(gather));
+}
+
+Planner::Snapshot Orc()
+{
+    Planner::Snapshot bot = GH::Bot(10, 5000);
+    bot.race = 2;
+    bot.cls = 1;
+    bot.team = 1;
+    bot.rewardedQuests = {CLASS_PREV};
+    return bot;
+}
+
+G::Situation GovernedAt()
+{
+    G::Situation situation = GH::Base();
+    situation.governed = true;
+    situation.levelXp = 7600;
+    return situation;
+}
+
+std::string Ranked(G::GoalPlan const& plan)
+{
+    std::string takes;
+    for (Planner::CircuitTake const& take : plan.circuit.take)
+        takes += " " + std::to_string(take.quest) + (take.classQuest ? "(class_quest)" : "");
+    return "[" + GH::Summary(plan.ranked) + "] takes:" + (takes.empty() ? " none" : takes);
+}
+
+bool TakesClass(G::GoalPlan const& plan, std::uint32_t quest)
+{
+    return std::any_of(plan.circuit.take.begin(), plan.circuit.take.end(),
+                       [quest](Planner::CircuitTake const& take) { return take.quest == quest && take.classQuest; });
+}
+
+bool HasClassOption(G::Ranked const& ranked)
+{
+    return std::any_of(ranked.options.begin(), ranked.options.end(),
+                       [](G::Option const& option) { return option.reason == REASON_WORD; });
+}
+
+bool TopClassTrip(G::Ranked const& ranked)
+{
+    G::Option const* top = GH::Top(ranked);
+    return top && top->reason == REASON_WORD && top->kind == G::GoalKind::Quest &&
+           top->targetType == G::TargetType::Camp;
+}
+
+bool TopCircuitTaking(G::GoalPlan const& plan, std::uint32_t quest)
+{
+    G::Option const* top = GH::Top(plan.ranked);
+    return top && top->reason == G::CIRCUIT_REASON && TakesClass(plan, quest);
+}
+
+G::ReplanInput Interval(G::CurrentGoal const& current, G::GoalPlan const& plan)
+{
+    G::ReplanInput in;
+    in.current = current;
+    in.fresh = &plan.ranked;
+    in.plain = plan.plain ? &*plan.plain : nullptr;
+    in.nowMs = G::REPLAN_INTERVAL_MS + 10;
+    in.lastPlanMs = 1;
+    return in;
+}
+
+std::string Verdict(G::Replan const& replan)
+{
+    return std::string(G::ReplanWord(replan.verdict)) + " " + replan.reason +
+           (replan.chosen ? " " + G::ChoiceWord(*replan.chosen) + " " + replan.chosen->reason : std::string());
+}
+
+void Wiring()
+{
+    Planner::Snapshot const bot = Orc();
+    Planner::QuestIndex const far = World(false, bot);
+    Planner::QuestIndex const near = World(true, bot);
+    Planner::CircuitContext farContext;
+    farContext.quests = &far;
+    Planner::CircuitContext nearContext;
+    nearContext.quests = &near;
+
+    // A warrior at 10 with 1498 takeable: the lone trip over the ordinary circuit
+    G::GoalPlan const lone = G::PlanGoals(bot, farContext, GovernedAt());
+    std::printf("info: warrior 10, giver 1600 yd off: %s\n", Ranked(lone).c_str());
+    Check(TopClassTrip(lone.ranked) && GH::Find(lone.ranked, G::GoalKind::Quest, GH::HOME_HUB),
+          "wiring: a governed warrior 10 picks the lone trip to 1498 over its ordinary circuit");
+
+    // The giver at the hub: the circuit takes 1498 with the quests near it, no lone trip
+    G::GoalPlan const circuit = G::PlanGoals(bot, nearContext, GovernedAt());
+    std::printf("info: warrior 10, giver at the hub: %s\n", Ranked(circuit).c_str());
+    Check(TopCircuitTaking(circuit, CLASS_QUEST) && !HasClassOption(circuit.ranked) &&
+              Planner::CircuitLog::Rows(circuit.circuit).size() > 0,
+          "wiring: a circuit that takes 1498 with the quests near it stands for the class quest");
+    bool classRow = false;
+    for (auto const& row : Planner::CircuitLog::Rows(circuit.circuit))
+        classRow = classRow || (row.choice == "take:1498" && row.reason == std::string(REASON_WORD));
+    Check(classRow, "wiring: the circuit row of 1498 has the reason class_quest");
+
+    // Mid-circuit: the circuit goes on (the plain plan keeps it), the trip comes when the circuit ends
+    Planner::Snapshot running = bot;
+    running.currentGoal = {static_cast<std::uint32_t>(G::GoalKind::Quest), GH::HOME_HUB, 1};
+    G::GoalPlan const mid = G::PlanGoals(running, farContext, GovernedAt());
+    G::CurrentGoal current{G::GoalKind::Quest, GH::HOME_HUB, 0.0f, false, false, G::TargetType::Default};
+    G::Replan const stays = G::ReplanDecision(Interval(current, mid));
+    G::ReplanInput unguarded = Interval(current, mid);
+    unguarded.plain = nullptr;
+    G::Replan const bare = G::ReplanDecision(unguarded);
+    std::printf("info: mid-circuit: %s; with the plain plan: %s; without it: %s\n", Ranked(mid).c_str(),
+                Verdict(stays).c_str(), Verdict(bare).c_str());
+    Check(mid.plain.has_value() && stays.verdict == G::ReplanVerdict::Stay,
+          "wiring: a bot mid-circuit finishes its circuit first (" + Verdict(stays) + ")");
+    current.ended = true;
+    G::Replan const after = G::ReplanDecision(Interval(current, mid));
+    Check(after.verdict == G::ReplanVerdict::Switch && after.chosen && after.chosen->reason == REASON_WORD,
+          "wiring: when the circuit ends the next decision takes the class trip (" + Verdict(after) + ")");
+
+    // A bridge goal outranks the class quest; a sick bot rests first
+    G::Situation bridged = GovernedAt();
+    bridged.external = G::External{G::GoalKind::TravelElsewhere, 7, bot.position, 30.0f, "external"};
+    G::GoalPlan const bridge = G::PlanGoals(bot, farContext, bridged);
+    std::printf("info: bridge goal: %s\n", Ranked(bridge).c_str());
+    Check(GH::Top(bridge.ranked) && GH::Top(bridge.ranked)->pinned, "wiring: a bridge goal outranks the class quest");
+    Planner::Snapshot sick = bot;
+    sick.sickMs = 60000;
+    G::GoalPlan const resting = G::PlanGoals(sick, farContext, GovernedAt());
+    std::printf("info: sick: %s\n", Ranked(resting).c_str());
+    Check(GH::Top(resting.ranked) && GH::Top(resting.ranked)->kind == G::GoalKind::Rest &&
+              !HasClassOption(resting.ranked),
+          "wiring: a sick bot rests first");
+
+    // No bonus: not governed, the spell known, given up
+    G::GoalPlan const ungoverned = G::PlanGoals(bot, nearContext, GH::Base());
+    G::Situation known = GovernedAt();
+    known.knownClassQuestSpells = {71};
+    G::GoalPlan const knows = G::PlanGoals(bot, farContext, known);
+    G::Situation givenUp = GovernedAt();
+    givenUp.givenUpQuests = {CLASS_QUEST};
+    G::GoalPlan const gaveUp = G::PlanGoals(bot, farContext, givenUp);
+    std::printf("info: ungoverned at the hub: %s\n", Ranked(ungoverned).c_str());
+    Check(ungoverned.classBonus.empty() && !TakesClass(ungoverned, CLASS_QUEST) && knows.classBonus.empty() &&
+              !HasClassOption(knows.ranked) && gaveUp.classBonus.empty() && !HasClassOption(gaveUp.ranked),
+          "wiring: an ungoverned bot, a known spell and a given-up quest get no bonus and no trip");
+    Check(!Planner::GoalApply::Governed(true, 20, false) && !Planner::GoalApply::Governed(true, 21, true) &&
+              !Planner::GoalApply::Governed(false, 21, false) && Planner::GoalApply::Governed(true, 21, false),
+          "wiring: a weighted-group bot and a bot with a real master are not governed");
+
+    // The 1795 gap: a quest opened only by another's NextQuestId waits for that one
+    Planner::Snapshot opened = bot;
+    opened.rewardedQuests = {CLASS_PREV, GATE};
+    std::sort(opened.rewardedQuests.begin(), opened.rewardedQuests.end());
+    G::GoalPlan const before = G::PlanGoals(bot, nearContext, GH::Base());
+    G::GoalPlan const afterGate = G::PlanGoals(opened, nearContext, GH::Base());
+    std::vector<std::uint32_t> const& unlocks = near.Unlocks(GATE);
+    Check(!GH::Takes(before.circuit, GATED) && GH::Takes(before.circuit, GATE) && GH::Takes(afterGate.circuit, GATED) &&
+              std::find(unlocks.begin(), unlocks.end(), GATED) != unlocks.end(),
+          "gap: a quest gated by another's NextQuestId is taken only after that one is rewarded");
+}
+
+// J1 and J2 over generated quest logs and planner states, each planned by PlanGoals on the two hubs
+void Decisions(std::uint32_t seed)
+{
+    std::mt19937 rng(seed + 1);
+    Planner::Snapshot const base = Orc();
+    Planner::QuestIndex const worlds[2] = {World(false, base), World(true, base)};
+    int const STATES = 3000;
+    int j1 = 0, j1Held = 0, j1Leaves = 0, j2 = 0, j2Trips = 0, j2Circuits = 0;
+    std::string first1, first2;
+    for (int n = 0; n < STATES; ++n)
+    {
+        bool const atHub = rng() % 2;
+        Planner::CircuitContext context;
+        context.quests = &worlds[atHub ? 1 : 0];
+        Planner::Snapshot bot = base;
+        bot.level = static_cast<std::uint8_t>(9 + rng() % 4);
+        bot.race = rng() % 4 == 0 ? 1 : 2;
+        bot.cls = rng() % 5 == 0 ? 2 : 1;
+        bot.money = rng() % 20000;
+        bot.rewardedQuests.clear();
+        if (rng() % 5 != 0)
+            bot.rewardedQuests.push_back(CLASS_PREV);
+        bool const classDone = rng() % 10 == 0;
+        if (classDone)
+            bot.rewardedQuests.push_back(CLASS_QUEST);
+        for (std::uint32_t quest = ORDINARY; quest < ORDINARY + ORDINARY_COUNT + 1; ++quest)
+        {
+            std::uint32_t const id = quest == ORDINARY + ORDINARY_COUNT ? GATE : quest;
+            std::uint32_t const roll = rng() % 4;
+            if (roll == 0)
+                bot.rewardedQuests.push_back(id);
+            else if (roll == 1)
+                bot.quests.push_back({id, 0, {}});
+        }
+        bool const classInLog = !classDone && rng() % 10 == 0;
+        if (classInLog)
+            bot.quests.push_back({CLASS_QUEST, 0, {}});
+        std::sort(bot.rewardedQuests.begin(), bot.rewardedQuests.end());
+        bot.sickMs = rng() % 8 == 0 ? 60000 : 0;
+        G::Situation situation = GH::Base();
+        situation.governed = rng() % 5 != 0;
+        situation.levelXp = 7000 + rng() % 3000;
+        if (rng() % 6 == 0)
+            situation.knownClassQuestSpells = {71};
+        if (rng() % 10 == 0)
+            situation.givenUpQuests = {CLASS_QUEST};
+        situation.healthPercent = rng() % 5 == 0 ? static_cast<float>(20 + rng() % 60) : 100.0f;
+        if (rng() % 2)
+            situation.spots = {GH::Spot(21, static_cast<float>(40 + rng() % 200), 5.0f)};
+        if (rng() % 2)
+            situation.hubs = {
+                GH::Hub(31, bot.zone, static_cast<float>(50 + rng() % 400), static_cast<float>(2 + rng() % 20))};
+        int const goal = static_cast<int>(rng() % 4);  // none, the circuit, a move to hub 31, grinding spot 21
+        G::CurrentGoal current;
+        if (goal == 1)
+            current = {G::GoalKind::Quest, GH::HOME_HUB, 0.0f, false, false, G::TargetType::Default};
+        else if (goal == 2)
+        {
+            if (situation.hubs.empty())
+                situation.hubs = {GH::Hub(31, bot.zone, 200.0f, 10.0f)};
+            current = {G::GoalKind::Quest, 31, 0.0f, false, true, G::TargetType::Default};
+        }
+        else if (goal == 3)
+        {
+            if (situation.spots.empty())
+                situation.spots = {GH::Spot(21, 120.0f, 5.0f)};
+            current = {G::GoalKind::Grind, 21, 0.0f, false, false, G::TargetType::Default};
+        }
+        current.valuePerMinute = static_cast<float>(rng() % 600);
+        if (goal)
+            bot.currentGoal = {static_cast<std::uint32_t>(current.kind), current.target, 1};
+        G::GoalPlan const plan = G::PlanGoals(bot, context, situation);
+        std::string const state = "state " + std::to_string(n) + " (class " + std::to_string(bot.cls) + ", race " +
+                                  std::to_string(bot.race) + ", level " + std::to_string(bot.level) +
+                                  (atHub ? ", giver at the hub" : ", giver far") + ", goal " + std::to_string(goal) +
+                                  ")";
+
+        if (goal)
+        {
+            // J1: what the plan without the bonus keeps, the bot keeps
+            G::Situation plainSituation = situation;
+            plainSituation.governed = false;
+            G::GoalPlan const without = G::PlanGoals(bot, context, plainSituation);
+            G::ReplanInput in = Interval(current, plan);
+            if (rng() % 3 == 0)
+                in.lastPlanMs = in.nowMs - 1000;  // no interval trigger
+            in.delta.situation = rng() % 4 == 0;
+            G::Replan const with = G::ReplanDecision(in);
+            G::ReplanInput plainIn = in;
+            plainIn.fresh = &without.ranked;
+            plainIn.plain = nullptr;
+            G::Replan const reference = G::ReplanDecision(plainIn);
+            G::ReplanInput bare = in;
+            bare.plain = nullptr;
+            G::Replan const unguarded = G::ReplanDecision(bare);
+            ++j1;
+            if (reference.verdict == G::ReplanVerdict::Stay && with.verdict != G::ReplanVerdict::Stay && first1.empty())
+                first1 = state + ": without the bonus " + Verdict(reference) + ", with it " + Verdict(with) + "; " +
+                         Ranked(plan);
+            if (reference.verdict == G::ReplanVerdict::Stay && unguarded.verdict != G::ReplanVerdict::Stay)
+                ++j1Held;
+            if (with.verdict != G::ReplanVerdict::Stay)
+                ++j1Leaves;
+            continue;
+        }
+
+        // J2: a governed bot without the spells, with 1498 takeable and doable, not sick, at full health, no goal
+        bool const prev = std::binary_search(bot.rewardedQuests.begin(), bot.rewardedQuests.end(), CLASS_PREV);
+        bool const takeable = situation.governed && bot.cls == 1 && bot.race == 2 && bot.level >= 10 && prev &&
+                              !classDone && !classInLog && situation.knownClassQuestSpells.empty() &&
+                              situation.givenUpQuests.empty();
+        if (!takeable || bot.sickMs || situation.healthPercent < 100.0f)
+            continue;
+        ++j2;
+        bool const bonus = !plan.classBonus.empty() && plan.classBonus.front().first == CLASS_QUEST;
+        bool const trip = TopClassTrip(plan.ranked);
+        bool const taking = TopCircuitTaking(plan, CLASS_QUEST);
+        j2Trips += trip ? 1 : 0;
+        j2Circuits += taking ? 1 : 0;
+        if (!(bonus && (trip || taking)) && first2.empty())
+            first2 = state + ": " + Ranked(plan);
+    }
+    std::printf(
+        "info: invariant J1/J2 seed %u, %d states: J1 %d with a running goal (%d leave, %d kept only by the "
+        "plain plan), J2 %d (%d lone trips, %d circuits)\n",
+        seed + 1, STATES, j1, j1Leaves, j1Held, j2, j2Trips, j2Circuits);
+    Check(first1.empty() && j1 > 0, "J1: the bonus never ends a running trip or circuit" +
+                                        (first1.empty() ? std::string() : ": first counterexample " + first1));
+    Check(first2.empty() && j2 > 0 && j2Trips > 0 && j2Circuits > 0,
+          "J2: a governed bot with a takeable class quest picks it or a circuit that takes it" +
+              (first2.empty() ? std::string() : ": first counterexample " + first2));
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -276,6 +614,8 @@ int main(int argc, char** argv)
     Table();
     Scenarios();
     Invariant(seed);
+    Wiring();
+    Decisions(seed);
     std::printf("class quest selftest: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

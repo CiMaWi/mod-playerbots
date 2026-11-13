@@ -420,6 +420,18 @@ struct External
     std::string reason{"external"};
 };
 
+// A lone trip to the giver of a class quest with the unlock bonus (upkeep WU20a)
+struct ClassTrip
+{
+    std::uint32_t quest{0};
+    std::uint32_t camp{NO_CAMP};  // the giver's camp: the goal's target
+    Place place;                  // the giver
+    float travelMinutes{0.0f};
+    float xp{0.0f};
+    float copper{0.0f};
+    float bonus{0.0f};  // XP
+};
+
 // The inputs the Snapshot lacks; the harness fills them, WT16 fills them live
 struct Situation
 {
@@ -441,6 +453,15 @@ struct Situation
     std::string shortText;             // "12g 0s 0c short for journeyman riding", for the goal view
     std::uint32_t bagBudgetPercent{BAG_BUDGET_PERCENT};
     std::optional<External> external;
+    // Class quests (upkeep WU20a, §3.11): the governed rule's inputs, from the map thread and the job
+    bool governed{false};                              // GoalApply::Governed
+    bool classQuests{true};                            // false: the plan without the bonus (PlanGoals' plain plan)
+    std::uint32_t levelXp{0};                          // XP from the bot's level to the next
+    std::vector<std::uint32_t> knownClassQuestSpells;  // sorted: the table's spells the bot knows
+    std::vector<std::uint32_t> givenUpQuests;          // sorted: given up GIVE_UP_LIMIT times (WU21a counts them)
+    std::vector<std::uint32_t> trainerTaught;          // sorted: the table's spells the class trainer teaches
+    std::vector<std::pair<std::uint32_t, float>> classBonus;  // PlanGoals fills: (quest, bonus XP), sorted
+    std::vector<ClassTrip> classTrips;                        // PlanGoals fills: one per bonus quest not in the log
 };
 
 struct Option
@@ -596,6 +617,7 @@ public:
         else
             AddRest();
         AddHearth();
+        AddClassQuests();
         AddExternal();
         return Finish();
     }
@@ -791,6 +813,73 @@ private:
         }
         else
             Add(std::move(option), {});
+    }
+
+    // A class quest a governed bot lacks (upkeep WU20a, §3.11): worth what the best other activity earns over its
+    // minutes, plus its reward and unlock bonus, so the spell is worth the way. A circuit that takes the quest stands
+    // for it, with the quests near it; otherwise a lone trip to the giver's camp. Sick bots drop both (Add)
+    void AddClassQuests()
+    {
+        if (_situation.classBonus.empty())
+            return;
+        auto const bonusOf = [this](std::uint32_t quest)
+        {
+            for (auto const& [id, bonus] : _situation.classBonus)
+                if (id == quest)
+                    return bonus;
+            return 0.0f;
+        };
+        CircuitPlan const* plan = _situation.circuit;
+        auto const takes = [plan](std::uint32_t quest)
+        {
+            return plan && std::any_of(plan->take.begin(), plan->take.end(),
+                                       [quest](CircuitTake const& take) { return take.quest == quest; });
+        };
+        Option* circuit = nullptr;
+        float base = 0.0f;
+        for (Option& option : _options)
+        {
+            if (option.kind == GoalKind::Quest && option.reason == CIRCUIT_REASON)
+                circuit = &option;
+            else if (!IsInterlude(option.kind))
+                base = std::max(base, option.valuePerMinute);
+        }
+        if (base <= 0.0f)
+            base = BandRate();
+        float taken = 0.0f;
+        if (plan)
+            for (CircuitTake const& take : plan->take)
+                if (take.classQuest)
+                    taken += bonusOf(take.quest);
+        if (circuit && taken > 0.0f)
+        {
+            float const minutes = std::max(circuit->minutes, MIN_OPTION_MINUTES);
+            float const floor = base + taken / minutes;
+            if (circuit->valuePerMinute < floor)
+            {
+                circuit->valuePerMinute = floor;
+                circuit->value = floor * minutes;
+            }
+        }
+        std::vector<std::uint32_t> camps;
+        for (ClassTrip const& trip : _situation.classTrips)
+        {
+            if (takes(trip.quest) || (plan && plan->ok && trip.camp == plan->homeCamp) ||
+                std::find(camps.begin(), camps.end(), trip.camp) != camps.end())
+                continue;
+            camps.push_back(trip.camp);
+            Option option;
+            option.kind = GoalKind::Quest;
+            option.target = trip.camp;
+            option.targetType = TargetType::Camp;
+            option.place = trip.place;
+            option.minutes = std::max(trip.travelMinutes, MIN_OPTION_MINUTES);
+            option.xp = trip.xp + trip.bonus;
+            option.copper = trip.copper;
+            option.expected = base * option.minutes;
+            option.reason = ClassQuests::REASON_WORD;
+            Add(std::move(option), {});
+        }
     }
 
     void AddHubs()
@@ -1148,7 +1237,9 @@ struct GoalPlan
 {
     CircuitPlan circuit;
     Ranked ranked;
-    std::uint32_t hub{NO_HUB};  // the bot's hub as the plan saw it (Situation::here.hub)
+    std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
+    std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
+    std::optional<Ranked> plain;  // while a goal runs: the same plan without the bonus (ReplanDecision, J1)
 };
 
 // The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
@@ -1317,12 +1408,98 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
     }
 }
 
-// The planner job: the circuit with the bot's own weights, then every goal beside it
-inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation situation)
+// The class quests of a governed bot (upkeep WU20a, §3.11): the unlock bonus on the circuit's values, the quests in
+// its log protected from the circuit's abandon, and a lone trip per bonus quest to its nearest reachable giver
+inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model const& model, Situation& situation)
+{
+    situation.classBonus.clear();
+    situation.classTrips.clear();
+    if (!situation.governed || !situation.classQuests || !context.quests)
+        return;
+    QuestIndex const& quests = *context.quests;
+    ClassQuests::BotFacts facts;
+    facts.cls = bot.cls;
+    facts.race = bot.race;
+    facts.level = bot.level;
+    facts.governed = true;
+    facts.levelXp = situation.levelXp;
+    facts.rewarded = bot.rewardedQuests;
+    if (!std::is_sorted(facts.rewarded.begin(), facts.rewarded.end()))
+        std::sort(facts.rewarded.begin(), facts.rewarded.end());
+    facts.givenUp = situation.givenUpQuests;
+    facts.knownSpells = situation.knownClassQuestSpells;
+    std::vector<std::uint32_t> log;
+    for (QuestSlot const& slot : bot.quests)
+        log.push_back(slot.quest);
+    std::sort(log.begin(), log.end());
+
+    auto const teaches = [&situation](std::uint32_t spell)
+    { return std::binary_search(situation.trainerTaught.begin(), situation.trainerTaught.end(), spell); };
+    std::vector<ClassTrip> trips;
+    // A route: an indexed giver in a camp that the travel cost reaches (straight walking on the bot's map without one)
+    auto const route = [&](std::uint32_t quest)
+    {
+        QuestRecord const* record = quests.Find(quest);
+        if (!record)
+            return false;
+        std::optional<ClassTrip> best;
+        for (std::uint32_t const index : record->givers)
+        {
+            QuestPlace const& giver = quests.places[index];
+            if (giver.camp == NO_CAMP)
+                continue;
+            Place const place{giver.mapId, giver.x, giver.y, giver.z};
+            float minutes = 0.0f;
+            if (context.travel)
+            {
+                float const seconds = context.travel(bot.position, place);
+                if (!std::isfinite(seconds) || seconds < 0.0f)
+                    continue;
+                minutes = seconds / SECONDS_PER_MINUTE;
+            }
+            else if (giver.mapId == bot.position.map)
+                minutes = WorldTravel::WalkMinutes(std::hypot(giver.x - bot.position.x, giver.y - bot.position.y),
+                                                   model.runSpeed);
+            else
+                continue;
+            if (!best || minutes < best->travelMinutes)
+                best = ClassTrip{quest,
+                                 giver.camp,
+                                 place,
+                                 minutes,
+                                 static_cast<float>(record->xpBase),
+                                 static_cast<float>(std::max(record->copperReward, 0)),
+                                 0.0f};
+        }
+        if (best && !std::binary_search(log.begin(), log.end(), quest))
+            trips.push_back(*best);
+        return best.has_value();
+    };
+    situation.classBonus = ClassQuests::Bonuses(facts, teaches, route);
+    for (ClassTrip& trip : trips)
+        for (auto const& [quest, bonus] : situation.classBonus)
+            if (quest == trip.quest)
+                trip.bonus = bonus;
+    std::sort(trips.begin(), trips.end(), [](ClassTrip const& a, ClassTrip const& b) { return a.quest < b.quest; });
+    trips.erase(std::unique(trips.begin(), trips.end(),
+                            [](ClassTrip const& a, ClassTrip const& b) { return a.quest == b.quest; }),
+                trips.end());
+    trips.erase(std::remove_if(trips.begin(), trips.end(), [](ClassTrip const& trip) { return trip.bonus <= 0.0f; }),
+                trips.end());
+    situation.classTrips = std::move(trips);
+    context.unlockBonus = situation.classBonus;
+    for (std::uint32_t const quest : ClassQuests::Protected(log, facts))
+        context.protectedQuests.push_back(quest);
+}
+
+// One planning pass: the circuit with the bot's own weights, then every goal beside it
+inline GoalPlan PlanOnce(Snapshot const& bot, CircuitContext context, Situation situation)
 {
     GoalPlan plan;
     Model const model = Prepare(bot, situation);
     FillFromIndexes(bot, context, model, situation);
+    FillClassQuests(bot, context, model, situation);
+    plan.classBonus = situation.classBonus;
     context.weights = CircuitWeightsFor(model);
     plan.circuit = PlanCircuit(bot, context);
     if (situation.here.hub == NO_HUB)
@@ -1332,6 +1509,20 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     if (situation.deliveries.empty())
         situation.deliveries = Deliveries(bot, context, plan.circuit, model.runSpeed);
     plan.ranked = Rank(bot, situation);
+    return plan;
+}
+
+// The planner job. While a goal runs and a class quest has the unlock bonus, the plan without the bonus as well: the
+// bonus never makes the bot leave its goal (ReplanDecision), it is weighed when the goal ends
+inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext const& context, Situation const& situation)
+{
+    GoalPlan plan = PlanOnce(bot, context, situation);
+    if (bot.currentGoal.kind != 0 && !plan.classBonus.empty())
+    {
+        Situation plain = situation;
+        plain.classQuests = false;
+        plan.plain = PlanOnce(bot, context, std::move(plain)).ranked;
+    }
     return plan;
 }
 
@@ -1397,6 +1588,7 @@ struct ReplanInput
 {
     CurrentGoal current;
     Ranked const* fresh{nullptr};
+    Ranked const* plain{nullptr};  // the fresh plan without the class-quest bonus (GoalPlan::plain); may be null
     Delta delta;
     std::uint32_t nowMs{0};
     std::uint32_t lastPlanMs{0};
@@ -1421,6 +1613,20 @@ inline float ReplanMargin(Weights const& weights)
 
 inline Replan ReplanDecision(ReplanInput const& in)
 {
+    // The class-quest bonus never makes the bot leave its goal: what the plan without it keeps, the bot keeps (WU20a)
+    if (in.plain && in.current.kind != GoalKind::None && !in.current.ended)
+    {
+        ReplanInput without = in;
+        without.fresh = in.plain;
+        without.plain = nullptr;
+        Replan plain = ReplanDecision(without);
+        if (plain.verdict == ReplanVerdict::Stay)
+            return plain;
+        ReplanInput with = in;
+        with.plain = nullptr;
+        return ReplanDecision(with);
+    }
+
     Replan replan;
     if (!in.fresh || !in.fresh->ok)
     {
