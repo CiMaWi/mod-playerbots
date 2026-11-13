@@ -601,6 +601,13 @@ int main()
     {
         Fixture f;
         f.Command.Operation = Intent::AttackOwnTarget;
+        f.Bot.Target = f.Other.Guid;
+        f.Bot.Victim = &f.Target;
+        Check(f.Run() == Result::Applied && attacks == 0, "the unit fought is the bot's own target, selected or not");
+    }
+    {
+        Fixture f;
+        f.Command.Operation = Intent::AttackOwnTarget;
         f.Bot.AttackResult = false;
         Check(f.Run() == Result::Failed, "core failure is not reported applied");
         Check(attacks == 1 && mutations > 1, "partial failed attempt remains one attempt");
@@ -1052,7 +1059,9 @@ int main()
         Fixture f;
         f.OneShot(Intent::Follow);
         followResult = false;
-        Check(f.Run() == Result::Failed && follows == 1 && f.Authorizations == 1, "follow failure one attempt");
+        Check(
+            f.Run() == Result::Applied && follows == 1 && f.Authorizations == 1 && f.AI.Strategies == FollowStrategies,
+            "a refused move leaves the follow applied");
     }
     {
         Fixture f;
@@ -1759,9 +1768,68 @@ int main()
             ObjectAccessor::Units[6] = &twin;
             ObjectAccessor::Units[7] = &leader;
             f.AI.Values.Possible.Data = {f.Target.Guid, leader.Guid, twin.Guid};
+            f.Bot.Target = ObjectGuid();  // No own target among the candidates: the nearest rule alone.
             f.Command.TargetName = exact ? "Defias Thug" : "thug";
             Check(f.Run() == Result::Applied && f.Party.Marked == (exact ? twin.Guid : leader.Guid),
                   "an exact name beats a nearer part of one, two of one name go to the nearer, else the nearest part");
+        }
+        // The bot's own target counts as the nearest of its name: the unit fought, then the selection, never the bot
+        // itself and never a dead one; a part of a name still loses to an exact one.
+        {
+            auto const twins = [](Fixture& f, Unit& twin)
+            {
+                twin.Guid = ObjectGuid(6);
+                twin.Name = "Defias Thug";
+                twin.X = 10.0f;
+                ObjectAccessor::Units[6] = &twin;
+                f.AI.Values.Possible.Data = {f.Target.Guid, twin.Guid};
+                f.Command.TargetName = "Defias Thug";
+            };
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Command.Operation = Intent::AttackOwnTarget;
+                Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+                      "the selected unit of a name wins over a nearer one");
+            }
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Bot.Target = twin.Guid;
+                f.Bot.Victim = &f.Target;
+                Check(f.Run() == Result::Applied && f.Party.Marked == f.Target.Guid,
+                      "the unit fought wins over the selection");
+            }
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Bot.Victim = &f.Target;
+                f.Target.Alive = false;
+                Check(f.Run() == Result::Applied && f.Party.Marked == twin.Guid, "a dead own target is not the answer");
+            }
+            {
+                Fixture f;
+                named(f);
+                f.Bot.Name = "Defias Thug";
+                f.Bot.Target = f.Bot.Guid;
+                Check(f.Run() == Result::Applied && f.Party.Marked == f.Target.Guid,
+                      "a bot that selects itself is not its own target");
+            }
+            {
+                Fixture f;
+                named(f);
+                Unit twin;
+                twins(f, twin);
+                f.Target.Name = "Defias Thug Leader";
+                Check(f.Run() == Result::Applied && f.Party.Marked == twin.Guid,
+                      "an exact name beats a selected part of one");
+            }
         }
         // A quest by its title, among the bot's log.
         objectMgr.Quests = {{62, {"The Fargodeep Mine"}}, {40, {"A Fishy Peril"}}};

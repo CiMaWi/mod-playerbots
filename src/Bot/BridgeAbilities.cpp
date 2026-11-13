@@ -159,12 +159,14 @@ Result FollowOnce(PlayerbotAI* ai, Player* partner)
     positions["return"].Reset();
     positions["stay"].Reset();
 
-    // One move now toward the formation location; a bot already there follows from here on without one.
+    // The strategies are the follow, as playerbots' follow command answers "Following" without a move. One move now
+    // toward the formation location is a nudge; a bot already there needs none. MoveTo refuses while the bot's last
+    // move still runs (MovementAction::IsWaitingForLastMove), as after an invite, and the follow is in effect anyway.
     FollowAction follow(ai);
-    if (!follow.isUseful())
-        return Result::Applied;
+    if (follow.isUseful())
+        follow.Execute(Event());
 
-    return follow.Execute(Event()) ? Result::Applied : Result::Failed;
+    return Result::Applied;
 }
 
 // Stay as playerbots' "stay" command does (ChatShortcutActions.cpp StayChatShortcutAction), without its "Staying"
@@ -298,7 +300,8 @@ Refusal FollowCheck(ActFacts const& act) { return act.Bot->IsInMap(act.Partner) 
 
 Refusal AttackCheck(ActFacts const& act)
 {
-    if (act.Bot->GetTarget() != act.Target->GetGUID())
+    // The bot's own target: its selection, or the unit it fights while the selection is elsewhere.
+    if (act.Bot->GetTarget() != act.Target->GetGUID() && act.Bot->GetVictim() != act.Target)
         return Refusal::NoTarget;
 
     if (act.Bot->IsMounted())
@@ -915,10 +918,16 @@ float DistanceTo(Player* bot, float x, float y, float z)
 }
 
 // The units the bot perceives (the nearest NPCs, possible targets and nearest friendly players it keeps as values)
-// and its group's members. A unit in two lists is the same id twice.
+// and its group's members. A unit in two lists is the same id twice. The bot's own living target (the unit it fights,
+// then its selection, never the bot) counts as the nearest unit of its name; an exact name still beats a part of one.
 uint64_t UnitNamed(ActFacts const& act, std::string const& name)
 {
     std::vector<NameCandidate> candidates;
+    // The first of equal distance wins, so the unit fought beats the selection.
+    for (Unit* own : {act.Bot->GetVictim(), ObjectAccessor::GetUnit(*act.Bot, act.Bot->GetTarget())})
+        if (own && own != act.Bot && own->IsAlive())
+            candidates.push_back({own->GetName(), own->GetGUID().GetRawValue(), 0.0f});
+
     for (char const* list : {"nearest npcs", "possible targets", "nearest friendly players"})
         if (Value<GuidVector>* units = act.Ai->GetAiObjectContext()->GetValue<GuidVector>(list))
             for (ObjectGuid const& guid : units->Get())
