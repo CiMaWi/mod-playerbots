@@ -1381,18 +1381,28 @@ PassengerMotion Intent(Player const& bot, Transport const& transport, MotionKind
     return motion;
 }
 
-// A boarding walks straight onto the deck; an exit walks across the deck to its edge (via) and on to the quay
+// A boarding walks straight onto the deck; an exit walks across the deck to its edge (via) and on to the quay. Via
+// points within 0.2 yd of the point before are left out (a spline refuses a segment shorter than 0.1 yd)
 void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion,
-                        std::optional<Point> const& via = std::nullopt)
+                        std::vector<Point> const& via = {})
 {
     if (bot.IsSitState())
         bot.SetStandState(UNIT_STAND_STATE_STAND);
     bot.GetMotionMaster()->Clear();
     Movement::MoveSplineInit init(&bot);
-    if (via)
-        init.MovebyPath({{bot.GetPositionX(), bot.GetPositionY(), bot.GetPositionZ()},
-                         {via->X, via->Y, via->Z},
-                         {motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z}});
+    if (!via.empty())
+    {
+        Movement::PointsArray path{{bot.GetPositionX(), bot.GetPositionY(), bot.GetPositionZ()}};
+        for (Point const& point : via)
+            if ((G3D::Vector3{point.X, point.Y, point.Z} - path.back()).length() >= 0.2f)
+                path.push_back({point.X, point.Y, point.Z});
+        G3D::Vector3 const end{motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z};
+        if (path.size() > 1 && (end - path.back()).length() < 0.2f)
+            path.back() = end;
+        else
+            path.push_back(end);
+        init.MovebyPath(path);
+    }
     else
         init.MoveTo(motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z, false, false);
     if (init.Launch() <= 0)
@@ -1413,23 +1423,25 @@ std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& dat
     return result;
 }
 
+// The crossing checks' words (TravelLifecycle::CrossingCheck), for the debug log
+constexpr std::array<char const*, TravelLifecycle::CrossingTally::REASONS> CROSSING_NAMES = {
+    "accepted", "no_shore", "no_deck",  "on_hull",  "height",   "distance",
+    "ground",   "onward",   "crossing", "corridor", "deck_walk"};
+
 // A failed exit or quay search, for the debug log: the hull box, the count of each failed check and its first sample
 void LogCrossingSearch(Player const& bot, NewRpgInfo::Travel const& data, Transport const& transport, char const* kind,
                        TravelLifecycle::CrossingTally const& tally)
 {
-    static constexpr std::array<char const*, TravelLifecycle::CrossingTally::REASONS> NAMES = {
-        "accepted", "no_shore", "no_deck",  "on_hull",  "height",   "distance",
-        "ground",   "onward",   "crossing", "corridor", "deck_walk"};
     TravelLifecycle::Footprint const hull = TransportGeometry::Hull(bot, transport);
     TransportGeometry::GroundGeometry const geometry{bot, &transport};
     std::string reasons;
-    for (std::size_t i = 0; i < NAMES.size(); ++i)
+    for (std::size_t i = 0; i < CROSSING_NAMES.size(); ++i)
     {
         if (!tally.Counts[i])
             continue;
         auto const& sample = *tally.First[i];
         reasons +=
-            Acore::StringFormat(" {}={}@{:.2f},{:.2f},{:.2f}>{:.2f},{:.2f},{:.2f}", NAMES[i], tally.Counts[i],
+            Acore::StringFormat(" {}={}@{:.2f},{:.2f},{:.2f}>{:.2f},{:.2f},{:.2f}", CROSSING_NAMES[i], tally.Counts[i],
                                 sample.From.X, sample.From.Y, sample.From.Z, sample.To.X, sample.To.Y, sample.To.Z);
         if (i == static_cast<std::size_t>(TravelLifecycle::CrossingCheck::Crossing))
             reasons += Acore::StringFormat(
@@ -1457,9 +1469,74 @@ void LogCrossingSearch(Player const& bot, NewRpgInfo::Travel const& data, Transp
                   "[TravelLifecycle] exit_probe bot={} trip={} bearing={} at={:.0f} check={}{} "
                   "from={:.2f},{:.2f},{:.2f} to={:.2f},{:.2f},{:.2f}",
                   bot.GetGUID().GetCounter(), data.tripId, side * 15, furthest->Distance,
-                  NAMES[static_cast<std::size_t>(furthest->Check)], block, furthest->From.X, furthest->From.Y,
+                  CROSSING_NAMES[static_cast<std::size_t>(furthest->Check)], block, furthest->From.X, furthest->From.Y,
                   furthest->From.Z, furthest->To.X, furthest->To.Y, furthest->To.Z);
     }
+}
+
+// WT43b: the boarding crossing walked back where the transport stands as it did at the boarding (the passenger
+// observer confirms it as any exit, ConfirmExit). Its shore may touch the hull (a zeppelin's gondola beside its tower):
+// then the walk goes on from the shore, along the crossing's line, to the first point off the hull up to
+// BACK_OUT_YARDS out, and that step is the exit's crossing (CheckExit from the shore; the deck-to-shore part is the
+// boarding's, checked then at this pose). Onward ground: a step beyond
+struct BackPath
+{
+    Point Deck;
+    Point From;  // where the exit's crossing starts: the deck, or the shore when the walk goes on from it
+    Point Ground;
+    Point Onward;
+};
+
+std::optional<BackPath> BackCrossing(Player const& bot, NewRpgInfo::Travel const& data, Transport const& ridden,
+                                     bool trace)
+{
+    constexpr float ONWARD_YARDS = 4.0f;
+    constexpr float BACK_OUT_YARDS = 3.0f;
+    auto const walk = TravelLegs::CrossingBack(data.trip.boardCrossing, ridden.GetGUID().GetRawValue(),
+                                               TransportGeometry::PoseOf(ridden));
+    if (!walk)
+        return std::nullopt;
+    float const dx = walk->shore.X - walk->deck.X;
+    float const dy = walk->shore.Y - walk->deck.Y;
+    float const length = std::sqrt(dx * dx + dy * dy);
+    if (length < 0.1f)
+        return std::nullopt;
+    TransportGeometry::GroundGeometry const geometry{bot, &ridden};
+    auto const out = [&](Point const& from, float yards)
+    {
+        return geometry.SnapGround({from.X + dx / length * yards, from.Y + dy / length * yards, from.Z}, 1.5f,
+                                   TravelLifecycle::DOCK_FLOOR_YARDS);
+    };
+    TravelLifecycle::CrossingCheck check = TravelLifecycle::CrossingCheck::NoShore;
+    std::optional<BackPath> path;
+    float extra = 0.0f;
+    for (; extra <= BACK_OUT_YARDS && !path; extra += 1.0f)
+    {
+        Point const from = extra > 0.0f ? walk->shore : walk->deck;
+        auto const ground = extra > 0.0f ? out(walk->shore, extra) : std::optional<Point>{walk->shore};
+        auto const onward = ground ? out(*ground, ONWARD_YARDS) : std::nullopt;
+        if (!ground || !onward)
+        {
+            check = ground ? TravelLifecycle::CrossingCheck::Onward : TravelLifecycle::CrossingCheck::NoShore;
+            continue;
+        }
+        check = TravelLifecycle::CheckExit(geometry, from, *ground, *onward);
+        if (check == TravelLifecycle::CrossingCheck::Accepted)
+            path = BackPath{walk->deck, from, *ground, *onward};
+    }
+    if (path && !geometry.DeckWalkClear(TransportGeometry::PositionOf(bot), walk->deck))
+    {
+        check = TravelLifecycle::CrossingCheck::DeckWalk;
+        path.reset();
+    }
+    if (trace)
+        LOG_DEBUG("playerbots",
+                  "[TravelLifecycle] exit_back bot={} trip={} leg={} entry={} check={} out={:.0f} "
+                  "deck={:.2f},{:.2f},{:.2f} shore={:.2f},{:.2f},{:.2f}",
+                  bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, ridden.GetEntry(),
+                  CROSSING_NAMES[static_cast<std::size_t>(check)], extra - 1.0f, walk->deck.X, walk->deck.Y,
+                  walk->deck.Z, walk->shore.X, walk->shore.Y, walk->shore.Z);
+    return path;
 }
 
 void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, Point const& toward)
@@ -1482,12 +1559,21 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, Poi
         PassengerMotion motion = Intent(bot, ridden, MotionKind::Exit, exit->Ground);
         motion.ExitFrom = exit->Deck;
         motion.Onward = exit->Onward;
-        IssueTransportMove(bot, data, motion, exit->Deck);
+        IssueTransportMove(bot, data, motion, {exit->Deck});
         return;
     }
     if (trace)
         LogCrossingSearch(bot, data, ridden, "exit", tally);
+    if (auto const back = BackCrossing(bot, data, ridden, trace))
+    {
+        PassengerMotion motion = Intent(bot, ridden, MotionKind::Exit, back->Ground);
+        motion.ExitFrom = back->From;
+        motion.Onward = back->Onward;
+        IssueTransportMove(bot, data, motion, {back->Deck, back->From});
+        return;
+    }
     data.trip.exitSought = true;
+    data.trip.exitless = true;
     EventLog::Emit(&bot, TravelLegs::TRANSPORT_EVENT_TYPE,
                    TravelLegs::TransportSource(TravelLegs::TransportEvent::NoExit), ridden.GetEntry(), 0);
 }
@@ -2005,10 +2091,14 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
                 {
                     LogBoardMove(bot, transport->GetEntry(), *deck);
                     IssueTransportMove(*bot, *data, Intent(*bot, *transport, MotionKind::Board, *deck));
+                    if (data->passengerMotion)
+                        data->trip.boardCrossing = TravelLegs::StoreCrossing(
+                            transport->GetGUID().GetRawValue(), TransportGeometry::PoseOf(*transport), *deck, from);
                 }
             }
             return true;
         case TravelLegs::Act::Hop:
+            data->trip.boardCrossing = {};  // a hop is no crossing to walk back
             if (transport && deck)
                 HopOnto(bot, *data, *transport, *deck, trip.misses);
             return true;
@@ -2016,7 +2106,9 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
             if (ridden && seen.transport.scanned && seen.transport.guid == membership.Guid)
             {
                 Point toward{data->dest.GetPositionX(), data->dest.GetPositionY(), data->dest.GetPositionZ()};
-                if (trip.legIdx + 1 < trip.legs.size())
+                if (trip.boarding == TravelLegs::Boarding::Back)
+                    toward = {next.target.x, next.target.y, next.target.z};  // the quay it waited on
+                else if (trip.legIdx + 1 < trip.legs.size())
                 {
                     TravelRoute::Leg const& onward = trip.legs[trip.legIdx + 1];
                     TravelRoute::Point const& target =

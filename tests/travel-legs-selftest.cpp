@@ -552,7 +552,7 @@ void CheckEventSources()
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
     bool reasons = true;
-    for (int r = 0; r <= static_cast<int>(FailReason::Death); ++r)
+    for (int r = 0; r <= static_cast<int>(FailReason::NoExit); ++r)
     {
         FailReason const reason = static_cast<FailReason>(r);
         std::string const word = TravelLegs::FailWord(reason);
@@ -1006,10 +1006,96 @@ void CheckTransport()
               std::string(TravelLegs::TransportSource(TransportEvent::Leave)) == "leave" &&
               std::string(TravelLegs::TransportSource(TransportEvent::StuckAboard)) == "stuck_aboard" &&
               std::string(TravelLegs::TransportSource(TransportEvent::NoExit)) == "no_exit" &&
+              std::string(TravelLegs::TransportSource(TransportEvent::Back)) == "back" &&
               std::string(TravelLegs::TRANSPORT_EVENT_TYPE) == "Transport" &&
               std::string(TravelLegs::HOP_HONESTY_KIND) == "Teleport" &&
               std::string(TravelLegs::HOP_HONESTY_SOURCE) == "transport_hop",
           "transport: event words");
+}
+
+bool Close(TravelLifecycle::Point const& a, TravelLifecycle::Point const& b)
+{
+    return TravelLifecycle::DistanceSquared(a, b) < 0.01f * 0.01f;
+}
+
+// WT43b: a rider without an exit at the end walks its boarding crossing back where it boarded, and the replan leaves
+// the ride out
+void CheckBack()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::StepLeg;
+    using TravelLegs::TransportEvent;
+    // The crossing in the transport's frame: placed back by the same pose it is the same points; a stop repeats its
+    // pose within a few tenths; at the far stop, or aboard another transport, there is none
+    TravelLifecycle::DockPose const stopA{{1318.0f, -4660.0f, 55.0f}, 1.2f};
+    TravelLifecycle::Point const deck{1318.1f, -4658.0f, 55.3f};
+    TravelLifecycle::Point const shore{1318.67f, -4651.05f, 53.91f};
+    TravelLegs::BoardCrossing const crossing = TravelLegs::StoreCrossing(7, stopA, deck, shore);
+    auto const same = TravelLegs::CrossingBack(crossing, 7, stopA);
+    Check(same && Close(same->deck, deck) && Close(same->shore, shore),
+          "back: the crossing in the transport's frame comes back at the same pose");
+    TravelLifecycle::DockPose const again{{1318.2f, -4659.9f, 55.1f}, 1.21f};
+    auto const near = TravelLegs::CrossingBack(crossing, 7, again);
+    Check(near && TravelLifecycle::DistanceSquared(near->shore, shore) < 0.5f * 0.5f,
+          "back: the stop repeats its pose within a few tenths: the crossing holds");
+    TravelLifecycle::DockPose const turned{{1318.0f, -4660.0f, 55.0f}, 2.2f};
+    Check(!TravelLegs::CrossingBack(crossing, 7, {{2066.0f, 288.0f, 97.0f}, 4.0f}) &&
+              !TravelLegs::CrossingBack(crossing, 7, turned) && !TravelLegs::CrossingBack(crossing, 8, stopA) &&
+              !TravelLegs::CrossingBack(TravelLegs::BoardCrossing{}, 0, stopA),
+          "back: none at the far stop, turned, aboard another transport or without a boarding walk");
+    TravelLifecycle::Point const local =
+        TravelLegs::LocalOffset({{10.0f, 20.0f, 5.0f}, 1.5707964f}, {10.0f, 30.0f, 6.0f});
+    Check(std::fabs(local.X - 10.0f) < 0.001f && std::fabs(local.Y) < 0.001f && std::fabs(local.Z - 1.0f) < 0.001f,
+          "back: the local frame turns by -o (10 yd north of a ship facing north lies 10 yd ahead)");
+
+    // Without a no_exit the bot rides on past its boarding stop
+    Trip ride = StartedTrip({ShipLeg()});
+    ride.boarding = Boarding::Board;
+    StepLeg(ride, Boarded(DECK, 2000, SHIP, Sight(SHIP_AT_A, false)));
+    StepLeg(ride, On(SHIP_AT_B, 3000, SHIP, Sight(SHIP_AT_B, false)));
+    StepLeg(ride, On(SEA_1, 4000, SHIP, Sight(SEA_1, true)));
+    Check(StepLeg(ride, On(DECK, 5000, SHIP, Sight(SHIP_AT_A, false))).act == Act::Wait &&
+              ride.boarding == Boarding::Ride,
+          "back: without a no_exit the boarding stop is no exit");
+
+    // After a no_exit at the end: at the boarding stop it walks off, a `back` row, the leg fails as no_exit and the
+    // replan leaves the ride out
+    Trip back = StartedTrip({ShipLeg()});
+    back.boarding = Boarding::Board;
+    StepLeg(back, Boarded(DECK, 2000, SHIP, Sight(SHIP_AT_A, false)));
+    StepLeg(back, On(SHIP_AT_B, 3000, SHIP, Sight(SHIP_AT_B, false)));
+    back.exitSought = true;
+    back.exitless = true;  // the follower's WalkOff found no exit at B
+    StepLeg(back, On(SEA_1, 4000, SHIP, Sight(SEA_1, true)));
+    Decision const off = StepLeg(back, On(DECK, 5000, SHIP, Sight(SHIP_AT_A, false)));
+    Check(off.act == Act::Disembark && Near(off.target, PIER_A) && back.boarding == Boarding::Back && !back.exitSought,
+          "back: after no_exit, docked where it boarded: walks off towards the boarding side");
+    Decision const ashore = StepLeg(back, Exited(PIER_A, 6000));
+    Check(ashore.act == Act::Fail && ashore.reason == FailReason::NoExit &&
+              Noted(back, back.transportNotes.size() - 1, TransportEvent::Back, SHIP, 4),
+          "back: off where it boarded: `back` (4 s aboard), the leg fails as no_exit");
+    Check(TravelLegs::AfterFailure(back, ashore.reason) == TravelLegs::Recovery::Replan &&
+              back.avoidEdges.size() == 1 && back.avoidEdges[0] == std::make_pair(1u, 3u),
+          "back: the replan leaves the ride's link out");
+
+    // The back exit missed: the transport leaves again, stuck_aboard, and the next stop tries again
+    Trip again2 = StartedTrip({ShipLeg()});
+    again2.boarding = Boarding::Board;
+    StepLeg(again2, Boarded(DECK, 2000, SHIP, Sight(SHIP_AT_A, false)));
+    again2.exitless = true;
+    StepLeg(again2, On(SEA_0, 3000, SHIP, Sight(SEA_0, true)));
+    StepLeg(again2, On(DECK, 4000, SHIP, Sight(SHIP_AT_A, false)));
+    std::size_t const before = again2.transportNotes.size();
+    Check(StepLeg(again2, On(SEA_0, 5000, SHIP, Sight(SEA_0, true))).act == Act::Wait &&
+              again2.boarding == Boarding::Ride && Noted(again2, before, TransportEvent::StuckAboard, SHIP, 1),
+          "back: still aboard as it leaves the boarding stop: stuck_aboard, rides on");
+    Check(StepLeg(again2, On(SHIP_AT_B, 6000, SHIP, Sight(SHIP_AT_B, false))).act == Act::Disembark &&
+              again2.boarding == Boarding::Leave,
+          "back: the end stop is still tried first");
+
+    // A new leg starts without the no_exit and the stored crossing
+    TravelLegs::StartLeg(again2, 0, 7000, NodeAt);
+    Check(!again2.exitless && !again2.boardCrossing.guid, "back: a new leg forgets the no_exit and the crossing");
 }
 
 // WT19-d: a trip end, a route request or a walk while the bot rides a ship gets the bot off first, within one period
@@ -1200,6 +1286,7 @@ int main()
     CheckDeathsAndRecord();
     CheckPlaces();
     CheckTransport();
+    CheckBack();
     CheckOffFirst();
     CheckBoarding();
     std::cout << passed << " passed, " << failed << " failed\n";

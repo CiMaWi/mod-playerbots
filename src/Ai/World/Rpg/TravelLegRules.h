@@ -108,7 +108,8 @@ enum class FailReason : std::uint8_t
     Hearth,       // the hearthstone is missing or its cast failed
     OffMesh,      // the bot stands off the walkable mesh (MoveFarTo's off-mesh check): no walk can start there
     Death,        // the bot died LEG_DEATHS times on the leg or TRIP_DEATHS times on the trip (NoteLife)
-    TransportLost
+    TransportLost,
+    NoExit  // no exit at the leg's end: the bot walked its boarding crossing back where it boarded (Boarding::Back)
 };
 
 inline char const* FailWord(FailReason reason)
@@ -145,6 +146,8 @@ inline char const* FailWord(FailReason reason)
             return "death";
         case FailReason::TransportLost:
             return "transport_lost";
+        case FailReason::NoExit:
+            return "no_exit";
     }
     return "?";
 }
@@ -204,6 +207,8 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:death";
         case FailReason::TransportLost:
             return "leg_failed:transport_lost";
+        case FailReason::NoExit:
+            return "leg_failed:no_exit";
     }
     return "leg_failed:?";
 }
@@ -242,15 +247,17 @@ inline char const* AbortSource(FailReason reason)
             return "abort:death";
         case FailReason::TransportLost:
             return "abort:transport_lost";
+        case FailReason::NoExit:
+            return "abort:no_exit";
     }
     return "abort:?";
 }
 
 // Transport event sources (EventLog::Emit(bot, TRANSPORT_EVENT_TYPE, TransportSource(event), entry, amount)), id = the
 // transport's gameobject entry. Amounts: attempt = seconds of the walk to the dock node, boarded = seconds waited
-// there, arrived and leave = seconds aboard, missed and hop = the leg's misses so far, stuck_aboard = seconds since
-// the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period). The hop also
-// gets EventLog::Honesty(bot, HOP_HONESTY_KIND, HOP_HONESTY_SOURCE, entry, misses) for `wlog report honesty`
+// there, arrived, leave and back = seconds aboard, missed and hop = the leg's misses so far, stuck_aboard = seconds
+// since the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period). The hop
+// also gets EventLog::Honesty(bot, HOP_HONESTY_KIND, HOP_HONESTY_SOURCE, entry, misses) for `wlog report honesty`
 enum class TransportEvent : std::uint8_t
 {
     Attempt,  // the bot reached the dock node
@@ -262,7 +269,8 @@ enum class TransportEvent : std::uint8_t
     StuckAboard,  // the transport left the leg's end with the bot still aboard after a leave
     NoExit,       // the follower found no ground beside the deck to walk off to (once per leave)
     OffFirst,     // a pending trip operation waits until the bot is ashore
-    Lost          // verified membership loss without a safe exit
+    Lost,         // verified membership loss without a safe exit
+    Back          // after a no_exit, off the transport where it boarded, by its boarding crossing walked back
 };
 
 constexpr char const* TRANSPORT_EVENT_TYPE = "Transport";
@@ -293,6 +301,8 @@ inline char const* TransportSource(TransportEvent event)
             return "off_first";
         case TransportEvent::Lost:
             return "lost";
+        case TransportEvent::Back:
+            return "back";
     }
     return "?";
 }
@@ -364,15 +374,71 @@ struct LegRecord
     std::uint8_t deaths{0};
 };
 
-// A transport leg's states: walk to the dock node, wait there, board, ride and leave at the destination.
+// A transport leg's states: walk to the dock node, wait there, board, ride and leave at the destination; after a
+// no_exit there, walk back off where the bot boarded (Back)
 enum class Boarding : std::uint8_t
 {
     Approach,
     Wait,
     Board,
     Ride,
-    Leave
+    Leave,
+    Back
 };
+
+// WT43b: the boarding's crossing (deck point and shore) in the transport's own frame: the offset from its origin,
+// turned by -o (z unturned). A ship or zeppelin repeats its pose at a stop, so where it stands as it did at the
+// boarding the same crossing, walked in reverse, gets the bot off
+constexpr float BACK_STOP_YARDS = 3.0f;  // the stored shore, placed by the current pose, lies this near its old place
+
+inline TravelLifecycle::Point LocalOffset(TravelLifecycle::DockPose const& pose, TravelLifecycle::Point const& world)
+{
+    float const dx = world.X - pose.Position.X;
+    float const dy = world.Y - pose.Position.Y;
+    float const c = std::cos(pose.Orientation);
+    float const s = std::sin(pose.Orientation);
+    return {dx * c + dy * s, dy * c - dx * s, world.Z - pose.Position.Z};
+}
+
+inline TravelLifecycle::Point WorldPoint(TravelLifecycle::DockPose const& pose, TravelLifecycle::Point const& local)
+{
+    float const c = std::cos(pose.Orientation);
+    float const s = std::sin(pose.Orientation);
+    return {pose.Position.X + local.X * c - local.Y * s, pose.Position.Y + local.X * s + local.Y * c,
+            pose.Position.Z + local.Z};
+}
+
+struct BoardCrossing
+{
+    std::uint64_t guid{0};  // the transport boarded; 0 none
+    TravelLifecycle::Point deck;
+    TravelLifecycle::Point shore;
+    TravelLifecycle::Point shoreWorld;  // where the bot stood ashore
+};
+
+inline BoardCrossing StoreCrossing(std::uint64_t guid, TravelLifecycle::DockPose const& pose,
+                                   TravelLifecycle::Point const& deck, TravelLifecycle::Point const& shore)
+{
+    return {guid, LocalOffset(pose, deck), LocalOffset(pose, shore), shore};
+}
+
+struct CrossingWalk
+{
+    TravelLifecycle::Point deck;
+    TravelLifecycle::Point shore;
+};
+
+// The stored crossing in world coordinates, only aboard the same transport standing where the bot boarded it
+inline std::optional<CrossingWalk> CrossingBack(BoardCrossing const& crossing, std::uint64_t guid,
+                                                TravelLifecycle::DockPose const& pose)
+{
+    if (!crossing.guid || crossing.guid != guid)
+        return std::nullopt;
+    TravelLifecycle::Point const shore = WorldPoint(pose, crossing.shore);
+    if (TravelLifecycle::DistanceSquared(shore, crossing.shoreWorld) > BACK_STOP_YARDS * BACK_STOP_YARDS)
+        return std::nullopt;
+    return CrossingWalk{WorldPoint(pose, crossing.deck), shore};
+}
 
 // What waits for the bot to get off a ship or zeppelin (OffFirst): a walk or a route request (none), the trip's
 // arrival, or its abort
@@ -434,6 +500,8 @@ struct Trip
     bool hopped{false};
     std::uint64_t passengerGuid{0};  // confirmed boarding for this leg
     bool exitSought{false};          // this docking already reported no safe exit
+    bool exitless{false};            // WT43b: an exit search of this leg found nothing (no_exit): go Back
+    BoardCrossing boardCrossing;     // the issued boarding walk (StoreCrossing); none after a hop
     // WT19-e: a ship's or zeppelin's dock node is its own stop (over the water or in the air), so the bot walks to and
     // A motion transport waits on the physical quay. The follower looks once per observed docking.
     Point quay;
@@ -651,6 +719,8 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.hopped = false;
     trip.passengerGuid = 0;
     trip.exitSought = false;
+    trip.exitless = false;
+    trip.boardCrossing = {};
     trip.hasQuay = keepQuay;
     trip.quaySought = keepQuay;
     trip.record = NextRecord(trip.record, nowMs);
@@ -777,6 +847,12 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
                 note(TransportEvent::Arrived, seconds(trip.boardedMs));
                 return {Act::Done, leg.to, FailReason::None};
             }
+            // Back ashore where it boarded: the leg failed, the replan leaves this link out (AfterFailure)
+            if (!seen.aboardGuid && trip.boarding == Boarding::Back && seen.passengerOutcome == Outcome::Exited)
+            {
+                note(TransportEvent::Back, seconds(trip.boardedMs));
+                return fail(FailReason::NoExit);
+            }
             note(TransportEvent::Lost, seconds(trip.boardedMs));
             return fail(FailReason::TransportLost);
         }
@@ -794,8 +870,18 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
             }
             return {Act::Disembark, leg.to, FailReason::None};
         }
-        // It left the end again with the bot: the round trip brings it back
-        if (trip.boarding == Boarding::Leave)
+        // WT43b: no exit at the end: off where it boarded, towards the quay it waited on
+        if (trip.exitless && DockedAt(trip, leg.from))
+        {
+            if (trip.boarding != Boarding::Back)
+            {
+                trip.exitSought = false;
+                enter(Boarding::Back);
+            }
+            return {Act::Disembark, trip.hasQuay ? trip.quay : leg.from, FailReason::None};
+        }
+        // It left the end (or the start, after no exit) again with the bot: the round trip brings it back
+        if (trip.boarding == Boarding::Leave || trip.boarding == Boarding::Back)
             note(TransportEvent::StuckAboard, seconds(trip.stateMs));
         if (trip.boarding != Boarding::Ride)
             enter(Boarding::Ride);
@@ -1142,7 +1228,7 @@ inline void NoteTransportTimeout(Trip& trip)
 // at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
 // the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
 // Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it. A timed-out
-// transport leg replans without its link (NoteTransportTimeout)
+// transport leg, a lost ride and a walk back after no exit replan without its link (NoteTransportTimeout)
 inline Recovery AfterFailure(Trip& trip, FailReason reason)
 {
     std::uint32_t const combatSinceMs = trip.record.combatSinceMs;
@@ -1155,7 +1241,7 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason)
         return Recovery::Abort;
     if (reason == FailReason::Death)
         NoteDeath(trip);
-    if (reason == FailReason::Timeout || reason == FailReason::TransportLost)
+    if (reason == FailReason::Timeout || reason == FailReason::TransportLost || reason == FailReason::NoExit)
         NoteTransportTimeout(trip);
     ++trip.replans;
     return Recovery::Replan;
