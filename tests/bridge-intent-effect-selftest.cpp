@@ -570,20 +570,33 @@ int main()
                                                                      f.AI.Passenger = false;
                                                                  },
                                                                  [](Fixture& f) { f.Bot.Valid = false; },
-                                                                 [](Fixture&) { waitForAttack = true; },
-                                                                 [](Fixture& f)
-                                                                 {
-                                                                     f.AI.Values.Current.Data = &f.Target;
-                                                                     f.Bot.Victim = &f.Target;
-                                                                     f.Bot.State = UNIT_STATE_MELEE_ATTACKING;
-                                                                     f.AI.State = BOT_STATE_COMBAT;
-                                                                 }};
+                                                                 [](Fixture&) { waitForAttack = true; }};
     for (auto const& fail : attackFailures)
     {
         Fixture f;
         f.Command.Operation = Intent::AttackOwnTarget;
         fail(f);
         f.Denied(Result::Failed);
+    }
+    // An attack on the unit the bot already fights is in effect: applied, with no new attack (also while waiting)
+    for (bool const wait : {false, true})
+    {
+        Fixture f;
+        f.Command.Operation = Intent::AttackOwnTarget;
+        f.AI.Values.Current.Data = &f.Target;
+        f.Bot.Victim = &f.Target;
+        f.Bot.State = UNIT_STATE_MELEE_ATTACKING;
+        f.AI.State = BOT_STATE_COMBAT;
+        waitForAttack = wait;
+        Check(f.Run() == Result::Applied, "an attack already under way is applied");
+        Check(attacks == 0 && mutations == 0, "an attack under way starts no new attack");
+    }
+    {
+        Fixture f;
+        f.Command.Operation = Intent::AttackOwnTarget;
+        f.Bot.Victim = &f.Other;
+        Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+              "a bot fighting another unit turns on its target");
     }
     {
         Fixture f;

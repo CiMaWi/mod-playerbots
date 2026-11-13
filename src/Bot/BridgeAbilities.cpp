@@ -309,6 +309,10 @@ Refusal AttackCheck(ActFacts const& act)
 
 Result AttackOnce(ActFacts const& act, Refusal&)
 {
+    // The bot already fights the unit: the order is in effect (AttackAction would refuse an attack it already runs)
+    if (act.Bot->GetVictim() == act.Target)
+        return Result::Applied;
+
     // A bridge attack cannot defer the attack or update the wait strategy's combat-start timer.
     if (act.Ai->HasStrategy("wait for attack", BOT_STATE_COMBAT))
         return Result::Failed;
