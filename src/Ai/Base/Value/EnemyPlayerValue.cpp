@@ -14,6 +14,7 @@
 #include "ServerFacade.h"
 #include "Strategy.h"
 #include "TargetValue.h"
+#include "TestConstraints.h"
 #include "Vehicle.h"
 
 namespace
@@ -130,6 +131,11 @@ Unit* EnemyPlayerValue::Calculate()
 
         return *targets.begin();
     }
+
+    // A test's nofight bot starts no fight with a player either (TestConstraints::StartsFights); it answers one
+    // already fighting it (above)
+    if (!TestConstraints::StartsFights(botAI->rpgInfo.constraints))
+        return nullptr;
 
     // 2. Find enemy player in range.
 

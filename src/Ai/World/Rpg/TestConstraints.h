@@ -47,7 +47,7 @@ constexpr Row ROWS[] = {
     {"status", Kind::Choice, STATUS, "idle status pick"},
     {"errand", Kind::Choice, ERRAND, "errand triggers"},
     {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
-    {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind pick"},
+    {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
 };
 
@@ -139,7 +139,8 @@ struct IdleGate
 inline IdleGate GateOf(std::uint16_t set) { return {!(set & PLANNER), !(set & STATUS)}; }
 inline bool ErrandAllowed(std::uint16_t set) { return !(set & ERRAND); }
 inline bool HearthAllowed(std::uint16_t set) { return !(set & HEARTH); }
-// "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions)
+// "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
+// player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
