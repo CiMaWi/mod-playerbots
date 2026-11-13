@@ -13,15 +13,20 @@
 
 #include "Bag.h"
 #include "BridgeAbilities.h"
+#include "BridgeAround.h"
 #include "BridgeBotTopics.h"
 #include "BridgeNames.h"
+#include "Creature.h"
 #include "DBCStores.h"
+#include "Formulas.h"
+#include "GameObject.h"
 #include "Group.h"
 #include "LootObjectStack.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "Pet.h"
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -29,6 +34,7 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "RouteService.h"
+#include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "ThreadCheck.h"
@@ -267,6 +273,139 @@ constexpr bool ReadersInOrder()
     return std::size(Readers) == std::size(TopicTable);
 }
 static_assert(ReadersInOrder(), "one reader per topic row, in the rows' order");
+
+// The service of a friendly NPC, the first of its flags in this order; nullptr for none.
+char const* ServiceWord(Creature const* creature)
+{
+    static constexpr std::pair<NPCFlags, char const*> Services[] = {
+        {UNIT_NPC_FLAG_INNKEEPER, "innkeeper"}, {UNIT_NPC_FLAG_FLIGHTMASTER, "flightmaster"},
+        {UNIT_NPC_FLAG_BANKER, "banker"},       {UNIT_NPC_FLAG_AUCTIONEER, "auctioneer"},
+        {UNIT_NPC_FLAG_TRAINER, "trainer"},     {UNIT_NPC_FLAG_REPAIR, "repair"},
+        {UNIT_NPC_FLAG_VENDOR_MASK, "vendor"}};
+    for (auto const& [flag, word] : Services)
+        if (creature->HasNpcFlag(flag))
+            return word;
+
+    return nullptr;
+}
+
+// A quest giver's task for the bot (its "can accept / turn in quest npc" values; a game object's qualifier is the
+// negative entry): reward before quest; nullptr for none.
+char const* TaskWord(AiObjectContext* context, int32 giver)
+{
+    if (context->GetValue<bool>("can turn in quest npc", giver)->Get())
+        return "reward";
+    if (context->GetValue<bool>("can accept quest npc", giver)->Get())
+        return "quest";
+
+    return nullptr;
+}
+
+// A perceived unit as a candidate: alive, visible and selectable; a hostile one with its danger, a person, a quest
+// giver with a task, a friendly NPC with a service. False for anything else (a plain NPC, a pet, a trigger).
+bool UnitCandidate(Player* bot, PlayerbotAI* ai, Unit* unit, float distance, std::vector<AroundCandidate>& out)
+{
+    if (!unit || unit == bot || !unit->IsAlive() || !Visible(bot, unit) || unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+        return false;
+    Creature* creature = unit->ToCreature();
+    if (creature && creature->IsTrigger())
+        return false;
+
+    std::string const name = unit->GetName();
+    if (unit->IsHostileTo(bot) || unit == bot->GetVictim())
+    {
+        uint32 const rank = creature ? creature->GetCreatureTemplate()->rank : 0;
+        out.push_back({name, AroundKind::Hostile,
+                       HostileDetail(bot->GetLevel(), unit->GetLevel(), Acore::XP::GetGrayLevel(bot->GetLevel()), rank),
+                       distance});
+        return true;
+    }
+    if (Player* player = unit->ToPlayer())
+    {
+        PlayerbotAI* other = GET_PLAYERBOT_AI(player);
+        char const* const detail = bot->GetGroup() && bot->GetGroup()->IsMember(player->GetGUID()) ? "group"
+                                   : other && other->IsBotAI()                                     ? "bot"
+                                                                                                   : "player";
+        out.push_back({name, AroundKind::Person, detail, distance});
+        return true;
+    }
+    if (!creature)
+        return false;
+
+    if (creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER))
+        if (char const* task = TaskWord(ai->GetAiObjectContext(), static_cast<int32>(creature->GetEntry())))
+        {
+            out.push_back({name, AroundKind::Task, task, distance});
+            return true;
+        }
+    if (char const* service = ServiceWord(creature))
+    {
+        out.push_back({name, AroundKind::Service, service, distance});
+        return true;
+    }
+    return false;
+}
+
+// SpellFocusObject.dbc ids
+constexpr uint32 SpellFocusAnvil = 1;
+constexpr uint32 SpellFocusForge = 3;
+constexpr uint32 SpellFocusFire = 4;
+
+// A useful object: a mailbox, an anvil, a forge or a fire (named by its word when it has no name, as most campfires),
+// or a quest-giving object with a task.
+void ObjectCandidate(Player* bot, PlayerbotAI* ai, GameObject* object, std::vector<AroundCandidate>& out)
+{
+    if (!object || !object->IsInWorld() || !object->isSpawned() || !bot->IsInMap(object) || !bot->InSamePhase(object))
+        return;
+    GameObjectTemplate const* info = object->GetGOInfo();
+    char const* detail = nullptr;
+    AroundKind kind = AroundKind::Object;
+    if (info->type == GAMEOBJECT_TYPE_MAILBOX)
+        detail = "mailbox";
+    else if (info->type == GAMEOBJECT_TYPE_SPELL_FOCUS)
+        detail = info->spellFocus.focusId == SpellFocusAnvil   ? "anvil"
+                 : info->spellFocus.focusId == SpellFocusForge ? "forge"
+                 : info->spellFocus.focusId == SpellFocusFire  ? "fire"
+                                                               : nullptr;
+    else if (info->type == GAMEOBJECT_TYPE_QUESTGIVER)
+    {
+        kind = AroundKind::Task;
+        detail = TaskWord(ai->GetAiObjectContext(), -static_cast<int32>(object->GetEntry()));
+    }
+    if (detail)
+        out.push_back({object->GetName().empty() ? std::string(detail) : object->GetName(), kind, detail,
+                       bot->GetExactDist(object)});
+}
+
+// P §3.3 "around you" from the bot's own values. Cost: five grid visits per state (the four unit lists recalculate on
+// every read, the object list when a second old) and the quest values of each quest giver; a state is read at
+// request rate (a chat turn, a wake) on the world thread with the maps idle, never from a trigger or per tick.
+std::vector<AroundEntry> ReadAround(Player* bot, PlayerbotAI* ai)
+{
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::vector<AroundCandidate> candidates;
+    std::vector<ObjectGuid> seen;
+    // The unit fought, then the selection, at distance 0: they lead their name; a unit in two lists counts once.
+    for (Unit* own : {bot->GetVictim(), ObjectAccessor::GetUnit(*bot, bot->GetTarget())})
+        if (own && std::find(seen.begin(), seen.end(), own->GetGUID()) == seen.end() &&
+            UnitCandidate(bot, ai, own, 0.0f, candidates))
+            seen.push_back(own->GetGUID());
+
+    for (char const* list : {"possible targets", "nearest hostile npcs", "nearest npcs", "nearest friendly players"})
+        for (ObjectGuid const& guid : context->GetValue<GuidVector>(list)->Get())
+        {
+            if (std::find(seen.begin(), seen.end(), guid) != seen.end())
+                continue;
+            seen.push_back(guid);
+            if (Unit* unit = ObjectAccessor::GetUnit(*bot, guid))
+                UnitCandidate(bot, ai, unit, bot->GetExactDist(unit), candidates);
+        }
+
+    for (ObjectGuid const& guid : context->GetValue<GuidVector>("nearest game objects")->Get())
+        ObjectCandidate(bot, ai, ObjectAccessor::GetGameObject(*bot, guid), candidates);
+
+    return SelectAround(std::move(candidates), bot->GetName());
+}
 }  // namespace
 
 bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotStateFacts& facts)
@@ -357,6 +496,15 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
             facts.partnerZ = partner->GetPositionZ();
         }
     }
+
+    facts.around = ReadAround(bot, ai);
+    if (Guardian* servant = bot->GetGuardianPet(); servant && servant->IsInWorld() && servant->IsAlive())
+        facts.servantName = servant->GetName();
+    Unit::AuraEffectList const& mounts = bot->GetAuraEffectsByType(SPELL_AURA_MOUNTED);
+    if (!mounts.empty() && mounts.front()->GetSpellInfo()->SpellName[0])
+        facts.mountName = mounts.front()->GetSpellInfo()->SpellName[0];
+    else if (Unit* vehicle = bot->GetVehicleBase())
+        facts.mountName = vehicle->GetName();
     return true;
 }
 

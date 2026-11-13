@@ -19,6 +19,7 @@
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
+#include "BridgeBotState.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
@@ -265,6 +266,11 @@ public:
             {"meet", HandleFightMeetCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts)
+        static ChatCommandTable playerbotsBridgeCommandTable = {
+            {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -297,6 +303,7 @@ public:
             {"bank", playerbotsBankCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
+            {"bridge", playerbotsBridgeCommandTable},
         };
 
         static ChatCommandTable wlogCommandTable = {
@@ -712,6 +719,38 @@ public:
 
         std::string const result = botAI->HandleRemoteCommand(std::string(command));
         handler->PSendSysMessage("{}: {}", target.GetName(), result.empty() ? "<empty>" : result);
+        return true;
+    }
+
+    // LC8: the bot's state facts as the conversation bridge reads them (lab tests; the wire carries `around` from
+    // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry, then "SERVANT <bot> <name|none>" and
+    // "MOUNT <bot> <name|none>". Console: ReadBotState reads only on the world thread, which a game client's
+    // command is not on.
+    static bool HandleBridgeStateCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+
+        PlayerbotBridge::BotStateFacts facts;
+        if (!PlayerbotBridge::ReadBotState(target.GetGUID(), ObjectGuid::Empty, facts))
+        {
+            handler->SendErrorMessage("{}: no state (only the console reads it, for a bot in the world)",
+                                      target.GetName());
+            return false;
+        }
+
+        handler->PSendSysMessage("Bridge state of {}: {} around", target.GetName(), facts.around.size());
+        for (std::size_t index = 0; index < facts.around.size(); ++index)
+        {
+            PlayerbotBridge::AroundEntry const& entry = facts.around[index];
+            handler->PSendSysMessage("AROUND {} {} {} {} x{} {}", target.GetName(), index + 1,
+                                     PlayerbotBridge::AroundKindWord(entry.Kind), entry.Detail, entry.Count,
+                                     entry.Name);
+        }
+        handler->PSendSysMessage("SERVANT {} {}", target.GetName(),
+                                 facts.servantName.empty() ? "none" : facts.servantName);
+        handler->PSendSysMessage("MOUNT {} {}", target.GetName(), facts.mountName.empty() ? "none" : facts.mountName);
         return true;
     }
 

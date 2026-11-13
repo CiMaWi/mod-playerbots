@@ -11,12 +11,15 @@
 #include <string>
 #include <vector>
 
+#include "BridgeAround.h"
+
 class ObjectGuid;
 class Player;
 
 // DS.14/J5f: raw facts about a bot for one conversation-bridge request. Read on the world thread while map threads
-// are idle (the chat hook, a wake submit, the post-map-join update), from stored values and Player fields only;
-// nothing here scans the world. The bridge module filters and bounds them before anything reaches a model.
+// are idle (the chat hook, a wake submit, the post-map-join update), from stored values and Player fields; only
+// `around` scans the world, through the bot's own values. The bridge module filters and bounds them before anything
+// reaches a model.
 namespace PlayerbotBridge
 {
 struct NameCandidate;  // BridgeNames.h
@@ -70,6 +73,11 @@ struct BotStateFacts
     bool passive = false;
     uint32_t freeBagSlots = 0;
     uint32_t money = 0;
+    // LC8: what the bot perceives around it (SelectAround over its nearest-unit and nearest-object values; the only
+    // facts here that visit the grid), the servant or pet it has out and what it rides, by name (empty: none).
+    std::vector<AroundEntry> around;
+    std::string servantName;
+    std::string mountName;
 };
 
 // False (facts reset) off the world thread, or for a guid that is not an online bot in the world.
