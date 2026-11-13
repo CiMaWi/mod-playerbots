@@ -595,8 +595,8 @@ public:
         return true;
     }
 
-    // `playerbots route aboard <bot> <entry>` (tests): stands the bot on the deck of that docked ship or zeppelin on its
-    // map, as its passenger; the outcome is the world-log row Aboard placed|failed|refused:<why>
+    // `playerbots route aboard <bot> <entry>` (tests): stands the bot on the deck of that docked ship or zeppelin on
+    // its map, as its passenger; the outcome is the world-log row Aboard placed|failed|refused:<why>
     static bool HandleRouteAboardCommand(ChatHandler* handler, PlayerIdentifier target, uint32 entry)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -676,9 +676,10 @@ public:
 
         if (command.empty())
         {
-            handler->SendErrorMessage("Usage: .playerbots inspect <bot> <query> (state, position, tpos, "
-                                      "movement, target, hp, strategy, action, values, travel, budget, "
-                                      "constraints, hold)");
+            handler->SendErrorMessage(
+                "Usage: .playerbots inspect <bot> <query> (state, position, tpos, "
+                "movement, target, hp, strategy, action, values, travel, budget, "
+                "constraints, hold)");
             return false;
         }
 

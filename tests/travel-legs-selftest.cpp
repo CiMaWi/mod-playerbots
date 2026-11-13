@@ -513,7 +513,8 @@ void CheckResetAndDeadline()
     FakeInfo const reset = TravelLegs::AfterReset<FakeInfo::Travel>(travelling, false);
     Check(std::holds_alternative<FakeInfo::Idle>(reset.data) && reset.startT == 0 && reset.routeRequests == 17,
           "a full reset ends the trip and keeps the request ids");
-    Check(ported.constraints == 48 && reset.constraints == 48, "a far teleport and a full reset keep a test's constraints");
+    Check(ported.constraints == 48 && reset.constraints == 48,
+          "a far teleport and a full reset keep a test's constraints");
     // Other statuses start over on a far teleport, as before
     FakeInfo errands;
     errands.data = FakeInfo::Errands{42};
