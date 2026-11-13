@@ -10,6 +10,8 @@
 #include "CensusMgr.h"
 #include "Corpse.h"
 #include "Event.h"
+#include "FightBook.h"
+#include "FightRules.h"
 #include "FleeManager.h"
 #include "GameGraveyard.h"
 #include "GridNotifiers.h"
@@ -20,6 +22,31 @@
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
 #include "WorldTravelRules.h"
+
+namespace
+{
+// No camping (WP7): the ghost of a persistent bot keeps away from its corpse while an enemy player stands there and
+// takes the spirit healer after its wait; true when that decided the action (wait or spirit healer)
+bool KeepsAwayFromCorpse(PlayerbotAI* botAI, Player* bot, Corpse const* corpse)
+{
+    WorldPvp::GhostPlan const ghost = WorldPvp::PlanGhostFor(botAI, corpse);
+    if (ghost.step == WorldPvp::GhostStep::Corpse)
+        return false;
+    if (ghost.step == WorldPvp::GhostStep::SpiritHealer)
+    {
+        // Never on to the corpse, also when the spirit healer action did nothing this time
+        botAI->DoSpecificAction("spirit healer", Event(), true);
+        return true;
+    }
+    if (bot->isMoving())
+    {
+        bot->GetMotionMaster()->Clear();
+        bot->StopMoving();
+    }
+    botAI->SetNextCheckDelay(ghost.recheckMs);
+    return true;
+}
+}  // namespace
 
 // Top of the default start-zone brackets (Playerbots.ZoneBracket.*).
 constexpr uint32 START_ZONE_GRAVEYARD_MAX_LEVEL = 12;
@@ -74,6 +101,9 @@ bool ReviveFromCorpseAction::Execute(Event event)
 
         if (exhausted)
             return botAI->DoSpecificAction("spirit healer");
+
+        if (KeepsAwayFromCorpse(botAI, bot, corpse))
+            return true;
     }
 
     LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at body", bot->GetGUID().ToString().c_str(),
@@ -125,6 +155,9 @@ bool FindCorpseAction::Execute(Event /*event*/)
             sRandomPlayerbotMgr.Revive(bot);
             return true;
         }
+
+        if (KeepsAwayFromCorpse(botAI, bot, corpse))
+            return true;
     }
 
     WorldPosition botPos(bot);

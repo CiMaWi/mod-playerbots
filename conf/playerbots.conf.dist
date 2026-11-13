@@ -2313,6 +2313,20 @@ Playerbots.WorldPvp.NoHitSeconds = 30
 Playerbots.WorldPvp.StalemateSeconds = 300
 Playerbots.WorldPvp.CalmYards = 200
 
+# No camping (persistent bots in the open world). No bot starts a fight on a player resurrected in the last
+# ResurrectedSeconds (any player, by any resurrection; nor near a graveyard, GraveyardYards above). The ghost of a bot
+# whose corpse has an enemy player (alive, of the other team, flagged or not) within GhostEnemyYards waits as a ghost
+# and checks again every GhostRecheckSeconds; once the enemy has gone it runs to its corpse, and
+# GhostSpiritHealerSeconds after its release (counted from the release, never reset by a recheck) it takes the spirit
+# healer instead. ResurrectedSeconds is read when a map's fight book is made (at the map's creation), so a
+# .reload config changes it only for maps made afterwards. (Ranges: ResurrectedSeconds 0-86400; GhostEnemyYards
+# 0-2000; GhostRecheckSeconds 1-600; GhostSpiritHealerSeconds 0-86400.)
+# Defaults: 300, 40, 15, 300
+Playerbots.WorldPvp.ResurrectedSeconds = 300
+Playerbots.WorldPvp.GhostEnemyYards = 40
+Playerbots.WorldPvp.GhostRecheckSeconds = 15
+Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600

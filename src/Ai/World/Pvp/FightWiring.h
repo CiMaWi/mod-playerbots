@@ -569,6 +569,91 @@ inline float NearestYards(std::vector<Point> const& points, float x, float y)
         nearest = std::min(nearest, std::hypot(point.x - x, point.y - y));
     return nearest;
 }
+
+// --- The ghost's wait (WP7, PlanGhostFor) ---
+
+constexpr char const* EVENT_GHOST_WAIT = "GhostWait";
+constexpr char const* GHOST_ENEMY = "enemy";
+constexpr char const* GHOST_GONE = "gone";
+constexpr char const* GHOST_HEALER = "healer";
+// A ghost on its way to the spirit healer checks no more (its resurrection clears the wait)
+constexpr uint32_t GHOST_HEALER_HOLD_MS = 60 * 60 * 1000;
+
+// A check's outcome: the step, and the GhostWait row to write (source nullptr for none)
+struct GhostTurn
+{
+    GhostPlan plan;
+    char const* row = nullptr;
+    int64_t amount = 0;
+};
+
+// Whether the ghost checks its corpse now; between checks the last answer holds (GhostHeld)
+inline bool GhostCheckDue(FightMemory const& memory, uint32_t nowMs)
+{
+    return !memory.ghostNextCheckMs || static_cast<int32_t>(nowMs - memory.ghostNextCheckMs) >= 0;
+}
+
+// The last check's answer. While waiting, ghostSinceMs is when the wait began, 0 once the spirit healer was chosen
+inline GhostPlan GhostHeld(FightMemory const& memory, uint32_t nowMs)
+{
+    GhostPlan plan;
+    if (memory.ghostWaiting)
+    {
+        plan.step = memory.ghostSinceMs ? GhostStep::Wait : GhostStep::SpiritHealer;
+        plan.recheckMs = memory.ghostNextCheckMs - nowMs;
+    }
+    return plan;
+}
+
+// A check: enemyYards from the corpse to the nearest enemy player (FAR_YARDS for none), ghostMs since the release.
+// One row when a wait starts (enemy, the yards), one when it ends (gone or healer, the seconds waited)
+inline GhostTurn GhostChecked(FightMemory& memory, float enemyYards, uint32_t ghostMs, uint32_t nowMs,
+                              FightRuleValues const& values)
+{
+    GhostTurn turn;
+    turn.plan = PlanGhost(enemyYards, ghostMs, values);
+    int64_t const waitedSeconds = memory.ghostWaiting && memory.ghostSinceMs ? (nowMs - memory.ghostSinceMs) / 1000 : 0;
+    uint32_t nextMs = values.ghostRecheckMs;
+    switch (turn.plan.step)
+    {
+        case GhostStep::Wait:
+            if (!memory.ghostWaiting)
+            {
+                memory.ghostWaiting = true;
+                memory.ghostSinceMs = nowMs ? nowMs : 1;
+                turn.row = GHOST_ENEMY;
+                turn.amount = std::lround(enemyYards);
+            }
+            nextMs = turn.plan.recheckMs;
+            break;
+        case GhostStep::SpiritHealer:
+            memory.ghostWaiting = true;
+            memory.ghostSinceMs = 0;
+            turn.row = GHOST_HEALER;
+            turn.amount = waitedSeconds;
+            nextMs = GHOST_HEALER_HOLD_MS;
+            break;
+        case GhostStep::Corpse:
+            if (memory.ghostWaiting)
+            {
+                turn.row = GHOST_GONE;
+                turn.amount = waitedSeconds;
+            }
+            memory.ghostWaiting = false;
+            break;
+    }
+    uint32_t const nextCheckMs = nowMs + nextMs;
+    memory.ghostNextCheckMs = nextCheckMs ? nextCheckMs : 1;
+    return turn;
+}
+
+// A resurrection ends the wait; the next death starts with a check
+inline void GhostRevived(FightMemory& memory)
+{
+    memory.ghostWaiting = false;
+    memory.ghostSinceMs = 0;
+    memory.ghostNextCheckMs = 0;
+}
 }  // namespace WorldPvp
 
 #endif

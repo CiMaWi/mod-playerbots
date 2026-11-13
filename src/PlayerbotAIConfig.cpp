@@ -1292,6 +1292,10 @@ bool PlayerbotAIConfig::Initialize()
         pvpNumber("NoHitSeconds", WorldPvp.NoHitSeconds, 1, MaxGraceSeconds);
         pvpNumber("StalemateSeconds", WorldPvp.StalemateSeconds, 1, DAY);
         pvpNumber("CalmYards", WorldPvp.CalmYards, 0, MaxRadiusYards);
+        pvpNumber("ResurrectedSeconds", WorldPvp.ResurrectedSeconds, 0, DAY);
+        pvpNumber("GhostEnemyYards", WorldPvp.GhostEnemyYards, 0, MaxRadiusYards);
+        pvpNumber("GhostRecheckSeconds", WorldPvp.GhostRecheckSeconds, 1, MaxGraceSeconds);
+        pvpNumber("GhostSpiritHealerSeconds", WorldPvp.GhostSpiritHealerSeconds, 0, DAY);
     }
 
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults

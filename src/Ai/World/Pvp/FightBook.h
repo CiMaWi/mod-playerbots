@@ -10,6 +10,7 @@
 #include "ObjectGuid.h"
 
 class ChatHandler;
+class Corpse;
 class Player;
 class PlayerbotAI;
 class Unit;
@@ -63,6 +64,15 @@ bool CallsPetOff(PlayerbotAI* botAI, Unit* target);
 bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y);
 // The retreat action could not move the bot (rooted, every direction blocked): it gives the retreat up
 void GiveUpRetreat(PlayerbotAI* botAI);
+
+struct GhostPlan;
+// FindCorpseAction and ReviveFromCorpseAction, the ghost's map thread (PlanGhost in FightRules.h): a persistent ghost
+// in the open world with an enemy player (alive, of the other team, flagged or not) within GhostEnemyYards of its
+// corpse waits as a ghost, runs to its corpse once the enemy has gone and takes the spirit healer
+// GhostSpiritHealerSeconds after its release (the corpse's ghost time: a recheck never resets it). One corpse search
+// per recheck, the last answer in between; a GhostWait row when a wait starts and when it ends. Step Corpse for every
+// other ghost (a game-client master, a battleground, no book, not persistent, its corpse on another map)
+GhostPlan PlanGhostFor(PlayerbotAI* botAI, Corpse const* corpse);
 
 // NearestEnemyPlayersValue::AcceptUnit for the other bots, the bot's map thread: the enemy player when `unit` is one
 // this persistent bot (a PvpTest fighter) meets now (in sight, not seen in the last MeetingMemorySeconds; remembered

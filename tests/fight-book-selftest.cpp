@@ -417,6 +417,41 @@ void CheckRuleEnds()
     }
 }
 
+// WP7: the resurrections the start rule reads (OnPlayerResurrect notes them)
+void CheckResurrections()
+{
+    std::atomic<uint32_t> ids{0};
+    FightBook book(DefaultBounds(), ids);
+    uint32_t const t = 10 * MINUTE;
+    Check(book.ResurrectedMsAgo(7, t) == WorldPvp::NEVER_MS, "no resurrection noted: never");
+    book.NoteResurrection(7, 1.0f, 2.0f, t);
+    Check(book.ResurrectedMsAgo(7, t + 30 * SECOND) == 30 * SECOND, "a resurrection 30 s ago is found by its guid");
+    Check(book.ResurrectedMsAgo(8, t + 30 * SECOND) == WorldPvp::NEVER_MS, "another guid is not");
+    book.NoteResurrection(7, 3.0f, 4.0f, t + MINUTE);
+    Check(book.Resurrections().size() == 1 && book.Resurrections().front().x == 3.0f,
+          "a second resurrection replaces the first");
+    Check(book.ResurrectedMsAgo(7, t + 2 * MINUTE) == MINUTE, "it counts from the latest");
+    Check(book.ResurrectedMsAgo(7, t + 6 * MINUTE - 1) == 5 * MINUTE - 1, "inside 5 minutes it holds");
+    Check(book.ResurrectedMsAgo(7, t + 6 * MINUTE) == WorldPvp::NEVER_MS, "5 minutes after it: never");
+    book.NoteResurrection(9, 0.0f, 0.0f, t + 7 * MINUTE);
+    Check(book.Resurrections().size() == 1 && book.Resurrections().front().guid == 9,
+          "an expired resurrection is dropped at the next note");
+
+    FightBook full(DefaultBounds(), ids);
+    for (uint64_t guid = 1; guid <= WorldPvp::MAX_RESURRECTIONS + 1; ++guid)
+        full.NoteResurrection(guid, 0.0f, 0.0f, t + static_cast<uint32_t>(guid));
+    Check(full.Resurrections().size() == WorldPvp::MAX_RESURRECTIONS, "the bound holds MAX_RESURRECTIONS");
+    Check(full.ResurrectedMsAgo(1, t + SECOND) == WorldPvp::NEVER_MS &&
+              full.ResurrectedMsAgo(2, t + SECOND) != WorldPvp::NEVER_MS,
+          "the bound evicts the oldest");
+
+    WorldPvpConfig config;
+    config.ResurrectedSeconds = 0;
+    FightBook off(FightBounds::From(config), ids);
+    off.NoteResurrection(5, 0.0f, 0.0f, t);
+    Check(off.ResurrectedMsAgo(5, t) == WorldPvp::NEVER_MS, "ResurrectedSeconds 0: never resurrected recently");
+}
+
 int main()
 {
     CheckStartAndJoins();
@@ -428,6 +463,7 @@ int main()
     CheckMemory();
     CheckEndAnchor();
     CheckRuleEnds();
+    CheckResurrections();
     std::cout << "fight-book-selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
 }

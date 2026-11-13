@@ -22,6 +22,7 @@
 #include "CellImpl.h"
 #include "CensusMgr.h"
 #include "Chat.h"
+#include "Corpse.h"
 #include "Creature.h"
 #include "FightBookRules.h"
 #include "FightWiring.h"
@@ -1075,8 +1076,27 @@ class FightBookPlayerScript : public PlayerScript
 public:
     FightBookPlayerScript()
         : PlayerScript("FightBookPlayerScript", {PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE,
-                                                 PLAYERHOOK_ON_PLAYER_ENTER_COMBAT})
+                                                 PLAYERHOOK_ON_PLAYER_ENTER_COMBAT, PLAYERHOOK_ON_PLAYER_RESURRECT})
     {
+    }
+
+    // Any player's resurrection by any path (its corpse, a spirit healer, a spell, the console): the player's map
+    // thread, or the world thread (a console command, an accepted spell), which never overlaps that map's update. A
+    // bot's ghost wait ends with it
+    void OnPlayerResurrect(Player* player, float /*restorePercent*/, bool& /*applySickness*/) override
+    {
+        if (!player)
+            return;
+        PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player);
+        if (botAI && botAI->fightMemory)
+            GhostRevived(*botAI->fightMemory);
+        if (!HasBook(player->GetMap()))
+            return;
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks")
+                                                        : nullptr);
+        if (std::shared_ptr<BookEntry> const entry = BookOf(player->GetMap(), true))
+            entry->book.NoteResurrection(player->GetGUID().GetRawValue(), player->GetPositionX(),
+                                         player->GetPositionY(), getMSTime());
     }
 
     // The player's map thread; deaths of the fight's participants
@@ -1375,6 +1395,51 @@ void GiveUpRetreat(PlayerbotAI* botAI)
 {
     if (botAI && botAI->fightMemory)
         GiveUpRetreat(*botAI->fightMemory);
+}
+
+namespace
+{
+// The yards from the corpse to the nearest alive enemy player within range, FAR_YARDS when there is none
+float NearestEnemyYards(Player* bot, Corpse const* corpse, float range)
+{
+    std::vector<Player*> players;
+    Acore::AnyPlayerInObjectRangeCheck check(corpse, range, true, true);
+    Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(corpse, players, check);
+    Cell::VisitObjects(corpse, searcher, range);
+    float nearest = FAR_YARDS;
+    for (Player* const player : players)
+    {
+        if (player->GetTeamId() != bot->GetTeamId())
+            nearest = std::min(nearest, corpse->GetExactDist(player));
+    }
+    return nearest;
+}
+}  // namespace
+
+GhostPlan PlanGhostFor(PlayerbotAI* botAI, Corpse const* corpse)
+{
+    Player* const bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !corpse || bot->InBattleground() || botAI->HasGameClientMaster() || !HasBook(bot->GetMap()) ||
+        corpse->GetMapId() != bot->GetMapId())
+        return GhostPlan();
+    uint32 const nowMs = getMSTime();
+    FightMemory* const memory = MemoryOf(botAI, nowMs);
+    if (!memory)
+        return GhostPlan();
+    if (!GhostCheckDue(*memory, nowMs))
+        return GhostHeld(*memory, nowMs);
+
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp ghost") : nullptr);
+    FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
+    time_t const now = time(nullptr);
+    time_t const released = corpse->GetGhostTime();
+    uint32 const ghostMs =
+        now > released ? static_cast<uint32>(std::min<time_t>(now - released, DAY)) * IN_MILLISECONDS : 0;
+    GhostTurn const turn =
+        GhostChecked(*memory, NearestEnemyYards(bot, corpse, values.ghostEnemyYards), ghostMs, nowMs, values);
+    if (turn.row)
+        EventLog::Emit(bot, EVENT_GHOST_WAIT, turn.row, 0, turn.amount);
+    return turn.plan;
 }
 
 bool RequestsWaiting() { return requestCount.load(std::memory_order_relaxed) != 0; }

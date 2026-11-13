@@ -769,6 +769,53 @@ void CheckCalm()
     Check(!InAnyCalmArea(ring, 1000.0f, 0.0f, now, VALUES), "an end older than CalmMinutes: not calm");
 }
 
+// WP7: the ghost's wait around PlanGhost: rows on a wait's start and end only, the recheck by timer, the wait counted
+// from the release
+void CheckGhost()
+{
+    FightRuleValues const values;
+    uint32_t const t = LOGIN;
+    FightMemory memory;
+    Check(GhostCheckDue(memory, t), "a new ghost checks at once");
+    GhostTurn turn = GhostChecked(memory, FAR_YARDS, 0, t, values);
+    Check(turn.plan.step == GhostStep::Corpse && !turn.row, "no enemy: to the corpse, no row");
+    Check(!GhostCheckDue(memory, t + 14 * SECOND) && GhostCheckDue(memory, t + 15 * SECOND),
+          "the next check comes after GhostRecheckSeconds");
+    Check(GhostHeld(memory, t + SECOND).step == GhostStep::Corpse, "between checks the corpse run holds");
+
+    turn = GhostChecked(memory, 12.4f, 15 * SECOND, t + 15 * SECOND, values);
+    Check(turn.plan.step == GhostStep::Wait && turn.row == std::string(GHOST_ENEMY) && turn.amount == 12,
+          "an enemy at the corpse: the wait starts with a row (its yards)");
+    Check(GhostHeld(memory, t + 20 * SECOND).step == GhostStep::Wait &&
+              GhostHeld(memory, t + 20 * SECOND).recheckMs == 10 * SECOND,
+          "between checks the wait holds, the recheck left");
+    turn = GhostChecked(memory, 12.0f, 30 * SECOND, t + 30 * SECOND, values);
+    Check(turn.plan.step == GhostStep::Wait && !turn.row, "a recheck with the enemy still there writes no row");
+    turn = GhostChecked(memory, FAR_YARDS, 45 * SECOND, t + 45 * SECOND, values);
+    Check(turn.plan.step == GhostStep::Corpse && turn.row == std::string(GHOST_GONE) && turn.amount == 30,
+          "the enemy gone: to the corpse, a row with the 30 s waited");
+
+    FightMemory camped;
+    GhostChecked(camped, 10.0f, 0, t, values);
+    turn = GhostChecked(camped, 10.0f, 4 * MINUTE + 55 * SECOND, t + 4 * MINUTE + 55 * SECOND, values);
+    Check(turn.plan.step == GhostStep::Wait && turn.plan.recheckMs == 5 * SECOND,
+          "the recheck is never later than the spirit healer's time");
+    turn = GhostChecked(camped, 10.0f, 5 * MINUTE, t + 5 * MINUTE, values);
+    Check(turn.plan.step == GhostStep::SpiritHealer && turn.row == std::string(GHOST_HEALER) && turn.amount == 300,
+          "5 minutes after the release: the spirit healer, a row with the 300 s waited");
+    Check(!GhostCheckDue(camped, t + 30 * MINUTE) && GhostHeld(camped, t + 30 * MINUTE).step == GhostStep::SpiritHealer,
+          "on its way to the spirit healer it checks no more");
+    GhostRevived(camped);
+    Check(GhostCheckDue(camped, t + 31 * MINUTE) && GhostHeld(camped, t + 31 * MINUTE).step == GhostStep::Corpse,
+          "a resurrection ends the wait; the next death checks at once");
+
+    // The wait counts from the release (ghostMs, the corpse's ghost time), not from the wait's start
+    FightMemory late;
+    turn = GhostChecked(late, 10.0f, 5 * MINUTE + SECOND, t, values);
+    Check(turn.plan.step == GhostStep::SpiritHealer && turn.row == std::string(GHOST_HEALER) && turn.amount == 0,
+          "an enemy found after 5 minutes as a ghost: the spirit healer at once, 0 s waited");
+}
+
 int main()
 {
     CheckWho();
@@ -791,6 +838,7 @@ int main()
     CheckEndGates();
     CheckChase();
     CheckCalm();
+    CheckGhost();
     std::cout << "fight-wiring-selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
 }
