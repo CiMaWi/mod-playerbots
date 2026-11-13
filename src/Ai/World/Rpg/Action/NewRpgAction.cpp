@@ -859,11 +859,15 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
+// flyfail and flyabort change nothing on the bot: the fly leg's follower reads the bit (TestConstraints::FlyLegFails)
+void ReadByFollower(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
     {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
+    {TestConstraints::FLYFAIL, ReadByFollower, ReadByFollower},
+    {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
@@ -2726,6 +2730,26 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         // The deadline waited at the dock and aboard: that time does not count against the route's estimate
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Transport)
             data->routeStartMs += seen.nowMs - dockSinceBefore;
+    }
+    // A test's flyfail or flyabort row: past the leg's middle and in the air the fly leg fails as its timeout would
+    // (the way down after a failure in the air, upkeep WU26b); flyabort spends the trip's replans first. One bit test
+    // outside such a test
+    uint16 const constraints = botAI->rpgInfo.constraints;
+    if (next.act == TravelLegs::Act::Fly && (constraints & TestConstraints::FLY_FAILS))
+    {
+        TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+        auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
+        bool const inTheAir = TravelLegs::BodyZ(seen.bot.z, groundZ, waterZ) < seen.bot.z;
+        if (TestConstraints::FlyLegFails(constraints, std::hypot(seen.bot.x - leg.from.x, seen.bot.y - leg.from.y),
+                                         std::hypot(leg.to.x - leg.from.x, leg.to.y - leg.from.y), inTheAir))
+        {
+            if (TestConstraints::FlyFailAborts(constraints))
+                data->trip.replans = TravelLegs::MAX_REPLANS;
+            LOG_INFO("playerbots", "[Route] {} fly leg {}/{} fails in the air by the test constraint {}",
+                     bot->GetName(), trip.legIdx + 1, trip.legs.size(),
+                     TestConstraints::Format(constraints & TestConstraints::FLY_FAILS));
+            return LegFailed(*data, TravelLegs::FailReason::Timeout);
+        }
     }
     // Once per waypoint in the air: the real ground ahead (the flight map has no buildings) may lift it
     if (next.act == TravelLegs::Act::Fly && TravelLegs::NeedsHeightCheck(trip))
