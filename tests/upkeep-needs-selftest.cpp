@@ -50,6 +50,7 @@ constexpr std::uint8_t CLASS_WARRIOR = 1;
 constexpr std::uint8_t RACE_HUMAN = 1;
 constexpr std::uint8_t RACE_ORC = 2;
 
+constexpr std::uint32_t TRAINER_WARRIOR_STARTER = 99;  // a starter trainer: the first levels only
 constexpr std::uint32_t TRAINER_WARRIOR = 100;
 constexpr std::uint32_t TRAINER_MAGE = 110;
 constexpr std::uint32_t TRAINER_HUNTER = 120;
@@ -153,6 +154,8 @@ UpkeepIndex Fixture()
     std::vector<TrainerSpell> warrior;
     for (std::uint8_t level = 2; level <= 40; level += 2)
         warrior.push_back(Spell(1000 + level, level == 20 ? 30000 : 100u * level, level));
+    input.trainers.push_back(
+        {TRAINER_WARRIOR_STARTER, TrainerKind::Class, CLASS_WARRIOR, {warrior.begin(), warrior.begin() + 3}});
     input.trainers.push_back({TRAINER_WARRIOR, TrainerKind::Class, CLASS_WARRIOR, warrior});
     std::vector<TrainerSpell> mage;
     for (std::uint8_t level = 4; level <= 20; level += 2)
@@ -199,6 +202,7 @@ UpkeepIndex Fixture()
                             {TRAINER_MAGE, TRAINER_MAGE},       {TRAINER_HUNTER, TRAINER_HUNTER},
                             {TRAINER_PALADIN, TRAINER_PALADIN}, {TRAINER_DRUID, TRAINER_DRUID},
                             {TRAINER_WARLOCK, TRAINER_WARLOCK}, {TRAINER_RIDING, TRAINER_RIDING}};
+    input.trainerEntries.emplace_back(TRAINER_WARRIOR_STARTER, TRAINER_WARRIOR_STARTER);
 
     UpkeepItemFacts bread = Item(ITEM_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
     bread.spellCategory = CATEGORY_FOOD;
@@ -632,6 +636,38 @@ void GroundRiding(UpkeepIndex const& index)
     Show("a warrior that walks 3 min/h, at 20", Bot(index, CLASS_WARRIOR, 20, 200 * GOLD, 20), index, Rates(20, 3.0f));
     std::cout << "  it buys apprentice riding at level " << int(rare) << "\n";
     Check(rare > 20, "a bot that rarely travels buys apprentice riding later");
+}
+
+// Where the rank and its mount are bought (WU26c): the trainer that teaches the rank, and any vendor that sells a
+// fitting mount at the price (each race's riding trainer and mount vendor are their own)
+void RidingPlaces(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: riding trainer and mount vendor\n";
+    Check(TrainerFor(index, TrainerKind::Mount, 0, SPELL_EXPERT) == TRAINER_RIDING &&
+              !TrainerFor(index, TrainerKind::Mount, 0, SPELL_FELSTEED) &&
+              TrainerFor(index, TrainerKind::Mount, 0) == TRAINER_RIDING,
+          "the riding trainer that teaches the rank; none for a spell no riding trainer teaches");
+    NeedList const at20 = ComputeNeeds(Bot(index, CLASS_WARRIOR, 20, 100 * GOLD, 20), index, Rates(20));
+    RankValue const* apprentice = BoughtRank(at20, SPELL_APPRENTICE);
+    Check(apprentice && MountSoldBy(index, RACE_HUMAN, CLASS_WARRIOR, *apprentice, VENDOR_MOUNTS) == ITEM_HORSE &&
+              !MountSoldBy(index, RACE_HUMAN, CLASS_WARRIOR, *apprentice, VENDOR_INN) &&
+              !BoughtRank(at20, SPELL_JOURNEYMAN),
+          "the vendor's own mount for the bought rank; none at a vendor without one");
+}
+
+void TrainingPlaces(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: the class trainer that teaches the waiting spells\n";
+    Check(TrainerFor(index, TrainerKind::Class, CLASS_WARRIOR) == TRAINER_WARRIOR_STARTER,
+          "the fixture's first warrior trainer is the starter one");
+    NeedList const level24 = ComputeNeeds(Bot(index, CLASS_WARRIOR, 24, 100 * GOLD, 20), index, Rates(24));
+    Need const* at24 = Find(level24, NeedOrder::Training);
+    Check(at24 && at24->lastSpell == 1024 && at24->trainer == TRAINER_WARRIOR,
+          "a level-24 need goes to the trainer that teaches its level-24 spell, not the starter trainer");
+    NeedList const level6 = ComputeNeeds(Bot(index, CLASS_WARRIOR, 6, 100 * GOLD, 2), index, Rates(6));
+    Need const* at6 = Find(level6, NeedOrder::Training);
+    Check(at6 && at6->lastSpell == 1006 && at6->trainer == TRAINER_WARRIOR_STARTER,
+          "a level-6 need may go to the starter trainer, which teaches it");
 }
 
 void FlyingRiding(UpkeepIndex const& index)
@@ -1457,6 +1493,8 @@ int main()
     TrainingGold(index);
     TrainingBuying(index);
     GroundRiding(index);
+    RidingPlaces(index);
+    TrainingPlaces(index);
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

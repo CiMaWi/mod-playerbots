@@ -182,20 +182,23 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, Planner::UpkeepIndex co
         UpkeepNeeds::ComputeNeeds(snapshot, index, Planner::BotNeedRates(botAI, snapshot));
     uint32 const entry = vendor->GetEntry();
     UpkeepNeeds::Need const* need = nullptr;
+    UpkeepNeeds::RankValue const* value = nullptr;
+    uint32 item = 0;  // this vendor's own mount for the rank (any race's vendor that sells one at the price)
     for (UpkeepNeeds::Need const& each : needs.needs)
-        if (each.kind == UpkeepKind::Riding && each.vendor == entry)
+    {
+        UpkeepNeeds::RankValue const* rank =
+            each.kind == UpkeepKind::Riding ? UpkeepNeeds::BoughtRank(needs, each.item) : nullptr;
+        item = rank ? UpkeepNeeds::MountSoldBy(index, snapshot.race, snapshot.cls, *rank, entry) : 0;
+        if (item)
         {
             need = &each;
+            value = rank;
             break;
         }
-    UpkeepNeeds::RankValue const* value = nullptr;
-    for (UpkeepNeeds::RankValue const& each : needs.ranks)
-        if (need && each.bought && each.rank.spellId == need->item)
-            value = &each;
-    if (!need || !value || !value->mountItem)
+    }
+    if (!need || !value || !item)
         return;
 
-    uint32 const item = value->mountItem;
     auto const skip = [bot, need, item](char const* reason)
     {
         WorldLog::Decision(
@@ -362,10 +365,10 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
                            line.item);
     }
 
-    // The riding need's mount, when this vendor sells it (WU14), with the gold the stock left
-    uint32 const entry = vendor->GetEntry();
-    if (std::any_of(needs.needs.begin(), needs.needs.end(), [entry](UpkeepNeeds::Need const& need)
-                    { return need.kind == UpkeepKind::Riding && need.vendor == entry; }))
+    // The riding need's mount, when this vendor sells it (WU14), with the gold the stock left: MountAtVendor takes
+    // this vendor's own mount for the bought rank, so any vendor of the errand may be the one
+    if (std::any_of(needs.needs.begin(), needs.needs.end(),
+                    [](UpkeepNeeds::Need const& need) { return need.kind == UpkeepKind::Riding; }))
         MountAtVendor(botAI, vendor, *index);
 }
 
@@ -1488,7 +1491,22 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (training)
         snapshot.Training = {training->units, training->levelsBehind, trainingDue, training->item};
     if (riding)
-        snapshot.Riding = {riding->item, riding->vendor, riding->trainer != 0};
+    {
+        // The mount at the nearest vendor in reach that sells one for the rank at its price (each race's vendor sells
+        // its own mounts at the one price; the need names the vendor its pricing met first)
+        uint32 mountVendor = riding->vendor;
+        UpkeepNeeds::RankValue const* const rank = UpkeepNeeds::BoughtRank(needs, riding->item);
+        float mountYards = std::numeric_limits<float>::max();
+        if (index && rank && riding->vendor)
+            for (std::pair<float, TravelMgr::VendorInfo const*> const& vendor : inReach)
+                if (vendor.first < mountYards &&
+                    UpkeepNeeds::MountSoldBy(*index, bot->getRace(), bot->getClass(), *rank, vendor.second->entry))
+                {
+                    mountYards = vendor.first;
+                    mountVendor = vendor.second->entry;
+                }
+        snapshot.Riding = {riding->item, mountVendor, riding->trainer != 0};
+    }
     // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
     std::sort(inReach.begin(), inReach.end(),
               [](std::pair<float, TravelMgr::VendorInfo const*> const& a,
@@ -1516,16 +1534,23 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (index && training)
     {
         // A vendor stop with a class trainer within STOP_JOIN_YARDS takes training too, and the trainer part of the
-        // stop goes to that trainer; the trainer's own spawns are stops as well
+        // stop goes to that trainer; the trainer's own spawns are stops as well. Every class trainer that teaches the
+        // highest waiting spell is one: a starter trainer that teaches only the first levels is none
         std::vector<WorldTravel::ServiceStop> trainerStops;
-        AddTrainerStops(TrainerSpawns(bot, *index, training->trainer, reachYards), WorldTravel::SERVICE_TRAINER,
-                        trainerStops);
+        for (Planner::UpkeepTrainer const& trainer : index->trainers)
+            if (trainer.kind == Planner::TrainerKind::Class && trainer.requirement == bot->getClass() &&
+                (trainer.key == training->trainer || UpkeepNeeds::Teaches(*index, trainer, training->lastSpell)))
+                AddTrainerStops(TrainerSpawns(bot, *index, trainer.key, reachYards), WorldTravel::SERVICE_TRAINER,
+                                trainerStops);
         WorldTravel::JoinTrainers(snapshot.Stops, trainerStops, WorldTravel::SERVICE_TRAINER);
         snapshot.Stops.insert(snapshot.Stops.end(), trainerStops.begin(), trainerStops.end());
     }
+    // Every riding trainer that teaches the rank: each race's riding trainer is a trainer of its own
     if (index && riding && riding->trainer)
-        AddTrainerStops(TrainerSpawns(bot, *index, riding->trainer, reachYards), WorldTravel::SERVICE_RIDING_TRAINER,
-                        snapshot.Stops);
+        for (Planner::UpkeepTrainer const& trainer : index->trainers)
+            if (trainer.kind == Planner::TrainerKind::Mount && UpkeepNeeds::Teaches(*index, trainer, riding->item))
+                AddTrainerStops(TrainerSpawns(bot, *index, trainer.key, reachYards),
+                                WorldTravel::SERVICE_RIDING_TRAINER, snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
 
     // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay

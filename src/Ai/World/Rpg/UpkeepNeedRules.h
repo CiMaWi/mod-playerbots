@@ -130,6 +130,7 @@ struct Need
     std::uint32_t trainer{0};               // a trainer key that teaches it
     std::uint32_t levelsBehind{0};          // training: levels since the oldest waiting spell
     std::uint64_t cheapest{0};              // training: the cheapest waiting spell with no waiting prerequisite
+    std::uint32_t lastSpell{0};             // training: the waiting spell of the highest level (its trainers teach)
     std::uint32_t target{0};                // consumables: the stock target
     std::uint32_t lotSize{1};               // consumables: the best offer's lot (buyCount) ...
     std::uint32_t lotPrice{0};              // ... and its price
@@ -530,10 +531,24 @@ inline std::vector<std::size_t> Learnable(TrainerList const& list, TrainerList c
     return result;
 }
 
-inline std::uint32_t TrainerFor(UpkeepIndex const& index, Planner::TrainerKind kind, std::uint32_t requirement)
+// The trainer teaches the spell (its positions on its list)
+inline bool Teaches(UpkeepIndex const& index, Planner::UpkeepTrainer const& trainer, std::uint32_t spellId)
+{
+    if (trainer.list >= index.lists.size())
+        return false;
+    std::size_t const position = index.lists[trainer.list].Find(spellId);
+    return position != TrainerList::NOT_FOUND &&
+           std::binary_search(trainer.spells.begin(), trainer.spells.end(), static_cast<std::uint16_t>(position));
+}
+
+// The first trainer of the kind and requirement; with a spell, the first that teaches it: each race's riding trainer
+// is a trainer of its own, and only the flying trainers teach expert riding and Cold Weather Flying
+inline std::uint32_t TrainerFor(UpkeepIndex const& index, Planner::TrainerKind kind, std::uint32_t requirement,
+                                std::uint32_t spellId = 0)
 {
     for (Planner::UpkeepTrainer const& trainer : index.trainers)
-        if (trainer.kind == kind && trainer.requirement == requirement)
+        if (trainer.kind == kind && trainer.requirement == requirement &&
+            (!spellId || Teaches(index, trainer, spellId)))
             return trainer.key;
     return 0;
 }
@@ -569,9 +584,9 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
     Need need;
     need.order = NeedOrder::Training;
     need.kind = UpkeepKind::TrainerSpell;
-    need.trainer = TrainerFor(index, Planner::TrainerKind::Class, snapshot.cls);
     need.without = "the spells wait";
     std::uint8_t oldest = snapshot.level;
+    std::uint8_t last = 0;
     for (std::size_t const position : spells)
     {
         TrainerSpell const& spell = trainer->spells[position];
@@ -585,12 +600,29 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
         oldest = std::min(oldest, spell.reqLevel);
         if (!need.item)
             need.item = spell.spellId;
+        if (!need.lastSpell || spell.reqLevel > last)
+        {
+            need.lastSpell = spell.spellId;
+            last = spell.reqLevel;
+        }
     }
     if (!need.units)
         return;
+    // A trainer that teaches the highest waiting spell: a starter trainer teaches only the first levels
+    need.trainer = TrainerFor(index, Planner::TrainerKind::Class, snapshot.cls, need.lastSpell);
+    if (!need.trainer)
+        need.trainer = TrainerFor(index, Planner::TrainerKind::Class, snapshot.cls);
     need.levelsBehind = snapshot.level - oldest;
     need.due = static_cast<float>(need.levelsBehind) >= list.trainingSpan;
     list.needs.push_back(need);
+}
+
+// A mount of the riding skill the bot's race and class may ride, with no reputation asked
+inline bool MountFits(VendorOffer const& offer, std::uint8_t race, std::uint8_t cls, std::uint16_t skill)
+{
+    return offer.requiredSkillRank == skill && !offer.requiredFaction &&
+           (!offer.raceMask || (offer.raceMask & RaceBit(race))) &&
+           (!offer.classMask || (offer.classMask & UpkeepIndex::ClassBit(cls)));
 }
 
 // The cheapest mount of a riding skill the bot's race may ride, payable in gold; gold+currency mounts are counted
@@ -601,9 +633,7 @@ inline void PriceMount(UpkeepIndex const& index, Snapshot const& snapshot, RankV
         return;
     for (VendorOffer const& offer : index.Offers(UpkeepStock::Mount))
     {
-        if (offer.requiredSkillRank != value.rank.skill || offer.requiredFaction ||
-            (offer.raceMask && !(offer.raceMask & RaceBit(snapshot.race))) ||
-            (offer.classMask && !(offer.classMask & UpkeepIndex::ClassBit(snapshot.cls))))
+        if (!MountFits(offer, snapshot.race, snapshot.cls, value.rank.skill))
             continue;
         if (!offer.GoldOnly())
         {
@@ -617,6 +647,30 @@ inline void PriceMount(UpkeepIndex const& index, Snapshot const& snapshot, RankV
             value.mountVendor = offer.vendorEntry;
         }
     }
+}
+
+// The mount a vendor sells for the rank at no more than its price, payable in gold; 0 when it sells none. Every race's
+// mount vendor sells its own mounts at the one price, so the errand takes the nearest such vendor, not only the one
+// PriceMount met first
+inline std::uint32_t MountSoldBy(UpkeepIndex const& index, std::uint8_t race, std::uint8_t cls, RankValue const& value,
+                                 std::uint32_t vendorEntry)
+{
+    if (!value.mountItem)
+        return 0;
+    for (VendorOffer const& offer : index.Offers(UpkeepStock::Mount))
+        if (offer.vendorEntry == vendorEntry && offer.GoldOnly() && offer.buyPrice <= value.mount &&
+            MountFits(offer, race, cls, value.rank.skill))
+            return offer.item;
+    return 0;
+}
+
+// The rank the need list bought, by its spell; nullptr when none
+inline RankValue const* BoughtRank(NeedList const& list, std::uint32_t spellId)
+{
+    for (RankValue const& value : list.ranks)
+        if (value.bought && value.rank.spellId == spellId)
+            return &value;
+    return nullptr;
 }
 
 // The reserve's thrift scale applied to a sum of prices
@@ -722,7 +776,8 @@ inline void AddRiding(NeedList& list, UpkeepIndex const& index, Snapshot const& 
             need.units = 1;
             need.item = rank.spellId;
             need.vendor = value.mountVendor;
-            need.trainer = known ? 0 : TrainerFor(index, Planner::TrainerKind::Mount, riding->requirement);
+            need.trainer =
+                known ? 0 : TrainerFor(index, Planner::TrainerKind::Mount, riding->requirement, rank.spellId);
             need.without = "walks the long legs";
             list.needs.push_back(need);
         }
