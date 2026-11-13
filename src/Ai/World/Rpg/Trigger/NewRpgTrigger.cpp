@@ -9,6 +9,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldTravelRules.h"
 
@@ -26,6 +27,8 @@ bool BankVisitActiveTrigger::IsActive()
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
+    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
+        return false;
     switch (botAI->rpgInfo.GetStatus())
     {
         case RPG_IDLE:

@@ -105,15 +105,20 @@ void NewRpgInfo::ChangeToTravel(WorldPosition dest, std::string place)
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
-void NewRpgInfo::ChangeToErrands(uint32 vendorEntry, WorldPosition vendorPos, uint32 money)
+void NewRpgInfo::ChangeToErrands(std::vector<ErrandStop> stops, uint32 money)
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
     Errands errands;
-    errands.vendorEntry = vendorEntry;
-    errands.vendorPos = vendorPos;
+    for (ErrandStop const& stop : stops)
+        if (stop.vendorEntry)
+        {
+            errands.vendorEntry = stop.vendorEntry;
+            break;
+        }
+    errands.stops = std::move(stops);
     errands.moneyAtStart = money;
-    data = errands;
+    data = std::move(errands);
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -278,9 +283,15 @@ std::string NewRpgInfo::ToString()
         else if constexpr (std::is_same_v<T, Errands>)
         {
             out << "ERRANDS";
-            out << "\nvendorEntry: " << arg.vendorEntry;
-            out << "\nvendorPos: " << arg.vendorPos.GetMapId() << " " << arg.vendorPos.GetPositionX() << " "
-                << arg.vendorPos.GetPositionY() << " " << arg.vendorPos.GetPositionZ();
+            out << "\nstop: " << static_cast<uint32>(arg.stop) << "/" << arg.stops.size();
+            if (arg.stop < arg.stops.size())
+            {
+                ErrandStop const& stop = arg.stops[arg.stop];
+                out << "\nvendorEntry: " << stop.vendorEntry;
+                out << "\nstopPos: " << stop.pos.GetMapId() << " " << stop.pos.GetPositionX() << " "
+                    << stop.pos.GetPositionY() << " " << stop.pos.GetPositionZ();
+                out << "\nturnIns: " << stop.turnIns.size();
+            }
             out << "\nfound: " << (arg.vendor.IsEmpty() ? 0 : 1);
             out << "\nlastErrands: " << startT;
         }

@@ -4,6 +4,11 @@
  * or (at your option) any later version.
  */
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <limits>
+
 #include "AcquaintanceMgr.h"
 #include "ActivityBudget.h"
 #include "ArenaRecruit.h"
@@ -16,6 +21,7 @@
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
+#include "FightBook.h"
 #include "GuildTaskMgr.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
@@ -25,6 +31,7 @@
 #include "NaturalTrace.h"
 #include "NewRpgAction.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
@@ -36,9 +43,13 @@
 #include "PvpTest.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "RouteCheck.h"
+#include "RouteQuery.h"
 #include "ScriptMgr.h"
 #include "Tactics.h"
+#include "TestConstraints.h"
 #include "TestPlayer.h"
+#include "TransportMgr.h"
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
@@ -193,11 +204,24 @@ public:
             {"resize", Population::HandleResizeCommand, SEC_CONSOLE, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsRouteCheckCommandTable = {
+            {"links", RouteCheck::HandleLinksCommand, SEC_PLAYER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsRouteCommandTable = {
             {"status", TravelGraph::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", TravelGraph::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"go", HandleRouteGoCommand, SEC_GAMEMASTER, Console::Yes},
             {"stop", HandleRouteStopCommand, SEC_GAMEMASTER, Console::Yes},
+            {"transport", HandleRouteTransportCommand, SEC_GAMEMASTER, Console::Yes},
+            {"hold", HandleRouteHoldCommand, SEC_GAMEMASTER, Console::Yes},
+            {"release", HandleRouteReleaseCommand, SEC_GAMEMASTER, Console::Yes},
+            {"constraint", HandleRouteConstraintCommand, SEC_GAMEMASTER, Console::Yes},
+            {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
+            {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
+            {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
+            {"query", RouteQuery::HandleCommand, SEC_PLAYER, Console::Yes},
+            {"check", playerbotsRouteCheckCommandTable},
         };
 
         static ChatCommandTable playerbotsPlannerCommandTable = {
@@ -210,6 +234,7 @@ public:
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
             {"goals", Planner::HandleGoalsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsMailCommandTable = {
@@ -228,6 +253,14 @@ public:
             {"selftest", WorldLog::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"case", WorldLog::HandleCaseCommand, SEC_GAMEMASTER, Console::Yes},
             {"status", WorldLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
+        // World PvP (WP1): list and bot read; ready and meet are lab fixtures (Playerbots.WorldPvp.TestCommands)
+        static ChatCommandTable playerbotsFightCommandTable = {
+            {"list", HandleFightListCommand, SEC_PLAYER, Console::Yes},
+            {"bot", HandleFightBotCommand, SEC_PLAYER, Console::Yes},
+            {"ready", HandleFightReadyCommand, SEC_GAMEMASTER, Console::Yes},
+            {"meet", HandleFightMeetCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -260,6 +293,7 @@ public:
             {"mail", playerbotsMailCommandTable},
             {"bank", playerbotsBankCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
+            {"fight", playerbotsFightCommandTable},
         };
 
         static ChatCommandTable wlogCommandTable = {
@@ -358,8 +392,130 @@ public:
         handler->PSendSysMessage("ROUTE go: {} -> {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered; see [Route] {} travel to {}",
                                  target.GetName(), order.place, dest->mapId, dest->x, dest->y, dest->z,
                                  target.GetName(), order.place);
-        TravelOrders::Post(bot->GetGUID(), std::move(order));
+        TravelOrders::Post(botAI, std::move(order));
         return true;
+    }
+
+    static std::string LowerCase(std::string text)
+    {
+        std::transform(text.begin(), text.end(), text.begin(),
+                       [](unsigned char letter) { return static_cast<char>(std::tolower(letter)); });
+        return text;
+    }
+
+    // A transport link's name: its gameobject's ("Ship (The Bravery)", "Subway", "Undervator")
+    static std::string TransportName(uint32 entry)
+    {
+        GameObjectTemplate const* info = sObjectMgr->GetGameObjectTemplate(entry);
+        return info && !info->name.empty() ? info->name : "transport " + std::to_string(entry);
+    }
+
+    // `playerbots route transport <bot> <name>|<entry>` (WT19, tests): sends a persistent bot over a transport. The
+    // travel graph's transport links of that gameobject entry, or with that part of its name (any case); of them the
+    // one starting nearest the bot on its map, else the first. The order's destination is that link's end: the route
+    // search picks the way (its [Route] line shows whether it takes the transport). A Deeprun Tram car starts on map
+    // 369: from Stormwind or Ironforge name the car's entry
+    static bool HandleRouteTransportCommand(ChatHandler* handler, PlayerIdentifier target, Tail name)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        TravelGraph const& graph = TravelGraph::Instance();
+        char const* refusal = nullptr;
+        if (!graph.IsReady())
+            refusal = "the travel graph is not ready";
+        else if (!PlayerbotFactory::KeepsPossessions(bot))
+            refusal = "not a persistent bot (honest travel, random bot, no real master)";
+        else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+            refusal = "the bot does not run the new rpg strategy";
+        else if (!bot->IsAlive())
+            refusal = "dead";
+        else if (bot->IsInFlight())
+            refusal = "in flight";
+        else if (bot->GetMap()->Instanceable())
+            refusal = "in an instance";
+        if (refusal)
+        {
+            handler->SendErrorMessage("ROUTE transport: {} refused: {}", target.GetName(), refusal);
+            return false;
+        }
+
+        std::string const text = LowerCase(std::string(name));
+        bool const byEntry = !text.empty() && std::all_of(text.begin(), text.end(),
+                                                          [](unsigned char letter) { return std::isdigit(letter); });
+        uint32 const entry = byEntry ? static_cast<uint32>(std::strtoul(text.c_str(), nullptr, 10)) : 0;
+        TravelGraphLink const* chosen = nullptr;
+        float chosenYards = std::numeric_limits<float>::max();
+        std::vector<uint32> entries;  // every transport of the graph, for the usage line
+        for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
+        {
+            TravelGraphLink const& link = graph.GetLink(i);
+            if (link.type != TravelLinkType::Transport)
+                continue;
+            if (std::find(entries.begin(), entries.end(), link.object) == entries.end())
+                entries.push_back(link.object);
+            bool const matches =
+                byEntry ? link.object == entry
+                        : !text.empty() && LowerCase(TransportName(link.object)).find(text) != std::string::npos;
+            if (!matches)
+                continue;
+            TravelGraphNode const& from = graph.GetNode(link.from);
+            float const yards = from.mapId == bot->GetMapId() ? bot->GetExactDist(from.x, from.y, from.z)
+                                                              : std::numeric_limits<float>::max();
+            if (!chosen || yards < chosenYards)
+            {
+                chosen = &link;
+                chosenYards = yards;
+            }
+        }
+        if (!chosen)
+        {
+            std::string names;
+            for (uint32 known : entries)
+                names += (names.empty() ? "" : ", ") + TransportName(known) + " " + std::to_string(known);
+            handler->SendErrorMessage("Usage: .playerbots route transport <bot> <name>|<entry>; transports: {}", names);
+            return false;
+        }
+
+        TravelGraphNode const& from = graph.GetNode(chosen->from);
+        TravelGraphNode const& to = graph.GetNode(chosen->to);
+        TravelOrder order;
+        order.dest = WorldPosition(to.mapId, to.x, to.y, to.z);
+        order.place = TransportName(chosen->object);
+        order.postedMs = getMSTime();
+        handler->PSendSysMessage(
+            "ROUTE transport: {} -> {} {} from node {} ({}, {:.0f}, {:.0f}, {:.0f}) to node {} ({}, "
+            "{:.0f}, {:.0f}, {:.0f}) ordered; see [Route] {} travel to {}",
+            target.GetName(), order.place, chosen->object, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId,
+            to.x, to.y, to.z, target.GetName(), order.place);
+        TravelOrders::Post(botAI, std::move(order));
+        return true;
+    }
+
+    // `playerbots fight list`: the active fights on the GM's map (every open-world map from the console)
+    static bool HandleFightListCommand(ChatHandler* handler) { return WorldPvp::HandleListCommand(handler); }
+
+    // `playerbots fight bot <bot>`: the bot's fight memory, answered by the bot's next update
+    static bool HandleFightBotCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        return botAI && WorldPvp::HandleBotCommand(handler, botAI);
+    }
+
+    // `playerbots fight ready <bot>` (labs): the bot's next chance starts a fight when the hard rules pass (WP4)
+    static bool HandleFightReadyCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        return botAI && WorldPvp::HandleReadyCommand(handler, botAI);
+    }
+
+    // `playerbots fight meet <bot> <enemy bot>` (labs): places the enemy bot beside the bot, PvP flagged, no attack
+    static bool HandleFightMeetCommand(ChatHandler* handler, PlayerIdentifier target, PlayerIdentifier enemy)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        PlayerbotAI* enemyAI = botAI ? GetOnlineBotAI(handler, enemy) : nullptr;
+        return enemyAI && WorldPvp::HandleMeetCommand(handler, botAI, enemyAI);
     }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update
@@ -372,8 +528,167 @@ public:
         order.stop = true;
         order.place = "stop";
         order.postedMs = getMSTime();
-        TravelOrders::Post(botAI->GetBot()->GetGUID(), std::move(order));
+        TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE stop: {} ordered", target.GetName());
+        return true;
+    }
+
+    // A test's constraint change (TestConstraints, functional tests): posted like a travel order, so the bot's map
+    // thread applies it ahead of the AI's delays and writes a Constraint row
+    static void PostConstraints(PlayerbotAI* botAI, uint16 on, uint16 off)
+    {
+        TravelOrder order;
+        order.on = on;
+        order.off = off;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+    }
+
+    // `playerbots route constraint <bot> <name>[,<name>..] on|off`: sets or clears any row of `route constraints`
+    static bool HandleRouteConstraintCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        std::string_view text(rest);
+        while (!text.empty() && text.back() == ' ')
+            text.remove_suffix(1);
+        size_t const cut = text.find_last_of(' ');
+        std::string_view const state = cut == std::string_view::npos ? std::string_view() : text.substr(cut + 1);
+        bool const on = state == "on";
+        TestConstraints::Parsed const parsed =
+            TestConstraints::Parse(cut == std::string_view::npos ? std::string_view() : text.substr(0, cut));
+        if ((!on && state != "off") || (!parsed.set && parsed.bad.empty()))
+        {
+            handler->SendErrorMessage("Usage: .playerbots route constraint <bot> <name>[,<name>..] on|off; names: {}",
+                                      TestConstraints::Names());
+            return false;
+        }
+        if (!parsed.set)
+        {
+            handler->SendErrorMessage("ROUTE constraint: unknown '{}' ({})", parsed.bad, TestConstraints::Names());
+            return false;
+        }
+        PostConstraints(botAI, on ? parsed.set : 0, on ? 0 : parsed.set);
+        handler->PSendSysMessage("ROUTE constraint: {} {} {} ordered", target.GetName(),
+                                 TestConstraints::Format(parsed.set), std::string(state));
+        return true;
+    }
+
+    // `playerbots route constraints`: the constraint table, a line per row (the runner and the docs take names here)
+    static bool HandleRouteConstraintsCommand(ChatHandler* handler)
+    {
+        for (TestConstraints::Row const& row : TestConstraints::ROWS)
+            handler->PSendSysMessage("ROUTE constraint {} {} {}", row.name, TestConstraints::KindName(row.kind),
+                                     row.where);
+        handler->PSendSysMessage("ROUTE constraints: {}", std::size(TestConstraints::ROWS));
+        return true;
+    }
+
+    // `playerbots route hold <bot>`: the four choice rows on; the bot ends its status and chooses nothing on its own
+    // (no planner goal, random status, errand, inn bind or hearth); orders still run, then it holds again
+    static bool HandleRouteHoldCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        PostConstraints(botAI, TestConstraints::HOLD, 0);
+        handler->PSendSysMessage("ROUTE hold: {} ordered", target.GetName());
+        return true;
+    }
+
+    // `playerbots route release <bot> [planner|status|errand|hearth ...]`: the named choices stay off, the other choice
+    // rows go; none named = every choice row goes. State rows stay as they are
+    static bool HandleRouteReleaseCommand(ChatHandler* handler, PlayerIdentifier target, Tail choices)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        TestConstraints::Parsed const parsed = TestConstraints::Parse(std::string_view(choices));
+        uint16 const states = parsed.set & TestConstraints::STATES;
+        if (!parsed.bad.empty() || states)
+        {
+            handler->SendErrorMessage("ROUTE release: unknown choice '{}' ({})",
+                                      parsed.bad.empty() ? TestConstraints::Format(states) : parsed.bad,
+                                      TestConstraints::Format(TestConstraints::CHOICES));
+            return false;
+        }
+        PostConstraints(botAI, parsed.set, static_cast<uint16>(TestConstraints::HOLD & ~parsed.set));
+        handler->PSendSysMessage("ROUTE release: {} ordered (kept off: {})", target.GetName(),
+                                 TestConstraints::Format(parsed.set));
+        return true;
+    }
+
+    // `playerbots route aboard <bot> <entry>` (tests): stands the bot on the deck of that docked ship or zeppelin on
+    // its map, as its passenger; the outcome is the world-log row Aboard placed|failed|refused:<why>
+    static bool HandleRouteAboardCommand(ChatHandler* handler, PlayerIdentifier target, uint32 entry)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        if (!entry)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route aboard <bot> <transport entry>");
+            return false;
+        }
+        TravelOrder order;
+        order.aboard = entry;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE aboard: {} on {} ordered", target.GetName(), entry);
+        return true;
+    }
+
+    // `playerbots route links transport|flight`: the loaded travel graph's links of that kind, a line each (the test
+    // runner's case generators read them). World thread: the graph is immutable once ready
+    static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
+    {
+        std::string_view const type(kind);
+        bool const flights = type == "flight";
+        if (!flights && type != "transport")
+        {
+            handler->SendErrorMessage("Usage: .playerbots route links transport|flight");
+            return false;
+        }
+        TravelGraph const& graph = TravelGraph::Instance();
+        if (!graph.IsReady())
+        {
+            handler->SendErrorMessage("ROUTE links: the travel graph is not ready");
+            return false;
+        }
+        TravelLinkType const wanted = flights ? TravelLinkType::Flight : TravelLinkType::Transport;
+        uint32 count = 0;
+        for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
+        {
+            TravelGraphLink const& link = graph.GetLink(i);
+            if (link.type != wanted)
+                continue;
+            TravelGraphNode const& from = graph.GetNode(link.from);
+            TravelGraphNode const& to = graph.GetNode(link.to);
+            if (flights)
+            {
+                TravelTaxiPath const* path = graph.TaxiPathOf(link);
+                if (!path)
+                    continue;
+                bool const alliance = path->teams & TravelGraph::TAXI_ALLIANCE;
+                bool const horde = path->teams & TravelGraph::TAXI_HORDE;
+                char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
+                handler->PSendSysMessage(
+                    "ROUTE link flight {} {} {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
+                    path->from, path->to, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x,
+                    to.y, to.z);
+            }
+            else
+            {
+                TransportTemplate const* motion = sTransportMgr->GetTransportTemplate(link.object);
+                uint32 const periodSeconds = motion ? motion->pathTime / IN_MILLISECONDS : 0;  // 0: an elevator
+                handler->PSendSysMessage(
+                    "ROUTE link transport {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
+                    periodSeconds, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z);
+            }
+            ++count;
+        }
+        handler->PSendSysMessage("ROUTE links: {} {}", count, std::string(type));
         return true;
     }
 
@@ -385,8 +700,10 @@ public:
 
         if (command.empty())
         {
-            handler->SendErrorMessage("Usage: .playerbots inspect <bot> <query> (state, position, tpos, "
-                                      "movement, target, hp, strategy, action, values, travel, budget)");
+            handler->SendErrorMessage(
+                "Usage: .playerbots inspect <bot> <query> (state, position, tpos, "
+                "movement, target, hp, strategy, action, values, travel, budget, "
+                "constraints, hold)");
             return false;
         }
 

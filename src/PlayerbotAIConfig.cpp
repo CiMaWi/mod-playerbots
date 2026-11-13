@@ -1233,6 +1233,46 @@ bool PlayerbotAIConfig::Initialize()
         naturalNumber("Path", "Walk.MaxLegYards", NaturalPath.WalkMaxLegYards, MaxNaturalYards);
     }
 
+    // World PvP of persistent bots (Playerbots.WorldPvp.*), optional keys whose defaults (WorldPvpConfig) are the
+    // conf.dist values; the options the code does not read yet keep their declared defaults
+    {
+        auto const pvpNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
+        {
+            value = std::clamp<uint32>(
+                sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldPvp.") + key, value, false), minimum,
+                maximum);
+        };
+        constexpr uint32 MaxBookCount = 1000;
+        constexpr uint32 MaxRadiusYards = 2000;
+        constexpr uint32 MaxPvpMinutes = 24 * 60;
+        constexpr uint32 MaxGraceSeconds = 600;
+        WorldPvp = WorldPvpConfig{};
+        pvpNumber("MeetingMemorySeconds", WorldPvp.MeetingMemorySeconds, 0, DAY);
+        pvpNumber("RecentEnemies", WorldPvp.RecentEnemies, 1, WorldPvp::MAX_RECENT_ENEMIES);
+        pvpNumber("Book.MaxActiveFights", WorldPvp.MaxActiveFights, 1, MaxBookCount);
+        pvpNumber("Book.MaxParticipants", WorldPvp.MaxParticipants, 2, MaxBookCount);
+        pvpNumber("Book.FightRadiusYards", WorldPvp.FightRadiusYards, 1, MaxRadiusYards);
+        pvpNumber("Book.FightRadiusMaxYards", WorldPvp.FightRadiusMaxYards, 1, MaxRadiusYards);
+        pvpNumber("Book.MaxFightMinutes", WorldPvp.MaxFightMinutes, 1, MaxPvpMinutes);
+        pvpNumber("Book.EndGraceSeconds", WorldPvp.EndGraceSeconds, 0, MaxGraceSeconds);
+        pvpNumber("CalmMinutes", WorldPvp.CalmMinutes, 0, MaxPvpMinutes);
+        WorldPvp.TestCommands =
+            sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.TestCommands", WorldPvp.TestCommands, false);
+        // The shape weights of the fight rules the nights tune (FightRules.h clamps them again)
+        auto const pvpWeight = [](char const* key, float& value, float maximum)
+        {
+            float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
+            value = read >= 0.0f && read <= maximum ? read : std::clamp(value, 0.0f, maximum);
+        };
+        pvpWeight("OddsCaution", WorldPvp.OddsCaution, 0.5f);
+        pvpWeight("Join.Base", WorldPvp.JoinBase, 1.0f);
+        pvpWeight("Join.Aggression", WorldPvp.JoinAggression, 1.0f);
+        pvpWeight("Join.Helpfulness", WorldPvp.JoinHelpfulness, 1.0f);
+        pvpWeight("Join.Goal", WorldPvp.JoinGoal, 1.0f);
+        pvpWeight("Retreat.CautionHealth", WorldPvp.RetreatCautionHealth, 1.0f);
+        pvpWeight("Retreat.CautionOdds", WorldPvp.RetreatCautionOdds, 0.5f);
+    }
+
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults
     // (WorldTravelConfig) are the conf.dist values
     {
@@ -1316,6 +1356,8 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Planner.RecheckYards", WorldTravel.PlannerRecheckYards, MaxTravelYards);
         WorldTravel.PlannerRecheckYards = std::max<uint32>(WorldTravel.PlannerRecheckYards, MinRecheckYards);
         travelNumber("Planner.NoopSeconds", WorldTravel.PlannerNoopSeconds, MaxNoopSeconds);
+        WorldTravel.PlannerGoals =
+            sConfigMgr->GetOption<bool>("Playerbots.WorldTravel.Planner.Goals", WorldTravel.PlannerGoals, false);
         travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
         WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }

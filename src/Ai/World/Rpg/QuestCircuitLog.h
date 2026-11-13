@@ -18,13 +18,15 @@
 // WT13b r6c: the circuit's choices as world-log decision rows (kind "circuit", family rule 14). A pure mapping from a
 // plan to rows (no Player, no WorldLog), so the offline selftest checks it and WT16 emits the same rows where it
 // applies plans. choice and reason are words of [a-z0-9_:]; the numbers in a choice are quest ids and camp indexes:
-//   take:<quest>            reason value_per_minute, or delivery_elsewhere for a carried quest; value = value per
-//   minute defer:<quest>           reason log_full, too_far, risky, no_area, elite_group_solo or later_trip; value 0
+// clang-format off
+//   take:<quest>            reason value_per_minute, or delivery_elsewhere for a carried quest; value = per minute
+//   defer:<quest>           reason log_full, too_far, risky, no_area, elite_group_solo or later_trip; value 0
 //   defer:more              the deferrals beyond the cap, value = their count
 //   abandon:<quest>         reason grey, overtime, deaths, log_space or unindexed; value 0
 //   move:<chain|delivery|bracket>:camp<N>[:q<quest>]  reason chain_quest_takeable_there, delivery, zone_bracket
 //   move:nowhere            reason target_not_actionable, log_full_no_delivery or no_target; value = 0
 // The move row's value is the walk seconds.
+// clang-format on
 namespace Planner::CircuitLog
 {
 constexpr std::size_t MAX_ROWS = 40;  // one plan cannot flood the stream; surplus deferrals fold into defer:more

@@ -113,7 +113,8 @@ protected:
     const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
 };
 
-// Chooses the nearest friendly vendor on the bot's map and starts an errand there when the trip is worth it
+// Plans a trip (WorldTravel::PlanTrip): the errands the providers offer go to friendly vendors and quest enders near
+// the bot, each stop only when its errands are worth its detour; starts the trip when it has a stop
 class NewRpgStartErrandsAction : public NewRpgBaseAction
 {
 public:
@@ -121,7 +122,8 @@ public:
     bool Execute(Event event) override;
 };
 
-// Walks to the errand's vendor, sells, buys and repairs there, then goes IDLE
+// Walks the trip's stops; at each it sells, buys and repairs at the vendor and turns in the completed quests whose
+// ender stands there, then goes IDLE
 class NewRpgErrandsAction : public NewRpgBaseAction
 {
 public:
@@ -150,7 +152,8 @@ private:
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
     bool Arrive(NewRpgInfo::Travel& data);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
-    void EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source);
+    // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
+    void EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source);
 };
 
 // Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its
@@ -162,21 +165,29 @@ public:
     bool Execute(Event event) override;
 };
 
-// GM orders for RPG_TRAVEL (`playerbots route go|stop`, tests): the command posts on the world thread, the bot's map
-// thread takes its order in NewRpgStatusUpdateAction (one atomic load per tick while no order waits). An order not
-// taken within a minute (the bot is not in the rpg strategy, or logged out) is dropped
+// GM orders for tests (`playerbots route go|stop|transport|constraint|hold|release|aboard`): the command posts on the
+// world thread, the bot's map thread takes its order at its next AI update, ahead of the AI's delays (TakeAndApply
+// from PlayerbotAI::UpdateAI: one atomic load per update while no order waits for the bot; an order that moves the
+// bot waits until it is out of combat, a constraint change never). A bot outside the new rpg strategy refuses its
+// order; an order not taken within a minute (the bot logged out or kept fighting) is dropped
 struct TravelOrder
 {
     WorldPosition dest{};
     std::string place;  // the name in the log lines
     bool stop{false};   // end the bot's trip instead
     uint32 postedMs{0};
+    uint16 on{0};  // TestConstraints bits set, then those cleared (`off`), before anything else of the order
+    uint16 off{0};
+    uint32 aboard{0};  // `route aboard`: the transport entry to stand the bot on; 0 = none
 };
 
 namespace TravelOrders
 {
-void Post(ObjectGuid bot, TravelOrder order);
-bool Take(ObjectGuid bot, TravelOrder& order);
+void Post(PlayerbotAI* botAI, TravelOrder order);
+bool TakeAndApply(PlayerbotAI* botAI, Player* bot);  // on the bot's map thread: the order taken and applied
+// The bot's state constraints applied again (a pet summoned since gets nofight); map thread, at every AI update of a
+// bot with a state row set
+void KeepConstraints(Player* bot, uint16 constraints);
 }  // namespace TravelOrders
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction

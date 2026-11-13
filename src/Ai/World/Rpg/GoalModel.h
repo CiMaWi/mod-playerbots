@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "ErrandRules.h"
 #include "ItemWorthRules.h"
 #include "QuestCircuit.h"
 #include "TraitRules.h"
@@ -78,6 +79,7 @@ constexpr float RISK_REFUSE = 1.0f;
 constexpr float GRIND_MINUTES = 20.0f;
 constexpr float MOVE_HORIZON_MINUTES = 60.0f;        // a hub's rate counts this long after the travel
 constexpr float MOVE_UNKNOWN_SHARE = 0.8f;           // a move target without an estimate: this share of the band's rate
+constexpr std::size_t NEXT_ZONE_HUBS = 4;            // hubs of other zones offered to an outlevelled bot
 constexpr float DELIVERY_OTHER_MAP_MINUTES = 30.0f;  // an ender on another map without a route: a long journey
 constexpr float TURN_IN_MINUTES = 0.5f;
 constexpr float GATHER_MINUTES = 0.25f;
@@ -88,8 +90,8 @@ constexpr float NEAR_VENDOR_MINUTES = 2.0f;
 constexpr float VISIT_MINUTES = 1.0f;
 constexpr std::uint32_t ORDER_PRESSURE_PERCENT = 15;  // an orderly bot sells this much earlier, an untidy one later
 constexpr std::uint32_t PRESSURE_MIN_PERCENT = 50;
-constexpr std::uint8_t REPAIR_PERCENT = 20;
-constexpr float REPAIR_MINUTES_SAVED = 10.0f;
+using WorldTravel::REPAIR_MINUTES_SAVED;  // the errand rules own the repair worth (WT15)
+using WorldTravel::REPAIR_PERCENT;
 constexpr std::uint32_t BAG_BUDGET_PERCENT = 50;
 
 constexpr float REST_BASE = 0.5f;  // rests below this share of health or mana, caution raises it, drive lowers it
@@ -298,6 +300,7 @@ inline CircuitWeights CircuitWeightsFor(Model const& model)
 // The bot's hub as the circuit sees it
 struct HereInfo
 {
+    // NO_HUB: PlanGoals finds it from the circuit's home camp (CircuitHub; the live bots)
     std::uint32_t hub{0};
     std::uint32_t zoneLow{0};  // the zone's level bracket, 0/0 = unknown
     std::uint32_t zoneHigh{0};
@@ -451,6 +454,10 @@ struct Option
     std::string reason;
     std::vector<std::string> traitNotes;
 };
+
+// The reason of the option that stands for the circuit at the bot's own hub; a quest option with another reason
+// names a delivery or a move to another hub or camp in the zone (GoalApply::RoleOf)
+constexpr char const* CIRCUIT_REASON = "circuit";
 
 // <kind>:<target>, the target with its type where the kind does not say it (money:spot_7, move_zone:camp_21)
 inline std::string ChoiceWord(Option const& option)
@@ -705,10 +712,15 @@ private:
             Option option;
             option.kind = GoalKind::Quest;
             option.target = here.hub;
+            if (here.hub == NO_HUB && plan->homeCamp != NO_CAMP)
+            {
+                option.target = plan->homeCamp;  // a circuit outside every hub's core: its home camp names it
+                option.targetType = TargetType::Camp;
+            }
             option.place = plan->start;
             option.minutes = plan->minutes;
             option.expected = plan->value;
-            option.reason = "circuit";
+            option.reason = CIRCUIT_REASON;
             option.crowd = CompetingCrowd(here.competingBots);
             Apply(option, Factor(W().thoroughness, THOROUGH_QUEST_SPAN), W().thoroughness, "thorough", "hasty");
             ApplyHome(option, here.home);
@@ -1093,7 +1105,18 @@ struct GoalPlan
 {
     CircuitPlan circuit;
     Ranked ranked;
+    std::uint32_t hub{NO_HUB};  // the bot's hub as the plan saw it (Situation::here.hub)
 };
+
+// The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
+inline std::uint32_t CircuitHub(CircuitPlan const& circuit, CircuitContext const& context)
+{
+    if (circuit.homeCamp == NO_CAMP || !context.quests || !context.indexes ||
+        circuit.homeCamp >= context.quests->camps.size())
+        return NO_HUB;
+    std::optional<Nearby> const hub = CampHub(context.quests->camps[circuit.homeCamp], *context.indexes);
+    return hub ? hub->index : NO_HUB;
+}
 
 // A carried quest the bot can turn in now: complete in its log, or one with no objective but the turn-in (a take
 // carried to its ender). One with objectives left is no delivery yet: its ender is no goal until they are done
@@ -1150,13 +1173,118 @@ inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext cons
     return deliveries;
 }
 
+inline bool HomeSide(ZoneSide side, std::uint8_t team) { return side == (team ? ZoneSide::Horde : ZoneSide::Alliance); }
+
+inline bool EnemySide(ZoneSide side, std::uint8_t team)
+{
+    return side == (team ? ZoneSide::Alliance : ZoneSide::Horde);
+}
+
+// A camp gives at least the bracket move's few quests the bot could take (the circuit's Takeable without its log and
+// chain state). A quest's race mask also keeps the bot out of the enemy's towns in a contested zone
+inline bool OffersQuests(Snapshot const& bot, QuestIndex const& quests, QuestCamp const& camp, std::uint32_t greyDiff)
+{
+    std::int32_t const level = bot.level;
+    auto const rewarded = [&bot](std::uint32_t questId)
+    { return std::binary_search(bot.rewardedQuests.begin(), bot.rewardedQuests.end(), questId); };
+    std::uint32_t offered = 0;
+    for (std::uint32_t const id : camp.quests)
+    {
+        QuestRecord const* quest = quests.Find(id);
+        if (!quest || (quest->flags & (Circuit::REPEAT_FLAGS | Circuit::INSTANCE_FLAGS)) ||
+            ((quest->flags & Circuit::GROUP_FLAGS) && bot.groupSize <= 1) || quest->prev < 0 ||
+            !Eligible(*quest, bot.race, bot.cls, bot.level))
+            continue;
+        std::int32_t const questLevel = Circuit::QuestLevel(*quest, bot.level);
+        if (questLevel > level + Circuit::MAX_LEVELS_ABOVE || level > questLevel + static_cast<std::int32_t>(greyDiff))
+            continue;
+        if (rewarded(id) || (quest->prev > 0 && !rewarded(static_cast<std::uint32_t>(quest->prev))) ||
+            std::any_of(bot.quests.begin(), bot.quests.end(), [id](QuestSlot const& slot) { return slot.quest == id; }))
+            continue;
+        if (++offered >= Circuit::MOVE_MIN_QUESTS)
+            return true;
+    }
+    return false;
+}
+
+// What the live caller leaves unset, from the immutable indexes on the worker: the zone's bracket and side, and for a
+// bot past its zone's bracket the nearest hubs of other zones whose bracket fits it, one per zone, on its map. A bot
+// within its bracket moves on when its circuit runs dry (AddCircuit). The hubs' value is the dry move's estimate for
+// an unknown hub: a PlanCircuit per hub would cost too much
+inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, Model const& model,
+                            Situation& situation)
+{
+    if (!context.indexes)
+        return;
+    PlannerIndexes const& indexes = *context.indexes;
+    HereInfo& here = situation.here;
+    if (!here.zoneLow && !here.zoneHigh)
+        if (ZoneRecord const* zone = indexes.FindZone(bot.zone))
+        {
+            here.zoneLow = zone->low;
+            here.zoneHigh = zone->high;
+            here.home = HomeSide(zone->side, bot.team);
+        }
+    if (!situation.hubs.empty() || !context.quests || !here.zoneHigh || bot.level <= here.zoneHigh)
+        return;
+
+    QuestIndex const& quests = *context.quests;
+    Place const& at = bot.position;
+    std::vector<std::uint32_t> zones;
+    for (Nearby const& nearby : quests.NearestCamps(at.map, at.x, at.y, at.z, quests.camps.size()))
+    {
+        QuestCamp const& camp = quests.camps[nearby.index];
+        if (std::find(zones.begin(), zones.end(), camp.zoneId) != zones.end())
+            continue;  // the bot's own zone fails the bracket test below
+        ZoneRecord const* zone = indexes.FindZone(camp.zoneId);
+        if (!zone || !zone->high || bot.level < zone->low || bot.level > zone->high ||
+            EnemySide(zone->side, bot.team) || !OffersQuests(bot, quests, camp, context.greyDiff))
+            continue;
+        std::optional<Nearby> const hub = CampHub(camp, indexes);
+        if (!hub || std::any_of(situation.hubs.begin(), situation.hubs.end(),
+                                [&hub](HubOption const& listed) { return listed.hub == hub->index; }))
+            continue;
+        Hub const& record = indexes.hubs[hub->index];
+        HubOption option;
+        option.hub = hub->index;
+        option.zone = camp.zoneId;
+        option.place = {record.mapId, record.x, record.y, record.z};
+        if (context.travel)
+        {
+            float const seconds = context.travel(at, option.place);
+            if (!std::isfinite(seconds) || seconds < 0.0f)
+                continue;  // no way there
+            option.travelMinutes = seconds / SECONDS_PER_MINUTE;
+        }
+        else
+            option.travelMinutes =
+                WorldTravel::WalkMinutes(std::hypot(record.x - at.x, record.y - at.y), model.runSpeed);
+        option.valuePerMinute = BAND_XP_PER_MINUTE[model.band] * MOVE_UNKNOWN_SHARE;
+        option.home = HomeSide(zone->side, bot.team);
+        if (context.crowding)
+        {
+            auto const crowd = context.crowding->byArea.find(AreaKey(record.mapId, record.areaId));
+            if (crowd != context.crowding->byArea.end())
+                option.botsAtHub = crowd->second.bots;
+        }
+        situation.hubs.push_back(option);
+        zones.push_back(camp.zoneId);
+        if (situation.hubs.size() >= NEXT_ZONE_HUBS)
+            break;
+    }
+}
+
 // The planner job: the circuit with the bot's own weights, then every goal beside it
 inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation situation)
 {
     GoalPlan plan;
     Model const model = Prepare(bot, situation);
+    FillFromIndexes(bot, context, model, situation);
     context.weights = CircuitWeightsFor(model);
     plan.circuit = PlanCircuit(bot, context);
+    if (situation.here.hub == NO_HUB)
+        situation.here.hub = CircuitHub(plan.circuit, context);
+    plan.hub = situation.here.hub;
     situation.circuit = &plan.circuit;
     if (situation.deliveries.empty())
         situation.deliveries = Deliveries(bot, context, plan.circuit, model.runSpeed);

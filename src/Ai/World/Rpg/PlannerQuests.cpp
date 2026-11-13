@@ -899,6 +899,39 @@ Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const&
     };
 }
 
+Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<QuestProgress> const& progress,
+                     Goals::Situation const& situation)
+{
+    CircuitData data = CircuitDataNow();
+    CircuitContext context = data.Context();
+    context.protectedQuests = protectedQuests;
+    context.progress = progress;
+    return [data = std::move(data), context = std::move(context),
+            situation](Snapshot const& snapshot) -> std::optional<Payload>
+    {
+        // A failed job answers without a plan: its bot falls back at once (fallback_failed) instead of waiting out
+        // the pool's keep time for a result that never comes
+        if (!data.quests)
+            return Payload{GoalsAnswer{}};
+        auto const started = std::chrono::steady_clock::now();
+        std::shared_ptr<Goals::GoalPlan const> plan;
+        try
+        {
+            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, situation));
+        }
+        catch (...)
+        {
+            return Payload{GoalsAnswer{}};
+        }
+        if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner goals compute"))
+            row->Record(static_cast<uint64>(std::max<long long>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
+                    .count(),
+                0)));
+        return Payload{GoalsAnswer{std::move(plan)}};
+    };
+}
+
 bool RunCircuitHarness(ChatHandler* handler)
 {
     if (!IndexesReady() || !QuestsReady())
@@ -1279,6 +1312,7 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     CircuitData const data = CircuitDataNow();
     Snapshot const snapshot = FillSnapshot(player, 0);
     Goals::Situation situation;
+    situation.here.hub = NO_HUB;  // as the live job: found from the circuit
     situation.healthPercent = player->GetHealthPct();
     uint32 const maxMana = player->GetMaxPower(POWER_MANA);
     situation.manaPercent =

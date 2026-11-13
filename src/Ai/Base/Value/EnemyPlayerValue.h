@@ -24,6 +24,10 @@ public:
 
 public:
     bool AcceptUnit(Unit* unit) override;
+
+private:
+    // nullptr when today's rules take the unit as an attack-on-sight target, else the word of the rule that passed
+    char const* Refusal(Unit* unit);
 };
 
 class EnemyPlayerValue : public UnitCalculatedValue

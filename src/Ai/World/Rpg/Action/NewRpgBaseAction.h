@@ -64,7 +64,8 @@ protected:
     static WorldPosition SelectRandomGrindPos(Player* bot);
     static WorldPosition SelectRandomCampPos(Player* bot);
     bool SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path);
-    bool RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus);
+    // reason: the rpg_status row's reason word for a started pick ("weights", or a planner bot's fallback word)
+    bool RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason = "weights");
     bool CheckRpgStatusAvailable(NewRpgStatus status);
 
     /* FLIGHTS (the random flight status and RPG_TRAVEL's flight legs) */

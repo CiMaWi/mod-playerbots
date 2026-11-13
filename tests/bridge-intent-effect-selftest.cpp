@@ -1436,5 +1436,156 @@ int main()
                   mutations == writes && f.AI.Values.Formation.Name == "near",
               "no restore or capture during startup");
     }
+    // WT18a: each goal verb hands the planner one order after the admission and the prologue, with its place or
+    // quest; the planner's answer is the result and the reason. No group is needed and nothing else changes.
+    {
+        using Planner::GoalApply::BridgeAnswer;
+        using Planner::GoalApply::BridgeOrder;
+        struct GoalVerb
+        {
+            Intent Operation;
+            BridgeOrder Order;
+            char const* Place;
+            uint32_t Quest;
+        };
+        std::vector<GoalVerb> const verbs = {
+            {Intent::GoTo, BridgeOrder::GoTo, "goldshire", 0},     {Intent::Quest, BridgeOrder::Quest, "", 33},
+            {Intent::Errands, BridgeOrder::Errands, "", 0},        {Intent::SetHearth, BridgeOrder::SetHearth, "", 0},
+            {Intent::GrindHere, BridgeOrder::GrindHere, "", 0},    {Intent::GatherHere, BridgeOrder::GatherHere, "", 0},
+            {Intent::MeetAt, BridgeOrder::MeetAt, "1.5,2,3,0", 0}, {Intent::PausePlan, BridgeOrder::Pause, "", 0},
+            {Intent::ResumePlan, BridgeOrder::Resume, "", 0}};
+        auto const goal = [](Fixture& f, GoalVerb const& verb)
+        {
+            f.Command.Operation = verb.Operation;
+            f.Command.Target = 0;
+            f.Command.PlaceName = verb.Place;
+            f.Command.QuestId = verb.Quest;
+            bridgeCalls = 0;
+            bridgeAnswer = BridgeAnswer::Done;
+            bridgeBot = nullptr;
+            bridgeAI = nullptr;
+            bridgePlace = "unset";
+            bridgeQuest = 99;
+        };
+        auto const noOtherEffect = []
+        {
+            return mutations == 0 && attacks == 0 && marks == 0 && follows == 0 && stays == 0 && stops == 0 &&
+                   flees == 0 && moves == 0 && paths == 0;
+        };
+        for (GoalVerb const& verb : verbs)
+        {
+            {
+                Fixture f;
+                goal(f, verb);
+                Check(f.Run() == Result::Applied && f.Authorizations == 1 && bridgeCalls == 1,
+                      "a goal verb is delivered: one order to the planner after one admission");
+                Check(bridgeOrder == verb.Order && bridgePlace == verb.Place && bridgeQuest == verb.Quest &&
+                          bridgeBot == &f.Bot && bridgeAI == &f.AI,
+                      "the planner gets the verb's order, place and quest for this bot");
+                Check(noOtherEffect() && PlayerbotBridge::LastingPart(verb.Operation) == Part::None,
+                      "a goal verb changes nothing else and has no lasting part");
+            }
+            {
+                Fixture f;
+                Ungrouped(f);
+                goal(f, verb);
+                Check(f.Run() == Result::Applied && bridgeCalls == 1, "a goal verb needs no group");
+            }
+            std::vector<std::pair<BridgeAnswer, Refusal>> const answers = {
+                {BridgeAnswer::NotPlanner, Refusal::NotPlanner},     {BridgeAnswer::GoalHeld, Refusal::GoalHeld},
+                {BridgeAnswer::UnknownPlace, Refusal::UnknownPlace}, {BridgeAnswer::NoRoute, Refusal::NoRoute},
+                {BridgeAnswer::NoSuchQuest, Refusal::NoSuchQuest},   {BridgeAnswer::NothingHere, Refusal::NothingHere},
+                {BridgeAnswer::AlreadyThere, Refusal::AlreadyThere}, {BridgeAnswer::CannotNow, Refusal::CannotNow}};
+            for (auto const& [answer, reason] : answers)
+            {
+                Fixture f;
+                goal(f, verb);
+                bridgeAnswer = answer;
+                Check(f.Run() == Result::Rejected && f.Why == reason && bridgeCalls == 1 && f.Authorizations == 1,
+                      "the planner's refusal is the order's reason (mutant: a refusal dropped)");
+            }
+            {
+                Fixture f;
+                goal(f, verb);
+                bridgeAnswer = BridgeAnswer::Failed;
+                Check(f.Run() == Result::Failed && bridgeCalls == 1, "an executor that did not start is a failure");
+            }
+            std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> const prologue = {
+                {[](Fixture& f) { f.Bot.Alive = false; }, Refusal::Dead},
+                {[](Fixture& f) { f.Bot.Battleground = true; }, Refusal::Battleground},
+                {[](Fixture& f) { f.Bot.State |= UNIT_STATE_IN_FLIGHT; }, Refusal::Travelling}};
+            for (auto const& [change, reason] : prologue)
+            {
+                Fixture f;
+                goal(f, verb);
+                change(f);
+                f.Refused(reason);
+                Check(bridgeCalls == 0, "the prologue refuses before the planner (mutant: no prologue for goals)");
+            }
+            std::vector<std::function<void(Fixture&)>> const stale = {
+                [](Fixture& f) { f.Command.Group = 0; }, [](Fixture& f) { f.Human.Team = 1; },
+                [](Fixture& f) { f.Bot.World = false; }, [](Fixture& f) { f.AI.BotAI = false; }};
+            for (auto const& change : stale)
+            {
+                Fixture f;
+                goal(f, verb);
+                change(f);
+                f.Denied();
+                Check(bridgeCalls == 0, "a stale or foreign order reaches no planner");
+            }
+        }
+        // Stray or missing fields: a mapping error, refused before the admission callback and the planner.
+        std::vector<std::pair<GoalVerb, std::function<void(Fixture&)>>> const malformed = {
+            {verbs[0], [](Fixture& f) { f.Command.PlaceName.clear(); }},
+            {verbs[6], [](Fixture& f) { f.Command.PlaceName.clear(); }},
+            {verbs[0], [](Fixture& f) { f.Command.PlaceName = std::string(PlayerbotBridge::MaxPlaceName + 1, 'a'); }},
+            {verbs[1], [](Fixture& f) { f.Command.PlaceName = "goldshire"; }},
+            {verbs[4], [](Fixture& f) { f.Command.PlaceName = "goldshire"; }},
+            {verbs[1], [](Fixture& f) { f.Command.QuestId = 0; }},
+            {verbs[0], [](Fixture& f) { f.Command.QuestId = 33; }},
+            {verbs[7], [](Fixture& f) { f.Command.QuestId = 33; }},
+            {verbs[2], [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; }},
+            {verbs[5], [](Fixture& f) { f.Command.Shape = FormationShape::Line; }},
+            {verbs[8], [](Fixture& f) { f.Command.Enabled = true; }},
+            {verbs[3], [](Fixture& f) { f.Command.VisibilityDistance = 0.0f; }}};
+        for (auto const& [verb, change] : malformed)
+        {
+            Fixture f;
+            goal(f, verb);
+            change(f);
+            f.Denied();
+            Check(f.Authorizations == 0 && bridgeCalls == 0,
+                  "a malformed goal order reaches neither admission nor planner");
+        }
+        {
+            Fixture f;
+            goal(f, verbs[0]);
+            f.Command.PlaceName = std::string(PlayerbotBridge::MaxPlaceName, 'a');
+            Check(f.Run() == Result::Applied && bridgePlace.size() == PlayerbotBridge::MaxPlaceName,
+                  "a place of the longest length passes");
+        }
+        for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Position, Intent::SaveMana})
+        {
+            Fixture f;
+            f.OneShot(operation);
+            f.Command.PlaceName = "goldshire";
+            f.Denied();
+            Fixture g;
+            g.OneShot(operation);
+            g.Command.QuestId = 33;
+            g.Denied();
+            Check(f.Authorizations == 0 && g.Authorizations == 0, "no place or quest on the other verbs");
+        }
+        {
+            Fixture f;
+            goal(f, verbs[0]);
+            Check(OllamaBotRandomChatter::Run(
+                      f.Command, [] { return true; }, true) == Result::Rejected &&
+                      bridgeCalls == 0,
+                  "a goal order off the world thread reaches no planner");
+            Check(OllamaBotRandomChatter::Run(f.Command, [] { return false; }) == Result::Rejected && bridgeCalls == 0,
+                  "a refused admission reaches no planner");
+        }
+    }
     std::cout << "PASS " << checks << " checks\n";
 }

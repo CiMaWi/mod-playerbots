@@ -131,7 +131,8 @@ struct Snapshot
 enum class JobKind : std::uint8_t
 {
     Noop,     // proves the machinery (WorldTravel.PlannerNoopSeconds); its answer changes nothing
-    Circuit,  // a questing circuit at the bot's hub (WT13b, QuestCircuit.h); WT16 applies it
+    Circuit,  // a questing circuit at the bot's hub (WT13b, QuestCircuit.h)
+    Goals,    // the ranked goals with their circuit (WT14, GoalModel.h); PlannerService applies them (WT16)
 };
 
 struct NoopAnswer
@@ -146,7 +147,17 @@ struct CircuitAnswer
     std::shared_ptr<CircuitPlan const> plan;
 };
 
-using Payload = std::variant<std::monostate, NoopAnswer, CircuitAnswer>;
+namespace Goals
+{
+struct GoalPlan;  // GoalModel.h
+}
+
+struct GoalsAnswer
+{
+    std::shared_ptr<Goals::GoalPlan const> plan;
+};
+
+using Payload = std::variant<std::monostate, NoopAnswer, CircuitAnswer, GoalsAnswer>;
 // A pure function of the snapshot. None or an exception = failed: the bot gets no result and keeps today's pick
 using Compute = std::function<std::optional<Payload>(Snapshot const&)>;
 
@@ -167,6 +178,7 @@ struct Result
     Payload payload;
     std::uint32_t computeNs{0};
     std::uint32_t waitNs{0};
+    std::uint64_t ticket{0};  // Submit's answer for this job: a bot applies only the result of the job it waits for
 };
 
 // A few microseconds of work that depends only on the snapshot (FNV-1a over its main fields)
@@ -321,14 +333,15 @@ public:
         _workers.clear();
     }
 
-    // Any thread; never waits for a job. False = the pool is not running. A bot has at most one waiting job: a newer
-    // one replaces it in place
-    bool Submit(std::uint64_t bot, Job job)
+    // Any thread; never waits for a job. Answers the job's ticket (its result carries it); 0 = the pool is not
+    // running. A bot has at most one waiting job: a newer one replaces it in place
+    std::uint64_t Submit(std::uint64_t bot, Job job)
     {
+        std::uint64_t ticket = 0;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_workers.empty() || _stopping)
-                return false;
+                return 0;
             ++_stats.submitted;
             auto const waiting = _waiting.find(bot);
             _expiredFor.erase(bot);
@@ -336,7 +349,7 @@ public:
             {
                 waiting->second = {std::move(job), Clock::now(), ++_sequence};
                 ++_stats.replaced;
-                return true;
+                return _sequence;
             }
             if (_waiting.size() >= _queueMax)
             {
@@ -345,11 +358,12 @@ public:
                 ++_stats.dropped;
             }
             _waiting.emplace(bot, Pending{std::move(job), Clock::now(), ++_sequence});
+            ticket = _sequence;
             _order.push_back(bot);
             _stats.peakWaiting = std::max(_stats.peakWaiting, static_cast<std::uint32_t>(_waiting.size()));
         }
         _wake.notify_one();
-        return true;
+        return ticket;
     }
 
     // Any thread: one-off background work with no bot (WT12b's index build). False = the pool is not running
@@ -564,7 +578,8 @@ private:
                           pending.job.kind,
                           std::move(*payload),
                           computeNs,
-                          waitNs};
+                          waitNs,
+                          pending.sequence};
             // With several workers the bot's later job can finish first (and be taken already), run beside this
             // one, or still wait: only the latest result is kept, else the bot would take the older one
             auto const done = _done.find(bot);
@@ -752,13 +767,15 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
                 std::this_thread::yield();
             return NoopCompute(snapshot);
         };
-        check(pool.Submit(1, job(1, 1, gated)), "Submit to a running pool");
+        std::array<std::uint64_t, 7> tickets{};
+        tickets[1] = pool.Submit(1, job(1, 1, gated));
+        check(tickets[1] != 0, "Submit to a running pool answers a ticket");
         check(waitFor([&entered] { return entered.load(); }), "the gated job starts");
         check(!pool.TryTake(99), "no result: the fast path");
-        pool.Submit(2, job(2, 1));
-        pool.Submit(2, job(2, 2));
+        std::uint64_t const replacedTicket = pool.Submit(2, job(2, 1));
+        check(pool.Submit(2, job(2, 2)) > replacedTicket, "the replacing job gets a newer ticket");
         for (std::uint64_t bot = 3; bot <= 6; ++bot)
-            pool.Submit(bot, job(bot, 1));
+            tickets[bot] = pool.Submit(bot, job(bot, 1));
         PoolStats const queued = pool.Stats();
         check(queued.replaced == 1, "a newer job replaces the bot's waiting one");
         check(queued.dropped == 1 && queued.waiting == SMALL_QUEUE, "the cap drops the oldest waiting job");
@@ -775,6 +792,7 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
                               ++got;
                               check(result->bot == bot && checksum(*result) == expected(bot, 1),
                                     "a gated-queue result is the bot's own");
+                              check(result->ticket == tickets[bot], "a result carries its job's ticket");
                           }
                       return got == kept.size();
                   }),

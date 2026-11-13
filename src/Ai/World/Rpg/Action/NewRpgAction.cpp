@@ -11,6 +11,8 @@
 #include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "DBCStores.h"
+#include "ErrandRules.h"
+#include "GameObjectModel.h"
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -18,6 +20,7 @@
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
+#include "ModelIgnoreFlags.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
@@ -37,11 +40,16 @@
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "QuestIndex.h"
 #include "Random.h"
+#include "RandomPlayerbotMgr.h"
 #include "RouteService.h"
+#include "RpgNavMeshSnap.h"
 #include "SharedDefines.h"
 #include "StartingHistoryRules.h"
+#include "TestConstraints.h"
 #include "Timer.h"
+#include "Transport.h"
 #include "TravelGraph.h"
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
@@ -51,6 +59,7 @@
 #include "WorldTravelRules.h"
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -85,6 +94,73 @@ void FinishErrands(PlayerbotAI* botAI, bool visited)
         EventLog::Emit(bot, "Inventory", "errand_abort", data->vendorEntry, int64(minutes));
 
     info.ChangeToIdle();
+}
+
+WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc)
+{
+    return {loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()};
+}
+
+// The equipped gear's durability in percent (as the planner snapshot counts it)
+uint32 EquippedDurabilityPercent(Player* bot)
+{
+    uint64 durability = 0;
+    uint64 maxDurability = 0;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+        {
+            durability += item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+            maxDurability += item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+        }
+    return static_cast<uint32>(
+        maxDurability ? std::min<uint64>(durability * WorldTravel::PERCENT / maxDurability, WorldTravel::PERCENT)
+                      : WorldTravel::PERCENT);
+}
+
+// The bot's completed quests with the nearest ender on its map (the planner's quest index; none before it is built)
+void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& completed)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index)
+        return;
+
+    uint32 const mapId = bot->GetMapId();
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = bot->GetQuestSlotQuestId(slot);
+        if (!questId || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+            continue;
+
+        Planner::QuestRecord const* record = index->Find(questId);
+        if (!record)
+            continue;
+
+        Planner::QuestPlace const* ender = nullptr;
+        float enderYards = std::numeric_limits<float>::max();
+        for (uint32 const placeIdx : record->enders)
+        {
+            if (placeIdx >= index->places.size() || index->places[placeIdx].mapId != mapId)
+                continue;
+
+            Planner::QuestPlace const& place = index->places[placeIdx];
+            float const yards = bot->GetExactDist(place.x, place.y, place.z);
+            if (yards < enderYards)
+            {
+                ender = &place;
+                enderYards = yards;
+            }
+        }
+        if (!ender)
+            continue;
+
+        WorldTravel::CompletedQuest quest;
+        quest.QuestId = questId;
+        quest.Ender = ender->entry;
+        quest.EnderIsObject = ender->isObject;
+        quest.Place = {ender->mapId, ender->x, ender->y, ender->z};
+        quest.WorthCopper = static_cast<float>(std::max<int32>(record->copperReward, 0));
+        completed.push_back(quest);
+    }
 }
 }  // namespace
 
@@ -304,30 +380,98 @@ namespace
 {
 constexpr uint32 HEARTHSTONE_SPELL = 8690;
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
+constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
 
 std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
-std::atomic<uint32> travelOrdersWaiting{0};                // travelOrders.size(): the map threads' cheap check
+
+// nofight: creatures neither attack an immune-to-NPC unit nor are attacked by it (Unit::_IsValidAttackTarget); setting
+// the flag ends the unit's PvE combat
+void SetNoFight(Unit* unit, bool on)
+{
+    if (unit && unit->IsImmuneToNPC() != on)
+        unit->SetImmuneToNPC(on);
+}
+
+void NoFight(Player& bot, bool on)
+{
+    SetNoFight(&bot, on);
+    for (Unit* controlled : bot.m_Controlled)
+        SetNoFight(controlled, on);
+}
+
+void ApplyNoFight(Player& bot) { NoFight(bot, true); }
+void UndoNoFight(Player& bot) { NoFight(bot, false); }
+void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
+void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
+
+// The state rows' apply and undo (TestConstraints::ROWS)
+constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
+    {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
+    {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
+};
+static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
+
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);  // beside the transport legs' deck helpers
+
+// A GM order ends the bot's trip: the Travel event and the trip decision with the word (stopped, held)
+void EndTripByOrder(Player* bot, NewRpgInfo& info, NewRpgInfo::Travel const& data, char const* word)
+{
+    LOG_INFO("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), word);
+    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
+    std::string const source = std::string("abort:") + word;
+    EventLog::Emit(bot, "Travel", source.c_str(), data.tripId, seconds);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", word, static_cast<float>(seconds),
+                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
+    info.ChangeToIdle();
+}
+
+// A test's constraint change: the state rows applied or undone, one Constraint row whose amount is the ms from the
+// command to the take (also on an idle bot). A choice row turning on ends the current status unless a trip comes with
+// it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit
+void ApplyConstraints(Player* bot, NewRpgInfo& info, TravelOrder const& order, bool tripFollows)
+{
+    uint16 const before = info.constraints;
+    uint16 const after = TestConstraints::Next(before, order.on, order.off);
+    info.constraints = after;
+    info.planner.snapshotDue = true;
+    TestConstraints::ChangeStates(STATE_OPS, *bot, before, after);
+    std::string const set = TestConstraints::Format(after);
+    uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
+    LOG_INFO("playerbots", "[Route] {} constraints: {} (taken after {} ms)", bot->GetName(), set, latencyMs);
+    EventLog::Emit(bot, CONSTRAINT_EVENT_TYPE, set.c_str(), 0, latencyMs);
+    if (!TestConstraints::EndsStatus(before, after) || tripFollows)
+        return;
+    WorldLog::StatusReason const reasonScope("hold");
+    if (auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data))
+        EndTripByOrder(bot, info, *data, "held");
+    else
+        info.ChangeToIdle();
+}
 
 // A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
 bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 {
-    WorldLog::StatusReason const reasonScope("order");
     NewRpgInfo& info = botAI->rpgInfo;
+    bool const trip = TestConstraints::HasTrip(order);
+    bool const constrained = order.on || order.off;
+    if (constrained)
+        ApplyConstraints(bot, info, order, trip);
+    if (order.aboard)
+        PlaceAboard(botAI, bot, order.aboard);
+    bool const applied = constrained || order.aboard;
+    if (!trip)
+        return applied;
+    WorldLog::StatusReason const reasonScope("order");
     if (order.stop)
     {
         auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data);
         if (!data)
         {
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
-            return false;
+            return applied;
         }
-        LOG_INFO("playerbots", "[Route] {} gives the trip up: stopped", bot->GetName());
-        uint32 const seconds = GetMSTimeDiffToNow(data->tripStartMs) / IN_MILLISECONDS;
-        EventLog::Emit(bot, "Travel", "abort:stopped", data->tripId, seconds);
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", "stopped", static_cast<float>(seconds),
-                           {{"replans", static_cast<float>(data->trip.replans)}}, data->tripId);
-        info.ChangeToIdle();
+        EndTripByOrder(bot, info, *data, "stopped");
         return true;
     }
 
@@ -341,29 +485,19 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     if (refusal)
     {
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
-        return false;
+        return applied;
     }
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
     info.ChangeToTravel(order.dest, order.place);
     return true;
 }
-}  // namespace
 
-void TravelOrders::Post(ObjectGuid bot, TravelOrder order)
+// The bot's order when it may take it now (TestConstraints::TakeNow); the bot's hint stays while its order waits.
+// Orders nobody took in time are dropped on any take, and logged: the bot logged out or fought for a minute
+bool TakeOrder(PlayerbotAI* botAI, ObjectGuid bot, bool inCombat, TravelOrder& order)
 {
     std::lock_guard<std::mutex> guard(travelOrdersLock);
-    travelOrders[bot] = std::move(order);
-    travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
-}
-
-bool TravelOrders::Take(ObjectGuid bot, TravelOrder& order)
-{
-    if (!travelOrdersWaiting.load(std::memory_order_acquire))
-        return false;
-    std::lock_guard<std::mutex> guard(travelOrdersLock);
-    // Orders nobody took in time are dropped on any take, also a miss (so no order keeps every bot at the lock), and
-    // logged: the bot is not in the new rpg strategy, logged out or in combat
     for (auto it = travelOrders.begin(); it != travelOrders.end();)
     {
         if (GetMSTimeDiffToNow(it->second.postedMs) <= TRAVEL_ORDER_TTL_MS)
@@ -376,32 +510,81 @@ bool TravelOrders::Take(ObjectGuid bot, TravelOrder& order)
         it = travelOrders.erase(it);
     }
     auto const found = travelOrders.find(bot);
-    bool taken = false;
-    if (found != travelOrders.end())
+    bool const taken = found != travelOrders.end() && TestConstraints::TakeNow(found->second, inCombat);
+    bool const waiting = found != travelOrders.end() && !taken;
+    if (taken)
     {
         order = std::move(found->second);
         travelOrders.erase(found);
-        taken = true;
     }
-    travelOrdersWaiting.store(static_cast<uint32>(travelOrders.size()), std::memory_order_release);
+    botAI->orderPosted.store(waiting, std::memory_order_release);
     return taken;
+}
+}  // namespace
+
+void TravelOrders::Post(PlayerbotAI* botAI, TravelOrder order)
+{
+    std::lock_guard<std::mutex> guard(travelOrdersLock);
+    // A hold and a trip posted before the bot's next update both stay (TestConstraints::Merge)
+    auto const [it, added] = travelOrders.try_emplace(botAI->GetBot()->GetGUID(), order);
+    if (!added)
+        TestConstraints::Merge(it->second, std::move(order));
+    botAI->orderPosted.store(true, std::memory_order_release);
+}
+
+bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
+{
+    if (!botAI->orderPosted.load(std::memory_order_acquire))
+        return false;
+    TravelOrder order;
+    if (!TakeOrder(botAI, bot->GetGUID(), bot->IsInCombat(), order))
+        return false;
+    if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+    {
+        LOG_INFO("playerbots", "[Route] {} order '{}' refused: the bot does not run the new rpg strategy",
+                 bot->GetName(), order.place);
+        return false;
+    }
+    return ApplyTravelOrder(botAI, bot, order);
+}
+
+void TravelOrders::KeepConstraints(Player* bot, uint16 constraints)
+{
+    TestConstraints::KeepStates(STATE_OPS, *bot, constraints);
 }
 
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
     Planner::PlannerHook(botAI, bot);
-    {
-        TravelOrder order;
-        if (TravelOrders::Take(bot->GetGUID(), order) && ApplyTravelOrder(botAI, bot, order))
-            return true;
-    }
+    // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAI)
     NewRpgStatus status = info.GetStatus();
     switch (status)
     {
         case RPG_IDLE:
+        {
+            // A test's hold (TestConstraints): a held choice is not made; an order was taken all the same
+            TestConstraints::IdleGate const gate = TestConstraints::GateOf(info.constraints);
+            if (!gate.planner && !gate.status)
+                return false;
+            // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback
+            Planner::IdleStep step;
+            if (gate.planner)
+                step = Planner::OnIdle(botAI, bot,
+                                       [this](uint32 questId)
+                                       {
+                                           std::vector<POIInfo> poiInfo;
+                                           return !botAI->lowPriorityQuest.contains(questId) &&
+                                                  GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
+                                       });
+            if (step.started)
+                return true;
+            if (step.wait || !gate.status)
+                return false;
             return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
-                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER});
+                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER},
+                                      step.reason);
+        }
 
         case RPG_GO_GRIND:
         {
@@ -512,7 +695,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // ERRANDS -> IDLE: a trip that has not ended in time is given up
             if (info.HasStatusPersisted(WorldTravel::ERRAND_DEADLINE_MS))
             {
-                FinishErrands(botAI, false);
+                auto const* errands = std::get_if<NewRpgInfo::Errands>(&info.data);
+                FinishErrands(botAI, errands && errands->visited);
                 return true;
             }
             break;
@@ -656,18 +840,22 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     WorldTravel::StampErrandCheck(measure, getMSTime());
     measure.HasVendor = false;
 
-    // The nearest vendor on the bot's map that trades with the bot (startup cache; no route to other maps yet)
+    // The vendors on the bot's map that trade with the bot (startup cache; no route to other maps yet): the nearest
+    // one for the destroy rule, the nearest VENDOR_STOPS within the errand walk limit as the trip's service stops
+    constexpr std::size_t VENDOR_STOPS = 8;
     uint32 const mapId = bot->GetMapId();
+    float const runSpeed = bot->GetSpeed(MOVE_RUN);
+    float const reachYards = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
     std::vector<TravelMgr::VendorInfo> const& vendors = TravelMgr::instance().GetVendors(mapId);
-    uint32 vendorEntry = 0;
-    WorldPosition vendorPos;
-    float vendorYards = std::numeric_limits<float>::max();
+    TravelMgr::VendorInfo const* nearest = nullptr;
+    float nearestYards = std::numeric_limits<float>::max();
+    std::vector<std::pair<float, TravelMgr::VendorInfo const*>> inReach;
     uint32 refused = 0;
     for (TravelMgr::VendorInfo const& vendor : vendors)
     {
         float const yards =
             bot->GetExactDist(vendor.loc.GetPositionX(), vendor.loc.GetPositionY(), vendor.loc.GetPositionZ());
-        if (yards >= vendorYards)
+        if (yards >= nearestYards && yards > reachYards)
             continue;
 
         // The core's interact test (Player::GetNPCIfCanInteractWith): the vendor's reaction must be above Unfriendly.
@@ -678,12 +866,16 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             continue;
         }
 
-        vendorEntry = vendor.entry;
-        vendorPos = WorldPosition(vendor.loc);
-        vendorYards = yards;
+        if (yards < nearestYards)
+        {
+            nearest = &vendor;
+            nearestYards = yards;
+        }
+        if (yards <= reachYards)
+            inReach.emplace_back(yards, &vendor);
     }
 
-    if (!vendorEntry)
+    if (!nearest)
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
                   bot->GetName(), mapId, vendors.size(), refused);
@@ -691,12 +883,12 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         return false;
     }
 
-    float const walkMinutes = WorldTravel::WalkMinutes(vendorYards, bot->GetSpeed(MOVE_RUN));
+    float const walkMinutes = WorldTravel::WalkMinutes(nearestYards, runSpeed);
     measure.HasVendor = true;
     measure.VendorMapId = mapId;
-    measure.VendorX = vendorPos.GetPositionX();
-    measure.VendorY = vendorPos.GetPositionY();
-    measure.VendorZ = vendorPos.GetPositionZ();
+    measure.VendorX = nearest->loc.GetPositionX();
+    measure.VendorY = nearest->loc.GetPositionY();
+    measure.VendorZ = nearest->loc.GetPositionZ();
 
     // The stacks the sell action would take from the general slots (as the destroy rule counts them)
     uint32 sellableSlots = 0;
@@ -706,27 +898,94 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             if (WorldTravel::InGeneralSlot(bot, item))
                 ++sellableSlots;
 
+    // The trip planner's view of the bot (ErrandRules.h): what each errand is worth now and where it can be done
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
-    uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
-    // The world log's decision row: walk seconds to the vendor, the sellable stacks and the free slots it weighed
+    WorldTravel::SlotBand const& band = config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())];
+    WorldTravel::ErrandSnapshot snapshot;
+    snapshot.Level = bot->GetLevel();
+    snapshot.Money = bot->GetMoney();
+    snapshot.Rates = WorldTravel::CurrentRates(measure, band);
+    snapshot.BagHorizonHours = band.BagHorizonHours;
+    snapshot.FreeSlots = WorldTravel::FreeGeneralSlots(bot);
+    snapshot.SellableSlots = sellableSlots;
+    snapshot.DurabilityPercent = EquippedDurabilityPercent(bot);
+    snapshot.MinutesToNextStop = static_cast<float>(config.ErrandNextStopMinutes);
+    std::sort(inReach.begin(), inReach.end(),
+              [](std::pair<float, TravelMgr::VendorInfo const*> const& a,
+                 std::pair<float, TravelMgr::VendorInfo const*> const& b) { return a.first < b.first; });
+    if (inReach.size() > VENDOR_STOPS)
+        inReach.resize(VENDOR_STOPS);
+    for (std::pair<float, TravelMgr::VendorInfo const*> const& vendor : inReach)
+    {
+        WorldTravel::ServiceStop stop;
+        stop.Id = vendor.second->entry;
+        stop.Place = ErrandPlaceOf(vendor.second->loc);
+        stop.Services = WorldTravel::SERVICE_VENDOR;
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(stop.Id);
+        if (creature && (creature->npcflag & UNIT_NPC_FLAG_REPAIR))
+            stop.Services |= WorldTravel::SERVICE_REPAIR;
+        snapshot.Stops.push_back(stop);
+    }
+    AddCompletedQuests(bot, snapshot.Completed);
+
+    // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay
+    WorldTravel::TripRequest request;
+    request.Start = {mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    request.YardsPerSecond = runSpeed;
+    request.Rates = snapshot.Rates;
+    WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(
+        request, snapshot.Stops, WorldTravel::CollectOffers(snapshot, WorldTravel::TravelProviders()));
+
+    std::vector<NewRpgInfo::ErrandStop> stops;
+    float tripMinutes = 0.0f;
+    std::size_t errandCount = 0;
+    bool anyVendor = false;
+    for (WorldTravel::TripStop const& tripStop : plan.Stops)
+    {
+        NewRpgInfo::ErrandStop stop;
+        stop.pos = WorldPosition(tripStop.Place.MapId, tripStop.Place.X, tripStop.Place.Y, tripStop.Place.Z);
+        if (tripStop.Services & WorldTravel::SERVICE_VENDOR)
+        {
+            stop.vendorEntry = tripStop.Id;
+            anyVendor = true;
+        }
+        for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
+            if (errand.Kind == WorldTravel::ErrandKind::TurnIn)
+                stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
+        tripMinutes += tripStop.DetourMinutes;
+        errandCount += tripStop.Errands.size();
+        stops.push_back(std::move(stop));
+    }
+
+    // The world log's decision row: the sellable stacks and free slots, the trip's stops and errands it weighed
     WorldLogFormat::Alternatives weighed;
     if (WorldLog::Active())
-        weighed = {{"sellable", static_cast<float>(sellableSlots)}, {"free_slots", static_cast<float>(freeSlots)}};
-    float const walkSeconds = walkMinutes * MINUTE;
-    if (!WorldTravel::TripWorthIt(
-            WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())], freeSlots,
-                                       sellableSlots, walkMinutes, config.ErrandNextStopMinutes)))
+        weighed = {{"sellable", static_cast<float>(sellableSlots)},
+                   {"free_slots", static_cast<float>(snapshot.FreeSlots)},
+                   {"stops", static_cast<float>(stops.size())},
+                   {"errands", static_cast<float>(errandCount)}};
+    if (stops.empty())
     {
         LOG_DEBUG("playerbots",
-                  "[New RPG] {} errands: trip not worth it (vendor {} at {:.0f} yd, {:.1f} walk min, {} sellable, {} "
-                  "free slots)",
-                  bot->GetName(), vendorEntry, vendorYards, walkMinutes, sellableSlots, freeSlots);
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "not_worth", walkSeconds, weighed);
+                  "[New RPG] {} errands: trip not worth it (nearest vendor {} at {:.0f} yd, {:.1f} walk min, {} "
+                  "sellable, {} free slots, {} errands refused)",
+                  bot->GetName(), nearest->entry, nearestYards, walkMinutes, sellableSlots, snapshot.FreeSlots,
+                  plan.Refused.size());
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "not_worth", walkMinutes * MINUTE,
+                           weighed);
         return false;
     }
 
-    botAI->rpgInfo.ChangeToErrands(vendorEntry, vendorPos, bot->GetMoney());
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor", "worth_it", walkSeconds, weighed);
+    botAI->rpgInfo.ChangeToErrands(std::move(stops), bot->GetMoney());
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, anyVendor ? "vendor" : "turn_in", "worth_it",
+                       tripMinutes * MINUTE, weighed);
+    // The errands the trip leaves out: the detour rule's refusals (detour_not_worth, too_far, no_stop)
+    if (WorldLog::Active())
+        for (WorldTravel::Refusal const& refusal : plan.Refused)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
+                               WorldTravel::ErrandKindName(refusal.Offer.Kind), refusal.Reason,
+                               refusal.WalkMinutes * MINUTE,
+                               {{"worth", refusal.Offer.WorthCopper}, {"cost", refusal.CostCopper}});
     return true;
 }
 
@@ -736,53 +995,116 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     if (!data)
         return false;
 
-    if (data->vendor.IsEmpty())
+    if (data->stop >= data->stops.size())
     {
-        if (bot->GetExactDist(data->vendorPos) > VENDOR_SEARCH_YARDS)
-        {
-            if (MoveFarTo(data->vendorPos))
-                return true;
-            return MoveRandomNear(10.0f);
-        }
-
-        Creature* found = bot->FindNearestCreature(data->vendorEntry, VENDOR_SEARCH_YARDS);
-        if (!found)
-        {
-            FinishErrands(botAI, false);
-            return true;
-        }
-        data->vendor = found->GetGUID();
-    }
-
-    WorldObject* object = ObjectAccessor::GetWorldObject(*bot, data->vendor);
-    Creature* vendor = object ? object->ToCreature() : nullptr;
-    if (!vendor || !vendor->IsAlive())
-    {
-        FinishErrands(botAI, false);
+        FinishErrands(botAI, data->visited);
         return true;
     }
 
-    if (!IsWithinInteractionDist(vendor))
+    NewRpgInfo::ErrandStop& stop = data->stops[data->stop];
+    if (!data->arrived)
     {
-        if (MoveWorldObjectTo(data->vendor))
-            return true;
-        return MoveRandomNear(15.0f);
+        if (bot->GetExactDist(stop.pos) > VENDOR_SEARCH_YARDS)
+        {
+            if (MoveFarTo(stop.pos))
+                return true;
+            return MoveRandomNear(10.0f);
+        }
+        data->arrived = true;
     }
 
-    // The vendor visit of the npc wander: sell by worth, buy (a bag by worth) and repair, all paid
-    constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
-    botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
-    // A bag bought earlier may lie inside the bag it should replace, where the swap always fails
-    if (WorldTravel::MoveSpareBagToBackpack(bot, ItemUsageValue::SmallestBagSize(bot)))
-        botAI->DoSpecificAction("equip upgrades packet action");
+    // The vendor visit of the npc wander: sell by worth, buy (a bag by worth) and repair, all paid. A vendor that is
+    // gone leaves the stop's other errands
+    if (stop.vendorEntry && !data->vendorDone)
+    {
+        if (data->vendor.IsEmpty())
+        {
+            Creature* found = bot->FindNearestCreature(stop.vendorEntry, VENDOR_SEARCH_YARDS);
+            if (!found)
+            {
+                data->vendorDone = true;
+                return true;
+            }
+            data->vendor = found->GetGUID();
+        }
 
-    if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
-        botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
+        WorldObject* object = ObjectAccessor::GetWorldObject(*bot, data->vendor);
+        Creature* vendor = object ? object->ToCreature() : nullptr;
+        if (!vendor || !vendor->IsAlive())
+        {
+            data->vendorDone = true;
+            return true;
+        }
 
-    if (vendor->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))
-        botAI->DoSpecificAction("repair", Event("repair"), true);
+        if (!IsWithinInteractionDist(vendor))
+        {
+            if (MoveWorldObjectTo(data->vendor))
+                return true;
+            return MoveRandomNear(15.0f);
+        }
 
-    FinishErrands(botAI, true);
+        constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
+        botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+        // A bag bought earlier may lie inside the bag it should replace, where the swap always fails
+        if (WorldTravel::MoveSpareBagToBackpack(bot, ItemUsageValue::SmallestBagSize(bot)))
+            botAI->DoSpecificAction("equip upgrades packet action");
+
+        if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
+            botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
+
+        if (vendor->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))
+            botAI->DoSpecificAction("repair", Event("repair"), true);
+
+        data->vendorDone = true;
+        data->visited = true;
+        return true;
+    }
+
+    // The completed quests whose ender stands at the stop: the quest talk turns in every quest the ender takes and
+    // accepts the fitting ones it offers (WT.6). An ender out of reach or a quest no longer complete is left out
+    while (!stop.turnIns.empty())
+    {
+        NewRpgInfo::ErrandTurnIn const turnIn = stop.turnIns.back();
+        if (bot->GetQuestStatus(turnIn.questId) != QUEST_STATUS_COMPLETE)
+        {
+            stop.turnIns.pop_back();
+            continue;
+        }
+
+        float const searchYards = WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS;
+        WorldObject* ender = nullptr;
+        if (turnIn.enderIsObject)
+            ender = bot->FindNearestGameObject(turnIn.ender, searchYards);
+        else
+            ender = bot->FindNearestCreature(turnIn.ender, searchYards);
+        if (!ender)
+        {
+            stop.turnIns.pop_back();
+            continue;
+        }
+
+        if (!IsWithinInteractionDist(ender))
+        {
+            if (MoveWorldObjectTo(ender->GetGUID()))
+                return true;
+            stop.turnIns.pop_back();
+            continue;
+        }
+
+        if (bot->CanInteractWithQuestGiver(ender))
+        {
+            InteractWithNpcOrGameObjectForQuest(ender->GetGUID());
+            data->visited = true;
+        }
+        stop.turnIns.pop_back();
+        return true;
+    }
+
+    // The stop is done: on to the next
+    ++data->stop;
+    data->arrived = false;
+    data->vendorDone = false;
+    data->vendor = ObjectGuid();
     return true;
 }
 
@@ -852,7 +1174,13 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
-        uint32 rndIdx = urand(0, poiInfo.size() - 1);
+        // A planner bot goes to the point nearest its plan's tasks for the quest, others to a random one
+        std::vector<std::pair<float, float>> points;
+        points.reserve(poiInfo.size());
+        for (POIInfo const& poi : poiInfo)
+            points.emplace_back(poi.pos.x, poi.pos.y);
+        int const planned = Planner::PlannedPoi(botAI, questId, points);
+        uint32 rndIdx = planned >= 0 ? static_cast<uint32>(planned) : urand(0, poiInfo.size() - 1);
         G3D::Vector2 nearestPoi = poiInfo[rndIdx].pos;
         int32 objectiveIdx = poiInfo[rndIdx].objectiveIdx;
 
@@ -1008,6 +1336,366 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index)
     return {node.mapId, node.x, node.y, node.z};
 }
 
+// Transport legs (WT19): the deck point is probed in steps of DECK_STEP_YARDS from the bot towards the transport's
+// centre, only within DECK_PROBE_YARDS of it; the bot heads DECK_INWARD_YARDS past the deck's edge. The deck is the
+// model's top surface from DECK_RISE_YARDS above to DECK_DROP_YARDS below the bot (WT19-e)
+constexpr float DECK_STEP_YARDS = 2.0f;
+constexpr float DECK_PROBE_YARDS = 100.0f;
+constexpr float DECK_INWARD_YARDS = 4.0f;
+constexpr float DECK_RISE_YARDS = 6.0f;
+constexpr float DECK_DROP_YARDS = 12.0f;
+constexpr float HOP_LIFT_YARDS = 0.5f;  // the hop lands this far above the deck point (as the off-mesh snap does)
+// The walk off at the leg's end heads for the nearest ground (no water) this far beside and above or below the bot
+constexpr float EXIT_ACROSS_YARDS = 25.0f;
+constexpr float EXIT_VERTICAL_YARDS = 10.0f;
+
+// The current leg is a transport leg past its approach: the bot waits at the dock, boards, rides or steps off. The
+// follower scans for the transport then, and the trip's deadline waits (the next departure may be minutes away)
+bool AtTransportLeg(TravelLegs::Trip const& trip)
+{
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport &&
+           trip.boarding != TravelLegs::Boarding::Approach;
+}
+
+// The leg's transport, found anew on every scan (never kept across ticks): the one the bot rides, else the nearest
+// of the leg's entry to its dock on the bot's map. O(transports on the map), once a scan
+Transport* FindLegTransport(Player* bot, TravelRoute::Leg const& leg)
+{
+    Transport* const ridden = bot->GetTransport();
+    if (ridden && ridden->GetEntry() == leg.object)
+        return ridden;
+    Transport* best = nullptr;
+    float bestYards = std::numeric_limits<float>::max();
+    for (Transport* transport : bot->GetMap()->GetAllTransports())
+    {
+        if (!transport->IsInWorld() || transport->GetEntry() != leg.object)
+            continue;
+        float const yards = transport->GetExactDist2d(leg.from.x, leg.from.y);
+        if (yards < bestYards)
+        {
+            best = transport;
+            bestYards = yards;
+        }
+    }
+    return best;
+}
+
+// The top of the transport's model at (x, y) from DECK_RISE_YARDS above z down to DECK_DROP_YARDS below it: the
+// surface a bot stands on there. PlayerbotAI's passenger check casts from 2 yd above the bot, so a point at the bot's
+// own height under a higher deck, or in the water below one, never makes it a passenger
+std::optional<float> DeckHeight(Transport* transport, uint32 phaseMask, float x, float y, float z)
+{
+    if (!transport->m_model)
+        return std::nullopt;
+    float distance = DECK_RISE_YARDS + DECK_DROP_YARDS;
+    G3D::Ray const ray(G3D::Vector3(x, y, z + DECK_RISE_YARDS), G3D::Vector3(0.0f, 0.0f, -1.0f));
+    if (!transport->m_model->intersectRay(ray, distance, false, phaseMask, VMAP::ModelIgnoreFlags::Nothing))
+        return std::nullopt;
+    return z + DECK_RISE_YARDS - distance;
+}
+
+// Where the bot boards: decks are off the mesh, so a ship's or zeppelin's deck is probed from the bot towards its
+// centre (DeckHeight) and the bot heads DECK_INWARD_YARDS past the edge, at the deck's height there; an elevator or
+// tram car is boarded towards its centre. Without a hit (also within DECK_STEP_YARDS of it) the centre, at the deck's
+// height there when the model has one within reach
+Position DeckPoint(Player* bot, Transport* transport)
+{
+    float const botX = bot->GetPositionX();
+    float const botY = bot->GetPositionY();
+    float const z = bot->GetPositionZ();
+    float const dx = transport->GetPositionX() - botX;
+    float const dy = transport->GetPositionY() - botY;
+    float const yards = std::sqrt(dx * dx + dy * dy);
+    Position deck(transport->GetPositionX(), transport->GetPositionY(), z, bot->GetOrientation());
+    if (transport->IsStaticTransport() || yards > DECK_PROBE_YARDS)
+        return deck;
+    uint32 const phaseMask = bot->GetPhaseMask();
+    for (float along = DECK_STEP_YARDS; along < yards; along += DECK_STEP_YARDS)
+    {
+        float const part = along / yards;
+        std::optional<float> const edge = DeckHeight(transport, phaseMask, botX + dx * part, botY + dy * part, z);
+        if (!edge)
+            continue;
+        float const inward = std::min((along + DECK_INWARD_YARDS) / yards, 1.0f);
+        float const x = botX + dx * inward;
+        float const y = botY + dy * inward;
+        deck.Relocate(x, y, DeckHeight(transport, phaseMask, x, y, *edge).value_or(*edge));
+        return deck;
+    }
+    deck.m_positionZ = DeckHeight(transport, phaseMask, deck.GetPositionX(), deck.GetPositionY(), z).value_or(z);
+    return deck;
+}
+
+// A ship or zeppelin at a stop it keeps for the attach's deadline (MotionTransport::IsMoving is private: its key
+// frames, as MotionTransport::Update reads them)
+bool Docked(MotionTransport const& ship)
+{
+    uint32 const period = ship.GetPeriod();
+    if (!period)
+        return false;
+    uint32 const timer = ship.GetPathProgress() % period;
+    for (KeyFrame const& frame : ship.GetKeyFrames())
+        if (timer >= frame.ArriveTime && timer + PlayerbotAI::ABOARD_DEADLINE_MS < frame.DepartureTime)
+            return true;
+    return false;
+}
+
+// `route aboard` (tests): the bot is stood on the deck of the docked ship or zeppelin of that entry nearest it on its
+// map, at the boarding deck point from where it stands (the test puts it on the dock first). No explicit attach:
+// AddPassenger takes the current position as the offset, so PlayerbotAI's passenger check attaches it after the
+// teleport (BeginAboard). Refused: absent (none on the map), not_mo (an elevator), away (not at a stop), no_deck
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
+{
+    Transport* transport = nullptr;
+    float nearest = std::numeric_limits<float>::max();
+    for (Transport* candidate : bot->GetMap()->GetAllTransports())
+    {
+        if (!candidate->IsInWorld() || candidate->GetEntry() != entry)
+            continue;
+        float const yards = candidate->GetExactDist2d(bot);
+        if (yards < nearest)
+        {
+            transport = candidate;
+            nearest = yards;
+        }
+    }
+    MotionTransport const* ship = transport ? transport->ToMotionTransport() : nullptr;
+    Position deck;
+    char const* refusal = nullptr;
+    if (!transport)
+        refusal = "absent";
+    else if (!ship)
+        refusal = "not_mo";
+    else if (!Docked(*ship))
+        refusal = "away";
+    else
+    {
+        deck = DeckPoint(bot, transport);
+        if (bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), deck.GetPositionX(), deck.GetPositionY(),
+                                              deck.GetPositionZ(), bot) != transport)
+            refusal = "no_deck";
+    }
+    if (refusal)
+    {
+        LOG_INFO("playerbots", "[Route] {} aboard {} refused: {}", bot->GetName(), entry, refusal);
+        std::string const source = std::string("refused:") + refusal;
+        EventLog::Emit(bot, PlayerbotAI::ABOARD_EVENT_TYPE, source.c_str(), entry);
+        return;
+    }
+    LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry,
+             deck.GetPositionX(), deck.GetPositionY(), deck.GetPositionZ());
+    bot->NearTeleportTo(deck.GetPositionX(), deck.GetPositionY(), deck.GetPositionZ() + HOP_LIFT_YARDS,
+                        bot->GetOrientation());
+    botAI->BeginAboard(entry);
+}
+
+// Board and Disembark: a straight walk (no path: decks are off the mesh), as FollowAction boards a master's ship.
+// PlayerbotAI makes the bot a passenger of the transport it stands on, or none, within a second
+void StraightMove(Player* bot, float x, float y, float z)
+{
+    if (bot->IsSitState())
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+    bot->CastStop();
+    bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, false);
+}
+
+// The leave at the leg's end: its end node is the transport's own stop (its centre, on the hull or over the water), so
+// the bot walks straight off to the nearest ground beside the deck. The first look per leave goes to the debug log,
+// or to the world log as `Transport no_exit` when there is no ground. entry: the transport's gameobject entry
+void WalkOff(Player* bot, TravelLegs::Trip& trip, uint32 entry)
+{
+    float x = bot->GetPositionX();
+    float y = bot->GetPositionY();
+    float z = bot->GetPositionZ();
+    bool const found = NavMeshSnap::Nearest(bot->GetMap(), x, y, z, EXIT_ACROSS_YARDS, EXIT_VERTICAL_YARDS,
+                                            NAV_GROUND) == NavMeshSnap::Result::Found;
+    if (found)
+        StraightMove(bot, x, y, z);
+    if (trip.exitSought)
+        return;
+    trip.exitSought = true;
+    if (!found)
+        EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE,
+                       TravelLegs::TransportSource(TravelLegs::TransportEvent::NoExit), entry, 0);
+    if (!found || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    Transport* const ridden = bot->GetTransport();
+    bool const overHull = ridden && bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), x, y, z, nullptr) == ridden;
+    LOG_DEBUG("playerbots", "[Route] {} leaves transport {}: ground {:.1f} yd away ({:.1f} yd up), {}", bot->GetName(),
+              entry, bot->GetExactDist(x, y, z), z - bot->GetPositionZ(), overHull ? "under the hull" : "off the hull");
+}
+
+// An aboard scan short of the leave, for the debug log: what the dock test at the leg's end saw
+void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, float moved)
+{
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    TravelLegs::TransportSight const& sight = trip.sight;
+    float const dx = sight.at.x - leg.to.x;
+    float const dy = sight.at.y - leg.to.y;
+    LOG_DEBUG("playerbots",
+              "[Route] {} aboard {} on map {}: {:.1f} yd (2D) from the leg's end on map {}, still {}, moving {}, "
+              "static {}, {:.1f} yd moved since the last scan (-1: none)",
+              bot->GetName(), leg.object, sight.at.mapId, std::sqrt(dx * dx + dy * dy), leg.to.mapId, trip.still,
+              sight.moving, sight.isStatic, moved);
+}
+
+// The quay of a ship's or zeppelin's leg (WT19-e, TravelLegs::SetQuay): the nearest ground (no water) beside its dock
+// node, as the walk off at the end looks for it. Once a leg, on the leg's map while approaching; a nav mesh tile not
+// loaded yet is looked at again a scan later. Elevators and the tram wait at their stop node
+void SeekQuay(Player* bot, NewRpgInfo::Travel& data, uint32 nowMs)
+{
+    TravelLegs::Trip& trip = data.trip;
+    if (trip.legIdx >= trip.legs.size() || trip.quaySought || trip.boarding != TravelLegs::Boarding::Approach)
+        return;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type != TravelRoute::LegType::Transport || bot->GetMapId() != leg.from.mapId ||
+        getMSTimeDiff(data.transportScanMs, nowMs) < TravelLegs::TRANSPORT_SCAN_MS)
+        return;
+    data.transportScanMs = nowMs;
+    GameObjectTemplate const* const info = sObjectMgr->GetGameObjectTemplate(leg.object);
+    if (!info || info->type != GAMEOBJECT_TYPE_MO_TRANSPORT)
+    {
+        TravelLegs::SetQuay(trip, nullptr);
+        return;
+    }
+    float x = leg.from.x;
+    float y = leg.from.y;
+    float z = leg.from.z;
+    NavMeshSnap::Result const result =
+        NavMeshSnap::Nearest(bot->GetMap(), x, y, z, EXIT_ACROSS_YARDS, EXIT_VERTICAL_YARDS, NAV_GROUND);
+    if (result == NavMeshSnap::Result::Unknown)
+    {
+        TravelLegs::NoteQuayUnknown(trip);
+        return;
+    }
+    TravelRoute::Point const quay{leg.from.mapId, x, y, z};
+    TravelLegs::SetQuay(trip, result == NavMeshSnap::Result::Found ? &quay : nullptr);
+    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    if (trip.hasQuay)
+        LOG_DEBUG("playerbots",
+                  "[Route] {} waits for transport {} on the ground {:.1f} yd from its stop ({:.1f} yd up)",
+                  bot->GetName(), leg.object, TravelRoute::Distance(leg.from, quay), z - leg.from.z);
+    else
+        LOG_DEBUG("playerbots", "[Route] {} waits for transport {} at its stop: no ground beside it", bot->GetName(),
+                  leg.object);
+}
+
+// A Board walk, for the debug log: the deck point, the bot's height and the distance
+void LogBoardMove(Player* bot, uint32 entry, Position const& deck)
+{
+    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    LOG_DEBUG("playerbots",
+              "[Route] {} boards transport {}: deck point ({:.1f}, {:.1f}, {:.1f}), bot z {:.1f}, {:.1f} yd",
+              bot->GetName(), entry, deck.GetPositionX(), deck.GetPositionY(), deck.GetPositionZ(), bot->GetPositionZ(),
+              bot->GetExactDist(deck));
+}
+
+// A miss this tick, for the debug log: whether the bot stood over the hull (the passenger check's test) or beside it
+void LogMisses(Player* bot, TravelLegs::Trip const& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    for (TravelLegs::TransportNote const& note : trip.transportNotes)
+    {
+        if (note.event != TravelLegs::TransportEvent::Missed)
+            continue;
+        Transport* const transport = FindLegTransport(bot, trip.legs[trip.legIdx]);
+        bool const onHull = transport && bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(),
+                                                                           bot->GetPositionY(), bot->GetPositionZ(),
+                                                                           nullptr) == transport;
+        LOG_DEBUG("playerbots", "[Route] {} missed transport {} (miss {}): {}, {:.1f} yd from its centre, bot z {:.1f}",
+                  bot->GetName(), note.entry, note.amount, onHull ? "over the hull" : "off the hull",
+                  transport ? bot->GetExactDist2d(transport) : -1.0f, bot->GetPositionZ());
+        return;
+    }
+}
+
+// A scan of the transport: where it is, whether a ship or zeppelin moved since the scan before (trip.sight), its
+// period. Returns the yards moved since that scan on this map, -1 none
+float SeeTransport(Player* bot, Transport* transport, TravelLegs::Trip const& trip, TravelLegs::TransportSight& sight)
+{
+    float moved = -1.0f;
+    sight.found = true;
+    sight.isStatic = transport->IsStaticTransport();
+    sight.at = {bot->GetMapId(), transport->GetPositionX(), transport->GetPositionY(), transport->GetPositionZ()};
+    TravelLegs::TransportSight const& before = trip.sight;
+    if (before.found && before.at.mapId == sight.at.mapId)
+        moved = TravelRoute::Distance(before.at, sight.at);
+    if (MotionTransport const* ship = transport->ToMotionTransport())
+    {
+        // MotionTransport::IsMoving is private: a ship or zeppelin is under way when it moved since the scan before
+        // (on the first scan it counts as under way, so no docking is read from one position)
+        sight.moving = moved < 0.0f || moved > TravelLegs::STILL_YARDS;
+        sight.periodMs = ship->GetPeriod();
+    }
+    else if (StaticTransport const* fixed = transport->ToStaticTransport())
+        sight.periodMs = fixed->GetPeriod();
+    return moved;
+}
+
+void SendTransportNotes(Player* bot, TravelLegs::Trip& trip)
+{
+    for (TravelLegs::TransportNote const& note : trip.transportNotes)
+        EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE, TravelLegs::TransportSource(note.event), note.entry,
+                       note.amount);
+    trip.transportNotes.clear();
+}
+
+// The gate before a trip's end, a route request or a walk (WT19-d, TravelLegs::BeginOffFirst): true when the bot
+// rides a ship or zeppelin and gets off first (`Transport off_first`)
+bool OffFirstBegins(Player* bot, TravelLegs::Trip& trip, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
+                    char const* why = nullptr, char const* source = nullptr)
+{
+    Transport* const ridden = bot->GetTransport();
+    MotionTransport const* const ship = ridden ? ridden->ToMotionTransport() : nullptr;
+    if (!ship || !TravelLegs::BeginOffFirst(trip, ship->GetEntry(), ship->GetPeriod(), getMSTime(), end, why, source))
+        return false;
+    SendTransportNotes(bot, trip);
+    char const* const waiting = end == TravelLegs::OffFirstEnd::Arrive  ? "arrival"
+                                : end == TravelLegs::OffFirstEnd::Abort ? "abort"
+                                                                        : "walk or route";
+    LOG_DEBUG("playerbots", "[Route] {} gets off transport {} first (the {} waits)", bot->GetName(), ship->GetEntry(),
+              waiting);
+    return true;
+}
+
+// One tick of the get-off (TravelLegs::StepOffFirst): the ridden ship's scan once a TRANSPORT_SCAN_MS, the walk off
+// to the nearest ground on a scan while it stands
+TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data)
+{
+    TravelLegs::Trip& trip = data.trip;
+    Transport* const ridden = bot->GetTransport();
+    TravelLegs::Observation seen;
+    seen.nowMs = getMSTime();
+    seen.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    seen.aboard = ridden ? ridden->GetEntry() : 0;
+    if (getMSTimeDiff(data.transportScanMs, seen.nowMs) >= TravelLegs::TRANSPORT_SCAN_MS)
+    {
+        data.transportScanMs = seen.nowMs;
+        seen.transport.scanned = true;
+        if (ridden && ridden->GetEntry() == trip.offFirst.entry)
+            SeeTransport(bot, ridden, trip, seen.transport);
+    }
+    TravelLegs::OffStep const step = TravelLegs::StepOffFirst(trip, seen);
+    SendTransportNotes(bot, trip);
+    if (step == TravelLegs::OffStep::Disembark && seen.transport.scanned)
+        WalkOff(bot, trip, trip.offFirst.entry);
+    return step;
+}
+
+// The last-resort hop (WT.14): a few yards onto the docked deck, only unseen (the scan's sight check), counted (its
+// Transport hop event went with the trip's notes; the honesty row for `wlog report honesty`)
+void HopOnto(Player* bot, Position const& deck, uint32 entry, uint32 misses)
+{
+    bot->GetMotionMaster()->Clear();
+    bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
+    bot->TeleportTo(bot->GetMapId(), deck.GetPositionX(), deck.GetPositionY(), deck.GetPositionZ() + HOP_LIFT_YARDS,
+                    bot->GetOrientation());
+    EventLog::Honesty(bot, TravelLegs::HOP_HONESTY_KIND, TravelLegs::HOP_HONESTY_SOURCE, entry, misses);
+}
+
 // A walk leg's end (WT.23): its trip decision row, walk_leg when done or walk_leg_failed (how the bot went: foot, part
 // or mounted; its seconds in combat; its seconds against the estimate), and in the debug log its speed: its path
 // through the waypoints, its straight line, the time taken
@@ -1072,7 +1760,25 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     auto* data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (!data)
         return false;
-    if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, bot->IsInFlight()))
+    // Aboard or at a transport's dock the deadline waits; the leg's end takes that time off the route (below)
+    // A trip end, route request or walk that came while the bot rode a ship or zeppelin waits until it is off (or a
+    // period passed); then it goes on (WT19-d)
+    if (data->trip.offFirst.sinceMs)
+    {
+        TravelLegs::OffStep const step = GetOffFirst(bot, *data);
+        if (step == TravelLegs::OffStep::Wait || step == TravelLegs::OffStep::Disembark)
+            return true;
+        TravelLegs::OffFirst const& off = data->trip.offFirst;
+        if (off.end == TravelLegs::OffFirstEnd::Arrive)
+            return Arrive(*data);
+        if (off.end == TravelLegs::OffFirstEnd::Abort)
+            EndTrip(*data, off.why, off.source);
+        return true;
+    }
+    Transport* const ridden = bot->GetTransport();
+    bool const riding = bot->IsInFlight() || ridden || AtTransportLeg(data->trip);
+    bool const replanPending = data->failedMs && data->trip.legs.empty();
+    if (TravelLegs::PastDeadline(GetMSTimeDiffToNow(data->routeStartMs), data->routeSeconds, riding, replanPending))
     {
         EndTrip(*data, "deadline", "abort:deadline");
         return true;
@@ -1088,6 +1794,9 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         // The trip's start, or a new route once the failed leg's stuck report has reached the published book
         if (data->failedMs && GetMSTimeDiffToNow(data->failedMs) < TravelLegs::REPLAN_DELAY_MS)
             return true;
+        // Never planned from a ship's deck: the bot gets off first
+        if (OffFirstBegins(bot, data->trip))
+            return true;
         return RequestRoute(*data);
     }
     // MoveFarTo found the bot off the mesh and started its recovery (hearth or a short move): the trip ends
@@ -1098,14 +1807,47 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
     seen.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     seen.inFlight = bot->IsInFlight();
     seen.money = bot->GetMoney();
+    // A passenger does not walk: no give-up of an earlier walk counts against the ride
+    if (ridden)
+        data->stuck = false;
     seen.stuck = data->stuck;
     seen.nowMs = getMSTime();
+    seen.aboard = ridden ? ridden->GetEntry() : 0;
     TravelLegs::Trip const& trip = data->trip;
+    SeekQuay(bot, *data, seen.nowMs);
+    // The transport scan (WT19): once a TRANSPORT_SCAN_MS while a transport leg is past its approach, on the bot's
+    // map only. The deck point and the Transport* live for this tick only
+    std::optional<Position> deck;
+    float moved = -1.0f;  // the transport's yards since the scan before on this map; -1 none
+    if (AtTransportLeg(trip) && getMSTimeDiff(data->transportScanMs, seen.nowMs) >= TravelLegs::TRANSPORT_SCAN_MS)
+    {
+        data->transportScanMs = seen.nowMs;
+        TravelLegs::TransportSight& sight = seen.transport;
+        sight.scanned = true;
+        if (Transport* const transport = FindLegTransport(bot, trip.legs[trip.legIdx]))
+        {
+            moved = SeeTransport(bot, transport, trip, sight);
+            if (!ridden && !sight.moving)
+            {
+                deck = DeckPoint(bot, transport);
+                if (TravelLegs::WantsSightCheck(trip))
+                    sight.unseen = !sRandomPlayerbotMgr.IsTeleportSeen(
+                        bot, WorldPosition(bot->GetMapId(), deck->GetPositionX(), deck->GetPositionY(),
+                                           deck->GetPositionZ()));
+            }
+        }
+    }
     TravelLegs::NoteTick(data->trip, bot->IsMounted());
     TravelLegs::LegRecord const recordBefore = trip.record;  // Advance starts a new leg's record
     uint32 const legBefore = trip.legIdx;
     uint32 const legStartBefore = trip.legStartMs;
+    uint32 const dockSinceBefore = trip.waitSinceMs;  // a transport leg: the bot's arrival at the dock
     TravelLegs::Decision const next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
+    LogMisses(bot, trip);
+    SendTransportNotes(bot, data->trip);
+    if (seen.transport.scanned && ridden && trip.legIdx == legBefore && trip.boarding == TravelLegs::Boarding::Ride &&
+        sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        LogAboardScan(bot, trip, moved);
     // The legs passed this tick (no-op walks are no legs to a reader): id the trip, amount the leg's seconds
     for (uint32 i = legBefore; i < trip.legIdx && i < trip.legs.size(); ++i)
     {
@@ -1115,12 +1857,18 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), data->tripId, seconds);
         if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Walk)
             LogWalkLeg(bot, *data, i, recordBefore, seen.nowMs, seen.nowMs - legStartBefore, "done", true);
+        // The deadline waited at the dock and aboard: that time does not count against the route's estimate
+        if (i == legBefore && trip.legs[i].type == TravelRoute::LegType::Transport)
+            data->routeStartMs += seen.nowMs - dockSinceBefore;
     }
     switch (next.act)
     {
         case TravelLegs::Act::Arrived:
             return Arrive(*data);
         case TravelLegs::Act::Walk:
+            // Not from a ship's deck: the bot gets off first
+            if (OffFirstBegins(bot, data->trip))
+                return true;
             return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
         case TravelLegs::Act::UseTrigger:
             return UsePortal(*data);
@@ -1132,6 +1880,25 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
             // As the random flight status does: nothing else to do in the air
             ContinueCrossMapTaxi();
             return false;
+        case TravelLegs::Act::Board:
+            // Towards the deck point of this tick's scan; a new walk only once the last one ended
+            if (deck && TravelLegs::WantsBoardMove(trip, !bot->movespline->Finalized()))
+            {
+                data->trip.boardMoveSent = true;
+                LogBoardMove(bot, trip.legs[trip.legIdx].object, *deck);
+                StraightMove(bot, deck->GetPositionX(), deck->GetPositionY(), deck->GetPositionZ());
+            }
+            return true;
+        case TravelLegs::Act::Hop:
+            // Only on a scan tick (it needs the sight check), so the deck point is this tick's
+            if (deck)
+                HopOnto(bot, *deck, trip.legs[trip.legIdx].object, trip.misses);
+            return true;
+        case TravelLegs::Act::Disembark:
+            // Once a scan: the transport stands at the leg's end, the bot walks straight off onto the ground beside it
+            if (seen.transport.scanned)
+                WalkOff(bot, data->trip, trip.legs[trip.legIdx].object);
+            return true;
         case TravelLegs::Act::Fail:
             return LegFailed(*data, next.reason);
         case TravelLegs::Act::Wait:
@@ -1144,11 +1911,13 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
 bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
 {
     TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, ++botAI->rpgInfo.routeRequests);
-    // Transports are not run yet (WT19). Flights only to discovered nodes (the snapshot's taxi mask), their fares
-    // within the purse (the search's fare budget). The hearthstone is a leg while its stone is in the bags and it is
-    // ready or cooling for at most the wait cap (the search); not again after a hearth leg of this trip failed
-    snapshot.hasHearthstone = snapshot.hasHearthstone && !data.noHearth;
-    snapshot.allowTransport = false;
+    // Transports run (WT19; a timed-out transport leg's link is left out through avoidEdges). Flights only to
+    // discovered nodes (the snapshot's taxi mask), their fares within the purse (the search's fare budget). The
+    // hearthstone is a leg while its stone is in the bags and it is ready or cooling for at most the wait cap (the
+    // search); not again after a hearth leg of this trip failed
+    snapshot.hasHearthstone =
+        snapshot.hasHearthstone && !data.noHearth && TestConstraints::HearthAllowed(botAI->rpgInfo.constraints);
+    snapshot.allowTransport = true;
     TravelRoute::Request request;
     request.snapshot = snapshot;
     request.goal = {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()};
@@ -1383,6 +2152,9 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
 
 bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
 {
+    // Not on a ship's deck: the bot gets off first, then arrives (WT19-d)
+    if (OffFirstBegins(bot, data.trip, TravelLegs::OffFirstEnd::Arrive))
+        return true;
     uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
     uint32 const replans = data.trip.replans;
     if (data.bindInn)
@@ -1454,8 +2226,11 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data)
     return true;
 }
 
-void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel const& data, char const* why, char const* source)
+void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source)
 {
+    // Not on a ship's deck: the bot gets off first, then the trip ends (WT19-d)
+    if (OffFirstBegins(bot, data.trip, TravelLegs::OffFirstEnd::Abort, why, source))
+        return;
     if (data.place.empty())
         LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
     else

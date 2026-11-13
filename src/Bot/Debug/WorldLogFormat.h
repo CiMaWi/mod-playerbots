@@ -412,13 +412,15 @@ enum class DecisionKind : uint8_t
     Inn,
     Circuit,
     Goal,
+    FightStart,  // world PvP (WP1): one row per meeting
+    FightJoin,   // world PvP (WP5): one row per bystander and fight
     Mail,
     Bank
 };
 
-constexpr size_t DECISION_KIND_COUNT = 9;
+constexpr size_t DECISION_KIND_COUNT = 11;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status", "route", "trip", "errand", "inn", "circuit", "goal", "mail", "bank"};
+    "rpg_status", "route", "trip", "errand", "inn", "circuit", "goal", "fight_start", "fight_join", "mail", "bank"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

@@ -32,6 +32,7 @@
 #include "NewRpgStrategy.h"
 #include "ObjectGuid.h"
 #include "PerfMonitor.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -1930,7 +1931,8 @@ bool RandomPlayerbotMgr::IsBusy(Player* bot)
     WorldTravel::BusyInput in;
     in.Honest = HonestTravel();
     in.RealMaster = botAI->HasGameClientMaster();
-    in.HasGoal = false;  // the goal arrives with WT16
+    // An external goal (the bridge's or a group's) keeps the bot; the planner's own goals do not (WT20)
+    in.HasGoal = Planner::HasExternalGoal(bot->GetGUID().GetRawValue());
     in.InCombat = bot->IsInCombat();
     in.Dead = !bot->IsAlive();
     in.Grouped = bot->GetGroup() != nullptr;
@@ -2206,10 +2208,22 @@ void RandomPlayerbotMgr::InitArenaTeams()
              RandomPlayerbotFactory::GetBotArenaTeamCount(ARENA_TYPE_5v5), sPlayerbotAIConfig.RandomBotArenaTeam5v5Count);
 }
 
+// Set by RandomizeFirst while it places a bot that was just made at its level (the factory creating the bot).
+static thread_local bool placingNewBot = false;
+
 void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 {
     if (bot->InBattleground())
         return;
+
+    // Persistent bots change zones by travelling (the planner's move_zone goal, WT20): no level-up, periodic or
+    // legacy-caller teleports. Only the first placement of a newly made bot stays, counted as "mgr_place".
+    bool const placing = placingNewBot && HonestTravel();
+    if (HonestTravel() && !placing)
+        return;
+    char const* const levelTag = placing ? "mgr_place" : "mgr_level";
+    char const* const cityTag = placing ? "mgr_place" : "mgr_city";
+    char const* const hubTag = placing ? "mgr_place" : "mgr_hub";
 
     // One weighted roll across the three destination classes, so each config value is an exact
     // share of the roll (they are peers, not nested gates):
@@ -2235,7 +2249,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
         {
             LOG_DEBUG("playerbots", "Random teleporting bot {} to a quest giver ({} candidates)",
                       bot->GetName().c_str(), qlocs.size());
-            EventLog::SourceScope levelScope("mgr_level");
+            EventLog::SourceScope levelScope(levelTag);
             RandomTeleport(bot, qlocs, /*hearth=*/false);
             return;
         }
@@ -2246,7 +2260,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
         std::vector<WorldLocation> locs = sTravelMgr.GetCityLocations(bot);
         if (!locs.empty())
         {
-            EventLog::SourceScope cityScope("mgr_city");
+            EventLog::SourceScope cityScope(cityTag);
             RandomTeleport(bot, locs, /*hearth=*/true);
             return;
         }
@@ -2263,7 +2277,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 
     if (!locs.empty())
     {
-        EventLog::SourceScope hubScope("mgr_hub");
+        EventLog::SourceScope hubScope(hubTag);
         RandomTeleport(bot, locs, false);
         return;
     }
@@ -2532,8 +2546,10 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
     }
 
     // Made at its level by ".playerbots population resize": that level, once
+    bool madeAtLevel = false;
     if (GetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent))
     {
+        madeAtLevel = true;
         level = bot->GetLevel();
         SetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent, 0, 0);
     }
@@ -2567,7 +2583,10 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
     if (pmo)
         pmo->finish();
 
+    // A bot made at its level is placed once by the factory; a re-initialised persistent bot stays where it is.
+    placingNewBot = madeAtLevel;
     RandomTeleportForLevel(bot);
+    placingNewBot = false;
 }
 
 void RandomPlayerbotMgr::RandomizeMin(Player* bot)
