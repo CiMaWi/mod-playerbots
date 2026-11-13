@@ -466,6 +466,17 @@ inline void RidingTrip(std::vector<Check>& checks)
     Add(checks, "ride: a riding trip visits the riding trainer and the mount vendor of the bot's race", both,
         "mount vendor " + std::to_string(value.mountVendor) + "; " + Describe(plan));
 
+    // A bot standing at the mount vendor (WU26c): the vendor is the nearer stop, yet the rank is learnt first, as the
+    // vendor sells the mount only to a bot that knows it: one trip buys both
+    TripRequest atVendor = Request(bot);
+    atVendor.Start = At(1000.0f, 195.0f);
+    TripPlan const rankFirst = Plan(bot, atVendor);
+    bool const ordered = rankFirst.Stops.size() == 2 && rankFirst.Stops[0].Id == RIDING_TRAINER &&
+                         HasErrand(rankFirst.Stops[0], ErrandKind::Ride) && rankFirst.Stops[1].Id == MOUNT_VENDOR &&
+                         HasErrand(rankFirst.Stops[1], ErrandKind::Ride) && rankFirst.Refused.empty();
+    Add(checks, "ride: the riding trainer comes before the mount vendor, also from beside the vendor", ordered,
+        Describe(rankFirst));
+
     // A known rank whose mount is missing (WU14): the mount vendor alone, the trainer is no stop
     ErrandSnapshot mountOnly = bot;
     mountOnly.Riding.Learn = false;

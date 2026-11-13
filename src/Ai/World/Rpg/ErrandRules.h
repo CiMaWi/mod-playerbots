@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_ERRANDRULES_H
 #define _PLAYERBOT_ERRANDRULES_H
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -477,6 +478,28 @@ inline float InsertYards(ErrandPlace const& start, std::vector<TripStop> const& 
     return best;
 }
 
+// The stop of a trip that holds the riding errand on `service`, or the trip's size when none does
+inline std::size_t RideStop(std::vector<TripStop> const& stops, uint32_t service)
+{
+    for (std::size_t i = 0; i < stops.size(); ++i)
+        for (ErrandOffer const& errand : stops[i].Errands)
+            if (errand.Kind == ErrandKind::Ride && errand.Service == service)
+                return i;
+    return stops.size();
+}
+
+// A rank and its mount on one trip (WU26c): the vendor sells the mount only to a bot that knows the rank, so the riding
+// trainer's stop comes before the mount vendor's when the detour order put it after
+inline void RankBeforeMount(std::vector<TripStop>& stops)
+{
+    std::size_t const trainer = RideStop(stops, SERVICE_RIDING_TRAINER);
+    std::size_t const vendor = RideStop(stops, SERVICE_MOUNT_VENDOR);
+    if (trainer < stops.size() && vendor < trainer)
+        std::rotate(stops.begin() + static_cast<std::ptrdiff_t>(vendor),
+                    stops.begin() + static_cast<std::ptrdiff_t>(trainer),
+                    stops.begin() + static_cast<std::ptrdiff_t>(trainer) + 1);
+}
+
 // The detour rule: an errand joins a stop already on the trip when one can take it; a new stop opens only when the
 // pending errands it takes are worth more than its detour, the best gain first, until no detour pays or the trip has
 // MAX_DETOUR_STOPS detours. Deterministic: candidates in the order given, strict comparisons.
@@ -588,6 +611,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         }
         plan.Refused.push_back(refusal);
     }
+    RankBeforeMount(plan.Stops);
     return plan;
 }
 }  // namespace WorldTravel
