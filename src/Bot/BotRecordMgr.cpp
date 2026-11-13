@@ -280,8 +280,10 @@ void BotRecordMgr::OnEvent(Player* player, std::string_view type, std::string_vi
         return;
     }
 
-    // A kill above the low mark is shared by the killer's group: its bots alive on the map within reward distance
+    // A kill above the low mark is shared by the killer's group: its bots alive on the map within reward distance. The
+    // shared row's others name everyone at it, the killer too, so each participant's row names the others
     std::vector<Player*> participants = {player};
+    std::size_t const alone = event.Others.size();
     if (Group* const party = group ? player->GetGroup() : nullptr)
         for (GroupReference* ref = party->GetFirstMember(); ref; ref = ref->next())
         {
@@ -294,6 +296,8 @@ void BotRecordMgr::OnEvent(Player* player, std::string_view type, std::string_vi
             if (IsBot(member))
                 participants.push_back(member);
         }
+    if (event.Others.size() > alone)
+        AppendToken(event.Others, PersonToken(player));
 
     Record(participants, event);
     if (pmo)

@@ -724,8 +724,8 @@ public:
 
     // LC8: the bot's state facts as the conversation bridge reads them (lab tests; the wire carries `around` from
     // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry, then "SERVANT <bot> <name|none>" and
-    // "MOUNT <bot> <name|none>". Console: ReadBotState reads only on the world thread, which a game client's
-    // command is not on.
+    // "MOUNT <bot> <name|none>", then "DEED <bot> <sentence>" per recent deed (LC7). Console: ReadBotState reads only
+    // on the world thread, which a game client's command is not on.
     static bool HandleBridgeStateCommand(ChatHandler* handler, PlayerIdentifier target)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -751,6 +751,8 @@ public:
         handler->PSendSysMessage("SERVANT {} {}", target.GetName(),
                                  facts.servantName.empty() ? "none" : facts.servantName);
         handler->PSendSysMessage("MOUNT {} {}", target.GetName(), facts.mountName.empty() ? "none" : facts.mountName);
+        for (std::string const& deed : facts.deeds)
+            handler->PSendSysMessage("DEED {} {}", target.GetName(), deed);
         return true;
     }
 

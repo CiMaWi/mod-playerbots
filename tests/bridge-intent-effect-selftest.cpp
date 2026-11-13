@@ -2187,10 +2187,11 @@ int main()
 
         // LC1b: the topic rows. Every topic has a row, in the wire's order and under the wire's word
         // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
-        char const* const wireTopics[] = {"inventory", "quests", "cooldowns",  "strategies", "spells", "plan",
-                                          "options",   "route",  "quest_plan", "bags",       "places"};
+        char const* const wireTopics[] = {"inventory", "quests",  "cooldowns", "strategies", "spells",
+                                          "plan",      "options", "route",     "quest_plan", "bags",
+                                          "places",    "history", "lately",    "known"};
         std::span<TopicRow const> const topics = PlayerbotBridge::TopicRows();
-        Check(topics.size() == std::size(wireTopics), "eleven topic rows");
+        Check(topics.size() == std::size(wireTopics), "fourteen topic rows");
         for (std::size_t index = 0; index < topics.size(); ++index)
         {
             TopicRow const& row = topics[index];

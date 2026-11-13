@@ -217,7 +217,22 @@ inline constexpr TopicRow TopicTable[] = {
      .Name = "places",
      .Sentence = "Where your hearthstone is bound and the flight points you know.",
      .Params = {},
-     .Limit = 24}};
+     .Limit = 24},
+    {.Topic = BotStateTopic::History,
+     .Name = "history",
+     .Sentence = "What you did that mattered, in order, and the lands, dungeons and foes you know.",
+     .Params = {},
+     .Limit = 24},
+    {.Topic = BotStateTopic::Lately,
+     .Name = "lately",
+     .Sentence = "What you did of note lately, newest first.",
+     .Params = {},
+     .Limit = 12},
+    {.Topic = BotStateTopic::Known,
+     .Name = "known",
+     .Sentence = "The others you have shared deeds with, and what you shared.",
+     .Params = {},
+     .Limit = 12}};
 
 constexpr bool TopicTableInOrder()
 {
@@ -225,7 +240,7 @@ constexpr bool TopicTableInOrder()
         if (static_cast<std::size_t>(TopicTable[index].Topic) != index)
             return false;
 
-    return static_cast<std::size_t>(BotStateTopic::Places) + 1 == std::size(TopicTable);
+    return static_cast<std::size_t>(BotStateTopic::Known) + 1 == std::size(TopicTable);
 }
 static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
 

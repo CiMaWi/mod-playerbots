@@ -12,14 +12,17 @@
 #include <thread>
 
 #include "Bag.h"
+#include "BotRecordMgr.h"
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
 #include "BridgeBotTopics.h"
 #include "BridgeNames.h"
+#include "CharacterCache.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "Formulas.h"
 #include "GameObject.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "LootObjectStack.h"
 #include "ObjectAccessor.h"
@@ -33,6 +36,7 @@
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "RecordWords.h"
 #include "RouteService.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
@@ -231,6 +235,103 @@ void ReadRoute(Player* bot, std::string const& argument, std::vector<BotStateIte
     Topics::RouteItems(in, items);
 }
 
+// A DBC name in the server's locale, else in English
+template <typename Names>
+std::string DbcName(Names const& names)
+{
+    char const* name = names[sWorld->GetDefaultDbcLocale()];
+    return name && *name ? name : (names[LOCALE_enUS] ? names[LOCALE_enUS] : "");
+}
+
+// LC7: the game's names of a record row's ids, from templates, DBC stores and the character cache (no DB)
+class GameLookup final : public RecordWords::Lookup
+{
+public:
+    std::string PlaceName(uint32 area, uint32 zone) const override
+    {
+        std::string name = AreaName(area);
+        return name.empty() ? AreaName(zone) : name;
+    }
+
+    std::string ZoneName(uint32 zone) const override { return AreaName(zone); }
+
+    std::string CreatureName(uint32 entry) const override
+    {
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+        return creature ? creature->Name : std::string();
+    }
+
+    bool Boss(uint32 entry) const override
+    {
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+        return creature && (creature->rank == CREATURE_ELITE_WORLDBOSS ||
+                            creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS));
+    }
+
+    std::string QuestTitle(uint32 id) const override
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(id);
+        return quest ? quest->GetTitle() : std::string();
+    }
+
+    std::string ItemName(uint32 id) const override
+    {
+        ItemTemplate const* item = sObjectMgr->GetItemTemplate(id);
+        return item ? item->Name1 : std::string();
+    }
+
+    std::string SpellName(uint32 id) const override
+    {
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(id);
+        return spell ? DbcName(spell->SpellName) : std::string();
+    }
+
+    std::string SkillName(uint32 id) const override
+    {
+        SkillLineEntry const* skill = sSkillLineStore.LookupEntry(id);
+        return skill ? DbcName(skill->name) : std::string();
+    }
+
+    std::string FlightPointName(uint32 node) const override
+    {
+        TaxiNodesEntry const* entry = sTaxiNodesStore.LookupEntry(node);
+        return entry ? DbcName(entry->name) : std::string();
+    }
+
+    std::string DungeonName(uint32 map) const override
+    {
+        MapEntry const* entry = sMapStore.LookupEntry(map);
+        return entry && entry->IsDungeon() ? DbcName(entry->name) : std::string();
+    }
+
+    std::optional<RecordWords::Person> Character(uint32 guid) const override
+    {
+        CharacterCacheEntry const* character =
+            sCharacterCache->GetCharacterCacheByGuid(ObjectGuid::Create<HighGuid::Player>(guid));
+        if (!character)
+            return std::nullopt;
+        return RecordWords::Person{character->Name, character->Race, character->Class};
+    }
+};
+
+using RecordReader = std::vector<RecordWords::Entry> (*)(std::vector<RecordRules::Row> const& rows, uint32 self,
+                                                         uint32 now, RecordWords::Lookup const& lookup);
+
+void ReadRecord(Player* bot, RecordReader reader, std::vector<BotStateItem>& items)
+{
+    uint32 const self = bot->GetGUID().GetCounter();
+    std::vector<RecordRules::Row> const rows = BotRecordMgr::Instance().Rows(self);
+    uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+    for (RecordWords::Entry& entry : reader(rows, self, now, GameLookup()))
+        items.push_back({std::move(entry.Name), entry.Value, entry.Extra, entry.Code, std::move(entry.Text)});
+}
+
+std::vector<RecordWords::Entry> LatelyEntries(std::vector<RecordRules::Row> const& rows, uint32 self, uint32 now,
+                                              RecordWords::Lookup const& lookup)
+{
+    return RecordWords::Lately(rows, self, now, lookup);
+}
+
 // What a topic's reader gets
 struct TopicSource
 {
@@ -262,7 +363,12 @@ constexpr TopicReader Readers[] = {
     {BotStateTopic::QuestPlan,
      [](TopicSource const& in, Items& items) { Topics::QuestPlanItems(PlanInputOf(in.Bot, in.Ai), items); }},
     {BotStateTopic::Bags, [](TopicSource const& in, Items& items) { ReadBags(in.Bot, in.Ai, items); }},
-    {BotStateTopic::Places, [](TopicSource const& in, Items& items) { ReadPlaces(in.Bot, items); }}};
+    {BotStateTopic::Places, [](TopicSource const& in, Items& items) { ReadPlaces(in.Bot, items); }},
+    {BotStateTopic::History,
+     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::History, items); }},
+    {BotStateTopic::Lately, [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &LatelyEntries, items); }},
+    {BotStateTopic::Known,
+     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::KnownBots, items); }}};
 
 constexpr bool ReadersInOrder()
 {
@@ -505,6 +611,9 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
         facts.mountName = mounts.front()->GetSpellInfo()->SpellName[0];
     else if (Unit* vehicle = bot->GetVehicleBase())
         facts.mountName = vehicle->GetName();
+    uint32 const self = bot->GetGUID().GetCounter();
+    facts.deeds = RecordWords::Deeds(BotRecordMgr::Instance().Rows(self), self,
+                                     static_cast<uint32>(GameTime::GetGameTime().count()), GameLookup());
     return true;
 }
 
