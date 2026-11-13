@@ -683,9 +683,9 @@ void CheckChase()
           "aggression lengthens the chase, courtesy shortens it");
 
     FightMemory memory = Ready(now);
-    NoteChase(memory, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    NoteChase(memory, ENEMY, 0.0f, 0.0f, 40.0f, now, now);
     Check(!CheckChase(memory, ENEMY + 1, 0.0f, 0.0f, now + 20 * SECOND, limit), "another target is no chase");
-    NoteChase(memory, ENEMY, 50.0f, 50.0f, 40.0f, now + 5 * SECOND);
+    NoteChase(memory, ENEMY, 50.0f, 50.0f, 40.0f, now + 5 * SECOND, now + 5 * SECOND);
     Check(memory.chaseStartMs == now && memory.chaseX == 0.0f, "a running chase is not restarted");
     Check(!CheckChase(memory, ENEMY, 70.0f, 0.0f, now + limit.ms - 1, limit), "inside the limits the chase goes on");
     Check(CheckChase(memory, ENEMY, 70.0f, 0.0f, now + limit.ms, limit) && memory.chaseOver,
@@ -693,21 +693,33 @@ void CheckChase()
     Check(ChaseLeftAlone(memory, ENEMY, now + limit.ms + LEFT_ALONE_MS - 1) &&
               !ChaseLeftAlone(memory, ENEMY, now + limit.ms + LEFT_ALONE_MS),
           "the winner leaves it alone for LEFT_ALONE_MS");
-    NoteChase(memory, ENEMY, 0.0f, 0.0f, 40.0f, now + limit.ms + SECOND);
+    NoteChase(memory, ENEMY, 0.0f, 0.0f, 40.0f, now + limit.ms + SECOND, now + limit.ms + SECOND);
     Check(memory.chaseOver, "no new chase of it while left alone");
 
     FightMemory far = Ready(now);
-    NoteChase(far, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    NoteChase(far, ENEMY, 0.0f, 0.0f, 40.0f, now, now);
     Check(!CheckChase(far, ENEMY, 79.0f, 0.0f, now + SECOND, limit), "39 yd beyond the fight: on");
     Check(CheckChase(far, ENEMY, 80.0f, 0.0f, now + SECOND, limit), "40 yd beyond the fight: over by distance");
 
     FightMemory daring = Ready(now);
-    NoteChase(daring, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    NoteChase(daring, ENEMY, 0.0f, 0.0f, 40.0f, now, now);
     Check(!CheckChase(daring, ENEMY, 0.0f, 0.0f, now + limit.ms, ChaseLimitFor(1.0f, 0.0f, VALUES)),
           "an aggressive winner chases longer");
 
+    FightMemory late = Ready(now);
+    NoteChase(late, ENEMY, 0.0f, 0.0f, 40.0f, now, now + 10 * SECOND);
+    Check(late.chaseStartMs == now && CheckChase(late, ENEMY, 0.0f, 0.0f, now + limit.ms, limit),
+          "a winner coming late chases only the rest: the chase counts from the enemy's retreat");
+    FightMemory unknown = Ready(now);
+    NoteChase(unknown, ENEMY, 0.0f, 0.0f, 40.0f, 0, now + 10 * SECOND);
+    Check(unknown.chaseStartMs == now + 10 * SECOND, "no retreat time known: the chase counts from now");
+
+    Check(!ChasePast(0, now, limit) && !ChasePast(now, now + limit.ms - 1, limit) &&
+              ChasePast(now, now + limit.ms, limit),
+          "a late joiner leaves an enemy whose chase from its retreat is past its limit");
+
     FightMemory stale = Ready(now);
-    NoteChase(stale, ENEMY, 0.0f, 0.0f, 40.0f, now);
+    NoteChase(stale, ENEMY, 0.0f, 0.0f, 40.0f, now, now);
     Check(!CheckChase(stale, ENEMY, 0.0f, 0.0f, now + limit.ms + LEFT_ALONE_MS, limit) && !stale.chaseGuid,
           "a chase not looked at for its limit and the leave-alone time is forgotten");
 }

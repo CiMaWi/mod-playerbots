@@ -817,10 +817,13 @@ bool ProbeSides(Fight const& fight, FightParticipant const& participant, Player*
             break;
     }
 
-    FightParticipant const* const victim = enemyOf(player->GetVictim());
+    // A caster has no victim: its selected target counts (WP6 chase-b70: a warlock's chase was never noted)
+    FightParticipant const* victim = enemyOf(player->GetVictim());
+    if (!victim)
+        victim = enemyOf(ObjectAccessor::GetUnit(*player, player->GetTarget()));
     if (victim && victim->retreated && !IsForced(player->GetGUID(), nowMs))
         if (FightMemory* const memory = MemoryOf(player, nowMs))
-            NoteChase(*memory, victim->guid, fight.centreX, fight.centreY, fight.radius, nowMs);
+            NoteChase(*memory, victim->guid, fight.centreX, fight.centreY, fight.radius, victim->retreatedMs, nowMs);
     return sides;
 }
 
@@ -1268,9 +1271,16 @@ Player* JoinTarget(PlayerbotAI* botAI)
     if (!fight)
         return nullptr;
 
+    ChaseLimit const limit =
+        ChaseLimitFor(memory->aggression, memory->courtesy, FightRuleValues(sPlayerbotAIConfig.WorldPvp));
+    auto const leftAlone = [&](FightParticipant const& participant, Player* player)
+    {
+        return ChaseLeftAlone(*memory, participant.guid, nowMs) ||
+               (ChasePast(participant.retreatedMs, nowMs, limit) && !Attacks(player, bot));
+    };
     Player* const enemy = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(memory->joinGuid));
-    if (fresh && enemy && enemy->IsAlive() && fight->Find(memory->joinGuid) &&
-        !ChaseLeftAlone(*memory, memory->joinGuid, nowMs))
+    FightParticipant const* const joined = fight->Find(memory->joinGuid);
+    if (fresh && enemy && enemy->IsAlive() && joined && !leftAlone(*joined, enemy))
         return enemy;
 
     // Its target is dead, gone or left alone, or the bot is in the fight it joined: the nearest enemy participant it
@@ -1280,7 +1290,7 @@ Player* JoinTarget(PlayerbotAI* botAI)
     {
         Player* const player = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(participant.guid));
         if (!player || !player->IsInWorld() || !player->IsAlive() || player->GetTeamId() == bot->GetTeamId() ||
-            ChaseLeftAlone(*memory, participant.guid, nowMs))
+            leftAlone(participant, player))
             continue;
         JoinEnemy candidate;
         candidate.guid = participant.guid;
@@ -1304,9 +1314,8 @@ bool ChaseEnds(PlayerbotAI* botAI, Unit* target)
     if (!memory || !memory->chaseGuid || memory->chaseGuid != target->GetGUID().GetRawValue() || !StartsByRules(botAI))
         return false;
     Player* const bot = botAI->GetBot();
-    if (Attacks(target, bot))
-        return false;
-
+    // The retreated enemy hitting back does not lengthen the chase: it fights only who attacks it (LeftAlone), so
+    // both stop here; kept on, the two defended against each other until the stalemate (WP6 chase-b70)
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp chase") : nullptr);
     ChaseLimit const limit =
         ChaseLimitFor(memory->aggression, memory->courtesy, FightRuleValues(sPlayerbotAIConfig.WorldPvp));

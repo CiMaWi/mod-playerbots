@@ -401,13 +401,16 @@ inline bool RetreatedFromFight(FightMemory const& memory)
 }
 
 // The book saw this bot attack `guid`, a retreated enemy of its fight (centre and radius then): a chase starts,
-// unless it is the chase already running or one just over
-inline void NoteChase(FightMemory& memory, uint64_t guid, float x, float y, float radius, uint32_t nowMs)
+// unless it is the chase already running or one just over. It counts from the enemy's retreat (`retreatMs`, 0 for
+// unknown): a winner that comes late has only the rest of the chase (WP6 chase-b70: allies that joined 8 and 13 s
+// after the retreat kept the fight past the stalemate)
+inline void NoteChase(FightMemory& memory, uint64_t guid, float x, float y, float radius, uint32_t retreatMs,
+                      uint32_t nowMs)
 {
     if (memory.chaseGuid == guid && (!memory.chaseOver || nowMs - memory.chaseOverMs < LEFT_ALONE_MS))
         return;
     memory.chaseGuid = guid;
-    memory.chaseStartMs = nowMs;
+    memory.chaseStartMs = retreatMs && nowMs - retreatMs < LEFT_ALONE_MS ? retreatMs : nowMs;
     memory.chaseX = x;
     memory.chaseY = y;
     memory.chaseRadius = radius;
@@ -435,6 +438,14 @@ inline bool CheckChase(FightMemory& memory, uint64_t guid, float x, float y, uin
     memory.chaseOver = true;
     memory.chaseOverMs = nowMs;
     return true;
+}
+
+// A retreated enemy (`retreatedMs` its retreat, 0 for none) whose chase, counted from the retreat, is past the bot's
+// limit: a bot coming to the fight late does not take it up (WP6 chase-b15: a rogue joining 21 s after the retreat
+// kept the fight to the stalemate)
+inline bool ChasePast(uint32_t retreatedMs, uint32_t nowMs, ChaseLimit const& limit)
+{
+    return retreatedMs != 0 && nowMs - retreatedMs >= limit.ms;
 }
 
 // A chase over: the winner leaves `guid` alone for a while

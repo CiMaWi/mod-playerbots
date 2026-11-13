@@ -42,11 +42,13 @@ bool IsPickedTarget(PlayerbotAI* botAI, Unit* unit);
 // else nullptr
 Player* JoinTarget(PlayerbotAI* botAI);
 // InvalidTargetValue ("current target"): whether this bot stops chasing `target`, a retreated enemy of its fight it
-// attacks: the chase's time or yards beyond the fight passed the bot's limit (ChaseLimitFor: aggression lengthens
-// it, courtesy shortens it); an enemy attacking the bot is never dropped. O(1) unless `target` is the chased one
+// attacks: the chase's time since the enemy's retreat or its yards beyond the fight passed the bot's limit
+// (ChaseLimitFor: aggression lengthens it, courtesy shortens it), also when the enemy hits back (it fights only who
+// attacks it). O(1) unless `target` is the chased one
 bool ChaseEnds(PlayerbotAI* botAI, Unit* target);
-// EnemyPlayerValue::Calculate: whether this bot, starting by the rules, leaves `unit` alone: it retreated from the
-// fight it is in, or its chase of `unit` just ended; never an enemy attacking it (self-defence)
+// EnemyPlayerValue::Calculate and InvalidTargetValue ("current target"): whether this bot, starting by the rules,
+// leaves `unit` alone (neither picks nor keeps it as its target): it retreated from the fight it is in, it disengages,
+// or its chase of `unit` just ended; never an enemy attacking it (self-defence)
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
 // The "world pvp retreat" trigger and action: while this bot retreats (or disengages) by the rules, the place it moves
 // away from
