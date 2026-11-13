@@ -9501,8 +9501,9 @@ uint32 PlayerbotAI::ComputeReactDelay()
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
         return base * 5;
 
-    // When not resting, return 10-30 times the base
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))
+    // When not resting, or on a mailbox or banker visit, return 10-30 times the base. A visit takes one step a check:
+    // at the rest area's pace below, a visit of two mails took minutes in a city (WB7d)
+    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail))
         return base * urand(10, 30);
 
     // In other cases, return 20-200 times the base
