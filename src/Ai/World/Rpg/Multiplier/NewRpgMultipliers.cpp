@@ -5,12 +5,17 @@
  */
 
 #include "NewRpgMultipliers.h"
+
 #include "Playerbots.h"
+#include "TestConstraints.h"
 
 float NewRpgQuestGiverMultiplier::GetValue(Action* action)
 {
     if (!action || action->getName() != "attack anything")
         return 1.0f;
+    // A test's nofight bot picks no mob (TestConstraints::StartsFights): neither could hit the other
+    if (!TestConstraints::StartsFights(botAI->rpgInfo.constraints))
+        return 0.0f;
 
     switch (botAI->rpgInfo.GetStatus())
     {

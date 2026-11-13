@@ -14,6 +14,7 @@
 #include "ServerFacade.h"
 #include "Strategy.h"
 #include "TargetValue.h"
+#include "TestConstraints.h"
 #include "Vehicle.h"
 
 namespace
@@ -142,6 +143,11 @@ Unit* EnemyPlayerValue::Calculate()
 
         return *targets.begin();
     }
+
+    // A test's nofight bot starts no fight with a player either (TestConstraints::StartsFights), nor joins one; it
+    // answers one already fighting it (above)
+    if (!TestConstraints::StartsFights(botAI->rpgInfo.constraints))
+        return nullptr;
 
     // World PvP (WP5): the target in the fight the rules let this bot join, when today's checks of step 2 pass on it
     if (Player* const joined = WorldPvp::JoinTarget(botAI))

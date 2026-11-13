@@ -3574,6 +3574,9 @@ Playerbots.RandomBotTeleLowerLevel = 1
 Playerbots.RandomBotTeleHigherLevel = 3
 
 # Bots automatically teleport to another place for leveling on levelup
+# No effect with Playerbots.Population.Persistent = 1 (not ArenaOnly): persistent bots change zones by travelling
+# (the planner's move_zone goal), and the periodic hub/city refresh teleports are off for them too. Only a newly
+# made bot's first placement (".playerbots population resize") is still a teleport.
 # Default: 1 (enabled)
 Playerbots.AutoTeleportForLevel = 1
 
@@ -3893,6 +3896,8 @@ Playerbots.MinRandomBotReviveTime = 60
 Playerbots.MaxRandomBotReviveTime = 300
 
 # Minimum and maximum seconds between bot teleports to new areas or zones
+# Persistent bots (Playerbots.Population.Persistent = 1, not ArenaOnly) no longer teleport on this timer; the
+# refresh still runs, the teleport is replaced by travelling (move_zone).
 # Defaults: 3600 (min), 18000 (max)
 Playerbots.MinRandomBotTeleportInterval = 3600
 Playerbots.MaxRandomBotTeleportInterval = 18000

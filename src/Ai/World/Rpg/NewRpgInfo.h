@@ -117,6 +117,8 @@ struct NewRpgInfo
         bool noHearth{false};  // a hearth leg failed: later routes of this trip leave the hearthstone out
         uint8 bindTries{0};    // an inn errand: binds tried in front of the innkeeper
         uint32 tripId{0};      // the world log's trip id (WL7)
+        // A transport leg's last scan (TravelLegs::TRANSPORT_SCAN_MS)
+        uint32 transportScanMs{0};
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
     // every errand assigned there: sell, buy (a bag by worth) and repair at its vendor, turn in completed quests
@@ -149,6 +151,7 @@ struct NewRpgInfo
 
     uint32 startT{0};     // start timestamp of the current status
     uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
+    uint16 constraints{0};  // a test's constraints (TestConstraints bits, `playerbots route constraint`); not saved
     std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
     uint32 routeRequests{0};  // the bot's route request ids (TravelRoute::Snapshot::requestId), across trips
     // The planner's view of the bot (Planner::PlannerHook, PlannerService.cpp); a reset only costs a new snapshot

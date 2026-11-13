@@ -879,6 +879,15 @@ public:
     // Schedules a callback to run once after <delayMs> milliseconds.
     void AddTimedEvent(std::function<void()> callback, uint32 delayMs);
 
+    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass until it rides
+    // that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
+    void BeginAboard(uint32 entry);
+    static constexpr uint32 ABOARD_DEADLINE_MS = 5000;
+    static constexpr char const* ABOARD_EVENT_TYPE = "Aboard";
+    // Set on the world thread when an order for this bot is posted (TravelOrders::Post), cleared when none is left: the
+    // map thread's one atomic load per update
+    std::atomic<bool> orderPosted{false};
+
 private:
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
@@ -925,6 +934,8 @@ protected:
     BotCheatMask cheatMask = BotCheatMask::none;
     Position jumpDestination = Position();
     uint32 nextTransportCheck = 0;
+    uint32 aboardEntry = 0;    // BeginAboard's transport; 0 = none pending
+    uint32 aboardSinceMs = 0;  // getMSTime() of the placement
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
     uint8 pvpSkillFirstRoll = 0;
