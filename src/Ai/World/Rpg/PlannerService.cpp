@@ -36,12 +36,14 @@
 #include "Playerbots.h"
 #include "QuestCircuitLog.h"
 #include "RouteService.h"
+#include "SpellAuras.h"
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
+#include "UpkeepNeedRules.h"
 #include "World.h"
 #include "WorldLog.h"
 
@@ -630,7 +632,9 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, NewRpgInfo::PlannerState& stat
     for (QuestSlot const& slot : snapshot.quests)
         log.push_back(slot.quest);
     GoalApply::UpdateSeen(goals.seen, std::move(log), now);
-    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(bot, goals));
+    // The needs rates read the bot's slot measure here; the job computes the needs list from them (upkeep WU16)
+    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(bot, goals),
+                                   BotNeedRates(botAI, snapshot));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);
     state.snapshotDue = false;
@@ -727,6 +731,9 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
     snapshot.runSpeed = bot->GetSpeed(MOVE_RUN);
     snapshot.mounted = bot->IsMounted();
+    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16)
+    if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+        snapshot.sickMs = static_cast<std::uint32_t>(std::max<int32>(sickness->GetDuration(), 0));
     if (Group const* group = bot->GetGroup())
     {
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
@@ -1115,6 +1122,8 @@ bool HandleGoalCommand(ChatHandler* handler, char const* args)
                                  view.jobOut ? "; a job is out" : "");
     else
         handler->PSendSysMessage("  no plan yet{}", view.jobOut ? "; a job is out" : "");
+    if (view.plan && !view.plan->ranked.shortText.empty())
+        handler->PSendSysMessage("  {}", view.plan->ranked.shortText);
     for (OptionLine const& option : view.options)
         handler->PSendSysMessage("  {} {:.1f}/min over {:.1f} min: {}", option.choice, option.valuePerMinute,
                                  option.minutes, option.reason);

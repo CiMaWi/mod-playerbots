@@ -28,6 +28,7 @@
 #include "GoalModelHarness.h"
 #include "GoalModelLog.h"
 #include "Log.h"
+#include "NeedGoalBridge.h"
 #include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -900,14 +901,14 @@ Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const&
 }
 
 Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<QuestProgress> const& progress,
-                     Goals::Situation const& situation)
+                     Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates)
 {
     CircuitData data = CircuitDataNow();
     CircuitContext context = data.Context();
     context.protectedQuests = protectedQuests;
     context.progress = progress;
-    return [data = std::move(data), context = std::move(context),
-            situation](Snapshot const& snapshot) -> std::optional<Payload>
+    return [data = std::move(data), context = std::move(context), situation, rates,
+            upkeep = CurrentUpkeepIndex()](Snapshot const& snapshot) -> std::optional<Payload>
     {
         // A failed job answers without a plan: its bot falls back at once (fallback_failed) instead of waiting out
         // the pool's keep time for a result that never comes
@@ -917,7 +918,11 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
         std::shared_ptr<Goals::GoalPlan const> plan;
         try
         {
-            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, situation));
+            // The needs list on the worker: its reserve and shortfall feed the need factor (upkeep WU16, §3.10)
+            Goals::Situation filled = situation;
+            if (upkeep)
+                NeedBridge::Fill(filled, NeedBridge::InputsOf(UpkeepNeeds::ComputeNeeds(snapshot, *upkeep, rates)));
+            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, filled));
         }
         catch (...)
         {

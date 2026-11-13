@@ -130,6 +130,7 @@ struct Snapshot
     std::uint8_t groupSize{0};  // 0 = no group
     std::uint64_t groupLeader{0};
     std::uint32_t deaths{0};  // not filled yet: no cheap per-bot death count exists
+    std::uint32_t sickMs{0};  // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
     Goal currentGoal;         // WT16 fills the goals
     std::vector<Goal> recentGoals;
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)

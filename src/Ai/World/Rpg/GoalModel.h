@@ -104,6 +104,8 @@ constexpr float REST_MAX = 0.85f;
 constexpr float DEATH_CHANCE_AT_ZERO = 0.5f;
 constexpr float DEATH_MINUTES = 5.0f;  // a corpse run
 constexpr float REST_MINUTES = 0.5f;
+constexpr float MINUTE_MS = 60000.0f;
+constexpr char const* SICK_REASON = "sick";  // a sick bot rests; every other option is dropped (upkeep §3.5, WU16)
 
 constexpr float HEARTH_USES = 1.0f;
 constexpr float OTHER_MAP_MINUTES = 15.0f;  // the way back from a bind on another map
@@ -253,13 +255,14 @@ inline std::uint64_t DefaultReserve(std::uint32_t level)
     return static_cast<std::uint64_t>(level) * level * RESERVE_PER_LEVEL_SQUARED;
 }
 
-inline Need NeedFor(Snapshot const& bot, Weights const& weights, std::uint64_t reserveCopper)
+// known: the reserve is upkeep's (NeedGoalBridge), 0 a real zero; else 0 stands for the default reserve
+inline Need NeedFor(Snapshot const& bot, Weights const& weights, std::uint64_t reserveCopper, bool known = false)
 {
     Need need;
     std::uint32_t const band = WorldTravel::LevelBand(bot.level);
     need.exchange =
         BAND_XP_PER_MINUTE[band] / static_cast<float>(WorldTravel::DEFAULT_SLOT_BANDS[band].EarnCopperPerMinute);
-    need.baseReserve = reserveCopper ? reserveCopper : DefaultReserve(bot.level);
+    need.baseReserve = reserveCopper || known ? reserveCopper : DefaultReserve(bot.level);
     need.reserve =
         static_cast<std::uint64_t>(static_cast<double>(need.baseReserve) * Factor(weights.thrift, THRIFT_RESERVE_SPAN));
     need.shortOfReserve = bot.money < need.reserve;
@@ -431,7 +434,11 @@ struct Situation
     std::vector<Inn> inns;
     float healthPercent{100.0f};
     float manaPercent{-1.0f};        // < 0: no mana
-    std::uint64_t reserveCopper{0};  // 0: the default reserve
+    std::uint64_t reserveCopper{0};  // 0: the default reserve, unless reserveKnown
+    bool reserveKnown{false};        // upkeep's reserve (NeedGoalBridge, WU16), unscaled: the model scales it by thrift
+    std::uint64_t shortfallCopper{0};  // upkeep's shortfall against its reserve; 0 = none
+    std::string shortKind;             // the largest unpaid need's kind word (NeedShort's src)
+    std::string shortText;             // "12g 0s 0c short for journeyman riding", for the goal view
     std::uint32_t bagBudgetPercent{BAG_BUDGET_PERCENT};
     std::optional<External> external;
 };
@@ -487,6 +494,9 @@ struct Ranked
     bool ok{false};
     std::string failure;
     Need need;
+    std::uint64_t shortfallCopper{0};  // the situation's, carried for NeedShort and the goal view
+    std::string shortKind;
+    std::string shortText;
     float referenceRate{0.0f};  // the best activity's value per minute
     std::uint32_t considered{0};
     std::vector<Option> options;  // the best RANK_KEEP, best first
@@ -545,7 +555,7 @@ inline Model Prepare(Snapshot const& bot, Situation const& situation)
 {
     Model model;
     model.weights = FromTraits(bot);
-    model.need = NeedFor(bot, model.weights, situation.reserveCopper);
+    model.need = NeedFor(bot, model.weights, situation.reserveCopper, situation.reserveKnown);
     model.band = WorldTravel::LevelBand(bot.level);
     model.cautionWeight = CautionWeight(model.weights);
     if (std::isfinite(bot.runSpeed) && bot.runSpeed > 0.0f)
@@ -564,6 +574,9 @@ public:
     Ranked Run()
     {
         _ranked.need = _model.need;
+        _ranked.shortfallCopper = _situation.shortfallCopper;
+        _ranked.shortKind = _situation.shortKind;
+        _ranked.shortText = _situation.shortText;
         if (!Finite(_bot.position))
         {
             _ranked.failure = "bad position";
@@ -578,7 +591,10 @@ public:
         _ranked.referenceRate = ReferenceRate();
         AddErrand();
         AddBagOffers();
-        AddRest();
+        if (Sick())
+            AddSickRest();
+        else
+            AddRest();
         AddHearth();
         AddExternal();
         return Finish();
@@ -586,6 +602,9 @@ public:
 
 private:
     Weights const& W() const { return _model.weights; }
+
+    // Resurrection sickness: no goal that fights or walks off is taken until it ends, the status update would end it
+    bool Sick() const { return _bot.sickMs > 0; }
 
     bool Outlevelled() const { return _situation.here.zoneHigh && _bot.level > _situation.here.zoneHigh; }
 
@@ -634,6 +653,11 @@ private:
     void Add(Option option, RiskInput const& risk)
     {
         ++_ranked.considered;
+        if (Sick())
+        {
+            Drop(option, SICK_REASON);
+            return;
+        }
         if (!std::isfinite(option.xp) || !std::isfinite(option.copper) || !std::isfinite(option.itemWorth) ||
             !std::isfinite(option.expected) || !std::isfinite(option.minutes) || !std::isfinite(option.crowd) ||
             !Finite(risk) || !Finite(option.place))
@@ -1009,6 +1033,23 @@ private:
         if (std::abs(W().caution) >= NOTICEABLE_UNIT)
             option.traitNotes.emplace_back(W().caution > 0.0f ? "careful" : "daring");
         Add(std::move(option), {});
+    }
+
+    // A sick bot rests until the sickness ends (upkeep §3.5): pinned, so it ranks above everything, an external goal
+    // too; its worth is the time at the reference rate the sickness would cost in a fight
+    void AddSickRest()
+    {
+        Option option;
+        option.kind = GoalKind::Rest;
+        option.place = _bot.position;
+        option.minutes = std::max(static_cast<float>(_bot.sickMs) / MINUTE_MS, REST_MINUTES);
+        option.expected = option.minutes * _ranked.referenceRate;
+        option.value = option.expected;
+        option.valuePerMinute = _ranked.referenceRate;
+        option.pinned = true;
+        option.reason = SICK_REASON;
+        ++_ranked.considered;
+        _options.push_back(std::move(option));
     }
 
     // Binding at an inn when the bind is far (WT9's rule): worth the way back it saves on the next hearth

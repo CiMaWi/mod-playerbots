@@ -1052,10 +1052,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             TestConstraints::IdleGate const gate = TestConstraints::GateOf(info.constraints);
             if (!gate.planner && !gate.status)
                 return false;
-            // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback. A sick bot
-            // takes no goal: the weighted pick lets it only rest (upkeep §3.5)
+            // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback. A sick
+            // bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted pick lets it only rest
             Planner::IdleStep step;
-            if (gate.planner && !sick)
+            if (gate.planner)
                 step = Planner::OnIdle(botAI, bot,
                                        [this](uint32 questId)
                                        {

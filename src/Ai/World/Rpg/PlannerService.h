@@ -174,9 +174,10 @@ bool HandleCircuitCommand(ChatHandler* handler, char const* args);
 // World thread: the synthetic checks plus the real-data scenarios (the circuit harness's places, synthetic spots)
 bool RunGoalsHarness(ChatHandler* handler);
 // The calling thread: a goals job (PlanGoals) over the published data, with the plan's kept quests protected and the
-// log quests' progress. Answers a GoalsAnswer, also for a failed ranking; none when the quest index was not ready
+// log quests' progress. Answers a GoalsAnswer, also for a failed ranking; none when the quest index was not ready.
+// The rates (BotNeedRates, map thread) let the job compute the needs list for the need factor (upkeep WU16)
 Compute GoalsCompute(std::vector<std::uint32_t> const& protectedQuests, std::vector<QuestProgress> const& progress,
-                     Goals::Situation const& situation);
+                     Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates);
 // `playerbots planner goals selftest | <player name>`: the harness, or the ranked goals of an online player (read
 // only; writes a `goal` decision row when the world log is on)
 bool HandleGoalsCommand(ChatHandler* handler, char const* args);
