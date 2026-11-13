@@ -827,6 +827,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (TravelOrders::TakeAndApply(this, bot) || aboardEntry)
         nextAICheckDelay = 0;
 
+    // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can be a
+    // minute apart for an idle bot, time enough for a new pet to start a fight (one bit test for every other bot)
+    if (rpgInfo.constraints & TestConstraints::STATES)
+        TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
+
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
     if (flying != WorldLog::InFlight(worldLog))
@@ -1156,10 +1161,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 aboardEntry = 0;
             }
         }
-
-        // A test's state constraints applied again, also to a pet summoned since
-        if (rpgInfo.constraints & TestConstraints::STATES)
-            TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
     }
 
     // Update the bot's group status (moved to helper function)
