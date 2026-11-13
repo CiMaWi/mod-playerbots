@@ -1442,20 +1442,37 @@ constexpr float OFF_HULL_REACH_YARDS = 40.0f;
 constexpr float OFF_HULL_RING_YARDS = 2.0f;
 constexpr uint32 OFF_HULL_BEARINGS = 16;
 
-std::optional<Point> GroundOffHull(Player const& bot, Transport const& ridden)
+std::optional<Point> GroundOffHull(Player const& bot, Transport const& ridden, bool trace)
 {
     TransportGeometry::GroundGeometry const geometry{bot, &ridden};
     Point const from = TransportGeometry::PositionOf(bot);
     constexpr float FULL_TURN = 6.28318531f;
+    // Why the candidates failed (traced bots, WT54-4): no ground mesh within a step of the deck's height, ground under
+    // the hull, or a mesh point that is not standing ground (water, or the snap left the point)
+    uint32 noMesh = 0;
+    uint32 onHull = 0;
+    uint32 notGround = 0;
     for (float radius = OFF_HULL_RING_YARDS; radius <= OFF_HULL_REACH_YARDS; radius += OFF_HULL_RING_YARDS)
         for (uint32 bearing = 0; bearing < OFF_HULL_BEARINGS; ++bearing)
         {
             float const angle = FULL_TURN * static_cast<float>(bearing) / static_cast<float>(OFF_HULL_BEARINGS);
             Point const seed{from.X + radius * std::cos(angle), from.Y + radius * std::sin(angle), from.Z};
             auto const ground = geometry.SnapGround(seed, OFF_HULL_RING_YARDS / 2.0f, TravelLifecycle::EXIT_STEP_YARDS);
-            if (ground && geometry.OffHull(*ground) && geometry.OnGround(*ground))
+            if (!ground)
+                ++noMesh;
+            else if (!geometry.OffHull(*ground))
+                ++onHull;
+            else if (!geometry.OnGround(*ground))
+                ++notGround;
+            else
                 return ground;
         }
+    if (trace)
+        LOG_DEBUG("playerbots",
+                  "[TravelLifecycle] ground_off_hull bot={} entry={} at={:.2f},{:.2f},{:.2f} origin_z={:.2f} "
+                  "none: no_mesh={} on_hull={} not_ground={}",
+                  bot.GetGUID().GetCounter(), ridden.GetEntry(), from.X, from.Y, from.Z, ridden.GetPositionZ(), noMesh,
+                  onHull, notGround);
     return std::nullopt;
 }
 
@@ -1731,7 +1748,7 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
     TravelLifecycle::CrossingTally tally;
     std::vector<Point> onward = route;
     if (!TravelLifecycle::OnwardPoint(TransportGeometry::GroundGeometry{bot, &ridden}, route))
-        if (auto const ground = GroundOffHull(bot, ridden))
+        if (auto const ground = GroundOffHull(bot, ridden, trace))
             onward.push_back(*ground);
     auto const exit = TransportGeometry::FindExit(bot, ridden, onward, trace ? &tally : nullptr);
     if (exit)
