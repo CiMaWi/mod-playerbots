@@ -552,8 +552,13 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     NewRpgInfo& info = botAI->rpgInfo;
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
+    uint16 const before = info.constraints;
     if (constrained)
         ApplyConstraints(bot, info, order, trip);
+    // A released errand choice is made at once: an errand check stamped before the hold (an inn trip, the login)
+    // would otherwise keep the bot from its errands for the retry time (WB8b run 1: up to 5 minutes)
+    if (!TestConstraints::ErrandAllowed(before) && TestConstraints::ErrandAllowed(info.constraints))
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
     if (order.aboard)
         PlaceAboard(botAI, bot, order.aboard);
     bool const applied = constrained || order.aboard;
@@ -1178,12 +1183,14 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     }
 
     // The vendor visit of the npc wander: sell by worth, buy (a bag by worth) and repair, all paid. A vendor that is
-    // gone leaves the stop's other errands
+    // gone leaves the stop's other errands. Searched within the stop's reach, as the turn-ins: a banker visit before
+    // it leaves the bot up to STOP_JOIN_YARDS from the stop (WB8b run 3: Dalaran's vendor 39 yd from the banker)
     if (stop.vendorEntry && !data->vendorDone)
     {
         if (data->vendor.IsEmpty())
         {
-            Creature* found = bot->FindNearestCreature(stop.vendorEntry, VENDOR_SEARCH_YARDS);
+            Creature* found =
+                bot->FindNearestCreature(stop.vendorEntry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
             if (!found)
             {
                 data->vendorDone = true;
