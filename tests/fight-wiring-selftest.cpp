@@ -722,6 +722,11 @@ void CheckChase()
     NoteChase(stale, ENEMY, 0.0f, 0.0f, 40.0f, now, now);
     Check(!CheckChase(stale, ENEMY, 0.0f, 0.0f, now + limit.ms + LEFT_ALONE_MS, limit) && !stale.chaseGuid,
           "a chase not looked at for its limit and the leave-alone time is forgotten");
+
+    // WP6-4: a pet is on its owner's side
+    Check(PetCalledOff(true, ENEMY, ENEMY) && !PetCalledOff(false, ENEMY, ENEMY) && !PetCalledOff(true, 0, ENEMY) &&
+              !PetCalledOff(true, ENEMY + 1, ENEMY),
+          "a bot leaving an enemy alone calls its pet off that enemy's side, and only off that one");
 }
 
 void CheckCalm()

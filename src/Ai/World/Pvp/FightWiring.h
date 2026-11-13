@@ -499,6 +499,15 @@ inline bool LeavesAlone(FightMemory const& memory, uint64_t guid, bool attacksBo
                            ChaseLeftAlone(memory, guid, nowMs));
 }
 
+// A player's pets are on its side: the bot calls its pet off a unit of side `petVictimSide` (the player the pet's
+// victim belongs to, 0 for none) when it leaves side `leftSide` alone (`leavesAlone`). Kept on, a hunter's pet went on
+// attacking the retreated enemy its owner had left alone, and both sides stayed in PvP combat until the stalemate
+// (WP6 chase-b15)
+inline bool PetCalledOff(bool leavesAlone, uint64_t petVictimSide, uint64_t leftSide)
+{
+    return leavesAlone && petVictimSide != 0 && petVictimSide == leftSide;
+}
+
 // Who is the aggressor of PvP combat between two players: the killer (`first` on a kill); else the one that picked the
 // other at a meeting while the other did not pick it (a caster's first spell sets no victim, WP6 timeout-b70); else
 // the one attacking the other while the other does not attack it (at the first hit the target has not answered yet);

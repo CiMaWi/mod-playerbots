@@ -48,8 +48,12 @@ Player* JoinTarget(PlayerbotAI* botAI);
 bool ChaseEnds(PlayerbotAI* botAI, Unit* target);
 // EnemyPlayerValue::Calculate and InvalidTargetValue ("current target"): whether this bot, starting by the rules,
 // leaves `unit` alone (neither picks nor keeps it as its target): it retreated from the fight it is in, it disengages,
-// or its chase of `unit` just ended; never an enemy attacking it (self-defence)
+// or its chase of `unit` just ended; never an enemy attacking it (self-defence). A player's pet counts as its owner's
+// side: leaving the player alone leaves its pets alone unless they attack the bot
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
+// DropTargetAction: whether this bot, dropping `target` because it leaves it alone or its chase of it ended, calls its
+// pet off too (the pet attacks `target`'s side). O(1)
+bool CallsPetOff(PlayerbotAI* botAI, Unit* target);
 // The "world pvp retreat" trigger and action: while this bot retreats (or disengages) by the rules, the place it moves
 // away from
 bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y);

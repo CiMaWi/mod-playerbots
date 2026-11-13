@@ -19,9 +19,9 @@ bool InvalidTargetValue::Calculate()
         return true;
 
     // World PvP (WP6): a winner stops chasing a retreated enemy at its chase limit, and a bot drops a target it leaves
-    // alone (a retreated bot whose chaser stopped attacking it)
-    if (target && target->IsPlayer() && qualifier == "current target" &&
-        (WorldPvp::ChaseEnds(botAI, target) || WorldPvp::LeftAlone(botAI, target)))
+    // alone (a retreated bot whose chaser stopped attacking it), a player or a player's pet
+    if (target && qualifier == "current target" && target->GetCharmerOrOwnerPlayerOrPlayerItself() &&
+        ((target->IsPlayer() && WorldPvp::ChaseEnds(botAI, target)) || WorldPvp::LeftAlone(botAI, target)))
         return true;
 
     Unit* enemy = AI_VALUE(Unit*, "enemy player target");

@@ -34,6 +34,7 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
+#include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -1327,12 +1328,29 @@ bool LeftAlone(PlayerbotAI* botAI, Unit* unit)
     FightMemory const* const memory = botAI && unit ? botAI->fightMemory.get() : nullptr;
     if (!memory)
         return false;
-    uint64 const guid = unit->GetGUID().GetRawValue();
+    // A pet is on its owner's side; a unit that belongs to no player (a creature) is never left alone
+    Player* const side = unit->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (!side)
+        return false;
+    uint64 const guid = side->GetGUID().GetRawValue();
     uint32 const nowMs = getMSTime();
     // Cheap first: most bots have neither state; a battleground, arena or PvpTest fight keeps today's targets
     if (!LeavesAlone(*memory, guid, false, nowMs) || !StartsByRules(botAI))
         return false;
     return LeavesAlone(*memory, guid, Attacks(unit, botAI->GetBot()), nowMs);
+}
+
+bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
+{
+    Pet* const pet = botAI && target ? botAI->GetBot()->GetPet() : nullptr;
+    Unit* const victim = pet ? pet->GetVictim() : nullptr;
+    Player* const victimSide = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    Player* const leftSide = target ? target->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    if (!victimSide || !leftSide)
+        return false;
+    // A chase over ends the pet's too, also while the enemy hits back (ChaseEnds); else the bot's leave-alone
+    bool const leaves = ChaseEnds(botAI, leftSide) || LeftAlone(botAI, target);
+    return PetCalledOff(leaves, victimSide->GetGUID().GetRawValue(), leftSide->GetGUID().GetRawValue());
 }
 
 bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y)

@@ -2293,9 +2293,11 @@ Playerbots.WorldPvp.Retreat.CautionOdds = 0.1
 
 # Ending a fight (persistent bots in the open world). A participant that starts fights by the rules retreats when
 # its health is low and its side is losing by what it sees (the retreat lines above, Retreat.HealthPercent and
-# Retreat.Odds): it drops its target, moves away from the enemies for 15 s and does not rejoin that fight (it still
-# defends itself). A winner chasing a retreated enemy stops after ChaseSeconds or ChaseYards beyond the fight's
-# radius, both x (1 + 0.5 x aggression - 0.5 x courtesy), and leaves it alone for 30 s unless it attacks. A fight
+# Retreat.Odds): it drops its target, moves away from the enemies for 15 s (it waits while it cannot move and gives
+# the retreat up only when every direction is blocked) and does not rejoin that fight (it still defends itself). A
+# winner chasing a retreated enemy stops ChaseSeconds after the enemy's retreat or ChaseYards beyond the fight's
+# radius, both x (1 + 0.5 x aggression - 0.5 x courtesy), also when the enemy hits back; it calls its pet off too and
+# leaves the enemy alone for 30 s unless it attacks; a bot that comes to the fight later does not take it up. A fight
 # ends wiped as soon as one side has nobody on the map, alive and not retreated (a retreated participant still in
 # PvP combat counts: the chase is part of the fight); as timeout after NoHitSeconds without a hit between the sides
 # (its length to that hit); as stalemate after StalemateSeconds; then the bots still in PvP combat disengage (they
