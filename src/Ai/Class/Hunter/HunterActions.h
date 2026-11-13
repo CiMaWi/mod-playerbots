@@ -193,6 +193,10 @@ class FeedPetAction : public Action
 public:
     FeedPetAction(PlayerbotAI* botAI) : Action(botAI, "feed pet") {}
     bool Execute(Event event) override;
+    bool isUseful() override;
+
+private:
+    time_t nextFoodSearch = 0;  // a bag search that found no food for the pet waits until then
 };
 
 class CastCallPetAction : public CastBuffSpellAction

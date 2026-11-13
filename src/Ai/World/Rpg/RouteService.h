@@ -69,9 +69,10 @@ class RouteService
 {
 public:
     using Clock = std::chrono::steady_clock;
-    // Runs on a worker after each search: the search's and the queue wait's microseconds. The server feeds its
-    // PerfMonitor rows with it
-    using Sink = std::function<void(std::uint64_t searchUs, std::uint64_t waitUs)>;
+    // Runs on a worker after each search: the search's and the queue wait's microseconds, the route's flight searches
+    // and their microseconds (Result::flightSearches). The server feeds its PerfMonitor rows with it
+    using Sink = std::function<void(std::uint64_t searchUs, std::uint64_t waitUs, std::uint32_t flightSearches,
+                                    float flightMicros)>;
 
     RouteService(TravelGraph const& graph, StuckBook const& stuck) : _graph(graph), _stuck(stuck) {}
     ~RouteService() { Stop(); }
@@ -257,6 +258,8 @@ private:
             answer.result = Search(_graph, job.request, *stuck, job.params);
             std::uint32_t const searchUs = Micros(Clock::now() - picked);
             std::uint32_t const waitUs = Micros(picked - job.submitted);
+            std::uint32_t const flightSearches = answer.result.flightSearches;
+            float const flightMicros = answer.result.flightMicros;
 
             lock.lock();
             Clock::time_point const now = Clock::now();
@@ -275,7 +278,7 @@ private:
             lock.unlock();
 
             if (_sink)
-                _sink(searchUs, waitUs);
+                _sink(searchUs, waitUs, flightSearches, flightMicros);
             lock.lock();
         }
     }
@@ -398,7 +401,7 @@ inline std::uint32_t ServiceSelftest(TravelGraph const& graph, std::vector<std::
     std::atomic<std::uint32_t> withFlag{0};
     std::atomic<std::uint32_t> staleTaken{0};
     RouteService service(graph, book);
-    service.Start(THREADS, [&sinkCalls](std::uint64_t, std::uint64_t) { ++sinkCalls; });
+    service.Start(THREADS, [&sinkCalls](std::uint64_t, std::uint64_t, std::uint32_t, float) { ++sinkCalls; });
 
     // The consumer's loop (WT8): poll, drop an answer to an older request of the bot, keep polling
     auto const answerFor = [&](RouteService& on, std::uint64_t bot, std::uint32_t requestId) -> std::optional<Answer>

@@ -7,11 +7,14 @@
 #include "BankMailState.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
+#include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "TestConstraints.h"
 #include "Timer.h"
+#include "UpkeepNeedRules.h"
+#include "UpkeepRules.h"
 #include "WorldTravelRules.h"
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
@@ -26,43 +29,63 @@ bool BankVisitActiveTrigger::IsActive()
     return botAI->rpgInfo.bankMail.bankVisit.phase != BankMail::BankVisitPhase::None;
 }
 
-bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
+bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
 {
     // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
     if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints) || BankMail::VisitRuns(botAI->rpgInfo.bankMail))
         return false;
-    switch (botAI->rpgInfo.GetStatus())
-    {
-        case RPG_IDLE:
-        case RPG_WANDER_RANDOM:
-        case RPG_WANDER_NPC:
-        case RPG_GO_GRIND:
-        case RPG_GO_CAMP:
-        case RPG_REST:
-        case RPG_DO_GATHER:
-            break;
-        default:
-            return false;
-    }
-
     Player* bot = botAI->GetBot();
+    if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
+        return false;
+
     return RandomPlayerbotMgr::HonestTravel() && !IsRealPlayer(botAI->GetMaster()) && !bot->IsInCombat() &&
            bot->IsAlive() && !bot->GetGroup() && !bot->GetMap()->Instanceable();
 }
 
+bool WorldTravel::RepairErrandWanted(Player* bot)
+{
+    // The wear first: the price pass runs only for gear that is due
+    Planner::GearWear const wear = Planner::ReadGearWear(bot);
+    if (!UpkeepNeeds::RepairDue(wear.broken, wear.lowestPercent))
+        return false;
+
+    return UpkeepNeeds::RepairErrandDue(wear.broken, wear.lowestPercent, Planner::PriceRepair(bot).cheapest,
+                                        bot->GetMoney());
+}
+
+bool WorldTravel::NeedErrandWanted(PlayerbotAI* botAI)
+{
+    std::shared_ptr<Planner::UpkeepIndex const> const index =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    if (!index)
+        return false;
+
+    Planner::Snapshot const snapshot = Planner::FillSnapshot(botAI->GetBot(), 0);
+    UpkeepNeeds::NeedList const list =
+        UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+    return UpkeepNeeds::AnyErrandDue(list);
+}
+
 bool InventoryPressureTrigger::IsActive()
 {
-    if (!WorldTravel::ErrandMayStart(botAI))
+    // A due need may also end questing, full bags may not (Upkeep::ErrandMayStart)
+    if (!WorldTravel::ErrandMayStart(botAI, true) || !sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 
+    // Full bags, or the needs (upkeep §3.3, the errand check's providers) after the retry time: the repair first,
+    // then a due stock, training or riding rank (one snapshot)
     WorldTravel::SlotMeasure const& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
-    uint32 const now = getMSTime();
-    if (!WorldTravel::ErrandRetryDue(measure, now) || !sRandomPlayerbotMgr.IsRandomBot(bot))
+    uint32 const nowMs = getMSTime();
+    if (WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs) && WorldTravel::ErrandMayStart(botAI))
+        return true;
+
+    if (!WorldTravel::ErrandRetryOver(measure, nowMs))
         return false;
 
-    // Full bags, or mail or a bank errand worth a trip of its own (WB8b: the same check, no trigger of its own)
-    return WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), now) ||
-           BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel());
+    // Mail or a bank errand worth a trip of its own (WB8b: the same check, no trigger of its own; as full bags, it
+    // does not end questing)
+    return (BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI)) ||
+           WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI);
 }
 
 bool InnBindTrigger::IsActive()

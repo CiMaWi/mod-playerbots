@@ -4443,6 +4443,13 @@ std::vector<TravelMgr::VendorInfo> const& TravelMgr::GetVendors(uint32 mapId) co
     return it == vendorsByMap.end() ? none : it->second;
 }
 
+std::vector<TravelMgr::TrainerInfo> const& TravelMgr::GetTrainers(uint32 mapId) const
+{
+    static std::vector<TrainerInfo> const none;
+    auto const it = trainersByMap.find(mapId);
+    return it == trainersByMap.end() ? none : it->second;
+}
+
 bool TravelMgr::GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const
 {
     auto const itr = zone2LevelBracket.find(zoneId);
@@ -4765,6 +4772,7 @@ void TravelMgr::PrepareDestinationCache()
     uint32 innsHostile = 0;  // a faction hostile to every player
     uint32 bankerCount = 0;
     uint32 vendorCount = 0;
+    uint32 trainerCount = 0;
 
     // Spawns of a positive game event exist only while it runs (same idiom as PrepareQuestGiverTeleportIndex)
     std::unordered_set<ObjectGuid::LowType> eventSpawns;
@@ -4772,6 +4780,7 @@ void TravelMgr::PrepareDestinationCache()
     for (size_t i = sGameEventMgr->GetEventMap().size(); i < eventCreatureGuids.size(); ++i)
         eventSpawns.insert(eventCreatureGuids[i].begin(), eventCreatureGuids[i].end());
     vendorsByMap.clear();
+    trainersByMap.clear();
 
     LOG_INFO("playerbots", "Preparing destination caches for {} levels...", maxLevel);
     // Temporary map to group creatures by entry and area
@@ -4810,6 +4819,14 @@ void TravelMgr::PrepareDestinationCache()
             vendorsByMap[mapId].push_back(
                 {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
             ++vendorCount;
+        }
+
+        // ERRAND TRAINERS (class, riding and profession trainers; the errand matches the upkeep index's entries)
+        if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_TRAINER) && !eventSpawns.count(guid))
+        {
+            trainersByMap[mapId].push_back(
+                {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
+            ++trainerCount;
         }
 
         // CREATURES
@@ -5058,7 +5075,7 @@ void TravelMgr::PrepareDestinationCache()
     }
 
     LOG_INFO("playerbots", ">> {} flight masters and {} innkeepers and {} banker locations for level collected.", flightMastersCount, innkeepersCount, bankerCount);
-    LOG_INFO("playerbots", ">> {} errand vendors collected.", vendorCount);
+    LOG_INFO("playerbots", ">> {} errand vendors and {} trainers collected.", vendorCount, trainerCount);
 }
 
 void TravelMgr::PrepareQuestGiverTeleportIndex()

@@ -14,6 +14,7 @@
 #include "ServerFacade.h"
 #include "Timer.h"
 #include "Unit.h"
+#include "Upkeep.h"
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -21,8 +22,20 @@
 
 const int ITEM_SOUL_SHARD = 6265;
 
-// Checks if the bot has less than 26 soul shards, and if so, allows casting Drain Soul
-bool CastDrainSoulAction::isUseful() { return AI_VALUE2(uint32, "item count", "soul shard") < 26; }
+// The shards below which a Destruction or Demonology warlock drains for one
+static constexpr uint32 DRAIN_SOUL_SHARD_CAP = 6;
+
+// Affliction drains as its execute while under 26 shards. The other specs drain only for a shard (upkeep WU7b): a
+// warlock not granted the handed-out shard gets its shards from Drain Soul alone, up to a few for its pet, stones
+// and Shadowburn or Soul Fire; a granted one keeps today's rotation
+bool CastDrainSoulAction::isUseful()
+{
+    uint32 const shards = AI_VALUE2(uint32, "item count", "soul shard");
+    if (botAI->HasStrategy("affli", BOT_STATE_COMBAT))
+        return shards < 26;
+
+    return shards < DRAIN_SOUL_SHARD_CAP && !Upkeep::Granted(bot, UpkeepKind::Reagent);
+}
 
 // Checks if the bot's health is above a certain threshold, and if so, allows casting Life Tap
 bool CastLifeTapAction::isUseful() { return AI_VALUE2(uint8, "health", "self target") > sPlayerbotAIConfig.LowHealth; }
@@ -130,16 +143,18 @@ bool CreateSoulShardAction::Execute(Event /*event*/)
         SQLTransaction<CharacterDatabaseConnection> trans = CharacterDatabase.BeginTransaction();
         bot->SaveInventoryAndGoldToDB(trans);
         CharacterDatabase.CommitTransaction(trans);
+        Upkeep::Note(bot, UpkeepKind::Reagent, "soul_shard", ITEM_SOUL_SHARD, 1);
         return true;
     }
     return false;
 }
 
-// Checks if the bot has less than 6 soul shards, allowing the creation of a new one
+// Checks if the bot has less than 6 soul shards, allowing the creation of a new one. A shard from nothing is a
+// handout: a warlock not granted Reagent (a persistent bot outside the handout share) drains its shards instead
 bool CreateSoulShardAction::isUseful()
 {
     Player* bot = botAI->GetBot();
-    if (!bot)
+    if (!bot || !Upkeep::Granted(bot, UpkeepKind::Reagent))
         return false;
 
     uint32 currentShards = bot->GetItemCount(ITEM_SOUL_SHARD, false);  // false = only bags

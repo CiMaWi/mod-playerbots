@@ -164,16 +164,26 @@ public:
     CastConjureManaGemAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "conjure mana gem") {}
 };
 
-class CastConjureFoodAction : public CastBuffSpellAction
+// Conjure food or water. The cast check ignores the power cost, so the action also needs the mana for the cast:
+// otherwise a mage short of mana would retry a failing cast every trigger interval.
+class CastConjureConsumableAction : public CastBuffSpellAction
 {
 public:
-    CastConjureFoodAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "conjure food") {}
+    CastConjureConsumableAction(PlayerbotAI* botAI, std::string const spell) : CastBuffSpellAction(botAI, spell) {}
+
+    bool isPossible() override;
 };
 
-class CastConjureWaterAction : public CastBuffSpellAction
+class CastConjureFoodAction : public CastConjureConsumableAction
 {
 public:
-    CastConjureWaterAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "conjure water") {}
+    CastConjureFoodAction(PlayerbotAI* botAI) : CastConjureConsumableAction(botAI, "conjure food") {}
+};
+
+class CastConjureWaterAction : public CastConjureConsumableAction
+{
+public:
+    CastConjureWaterAction(PlayerbotAI* botAI) : CastConjureConsumableAction(botAI, "conjure water") {}
 };
 
 class UseManaSapphireAction : public UseItemAction

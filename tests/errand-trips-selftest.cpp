@@ -4,9 +4,10 @@
  * or (at your option) any later version.
  */
 
-// Offline proof of trips and errands (travel plan WT15, WT.6; bank-mail plan WB8): the scenarios of ErrandHarness.h on
-// synthetic bots and stops, each about the stops a trip makes and the errands it does or refuses, and a seeded search
-// of the mail and bank invariants. The seed is printed; pass another as the first argument to search elsewhere.
+// Offline proof of trips and errands (travel plan WT15, WT.6; the upkeep needs as providers, WU12; bank-mail plan
+// WB8): the scenarios of ErrandHarness.h on synthetic bots and stops, each about the stops a trip makes and the
+// errands it does or refuses, and a seeded search of the mail and bank invariants. The seed is printed; pass another
+// as the first argument to search elsewhere.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/errand-trips-selftest.cpp
 
 #include <cstdio>

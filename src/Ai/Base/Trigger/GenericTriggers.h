@@ -276,7 +276,7 @@ private:
 class NoFoodTrigger : public Trigger
 {
 public:
-    NoFoodTrigger(PlayerbotAI* botAI) : Trigger(botAI, "no food trigger") {}
+    NoFoodTrigger(PlayerbotAI* botAI) : Trigger(botAI, "no food trigger", 10) {}
 
     bool IsActive() override;
 };
@@ -284,7 +284,7 @@ public:
 class NoDrinkTrigger : public Trigger
 {
 public:
-    NoDrinkTrigger(PlayerbotAI* botAI) : Trigger(botAI, "no drink trigger") {}
+    NoDrinkTrigger(PlayerbotAI* botAI) : Trigger(botAI, "no drink trigger", 10) {}
 
     bool IsActive() override;
 };
