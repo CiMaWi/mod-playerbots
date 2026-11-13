@@ -927,8 +927,9 @@ public:
         if (!riding && _player.IsFlying())
             return {guid, entry, Contact::OffSurface};
         // A bot with no boarding of its own (no expected vessel) is not taken aboard by a hull sweeping through its
-        // spot on the pier or in the water (WT54-9, F1): only a vessel at its stop takes a still bot aboard
-        if (!riding && !expected && UnderWay(*surface))
+        // spot on the pier or in the water (WT54-9, F1): only a vessel at its stop takes a still bot aboard, and not
+        // one that swims under its hull (WT54-10: sea-level starts at a docked ship, then no exit at its far stop)
+        if (!riding && !expected && (UnderWay(*surface) || _player.IsInWater()))
             return {guid, entry, Contact::OffSurface};
 
         constexpr float RAY_RISE_YARDS = 0.5f;

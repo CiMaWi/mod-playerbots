@@ -2006,7 +2006,16 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
         return;
 
     TransportGeometry::GroundGeometry const geometry{*bot, transport};
-    Point const from = TransportGeometry::PositionOf(*bot);
+    Point from = TransportGeometry::PositionOf(*bot);
+    if (!approachWalk)
+    {
+        // A bot whose approach walk ended before the deck's level was known waits off that level (WT54-10:
+        // Orgrimmar's upper ramp 62.41, the platform 52.0): its quay is looked for from the ground beside the stop at
+        // the deck's level, and the walk to the quay takes it there. Once per docking, so no cost per scan
+        TravelRoute::Point seed{leg.from.mapId, from.X, from.Y, from.Z};
+        AimApproachEnd(bot, seed, leg, trip.sight.guid);
+        from = Point{seed.x, seed.y, seed.z};
+    }
     bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
     TravelLifecycle::CrossingTally tally;
     auto const shore = TravelLifecycle::FindQuay(geometry, from, TransportGeometry::PositionOf(*transport),
@@ -2037,6 +2046,17 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
         trip.waypoints.back().at = quay;
     LOG_DEBUG("playerbots", "[Route] {} waits for transport {} on ground at {:.2f}, {:.2f}, {:.2f}", bot->GetName(),
               leg.object, quay.x, quay.y, quay.z);
+}
+
+// Where a boarding starts (WT54-10): the quay the bot waits at, whose crossing FindQuay accepted, else where it
+// stands. A bot within QUAY_REACH_YARDS of its quay does not walk to it, and from its own spot the crossing can differ
+// (run 12, Orgrimmar's platform: accepted from the quay, blocked 0.6 yd beside it), so the board check, its deck point
+// and the walk all start at the quay
+Point BoardStart(Player const& bot, TravelLegs::Trip const& trip)
+{
+    if (trip.hasQuay && trip.quay.mapId == bot.GetMapId())
+        return Point{trip.quay.x, trip.quay.y, trip.quay.z};
+    return TransportGeometry::PositionOf(bot);
 }
 
 // A Board walk, for the debug log: the deck point, the bot's height and the distance
@@ -2439,7 +2459,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
             if (!ridden && !sight.moving && !data->passengerMotion &&
                 std::fabs(seen.bot.z - TravelLegs::WaitPoint(trip, leg).z) <= TravelLifecycle::DOCK_FLOOR_YARDS)
             {
-                Point const from = TransportGeometry::PositionOf(*bot);
+                Point const from = BoardStart(*bot, trip);
                 deck = TransportGeometry::GroundGeometry{*bot, transport}.DeckFrom(from);
                 if (deck)
                 {
@@ -2508,11 +2528,11 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         case TravelLegs::Act::Board:
             if (transport && deck && seen.boardingReady && !data->passengerMotion && PrepareTransportMove(*bot))
             {
-                Point const from = TransportGeometry::PositionOf(*bot);
+                Point const from = BoardStart(*bot, data->trip);
                 if (TravelLifecycle::AcceptBoard(TransportGeometry::GroundGeometry{*bot, transport}, from, *deck))
                 {
                     LogBoardMove(bot, transport->GetEntry(), *deck);
-                    IssueTransportMove(*bot, *data, Intent(*bot, *transport, MotionKind::Board, *deck));
+                    IssueTransportMove(*bot, *data, Intent(*bot, *transport, MotionKind::Board, *deck), {from});
                     if (data->passengerMotion)
                         data->trip.boardCrossing = TravelLegs::StoreCrossing(
                             transport->GetGUID().GetRawValue(), TransportGeometry::PoseOf(*transport), *deck, from);
