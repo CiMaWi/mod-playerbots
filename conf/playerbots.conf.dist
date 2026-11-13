@@ -664,6 +664,8 @@ Playerbots.AutoGearScoreLimit = 0
 # "raid" (bots use certain cheats implemented into raid strategies)
 # To use multiple cheats, separate them by commas below (e.g., to enable all, use "gold,health,mana,power,raid,taxi")
 # Default: food, taxi, and raid are enabled
+# "food" no longer feeds persistent bots (random bots that keep their possessions under honest travel, outside
+# Playerbots.Upkeep.HandoutShare): they eat and drink what they bought, looted or conjured, and rest without it
 Playerbots.BotCheats = "food,taxi,raid"
 
 # List of attunement quests (comma-separated list of quest IDs) that are automatically completed for all bots.
@@ -2208,6 +2210,14 @@ Playerbots.WorldTravel.Planner.RecheckYards = 100
 Playerbots.WorldTravel.Planner.NoopSeconds = 0
 Playerbots.WorldTravel.Planner.Goals = 1
 Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
+
+# Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, riding, gold, attunements,
+# keys, reputation, glyphs, talent resets and the like) end
+# kind by kind for them, and they buy and train what they need. HandoutShare keeps this percent of persistent bots on
+# every handout, chosen by guid so that the world log names the same bots as a cohort: a bot is in the share when
+# (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < HandoutShare. A test switch for comparisons and forced checks
+# (0-100). Default: 0
+Playerbots.Upkeep.HandoutShare = 0
 
 # World PvP of persistent bots in the open world (battlegrounds, arenas and dungeons keep their own rules). Every
 # open-world map keeps a fight book: its active fights (a cluster of PvP combat with two sides, its starter and

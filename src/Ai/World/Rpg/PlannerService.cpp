@@ -19,6 +19,7 @@
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
+#include "DBCStores.h"
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
 #include "Group.h"
@@ -41,6 +42,7 @@
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
+#include "World.h"
 #include "WorldLog.h"
 
 namespace Planner
@@ -56,10 +58,12 @@ constexpr uint32 STATE_ALIVE_BIT = 1u << 24;
 constexpr uint32 STATE_GROUP_BIT = 1u << 25;
 constexpr uint32 STATE_SCOPE_BIT = 1u << 31;  // in PlannerState::stateKey: the bot keeps its possessions
 constexpr double NANOS_PER_MICRO = 1000.0;
-constexpr std::array<uint32, 15> SNAPSHOT_SKILLS = {
-    SKILL_RIDING,        SKILL_FIRST_AID,      SKILL_COOKING,     SKILL_FISHING,   SKILL_ALCHEMY,
-    SKILL_BLACKSMITHING, SKILL_ENCHANTING,     SKILL_ENGINEERING, SKILL_HERBALISM, SKILL_INSCRIPTION,
-    SKILL_JEWELCRAFTING, SKILL_LEATHERWORKING, SKILL_MINING,      SKILL_SKINNING,  SKILL_TAILORING};
+static_assert(SNAPSHOT_SKILLS ==
+                  std::array<std::uint16_t, 15>{SKILL_RIDING, SKILL_FIRST_AID, SKILL_COOKING, SKILL_FISHING,
+                                                SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_ENCHANTING, SKILL_ENGINEERING,
+                                                SKILL_HERBALISM, SKILL_INSCRIPTION, SKILL_JEWELCRAFTING,
+                                                SKILL_LEATHERWORKING, SKILL_MINING, SKILL_SKINNING, SKILL_TAILORING},
+              "PlannerPool.h's snapshot skills are the core's SkillType ids");
 
 static_assert(TAXI_WORDS == TaxiMaskSize, "the snapshot's taxi mask has PlayerTaxi's layout");
 static_assert(QUEST_LOG_SLOTS == MAX_QUEST_LOG_SIZE, "the snapshot holds the whole quest log");
@@ -96,6 +100,37 @@ Limits ConfiguredLimits()
 
 Place PlaceOf(Player* bot) { return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()}; }
 
+// What Player::DurabilityRepair would charge for the item, without repairing it (DurabilityRepairAll(false, ...)
+// repairs for free, so the snapshot cannot call it): lost durability times the item level's multiplier for its class
+// and subclass times the quality's modifier times Rate.RepairCost; no reputation discount (the vendor's faction)
+uint32 RepairCost(Item const* item)
+{
+    if (!item)
+        return 0;
+    uint32 const most = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+    uint32 const current = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+    if (!most || current >= most)
+        return 0;
+    ItemTemplate const* proto = item->GetTemplate();
+    DurabilityCostsEntry const* costs = proto ? sDurabilityCostsStore.LookupEntry(proto->ItemLevel) : nullptr;
+    DurabilityQualityEntry const* quality =
+        costs ? sDurabilityQualityStore.LookupEntry((proto->Quality + 1) * 2) : nullptr;
+    if (!quality)
+        return 0;
+    uint32 const multiplier = costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class, proto->SubClass)];
+    uint32 const copper = uint32((most - current) * multiplier * double(quality->quality_mod));
+    return std::max<uint32>(uint32(copper * sWorld->getRate(RATE_REPAIRCOST)), 1);
+}
+
+void AddRepair(RepairPrice& price, Item const* item)
+{
+    uint32 const copper = RepairCost(item);
+    if (!copper)
+        return;
+    price.total += copper;
+    price.cheapest = price.cheapest ? std::min(price.cheapest, copper) : copper;
+}
+
 void FillBags(Player* bot, Snapshot& snapshot)
 {
     uint32 slots = INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START;
@@ -123,16 +158,11 @@ void FillBags(Player* bot, Snapshot& snapshot)
     }
     snapshot.bagFree = static_cast<uint16>(free);
 
-    uint64 durability = 0;
-    uint64 maxDurability = 0;
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-        {
-            durability += item->GetUInt32Value(ITEM_FIELD_DURABILITY);
-            maxDurability += item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
-        }
-    snapshot.durabilityPercent =
-        static_cast<uint8>(maxDurability ? std::min<uint64>(durability * PERCENT / maxDurability, PERCENT) : PERCENT);
+    GearWear const wear = ReadGearWear(bot);
+    snapshot.durabilityPercent = wear.durabilityPercent;
+    snapshot.lowestDurabilityPercent = wear.lowestPercent;
+    snapshot.brokenItems = wear.broken;
+    snapshot.repairCost = PriceRepair(bot).total;
 }
 
 void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
@@ -609,6 +639,46 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, NewRpgInfo::PlannerState& stat
 }
 }  // namespace
 
+GearWear ReadGearWear(Player* bot)
+{
+    uint64 durability = 0;
+    uint64 maxDurability = 0;
+    uint64 lowest = PERCENT;
+    uint32 broken = 0;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+        {
+            uint32 const current = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+            uint32 const most = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+            durability += current;
+            maxDurability += most;
+            if (!most)
+                continue;  // never wears
+            lowest = std::min<uint64>(lowest, static_cast<uint64>(current) * PERCENT / most);
+            if (!current)
+                ++broken;
+        }
+    GearWear wear;
+    wear.durabilityPercent =
+        static_cast<uint8>(maxDurability ? std::min<uint64>(durability * PERCENT / maxDurability, PERCENT) : PERCENT);
+    wear.lowestPercent = static_cast<uint8>(lowest);
+    wear.broken = static_cast<uint8>(broken);
+    return wear;
+}
+
+// The items DurabilityRepairAll repairs: equipped, the backpack, the bags themselves and the items in them
+RepairPrice PriceRepair(Player* bot)
+{
+    RepairPrice price;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        AddRepair(price, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag const* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                AddRepair(price, bag->GetItemByPos(static_cast<uint8>(slot)));
+    return price;
+}
+
 PlannerPool& Pool()
 {
     static PlannerPool pool;
@@ -643,7 +713,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.money = bot->GetMoney();
     FillBags(bot, snapshot);
     FillBankMail(bot, snapshot);
-    for (uint32 const skill : SNAPSHOT_SKILLS)
+    for (std::uint16_t const skill : SNAPSHOT_SKILLS)
         if (uint16 const value = bot->GetPureSkillValue(skill))
             snapshot.skills.push_back(
                 {static_cast<uint16>(skill), value, static_cast<uint16>(bot->GetPureMaxSkillValue(skill))});
@@ -662,6 +732,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
         snapshot.groupLeader = group->GetLeaderGUID().GetRawValue();
     }
+    FillUpkeep(bot, snapshot);
     return snapshot;
 }
 
@@ -921,7 +992,8 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
         RowTimer const timer("bridge route order");
         TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *at);
         std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
-        return TravelRoute::Search(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams()).ok;
+        // The ground route answers "is there a route" (fly legs never change it): no flight search on a map thread
+        return TravelRoute::GroundSearch(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams()).ok;
     };
     BridgeAnswer const answer = GoalApply::BridgeCheck(order, facts);
     if (answer != BridgeAnswer::Done)

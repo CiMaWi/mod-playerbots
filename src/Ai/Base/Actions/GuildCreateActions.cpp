@@ -14,6 +14,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "Upkeep.h"
 
 bool BuyPetitionAction::Execute(Event /*event*/)
 {
@@ -240,9 +241,9 @@ bool PetitionTurnInAction::Execute(Event /*event*/)
             // (EMBLEM_PRICE = 10 * GOLD in core)
             static constexpr uint32 REQUIRED = 10 * GOLD;
             uint32 have = bot->GetMoney();               // actual money earned by bot in copper
-            if (have < REQUIRED)
+            if (have < REQUIRED && Upkeep::Granted(bot, UpkeepKind::Gold))
             {
-                EventLog::Honesty(bot, "Gold", "guild_charter", 0, int64(REQUIRED - have));
+                Upkeep::Note(bot, UpkeepKind::Gold, "guild_charter", 0, int64(REQUIRED - have));
                 bot->ModifyMoney(int32(REQUIRED - have)); // add only the missing amount to bot to reach 10g
             }
 
@@ -256,7 +257,9 @@ bool PetitionTurnInAction::Execute(Event /*event*/)
             st = urand(0, 180);
             EmblemInfo emblemInfo(st, cl, br, bc, bg);
 
-            guild->HandleSetEmblem(emblemInfo); // official core handling
+            // A bot that keeps its possessions and cannot pay the price leaves the guild without an emblem
+            if (bot->GetMoney() >= REQUIRED)
+                guild->HandleSetEmblem(emblemInfo); // official core handling
 
             // LANG_GUILD_VETERAN -> can invite
             guild->HandleSetRankInfo(2, {}, GR_RIGHT_GCHATLISTEN | GR_RIGHT_GCHATSPEAK | GR_RIGHT_INVITE);

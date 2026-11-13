@@ -151,6 +151,46 @@ inline bool ShouldDestroyFor(DestroyForSpaceInput const& in)
     return static_cast<uint64_t>(in.LootWorth) * PERCENT > needed;
 }
 
+// The bot's travel shares (upkeep plan WU14, §3.8): the minutes per hour of play on route legs that a riding rank
+// shortens. A walk leg counts whole, mounted or not (a rank saves its ratio of the time at the bot's best speed now);
+// transport and taxi legs count nothing (no mount shortens them). The flight shares count where a flying mount would
+// fly: fly legs, and walk legs in an open flying area, ridden on the ground until the bot flies there
+enum TravelShare : uint8_t
+{
+    TRAVEL_WALK,       // every walk leg: the ground ranks shorten it
+    TRAVEL_FLIGHT,     // fly legs; walk legs in an open flying area outside Northrend (inside it with cold weather)
+    TRAVEL_NORTHREND,  // fly and walk legs in Northrend's open flying areas: cold weather flying flies the walked ones
+    TRAVEL_SHARES
+};
+constexpr uint32_t TRAVEL_MAP_NORTHREND = 571;
+
+enum class LegKind : uint8_t
+{
+    Other,  // a transport, a taxi or a no-op leg
+    Walk,
+    Fly
+};
+
+// The shares a done or failed leg counts towards, as bits (1 << TravelShare). openFlying: the leg ended in an area
+// where flying mounts fly (FlightMap's open areas); coldWeather: the bot knows cold weather flying
+constexpr uint8_t LegShares(LegKind kind, uint32_t mapId, bool openFlying, bool coldWeather)
+{
+    constexpr uint32_t walk = 1u << TRAVEL_WALK;
+    constexpr uint32_t flight = 1u << TRAVEL_FLIGHT;
+    constexpr uint32_t northrend = 1u << TRAVEL_NORTHREND;
+    bool const inNorthrend = mapId == TRAVEL_MAP_NORTHREND;
+    uint32_t shares = 0;
+    if (kind == LegKind::Fly)
+        shares = inNorthrend ? flight | northrend : flight;
+    else if (kind == LegKind::Walk && !openFlying)
+        shares = walk;
+    else if (kind == LegKind::Walk && !inNorthrend)
+        shares = walk | flight;
+    else if (kind == LegKind::Walk)
+        shares = coldWeather ? walk | flight | northrend : walk | northrend;
+    return static_cast<uint8_t>(shares);
+}
+
 // A bot's rolling measurements (in memory, per login). Until the first window closes the band defaults apply.
 struct SlotMeasure
 {
@@ -171,6 +211,22 @@ struct SlotMeasure
     float VendorX = 0.0f;
     float VendorY = 0.0f;
     float VendorZ = 0.0f;
+    // Consumable use per upkeep stock kind (upkeep plan WU6, UpkeepNeeds::SampleUse): the stock the last vendor visit
+    // ended with, what it was counted by (the pet's diet, the ammo type and grade; 0 = unknown) and the use per hour
+    // measured from its falls since; 0 = not measured yet (the default applies)
+    static constexpr std::size_t USE_KINDS = 7;  // Planner::UPKEEP_STOCK_COUNT
+    bool UseNoted = false;
+    uint32_t UseNotedMs = 0;
+    std::array<uint32_t, USE_KINDS> UseStock{};
+    std::array<uint32_t, USE_KINDS> UseBasis{};
+    std::array<float, USE_KINDS> UsePerHour{};
+    // The travel shares (NoteTravelLeg): the leg milliseconds of the open window per share and the measured minutes
+    // per hour; until the first window closes the needs read the default walk share and no flight
+    bool TravelStarted = false;
+    uint32_t TravelStartMs = 0;
+    std::array<float, TRAVEL_SHARES> TravelWindowMs{};
+    bool HasTravel = false;
+    std::array<float, TRAVEL_SHARES> TravelMinutesPerHour{};
 };
 
 // Closes a window that is at least MEASURE_WINDOW_MS old; the new rates are the average of the old ones and the
@@ -219,6 +275,36 @@ inline void AddLostWorth(SlotMeasure& measure, uint32_t nowMs, uint32_t copper)
     RollWindow(measure, nowMs);
     if (copper != WORTH_PRICELESS)
         measure.WindowLostCopper += static_cast<float>(copper);
+}
+
+// A done or failed leg's time (shares: LegShares' bits). The first window starts where the first leg started, so
+// that leg lies inside it; a leg ending at least MEASURE_WINDOW_MS after the window's start closes it, and the new
+// shares are the average of the old ones and the window's (at most the whole hour; nowMs from a wrapping clock)
+inline void NoteTravelLeg(SlotMeasure& measure, uint8_t shares, uint32_t legMs, uint32_t nowMs)
+{
+    if (!measure.TravelStarted)
+    {
+        measure.TravelStarted = true;
+        measure.TravelStartMs = nowMs - legMs;
+    }
+    for (std::size_t share = 0; share < TRAVEL_SHARES; ++share)
+        if (shares & (1u << share))
+            measure.TravelWindowMs[share] += static_cast<float>(legMs);
+
+    uint32_t const elapsed = nowMs - measure.TravelStartMs;
+    if (elapsed < MEASURE_WINDOW_MS)
+        return;
+
+    for (std::size_t share = 0; share < TRAVEL_SHARES; ++share)
+    {
+        float const minutes =
+            std::min(measure.TravelWindowMs[share] / static_cast<float>(elapsed) * MINUTES_PER_HOUR, MINUTES_PER_HOUR);
+        float& rate = measure.TravelMinutesPerHour[share];
+        rate = measure.HasTravel ? (rate + minutes) / 2.0f : minutes;
+        measure.TravelWindowMs[share] = 0.0f;
+    }
+    measure.HasTravel = true;
+    measure.TravelStartMs = nowMs;
 }
 
 struct SlotRates
@@ -326,13 +412,19 @@ inline void StampErrandCheck(SlotMeasure& measure, uint32_t nowMs)
     measure.ErrandCheckMs = nowMs;
 }
 
+// No errand check (a start, an end or a refusal) within the retry time; the repair errand shares it
+inline bool ErrandRetryOver(SlotMeasure const& measure, uint32_t nowMs)
+{
+    return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
+}
+
 // The cheap part of the errand rule, for the trigger: bags this full and no errand check within the retry time
 inline bool ErrandDue(SlotMeasure const& measure, uint32_t usedPercent, uint32_t nowMs)
 {
     if (usedPercent < ERRAND_PRESSURE_PERCENT)
         return false;
 
-    return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
+    return ErrandRetryOver(measure, nowMs);
 }
 
 // Straight-line minutes at the bot's run speed

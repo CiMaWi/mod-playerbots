@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_ERRANDRULES_H
 #define _PLAYERBOT_ERRANDRULES_H
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -22,7 +23,8 @@
 // bot's map thread, tests/errand-trips-selftest.cpp runs the same code.
 namespace WorldTravel
 {
-// Append-only: later plans add training (WU), mail and the bank (WB), the auction house (WA) and town visits (WC)
+// Append-only: the upkeep needs (WU) shop, train and ride; later plans add mail and the bank (WB), the auction house
+// (WA) and town visits (WC)
 enum class ErrandKind : uint8_t
 {
     TurnIn,
@@ -30,9 +32,12 @@ enum class ErrandKind : uint8_t
     Repair,
     BuyBag,
     BindHearth,
-    LearnFlight
+    LearnFlight,
+    Shop,
+    Train,
+    Ride
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 6;
+constexpr uint8_t ERRAND_KIND_COUNT = 9;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -50,6 +55,12 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "bind_hearth";
         case ErrandKind::LearnFlight:
             return "learn_flight";
+        case ErrandKind::Shop:
+            return "shop";
+        case ErrandKind::Train:
+            return "train";
+        case ErrandKind::Ride:
+            return "ride";
     }
     return "other";
 }
@@ -60,14 +71,24 @@ constexpr uint32_t SERVICE_VENDOR = 1u << 1;
 constexpr uint32_t SERVICE_REPAIR = 1u << 2;
 constexpr uint32_t SERVICE_INNKEEPER = 1u << 3;
 constexpr uint32_t SERVICE_FLIGHT_MASTER = 1u << 4;
+// The upkeep needs' services are the bot's own: the errand check marks the stops that answer its needs
+constexpr uint32_t SERVICE_TRAINER = 1u << 5;         // teaches the bot's class spells
+constexpr uint32_t SERVICE_RIDING_TRAINER = 1u << 6;  // teaches the riding rank the bot buys
+constexpr uint32_t SERVICE_MOUNT_VENDOR = 1u << 7;    // sells that rank's mount for the bot's race
+// A vendor that sells the bot a consumable stock kind: the kind's bit (UpkeepNeeds' StockBit) from this bit on
+constexpr uint32_t SERVICE_STOCK_SHIFT = 24;
+
+constexpr uint32_t StockServices(uint8_t stockKinds)
+{
+    return static_cast<uint32_t>(stockKinds) << SERVICE_STOCK_SHIFT;
+}
 
 // An errand place this close to a stop is done at that stop (a town square; quest camps cluster at 25 to 70 yd)
 constexpr float STOP_JOIN_YARDS = 40.0f;
 // A trip opens at most this many detours
 constexpr std::size_t MAX_DETOUR_STOPS = 3;
-// Repairing (the goal model's rule, WT14): worth the minutes a bot below this durability would lose to broken gear
-constexpr uint8_t REPAIR_PERCENT = 20;
-constexpr float REPAIR_MINUTES_SAVED = 10.0f;
+// A need that is not due joins a stop the trip makes anyway and never pays a detour
+constexpr float JOIN_WORTH = 1.0f;  // copper
 
 struct ErrandPlace
 {
@@ -99,6 +120,7 @@ struct ErrandOffer
     uint32_t Id = 0;      // the quest, the bag item, the inn or node; 0 for selling and repairing
     uint32_t Target = 0;  // the creature or object entry the errand talks to at Place; 0 = any with the service
     bool TargetIsObject = false;
+    bool Due = false;  // an upkeep need due now: worth a trip of its own, also for a questing bot
 };
 
 // A place near the bot that offers services: a vendor (that may repair), an innkeeper, a flight master
@@ -107,6 +129,8 @@ struct ServiceStop
     uint32_t Id = 0;  // the creature entry
     ErrandPlace Place;
     uint32_t Services = 0;
+    uint32_t Trainer = 0;  // the class trainer's entry when this stop takes training because the trainer stands within
+                           // STOP_JOIN_YARDS (a vendor stop); 0 = none, or the stop is the trainer's own (Id)
 };
 
 struct CompletedQuest
@@ -136,6 +160,23 @@ struct PlaceOffer
     float WorthCopper = 0.0f;
 };
 
+// The class trainer's spells the bot may learn now (UpkeepNeeds' training need); Units 0 = none
+struct TrainingAt
+{
+    uint32_t Units = 0;
+    uint32_t LevelsBehind = 0;
+    bool Due = false;  // the waiting spells span the bot's training span
+    uint32_t Spell = 0;
+};
+
+// The riding rank the bot buys (UpkeepNeeds' riding need, always due); Spell 0 = none
+struct RidingAt
+{
+    uint32_t Spell = 0;
+    uint32_t MountVendor = 0;  // the vendor entry of the race's cheapest mount; 0 for cold weather flying
+    bool Learn = true;         // the rank is to learn; false: the rank is known, only its mount is missing
+};
+
 // What the providers read: filled on the bot's map thread, never a Player
 struct ErrandSnapshot
 {
@@ -145,7 +186,6 @@ struct ErrandSnapshot
     uint32_t BagHorizonHours = 0;
     uint32_t FreeSlots = 0;
     uint32_t SellableSlots = 0;
-    uint32_t DurabilityPercent = PERCENT;
     float MinutesToNextStop = 0.0f;  // until the bot passes a vendor anyway
     uint64_t Reserve = 0;            // ShouldBuyBag's reserve
     uint32_t ThriftPercent = PERCENT;
@@ -155,6 +195,12 @@ struct ErrandSnapshot
     std::vector<BagOfferAt> Bags;
     std::vector<PlaceOffer> Inns;         // an inn worth binding at
     std::vector<PlaceOffer> FlightNodes;  // an undiscovered node worth learning
+    // The upkeep needs (UpkeepNeedRules.h): the stops that answer them carry the services above
+    bool RepairDue = false;  // UpkeepNeeds::RepairErrandDue, and a repairer within the walk limit
+    uint8_t DueStock = 0;    // the stock kinds due whose lot the gold pays
+    uint8_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
+    TrainingAt Training;
+    RidingAt Riding;  // one rank per trip, the lowest
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -172,14 +218,24 @@ inline float SaleWorth(SlotRates const& rates, uint32_t freeSlots, uint32_t sell
     return SlotsWorthPerHour(rates, freeSlots, sellableSlots) * minutesToNextStop / MINUTES_PER_HOUR;
 }
 
-// The broken share of a bot below REPAIR_PERCENT durability, valued at its earning rate
-inline float RepairWorth(uint32_t durabilityPercent, float earnCopperPerMinute)
+// A detour costs a usual trip's minutes (t) plus the walk it adds, at the earning rate: TripWorthIt's cost
+inline float DetourCost(SlotRates const& rates, float walkMinutes)
 {
-    if (durabilityPercent >= REPAIR_PERCENT)
-        return 0.0f;
+    return (rates.TripMinutes + walkMinutes) * rates.EarnCopperPerMinute;
+}
 
-    float const broken = static_cast<float>(REPAIR_PERCENT - durabilityPercent) / REPAIR_PERCENT;
-    return broken * REPAIR_MINUTES_SAVED * earnCopperPerMinute;
+// A due need is worth a trip of its own: more than the detour to any stop within the walk limit
+inline float DueWorth(SlotRates const& rates) { return DetourCost(rates, ERRAND_MAX_WALK_MINUTES) + 1.0f; }
+
+// The services of a vendor stop: repairing, the stock kinds it sells the bot (UpkeepNeeds::VendorCover), the mount
+inline uint32_t VendorServices(ErrandSnapshot const& snapshot, uint32_t vendorEntry, bool repairs, uint8_t stockKinds)
+{
+    uint32_t services = SERVICE_VENDOR | StockServices(stockKinds);
+    if (repairs)
+        services |= SERVICE_REPAIR;
+    if (snapshot.Riding.MountVendor && vendorEntry == snapshot.Riding.MountVendor)
+        services |= SERVICE_MOUNT_VENDOR;
+    return services;
 }
 
 inline void ProvideTurnIns(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
@@ -202,19 +258,81 @@ inline void ProvideSale(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
     offers.push_back(offer);
 }
 
-// Paid repairs at a vendor that repairs; free repairs are the upkeep plan's (WU)
+// The repair need (§3.5) at any vendor that repairs, when due and the gold pays an item
 inline void ProvideRepair(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    float const worth = RepairWorth(snapshot.DurabilityPercent, snapshot.Rates.EarnCopperPerMinute);
-    if (worth <= 0.0f)
+    if (!snapshot.RepairDue)
         return;
 
     ErrandOffer offer;
     offer.Kind = ErrandKind::Repair;
     offer.Service = SERVICE_REPAIR;
-    offer.WorthCopper = worth;
+    offer.WorthCopper = DueWorth(snapshot.Rates);
+    offer.Due = true;
     offers.push_back(offer);
 }
+
+// One offer per stock kind (§3.6) at any vendor that sells it: the vendor covering the most due kinds gains most, then
+// the one covering more other kinds, then the nearest; the vendor visit's shopping list buys there (ShopAtVendor)
+inline void ProvideShopping(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    for (uint32_t bit = 1; bit <= UINT8_MAX; bit <<= 1)
+    {
+        bool const due = (snapshot.DueStock & bit) != 0;
+        if (!due && !(snapshot.OtherStock & bit))
+            continue;
+
+        ErrandOffer offer;
+        offer.Kind = ErrandKind::Shop;
+        offer.Service = SERVICE_VENDOR | StockServices(static_cast<uint8_t>(bit));
+        offer.WorthCopper = due ? DueWorth(snapshot.Rates) : JOIN_WORTH;
+        offer.Id = bit;
+        offer.Due = due;
+        offers.push_back(offer);
+    }
+}
+
+// Training (§3.7) at any of the class's trainers: it joins a trip that passes one, its own trip once enough levels wait
+inline void ProvideTraining(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Training.Units)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Train;
+    offer.Service = SERVICE_TRAINER;
+    offer.WorthCopper = snapshot.Training.Due ? DueWorth(snapshot.Rates) : JOIN_WORTH;
+    offer.Id = snapshot.Training.Spell;
+    offer.Due = snapshot.Training.Due;
+    offers.push_back(offer);
+}
+
+// A riding rank bought (§3.8): one trip to the riding trainer and the race's mount vendor; a known rank whose mount
+// is missing (WU14) goes to the mount vendor alone
+inline void ProvideRiding(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Riding.Spell)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Ride;
+    offer.Service = SERVICE_RIDING_TRAINER;
+    offer.WorthCopper = DueWorth(snapshot.Rates);
+    offer.Id = snapshot.Riding.Spell;
+    offer.Due = true;
+    if (snapshot.Riding.Learn)
+        offers.push_back(offer);
+    if (!snapshot.Riding.MountVendor)
+        return;
+
+    offer.Service = SERVICE_MOUNT_VENDOR;
+    offer.Target = snapshot.Riding.MountVendor;
+    offers.push_back(offer);
+}
+
+// The errand check on a map without a vendor that trades with the bot (WU12 NOTE 4): a trainer need still plans its
+// trip (class training or a riding rank, their trainers are stops of their own); without one it is skipped
+constexpr bool ErrandCheckPlans(bool vendorOnMap, bool trainerWanted) { return vendorOnMap || trainerWanted; }
 
 // A bag ShouldBuyBag takes; buying it now gains its slots until the next vendor stop (as the goal model's bag offer)
 inline void ProvideBags(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
@@ -264,6 +382,9 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::BuyBag, "buy_bag", &ProvideBags},
         {ErrandKind::BindHearth, "bind_hearth", &ProvideHearth},
         {ErrandKind::LearnFlight, "learn_flight", &ProvideFlightNodes},
+        {ErrandKind::Shop, "shop", &ProvideShopping},
+        {ErrandKind::Train, "train", &ProvideTraining},
+        {ErrandKind::Ride, "ride", &ProvideRiding},
     };
     return rows;
 }
@@ -281,6 +402,7 @@ struct TripStop
     ErrandPlace Place;
     uint32_t Services = 0;
     uint32_t Id = 0;       // the service stop's entry; 0 for a placed errand's own place
+    uint32_t Trainer = 0;  // the trainer to visit at this stop when it is not the stop's own entry (ServiceStop)
     bool OnRoute = false;  // a stop the bot makes anyway
     float DetourMinutes = 0.0f;
     std::vector<ErrandOffer> Errands;
@@ -316,6 +438,26 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
     return offer.Service && (stop.Services & offer.Service) == offer.Service;
 }
 
+// A stop with a trainer within STOP_JOIN_YARDS takes the training of that trainer, as an errand place within that
+// distance is done at the stop: the stop gets the trainer service and the trainer's entry (the bot walks the few yards
+// on arrival). The first trainer in the order given wins; a stop that already has one, or is a trainer's own, keeps it
+inline void JoinTrainers(std::vector<ServiceStop>& stops, std::vector<ServiceStop> const& trainers, uint32_t service)
+{
+    for (ServiceStop& stop : stops)
+    {
+        if (stop.Trainer || (stop.Services & service))
+            continue;
+
+        for (ServiceStop const& trainer : trainers)
+            if (Yards(stop.Place, trainer.Place) <= STOP_JOIN_YARDS)
+            {
+                stop.Services |= service;
+                stop.Trainer = trainer.Id;
+                break;
+            }
+    }
+}
+
 // The yards that passing `place` adds at the best point of the route, and that point. After the last stop the walk
 // there counts once, standing for the way back (as TripWorthIt)
 inline float InsertYards(ErrandPlace const& start, std::vector<TripStop> const& stops, ErrandPlace const& place,
@@ -336,10 +478,26 @@ inline float InsertYards(ErrandPlace const& start, std::vector<TripStop> const& 
     return best;
 }
 
-// A detour costs a usual trip's minutes (t) plus the walk it adds, at the earning rate: TripWorthIt's cost
-inline float DetourCost(SlotRates const& rates, float walkMinutes)
+// The stop of a trip that holds the riding errand on `service`, or the trip's size when none does
+inline std::size_t RideStop(std::vector<TripStop> const& stops, uint32_t service)
 {
-    return (rates.TripMinutes + walkMinutes) * rates.EarnCopperPerMinute;
+    for (std::size_t i = 0; i < stops.size(); ++i)
+        for (ErrandOffer const& errand : stops[i].Errands)
+            if (errand.Kind == ErrandKind::Ride && errand.Service == service)
+                return i;
+    return stops.size();
+}
+
+// A rank and its mount on one trip (WU26c): the vendor sells the mount only to a bot that knows the rank, so the riding
+// trainer's stop comes before the mount vendor's when the detour order put it after
+inline void RankBeforeMount(std::vector<TripStop>& stops)
+{
+    std::size_t const trainer = RideStop(stops, SERVICE_RIDING_TRAINER);
+    std::size_t const vendor = RideStop(stops, SERVICE_MOUNT_VENDOR);
+    if (trainer < stops.size() && vendor < trainer)
+        std::rotate(stops.begin() + static_cast<std::ptrdiff_t>(vendor),
+                    stops.begin() + static_cast<std::ptrdiff_t>(trainer),
+                    stops.begin() + static_cast<std::ptrdiff_t>(trainer) + 1);
 }
 
 // The detour rule: an errand joins a stop already on the trip when one can take it; a new stop opens only when the
@@ -367,10 +525,10 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
     // The candidate places: the known service stops, then each errand's own place
     std::vector<TripStop> candidates;
     for (ServiceStop const& service : known)
-        candidates.push_back({service.Place, service.Services, service.Id, false, 0.0f, {}});
+        candidates.push_back({service.Place, service.Services, service.Id, service.Trainer, false, 0.0f, {}});
     for (ErrandOffer const& offer : offers)
         if (offer.Placed)
-            candidates.push_back({offer.Place, offer.Service, offer.Target, false, 0.0f, {}});
+            candidates.push_back({offer.Place, offer.Service, offer.Target, 0, false, 0.0f, {}});
 
     join();
     for (std::size_t detours = 0; detours < MAX_DETOUR_STOPS; ++detours)
@@ -453,6 +611,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         }
         plan.Refused.push_back(refusal);
     }
+    RankBeforeMount(plan.Stops);
     return plan;
 }
 }  // namespace WorldTravel

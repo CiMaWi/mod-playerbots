@@ -10,6 +10,7 @@
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SpellMgr.h"
 #include "UseItemAction.h"
 #include <cmath>
 
@@ -161,4 +162,14 @@ bool CastBlinkBackAction::Execute(Event event)
         return true;
 
     return CastSpellAction::Execute(event);
+}
+
+bool CastConjureConsumableAction::isPossible()
+{
+    if (!CastBuffSpellAction::isPossible())
+        return false;
+
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", spell));
+    return spellInfo &&
+           static_cast<int32>(bot->GetPower(POWER_MANA)) >= spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
 }
