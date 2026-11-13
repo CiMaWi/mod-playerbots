@@ -1439,6 +1439,94 @@ std::optional<Point> GroundBesideStop(Map* map, Point const& stop, float level)
     return at;
 }
 
+// A vessel's deck below its origin (WT54-7), measured on its model at the hull's centre: casts down from the origin,
+// each from just below the surface the last one hit. The last surface is the hull's bottom (run 10: Northrend zeppelins
+// -8.94/-17.88/-25.51, deck -17.88); the deck is the lowest surface above it with a body's headroom. The model is the
+// same at every pose and on every map, so the yards are kept per entry for every map thread; zero for a vessel whose
+// stop does not hang above its ground (a ship: its deck lies above its waterline origin) or with no deck found.
+constexpr float DECK_HEADROOM_YARDS = 2.0f;
+constexpr uint32 DECK_DROP_HITS = 8;
+
+std::mutex deckDropLock;
+std::unordered_map<uint32, float> deckDrops;
+
+std::optional<float> KnownDeckDrop(uint32 entry)
+{
+    std::lock_guard<std::mutex> guard(deckDropLock);
+    auto const known = deckDrops.find(entry);
+    return known == deckDrops.end() ? std::nullopt : std::optional<float>(known->second);
+}
+
+std::optional<float> MeasureDeckDrop(Transport const& transport, uint32 phase)
+{
+    if (!transport.m_model)
+        return std::nullopt;
+    Point const centre = TransportGeometry::HullCentre(transport);
+    float const low = transport.m_model->GetBounds().low().z;
+    float top = centre.Z;
+    std::vector<float> surfaces;
+    std::string hits;
+    while (surfaces.size() < DECK_DROP_HITS && top > low)
+    {
+        auto const surface =
+            TransportGeometry::DeckHeight(transport, phase, {centre.X, centre.Y, top}, 0.0f, top - low + 1.0f);
+        if (!surface)
+            break;
+        hits += Acore::StringFormat("{}{:.2f}", hits.empty() ? "" : "/", *surface - centre.Z);
+        surfaces.push_back(*surface);
+        top = *surface - 0.05f;
+    }
+    std::optional<float> deck;
+    for (std::size_t i = 0; i + 1 < surfaces.size(); ++i)
+        if ((i ? surfaces[i - 1] : centre.Z) - surfaces[i] >= DECK_HEADROOM_YARDS)
+            deck = surfaces[i];
+    LOG_DEBUG("playerbots", "[TravelLifecycle] deck_drop entry={} origin_z={:.2f} low={:.2f} hits={} deck={}",
+              transport.GetEntry(), centre.Z, low, hits.empty() ? std::string("none") : hits,
+              deck ? Acore::StringFormat("{:.2f}", *deck - centre.Z) : std::string("none"));
+    if (!deck)
+        return std::nullopt;
+    return centre.Z - *deck;
+}
+
+// The approach walk to a ship's or zeppelin's stop ends on the ground beside it, not at the stop (in the berth's
+// water, or in the air at a zeppelin's origin), where the arriving hull would take the bot aboard without a boarding.
+// A stop that hangs above its ground (a zeppelin's) is waited for at its deck's level (WT54-7): the ground nearest the
+// origin is the tower's roof or upper ramp (Tirisfal 113.09, Orgrimmar 62.41), 18 yd above the platform the gondola
+// docks at. The deck is measured once the vessel is on the bot's map (here or by any bot); an end aimed before that is
+// aimed again once it is known. The walk's point before the stop is no level (WT54-5: a graph node at the tower's foot)
+void AimApproachEnd(Player* bot, TravelRoute::Point& end, TravelRoute::Leg const& leg, uint64 expected)
+{
+    if (end.mapId != leg.from.mapId)
+        return;
+    Point const stop{leg.from.x, leg.from.y, leg.from.z};
+    bool const atStop = TravelRoute::Distance(end, leg.from) < 0.1f;
+    auto drop = KnownDeckDrop(leg.object);
+    if (!drop)
+        if (Transport* const transport = FindLegTransport(bot, leg, expected))
+            if (transport->ToMotionTransport())
+            {
+                auto const plain = GroundBesideStop(bot->GetMap(), stop, stop.Z);
+                if (plain && transport->m_model)
+                {
+                    auto const measured = MeasureDeckDrop(*transport, bot->GetPhaseMask());
+                    drop = measured && plain->Z < stop.Z - TravelLifecycle::DOCK_FLOOR_YARDS ? *measured : 0.0f;
+                    std::lock_guard<std::mutex> guard(deckDropLock);
+                    deckDrops.emplace(leg.object, *drop);
+                }
+            }
+    bool const hangs = drop && *drop > TravelLifecycle::DOCK_FLOOR_YARDS;
+    float const level = hangs ? stop.Z - *drop : stop.Z;
+    if (!atStop && (!hangs || std::fabs(end.z - level) <= 2.0f * TravelLifecycle::DOCK_FLOOR_YARDS))
+        return;
+    auto const ground = GroundBesideStop(bot->GetMap(), stop, level);
+    if (!ground || (!atStop && TravelRoute::Distance(end, {end.mapId, ground->X, ground->Y, ground->Z}) < 0.5f))
+        return;
+    end = {end.mapId, ground->X, ground->Y, ground->Z};
+    LOG_DEBUG("playerbots", "[Route] {} walks to {:.2f}, {:.2f}, {:.2f} beside the stop of {} (deck {} below it)",
+              bot->GetName(), ground->X, ground->Y, ground->Z, leg.object,
+              hangs ? Acore::StringFormat("{:.2f}", *drop) : std::string("not"));
+}
+
 // The ground nearest the rider that lies off the docked hull, within a step of the deck's floor (WT54-3). A route that
 // ends at the vessel's stop gives no ground off the hull: beside a stop lies the pier under the docked ship, or the
 // ground below a zeppelin's tower. The bot then goes on from this ground; the exit's checks stay as they are.
@@ -1869,6 +1957,13 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
     TravelLegs::Trip& trip = data.trip;
     if (trip.legIdx >= trip.legs.size() || trip.boarding != TravelLegs::Boarding::Approach)
         return;
+    // At its transport's dock the bot waits on foot (WT54-7; TravelKeepsOnFoot keeps it so): Thunder Bluff's zeppelin
+    // left while the bot spent the scan after its docking on the dismount
+    if (trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport && bot->IsMounted() && !bot->IsInCombat())
+    {
+        WorldPacket emptyPacket;
+        bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
+    }
 
     if (trip.hasQuay || getMSTimeDiff(data.transportScanMs, seen.nowMs) < TravelLegs::TRANSPORT_SCAN_MS)
         return;
@@ -1885,17 +1980,9 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
         return;
 
     data.transportScanMs = seen.nowMs;
-    // The approach walk ends on the ground beside the stop, not at the stop (in the berth's water, or in the air at a
-    // zeppelin's origin), where the arriving hull would take the bot aboard without a boarding; once docked, the quay.
-    // Looked for at the stop's own height: at the level of the walk's point before the stop (WT54-5 run 7) it was the
-    // ground under the zeppelin tower (that point is a graph node at the tower's foot)
+    // The approach walk ends on the ground beside the stop (AimApproachEnd); once docked, the quay
     if (approachWalk && !trip.waypoints.empty())
-    {
-        TravelRoute::Point& end = trip.waypoints.back().at;
-        if (end.mapId == leg.from.mapId && TravelRoute::Distance(end, leg.from) < 0.1f)
-            if (auto const ground = GroundBesideStop(bot->GetMap(), Point{end.x, end.y, end.z}, end.z))
-                end = {end.mapId, ground->X, ground->Y, ground->Z};
-    }
+        AimApproachEnd(bot, trip.waypoints.back().at, leg, trip.sight.guid);
     if (approachWalk && (trip.waypoints.empty() || trip.next + 1 < trip.waypoints.size()))
         return;
     TravelLegs::TransportSight sight;
@@ -1911,18 +1998,29 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
     if (trip.quaySought || !ReadyForTransportMove(*bot))
         return;
 
+    TransportGeometry::GroundGeometry const geometry{*bot, transport};
     Point const from = TransportGeometry::PositionOf(*bot);
     bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
     TravelLifecycle::CrossingTally tally;
-    auto const shore = TravelLifecycle::FindQuay(TransportGeometry::GroundGeometry{*bot, transport}, from,
-                                                 TransportGeometry::PositionOf(*transport),
+    auto const shore = TravelLifecycle::FindQuay(geometry, from, TransportGeometry::PositionOf(*transport),
                                                  TransportGeometry::HullCentre(*transport), trace ? &tally : nullptr);
     if (!shore)
     {
         TravelLegs::SetQuay(trip, nullptr);
         LOG_DEBUG("playerbots", "[Route] {} found no reachable boarding floor for {}", bot->GetName(), leg.object);
         if (trace)
+        {
             LogCrossingSearch(*bot, data, *transport, "quay", tally);
+            // The first quay that failed only on the walk to it, and how the ground mesh joins the bot to it (WT54-7)
+            auto const& corridor = tally.First[static_cast<std::size_t>(TravelLifecycle::CrossingCheck::Corridor)];
+            if (corridor)
+                LOG_DEBUG("playerbots",
+                          "[TravelLifecycle] quay_reach bot={} at={:.2f},{:.2f},{:.2f} shore={:.2f},{:.2f},{:.2f} "
+                          "reach={}",
+                          bot->GetGUID().GetCounter(), from.X, from.Y, from.Z, corridor->From.X, corridor->From.Y,
+                          corridor->From.Z,
+                          TransportGeometry::GroundGeometry::ReachName(geometry.GroundReach(from, corridor->From)));
+        }
         return;
     }
 
@@ -2181,8 +2279,8 @@ bool TravelKeepsOnFoot(PlayerbotAI* botAI)
     TravelLegs::Trip const& trip = data->trip;
     if (trip.offFirst.sinceMs)
         return true;
-    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport &&
-           trip.boarding != TravelLegs::Boarding::Approach;
+    // A transport leg goes on foot from its dock on (WT54-7: also while it waits there, SeekQuay)
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
 }
 
 bool NewRpgTravelAction::ConsumeScheduledWork(PlayerbotAI* botAI)

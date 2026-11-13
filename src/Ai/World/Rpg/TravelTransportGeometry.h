@@ -303,10 +303,33 @@ struct GroundGeometry
             return std::vector<Point>{end};
         uint32 const phase = Bot.GetPhaseMask();
         float const radius = std::max(0.35f, Bot.GetObjectSize() * 0.5f);
-        return TravelLifecycle::DeckPath(
-            start, end, radius, [&](Point const& top, float drop)
-            { return DeckHeight(*Surface, phase, top, 0.0f, drop); }, [&](Point const& a, Point const& b)
-            { return ModelBlocks({a.X, a.Y, a.Z}, {b.X, b.Y, b.Z}); }, cells, expanded);
+        auto const deckAt = [&](Point const& top, float drop) { return DeckHeight(*Surface, phase, top, 0.0f, drop); };
+        auto const blocks = [&](Point const& a, Point const& b)
+        { return ModelBlocks({a.X, a.Y, a.Z}, {b.X, b.Y, b.Z}); };
+        auto walk = TravelLifecycle::DeckPath(start, end, radius, deckAt, blocks, cells, expanded);
+        if (walk || expanded != 1)
+            return walk;
+        // No step leaves the rider's spot: it stands inside a fitting of the deck, whose faces every body ray hits
+        // (WT54-7: riders on a zeppelin's gondola and a ship's rail, deck_walk at every exit). The walk then starts
+        // with a step out of it, to the nearest deck spot within DECK_ESCAPE_YARDS with a straight walk to the end
+        // (no search: run 10's searches from such spots spent the exit's whole budget before its straight candidates)
+        constexpr float DECK_ESCAPE_YARDS = 2.0f;
+        constexpr uint32 ESCAPE_BEARINGS = 8;
+        constexpr float FULL_TURN = 6.28318531f;
+        for (float reach = 1.0f; reach <= DECK_ESCAPE_YARDS; reach += 1.0f)
+            for (uint32 bearing = 0; bearing < ESCAPE_BEARINGS; ++bearing)
+            {
+                float const angle = FULL_TURN * static_cast<float>(bearing) / static_cast<float>(ESCAPE_BEARINGS);
+                Point const top{start.X + reach * std::cos(angle), start.Y + reach * std::sin(angle),
+                                start.Z + TravelLifecycle::DECK_CLIMB_YARDS};
+                auto const surface = deckAt(top, 3.0f * TravelLifecycle::DECK_CLIMB_YARDS);
+                if (!surface || std::fabs(*surface - start.Z) > TravelLifecycle::DECK_CLIMB_YARDS)
+                    continue;
+                Point const out{top.X, top.Y, *surface};
+                if (TravelLifecycle::FollowDeck(out, end, radius, deckAt, blocks))
+                    return std::vector<Point>{out, end};
+            }
+        return std::nullopt;
     }
 
     bool ModelBlocks(G3D::Vector3 const& a, G3D::Vector3 const& b) const
