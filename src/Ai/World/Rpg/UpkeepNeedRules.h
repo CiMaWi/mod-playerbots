@@ -289,16 +289,18 @@ inline bool BitsAlign(UpkeepIndex const& index, Snapshot const& snapshot)
     return snapshot.upkeepVersion && snapshot.upkeepVersion == index.version;
 }
 
-// A reagent of a class spell the bot knows (the index's reagent spells against the snapshot's known bits). The
-// generic sell keeps only the reagents of spells the bot has (ItemUsageValue::IsItemNeededForUsefullSpell): one for a
-// spell not learned yet would be sold at the next visit
+// A reagent of a class spell the bot knows and casts with it (the index's reagent spells against the snapshot's known
+// and reagent-free bits). The generic sell keeps only the reagents of spells the bot has and pays them for
+// (ItemUsageValue::IsItemNeededForUsefullSpell): one for a spell not learned yet, or one a glyph makes free, would be
+// sold at the next visit (`skip would_sell` at the vendor)
 inline bool ReagentKnown(UpkeepIndex const& index, Snapshot const& snapshot, std::uint32_t item)
 {
     if (!BitsAlign(index, snapshot))
         return false;
     auto const [first, last] = index.ReagentSpells(snapshot.cls, item);
     for (auto it = first; it != last; ++it)
-        if (Planner::HasSpellBit(snapshot.knownClassSpells, it->position))
+        if (Planner::HasSpellBit(snapshot.knownClassSpells, it->position) &&
+            !Planner::HasSpellBit(snapshot.reagentFreeClassSpells, it->position))
             return true;
     return false;
 }

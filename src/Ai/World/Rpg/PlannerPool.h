@@ -145,6 +145,9 @@ struct Snapshot
     // Bit i: the abilities the class list's spell i needs that are on neither list (talents, racials, quest spells
     // such as Summon Warhorse) are all known
     std::vector<std::uint64_t> offListMetClassSpells;
+    // Bit i: the class list's spell i is known and cast without its reagents (Player::CanNoReagentCast: Glyph of
+    // Renewed Life frees Reincarnation's Ankh); only the reagent spells' positions are filled
+    std::vector<std::uint64_t> reagentFreeClassSpells;
     // The riding skill the bot's best known mount of each kind needs; a riding rank is complete with a mount of its
     // skill or better (WU14). The travel shares are no snapshot fields: the needs read them from the slot measure
     std::uint16_t groundMountSkill{0};
@@ -164,8 +167,8 @@ struct Snapshot
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
                rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
                stock.capacity() * sizeof(StockItem) +
-               (knownClassSpells.capacity() + knownRidingSpells.capacity() + canLearnClassSpells.capacity() +
-                canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
+               (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
+                canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);
     }
 };

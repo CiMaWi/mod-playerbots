@@ -1110,6 +1110,15 @@ void KeptItems(UpkeepIndex const& index)
           "a reagent of a spell the mage has not learned: no need, no errand, no vendor covers it");
     Check(ReagentKnown(index, adept, ITEM_POWDER) && Find(adeptNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent),
           "the spell learned: the reagent need");
+    Snapshot glyphed = adept;
+    glyphed.reagentFreeClassSpells = SpellBits(glyphed.knownClassSpells.size() * BITS_PER_WORD);
+    auto const [powderFirst, powderLast] = index.ReagentSpells(CLASS_MAGE, ITEM_POWDER);
+    for (auto it = powderFirst; it != powderLast; ++it)
+        SetSpellBit(glyphed.reagentFreeClassSpells, it->position);
+    NeedList const glyphedNeeds = ComputeNeeds(glyphed, index, Rates(12));
+    Check(powderFirst != powderLast && !ReagentKnown(index, glyphed, ITEM_POWDER) &&
+              !Find(glyphedNeeds, NeedOrder::ReagentPoison) && !StockErrandDue(glyphedNeeds),
+          "the spell cast without its reagent (a glyph): no need, no errand (WU26a-fix)");
     Check(!Find(warriorNeeds, NeedOrder::ReagentPoison), "a class no spell of which uses the powder: no need");
 
     Snapshot hunter = Bot(index, CLASS_HUNTER, 30, 100 * GOLD, 30);

@@ -460,6 +460,23 @@ void FillMounts(Player* bot, Snapshot& snapshot)
         best = std::max(best, skill);
     }
 }
+
+// The known reagent spells of the class the bot casts without their reagents, judged as the generic sell judges them
+// (ItemUsageValue::SpellsUsingItem skips them): their reagents are no need (UpkeepNeeds::ReagentKnown)
+void FillReagentFree(Player* bot, UpkeepIndex const& index, TrainerList const& list, Snapshot& snapshot)
+{
+    snapshot.reagentFreeClassSpells = SpellBits(list.spells.size());
+    uint8 const cls = bot->getClass();
+    auto it = std::lower_bound(index.reagentSpells.begin(), index.reagentSpells.end(), ReagentSpell{cls, 0, 0});
+    for (; it != index.reagentSpells.end() && it->cls == cls; ++it)
+    {
+        if (it->position >= list.spells.size() || !HasSpellBit(snapshot.knownClassSpells, it->position))
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(list.spells[it->position].spellId);
+        if (info && bot->CanNoReagentCast(info))
+            SetSpellBit(snapshot.reagentFreeClassSpells, it->position);
+    }
+}
 }  // namespace
 
 void FillUpkeep(Player* bot, Snapshot& snapshot)
@@ -500,6 +517,8 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         TrainerList const* classList = index->ClassList(cls);
         TrainerList const* riding = index->RidingList(bot->getRace(true));
         FillKnown(bot, classList, snapshot.knownClassSpells, snapshot.canLearnClassSpells);
+        if (classList)
+            FillReagentFree(bot, *index, *classList, snapshot);
         FillKnown(bot, riding, snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
         FillMounts(bot, snapshot);
         if (classList)
