@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "Chat.h"
+#include "DBCStores.h"
 #include "DetourCommon.h"
 #include "GameTime.h"
 #include "GridDefines.h"
@@ -466,6 +467,12 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
         if (!end || *end)
         {
             handler->SendErrorMessage("ROUTE check links: usage: [map [count]] | all | status | stop");
+            return false;
+        }
+        // CreateBaseMap asserts on a map id the DBC does not know: refuse it here
+        if (!sMapStore.LookupEntry(static_cast<std::uint32_t>(mapId)))
+        {
+            handler->SendErrorMessage("ROUTE check links: no map {}", mapId);
             return false;
         }
         maps = {static_cast<std::uint32_t>(mapId)};
