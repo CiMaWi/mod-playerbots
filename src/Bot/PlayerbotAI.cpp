@@ -1708,6 +1708,10 @@ void PlayerbotAI::HandleTeleportAck()
         if (!plMover)
             return;
 
+        // A running mailbox or bank visit ends with its row: its walk was planned from where the bot stood, the spot in
+        // reach, and getting back from where it lands is the travel errand's job (WB.12)
+        BankMail::EndVisits(this, BankMail::VisitEnd::Teleport);
+
         WorldPacket p(MSG_MOVE_TELEPORT_ACK, 20);
         p << plMover->GetPackGUID();
         p << uint32(0);  // flags

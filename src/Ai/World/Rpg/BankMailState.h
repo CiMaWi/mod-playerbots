@@ -170,8 +170,8 @@ VisitWatchIn WatchInOf(Player const* bot, uint32 mapId, uint32 startedMs, uint32
 // The bot's map thread, in every AI update while a visit runs, whatever engine runs (the stepping engine does not run
 // in combat or dead): ends a visit at its deadline, at death or on another map, with its row
 void WatchVisits(PlayerbotAI* botAI);
-// The world thread or the bot's map thread, before its state is dropped (a far teleport, Reset(true), a logout):
-// ends a running visit of either kind with its row
+// The world thread or the bot's map thread, before its state is dropped (a far teleport, Reset(true), a logout) or
+// at a near teleport: ends a running visit of either kind with its row
 void EndVisits(PlayerbotAI* botAI, VisitEnd end);
 }  // namespace BankMail
 

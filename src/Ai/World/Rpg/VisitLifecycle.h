@@ -31,7 +31,7 @@ enum class VisitEnd : uint8_t
     Timeout,    // the deadline passed out of combat
     NoSpot,     // no mailbox or banker where the index put it, or it went
     Combat,     // the deadline passed in combat (the stepping engine runs out of combat only)
-    Teleport,   // a far teleport (PlayerbotAI::HandleTeleportAck)
+    Teleport,   // a teleport, far or near (PlayerbotAI::HandleTeleportAck)
     Reset,      // PlayerbotAI::Reset(true)
     Death,      // the bot died
     MapChange,  // the bot is on another map than the spot's
