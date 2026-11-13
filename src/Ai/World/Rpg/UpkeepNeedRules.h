@@ -570,9 +570,37 @@ inline bool NeedsWaitingSpell(TrainerList const& trainer, std::vector<std::size_
     return false;
 }
 
+// The class trainer that teaches the most of the spells waiting at this level, the first on a tie; none when no
+// trainer teaches one. A starter trainer teaches only the first levels and a mage's portal trainer a teleport or two,
+// so neither is the trip's trainer while the class trainer teaches more
+inline Planner::UpkeepTrainer const* WaitingTeacher(UpkeepIndex const& index, TrainerList const& list,
+                                                    std::vector<std::size_t> const& spells, Snapshot const& snapshot)
+{
+    Planner::UpkeepTrainer const* best = nullptr;
+    std::size_t most = 0;
+    for (Planner::UpkeepTrainer const& trainer : index.trainers)
+    {
+        if (trainer.kind != Planner::TrainerKind::Class || trainer.requirement != snapshot.cls)
+            continue;
+        std::size_t taught = 0;
+        for (std::size_t const position : spells)
+            if (list.spells[position].reqLevel <= snapshot.level &&
+                Teaches(index, trainer, list.spells[position].spellId))
+                ++taught;
+        if (taught > most)
+        {
+            best = &trainer;
+            most = taught;
+        }
+    }
+    return best;
+}
+
 // Training: the spells of this level are a need, due when the oldest waits trainingSpan levels; the reserve holds
-// them and the next trainingReserveLevels levels' spells. The cheapest price is taken over the spells that need no
-// other waiting spell first: only those can be bought on the first visit
+// them and the next trainingReserveLevels levels' spells. The need counts the spells its trainer (WaitingTeacher)
+// teaches, one visit's worth: a spell only another trainer teaches (a mage's teleport at the portal trainer) is the
+// next need once these are bought; as the highest waiting spell it sent the whole need to that trainer alone. The
+// cheapest price is taken over the spells that need no other waiting spell first: only those can be bought at once
 inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates)
 {
     TrainerList const* trainer = index.ClassList(snapshot.cls);
@@ -581,6 +609,11 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
     std::vector<std::size_t> const spells = Learnable(
         *trainer, index.RidingList(snapshot.race), snapshot, snapshot.knownClassSpells, snapshot.canLearnClassSpells,
         static_cast<std::uint32_t>(snapshot.level) + rates.trainingReserveLevels);
+    for (std::size_t const position : spells)
+        list.reserveTraining += trainer->spells[position].moneyCost;
+    Planner::UpkeepTrainer const* const teacher = WaitingTeacher(index, *trainer, spells, snapshot);
+    if (!teacher)
+        return;
     Need need;
     need.order = NeedOrder::Training;
     need.kind = UpkeepKind::TrainerSpell;
@@ -590,8 +623,7 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
     for (std::size_t const position : spells)
     {
         TrainerSpell const& spell = trainer->spells[position];
-        list.reserveTraining += spell.moneyCost;
-        if (spell.reqLevel > snapshot.level)
+        if (spell.reqLevel > snapshot.level || !Teaches(index, *teacher, spell.spellId))
             continue;
         need.copper += spell.moneyCost;
         if ((!need.cheapest || spell.moneyCost < need.cheapest) && !NeedsWaitingSpell(*trainer, spells, spell))
@@ -608,10 +640,7 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
     }
     if (!need.units)
         return;
-    // A trainer that teaches the highest waiting spell: a starter trainer teaches only the first levels
-    need.trainer = TrainerFor(index, Planner::TrainerKind::Class, snapshot.cls, need.lastSpell);
-    if (!need.trainer)
-        need.trainer = TrainerFor(index, Planner::TrainerKind::Class, snapshot.cls);
+    need.trainer = teacher->key;
     need.levelsBehind = snapshot.level - oldest;
     need.due = static_cast<float>(need.levelsBehind) >= list.trainingSpan;
     list.needs.push_back(need);

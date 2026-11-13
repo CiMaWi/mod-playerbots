@@ -668,6 +668,34 @@ void TrainingPlaces(UpkeepIndex const& index)
     Need const* at6 = Find(level6, NeedOrder::Training);
     Check(at6 && at6->lastSpell == 1006 && at6->trainer == TRAINER_WARRIOR_STARTER,
           "a level-6 need may go to the starter trainer, which teaches it");
+
+    // acore_world's mage trainers (WU26c round 5): trainer 16 teaches 2121, 120 and 6127 at 24-30, the Darnassus
+    // portal trainer 21 Teleport: Darnassus 3565 at 30, the level-30 spell with the lowest id
+    constexpr std::uint32_t TRAINER_PORTAL = 105;
+    UpkeepGather input;
+    input.trainers.push_back({TRAINER_PORTAL, TrainerKind::Class, CLASS_MAGE, {Spell(3565, 8000, 30)}});
+    input.trainers.push_back(
+        {TRAINER_MAGE,
+         TrainerKind::Class,
+         CLASS_MAGE,
+         {Spell(1953, 2000, 20), Spell(2121, 4000, 24), Spell(120, 5000, 26), Spell(6127, 8000, 30)}});
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainerEntries = {
+        {TRAINER_PORTAL, TRAINER_PORTAL}, {TRAINER_MAGE, TRAINER_MAGE}, {TRAINER_RIDING, TRAINER_RIDING}};
+    UpkeepIndex portals = UpkeepIndex::Build(std::move(input));
+    portals.version = 7;
+    NeedList const untrained = ComputeNeeds(Bot(portals, CLASS_MAGE, 30, 50 * GOLD, 22), portals, Rates(30));
+    Need const* mage = Find(untrained, NeedOrder::Training);
+    Check(mage && mage->trainer == TRAINER_MAGE && mage->lastSpell == 6127 && mage->units == 3 &&
+              mage->copper == 17000 && mage->levelsBehind == 6 && mage->due && TrainingErrandDue(*mage),
+          "a mage's need goes to the class trainer and counts its spells, not the portal trainer's teleport");
+    Snapshot trained = Bot(portals, CLASS_MAGE, 30, 50 * GOLD, 22);
+    for (std::uint32_t const spell : {2121u, 120u, 6127u})
+        Mark(trained.knownClassSpells, *portals.ClassList(CLASS_MAGE), spell);
+    NeedList const teleport = ComputeNeeds(trained, portals, Rates(30));
+    Need const* portal = Find(teleport, NeedOrder::Training);
+    Check(portal && portal->trainer == TRAINER_PORTAL && portal->lastSpell == 3565 && portal->units == 1,
+          "after the class trainer's visit the teleport alone is a need at the portal trainer");
 }
 
 void FlyingRiding(UpkeepIndex const& index)
