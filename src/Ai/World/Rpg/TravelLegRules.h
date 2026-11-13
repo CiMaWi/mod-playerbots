@@ -771,6 +771,22 @@ inline bool TakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard
     return std::sqrt(dx * dx + dy * dy) <= (trip.sight.isStatic ? STATIC_DOCK_YARDS : SHIP_DOCK_YARDS);
 }
 
+// The walk to a ship's or zeppelin's leg ended aboard (WT54-6, the WT47 class "aboard before boarding"): the leg's
+// vessel, docked over the walk's last yards, took the bot aboard before the walk reached its end. The walk is done and
+// the transport leg's TakenAboard counts the boarding. Only for the walk right before that leg, its entry, and within
+// a docked hull's reach of its start; the caller leaves elevators and the tram out (their stops share x and y)
+inline bool WalkTakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+{
+    if (!aboard || trip.legIdx + 1 >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk)
+        return false;
+    Leg const& leg = trip.legs[trip.legIdx + 1];
+    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != leg.from.mapId)
+        return false;
+    float const dx = bot.x - leg.from.x;
+    float const dy = bot.y - leg.from.y;
+    return std::sqrt(dx * dx + dy * dy) <= SHIP_DOCK_YARDS;
+}
+
 inline std::uint32_t TransportPeriodMs(Trip const& trip, Leg const& leg)
 {
     return trip.periodMs ? trip.periodMs : FallbackPeriodMs(leg);
@@ -984,6 +1000,11 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
         {
             if (seen.bot.mapId != leg.to.mapId)
                 return fail(FailReason::WrongMap);
+            if (WalkTakenAboard(trip, seen.bot, seen.aboard))
+            {
+                trip.next = static_cast<std::uint32_t>(trip.waypoints.size());
+                return {Act::Done, leg.to, FailReason::None};
+            }
             bool const leadsToQuay = seen.quayLeg == trip.legIdx + 1;
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
             float const waypointYards = leadsToQuay && trip.hasQuay ? QUAY_REACH_YARDS : WAYPOINT_YARDS;

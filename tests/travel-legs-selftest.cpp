@@ -1058,6 +1058,21 @@ void CheckTakenAboard()
     Trip astray = SoughtTrip({ShipLeg()});
     Check(StepLeg(astray, On(SEA_0, 4000, SHIP, Sight(SEA_0, true))).act == Act::Wait && !astray.passengerGuid,
           "taken aboard far from the start: not a boarding");
+
+    // WT54-6: the vessel docked over the walk's last yards takes the bot aboard before the walk to the dock is done
+    Leg const walk = MakeLeg(LegType::Walk, NODES[0], PIER_A, {0, 1}, 30.0f);
+    Trip walking = StartedTrip({walk, ShipLeg()});
+    Check(TravelLegs::WalkTakenAboard(walking, DECK, SHIP), "taken aboard on the walk: the next leg's vessel");
+    Check(!TravelLegs::WalkTakenAboard(walking, DECK, LIFT) && !TravelLegs::WalkTakenAboard(walking, SEA_0, SHIP) &&
+              !TravelLegs::WalkTakenAboard(walking, DECK, 0),
+          "taken aboard on the walk: never by another entry, far from the dock or ashore");
+    Trip lastWalk = StartedTrip({ShipLeg(), walk});
+    TravelLegs::StartLeg(lastWalk, 1, 1000, NodeAt);
+    Check(!TravelLegs::WalkTakenAboard(lastWalk, DECK, SHIP), "taken aboard on the walk: only before a transport leg");
+    Decision const ahead = TravelLegs::Advance(walking, On(DECK, 4000, SHIP, Sight(SHIP_AT_A, false)), NodeAt);
+    Check(ahead.act == Act::Wait && walking.legIdx == 1 && walking.boarding == Boarding::Ride &&
+              walking.passengerGuid == SHIP && Noted(walking, 0, TransportEvent::Boarded, SHIP, 0),
+          "taken aboard on the walk: the walk is done, the ship's leg boarded and rides");
 }
 
 void CheckBack()

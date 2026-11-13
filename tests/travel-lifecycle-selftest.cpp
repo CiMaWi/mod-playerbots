@@ -253,9 +253,18 @@ void CheckRideAndExit()
     Check(adapter.Aboard.Guid == CAR, "airborne over the ridden deck preserves the frame");
 
     adapter.ExpectedContact = Contact::OffSurface;
-    adapter.Calls.clear();
     Maintain(cadence, 3010, MAP, nullptr, adapter);
-    Check(!adapter.Aboard.Guid, "verified off-deck observation detaches without a route");
+    Check(adapter.Aboard.Guid == CAR && cadence.OffSurface == 1,
+          "one sample off the deck without a move of its own keeps the rider (WT54-6)");
+    adapter.ExpectedContact = Contact::Feet;
+    Maintain(cadence, 4010, MAP, nullptr, adapter);
+    Check(adapter.Aboard.Guid == CAR && cadence.OffSurface == 0, "back on the deck: the count starts again");
+    adapter.ExpectedContact = Contact::OffSurface;
+    Maintain(cadence, 5010, MAP, nullptr, adapter);
+    adapter.Calls.clear();
+    Maintain(cadence, 6010, MAP, nullptr, adapter);
+    Check(!adapter.Aboard.Guid && cadence.OffSurface == 0,
+          "verified off-deck observation on two samples in a row detaches without a route");
     Check(adapter.Calls == std::vector<std::string_view>{"read", "probe", "settle", "detach", "read", "publish"},
           "local spline is settled before unexpected detach");
 

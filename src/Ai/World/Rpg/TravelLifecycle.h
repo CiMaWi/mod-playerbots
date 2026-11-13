@@ -22,6 +22,10 @@
 namespace TravelLifecycle
 {
 constexpr std::uint32_t PASSENGER_INTERVAL_MS = 1000;
+// A rider without a move of its own (no boarding or exit spline) leaves its deck on this many samples off it in a row:
+// one probe off the surface while it stands still is the hull's model a step away from its passengers (WT54-6: two
+// riders of 187568 dropped at sea on the same sample), not an exit
+constexpr std::uint8_t OFF_SURFACE_SAMPLES = 2;
 
 struct Point
 {
@@ -637,6 +641,7 @@ struct Cadence
     std::uint32_t Map = 0;
     bool Sampled = false;
     bool Revalidate = false;
+    std::uint8_t OffSurface = 0;  // the rider's samples off its deck in a row (OFF_SURFACE_SAMPLES)
 };
 
 struct Membership
@@ -691,7 +696,8 @@ struct Sample
 
 // The adapter resolves transport identities and applies the frame change on the bot's map thread.
 template <class Adapter>
-Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, std::uint64_t preferred = 0)
+Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, std::uint64_t preferred = 0,
+                 std::uint8_t* offSurfaceSamples = nullptr)
 {
     Sample sample;
     sample.Before = sample.After = adapter.ReadMembership();
@@ -731,8 +737,12 @@ Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, s
     std::uint64_t const expected = motion ? motion->Transport : preferred;
     sample.Observed = adapter.Probe(sample.Before.Guid ? sample.Before.Guid : expected, sample.Before.Guid != 0);
 
-    if (sample.Before.Guid && sample.Observed.Guid == sample.Before.Guid &&
-        sample.Observed.Where == Contact::OffSurface && !preferred)
+    bool const offSurface = sample.Before.Guid && sample.Observed.Guid == sample.Before.Guid &&
+                            sample.Observed.Where == Contact::OffSurface && !preferred;
+    bool const leaves = offSurface && (motion || !offSurfaceSamples || ++*offSurfaceSamples >= OFF_SURFACE_SAMPLES);
+    if (offSurfaceSamples && (!offSurface || leaves))
+        *offSurfaceSamples = 0;
+    if (leaves)
     {
         bool const safeExit = motion && motion->Kind == MotionKind::Exit && state == MotionState::Reached &&
                               motion->Transport == sample.Before.Guid && adapter.ConfirmExit(*motion);
@@ -780,11 +790,11 @@ void Maintain(Cadence& cadence, std::uint32_t nowMs, std::uint32_t map, Passenge
     if (cadence.Sampled && gapMs < PASSENGER_INTERVAL_MS && !completed && !cadence.Revalidate && cadence.Map == map)
         return;
 
-    cadence = {nowMs, map, true, false};
+    cadence = {nowMs, map, true, false, cadence.OffSurface};
     if (completed)
         motion->CompletionSampled = true;
 
-    adapter.Observe(nowMs, gapMs, motion, [&] { return Reconcile(adapter, motion, state); });
+    adapter.Observe(nowMs, gapMs, motion, [&] { return Reconcile(adapter, motion, state, 0, &cadence.OffSurface); });
 }
 }  // namespace TravelLifecycle
 
