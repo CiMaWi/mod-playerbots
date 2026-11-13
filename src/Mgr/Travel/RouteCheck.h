@@ -13,13 +13,18 @@
 // The check runs on the world thread (a map's navmesh query is not thread-safe and loading tiles changes the
 // navmesh) in slices queued through PlayerbotWorldThreadProcessor, so the command returns at once; `status` prints
 // the progress or the last result, the report goes to <LogsDir>/route-check-links-<time>.tsv. The classing and the
-// report format are RouteCheckRules.h.
+// report format are RouteCheckRules.h. Every walk link gets a class from both directions (ok, reverse-only,
+// end-off-mesh, dead, capped).
+// `playerbots route check pairs <file>` (GM; lines `map x1 y1 z1 x2 y2 z2 [label]`): the same two probes for listed
+// pairs of points, the corners of each answer beside the class, to <LogsDir>/route-check-pairs-<time>.tsv.
+// `status` and `stop` serve both; one job at a time.
 
 class ChatHandler;
 
 namespace RouteCheck
 {
 bool HandleLinksCommand(ChatHandler* handler, char const* args);
-}
+bool HandlePairsCommand(ChatHandler* handler, char const* args);
+}  // namespace RouteCheck
 
 #endif

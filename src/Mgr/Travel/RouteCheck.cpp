@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "Chat.h"
@@ -85,6 +86,11 @@ struct Job
     std::vector<std::string> rows;
     std::vector<std::string> notes;  // per map: grids created, tiles loaded
     std::vector<std::string> summary;
+    bool pairsMode{false};        // `route check pairs`: the listed point pairs instead of the graph's links
+    std::vector<PairSpec> pairs;  // sorted by map
+    std::size_t nextPair{0};
+    std::unordered_set<std::uint32_t> offNodes;  // nodes of the map over OFFMESH_LIMIT yd from the mesh (or none)
+    NodeLinkCounts nodeLinks;                    // per node key: its non-ok links by class
     Clock::time_point started;
     Clock::duration busy{};
     std::uint32_t slices{0};
@@ -93,6 +99,8 @@ struct Job
 
 std::mutex jobMutex;  // the console and the slices both run on the world thread; in-game chat may not
 Job job;
+
+char const* Title() { return job.pairsMode ? "pairs" : "links"; }
 
 Vec At(TravelGraphNode const& node) { return {node.x, node.y, node.z}; }
 
@@ -152,11 +160,15 @@ void BeginMap(TravelGraph const& graph)
     job.links.clear();
     job.nextNode = 0;
     job.nextLink = 0;
+    job.offNodes.clear();
+    job.nodeLinks.clear();
     Map* map = sMapMgr->CreateBaseMap(mapId);
     if (!map)
         return;
     job.probe = std::make_unique<Probe>();
     job.probe->SetMap(map);
+    if (job.pairsMode)
+        return;
     for (std::uint32_t index = 0; index < graph.LinkCount(); ++index)
     {
         TravelGraphLink const& link = graph.GetLink(index);
@@ -188,6 +200,7 @@ void EndMap()
     std::uint32_t tiles = 0;
     if (job.probe)
     {
+        AddNodeLinkLines(job.rows, job.nodeLinks);
         tiles = TilesLoaded(job.probe->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh());
         job.probe.reset();
         job.done.push_back(job.current);
@@ -198,16 +211,19 @@ void EndMap()
     ++job.mapIndex;
 }
 
-void CheckNode(TravelGraph const& graph, std::uint32_t index)
+struct MeshAnswer
 {
-    TravelGraphNode const& node = graph.GetNode(index);
-    Map* map = job.probe->GetMap();
-    EnsureGrids(map, node.x, node.x, node.y, node.y, 0);
-    ++job.current.nodes;
+    float distance{-1.0f};  // to the nearest polygon bots may walk on; < 0: none in the search box
+    bool steep{false};      // a polygon bots may not walk on lies within OFFMESH_LISTED
+};
+
+// The box reaches OFFMESH_LIMIT yd each way (horizontally), so a polygon within that distance is found
+MeshAnswer MeshDistance(Map* map, Vec const& at)
+{
     MMapData& mmap = map->GetMapCollisionData().GetMMapData();
     dtNavMeshQuery const* query = mmap.GetNavMeshQuery();
-    float const point[3] = {node.y, node.z, node.x};
-    float const extents[3] = {3.0f, 5.0f, 3.0f};  // PathGenerator::GetPolyByLocation's first box
+    float const point[3] = {at.y, at.z, at.x};
+    float const extents[3] = {OFFMESH_LIMIT, 5.0f, OFFMESH_LIMIT};
     auto const nearest = [&](dtQueryFilter const& filter, dtPolyRef& ref)
     {
         float closest[3] = {0.0f, 0.0f, 0.0f};
@@ -216,28 +232,102 @@ void CheckNode(TravelGraph const& graph, std::uint32_t index)
             return -1.0f;
         return dtVdist(closest, point);
     };
+    MeshAnswer answer;
     dtQueryFilter bots;
     bots.setIncludeFlags(NAV_GROUND | NAV_WATER);
     bots.setExcludeFlags(BOT_EXCLUDE);
     dtPolyRef ref = 0;
-    float const distance = nearest(bots, ref);
-    if (distance >= 0.0f && distance <= OFFMESH_LIMIT)
-        return;
+    answer.distance = nearest(bots, ref);
+    if (answer.distance >= 0.0f && answer.distance <= OFFMESH_LISTED)
+        return answer;
     dtQueryFilter any;
     any.setIncludeFlags(0xffff);
     any.setExcludeFlags(0);
     float const anyDistance = nearest(any, ref);
-    bool steep = false;
     dtMeshTile const* tile = nullptr;
     dtPoly const* poly = nullptr;
-    if (anyDistance >= 0.0f && anyDistance <= OFFMESH_LIMIT &&
+    if (anyDistance >= 0.0f && anyDistance <= OFFMESH_LISTED &&
         dtStatusSucceed(mmap.GetNavMesh()->getTileAndPolyByRef(ref, &tile, &poly)) && poly)
-        steep = poly->getArea() == NAV_GROUND_STEEP;
+        answer.steep = poly->getArea() == NAV_GROUND_STEEP;
+    return answer;
+}
+
+void CheckNode(TravelGraph const& graph, std::uint32_t index)
+{
+    TravelGraphNode const& node = graph.GetNode(index);
+    Map* map = job.probe->GetMap();
+    EnsureGrids(map, node.x, node.x, node.y, node.y, 0);
+    ++job.current.nodes;
+    MeshAnswer const answer = MeshDistance(map, At(node));
+    if (answer.distance >= 0.0f && answer.distance <= OFFMESH_LISTED)
+        return;
     ++job.current.offMesh;
-    if (steep)
+    if (IsOffMesh(answer.distance))
+    {
+        ++job.current.offMesh4;
+        job.offNodes.insert(index);
+    }
+    if (answer.steep)
         ++job.current.offMeshSteep;
-    job.rows.push_back(
-        Line("nodes.offmesh", NodeKey(node.mapId, node.x, node.y, node.z), OffMeshValue(distance, steep)));
+    job.rows.push_back(Line("nodes.offmesh", NodeKey(node.mapId, node.x, node.y, node.z),
+                            OffMeshValue(answer.distance, answer.steep)));
+}
+
+// One direction: the engine's answers chained from a to b; the corners of the answers go to `corners` when given
+LinkResult ProbeDirection(Probe const* probe, Vec const& a, Vec const& b, std::vector<Vec>* corners)
+{
+    return Chain(a, b,
+                 [probe, corners](Vec const& at, Vec const& end)
+                 {
+                     PathGenerator path(probe);
+                     // Corners, not 4 yd steps: the 148-point cap then binds by polygons
+                     path.SetUseStraightPath(true);
+                     path.SetExcludeFlags(BOT_EXCLUDE);
+                     path.SetNavTerrainCost(NAV_WATER, BOT_WATER_COST);
+                     path.CalculatePath(at.x, at.y, at.z, end.x, end.y, end.z, false);
+                     Hop hop;
+                     hop.type = path.GetPathType();
+                     hop.last = at;
+                     if (!path.GetPath().empty())
+                     {
+                         G3D::Vector3 const& last = path.GetPath().back();
+                         hop.last = {last.x, last.y, last.z};
+                     }
+                     if (corners)
+                     {
+                         bool first = true;
+                         for (G3D::Vector3 const& point : path.GetPath())
+                         {
+                             // a later answer starts at the last corner of the one before
+                             if (!first || corners->empty())
+                                 corners->push_back({point.x, point.y, point.z});
+                             first = false;
+                         }
+                     }
+                     return hop;
+                 });
+}
+
+struct Both
+{
+    LinkResult fwd;
+    LinkResult rev;
+    bool revAsked{false};
+    LinkVerdict verdict;
+    std::vector<Vec> fwdPath;
+    std::vector<Vec> revPath;
+};
+
+// The reverse is asked only when the forward answer neither arrived nor was capped
+Both ProbeBoth(Probe const* probe, Vec const& from, Vec const& to, bool fromOff, bool toOff, bool wantPaths)
+{
+    Both both;
+    both.fwd = ProbeDirection(probe, from, to, wantPaths ? &both.fwdPath : nullptr);
+    both.revAsked = both.fwd.cls != LinkClass::Real && both.fwd.cls != LinkClass::Capped;
+    if (both.revAsked)
+        both.rev = ProbeDirection(probe, to, from, wantPaths ? &both.revPath : nullptr);
+    both.verdict = ClassifyLink(both.fwd, both.revAsked ? &both.rev : nullptr, from, to, fromOff, toOff);
+    return both;
 }
 
 void CheckLink(TravelGraph const& graph, std::uint32_t index)
@@ -264,37 +354,45 @@ void CheckLink(TravelGraph const& graph, std::uint32_t index)
     dtNavMesh const* navMesh = map->GetMapCollisionData().GetMMapData().GetNavMesh();
     bool const startTile = TileLoaded(navMesh, At(from));
     bool const endTile = TileLoaded(navMesh, At(to));
-    Probe const* probe = job.probe.get();
-    LinkResult const result = Chain(At(from), At(to),
-                                    [probe](Vec const& at, Vec const& end)
-                                    {
-                                        PathGenerator path(probe);
-                                        // Corners, not 4 yd steps: the 148-point cap then binds by polygons
-                                        path.SetUseStraightPath(true);
-                                        path.SetExcludeFlags(BOT_EXCLUDE);
-                                        path.SetNavTerrainCost(NAV_WATER, BOT_WATER_COST);
-                                        path.CalculatePath(at.x, at.y, at.z, end.x, end.y, end.z, false);
-                                        Hop hop;
-                                        hop.type = path.GetPathType();
-                                        hop.last = at;
-                                        if (!path.GetPath().empty())
-                                        {
-                                            G3D::Vector3 const& last = path.GetPath().back();
-                                            hop.last = {last.x, last.y, last.z};
-                                        }
-                                        return hop;
-                                    });
+    Both const both = ProbeBoth(job.probe.get(), At(from), At(to), job.offNodes.count(link.from) != 0,
+                                job.offNodes.count(link.to) != 0, false);
     ++job.current.links;
-    ++job.current.byClass[static_cast<int>(result.cls)];
-    if (result.cls == LinkClass::Real)
+    ++job.current.byClass[static_cast<int>(both.verdict.verdict)];
+    if (both.verdict.verdict == Verdict::Ok)
     {
-        if (result.hops > 1)
+        if (both.fwd.hops > 1)
             ++job.current.chained;
         return;
     }
-    std::string const key = LinkKey(NodeKey(from.mapId, from.x, from.y, from.z), NodeKey(to.mapId, to.x, to.y, to.z));
-    job.rows.push_back(Line(result.cls == LinkClass::Capped ? "links.capped" : "links.broken", key,
-                            BrokenValue(result, startTile, endTile)));
+    std::string const fromKey = NodeKey(from.mapId, from.x, from.y, from.z);
+    std::string const toKey = NodeKey(to.mapId, to.x, to.y, to.z);
+    job.rows.push_back(
+        Line(both.verdict.verdict == Verdict::Capped ? "links.capped" : "links.class", LinkKey(fromKey, toKey),
+             LinkValue(both.verdict, both.fwd, both.revAsked ? &both.rev : nullptr, !startTile || !endTile)));
+    CountNodeLink(job.nodeLinks, both.verdict.verdict, fromKey, toKey);
+}
+
+// A pair of points: a link without a stored link; the corners of each probe's answers are written beside the class
+void CheckPair(PairSpec const& pair)
+{
+    Map* map = job.probe->GetMap();
+    EnsureGrids(map, std::min(pair.from.x, pair.to.x), std::max(pair.from.x, pair.to.x),
+                std::min(pair.from.y, pair.to.y), std::max(pair.from.y, pair.to.y), 1);
+    dtNavMesh const* navMesh = map->GetMapCollisionData().GetMMapData().GetNavMesh();
+    bool const notile = !TileLoaded(navMesh, pair.from) || !TileLoaded(navMesh, pair.to);
+    Both const both = ProbeBoth(job.probe.get(), pair.from, pair.to, IsOffMesh(MeshDistance(map, pair.from).distance),
+                                IsOffMesh(MeshDistance(map, pair.to).distance), true);
+    ++job.current.links;
+    ++job.current.byClass[static_cast<int>(both.verdict.verdict)];
+    if (both.verdict.verdict == Verdict::Ok && both.fwd.hops > 1)
+        ++job.current.chained;
+    std::string const key = PairKey(NodeKey(pair.mapId, pair.from.x, pair.from.y, pair.from.z),
+                                    NodeKey(pair.mapId, pair.to.x, pair.to.y, pair.to.z), pair.label);
+    job.rows.push_back(
+        Line("pair.class", key, LinkValue(both.verdict, both.fwd, both.revAsked ? &both.rev : nullptr, notile)));
+    job.rows.push_back(Line("pair.path.fwd", key, PathValue(both.fwdPath)));
+    if (both.revAsked)
+        job.rows.push_back(Line("pair.path.rev", key, PathValue(both.revPath)));
 }
 
 // One unit of work; true when the job has nothing left
@@ -311,7 +409,17 @@ bool Step(TravelGraph const& graph)
             return job.mapIndex >= job.maps.size();
         }
     }
-    if (job.nextNode < job.nodes.size())
+    if (job.pairsMode)
+    {
+        if (job.nextPair < job.pairs.size() && job.pairs[job.nextPair].mapId == job.maps[job.mapIndex])
+            CheckPair(job.pairs[job.nextPair++]);
+        else
+        {
+            EndMap();
+            return job.mapIndex >= job.maps.size();
+        }
+    }
+    else if (job.nextNode < job.nodes.size())
         CheckNode(graph, job.nodes[job.nextNode++]);
     else if (job.nextLink < job.links.size())
         CheckLink(graph, job.links[job.nextLink++]);
@@ -329,30 +437,33 @@ void Finish(TravelGraph const& graph)
         EndMap();  // stopped inside a map: its partial counts
     std::string const stamp = Acore::Time::TimeToTimestampStr(GameTime::GetGameTime(), "%Y%m%d-%H%M%S");
     std::filesystem::path const file =
-        std::filesystem::path(sLog->GetLogsDir()) / ("route-check-links-" + stamp + ".tsv");
+        std::filesystem::path(sLog->GetLogsDir()) / (std::string("route-check-") + Title() + "-" + stamp + ".tsv");
     double const elapsed = Seconds(Clock::now() - job.started);
     TravelGraphStats const& stats = graph.Stats();
+    std::string const prefix = std::string("ROUTE check ") + Title() + ": ";
     std::vector<std::string> summary;
     MapCounts total;
     for (MapCounts const& counts : job.done)
     {
-        summary.push_back("ROUTE check links: " + SummaryLine("map " + std::to_string(counts.mapId), counts));
+        summary.push_back(prefix + SummaryLine("map " + std::to_string(counts.mapId), counts));
         total.Add(counts);
     }
-    summary.push_back("ROUTE check links: " + SummaryLine("total", total));
+    summary.push_back(prefix + SummaryLine("total", total));
     for (std::string const& note : job.notes)
-        summary.push_back("ROUTE check links: " + note);
+        summary.push_back(prefix + note);
     summary.push_back(Acore::StringFormat(
-        "ROUTE check links: {}: {:.1f} s elapsed, {:.1f} s on the world thread in {} slices, {} grids created; "
-        "report {}",
+        "{}{}: {:.1f} s elapsed, {:.1f} s on the world thread in {} slices, {} grids created; report {}", prefix,
         job.stop ? "stopped" : "done", elapsed, Seconds(job.busy), job.slices, job.gridsCreated, file.string()));
     std::ofstream out(file, std::ios::binary);
     if (out)
     {
-        out << "# route check links (PLAN navigation §3.2 check 3), " << stamp << "\n";
+        out << "# route check " << Title() << " (PLAN navigation §3.2 check 3), " << stamp << "\n";
         out << "# graph: " << stats.nodes << " nodes, " << stats.links << " links ("
             << stats.linksByType[static_cast<int>(TravelLinkType::Walk)] << " walk), " << stats.points
             << " path points\n";
+        out << "# off the mesh: over " << OFFMESH_LIMIT
+            << " yd from the bots' mesh or none; cause: a probe stopped within " << CAUSE_RADIUS
+            << " yd (2D) of the end node\n";
         out << "# navmesh: " << sWorld->GetDataPath() << "mmaps\n";
         out << "# " << (job.stop ? "stopped" : "complete") << (job.limit ? ", first links only" : "") << ", "
             << Acore::StringFormat("{:.1f}", elapsed) << " s\n";
@@ -360,11 +471,12 @@ void Finish(TravelGraph const& graph)
             out << line << "\n";
     }
     else
-        summary.push_back("ROUTE check links: could not write " + file.string());
+        summary.push_back(prefix + "could not write " + file.string());
     for (std::string const& line : summary)
         LOG_INFO("playerbots", "{}", line);
     job.summary = std::move(summary);
     job.rows.clear();
+    job.pairs.clear();
     job.running = false;
 }
 
@@ -395,7 +507,7 @@ public:
         return true;
     }
 
-    std::string GetName() const override { return "route check links"; }
+    std::string GetName() const override { return std::string("route check ") + Title(); }
 };
 
 bool QueueSlice()
@@ -407,25 +519,30 @@ void PrintStatus(ChatHandler* handler)
 {
     if (job.running)
     {
-        handler->PSendSysMessage(
-            "ROUTE check links: running, map {} ({} of {}): {} of {} nodes, {} of {} links; {:.1f} s elapsed",
-            job.maps[std::min(job.mapIndex, job.maps.size() - 1)], job.mapIndex + 1, job.maps.size(), job.nextNode,
-            job.nodes.size(), job.nextLink, job.links.size(), Seconds(Clock::now() - job.started));
+        if (job.pairsMode)
+            handler->PSendSysMessage("ROUTE check pairs: running, map {} ({} of {}): {} of {} pairs; {:.1f} s elapsed",
+                                     job.maps[std::min(job.mapIndex, job.maps.size() - 1)], job.mapIndex + 1,
+                                     job.maps.size(), job.nextPair, job.pairs.size(),
+                                     Seconds(Clock::now() - job.started));
+        else
+            handler->PSendSysMessage(
+                "ROUTE check links: running, map {} ({} of {}): {} of {} nodes, {} of {} links; {:.1f} s elapsed",
+                job.maps[std::min(job.mapIndex, job.maps.size() - 1)], job.mapIndex + 1, job.maps.size(), job.nextNode,
+                job.nodes.size(), job.nextLink, job.links.size(), Seconds(Clock::now() - job.started));
         return;
     }
     if (job.summary.empty())
     {
-        handler->PSendSysMessage("ROUTE check links: no check has run (playerbots route check links [map [count]])");
+        handler->PSendSysMessage(
+            "ROUTE check: no check has run (playerbots route check links [map [count]] | pairs <file>)");
         return;
     }
     for (std::string const& line : job.summary)
         handler->PSendSysMessage("{}", line);
 }
-}  // namespace
 
-bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
+std::vector<std::string> Words(char const* args)
 {
-    std::lock_guard<std::mutex> guard(jobMutex);
     std::string const text = args ? args : "";
     std::vector<std::string> words;
     for (std::size_t at = 0; at < text.size();)
@@ -435,6 +552,12 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
             words.push_back(text.substr(at, end - at));
         at = end + 1;
     }
+    return words;
+}
+
+// `status` and `stop` serve both commands: one job at a time; the caller holds jobMutex
+bool HandleStatusStop(ChatHandler* handler, std::vector<std::string> const& words)
+{
     if (!words.empty() && words[0] == "status")
     {
         PrintStatus(handler);
@@ -443,13 +566,44 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
     if (!words.empty() && words[0] == "stop")
     {
         job.stop = job.running;
-        handler->SendSysMessage(job.running ? "ROUTE check links: stopping after this slice"
-                                            : "ROUTE check links: no check is running");
+        handler->SendSysMessage(job.running ? "ROUTE check: stopping after this slice"
+                                            : "ROUTE check: no check is running");
         return true;
     }
+    return false;
+}
+
+// Starts the queued job (`job` is filled); the caller holds jobMutex
+bool StartJob(ChatHandler* handler, std::vector<std::uint32_t> const& maps, std::string const& detail)
+{
+    job.running = true;
+    job.maps = maps;
+    job.started = Clock::now();
+    if (!QueueSlice())
+    {
+        job.running = false;
+        handler->SendErrorMessage("ROUTE check {}: the world-thread queue refused the job", Title());
+        return false;
+    }
+    std::string mapList;
+    for (std::uint32_t const mapId : maps)
+        mapList += (mapList.empty() ? "" : " ") + std::to_string(mapId);
+    handler->PSendSysMessage("ROUTE check {}: started on map(s) {}{}; poll playerbots route check links status",
+                             Title(), mapList, detail);
+    return true;
+}
+}  // namespace
+
+bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
+{
+    std::lock_guard<std::mutex> guard(jobMutex);
+    std::vector<std::string> const words = Words(args);
+    if (HandleStatusStop(handler, words))
+        return true;
     if (job.running)
     {
-        handler->PSendSysMessage("ROUTE check links: a check is running (playerbots route check links status|stop)");
+        handler->PSendSysMessage("ROUTE check {}: a check is running (playerbots route check links status|stop)",
+                                 Title());
         return true;
     }
     TravelGraph const& graph = TravelGraph::Instance();
@@ -480,20 +634,65 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
             limit = static_cast<std::uint32_t>(std::strtoul(words[1].c_str(), nullptr, 10));
     }
     job = Job();
-    job.running = true;
-    job.maps = maps;
     job.limit = limit;
-    job.started = Clock::now();
-    if (!QueueSlice())
+    return StartJob(handler, maps, limit ? Acore::StringFormat(", first {} walk links each", limit) : "");
+}
+
+// `playerbots route check pairs <file>`: the file is read here once (small), never in a slice
+bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
+{
+    std::lock_guard<std::mutex> guard(jobMutex);
+    std::vector<std::string> const words = Words(args);
+    if (HandleStatusStop(handler, words))
+        return true;
+    if (job.running)
     {
-        job.running = false;
-        handler->SendErrorMessage("ROUTE check links: the world-thread queue refused the job");
+        handler->PSendSysMessage("ROUTE check {}: a check is running (playerbots route check links status|stop)",
+                                 Title());
+        return true;
+    }
+    std::string const path = args ? args : "";
+    std::ifstream in(std::filesystem::path(
+        path.substr(path.find_first_not_of(' ') == std::string::npos ? 0 : path.find_first_not_of(' '))));
+    if (words.empty() || !in)
+    {
+        handler->SendErrorMessage(
+            "ROUTE check pairs: usage: <file> (lines: map x1 y1 z1 x2 y2 z2 [label]) | status | stop");
         return false;
     }
-    std::string mapList;
-    for (std::uint32_t const mapId : maps)
-        mapList += (mapList.empty() ? "" : " ") + std::to_string(mapId);
-    handler->PSendSysMessage("ROUTE check links: started on map(s) {}{}; poll playerbots route check links status",
-                             mapList, limit ? Acore::StringFormat(", first {} walk links each", limit) : "");
-    return true;
+    std::vector<PairSpec> pairs;
+    std::string line;
+    std::uint32_t skipped = 0;
+    while (std::getline(in, line))
+    {
+        PairSpec pair;
+        if (!ParsePairLine(line, pair))
+        {
+            if (line.find_first_not_of(" \t\r") != std::string::npos && line[line.find_first_not_of(" \t\r")] != '#')
+                ++skipped;
+            continue;
+        }
+        if (!sMapStore.LookupEntry(pair.mapId))
+        {
+            ++skipped;
+            continue;
+        }
+        pairs.push_back(std::move(pair));
+    }
+    if (pairs.empty())
+    {
+        handler->SendErrorMessage("ROUTE check pairs: no usable pair in the file ({} lines skipped)", skipped);
+        return false;
+    }
+    std::stable_sort(pairs.begin(), pairs.end(),
+                     [](PairSpec const& a, PairSpec const& b) { return a.mapId < b.mapId; });
+    std::vector<std::uint32_t> maps;
+    for (PairSpec const& pair : pairs)
+        if (maps.empty() || maps.back() != pair.mapId)
+            maps.push_back(pair.mapId);
+    job = Job();
+    job.pairsMode = true;
+    std::size_t const count = pairs.size();
+    job.pairs = std::move(pairs);
+    return StartJob(handler, maps, Acore::StringFormat(", {} pairs, {} lines skipped", count, skipped));
 }

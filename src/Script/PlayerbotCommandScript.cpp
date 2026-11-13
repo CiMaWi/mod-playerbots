@@ -204,6 +204,7 @@ public:
 
         static ChatCommandTable playerbotsRouteCheckCommandTable = {
             {"links", RouteCheck::HandleLinksCommand, SEC_PLAYER, Console::Yes},
+            {"pairs", RouteCheck::HandlePairsCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsRouteCommandTable = {
