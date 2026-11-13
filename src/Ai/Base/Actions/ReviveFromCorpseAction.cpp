@@ -21,10 +21,16 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "Upkeep.h"
+#include "World.h"
+#include "WorldLog.h"
 #include "WorldTravelRules.h"
 
 namespace
 {
+// The death row's reason when the ghost took the spirit healer because an enemy player stood at its corpse (WP7)
+constexpr char const* CAMPED_REASON = "corpse_camped";
+
 // No camping (WP7): the ghost of a persistent bot keeps away from its corpse while an enemy player stands there and
 // takes the spirit healer after its wait; true when that decided the action (wait or spirit healer)
 bool KeepsAwayFromCorpse(PlayerbotAI* botAI, Player* bot, Corpse const* corpse)
@@ -35,7 +41,7 @@ bool KeepsAwayFromCorpse(PlayerbotAI* botAI, Player* bot, Corpse const* corpse)
     if (ghost.step == WorldPvp::GhostStep::SpiritHealer)
     {
         // Never on to the corpse, also when the spirit healer action did nothing this time
-        botAI->DoSpecificAction("spirit healer", Event(), true);
+        botAI->DoSpecificAction("spirit healer", Event("ghost wait", CAMPED_REASON), true);
         return true;
     }
     if (bot->isMoving())
@@ -386,7 +392,7 @@ Creature* FindSpiritHealer(Player* bot, float range)
 }
 }  // namespace
 
-bool SpiritHealerAction::Execute(Event /*event*/)
+bool SpiritHealerAction::Execute(Event event)
 {
     // GetGrave() picks world graveyards; teleporting there from a BG removes the bot from it.
     if (bot->InBattleground())
@@ -420,8 +426,32 @@ bool SpiritHealerAction::Execute(Event /*event*/)
             LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
                       bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
             PlayerbotChatHandler ch(bot);
-            bot->ResurrectPlayer(0.5f);
-            EventLog::Honesty(bot, "Resurrect", "spirit_healer_free");
+            // Free when granted, else what a player pays (WorldSession::SendSpiritResurrect)
+            bool const granted = Upkeep::Granted(bot, UpkeepKind::Resurrect);
+            bot->ResurrectPlayer(0.5f, !granted);
+            if (granted)
+                Upkeep::Note(bot, UpkeepKind::Resurrect, "spirit_healer_free");
+            else
+            {
+                bot->DurabilityLossAll(sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT) / 100.0f, true);
+                if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+                    EventLog::Emit(bot, Upkeep::EVENT_SICK, "spirit_healer", Upkeep::SPELL_RESURRECTION_SICKNESS,
+                                   sickness->GetDuration());
+            }
+            // The death decision row (upkeep §3.14) of a persistent bot: why the spirit healer, not the corpse run
+            if (RandomPlayerbotMgr::HonestTravel() && !botAI->HasGameClientMaster())
+            {
+                bool const exhausted =
+                    WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
+                char const* reason = event.getParam() == CAMPED_REASON ? CAMPED_REASON
+                                     : exhausted ? "corpse_runs_exhausted"
+                                     : (deadTime >= 10 * MINUTE ? "dead_too_long" : "no_path");
+                WorldLogFormat::Alternatives weighed;
+                if (WorldLog::Active())
+                    weighed = {{"dead_seconds", static_cast<float>(deadTime)}};
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
+                                   static_cast<float>(dCount / WorldTravel::DEATH_COUNT_PER_DEATH), weighed);
+            }
             bot->SpawnCorpseBones();
             context->GetValue<Unit*>("current target")->Set(nullptr);
             bot->SetTarget();

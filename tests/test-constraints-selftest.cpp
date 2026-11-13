@@ -90,15 +90,15 @@ void ApplyNoDamage(ModelUnits& units)
     ++units.applies;
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
-void ReadByDestroy(ModelUnits&) {}  // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByFollower(ModelUnits&) {}   // flyfail, flyabort: the follower reads the bit (FlyLegFails)
+void ReadByDestroy(ModelUnits&) {}    // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByFightBook(ModelUnits&) {}  // fightready, joinroll: the fight book reads the bits (FightReady, JoinRoll)
 
-void NoOp(ModelUnits& /*units*/) {}
-
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
-                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-                                              {FIGHTREADY, NoOp, NoOp},
-                                              {JOINROLL, NoOp, NoOp},
-                                              {NODESTROY, ReadByDestroy, ReadByDestroy}};
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {
+    {NOFIGHT, ApplyNoFight, UndoNoFight},        {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+    {FLYFAIL, ReadByFollower, ReadByFollower},   {FLYABORT, ReadByFollower, ReadByFollower},
+    {NODESTROY, ReadByDestroy, ReadByDestroy},   {FIGHTREADY, ReadByFightBook, ReadByFightBook},
+    {JOINROLL, ReadByFightBook, ReadByFightBook}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -229,12 +229,22 @@ bool RowWorks(Row const& row)
                !StartsFights(NOFIGHT) && StartsFights(HOLD | NODAMAGE);
     if (name == "nodamage")
         return applied.god && !applied.botImmune && !units.god;
+    // Fails only in the air and past the leg's middle; no other row fails a fly leg; nothing on the bot changes
+    bool const untouched = !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0;
+    bool const failsRight = FlyLegFails(row.bit, 50.0f, 100.0f, true) && FlyLegFails(row.bit, 90.0f, 100.0f, true) &&
+                            !FlyLegFails(row.bit, 49.0f, 100.0f, true) && !FlyLegFails(row.bit, 90.0f, 100.0f, false) &&
+                            !FlyLegFails(HOLD | NOFIGHT | NODAMAGE, 90.0f, 100.0f, true) && !EndsStatus(0, row.bit);
+    if (name == "flyfail")
+        return untouched && failsRight && !FlyFailAborts(FLYFAIL) && !FlyFailAborts(STATES & ~FLYABORT);
+    if (name == "flyabort")
+        return untouched && failsRight && FlyFailAborts(FLYABORT) && FlyFailAborts(FLYFAIL | FLYABORT);
     // Read by the fight book only: nothing to apply, and no other row reads it
     if (name == "fightready")
-        return !applied.god && !applied.botImmune && FightReady(FIGHTREADY) && !FightReady(HOLD | NOFIGHT | JOINROLL) &&
-               StartsFights(FIGHTREADY);
+        return untouched && FightReady(FIGHTREADY) && !FightReady(HOLD | (STATES & ~FIGHTREADY)) &&
+               StartsFights(FIGHTREADY) && !FlyLegFails(FIGHTREADY, 90.0f, 100.0f, true);
     if (name == "joinroll")
-        return !applied.god && !applied.botImmune && JoinRoll(JOINROLL) && !JoinRoll(HOLD | NOFIGHT | FIGHTREADY);
+        return untouched && JoinRoll(JOINROLL) && !JoinRoll(HOLD | (STATES & ~JOINROLL)) &&
+               !FlyLegFails(JOINROLL, 90.0f, 100.0f, true);
     // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nodestroy")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -260,8 +270,16 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, fightready, joinroll, nodestroy",
+    Check(Names() ==
+              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, fightready, joinroll",
           "names: every row for refusals");
+    Check(
+        Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
+        "fly rows: state rows (hold never sets them), parsed and formatted");
+    Check(Parse("fightready joinroll").set == (FIGHTREADY | JOINROLL) &&
+              Format(JOINROLL | FIGHTREADY | FLYFAIL) == "flyfail,fightready,joinroll" &&
+              ((FIGHTREADY | JOINROLL) & (CHOICES | FLY_FAILS | NODESTROY)) == 0,
+          "fight rows: state rows with bits of their own, parsed and formatted");
     Check(Parse("nodestroy").set == NODESTROY && Format(NODESTROY | NOFIGHT) == "nofight,nodestroy",
           "nodestroy: a state row, parsed and formatted");
 }
@@ -338,6 +356,11 @@ void TestRelease()
     moving.Post(Release(0));
     moving.Update();
     Check(moving.status == Status::Travel, "release: does not end the current trip");
+    Check(FreesErrands(HOLD, PLANNER | STATUS | HEARTH) && FreesErrands(ERRAND | NOFIGHT, NOFIGHT),
+          "release: clearing the errand row frees the errand checks");
+    Check(!FreesErrands(HOLD, HOLD) && !FreesErrands(0, 0) && !FreesErrands(HOLD & ~ERRAND, 0) &&
+              !FreesErrands(0, ERRAND),
+          "release: the errand checks stay as they are unless the errand row turns off");
 }
 
 void TestStates()

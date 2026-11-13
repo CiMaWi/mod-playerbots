@@ -65,10 +65,15 @@ public:
     bool IsActive() override;
 };
 
+// Only while the bags hold ammo the hunter can equip and none usable is equipped: the equip action then has work. With
+// no usable ammo at all it stays quiet, so the hunter fights in melee and its RPG errand buys ammo (WU7). Checked every
+// 10 s (Trigger reads an interval below 100 as seconds), so its bag search stays off the per-tick path.
 class HunterNoAmmoTrigger : public AmmoCountTrigger
 {
 public:
     HunterNoAmmoTrigger(PlayerbotAI* botAI) : AmmoCountTrigger(botAI, "ammo", 1, 10) {}
+
+    bool IsActive() override;
 };
 
 class HunterHasAmmoTrigger : public AmmoCountTrigger

@@ -18,6 +18,7 @@
 #include "RandomItemMgr.h"
 #include "ServerFacade.h"
 #include "StatsWeightCalculator.h"
+#include "Upkeep.h"
 
 #include <unordered_set>
 
@@ -488,9 +489,9 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
     {
         float ammoCount = BetterStacks(proto, "ammo");
         float requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2; // Hunters get 8 stacks, others 2
-        uint32 currentAmmoId = bot->GetUInt32Value(PLAYER_AMMO_ID);
+        uint32 currentAmmoId = Upkeep::EquippedAmmoId(bot);
 
-        // Check if the bot has an ammo type assigned
+        // Check if the bot has an ammo type assigned (and some of it left)
         if (currentAmmoId == 0)
             return ITEM_USAGE_EQUIP;  // Equip the ammo if no ammo
         // Compare new ammo vs current equipped ammo

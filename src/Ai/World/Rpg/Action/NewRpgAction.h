@@ -150,6 +150,8 @@ private:
     bool TalkFlightMaster(NewRpgInfo::Travel& data);
     bool UseHearth(NewRpgInfo::Travel& data);
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
+    // After a fly leg failed in the air: the flight down or the fall (TravelLegs::StartDescent, StepDescent)
+    bool FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision const& down);
     bool Arrive(NewRpgInfo::Travel& data);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits

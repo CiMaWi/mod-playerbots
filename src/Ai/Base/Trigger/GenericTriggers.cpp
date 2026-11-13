@@ -23,6 +23,7 @@
 #include "TemporarySummon.h"
 #include "ThreatManager.h"
 #include "Timer.h"
+#include "Upkeep.h"
 #include <string>
 
 bool LowManaTrigger::IsActive()
@@ -202,22 +203,31 @@ bool AoeTrigger::IsActive()
     return HasEnoughAoeTargets(botAI, current_target->GetPosition(), range, static_cast<uint32>(amount));
 }
 
+// The mage's conjure triggers. A bot with the food cheat eats and drinks without items and keeps not conjuring; an
+// honest one conjures what it lacks. With no free bag slot the conjured item has no room, so the trigger stays quiet
+// instead of a futile cast every interval.
 bool NoFoodTrigger::IsActive()
 {
-    bool isRandomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
-    if (isRandomBot && botAI->HasCheat(BotCheatMask::food))
+    if (Upkeep::FoodCheat(botAI))
         return false;
 
-    return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured food").empty();
+    return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured food").empty() &&
+           bot->GetFreeInventorySpace() > 0;
 }
 
 bool NoDrinkTrigger::IsActive()
 {
-    bool isRandomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
-    if (isRandomBot && botAI->HasCheat(BotCheatMask::food))
+    if (Upkeep::FoodCheat(botAI))
         return false;
 
-    return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured water").empty();
+    // "conjured water" falls back to any food when the bot holds no drink: only a drink (category 59) counts
+    for (Item* item : AI_VALUE2(std::vector<Item*>, "inventory items", "conjured water"))
+    {
+        if (item->GetTemplate()->Spells[0].SpellCategory == 59)
+            return false;
+    }
+
+    return bot->GetFreeInventorySpace() > 0;
 }
 
 bool TargetInSightTrigger::IsActive() { return AI_VALUE(Unit*, "grind target"); }

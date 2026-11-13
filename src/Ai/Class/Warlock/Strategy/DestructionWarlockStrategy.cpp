@@ -75,11 +75,13 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         )
     );
 
-    // Shadowburn as execute if target is low HP
+    // Shadowburn as execute if target is low HP. Drain Soul before it only while a warlock without handed-out
+    // shards is short of them (CastDrainSoulAction::isUseful): Shadowburn spends the shard Drain Soul would earn
     triggers.push_back(
         new TriggerNode(
             "target critical health",
             {
+                NextAction("drain soul", 18.5f),
                 NextAction("shadowburn", 18.0f)
             }
         )

@@ -173,6 +173,53 @@ void CheckMeasure()
     Check(own.LootSlotsPerHour == 16.25f && own.TripMinutes == 10.0f, "own r once measured, t from the band");
 }
 
+// The travel shares (upkeep WU14): leg time per hour by the shares a leg counts towards
+void CheckTravel()
+{
+    using WorldTravel::LegKind;
+    using WorldTravel::LegShares;
+    constexpr uint32_t MAP_KALIMDOR = 1;
+    constexpr uint32_t MAP_OUTLAND = 530;
+    constexpr uint32_t MINUTE = 60000;
+    constexpr uint8_t WALK = 1u << WorldTravel::TRAVEL_WALK;
+    constexpr uint8_t FLIGHT = 1u << WorldTravel::TRAVEL_FLIGHT;
+    constexpr uint8_t NORTH = 1u << WorldTravel::TRAVEL_NORTHREND;
+    Check(LegShares(LegKind::Walk, MAP_KALIMDOR, false, false) == WALK, "a walk leg counts as walking");
+    Check(LegShares(LegKind::Other, MAP_KALIMDOR, true, true) == 0, "a transport or taxi leg counts nothing");
+    Check(LegShares(LegKind::Walk, MAP_OUTLAND, true, false) == (WALK | FLIGHT),
+          "a walk leg in an open flying area of Outland also counts where a flyer would fly");
+    Check(LegShares(LegKind::Fly, MAP_OUTLAND, true, false) == FLIGHT, "a fly leg counts as flight, not walking");
+    Check(LegShares(LegKind::Walk, WorldTravel::TRAVEL_MAP_NORTHREND, true, false) == (WALK | NORTH),
+          "a walk leg in Northrend's open sky without cold weather flying: walking and the northrend share");
+    Check(LegShares(LegKind::Walk, WorldTravel::TRAVEL_MAP_NORTHREND, true, true) == (WALK | FLIGHT | NORTH),
+          "with cold weather flying it counts as flight too");
+    Check(LegShares(LegKind::Fly, WorldTravel::TRAVEL_MAP_NORTHREND, true, true) == (FLIGHT | NORTH),
+          "a fly leg in Northrend: flight and the northrend share");
+
+    SlotMeasure measure;
+    uint32_t const start = 5000;
+    WorldTravel::NoteTravelLeg(measure, WALK, 10 * MINUTE, start + 10 * MINUTE);
+    WorldTravel::NoteTravelLeg(measure, 0, 5 * MINUTE, start + 20 * MINUTE);
+    WorldTravel::NoteTravelLeg(measure, WALK | FLIGHT, 20 * MINUTE, start + 50 * MINUTE);
+    Check(!measure.HasTravel && measure.TravelStartMs == start,
+          "no share inside the first window, which starts where the first leg started");
+    WorldTravel::NoteTravelLeg(measure, WALK, 0, start + 60 * MINUTE);
+    Check(measure.HasTravel && measure.TravelMinutesPerHour[WorldTravel::TRAVEL_WALK] == 30.0f &&
+              measure.TravelMinutesPerHour[WorldTravel::TRAVEL_FLIGHT] == 20.0f &&
+              measure.TravelMinutesPerHour[WorldTravel::TRAVEL_NORTHREND] == 0.0f,
+          "the first closed hour: 30 min/h walked (10 + 20), 20 of them where a flyer flies; the transport adds none");
+    WorldTravel::NoteTravelLeg(measure, WALK, 20 * MINUTE, start + 180 * MINUTE);
+    Check(measure.TravelMinutesPerHour[WorldTravel::TRAVEL_WALK] == 20.0f &&
+              measure.TravelMinutesPerHour[WorldTravel::TRAVEL_FLIGHT] == 10.0f,
+          "a two-hour window of 20 minutes (10 min/h) averages with the old share");
+    SlotMeasure wrapped;
+    uint32_t const late = UINT32_MAX - 1000;
+    WorldTravel::NoteTravelLeg(wrapped, WALK, 0, late);
+    WorldTravel::NoteTravelLeg(wrapped, WALK, 90 * MINUTE, late + 60 * MINUTE);
+    Check(wrapped.HasTravel && wrapped.TravelMinutesPerHour[WorldTravel::TRAVEL_WALK] == 60.0f,
+          "the clock may wrap; a leg longer than the window counts at most the whole hour");
+}
+
 SlotRates HighLootRates()
 {
     SlotMeasure measure;
@@ -349,6 +396,7 @@ int main()
     CheckItemWorth();
     CheckDestroy();
     CheckMeasure();
+    CheckTravel();
     CheckSlotWorth();
     CheckBagPurchase();
     CheckErrands();

@@ -6,10 +6,13 @@
 
 #include "ReleaseSpiritAction.h"
 #include "CensusMgr.h"
+#include "CheckMountStateAction.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "GameGraveyard.h"
+#include "GridTerrainData.h"
 #include "Log.h"
+#include "Map.h"
 #include "NearestNpcsValue.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
@@ -17,6 +20,46 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "TravelLegRules.h"
+#include "Upkeep.h"
+#include "WorldLog.h"
+#include "WorldTravelRules.h"
+
+namespace
+{
+// The death decision row of a persistent bot (upkeep §3.14): the corpse run while runs are left. Once they are used up
+// SpiritHealerAction writes the row as the spirit healer revives the bot
+void LogCorpseRun(PlayerbotAI* botAI, Player* bot, uint32 deathCount)
+{
+    if (bot->InBattleground() || !RandomPlayerbotMgr::HonestTravel() || botAI->HasGameClientMaster() ||
+        WorldTravel::CorpseRunsExhausted(deathCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures))
+        return;
+
+    uint32 const deaths = deathCount / WorldTravel::DEATH_COUNT_PER_DEATH;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "corpse_run", deaths <= 1 ? "first_run" : "retry",
+                       static_cast<float>(deaths));
+}
+
+// A bot killed in the air lies on the floor below before the release makes its corpse (TravelLegs::BodyZ), as a
+// player's body falls: the corpse, the ghost's way back and the revival at the corpse keep that spot
+void LayBodyOnFloor(Player* bot)
+{
+    if (bot->GetTransport())
+        return;
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    float const z = bot->GetPositionZ();
+    auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
+    float const bodyZ = TravelLegs::BodyZ(z, groundZ, waterZ);
+    if (bodyZ == z)
+        return;
+    LOG_INFO("playerbots",
+             "Bot {} <{}> killed {:.0f} yd above the floor in area {}: the body lies at ({:.0f}, {:.0f}, "
+             "{:.0f})",
+             bot->GetGUID().ToString(), bot->GetName(), z - bodyZ, bot->GetAreaId(), x, y, bodyZ);
+    bot->UpdatePosition(x, y, bodyZ, bot->GetOrientation(), true);
+}
+}  // namespace
 
 // ReleaseSpiritAction implementation
 bool ReleaseSpiritAction::Execute(Event event)
@@ -49,10 +92,15 @@ bool ReleaseSpiritAction::Execute(Event event)
     botAI->TellMasterNoFacing(message);
 
     IncrementDeathCount();
-    bot->DurabilityRepairAll(false, 1.0f, false);
-    EventLog::Honesty(bot, "Repair", "free_repair_release");
+    LogCorpseRun(botAI, bot, AI_VALUE(uint32, "death count"));
+    if (Upkeep::Granted(bot, UpkeepKind::Repair))
+    {
+        bot->DurabilityRepairAll(false, 1.0f, false);
+        Upkeep::Note(bot, UpkeepKind::Repair, "free_repair_release");
+    }
     LogRelease("released");
 
+    LayBodyOnFloor(bot);
     WorldPacket releasePacket(CMSG_REPOP_REQUEST);
     releasePacket << uint8(0);
     bot->GetSession()->HandleRepopRequestOpcode(releasePacket);
@@ -91,10 +139,15 @@ void ReleaseSpiritAction::LogRelease(std::string const& releaseMsg) const
 bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 {
     IncrementDeathCount();
-    bot->DurabilityRepairAll(false, 1.0f, false);
-    EventLog::Honesty(bot, "Repair", "free_repair_release");
+    LogCorpseRun(botAI, bot, AI_VALUE(uint32, "death count"));
+    if (Upkeep::Granted(bot, UpkeepKind::Repair))
+    {
+        bot->DurabilityRepairAll(false, 1.0f, false);
+        Upkeep::Note(bot, UpkeepKind::Repair, "free_repair_release");
+    }
     LogRelease("auto released");
 
+    LayBodyOnFloor(bot);
     WorldPacket packet(CMSG_REPOP_REQUEST);
     packet << uint8(0);
     bot->GetSession()->HandleRepopRequestOpcode(packet);

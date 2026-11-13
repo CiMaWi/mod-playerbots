@@ -4997,6 +4997,7 @@ void NoteFakeKickCast(Player* caster, Spell* spell)
 
 bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 {
+    lastPrepareResult = -1;
     if (!spellId)
         return false;
 
@@ -5265,6 +5266,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     if (result != SPELL_CAST_OK)
     {
+        lastPrepareResult = static_cast<int32>(result);
         // if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
         //     LOG_DEBUG("playerbots", "Spell cast failed. - target name: {}, spellid: {}, bot name: {}, result: {}",
         //         target->GetName(), spellId, bot->GetName(), result);
