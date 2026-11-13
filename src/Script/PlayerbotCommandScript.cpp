@@ -17,6 +17,7 @@
 #include "BankMailCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotProfileMgr.h"
+#include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
@@ -274,6 +275,7 @@ public:
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", BotTraitMgr::HandleTraitsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"record", BotRecordMgr::HandleRecordCommand, SEC_GAMEMASTER, Console::Yes},
             {"acquaintances", AcquaintanceMgr::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
             {"account", playerbotsAccountCommandTable},
