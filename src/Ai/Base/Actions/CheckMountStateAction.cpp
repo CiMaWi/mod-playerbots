@@ -14,6 +14,7 @@
 #include "Event.h"
 #include "GridTerrainData.h"
 #include "LootInteraction.h"
+#include "NewRpgAction.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
@@ -203,6 +204,10 @@ bool CheckMountStateAction::isUseful()
     float posZ = bot->GetPositionZ();
     float groundLevel = bot->GetMapWaterOrGroundLevel(bot->GetPositionX(), bot->GetPositionY(), posZ);
     if (!bot->IsMounted() && !bot->HasWaterWalkAura() && posZ < groundLevel)
+        return false;
+
+    // Not useful when a transport leg keeps the bot on foot (waiting at the dock, boarding, aboard)
+    if (!bot->IsMounted() && TravelKeepsOnFoot(botAI))
         return false;
 
     // Not useful when bot does not have mount strat and is not currently mounted

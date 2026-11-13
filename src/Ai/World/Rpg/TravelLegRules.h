@@ -347,6 +347,7 @@ struct Observation
     std::uint64_t aboardGuid{0};
     bool membershipAvailable{true};
     bool boardingReady{true};
+    bool boardMotion{false};  // the bot's own boarding move onto the transport it is aboard has not reported yet
     std::optional<TravelLifecycle::Outcome> passengerOutcome;
     std::uint32_t quayLeg{NO_NODE};
     std::optional<std::uint32_t> activeLegMs;
@@ -755,6 +756,21 @@ inline bool DockedAt(Trip const& trip, Point const& dock)
     return flat <= SHIP_DOCK_YARDS && std::fabs(sight.at.z - dock.z) <= STATIC_DOCK_Z_YARDS;
 }
 
+// The leg's vessel took the bot aboard at the leg's start before it boarded (WT54): its deck docked under the bot
+// waiting beside the stop and the passenger rule attached it. That is the boarding; no crossing was needed. Only on
+// the current transport leg before its ride, the leg's entry, and within a docked hull's reach of the start node
+inline bool TakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.passengerGuid || !aboard)
+        return false;
+    Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != leg.from.mapId)
+        return false;
+    float const dx = bot.x - leg.from.x;
+    float const dy = bot.y - leg.from.y;
+    return std::sqrt(dx * dx + dy * dy) <= (trip.sight.isStatic ? STATIC_DOCK_YARDS : SHIP_DOCK_YARDS);
+}
+
 inline std::uint32_t TransportPeriodMs(Trip const& trip, Leg const& leg)
 {
     return trip.periodMs ? trip.periodMs : FallbackPeriodMs(leg);
@@ -835,6 +851,13 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
     {
         trip.passengerGuid = seen.aboardGuid;
         note(TransportEvent::Boarded, seconds(trip.waitSinceMs));
+        trip.boardedMs = nowMs;
+        enter(Boarding::Ride);
+    }
+    else if (seen.aboardGuid && !seen.boardMotion && TakenAboard(trip, seen.bot, seen.aboard))
+    {
+        trip.passengerGuid = seen.aboardGuid;
+        note(TransportEvent::Boarded, seconds(trip.waitSinceMs ? trip.waitSinceMs : trip.legStartMs));
         trip.boardedMs = nowMs;
         enter(Boarding::Ride);
     }

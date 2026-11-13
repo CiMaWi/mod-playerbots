@@ -183,6 +183,10 @@ struct TravelOrder
     uint32 aboard{0};  // `route aboard`: the transport entry to stand the bot on; 0 = none
 };
 
+// A trip at a transport leg past its approach (waiting at the dock, boarding, aboard, walking off) keeps the bot on
+// foot: the boarding and exit moves dismount it, and the mount check would mount it again before the next one (WT54)
+bool TravelKeepsOnFoot(PlayerbotAI* botAI);
+
 namespace TravelOrders
 {
 void Post(PlayerbotAI* botAI, TravelOrder order);

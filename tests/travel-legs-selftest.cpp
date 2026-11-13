@@ -780,8 +780,10 @@ void CheckTransport()
     Check(board.act == Act::Board && Near(board.target, SHIP_AT_A) && trip.boarding == Boarding::Board,
           "transport: boards the docked ship (target: its position)");
     Check(StepLeg(trip, On(DECK, 6000, 0)).act == Act::Board, "transport: between scans the last scan holds");
-    Check(StepLeg(trip, On(DECK, 6500, SHIP)).act == Act::Wait && trip.boarding == Boarding::Board,
-          "transport: pointer alone cannot acknowledge a boarded leg");
+    Observation pending = On(DECK, 6500, SHIP);
+    pending.boardMotion = true;
+    Check(StepLeg(trip, pending).act == Act::Wait && trip.boarding == Boarding::Board,
+          "transport: pointer alone cannot acknowledge a boarded leg while its own boarding move is pending");
     Check(StepLeg(trip, Boarded(DECK, 7000, SHIP, Sight(SHIP_AT_A, false))).act == Act::Wait &&
               trip.boarding == Boarding::Ride && Noted(trip, 1, TransportEvent::Boarded, SHIP, 4),
           "transport: aboard: rides (boarded after 4 s at the dock)");
@@ -1024,6 +1026,40 @@ bool Close(TravelLifecycle::Point const& a, TravelLifecycle::Point const& b)
 
 // WT43b: a rider without an exit at the end walks its boarding crossing back where it boarded, and the replan leaves
 // the ride out
+// WT54: the leg's vessel docks under the bot waiting beside its stop and the passenger rule attaches it: boarded
+void CheckTakenAboard()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::StepLeg;
+    using TravelLegs::TransportEvent;
+
+    Trip waiting = SoughtTrip({ShipLeg()});
+    StepLeg(waiting, On(PIER_A, 3000, 0, Gone()));
+    Check(waiting.boarding == Boarding::Wait, "taken aboard: the bot waits at the dock node");
+    Check(TravelLegs::TakenAboard(waiting, DECK, SHIP), "taken aboard: the leg's vessel at its start");
+    Check(!TravelLegs::TakenAboard(waiting, DECK, LIFT), "taken aboard: never by another entry");
+    Check(!TravelLegs::TakenAboard(waiting, SEA_0, SHIP), "taken aboard: never far from the leg's start");
+    Check(StepLeg(waiting, On(DECK, 9000, SHIP, Sight(SHIP_AT_A, true))).act == Act::Wait &&
+              waiting.boarding == Boarding::Ride && waiting.passengerGuid == SHIP &&
+              Noted(waiting, 1, TransportEvent::Boarded, SHIP, 6),
+          "taken aboard while waiting: boarded (6 s waited), rides");
+    Check(!TravelLegs::TakenAboard(waiting, DECK, SHIP), "taken aboard: once boarded, the ride owns it");
+
+    Trip approach = SoughtTrip({ShipLeg()});
+    Observation pending = On(DECK, 4000, SHIP, Sight(SHIP_AT_A, true));
+    pending.boardMotion = true;
+    StepLeg(approach, pending);
+    Check(approach.boarding == Boarding::Approach && !approach.passengerGuid,
+          "taken aboard: not while the bot's own boarding move is pending");
+    StepLeg(approach, On(DECK, 5000, SHIP, Sight(SHIP_AT_A, true)));
+    Check(approach.boarding == Boarding::Ride && Noted(approach, 0, TransportEvent::Boarded, SHIP, 4),
+          "taken aboard before the wait began: boarded (4 s since the leg's start), rides");
+
+    Trip astray = SoughtTrip({ShipLeg()});
+    Check(StepLeg(astray, On(SEA_0, 4000, SHIP, Sight(SEA_0, true))).act == Act::Wait && !astray.passengerGuid,
+          "taken aboard far from the start: not a boarding");
+}
+
 void CheckBack()
 {
     using TravelLegs::Boarding;
@@ -1290,6 +1326,7 @@ int main()
     CheckDeathsAndRecord();
     CheckPlaces();
     CheckTransport();
+    CheckTakenAboard();
     CheckBack();
     CheckOffFirst();
     CheckBoarding();

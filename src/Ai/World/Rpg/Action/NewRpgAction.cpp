@@ -1750,7 +1750,7 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
 // Where the bot goes after a transport's quay, for the exit search: the next walk leg's waypoints after its start
 // (its graph nodes, then its end), or the start of the next leg of another kind; the trip's destination when the
 // next leg lies on another map or there is none
-std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, uint32 mapId, Point const& dest)
+std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 mapId, Point const& dest)
 {
     std::vector<Point> route;
     if (trip.legIdx + 1 < trip.legs.size())
@@ -1768,6 +1768,13 @@ std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, uint32 mapId, Point
     }
     if (route.empty())
         route.push_back(dest);
+    // A point at the leg's end node is the vessel's own stop (in the berth's water, or in the air at a zeppelin's
+    // origin), with no ground to walk on: the ground beside it instead, as for the approach walk (SeekQuay)
+    TravelRoute::Point const& end = trip.legs[trip.legIdx].to;
+    for (Point& point : route)
+        if (end.mapId == mapId &&
+            TravelRoute::Distance(end, {mapId, point.X, point.Y, point.Z}) <= TravelLegs::SAME_POINT_YARDS)
+            point = GroundBesideStop(map, point).value_or(point);
     return route;
 }
 
@@ -2015,11 +2022,10 @@ TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data)
     {
         if (step == TravelLegs::OffStep::Disembark)
         {
-            // Onward toward the trip's goal on this map; a goal elsewhere leads on from the ground beside the vessel
-            Point onward{data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()};
-            if (data.dest.GetMapId() != bot->GetMapId())
-                onward = GroundBesideStop(bot->GetMap(), TransportGeometry::PositionOf(*ridden))
-                             .value_or(TransportGeometry::PositionOf(*bot));
+            // Off where it stands, onto the ground beside the vessel: the trip's goal may be another vessel stop
+            // (no ground) or on another map, and the pending operation plans from the shore
+            Point const onward = GroundBesideStop(bot->GetMap(), TransportGeometry::PositionOf(*ridden))
+                                     .value_or(TransportGeometry::PositionOf(*bot));
             WalkOff(*bot, data, *ridden, std::vector<Point>{onward});
         }
         else if (step == TravelLegs::OffStep::Wait && wasStill)
@@ -2113,6 +2119,18 @@ bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data)
 }
 }  // namespace
 
+bool TravelKeepsOnFoot(PlayerbotAI* botAI)
+{
+    auto const* const data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (!data)
+        return false;
+    TravelLegs::Trip const& trip = data->trip;
+    if (trip.offFirst.sinceMs)
+        return true;
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport &&
+           trip.boarding != TravelLegs::Boarding::Approach;
+}
+
 bool NewRpgTravelAction::ConsumeScheduledWork(PlayerbotAI* botAI)
 {
     using TravelProgress::Overdue;
@@ -2180,7 +2198,10 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     // A route may have been superseded aboard. Only the route with this ride or its own boarding result may use it.
     bool const ownsBoard = data->passengerMotion && data->passengerMotion->Kind == MotionKind::Board &&
                            data->passengerMotion->Transport == membership.Guid;
-    if (ridden && (!AtTransportLeg(trip) || (!trip.passengerGuid && !ownsBoard)))
+    // Taken aboard by the leg's vessel at the leg's start (its deck docked under the waiting bot) is the boarding
+    TravelRoute::Point const standing{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    bool const takenAboard = ridden && TravelLegs::TakenAboard(trip, standing, membership.Entry);
+    if (ridden && !takenAboard && (!AtTransportLeg(trip) || (!trip.passengerGuid && !ownsBoard)))
     {
         OffFirstBegins(bot, *data);
         return true;
@@ -2233,6 +2254,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     seen.aboard = membership.Entry;
     seen.aboardGuid = membership.Guid;
     seen.membershipAvailable = membership.Available;
+    seen.boardMotion = ownsBoard;
     seen.passengerOutcome = TakePassengerOutcome(*bot, *data);
     seen.quayLeg = quayLeg;
     SeekQuay(bot, *data, seen);
@@ -2352,7 +2374,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
                     WalkOff(*bot, *data, *ridden,
                             std::vector<Point>{Point{next.target.x, next.target.y, next.target.z}});
                 else
-                    WalkOff(*bot, *data, *ridden, OnwardRoute(trip, bot->GetMapId(), dest));
+                    WalkOff(*bot, *data, *ridden, OnwardRoute(trip, bot->GetMap(), bot->GetMapId(), dest));
             }
             return true;
         case TravelLegs::Act::Fail:
