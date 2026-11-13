@@ -36,6 +36,7 @@
 #include "RouteService.h"
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
@@ -599,6 +600,9 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, NewRpgInfo::PlannerState& stat
 {
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
+    // A test keeping the hearth off: no hearth or inn goal either (GoalModel AddHearth)
+    if (!TestConstraints::HearthAllowed(botAI->rpgInfo.constraints))
+        snapshot.hasHearthstone = false;
     GoalApply::Active const& current = goals.slot.Query();
     snapshot.currentGoal = {static_cast<uint32>(current.kind), current.target, current.startedMs};
     std::vector<uint32> log;
@@ -727,6 +731,9 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
             state.goals->situationChanged = true;
     }
     if (!(state.stateKey & STATE_SCOPE_BIT))
+        return;
+    // A test's hold on the planner (TestConstraints): no jobs, no goals taken
+    if (!TestConstraints::GateOf(botAI->rpgInfo.constraints).planner)
         return;
 
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;

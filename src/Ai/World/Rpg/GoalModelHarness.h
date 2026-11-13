@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -53,6 +54,19 @@ constexpr std::uint32_t BARE_TAKE = 612;     // a take with no objective but the
 constexpr std::uint32_t OPEN_TAKE = 613;     // a take with an objective, carried for later
 constexpr std::uint32_t CARRIED_ENDER = 90002;
 constexpr std::uint32_t OUTSIDE_TARGET = 700;
+constexpr std::uint32_t KALIMDOR = 1;
+constexpr std::uint32_t WETLANDS = 11;
+constexpr std::uint32_t REDRIDGE = 44;
+constexpr std::uint32_t LOCH_MODAN = 38;
+constexpr std::uint32_t SILVERPINE = 130;
+constexpr std::uint32_t DARKSHORE = 148;
+constexpr std::uint32_t ASHENVALE = 331;
+constexpr std::uint32_t STONETALON = 406;
+constexpr std::uint32_t HORDE_RACES = 690;          // orc, undead, tauren, troll, blood elf
+constexpr std::uint32_t NEXT_ZONE_QUESTS = 800;     // quest ids of the next-zone world
+constexpr std::uint32_t NEXT_ZONE_ENTRIES = 91000;  // its creature entries
+constexpr float BOT_X = -9465.0f;                   // Bot()'s spot
+constexpr float BOT_Y = 40.0f;
 
 struct Check
 {
@@ -541,41 +555,180 @@ inline void NoFlapping(std::vector<Check>& checks)
         joined.verdict == ReplanVerdict::Switch && joined.reason == "opportunity_group", joined.reason);
 }
 
+// The next-zone world (WT20-b): quest camps east of the bot's Goldshire spot, each with two quests and a services hub
+// around it. Every zone lies on the bot's map except Darkshore, at the bot's own coordinates on Kalimdor
+struct ZoneCamp
+{
+    char const* name;
+    std::uint32_t map;
+    float east;  // yards east of the bot
+    std::uint32_t zone;
+    std::int32_t questLevel;
+    std::uint32_t minLevel;
+    std::uint32_t raceMask;
+};
+
+constexpr ZoneCamp NEXT_ZONE_CAMPS[] = {
+    {"home", EASTERN, 0.0f, ELWYNN, 10, 1, 0},       {"X", EASTERN, 600.0f, WETLANDS, 17, 10, 0},
+    {"W1", EASTERN, 1000.0f, WESTFALL, 12, 8, 0},    {"E", EASTERN, 1200.0f, SILVERPINE, 14, 10, 0},
+    {"R", EASTERN, 1500.0f, REDRIDGE, 16, 12, 0},    {"L", EASTERN, 2000.0f, LOCH_MODAN, 14, 10, 0},
+    {"W2", EASTERN, 2200.0f, WESTFALL, 12, 8, 0},    {"S1", EASTERN, 2500.0f, STONETALON, 16, 12, HORDE_RACES},
+    {"S2", EASTERN, 3000.0f, STONETALON, 16, 12, 0}, {"A", EASTERN, 5000.0f, ASHENVALE, 17, 12, 0},
+    {"K", KALIMDOR, 0.0f, DARKSHORE, 14, 10, 0}};
+constexpr std::size_t HOME_CAMP = 0;
+constexpr std::size_t W1_CAMP = 2;
+constexpr std::size_t R_CAMP = 4;
+constexpr std::size_t L_CAMP = 5;
+constexpr std::size_t W2_CAMP = 6;
+constexpr std::size_t S2_CAMP = 8;
+
+struct NextZoneWorld
+{
+    QuestIndex quests;
+    PlannerIndexes indexes;
+    std::vector<std::uint32_t> hubs;  // per NEXT_ZONE_CAMPS entry
+};
+
+inline NextZoneWorld NextZones()
+{
+    GatherInput services;
+    services.zones = {
+        {ELWYNN, 1, 10, ZoneSide::Alliance, EASTERN},       {WETLANDS, 20, 30, ZoneSide::Alliance, EASTERN},
+        {WESTFALL, 10, 20, ZoneSide::Alliance, EASTERN},    {SILVERPINE, 10, 20, ZoneSide::Horde, EASTERN},
+        {REDRIDGE, 15, 25, ZoneSide::Alliance, EASTERN},    {LOCH_MODAN, 10, 20, ZoneSide::Alliance, EASTERN},
+        {STONETALON, 15, 27, ZoneSide::Contested, EASTERN}, {ASHENVALE, 15, 30, ZoneSide::Contested, EASTERN},
+        {DARKSHORE, 10, 20, ZoneSide::Alliance, KALIMDOR}};
+    QuestGather gather;
+    std::uint32_t entry = NEXT_ZONE_ENTRIES;
+    std::uint32_t questId = NEXT_ZONE_QUESTS;
+    for (ZoneCamp const& camp : NEXT_ZONE_CAMPS)
+    {
+        float const x = BOT_X + camp.east;
+        for (float const dx : {-10.0f, 10.0f})
+            for (float const dy : {-10.0f, 10.0f})
+                services.spawns.push_back(
+                    {camp.map, x + dx, BOT_Y + dy, 0.0f, ++entry, NpcFlag::VENDOR, 0, camp.zone, camp.zone, 0, false});
+        std::uint32_t const giver = ++entry;
+        gather.places.push_back({camp.map, x, BOT_Y + 5.0f, 0.0f, giver, false, camp.zone, camp.zone, NO_CAMP});
+        for (float const north : {0.0f, 60.0f})
+        {
+            QuestRecord quest;
+            quest.id = ++questId;
+            quest.level = camp.questLevel;
+            quest.minLevel = camp.minLevel;
+            quest.raceMask = camp.raceMask;
+            quest.xpBase = 400;
+            std::uint32_t const target = ++entry;
+            quest.objectives.push_back({ObjectiveKind::Kill, target, 6u, 0, {}});
+            for (float const offset : {-8.0f, 0.0f, 8.0f})
+                gather.targets.push_back({target, false, camp.map, x + 60.0f + offset, BOT_Y + north + offset, 0.0f});
+            gather.relations.push_back({quest.id, giver, false, false});
+            gather.relations.push_back({quest.id, giver, false, true});
+            gather.quests.push_back(std::move(quest));
+        }
+    }
+    NextZoneWorld world{QuestIndex::Build(std::move(gather)), PlannerIndexes::Build(std::move(services)), {}};
+    for (ZoneCamp const& camp : NEXT_ZONE_CAMPS)
+    {
+        std::vector<Nearby> const hub = world.indexes.NearestHubs(camp.map, BOT_X + camp.east, BOT_Y, 0.0f, 1);
+        world.hubs.push_back(hub.empty() ? NO_HUB : hub.front().index);
+    }
+    return world;
+}
+
+// The hubs the live fill offers, by camp name
+inline std::vector<std::uint32_t> Filled(Snapshot const& bot, CircuitContext const& context, Situation& situation)
+{
+    FillFromIndexes(bot, context, Prepare(bot, situation), situation);
+    std::vector<std::uint32_t> hubs;
+    for (HubOption const& hub : situation.hubs)
+        hubs.push_back(hub.hub);
+    return hubs;
+}
+
+inline std::string CampNames(NextZoneWorld const& world, std::vector<std::uint32_t> const& hubs)
+{
+    std::string text;
+    for (std::uint32_t const hub : hubs)
+    {
+        auto const at = std::find(world.hubs.begin(), world.hubs.end(), hub);
+        text += text.empty() ? "" : ",";
+        text += at == world.hubs.end() ? std::to_string(hub) : NEXT_ZONE_CAMPS[at - world.hubs.begin()].name;
+    }
+    return text.empty() ? "none" : text;
+}
+
+// The live fill (FillFromIndexes): the zone's bracket from the indexes, and for a bot past it the next zones' hubs
 inline void Outlevelled(std::vector<Check>& checks)
 {
-    for (std::uint8_t const level : {20, 8})
+    NextZoneWorld const world = NextZones();
+    CircuitContext context;
+    context.quests = &world.quests;
+    context.indexes = &world.indexes;
+    Situation live;
+    live.here.hub = NO_HUB;  // as SituationOf leaves it
+    auto const moves = [](Ranked const& ranked)
     {
-        Snapshot bot = Bot(level, FLUSH);
-        Situation situation = Base();
-        CircuitPlan circuit;
-        if (level > situation.here.zoneHigh)
-        {
-            circuit.ok = true;
-            circuit.start = bot.position;
-            circuit.moveOn.reason = MoveReason::Bracket;
-            circuit.moveOn.hub = WESTFALL;
-            circuit.moveOn.zone = WESTFALL;
-            circuit.moveOn.seconds = 480.0f;
-        }
-        else
-            circuit = Circuit(bot, situation, 1500.0f, 200.0f, 20.0f);
-        situation.circuit = &circuit;
-        situation.hubs = {Hub(WESTFALL, WESTFALL, level > 10 ? 300.0f : 60.0f, 8.0f)};
-        situation.spots = {Spot(31, 30.0f, 10.0f, 7, 9)};
-        Ranked const ranked = Rank(bot, situation);
-        if (level > situation.here.zoneHigh)
-        {
-            Option const* grey = Find(ranked, GoalKind::Money, 31);
-            if (!grey)
-                grey = Find(ranked, GoalKind::Grind, 31);
-            Add(checks, "outlevelled: a bot that outlevelled its zone moves on",
-                TopIs(ranked, GoalKind::MoveZone, WESTFALL, "outlevelled") && (!grey || grey->xp == 0.0f),
-                Summary(ranked));
-        }
-        else
-            Add(checks, "outlevelled: a bot within its bracket keeps questing here",
-                TopIs(ranked, GoalKind::Quest, HOME_HUB, "circuit"), Summary(ranked));
-    }
+        return std::count_if(ranked.options.begin(), ranked.options.end(),
+                             [](Option const& option) { return option.kind == GoalKind::MoveZone; });
+    };
+
+    // Grey quests at home leave a dry circuit (the circuit skips grey quests), so the estimate of an unknown hub wins
+    Snapshot const outlevelled = Bot(16, FLUSH);
+    GoalPlan const moved = PlanGoals(outlevelled, context, live);
+    Add(checks, "outlevelled: grey quests at home leave a dry circuit and the nearest next zone's hub wins",
+        moved.circuit.take.empty() && moved.hub == world.hubs[HOME_CAMP] &&
+            TopIs(moved.ranked, GoalKind::MoveZone, world.hubs[W1_CAMP], "outlevelled") && moves(moved.ranked) >= 2,
+        Summary(moved.ranked));
+
+    Snapshot const inBracket = Bot(10, FLUSH);
+    Situation kept = live;
+    std::vector<std::uint32_t> const none = Filled(inBracket, context, kept);
+    GoalPlan const stays = PlanGoals(inBracket, context, live);
+    Add(checks, "outlevelled: a bot within its bracket keeps questing here and gets no next zones",
+        none.empty() && kept.here.zoneLow == 1 && kept.here.zoneHigh == 10 && kept.here.home &&
+            TopIs(stays.ranked, GoalKind::Quest, world.hubs[HOME_CAMP], "circuit") && !moves(stays.ranked),
+        "hubs " + CampNames(world, none) + "; " + Summary(stays.ranked));
+
+    // Wetlands is above the bracket, Silverpine the enemy's, Stonetalon's first camp gives Horde quests only,
+    // Westfall's second camp is a zone already listed, Ashenvale past the cap, Darkshore on another map
+    Situation listed = live;
+    std::vector<std::uint32_t> const hubs = Filled(outlevelled, context, listed);
+    std::vector<std::uint32_t> const expected = {world.hubs[W1_CAMP], world.hubs[R_CAMP], world.hubs[L_CAMP],
+                                                 world.hubs[S2_CAMP]};
+    Add(checks, "next zones: the nearest hubs of zones in the bracket, one per zone, none of the enemy's, at most four",
+        hubs == expected && listed.hubs.front().zone == WESTFALL && listed.hubs.front().home &&
+            !listed.hubs.back().home && listed.hubs.front().travelMinutes > 0.0f &&
+            listed.hubs.front().travelMinutes < listed.hubs.back().travelMinutes,
+        "hubs " + CampNames(world, hubs));
+
+    Situation beyond = live;
+    std::vector<std::uint32_t> const past = Filled(Bot(40, FLUSH), context, beyond);
+    GoalPlan const nowhere = PlanGoals(Bot(40, FLUSH), context, live);
+    CircuitContext bare = context;
+    bare.indexes = nullptr;
+    Situation unset = live;
+    std::vector<std::uint32_t> const unknown = Filled(outlevelled, bare, unset);
+    Add(checks, "next zones: no zone in the bracket or no indexes yet gives no hub options",
+        past.empty() && beyond.here.zoneHigh == 10 && nowhere.ranked.ok && !moves(nowhere.ranked) && unknown.empty() &&
+            !unset.here.zoneHigh,
+        "level 40 " + CampNames(world, past) + "; no indexes " + CampNames(world, unknown));
+
+    // A travel cost that finds no way to Westfall's first hub: its second hub stands for the zone
+    auto const& blocked = world.indexes.hubs[world.hubs[W1_CAMP]];
+    CircuitContext costed = context;
+    costed.travel = [&blocked](Place const& from, Place const& to)
+    {
+        return std::hypot(to.x - blocked.x, to.y - blocked.y) < 1.0f ? -1.0f
+                                                                     : std::hypot(to.x - from.x, to.y - from.y) / 7.0f;
+    };
+    Situation reached = live;
+    std::vector<std::uint32_t> const reachable = Filled(outlevelled, costed, reached);
+    Add(checks, "next zones: a hub without a way there is skipped",
+        reachable.size() == NEXT_ZONE_HUBS &&
+            std::find(reachable.begin(), reachable.end(), world.hubs[W1_CAMP]) == reachable.end() &&
+            std::find(reachable.begin(), reachable.end(), world.hubs[W2_CAMP]) != reachable.end(),
+        "hubs " + CampNames(world, reachable));
 }
 
 inline void Busy(std::vector<Check>& checks)

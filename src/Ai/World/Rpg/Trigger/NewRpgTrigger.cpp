@@ -10,6 +10,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "UpkeepNeedRules.h"
 #include "UpkeepRules.h"
@@ -19,6 +20,8 @@ bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
 {
+    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
+        return false;
     Player* bot = botAI->GetBot();
     if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
         return false;

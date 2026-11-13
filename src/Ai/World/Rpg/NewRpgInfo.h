@@ -154,6 +154,7 @@ struct NewRpgInfo
 
     uint32 startT{0};     // start timestamp of the current status
     uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
+    uint16 constraints{0};  // a test's constraints (TestConstraints bits, `playerbots route constraint`); not saved
     std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
     uint32 routeRequests{0};  // the bot's route request ids (TravelRoute::Snapshot::requestId), across trips
     // The planner's view of the bot (Planner::PlannerHook, PlannerService.cpp); a reset only costs a new snapshot
