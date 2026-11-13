@@ -31,6 +31,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace RouteCheck
@@ -427,6 +428,201 @@ inline std::string PathValue(std::vector<Vec> const& points)
         text += (text.empty() ? "" : ";") + std::string(one);
     }
     return text;
+}
+
+// `route check pairs walk <file>` (NV13b): the walk a bot makes over a pair, modelled on the engine's answers as the
+// bot's movement asks for them. A route follower orders its waypoint by NewRpgBaseAction::MoveFarTo: within
+// WALK_ORDER_RANGE (3D) the waypoint itself; else the actual end of a path towards it, when the path type stays
+// within WALK_TYPE_OK and that end gains WALK_GAIN on the waypoint; else a stepping stone in the forward cone (two
+// samples). The order is a MotionMaster::MovePoint with a generated path and no forced destination:
+// PointMovementGenerator and MoveSplineInit::MoveTo follow the path unless the answer is NOPATH (then a straight
+// line), and a shortcut answer (NORMAL|NOT_USING_PATH for a mesh hole, as the owner is no creature; SHORT) is a
+// straight line too. The trip arrives within WALK_GOAL (3D, TravelLegRules GOAL_YARDS) and gives up after
+// WALK_STUCK_MOVES moves in a row that gain less than WALK_GAIN on the end.
+constexpr std::uint32_t PATH_FARFROMPOLY = 0xc0;  // FARFROMPOLY_START | FARFROMPOLY_END
+constexpr std::uint32_t WALK_TYPE_OK = PATH_NORMAL | PATH_INCOMPLETE | PATH_FARFROMPOLY;
+constexpr float WALK_ORDER_RANGE = 70.0f;  // yd: NewRpgBaseAction pathFinderDis
+constexpr float WALK_GOAL = 10.0f;
+constexpr float WALK_GAIN = 5.0f;
+constexpr std::uint32_t WALK_STUCK_MOVES = 5;
+constexpr std::uint32_t WALK_MAX_MOVES = 200;
+constexpr float WALK_CONE = 3.14159265f;  // the cone's width: (rand - 0.5) x this
+
+// What a walk's moves were, as bits
+constexpr std::uint32_t WALK_MESH = 0x01;        // along a navmesh path
+constexpr std::uint32_t WALK_INCOMPLETE = 0x02;  // that path, or the one that chose the order, was INCOMPLETE
+constexpr std::uint32_t WALK_FARPOLY = 0x04;     // ... started or ended far from a polygon
+constexpr std::uint32_t WALK_STRAIGHT = 0x08;    // a straight line (NOPATH, NOT_USING_PATH, SHORTCUT or SHORT)
+constexpr std::uint32_t WALK_CONE_STONE = 0x10;  // the order was a stepping stone of the cone
+
+// One engine answer as the walk reads it
+struct WalkAnswer
+{
+    bool result{false};  // CalculatePath's return
+    std::uint32_t type{0};
+    Vec last;            // the path's last point
+    Vec actualEnd;       // GetActualEndPosition
+    float length{0.0f};  // along the path's points
+};
+
+enum class WalkEnd : std::uint8_t
+{
+    Arrived,
+    Stuck,
+    Capped  // WALK_MAX_MOVES moves
+};
+
+struct WalkResult
+{
+    WalkEnd end{WalkEnd::Capped};
+    std::uint32_t moves{0};
+    std::uint32_t kinds{0};  // WALK_* bits of every move
+    float meshYd{0.0f};      // walked along navmesh paths
+    float straightYd{0.0f};  // walked in straight lines
+    Vec reached;             // where the walk ended
+    bool straightSeen{false};
+    Vec firstStraight;  // where the first straight move began
+};
+
+inline float Dist3D(Vec const& a, Vec const& b)
+{
+    return std::sqrt(Dist2D(a, b) * Dist2D(a, b) + (a.z - b.z) * (a.z - b.z));
+}
+
+inline std::uint32_t WalkTypeKinds(std::uint32_t type)
+{
+    return ((type & PATH_INCOMPLETE) ? WALK_INCOMPLETE : 0u) | ((type & PATH_FARFROMPOLY) ? WALK_FARPOLY : 0u);
+}
+
+// One MovePoint order to target: where the bot ends, how it went and how far (PointMovementGenerator's rule)
+template <class PathFn>
+std::uint32_t WalkMove(Vec const& at, Vec const& target, PathFn& path, Vec& land, float& length)
+{
+    WalkAnswer const answer = path(at, target);
+    if (!answer.result || (answer.type & (PATH_NOPATH | PATH_NOT_USING_PATH | PATH_SHORTCUT | PATH_SHORT)))
+    {
+        land = target;
+        length = Dist3D(at, target);
+        return WALK_STRAIGHT;
+    }
+    land = answer.last;
+    length = answer.length;
+    return WALK_MESH | WalkTypeKinds(answer.type);
+}
+
+// The walk from start to end; path(at, target) returns one engine answer, rand() a number in [0, 1)
+template <class PathFn, class RandFn>
+WalkResult Walk(Vec const& start, Vec const& end, PathFn&& path, RandFn&& rand)
+{
+    WalkResult result;
+    Vec at = start;
+    float nearest = Dist3D(at, end);
+    std::uint32_t idle = 0;
+    while (result.moves < WALK_MAX_MOVES)
+    {
+        float const distance = Dist3D(at, end);
+        if (distance <= WALK_GOAL)
+        {
+            result.end = WalkEnd::Arrived;
+            break;
+        }
+        Vec target = end;
+        std::uint32_t kinds = 0;
+        bool order = true;
+        if (distance >= WALK_ORDER_RANGE)
+        {
+            WalkAnswer const toward = path(at, end);
+            if (toward.result && !(toward.type & ~WALK_TYPE_OK) && Dist3D(end, toward.actualEnd) + WALK_GAIN < distance)
+            {
+                target = toward.actualEnd;
+                kinds = WalkTypeKinds(toward.type);
+            }
+            else
+            {
+                order = false;
+                float minDelta = WALK_CONE;
+                float const base = std::atan2(end.y - at.y, end.x - at.x);
+                for (int attempt = 0; attempt < 2; ++attempt)
+                {
+                    float const delta = (rand() - 0.5f) * WALK_CONE;
+                    float const reach = (0.5f + rand() * 0.5f) * WALK_ORDER_RANGE;
+                    Vec const sample{at.x + std::cos(base + delta) * reach, at.y + std::sin(base + delta) * reach,
+                                     at.z + 0.5f};
+                    WalkAnswer const stone = path(at, sample);
+                    if (stone.result && !(stone.type & ~WALK_TYPE_OK) && std::fabs(delta) <= minDelta)
+                    {
+                        order = true;
+                        target = stone.actualEnd;
+                        minDelta = std::fabs(delta);
+                        kinds = WALK_CONE_STONE | WalkTypeKinds(stone.type);
+                    }
+                }
+            }
+        }
+        ++result.moves;
+        if (order)
+        {
+            Vec land;
+            float length = 0.0f;
+            kinds |= WalkMove(at, target, path, land, length);
+            if (kinds & WALK_STRAIGHT)
+            {
+                if (!result.straightSeen)
+                    result.firstStraight = at;
+                result.straightSeen = true;
+                result.straightYd += length;
+            }
+            else
+                result.meshYd += length;
+            result.kinds |= kinds;
+            at = land;
+        }
+        float const now = Dist3D(at, end);
+        if (now + WALK_GAIN < nearest)
+        {
+            nearest = now;
+            idle = 0;
+        }
+        else if (++idle >= WALK_STUCK_MOVES)
+        {
+            result.end = WalkEnd::Stuck;
+            break;
+        }
+    }
+    result.reached = at;
+    return result;
+}
+
+inline std::string WalkKindsWord(std::uint32_t kinds)
+{
+    static constexpr std::array<std::pair<std::uint32_t, char const*>, 5> NAMES{{{WALK_MESH, "mesh"},
+                                                                                 {WALK_INCOMPLETE, "incomplete"},
+                                                                                 {WALK_FARPOLY, "farpoly"},
+                                                                                 {WALK_STRAIGHT, "straight"},
+                                                                                 {WALK_CONE_STONE, "cone"}}};
+    std::string text;
+    for (auto const& [bit, name] : NAMES)
+        if (kinds & bit)
+            text += (text.empty() ? "" : "+") + std::string(name);
+    return text.empty() ? "-" : text;
+}
+
+// A `pair.walk` row's value: `<arrived|stuck|capped> moves=N kinds=a+b mesh=Y straight=Y at=x,y,z [from=x,y,z]`
+inline std::string WalkValue(WalkResult const& walk)
+{
+    char const* word = walk.end == WalkEnd::Arrived ? "arrived" : walk.end == WalkEnd::Stuck ? "stuck" : "capped";
+    char text[256];
+    std::snprintf(text, sizeof(text), "%s moves=%u kinds=%s mesh=%.0f straight=%.0f at=%.0f,%.0f,%.0f", word,
+                  walk.moves, WalkKindsWord(walk.kinds).c_str(), walk.meshYd, walk.straightYd, walk.reached.x,
+                  walk.reached.y, walk.reached.z);
+    std::string value = text;
+    if (walk.straightSeen)
+    {
+        std::snprintf(text, sizeof(text), " from=%.0f,%.0f,%.0f", walk.firstStraight.x, walk.firstStraight.y,
+                      walk.firstStraight.z);
+        value += text;
+    }
+    return value;
 }
 
 // The report: count lines per map and in total, the status, then the rows; sorted (by metric, then key)

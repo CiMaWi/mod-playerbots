@@ -11,8 +11,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -35,7 +37,8 @@
 
 static_assert(RouteCheck::PATH_NORMAL == PATHFIND_NORMAL && RouteCheck::PATH_SHORTCUT == PATHFIND_SHORTCUT &&
               RouteCheck::PATH_INCOMPLETE == PATHFIND_INCOMPLETE && RouteCheck::PATH_NOPATH == PATHFIND_NOPATH &&
-              RouteCheck::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH && RouteCheck::PATH_SHORT == PATHFIND_SHORT);
+              RouteCheck::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH && RouteCheck::PATH_SHORT == PATHFIND_SHORT &&
+              RouteCheck::PATH_FARFROMPOLY == PATHFIND_FARFROMPOLY);
 
 namespace
 {
@@ -89,6 +92,7 @@ struct Job
     bool pairsMode{false};        // `route check pairs`: the listed point pairs instead of the graph's links
     std::vector<PairSpec> pairs;  // sorted by map
     std::size_t nextPair{0};
+    bool walkMode{false};  // `route check pairs walk`: the bot's walk (WalkResult) beside the class, no corners
     std::unordered_set<std::uint32_t> offNodes;  // nodes of the map over OFFMESH_LIMIT yd from the mesh (or none)
     NodeLinkCounts nodeLinks;                    // per node key: its non-ok links by class
     Clock::time_point started;
@@ -100,7 +104,7 @@ struct Job
 std::mutex jobMutex;  // the console and the slices both run on the world thread; in-game chat may not
 Job job;
 
-char const* Title() { return job.pairsMode ? "pairs" : "links"; }
+char const* Title() { return job.pairsMode ? (job.walkMode ? "walks" : "pairs") : "links"; }
 
 Vec At(TravelGraphNode const& node) { return {node.x, node.y, node.z}; }
 
@@ -372,7 +376,38 @@ void CheckLink(TravelGraph const& graph, std::uint32_t index)
     CountNodeLink(job.nodeLinks, both.verdict.verdict, fromKey, toKey);
 }
 
+// The walk a bot makes from a to b, as its movement asks the engine (RouteCheckRules.h Walk); the cone's samples come
+// from a generator seeded by the pair, so a run repeats
+WalkResult WalkPair(Probe const* probe, PairSpec const& pair)
+{
+    std::mt19937 generator(static_cast<std::uint32_t>(std::hash<std::string>{}(pair.label)));
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    return Walk(
+        pair.from, pair.to,
+        [probe](Vec const& at, Vec const& target)
+        {
+            // As a bot's MovePoint asks: smooth path, no forced destination; the bots' polygons
+            PathGenerator path(probe);
+            path.SetExcludeFlags(BOT_EXCLUDE);
+            path.SetNavTerrainCost(NAV_WATER, BOT_WATER_COST);
+            WalkAnswer answer;
+            answer.result = path.CalculatePath(at.x, at.y, at.z, target.x, target.y, target.z, false);
+            answer.type = path.GetPathType();
+            answer.last = at;
+            Movement::PointsArray const& points = path.GetPath();
+            for (std::size_t i = 1; i < points.size(); ++i)
+                answer.length += (points[i] - points[i - 1]).length();
+            if (!points.empty())
+                answer.last = {points.back().x, points.back().y, points.back().z};
+            G3D::Vector3 const& actual = path.GetActualEndPosition();
+            answer.actualEnd = {actual.x, actual.y, actual.z};
+            return answer;
+        },
+        [&generator, &unit]() { return unit(generator); });
+}
+
 // A pair of points: a link without a stored link; the corners of each probe's answers are written beside the class
+// (walk mode: the bot's walk instead of the corners)
 void CheckPair(PairSpec const& pair)
 {
     Map* map = job.probe->GetMap();
@@ -381,7 +416,7 @@ void CheckPair(PairSpec const& pair)
     dtNavMesh const* navMesh = map->GetMapCollisionData().GetMMapData().GetNavMesh();
     bool const notile = !TileLoaded(navMesh, pair.from) || !TileLoaded(navMesh, pair.to);
     Both const both = ProbeBoth(job.probe.get(), pair.from, pair.to, IsOffMesh(MeshDistance(map, pair.from).distance),
-                                IsOffMesh(MeshDistance(map, pair.to).distance), true);
+                                IsOffMesh(MeshDistance(map, pair.to).distance), !job.walkMode);
     ++job.current.links;
     ++job.current.byClass[static_cast<int>(both.verdict.verdict)];
     if (both.verdict.verdict == Verdict::Ok && both.fwd.hops > 1)
@@ -390,6 +425,11 @@ void CheckPair(PairSpec const& pair)
                                     NodeKey(pair.mapId, pair.to.x, pair.to.y, pair.to.z), pair.label);
     job.rows.push_back(
         Line("pair.class", key, LinkValue(both.verdict, both.fwd, both.revAsked ? &both.rev : nullptr, notile)));
+    if (job.walkMode)
+    {
+        job.rows.push_back(Line("pair.walk", key, WalkValue(WalkPair(job.probe.get(), pair))));
+        return;
+    }
     job.rows.push_back(Line("pair.path.fwd", key, PathValue(both.fwdPath)));
     if (both.revAsked)
         job.rows.push_back(Line("pair.path.rev", key, PathValue(both.revPath)));
@@ -651,13 +691,16 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
                                  Title());
         return true;
     }
-    std::string const path = args ? args : "";
-    std::ifstream in(std::filesystem::path(
-        path.substr(path.find_first_not_of(' ') == std::string::npos ? 0 : path.find_first_not_of(' '))));
-    if (words.empty() || !in)
+    std::string path = args ? args : "";
+    path = path.substr(path.find_first_not_of(' ') == std::string::npos ? 0 : path.find_first_not_of(' '));
+    bool const walk = !words.empty() && words[0] == "walk";
+    if (walk)
+        path = path.substr(std::min(path.size(), path.find_first_not_of(' ', 4)));
+    std::ifstream in{std::filesystem::path(path)};
+    if (words.size() < (walk ? 2u : 1u) || !in)
     {
         handler->SendErrorMessage(
-            "ROUTE check pairs: usage: <file> (lines: map x1 y1 z1 x2 y2 z2 [label]) | status | stop");
+            "ROUTE check pairs: usage: [walk] <file> (lines: map x1 y1 z1 x2 y2 z2 [label]) | status | stop");
         return false;
     }
     std::vector<PairSpec> pairs;
@@ -692,6 +735,7 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
             maps.push_back(pair.mapId);
     job = Job();
     job.pairsMode = true;
+    job.walkMode = walk;
     std::size_t const count = pairs.size();
     job.pairs = std::move(pairs);
     return StartJob(handler, maps, Acore::StringFormat(", {} pairs, {} lines skipped", count, skipped));

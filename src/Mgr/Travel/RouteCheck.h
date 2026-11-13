@@ -17,7 +17,11 @@
 // end-off-mesh, dead, capped).
 // `playerbots route check pairs <file>` (GM; lines `map x1 y1 z1 x2 y2 z2 [label]`): the same two probes for listed
 // pairs of points, the corners of each answer beside the class, to <LogsDir>/route-check-pairs-<time>.tsv.
-// `status` and `stop` serve both; one job at a time.
+// `playerbots route check pairs walk <file>` (NV13b): for each pair the forward class and the walk a bot makes, as its
+// movement asks the engine (MoveFarTo, MovePoint; RouteCheckRules.h Walk), to <LogsDir>/route-check-walks-<time>.tsv
+// as `pair.walk` rows: arrived or stuck, the kinds of moves (mesh, incomplete, farpoly, straight, cone) and the yards
+// walked along the mesh and in straight lines.
+// `status` and `stop` serve all three; one job at a time.
 
 class ChatHandler;
 

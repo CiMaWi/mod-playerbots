@@ -7,6 +7,7 @@
 // Standalone check of `playerbots route check links|pairs` (src/Mgr/Travel/RouteCheckRules.h): the classing of every
 // path type, the chaining of long links, the verdict of a link from both directions, the report keys and lines.
 // Usage: route-check-selftest
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -235,6 +236,70 @@ int main()
               std::string::npos,
           "summary line");
     std::cout << "  " << summary << "\n";
+
+    // The bot's walk (route check pairs walk): engine answers from small made-up worlds
+    auto const answer = [](std::uint32_t type, Vec const& at, Vec const& last)
+    {
+        WalkAnswer one;
+        one.result = true;
+        one.type = type;
+        one.last = last;
+        one.actualEnd = last;
+        one.length = Dist3D(at, last);
+        return one;
+    };
+    auto const half = []() { return 0.5f; };
+    // The mesh everywhere: one order along the path to the end
+    WalkResult walk =
+        Walk(start, end, [&](Vec const& at, Vec const& target) { return answer(PATH_NORMAL, at, target); }, half);
+    check(walk.end == WalkEnd::Arrived && walk.moves == 1 && walk.kinds == WALK_MESH && walk.straightYd == 0.0f,
+          "walk on the mesh: arrived in 1 move, mesh only");
+    // A hole from x 60 on: the path towards the end is INCOMPLETE to x 60, then within 70 yd the order is the end
+    // itself and the engine answers the hole with a shortcut: a straight line to the end
+    Vec const holeEdge{60.0f, 0.0f, 10.0f};
+    auto const hole = [&](Vec const& at, Vec const& target)
+    {
+        if (target.x <= 60.0f)
+            return answer(PATH_NORMAL, at, target);
+        if (at.x < 60.0f)
+            return answer(PATH_INCOMPLETE, at, holeEdge);
+        WalkAnswer shortcut = answer(PATH_NORMAL | PATH_NOT_USING_PATH, at, target);
+        return shortcut;
+    };
+    walk = Walk(start, end, hole, half);
+    check(walk.end == WalkEnd::Arrived && walk.moves == 2 &&
+              walk.kinds == (WALK_MESH | WALK_INCOMPLETE | WALK_STRAIGHT) &&
+              std::fabs(walk.straightYd - 40.0f) < 0.01f && std::fabs(walk.meshYd - 60.0f) < 0.01f &&
+              walk.straightSeen && walk.firstStraight.x == 60.0f,
+          "walk over a hole: arrives by a straight line from the hole's edge");
+    check(WalkValue(walk) ==
+              "arrived moves=2 kinds=mesh+incomplete+straight mesh=60 straight=40 at=100,0,10 from=60,0,10",
+          "walk row value");
+    // NOPATH also moves the bot in a straight line (MoveSplineInit::MoveTo without a path)
+    walk = Walk(
+        start, Vec{50.0f, 0.0f, 10.0f}, [&](Vec const& at, Vec const&) { return answer(PATH_NOPATH, at, at); }, half);
+    check(walk.end == WalkEnd::Arrived && walk.kinds == WALK_STRAIGHT, "NOPATH within 70 yd: a straight line");
+    // An INCOMPLETE mesh that ends at x 40 short of the end at x 60: the bot stops there and gives up
+    auto const shortMesh = [&](Vec const& at, Vec const& target)
+    { return target.x <= 40.0f ? answer(PATH_NORMAL, at, target) : answer(PATH_INCOMPLETE, at, Vec{40, 0, 10}); };
+    walk = Walk(start, Vec{60.0f, 0.0f, 10.0f}, shortMesh, half);
+    check(walk.end == WalkEnd::Stuck && walk.moves == 1 + WALK_STUCK_MOVES && walk.reached.x == 40.0f &&
+              walk.kinds == (WALK_MESH | WALK_INCOMPLETE),
+          "walk stopped by an incomplete mesh: stuck where the mesh ends");
+    // A long link whose end lies in a hole: the path towards it is a shortcut (not accepted), so the bot takes
+    // stepping stones of the cone (rand 0.5: straight ahead, 52.5 yd) until within 70 yd, then a straight line
+    Vec const far{200.0f, 0.0f, 10.0f};
+    auto const farHole = [&](Vec const& at, Vec const& target)
+    {
+        if (target.x >= 200.0f)
+            return answer(PATH_NORMAL | PATH_NOT_USING_PATH, at, target);
+        return answer(PATH_NORMAL, at, target);
+    };
+    walk = Walk(start, far, farHole, half);
+    check(
+        walk.end == WalkEnd::Arrived && walk.moves == 4 && walk.kinds == (WALK_MESH | WALK_CONE_STONE | WALK_STRAIGHT),
+        "long link into a hole: cone stones, then a straight line");
+    std::cout << "  " << WalkValue(walk) << "\n";
 
     std::cout << "route-check-selftest: " << (checks - failures) << "/" << checks << " passed\n";
     return failures ? 1 : 0;
