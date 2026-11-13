@@ -45,9 +45,10 @@ enum class State : std::uint8_t
     Ordinary    // not a class quest for this bot: the trainer teaches its spell
 };
 
-// [E] The unlock bonus in XP: this share of the XP the bot needs for its next level, added to the quest's value. Large
-// (a class quest beats most camps and pays a detour of a few quests' worth) but finite, so a far trip still loses to
-// levelling where the bot is (WU.16). A tuning value read from the nights: time from unlock to done (NOTES watchlist)
+// [E] The unlock bonus in XP: this share of the XP the bot needs for its next level, added to the quest's value. The
+// goal model floors a class option at the best other rate plus (reward + bonus) / minutes (AddClassQuests), so the
+// quest wins the next decision at any distance (J2); the bonus's size decides whether a circuit that takes it beats a
+// lone trip to it. A tuning value read from the nights: time from unlock to done (NOTES watchlist)
 constexpr float UNLOCK_BONUS_LEVEL_SHARE = 0.25f;
 constexpr char const* REASON_WORD =
     "class_quest";                          // the goal and circuit rows' reason (UpkeepRules REASON_CLASS_QUEST)
@@ -376,13 +377,14 @@ Judgement Judge(Entry const& classQuest, BotFacts const& bot, TrainerTeaches con
 
 inline float BonusXp(BotFacts const& bot) { return UNLOCK_BONUS_LEVEL_SHARE * static_cast<float>(bot.levelXp); }
 
-// Every quest that gets the bonus for this bot (quest id, bonus XP), sorted by quest; empty for an ungoverned bot
+// Every quest that gets the bonus for this bot (quest id, bonus XP), sorted by quest; empty for an ungoverned bot and
+// at the top level (no XP to the next level: no bonus, so no second planning pass in PlanGoals either)
 template <typename TrainerTeaches, typename HasRoute>
 std::vector<std::pair<std::uint32_t, float>> Bonuses(BotFacts const& bot, TrainerTeaches const& trainerTeaches,
                                                      HasRoute const& hasRoute)
 {
     std::vector<std::pair<std::uint32_t, float>> out;
-    if (!bot.governed)
+    if (!bot.governed || BonusXp(bot) <= 0.0f)
         return out;
     for (Entry const& entry : TABLE)
     {

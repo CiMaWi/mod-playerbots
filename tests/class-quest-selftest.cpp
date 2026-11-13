@@ -148,6 +148,9 @@ void Scenarios()
     ungoverned.governed = false;
     Check(JudgeId(1498, ungoverned).verdict == Verdict::NotGoverned && Bonuses(ungoverned, noTrainer, anyRoute).empty(),
           "an ungoverned bot gets no bonus");
+    BotFacts topLevel = warrior;
+    topLevel.levelXp = 0;
+    Check(Bonuses(topLevel, noTrainer, anyRoute).empty(), "at the top level (no XP to the next level) no bonus entry");
 
     auto const bonuses = Bonuses(warrior, noTrainer, anyRoute);
     Check(bonuses.size() == 1 && bonuses[0].first == 1498 && bonuses[0].second == BonusXp(warrior),
