@@ -1435,6 +1435,30 @@ std::optional<Point> GroundBesideStop(Map* map, Point at)
     return at;
 }
 
+// The ground nearest the rider that lies off the docked hull, within a step of the deck's floor (WT54-3). A route that
+// ends at the vessel's stop gives no ground off the hull: beside a stop lies the pier under the docked ship, or the
+// ground below a zeppelin's tower. The bot then goes on from this ground; the exit's checks stay as they are.
+constexpr float OFF_HULL_REACH_YARDS = 40.0f;
+constexpr float OFF_HULL_RING_YARDS = 2.0f;
+constexpr uint32 OFF_HULL_BEARINGS = 16;
+
+std::optional<Point> GroundOffHull(Player const& bot, Transport const& ridden)
+{
+    TransportGeometry::GroundGeometry const geometry{bot, &ridden};
+    Point const from = TransportGeometry::PositionOf(bot);
+    constexpr float FULL_TURN = 6.28318531f;
+    for (float radius = OFF_HULL_RING_YARDS; radius <= OFF_HULL_REACH_YARDS; radius += OFF_HULL_RING_YARDS)
+        for (uint32 bearing = 0; bearing < OFF_HULL_BEARINGS; ++bearing)
+        {
+            float const angle = FULL_TURN * static_cast<float>(bearing) / static_cast<float>(OFF_HULL_BEARINGS);
+            Point const seed{from.X + radius * std::cos(angle), from.Y + radius * std::sin(angle), from.Z};
+            auto const ground = geometry.SnapGround(seed, OFF_HULL_RING_YARDS / 2.0f, TravelLifecycle::EXIT_STEP_YARDS);
+            if (ground && geometry.OffHull(*ground) && geometry.OnGround(*ground))
+                return ground;
+        }
+    return std::nullopt;
+}
+
 bool PrepareTransportMove(Player& bot)
 {
     if (!ReadyForTransportMove(bot))
@@ -1705,7 +1729,11 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
         return;
     bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
     TravelLifecycle::CrossingTally tally;
-    auto const exit = TransportGeometry::FindExit(bot, ridden, route, trace ? &tally : nullptr);
+    std::vector<Point> onward = route;
+    if (!TravelLifecycle::OnwardPoint(TransportGeometry::GroundGeometry{bot, &ridden}, route))
+        if (auto const ground = GroundOffHull(bot, ridden))
+            onward.push_back(*ground);
+    auto const exit = TransportGeometry::FindExit(bot, ridden, onward, trace ? &tally : nullptr);
     if (exit)
     {
         if (trace)
