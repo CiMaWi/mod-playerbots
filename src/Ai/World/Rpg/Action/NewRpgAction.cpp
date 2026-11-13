@@ -1426,9 +1426,13 @@ bool ReadyForTransportMove(Player const& bot) { return !TransportMoveHold(bot); 
 constexpr float STOP_GROUND_ACROSS_YARDS = 25.0f;
 constexpr float STOP_GROUND_VERTICAL_YARDS = 22.0f;
 
-// The nearest ground beside a vessel's stop or position; nothing when the tile is not loaded or none lies within reach
-std::optional<Point> GroundBesideStop(Map* map, Point at)
+// The nearest ground beside a vessel's stop or position, looked for at the level of the bot that walks there (WT54-5):
+// a rider's deck, or the point an approach walk comes from. Looked for at the stop's own height it is the sea floor
+// under a berth, or a zeppelin tower's roof or upper ramp instead of the platform 18 yd below the hull's origin.
+// Nothing when the tile is not loaded or none lies within reach
+std::optional<Point> GroundBesideStop(Map* map, Point const& stop, float level)
 {
+    Point at{stop.X, stop.Y, level};
     if (NavMeshSnap::Nearest(map, at.X, at.Y, at.Z, STOP_GROUND_ACROSS_YARDS, STOP_GROUND_VERTICAL_YARDS, NAV_GROUND) !=
         NavMeshSnap::Result::Found)
         return std::nullopt;
@@ -1660,7 +1664,8 @@ void LogCrossingSearch(Player const& bot, NewRpgInfo::Travel const& data, Transp
         LOG_DEBUG("playerbots",
                   "[TravelLifecycle] exit_probe bot={} trip={} bearing={} at={:.0f} check={}{} "
                   "from={:.2f},{:.2f},{:.2f} to={:.2f},{:.2f},{:.2f}",
-                  bot.GetGUID().GetCounter(), data.tripId, side * 15, furthest->Distance,
+                  bot.GetGUID().GetCounter(), data.tripId,
+                  side * static_cast<int>(360 / TravelLifecycle::CROSSING_BEARINGS), furthest->Distance,
                   CROSSING_NAMES[static_cast<std::size_t>(furthest->Check)], block, furthest->From.X, furthest->From.Y,
                   furthest->From.Z, furthest->To.X, furthest->To.Y, furthest->To.Z);
     }
@@ -1794,8 +1799,9 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
 
 // Where the bot goes after a transport's quay, for the exit search: the next walk leg's waypoints after its start
 // (its graph nodes, then its end), or the start of the next leg of another kind; the trip's destination when the
-// next leg lies on another map or there is none
-std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 mapId, Point const& dest)
+// next leg lies on another map or there is none. deckZ: the rider's floor, the level the ground beside the stop is
+// looked for at
+std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 mapId, Point const& dest, float deckZ)
 {
     std::vector<Point> route;
     if (trip.legIdx + 1 < trip.legs.size())
@@ -1819,7 +1825,7 @@ std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 ma
     for (Point& point : route)
         if (end.mapId == mapId &&
             TravelRoute::Distance(end, {mapId, point.X, point.Y, point.Z}) <= TravelLegs::SAME_POINT_YARDS)
-            point = GroundBesideStop(map, point).value_or(point);
+            point = GroundBesideStop(map, point, deckZ).value_or(point);
     return route;
 }
 
@@ -1880,12 +1886,14 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
 
     data.transportScanMs = seen.nowMs;
     // The approach walk ends on the ground beside the stop, not at the stop (in the berth's water, or in the air at a
-    // zeppelin's origin), where the arriving hull would take the bot aboard without a boarding; once docked, the quay
+    // zeppelin's origin), where the arriving hull would take the bot aboard without a boarding; once docked, the quay.
+    // Looked for at the stop's own height: at the level of the walk's point before the stop (WT54-5 run 7) it was the
+    // ground under the zeppelin tower (that point is a graph node at the tower's foot)
     if (approachWalk && !trip.waypoints.empty())
     {
         TravelRoute::Point& end = trip.waypoints.back().at;
         if (end.mapId == leg.from.mapId && TravelRoute::Distance(end, leg.from) < 0.1f)
-            if (auto const ground = GroundBesideStop(bot->GetMap(), Point{end.x, end.y, end.z}))
+            if (auto const ground = GroundBesideStop(bot->GetMap(), Point{end.x, end.y, end.z}, end.z))
                 end = {end.mapId, ground->X, ground->Y, ground->Z};
     }
     if (approachWalk && (trip.waypoints.empty() || trip.next + 1 < trip.waypoints.size()))
@@ -2069,8 +2077,9 @@ TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data)
         {
             // Off where it stands, onto the ground beside the vessel: the trip's goal may be another vessel stop
             // (no ground) or on another map, and the pending operation plans from the shore
-            Point const onward = GroundBesideStop(bot->GetMap(), TransportGeometry::PositionOf(*ridden))
-                                     .value_or(TransportGeometry::PositionOf(*bot));
+            Point const onward =
+                GroundBesideStop(bot->GetMap(), TransportGeometry::PositionOf(*ridden), bot->GetPositionZ())
+                    .value_or(TransportGeometry::PositionOf(*bot));
             WalkOff(*bot, data, *ridden, std::vector<Point>{onward});
         }
         else if (step == TravelLegs::OffStep::Wait && wasStill)
@@ -2419,7 +2428,8 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
                     WalkOff(*bot, *data, *ridden,
                             std::vector<Point>{Point{next.target.x, next.target.y, next.target.z}});
                 else
-                    WalkOff(*bot, *data, *ridden, OnwardRoute(trip, bot->GetMap(), bot->GetMapId(), dest));
+                    WalkOff(*bot, *data, *ridden,
+                            OnwardRoute(trip, bot->GetMap(), bot->GetMapId(), dest, bot->GetPositionZ()));
             }
             return true;
         case TravelLegs::Act::Fail:

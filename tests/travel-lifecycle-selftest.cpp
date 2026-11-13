@@ -377,11 +377,12 @@ void CheckQuay()
         mutable int UpperCorridorChecks = 0;
         bool LowerAvailable = true;
 
-        std::optional<Point> ShoreAt(Point const& seed) const
+        std::optional<Point> ShoreAt(Point const& seed, float vertical) const
         {
             if (std::hypot(seed.X - Upper.X, seed.Y - Upper.Y) <= 0.35f)
                 return Upper;
-            if (LowerAvailable && DistanceSquared(seed, Lower) <= 1.0f)
+            if (LowerAvailable && std::hypot(seed.X - Lower.X, seed.Y - Lower.Y) <= 0.5f &&
+                std::fabs(seed.Z - Lower.Z) <= vertical)
                 return Lower;
             return std::nullopt;
         }
@@ -416,8 +417,61 @@ void CheckQuay()
     Check(geometry.Toward && geometry.Toward->X == centre.X && geometry.Toward->Y == centre.Y,
           "the boarding deck point aims at the hull's centre, not the origin on the gondola's rail");
     Check(geometry.Inset == BOARD_DECK_INSET_YARDS, "the boarding deck point lies the boarding inset inside the edge");
+    // WT54-5: a bot that waits on the tower's roof (Tirisfal, 13 yd above the platform) finds the platform's quay
+    Point const roof{2061.93f, 252.10f, 113.09f};
+    auto const below = FindQuay(geometry, roof, origin, centre);
+    Check(below && below->Z == geometry.Lower.Z, "a bot above the platform finds the quay on the platform below it");
+    Point const ground{2061.93f, 252.10f, 99.767f - QUAY_LEVEL_YARDS - 1.0f};
+    Check(!FindQuay(geometry, ground, origin, centre), "a floor beyond the quay's level window is no quay");
     geometry.LowerAvailable = false;
     Check(!FindQuay(geometry, approach, origin, centre), "the disconnected upper candidate alone cannot choose a quay");
+}
+
+// WT54-5: a zeppelin's gondola opens to its tower by a gangway a few yards wide. Here the ground lies beyond 8 yd of
+// the origin all round and the crossing is clear only within 2 degrees of a bearing 35 degrees off the route's: the
+// exit and the quay searches sample bearings 5 degrees apart, so both find it (15 degrees apart: 30 and 45, neither)
+void CheckGangway()
+{
+    struct GangwayGeometry
+    {
+        static float Degrees(Point const& point) { return std::atan2(point.Y, point.X) * 57.2957795f; }
+        static bool OnQuay(Point const& point) { return std::hypot(point.X, point.Y) >= 8.0f; }
+        std::optional<Point> ShoreAt(Point const& seed, float vertical) const
+        {
+            return OnQuay(seed) && std::fabs(seed.Z) <= vertical ? std::optional<Point>(Point{seed.X, seed.Y, 0.0f})
+                                                                 : std::nullopt;
+        }
+        std::optional<Point> SnapGround(Point point, float, float) const
+        {
+            return OnQuay(point) ? std::optional<Point>(point) : std::nullopt;
+        }
+        std::optional<Point> DeckFrom(Point const& shore, float, Point const&) const
+        {
+            float const scale = 6.0f / std::hypot(shore.X, shore.Y);
+            return Point{shore.X * scale, shore.Y * scale, 0.0f};
+        }
+        bool OffHull(Point const& point) const { return std::hypot(point.X, point.Y) >= 7.0f; }
+        bool OnGround(Point const& point) const { return OnQuay(point); }
+        bool GroundLeadsOn(Point const& start, Point const& end) const { return OnQuay(start) && OnQuay(end); }
+        bool ConnectedGround(Point const&, Point const&) const { return true; }
+        bool CrossingClear(Point const&, Point const& end) const { return std::fabs(Degrees(end) - 35.0f) <= 2.0f; }
+        std::optional<std::vector<Point>> DeckPath(Point const&, Point const& to, std::uint32_t,
+                                                   std::uint32_t& expanded) const
+        {
+            expanded = 0;
+            return std::vector<Point>{to};
+        }
+    } geometry;
+
+    Point const origin{0.0f, 0.0f, 0.0f};
+    Point const rider{0.0f, 0.0f, 0.0f};
+    auto const exit = FindExit(geometry, rider, origin, origin, {Point{20.0f, 0.0f, 0.0f}});
+    Check(exit && std::fabs(GangwayGeometry::Degrees(exit->Ground) - 35.0f) <= 2.0f,
+          "the exit search finds the gangway between two 15-degree bearings");
+    Point const waiting{3.0f, 0.0f, 0.0f};  // on the hull's footprint: no quay where the bot stands
+    auto const quay = FindQuay(geometry, waiting, origin, origin);
+    Check(quay && std::fabs(GangwayGeometry::Degrees(*quay) - 35.0f) <= 2.0f,
+          "the quay search finds the gangway between two 15-degree bearings");
 }
 
 // The attach guard ported from PR #2747: a stale transport frame is cleared before AddPassenger, a listed passenger
@@ -623,9 +677,9 @@ void CheckGondolaExit()
     Point const far{100.0f, 0.0f, 40.0f};
     CrossingTally tally;
     auto const exit = FindExit(geometry, geometry.Bot, origin, origin, {stop, far}, &tally);
-    Check(
-        exit && std::fabs(std::atan2(exit->Ground.Y, exit->Ground.X) - 2.35619449f) < 0.01f && exit->Ground.Z == 97.0f,
-        "the gondola's exit steps from the higher centre down onto the platform at +135 degrees");
+    // 5-degree bearings (WT54-5) reach the platform's sector (+127 to +143 degrees) first at +130
+    Check(exit && GondolaGeometry::Platform(exit->Ground) && exit->Ground.Z == 97.0f,
+          "the gondola's exit steps from the higher centre down onto the platform at +135 degrees");
     Check(exit && tally.Onward && exit->Onward.X == far.X && exit->Onward.Y == far.Y,
           "the onward point is the route's first point off the hull, not a point beside the quay");
     Check(exit && !exit->Walk.empty() && exit->Walk.back().X == exit->Deck.X && exit->Walk.back().Y == exit->Deck.Y,
@@ -1721,6 +1775,7 @@ int main()
     CheckQuay();
     CheckAttachGuard();
     CheckExitSearch();
+    CheckGangway();
     CheckDeckPoint();
     CheckDeckWalk();
     CheckDeckPath();

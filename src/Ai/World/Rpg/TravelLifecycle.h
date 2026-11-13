@@ -31,7 +31,14 @@ struct Point
 };
 
 constexpr float CROSSING_YARDS = 25.0f;
+// The ring searches around a transport for a quay or an exit sample a bearing every 5 degrees (WT54-5): a zeppelin's
+// gondola opens to its tower by a gangway a few yards wide, which bearings 15 degrees apart (5 yd at 20 yd) step over
+constexpr unsigned CROSSING_BEARINGS = 72;
+constexpr float CROSSING_BEARING_STEP = 6.28318531f / static_cast<float>(CROSSING_BEARINGS);
 constexpr float DOCK_FLOOR_YARDS = 2.0f;
+// A bot that waits above the platform beside a docked transport (a zeppelin tower's ramp or roof) finds its quay on
+// the ring this far below or above its own floor
+constexpr float QUAY_LEVEL_YARDS = 16.0f;
 constexpr float CROSSING_BODY_YARDS = 0.65f;
 // The step from a deck edge up or down to the quay on an exit: a jump (apex 1.64 yd at the client's 7.96 yd/s take-off
 // and 19.29 yd/s^2 gravity) plus the navmesh's step (walkableClimb 4 cells x 0.267 yd = 1.07 yd) reaches 2.7 yd. Booty
@@ -128,7 +135,7 @@ struct CrossingTally
         Point From;
         Point To;
     };
-    static constexpr std::size_t BEARINGS = 24;
+    static constexpr std::size_t BEARINGS = CROSSING_BEARINGS;
     std::array<std::optional<Furthest>, BEARINGS> Bearings{};
     std::optional<Point> Onward;  // the exit search's onward point (OnwardPoint)
     std::uint32_t DeckCells = 0;  // the cells its deck walk searches expanded
@@ -340,18 +347,25 @@ bool AcceptBoard(Geometry const& geometry, Point const& shore, Point const& deck
     return CheckBoard(geometry, shore, deck) == CrossingCheck::Accepted;
 }
 
-// The quay a bot boards from: where it stands, else on the ring around the transport's origin at its floor; its deck
-// point lies toward the hull's centre (a zeppelin's origin lies on its gondola's rail: a line toward it ends there)
+// The quay a bot boards from: where it stands, else on the ring around the transport's origin, at its floor or within
+// QUAY_LEVEL_YARDS of it (a bot above the platform); its deck point lies toward the hull's centre (a zeppelin's origin
+// need not lie over its deck: a line toward it ends on the rail). Water is no quay: it is rejected before the deck
+// point's ray casts
 template <class Geometry>
 std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, Point const& origin, Point const& centre,
                               CrossingTally* tally = nullptr)
 {
-    auto const tryShore = [&](Point const& seed) -> std::optional<Point>
+    auto const tryShore = [&](Point const& seed, float vertical) -> std::optional<Point>
     {
-        auto const shore = geometry.ShoreAt(seed);
+        auto const shore = geometry.ShoreAt(seed, vertical);
         if (!shore)
         {
             Note(tally, CrossingCheck::NoShore, approach, seed);
+            return std::nullopt;
+        }
+        if (!geometry.OnGround(*shore))
+        {
+            Note(tally, CrossingCheck::Ground, approach, *shore);
             return std::nullopt;
         }
         auto const deck = geometry.DeckFrom(*shore, BOARD_DECK_INSET_YARDS, centre);
@@ -368,19 +382,18 @@ std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, P
         Note(tally, check, *shore, *deck);
         return std::nullopt;
     };
-    if (auto const shore = tryShore(approach))
+    if (auto const shore = tryShore(approach, DOCK_FLOOR_YARDS))
         return shore;
 
     // Sample around the model horizontally, using the normal approach's floor as the height reference.
-    constexpr unsigned BEARINGS = 24;
-    constexpr float BEARING_STEP = 0.26179939f;
-    for (unsigned bearing = 0; bearing < BEARINGS; ++bearing)
+    for (unsigned bearing = 0; bearing < CROSSING_BEARINGS; ++bearing)
     {
-        float const angle = static_cast<float>(bearing) * BEARING_STEP;
+        float const angle = static_cast<float>(bearing) * CROSSING_BEARING_STEP;
         float const dx = std::cos(angle);
         float const dy = std::sin(angle);
         for (float distance = 1.0f; distance <= CROSSING_YARDS; distance += 1.0f)
-            if (auto const shore = tryShore({origin.X + dx * distance, origin.Y + dy * distance, approach.Z}))
+            if (auto const shore =
+                    tryShore({origin.X + dx * distance, origin.Y + dy * distance, approach.Z}, QUAY_LEVEL_YARDS))
                 return shore;
     }
     return std::nullopt;
@@ -445,7 +458,7 @@ std::optional<ExitPath> FindExit(Geometry const& geometry, Point const& from, Po
                                  std::vector<Point> const& route, CrossingTally* tally = nullptr)
 {
     constexpr unsigned BEARINGS = CrossingTally::BEARINGS;
-    constexpr float BEARING_STEP = 0.26179939f;
+    constexpr float BEARING_STEP = CROSSING_BEARING_STEP;
     auto const onward = OnwardPoint(geometry, route);
     if (tally)
         tally->Onward = onward;
