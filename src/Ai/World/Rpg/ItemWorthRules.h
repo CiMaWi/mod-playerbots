@@ -333,13 +333,19 @@ inline void StampErrandCheck(SlotMeasure& measure, uint32_t nowMs)
     measure.ErrandCheckMs = nowMs;
 }
 
+// No errand check within the retry time
+inline bool ErrandRetryDue(SlotMeasure const& measure, uint32_t nowMs)
+{
+    return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
+}
+
 // The cheap part of the errand rule, for the trigger: bags this full and no errand check within the retry time
 inline bool ErrandDue(SlotMeasure const& measure, uint32_t usedPercent, uint32_t nowMs)
 {
     if (usedPercent < ERRAND_PRESSURE_PERCENT)
         return false;
 
-    return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
+    return ErrandRetryDue(measure, nowMs);
 }
 
 // Straight-line minutes at the bot's run speed

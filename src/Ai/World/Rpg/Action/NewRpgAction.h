@@ -130,7 +130,6 @@ public:
     NewRpgErrandsAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg errands") {}
     bool Execute(Event event) override;
 
-private:
     // A vendor that walks along its route stays within this distance of its spawn point
     static constexpr float VENDOR_SEARCH_YARDS = 30.0f;
 };

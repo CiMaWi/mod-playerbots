@@ -284,6 +284,11 @@ void CheckErrands()
     Check(!WorldTravel::ErrandDue(measure, 100, now + WorldTravel::ERRAND_RETRY_MS - 1),
           "cool-down: no check within the retry time of the last one");
     Check(WorldTravel::ErrandDue(measure, 100, now + WorldTravel::ERRAND_RETRY_MS), "a check after the retry time");
+    // WB8b: a mail or bank errand starts the same check without bag pressure, under the same retry time
+    Check(!WorldTravel::ErrandRetryDue(measure, now + WorldTravel::ERRAND_RETRY_MS - 1) &&
+              WorldTravel::ErrandRetryDue(measure, now + WorldTravel::ERRAND_RETRY_MS) &&
+              WorldTravel::ErrandRetryDue(SlotMeasure{}, now),
+          "the retry time alone: none within it, one after it and one before any check");
     SlotMeasure wrapped;
     WorldTravel::StampErrandCheck(wrapped, UINT32_MAX - 1000);
     Check(!WorldTravel::ErrandDue(wrapped, 100, 1000) &&

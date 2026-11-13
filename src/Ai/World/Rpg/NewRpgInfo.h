@@ -122,7 +122,8 @@ struct NewRpgInfo
         uint32 transportScanMs{0};
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
-    // every errand assigned there: sell, buy (a bag by worth) and repair at its vendor, turn in completed quests
+    // every errand assigned there: sell, buy (a bag by worth) and repair at its vendor, turn in completed quests, visit
+    // the banker and the mailbox (BankVisit.h, MailVisit.h)
     struct ErrandTurnIn
     {
         uint32 questId{0};
@@ -134,6 +135,12 @@ struct NewRpgInfo
         WorldPosition pos{};
         uint32 vendorEntry{0};  // the vendor of this stop; 0 = none
         std::vector<ErrandTurnIn> turnIns;
+        // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
+        // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the
+        // mailbox last, once the sale has made room
+        bool bankBefore{false};
+        bool bankAfter{false};
+        bool mail{false};
     };
     struct Errands
     {

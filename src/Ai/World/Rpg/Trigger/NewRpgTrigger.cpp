@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "BankMailState.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
 #include "PlayerbotAI.h"
@@ -27,7 +28,8 @@ bool BankVisitActiveTrigger::IsActive()
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
-    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
+    // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
+    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints) || BankMail::VisitRuns(botAI->rpgInfo.bankMail))
         return false;
     switch (botAI->rpgInfo.GetStatus())
     {
@@ -54,8 +56,13 @@ bool InventoryPressureTrigger::IsActive()
         return false;
 
     WorldTravel::SlotMeasure const& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
-    return WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), getMSTime()) &&
-           sRandomPlayerbotMgr.IsRandomBot(bot);
+    uint32 const now = getMSTime();
+    if (!WorldTravel::ErrandRetryDue(measure, now) || !sRandomPlayerbotMgr.IsRandomBot(bot))
+        return false;
+
+    // Full bags, or mail or a bank errand worth a trip of its own (WB8b: the same check, no trigger of its own)
+    return WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), now) ||
+           BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel());
 }
 
 bool InnBindTrigger::IsActive()

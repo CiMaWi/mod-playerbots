@@ -134,6 +134,13 @@ inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
                              state.bankVisit.phase != BankVisitPhase::None);
 }
 
+// What can start a trip without full bags (WB8b, the errand trigger): worth the bot saw or expects in its mail, or a
+// kept item come due at the level. Unopened mail alone never pays a detour (WB.4), so it only joins trips
+inline bool ErrandWaits(BotBankMail const& state, uint8 level)
+{
+    return state.mail.seenCopper || state.mail.expectedCopper || DueAt(state.bank.kept, level).count;
+}
+
 // A far teleport or a PlayerbotAI::Reset(true) rebuilds NewRpgInfo (TravelLegs::AfterReset keeps only the route
 // requests). The bot's knowledge (waiting mail, seen worth, bank slots, kept items) survives it; a running visit
 // was ended with its row just before (EndVisits), so nothing of it is left to keep.
