@@ -1678,8 +1678,8 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
         EventLog::Emit(bot, PlayerbotAI::ABOARD_EVENT_TYPE, source.c_str(), entry);
         return;
     }
-    LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry, deck->X,
-             deck->Y, deck->Z);
+    LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry, deck->X, deck->Y,
+             deck->Z);
     bot->NearTeleportTo(deck->X, deck->Y, deck->Z + HOP_LIFT_YARDS, bot->GetOrientation());
     botAI->BeginAboard(entry);
 }
