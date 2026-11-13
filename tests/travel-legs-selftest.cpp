@@ -480,6 +480,7 @@ struct FakeInfo
     std::variant<Idle, Travel, Errands> data{Idle{}};
     std::uint32_t startT{0};
     std::uint32_t routeRequests{0};
+    std::uint16_t constraints{0};
     float nearestMoveFarDis{1.0e9f};
 };
 
@@ -490,6 +491,7 @@ void CheckResetAndDeadline()
     std::get<FakeInfo::Travel>(travelling.data).trip.legIdx = 2;  // on the portal leg
     travelling.startT = 1234;
     travelling.routeRequests = 17;
+    travelling.constraints = 48;
     travelling.nearestMoveFarDis = 3.0f;
 
     // A far teleport (the portal's worldport) keeps the trip where it was
@@ -508,6 +510,8 @@ void CheckResetAndDeadline()
     FakeInfo const reset = TravelLegs::AfterReset<FakeInfo::Travel>(travelling, false);
     Check(std::holds_alternative<FakeInfo::Idle>(reset.data) && reset.startT == 0 && reset.routeRequests == 17,
           "a full reset ends the trip and keeps the request ids");
+    Check(ported.constraints == 48 && reset.constraints == 48,
+          "a far teleport and a full reset keep a test's constraints");
     // Other statuses start over on a far teleport, as before
     FakeInfo errands;
     errands.data = FakeInfo::Errands{42};

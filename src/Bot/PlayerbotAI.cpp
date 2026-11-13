@@ -31,6 +31,7 @@
 #include "CcState.h"
 #include "CcTacticStrategy.h"
 #include "CellImpl.h"
+#include "CensusMgr.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
@@ -52,7 +53,6 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
-#include "HoldRules.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
@@ -100,6 +100,7 @@
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
+#include "TestConstraints.h"
 #include "ThreadCheck.h"
 #include "Transport.h"
 #include "TravelTransportGeometry.h"
@@ -1173,6 +1174,13 @@ void PlayerbotAI::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs
         TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
 }
 
+void PlayerbotAI::BeginAboard(uint32 entry)
+{
+    aboardEntry = entry;
+    aboardSinceMs = getMSTime();
+    passengerCadence.Revalidate = true;
+}
+
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
     // Handle the AI check delay
@@ -1190,6 +1198,16 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         tracedMount = MountPath::None;
         return;
     }
+
+    // A test's order (TravelOrders) ahead of the reaction and the AI's delays, the engine then runs in this update; so
+    // does it for a bot placed aboard until its placement is decided (below)
+    if (TravelOrders::TakeAndApply(this, bot) || aboardEntry)
+        nextAICheckDelay = 0;
+
+    // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can be a
+    // minute apart for an idle bot, time enough for a new pet to start a fight (one bit test for every other bot)
+    if (rpgInfo.constraints & TestConstraints::STATES)
+        TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
 
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
@@ -1236,6 +1254,23 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     PassengerAdapter passenger(*bot, traceTravel);
     TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
                               travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
+    // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
+    // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence
+    if (aboardEntry)
+    {
+        Transport const* ridden = bot->GetTransport();
+        bool const placed = ridden && ridden->GetEntry() == aboardEntry;
+        uint32 const sinceMs = GetMSTimeDiffToNow(aboardSinceMs);
+        if (placed || sinceMs > ABOARD_DEADLINE_MS)
+        {
+            LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), aboardEntry,
+                     placed ? "placed" : "failed", sinceMs);
+            EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
+            aboardEntry = 0;
+        }
+        else
+            passengerCadence.Revalidate = true;
+    }
     if (HasPendingDismount())
     {
         if (!bot->IsAlive() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport())
@@ -1724,7 +1759,6 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     }
 
     HandleCommands();
-    TravelOrders::TakeAndApply(this, bot);  // a GM order (route go, hold, release) at the next update
 
     // logout if logout timer is ready or if instant logout is possible
     if (bot->GetSession()->IsLoggingOut())
@@ -7255,8 +7289,10 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
     {
         return GetAiObjectContext()->FormatValues();
     }
+    else if (command == "constraints")
+        return "constraints " + TestConstraints::Format(rpgInfo.constraints);
     else if (command == "hold")
-        return "hold " + HoldRules::Format(rpgInfo.heldChoices);
+        return "hold " + TestConstraints::Format(static_cast<uint16>(rpgInfo.constraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;

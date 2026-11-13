@@ -867,6 +867,7 @@ void CheckUnconsumedBoardTransfer()
         std::variant<std::monostate, Travel> data;
         std::uint32_t routeRequests = 19;
         std::uint32_t startT = 10;
+        std::uint16_t constraints = 0;
     } info;
     info.data = Info::Travel{};
     auto& before = std::get<Info::Travel>(info.data);
