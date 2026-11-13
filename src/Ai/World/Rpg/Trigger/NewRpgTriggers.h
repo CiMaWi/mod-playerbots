@@ -48,6 +48,22 @@ private:
     static constexpr int32 CHECK_SECONDS = 30;
 };
 
+// A mailbox visit runs (BankMail::BeginMailVisit; started only by a command until the trips start one): a bool
+class MailVisitActiveTrigger : public Trigger
+{
+public:
+    MailVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mail visit active") {}
+    bool IsActive() override;
+};
+
+// A banker visit runs (BankMail::BeginBankVisit; started only by a command until the trips start one): a bool
+class BankVisitActiveTrigger : public Trigger
+{
+public:
+    BankVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "bank visit active") {}
+    bool IsActive() override;
+};
+
 // A persistent bot whose bind is far (WorldTravel::BindIsFar) and whose inn check is due (every 30 minutes)
 class InnBindTrigger : public Trigger
 {

@@ -2265,6 +2265,20 @@ Playerbots.WorldPvp.Retreat.CautionOdds = 0.1
 # switch for test servers. (Range: 0-1.) Default: 0
 Playerbots.WorldPvp.TestCommands = 0
 
+# Mail and bank visits of persistent bots. A bot knows that mail waits and what it expects from it, not what is
+# inside; an unread mail whose content it does not know counts Mail.DefaultWorthCopper. A bank item counts as kept for
+# later while the level it is due at is at most Bank.KeepLevelHorizon levels above the bot's. A visit (the walk
+# included) is given up after Mail.VisitDeadlineSeconds or Bank.VisitDeadlineSeconds; one step of it (a take from a
+# mail, a deposit) waits at most VisitStepSeconds for the server's answer; one mailbox visit opens at most
+# Mail.PerVisit mails. (Ranges: DefaultWorthCopper 0-10000; KeepLevelHorizon 0-20; VisitDeadlineSeconds 60-3600;
+# VisitStepSeconds 1-60; PerVisit 1-100.) Defaults: 100, 5, 900, 900, 10, 50
+Playerbots.BankMail.Mail.DefaultWorthCopper = 100
+Playerbots.BankMail.Bank.KeepLevelHorizon = 5
+Playerbots.BankMail.Mail.VisitDeadlineSeconds = 900
+Playerbots.BankMail.Bank.VisitDeadlineSeconds = 900
+Playerbots.BankMail.VisitStepSeconds = 10
+Playerbots.BankMail.Mail.PerVisit = 50
+
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
 Playerbots.Ladder.DepartTimeoutSeconds = 600

@@ -13,6 +13,8 @@
 #include "ActivityBudget.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
+#include "BankCommands.h"
+#include "BankMailCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotProfileMgr.h"
 #include "BotTraitMgr.h"
@@ -204,6 +206,7 @@ public:
 
         static ChatCommandTable playerbotsRouteCheckCommandTable = {
             {"links", RouteCheck::HandleLinksCommand, SEC_PLAYER, Console::Yes},
+            {"pairs", RouteCheck::HandlePairsCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsRouteCommandTable = {
@@ -234,6 +237,18 @@ public:
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
             {"goals", Planner::HandleGoalsCommand, SEC_GAMEMASTER, Console::Yes},
             {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
+        static ChatCommandTable playerbotsMailCommandTable = {
+            {"status", BankMail::HandleMailStatusCommand, SEC_PLAYER, Console::Yes},
+            {"selftest", BankMail::HandleMailSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"visit", BankMail::HandleMailVisitCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
+        static ChatCommandTable playerbotsBankCommandTable = {
+            {"status", BankMail::HandleBankStatusCommand, SEC_PLAYER, Console::Yes},
+            {"selftest", BankMail::HandleBankSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"visit", BankMail::HandleBankVisitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsWorldLogCommandTable = {
@@ -277,6 +292,8 @@ public:
             {"population", playerbotsPopulationCommandTable},
             {"route", playerbotsRouteCommandTable},
             {"planner", playerbotsPlannerCommandTable},
+            {"mail", playerbotsMailCommandTable},
+            {"bank", playerbotsBankCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
         };

@@ -329,9 +329,10 @@ inline void CheckSegments(Checker& checker)
 // reason scope nests and restores
 inline void CheckEventWords(Checker& checker)
 {
-    constexpr std::string_view FACT_TYPES[] = {"XpGain",    "Kill",       "QuestAccept", "QuestAbandon", "Equip",
-                                               "SkillUp",   "SpellLearn", "TaxiNode",    "Flight",       "Hearth",
-                                               "MapChange", "Resurrect",  "Status"};
+    constexpr std::string_view FACT_TYPES[] = {"XpGain", "Kill",           "QuestAccept",    "QuestAbandon",
+                                               "Equip",  "SkillUp",        "SpellLearn",     "TaxiNode",
+                                               "Flight", "Hearth",         "MapChange",      "Resurrect",
+                                               "Status", EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START};
     bool fields = true;
     for (std::string_view const type : FACT_TYPES)
     {
@@ -431,8 +432,13 @@ inline void CheckDecisions(Checker& checker)
     std::string kinds;
     for (size_t kind = 0; kind <= DECISION_KIND_COUNT; ++kind)
         kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');
-    checker.Equal(kinds, "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join other ",
+    checker.Equal(kinds, "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank other ",
                   "a word per decision kind");
+
+    uint32_t const visit = PackVisitCounts(3, 12, VISIT_COUNT_MAX + 5);
+    checker.Check(VisitCount(visit, 0) == 3 && VisitCount(visit, 1) == 12 && VisitCount(visit, 2) == VISIT_COUNT_MAX,
+                  "visit counts pack into an event id, each capped");
+    checker.Check(PackVisitCounts(4, 2) == (4u | 2u << VISIT_COUNT_BITS), "a bank visit packs two counts");
 
     std::string value;
     AppendValue(value, std::numeric_limits<float>::infinity());

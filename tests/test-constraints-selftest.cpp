@@ -91,11 +91,13 @@ void ApplyNoDamage(ModelUnits& units)
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
 void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
+void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
                                               {FLYFAIL, ReadByFollower, ReadByFollower},
-                                              {FLYABORT, ReadByFollower, ReadByFollower}};
+                                              {FLYABORT, ReadByFollower, ReadByFollower},
+                                              {NODESTROY, ReadByDestroy, ReadByDestroy}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -235,6 +237,11 @@ bool RowWorks(Row const& row)
         return untouched && failsRight && !FlyFailAborts(FLYFAIL) && !FlyFailAborts(STATES & ~FLYABORT);
     if (name == "flyabort")
         return untouched && failsRight && FlyFailAborts(FLYABORT) && FlyFailAborts(FLYFAIL | FLYABORT);
+    // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
+    if (name == "nodestroy")
+        return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
+               !DestroysForSpace(NODESTROY) && !DestroysForSpace(HOLD | NODESTROY) && DestroysForSpace(0) &&
+               DestroysForSpace(HOLD | NOFIGHT | NODAMAGE) && (NODESTROY & HOLD) == 0 && !EndsStatus(0, NODESTROY);
     return false;
 }
 
@@ -255,11 +262,13 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort",
+    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
         "fly rows: state rows (hold never sets them), parsed and formatted");
+    Check(Parse("nodestroy").set == NODESTROY && Format(NODESTROY | NOFIGHT) == "nofight,nodestroy",
+          "nodestroy: a state row, parsed and formatted");
 }
 
 void TestHeldIdle()

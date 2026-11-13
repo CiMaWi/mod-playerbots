@@ -10,6 +10,7 @@
 #include <memory>
 #include <unordered_set>
 
+#include "BankMailState.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -169,6 +170,9 @@ struct NewRpgInfo
         std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
     };
     PlannerState planner;
+    // Mail and bank knowledge and visits (BankMailState.h); Reset() keeps it, so a visit survives a status change;
+    // a far teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
+    BankMail::BotBankMail bankMail;
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};

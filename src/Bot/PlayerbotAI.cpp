@@ -832,6 +832,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (rpgInfo.constraints & TestConstraints::STATES)
         TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
 
+    // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
+    // does not run (in combat, dead); one test while no visit runs
+    if (BankMail::VisitRuns(rpgInfo.bankMail))
+        BankMail::WatchVisits(this);
+
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
     if (flying != WorldLog::InFlight(worldLog))
@@ -1665,8 +1670,10 @@ void PlayerbotAI::HandleTeleportAck()
             EvaluateHealerDpsStrategy();
 
         // reset AI state after teleport; a trip in progress goes on (a portal or a cross-map flight leg ends here)
+        BankMail::EndVisits(this, BankMail::VisitEnd::Teleport);  // with its row, before AfterReset drops the state
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
-        NewRpgInfo const kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
+        NewRpgInfo kept = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, true);
+        kept.bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
         rpgInfo.bot = nullptr;  // the reset notes no status change; the teleport does, once
         Reset(true);
         rpgInfo = kept;
@@ -1770,7 +1777,10 @@ void PlayerbotAI::Reset(bool full)
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
         Player* const rpgBot = rpgInfo.bot;  // null inside a far teleport's reset
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
+        BankMail::EndVisits(this, BankMail::VisitEnd::Reset);  // with its row; AfterReset keeps the knowledge
+        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);
         rpgInfo = TravelLegs::AfterReset<NewRpgInfo::Travel>(rpgInfo, false);  // keeps the route request ids
+        rpgInfo.bankMail = bankMail;
         rpgInfo.bot = rpgBot;
         WorldLog::StatusReason const reasonScope("reset");
         WorldLog::NoteStatus(rpgBot, statusBefore, rpgInfo.GetStatus());
@@ -9493,8 +9503,9 @@ uint32 PlayerbotAI::ComputeReactDelay()
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
         return base * 5;
 
-    // When not resting, return 10-30 times the base
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))
+    // When not resting, or on a mailbox or banker visit, return 10-30 times the base. A visit takes one step a check:
+    // at the rest area's pace below, a visit of two mails took minutes in a city (WB7d)
+    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail))
         return base * urand(10, 30);
 
     // In other cases, return 20-200 times the base

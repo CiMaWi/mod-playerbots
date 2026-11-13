@@ -8,6 +8,7 @@
 #include "AcquaintanceMgr.h"
 #include "ActivityBudget.h"
 #include "ArenaTeamFormation.h"
+#include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "BotProfileMgr.h"
@@ -235,6 +236,10 @@ public:
 
     void OnPlayerBeforeLogout(Player* player) override
     {
+        // A bot's mailbox or bank visit ends with its row while its AI is still there (any logout path)
+        if (PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player))
+            BankMail::EndVisits(botAI, BankMail::VisitEnd::Logout);
+
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
         {
             PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);

@@ -16,6 +16,7 @@
 #include <unordered_map>
 
 #include "Bag.h"
+#include "BankMailState.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -32,6 +33,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
+#include "Playerbots.h"
 #include "QuestCircuitLog.h"
 #include "RouteService.h"
 #include "StartingHistoryRules.h"
@@ -185,6 +187,24 @@ void FillQuests(Player* bot, Snapshot& snapshot)
     RewardedQuestSet const& rewarded = bot->getRewardedQuests();
     snapshot.rewardedQuests.assign(rewarded.begin(), rewarded.end());
     std::sort(snapshot.rewardedQuests.begin(), snapshot.rewardedQuests.end());
+}
+
+// Mail list read: the bot's own map thread or the world thread only (FillSnapshot's callers; BankMailState.h)
+void FillBankMail(Player* bot, Snapshot& snapshot)
+{
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        return;
+    BankMail::BotBankMail& known = botAI->rpgInfo.bankMail;
+    BankMail::RefreshMailKnowledge(bot, known.mail);
+    BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
+    snapshot.mailWaiting = known.mail.waiting;
+    snapshot.mailSeenCopper = known.mail.seenCopper;
+    snapshot.mailExpectedCopper = known.mail.expectedCopper;
+    snapshot.bankKeptCount = static_cast<uint32>(known.bank.kept.size());
+    snapshot.bankDueCount = due.count;
+    snapshot.bankDueWorth = due.worth;
+    snapshot.bankFreeSlots = known.bank.freeSlots;
 }
 
 // FillSnapshot with its PerfMonitor row (map-thread microseconds per snapshot)
@@ -692,6 +712,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.area = bot->GetAreaId();
     snapshot.money = bot->GetMoney();
     FillBags(bot, snapshot);
+    FillBankMail(bot, snapshot);
     for (std::uint16_t const skill : SNAPSHOT_SKILLS)
         if (uint16 const value = bot->GetPureSkillValue(skill))
             snapshot.skills.push_back(
