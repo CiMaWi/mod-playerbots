@@ -727,6 +727,20 @@ void CheckChase()
     Check(PetCalledOff(true, ENEMY, ENEMY) && !PetCalledOff(false, ENEMY, ENEMY) && !PetCalledOff(true, 0, ENEMY) &&
               !PetCalledOff(true, ENEMY + 1, ENEMY),
           "a bot leaving an enemy alone calls its pet off that enemy's side, and only off that one");
+
+    // WP6-6: a start is decided only on an enemy in reach
+    int sightAsked = 0;
+    auto const seen = [&sightAsked]()
+    {
+        ++sightAsked;
+        return true;
+    };
+    auto const unseen = []() { return false; };
+    Check(InReach(0.0f, seen) && InReach(29.9f, seen) && InReach(-29.9f, seen),
+          "an enemy in sight within the reach height is in reach, above or below");
+    Check(!InReach(0.0f, unseen) && !InReach(REACH_HEIGHT_YARDS, seen) && !InReach(-31.0f, seen),
+          "an enemy out of sight, or too far above or below, is out of reach");
+    Check(sightAsked == 3, "the line of sight is asked only when the height passes");
 }
 
 void CheckCalm()

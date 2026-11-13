@@ -155,7 +155,7 @@ Unit* EnemyPlayerValue::Calculate()
     if (Player* const joined = WorldPvp::JoinTarget(botAI))
         if (joined != pVictim && !IsUnavailableCombatTarget(bot, joined) && !exclusions.count(joined->GetGUID()) &&
             bot->IsWithinDist(joined, VISIBILITY_DISTANCE_NORMAL) && !EnemyRefusal(botAI, bot, joined, true) &&
-            bot->IsWithinLOSInMap(joined) && std::fabs(bot->GetPositionZ() - joined->GetPositionZ()) < 30.0f)
+            WorldPvp::Reaches(bot, joined))
             return joined;
 
     // 2. Find enemy player in range. A bot that starts fights by the rules and cannot start one now skips it; the
@@ -202,8 +202,8 @@ Unit* EnemyPlayerValue::Calculate()
         if (!bot->IsWithinDist(pTarget, aggroDistance))
             continue;
 
-        if (bot->IsWithinLOSInMap(pTarget) &&
-            (controllingCannon || (fabs(bot->GetPositionZ() - pTarget->GetPositionZ()) < 30.0f)))
+        // The rules decided a start only on an enemy in reach (WorldPvp::AcceptByRules): the same test
+        if (controllingCannon ? bot->IsWithinLOSInMap(pTarget) : WorldPvp::Reaches(bot, pTarget))
             return pTarget;
     }
 

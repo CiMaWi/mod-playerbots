@@ -508,6 +508,19 @@ inline bool PetCalledOff(bool leavesAlone, uint64_t petVictimSide, uint64_t left
     return leavesAlone && petVictimSide != 0 && petVictimSide == leftSide;
 }
 
+// The most height between a bot and an enemy player it attacks (EnemyPlayerValue; a cannon has no limit)
+constexpr float REACH_HEIGHT_YARDS = 30.0f;
+
+// Whether a bot can attack an enemy player `heightYards` above or below it, given its line of sight to it (`inSight`
+// asks for it only when the height passes): the attack's own test, applied to a start before the rules decide it, so
+// an enemy out of reach spends no chance and leaves no fight_start row (a priest picked an enemy it never attacked,
+// WP6 stalemate-b35)
+template <typename Sight>
+inline bool InReach(float heightYards, Sight const& inSight)
+{
+    return std::fabs(heightYards) < REACH_HEIGHT_YARDS && inSight();
+}
+
 // Who is the aggressor of PvP combat between two players: the killer (`first` on a kill); else the one that picked the
 // other at a meeting while the other did not pick it (a caster's first spell sets no victim, WP6 timeout-b70); else
 // the one attacking the other while the other does not attack it (at the first hit the target has not answered yet);

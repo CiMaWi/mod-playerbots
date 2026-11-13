@@ -29,10 +29,14 @@ bool StartsByRules(PlayerbotAI* botAI);
 // peaceable, in its gap), so it skips the enemy-player scan; attackers and fights still reach it
 bool ScanGated(PlayerbotAI* botAI);
 // NearestEnemyPlayersValue::AcceptUnit for a bot that starts by the rules: whether the enemy player `unit` is the
-// target the rules picked. A new meeting (within ScanYards, in sight, not seen for MeetingMemorySeconds) while the
+// target the rules picked. A new meeting (within ScanYards, in sight and in reach, not seen for MeetingMemorySeconds)
+// while the
 // gate is open is decided here once (DecideStart; its fight_start row); `refusal` is the word of today's target check
 // that failed on the enemy, nullptr when it is an attackable, PvP-flagged enemy the bot can see
 bool AcceptByRules(PlayerbotAI* botAI, Unit* unit, char const* refusal);
+// EnemyPlayerValue and AcceptByRules: whether `bot` can attack `enemy` from where it is (InReach: the height between
+// them, then its line of sight)
+bool Reaches(Unit const* bot, Unit const* enemy);
 // PossibleTargetsValue::AcceptUnit: whether `unit` is the player the rules picked for this bot to attack, at a meeting
 // or as the target of a fight it decided to join
 bool IsPickedTarget(PlayerbotAI* botAI, Unit* unit);

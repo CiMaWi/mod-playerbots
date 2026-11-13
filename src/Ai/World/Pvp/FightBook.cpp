@@ -1196,6 +1196,12 @@ bool ScanGated(PlayerbotAI* botAI)
     return true;
 }
 
+bool Reaches(Unit const* bot, Unit const* enemy)
+{
+    return InReach(bot->GetPositionZ() - enemy->GetPositionZ(),
+                   [bot, enemy]() { return bot->IsWithinLOSInMap(enemy); });
+}
+
 bool AcceptByRules(PlayerbotAI* botAI, Unit* unit, char const* refusal)
 {
     Player* const bot = botAI->GetBot();
@@ -1222,7 +1228,9 @@ bool AcceptByRules(PlayerbotAI* botAI, Unit* unit, char const* refusal)
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp meeting")
                                                     : nullptr);
-    if (memory->SeenRecently(guid, nowMs, config.MeetingMemorySeconds * IN_MILLISECONDS) || !bot->CanSeeOrDetect(enemy))
+    // An enemy out of reach is no meeting yet: no fight_start row, no chance spent, met again once in reach
+    if (memory->SeenRecently(guid, nowMs, config.MeetingMemorySeconds * IN_MILLISECONDS) ||
+        !bot->CanSeeOrDetect(enemy) || !Reaches(bot, enemy))
         return false;
     memory->Remember(guid, nowMs, config.RecentEnemies);
 
