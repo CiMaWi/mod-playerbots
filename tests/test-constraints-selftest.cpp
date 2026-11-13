@@ -90,9 +90,11 @@ void ApplyNoDamage(ModelUnits& units)
     ++units.applies;
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
+void ReadByDestroy(ModelUnits&) {}  // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
-                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage}};
+                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+                                              {NODESTROY, ReadByDestroy, ReadByDestroy}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -223,6 +225,11 @@ bool RowWorks(Row const& row)
                !StartsFights(NOFIGHT) && StartsFights(HOLD | NODAMAGE);
     if (name == "nodamage")
         return applied.god && !applied.botImmune && !units.god;
+    // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
+    if (name == "nodestroy")
+        return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
+               !DestroysForSpace(NODESTROY) && !DestroysForSpace(HOLD | NODESTROY) && DestroysForSpace(0) &&
+               DestroysForSpace(HOLD | NOFIGHT | NODAMAGE) && (NODESTROY & HOLD) == 0 && !EndsStatus(0, NODESTROY);
     return false;
 }
 
@@ -243,7 +250,9 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(Names() == "planner, status, errand, hearth, nofight, nodamage", "names: every row for refusals");
+    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, nodestroy", "names: every row for refusals");
+    Check(Parse("nodestroy").set == NODESTROY && Format(NODESTROY | NOFIGHT) == "nofight,nodestroy",
+          "nodestroy: a state row, parsed and formatted");
 }
 
 void TestHeldIdle()

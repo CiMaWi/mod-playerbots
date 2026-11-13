@@ -15,6 +15,16 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
+bool MailVisitActiveTrigger::IsActive()
+{
+    return botAI->rpgInfo.bankMail.mailVisit.phase != BankMail::MailVisitPhase::None;
+}
+
+bool BankVisitActiveTrigger::IsActive()
+{
+    return botAI->rpgInfo.bankMail.bankVisit.phase != BankMail::BankVisitPhase::None;
+}
+
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
     if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))

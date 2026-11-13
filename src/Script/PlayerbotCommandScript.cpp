@@ -13,6 +13,8 @@
 #include "ActivityBudget.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
+#include "BankCommands.h"
+#include "BankMailCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotProfileMgr.h"
 #include "BotTraitMgr.h"
@@ -235,6 +237,18 @@ public:
             {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsMailCommandTable = {
+            {"status", BankMail::HandleMailStatusCommand, SEC_PLAYER, Console::Yes},
+            {"selftest", BankMail::HandleMailSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"visit", BankMail::HandleMailVisitCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
+        static ChatCommandTable playerbotsBankCommandTable = {
+            {"status", BankMail::HandleBankStatusCommand, SEC_PLAYER, Console::Yes},
+            {"selftest", BankMail::HandleBankSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"visit", BankMail::HandleBankVisitCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsWorldLogCommandTable = {
             {"selftest", WorldLog::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"case", WorldLog::HandleCaseCommand, SEC_GAMEMASTER, Console::Yes},
@@ -276,6 +290,8 @@ public:
             {"population", playerbotsPopulationCommandTable},
             {"route", playerbotsRouteCommandTable},
             {"planner", playerbotsPlannerCommandTable},
+            {"mail", playerbotsMailCommandTable},
+            {"bank", playerbotsBankCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
         };
