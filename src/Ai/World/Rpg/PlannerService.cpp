@@ -18,6 +18,7 @@
 #include "Bag.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
+#include "CensusMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
 #include "GoalInterface.h"
@@ -600,6 +601,19 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         return;
     }
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    Goals::Ranked const& ranked = answer->plan->ranked;
+    switch (GoalApply::NoteShort(goals, ranked.shortfallCopper, ranked.shortKind))
+    {
+        case GoalApply::ShortChange::Begin:
+            EventLog::Emit(bot, Upkeep::EVENT_NEED_SHORT, goals.shortKind.c_str(), 1,
+                           static_cast<int64>(ranked.shortfallCopper));
+            break;
+        case GoalApply::ShortChange::End:
+            EventLog::Emit(bot, Upkeep::EVENT_NEED_SHORT, goals.shortKind.c_str(), 0, 0);
+            break;
+        default:
+            break;
+    }
     ConsiderSwitch(botAI, bot, goals, now);
     Publish(bot, goals);
 }
