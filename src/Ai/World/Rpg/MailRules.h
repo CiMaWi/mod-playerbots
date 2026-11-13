@@ -28,8 +28,11 @@
 namespace BankMail
 {
 constexpr uint32_t MAIL_WORTH_CAP = std::numeric_limits<uint32_t>::max();
-// The orderliness weight until the traits supply one (bank-mail WB8)
+// The orderliness weight of a bot with no trait (a unit of 0)
 constexpr float DEFAULT_ORDERLINESS_WEIGHT = 1.0f;
+// A messy bot (unit -1) still fetches its mail at half the worth, a tidy one (unit +1) at one and a half times: a
+// weight of 0 would make MailErrandWorth 0 and a messy bot would never fetch anything (WB8)
+constexpr float ORDERLINESS_SPREAD = 0.5f;
 // The client's inbox shows this many mails
 constexpr uint32_t DEFAULT_MAILS_PER_VISIT = 50;
 
@@ -305,6 +308,17 @@ inline VisitPlan PlanMailVisit(std::vector<MailIn> const& mails, BagSpace const&
     }
 
     return plan;
+}
+
+// The orderliness trait (a unit in -1..1) as the weight of the bank-mail errands: 1 + spread * unit, so 0.5 .. 1.5 and
+// never 0 or below; no trait value (NaN) counts as a neutral bot
+inline float OrderlinessWeight(float unit)
+{
+    if (!(unit == unit))
+        return DEFAULT_ORDERLINESS_WEIGHT;
+
+    float const clamped = std::min(1.0f, std::max(-1.0f, unit));
+    return DEFAULT_ORDERLINESS_WEIGHT + ORDERLINESS_SPREAD * clamped;
 }
 
 // The worth of a mail errand: what unopened mail is expected to hold, plus what the bot saw and left, plus what it

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ItemWorthRules.h"
+#include "MailRules.h"
 
 // Trips and errands (travel plan WT15, PLAN 3.11, WT.6): providers say what an errand needs (a service), where it can
 // be done and what it is worth now; PlanTrip puts every errand on a stop of the trip and opens a detour only when the
@@ -30,9 +31,12 @@ enum class ErrandKind : uint8_t
     Repair,
     BuyBag,
     BindHearth,
-    LearnFlight
+    LearnFlight,
+    Mail,          // the bank-mail plan (WB8)
+    BankWithdraw,  // due items from the bank
+    BankDeposit    // kept items into the bank
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 6;
+constexpr uint8_t ERRAND_KIND_COUNT = 9;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -50,6 +54,12 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "bind_hearth";
         case ErrandKind::LearnFlight:
             return "learn_flight";
+        case ErrandKind::Mail:
+            return "mail";
+        case ErrandKind::BankWithdraw:
+            return "bank_withdraw";
+        case ErrandKind::BankDeposit:
+            return "bank_deposit";
     }
     return "other";
 }
@@ -60,6 +70,11 @@ constexpr uint32_t SERVICE_VENDOR = 1u << 1;
 constexpr uint32_t SERVICE_REPAIR = 1u << 2;
 constexpr uint32_t SERVICE_INNKEEPER = 1u << 3;
 constexpr uint32_t SERVICE_FLIGHT_MASTER = 1u << 4;
+constexpr uint32_t SERVICE_MAILBOX = 1u << 5;
+constexpr uint32_t SERVICE_BANKER = 1u << 6;
+// Unopened mail alone is worth at most this share of a usual trip's minutes at the earning rate, so it never pays a
+// detour (a detour costs at least that trip's minutes) yet still joins any stop with a mailbox (WB.4)
+constexpr float UNOPENED_MAIL_TRIP_SHARE = 0.5f;
 
 // An errand place this close to a stop is done at that stop (a town square; quest camps cluster at 25 to 70 yd)
 constexpr float STOP_JOIN_YARDS = 40.0f;
@@ -155,6 +170,16 @@ struct ErrandSnapshot
     std::vector<BagOfferAt> Bags;
     std::vector<PlaceOffer> Inns;         // an inn worth binding at
     std::vector<PlaceOffer> FlightNodes;  // an undiscovered node worth learning
+    // Bank and mail (WB8): only for a bot the bank rule governs (a persistent bot without a master)
+    bool Governed = false;
+    float Orderliness = 0.0f;         // the trait, a unit in -1..1
+    uint32_t MailWaiting = 0;         // unopened mails
+    uint32_t MailDefaultWorth = 100;  // copper per unopened mail (the config's MailDefaultWorthCopper)
+    uint32_t MailSeenCopper = 0;      // what the bot saw and left in the mail
+    uint32_t MailExpectedCopper = 0;  // what it expects from its own sales
+    uint32_t BankDueCount = 0;        // kept items that have come due
+    uint32_t BankDueWorth = 0;        // their worth
+    uint32_t BankDepositSlots = 0;    // bag slots kept items hold that a deposit would free
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -254,6 +279,85 @@ inline void ProvideFlightNodes(ErrandSnapshot const& snapshot, std::vector<Erran
                           node.Target, false});
 }
 
+// The mail errand (WB8): the worth of MailErrandWorth with the bot's orderliness as weight. The unopened part
+// (waiting x default) is capped below a detour's least cost, so it joins a stop that has a mailbox but never opens one;
+// what the bot saw or expects counts in full and can pay a detour. Placed nowhere: any stop with a mailbox takes it
+inline float MailWorth(ErrandSnapshot const& snapshot)
+{
+    float const weight = BankMail::OrderlinessWeight(snapshot.Orderliness);
+    double const full = BankMail::MailErrandWorth(snapshot.MailWaiting, snapshot.MailDefaultWorth,
+                                                  snapshot.MailSeenCopper, snapshot.MailExpectedCopper, weight);
+    double const unopened = BankMail::MailErrandWorth(snapshot.MailWaiting, snapshot.MailDefaultWorth, 0, 0, weight);
+    double const cap =
+        static_cast<double>(UNOPENED_MAIL_TRIP_SHARE) * snapshot.Rates.TripMinutes * snapshot.Rates.EarnCopperPerMinute;
+    double const worth = full - unopened + std::min(unopened, std::max(cap, 0.0));
+    return static_cast<float>(std::min(std::max(worth, 0.0), 4.0e9));
+}
+
+inline void ProvideMail(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Governed || (!snapshot.MailWaiting && !snapshot.MailSeenCopper && !snapshot.MailExpectedCopper))
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Mail;
+    offer.Service = SERVICE_MAILBOX;
+    offer.WorthCopper = MailWorth(snapshot);
+    offers.push_back(offer);
+}
+
+// Due items waiting in the bank, weighted by orderliness
+inline void ProvideBankWithdraw(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Governed || !snapshot.BankDueCount)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::BankWithdraw;
+    offer.Service = SERVICE_BANKER;
+    offer.WorthCopper = static_cast<float>(snapshot.BankDueWorth) * BankMail::OrderlinessWeight(snapshot.Orderliness);
+    offers.push_back(offer);
+}
+
+// Kept items out of the bags: the slots they free are worth the same as a sale's until the next stop, unweighted
+inline void ProvideBankDeposit(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Governed || !snapshot.BankDepositSlots)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::BankDeposit;
+    offer.Service = SERVICE_BANKER;
+    offer.WorthCopper =
+        SaleWorth(snapshot.Rates, snapshot.FreeSlots, snapshot.BankDepositSlots, snapshot.MinutesToNextStop);
+    offers.push_back(offer);
+}
+
+// A mailbox or banker near a stop is done at that stop (STOP_JOIN_YARDS): its service bit goes onto the nearest stop
+// within that distance, else it stands as a stop of its own. PlanTrip joins an unplaced errand only to a stop whose
+// Services carry the bit, so the snapshot's stops come through here (WB8)
+inline void MergeServiceStops(std::vector<ServiceStop>& stops, std::vector<ServiceStop> const& extras)
+{
+    for (ServiceStop const& extra : extras)
+    {
+        ServiceStop* nearest = nullptr;
+        float best = STOP_JOIN_YARDS;
+        for (ServiceStop& stop : stops)
+        {
+            float const yards = Yards(stop.Place, extra.Place);
+            if (yards <= best)
+            {
+                best = yards;
+                nearest = &stop;
+            }
+        }
+        if (nearest)
+            nearest->Services |= extra.Services;
+        else
+            stops.push_back(extra);
+    }
+}
+
 // The travel plan's providers; a later plan adds its row to its own copy of this table, PlanTrip stays as it is
 inline std::vector<ProviderRow> const& TravelProviders()
 {
@@ -265,6 +369,21 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::BindHearth, "bind_hearth", &ProvideHearth},
         {ErrandKind::LearnFlight, "learn_flight", &ProvideFlightNodes},
     };
+    return rows;
+}
+
+// The trip's providers with the bank and mail rows. A stop does its errands in the order the offers come: a banker's
+// withdrawal first (it may bring gear or sellable items), then selling and the rest, then the deposit and the mailbox
+inline std::vector<ProviderRow> const& TripProviders()
+{
+    static std::vector<ProviderRow> const rows = []
+    {
+        std::vector<ProviderRow> all = {{ErrandKind::BankWithdraw, "bank_withdraw", &ProvideBankWithdraw}};
+        all.insert(all.end(), TravelProviders().begin(), TravelProviders().end());
+        all.push_back({ErrandKind::BankDeposit, "bank_deposit", &ProvideBankDeposit});
+        all.push_back({ErrandKind::Mail, "mail", &ProvideMail});
+        return all;
+    }();
     return rows;
 }
 
