@@ -52,6 +52,7 @@ struct GroundGeometry
     bool OffHull(Point const& point) const { return Surface.Outside(point); }
     bool OnGround(Point const&) const { return Ground; }
     bool ConnectedGround(Point const&, Point const&) const { return Corridor; }
+    bool GroundLeadsOn(Point const&, Point const&) const { return Corridor; }
     bool CrossingClear(Point const&, Point const&) const { return Crossing; }
 };
 
@@ -435,7 +436,7 @@ void CheckExitSearch()
         {
             return OnQuay(point) ? std::optional<Point>(point) : std::nullopt;
         }
-        std::optional<Point> DeckFrom(Point const& shore, float inset) const
+        std::optional<Point> DeckFrom(Point const& shore, float inset, Point const&) const
         {
             Inset = inset;
             float const inward = shore.Y < 0.0f ? -1.0f : 1.0f;
@@ -443,16 +444,21 @@ void CheckExitSearch()
         }
         bool OffHull(Point const& point) const { return Deck.Outside(point); }
         bool OnGround(Point const& point) const { return OnQuay(point); }
-        bool ConnectedGround(Point const& start, Point const& end) const { return OnQuay(start) && OnQuay(end); }
+        bool GroundLeadsOn(Point const& start, Point const& end) const { return OnQuay(start) && OnQuay(end); }
         bool CrossingClear(Point const& start, Point const&) const { return DistanceSquared(start, Bot) > 0.01f; }
-        bool DeckWalkClear(Point const&, Point const&) const { return DeckWalk; }
+        std::optional<std::vector<Point>> DeckPath(Point const&, Point const& to, std::uint32_t,
+                                                   std::uint32_t& expanded) const
+        {
+            expanded = 0;
+            return DeckWalk ? std::optional<std::vector<Point>>(std::vector<Point>{to}) : std::nullopt;
+        }
     } geometry;
 
     Point const origin{0.0f, 0.0f, 0.0f};
     Point const toward{0.0f, -40.0f, 6.0f};
     Check(!AcceptExit(geometry, geometry.Bot, {0.0f, -8.0f, 6.0f}, {0.0f, -12.0f, 6.0f}),
           "the straight crossing from where the bot boarded is blocked by the far railing");
-    auto const exit = FindExit(geometry, geometry.Bot, origin, toward);
+    auto const exit = FindExit(geometry, geometry.Bot, origin, origin, {toward});
     Check(exit && exit->Deck.Y == -1.0f && exit->Ground.Y <= -7.0f && std::fabs(exit->Ground.X) < 0.01f,
           "the exit crosses the deck to the edge facing the route and steps onto the quay there");
     Check(exit && AcceptExit(geometry, exit->Deck, exit->Ground, exit->Onward),
@@ -467,26 +473,260 @@ void CheckExitSearch()
     Check(exit && geometry.OffHull(exit->Onward) && exit->Onward.Y < exit->Ground.Y,
           "the onward point leads away from the hull");
     Point const nearRoute{3.0f, -14.0f, 6.0f};
-    auto const nearExit = FindExit(geometry, geometry.Bot, origin, nearRoute);
+    auto const nearExit = FindExit(geometry, geometry.Bot, origin, origin, {nearRoute});
     Check(nearExit && nearExit->Onward.X == nearRoute.X && nearExit->Onward.Y == nearRoute.Y,
           "a near route point off the hull is the onward point");
 
     geometry.DeckWalk = false;
     CrossingTally tally;
-    Check(!FindExit(geometry, geometry.Bot, origin, toward, &tally) &&
+    Check(!FindExit(geometry, geometry.Bot, origin, origin, {toward}, &tally) &&
               tally.Counts[static_cast<std::size_t>(CrossingCheck::DeckWalk)] > 0,
           "a blocked walk across the deck rejects the edge and is counted");
     Check(
         tally.Bearings[0] && tally.Bearings[0]->Check == CrossingCheck::DeckWalk && tally.Bearings[0]->Distance == 7.0f,
         "the probe keeps, for the route's bearing, the nearest candidate that got furthest (the deck walk at 7 yd)");
     geometry.DeckWalk = true;
-    Check(!FindExit(geometry, {0.0f, 3.0f, 12.0f}, origin, toward),
+    Check(!FindExit(geometry, {0.0f, 3.0f, 12.0f}, origin, origin, {toward}),
           "the search looks for the quay at the deck's floor, not a dock floor below it");
 }
 
-// WT43: Tirisfal's gondola (deck at 98.46 within 7 yd of the origin's XY), its platform 10 yd out. Boarding's 4-yd
-// inset after a 2-yd edge step puts the deck point 2 yd from the centre, behind the rail; an exit's 1-yd inset keeps it
-// 1 to 2 yd inside the edge.
+// WT43c: the walk across the deck goes around what the straight walk cannot cross (a mast on the centreline) within a
+// bounded search, and gives up at its cap where no walk exists (a wall across the deck).
+void CheckDeckPath()
+{
+    auto const deckWithin = [](float halfX, float halfY)
+    {
+        return [halfX, halfY](Point const& top, float drop) -> std::optional<float>
+        {
+            if (std::fabs(top.X) > halfX || std::fabs(top.Y) > halfY || top.Z < 6.1f || top.Z - 6.1f > drop)
+                return std::nullopt;
+            return 6.1f;
+        };
+    };
+    auto const mast = [](Point const& a, Point const& b)
+    {
+        float const dx = b.X - a.X;
+        float const dy = b.Y - a.Y;
+        float const length2 = dx * dx + dy * dy;
+        float const part = length2 > 0.0f ? std::clamp(-(a.X * dx + a.Y * dy) / length2, 0.0f, 1.0f) : 0.0f;
+        return std::hypot(a.X + dx * part, a.Y + dy * part) < 1.0f;
+    };
+    auto const shipDeck = deckWithin(8.0f, 5.0f);
+    Point const start{0.0f, 4.0f, 6.1f};
+    Point const end{0.0f, -4.0f, 6.1f};
+    Check(!FollowDeck(start, end, 0.35f, shipDeck, mast), "the straight walk across the deck runs into the mast");
+    std::uint32_t expanded = 0;
+    auto const walk = DeckPath(start, end, 0.35f, shipDeck, mast, DECK_PATH_CELLS, expanded);
+    bool clear = walk && !walk->empty() && walk->back().X == end.X && walk->back().Y == end.Y;
+    Point at = start;
+    for (Point const& corner : walk ? *walk : std::vector<Point>{})
+    {
+        clear = clear && FollowDeck(at, corner, 0.35f, shipDeck, mast);
+        at = corner;
+    }
+    Check(clear, "the deck walk goes around the mast by corners its steps clear and ends at the deck edge");
+    Check(walk && walk->size() >= 2 && walk->size() <= 8 && expanded > 0 && expanded <= DECK_PATH_CELLS,
+          "the walk around the mast is a few corners, found within the search's cap");
+    Check(DeckPath({0.0f, 4.0f, 6.1f}, {3.0f, 4.0f, 6.1f}, 0.35f, shipDeck, mast, DECK_PATH_CELLS, expanded) &&
+              expanded == 0,
+          "a clear straight walk is taken without a search");
+
+    auto const wall = [](Point const& a, Point const& b)
+    { return std::min(a.Y, b.Y) < 0.5f && std::max(a.Y, b.Y) > -0.5f; };
+    Check(!DeckPath({0.0f, 5.0f, 6.1f}, {0.0f, -5.0f, 6.1f}, 0.35f, deckWithin(30.0f, 10.0f), wall, DECK_PATH_CELLS,
+                    expanded) &&
+              expanded == DECK_PATH_CELLS,
+          "a wall across the deck ends the search at its cap, without a walk");
+}
+
+// WT43c: a round gondola (synthetic; Tirisfal's own shape is CheckTirisfalGondola's). The bot stands on the centre's
+// fixture (98.46, within 2 yd), the gondola's floor (97.1)
+// reaches 7 yd out; the tower's platform lies 7.5 to 12 yd out at 97.0, at +135 degrees from the route's far point,
+// and joins the ground the route goes on to. At +60 degrees lies a ledge of the mesh that leads nowhere (an island).
+void CheckGondolaExit()
+{
+    struct GondolaGeometry
+    {
+        Point Bot{0.0f, 0.0f, 98.46f};
+
+        static float Radius(Point const& point) { return std::hypot(point.X, point.Y); }
+        static bool Sector(Point const& point, float degrees)
+        {
+            float const bearing = std::atan2(point.Y, point.X) * 57.2957795f;
+            return std::fabs(bearing - degrees) <= 8.0f && Radius(point) >= 7.5f && Radius(point) <= 12.0f;
+        }
+        static bool Platform(Point const& point) { return Sector(point, 135.0f); }
+        static bool Island(Point const& point) { return Sector(point, 60.0f); }
+        static bool Far(Point const& point) { return point.X >= 50.0f; }
+        static std::optional<float> DeckAt(Point const& top, float drop)
+        {
+            float const z = Radius(top) <= 2.0f && top.Z >= 98.46f ? 98.46f : 97.1f;
+            if (Radius(top) > 7.0f || top.Z < z || top.Z - z > drop)
+                return std::nullopt;
+            return z;
+        }
+        std::optional<Point> ShoreAt(Point const& seed, float vertical) const
+        {
+            bool const quay = (Platform(seed) || Island(seed)) && std::fabs(seed.Z - 97.0f) <= vertical;
+            return quay ? std::optional<Point>(Point{seed.X, seed.Y, 97.0f}) : std::nullopt;
+        }
+        std::optional<Point> SnapGround(Point point, float, float) const
+        {
+            if (Far(point))
+                return point;
+            if (Platform(point) || Island(point))
+                return Point{point.X, point.Y, 97.0f};
+            return std::nullopt;
+        }
+        std::optional<Point> DeckFrom(Point const& shore, float inset, Point const&) const
+        {
+            float const scale = (7.0f - inset) / Radius(shore);
+            return Point{shore.X * scale, shore.Y * scale, 97.1f};
+        }
+        bool OffHull(Point const& point) const { return Radius(point) > 7.2f; }
+        bool OnGround(Point const& point) const { return Platform(point) || Island(point) || Far(point); }
+        bool CrossingClear(Point const&, Point const&) const { return true; }
+        bool GroundLeadsOn(Point const& start, Point const& end) const { return Platform(start) && Far(end); }
+        std::optional<std::vector<Point>> DeckPath(Point const& start, Point const& end, std::uint32_t cells,
+                                                   std::uint32_t& expanded) const
+        {
+            return TravelLifecycle::DeckPath(
+                start, end, 0.35f, [](Point const& top, float drop) { return DeckAt(top, drop); },
+                [](Point const&, Point const&) { return false; }, cells, expanded);
+        }
+    } geometry;
+
+    Point const origin{0.0f, 0.0f, 114.97f};
+    Point const stop{0.0f, 0.0f, 114.97f};
+    Point const far{100.0f, 0.0f, 40.0f};
+    CrossingTally tally;
+    auto const exit = FindExit(geometry, geometry.Bot, origin, origin, {stop, far}, &tally);
+    Check(
+        exit && std::fabs(std::atan2(exit->Ground.Y, exit->Ground.X) - 2.35619449f) < 0.01f && exit->Ground.Z == 97.0f,
+        "the gondola's exit steps from the higher centre down onto the platform at +135 degrees");
+    Check(exit && tally.Onward && exit->Onward.X == far.X && exit->Onward.Y == far.Y,
+          "the onward point is the route's first point off the hull, not a point beside the quay");
+    Check(exit && !exit->Walk.empty() && exit->Walk.back().X == exit->Deck.X && exit->Walk.back().Y == exit->Deck.Y,
+          "the exit's deck walk ends at its deck edge");
+    Check(tally.Counts[static_cast<std::size_t>(CrossingCheck::Corridor)] > 0,
+          "a quay on a ledge that does not lead on to the route is rejected by its corridor");
+    CrossingTally lost;
+    Check(!FindExit(geometry, geometry.Bot, origin, origin, {stop}, &lost) && !lost.Onward &&
+              lost.Counts[static_cast<std::size_t>(CrossingCheck::Onward)] == 1,
+          "a route with no point off the hull gives no exit and counts it once");
+}
+
+// WT43c: Tirisfal's gondola as its collision model has it (Transport_Zeppelin.wmo). The transport's origin lies on the
+// gondola's rail, whose top (98.46) is where the rider stands; the floor (97.07) spans |x| <= 12, -13 <= y < 0, and the
+// rail's outer face (y = 0.6) is open only at the gangway (-8 <= x <= -2). The tower's platform (97.0) lies beyond the
+// rail. The model's bounds centre (-7.65, -7.88) lies over the floor.
+void CheckTirisfalGondola()
+{
+    struct TirisfalGeometry
+    {
+        Point Bot{0.0f, 0.0f, 98.46f};
+
+        static bool Gangway(float x) { return x >= -8.0f && x <= -2.0f; }
+        static std::optional<float> Surface(float x, float y)
+        {
+            if (std::fabs(x) > 12.0f || y < -13.0f || y > 0.6f)
+                return std::nullopt;
+            return y >= 0.0f && !Gangway(x) ? 98.46f : 97.07f;
+        }
+        // The rail's outer face between two points, open at the gangway
+        static bool Face(Point const& a, Point const& b)
+        {
+            constexpr float FACE = 0.6f;
+            if (std::min(a.Y, b.Y) > FACE || std::max(a.Y, b.Y) <= FACE)
+                return false;
+            return !Gangway(a.X + (b.X - a.X) * (FACE - a.Y) / (b.Y - a.Y));
+        }
+        static bool Platform(Point const& point)
+        {
+            return point.X >= -2.0f && point.X <= 6.0f && point.Y >= 1.0f && point.Y <= 12.0f;
+        }
+        static bool Far(Point const& point) { return point.Y >= 50.0f; }
+        std::optional<Point> ShoreAt(Point const& seed, float vertical) const
+        {
+            bool const quay = Platform(seed) && std::fabs(seed.Z - 97.0f) <= vertical;
+            return quay ? std::optional<Point>(Point{seed.X, seed.Y, 97.0f}) : std::nullopt;
+        }
+        std::optional<Point> SnapGround(Point point, float, float) const
+        {
+            if (Far(point))
+                return point;
+            if (Platform(point))
+                return Point{point.X, point.Y, 97.0f};
+            return std::nullopt;
+        }
+        std::optional<Point> DeckFrom(Point const& shore, float inset, Point const& toward) const
+        {
+            return DeckPointFrom(shore, toward, inset,
+                                 [](Point const& point) -> std::optional<float>
+                                 {
+                                     auto const surface = Surface(point.X, point.Y);
+                                     if (!surface || *surface > point.Z + 6.0f || *surface < point.Z - 12.0f)
+                                         return std::nullopt;
+                                     return surface;
+                                 });
+        }
+        bool OffHull(Point const& point) const
+        {
+            return std::fabs(point.X) > 12.35f || point.Y < -13.35f || point.Y > 0.95f;
+        }
+        bool OnGround(Point const& point) const { return Platform(point) || Far(point); }
+        bool GroundLeadsOn(Point const& start, Point const& end) const { return Platform(start) && Far(end); }
+        // The body ray and the rays 0.35 yd to either side of it
+        bool CrossingClear(Point const& start, Point const& end) const
+        {
+            float const length = std::hypot(end.X - start.X, end.Y - start.Y);
+            for (float const side : {0.0f, -0.35f, 0.35f})
+            {
+                float const x = -(end.Y - start.Y) / length * side;
+                float const y = (end.X - start.X) / length * side;
+                if (Face({start.X + x, start.Y + y, start.Z}, {end.X + x, end.Y + y, end.Z}))
+                    return false;
+            }
+            return true;
+        }
+        std::optional<std::vector<Point>> DeckPath(Point const& start, Point const& end, std::uint32_t cells,
+                                                   std::uint32_t& expanded) const
+        {
+            return TravelLifecycle::DeckPath(
+                start, end, 0.35f,
+                [](Point const& top, float drop) -> std::optional<float>
+                {
+                    auto const surface = Surface(top.X, top.Y);
+                    if (!surface || *surface > top.Z || top.Z - *surface > drop)
+                        return std::nullopt;
+                    return surface;
+                },
+                [](Point const& a, Point const& b) { return Face(a, b); }, cells, expanded);
+        }
+    } geometry;
+
+    Point const origin{0.0f, 0.0f, 114.97f};
+    Point const centre{-7.65f, -7.88f, 114.97f};
+    std::vector<Point> const route{origin, {-30.0f, 100.0f, 40.0f}};
+    CrossingTally toOrigin;
+    Check(!FindExit(geometry, geometry.Bot, origin, origin, route, &toOrigin) &&
+              toOrigin.Counts[static_cast<std::size_t>(CrossingCheck::Crossing)] > 0,
+          "Tirisfal: deck points searched toward the origin stay on the rail, and their crossings meet its face");
+    auto const exit = FindExit(geometry, geometry.Bot, origin, centre, route);
+    float const part = exit ? (0.6f - exit->Deck.Y) / (exit->Ground.Y - exit->Deck.Y) : 0.0f;
+    float const gangway = exit ? exit->Deck.X + (exit->Ground.X - exit->Deck.X) * part : 0.0f;
+    Check(exit && exit->Deck.Z == 97.07f && TirisfalGeometry::Platform(exit->Ground) &&
+              TirisfalGeometry::Gangway(gangway),
+          "Tirisfal: the deck point searched toward the hull's centre lies on the floor past the gangway, and the "
+          "crossing to the platform passes through the gangway");
+    Check(exit && !exit->Walk.empty() && exit->Walk.back().X == exit->Deck.X && exit->Walk.back().Y == exit->Deck.Y &&
+              AcceptExit(geometry, exit->Deck, exit->Ground, exit->Onward),
+          "Tirisfal: the walk goes down from the rail to that deck point, and the exit passes its confirmation there");
+}
+
+// WT43: a round gondola (synthetic: deck at 98.46 within 7 yd of the origin's XY), its platform 10 yd out.
+// Boarding's 4-yd inset after a 2-yd edge step puts the deck point 2 yd from the centre, behind the rail; an exit's
+// 1-yd inset keeps it 1 to 2 yd inside the edge.
 void CheckDeckPoint()
 {
     Point const origin{0.0f, 0.0f, 114.97f};
@@ -1459,6 +1699,9 @@ int main()
     CheckExitSearch();
     CheckDeckPoint();
     CheckDeckWalk();
+    CheckDeckPath();
+    CheckGondolaExit();
+    CheckTirisfalGondola();
     CheckDiscardedOwner();
     CheckIneligibleMaintenance();
     CheckUnconsumedBoardTransfer();

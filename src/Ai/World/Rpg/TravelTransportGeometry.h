@@ -11,7 +11,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "GameObjectModel.h"
 #include "ModelIgnoreFlags.h"
@@ -33,6 +35,17 @@ inline Point PositionOf(WorldObject const& object)
 }
 
 inline DockPose PoseOf(Transport const& transport) { return {PositionOf(transport), transport.GetOrientation()}; }
+
+// The middle of the transport's hull: the centre of its model's bounds (the world box around the turned model box has
+// the box's own centre), at the transport's height. A transport's origin need not lie over its deck: a zeppelin's lies
+// on its gondola's rail.
+inline Point HullCentre(Transport const& transport)
+{
+    if (!transport.m_model)
+        return PositionOf(transport);
+    G3D::Vector3 const centre = transport.m_model->GetBounds().center();
+    return {centre.x, centre.y, transport.GetPositionZ()};
+}
 
 struct SplineControl
 {
@@ -135,10 +148,16 @@ struct GroundGeometry
         return shore;
     }
 
-    std::optional<Point> DeckFrom(Point const& shore, float inset = TravelLifecycle::BOARD_DECK_INSET_YARDS) const
+    // Boarding's deck point lies toward the transport's origin
+    std::optional<Point> DeckFrom(Point const& shore) const
+    {
+        return DeckFrom(shore, TravelLifecycle::BOARD_DECK_INSET_YARDS, PositionOf(*Surface));
+    }
+
+    std::optional<Point> DeckFrom(Point const& shore, float inset, Point const& toward) const
     {
         uint32 const phase = Bot.GetPhaseMask();
-        return TravelLifecycle::DeckPointFrom(shore, PositionOf(*Surface), inset,
+        return TravelLifecycle::DeckPointFrom(shore, toward, inset,
                                               [&](Point const& point) { return DeckHeight(*Surface, phase, point); });
     }
 
@@ -165,13 +184,41 @@ struct GroundGeometry
                !Bot.GetMap()->IsInWater(Bot.GetPhaseMask(), point.X, point.Y, point.Z, Bot.GetCollisionHeight());
     }
 
+    // How the ground mesh joins two points. Connected: the search reached end. Far: the search ran out of nodes on a
+    // large mesh before it reached a distant end. Apart: it exhausted a mesh island without reaching end. Off: a point
+    // has no ground polygon, or the walk's first polygons are not ground.
+    enum class Reach : uint8
+    {
+        Connected,
+        Far,
+        Apart,
+        Off
+    };
+
+    static char const* ReachName(Reach reach)
+    {
+        switch (reach)
+        {
+            case Reach::Connected:
+                return "connected";
+            case Reach::Far:
+                return "far";
+            case Reach::Apart:
+                return "apart";
+            case Reach::Off:
+                return "off";
+        }
+        return "unknown";
+    }
+
     // Read the current map's ground mesh directly, with no passenger-dependent shortcut or pathfinding state change.
-    bool ConnectedGround(Point const& start, Point const& end) const
+    // The stored corridor holds the walk's first polygons only (DT_BUFFER_TOO_SMALL keeps the start part).
+    Reach GroundReach(Point const& start, Point const& end) const
     {
         MMapData& mmap = Bot.GetMap()->GetMapCollisionData().GetMMapData();
         dtNavMeshQuery const* const query = mmap.GetNavMeshQuery();
         if (!mmap.GetNavMesh() || !query)
-            return false;
+            return Reach::Off;
         dtQueryFilter filter;
         filter.setIncludeFlags(NAV_GROUND);
         filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
@@ -184,24 +231,37 @@ struct GroundGeometry
         dtPolyRef toPoly = 0;
         if (dtStatusFailed(query->findNearestPoly(from, extents, &filter, &fromPoly, fromNearest)) || !fromPoly ||
             dtStatusFailed(query->findNearestPoly(to, extents, &filter, &toPoly, toNearest)) || !toPoly)
-            return false;
+            return Reach::Off;
 
         std::array<dtPolyRef, 64> corridor;
         int count = 0;
         dtStatus const status = query->findPath(fromPoly, toPoly, fromNearest, toNearest, &filter, corridor.data(),
                                                 &count, static_cast<int>(corridor.size()));
-        if (dtStatusFailed(status) || dtStatusDetail(status, DT_PARTIAL_RESULT | DT_BUFFER_TOO_SMALL) || count == 0 ||
-            corridor[count - 1] != toPoly)
-            return false;
+        if (dtStatusFailed(status) || count == 0)
+            return Reach::Off;
         for (int i = 0; i < count; ++i)
         {
             dtMeshTile const* tile = nullptr;
             dtPoly const* poly = nullptr;
             if (dtStatusFailed(mmap.GetNavMesh()->getTileAndPolyByRef(corridor[i], &tile, &poly)) ||
                 poly->getType() != DT_POLYTYPE_GROUND)
-                return false;
+                return Reach::Off;
         }
-        return true;
+        if (!dtStatusDetail(status, DT_PARTIAL_RESULT))
+            return Reach::Connected;
+        return dtStatusDetail(status, DT_OUT_OF_NODES) ? Reach::Far : Reach::Apart;
+    }
+
+    bool ConnectedGround(Point const& start, Point const& end) const
+    {
+        return GroundReach(start, end) == Reach::Connected;
+    }
+
+    // The quay leads on to the route: joined to it, or part of a mesh too large to search to a far route point.
+    bool GroundLeadsOn(Point const& start, Point const& end) const
+    {
+        Reach const reach = GroundReach(start, end);
+        return reach == Reach::Connected || reach == Reach::Far;
     }
 
     enum class Block : uint8
@@ -233,18 +293,20 @@ struct GroundGeometry
 
     bool CrossingClear(Point const& start, Point const& end) const { return CrossingBlock(start, end) == Block::Clear; }
 
-    // The walk across the deck to its edge, along the deck's surface: on the deck, the transport's own model is the
-    // only obstacle.
-    bool DeckWalkClear(Point const& start, Point const& end) const
+    // The walk across the deck to its edge, along the deck's surface (TravelLifecycle::DeckPath): on the deck, the
+    // transport's own model is the only obstacle.
+    std::optional<std::vector<Point>> DeckPath(Point const& start, Point const& end, std::uint32_t cells,
+                                               std::uint32_t& expanded) const
     {
+        expanded = 0;
         if (!Surface || !Surface->m_model)
-            return true;
+            return std::vector<Point>{end};
         uint32 const phase = Bot.GetPhaseMask();
         float const radius = std::max(0.35f, Bot.GetObjectSize() * 0.5f);
-        return TravelLifecycle::FollowDeck(
-            start, end, radius,
-            [&](Point const& top, float drop) { return DeckHeight(*Surface, phase, top, 0.0f, drop); },
-            [&](Point const& a, Point const& b) { return ModelBlocks({a.X, a.Y, a.Z}, {b.X, b.Y, b.Z}); });
+        return TravelLifecycle::DeckPath(
+            start, end, radius, [&](Point const& top, float drop)
+            { return DeckHeight(*Surface, phase, top, 0.0f, drop); }, [&](Point const& a, Point const& b)
+            { return ModelBlocks({a.X, a.Y, a.Z}, {b.X, b.Y, b.Z}); }, cells, expanded);
     }
 
     bool ModelBlocks(G3D::Vector3 const& a, G3D::Vector3 const& b) const
@@ -296,15 +358,16 @@ struct GroundGeometry
     }
 };
 
-// The exit search runs around the transport's origin from where the bot stands (TravelLifecycle::FindExit).
+// The exit search runs around the transport's origin from where the bot stands, toward the route's next points; its
+// deck edges lie toward the hull's centre (TravelLifecycle::FindExit).
 inline std::optional<TravelLifecycle::ExitPath> FindExit(Player const& bot, Transport const& transport,
-                                                         Point const& toward,
+                                                         std::vector<Point> const& route,
                                                          TravelLifecycle::CrossingTally* tally = nullptr)
 {
     if (!Available(bot, transport))
         return std::nullopt;
-    return TravelLifecycle::FindExit(GroundGeometry{bot, &transport}, PositionOf(bot), PositionOf(transport), toward,
-                                     tally);
+    return TravelLifecycle::FindExit(GroundGeometry{bot, &transport}, PositionOf(bot), PositionOf(transport),
+                                     HullCentre(transport), route, tally);
 }
 
 inline bool ConfirmExit(Player const& bot, Transport const& transport, TravelLifecycle::PassengerMotion const& motion)
