@@ -60,6 +60,10 @@ void AutoMaintenanceOnLevelupAction::AutoTeleportForLevel()
     if (botAI->HasGameClientMaster())
         return;
 
+    // Persistent bots change zones by travelling (the planner's move_zone goal, WT20).
+    if (sRandomPlayerbotMgr.HonestTravel())
+        return;
+
     sRandomPlayerbotMgr.RandomTeleportForLevel(bot);
     return;
 }

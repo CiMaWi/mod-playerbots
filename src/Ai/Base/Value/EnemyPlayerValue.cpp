@@ -5,42 +5,81 @@
  */
 
 #include "EnemyPlayerValue.h"
+#include "AttackersValue.h"
 #include "CombatManager.h"
+#include "FightBook.h"
+#include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "PvpValues.h"
 #include "ServerFacade.h"
 #include "Strategy.h"
 #include "TargetValue.h"
+#include "TestConstraints.h"
 #include "Vehicle.h"
+
+namespace
+{
+// The fight_start rows' reasons for today's scan (world-log.md); REFUSAL_FILTERED: the parent's filter, told apart
+// into level_filter and not_target only for a meeting
+constexpr char const* REFUSAL_FILTERED = "filtered";
+constexpr char const* REFUSAL_LEVEL = "level_filter";
+constexpr char const* REFUSAL_NOT_TARGET = "not_target";
+constexpr char const* REFUSAL_NOT_FLAGGED = "not_flagged";
+constexpr char const* REFUSAL_EXCLUSION = "exclusion";
+constexpr char const* REFUSAL_NOT_VISIBLE = "not_visible";
+constexpr char const* REFUSAL_MASTER = "master";
+}  // namespace
 
 bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
 {
+    // World PvP (WP1) records each enemy player a persistent bot newly meets, with what today's rules did to it;
+    // nothing here changes the result
+    Player* const met = WorldPvp::NewMeeting(botAI, unit);
+    char const* refusal = Refusal(unit);
+    if (met)
+    {
+        if (refusal == REFUSAL_FILTERED)
+            refusal = AttackersValue::IsPossibleTarget(unit, bot, range) ? REFUSAL_LEVEL : REFUSAL_NOT_TARGET;
+        WorldPvp::RecordMeeting(botAI, met, refusal);
+    }
+    return !refusal;
+}
+
+char const* NearestEnemyPlayersValue::Refusal(Unit* unit)
+{
     // Apply parent's filtering first (includes level difference checks)
     if (!PossibleTargetsValue::AcceptUnit(unit))
-        return false;
+        return REFUSAL_FILTERED;
 
     bool inCannon = botAI->IsInVehicle(false, true);
     Player* enemy = dynamic_cast<Player*>(unit);
-    if (enemy && botAI->IsOpposing(enemy) && enemy->IsPvP() &&
-        !sPlayerbotAIConfig.IsPvpProhibited(enemy->GetZoneId(), enemy->GetAreaId()) &&
-        !enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2) &&
-        ((inCannon || !enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE))) &&
-        /*!enemy->HasStealthAura() && !enemy->HasInvisibilityAura()*/ (bot->InBattleground() ? bot->CanSeeOrDetect(enemy) : enemy->CanSeeOrDetect(bot)) &&
-        !(enemy->HasSpiritOfRedemptionAura()))
-    {
-        // If with master, only attack if master is PvP flagged
-        Player* master = botAI->GetMaster();
-        if (master && !master->IsPvP() && !master->IsFFAPvP())
-            return false;
+    if (!enemy || !botAI->IsOpposing(enemy))
+        return REFUSAL_NOT_TARGET;
+    if (!enemy->IsPvP())
+        return REFUSAL_NOT_FLAGGED;
+    if (sPlayerbotAIConfig.IsPvpProhibited(enemy->GetZoneId(), enemy->GetAreaId()))
+        return REFUSAL_EXCLUSION;
+    if (enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2) ||
+        (!inCannon && enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE)))
+        return REFUSAL_NOT_TARGET;
+    // Stealth and invisibility: !enemy->HasStealthAura() && !enemy->HasInvisibilityAura() is left to the sight check
+    if (!(bot->InBattleground() ? bot->CanSeeOrDetect(enemy) : enemy->CanSeeOrDetect(bot)))
+        return REFUSAL_NOT_VISIBLE;
+    if (enemy->HasSpiritOfRedemptionAura())
+        return REFUSAL_NOT_TARGET;
 
-        return true;
-    }
+    // If with master, only attack if master is PvP flagged
+    Player* master = botAI->GetMaster();
+    if (master && !master->IsPvP() && !master->IsFFAPvP())
+        return REFUSAL_MASTER;
 
-    return false;
+    return nullptr;
 }
 
 Unit* EnemyPlayerValue::Calculate()
 {
+    // Today's enemy scan (with the nearest enemy players' refresh when due): world PvP's before number for WP4
+    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp scan") : nullptr);
     bool controllingCannon = false;
     bool controllingVehicle = false;
     bool passenger = false;
@@ -92,6 +131,11 @@ Unit* EnemyPlayerValue::Calculate()
 
         return *targets.begin();
     }
+
+    // A test's nofight bot starts no fight with a player either (TestConstraints::StartsFights); it answers one
+    // already fighting it (above)
+    if (!TestConstraints::StartsFights(botAI->rpgInfo.constraints))
+        return nullptr;
 
     // 2. Find enemy player in range.
 

@@ -9,7 +9,9 @@
 #include "Chat.h"
 #include "DBCStores.h"
 #include "Field.h"
+#include "GameObjectData.h"
 #include "Log.h"
+#include "ObjectMgr.h"
 #include "PlayerbotsDatabase.h"
 #include "QueryResult.h"
 #include "RouteService.h"
@@ -23,6 +25,15 @@ namespace
 // row table as one result, and the pool's one synchronous connection (PlayerbotsDatabase.SynchThreads = 1) is free
 // again for the world thread after each chunk
 constexpr uint32 PATH_CHUNK_NODES = 100;
+
+// A transport link's object must be a transport gameobject (a ship, zeppelin, elevator or tram car): the follower
+// looks for it among the map's transports. The templates are loaded before OnBeforeWorldInitialized starts the loader
+// and never change afterwards
+bool IsTransportObject(uint32 entry)
+{
+    GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(entry);
+    return object && (object->type == GAMEOBJECT_TYPE_TRANSPORT || object->type == GAMEOBJECT_TYPE_MO_TRANSPORT);
+}
 }  // namespace
 
 TravelGraph& TravelGraph::Instance()
@@ -60,6 +71,7 @@ void TravelGraph::Load()
 
     TravelGraphBuilder builder;
     uint32 rows[3]{};
+    uint32 notTransports = 0;
     if (QueryResult result = PlayerbotsDatabase.Query("SELECT id, name, map_id, x, y, z FROM playerbots_travelnode"))
     {
         do
@@ -88,8 +100,13 @@ void TravelGraph::Load()
             row.extraCost = fields[6].Get<float>();
             for (uint32 i = 0; i < 3; ++i)
                 row.maxCreature[i] = fields[7 + i].Get<uint8>();
-            builder.AddLink(row);
             ++rows[1];
+            if (row.type == static_cast<uint8>(TravelLinkType::Transport) && !IsTransportObject(row.object))
+            {
+                ++notTransports;
+                continue;
+            }
+            builder.AddLink(row);
         } while (result->NextRow());
     }
 
@@ -155,9 +172,10 @@ void TravelGraph::Load()
              static_cast<double>(_stats.memoryBytes) / (1024.0 * 1024.0));
     LOG_INFO("playerbots",
              "[Route] travel graph rows read: {} nodes, {} links, {} points; largest path chunk {} rows; {} links "
-             "skipped, {} points without a link; {} taxi paths, {} flight links without one",
+             "skipped, {} points without a link; {} taxi paths, {} flight links without one; {} transport links "
+             "without a transport object dropped",
              rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints, _stats.taxiPaths,
-             _stats.flightsWithoutTaxi);
+             _stats.flightsWithoutTaxi, notTransports);
     Publish(loadMs, peakChunkRows);
 }
 

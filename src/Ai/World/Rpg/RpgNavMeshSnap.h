@@ -24,8 +24,9 @@ enum class Result : uint8
     None      // no walkable poly within the box
 };
 
-// Searches `across` yd to each side and `vertical` yd up and down
-inline Result Nearest(Map* map, float& x, float& y, float& z, float across, float vertical)
+// Searches `across` yd to each side and `vertical` yd up and down; `include` NAV_GROUND alone leaves water out
+inline Result Nearest(Map* map, float& x, float& y, float& z, float across, float vertical,
+                      uint16 include = NAV_GROUND | NAV_WATER)
 {
     if (!map)
         return Result::Unknown;
@@ -44,7 +45,7 @@ inline Result Nearest(Map* map, float& x, float& y, float& z, float across, floa
         return Result::Unknown;
 
     dtQueryFilter filter;
-    filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
+    filter.setIncludeFlags(include);
     filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
     float const extents[3] = {across, vertical, across};
     dtPolyRef poly = 0;
