@@ -107,6 +107,24 @@ void CheckItemWorth()
     Check(WorldTravel::ItemWorth(SpaceClass::Priceless, 0, 0, 1, 1.0f) == WorldTravel::WORTH_PRICELESS,
           "priceless worth");
     Check(WorldTravel::ItemWorth(SpaceClass::Sell, 0, 0, 1, 1.0f) == 0, "an item without a price is worth 0");
+
+    // Gear the bank rule keeps for a later level (WB9): worth its later worth, finite, so it competes for space
+    ItemFacts later;
+    later.LaterWorthEach = 400;
+    Check(WorldTravel::ClassifyForSpace(later) == SpaceClass::Kept, "kept for a later level: its own class");
+    Check(WorldTravel::ItemWorth(SpaceClass::Kept, 100, 0, 1, 1.0f, 400) == 400, "kept worth: the later worth");
+    Check(WorldTravel::ItemWorth(SpaceClass::Kept, 100, 0, 2, 1.0f, 400) == 800, "kept worth x count");
+    ItemFacts laterQuest = later;
+    laterQuest.Quest = true;
+    Check(WorldTravel::ClassifyForSpace(laterQuest) == SpaceClass::Priceless, "a kept item a quest needs: priceless");
+    ItemFacts laterUnknown;
+    laterUnknown.Kept = true;
+    Check(WorldTravel::ClassifyForSpace(laterUnknown) == SpaceClass::Priceless,
+          "a banked item whose later worth is unknown stays priceless");
+    std::vector<SpaceCandidate> const full = {{400, false}, {900, false}, {50, false}};
+    Check(WorldTravel::LowestWorthVictim(full) == 2, "full bags: junk goes before a kept item");
+    Check(WorldTravel::LowestWorthVictim({{400, false}, {900, false}}) == 0,
+          "full bags: the kept item goes only when everything else is worth more");
 }
 
 void CheckDestroy()

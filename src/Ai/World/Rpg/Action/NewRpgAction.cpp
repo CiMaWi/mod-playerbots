@@ -6,6 +6,7 @@
 
 #include "NewRpgAction.h"
 #include "AreaDefines.h"
+#include "BankRulesInput.h"
 #include "BroadcastHelper.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
@@ -893,7 +894,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     measure.VendorY = nearest->loc.GetPositionY();
     measure.VendorZ = nearest->loc.GetPositionZ();
 
-    // The stacks the sell action would take from the general slots (as the destroy rule counts them)
+    // The stacks the sell action would take from the general slots (as the destroy rule counts them); gear kept for a
+    // later level is not among them
+    BankMail::RefreshCarriedKeeps(botAI);
     uint32 sellableSlots = 0;
     for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
         for (Item* item :

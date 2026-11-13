@@ -65,29 +65,34 @@ enum class SpaceClass : uint8_t
 {
     Sell,      // worth what a vendor pays now (later the auction or disenchant value)
     Use,       // an upgrade, consumable, reagent or ammo the bot uses: worth what it saves the bot
-    Priceless  // quest, guild task, kept or banked items, the hearthstone: never destroyed
+    Kept,      // gear the bank rule keeps for a later level (BankRules.h): worth its later worth
+    Priceless  // quest, guild task and kept items, upgrades, the hearthstone: never destroyed
 };
 
 struct ItemFacts
 {
     bool Quest = false;  // a quest item, a quest starter or a guild task item
-    bool Kept = false;   // kept on purpose (exact quest amount, stock to keep) or banked
+    bool Kept = false;   // kept on purpose (exact quest amount, stock to keep), or banked with its later worth unknown
     bool Hearthstone = false;
-    bool Upgrade = false;  // an equipment upgrade
-    bool Used = false;     // a consumable, reagent, tradeskill item or ammo the bot uses
+    bool Upgrade = false;         // an equipment upgrade
+    bool Used = false;            // a consumable, reagent, tradeskill item or ammo the bot uses
+    uint32_t LaterWorthEach = 0;  // kept by the bank rule for a later level: one item's later worth; 0 = not
 };
 
 inline SpaceClass ClassifyForSpace(ItemFacts const& facts)
 {
     if (facts.Quest || facts.Kept || facts.Hearthstone || facts.Upgrade)
         return SpaceClass::Priceless;
+    if (facts.LaterWorthEach)
+        return SpaceClass::Kept;
 
     return facts.Used ? SpaceClass::Use : SpaceClass::Sell;
 }
 
-// sellMultiplier: what a vendor pays this bot per copper of the item's sell price
+// sellMultiplier: what a vendor pays this bot per copper of the item's sell price; laterWorthEach: one Kept item's
+// later worth
 inline uint32_t ItemWorth(SpaceClass spaceClass, uint32_t sellPrice, uint32_t buyPrice, uint32_t count,
-                          float sellMultiplier)
+                          float sellMultiplier, uint32_t laterWorthEach = 0)
 {
     if (spaceClass == SpaceClass::Priceless)
         return WORTH_PRICELESS;
@@ -95,6 +100,8 @@ inline uint32_t ItemWorth(SpaceClass spaceClass, uint32_t sellPrice, uint32_t bu
     double each = sellPrice * static_cast<double>(std::max(sellMultiplier, 0.0f));
     if (spaceClass == SpaceClass::Use)
         each = std::max<double>(buyPrice, static_cast<double>(sellPrice) * BUY_PER_SELL_PRICE);
+    else if (spaceClass == SpaceClass::Kept)
+        each = laterWorthEach;
 
     double const total = each * std::max<uint32_t>(count, 1);
     return static_cast<uint32_t>(std::min(total, static_cast<double>(WORTH_PRICELESS - 1)));

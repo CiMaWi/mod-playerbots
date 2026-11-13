@@ -47,6 +47,7 @@ struct KeptItem
 struct BankKnowledge
 {
     std::vector<KeptItem> kept;  // the bank items the keep rule keeps now, by later worth (BankRulesInput.h)
+    CarriedKeeps carried;        // the bag items it keeps for a later level, for the item usage (RefreshCarriedKeeps)
     uint16 freeSlots{0};         // free bank item slots (the 28; bank bags are not counted)
     bool built{false};           // set at login (BuildBankKnowledge)
 };
