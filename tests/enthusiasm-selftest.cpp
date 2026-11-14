@@ -145,6 +145,11 @@ RowCase CaseFor(Modifier row)
         case Modifier::JoinAggression:
             c.with.join.aggression = 1.0f;
             break;
+        case Modifier::JoinAggressionOngoing:
+            c.without.join.targetAttacksFaction = true;
+            c.with.join.targetAttacksFaction = true;
+            c.with.join.aggression = 1.0f;
+            break;
         case Modifier::JoinGreen:
             c.with.join.colour = Colour::Green;
             break;
@@ -401,11 +406,33 @@ void TestLazyEqualsStepped()
     }
 }
 
-// Exit 4: a bot at Aggression -1 never passes a join check; one at Caution -1 never falls below its flee threshold
+// A join threshold worked out from the table's numbers, apart from JoinThreshold: the colour, helpfulness, balance and
+// graveyard rows added to `base`. The balance lean is 1 at balance <= 0.25 and -1 at >= 0.75, linear between
+float ExpectedThreshold(float base, JoinFacts const& facts)
+{
+    float const lean = facts.balance >= 0.5f ? -std::min(1.0f, (facts.balance - 0.5f) / 0.25f)
+                                             : std::min(1.0f, (0.5f - facts.balance) / 0.25f);
+    float threshold = base + 30.0f * lean;
+    if (facts.colour == Colour::Green)
+        threshold += 20.0f;
+    if (facts.targetAttacksFaction)
+        threshold -= 30.0f + 15.0f * (facts.helpfulness + 1.0f) * 0.5f;
+    if (facts.targetAttacksGroup)
+        threshold -= 50.0f;
+    if (facts.nearGraveyard)
+        threshold += 40.0f;
+    return threshold;
+}
+
+// Exit 4: a bot at Aggression -1 never starts a fight but joins one (the user, 2026-11-14); one at Caution -1 never
+// falls below its flee threshold
 void TestTraitExtremes()
 {
     EnthusiasmValues const v = Defaults();
     std::string problem;
+    std::string joinProblem;
+    int joins = 0;
+    int joining = 0;
     for (int colour = 0; colour < 5; ++colour)
         for (int flags = 0; flags < 8; ++flags)
             for (float helpfulness : {-1.0f, 0.0f, 1.0f})
@@ -420,13 +447,47 @@ void TestTraitExtremes()
                     facts.nearGraveyard = (flags & 4) != 0;
                     facts.balance = 0.05f * static_cast<float>(b);
                     float const threshold = JoinThreshold(facts, v);
-                    if (MayJoin(v.max, threshold))
-                        problem += " threshold " + Number(threshold) + " (colour " + Word(facts.colour) + ", flags " +
-                                   std::to_string(flags) + ", balance " + Number(facts.balance) + ");";
+                    std::string const where = " threshold " + Number(threshold) + " (colour " + Word(facts.colour) +
+                                              ", flags " + std::to_string(flags) + ", balance " +
+                                              Number(facts.balance) + ");";
+                    if ((flags & 3) == 0)
+                    {
+                        // Starting: the threshold is the scale's top, whatever else is on
+                        if (MayJoin(v.max, threshold) || !Near(threshold, 100.0))
+                            problem += where;
+                        continue;
+                    }
+                    // Joining: the Aggression term at a quarter, base 70, the other rows as they are
+                    float const expected = ExpectedThreshold(70.0f, facts);
+                    if (!Near(threshold, expected))
+                        joinProblem += where + " expected " + Number(expected) + ";";
+                    ++joining;
+                    joins += MayJoin(v.max, threshold) ? 1 : 0;
                 }
-    if (LowestJoinThreshold(-1.0f, 1.0f, v) < v.max)
-        problem += " its lowest threshold is below the top;";
-    Check(problem.empty(), "Aggression -1 never passes a join check, every other row at any setting" + problem);
+    Check(problem.empty(), "Aggression -1 never starts a fight: no colour, balance or flag lowers 100" + problem);
+    Check(joinProblem.empty() && joins > 0, "Aggression -1 joins a fight: base 70, then the faction and group rows (" +
+                                                std::to_string(joins) + " of " + std::to_string(joining) +
+                                                " joining situations pass at full enthusiasm)" + joinProblem);
+
+    // The two fights it is for, in the ordinary situation (yellow target, even balance, away from graveyards)
+    JoinFacts groupFight;
+    groupFight.aggression = -1.0f;
+    groupFight.targetAttacksGroup = true;
+    JoinFacts factionFight;
+    factionFight.aggression = -1.0f;
+    factionFight.helpfulness = 0.0f;
+    factionFight.targetAttacksFaction = true;
+    JoinFacts startFight;
+    startFight.aggression = -1.0f;
+    float const inGroup = JoinThreshold(groupFight, v);
+    float const inFaction = JoinThreshold(factionFight, v);
+    Check(Near(inGroup, 20.0) && inGroup < v.max && MayJoin(25.0, inGroup) && !MayJoin(15.0, inGroup) &&
+              Near(inFaction, 32.5) && inFaction < v.max && Near(JoinThreshold(startFight, v), 100.0),
+          "Aggression -1: a group member's fight 20, a faction player's fight 32.5 (neutral Helpfulness), starting " +
+              Number(JoinThreshold(startFight, v)) + "; got " + Number(inGroup) + " and " + Number(inFaction));
+    Check(LowestJoinThreshold(-1.0f, 1.0f, v) < v.max && Near(LowestJoinThreshold(-1.0f, 1.0f, v), -55.0),
+          "the scan's lowest threshold for Aggression -1 is its joining one, -55, not the top: " +
+              Number(LowestJoinThreshold(-1.0f, 1.0f, v)));
 
     problem.clear();
     for (bool group : {false, true})
@@ -459,6 +520,67 @@ void TestTraitExtremes()
               Near(held, 0.0) && !MustLeave(0.0, held),
           "strict checks: at the threshold a bot neither joins nor leaves; flee threshold " + Number(held) +
               " with a group member engaged holds a neutral bot at 0");
+}
+
+// The weakened Aggression term applies when the target already attacks the bot's faction or a group member, and in no
+// other situation: the threshold's slope in Aggression is -40 per +1 when starting (colour, graveyard and balance
+// make no difference) and -10 when joining (either row, both rows)
+void TestAggressionWhenJoining()
+{
+    EnthusiasmValues const v = Defaults();
+    std::string problem;
+    for (int colour = 0; colour < 5; ++colour)
+        for (int flags = 0; flags < 8; ++flags)
+            for (int b = 0; b <= 20; ++b)
+            {
+                JoinFacts facts;
+                facts.colour = static_cast<Colour>(colour);
+                facts.targetAttacksFaction = (flags & 1) != 0;
+                facts.targetAttacksGroup = (flags & 2) != 0;
+                facts.nearGraveyard = (flags & 4) != 0;
+                facts.balance = 0.05f * static_cast<float>(b);
+                float const none = JoinThreshold(facts, v);
+                bool const ongoing = (flags & 3) != 0;
+                for (float aggression : {-0.5f, 0.25f, 1.0f})
+                {
+                    facts.aggression = aggression;
+                    float const slope = (JoinThreshold(facts, v) - none) / aggression;
+                    if (!Near(slope, ongoing ? -10.0 : -40.0))
+                        problem += " slope " + Number(slope) + " (flags " + std::to_string(flags) + ", colour " +
+                                   std::to_string(colour) + ", balance " + Number(facts.balance) + ");";
+                }
+            }
+    Check(problem.empty(),
+          "the Aggression term is -40 per +1 when starting and -10 when joining, nowhere else" + problem);
+
+    // The factor is the option's: 1 gives the full term when joining, 0 none, and starting never reads it
+    JoinFacts joining;
+    joining.targetAttacksGroup = true;
+    joining.aggression = 0.5f;
+    JoinFacts starting;
+    starting.aggression = 0.5f;
+    EnthusiasmValues full = v;
+    full.joinAggressionFactor = 1.0f;
+    EnthusiasmValues none = v;
+    none.joinAggressionFactor = 0.0f;
+    Check(Near(JoinThreshold(joining, full), 60.0 - 20.0 - 50.0) && Near(JoinThreshold(joining, none), 60.0 - 50.0) &&
+              Near(JoinThreshold(starting, full), 40.0) && Near(JoinThreshold(starting, none), 40.0),
+          "factor 1: the full term when joining (-10), factor 0: none (10); starting reads neither (40)");
+
+    // The scale-top rule is for starting: with the full term a joining Aggression -1 bot sits at 100 before the rows,
+    // and they still lower it
+    JoinFacts peaceable = joining;
+    peaceable.aggression = -1.0f;
+    JoinFacts peaceableStart = starting;
+    peaceableStart.aggression = -1.0f;
+    Check(Near(JoinThreshold(peaceable, full), 50.0) && Near(JoinThreshold(peaceableStart, full), 100.0),
+          "factor 1, Aggression -1: base 100 does not stop the rows when joining (50), starting stays at 100");
+
+    // FromConfig takes the factor from the config and holds it to 0..1
+    WorldPvpConfig config;
+    Check(Near(FromConfig(config).joinAggressionFactor, 0.25), "the factor's default is 0.25");
+    config.Enthusiasm.AggressionJoinFactor = 7.0f;
+    Check(Near(FromConfig(config).joinAggressionFactor, 1.0), "the factor is held to 1");
 }
 
 // The scan's floor: no situation gives a lower threshold than LowestJoinThreshold
@@ -604,6 +726,8 @@ int main()
     report("TestLazyEqualsStepped");
     TestTraitExtremes();
     report("TestTraitExtremes");
+    TestAggressionWhenJoining();
+    report("TestAggressionWhenJoining");
     TestScanFloor();
     report("TestScanFloor");
     TestEngagedBounded();

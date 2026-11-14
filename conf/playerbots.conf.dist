@@ -2369,16 +2369,20 @@ Playerbots.WorldPvp.Enthusiasm.GroupDeathYards = 60
 Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 
 # Enthusiasm's thresholds, in points. A bot attacks an enemy player when its enthusiasm is above its join threshold
-# for that target: JoinBase - JoinAggression x aggression (-1..+1; at the scale's top the bot never starts or
-# joins); + JoinGreen for a green target; - JoinFactionAttacked when the target attacks a player of the bot's
-# faction, and up to JoinFactionHelpfulness more for the most helpful bot (none for the least); - JoinGroupAttacked
+# for that target: JoinBase - JoinAggression x aggression (-1..+1; at the scale's top the bot never starts a fight);
+# when the target already attacks a player of the bot's faction or a member of its group, the Aggression term counts
+# at AggressionJoinFactor of its size (a factor, 0-1: the most peaceable bot still joins); + JoinGreen for a green
+# target; - JoinFactionAttacked when the target attacks a player of the bot's faction, and up to
+# JoinFactionHelpfulness more for the most helpful bot (none for the least); - JoinGroupAttacked
 # when it attacks a member of the bot's group; + JoinGraveyard within GraveyardYards of a graveyard or spirit healer;
 # from - JoinBalanceMax when the bot's side clearly leads to + JoinBalanceMax when it is clearly behind. An engaged
 # bot leaves the fight when its enthusiasm falls below its flee threshold: FleeBase + FleeCaution x caution (below 0
 # it never flees), FleeGroupHold lower while a living member of its group within GroupHoldYards yd is engaged.
-# (Ranges: all points 0-1000; GroupHoldYards 0-2000.) Defaults: 60, 40, 20, 30, 15, 50, 40, 30, 15, 20, 15, 40
+# (Ranges: all points 0-1000; AggressionJoinFactor 0-1; GroupHoldYards 0-2000.) Defaults: 60, 40, 0.25, 20, 30, 15,
+# 50, 40, 30, 15, 20, 15, 40
 Playerbots.WorldPvp.Enthusiasm.JoinBase = 60
 Playerbots.WorldPvp.Enthusiasm.JoinAggression = 40
+Playerbots.WorldPvp.Enthusiasm.AggressionJoinFactor = 0.25
 Playerbots.WorldPvp.Enthusiasm.JoinGreen = 20
 Playerbots.WorldPvp.Enthusiasm.JoinFactionAttacked = 30
 Playerbots.WorldPvp.Enthusiasm.JoinFactionHelpfulness = 15

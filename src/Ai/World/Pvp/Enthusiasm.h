@@ -88,6 +88,7 @@ struct EnthusiasmValues
     float groupDeathYards = 0.0f;
     float joinBase = 0.0f;
     float joinAggression = 0.0f;
+    float joinAggressionFactor = 1.0f;
     float joinGreen = 0.0f;
     float joinFactionAttacked = 0.0f;
     float joinFactionHelpfulness = 0.0f;
@@ -123,6 +124,7 @@ inline EnthusiasmValues FromConfig(WorldPvpConfig const& config)
     values.groupDeathYards = static_cast<float>(zeal.GroupDeathYards);
     values.joinBase = zeal.JoinBase;
     values.joinAggression = zeal.JoinAggression;
+    values.joinAggressionFactor = std::clamp(zeal.AggressionJoinFactor, 0.0f, 1.0f);
     values.joinGreen = zeal.JoinGreen;
     values.joinFactionAttacked = zeal.JoinFactionAttacked;
     values.joinFactionHelpfulness = zeal.JoinFactionHelpfulness;
@@ -311,18 +313,25 @@ struct JoinFacts
     float balance = EVEN_BALANCE;       // LocalBalance, cached at the scan's cadence
 };
 
-// The threshold before the other rows: joinBase - joinAggression x aggression
-inline float JoinBaseThreshold(float aggression, EnthusiasmValues const& values)
+// Whether the target already fights the bot's side: it attacks a player of the bot's faction or a group member
+inline bool FightOngoing(JoinFacts const& facts) { return facts.targetAttacksFaction || facts.targetAttacksGroup; }
+
+// The threshold before the other rows: joinBase - joinAggression x aggression. When the fight is already ongoing the
+// Aggression term counts at joinAggressionFactor of its size
+inline float JoinBaseThreshold(float aggression, bool ongoing, EnthusiasmValues const& values)
 {
-    return values.joinBase - values.joinAggression * std::clamp(aggression, -1.0f, 1.0f);
+    float const term = values.joinAggression * (ongoing ? values.joinAggressionFactor : 1.0f);
+    return values.joinBase - term * std::clamp(aggression, -1.0f, 1.0f);
 }
 
-// The sum of the join rows, not held to the scale (above max: the bot never joins). Aggression alone putting it at
-// the scale's top makes the most peaceable bot one that never starts or joins: no other row lowers it then
+// The sum of the join rows, not held to the scale (above max: the bot never joins). Starting a fight: Aggression
+// alone putting the threshold at the scale's top makes the most peaceable bot one that never starts, and no other row
+// lowers it then. Joining one (FightOngoing): the weakened Aggression term lets that bot join, above all its group
 inline float JoinThreshold(JoinFacts const& facts, EnthusiasmValues const& values)
 {
-    float const base = JoinBaseThreshold(facts.aggression, values);
-    if (base >= values.max)
+    bool const ongoing = FightOngoing(facts);
+    float const base = JoinBaseThreshold(facts.aggression, ongoing, values);
+    if (!ongoing && base >= values.max)
         return base;
     float threshold = base;
     if (facts.colour == Colour::Green)
@@ -340,16 +349,18 @@ inline float JoinThreshold(JoinFacts const& facts, EnthusiasmValues const& value
     return threshold + BalanceJoinShift(facts.balance, values);
 }
 
-// The lowest join threshold a bot of these traits could have: below it the bot skips the enemy-player scan
+// The lowest join threshold a bot of these traits could have, joining or starting: below it the bot skips the
+// enemy-player scan
 inline float LowestJoinThreshold(float aggression, float helpfulness, EnthusiasmValues const& values)
 {
     JoinFacts facts;
     facts.aggression = aggression;
     facts.helpfulness = helpfulness;
+    facts.balance = 1.0f;
+    float const starting = JoinThreshold(facts, values);
     facts.targetAttacksFaction = true;
     facts.targetAttacksGroup = true;
-    facts.balance = 1.0f;
-    return JoinThreshold(facts, values);
+    return std::min(starting, JoinThreshold(facts, values));
 }
 
 inline bool MayJoin(double value, float joinThreshold) { return value > joinThreshold; }
@@ -459,6 +470,7 @@ enum class Modifier : uint8_t
     DepletionLead,
     JoinBase,
     JoinAggression,
+    JoinAggressionOngoing,
     JoinGreen,
     JoinFaction,
     JoinHelpfulness,
@@ -507,6 +519,8 @@ inline std::array<ModifierRow, MODIFIER_COUNT> ModifierTable(EnthusiasmValues co
         {"local balance, clearly leading", C::Depletion, F::Factor, v.depletionFactorLead},
         {"base", C::JoinThreshold, F::Shift, v.joinBase},
         {"Aggression, per +1", C::JoinThreshold, F::Shift, -v.joinAggression},
+        {"Aggression, per +1, target already attacks the bot's faction or group", C::JoinThreshold, F::Shift,
+         -v.joinAggression * v.joinAggressionFactor},
         {"green target", C::JoinThreshold, F::Shift, v.joinGreen},
         {"target attacks a player of the bot's faction", C::JoinThreshold, F::Shift, -v.joinFactionAttacked},
         {"the same, most helpful bot (Helpfulness)", C::JoinThreshold, F::Shift, -v.joinFactionHelpfulness},

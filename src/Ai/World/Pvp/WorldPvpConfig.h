@@ -36,9 +36,11 @@ struct WorldPvpEnthusiasmConfig
     // Join threshold: JoinBase - JoinAggression x aggression; +JoinGreen for a green target; -JoinFactionAttacked and
     // up to -JoinFactionHelpfulness more by helpfulness when the target attacks a player of the bot's faction;
     // -JoinGroupAttacked when it attacks a group member; +JoinGraveyard within GraveyardYards of a graveyard;
-    // -JoinBalanceMax..+JoinBalanceMax by the local balance
+    // -JoinBalanceMax..+JoinBalanceMax by the local balance. When the target already attacks a player of the bot's
+    // faction or a group member, the Aggression term counts at AggressionJoinFactor of its size (0..1)
     float JoinBase = 60.0f;
     float JoinAggression = 40.0f;
+    float AggressionJoinFactor = 0.25f;
     float JoinGreen = 20.0f;
     float JoinFactionAttacked = 30.0f;
     float JoinFactionHelpfulness = 15.0f;
