@@ -1495,14 +1495,12 @@ bool KaelthasSunstriderLootLegendaryWeaponsAction::LootWeapon(uint32 weaponEntry
     }
 
     OpenLootAction open(botAI);
-    bool opened = open.Execute(Event());
-    if (!opened)
-        return opened;
+    LootInteraction::Attempt const attempt = open.TryOpen(true);
+    if (attempt != LootInteraction::Attempt::Requested)
+        return attempt == LootInteraction::Attempt::Prepared;
 
     if (bot->HasItemCount(itemId, 1, false))
         return false;
-
-    bot->SetLootGUID(weapon->GetGUID());
 
     constexpr uint8 weaponIndex = 0;
     WorldPacket* packet = new WorldPacket(CMSG_AUTOSTORE_LOOT_ITEM, 1);

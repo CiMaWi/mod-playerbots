@@ -141,8 +141,10 @@ class NewRpgTravelAction : public NewRpgBaseAction
 public:
     NewRpgTravelAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg travel") {}
     bool Execute(Event event) override;
+    static bool ConsumeScheduledWork(PlayerbotAI* botAI);
 
 private:
+    bool StepTravel(NewRpgInfo::Travel* data, TravelProgress::Overdue overdue);
     bool RequestRoute(NewRpgInfo::Travel& data);
     bool TakeRoute(NewRpgInfo::Travel& data);
     bool UsePortal(NewRpgInfo::Travel& data);
@@ -151,7 +153,7 @@ private:
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
     // After a fly leg failed in the air: the flight down or the fall (TravelLegs::StartDescent, StepDescent)
     bool FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision const& down);
-    bool Arrive(NewRpgInfo::Travel& data);
+    bool Arrive(NewRpgInfo::Travel& data, bool stuck = false);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
     void EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source);
@@ -181,6 +183,10 @@ struct TravelOrder
     uint16 off{0};
     uint32 aboard{0};  // `route aboard`: the transport entry to stand the bot on; 0 = none
 };
+
+// A trip at a transport leg past its approach (waiting at the dock, boarding, aboard, walking off) keeps the bot on
+// foot: the boarding and exit moves dismount it, and the mount check would mount it again before the next one (WT54)
+bool TravelKeepsOnFoot(PlayerbotAI* botAI);
 
 namespace TravelOrders
 {
