@@ -170,8 +170,10 @@ inline double DepletionPerMs(float balanceFactor, EnthusiasmValues const& values
 }
 
 // The value at `nowMs`: one straight segment from the last change, up while not engaged, down while engaged, held
-// within the scale. The segment is monotone, so reading once equals settling at every step on the way. Unsigned
-// subtraction counts across the wrap of the ms clock
+// within the scale. The segment is monotone, so reading once equals settling at every step on the way. It has one
+// rate: the caller settles before `engaged` or `balanceFactor` changes (the scan's new balance included), or the new
+// rate would count for the whole time since the last change. Unsigned subtraction counts across the wrap of the ms
+// clock
 inline double Read(Enthusiasm const& state, uint32_t nowMs, bool engaged, float balanceFactor,
                    EnthusiasmValues const& values)
 {

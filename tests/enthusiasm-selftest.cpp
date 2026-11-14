@@ -272,6 +272,22 @@ void TestRowsIsolated()
               "row '" + std::string(row.name) + "' (" + Word(row.category) + ", " + Word(row.form) + "):" + problem);
     }
     Check(table.size() == MODIFIER_COUNT, "the table has one row per modifier");
+
+    // The two bans with an exception, and red, which has none
+    BanFacts greyAttacker;
+    greyAttacker.colour = Colour::Grey;
+    greyAttacker.targetAttacksFaction = true;
+    BanFacts redAttacker;
+    redAttacker.colour = Colour::Red;
+    redAttacker.targetAttacksFaction = true;
+    BanFacts mastersFoe;
+    mastersFoe.realMaster = true;
+    mastersFoe.mastersFight = true;
+    Check(Banned(greyAttacker) == BanReason::None && Banned(redAttacker) == BanReason::Red &&
+              Banned(mastersFoe) == BanReason::None,
+          std::string("ban exceptions: a grey target that attacks the bot's faction (") + Word(Banned(greyAttacker)) +
+              ") and a real master's fight (" + Word(Banned(mastersFoe)) + ") are allowed, a red one never (" +
+              Word(Banned(redAttacker)) + ")");
 }
 
 // Exit 2: the value stays within the scale under any sequence of edits, reads and time jumps
@@ -435,6 +451,14 @@ void TestTraitExtremes()
     Check(Near(JoinThreshold(eager, v), 20.0) && Near(FleeThreshold({1.0f, false}, v), 35.0) &&
               Near(FleeThreshold({-1.0f, false}, v), -5.0) && JoinThreshold(mild, v) < 60.0f,
           "trait ends: join 20 at Aggression +1, flee 35 and -5 at Caution +1 and -1, Aggression -0.99 helps a group");
+
+    // Both checks are strict: a value at its threshold neither joins nor leaves. A neutral bot beside an engaged
+    // group member has a flee threshold of 0, so it stays at 0
+    float const held = FleeThreshold({0.0f, true}, v);
+    Check(!MayJoin(60.0, 60.0f) && MayJoin(60.001, 60.0f) && !MustLeave(15.0, 15.0f) && MustLeave(14.999, 15.0f) &&
+              Near(held, 0.0) && !MustLeave(0.0, held),
+          "strict checks: at the threshold a bot neither joins nor leaves; flee threshold " + Number(held) +
+              " with a group member engaged holds a neutral bot at 0");
 }
 
 // The scan's floor: no situation gives a lower threshold than LowestJoinThreshold
