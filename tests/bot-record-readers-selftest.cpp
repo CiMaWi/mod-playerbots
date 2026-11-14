@@ -58,7 +58,10 @@ public:
     {
         if (Anyone && zone != 12 && zone != 40)
             return std::string(1, static_cast<char>('A' + zone % 26)) + "land";
-        return zone == 12 ? Name("Elwynn Forest") : zone == 40 ? Name("Westfall") : "";
+        return zone == 12     ? Name("Elwynn Forest")
+               : zone == 40   ? Name("Westfall")
+               : zone == 1581 ? Name("The Deadmines")
+                              : "";
     }
     std::string CreatureName(uint32_t entry) const override
     {
@@ -222,7 +225,10 @@ void Readers()
                              RowOf(Kind::Level, NOW - 9 * SECONDS_PER_DAY, 70, "level=10;"),
                              RowOf(Kind::Kill, NOW - 100, 40, "entry=448;rank=1;above=0;", "n448"),
                              RowOf(Kind::Kill, NOW - 50, 70, "entry=639;rank=3;", "n639", 40),
-                             RowOf(Kind::Dungeon, NOW - 200, 30, "map=36;", "", 40)};
+                             RowOf(Kind::Dungeon, NOW - 200, 30, "map=36;", "", 1581),
+                             RowOf(Kind::Kill, NOW - 150, 40, "entry=1;rank=1;above=0;", "n1", 1581)};
+    rows[4].Map = 36;
+    rows[5].Map = 36;
     std::vector<Entry> history = History(rows, SELF, NOW, names);
     std::vector<Entry> events;
     for (Entry const& entry : history)
@@ -234,14 +240,18 @@ void Readers()
     bool boss = false;
     bool dungeon = false;
     bool zones = false;
+    bool dungeonZone = false;
     for (Entry const& entry : history)
     {
+        dungeonZone =
+            dungeonZone || (entry.Code == static_cast<uint8_t>(HistoryRow::Zone) && entry.Name == "The Deadmines");
         boss = boss || (entry.Code == static_cast<uint8_t>(HistoryRow::Boss) && entry.Name == "Edwin VanCleef");
         dungeon = dungeon || (entry.Code == static_cast<uint8_t>(HistoryRow::Dungeon) && entry.Name == "The Deadmines");
         zones = zones ||
-                (entry.Code == static_cast<uint8_t>(HistoryRow::Zone) && entry.Name == "Westfall" && entry.Value == 2);
+                (entry.Code == static_cast<uint8_t>(HistoryRow::Zone) && entry.Name == "Westfall" && entry.Value == 1);
     }
     Check(boss && dungeon && zones, "history: the bosses, dungeons and zones the bot knows, with their counts");
+    Check(!dungeonZone, "history: a dungeon is known once, as a dungeon and not also as a zone");
     Check(history.size() == 3 + 4, "history: one knowledge entry per boss, dungeon and zone");
     bool plain = true;
     for (Entry const& entry : history)

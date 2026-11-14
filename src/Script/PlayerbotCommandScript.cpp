@@ -8,6 +8,8 @@
 #include <cctype>
 #include <cstdlib>
 #include <limits>
+#include <list>
+#include <sstream>
 
 #include "AcquaintanceMgr.h"
 #include "ActivityBudget.h"
@@ -21,10 +23,13 @@
 #include "BotTraitMgr.h"
 #include "BridgeBotFacts.h"
 #include "BridgeBotState.h"
+#include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
 #include "FightBook.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
@@ -49,13 +54,17 @@
 #include "RouteCheck.h"
 #include "RouteQuery.h"
 #include "ScriptMgr.h"
+#include "StringConvert.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
 #include "TestPlayer.h"
+#include "ThreadCheck.h"
+#include "Tokenize.h"
 #include "TransportMgr.h"
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
+#include "WorldSession.h"
 #include "WorldThreadMonitor.h"
 
 using namespace Acore::ChatCommands;
@@ -267,10 +276,12 @@ public:
             {"meet", HandleFightMeetCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts)
+        // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
+        // record test's fixture, LC6)
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
             {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -789,6 +800,81 @@ public:
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        return true;
+    }
+
+    // LC6, a test fixture (only a test calls it): the bot learns the flight point of its nearest flight master within
+    // FLIGHT_MASTER_YARDS through the engine's own path, WorldSession::SendLearnNewTaxiNode, which fires
+    // OnPlayerLearnTaxiNode (the world log's TaxiNode row and the record's flight row). A point the bot knew is
+    // forgotten first, so that it is learnt now. "FLIGHT <bot>: ok, node N at <flight master>, was known 0|1", else an
+    // error. Console: the world thread, maps idle.
+    static bool HandleBridgeLearnFlightCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+
+        PLAYERBOT_CHECK_WORLD_THREAD("HandleBridgeLearnFlightCommand");
+        constexpr float FLIGHT_MASTER_YARDS = 30.0f;
+        Player* const bot = botAI->GetBot();
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, FLIGHT_MASTER_YARDS);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, FLIGHT_MASTER_YARDS);
+        Creature* master = nullptr;
+        for (Unit* const unit : units)
+        {
+            Creature* const creature = unit->ToCreature();
+            if (!creature || !creature->IsAlive() || !(creature->GetNpcFlags() & UNIT_NPC_FLAG_FLIGHTMASTER))
+                continue;
+            if (!master || bot->GetDistance(creature) < bot->GetDistance(master))
+                master = creature;
+        }
+        if (!master)
+        {
+            handler->SendErrorMessage("FLIGHT {}: error, no flight master within {} yd", bot->GetName(),
+                                      static_cast<uint32>(FLIGHT_MASTER_YARDS));
+            return false;
+        }
+
+        uint32 const node = sObjectMgr->GetNearestTaxiNode(*master, bot->GetTeamId(true));
+        if (!node)
+        {
+            handler->SendErrorMessage("FLIGHT {}: error, {} has no flight point of the bot's side", bot->GetName(),
+                                      master->GetName());
+            return false;
+        }
+
+        bool const known = bot->m_taxi.IsTaximaskNodeKnown(node);
+        if (known)
+        {
+            // The mask as the character saves it, one number per field, without this node's bit
+            std::ostringstream saved;
+            saved << bot->m_taxi;
+            std::string const fields = saved.str();
+            std::string mask;
+            uint32 field = 0;
+            for (std::string_view const token : Acore::Tokenize(fields, ' ', false))
+            {
+                uint32 value = Acore::StringTo<uint32>(token).value_or(0);
+                if (field == (node - 1) / 32)
+                    value &= ~(1u << ((node - 1) % 32));
+                mask += Acore::StringFormat("{}{}", field ? " " : "", value);
+                ++field;
+            }
+            bot->m_taxi.LoadTaxiMask(mask);
+        }
+
+        bot->GetSession()->SendLearnNewTaxiNode(master);
+        if (!bot->m_taxi.IsTaximaskNodeKnown(node))
+        {
+            handler->SendErrorMessage("FLIGHT {}: error, node {} at {} not learnt", bot->GetName(), node,
+                                      master->GetName());
+            return false;
+        }
+
+        handler->PSendSysMessage("FLIGHT {}: ok, node {} at {}, was known {}", bot->GetName(), node, master->GetName(),
+                                 known ? 1 : 0);
         return true;
     }
 

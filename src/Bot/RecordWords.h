@@ -13,6 +13,7 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -343,6 +344,15 @@ inline std::vector<Entry> History(std::vector<RecordRules::Row> const& rows, uin
         uint32_t Count = 0;
         uint32_t Latest = 0;
     };
+    // A dungeon is known as a dungeon, not also as a zone: rows inside a dungeon's map add no zone stay
+    auto const inDungeon = [](RecordRules::Row const& row)
+    { return row.EventKind == RecordRules::Kind::Dungeon || row.EventKind == RecordRules::Kind::DungeonRun; };
+    std::set<uint32_t> dungeonMaps;
+    for (RecordRules::Row const& row : rows)
+        if (!RecordRules::Expired(row, now) && inDungeon(row))
+            if (uint32_t const map = RecordRules::FactValue(row.Facts, "map").value_or(0))
+                dungeonMaps.insert(map);
+
     std::map<std::pair<HistoryRow, uint32_t>, Known> known;
     for (RecordRules::Row const& row : rows)
     {
@@ -354,9 +364,10 @@ inline std::vector<Entry> History(std::vector<RecordRules::Row> const& rows, uin
             seen.Count += count;
             seen.Latest = std::max(seen.Latest, row.Time);
         };
-        note(HistoryRow::Zone, row.Zone, RecordRules::Count(row));
         uint32_t const map = RecordRules::FactValue(row.Facts, "map").value_or(0);
-        if ((row.EventKind == RecordRules::Kind::Dungeon || row.EventKind == RecordRules::Kind::DungeonRun) && map)
+        if (!inDungeon(row) && !dungeonMaps.count(row.Map))
+            note(HistoryRow::Zone, row.Zone, RecordRules::Count(row));
+        if (inDungeon(row) && map)
             note(HistoryRow::Dungeon, map, 1);
         uint32_t const entry = RecordRules::FactValue(row.Facts, "entry").value_or(0);
         if (row.EventKind == RecordRules::Kind::Kill && entry && lookup.Boss(entry))
