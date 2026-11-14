@@ -30,8 +30,6 @@ constexpr std::uint16_t NODAMAGE = 32;     // takes no damage
 constexpr std::uint16_t FLYFAIL = 64;      // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
 constexpr std::uint16_t FLYABORT = 128;    // as flyfail, as the trip's last failure: the trip ends once the bot is down
 constexpr std::uint16_t NODESTROY = 256;   // destroys no bag item for space (bank-mail WB7d)
-constexpr std::uint16_t FIGHTREADY = 512;  // its chances start a fight when the hard rules pass (world PvP)
-constexpr std::uint16_t JOINROLL = 1024;   // a bystander's join roll always wins (world PvP)
 constexpr std::uint16_t FLEE = 2048;       // in PvP combat it flees from the enemy players attacking it (world PvP)
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
@@ -59,8 +57,6 @@ constexpr Row ROWS[] = {
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
     {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
-    {"fightready", Kind::State, FIGHTREADY, "a chance starts a fight when the hard rules pass (p 1, never peaceable)"},
-    {"joinroll", Kind::State, JOINROLL, "a bystander's join roll always wins (defence, group, master unchanged)"},
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
 };
 
@@ -170,9 +166,6 @@ inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, boo
 // flyabort: the failure finds the trip's replans spent (TravelLegs::AfterFailure, MAX_REPLANS), so the trip aborts and
 // comes down first (AbortDescent)
 inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
-// Read where the fight book decides (FightBook.cpp); their apply and undo do nothing
-inline bool FightReady(std::uint16_t set) { return (set & FIGHTREADY) != 0; }
-inline bool JoinRoll(std::uint16_t set) { return (set & JOINROLL) != 0; }
 // flee, read by the world PvP retreat trigger (WorldPvpStrategy.cpp); its apply and undo do nothing
 inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps

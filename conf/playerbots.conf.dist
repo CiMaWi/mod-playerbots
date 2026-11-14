@@ -2348,9 +2348,9 @@ Playerbots.WorldPvp.GhostEnemyYards = 40
 Playerbots.WorldPvp.GhostRecheckSeconds = 15
 Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 
-# Enthusiasm (persistent bots in the open world; the rules exist, the fight decisions start reading them in later
-# steps). Every bot has one value on a scale of 0 to Max points; it is not saved and starts at a random level at
-# login. While the bot is not engaged (in PvP combat or holding an enemy player as its target) it rises by
+# Enthusiasm (persistent bots in the open world; a bot enters a fight by it, `.playerbots fight enthusiasm <bot>`
+# shows it). Every bot has one value on a scale of 0 to Max points; it is not saved and starts at a random level at
+# login. While the bot is not engaged (in PvP combat with an enemy player) it rises by
 # RecoveryPerHour points per hour of play; while engaged it falls by DepletionPerMinute points per minute times the
 # local balance's factor. A PvP death costs DeathEdit points at confidence 0, DeathEditConfident for the most
 # confident bot and DeathEditUnconfident for the least (linear between); a kill of an enemy player gives KillEdit; a

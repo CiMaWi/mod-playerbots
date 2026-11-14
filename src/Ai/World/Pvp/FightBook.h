@@ -9,15 +9,19 @@
 
 #include "ObjectGuid.h"
 
+#include <string_view>
+
 class ChatHandler;
 class Corpse;
 class Player;
 class PlayerbotAI;
 class Unit;
+class WorldObject;
 
-// World PvP (WP1, WP4-WP6): the fight book of each open-world map (FightBookRules.h holds its rules), the bots' fight
-// memories and meetings, the start, the joining and the end of fights by the fight rules (FightRules.h, fed by
-// FightWiring.h: retreats, chases, timeouts, calm areas), the fight events and the `playerbots fight` commands.
+// World PvP (WP1, WP4-WP6, WP23): the fight book of each open-world map (FightBookRules.h holds its rules), the bots'
+// fight memories and meetings, entering a fight by enthusiasm (FightEnthusiasm.cpp, Enthusiasm.h), the end of fights
+// by the fight rules (FightRules.h, fed by FightWiring.h: retreats, chases, timeouts), the fight events and the
+// `playerbots fight` commands.
 // Persistent bots in the open world; battlegrounds, arenas and dungeons have no book and keep today's attack on sight.
 namespace WorldPvp
 {
@@ -25,27 +29,37 @@ namespace WorldPvp
 // outside battlegrounds and arenas that PvpTest does not force. Such a bot attacks another player only in a fight it
 // is in or as the target the rules picked at a meeting
 bool StartsByRules(PlayerbotAI* botAI);
-// EnemyPlayerValue::Calculate: true when a bot that starts by the rules cannot start a fight now (StartGate: no open
-// world, a real player as its master or in its group, not its bot group's leader, in a fight, near a graveyard,
-// peaceable, in its gap), so it skips the enemy-player scan; attackers and fights still reach it
-bool ScanGated(PlayerbotAI* botAI);
-// NearestEnemyPlayersValue::AcceptUnit for a bot that starts by the rules: whether the enemy player `unit` is the
-// target the rules picked. A new meeting (within ScanYards, in sight and in reach, not seen for MeetingMemorySeconds)
-// while the
-// gate is open is decided here once (DecideStart; its fight_start row); `refusal` is the word of today's target check
-// that failed on the enemy, nullptr when it is an attackable, PvP-flagged enemy the bot can see
-bool AcceptByRules(PlayerbotAI* botAI, Unit* unit, char const* refusal);
-// EnemyPlayerValue and AcceptByRules: whether `bot` can attack `enemy` from where it is (InReach: the height between
-// them, then its line of sight)
+// EnemyPlayerValue: whether `bot` can attack `enemy` from where it is (InReach: the height between them, then its
+// line of sight)
 bool Reaches(Unit const* bot, Unit const* enemy);
-// PossibleTargetsValue::AcceptUnit: whether `unit` is the player the rules picked for this bot to attack, at a meeting
-// or as the target of a fight it decided to join
-bool IsPickedTarget(PlayerbotAI* botAI, Unit* unit);
-// EnemyPlayerValue::Calculate: the enemy of the fight this bot decided to join (the fight book's tick asks the
-// bystanders of its fights once each, WP5), while fresh, alive, on its map and in the fight; when it is gone and the
-// bot is in that fight, the nearest enemy participant it sees and may pick. Never in a fight it retreated from;
-// else nullptr
-Player* JoinTarget(PlayerbotAI* botAI);
+
+// Entering by enthusiasm (WP23, FightEnthusiasm.cpp), the bot's map thread. EnemyPlayerValue::Calculate first, for a
+// bot that starts by the rules: its enthusiasm (seeded at random on first use), the engaged edge, the traits and, at
+// the scan's cadence while the bot could enter or is engaged, the local balance (PerfMonitor "WorldPvp balance")
+void RefreshEnthusiasm(PlayerbotAI* botAI);
+// EnemyPlayerValue::Calculate: true while the value can enter nothing (SkipsScan), so the bot skips the enemy-player
+// scan; attackers still reach it by its combat references
+bool ScanSkipped(PlayerbotAI* botAI);
+// NearestEnemyPlayersValue::AcceptUnit for a bot that starts by the rules: its pick, or an alive enemy player within
+// ScanYards it does not leave alone, not banned (Banned), whose join threshold the value passes (Enters). `refusal`:
+// today's target check that failed on the enemy, nullptr when it is attackable, PvP-flagged and seen
+bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal);
+// EnemyPlayerValue::Calculate on the enemy it returns: a new pick writes its fight_start or fight_join row and holds
+// for PICK_MS; false when the bot may not enter on it (any more)
+bool NoteEntering(PlayerbotAI* botAI, Player* enemy);
+// PossibleTargetsValue::AcceptUnit: whether `unit` is the enemy this bot entered on (its pick)
+bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit);
+// OnBotTick (every bot tick while in PvP combat or engaged): the engaged edge and, while engaged, the balance
+void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32 nowMs);
+// The PvP-kill hooks, the killed player's map thread: the death edit of a bot victim, the kill edit of a bot killer
+// and the group death edit of the victim's bot group members on its map within GroupDeathYards; a PvpEnthusiasm event
+// row each
+void NoteEnthusiasmDeath(Player* killer, Player* killed);
+// `playerbots fight enthusiasm <bot> [set <0..max>]` (world thread, between map updates): the value, the thresholds
+// and the cached terms, one line each; `set` writes the value
+bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
+// The yards from `object` to the nearest graveyard (spirit healers stand at them) of its map
+float GraveyardYards(WorldObject const* object);
 // InvalidTargetValue ("current target"): whether this bot stops chasing `target`, a retreated enemy of its fight it
 // attacks: the chase's time since the enemy's retreat or its yards beyond the fight passed the bot's limit
 // (ChaseLimitFor: aggression lengthens it, courtesy shortens it), also when the enemy hits back (it fights only who
@@ -90,7 +104,7 @@ void MarkForced(ObjectGuid guid);
 void ClearForced(ObjectGuid guid);
 
 // `.playerbots fight ...` (world thread): list (the GM's map, or every map from the console), bot (its memory, answered
-// by its next tick); `fight ready` is the test constraint fightready (PlayerbotCommandScript.cpp)
+// by its next tick)
 bool HandleListCommand(ChatHandler* handler);
 bool HandleBotCommand(ChatHandler* handler, PlayerbotAI* botAI);
 }  // namespace WorldPvp

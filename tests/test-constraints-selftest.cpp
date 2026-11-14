@@ -92,14 +92,12 @@ void ApplyNoDamage(ModelUnits& units)
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
 void ReadByFollower(ModelUnits&) {}   // flyfail, flyabort: the follower reads the bit (FlyLegFails)
 void ReadByDestroy(ModelUnits&) {}    // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
-void ReadByFightBook(ModelUnits&) {}  // fightready, joinroll: the fight book reads the bits (FightReady, JoinRoll)
 void ReadByFlee(ModelUnits&) {}       // flee: the world PvP retreat trigger reads the bit (Flees)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {
-    {NOFIGHT, ApplyNoFight, UndoNoFight},         {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {FLYFAIL, ReadByFollower, ReadByFollower},    {FLYABORT, ReadByFollower, ReadByFollower},
-    {NODESTROY, ReadByDestroy, ReadByDestroy},    {FIGHTREADY, ReadByFightBook, ReadByFightBook},
-    {JOINROLL, ReadByFightBook, ReadByFightBook}, {FLEE, ReadByFlee, ReadByFlee}};
+    {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+    {FLYFAIL, ReadByFollower, ReadByFollower}, {FLYABORT, ReadByFollower, ReadByFollower},
+    {NODESTROY, ReadByDestroy, ReadByDestroy}, {FLEE, ReadByFlee, ReadByFlee}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -239,13 +237,6 @@ bool RowWorks(Row const& row)
         return untouched && failsRight && !FlyFailAborts(FLYFAIL) && !FlyFailAborts(STATES & ~FLYABORT);
     if (name == "flyabort")
         return untouched && failsRight && FlyFailAborts(FLYABORT) && FlyFailAborts(FLYFAIL | FLYABORT);
-    // Read by the fight book only: nothing to apply, and no other row reads it
-    if (name == "fightready")
-        return untouched && FightReady(FIGHTREADY) && !FightReady(HOLD | (STATES & ~FIGHTREADY)) &&
-               StartsFights(FIGHTREADY) && !FlyLegFails(FIGHTREADY, 90.0f, 100.0f, true);
-    if (name == "joinroll")
-        return untouched && JoinRoll(JOINROLL) && !JoinRoll(HOLD | (STATES & ~JOINROLL)) &&
-               !FlyLegFails(JOINROLL, 90.0f, 100.0f, true);
     // Read by the retreat trigger only: nothing to apply; no other row flees
     if (name == "flee")
         return untouched && Flees(FLEE) && !Flees(HOLD | (STATES & ~FLEE)) && StartsFights(FLEE) &&
@@ -276,16 +267,14 @@ void TestTable()
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
-              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, fightready, joinroll, "
-              "flee",
+              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, flee",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
         "fly rows: state rows (hold never sets them), parsed and formatted");
-    Check(Parse("fightready joinroll").set == (FIGHTREADY | JOINROLL) &&
-              Format(JOINROLL | FIGHTREADY | FLYFAIL) == "flyfail,fightready,joinroll" &&
-              ((FIGHTREADY | JOINROLL) & (CHOICES | FLY_FAILS | NODESTROY)) == 0,
-          "fight rows: state rows with bits of their own, parsed and formatted");
+    Check(Parse("fightready").set == 0 && Parse("joinroll").bad == "joinroll" && Parse("flee").set == FLEE &&
+              Format(FLEE | FLYFAIL) == "flyfail,flee" && (FLEE & (CHOICES | FLY_FAILS | NODESTROY)) == 0,
+          "fight rows: fightready and joinroll are gone (WP23), flee is a state row of its own");
     Check(Parse("nodestroy").set == NODESTROY && Format(NODESTROY | NOFIGHT) == "nofight,nodestroy",
           "nodestroy: a state row, parsed and formatted");
 }
@@ -352,11 +341,11 @@ void TestRelease()
     Check(bot.set == NOFIGHT && HearthAllowed(bot.set), "full release: no choice row kept");
     Check(bot.units.botImmune && !StartsFights(bot.set), "release: a state row stays (nofight)");
     ModelBot ready;
-    ready.Post(On(HOLD | FIGHTREADY | JOINROLL));
+    ready.Post(On(HOLD | FLEE | NODESTROY));
     ready.Update();
     ready.Post(Release(0));
     ready.Update();
-    Check(ready.set == (FIGHTREADY | JOINROLL), "release: fightready and joinroll stay");
+    Check(ready.set == (FLEE | NODESTROY), "release: flee and nodestroy stay");
     ModelBot moving;
     moving.status = Status::Travel;
     moving.Post(Release(0));

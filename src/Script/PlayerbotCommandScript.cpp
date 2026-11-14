@@ -257,11 +257,11 @@ public:
             {"status", WorldLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // World PvP (WP1): list and bot read; ready is the test constraint fightready (as route hold is the choices)
+        // World PvP (WP1, WP23): list and bot read; enthusiasm shows a bot's value and thresholds and sets the value
         static ChatCommandTable playerbotsFightCommandTable = {
             {"list", HandleFightListCommand, SEC_PLAYER, Console::Yes},
             {"bot", HandleFightBotCommand, SEC_PLAYER, Console::Yes},
-            {"ready", HandleFightReadyCommand, SEC_GAMEMASTER, Console::Yes},
+            {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -504,16 +504,13 @@ public:
         return botAI && WorldPvp::HandleBotCommand(handler, botAI);
     }
 
-    // `playerbots fight ready <bot>` (tests): shorthand for `route constraint <bot> fightready on`, the bot's chances
-    // start a fight when the hard rules pass (WP4)
-    static bool HandleFightReadyCommand(ChatHandler* handler, PlayerIdentifier target)
+    // `playerbots fight enthusiasm <bot> [set <0..100>]`: the bot's enthusiasm, its thresholds and the cached terms;
+    // `set` writes the value (a cheat). The world thread runs commands between map updates, so the bot's AI is read
+    // and written here directly
+    static bool HandleFightEnthusiasmCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        if (!botAI)
-            return false;
-        PostConstraints(botAI, TestConstraints::FIGHTREADY, 0);
-        handler->PSendSysMessage("FIGHT ready: {} ordered", target.GetName());
-        return true;
+        return botAI && WorldPvp::HandleEnthusiasmCommand(handler, botAI, std::string_view(rest));
     }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update

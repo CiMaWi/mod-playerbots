@@ -44,7 +44,6 @@
 #include "Random.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
-#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -106,7 +105,6 @@ struct BookEntry
 
     FightBook book;
     uint32 sinceTickMs = 0;
-    uint32 joinCheckMs = 0;
     bool published = false;
     uint32 const mapId;
     uint32 const instanceId;
@@ -198,7 +196,6 @@ FightMemory* MemoryOf(PlayerbotAI* botAI, uint32 nowMs)
         memory->persistentKnown = true;
         memory->persistentCheckMs = nowMs;
     }
-    memory->ready = TestConstraints::FightReady(botAI->rpgInfo.constraints);
     return memory->persistent ? memory.get() : nullptr;
 }
 
@@ -221,14 +218,14 @@ uint32 ColourOf(Player* viewer, Player* target)
             return 4;
     }
 }
-
-// The graveyards of each map (their 2D places), copied once from the graveyard store and read-only afterwards;
-// spirit healers stand at them
-std::once_flag graveyardsOnce;
-std::unordered_map<uint32, std::vector<Point>> graveyards;
+}  // namespace
 
 float GraveyardYards(WorldObject const* object)
 {
+    // The graveyards of each map (their 2D places), copied once from the graveyard store and read-only afterwards;
+    // spirit healers stand at them
+    static std::once_flag graveyardsOnce;
+    static std::unordered_map<uint32, std::vector<Point>> graveyards;
     std::call_once(graveyardsOnce,
                    []()
                    {
@@ -240,6 +237,8 @@ float GraveyardYards(WorldObject const* object)
                                      : NearestYards(found->second, object->GetPositionX(), object->GetPositionY());
 }
 
+namespace
+{
 // The bot-side gate values (FightWiring.h's RefreshGate, every GATE_REFRESH_MS)
 void ReadGate(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 nowMs)
 {
@@ -343,31 +342,6 @@ SideView ViewOf(Player* bot, Fight const& fight, FightRuleValues const& values)
         view.y /= static_cast<float>(view.enemies);
     }
     return view;
-}
-
-// The bot's side's share of the strength it sees within ScanYards: the alive players of both sides around it, the
-// bot and the target included (enemies only when the bot can see them)
-float OddsAround(Player* bot, Player* enemy, FightRuleValues const& values)
-{
-    uint32 const level = bot->GetLevel();
-    auto const strength = [&](Player const* player)
-    { return Strength(level, player->GetLevel(), player->GetHealthPct() / 100.0f, values); };
-    float own = strength(bot);
-    float other = strength(enemy);
-    std::vector<Player*> players;
-    Acore::AnyPlayerInObjectRangeCheck check(bot, values.scanYards, true, true);
-    Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(bot, players, check);
-    Cell::VisitObjects(bot, searcher, values.scanYards);
-    for (Player* const player : players)
-    {
-        if (player == bot || player == enemy)
-            continue;
-        if (player->GetTeamId() == bot->GetTeamId())
-            own += strength(player);
-        else if (bot->CanSeeOrDetect(player))
-            other += strength(player);
-    }
-    return OddsShare(own, other);
 }
 
 Combatant MakeCombatant(Player* player, uint32 nowMs)
@@ -630,176 +604,6 @@ void Publish(BookEntry& entry, uint32 nowMs)
     entry.snapshotEnded = static_cast<uint32>(entry.book.Ended().size());
 }
 
-// The players within `range` of a fight's centre
-struct NearFight
-{
-    float x = 0.0f;
-    float y = 0.0f;
-    float range = 0.0f;
-
-    bool operator()(Player* player) const { return player->GetExactDist2d(x, y) <= range; }
-};
-
-// The bystander's fight_join row: the rules' reason (defence, group, master, chance) or refusal word, the
-// probability, the odds, the yards to the fight and the enemies it could pick by chance
-void RecordJoin(Player* bot, uint32 fightId, JoinAnswer const& answer, JoinInput const& input)
-{
-    if (!WorldLog::Active())
-        return;
-
-    JoinDecision const& decision = answer.decision;
-    WorldLogFormat::Alternatives alternatives{WorldLogFormat::Alternative{"odds", input.odds}};
-    alternatives.Add({"yards", input.yards});
-    alternatives.Add({"pickable", static_cast<float>(answer.pickable)});
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::FightJoin, decision.join ? CHOICE_JOIN : CHOICE_PASS,
-                       decision.join ? Word(decision.why) : Word(decision.refusal), decision.p, alternatives, fightId);
-}
-
-// A bystander of a fight whose decided list is full, counted once for it
-void CountRefused(FightBook& book, Fight const& fight, FightMemory& memory)
-{
-    if (memory.refusedFightId == fight.id)
-        return;
-    memory.refusedFightId = fight.id;
-    book.CountRefusedDecision(fight.id);
-}
-
-// Whether the bystander would join `fighters`' fight whatever it rolls: its master or a member of its group is in it,
-// or a participant attacks it
-bool AlwaysJoins(PlayerbotAI* botAI, Player* bot, std::vector<Player*> const& fighters)
-{
-    Player* const master = botAI->GetMaster();
-    Group* const group = bot->GetGroup();
-    for (Player* const fighter : fighters)
-        if (fighter == master || (group && fighter->GetGroup() == group) || Attacks(fighter, bot))
-            return true;
-    return false;
-}
-
-// One bystander of `fight` (`fighters`: its participants on the map) answers once (WP.7): what it sees of the fight
-// goes into the join rules; a waiting answer is asked again at the next check
-void AskBystander(FightBook& book, Fight const& fight, std::vector<Player*> const& fighters, PlayerbotAI* botAI,
-                  Player* bot, uint32 nowMs, FightRuleValues const& values)
-{
-    FightMemory& memory = *botAI->fightMemory;
-    if (GateDue(memory, nowMs))
-        ReadGate(botAI, bot, memory, nowMs);
-
-    Player* const master = botAI->GetMaster();
-    Group* const group = bot->GetGroup();
-    uint32 const level = bot->GetLevel();
-    auto const strength = [&](Player const* player)
-    { return Strength(level, player->GetLevel(), player->GetHealthPct() / 100.0f, values); };
-    JoinInput input;
-    input.alive = bot->IsAlive();
-    input.visible = false;
-    input.ownSide = false;
-    input.yards = FAR_YARDS;
-    float own = strength(bot);
-    float other = 0.0f;
-    std::vector<JoinEnemy> enemies;
-    for (Player* const fighter : fighters)
-    {
-        bool const alive = fighter->IsAlive();
-        bool const seen = bot->CanSeeOrDetect(fighter);
-        float const yards = bot->GetDistance(fighter);
-        input.visible = input.visible || (alive && seen);
-        input.yards = std::min(input.yards, yards);
-        if (fighter->GetTeamId() == bot->GetTeamId())
-        {
-            input.ownSide = true;
-            input.groupFight = input.groupFight || (group && fighter->GetGroup() == group);
-            input.masterFight = input.masterFight || (master && fighter == master);
-            if (alive)
-                own += strength(fighter);
-            continue;
-        }
-        if (!alive)
-            continue;
-
-        other += strength(fighter);
-        JoinEnemy enemy;
-        enemy.guid = fighter->GetGUID().GetRawValue();
-        enemy.yards = yards;
-        enemy.colour = WorldPvp::ColourOf(level, fighter->GetLevel());
-        enemy.visible = seen;
-        enemy.attacking = Attacks(fighter, bot);
-        enemies.push_back(enemy);
-        input.attacked = input.attacked || enemy.attacking;
-        Unit* const victim = fighter->GetVictim();
-        Player* const victimPlayer = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
-        input.factionTargeted =
-            input.factionTargeted || (victimPlayer && victimPlayer->GetTeamId() == bot->GetTeamId());
-    }
-    input.odds = OddsShare(own, other);
-
-    // A test's joinroll bot always wins the roll (the refusals before it stand)
-    float const roll = TestConstraints::JoinRoll(botAI->rpgInfo.constraints) ? 0.0f : static_cast<float>(rand_norm());
-    JoinAnswer const answer = AnswerJoin(input, enemies, memory, fight.id, roll, values);
-    if (!answer.decided)
-        return;
-    // A full list keeps no more answers; a join of the bot's group, master or self-defence still counts
-    bool const always = answer.decision.join && answer.decision.why != JoinWhy::Chance;
-    if (!book.NoteDecided(fight.id, bot->GetGUID().GetRawValue()) && !always)
-    {
-        CountRefused(book, fight, memory);
-        return;
-    }
-    if (answer.decision.join)
-        NoteJoin(memory, answer, fight.id, nowMs);
-    RecordJoin(bot, fight.id, answer, input);
-}
-
-// Every JOIN_CHECK_MS on the map's update thread: the persistent bots (by the rules) within JoinYards plus the radius
-// of an active fight's centre that are not in it and have not answered decide whether to join it. The bots of this
-// map run their AI on this thread too, so their fight memories are written here safely
-void AskBystanders(Map* map, FightBook& book, uint32 nowMs)
-{
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp join") : nullptr);
-    FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
-    std::vector<Player*> fighters;
-    std::vector<Player*> nearby;
-    for (Fight const& fight : book.Active())
-    {
-        fighters.clear();
-        for (FightParticipant const& participant : fight.participants)
-        {
-            Player* const player = ObjectAccessor::GetPlayer(map, ObjectGuid(participant.guid));
-            if (player && player->IsInWorld())
-                fighters.push_back(player);
-        }
-        if (fighters.empty())
-            continue;
-
-        nearby.clear();
-        NearFight check{fight.centreX, fight.centreY, fight.radius + values.joinYards};
-        Acore::PlayerListSearcher<NearFight> searcher(fighters.front(), nearby, check);
-        Cell::VisitObjects(fight.centreX, fight.centreY, map, searcher, check.range);
-        for (Player* const bot : nearby)
-        {
-            uint64 const guid = bot->GetGUID().GetRawValue();
-            // A bot on a flight path cannot join: it is not asked
-            if (bot->IsInFlight() || fight.Find(guid) || fight.HasDecided(guid))
-                continue;
-            PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
-            if (!botAI || !StartsByRules(botAI))
-                continue;
-            // A full fight asks only those that join whatever they roll (once: a joiner walking in is not asked again)
-            if (fight.decidedCount >= MAX_DECIDED)
-            {
-                if (botAI->fightMemory->joinFightId == fight.id)
-                    continue;
-                if (!AlwaysJoins(botAI, bot, fighters))
-                {
-                    CountRefused(book, fight, *botAI->fightMemory);
-                    continue;
-                }
-            }
-            AskBystander(book, fight, fighters, botAI, bot, nowMs, values);
-        }
-    }
-}
-
 // A participant in PvP combat (the book's tick): whether it is in PvP combat with an enemy participant of its fight
 // (the hit clock). A persistent bot attacking a retreated enemy of its fight chases it from now (NoteChase)
 bool ProbeSides(Fight const& fight, FightParticipant const& participant, Player* player, uint32 nowMs)
@@ -920,11 +724,6 @@ void TickBook(Map* map, uint32 diff)
         [&values](FightClock const& clock) { return CheckFightEnd(clock, values); }, ended);
     for (Fight const& fight : ended)
         EmitEnd(map, fight, nowMs);
-    if (!entry->book.Active().empty() && ElapsedMs(entry->joinCheckMs, nowMs) >= JOIN_CHECK_MS)
-    {
-        entry->joinCheckMs = nowMs;
-        AskBystanders(map, entry->book, nowMs);
-    }
     Publish(*entry, nowMs);
 }
 
@@ -963,27 +762,6 @@ std::string SecondsAgo(bool known, uint32 sinceMs, uint32 nowMs)
     return known ? std::to_string(ElapsedMs(sinceMs, nowMs) / IN_MILLISECONDS) : std::string("never");
 }
 
-// The meeting's fight_start row: the rules' word (today's target word when it was no target), the colour, the
-// chance's probability and the odds
-void RecordStart(Player* bot, Player* enemy, StartDecision const& decision, StartTarget const& target,
-                 char const* refusal)
-{
-    if (!WorldLog::Active())
-        return;
-
-    char const* reason = decision.start ? Word(decision.reason) : Word(decision.refusal);
-    if (decision.refusal == Refusal::NotTarget && refusal)
-        reason = refusal;
-    WorldLogFormat::Alternatives alternatives{
-        WorldLogFormat::Alternative{"colour", static_cast<float>(ColourOf(bot, enemy))}};
-    alternatives.Add({"p", decision.p});
-    alternatives.Add({"odds", target.odds});
-    float const levelDifference =
-        static_cast<float>(static_cast<int32>(enemy->GetLevel()) - static_cast<int32>(bot->GetLevel()));
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::FightStart, decision.start ? CHOICE_START : CHOICE_PASS,
-                       reason, levelDifference, alternatives, 0);
-}
-
 // The memory as `fight bot` shows it: one line, then one line per recent enemy
 std::vector<std::string> Describe(PlayerbotAI* botAI, Player* bot, FightMemory* memory, uint32 nowMs)
 {
@@ -999,10 +777,9 @@ std::vector<std::string> Describe(PlayerbotAI* botAI, Player* bot, FightMemory* 
     uint32 const sinceEndMs = ElapsedMs(memory->lastFightEndMs, nowMs);
     uint32 const gapLeft = memory->hasFought && sinceEndMs < gapMs ? (gapMs - sinceEndMs) / IN_MILLISECONDS : 0;
     lines.push_back(Acore::StringFormat(
-        "FIGHT bot: {} persistent 1 fight {} last_end {} last_chance {} gap_left {} ready {} recent {} avoided 0 "
-        "grudges 0",
+        "FIGHT bot: {} persistent 1 fight {} last_end {} last_chance {} gap_left {} recent {} avoided 0 grudges 0",
         name, memory->fightId, SecondsAgo(memory->hasFought, memory->lastFightEndMs, nowMs),
-        SecondsAgo(memory->hasChance, memory->lastChanceMs, nowMs), gapLeft, memory->ready ? 1 : 0, memory->Count()));
+        SecondsAgo(memory->hasChance, memory->lastChanceMs, nowMs), gapLeft, memory->Count()));
     // The rules' state (WP4): the gate's word ("today": PvpTest or no open world), the base probability a chance
     // would have now (the budget clock), the picked target
     FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
@@ -1107,6 +884,7 @@ public:
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks")
                                                         : nullptr);
         NoteCombat(killer, killed, getMSTime(), true);
+        NoteEnthusiasmDeath(killer, killed);
     }
 
     // The player's map thread; a killing blow by a player's pet, totem or guardian counts for its owner. The core
@@ -1119,6 +897,7 @@ public:
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks")
                                                         : nullptr);
         NoteCombat(owner, killed, getMSTime(), true);
+        NoteEnthusiasmDeath(owner, killed);
     }
 
     // The player's map thread, when it enters combat at all: the first hit of a fight, while the aggressor is
@@ -1195,146 +974,10 @@ bool StartsByRules(PlayerbotAI* botAI)
     return StartsByRules(place);
 }
 
-bool ScanGated(PlayerbotAI* botAI)
-{
-    if (!StartsByRules(botAI))
-        return false;
-
-    FightMemory& memory = *botAI->fightMemory;
-    uint32 const nowMs = getMSTime();
-    if (IsPicked(memory, memory.startGuid, nowMs))
-        return false;
-    FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
-    if (GateDue(memory, nowMs))
-        ReadGate(botAI, botAI->GetBot(), memory, nowMs);
-    ReadCalm(botAI->GetBot(), memory, nowMs, values);
-    if (GateOf(memory, nowMs, values) == Refusal::None)
-        return false;
-
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp scan gated")
-                                                    : nullptr);
-    return true;
-}
-
 bool Reaches(Unit const* bot, Unit const* enemy)
 {
     return InReach(bot->GetPositionZ() - enemy->GetPositionZ(),
                    [bot, enemy]() { return bot->IsWithinLOSInMap(enemy); });
-}
-
-bool AcceptByRules(PlayerbotAI* botAI, Unit* unit, char const* refusal)
-{
-    Player* const bot = botAI->GetBot();
-    Player* const enemy = unit->ToPlayer();
-    uint32 const nowMs = getMSTime();
-    FightMemory* const memory = MemoryOf(botAI, nowMs);
-    if (!enemy || !memory)
-        return false;
-
-    uint64 const guid = enemy->GetGUID().GetRawValue();
-    if (IsPicked(*memory, guid, nowMs))
-        return !refusal;
-
-    WorldPvpConfig const& config = sPlayerbotAIConfig.WorldPvp;
-    FightRuleValues const values(config);
-    if (enemy->GetTeamId() == bot->GetTeamId() || !enemy->IsAlive() || !bot->IsWithinDist(enemy, values.scanYards))
-        return false;
-    if (GateDue(*memory, nowMs))
-        ReadGate(botAI, bot, *memory, nowMs);
-    ReadCalm(bot, *memory, nowMs, values);
-    // A bot that cannot start a fight now meets nobody (no fight_start row)
-    if (GateOf(*memory, nowMs, values) != Refusal::None)
-        return false;
-
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp meeting")
-                                                    : nullptr);
-    // An enemy out of reach is no meeting yet: no fight_start row, no chance spent, met again once in reach
-    if (memory->SeenRecently(guid, nowMs, config.MeetingMemorySeconds * IN_MILLISECONDS) ||
-        !bot->CanSeeOrDetect(enemy) || !Reaches(bot, enemy))
-        return false;
-    memory->Remember(guid, nowMs, config.RecentEnemies);
-
-    TargetFacts facts;
-    facts.enemy = !refusal;
-    facts.botLevel = bot->GetLevel();
-    facts.targetLevel = enemy->GetLevel();
-    facts.health = enemy->GetHealthPct() / 100.0f;
-    Unit* const victim = enemy->GetVictim();
-    facts.busy = victim && victim->IsCreature() && !victim->GetCharmerOrOwnerPlayerOrPlayerItself();
-    facts.graveyardYards = GraveyardYards(enemy);
-    if (std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false))
-        facts.sinceResurrectionMs = entry->book.ResurrectedMsAgo(guid, nowMs);
-
-    StartBot const startBot = MakeStartBot(*memory, nowMs);
-    StartTarget target = MakeStartTarget(facts, *memory, guid, nowMs);
-    if (NeedsOdds(startBot, target, values))
-        target.odds = OddsAround(bot, enemy, values);
-    StartDecision const decision =
-        DecideMeeting(*memory, startBot, target, guid, static_cast<float>(rand_norm()), nowMs, values);
-    RecordStart(bot, enemy, decision, target, refusal);
-    return decision.start;
-}
-
-bool IsPickedTarget(PlayerbotAI* botAI, Unit* unit)
-{
-    if (!botAI || !unit || !botAI->fightMemory)
-        return false;
-    uint64 const guid = unit->GetGUID().GetRawValue();
-    uint32 const nowMs = getMSTime();
-    return IsPicked(*botAI->fightMemory, guid, nowMs) || IsJoinTarget(*botAI->fightMemory, guid, nowMs);
-}
-
-Player* JoinTarget(PlayerbotAI* botAI)
-{
-    FightMemory* const memory = botAI ? botAI->fightMemory.get() : nullptr;
-    if (!memory || !memory->joinFightId)
-        return nullptr;
-    uint32 const nowMs = getMSTime();
-    bool const fresh = IsJoinTarget(*memory, memory->joinGuid, nowMs);
-    if ((!fresh && memory->fightId != memory->joinFightId) || memory->retreatFightId == memory->joinFightId ||
-        !StartsByRules(botAI))
-        return nullptr;
-    Player* const bot = botAI->GetBot();
-    std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false);
-    Fight const* const fight = entry ? entry->book.FindFight(memory->joinFightId) : nullptr;
-    if (!fight)
-        return nullptr;
-
-    ChaseLimit const limit =
-        ChaseLimitFor(memory->aggression, memory->courtesy, FightRuleValues(sPlayerbotAIConfig.WorldPvp));
-    auto const leftAlone = [&](FightParticipant const& participant, Player* player)
-    {
-        return ChaseLeftAlone(*memory, participant.guid, nowMs) ||
-               (ChasePast(participant.retreatedMs, nowMs, limit) && !Attacks(player, bot));
-    };
-    Player* const enemy = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(memory->joinGuid));
-    FightParticipant const* const joined = fight->Find(memory->joinGuid);
-    if (fresh && enemy && enemy->IsAlive() && joined && !leftAlone(*joined, enemy))
-        return enemy;
-
-    // Its target is dead, gone or left alone, or the bot is in the fight it joined: the nearest enemy participant it
-    // sees and may pick for the reason it came in
-    std::vector<JoinEnemy> enemies;
-    for (FightParticipant const& participant : fight->participants)
-    {
-        Player* const player = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(participant.guid));
-        if (!player || !player->IsInWorld() || !player->IsAlive() || player->GetTeamId() == bot->GetTeamId() ||
-            leftAlone(participant, player))
-            continue;
-        JoinEnemy candidate;
-        candidate.guid = participant.guid;
-        candidate.yards = bot->GetDistance(player);
-        candidate.colour = WorldPvp::ColourOf(bot->GetLevel(), player->GetLevel());
-        candidate.visible = bot->CanSeeOrDetect(player);
-        candidate.attacking = Attacks(player, bot);
-        enemies.push_back(candidate);
-    }
-    uint64 const target = PickJoinTarget(enemies, JoinWhyOf(memory->joinCameIn));
-    if (!target)
-        return nullptr;
-    memory->joinGuid = target;
-    memory->joinMs = nowMs;
-    return ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(target));
 }
 
 bool ChaseEnds(PlayerbotAI* botAI, Unit* target)
@@ -1445,6 +1088,7 @@ void OnBotTick(PlayerbotAI* botAI, Player* bot)
     uint32 const nowMs = getMSTime();
     if (RequestsWaiting())
         ServeRequest(botAI, bot, nowMs);
+    NoteEngaged(botAI, bot, nowMs);
     if (bot->GetCombatManager().GetPvPCombatRefs().empty() || !HasBook(bot->GetMap()))
         return;
 

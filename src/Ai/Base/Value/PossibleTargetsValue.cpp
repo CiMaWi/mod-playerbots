@@ -73,10 +73,10 @@ bool PossibleTargetsValue::AcceptUnit(Unit* unit)
         if (bot->duel && bot->duel->Opponent == unit)
             return true;
 
-        // World PvP (WP4): a bot that starts fights by the rules attacks another player only in a fight it is in or as
-        // the target the rules picked (their colours replace the level filter below)
+        // World PvP (WP4, WP23): a bot that starts fights by the rules attacks another player only in a fight it is in
+        // or as the enemy it entered on by enthusiasm (its colours replace the level filter below)
         if (WorldPvp::StartsByRules(botAI))
-            return bot->IsInCombatWith(unit) || WorldPvp::IsPickedTarget(botAI, unit);
+            return bot->IsInCombatWith(unit) || WorldPvp::IsEnteredTarget(botAI, unit);
 
         // Capital cities - no restrictions
         uint32 zoneId = bot->GetZoneId();

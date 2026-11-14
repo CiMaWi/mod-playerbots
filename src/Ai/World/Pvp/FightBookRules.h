@@ -709,10 +709,9 @@ public:
     uint32_t fightId = 0;
     bool hasFought = false;
     uint32_t lastFightEndMs = 0;
-    // WP4: the last chance and the test constraint fightready (MemoryOf copies it: its chances start a fight)
+    // WP4: the last chance
     bool hasChance = false;
     uint32_t lastChanceMs = 0;
-    bool ready = false;
     // The glue's own clocks: whether the bot is persistent (rechecked now and then) and the last combat check
     bool persistent = false;
     bool persistentKnown = false;

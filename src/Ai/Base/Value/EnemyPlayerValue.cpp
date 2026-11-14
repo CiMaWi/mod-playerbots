@@ -29,9 +29,9 @@ constexpr char const* REFUSAL_EXCLUSION = "exclusion";
 constexpr char const* REFUSAL_NOT_VISIBLE = "not_visible";
 constexpr char const* REFUSAL_MASTER = "master";
 
-// Today's target checks on an enemy player after the parent's filter: the scan's and the join target's. Outside
-// battlegrounds today's scan takes only enemies who can see the bot; a target the rules picked or let the bot join
-// (`byRules`) needs the bot's own sight of it, so a rogue that stealthed beside its pick still attacks it (WP4b)
+// Today's target checks on an enemy player after the parent's filter. Outside battlegrounds today's scan takes only
+// enemies who can see the bot; a bot entering by enthusiasm (`byRules`) needs its own sight of the enemy, so a rogue
+// that stealthed beside its pick still attacks it (WP4b)
 char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit, bool const byRules)
 {
     bool inCannon = botAI->IsInVehicle(false, true);
@@ -62,9 +62,9 @@ char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit, bool const
 
 bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
 {
-    // World PvP (WP4): a bot that starts fights by the rules takes only the enemy they picked at a meeting
+    // World PvP (WP23): a bot that starts fights by the rules takes only an enemy its enthusiasm lets it enter on
     if (WorldPvp::StartsByRules(botAI))
-        return unit->IsPlayer() && WorldPvp::AcceptByRules(botAI, unit, Refusal(unit, true));
+        return unit->IsPlayer() && WorldPvp::MayEnter(botAI, unit, Refusal(unit, true));
 
     // Today's scan; WP1 records each enemy player a persistent bot (a PvpTest fighter) newly meets, with what today's
     // rules did to it
@@ -91,8 +91,12 @@ char const* NearestEnemyPlayersValue::Refusal(Unit* unit, bool byRules)
 
 Unit* EnemyPlayerValue::Calculate()
 {
-    // The enemy scan (with the nearest enemy players' refresh when due); WorldPvp scan gated counts the skipped step 2
+    // The enemy scan (with the nearest enemy players' refresh when due); WorldPvp balance counts the local balance
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp scan") : nullptr);
+    // World PvP (WP23): the enthusiasm's engaged edge, traits and local balance before any step reads them
+    bool const byRules = WorldPvp::StartsByRules(botAI);
+    if (byRules)
+        WorldPvp::RefreshEnthusiasm(botAI);
     bool controllingCannon = false;
     bool controllingVehicle = false;
     bool passenger = false;
@@ -151,19 +155,10 @@ Unit* EnemyPlayerValue::Calculate()
     if (!TestConstraints::StartsFights(botAI->rpgInfo.constraints))
         return nullptr;
 
-    // World PvP (WP5): the target in the fight the rules let this bot join, when today's checks of step 2 pass on it
-    if (Player* const joined = WorldPvp::JoinTarget(botAI))
-        if (joined != pVictim && !IsUnavailableCombatTarget(bot, joined) && !exclusions.count(joined->GetGUID()) &&
-            bot->IsWithinDist(joined, VISIBILITY_DISTANCE_NORMAL) && !EnemyRefusal(botAI, bot, joined, true) &&
-            WorldPvp::Reaches(bot, joined))
-            return joined;
-
-    // 2. Find enemy player in range. A bot that starts fights by the rules and cannot start one now skips it; the
-    // enemy the rules picked is attacked from the full distance (the rules weighed the odds already)
-
-    bool const byRules = WorldPvp::StartsByRules(botAI);
+    // 2. Find enemy player in range. A bot that starts fights by the rules skips it while its enthusiasm can enter
+    // nothing; the enemy it enters on is attacked from the full distance (the thresholds weighed the balance already)
     GuidVector const players =
-        byRules && WorldPvp::ScanGated(botAI) ? GuidVector() : AI_VALUE(GuidVector, "nearest enemy players");
+        byRules && WorldPvp::ScanSkipped(botAI) ? GuidVector() : AI_VALUE(GuidVector, "nearest enemy players");
     float const maxAggroDistance = GetMaxAttackDistance();
     for (auto const& gTarget : players)
     {
@@ -202,14 +197,16 @@ Unit* EnemyPlayerValue::Calculate()
         if (!bot->IsWithinDist(pTarget, aggroDistance))
             continue;
 
-        // The rules decided a start only on an enemy in reach (WorldPvp::AcceptByRules): the same test
+        // A bot entering by enthusiasm writes its entering row once the enemy is in reach (and a new pick)
         if (controllingCannon ? bot->IsWithinLOSInMap(pTarget) : WorldPvp::Reaches(bot, pTarget))
-            return pTarget;
+            if (!byRules || WorldPvp::NoteEntering(botAI, pTarget))
+                return pTarget;
     }
 
-    // 3. Check party attackers.
+    // 3. Check party attackers. A bot entering by enthusiasm joins its group's fight by step 2 (the group row of its
+    // join threshold), not unasked here
 
-    if (Group* pGroup = bot->GetGroup())
+    if (Group* pGroup = byRules ? nullptr : bot->GetGroup())
     {
         for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
         {

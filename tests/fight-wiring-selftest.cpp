@@ -8,7 +8,7 @@
 // starts by the rules (PvpTest's forced fighters, battlegrounds and non-persistent bots do not); each refusal word
 // reached through the glue's mapping (not open world, real player, group member, in fight, graveyard of the bot and
 // of the target, peaceable, gap, grey, red, resurrected, rolled recently, roll); calm and the objective stay neutral;
-// a ready bot's chance starts; the chance clock and the rolled-at time change only on a chance; the first chance
+// the chance clock and the rolled-at time change only on a chance; the first chance
 // counts from login; orange by caution; the picked target's freshness; the fight's decided list and the book's
 // resurrections; the nearest graveyard. Joining (WP5): the waiting refusals (dead, in another fight, unseen, too far,
 // no enemy in sight) and the kept answers (not own side, all red, roll), the always-joins (defence, group, master)
@@ -200,28 +200,6 @@ void CheckChanceClock()
     Check(IsPicked(memory, ENEMY, later + START_TARGET_MS - 1), "the pick is fresh within START_TARGET_MS");
     Check(!IsPicked(memory, ENEMY, later + START_TARGET_MS), "the pick expires");
     Check(!IsPicked(memory, ENEMY + 1, later), "another enemy is not picked");
-}
-
-void CheckReady()
-{
-    uint32_t const now = LOGIN + HOUR;
-    GateFacts facts;
-    facts.aggression = -0.9f;
-    FightMemory memory = Ready(now, facts);
-    Check(Gate(memory, now) == Refusal::Peaceable, "a peaceable bot is gated");
-    memory.ready = true;
-    Check(Gate(memory, now) == Refusal::None, "a ready bot is not peaceable");
-    TargetFacts grey = Yellow();
-    grey.targetLevel = 30;
-    Check(Decide(memory, grey, now) == Refusal::Grey && memory.ready, "ready does not pass a hard rule");
-    TargetFacts orange = Yellow();
-    orange.targetLevel = 43;
-    memory.caution = 1.0f;
-    StartBot const bot = MakeStartBot(memory, now);
-    StartTarget const target = MakeStartTarget(orange, memory, ENEMY, now);
-    StartDecision const decision = DecideMeeting(memory, bot, target, ENEMY, 0.99f, now, VALUES);
-    Check(decision.start && decision.p == 1.0f, "a ready bot's chance starts (p 1)");
-    Check(memory.ready, "ready stays (a constraint row, cleared by its order)");
 }
 
 void CheckOrangeByCaution()
@@ -819,7 +797,6 @@ int main()
     CheckBotRefusals();
     CheckTargetRefusals();
     CheckChanceClock();
-    CheckReady();
     CheckOrangeByCaution();
     CheckOddsGate();
     CheckBookAdditions();

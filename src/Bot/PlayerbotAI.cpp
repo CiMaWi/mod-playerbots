@@ -35,6 +35,7 @@
 #include "ExternalEventHelper.h"
 #include "FightBook.h"
 #include "FightBookRules.h"
+#include "FightEnthusiasm.h"
 #include "FleeRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
@@ -847,9 +848,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP's records (WP1): the bot's PvP combat for its map's fight book and the fight commands' requests (a
-    // relaxed load and one empty() check while neither is there)
-    if (WorldPvp::RequestsWaiting() || !bot->GetCombatManager().GetPvPCombatRefs().empty())
+    // World PvP's records (WP1): the bot's PvP combat for its map's fight book, its enthusiasm's engaged edge (WP23)
+    // and the fight commands' requests (a relaxed load, one empty() check and a flag while none is there)
+    if (WorldPvp::RequestsWaiting() || !bot->GetCombatManager().GetPvPCombatRefs().empty() ||
+        (enthusiasm && enthusiasm->engaged))
         WorldPvp::OnBotTick(this, bot);
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)

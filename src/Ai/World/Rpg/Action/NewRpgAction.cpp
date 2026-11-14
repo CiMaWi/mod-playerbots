@@ -866,8 +866,6 @@ void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 void ReadByFollower(Player&) {}
 // nodestroy changes nothing on the bot: the smart destroy action reads the bit (TestConstraints::DestroysForSpace)
 void ReadByDestroy(Player&) {}
-// fightready and joinroll change nothing on the bot: the fight book reads the bits (TestConstraints::FightReady)
-void ReadByFightBook(Player&) {}
 // flee changes nothing on the bot: the world PvP retreat trigger reads the bit (TestConstraints::Flees)
 void ReadByFlee(Player&) {}
 
@@ -878,8 +876,6 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FLYFAIL, ReadByFollower, ReadByFollower},
     {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
     {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
-    {TestConstraints::FIGHTREADY, ReadByFightBook, ReadByFightBook},
-    {TestConstraints::JOINROLL, ReadByFightBook, ReadByFightBook},
     {TestConstraints::FLEE, ReadByFlee, ReadByFlee},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");

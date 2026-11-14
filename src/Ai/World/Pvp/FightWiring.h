@@ -99,8 +99,7 @@ inline StartBot MakeStartBot(FightMemory const& memory, uint32_t nowMs)
     bot.sinceFightEndMs = memory.hasFought ? nowMs - memory.lastFightEndMs : NEVER_MS;
     bot.sinceChanceMs = nowMs - (memory.hasChance ? memory.lastChanceMs : memory.bornMs);
     bot.graveyardYards = memory.graveyardYards;
-    // A ready bot (the test constraint fightready) is never peaceable: its chances start when the hard rules pass
-    bot.aggression = memory.ready ? std::max(memory.aggression, 0.0f) : memory.aggression;
+    bot.aggression = memory.aggression;
     bot.caution = memory.caution;
     bot.courtesy = memory.courtesy;
     return bot;
@@ -148,19 +147,13 @@ inline bool NeedsOdds(StartBot const& bot, StartTarget const& target, FightRuleV
 }
 
 // The meeting's decision and what it changes in the memory: a chance restarts the chance clock and marks the target
-// as rolled for, start or not; a ready bot's chance starts (p 1); a start picks the target
+// as rolled for, start or not; a start picks the target
 inline StartDecision DecideMeeting(FightMemory& memory, StartBot const& bot, StartTarget const& target, uint64_t guid,
                                    float roll, uint32_t nowMs, FightRuleValues const& values)
 {
     StartDecision decision = DecideStart(bot, target, roll, values);
     if (decision.chance)
     {
-        if (memory.ready)
-        {
-            decision.start = true;
-            decision.p = 1.0f;
-            decision.refusal = Refusal::None;
-        }
         memory.hasChance = true;
         memory.lastChanceMs = nowMs;
         memory.MarkRolled(guid, nowMs);
