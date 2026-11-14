@@ -59,7 +59,12 @@ enum class BagRow : std::uint8_t
 {
     Free,
     Sell,
-    Bag
+    Bag,
+    MailWaiting,   // value = unopened mails
+    MailSeen,      // value = copper worth the bot saw and left in the mail
+    MailExpected,  // value = copper the bot expects
+    Kept,          // name = the item, value = the level it is due at, extra = 1 in the bank, 0 in the bags
+    BankFree       // value = free bank slots, extra = all of them
 };
 enum class PlaceRow : std::uint8_t
 {
@@ -246,32 +251,74 @@ inline void QuestPlanItems(PlanInput const& in, std::vector<BotStateItem>& items
         add(quest, QuestRow::Deferred, 0);
 }
 
+// One item the bank rule keeps for a later level, its name resolved by the gather
+struct KeptLine
+{
+    std::string name;
+    std::uint32_t dueLevel{0};
+    bool inBank{false};
+    bool due{false};  // due at the bot's level now
+};
+
+// The kept items shown at most (about four)
+constexpr std::size_t KEPT_SHOWN = 4;
+
 struct BagsInput
 {
     std::uint32_t freeSlots{0};
     std::uint32_t slots{0};  // backpack and bags together
     PlanInput const* plan{nullptr};
+    std::uint32_t mailWaiting{0};         // unopened mails (a count only; what is inside stays unknown, WB.4)
+    std::uint32_t mailSeenCopper{0};      // worth the bot saw and left in the mail
+    std::uint32_t mailExpectedCopper{0};  // gold the bot expects there
+    bool keepsPossessions{false};         // the bank rule governs this bot
+    std::vector<KeptLine> kept;           // bank items, then bag items, each by later worth
+    std::uint32_t bankFree{0};
+    std::uint32_t bankSlots{0};
 };
 
 // free_slots (value free, extra all), then the plan's first errand (the next sell stop) and bag purchase: reason word,
-// seconds, extra = the option's target (vendor or item)
+// seconds, extra = the option's target (vendor or item); then the waiting mail (any bot: mail_waiting, mail_seen,
+// mail_expected, each when above 0) and, for a bot the bank rule governs, up to KEPT_SHOWN kept items (due first) and
+// bank_free
 inline void BagsItems(BagsInput const& in, std::vector<BotStateItem>& items)
 {
     items.clear();
     items.push_back(Item("free_slots", in.freeSlots, in.slots, BagRow::Free));
-    if (!in.plan || !Planned(*in.plan))
-        return;
-    bool sell = false;
-    bool bag = false;
-    for (Goals::Option const& option : in.plan->view.plan->ranked.options)
+    if (in.plan && Planned(*in.plan))
     {
-        bool& seen = option.kind == Goals::GoalKind::Errand ? sell : bag;
-        if ((option.kind != Goals::GoalKind::Errand && option.kind != Goals::GoalKind::BuyBag) || seen)
-            continue;
-        seen = true;
-        items.push_back(Item(Word(option.reason), RoundUp(option.minutes * Goals::SECONDS_PER_MINUTE), option.target,
-                             option.kind == Goals::GoalKind::Errand ? BagRow::Sell : BagRow::Bag));
+        bool sell = false;
+        bool bag = false;
+        for (Goals::Option const& option : in.plan->view.plan->ranked.options)
+        {
+            bool& seen = option.kind == Goals::GoalKind::Errand ? sell : bag;
+            if ((option.kind != Goals::GoalKind::Errand && option.kind != Goals::GoalKind::BuyBag) || seen)
+                continue;
+            seen = true;
+            items.push_back(Item(Word(option.reason), RoundUp(option.minutes * Goals::SECONDS_PER_MINUTE),
+                                 option.target, option.kind == Goals::GoalKind::Errand ? BagRow::Sell : BagRow::Bag));
+        }
     }
+    if (in.mailWaiting)
+        items.push_back(Item("mail_waiting", in.mailWaiting, 0, BagRow::MailWaiting));
+    if (in.mailSeenCopper)
+        items.push_back(Item("mail_seen", in.mailSeenCopper, 0, BagRow::MailSeen));
+    if (in.mailExpectedCopper)
+        items.push_back(Item("mail_expected", in.mailExpectedCopper, 0, BagRow::MailExpected));
+    if (in.keepsPossessions)
+    {
+        std::size_t shown = 0;
+        for (bool const dueNow : {true, false})
+            for (KeptLine const& line : in.kept)
+                if (line.due == dueNow && shown < KEPT_SHOWN)
+                {
+                    items.push_back(Item(line.name, line.dueLevel, line.inBank ? 1 : 0, BagRow::Kept));
+                    ++shown;
+                }
+        items.push_back(Item("bank_free", in.bankFree, in.bankSlots, BagRow::BankFree));
+    }
+    if (items.size() > Limit(BotStateTopic::Bags))
+        items.resize(Limit(BotStateTopic::Bags));
 }
 
 struct TaxiPlace

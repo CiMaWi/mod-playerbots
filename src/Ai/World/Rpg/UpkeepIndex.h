@@ -208,6 +208,16 @@ struct SpellFit
     std::array<std::uint32_t, UPKEEP_CLASS_SLOTS> races{};  // by class id: a bit per race id - 1
 };
 
+// A trainer spell that teaches a weapon skill line (WU15a: its learn-skill effect names a skill line of the weapon
+// category), with the races per class that may learn it: Player::IsSpellFitByClassAndRace and the skill line's
+// SkillRaceClassInfo, taken at the gather
+struct WeaponSkillFacts
+{
+    std::uint32_t skill{0};
+    std::uint32_t spellId{0};
+    std::array<std::uint32_t, UPKEEP_CLASS_SLOTS> races{};  // by class id: a bit per race id - 1
+};
+
 struct ReagentUse
 {
     std::uint32_t item{0};
@@ -241,7 +251,8 @@ struct UpkeepGather
     std::vector<VendorItemFacts> vendorItems;
     std::vector<UpkeepItemFacts> items;  // the vendors' items, once each
     std::vector<ReagentUse> reagents;
-    std::vector<SpellFit> fits;  // the class and riding trainers' spells
+    std::vector<SpellFit> fits;                  // the class and riding trainers' spells
+    std::vector<WeaponSkillFacts> weaponSkills;  // the tradeskill trainers' weapon skill spells
     std::uint32_t emptyVendors{0};
     std::uint32_t missingItems{0};  // vendor rows whose item has no template
 };
@@ -296,6 +307,24 @@ struct UpkeepTrainer
     std::vector<std::uint16_t> spells;   // the positions in its list it teaches, sorted
 };
 
+// A weapon skill the weapon masters teach (WU15a). Weapon masters are tradeskill trainers (the core's Trainer::Type, as
+// every profession trainer): a trainer of that kind is one when it teaches a weapon skill spell, so a profession
+// trainer's spells, merged into the same list, never become a weapon need
+struct WeaponSkill
+{
+    std::uint32_t skill{0};  // the skill line
+    std::uint32_t spellId{0};
+    std::uint32_t moneyCost{0};  // copper, the game's price (the first master's terms)
+    std::uint8_t reqLevel{0};
+    std::array<std::uint32_t, UPKEEP_CLASS_SLOTS> races{};  // by class id: a bit per race id - 1 that may learn it
+    std::vector<std::uint32_t> trainers;                    // the keys of the weapon masters that teach it, sorted
+
+    bool Fits(std::uint8_t cls, std::uint8_t race) const
+    {
+        return cls < UPKEEP_CLASS_SLOTS && race && race < UPKEEP_RACE_SLOTS && ((races[cls] >> (race - 1)) & 1u);
+    }
+};
+
 // One item at one vendor for one stock kind
 struct VendorOffer
 {
@@ -341,7 +370,9 @@ struct UpkeepStats
     std::uint32_t orphanEntries{0};   // creature entries naming no gathered trainer
     std::uint32_t spellConflicts{0};  // a spell two trainers of one list teach at different terms; the first is kept
     std::uint32_t reagentItems{0};
-    std::uint32_t currencyOnly{0};  // vendor rows sold for currency only: skipped
+    std::uint32_t weaponSkills{0};
+    std::uint32_t weaponMasters{0};  // tradeskill trainers that teach a weapon skill
+    std::uint32_t currencyOnly{0};   // vendor rows sold for currency only: skipped
     std::uint32_t unknownItems{0};
     std::uint32_t emptyVendors{0};
     std::uint32_t missingItems{0};
@@ -359,6 +390,7 @@ public:
     std::array<std::vector<VendorOffer>, UPKEEP_STOCK_COUNT> offers;      // by required level, item, vendor
     std::vector<std::pair<std::uint32_t, std::uint32_t>> reagentClasses;  // item, class mask; by item
     std::vector<ReagentSpell> reagentSpells;                              // by class, item and position
+    std::vector<WeaponSkill> weaponSkills;                                // by skill line
     UpkeepStats stats;
 
     static UpkeepIndex Build(UpkeepGather&& input)
@@ -367,6 +399,7 @@ public:
         index.stats.emptyVendors = input.emptyVendors;
         index.stats.missingItems = input.missingItems;
         index.BuildTrainers(input);
+        index.BuildWeapons(input);
         index.BuildFits(input);
         index.BuildReagents(input);
         index.BuildOffers(input);
@@ -389,6 +422,22 @@ public:
     {
         TrainerList const* list = List(TrainerKind::Mount, race);
         return list ? list : List(TrainerKind::Mount, 0);
+    }
+
+    WeaponSkill const* Weapon(std::uint32_t skill) const
+    {
+        auto const it = std::lower_bound(weaponSkills.begin(), weaponSkills.end(), skill,
+                                         [](WeaponSkill const& weapon, std::uint32_t id) { return weapon.skill < id; });
+        return it != weaponSkills.end() && it->skill == skill ? &*it : nullptr;
+    }
+
+    // A trainer key that teaches a weapon skill: a weapon master, not a profession trainer
+    bool WeaponMaster(std::uint32_t key) const
+    {
+        for (WeaponSkill const& weapon : weaponSkills)
+            if (std::binary_search(weapon.trainers.begin(), weapon.trainers.end(), key))
+                return true;
+        return false;
     }
 
     std::uint32_t ReagentClassMask(std::uint32_t item) const
@@ -437,6 +486,9 @@ public:
                 trainer.entries.capacity() * sizeof(std::uint32_t) + trainer.spells.capacity() * sizeof(std::uint16_t);
         for (std::vector<VendorOffer> const& kind : offers)
             bytes += kind.capacity() * sizeof(VendorOffer);
+        bytes += weaponSkills.capacity() * sizeof(WeaponSkill);
+        for (WeaponSkill const& weapon : weaponSkills)
+            bytes += weapon.trainers.capacity() * sizeof(std::uint32_t);
         return bytes;
     }
 
@@ -534,6 +586,51 @@ private:
             trainers.push_back(std::move(trainer));
         }
         stats.orphanEntries += static_cast<std::uint32_t>(input.trainerEntries.size() - next);
+    }
+
+    // The weapon skills (built after the trainers): each gathered weapon spell, once per skill line (the lowest spell),
+    // with every tradeskill trainer whose list position of it the trainer teaches; a spell no trainer teaches is none
+    void BuildWeapons(UpkeepGather& input)
+    {
+        std::sort(input.weaponSkills.begin(), input.weaponSkills.end(),
+                  [](WeaponSkillFacts const& a, WeaponSkillFacts const& b)
+                  { return std::tie(a.skill, a.spellId) < std::tie(b.skill, b.spellId); });
+        std::vector<std::uint32_t> masters;
+        for (WeaponSkillFacts const& facts : input.weaponSkills)
+        {
+            if (!facts.skill || (!weaponSkills.empty() && weaponSkills.back().skill == facts.skill))
+                continue;
+            WeaponSkill weapon;
+            weapon.skill = facts.skill;
+            weapon.spellId = facts.spellId;
+            weapon.races = facts.races;
+            for (UpkeepTrainer const& trainer : trainers)
+            {
+                if (trainer.kind != TrainerKind::Tradeskill || trainer.list >= lists.size())
+                    continue;
+                TrainerList const& list = lists[trainer.list];
+                std::size_t const position = list.Find(facts.spellId);
+                if (position == TrainerList::NOT_FOUND ||
+                    !std::binary_search(trainer.spells.begin(), trainer.spells.end(),
+                                        static_cast<std::uint16_t>(position)))
+                    continue;
+                if (weapon.trainers.empty())
+                {
+                    weapon.moneyCost = list.spells[position].moneyCost;
+                    weapon.reqLevel = list.spells[position].reqLevel;
+                }
+                weapon.trainers.push_back(trainer.key);
+                masters.push_back(trainer.key);
+            }
+            if (weapon.trainers.empty())
+                continue;
+            std::sort(weapon.trainers.begin(), weapon.trainers.end());
+            weaponSkills.push_back(std::move(weapon));
+        }
+        std::sort(masters.begin(), masters.end());
+        masters.erase(std::unique(masters.begin(), masters.end()), masters.end());
+        stats.weaponSkills = static_cast<std::uint32_t>(weaponSkills.size());
+        stats.weaponMasters = static_cast<std::uint32_t>(masters.size());
     }
 
     // Each list spell's fit from the gather; a list without fits (tradeskill, pet) keeps none

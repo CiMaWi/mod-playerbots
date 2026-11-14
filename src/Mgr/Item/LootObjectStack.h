@@ -9,11 +9,14 @@
 
 #include <array>
 #include <chrono>
+#include <string_view>
 
+#include "LootInteraction.h"
 #include "ObjectGuid.h"
 
 class AiObjectContext;
 class Player;
+class Spell;
 class WorldObject;
 
 struct ItemTemplate;
@@ -107,22 +110,38 @@ public:
     void Clear();
     LootObject GetLoot(float maxDistance = 0);
 
-    bool IsLootPending();
-    void BeginLoot(ObjectGuid guid);
-    void LootOpened(ObjectGuid guid);
-    void CancelLoot(ObjectGuid guid);
-    void RetryLoot(ObjectGuid guid);
+    bool IsLootPending() const { return _interaction.Pending(); }
+    bool HasInteraction() const { return _interaction.Guid != 0; }
+    bool InteractionExpired() const { return _interaction.Expired; }
+    ObjectGuid InteractionGuid() const { return ObjectGuid(_interaction.Guid); }
+    uint32 InteractionGeneration() const { return _interaction.Generation; }
+    bool PrepareLoot(ObjectGuid guid, bool encounter, uint32 now);
+    void BeginLoot(ObjectGuid guid, uint32 now);
+    bool OwnsCast(Spell const* spell) const;
+    bool LootOpened(ObjectGuid guid);
+    void CompleteResponse(ObjectGuid guid, uint32 gold, uint32 stored);
+    bool AcceptUnsolicitedLoot(ObjectGuid guid);
+    void Cancel(std::string_view reason);
+    void Observe(uint32 now, bool canMove);
+    bool ConsumeExpiry() { return LootInteraction::ConsumeExpiry(_interaction, *this); }
+    void Trace(std::string_view event, std::string_view detail);
     void DeferLoot(ObjectGuid guid);
     bool CanAttemptLoot(ObjectGuid guid) const;
 
 private:
     LootObject GetNearest(float maxDistance = 0);
+    bool IsDeferred(ObjectGuid guid) const;
+    void Finish();
+    void ClearSelection(ObjectGuid guid);
 
     Player* bot;
     LootTargetList availableLoot;
-    ObjectGuid _pendingLoot;
-    std::chrono::steady_clock::time_point _pendingUntil;
-    bool _awaitingRelease = false;
+    LootInteraction::Transaction _interaction;
+    ObjectGuid _interactionMaster;
+    uint32 _interactionMap = 0;
+    uint32 _interactionInstance = 0;
+    uint32 _castSpellId = 0;
+    bool _encounterInteraction = false;
 };
 
 #endif

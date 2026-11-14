@@ -96,9 +96,9 @@ int main()
 {
     // Limits: the six planner topics have their own, the old five the general cap
     Check(Limit(BotStateTopic::Plan) == 8 && Limit(BotStateTopic::Options) == 5 && Limit(BotStateTopic::Route) == 12 &&
-              Limit(BotStateTopic::QuestPlan) == 12 && Limit(BotStateTopic::Bags) == 6 &&
+              Limit(BotStateTopic::QuestPlan) == 12 && Limit(BotStateTopic::Bags) == 12 &&
               Limit(BotStateTopic::Places) == 24,
-          "limits plan 8, options 5, route 12, quest_plan 12, bags 6, places 24");
+          "limits plan 8, options 5, route 12, quest_plan 12, bags 12, places 24");
     Check(Limit(BotStateTopic::Spells) == BotStateTopicMaxItems && Limit(BotStateTopic::Inventory) == 64,
           "the old topics keep the general cap");
     Check(static_cast<int>(BotStateTopic::Spells) == 4 && static_cast<int>(BotStateTopic::Plan) == 5 &&
@@ -270,6 +270,130 @@ int main()
         in.inScope = false;
         BagsItems(bags, items);
         Check(items.size() == 1, "bags: out of scope only the free slots");
+    }
+
+    // Bags, WB9b: the waiting mail and the kept items
+    {
+        auto const named = [](std::vector<BotStateItem> const& list, char const* name)
+        { return std::count_if(list.begin(), list.end(), [&](BotStateItem const& i) { return i.name == name; }); };
+        auto const kept = [](char const* name, std::uint32_t level, bool inBank, bool due)
+        { return KeptLine{name, level, inBank, due}; };
+
+        // mail waiting, nothing kept (a governed bot): mail_waiting and the bank's free slots only
+        BagsInput bags;
+        bags.freeSlots = 3;
+        bags.slots = 52;
+        bags.mailWaiting = 3;
+        bags.keepsPossessions = true;
+        bags.bankFree = 28;
+        bags.bankSlots = 28;
+        BagsItems(bags, items);
+        Check(items.size() == 3 && items[1].name == "mail_waiting" && items[1].value == 3 &&
+                  Is(items[1], BagRow::MailWaiting) && items[2].name == "bank_free" && items[2].value == 28 &&
+                  items[2].extra == 28 && Is(items[2], BagRow::BankFree) && !named(items, "mail_seen") &&
+                  !named(items, "mail_expected"),
+              "bags: mail waiting and nothing kept: mail_waiting and bank_free only");
+
+        // items left in the mail and gold expected; no mail waiting gives no mail_waiting
+        bags.mailWaiting = 0;
+        bags.mailSeenCopper = 5000;
+        bags.mailExpectedCopper = 120;
+        BagsItems(bags, items);
+        Check(!named(items, "mail_waiting") && named(items, "mail_seen") == 1 && named(items, "mail_expected") == 1 &&
+                  items[1].name == "mail_seen" && items[1].value == 5000 && Is(items[1], BagRow::MailSeen) &&
+                  items[2].name == "mail_expected" && items[2].value == 120 && Is(items[2], BagRow::MailExpected),
+              "bags: mail seen and expected rows with their copper, no mail_waiting at zero");
+
+        // a due item in the bank and a kept one in the bags: names stay names, due first, bank 1 / bags 0
+        bags.mailSeenCopper = 0;
+        bags.mailExpectedCopper = 0;
+        bags.kept = {kept("Frostweave Robe", 60, false, false), kept("Chromatic Cloak", 57, true, true)};
+        bags.bankFree = 26;
+        BagsItems(bags, items);
+        Check(items.size() == 4 && items[1].name == "Chromatic Cloak" && items[1].value == 57 && items[1].extra == 1 &&
+                  Is(items[1], BagRow::Kept) && items[2].name == "Frostweave Robe" && items[2].value == 60 &&
+                  items[2].extra == 0 && Is(items[2], BagRow::Kept) && items[3].name == "bank_free" &&
+                  items[3].value == 26,
+              "bags: a due bank item before a kept bag item, by name, then bank_free");
+
+        // more kept items than the cap: seven kept, two due (the last two given), four shown, due ones first
+        bags.kept.clear();
+        for (int index = 0; index < 5; ++index)
+            bags.kept.push_back(kept("Later Item", 70 + index, true, false));
+        bags.kept.push_back(kept("Due One", 55, true, true));
+        bags.kept.push_back(kept("Due Two", 56, false, true));
+        BagsItems(bags, items);
+        Check(named(items, "Later Item") == 2 && items.size() == 1 + KEPT_SHOWN + 1 && items[1].name == "Due One" &&
+                  items[2].name == "Due Two" && items.back().name == "bank_free" &&
+                  items.size() <= Limit(BotStateTopic::Bags),
+              "bags: seven kept show four, both due ones first");
+
+        // nothing at all
+        BagsInput none;
+        none.freeSlots = 5;
+        none.slots = 20;
+        BagsItems(none, items);
+        Check(items.size() == 1 && items[0].name == "free_slots",
+              "bags: nothing waiting, nothing kept: free_slots only");
+        none.keepsPossessions = true;
+        none.bankFree = 28;
+        none.bankSlots = 28;
+        BagsItems(none, items);
+        Check(items.size() == 2 && items[1].name == "bank_free", "bags: a governed bot with nothing kept: bank_free");
+
+        // a bot the rule does not govern: mail rows only, even with kept filled
+        BagsInput free;
+        free.freeSlots = 5;
+        free.slots = 20;
+        free.mailWaiting = 2;
+        free.kept = {kept("Chromatic Cloak", 57, true, true)};
+        free.bankFree = 10;
+        BagsItems(free, items);
+        Check(items.size() == 2 && items[1].name == "mail_waiting" && !named(items, "Chromatic Cloak") &&
+                  !named(items, "bank_free"),
+              "bags: a bot the bank rule does not govern: mail rows only, no kept, no bank_free");
+
+        // out of the planner scope: the mail rows still appear
+        PlanInput out = InScope();
+        out.inScope = false;
+        bags.plan = &out;
+        bags.kept.clear();
+        bags.mailWaiting = 2;
+        BagsItems(bags, items);
+        Check(items.size() == 3 && items[1].name == "mail_waiting" && items[2].name == "bank_free",
+              "bags: out of scope, the mail rows and bank_free still appear");
+
+        // the biggest answer fits the limit: plan rows (3), mail (3), four kept, bank_free = 11
+        PlanInput in = InScope();
+        PlanOf(in).ranked.options = {OptionOf(Goals::GoalKind::Errand, 77, "mail", 90.0f, 2.0f),
+                                     OptionOf(Goals::GoalKind::BuyBag, 4500, "bag_worth_price", 70.0f, 4.0f)};
+        bags.plan = &in;
+        bags.mailWaiting = 2;
+        bags.mailSeenCopper = 10;
+        bags.mailExpectedCopper = 10;
+        bags.kept.clear();
+        for (int index = 0; index < 6; ++index)
+            bags.kept.push_back(kept("Thing", 60 + index, index % 2 == 0, false));
+        BagsItems(bags, items);
+        Check(items.size() == 11 && items.size() <= Limit(BotStateTopic::Bags), "bags: the fullest answer is 11 rows");
+
+        // the mail rows are fixed words and carry no digit, no mail content
+        bool plain = true;
+        for (BotStateItem const& item : items)
+            if (item.name.rfind("mail_", 0) == 0)
+                plain = plain && !HasDigit(item.name) &&
+                        (item.name == "mail_waiting" || item.name == "mail_seen" || item.name == "mail_expected");
+        Check(plain && named(items, "mail_waiting") && named(items, "mail_seen") && named(items, "mail_expected"),
+              "bags: the mail rows are their fixed words, no digit, no mail content");
+
+        // errand reasons read as words
+        for (char const* reason : {"mail", "bank_withdraw", "bank_deposit"})
+        {
+            PlanOf(in).ranked.options = {OptionOf(Goals::GoalKind::Errand, 77, reason, 90.0f, 2.0f)};
+            BagsItems(bags, items);
+            Check(items.size() > 1 && items[1].name == reason && Is(items[1], BagRow::Sell),
+                  "bags: an errand reason reads as its word");
+        }
     }
 
     // Places: the hearth, then known flight points, the bot's map nearest first, bounded

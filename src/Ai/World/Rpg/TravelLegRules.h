@@ -15,11 +15,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "RouteRules.h"
+#include "TravelLifecycle.h"
 
 namespace TravelLegs
 {
@@ -49,7 +51,6 @@ constexpr std::uint32_t HEARTH_SLACK_MS = 30 * 1000;  // a hearth leg's time bey
 constexpr std::uint32_t REPLAN_DELAY_MS = 2000;       // the failed leg's stuck report reaches the published book first
 constexpr std::uint32_t LEGS_PER_TICK = 4;            // finished legs passed in one tick at most
 constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;       // reached waypoints passed in one tick at most
-constexpr std::uint8_t QUAY_UNKNOWN_LOOKS = 3;        // quay looks on an unloaded nav mesh tile before the node stays
 constexpr std::uint8_t MAX_RESUBMITS = 3;             // route requests asked again per trip after a late or lost answer
 constexpr std::size_t AVOID_NODES = 4;                // route ends a trip leaves out after stuck walks
 constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leaves out (deaths, timed-out transports)
@@ -96,13 +97,12 @@ constexpr float SHIP_DOCK_YARDS = 80.0f;           // a stopped ship's or zeppel
 constexpr float STATIC_DOCK_YARDS = 20.0f;         // an elevator's or the tram's centre beside its stop node (2D)
 constexpr float STATIC_DOCK_Z_YARDS = 5.0f;        // and level with the stop node's floor
 constexpr float STILL_YARDS = 0.5f;                // a static transport that moved less between two scans stands
-constexpr float TRANSPORT_ARRIVE_YARDS = 10.0f;    // off the transport this close to the leg's end: arrived
 constexpr float WAIT_RETURN_YARDS = 15.0f;         // waiting further from the dock node, the bot walks back to it
+constexpr float QUAY_REACH_YARDS = 1.0f;
 // PlayerbotAI adds a passenger once a second: a departure without the bot counts as a miss after this
 constexpr std::uint32_t MISS_GRACE_MS = 2500;
 // Riding, one scan may miss the passenger (a cross-map ship's far teleport, that once-a-second check): the bot is off
 // the transport only when this many scans in a row saw it off
-constexpr std::uint8_t OFF_SCANS = 2;
 constexpr std::uint8_t HOP_AFTER_MISSES = 3;  // misses before the one last-resort hop onto the deck (WT.14)
 constexpr std::uint32_t HOP_TRY_MS = 3000;    // the boarding walk's time at a docking before the hop
 constexpr float HOP_MAX_YARDS = 20.0f;  // the hop only crosses the gap: the bot this close to the transport's centre
@@ -148,7 +148,9 @@ enum class FailReason : std::uint8_t
     Hearth,       // the hearthstone is missing or its cast failed
     OffMesh,      // the bot stands off the walkable mesh (MoveFarTo's off-mesh check): no walk can start there
     Death,        // the bot died LEG_DEATHS times on the leg or TRIP_DEATHS times on the trip (NoteLife)
-    Takeoff       // a fly leg: no takeoff where the bot stands, or no flying mount after FLY_MOUNT_TRIES tries
+    TransportLost,
+    NoExit,  // no exit at the leg's end: the bot walked its boarding crossing back where it boarded (Boarding::Back)
+    Takeoff  // a fly leg: no takeoff where the bot stands, or no flying mount after FLY_MOUNT_TRIES tries
 };
 
 // The follower's act for the logs (the case's hold line, the selftest's traces)
@@ -224,6 +226,10 @@ inline char const* FailWord(FailReason reason)
             return "off_mesh";
         case FailReason::Death:
             return "death";
+        case FailReason::TransportLost:
+            return "transport_lost";
+        case FailReason::NoExit:
+            return "no_exit";
         case FailReason::Takeoff:
             return "takeoff";
     }
@@ -232,7 +238,7 @@ inline char const* FailWord(FailReason reason)
 
 // Travel event sources (EventLog::Emit(bot, "Travel", source, ...); literals, as the log keeps the pointer's text):
 // "start", "arrived", "leg_done:<leg type>", "leg_failed:<reason>", "abort:<reason>" and the aborts that are no failed
-// leg: "abort:deadline", "abort:no_service", "abort:stopped", "abort:sick"
+// leg: "abort:deadline", "abort:stalled", "abort:no_service", "abort:stopped", "abort:sick"
 inline char const* LegDoneSource(LegType type)
 {
     switch (type)
@@ -285,6 +291,10 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:off_mesh";
         case FailReason::Death:
             return "leg_failed:death";
+        case FailReason::TransportLost:
+            return "leg_failed:transport_lost";
+        case FailReason::NoExit:
+            return "leg_failed:no_exit";
         case FailReason::Takeoff:
             return "leg_failed:takeoff";
     }
@@ -323,6 +333,10 @@ inline char const* AbortSource(FailReason reason)
             return "abort:off_mesh";
         case FailReason::Death:
             return "abort:death";
+        case FailReason::TransportLost:
+            return "abort:transport_lost";
+        case FailReason::NoExit:
+            return "abort:no_exit";
         case FailReason::Takeoff:
             return "abort:takeoff";
     }
@@ -331,9 +345,9 @@ inline char const* AbortSource(FailReason reason)
 
 // Transport event sources (EventLog::Emit(bot, TRANSPORT_EVENT_TYPE, TransportSource(event), entry, amount)), id = the
 // transport's gameobject entry. Amounts: attempt = seconds of the walk to the dock node, boarded = seconds waited
-// there, arrived and leave = seconds aboard, missed and hop = the leg's misses so far, stuck_aboard = seconds since
-// the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period). The hop also
-// gets EventLog::Honesty(bot, HOP_HONESTY_KIND, HOP_HONESTY_SOURCE, entry, misses) for `wlog report honesty`
+// there, arrived, leave and back = seconds aboard, missed and hop = the leg's misses so far, stuck_aboard = seconds
+// since the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period). The hop
+// also gets EventLog::Honesty(bot, HOP_HONESTY_KIND, HOP_HONESTY_SOURCE, entry, misses) for `wlog report honesty`
 enum class TransportEvent : std::uint8_t
 {
     Attempt,  // the bot reached the dock node
@@ -344,7 +358,9 @@ enum class TransportEvent : std::uint8_t
     Leave,        // aboard, the transport stands at the leg's end: the bot walks off
     StuckAboard,  // the transport left the leg's end with the bot still aboard after a leave
     NoExit,       // the follower found no ground beside the deck to walk off to (once per leave)
-    OffFirst      // the trip would end, plan or walk while the bot rides a ship or zeppelin: it gets off first
+    OffFirst,     // a pending trip operation waits until the bot is ashore
+    Lost,         // verified membership loss without a safe exit
+    Back          // after a no_exit, off the transport where it boarded, by its boarding crossing walked back
 };
 
 constexpr char const* TRANSPORT_EVENT_TYPE = "Transport";
@@ -373,6 +389,10 @@ inline char const* TransportSource(TransportEvent event)
             return "no_exit";
         case TransportEvent::OffFirst:
             return "off_first";
+        case TransportEvent::Lost:
+            return "lost";
+        case TransportEvent::Back:
+            return "back";
     }
     return "?";
 }
@@ -402,6 +422,7 @@ struct TransportSight
     bool unseen{false};         // no real player sees a hop onto it (IsTeleportSeen); filled only when WantsSightCheck
     std::uint32_t periodMs{0};  // its period; 0 unknown
     Point at;                   // its position: the target of Board and Hop
+    std::uint64_t guid{0};
 };
 
 // What the follower sees of the bot this tick
@@ -414,10 +435,16 @@ struct Observation
     bool takeoffHere{true};    // a fly leg: the bot may mount a flyer and lift off where it stands (outdoors, a flying
                                // area by its real area, not in water, no battle)
     std::uint32_t money{0};    // copper
-    bool stuck{false};         // MoveFarTo gave the current waypoint up (a traveller does not go IDLE there)
     std::uint32_t nowMs{0};    // getMSTime()
     std::uint32_t aboard{0};   // the gameobject entry of the transport the bot is a passenger of; 0 none
     TransportSight transport;  // transport legs only
+    std::uint64_t aboardGuid{0};
+    bool membershipAvailable{true};
+    bool boardingReady{true};
+    bool boardMotion{false};  // the bot's own boarding move onto the transport it is aboard has not reported yet
+    std::optional<TravelLifecycle::Outcome> passengerOutcome;
+    std::uint32_t quayLeg{NO_NODE};
+    std::optional<std::uint32_t> activeLegMs;
 };
 
 struct Decision
@@ -442,8 +469,8 @@ struct LegRecord
     std::uint8_t deaths{0};
 };
 
-// A transport leg's states: walk to the dock node, wait there, board the docked transport, ride, leave at the end;
-// off the transport short of the end the rest is a walk (Ashore)
+// A transport leg's states: walk to the dock node, wait there, board, ride and leave at the destination; after a
+// no_exit there, walk back off where the bot boarded (Back)
 enum class Boarding : std::uint8_t
 {
     Approach,
@@ -451,8 +478,62 @@ enum class Boarding : std::uint8_t
     Board,
     Ride,
     Leave,
-    Ashore
+    Back
 };
+
+// WT43b: the boarding's crossing (deck point and shore) in the transport's own frame: the offset from its origin,
+// turned by -o (z unturned). A ship or zeppelin repeats its pose at a stop, so where it stands as it did at the
+// boarding the same crossing, walked in reverse, gets the bot off
+constexpr float BACK_STOP_YARDS = 3.0f;  // the stored shore, placed by the current pose, lies this near its old place
+
+inline TravelLifecycle::Point LocalOffset(TravelLifecycle::DockPose const& pose, TravelLifecycle::Point const& world)
+{
+    float const dx = world.X - pose.Position.X;
+    float const dy = world.Y - pose.Position.Y;
+    float const c = std::cos(pose.Orientation);
+    float const s = std::sin(pose.Orientation);
+    return {dx * c + dy * s, dy * c - dx * s, world.Z - pose.Position.Z};
+}
+
+inline TravelLifecycle::Point WorldPoint(TravelLifecycle::DockPose const& pose, TravelLifecycle::Point const& local)
+{
+    float const c = std::cos(pose.Orientation);
+    float const s = std::sin(pose.Orientation);
+    return {pose.Position.X + local.X * c - local.Y * s, pose.Position.Y + local.X * s + local.Y * c,
+            pose.Position.Z + local.Z};
+}
+
+struct BoardCrossing
+{
+    std::uint64_t guid{0};  // the transport boarded; 0 none
+    TravelLifecycle::Point deck;
+    TravelLifecycle::Point shore;
+    TravelLifecycle::Point shoreWorld;  // where the bot stood ashore
+};
+
+inline BoardCrossing StoreCrossing(std::uint64_t guid, TravelLifecycle::DockPose const& pose,
+                                   TravelLifecycle::Point const& deck, TravelLifecycle::Point const& shore)
+{
+    return {guid, LocalOffset(pose, deck), LocalOffset(pose, shore), shore};
+}
+
+struct CrossingWalk
+{
+    TravelLifecycle::Point deck;
+    TravelLifecycle::Point shore;
+};
+
+// The stored crossing in world coordinates, only aboard the same transport standing where the bot boarded it
+inline std::optional<CrossingWalk> CrossingBack(BoardCrossing const& crossing, std::uint64_t guid,
+                                                TravelLifecycle::DockPose const& pose)
+{
+    if (!crossing.guid || crossing.guid != guid)
+        return std::nullopt;
+    TravelLifecycle::Point const shore = WorldPoint(pose, crossing.shore);
+    if (TravelLifecycle::DistanceSquared(shore, crossing.shoreWorld) > BACK_STOP_YARDS * BACK_STOP_YARDS)
+        return std::nullopt;
+    return CrossingWalk{WorldPoint(pose, crossing.deck), shore};
+}
 
 // What waits for the bot to get off a ship or zeppelin (OffFirst): a walk or a route request (none), the trip's
 // arrival, or its abort
@@ -469,6 +550,7 @@ struct OffFirst
 {
     std::uint32_t sinceMs{0};  // 0: none under way
     std::uint32_t entry{0};    // the ship's gameobject entry
+    std::uint64_t guid{0};
     std::uint32_t boundMs{0};
     OffFirstEnd end{OffFirstEnd::None};
     char const* why{nullptr};  // Abort: EndTrip's words (string literals)
@@ -526,15 +608,15 @@ struct Trip
     std::uint32_t departedMs{0};
     std::uint8_t misses{0};
     bool hopped{false};
-    std::uint8_t offScans{0};  // Ride, Leave, Ashore: the scans in a row that saw the bot off the transport
-    bool exitSought{false};    // Leave: the follower looked for the ground beside the deck (its first look is logged)
+    std::uint64_t passengerGuid{0};  // confirmed boarding for this leg
+    bool exitSought{false};          // this docking already reported no safe exit
+    bool exitless{false};            // WT43b: an exit search of this leg found nothing (no_exit): go Back
+    BoardCrossing boardCrossing;     // the issued boarding walk (StoreCrossing); none after a hop
     // WT19-e: a ship's or zeppelin's dock node is its own stop (over the water or in the air), so the bot walks to and
-    // waits on the ground beside it (the quay; the follower looks once a leg, SetQuay); without one at the node
+    // A motion transport waits on the physical quay. The follower looks once per observed docking.
     Point quay;
     bool hasQuay{false};
     bool quaySought{false};
-    std::uint8_t quayUnknown{0};  // looks that found no nav mesh tile (NoteQuayUnknown)
-    bool boardMoveSent{false};    // Board: the walk onto the deck went out at this docking (WantsBoardMove)
     std::vector<TransportNote> transportNotes;
     OffFirst offFirst;  // the whole trip's (StartLeg leaves it)
     // After a fly leg failed in the air (StartDescent): the bot flies down to descentTo before the replan
@@ -557,6 +639,7 @@ struct RouteWait
     std::uint32_t mapId{0};
     std::uint32_t requestedMs{0};
     bool waiting{false};
+    std::optional<Point> start{};
 };
 
 enum class Verdict : std::uint8_t
@@ -573,6 +656,14 @@ inline Verdict Judge(RouteWait const& wait, std::uint32_t answerId, std::uint32_
     if (botMapId != wait.mapId || nowMs - wait.requestedMs > TravelRoute::ANSWER_KEEP_MS)
         return Verdict::Refresh;
     return Verdict::Apply;
+}
+
+inline Verdict Judge(RouteWait const& wait, std::uint32_t answerId, Point const& bot, std::uint32_t nowMs)
+{
+    Verdict const verdict = Judge(wait, answerId, bot.mapId, nowMs);
+    if (verdict == Verdict::Apply && wait.start && Distance(*wait.start, bot) > GOAL_YARDS)
+        return Verdict::Refresh;
+    return verdict;
 }
 
 // No answer within its life: the service has dropped it (or the request)
@@ -798,6 +889,8 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
 {
     while (index < trip.legs.size() && IsNoOp(trip.legs[index]))
         ++index;
+    bool const keepQuay = trip.hasQuay && index == trip.legIdx + 1 && index < trip.legs.size() &&
+                          trip.legs[trip.legIdx].type == LegType::Walk && trip.legs[index].type == LegType::Transport;
     trip.legIdx = index;
     trip.legStartMs = nowMs;
     trip.next = 1;
@@ -824,13 +917,12 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.departedMs = 0;
     trip.misses = 0;
     trip.hopped = false;
-    trip.offScans = 0;
+    trip.passengerGuid = 0;
     trip.exitSought = false;
-    trip.quay = Point{};
-    trip.hasQuay = false;
-    trip.quaySought = false;
-    trip.quayUnknown = 0;
-    trip.boardMoveSent = false;
+    trip.exitless = false;
+    trip.boardCrossing = {};
+    trip.hasQuay = keepQuay;
+    trip.quaySought = keepQuay;
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
@@ -841,7 +933,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
 // the scan before (an elevator passes the floors without stopping)
 inline void NoteSight(Trip& trip, TransportSight const& sight)
 {
-    bool const before = trip.sight.found && trip.sight.at.mapId == sight.at.mapId;
+    bool const before = trip.sight.found && trip.sight.guid == sight.guid && trip.sight.at.mapId == sight.at.mapId;
     trip.still = sight.found && !sight.moving &&
                  (!sight.isStatic || (before && Distance(trip.sight.at, sight.at) <= STILL_YARDS));
     if (sight.periodMs)
@@ -860,7 +952,38 @@ inline bool DockedAt(Trip const& trip, Point const& dock)
     float const flat = std::sqrt(dx * dx + dy * dy);
     if (sight.isStatic)
         return flat <= STATIC_DOCK_YARDS && std::fabs(sight.at.z - dock.z) <= STATIC_DOCK_Z_YARDS;
-    return flat <= SHIP_DOCK_YARDS;
+    return flat <= SHIP_DOCK_YARDS && std::fabs(sight.at.z - dock.z) <= STATIC_DOCK_Z_YARDS;
+}
+
+// The leg's vessel took the bot aboard at the leg's start before it boarded (WT54): its deck docked under the bot
+// waiting beside the stop and the passenger rule attached it. That is the boarding; no crossing was needed. Only on
+// the current transport leg before its ride, the leg's entry, and within a docked hull's reach of the start node
+inline bool TakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.passengerGuid || !aboard)
+        return false;
+    Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != leg.from.mapId)
+        return false;
+    float const dx = bot.x - leg.from.x;
+    float const dy = bot.y - leg.from.y;
+    return std::sqrt(dx * dx + dy * dy) <= (trip.sight.isStatic ? STATIC_DOCK_YARDS : SHIP_DOCK_YARDS);
+}
+
+// The walk to a ship's or zeppelin's leg ended aboard (WT54-6, the WT47 class "aboard before boarding"): the leg's
+// vessel, docked over the walk's last yards, took the bot aboard before the walk reached its end. The walk is done and
+// the transport leg's TakenAboard counts the boarding. Only for the walk right before that leg, its entry, and within
+// a docked hull's reach of its start; the caller leaves elevators and the tram out (their stops share x and y)
+inline bool WalkTakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+{
+    if (!aboard || trip.legIdx + 1 >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk)
+        return false;
+    Leg const& leg = trip.legs[trip.legIdx + 1];
+    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != leg.from.mapId)
+        return false;
+    float const dx = bot.x - leg.from.x;
+    float const dy = bot.y - leg.from.y;
+    return std::sqrt(dx * dx + dy * dy) <= SHIP_DOCK_YARDS;
 }
 
 inline std::uint32_t TransportPeriodMs(Trip const& trip, Leg const& leg)
@@ -880,29 +1003,33 @@ inline std::uint32_t TransportRideMs(Trip const& trip, Leg const& leg)
     return LEG_SLACK_MS + RIDE_PERIODS * TransportPeriodMs(trip, leg);
 }
 
+inline bool TransportWaitExpired(Trip const& trip, Leg const& leg, std::uint32_t nowMs)
+{
+    return nowMs - trip.legStartMs > TransportWaitMs(trip, leg);
+}
+
+inline bool TransportRideExpired(Trip const& trip, Leg const& leg, std::uint32_t nowMs)
+{
+    return nowMs - trip.boardedMs > TransportRideMs(trip, leg);
+}
+
+inline bool OffFirstExpired(OffFirst const& off, std::uint32_t nowMs)
+{
+    return off.sinceMs && nowMs - off.sinceMs > off.boundMs;
+}
+
 // The follower's look for the quay beside the current transport leg's dock node: found, or none (the node stays)
 inline void SetQuay(Trip& trip, Point const* quay)
 {
-    trip.quaySought = true;
+    // A moving approach changes the floor and corridor evidence; a failed search is not a dock-wide result.
+    trip.quaySought = quay || trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk;
     trip.hasQuay = quay != nullptr;
     if (quay)
         trip.quay = *quay;
 }
 
-// A quay look found no nav mesh tile: asked again a scan later, but after QUAY_UNKNOWN_LOOKS the node stays (no quay),
-// so a tile that never loads does not leave the bot standing without an attempt
-inline void NoteQuayUnknown(Trip& trip)
-{
-    if (++trip.quayUnknown >= QUAY_UNKNOWN_LOOKS)
-        SetQuay(trip, nullptr);
-}
-
 // Where a transport leg's bot walks to and waits: the quay once found, else the dock node
 inline Point const& WaitPoint(Trip const& trip, Leg const& leg) { return trip.hasQuay ? trip.quay : leg.from; }
-
-// Board: one straight walk onto the deck per docking, a new one only once the last ended (a walk sent anew every
-// scan restarts it towards a point probed from wherever the bot then is)
-inline bool WantsBoardMove(Trip const& trip, bool botMoving) { return !trip.boardMoveSent || !botMoving; }
 
 // The hop may come at this docking: the follower then asks whether a real player sees it (TransportSight::unseen)
 inline bool WantsSightCheck(Trip const& trip)
@@ -913,8 +1040,7 @@ inline bool WantsSightCheck(Trip const& trip)
 
 // A transport leg (WT19): walk to the waiting point (WaitPoint), wait, board the docked transport, ride, walk off
 // where it stands at the leg's end. A departure without the bot is a miss and the bot waits for the next one; after
-// HOP_AFTER_MISSES misses one hop onto the deck, only unseen. The end node is the transport's own stop (its centre),
-// so a leave ends the leg once the bot is off the transport, wherever beside it. Events go to trip.transportNotes
+// HOP_AFTER_MISSES misses one hop onto the deck, only unseen. The observer confirms both passenger frame changes.
 inline Decision StepTransport(Trip& trip, Observation const& seen)
 {
     Leg const& leg = trip.legs[trip.legIdx];
@@ -930,32 +1056,45 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
     auto const note = [&trip, &leg](TransportEvent event, std::uint32_t amount)
     { trip.transportNotes.push_back({event, leg.object, amount}); };
     auto const seconds = [nowMs](std::uint32_t sinceMs) { return (nowMs - sinceMs) / 1000; };
-    bool const riding =
-        trip.boarding == Boarding::Ride || trip.boarding == Boarding::Leave || trip.boarding == Boarding::Ashore;
-    bool const aboard = seen.aboard != 0 && seen.aboard == leg.object;
+    using TravelLifecycle::Outcome;
+    if (!seen.membershipAvailable)
+        return {Act::Wait, leg.to, FailReason::None};
     if (seen.transport.scanned)
         NoteSight(trip, seen.transport);
-    if (aboard)
-        trip.offScans = 0;
-    else if (riding && seen.transport.scanned)
-        trip.offScans = static_cast<std::uint8_t>(std::min(trip.offScans + 1, 255));
-
-    if (!aboard && within(leg.to, TRANSPORT_ARRIVE_YARDS))
+    if (trip.boarding == Boarding::Board && seen.passengerOutcome == Outcome::Boarded && seen.aboardGuid &&
+        seen.aboard == leg.object)
     {
-        if (riding)
-            note(TransportEvent::Arrived, seconds(trip.boardedMs));
-        return {Act::Done, leg.to, FailReason::None};
+        trip.passengerGuid = seen.aboardGuid;
+        note(TransportEvent::Boarded, seconds(trip.waitSinceMs));
+        trip.boardedMs = nowMs;
+        enter(Boarding::Ride);
     }
-    if (aboard)
+    else if (seen.aboardGuid && !seen.boardMotion && TakenAboard(trip, seen.bot, seen.aboard))
     {
-        if (!riding)
+        trip.passengerGuid = seen.aboardGuid;
+        note(TransportEvent::Boarded, seconds(trip.waitSinceMs ? trip.waitSinceMs : trip.legStartMs));
+        trip.boardedMs = nowMs;
+        enter(Boarding::Ride);
+    }
+    if (trip.passengerGuid)
+    {
+        if (seen.aboardGuid != trip.passengerGuid)
         {
-            // Also within the grace after a departure: the passenger list caught up
-            note(TransportEvent::Boarded, seconds(trip.waitSinceMs));
-            trip.boardedMs = nowMs;
-            enter(Boarding::Ride);
+            if (!seen.aboardGuid && trip.boarding == Boarding::Leave && seen.passengerOutcome == Outcome::Exited)
+            {
+                note(TransportEvent::Arrived, seconds(trip.boardedMs));
+                return {Act::Done, leg.to, FailReason::None};
+            }
+            // Back ashore where it boarded: the leg failed, the replan leaves this link out (AfterFailure)
+            if (!seen.aboardGuid && trip.boarding == Boarding::Back && seen.passengerOutcome == Outcome::Exited)
+            {
+                note(TransportEvent::Back, seconds(trip.boardedMs));
+                return fail(FailReason::NoExit);
+            }
+            note(TransportEvent::Lost, seconds(trip.boardedMs));
+            return fail(FailReason::TransportLost);
         }
-        if (nowMs - trip.boardedMs > TransportRideMs(trip, leg))
+        if (TransportRideExpired(trip, leg, nowMs))
             return fail(FailReason::Timeout);
         if (seen.bot.mapId != leg.from.mapId && seen.bot.mapId != leg.to.mapId)
             return fail(FailReason::WrongMap);
@@ -969,41 +1108,36 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
             }
             return {Act::Disembark, leg.to, FailReason::None};
         }
-        // It left the end again with the bot: the round trip brings it back
-        if (trip.boarding == Boarding::Leave)
+        // WT43b: no exit at the end: off where it boarded, towards the quay it waited on
+        if (trip.exitless && DockedAt(trip, leg.from))
+        {
+            if (trip.boarding != Boarding::Back)
+            {
+                trip.exitSought = false;
+                enter(Boarding::Back);
+            }
+            return {Act::Disembark, trip.hasQuay ? trip.quay : leg.from, FailReason::None};
+        }
+        // It left the end (or the start, after no exit) again with the bot: the round trip brings it back
+        if (trip.boarding == Boarding::Leave || trip.boarding == Boarding::Back)
             note(TransportEvent::StuckAboard, seconds(trip.stateMs));
         if (trip.boarding != Boarding::Ride)
             enter(Boarding::Ride);
         return {Act::Wait, leg.to, FailReason::None};
     }
-    if (riding)
-    {
-        // Seen off by fewer than OFF_SCANS scans in a row: no walk off the deck yet
-        if (trip.offScans < OFF_SCANS)
-            return {Act::Wait, leg.to, FailReason::None};
-        if (trip.boarding == Boarding::Leave)
-        {
-            note(TransportEvent::Arrived, seconds(trip.boardedMs));
-            return {Act::Done, leg.to, FailReason::None};
-        }
-        // Off the transport short of the leg's end: the rest is a walk on the ground
-        if (trip.boarding == Boarding::Ride)
-            enter(Boarding::Ashore);
-        if (nowMs - trip.stateMs > LEG_SLACK_MS)
-            return fail(FailReason::Timeout);
-        if (seen.bot.mapId != leg.to.mapId)
-            return fail(FailReason::WrongMap);
-        return {Act::Walk, leg.to, FailReason::None};
-    }
+    if (seen.aboardGuid)
+        return {Act::Wait, leg.to, FailReason::None};
 
-    if (nowMs - trip.legStartMs > TransportWaitMs(trip, leg))
+    if (TransportWaitExpired(trip, leg, nowMs))
         return fail(FailReason::Timeout);
     if (seen.bot.mapId != leg.from.mapId)
         return fail(FailReason::WrongMap);
     Point const& waitAt = WaitPoint(trip, leg);
     if (trip.boarding == Boarding::Approach)
     {
-        if (!within(waitAt, WAYPOINT_YARDS))
+        if (seen.quayLeg == trip.legIdx && !trip.hasQuay)
+            return {Act::Wait, seen.bot, FailReason::None};
+        if (!within(waitAt, trip.hasQuay ? QUAY_REACH_YARDS : WAYPOINT_YARDS))
             return {Act::Walk, waitAt, FailReason::None};
         // At the dock node before the follower looked for the quay (the walk leg before ended there and this leg
         // began in the same tick): no wait there yet, the look comes on a later tick
@@ -1019,15 +1153,16 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
     {
         if (!docked)
             return wait;
+        if (trip.hasQuay && !within(waitAt, QUAY_REACH_YARDS))
+            return {Act::Walk, waitAt, FailReason::None};
         trip.departed = false;
-        trip.boardMoveSent = false;
         enter(Boarding::Board);
     }
     if (docked)
     {
         trip.departed = false;
-        if (seen.transport.scanned && seen.transport.unseen && trip.misses >= HOP_AFTER_MISSES && !trip.hopped &&
-            nowMs - trip.stateMs >= HOP_TRY_MS && within(trip.sight.at, HOP_MAX_YARDS))
+        if (seen.boardingReady && seen.transport.scanned && seen.transport.unseen && trip.misses >= HOP_AFTER_MISSES &&
+            !trip.hopped && nowMs - trip.stateMs >= HOP_TRY_MS && within(trip.sight.at, HOP_MAX_YARDS))
         {
             trip.hopped = true;
             note(TransportEvent::Hop, trip.misses);
@@ -1053,13 +1188,10 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
 {
     Leg const& leg = trip.legs[trip.legIdx];
     bool const lastLeg = trip.legIdx + 1 == trip.legs.size();
-    std::uint32_t const legMs = seen.nowMs - trip.legStartMs;  // unsigned: wraps as getMSTimeDiff does
+    std::uint32_t const legMs = seen.activeLegMs.value_or(seen.nowMs - trip.legStartMs);
     auto const fail = [](FailReason reason) { return Decision{Act::Fail, {}, reason}; };
     auto const within = [&seen](Point const& at, float yards)
     { return seen.bot.mapId == at.mapId && Distance(seen.bot, at) <= yards; };
-
-    if (seen.stuck)
-        return fail(FailReason::Stuck);
 
     switch (leg.type)
     {
@@ -1067,9 +1199,17 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
         {
             if (seen.bot.mapId != leg.to.mapId)
                 return fail(FailReason::WrongMap);
+            if (WalkTakenAboard(trip, seen.bot, seen.aboard))
+            {
+                trip.next = static_cast<std::uint32_t>(trip.waypoints.size());
+                return {Act::Done, leg.to, FailReason::None};
+            }
+            bool const leadsToQuay = seen.quayLeg == trip.legIdx + 1;
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
+            float const waypointYards = leadsToQuay && trip.hasQuay ? QUAY_REACH_YARDS : WAYPOINT_YARDS;
+            float const finalYards = lastLeg ? GOAL_YARDS : waypointYards;
             auto const reached = [&](std::uint32_t index)
-            { return within(trip.waypoints[index].at, lastLeg && index + 1 == count ? GOAL_YARDS : WAYPOINT_YARDS); };
+            { return within(trip.waypoints[index].at, index + 1 == count ? finalYards : WAYPOINT_YARDS); };
             // The current waypoint, or the one after it when the path went past a node
             for (std::uint32_t passed = 0; passed < WAYPOINTS_PER_TICK && trip.next < count; ++passed)
             {
@@ -1201,14 +1341,16 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
 // The gate before a trip's end, a route request or a walk (WT19-d): aboard a ship or zeppelin (its entry, 0 = none) the
 // bot gets off first, bounded by the ship's period (LEG_SLACK_MS while unknown). True: the end, request or walk waits
 // for StepOffFirst. Not while one is under way, and not again on a trip after a period passed aboard
-inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint32_t periodMs, std::uint32_t nowMs,
-                          OffFirstEnd end = OffFirstEnd::None, char const* why = nullptr, char const* source = nullptr)
+inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t guid, std::uint32_t periodMs,
+                          std::uint32_t nowMs, OffFirstEnd end = OffFirstEnd::None, char const* why = nullptr,
+                          char const* source = nullptr)
 {
     OffFirst& off = trip.offFirst;
-    if (!shipEntry || off.sinceMs || off.gaveUp)
+    if (!guid || off.sinceMs || off.gaveUp)
         return false;
     off.sinceMs = std::max<std::uint32_t>(nowMs, 1);
     off.entry = shipEntry;
+    off.guid = guid;
     off.boundMs = periodMs ? periodMs : LEG_SLACK_MS;
     off.end = end;
     off.why = why;
@@ -1216,7 +1358,6 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint32_t per
     // The scans start anew: the first one counts as under way
     trip.sight = {};
     trip.still = false;
-    trip.offScans = 0;
     trip.exitSought = false;
     trip.transportNotes.push_back({TransportEvent::OffFirst, shipEntry, off.boundMs / 1000});
     return true;
@@ -1224,10 +1365,11 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint32_t per
 
 enum class OffStep : std::uint8_t
 {
-    Wait,       // aboard while the ship is under way, or off on fewer than OFF_SCANS scans
-    Disembark,  // aboard, the ship stands: walk off to the nearest ground
-    Off,        // off on OFF_SCANS scans in a row: what waited goes on
-    GiveUp      // still aboard a period after the start: what waited goes on anyway (stuck_aboard)
+    Wait,
+    Disembark,
+    Off,
+    Lost,
+    GiveUp
 };
 
 // One tick of the get-off (seen.aboard, seen.transport: the ridden ship's scan, once a TRANSPORT_SCAN_MS). Off and
@@ -1237,17 +1379,18 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
     OffFirst& off = trip.offFirst;
     if (seen.transport.scanned)
         NoteSight(trip, seen.transport);
-    if (seen.aboard == 0 || seen.aboard != off.entry)
+    if (!seen.membershipAvailable)
+        return OffStep::Wait;
+    if (seen.aboardGuid != off.guid)
     {
-        if (seen.transport.scanned)
-            trip.offScans = static_cast<std::uint8_t>(std::min(trip.offScans + 1, 255));
-        if (trip.offScans < OFF_SCANS)
-            return OffStep::Wait;
         off.sinceMs = 0;
-        return OffStep::Off;
+        if (!seen.aboardGuid && seen.passengerOutcome == TravelLifecycle::Outcome::Exited)
+            return OffStep::Off;
+        off.gaveUp = true;
+        trip.transportNotes.push_back({TransportEvent::Lost, off.entry, 0});
+        return OffStep::Lost;
     }
-    trip.offScans = 0;
-    if (seen.nowMs - off.sinceMs > off.boundMs)
+    if (OffFirstExpired(off, seen.nowMs))
     {
         trip.transportNotes.push_back({TransportEvent::StuckAboard, off.entry, (seen.nowMs - off.sinceMs) / 1000});
         off.sinceMs = 0;
@@ -1260,7 +1403,7 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
 // The trip's next step: finished legs are passed (at most LEGS_PER_TICK), then the current leg's step; Arrived after
 // the last leg
 template <class NodeAt>
-Decision Advance(Trip& trip, Observation const& seen, NodeAt const& nodeAt)
+Decision Advance(Trip& trip, Observation seen, NodeAt const& nodeAt)
 {
     for (std::uint32_t passed = 0; passed < LEGS_PER_TICK; ++passed)
     {
@@ -1270,6 +1413,8 @@ Decision Advance(Trip& trip, Observation const& seen, NodeAt const& nodeAt)
         if (decision.act != Act::Done)
             return decision;
         StartLeg(trip, trip.legIdx + 1, seen.nowMs, nodeAt);
+        if (seen.activeLegMs)
+            seen.activeLegMs = 0;
     }
     if (trip.legIdx >= trip.legs.size())
         return {Act::Arrived, seen.bot, FailReason::None};
@@ -1381,7 +1526,8 @@ inline void NoteTransportTimeout(Trip& trip)
 // stands (spotClosed: a no-fly area, a battle, indoors, water) keeps flying: the replan's snapshot closes that spot
 // (Snapshot::takeoffHere, AddFlyLegs), so the bot walks to the next open point and tries there. Such replans have their
 // own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is
-// an ordinary takeoff failure. A timed-out transport leg replans without its link (NoteTransportTimeout)
+// an ordinary takeoff failure. A timed-out transport leg, a lost ride and a walk back after no exit replan without
+// its link (NoteTransportTimeout)
 inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
 {
     bool const spotRetry = reason == FailReason::Takeoff && spotClosed && trip.spotFails < MAX_SPOT_FAILS;
@@ -1403,7 +1549,7 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
         return Recovery::Abort;
     if (reason == FailReason::Death)
         NoteDeath(trip);
-    if (reason == FailReason::Timeout)
+    if (reason == FailReason::Timeout || reason == FailReason::TransportLost || reason == FailReason::NoExit)
         NoteTransportTimeout(trip);
     ++trip.replans;
     return Recovery::Replan;
@@ -1595,16 +1741,7 @@ inline std::uint32_t TripDeadlineMs(float estimateSeconds)
     return static_cast<std::uint32_t>(ms) + TRIP_SLACK_MS;
 }
 
-// The deadline counts from the current route's start against that route's estimate (a replan starts a new bound;
-// MAX_REPLANS bounds their number) and waits while the bot rides (in flight or aboard a transport): it cannot leave
-// the taxi or a ship at sea, so ending the trip there would only drop the legs after the landing
-// A replan pending (a leg failed, the new route has not arrived: replanPending) holds it too, because the dead leg's
-// time still counts against the old route. The hold is bounded: the pending route ends by its answer, or by NoAnswer
-// (MAX_RESUBMITS) failing the leg again, and MAX_REPLANS aborts the trip. The trip's first request is no replan
-inline bool PastDeadline(std::uint32_t routeMs, float routeSeconds, bool riding, bool replanPending = false)
-{
-    return !riding && !replanPending && routeMs > TripDeadlineMs(routeSeconds);
-}
+inline bool PastDeadline(std::uint32_t activeMs, float routeSeconds) { return activeMs > TripDeadlineMs(routeSeconds); }
 
 // PlayerbotAI::Reset(true) renews the bot's RPG state, also after every far teleport (HandleTeleportAck). What
 // survives it: the route request counter always (ids restarting at 0 would let an older answer pass Judge as

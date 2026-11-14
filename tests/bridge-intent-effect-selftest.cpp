@@ -2187,10 +2187,11 @@ int main()
 
         // LC1b: the topic rows. Every topic has a row, in the wire's order and under the wire's word
         // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
-        char const* const wireTopics[] = {"inventory", "quests", "cooldowns",  "strategies", "spells", "plan",
-                                          "options",   "route",  "quest_plan", "bags",       "places"};
+        char const* const wireTopics[] = {"inventory", "quests",  "cooldowns", "strategies", "spells",
+                                          "plan",      "options", "route",     "quest_plan", "bags",
+                                          "places",    "history", "lately",    "known"};
         std::span<TopicRow const> const topics = PlayerbotBridge::TopicRows();
-        Check(topics.size() == std::size(wireTopics), "eleven topic rows");
+        Check(topics.size() == std::size(wireTopics), "fourteen topic rows");
         for (std::size_t index = 0; index < topics.size(); ++index)
         {
             TopicRow const& row = topics[index];
@@ -2260,6 +2261,17 @@ int main()
             Check(entry.Refusals.empty() && entry.Lasting == Part::None && entry.Done == Completion::AtOnce &&
                       entry.StatePhrase.empty() && entry.Event.empty(),
                   "a topic's entry has no refusal, lasting part, state phrase or event");
+        }
+
+        // WB9b: the bags topic tells the bank and the mail too, in one sentence, with room for them
+        {
+            AbilityData const* bags = nullptr;
+            for (AbilityData const& entry : catalogue)
+                if (entry.Kind == AbilityKind::Topic && entry.Name == "bags")
+                    bags = &entry;
+            Check(bags && bags->Sentence == "Your bags, what you keep in the bank and the mail that waits for you." &&
+                      bags->Limit == 12 && catalogue.size() == rows.size() + topics.size(),
+                  "the catalogue lists bags with the bank and mail sentence and limit 12, no new topic or act");
         }
 
         // LC1b: the canonical text and its hash.

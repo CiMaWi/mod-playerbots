@@ -131,22 +131,24 @@ void CheckKinds()
           "a kind out of range is Other");
 
     // Gold (honest travel), Repair and Resurrect (WU5), the five consumable kinds (WU7), Attunement, Key, Reputation,
-    // Glyph and Talent (WU18) are honest; every other kind is still handed out
+    // Glyph and Talent (WU18), trainer spells, weapon skills, riding, mounts and special spells (WU15b) are honest;
+    // every other kind is still handed out
     size_t honest = 0;
     for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
         honest += rule.honest ? 1 : 0;
-    Check(honest == 13 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
+    Check(honest == 18 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
               Upkeep::IsHonest(UpkeepKind::Resurrect),
           "Gold, Repair, Resurrect and the five consumable kinds are honest");
     Check(Upkeep::IsHonest(UpkeepKind::Attunement) && Upkeep::IsHonest(UpkeepKind::Key) &&
               Upkeep::IsHonest(UpkeepKind::Reputation) && Upkeep::IsHonest(UpkeepKind::Glyph) &&
               Upkeep::IsHonest(UpkeepKind::Talent),
           "attunements, keys, reputation, glyphs and the talent reset are honest");
-    Check(!Upkeep::IsHonest(UpkeepKind::TrainerSpell) && !Upkeep::IsHonest(UpkeepKind::Pet) &&
-              !Upkeep::IsHonest(UpkeepKind::WeaponSkill) && !Upkeep::IsHonest(UpkeepKind::Riding) &&
-              !Upkeep::IsHonest(UpkeepKind::Mount) && !Upkeep::IsHonest(UpkeepKind::SpecialSpell) &&
-              !Upkeep::IsHonest(UpkeepKind::ClassQuest),
-          "trainer spells, pets, skills, mounts and class-quest spells are still handed out");
+    Check(Upkeep::IsHonest(UpkeepKind::TrainerSpell) && Upkeep::IsHonest(UpkeepKind::WeaponSkill) &&
+              Upkeep::IsHonest(UpkeepKind::Riding) && Upkeep::IsHonest(UpkeepKind::Mount) &&
+              Upkeep::IsHonest(UpkeepKind::SpecialSpell),
+          "trainer spells, weapon skills, riding, mounts and special spells are honest");
+    Check(!Upkeep::IsHonest(UpkeepKind::Pet) && !Upkeep::IsHonest(UpkeepKind::ClassQuest),
+          "pets and class-quest spells are still handed out");
     Check(!Upkeep::IsHonest(static_cast<UpkeepKind>(Upkeep::KIND_COUNT)), "a kind out of range is not honest");
 
     // The predicate over the flipped kinds' table entries
@@ -154,7 +156,8 @@ void CheckKinds()
     for (UpkeepKind const kind :
          {UpkeepKind::Repair, UpkeepKind::Resurrect, UpkeepKind::Food, UpkeepKind::Ammo, UpkeepKind::Reagent,
           UpkeepKind::Poison, UpkeepKind::Consumable, UpkeepKind::Attunement, UpkeepKind::Key, UpkeepKind::Reputation,
-          UpkeepKind::Glyph, UpkeepKind::Talent})
+          UpkeepKind::Glyph, UpkeepKind::Talent, UpkeepKind::TrainerSpell, UpkeepKind::WeaponSkill, UpkeepKind::Riding,
+          UpkeepKind::Mount, UpkeepKind::SpecialSpell})
     {
         std::string const word = Upkeep::KindWord(kind);
         bool const honestKind = Upkeep::IsHonest(kind);

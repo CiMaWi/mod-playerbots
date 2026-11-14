@@ -12,6 +12,8 @@
 #include <memory>
 #include <mutex>
 #include <stack>
+#include <string_view>
+#include <unordered_set>
 
 #include "BotAttributes.h"
 #include "Chat.h"
@@ -35,8 +37,6 @@
 #include "Tactics.h"
 #include "Util.h"
 #include "WorldPacket.h"
-#include <stack>
-#include <unordered_set>
 
 class Action;
 class AiObjectContext;
@@ -60,10 +60,12 @@ enum class TurnSnapSite : uint8;  // NaturalTurn.h
 class ReactionEngine;
 class Gameobject;
 class Item;
+class LootObjectStack;
 class Player;
 class PlayerbotMgr;
 class Spell;
 class SpellInfo;
+class Transport;
 class Unit;
 class WorldObject;
 class WorldPosition;
@@ -490,7 +492,7 @@ public:
     BotState GetState() { return currentState; };
     void ResetStrategies(bool load = false);
     void ReInitCurrentEngine();
-    void Reset(bool full = false);
+    void Reset(bool full = false, bool farTeleport = false);
     void LeaveOrDisbandGroup();
     static bool IsTank(Player* player, bool bySpec = false);
     static bool IsHeal(Player* player, bool bySpec = false);
@@ -864,6 +866,24 @@ public:
     std::set<uint32> GetAllCurrentQuestIds();
     std::set<uint32> GetCurrentIncompleteQuestIds();
     void PetFollow();
+    bool ReconcileFollowPassenger(Transport const& expected);
+    bool HasLootInteraction() const { return activeLootInteraction != nullptr; }
+    uint32 CompletedLootInteractions() const { return completedLootInteractions; }
+    bool LootInteractionExpired() const;
+    bool ConsumeLootExpiry();
+    void CancelLootInteraction(std::string_view reason);
+    void TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot = ObjectGuid::Empty,
+                                uint32 interaction = 0, std::string_view path = "none", float yards = 0.0f,
+                                std::optional<std::pair<uint32, uint32>> leg = std::nullopt);
+    TravelProgress::Motion ReadTravelWalk(bool checkPosition = false) const;
+    enum class MountPath : uint8
+    {
+        None,
+        Timer,
+        Packet
+    };
+    void TraceTravelMount(MountPath path, bool accepted);
+    bool HasPendingDismount() const { return pendingDismount.load(std::memory_order_relaxed); }
     static float GetItemScoreMultiplier(ItemQualities quality);
     static bool IsHealingSpell(uint32 spellFamilyName, flag96 spellFamilyFlags);
     static SpellFamilyNames Class2SpellFamilyName(uint8 cls);
@@ -897,6 +917,13 @@ public:
     std::atomic<bool> orderPosted{false};
 
 private:
+    friend class LootObjectStack;
+    LootObjectStack* activeLootInteraction = nullptr;
+    uint32 completedLootInteractions = 0;
+    std::atomic<bool> pendingDismount{false};
+    MountPath tracedMount = MountPath::None;
+    uint32 tracedMountAt = 0;
+
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
     bool IsTellAllowed(PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);
@@ -941,7 +968,8 @@ protected:
     bool inCombat = false;
     BotCheatMask cheatMask = BotCheatMask::none;
     Position jumpDestination = Position();
-    uint32 nextTransportCheck = 0;
+    TravelLifecycle::Cadence passengerCadence;
+    void ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove);
     uint32 aboardEntry = 0;    // BeginAboard's transport; 0 = none pending
     uint32 aboardSinceMs = 0;  // getMSTime() of the placement
     bool spellInterruptRequested = false;
