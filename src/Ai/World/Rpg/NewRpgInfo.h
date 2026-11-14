@@ -136,6 +136,7 @@ struct NewRpgInfo
         uint32 vendorEntry{0};   // the vendor of this stop; 0 = none
         uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
         bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
+        bool trainerWeapon{false};  // a weapon master (WU15a)
         std::vector<ErrandTurnIn> turnIns;
     };
     struct Errands

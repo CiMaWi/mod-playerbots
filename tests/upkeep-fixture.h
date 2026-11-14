@@ -268,6 +268,51 @@ UpkeepIndex Fixture()
     return index;
 }
 
+// Weapon masters (WU15a, world DB trainers 47-57): tradeskill trainers whose spells teach weapon skill lines at 1000
+// copper each, and a profession trainer of the same kind; maces fit warriors of every race and never mages, daggers
+// both. The gather repeats a skill once per master that teaches it
+constexpr std::uint32_t TRAINER_WEAPON_MASTER = 400;
+constexpr std::uint32_t TRAINER_PROFESSION = 410;
+constexpr std::uint16_t SKILL_MACES = 54;
+constexpr std::uint16_t SKILL_DAGGERS = 173;
+constexpr std::uint16_t SKILL_BLACKSMITHING = 164;
+constexpr std::uint32_t SPELL_MACES = 198;
+constexpr std::uint32_t SPELL_DAGGERS = 1180;
+constexpr std::uint32_t SPELL_BLACKSMITHING = 2018;
+constexpr std::uint32_t WEAPON_PRICE = 1000;
+constexpr std::uint32_t ALL_RACES = (1u << (UPKEEP_RACE_SLOTS - 1)) - 1;
+
+inline UpkeepIndex WeaponFixture()
+{
+    UpkeepGather input;
+    input.trainers.push_back({TRAINER_WARRIOR, TrainerKind::Class, CLASS_WARRIOR, {Spell(1002, 200, 2)}});
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainers.push_back({TRAINER_WEAPON_MASTER,
+                              TrainerKind::Tradeskill,
+                              0,
+                              {Spell(SPELL_MACES, WEAPON_PRICE, 0), Spell(SPELL_DAGGERS, WEAPON_PRICE, 0)}});
+    input.trainers.push_back({TRAINER_PROFESSION, TrainerKind::Tradeskill, 0, {Spell(SPELL_BLACKSMITHING, 10, 5)}});
+    input.trainerEntries = {{TRAINER_WARRIOR, TRAINER_WARRIOR},
+                            {TRAINER_RIDING, TRAINER_RIDING},
+                            {TRAINER_WEAPON_MASTER, TRAINER_WEAPON_MASTER},
+                            {TRAINER_PROFESSION, TRAINER_PROFESSION}};
+    WeaponSkillFacts maces{SKILL_MACES, SPELL_MACES, {}};
+    maces.races[CLASS_WARRIOR] = ALL_RACES;
+    WeaponSkillFacts daggers{SKILL_DAGGERS, SPELL_DAGGERS, {}};
+    daggers.races[CLASS_WARRIOR] = ALL_RACES;
+    daggers.races[CLASS_MAGE] = ALL_RACES;
+    input.weaponSkills = {daggers, maces, maces};
+    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    index.version = 7;
+    return index;
+}
+
+// The bot wields or carries a weapon of the skill line (FillUpkeep's AddWeapon), knowing the skill or not
+inline void Carries(Snapshot& bot, std::uint16_t skill, bool known = false)
+{
+    bot.ownedWeaponSkills.push_back({skill, known});
+}
+
 void Mark(std::vector<std::uint64_t>& bits, TrainerList const& list, std::uint32_t spellId)
 {
     std::size_t const position = list.Find(spellId);

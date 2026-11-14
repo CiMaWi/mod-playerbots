@@ -11,6 +11,7 @@
 #include "Item.h"
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
+#include "PlannerService.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
@@ -119,6 +120,10 @@ ItemUsage ItemUsageValue::Calculate()
     ItemUsage equip = QueryItemUsageForEquip(proto, randomPropertyId);
     if (equip != ITEM_USAGE_NONE)
         return equip;
+
+    // A weapon the bot will learn to use at a weapon master stays in the bags (WU15a): its visit needs it carried
+    if (!IsRealPlayer(botAI->GetMaster()) && Planner::WeaponToLearn(bot, proto))
+        return ITEM_USAGE_KEEP;
 
     // Get item instance to check if it's soulbound
     Item* item = bot->GetItemByEntry(proto->ItemId);

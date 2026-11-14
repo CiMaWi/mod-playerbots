@@ -527,6 +527,70 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
                        creature->GetEntry());
 }
 
+// The weapon master visit of an errand stop (upkeep §3.7, WU15a): each weapon skill need (recomputed here) this master
+// teaches, taught and paid through the core's trainer path at the reputation price when the need's funded share pays
+// it; the core's own test (CanTeachSpell) runs before the teach and reads it back. The skill then rises by use, as the
+// core does. One TrainerVisit event and one upkeep row per visit
+void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
+{
+    Player* bot = botAI->GetBot();
+    std::shared_ptr<Planner::UpkeepIndex const> const index =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    Trainer::Trainer* trainer = sObjectMgr->GetTrainer(creature->GetEntry());
+    uint32 const moneyBefore = bot->GetMoney();
+    uint32 wanted = 0;
+    uint32 learned = 0;
+    bool refused = false;
+    uint64 copper = 0;
+    uint64 funded = 0;
+    if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Tradeskill &&
+        trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
+    {
+        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
+        UpkeepNeeds::NeedList const needs =
+            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        float const discount = bot->GetReputationPriceDiscount(creature);
+        for (UpkeepNeeds::Need const& need : needs.needs)
+        {
+            Trainer::Spell const* spell = need.kind == UpkeepKind::WeaponSkill ? trainer->GetSpell(need.item) : nullptr;
+            if (!spell)
+                continue;  // not a weapon need, or another master teaches it
+            ++wanted;
+            copper += need.copper;
+            funded += need.funded;
+            if (UpkeepNeeds::TrainerPrice(spell->MoneyCost, discount) > need.funded)
+                continue;
+            if (!trainer->CanTeachSpell(bot, spell))
+            {
+                refused = true;
+                continue;
+            }
+            trainer->TeachSpell(creature, bot, spell->SpellId);
+            if (trainer->CanTeachSpell(bot, spell))
+                refused = true;
+            else
+                ++learned;
+        }
+    }
+
+    uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+    EventLog::Emit(bot, Upkeep::EVENT_TRAINER_VISIT, "weapon", creature->GetEntry(), int64(paid));
+    WorldLogFormat::Alternatives const weighed = {{"skills", static_cast<float>(learned)},
+                                                  {"left", static_cast<float>(wanted - learned)},
+                                                  {"funded", static_cast<float>(funded)},
+                                                  {"gold", static_cast<float>(bot->GetMoney())}};
+    if (learned)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "learn", funded < copper ? "short" : "due",
+                           static_cast<float>(paid), weighed, creature->GetEntry());
+        return;
+    }
+
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip",
+                       !wanted ? "weapon_none" : (refused ? "weapon_refused" : "weapon_short"),
+                       static_cast<float>(copper), weighed, creature->GetEntry());
+}
+
 WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc)
 {
     return {loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()};
@@ -1411,6 +1475,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             dueInReach |= static_cast<uint8>(candidate.covers & dueKinds);
     UpkeepNeeds::Need const* training = nullptr;
     UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest the funded gold pays
+    UpkeepNeeds::Need const* weapon = nullptr;  // one weapon skill per trip, the first the funded gold pays
     bool const buysAtVendors = BuysAtVendors(botAI);
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
@@ -1418,6 +1483,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             training = &need;
         else if (!riding && buysAtVendors && UpkeepNeeds::RidingErrandDue(need))
             riding = &need;
+        else if (!weapon && buysAtVendors && UpkeepNeeds::WeaponErrandDue(need))
+            weapon = &need;
         uint8 const bit = Planner::StockBit(need.stock);
         if (!need.due || !UpkeepNeeds::StockPayable(need) || (dueInReach & bit))
             continue;
@@ -1431,11 +1498,12 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
     // Due training makes a trip only when the gold pays a spell (UpkeepNeeds::TrainingErrandDue, as AnyErrandDue)
     bool const trainingDue = training && UpkeepNeeds::TrainingErrandDue(*training);
-    bool const needDue = repairing || dueInReach || trainingDue || riding;
+    bool const needDue = repairing || dueInReach || trainingDue || riding || weapon;
 
-    // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training or a
-    // riding rank to learn plans its trainer trip
-    bool const trainerWanted = index && ((trainingDue && training->trainer) || (riding && riding->trainer));
+    // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training, a
+    // riding rank or a weapon skill to learn plans its trainer trip
+    bool const trainerWanted =
+        index && ((trainingDue && training->trainer) || (riding && riding->trainer) || (weapon && weapon->trainer));
     if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
@@ -1510,6 +1578,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                 }
         snapshot.Riding = {riding->item, mountVendor, riding->trainer != 0};
     }
+    if (weapon)
+        snapshot.Weapon = {weapon->item};
     // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
     std::sort(inReach.begin(), inReach.end(),
               [](std::pair<float, TravelMgr::VendorInfo const*> const& a,
@@ -1554,6 +1624,19 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             if (trainer.kind == Planner::TrainerKind::Mount && UpkeepNeeds::Teaches(*index, trainer, riding->item))
                 AddTrainerStops(TrainerSpawns(bot, *index, trainer.key, reachYards),
                                 WorldTravel::SERVICE_RIDING_TRAINER, snapshot.Stops);
+    // Every weapon master that teaches the skill (WU15a); a vendor stop within STOP_JOIN_YARDS of one that has no
+    // trainer yet takes it too
+    if (index && weapon)
+    {
+        std::vector<WorldTravel::ServiceStop> masterStops;
+        for (Planner::WeaponSkill const& skill : index->weaponSkills)
+            if (skill.spellId == weapon->item)
+                for (uint32 const key : skill.trainers)
+                    AddTrainerStops(TrainerSpawns(bot, *index, key, reachYards), WorldTravel::SERVICE_WEAPON_MASTER,
+                                    masterStops);
+        WorldTravel::JoinTrainers(snapshot.Stops, masterStops, WorldTravel::SERVICE_WEAPON_MASTER);
+        snapshot.Stops.insert(snapshot.Stops.end(), masterStops.begin(), masterStops.end());
+    }
     AddCompletedQuests(bot, snapshot.Completed);
 
     // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay
@@ -1589,10 +1672,15 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
                         { return errand.Kind == WorldTravel::ErrandKind::Train; });
         bool const classTrainer = (tripStop.Services & WorldTravel::SERVICE_TRAINER) && trains;
-        if (classTrainer || (tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
+        bool const weaponMaster =
+            (tripStop.Services & WorldTravel::SERVICE_WEAPON_MASTER) &&
+            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
+                        { return errand.Kind == WorldTravel::ErrandKind::Weapon; });
+        if (classTrainer || weaponMaster || (tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
         {
             stop.trainerEntry = tripStop.Trainer ? tripStop.Trainer : tripStop.Id;
-            stop.trainerRiding = !classTrainer;
+            stop.trainerRiding = !classTrainer && !weaponMaster;
+            stop.trainerWeapon = !classTrainer && weaponMaster;
             anyTrainer = true;
         }
         for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
@@ -1646,11 +1734,12 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                            repairWeighed);
     }
     // The errand row's reason: the first due need on the trip in the fixed order
-    char const* const reason = dueOnTrip(WorldTravel::ErrandKind::Repair)  ? "repair_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Shop)  ? "stock_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Train) ? "train_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Ride)  ? "ride_due"
-                                                                           : "worth_it";
+    char const* const reason = dueOnTrip(WorldTravel::ErrandKind::Repair)   ? "repair_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Shop)   ? "stock_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Train)  ? "train_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Weapon) ? "weapon_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Ride)   ? "ride_due"
+                                                                            : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
                        anyVendor ? "vendor" : (anyTrainer ? "trainer" : "turn_in"), reason, tripMinutes * MINUTE,
                        weighed);
@@ -1807,6 +1896,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             return true;
         if (trainer && IsWithinInteractionDist(trainer) && stop.trainerRiding)
             RideAtTrainer(botAI, trainer);
+        else if (trainer && IsWithinInteractionDist(trainer) && stop.trainerWeapon)
+            LearnAtWeaponMaster(botAI, trainer);
         else if (trainer && IsWithinInteractionDist(trainer))
             TrainAtTrainer(botAI, trainer);
         else

@@ -21,6 +21,7 @@
 
 class ChatHandler;
 class Player;
+struct ItemTemplate;
 class PlayerbotAI;
 
 namespace UpkeepNeeds
@@ -150,6 +151,10 @@ std::vector<std::string> UpkeepIndexStatus();
 // pass over the bags and one HasSpell per trainer spell of the class and riding lists (the class-and-race fit and the
 // off-list abilities are precomputed in the index)
 void FillUpkeep(Player* bot, Snapshot& snapshot);
+// The bot's thread: a weapon of a skill line the bot lacks and would learn at a weapon master (upkeep §3.7, WU15a): its
+// class may wield it, and the index's weapon skill fits its class, race and level. Item usage keeps such a weapon
+// instead of selling it; one binary search in the index
+bool WeaponToLearn(Player* bot, ItemTemplate const* proto);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);

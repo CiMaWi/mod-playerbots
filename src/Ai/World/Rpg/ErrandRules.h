@@ -35,9 +35,10 @@ enum class ErrandKind : uint8_t
     LearnFlight,
     Shop,
     Train,
-    Ride
+    Ride,
+    Weapon  // a weapon skill at a weapon master (WU15a)
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 9;
+constexpr uint8_t ERRAND_KIND_COUNT = 10;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -61,6 +62,8 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "train";
         case ErrandKind::Ride:
             return "ride";
+        case ErrandKind::Weapon:
+            return "weapon";
     }
     return "other";
 }
@@ -75,6 +78,9 @@ constexpr uint32_t SERVICE_FLIGHT_MASTER = 1u << 4;
 constexpr uint32_t SERVICE_TRAINER = 1u << 5;         // teaches the bot's class spells
 constexpr uint32_t SERVICE_RIDING_TRAINER = 1u << 6;  // teaches the riding rank the bot buys
 constexpr uint32_t SERVICE_MOUNT_VENDOR = 1u << 7;    // sells that rank's mount for the bot's race
+constexpr uint32_t SERVICE_WEAPON_MASTER = 1u << 8;   // teaches the weapon skill the bot learns (WU15a)
+// A stop has one trainer to visit: a stop with any of these keeps its own
+constexpr uint32_t TRAINER_SERVICES = SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER;
 // A vendor that sells the bot a consumable stock kind: the kind's bit (UpkeepNeeds' StockBit) from this bit on
 constexpr uint32_t SERVICE_STOCK_SHIFT = 24;
 
@@ -177,6 +183,12 @@ struct RidingAt
     bool Learn = true;         // the rank is to learn; false: the rank is known, only its mount is missing
 };
 
+// The weapon skill the bot learns (UpkeepNeeds' weapon need whose funded gold pays it, WU15a); Spell 0 = none
+struct WeaponAt
+{
+    uint32_t Spell = 0;
+};
+
 // What the providers read: filled on the bot's map thread, never a Player
 struct ErrandSnapshot
 {
@@ -201,6 +213,7 @@ struct ErrandSnapshot
     uint8_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
     TrainingAt Training;
     RidingAt Riding;  // one rank per trip, the lowest
+    WeaponAt Weapon;  // one weapon skill per trip
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -330,6 +343,21 @@ inline void ProvideRiding(ErrandSnapshot const& snapshot, std::vector<ErrandOffe
     offers.push_back(offer);
 }
 
+// A weapon skill (§3.7, WU15a): one trip to a weapon master that teaches it; due once the gold pays it
+inline void ProvideWeaponMaster(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Weapon.Spell)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Weapon;
+    offer.Service = SERVICE_WEAPON_MASTER;
+    offer.WorthCopper = DueWorth(snapshot.Rates);
+    offer.Id = snapshot.Weapon.Spell;
+    offer.Due = true;
+    offers.push_back(offer);
+}
+
 // The errand check on a map without a vendor that trades with the bot (WU12 NOTE 4): a trainer need still plans its
 // trip (class training or a riding rank, their trainers are stops of their own); without one it is skipped
 constexpr bool ErrandCheckPlans(bool vendorOnMap, bool trainerWanted) { return vendorOnMap || trainerWanted; }
@@ -385,6 +413,7 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::Shop, "shop", &ProvideShopping},
         {ErrandKind::Train, "train", &ProvideTraining},
         {ErrandKind::Ride, "ride", &ProvideRiding},
+        {ErrandKind::Weapon, "weapon", &ProvideWeaponMaster},
     };
     return rows;
 }
@@ -440,12 +469,13 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
 
 // A stop with a trainer within STOP_JOIN_YARDS takes the training of that trainer, as an errand place within that
 // distance is done at the stop: the stop gets the trainer service and the trainer's entry (the bot walks the few yards
-// on arrival). The first trainer in the order given wins; a stop that already has one, or is a trainer's own, keeps it
+// on arrival). The first trainer in the order given wins; a stop that already has one, or is a trainer's own (of any
+// trainer service), keeps it
 inline void JoinTrainers(std::vector<ServiceStop>& stops, std::vector<ServiceStop> const& trainers, uint32_t service)
 {
     for (ServiceStop& stop : stops)
     {
-        if (stop.Trainer || (stop.Services & service))
+        if (stop.Trainer || (stop.Services & (service | TRAINER_SERVICES)))
             continue;
 
         for (ServiceStop const& trainer : trainers)

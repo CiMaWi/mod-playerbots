@@ -1110,6 +1110,58 @@ void RidingFunded(UpkeepIndex const& index)
           "the rank shows BUY with a funded share below its price: not an errand; once funded whole it is");
 }
 
+// Weapon skills (WU15a): a weapon the bot carries whose skill it lacks and its class may learn, at the weapon master
+void WeaponMasters()
+{
+    std::cout << "Scenario: weapon skills at the weapon master\n";
+    UpkeepIndex const index = WeaponFixture();
+    auto const weaponNeed = [](NeedList const& list) -> Need const*
+    {
+        for (Need const& need : list.needs)
+            if (need.kind == UpkeepKind::WeaponSkill)
+                return &need;
+        return nullptr;
+    };
+
+    Snapshot warrior = Bot(index, CLASS_WARRIOR, 15, 20 * GOLD, 15);
+    Carries(warrior, SKILL_MACES);
+    NeedList const mace = ComputeNeeds(warrior, index, Rates(15));
+    Need const* need = weaponNeed(mace);
+    Check(need && need->order == NeedOrder::Training && need->item == SPELL_MACES &&
+              need->trainer == TRAINER_WEAPON_MASTER && need->copper == WEAPON_PRICE && need->funded >= need->copper &&
+              need->due && WeaponErrandDue(*need) && AnyErrandDue(mace),
+          "a warrior carrying a mace without Maces trips to its weapon master");
+    Check(mace.reserveTraining >= WEAPON_PRICE && mace.reserve >= WEAPON_PRICE,
+          "the skill's price joins the training reserve");
+
+    Snapshot poor = warrior;
+    poor.money = 500;
+    NeedList const shortGold = ComputeNeeds(poor, index, Rates(15));
+    Need const* unpaid = weaponNeed(shortGold);
+    Check(unpaid && unpaid->funded < unpaid->copper && !WeaponErrandDue(*unpaid) && !AnyErrandDue(shortGold),
+          "with 500 copper the need stays and makes no trip");
+
+    Snapshot mage = Bot(index, CLASS_MAGE, 15, 20 * GOLD, 15);
+    Carries(mage, SKILL_MACES);
+    Check(!weaponNeed(ComputeNeeds(mage, index, Rates(15))),
+          "a mage carrying a mace has no need: its class never learns");
+    Carries(mage, SKILL_DAGGERS);
+    Need const* dagger = nullptr;
+    NeedList const daggers = ComputeNeeds(mage, index, Rates(15));
+    dagger = weaponNeed(daggers);
+    Check(dagger && dagger->item == SPELL_DAGGERS && dagger->trainer == TRAINER_WEAPON_MASTER,
+          "a mage carrying a dagger without Daggers has the need");
+
+    Snapshot unarmed = Bot(index, CLASS_WARRIOR, 15, 20 * GOLD, 15);
+    Check(!weaponNeed(ComputeNeeds(unarmed, index, Rates(15))), "a bot without a weapon it cannot use has no need");
+    Carries(unarmed, SKILL_MACES, true);
+    Check(!weaponNeed(ComputeNeeds(unarmed, index, Rates(15))), "a bot that knows the skill has no need");
+    Snapshot smith = Bot(index, CLASS_WARRIOR, 15, 20 * GOLD, 15);
+    Carries(smith, SKILL_BLACKSMITHING);
+    Check(!weaponNeed(ComputeNeeds(smith, index, Rates(15))),
+          "a profession spell on the merged list is no weapon need");
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1129,6 +1181,7 @@ int main()
     GroundRiding(index);
     RidingPlaces(index);
     TrainingPlaces(index);
+    WeaponMasters();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

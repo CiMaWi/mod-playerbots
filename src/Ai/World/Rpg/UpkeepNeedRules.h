@@ -647,6 +647,32 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
     list.needs.push_back(need);
 }
 
+// Weapon skills (§3.7, WU15a): a weapon the bot wields or carries whose skill it lacks is a need when its class and
+// race may learn the skill from a weapon master (a mage's mace is none) and its level allows the spell; one need per
+// skill, training's order, due at once (a weapon it cannot use is no matter of levels), its price in the training
+// reserve. Weapon skills rise by use, as the core does for any player
+inline void AddWeaponSkills(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot)
+{
+    for (Planner::OwnedWeapon const& owned : snapshot.ownedWeaponSkills)
+    {
+        Planner::WeaponSkill const* weapon = owned.known ? nullptr : index.Weapon(owned.skill);
+        if (!weapon || !weapon->Fits(snapshot.cls, snapshot.race) || weapon->reqLevel > snapshot.level)
+            continue;
+        Need need;
+        need.order = NeedOrder::Training;
+        need.kind = UpkeepKind::WeaponSkill;
+        need.copper = weapon->moneyCost;
+        need.cheapest = weapon->moneyCost;
+        need.due = true;
+        need.units = 1;
+        need.item = weapon->spellId;
+        need.trainer = weapon->trainers.front();
+        need.without = "the weapon stays unused";
+        list.reserveTraining += weapon->moneyCost;
+        list.needs.push_back(need);
+    }
+}
+
 // A mount of the riding skill the bot's race and class may ride, with no reputation asked
 inline bool MountFits(VendorOffer const& offer, std::uint8_t race, std::uint8_t cls, std::uint16_t skill)
 {
@@ -857,6 +883,13 @@ constexpr bool RidingErrandDue(Need const& need)
     return need.kind == UpkeepKind::Riding && need.due && need.copper > 0 && need.funded >= need.copper;
 }
 
+// A weapon skill makes a trip of its own once its funded gold pays its price (WU15a); a bot without the gold keeps
+// playing, the need stays. The visit's reputation price is never above copper
+constexpr bool WeaponErrandDue(Need const& need)
+{
+    return need.kind == UpkeepKind::WeaponSkill && need.due && need.copper > 0 && need.funded >= need.copper;
+}
+
 // The game's price of a trainer spell for a bot whose reputation gives this price factor (Trainer::TeachSpell:
 // int32(MoneyCost * reputationDiscount))
 constexpr std::uint32_t TrainerPrice(std::uint32_t moneyCost, float discount)
@@ -957,6 +990,7 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
         if (need.order != NeedOrder::Repair)
             list.reserveStock += need.copper;
     AddTraining(list, index, snapshot, rates);
+    AddWeaponSkills(list, index, snapshot);
 
     std::uint64_t const nearer = list.reserveRepair + list.reserveStock + list.reserveTraining;
     AddRiding(list, index, snapshot, rates, nearer);
@@ -1029,15 +1063,19 @@ inline bool StockErrandDue(NeedList const& list)
 }
 
 // A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training the
-// gold pays (TrainingErrandDue), a riding rank the funded gold pays (RidingErrandDue). The repair is the trigger's own
-// test first (RepairErrandDue reads the cheapest item's price)
+// gold pays (TrainingErrandDue), a riding rank or a weapon skill the funded gold pays (RidingErrandDue,
+// WeaponErrandDue). The repair is the trigger's own test first (RepairErrandDue reads the cheapest item's price)
 inline bool AnyErrandDue(NeedList const& list)
 {
     for (Need const& need : list.needs)
-        if (need.kind == UpkeepKind::TrainerSpell
-                ? TrainingErrandDue(need)
-                : (need.kind == UpkeepKind::Riding ? RidingErrandDue(need) : need.due && StockPayable(need)))
+    {
+        bool const due = need.kind == UpkeepKind::TrainerSpell  ? TrainingErrandDue(need)
+                         : need.kind == UpkeepKind::Riding      ? RidingErrandDue(need)
+                         : need.kind == UpkeepKind::WeaponSkill ? WeaponErrandDue(need)
+                                                                : need.due && StockPayable(need);
+        if (due)
             return true;
+    }
     return false;
 }
 
