@@ -251,6 +251,29 @@ bool NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
     return offMesh;
 }
 
+namespace
+{
+static_assert(TravelWalk::PATH_NOPATH == PATHFIND_NOPATH &&
+                  TravelWalk::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH &&
+                  TravelWalk::PATH_FARFROMPOLY_END == PATHFIND_FARFROMPOLY_END,
+              "TravelWalk reads the engine's PathType bits");
+
+// An order's engine answer as TravelWalk judges it: the type, the path's last step (a shortcut's whole line) and what
+// its end gains on dest
+TravelWalk::EngineAnswer ReadWalkAnswer(Player* bot, PathGenerator const& path, bool result, WorldPosition const& dest)
+{
+    TravelWalk::EngineAnswer answer;
+    answer.result = result;
+    answer.type = path.GetPathType();
+    Movement::PointsArray const& points = path.GetPath();
+    if (points.size() >= 2)
+        answer.lastStep = (points[points.size() - 1] - points[points.size() - 2]).length();
+    G3D::Vector3 const& end = path.GetActualEndPosition();
+    answer.gain = bot->GetExactDist(dest) - dest.GetExactDist(end.x, end.y, end.z);
+    return answer;
+}
+}  // namespace
+
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 {
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
@@ -364,9 +387,32 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
         return true;
     }
 
+    // WT58: along a graph link each order is judged on the engine's answer before the move (TravelWalkRules.h); near
+    // dest MovePoint would walk a "no path" answer as a straight line. Not taken: the follower's next tick orders the
+    // far node (fallback) or fails the leg (refused). A refusal where the bot stands off the mesh goes to the off-mesh
+    // recovery instead, as MoveFarTo's own probe does
+    TravelWalk::LinkWalk* const walk = travel && travel->trip.walk.Active() ? &travel->trip.walk : nullptr;
+    auto const taken = [&](PathGenerator const& path, bool result, bool direct)
+    {
+        TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest), direct);
+        if (verdict == TravelWalk::Verdict::Refuse && BotOffMesh())
+        {
+            walk->mode = TravelWalk::Mode::Fallback;
+            travel->progress.Latch(TravelProgress::Overdue::OffMesh);
+        }
+        return verdict == TravelWalk::Verdict::Walk || verdict == TravelWalk::Verdict::Hop;
+    };
+
     float dis = bot->GetExactDist(dest);
     if (dis < pathFinderDis)
     {
+        if (walk)
+        {
+            PathGenerator path(bot);
+            bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+            if (!taken(path, result, true))
+                return true;
+        }
         return MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false, false,
                       false, true);
     }
@@ -385,7 +431,9 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     // further PathGenerator calls fire until the bot arrives.
     {
         PathGenerator path(bot);
-        path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        if (walk && !taken(path, result, false))
+            return true;
         PathType type = path.GetPathType();
         bool canReach = !(type & (~typeOk));
         if (canReach)
@@ -441,6 +489,8 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     }
     if (found)
     {
+        if (walk)
+            TravelWalk::NoteMove(*walk);
         return MoveTo(bot->GetMapId(), rx, ry, rz, false, false, false, true);
     }
     return false;

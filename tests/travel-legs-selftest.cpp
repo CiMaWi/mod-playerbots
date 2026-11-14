@@ -313,6 +313,24 @@ void CheckStuckAvoid()
     Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, START, NODES[3], {}, 10.0f)});
     Check(!TravelLegs::NoteStuck(hearth) && !hearth.noDirect && hearth.avoid.empty() && !hearth.stuckSeen,
           "a hearth leg leaves nothing out");
+
+    // WT58: a walk link refused for no path: the replan leaves the link out (both ways), no node; a new leg walks
+    // no link yet
+    Trip refused = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1, 2}, 30.0f),
+                                MakeLeg(LegType::Walk, NODES[3], NODES[6], {3, 4, 5, 6}, 30.0f)});
+    refused.next = 2;
+    refused.walk.mode = TravelWalk::Mode::Refused;
+    refused.walk.from = 0;
+    refused.walk.to = 1;
+    Check(TravelLegs::AfterFailure(refused, FailReason::NoPath) == Recovery::Replan && refused.avoidEdges.size() == 1 &&
+              refused.avoidEdges[0] == std::pair<std::uint32_t, std::uint32_t>{0, 1} && refused.avoid.empty() &&
+              !refused.noDirect && refused.replans == 1,
+          "no path: the refused link 0 -> 1 is left out of the replan, no node");
+    refused.next = 1;
+    Check(TravelLegs::AfterFailure(refused, FailReason::NoPath) == Recovery::Replan && refused.avoidEdges.size() == 1,
+          "no path on the hop from the bot's start: no edge to leave out");
+    TravelLegs::StartLeg(refused, 1, 6000, NodeAt);
+    Check(!refused.walk.Active() && refused.walk.from == TravelLegs::NO_NODE, "a new leg starts with no link walked");
 }
 
 void CheckWrongMapAndFare()
@@ -530,7 +548,7 @@ void CheckEventSources()
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
     bool reasons = true;
-    for (int r = 0; r <= static_cast<int>(FailReason::Takeoff); ++r)
+    for (int r = 0; r <= static_cast<int>(FailReason::NoPath); ++r)
     {
         FailReason const reason = static_cast<FailReason>(r);
         std::string const word = TravelLegs::FailWord(reason);

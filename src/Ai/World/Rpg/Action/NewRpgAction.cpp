@@ -2251,6 +2251,53 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index)
     return {node.mapId, node.x, node.y, node.z};
 }
 
+// WT58: the graph link a walk leg walks now, between waypoints[next - 1] and waypoints[next]; none on the walks
+// between the bot, the graph and the goal, and on every other leg
+std::pair<std::uint32_t, std::uint32_t> WalkLinkEnds(TravelLegs::Trip const& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != TravelRoute::LegType::Walk)
+        return {TravelLegs::NO_NODE, TravelLegs::NO_NODE};
+    return TravelLegs::StuckEdge(trip);
+}
+
+// The links a walk leg walks along: walk links and a wait point's link to its stop (a ride's points are its voyage)
+bool WalkableLink(TravelGraphLink const& link)
+{
+    return link.type == TravelLinkType::Walk || (link.type == TravelLinkType::Transport && !link.object);
+}
+
+// A walk leg's order along its graph link (TravelWalkRules.h): the link's next stored point, else target (the far
+// node, or a waypoint off the graph). The points stay in the graph; the trip holds an index
+TravelRoute::Point WalkLinkTarget(TravelLegs::Trip& trip, TravelRoute::Point const& bot,
+                                  TravelRoute::Point const& target)
+{
+    TravelWalk::LinkWalk& walk = trip.walk;
+    auto const [from, to] = WalkLinkEnds(trip);
+    if (from == TravelLegs::NO_NODE)
+    {
+        walk = {};
+        return target;
+    }
+    TravelGraph const& graph = TravelGraph::Instance();
+    if (!walk.On(from, to))
+    {
+        TravelWalk::Rows<TravelGraphLink> const rows = TravelWalk::PickRows<TravelGraphLink>(
+            [&graph](std::uint32_t node) { return graph.LinksOf(node); }, from, to, WalkableLink);
+        std::span<TravelGraphPoint const> const points =
+            rows.link ? graph.PathOf(*rows.link) : std::span<TravelGraphPoint const>{};
+        TravelWalk::Begin(walk, from, to, rows.link ? graph.IndexOfLink(*rows.link) : TravelWalk::NO_LINK, points,
+                          rows.reversed, graph.GetNode(from), graph.GetNode(to));
+    }
+    if (walk.mode != TravelWalk::Mode::Stored)
+        return target;
+    std::span<TravelGraphPoint const> const points = graph.PathOf(graph.GetLink(walk.link));
+    std::uint32_t const point = TravelWalk::Target(walk, points, bot, graph.GetNode(to));
+    if (point == TravelWalk::NO_POINT)
+        return target;
+    TravelGraphPoint const& at = TravelWalk::PointAt(points, walk.reversed, point);
+    return {at.mapId, at.x, at.y, at.z};
+}
+
 constexpr float HOP_LIFT_YARDS = 0.5f;  // the hop lands this far above the deck point (as the off-mesh snap does)
 using TravelLifecycle::MotionKind;
 using TravelLifecycle::Outcome;
@@ -3324,6 +3371,21 @@ void LogWalkLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, Trave
               TravelLegs::MountWord(record), record.mountedTicks, record.ticks, combat);
 }
 
+// A graph link's walk (WT58): its trip decision row, walk_link once the walk moved on past it or walk_link_failed when
+// the leg failed on it: how (stored, nodes, fallback, refused), its moves, its ends' node ids and its hops
+void LogWalkLink(Player* bot, NewRpgInfo::Travel const& data, TravelWalk::LinkWalk const& walk, bool done)
+{
+    if (!walk.Active())
+        return;
+    TravelGraph const& graph = TravelGraph::Instance();
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, done ? "walk_link" : "walk_link_failed",
+                       TravelWalk::RowWord(walk), static_cast<float>(walk.moves),
+                       {{"from", static_cast<float>(graph.GetNode(walk.from).id)},
+                        {"to", static_cast<float>(graph.GetNode(walk.to).id)},
+                        {"hops", static_cast<float>(walk.hops)}},
+                       data.tripId);
+}
+
 constexpr float FLY_SAMPLE_YARDS = 50.0f;     // the real-height check samples the ground ahead this far apart
 constexpr float LANDING_PROBE_YARDS = 5.0f;   // the landing check searches the ground down from this above the landing
 constexpr float LANDING_PROBE_DEPTH = 40.0f;  // and this far down
@@ -3711,8 +3773,19 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     float const peakBefore = trip.peakZ;
     bool const wasWalk = data->CurrentLeg() && data->CurrentLeg()->type == TravelRoute::LegType::Walk &&
                          !TravelLegs::IsNoOp(*data->CurrentLeg());
+    TravelWalk::LinkWalk const walkBefore = trip.walk;
     TravelLegs::Decision next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
     bool const legChanged = trip.legIdx != legBefore;
+    // The graph link walked until now ends with its row once the walk moved on past it (WT58)
+    if (walkBefore.Active())
+    {
+        auto const [linkFrom, linkTo] = WalkLinkEnds(trip);
+        if (legChanged || linkFrom != walkBefore.from || linkTo != walkBefore.to)
+        {
+            LogWalkLink(bot, *data, walkBefore, true);
+            data->trip.walk = {};
+        }
+    }
     bool const waypointReached =
         wasWalk && (legChanged || trip.next > waypointBefore) && data->progress.WaypointReached();
     if (waypointReached)
@@ -3789,6 +3862,11 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         case TravelLegs::Act::Walk:
             if (trip.legIdx != legBefore && seen.quayLeg != trip.legIdx && MotionQuayLeg(trip) != TravelLegs::NO_NODE)
                 return true;  // the new approach gets a quay observation before walking
+            // Along a graph link: its stored points (WT58); the engine's "no path" at its far node refused it
+            if (trip.walk.mode == TravelWalk::Mode::Refused)
+                return LegFailed(*data, TravelLegs::FailReason::NoPath);
+            next.target = WalkLinkTarget(data->trip, seen.bot, next.target);
+            data->trip.lastTarget = next.target;
             return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
         case TravelLegs::Act::UseTrigger:
             return UsePortal(*data);
@@ -4134,6 +4212,19 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         }
     }
 
+    // The graph link the leg failed on (WT58): its row; a refusal's line names the link's ends
+    if (trip.walk.Active())
+    {
+        if (reason == TravelLegs::FailReason::NoPath)
+        {
+            TravelGraph const& graph = TravelGraph::Instance();
+            LOG_DEBUG("playerbots", "[Route] {} walk leg {}/{} link {} ({}) -> {} ({}) refused: no path",
+                      bot->GetName(), trip.legIdx + 1, trip.legs.size(), graph.GetNode(trip.walk.from).id,
+                      graph.GetName(trip.walk.from), graph.GetNode(trip.walk.to).id, graph.GetName(trip.walk.to));
+        }
+        LogWalkLink(bot, data, trip.walk, false);
+        trip.walk = {};
+    }
     // A takeoff refused where the bot stands keeps flying: the replan starts no flight at this spot (AddFlyLegs)
     bool const spotClosed =
         reason == TravelLegs::FailReason::Takeoff && CheckMountStateAction::NoTakeoffHere(bot) != nullptr;
