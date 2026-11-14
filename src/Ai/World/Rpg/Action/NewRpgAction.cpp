@@ -633,12 +633,12 @@ bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
     return true;
 }
 
-// The nearest beast the bot may tame now within the stop's reach, one of the stop's entry first (the planned spawn):
+// The nearest beast the bot may tame now within TAME_SEARCH_YARDS, one of the stop's entry first (the planned spawn):
 // another hunter may have tamed the planned one. Normal rank only and none whose spells break the channel, as the
 // index gathers them (Planner::BreaksTameChannel, read after the cheap checks)
 Creature* NearestTameable(Player* bot, uint32 entry)
 {
-    float const reach = WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS;
+    float const reach = UpkeepNeeds::TAME_SEARCH_YARDS;
     std::list<Unit*> found;
     Acore::AnyUnitInObjectRangeCheck check(bot, reach);
     Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, found, check);

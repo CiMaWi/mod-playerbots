@@ -964,6 +964,10 @@ constexpr std::uint32_t TAME_REST_MS = 60 * 1000;
 constexpr std::uint8_t TAME_MAX_TRIES = 3;
 // A pick that gets no cast within this time (the walk to the beast, the dismount) gives the stop up: every wait ends
 constexpr std::uint32_t TAME_REACH_MS = 60 * 1000;
+// The stop looks for a beast as far as a player sees one on a continent (Visibility.Distance.Continents' default): a
+// hunter arrives up to 30 yards short of the spawn, and when another hunter or a fight took the beasts there, the next
+// spawns of the entry stand 70-100 yards on (WU21b-4: Borean wolves 25675, the nearest left 92 yards from the bot)
+constexpr float TAME_SEARCH_YARDS = 100.0f;
 
 constexpr bool TameBreaksOff(float healthPct) { return healthPct < TAME_BREAK_OFF_HEALTH_PCT; }
 
