@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "Bag.h"
+#include "BankMailState.h"
 #include "BridgeAbilities.h"
 #include "BridgeBotTopics.h"
 #include "BridgeNames.h"
@@ -180,6 +181,26 @@ void ReadBags(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
         if (Bag* bag = bot->GetBagByPos(bagSlot))
             in.slots += bag->GetBagSize();
     in.plan = &plan;
+    // Stored knowledge only (WB.4: how much mail waits, never what is inside), as the WB2 and WB5 commands read it
+    BankMail::BotBankMail const& known = ai->rpgInfo.bankMail;
+    in.mailWaiting = BankMail::CountWaitingMail(bot);
+    in.mailSeenCopper = known.mail.seenCopper;
+    in.mailExpectedCopper = known.mail.expectedCopper;
+    in.keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    if (in.keepsPossessions)
+    {
+        auto const addKept = [&](uint32 entry, uint8 dueLevel, bool inBank)
+        {
+            if (ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(entry))
+                in.kept.push_back({itemTemplate->Name1, dueLevel, inBank, dueLevel <= bot->GetLevel()});
+        };
+        for (BankMail::KeptItem const& kept : known.bank.kept)
+            addKept(kept.entry, kept.dueLevel, true);
+        for (BankMail::KeptEntry const& kept : known.bank.carried.items)
+            addKept(kept.entry, kept.dueLevel, false);
+        in.bankFree = known.bank.freeSlots;
+        in.bankSlots = BankMail::BANK_ITEM_SLOTS;
+    }
     Topics::BagsItems(in, items);
 }
 
