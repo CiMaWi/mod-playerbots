@@ -961,6 +961,8 @@ void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 void ReadByFollower(Player&) {}
 // nodestroy changes nothing on the bot: the smart destroy action reads the bit (TestConstraints::DestroysForSpace)
 void ReadByDestroy(Player&) {}
+// notaxi changes nothing on the bot: the route request reads the bit (TestConstraints::TaxiAllowed)
+void ReadByRoute(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -969,6 +971,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FLYFAIL, ReadByFollower, ReadByFollower},
     {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
     {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
+    {TestConstraints::NOTAXI, ReadByRoute, ReadByRoute},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
@@ -3729,6 +3732,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     snapshot.hasHearthstone =
         snapshot.hasHearthstone && !data.noHearth && TestConstraints::HearthAllowed(botAI->rpgInfo.constraints);
     snapshot.allowTransport = true;
+    if (!TestConstraints::TaxiAllowed(botAI->rpgInfo.constraints))
+        snapshot.knownTaxi.fill(0);
     TravelRoute::Request request;
     request.snapshot = snapshot;
     request.goal = {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()};

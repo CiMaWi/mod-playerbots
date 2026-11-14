@@ -30,6 +30,7 @@ constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
 constexpr std::uint16_t FLYFAIL = 64;     // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
 constexpr std::uint16_t FLYABORT = 128;   // as flyfail, as the trip's last failure: the trip ends once the bot is down
 constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
+constexpr std::uint16_t NOTAXI = 512;     // plans no flight leg (travel WT55a: walk-only trips)
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -56,6 +57,7 @@ constexpr Row ROWS[] = {
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
     {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
+    {"notaxi", Kind::State, NOTAXI, "route request: no flight master known, no flight leg"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -167,6 +169,9 @@ inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
+// notaxi, read by the trip's route request (NewRpgAction.cpp; nothing to apply or undo): the search sees no flight
+// master known, so a test orders a walk-only trip (a bot learning a flight node on the way flies no more)
+inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

@@ -92,12 +92,12 @@ void ApplyNoDamage(ModelUnits& units)
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
 void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
 void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByRoute(ModelUnits&) {}     // notaxi: the route request reads the bit (TaxiAllowed)
 
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
-                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-                                              {FLYFAIL, ReadByFollower, ReadByFollower},
-                                              {FLYABORT, ReadByFollower, ReadByFollower},
-                                              {NODESTROY, ReadByDestroy, ReadByDestroy}};
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {
+    {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+    {FLYFAIL, ReadByFollower, ReadByFollower}, {FLYABORT, ReadByFollower, ReadByFollower},
+    {NODESTROY, ReadByDestroy, ReadByDestroy}, {NOTAXI, ReadByRoute, ReadByRoute}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -242,6 +242,11 @@ bool RowWorks(Row const& row)
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !DestroysForSpace(NODESTROY) && !DestroysForSpace(HOLD | NODESTROY) && DestroysForSpace(0) &&
                DestroysForSpace(HOLD | NOFIGHT | NODAMAGE) && (NODESTROY & HOLD) == 0 && !EndsStatus(0, NODESTROY);
+    // Only notaxi takes the flights out of a route request; nothing on the bot changes, the hold never sets it
+    if (name == "notaxi")
+        return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
+               !TaxiAllowed(NOTAXI) && !TaxiAllowed(HOLD | NOTAXI) && TaxiAllowed(0) && TaxiAllowed(STATES & ~NOTAXI) &&
+               TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI);
     return false;
 }
 
@@ -262,13 +267,15 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy",
+    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
         "fly rows: state rows (hold never sets them), parsed and formatted");
     Check(Parse("nodestroy").set == NODESTROY && Format(NODESTROY | NOFIGHT) == "nofight,nodestroy",
           "nodestroy: a state row, parsed and formatted");
+    Check(Parse("notaxi").set == NOTAXI && Format(NOTAXI | NOFIGHT) == "nofight,notaxi",
+          "notaxi: a state row, parsed and formatted");
 }
 
 void TestHeldIdle()
