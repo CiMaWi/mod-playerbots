@@ -88,7 +88,7 @@ constexpr uint32_t SERVICE_FLIGHT_MASTER = 1u << 4;
 constexpr uint32_t SERVICE_TRAINER = 1u << 5;         // teaches the bot's class spells
 constexpr uint32_t SERVICE_RIDING_TRAINER = 1u << 6;  // teaches the riding rank the bot buys
 constexpr uint32_t SERVICE_MOUNT_VENDOR = 1u << 7;    // sells that rank's mount for the bot's race
-constexpr uint32_t SERVICE_WEAPON_MASTER = 1u << 8;   // teaches the weapon skill the bot learns (WU15a)
+constexpr uint32_t SERVICE_WEAPON_MASTER = 1u << 10;  // teaches the weapon skill the bot learns (WU15a)
 // A stop has one trainer to visit: a stop with any of these keeps its own
 constexpr uint32_t TRAINER_SERVICES = SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER;
 // A vendor that sells the bot a consumable stock kind: the kind's bit (UpkeepNeeds' StockBit) from this bit on
@@ -100,6 +100,23 @@ constexpr uint32_t StockServices(uint8_t stockKinds)
 }
 constexpr uint32_t SERVICE_MAILBOX = 1u << 8;
 constexpr uint32_t SERVICE_BANKER = 1u << 9;
+// Every service has a bit of its own: two services merged onto one bit fail here
+constexpr uint32_t SERVICE_BITS[] = {SERVICE_QUEST_ENDER,    SERVICE_VENDOR,        SERVICE_REPAIR,
+                                     SERVICE_INNKEEPER,      SERVICE_FLIGHT_MASTER, SERVICE_TRAINER,
+                                     SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,  SERVICE_WEAPON_MASTER,
+                                     SERVICE_MAILBOX,        SERVICE_BANKER};
+constexpr bool ServiceBitsDistinct()
+{
+    uint32_t seen = 0;
+    for (uint32_t const bit : SERVICE_BITS)
+    {
+        if ((seen & bit) || bit >= (1u << SERVICE_STOCK_SHIFT))
+            return false;
+        seen |= bit;
+    }
+    return true;
+}
+static_assert(ServiceBitsDistinct(), "two errand services share a bit");
 // Unopened mail alone is worth at most this share of a usual trip's minutes at the earning rate, so it never pays a
 // detour (a detour costs at least that trip's minutes) yet still joins any stop with a mailbox (WB.4)
 constexpr float UNOPENED_MAIL_TRIP_SHARE = 0.5f;
