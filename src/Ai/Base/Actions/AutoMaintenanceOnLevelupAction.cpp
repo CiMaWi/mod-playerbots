@@ -16,6 +16,7 @@
 #include "SpellMgr.h"
 #include "StartingHistoryRules.h"
 #include "Upkeep.h"
+#include "WorldLog.h"
 
 namespace
 {
@@ -39,6 +40,9 @@ void NoteHearthstoneLoss(Player* bot, bool& had, char const* step)
 bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
 {
     bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    // The world log's mark that the level-up maintenance ran, also for a bot it hands nothing out to (WU15b)
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "levelup", keepsPossessions ? "keeps" : "granted",
+                       static_cast<float>(bot->GetLevel()));
     bool had = keepsPossessions;
     NoteHearthstoneLoss(bot, had, "before");
     AutoPickTalents();
@@ -126,8 +130,9 @@ void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*ou
 {
     PlayerbotFactory factory(bot, bot->GetLevel());
     bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
-    Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, SOURCE_LEVELUP,
-                    [&factory] { factory.InitSkills(); });
+    if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, SOURCE_LEVELUP,
+                         [&factory] { factory.InitSkills(); }))
+        factory.InitProfessionSkills();
     Upkeep::HandOut(
         bot, UpkeepKind::TrainerSpell, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitClassSpells(); },
         [&factory] { factory.InitAvailableSpells(); });
