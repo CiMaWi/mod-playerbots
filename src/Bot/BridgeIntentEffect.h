@@ -34,6 +34,13 @@ namespace PlayerbotBridge
 //     ResumePlan also ends a bridge goal.
 //   Every goal verb: NotPlanner when the planner does not run the bot (Planner.Goals off, a real master such as a
 //   player's group, not persistent), GoalHeld when a group's goal holds the slot.
+// The social verbs (LC16d) are done at once: Emote (emote) a gesture, Roll (roll) a roll of 1-100, Ready (ready) the
+// answer to the group's open ready check, LeaveGroup (leave_group) the bot leaves its group. With a counterpart
+// (LC16e): JoinGroup (join_group) the bot joins the partner's group, ShareQuest (share_quest) shares a quest of its
+// log with its group, AcceptQuest (accept_quest) takes the quest a group member shared with it.
+// The fight verbs (LC17a): Attack (attack) an enemy creature by name, any the bot sees (AttackOwnTarget is the old
+// form's own-target attack, out of the catalogue); Pull (pull) one creature near the bot's group, by its tank or a
+// ranged attacker. Cast (cast, LC17b) a helpful spell of the bot's own on a friend by name, or on itself.
 enum class Intent : uint8_t
 {
     Follow,
@@ -57,7 +64,16 @@ enum class Intent : uint8_t
     GatherHere,
     MeetAt,
     PausePlan,
-    ResumePlan
+    ResumePlan,
+    Emote,
+    Roll,
+    Ready,
+    LeaveGroup,
+    JoinGroup,
+    ShareQuest,
+    AcceptQuest,
+    Attack,
+    Cast
 };
 
 enum class Result : uint8_t
@@ -130,6 +146,14 @@ struct Order
     // Execute looks it up among what the bot sees or has in its log; empty otherwise. A place name stays in PlaceName.
     std::string TargetName = {};
     std::string QuestName = {};
+    // An item the bot carries and a spell it knows, by name (at most MaxName characters), for a row that takes one;
+    // empty otherwise. Execute looks them up among the bot's items and spells.
+    std::string ItemName = {};
+    std::string SpellName = {};
+    // A choice parameter's index into its Choices, for a row that takes one (OrderField::Choice); 0 otherwise.
+    uint8_t Choice = 0;
+    // A count, for a row that takes one: at least 1; 0 otherwise.
+    uint32_t Count = 0;
 };
 
 constexpr std::size_t MaxPlaceName = 64;

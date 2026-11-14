@@ -1025,6 +1025,8 @@ void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 void ReadByFollower(Player&) {}
 // nodestroy changes nothing on the bot: the smart destroy action reads the bit (TestConstraints::DestroysForSpace)
 void ReadByDestroy(Player&) {}
+// nomount changes nothing on the bot: the check mount state action reads the bit (TestConstraints::MountsOnItsOwn)
+void ReadByMount(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -1033,6 +1035,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FLYFAIL, ReadByFollower, ReadByFollower},
     {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
     {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
+    {TestConstraints::NOMOUNT, ReadByMount, ReadByMount},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 

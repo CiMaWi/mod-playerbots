@@ -7,6 +7,9 @@
 #ifndef _PLAYERBOT_TESTPLAYER_H
 #define _PLAYERBOT_TESTPLAYER_H
 
+#include <map>
+#include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -16,6 +19,7 @@
 class ChatHandler;
 class LoginQueryHolder;
 class Player;
+class WorldPacket;
 class WorldSession;
 
 struct TestPlayerWaypoint
@@ -56,9 +60,19 @@ public:
     static bool HandlePartyCommand(ChatHandler* handler, char const* args);
     // Groups a character with the test player as the leader (as an accepted invite), or "none" leaves the group
     static bool HandleGroupCommand(ChatHandler* handler, char const* args);
+    // Invites a character as a client would (CMSG_GROUP_INVITE through the test player's session): the character's
+    // answer decides; a bot's own trigger answers at once
+    static bool HandleInviteCommand(ChatHandler* handler, char const* args);
     // Queues a 2v2 arena (rated: in a 2v2 team with the character, founded if missing) grouped with a character;
     // "leave" leaves the queue. The test player accepts every battleground invite
     static bool HandleArenaQueueCommand(ChatHandler* handler, char const* args);
+    // Opens a ready check as the leader of the test player's group, or of the named character's group (an empty
+    // MSG_RAID_READY_CHECK through the leader's opcode handler)
+    static bool HandleReadyCheckCommand(ChatHandler* handler, char const* args);
+    // "READYANSWER <character>: ready|not ready|none": the character's last answer to a ready check opened here
+    static bool HandleReadyAnswerCommand(ChatHandler* handler, char const* args);
+    // Any thread: a ready check answer sent to a player; kept when that player opened a check here
+    void OnPacketSent(ObjectGuid receiver, WorldPacket const& packet);
 
 private:
     enum class State
@@ -79,8 +93,10 @@ private:
     bool Whisper(ChatHandler* handler, std::string const& target, std::string const& text);
     bool Party(ChatHandler* handler, std::string const& text);
     bool GroupWith(ChatHandler* handler, std::string const& target);
+    bool Invite(ChatHandler* handler, std::string const& target);
     bool ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated);
     void AcceptInvites(Player* player, uint32 diff);
+    bool OpenReadyCheck(ChatHandler* handler, std::string const& target);
 
     void StartLoad();
     void OnLoaded(LoginQueryHolder const& holder);
@@ -106,6 +122,10 @@ private:
     uint32 _waypoint = 0;
     uint32 _attempts = 0;
     uint32 _portTimer = 0;
+    // The ready check answers by member, sent from the members' map threads
+    std::mutex _readyLock;
+    std::map<ObjectGuid, uint8> _readyAnswers;
+    std::set<ObjectGuid> _readyOpeners;
 };
 
 #endif

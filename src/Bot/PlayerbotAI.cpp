@@ -21,6 +21,7 @@
 #include "AiFactory.h"
 #include "ArenaCcSpells.h"
 #include "ArenaCover.h"
+#include "BridgeAbilities.h"
 #include "ArenaDefensive.h"
 #include "ArenaDrink.h"
 #include "ArenaInterrupt.h"
@@ -2742,6 +2743,17 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             pendingDismount.store(true, std::memory_order_relaxed);
             return;
         }
+        // LC16d: the bridge's ready row answers the open check; a request names its sender, never the bot's own
+        case MSG_RAID_READY_CHECK:
+            if (packet.size() >= sizeof(uint64) && ObjectGuid(packet.read<uint64>(0)) != bot->GetGUID())
+                PlayerbotBridge::NoteReadyCheck(bot->GetGUID().GetRawValue());
+
+            botOutgoingPacketHandlers.AddPacket(packet);
+            return;
+        case MSG_RAID_READY_CHECK_FINISHED:
+            PlayerbotBridge::EndReadyCheck(bot->GetGUID().GetRawValue());
+            botOutgoingPacketHandlers.AddPacket(packet);
+            return;
         default:
             botOutgoingPacketHandlers.AddPacket(packet);
     }
