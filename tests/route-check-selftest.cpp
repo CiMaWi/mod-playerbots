@@ -41,7 +41,9 @@ int main()
         WalkAnswer one;
         one.result = true;
         one.type = type;
-        one.first = at;
+        float const reach = Dist2D(at, last);
+        float const back = reach > 4.0f ? 1.0f - 4.0f / reach : 0.0f;  // the smooth step before the last point
+        one.beforeLast = {at.x + (last.x - at.x) * back, at.y + (last.y - at.y) * back, at.z + (last.z - at.z) * back};
         one.last = last;
         one.actualEnd = last;
         one.length = Dist3D(at, last);
@@ -55,13 +57,12 @@ int main()
         WalkAnswer one;
         one.result = true;
         one.type = type;
-        one.first = at;
+        one.beforeLast = at;
         one.last = target;
         one.actualEnd = target;
         one.length = Dist3D(at, target);
         one.pointCount = 2;
         one.points = {at, target};
-        one.engineHops = true;
         return one;
     };
     auto const half = []() { return 0.5f; };
@@ -185,36 +186,50 @@ int main()
     check(!IsHop(hopAnswer(PATH_INCOMPLETE, start, Vec{4.2f, 0.0f, 13.0f})),
           "two points within one smooth step (4.2 yd 2D, 3 yd up): no hop");
     check(!IsHop(hopAnswer(PATH_NORMAL, start, twenty)), "a NORMAL two-point path: no hop");
-    Vec land;
-    float length = 0.0f;
     auto hopOnly = [&](Vec const& at, Vec const& target) { return hopAnswer(PATH_INCOMPLETE, at, target); };
-    std::uint32_t const hopKinds = WalkMove(start, twenty, hopOnly, land, length, nullptr);
-    check(hopKinds == (WALK_STRAIGHT | WALK_HOP | WALK_INCOMPLETE) && land.x == 20.0f && length == 20.0f,
-          "a hop move: straight, lands on its last point");
-    // The hop rule follows the engine: on core v21 (no append for INCOMPLETE) the same two points are an honest
-    // partial path, a mesh move
-    check(EngineHops(20) && !EngineHops(21) && !EngineHops(22), "the engine appends the hop below navmesh v21");
-    WalkAnswer partial = hopAnswer(PATH_INCOMPLETE, start, twenty);
-    partial.engineHops = false;
-    check(!IsHop(partial), "core v21: two INCOMPLETE points over 4.3 yd apart are no hop");
-    auto partialOnly = [&](Vec const& at, Vec const& target)
+    WalkStep step;
+    std::uint32_t const hopKinds = WalkMove(start, twenty, hopOnly, step, nullptr);
+    check(hopKinds == (WALK_STRAIGHT | WALK_HOP | WALK_INCOMPLETE) && step.land.x == 20.0f &&
+              step.straightYd == 20.0f && step.meshYd == 0.0f && step.straightFrom.x == 0.0f,
+          "a hop move of two points: straight, lands on its last point");
+    // One rule on both cores (NV19d): core v21 makes the same line without the append, after smooth steps to the
+    // start polygon's edge (FindSmoothPath copies the unclamped target in as the last point): x 0, 4, 8, 12, then 100
+    auto const jumpAnswer = [](std::uint32_t type, Vec const& at, Vec const& target)
     {
-        WalkAnswer one = hopAnswer(PATH_INCOMPLETE, at, target);
-        one.engineHops = false;
+        WalkAnswer one;
+        one.result = true;
+        one.type = type;
+        one.points = {at, Vec{at.x + 4.0f, at.y, at.z}, Vec{at.x + 8.0f, at.y, at.z}, Vec{at.x + 12.0f, at.y, at.z},
+                      target};
+        one.pointCount = 5;
+        one.beforeLast = one.points[3];
+        one.last = target;
+        one.actualEnd = target;
+        one.length = 12.0f + Dist3D(one.beforeLast, target);
         return one;
     };
-    std::uint32_t const partialKinds = WalkMove(start, twenty, partialOnly, land, length, nullptr);
-    check(partialKinds == (WALK_MESH | WALK_INCOMPLETE) && land.x == 20.0f, "core v21: that answer is a mesh move");
-    auto const gapNoHop = [&](Vec const& at, Vec const& target)
-    {
-        WalkAnswer one = gap(at, target);
-        one.engineHops = false;
-        return one;
-    };
-    WalkResult const gapWalkNoHop = Walk(start, sixtyEnd, gapNoHop, half);
-    check(DirectionOf(gapWalkNoHop) == Direction::Ok && gapWalkNoHop.kinds == (WALK_MESH | WALK_INCOMPLETE) &&
-              std::fabs(gapWalkNoHop.meshYd - 60.0f) < 0.01f,
-          "the gap's answers from an engine that does not append: mesh moves only, ok (as before NV19)");
+    Vec const hundred{100.0f, 0.0f, 10.0f};
+    check(IsHop(jumpAnswer(PATH_INCOMPLETE, start, hundred)) &&
+              IsHop(jumpAnswer(PATH_INCOMPLETE | PATH_FARFROMPOLY, start, hundred)),
+          "smooth steps, then a last leg of 88 yd, INCOMPLETE (also far from a polygon): a hop");
+    check(!IsHop(jumpAnswer(PATH_NORMAL, start, hundred)), "the same points on a NORMAL path: no hop");
+    check(!IsHop(jumpAnswer(PATH_INCOMPLETE, start, Vec{16.2f, 0.0f, 13.0f})),
+          "smooth steps, then a last leg of 4.2 yd (2D): no hop");
+    auto jumpOnly = [&](Vec const& at, Vec const& target) { return jumpAnswer(PATH_INCOMPLETE, at, target); };
+    std::vector<Vec> jumpTrace;
+    std::uint32_t const jumpKinds = WalkMove(start, hundred, jumpOnly, step, &jumpTrace);
+    check(jumpKinds == (WALK_MESH | WALK_STRAIGHT | WALK_HOP | WALK_INCOMPLETE) && step.land.x == 100.0f &&
+              std::fabs(step.meshYd - 12.0f) < 0.01f && std::fabs(step.straightYd - 88.0f) < 0.01f &&
+              step.straightFrom.x == 12.0f && jumpTrace.size() == 4 && jumpTrace.back().x == 100.0f,
+          "a hop move after smooth steps: mesh to the edge, then straight from it");
+    WalkResult const jumpWalk = Walk(start, end, jumpOnly, half);
+    check(jumpWalk.end == WalkEnd::Arrived && jumpWalk.moves == 1 && DirectionOf(jumpWalk) == Direction::Shortcut &&
+              jumpWalk.firstStraight.x == 12.0f && std::fabs(jumpWalk.meshYd - 12.0f) < 0.01f &&
+              std::fabs(jumpWalk.straightYd - 88.0f) < 0.01f,
+          "a walk whose one answer ends in that line: shortcut, the line from the mesh's edge");
+    check(DirectionValue("fwd", jumpWalk) ==
+              "fwd=shortcut moves=1 kinds=mesh+incomplete+straight+hop mesh=12 straight=88 at=100,0,10 from=12,0,10",
+          "that walk's direction value");
 
     // mode=path: the stored points in order. A mesh with a hole between x 80 and 100: the walk node to node goes
     // around it (one mesh order), the stored points lead into it

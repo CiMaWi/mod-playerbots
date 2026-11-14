@@ -77,19 +77,16 @@ constexpr float WALK_GAIN = 5.0f;
 constexpr std::uint32_t WALK_STUCK_MOVES = 5;
 constexpr std::uint32_t WALK_MAX_MOVES = 200;
 constexpr float WALK_CONE = 3.14159265f;  // the cone's width: (rand - 0.5) x this
-// The engine's hop (G33, NV19). Core v20's PathGenerator::BuildPointPath appends the target to a smooth path of
-// one point on one polygon ("start and end very close", PathGenerator.cpp:656) whatever the path type, and sets the
-// actual end to that point (:701): an INCOMPLETE answer of two points whose actual end is its last point, which the
-// bot walks as a straight line off the mesh it stands on. A smooth path has a point at least every
-// SMOOTH_PATH_STEP_SIZE (4 yd) plus SMOOTH_PATH_SLOP (0.3 yd), so a two-point INCOMPLETE answer longer than this
-// (2D) is the hop. Core v21 appends the target to NORMAL paths only and answers the same case NOPATH (:659), a
-// straight line already; there a two-point INCOMPLETE answer is an honest partial path (a straight corridor to the
-// last polygon it reaches), so the hop rule applies only to answers of an engine that appends (EngineHops).
+// The engine's hop (G33, NV19, NV19d). When the polygon path towards the target is partial and holds only the start
+// polygon (INCOMPLETE), PathGenerator::FindSmoothPath steers to the target unclamped ("the path is on the same
+// poly", v21 PathGenerator.cpp:998-1000, v20 :966-968): its smooth steps go to the polygon's edge, and at the end of
+// the corridor it copies that target in as the last point ("Reached end of path", v21 :1064-1065, v20 :1032-1033),
+// which may lie far off the mesh. Core v20 also appends the target to a smooth path of one point whatever the type
+// (:656, v21 for NORMAL paths only, :659). Both cores share the first; the bot walks the smooth part, then a straight
+// line to the last point. A smooth path has a point at least every SMOOTH_PATH_STEP_SIZE (4 yd) plus
+// SMOOTH_PATH_SLOP (0.3 yd), so an INCOMPLETE answer whose last leg is longer than this (2D) ends with the hop, on
+// either core. (Off-mesh connections also make a long leg; they lie inside a path, not at its end.)
 constexpr float HOP_MIN = 4.3f;
-
-// Whether the engine built with this navmesh version appends the hop: v21 (PR #28361) brought the mesh and the
-// NORMAL-only append together
-constexpr bool EngineHops(int mmapVersion) { return mmapVersion < 21; }
 
 // What a walk's moves were, as bits
 constexpr std::uint32_t WALK_MESH = 0x01;        // along a navmesh path
@@ -104,21 +101,29 @@ struct WalkAnswer
 {
     bool result{false};  // CalculatePath's return
     std::uint32_t type{0};
-    Vec first;                    // the path's first point
+    Vec beforeLast;               // the point before the last one (the first, for two points)
     Vec last;                     // the path's last point
     Vec actualEnd;                // GetActualEndPosition
     float length{0.0f};           // along the path's points
     std::uint32_t pointCount{0};  // the path's points
     std::vector<Vec> points;      // the path's points; only needed when the walk keeps a trace
-    bool engineHops{false};       // the answering engine appends the hop (EngineHops)
 };
 
-// The engine's hop (HOP_MIN): the answer's last point was appended, not walked on the mesh
+// The engine's hop (HOP_MIN): the answer's last point was copied in, not reached on the mesh
 inline bool IsHop(WalkAnswer const& answer)
 {
-    return answer.engineHops && (answer.type & PATH_INCOMPLETE) && answer.pointCount == 2 &&
-           Dist2D(answer.first, answer.last) > HOP_MIN;
+    return (answer.type & PATH_INCOMPLETE) && answer.pointCount >= 2 &&
+           Dist2D(answer.beforeLast, answer.last) > HOP_MIN;
 }
+
+// One move as the walk counts it
+struct WalkStep
+{
+    Vec land;                // where the bot ends
+    float meshYd{0.0f};      // walked along the path
+    float straightYd{0.0f};  // walked in a straight line
+    Vec straightFrom;        // where that line began
+};
 
 enum class WalkEnd : std::uint8_t
 {
@@ -145,34 +150,35 @@ inline std::uint32_t WalkTypeKinds(std::uint32_t type)
 }
 
 // One MovePoint order to target: where the bot ends, how it went and how far (PointMovementGenerator's rule); the
-// points it passes go to trace when given
+// points it passes go to trace when given. A hop's answer is the path to its point before the last, then a
+// straight line
 template <class PathFn>
-std::uint32_t WalkMove(Vec const& at, Vec const& target, PathFn& path, Vec& land, float& length,
-                       std::vector<Vec>* trace)
+std::uint32_t WalkMove(Vec const& at, Vec const& target, PathFn& path, WalkStep& step, std::vector<Vec>* trace)
 {
     WalkAnswer const answer = path(at, target);
+    step = WalkStep{};
     if (!answer.result || (answer.type & (PATH_NOPATH | PATH_NOT_USING_PATH | PATH_SHORTCUT | PATH_SHORT)))
     {
-        land = target;
-        length = Dist3D(at, target);
+        step.land = target;
+        step.straightYd = Dist3D(at, target);
+        step.straightFrom = at;
         if (trace)
             trace->push_back(target);
         return WALK_STRAIGHT;
     }
-    if (IsHop(answer))
-    {
-        land = answer.last;
-        length = Dist3D(at, land);
-        if (trace)
-            trace->push_back(land);
-        return WALK_STRAIGHT | WALK_HOP | WalkTypeKinds(answer.type);
-    }
-    land = answer.last;
-    length = answer.length;
+    step.land = answer.last;
     if (trace && answer.points.size() > 1)
         trace->insert(trace->end(), answer.points.begin() + 1, answer.points.end());
     else if (trace)
-        trace->push_back(land);
+        trace->push_back(step.land);
+    if (IsHop(answer))
+    {
+        step.straightYd = Dist3D(answer.beforeLast, answer.last);
+        step.meshYd = std::max(0.0f, answer.length - step.straightYd);
+        step.straightFrom = answer.beforeLast;
+        return WALK_STRAIGHT | WALK_HOP | (answer.pointCount > 2 ? WALK_MESH : 0u) | WalkTypeKinds(answer.type);
+    }
+    step.meshYd = answer.length;
     return WALK_MESH | WalkTypeKinds(answer.type);
 }
 
@@ -226,20 +232,18 @@ WalkEnd WalkLeg(Vec& at, Vec const& end, PathFn& path, RandFn& rand, std::vector
         ++result.moves;
         if (order)
         {
-            Vec land;
-            float length = 0.0f;
-            kinds |= WalkMove(at, target, path, land, length, trace);
+            WalkStep step;
+            kinds |= WalkMove(at, target, path, step, trace);
             if (kinds & WALK_STRAIGHT)
             {
                 if (!result.straightSeen)
-                    result.firstStraight = at;
+                    result.firstStraight = step.straightFrom;
                 result.straightSeen = true;
-                result.straightYd += length;
+                result.straightYd += step.straightYd;
             }
-            else
-                result.meshYd += length;
+            result.meshYd += step.meshYd;
             result.kinds |= kinds;
-            at = land;
+            at = step.land;
         }
         float const now = Dist3D(at, end);
         if (now + WALK_GAIN < nearest)

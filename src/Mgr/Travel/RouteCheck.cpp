@@ -327,18 +327,16 @@ WalkAnswer Ask(Probe const* probe, Vec const& at, Vec const& target, bool keepPo
     WalkAnswer answer;
     answer.result = path.CalculatePath(at.x, at.y, at.z, target.x, target.y, target.z, false);
     answer.type = path.GetPathType();
-    answer.engineHops = EngineHops(MMAP_VERSION);
-    answer.first = at;
+    answer.beforeLast = at;
     answer.last = at;
     Movement::PointsArray const& points = path.GetPath();
     answer.pointCount = static_cast<std::uint32_t>(points.size());
     for (std::size_t i = 1; i < points.size(); ++i)
         answer.length += (points[i] - points[i - 1]).length();
+    if (points.size() >= 2)
+        answer.beforeLast = {points[points.size() - 2].x, points[points.size() - 2].y, points[points.size() - 2].z};
     if (!points.empty())
-    {
-        answer.first = {points.front().x, points.front().y, points.front().z};
         answer.last = {points.back().x, points.back().y, points.back().z};
-    }
     if (keepPoints)
         for (G3D::Vector3 const& point : points)
             answer.points.push_back({point.x, point.y, point.z});
@@ -539,8 +537,7 @@ void Finish(TravelGraph const& graph)
         out << "# walk: the bot's, modelled (orders within " << WALK_ORDER_RANGE << " yd, arrival within " << WALK_GOAL
             << " yd 3D, stuck after " << WALK_STUCK_MOVES << " moves without " << WALK_GAIN << " yd gain, at most "
             << WALK_MAX_MOVES << " moves); ok: on the mesh only, shortcut: with a straight move (also the hop: an "
-            << "INCOMPLETE path of two points over " << HOP_MIN << " yd, on core v20 only: hop rule "
-            << (EngineHops(MMAP_VERSION) ? "on" : "off") << ", MMAP_VERSION " << MMAP_VERSION
+            << "INCOMPLETE path whose last leg is over " << HOP_MIN << " yd, every core; MMAP_VERSION " << MMAP_VERSION
             << "); mode path: over the stored points, "
             << "no-path: none stored\n";
         out << "# navmesh: " << sWorld->GetDataPath() << "mmaps\n";
