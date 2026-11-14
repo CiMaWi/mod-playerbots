@@ -274,7 +274,8 @@ bool WorldPvpFleeAction::Hop(uint32 nowMs)
     }
     bot->AttackStop();
     context->GetValue<Unit*>("current target")->Set(nullptr);
-    FleeManager manager(bot, STEP_YARDS, 0.0f);
+    // Its default start is no place (MAPID_INVALID at 0, 0, 0, which WorldPosition counts as set): the bot's own
+    FleeManager manager(bot, STEP_YARDS, 0.0f, false, WorldPosition(bot));
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
