@@ -1706,6 +1706,30 @@ void CheckWaitPoints()
     Check(off.act == Act::Disembark && Near(off.target, waitB) && trip.boarding == Boarding::Leave,
           "wait point: docked at the far stop: steps off towards the far wait point");
     Check(StepLeg(trip, Exited(waitB, 701000)).act == Act::Done, "wait point: off the ship the leg is done");
+
+    // WT60: a far wait point the deck cannot reach (the follower's WalkOff names the gate and sets exitless): the ship
+    // takes the bot back, and at the near stop it steps off towards the wait point it boarded from (WT43b's ride back)
+    Trip noExit = StartedTrip({WaitShipLeg(), MakeLeg(LegType::Walk, waitB, NODES[4], {8, 4}, 15.0f)});
+    noExit.boarding = Boarding::Board;
+    noExit.hasQuay = true;
+    noExit.quay = waitA;
+    StepLeg(noExit, Boarded(DECK, 2000, SHIP, Sight(SHIP_AT_A, false)));
+    Check(StepLeg(noExit, On(SHIP_AT_B, 3000, SHIP, Sight(SHIP_AT_B, false))).act == Act::Disembark &&
+              noExit.boarding == Boarding::Leave,
+          "wait point: no exit: docked at the far stop it tries the far wait point first");
+    noExit.exitSought = true;
+    noExit.exitless = true;
+    std::size_t const notesBefore = noExit.transportNotes.size();
+    StepLeg(noExit, On(SEA_1, 4000, SHIP, Sight(SEA_1, true)));
+    Check(Noted(noExit, notesBefore, TransportEvent::StuckAboard, SHIP, 1),
+          "wait point: no exit: still aboard as the ship leaves the far stop: stuck_aboard, rides back");
+    Decision const backOff = StepLeg(noExit, On(DECK, 5000, SHIP, Sight(SHIP_AT_A, false)));
+    Check(backOff.act == Act::Disembark && Near(backOff.target, waitA) && noExit.boarding == Boarding::Back &&
+              !noExit.exitSought,
+          "wait point: no exit: docked where it boarded it steps off towards the near wait point");
+    Decision const backAshore = StepLeg(noExit, Exited(waitA, 6000));
+    Check(backAshore.act == Act::Fail && backAshore.reason == FailReason::NoExit,
+          "wait point: no exit: off at the near wait point the leg fails as no_exit (the replan leaves the ride out)");
     Trip timedOut = StartedTrip({WaitShipLeg()});
     TravelLegs::NoteTransportTimeout(timedOut);
     Check(timedOut.avoidEdges.size() == 1 &&

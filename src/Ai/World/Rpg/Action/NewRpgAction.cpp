@@ -2747,19 +2747,58 @@ std::optional<BackPath> BackCrossing(Player const& bot, NewRpgInfo::Travel const
     return path;
 }
 
-// offHull: no wait point is the route's start, so ground off the hull is looked for when the route gives none
-void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std::vector<Point> const& route,
-             bool offHull)
+// The exit to a stop's wait point, for the debug log (WT60): the first gate that held it (the crossing checks' words),
+// the deck point, and whether the wait point lies off the hull and on ground by the old search's tests
+void LogExitGate(Player const& bot, NewRpgInfo::Travel const& data, Transport const& ridden, Point const& wait,
+                 std::optional<TravelLifecycle::ExitPath> const& exit, TravelLifecycle::CrossingCheck gate)
+{
+    TransportGeometry::GroundGeometry const geometry{bot, &ridden};
+    std::string deck("none");
+    if (exit)
+        deck = Acore::StringFormat("{:.2f},{:.2f},{:.2f}", exit->Deck.X, exit->Deck.Y, exit->Deck.Z);
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] exit_gate bot={} trip={} leg={} entry={} at={:.2f},{:.2f},{:.2f} gate={} "
+              "wait={:.2f},{:.2f},{:.2f} deck={} wait_off_hull={} wait_ground={} corners={}",
+              bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, ridden.GetEntry(), bot.GetPositionX(),
+              bot.GetPositionY(), bot.GetPositionZ(), CROSSING_NAMES[static_cast<std::size_t>(gate)], wait.X, wait.Y,
+              wait.Z, deck, geometry.OffHull(wait) ? 1 : 0, geometry.OnGround(wait) ? 1 : 0,
+              exit ? exit->Walk.size() : 0);
+}
+
+// Leaving is boarding in reverse (WT60): at a stop with a wait point the exit crosses from the deck point beside it
+// (FindWaitExit). Where it has none, or that crossing fails (the model between the wait point and the deck point
+// toward the hull's centre, as at Ratchet and Auberdine's pier), the old search finds ground off the hull toward the
+// route (FindExit; GroundOffHull only where no wait point and no route point gives the onward point). A failed exit
+// tries the boarding crossing walked back (WT43b), else it is a no_exit and the leg rides back
+void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std::optional<Point> const& waitPoint,
+             std::vector<Point> const& route)
 {
     if (data.passengerMotion || data.trip.exitSought || !PrepareTransportMove(bot))
         return;
     bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
     TravelLifecycle::CrossingTally tally;
-    std::vector<Point> onward = route;
-    if (offHull && !TravelLifecycle::OnwardPoint(TransportGeometry::GroundGeometry{bot, &ridden}, route))
-        if (auto const ground = GroundOffHull(bot, ridden, trace))
-            onward.push_back(*ground);
-    auto const exit = TransportGeometry::FindExit(bot, ridden, onward, trace ? &tally : nullptr);
+    std::optional<TravelLifecycle::ExitPath> exit;
+    if (waitPoint)
+    {
+        TravelLifecycle::CrossingCheck gate = TravelLifecycle::CrossingCheck::NoDeck;
+        if (TransportGeometry::Available(bot, ridden))
+            exit = TravelLifecycle::FindWaitExit(TransportGeometry::GroundGeometry{bot, &ridden},
+                                                 TransportGeometry::PositionOf(bot), *waitPoint,
+                                                 TransportGeometry::HullCentre(ridden), gate);
+        if (trace)
+            LogExitGate(bot, data, ridden, *waitPoint, exit, gate);
+    }
+    bool const toWaitPoint = exit.has_value();
+    if (!exit)
+    {
+        std::vector<Point> onward = route;
+        if (!waitPoint && !TravelLifecycle::OnwardPoint(TransportGeometry::GroundGeometry{bot, &ridden}, route))
+            if (auto const ground = GroundOffHull(bot, ridden, trace))
+                onward.push_back(*ground);
+        exit = TransportGeometry::FindExit(bot, ridden, onward, trace ? &tally : nullptr);
+        if (!exit && trace)
+            LogCrossingSearch(bot, data, ridden, "exit", tally);
+    }
     if (exit)
     {
         if (trace)
@@ -2780,11 +2819,10 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
         PassengerMotion motion = Intent(bot, ridden, MotionKind::Exit, exit->Ground);
         motion.ExitFrom = exit->Deck;
         motion.Onward = exit->Onward;
+        motion.ToWaitPoint = toWaitPoint;
         IssueTransportMove(bot, data, motion, exit->Walk);
         return;
     }
-    if (trace)
-        LogCrossingSearch(bot, data, ridden, "exit", tally);
     if (auto const back = BackCrossing(bot, data, ridden, trace))
     {
         PassengerMotion motion = Intent(bot, ridden, MotionKind::Exit, back->Ground);
@@ -3230,7 +3268,7 @@ TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data)
             Point const onward =
                 GroundBesideStop(bot->GetMap(), TransportGeometry::PositionOf(*ridden), bot->GetPositionZ())
                     .value_or(TransportGeometry::PositionOf(*bot));
-            WalkOff(*bot, data, *ridden, std::vector<Point>{onward}, true);
+            WalkOff(*bot, data, *ridden, std::nullopt, std::vector<Point>{onward});
         }
         else if (step == TravelLegs::OffStep::Wait && wasStill)
         {
@@ -3800,15 +3838,19 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
             {
                 Point const dest{data->dest.GetPositionX(), data->dest.GetPositionY(), data->dest.GetPositionZ()};
                 TravelRoute::Leg const& rideLeg = trip.legs[trip.legIdx];
-                if (trip.boarding == TravelLegs::Boarding::Back)  // the quay or wait point it waited on
-                    WalkOff(*bot, *data, *ridden,
-                            std::vector<Point>{Point{next.target.x, next.target.y, next.target.z}}, !rideLeg.waitFrom);
+                // Off at the stop's wait point where it has one: the far one, or after no exit the one it waited on
+                Point const target{next.target.x, next.target.y, next.target.z};
+                bool const back = trip.boarding == TravelLegs::Boarding::Back;
+                bool const atWaitPoint =
+                    (back ? rideLeg.waitFrom : rideLeg.waitTo) && next.target.mapId == bot->GetMapId();
+                std::optional<Point> const waitPoint = atWaitPoint ? std::optional<Point>{target} : std::nullopt;
+                if (back)  // the quay or wait point it waited on
+                    WalkOff(*bot, *data, *ridden, waitPoint, std::vector<Point>{target});
                 else
                 {
                     LogExitDockFoot(*bot, *data, *ridden);
-                    WalkOff(*bot, *data, *ridden,
-                            OnwardRoute(trip, bot->GetMap(), bot->GetMapId(), dest, bot->GetPositionZ()),
-                            !rideLeg.waitTo);
+                    WalkOff(*bot, *data, *ridden, waitPoint,
+                            OnwardRoute(trip, bot->GetMap(), bot->GetMapId(), dest, bot->GetPositionZ()));
                 }
             }
             return true;

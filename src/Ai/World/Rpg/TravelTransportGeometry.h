@@ -396,8 +396,7 @@ inline std::optional<TravelLifecycle::ExitPath> FindExit(Player const& bot, Tran
 inline bool ConfirmExit(Player const& bot, Transport const& transport, TravelLifecycle::PassengerMotion const& motion)
 {
     return AtIssuedDock(bot, transport, motion) &&
-           TravelLifecycle::AcceptExit(GroundGeometry{bot, &transport}, motion.ExitFrom, PositionOf(bot),
-                                       motion.Onward);
+           TravelLifecycle::ExitHolds(GroundGeometry{bot, &transport}, motion, PositionOf(bot));
 }
 }  // namespace TravelTransportGeometry
 
