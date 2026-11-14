@@ -143,13 +143,15 @@ inline TravelRoute::Request RequestOf(Parsed const& query)
     return request;
 }
 
-// A transport leg's wait points, where the graph has them (its nodes run wait point, stop, stop, wait point)
+// A transport leg's wait points, where the graph has them: an end joined to its stop by a wait-point link (waitFrom,
+// waitTo), else none (the leg ends at the stop)
 inline std::string WaitPointText(TravelGraph const& graph, TravelRoute::Leg const& leg)
 {
-    if (leg.type != TravelRoute::LegType::Transport || leg.nodes.size() < 3)
+    if (leg.type != TravelRoute::LegType::Transport || leg.nodes.empty() || (!leg.waitFrom && !leg.waitTo))
         return "";
-    return ", wait points '" + std::string(graph.GetName(leg.nodes.front())) + "' -> '" +
-           std::string(graph.GetName(leg.nodes.back())) + "'";
+    auto const name = [&graph](bool wait, std::uint32_t node)
+    { return wait ? "'" + std::string(graph.GetName(node)) + "'" : std::string("none"); };
+    return ", wait points " + name(leg.waitFrom, leg.nodes.front()) + " -> " + name(leg.waitTo, leg.nodes.back());
 }
 
 // Plans the route on the graph and returns the output lines

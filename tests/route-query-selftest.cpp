@@ -83,6 +83,21 @@ int main(int argc, char** argv)
     check(boardsFromWaitPoints(TravelRoute::Search(graph, RouteQuery::RequestOf(parsed), {}, {})),
           "orgrimmar -> undercity boards no transport at a stop with a wait point");
 
+    // The wait points' text names an end only where the leg has a wait point there (WT55b)
+    TravelRoute::Leg half;
+    half.type = TravelRoute::LegType::Transport;
+    half.nodes = {0, 1, 2};
+    half.rideAt = 1;
+    half.waitFrom = true;
+    check(RouteQuery::WaitPointText(graph, half) == ", wait points '" + std::string(graph.GetName(0)) + "' -> none",
+          "wait points text: the near end only");
+    half.nodes = {0, 1};
+    half.rideAt = 0;
+    half.waitFrom = false;
+    check(RouteQuery::WaitPointText(graph, half).empty(), "wait points text: none for a leg from stop to stop");
+    half.nodes = {0, 1, 2};
+    check(RouteQuery::WaitPointText(graph, half).empty(), "wait points text: three nodes alone name no wait point");
+
     if (!graphDir.empty())
     {
         // Five crossings by their vessels (innkeepers' and Warsong Hold's positions), each one transport leg that runs
@@ -110,7 +125,8 @@ int main(int argc, char** argv)
                 check(false, label + ": " + error);
                 continue;
             }
-            for (std::string const& line : RouteQuery::Run(graph, parsed))
+            std::vector<std::string> const run = RouteQuery::Run(graph, parsed);
+            for (std::string const& line : run)
                 std::cout << "  " << line << "\n";
             TravelRoute::Result const route = TravelRoute::Search(graph, RouteQuery::RequestOf(parsed), {}, {});
             auto const ride =
@@ -124,6 +140,11 @@ int main(int argc, char** argv)
                                endsWith(graph.GetName(ride->nodes.back()), "dock") &&
                                graph.GetNode(ride->nodes[1]).waitStop && graph.GetNode(ride->nodes[2]).waitStop;
             check(waits, label + ": the leg runs wait point, stop, stop, wait point");
+            std::string const text = ", wait points '" + std::string(graph.GetName(ride->nodes.front())) + "' -> '" +
+                                     std::string(graph.GetName(ride->nodes.back())) + "'";
+            check(std::any_of(run.begin(), run.end(),
+                              [&text](std::string const& line) { return line.find(text) != std::string::npos; }),
+                  label + ": the route names both wait points");
             check(std::count_if(route.legs.begin(), route.legs.end(), [](TravelRoute::Leg const& leg)
                                 { return leg.type == TravelRoute::LegType::Transport && !leg.object; }) == 0,
                   label + ": a transport leg without a vessel");

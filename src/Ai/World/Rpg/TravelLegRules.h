@@ -942,6 +942,10 @@ inline void NoteSight(Trip& trip, TransportSight const& sight)
 }
 
 // The leg's transport stands at a dock node: a ship within SHIP_DOCK_YARDS of it, a static one beside it at its floor
+// A transport leg's stops, where its vessel docks: from and to are the wait points where the graph has them (WT55b)
+inline Point const& StopFrom(Leg const& leg) { return leg.waitFrom ? leg.stopFrom : leg.from; }
+inline Point const& StopTo(Leg const& leg) { return leg.waitTo ? leg.stopTo : leg.to; }
+
 inline bool DockedAt(Trip const& trip, Point const& dock)
 {
     TransportSight const& sight = trip.sight;
@@ -963,10 +967,11 @@ inline bool TakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard
     if (trip.legIdx >= trip.legs.size() || trip.passengerGuid || !aboard)
         return false;
     Leg const& leg = trip.legs[trip.legIdx];
-    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != leg.from.mapId)
+    Point const& stop = StopFrom(leg);
+    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != stop.mapId)
         return false;
-    float const dx = bot.x - leg.from.x;
-    float const dy = bot.y - leg.from.y;
+    float const dx = bot.x - stop.x;
+    float const dy = bot.y - stop.y;
     return std::sqrt(dx * dx + dy * dy) <= (trip.sight.isStatic ? STATIC_DOCK_YARDS : SHIP_DOCK_YARDS);
 }
 
@@ -979,10 +984,11 @@ inline bool WalkTakenAboard(Trip const& trip, Point const& bot, std::uint32_t ab
     if (!aboard || trip.legIdx + 1 >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk)
         return false;
     Leg const& leg = trip.legs[trip.legIdx + 1];
-    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != leg.from.mapId)
+    Point const& stop = StopFrom(leg);
+    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != stop.mapId)
         return false;
-    float const dx = bot.x - leg.from.x;
-    float const dy = bot.y - leg.from.y;
+    float const dx = bot.x - stop.x;
+    float const dy = bot.y - stop.y;
     return std::sqrt(dx * dx + dy * dy) <= SHIP_DOCK_YARDS;
 }
 
@@ -1028,7 +1034,7 @@ inline void SetQuay(Trip& trip, Point const* quay)
         trip.quay = *quay;
 }
 
-// Where a transport leg's bot walks to and waits: the quay once found, else the dock node
+// Where a transport leg's bot walks to and waits: the wait point or the quay once found, else the dock node
 inline Point const& WaitPoint(Trip const& trip, Leg const& leg) { return trip.hasQuay ? trip.quay : leg.from; }
 
 // The hop may come at this docking: the follower then asks whether a real player sees it (TransportSight::unseen)
@@ -1098,7 +1104,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
             return fail(FailReason::Timeout);
         if (seen.bot.mapId != leg.from.mapId && seen.bot.mapId != leg.to.mapId)
             return fail(FailReason::WrongMap);
-        if (DockedAt(trip, leg.to))
+        if (DockedAt(trip, StopTo(leg)))
         {
             if (trip.boarding != Boarding::Leave)
             {
@@ -1109,7 +1115,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
             return {Act::Disembark, leg.to, FailReason::None};
         }
         // WT43b: no exit at the end: off where it boarded, towards the quay it waited on
-        if (trip.exitless && DockedAt(trip, leg.from))
+        if (trip.exitless && DockedAt(trip, StopFrom(leg)))
         {
             if (trip.boarding != Boarding::Back)
             {
@@ -1132,6 +1138,9 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         return fail(FailReason::Timeout);
     if (seen.bot.mapId != leg.from.mapId)
         return fail(FailReason::WrongMap);
+    // A stop with a wait point (WT.42): the bot waits there and crosses from there; no quay is looked for
+    if (leg.waitFrom && !trip.hasQuay)
+        SetQuay(trip, &leg.from);
     Point const& waitAt = WaitPoint(trip, leg);
     if (trip.boarding == Boarding::Approach)
     {
@@ -1148,7 +1157,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         enter(Boarding::Wait);
     }
     Decision const wait{within(waitAt, WAIT_RETURN_YARDS) ? Act::Wait : Act::Walk, waitAt, FailReason::None};
-    bool const docked = DockedAt(trip, leg.from);
+    bool const docked = DockedAt(trip, StopFrom(leg));
     if (trip.boarding == Boarding::Wait)
     {
         if (!docked)
@@ -1504,16 +1513,15 @@ inline void NoteDeath(Trip& trip)
 }
 
 // A transport leg that timed out (its transport never took the bot, or never let it off): later routes of this trip
-// leave its link out, both ways. Its middle pair of nodes: the ride, between the wait points where the leg has them
+// leave its link out, both ways. Its ride's pair of nodes (rideAt), between the wait points where the leg has them
 inline void NoteTransportTimeout(Trip& trip)
 {
     if (trip.legIdx >= trip.legs.size())
         return;
     Leg const& leg = trip.legs[trip.legIdx];
-    if (leg.type != LegType::Transport || leg.nodes.size() < 2)
+    if (leg.type != LegType::Transport || leg.rideAt + 1 >= leg.nodes.size())
         return;
-    std::size_t const middle = leg.nodes.size() / 2;
-    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes[middle - 1], leg.nodes[middle]};
+    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]};
     if (trip.avoidEdges.size() < AVOID_EDGES &&
         std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
         trip.avoidEdges.push_back(edge);

@@ -147,7 +147,8 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         W3
     };
     constexpr std::uint32_t SHIP = 20808;
-    auto const build = [](TravelGraph& graph, bool waitPoints)
+    // near, far: the wait points of S1, S2; a stop with one is reached only through it (no tie with a direct walk)
+    auto const build = [](TravelGraph& graph, bool near, bool far)
     {
         TravelGraphBuilder builder;
         builder.AddNode(A, "A", 0, 0.0f, 0.0f, 0.0f);
@@ -173,16 +174,19 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
             }
         };
         link(A, W1, 1, 0, 60.0f);
-        link(A, S1, 1, 0, 80.0f);
-        link(S2, B, 1, 0, 80.0f);
         link(W2, B, 1, 0, 60.0f);
         link(S1, S2, 3, SHIP, 0.1f);
-        if (waitPoints)
+        if (near)
         {
             link(W1, S1, 3, 0, 20.0f);
-            link(S2, W2, 3, 0, 20.0f);
             link(S1, W3, 3, 0, 30.0f);
         }
+        else
+            link(A, S1, 1, 0, 80.0f);
+        if (far)
+            link(S2, W2, 3, 0, 20.0f);
+        else
+            link(S2, B, 1, 0, 80.0f);
         std::string error;
         builder.EndLinks(error);
         builder.AddPoint(A, W1, 0, 0, 0.0f, 0.0f, 0.0f);
@@ -208,7 +212,7 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
     };
 
     TravelGraph waits;
-    build(waits, true);
+    build(waits, true, true);
     TravelRoute::Result const crossed = TravelRoute::Search(waits, request, TravelRoute::StuckEdges{}, {});
     auto const ride = std::find_if(crossed.legs.begin(), crossed.legs.end(), [](TravelRoute::Leg const& leg)
                                    { return leg.type == TravelRoute::LegType::Transport; });
@@ -218,6 +222,9 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
               "the transport leg runs W1, S1, S2, W2 with the ship");
         check(ride->from.x == 60.0f && ride->to.mapId == 1 && ride->to.x == 20.0f,
               "the transport leg runs from wait point to wait point");
+        check(ride->rideAt == 1 && ride->waitFrom && ride->waitTo && ride->stopFrom.x == 80.0f &&
+                  ride->stopTo.mapId == 1 && ride->stopTo.x == 0.0f,
+              "the transport leg knows its ride and its stops");
         check(crossed.legs.size() == 3 && crossed.legs.front().type == TravelRoute::LegType::Walk &&
                   crossed.legs.back().type == TravelRoute::LegType::Walk,
               "a walk to the wait point, the crossing, a walk on");
@@ -245,13 +252,42 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
           "without transports no route");
 
     TravelGraph plain;
-    build(plain, false);
+    build(plain, false, false);
     TravelRoute::Result const old = TravelRoute::Search(plain, request, TravelRoute::StuckEdges{}, {});
     auto const oldRide = std::find_if(old.legs.begin(), old.legs.end(), [](TravelRoute::Leg const& leg)
                                       { return leg.type == TravelRoute::LegType::Transport; });
     check(old.ok && transports(old) == 1 && oldRide != old.legs.end() &&
               ids(plain, *oldRide) == std::vector<std::uint32_t>{S1, S2} && oldRide->from.x == 80.0f,
           "without wait points the ride runs S1, S2 from the stop");
+    check(oldRide != old.legs.end() && oldRide->rideAt == 0 && !oldRide->waitFrom && !oldRide->waitTo,
+          "without wait points the leg has none");
+
+    // A wait point at one end only (WT55b): a timeout leaves the ride out, not the wait point's link
+    for (bool const nearEnd : {true, false})
+    {
+        std::string const side = nearEnd ? "near wait point only" : "far wait point only";
+        TravelGraph half;
+        build(half, nearEnd, !nearEnd);
+        TravelRoute::Result const route = TravelRoute::Search(half, request, TravelRoute::StuckEdges{}, {});
+        auto const leg = std::find_if(route.legs.begin(), route.legs.end(), [](TravelRoute::Leg const& each)
+                                      { return each.type == TravelRoute::LegType::Transport; });
+        if (!check(route.ok && transports(route) == 1 && leg != route.legs.end(), side + ": no single transport leg"))
+            continue;
+        std::vector<std::uint32_t> const expected =
+            nearEnd ? std::vector<std::uint32_t>{W1, S1, S2} : std::vector<std::uint32_t>{S1, S2, W2};
+        check(ids(half, *leg) == expected && leg->waitFrom == nearEnd && leg->waitTo == !nearEnd &&
+                  leg->rideAt == (nearEnd ? 1u : 0u) && leg->stopFrom.x == 80.0f && leg->stopTo.x == 0.0f &&
+                  leg->from.x == (nearEnd ? 60.0f : 80.0f) && leg->to.x == (nearEnd ? 0.0f : 20.0f),
+              side + ": its nodes, ends and stops");
+        TravelLegs::Trip trip;
+        trip.legs = route.legs;
+        trip.legIdx = static_cast<std::uint32_t>(leg - route.legs.begin());
+        TravelLegs::NoteTransportTimeout(trip);
+        check(trip.avoidEdges.size() == 1 &&
+                  trip.avoidEdges.front() ==
+                      std::pair<std::uint32_t, std::uint32_t>{half.IndexOfId(S1), half.IndexOfId(S2)},
+              side + ": a timed-out crossing leaves its ride out");
+    }
 
     TravelRoute::Request up = request;
     up.goal = {0, 91.0f, 0.0f, 200.0f};

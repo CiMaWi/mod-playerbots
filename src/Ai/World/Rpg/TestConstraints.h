@@ -57,7 +57,7 @@ constexpr Row ROWS[] = {
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
     {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
-    {"notaxi", Kind::State, NOTAXI, "route request: no flight master known, no flight leg"},
+    {"notaxi", Kind::State, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -169,8 +169,8 @@ inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
-// notaxi, read by the trip's route request (NewRpgAction.cpp; nothing to apply or undo): the search sees no flight
-// master known, so a test orders a walk-only trip (a bot learning a flight node on the way flies no more)
+// notaxi, read by the trip's route request (NewRpgAction.cpp; nothing to apply or undo): the search knows no flight
+// master, so the route and the bot take no taxi (also after the bot learns a flight node on the way)
 inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent

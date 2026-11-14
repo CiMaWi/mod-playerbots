@@ -241,6 +241,13 @@ struct Leg
     float flightYards{0.0f};
     std::uint32_t flightLevels{0};
     float flightClearance{0.0f};
+    // Transport legs: the index in nodes of the ride's first stop, the ride's stops, and whether an end is a wait point
+    // (waitFrom, waitTo: from or to is then the wait point, else the stop itself; TravelLegs::StopFrom, StopTo)
+    std::uint32_t rideAt{0};
+    Point stopFrom;
+    Point stopTo;
+    bool waitFrom{false};
+    bool waitTo{false};
 };
 
 struct Result
@@ -645,6 +652,16 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         }
 
         Leg& leg = result.legs.back();
+        if (type == LegType::Transport && !waitLink)
+        {
+            // The ride: its first stop is the node passed last, a node before it the near wait point
+            leg.rideAt = leg.nodes.empty() ? 0 : static_cast<std::uint32_t>(leg.nodes.size() - 1);
+            leg.waitFrom = leg.nodes.size() > 1;
+            leg.stopFrom = pointOf(step.vertex);
+            leg.stopTo = pointOf(vertex);
+        }
+        else if (type == LegType::Transport && legRides)
+            leg.waitTo = true;
         leg.to = pointOf(vertex);
         leg.seconds += best[vertex] - best[step.vertex];
         if (vertex < nodeCount)

@@ -64,6 +64,8 @@ std::vector<Point> const NODES = {
     {1, 1100.0f, 1000.0f, 0.0f},  // 4
     {1, 1200.0f, 1000.0f, 0.0f},  // 5 a flight master
     {1, 5000.0f, 5000.0f, 0.0f},  // 6 the landing
+    {0, 40.0f, 0.0f, 0.0f},       // 7 the wait point of pier A (node 1), beyond a ship's dock reach of it
+    {1, 1000.0f, 950.0f, 0.0f},   // 8 the wait point of pier B (node 3)
 };
 Point const START{0, -2.0f, 0.0f, 0.0f};
 Point const GOAL{1, 5055.0f, 5000.0f, 0.0f};
@@ -1663,6 +1665,54 @@ void CheckBoarding()
 }
 }  // namespace
 
+// A ship whose stops have wait points (WT55b): the bot waits at the near wait point and boards from there, the dock
+// test measures the stops, and at the far stop it steps off towards the far wait point
+Leg WaitShipLeg()
+{
+    Leg leg = MakeLeg(LegType::Transport, NODES[7], NODES[8], {7, 1, 3, 8}, 240.0f);
+    leg.object = SHIP;
+    leg.rideAt = 1;
+    leg.stopFrom = PIER_A;
+    leg.stopTo = PIER_B;
+    leg.waitFrom = true;
+    leg.waitTo = true;
+    return leg;
+}
+
+void CheckWaitPoints()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::StepLeg;
+    using TravelLegs::TransportEvent;
+    Point const waitA = NODES[7];
+    Point const waitB = NODES[8];
+    Trip trip = StartedTrip({WaitShipLeg(), MakeLeg(LegType::Walk, waitB, NODES[4], {8, 4}, 15.0f)});
+    Decision const approach = StepLeg(trip, On({0, 10.0f, 0.0f, 0.0f}, 2000, 0));
+    Check(approach.act == Act::Walk && Near(approach.target, waitA) && trip.hasQuay && trip.quaySought &&
+              Near(trip.quay, waitA),
+          "wait point: the approach ends at the wait point, no quay is looked for");
+    Check(StepLeg(trip, On(waitA, 3000, 0, Gone())).act == Act::Wait && trip.boarding == Boarding::Wait &&
+              Noted(trip, 0, TransportEvent::Attempt, SHIP, 2),
+          "wait point: waits there");
+    Check(StepLeg(trip, On(waitA, 4000, 0, Sight({0, 40.0f, -60.0f, 0.0f}, false))).act == Act::Wait,
+          "wait point: a ship stopped beside the wait point, out of the stop's reach, is not docked");
+    Decision const board = StepLeg(trip, On(waitA, 5000, 0, Sight(SHIP_AT_A, false)));
+    Check(board.act == Act::Board && Near(board.target, SHIP_AT_A) && trip.boarding == Boarding::Board,
+          "wait point: boards the ship docked at the stop, from the wait point");
+    Check(StepLeg(trip, Boarded(DECK, 7000, SHIP, Sight(SHIP_AT_A, false))).act == Act::Wait &&
+              trip.boarding == Boarding::Ride,
+          "wait point: aboard: rides");
+    Decision const off = StepLeg(trip, On({1, 1000.0f, 1030.0f, 3.0f}, 700000, SHIP, Sight(SHIP_AT_B, false)));
+    Check(off.act == Act::Disembark && Near(off.target, waitB) && trip.boarding == Boarding::Leave,
+          "wait point: docked at the far stop: steps off towards the far wait point");
+    Check(StepLeg(trip, Exited(waitB, 701000)).act == Act::Done, "wait point: off the ship the leg is done");
+    Trip timedOut = StartedTrip({WaitShipLeg()});
+    TravelLegs::NoteTransportTimeout(timedOut);
+    Check(timedOut.avoidEdges.size() == 1 &&
+              timedOut.avoidEdges.front() == std::pair<std::uint32_t, std::uint32_t>{1, 3},
+          "wait point: a timeout leaves the ride out, stop to stop");
+}
+
 int main()
 {
     CheckFullRoute();
@@ -1688,6 +1738,7 @@ int main()
     CheckBack();
     CheckOffFirst();
     CheckBoarding();
+    CheckWaitPoints();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }
