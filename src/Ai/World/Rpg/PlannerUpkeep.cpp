@@ -25,6 +25,7 @@
 #include "Chat.h"
 #include "DBCStores.h"
 #include "ItemWorthRules.h"
+#include "LabCopies.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -292,8 +293,7 @@ UpkeepGather GatherUpkeep()
             continue;
         ++tameSpawns[data.id];
         input.tameable.push_back({data.mapid, data.posX, data.posY, data.posZ, data.id,
-                                  static_cast<uint8>(beast->family), beast->minlevel, beast->maxlevel,
-                                  beast->IsExotic()});
+                                  static_cast<uint8>(beast->family), beast->maxlevel, beast->IsExotic()});
     }
     std::erase_if(input.tameable,
                   [&tameSpawns](auto const& spawn) { return !UpkeepNeeds::TameTargetSpawns(tameSpawns[spawn.entry]); });
@@ -857,6 +857,14 @@ bool HandlePetCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage(
             "Usage: playerbots planner pet <online player> [has|none|unpet|give <entry>|slots "
             "<n>|stabled <n>|fund <copper above the reserve>]");
+        return false;
+    }
+
+    // The changing verbs are test fixtures (unpet deletes every pet row): on a lab server and for a bot only
+    bool const changes = what == "unpet" || what == "give" || what == "slots" || what == "fund";
+    if (changes && (!LabCopyMgr::IsLabServer() || IsRealPlayer(bot)))
+    {
+        handler->PSendSysMessage("PLANNER pet {}: error, {} only on a lab server and for a bot", bot->GetName(), what);
         return false;
     }
 

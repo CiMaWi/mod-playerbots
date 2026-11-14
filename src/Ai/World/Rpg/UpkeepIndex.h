@@ -255,7 +255,6 @@ struct TameableSpawn
     float z{0.0f};
     std::uint32_t entry{0};
     std::uint8_t family{0};
-    std::uint8_t minLevel{0};
     std::uint8_t maxLevel{0};
     bool exotic{false};  // Beast Mastery's aura tames it (CREATURE_TYPE_FLAG_TAMEABLE_EXOTIC)
 };
@@ -456,6 +455,16 @@ public:
         auto const last = std::upper_bound(first, tameable.end(), map,
                                            [](std::uint32_t id, TameableSpawn const& spawn) { return id < spawn.map; });
         return {first, last};
+    }
+
+    // A tame target (WU21d): an entry the index keeps on that map (normal rank, no spell that breaks the channel,
+    // several spawns), as the tame stop picks a live beast
+    bool TameTarget(std::uint32_t map, std::uint32_t entry) const
+    {
+        auto const [first, last] = TameableOn(map);
+        auto const it = std::lower_bound(first, last, entry,
+                                         [](TameableSpawn const& spawn, std::uint32_t id) { return spawn.entry < id; });
+        return it != last && it->entry == entry;
     }
 
     WeaponSkill const* Weapon(std::uint32_t skill) const

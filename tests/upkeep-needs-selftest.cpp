@@ -1175,12 +1175,12 @@ UpkeepIndex PetFixture()
     UpkeepGather input;
     input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
     input.trainerEntries = {{TRAINER_RIDING, TRAINER_RIDING}};
-    input.tameable = {{0, 100.0f, 0.0f, 0.0f, BEAST_WOLF, 1, 10, 11, false},
-                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 8, 9, false},
-                      {0, 0.0f, 20.0f, 0.0f, BEAST_BEAR, 4, 30, 30, false},
-                      {0, 0.0f, 50.0f, 0.0f, BEAST_EXOTIC, 39, 5, 5, true},
-                      {1, 5.0f, 0.0f, 0.0f, BEAST_CAT, 2, 5, 6, false},
-                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 8, 9, false}};  // the same spawn twice: kept once
+    input.tameable = {{0, 100.0f, 0.0f, 0.0f, BEAST_WOLF, 1, 11, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 9, false},
+                      {0, 0.0f, 20.0f, 0.0f, BEAST_BEAR, 4, 30, false},
+                      {0, 0.0f, 50.0f, 0.0f, BEAST_EXOTIC, 39, 5, true},
+                      {1, 5.0f, 0.0f, 0.0f, BEAST_CAT, 2, 6, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 9, false}};  // the same spawn twice: kept once
     UpkeepIndex index = UpkeepIndex::Build(std::move(input));
     index.version = 7;
     return index;
@@ -1193,6 +1193,9 @@ void PetNeed()
     Check(index.stats.tameableSpawns == 5 && index.stats.tameableEntries == 5 &&
               index.TameableOn(0).second - index.TameableOn(0).first == 4,
           "the index keeps each tameable spawn once, by map");
+    Check(index.TameTarget(0, BEAST_WOLF) && index.TameTarget(0, BEAST_EXOTIC) && index.TameTarget(1, BEAST_CAT) &&
+              !index.TameTarget(1, BEAST_WOLF) && !index.TameTarget(0, BEAST_CAT) && !index.TameTarget(2, BEAST_WOLF),
+          "the tame stop's lookup: an entry is a tame target on the map the index keeps it on, nowhere else");
     auto const petNeed = [](NeedList const& list) { return Find(list, NeedOrder::Pet); };
     auto const hunter = [&index](std::uint8_t level)
     {

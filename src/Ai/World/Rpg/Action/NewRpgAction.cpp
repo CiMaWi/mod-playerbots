@@ -658,11 +658,16 @@ bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
 }
 
 // The nearest beast the bot may tame now within TAME_SEARCH_YARDS, one of the stop's entry first (the planned spawn):
-// another hunter may have tamed the planned one. Normal rank only and none whose spells break the channel, as the
-// index gathers them (Planner::BreaksTameChannel, read after the cheap checks); familyRule: only a family the hunter
+// another hunter may have tamed the planned one. Only an entry the index keeps as a tame target on the map (normal
+// rank, no spell that breaks the channel, several spawns: one lookup, WU21d); familyRule: only a family the hunter
 // wants (the tame after a stable swap, WU21c: never the unwanted kind it just stored)
 Creature* NearestTameable(Player* bot, uint32 entry, bool familyRule = false)
 {
+    std::shared_ptr<Planner::UpkeepIndex const> const index =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    if (!index)
+        return nullptr;
+
     float const reach = UpkeepNeeds::TAME_SEARCH_YARDS;
     std::list<Unit*> found;
     Acore::AnyUnitInObjectRangeCheck check(bot, reach);
@@ -673,10 +678,9 @@ Creature* NearestTameable(Player* bot, uint32 entry, bool familyRule = false)
     for (Unit* unit : found)
     {
         Creature* each = unit->ToCreature();
-        if (!each || each->GetCreatureTemplate()->rank != CREATURE_ELITE_NORMAL || !TameableNow(bot, each) ||
+        if (!each || !index->TameTarget(bot->GetMapId(), each->GetEntry()) || !TameableNow(bot, each) ||
             (familyRule && !UpkeepNeeds::WantedFamily(static_cast<uint8>(each->GetCreatureTemplate()->family),
-                                                      bot->CanTameExoticPets())) ||
-            Planner::BreaksTameChannel(*each->GetCreatureTemplate()))
+                                                      bot->CanTameExoticPets())))
             continue;
         std::pair<bool, float> const key{each->GetEntry() != entry, bot->GetExactDist(each)};
         if (key < best)
@@ -2087,7 +2091,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (weapon)
         snapshot.Weapon = {weapon->item};
     if (pet && pet->swap)
-        snapshot.Stable = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}, pet->copper};
+        snapshot.Stable = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     else if (pet)
         snapshot.Pet = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need

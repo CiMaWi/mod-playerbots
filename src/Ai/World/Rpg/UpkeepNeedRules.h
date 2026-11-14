@@ -952,7 +952,8 @@ inline TameableSpawn const* NearestBeast(UpkeepIndex const& index, Snapshot cons
 
 // The swap form (WU21c): a hunter whose pet is of no wanted family stores it at a stable master and tames a wanted
 // beast. Only with a wanted spawn on the map (else the hunter keeps its pet: it never stands without one for a beast
-// it cannot reach) and a slot for the old pet: an empty bought one (copper 0) or the next one to buy (copper its
+// it cannot reach; a spawn beyond the tame's walk limit is refused too_far by the trip, WorldTravel::PlanTrip) and a
+// slot for the old pet: an empty bought one (copper 0) or the next one to buy (copper its
 // price, due only when the gold above the reserve pays it: PetSwapPayable, read once the reserve is known). With every
 // slot full the hunter keeps its pet
 inline void AddPet(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot)

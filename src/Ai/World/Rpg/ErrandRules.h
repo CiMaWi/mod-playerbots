@@ -240,7 +240,6 @@ struct StableAt
 {
     uint32_t Beast = 0;  // the wanted beast the tame after the stable goes for
     ErrandPlace Place;   // its spawn
-    uint64_t Price = 0;  // the slot to buy; 0 = an empty bought slot
 };
 
 // What the providers read: filled on the bot's map thread, never a Player
@@ -442,7 +441,8 @@ inline void ProvideTame(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
 }
 
 // A hunter with an unwanted pet (§3.11, WU21c): a trip to a stable master, due once the slot is paid (the need's
-// rule); the stop's visit stores the pet and puts the tame of the wanted beast after it on the trip
+// rule); the stop's visit stores the pet and puts the tame of the wanted beast after it on the trip. The offer is not
+// placed (any stable master takes it); its Place is the beast's spawn, which PlanTrip holds to the tame's walk limit
 inline void ProvideStable(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
     if (!snapshot.Stable.Beast)
@@ -451,6 +451,7 @@ inline void ProvideStable(ErrandSnapshot const& snapshot, std::vector<ErrandOffe
     ErrandOffer offer;
     offer.Kind = ErrandKind::Stable;
     offer.Service = SERVICE_STABLE_MASTER;
+    offer.Place = snapshot.Stable.Place;
     offer.WorthCopper = DueWorth(snapshot.Rates);
     offer.Id = snapshot.Stable.Beast;
     offer.Target = snapshot.Stable.Beast;
@@ -738,6 +739,20 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         stop.OnRoute = true;
 
     std::vector<bool> done(offers.size(), false);
+    // The swap's beast (WU21d): the stable stores the pet only for a beast the tame offer would reach, the same walk
+    // limit from the start as the tame's own trip; else the swap is refused too_far and the hunter keeps its pet
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        if (offers[i].Kind != ErrandKind::Stable)
+            continue;
+
+        float const minutes = WalkMinutes(Yards(request.Start, offers[i].Place), request.YardsPerSecond);
+        if (minutes <= ERRAND_MAX_WALK_MINUTES)
+            continue;
+
+        done[i] = true;
+        plan.Refused.push_back({offers[i], "too_far", 0.0f, minutes});
+    }
     auto const join = [&plan, &offers, &done]()
     {
         for (std::size_t i = 0; i < offers.size(); ++i)
