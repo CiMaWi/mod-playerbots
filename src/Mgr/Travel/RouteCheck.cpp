@@ -53,6 +53,7 @@ constexpr std::uint32_t CONTINENTS[] = {0, 1, 530, 571};
 // NAV_DEEP_WATER on core v21 and an unused area (NAV_UNUSED2) on v20: a literal, so the module builds on both
 constexpr std::uint16_t NAV_FATIGUE_WATER = 0x20;
 constexpr float BOT_WATER_COST = 5.0f;
+constexpr float HAZARD_PLAIN = 0.5f;  // yd: a point this near a plain polygon is not on a hazard
 
 // The path owner: PathGenerator needs a WorldObject on the map, not a unit. Never added to the map or the world;
 // as no creature it gets the player filter (the bots' exclusions are set on top) and NORMAL|NOT_USING_PATH for a hole
@@ -318,17 +319,22 @@ void CheckNode(TravelGraph const& graph, std::uint32_t index)
                             OffMeshValue(answer.distance, answer.steep)));
 }
 
-// The areas under an answer's points and the middle of each leg (`areas=all`): the nearest polygon of any kind within
-// a yard sideways and 4 yd up or down; the end of a hop was copied in and is skipped
+// The hazard areas an answer's path walks on (`areas=all`), read at its points and the middle of each leg: the nearest
+// polygon bots may use within a yard sideways and 4 yd up or down is lava, slime or fatigue water, and no plain polygon
+// (ground, water, steep ground) lies within HAZARD_PLAIN yd of the point, so a bank that borders a hazard does not
+// count. The end of a hop was copied in and is skipped
 std::uint32_t AreasUnder(Map* map, Movement::PointsArray const& points, bool hop)
 {
     MMapData& mmap = map->GetMapCollisionData().GetMMapData();
     dtNavMeshQuery const* query = mmap.GetNavMeshQuery();
     if (!query)
         return 0;
-    dtQueryFilter any;
-    any.setIncludeFlags(0xffff);
-    any.setExcludeFlags(0);
+    dtQueryFilter walk;
+    walk.setIncludeFlags(BotIncludeFlags());
+    walk.setExcludeFlags(BotExcludeFlags());
+    dtQueryFilter plain;
+    plain.setIncludeFlags(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);
+    plain.setExcludeFlags(0);
     float const extents[3] = {1.0f, 4.0f, 1.0f};
     std::uint32_t areas = 0;
     auto const take = [&](G3D::Vector3 const& at)
@@ -338,9 +344,17 @@ std::uint32_t AreasUnder(Map* map, Movement::PointsArray const& points, bool hop
         float closest[3] = {0.0f, 0.0f, 0.0f};
         dtMeshTile const* tile = nullptr;
         dtPoly const* poly = nullptr;
-        if (dtStatusSucceed(query->findNearestPoly(point, extents, &any, &ref, closest)) && ref &&
-            dtStatusSucceed(mmap.GetNavMesh()->getTileAndPolyByRef(ref, &tile, &poly)) && poly)
-            areas |= AreaBit(poly->getArea());
+        if (!dtStatusSucceed(query->findNearestPoly(point, extents, &walk, &ref, closest)) || !ref ||
+            !dtStatusSucceed(mmap.GetNavMesh()->getTileAndPolyByRef(ref, &tile, &poly)) || !poly)
+            return;
+        std::uint32_t const bit = AreaBit(poly->getArea());
+        if (!bit)
+            return;
+        dtPolyRef bank = 0;
+        if (dtStatusSucceed(query->findNearestPoly(point, extents, &plain, &bank, closest)) && bank &&
+            dtVdist(closest, point) <= HAZARD_PLAIN)
+            return;
+        areas |= bit;
     };
     std::size_t const count = hop && !points.empty() ? points.size() - 1 : points.size();
     for (std::size_t i = 0; i < count; ++i)
@@ -470,6 +484,9 @@ void CheckLink(TravelGraph const& graph, std::uint32_t index)
     {
         if (both.fwd.moves > 1)
             ++job.current.chained;
+        // `areas=all`: an ok link whose walk touched lava or fatigue water is listed too (the others have their row)
+        if (job.options.areasAll && (both.fwd.areas || (both.revAsked && both.rev.areas)))
+            job.rows.push_back(Line("links.areas", key, LinkValue(both.verdict, both.fwd, nullptr, false)));
         return;
     }
     job.rows.push_back(
