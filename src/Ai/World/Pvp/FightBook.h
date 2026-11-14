@@ -41,7 +41,8 @@ void RefreshEnthusiasm(PlayerbotAI* botAI);
 // scan; attackers still reach it by its combat references
 bool ScanSkipped(PlayerbotAI* botAI);
 // NearestEnemyPlayersValue::AcceptUnit for a bot that starts by the rules: its pick, or an alive enemy player within
-// ScanYards it does not leave alone, not banned (Banned), whose join threshold the value passes (Enters). `refusal`:
+// ScanYards it does not leave alone, not banned (Banned), whose join threshold and flee floor the value passes
+// (Enters). `refusal`:
 // today's target check that failed on the enemy, nullptr when it is attackable, PvP-flagged and seen
 bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal);
 // EnemyPlayerValue::Calculate on the enemy it returns: a new pick writes its fight_start or fight_join row and holds

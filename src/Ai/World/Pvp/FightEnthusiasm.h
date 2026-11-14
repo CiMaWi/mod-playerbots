@@ -207,11 +207,27 @@ inline double EditBy(BotEnthusiasm& bot, EditCause cause, uint32_t nowMs, Enthus
     return before;
 }
 
-// A bot enters a fight only above its join threshold and not below its flee threshold: where the join threshold lies
-// below the flee threshold, a value between them would pick a target and leave it at once
-inline bool Enters(double value, float joinThreshold, float fleeThreshold)
+// What an even fight drains while one pick lasts (6.67 points at the defaults): the margin entering keeps above the
+// flee threshold
+inline double EnterMargin(EnthusiasmValues const& values)
 {
-    return MayJoin(value, joinThreshold) && !MustLeave(value, fleeThreshold);
+    return DepletionPerMs(BalanceDepletionFactor(EVEN_BALANCE, values), values) * PICK_MS;
+}
+
+// The lowest value that enters beside a flee threshold: the threshold plus EnterMargin, so a bot enters no fight it
+// would leave before its pick ends. A bot that left a hair below its threshold recovers past it within seconds, and
+// where its join threshold lies lower (its side leads) it would enter, drain for a second and leave again (wp-leave
+// run 3: four times in 13 s); now it needs the margin's recovery first (27 min at the defaults). Under a threshold
+// of 0 or below there is no floor: that bot never leaves (the value stops at 0, MustLeave is strict)
+inline double EnterFloor(float fleeThreshold, EnthusiasmValues const& values)
+{
+    return fleeThreshold > 0.0f ? fleeThreshold + EnterMargin(values) : 0.0;
+}
+
+// A bot enters a fight only above its join threshold and at or above its flee threshold's floor (EnterFloor)
+inline bool Enters(double value, float joinThreshold, float fleeThreshold, EnthusiasmValues const& values)
+{
+    return MayJoin(value, joinThreshold) && value >= EnterFloor(fleeThreshold, values);
 }
 
 inline bool IsPick(BotEnthusiasm const& bot, uint64_t guid, uint32_t nowMs)
@@ -226,11 +242,13 @@ inline void SetPick(BotEnthusiasm& bot, uint64_t guid, uint32_t nowMs)
 }
 
 // The enemy-player scan is skipped while the value can enter nothing (not even at the lowest join threshold the
-// traits allow, below the flee threshold as it holds now: the group hold is read every second whatever the skip)
+// traits allow, below the floor of the flee threshold as it holds now: the group hold is read every second whatever
+// the skip)
 // and no pick is open; attackers still reach the bot by its combat references
 inline bool SkipsScan(BotEnthusiasm const& bot, uint32_t nowMs, EnthusiasmValues const& values)
 {
-    return !IsPick(bot, bot.pickGuid, nowMs) && !Enters(ValueAt(bot, nowMs, values), bot.lowestJoin, bot.fleeNow);
+    return !IsPick(bot, bot.pickGuid, nowMs) &&
+           !Enters(ValueAt(bot, nowMs, values), bot.lowestJoin, bot.fleeNow, values);
 }
 
 // The leave check (PLAN 3.5), once per engaged episode: an engaged bot that starts by the rules, alive, with no real

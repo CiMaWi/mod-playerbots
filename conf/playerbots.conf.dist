@@ -2369,13 +2369,15 @@ Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 # target; - JoinFactionAttacked when the target attacks a player of the bot's faction, and up to
 # JoinFactionHelpfulness more for the most helpful bot (none for the least); - JoinGroupAttacked
 # when it attacks a member of the bot's group; + JoinGraveyard within GraveyardYards of a graveyard or spirit healer;
-# from - JoinBalanceMax when the bot's side clearly leads to + JoinBalanceMax when it is clearly behind. An engaged
+# from - JoinBalanceMax when the bot's side clearly leads to + JoinBalanceMax when it is clearly behind. It also
+# needs its enthusiasm above its flee threshold (below) by what an even fight drains in 20 s (DepletionPerMinute / 3:
+# 6.67), so a bot that left does not enter again within seconds where its join threshold lies lower. An engaged
 # bot (in PvP combat, or holding an enemy player as its target) leaves the fight when its enthusiasm falls below its
 # flee threshold: FleeBase + FleeCaution x caution (below 0 it never flees), FleeGroupHold lower while a living
 # member of its group within GroupHoldYards yd is in PvP combat (the hold fades as members flee or die). Leaving, it
 # drops its target and calls its pet off; it flees (Flee.*, above) when an enemy player attacks it, else it resumes
-# what it was doing; it leaves alone every enemy player that does not attack it until its PvP combat ends. A bot
-# with a real master never leaves.
+# what it was doing; it and its pet leave alone every enemy player that does not attack it until its PvP combat
+# ends. A bot with a real master never leaves.
 # (Ranges: all points 0-1000; AggressionJoinFactor 0-1; GroupHoldYards 0-2000.) Defaults: 60, 40, 0.25, 20, 30, 15,
 # 50, 40, 30, 15, 20, 15, 40
 Playerbots.WorldPvp.Enthusiasm.JoinBase = 60

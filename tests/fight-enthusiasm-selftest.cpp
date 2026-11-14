@@ -5,7 +5,8 @@
  */
 
 // Standalone check of a bot's enthusiasm as its AI holds it (src/Ai/World/Pvp/FightEnthusiasm.h, WP23): the seed, the
-// engaged edges and a new balance settle with the old state first, a bot enters only when MayJoin and not MustLeave,
+// engaged edges and a new balance settle with the old state first, a bot enters only above its join threshold and its
+// flee floor (the flee threshold plus an even fight's drain in one pick; a bot at its flee threshold never re-enters),
 // the scan skip, the pick, the one-off edits, the entering row's terms and the leaving (WP24: engaged by a held target,
 // the group hold, the leave check once per episode, the chase, the stalemate, who is left alone, no re-entry). Build
 // (Git Bash, module root):
@@ -107,14 +108,67 @@ void TestBalanceSettle()
           "balance: due again at the scan's cadence");
 }
 
-// Review item 1: MayJoin and not MustLeave
+// Review item 1 and the coordinator's ruling A (WP24c): above the join threshold, and above the flee threshold by
+// what an even fight drains while one pick lasts
 void TestEnters()
 {
-    Check(Enters(50.0, 40.0f, 15.0f), "enters: above both");
-    Check(!Enters(40.0, 40.0f, 15.0f), "enters: MayJoin is strict");
-    Check(!Enters(30.0, 20.0f, 35.0f), "enters: between a join threshold below the flee threshold, not entered");
-    Check(Enters(35.0, 20.0f, 35.0f), "enters: at the flee threshold (MustLeave is strict)");
-    Check(!Enters(10.0, -7.5f, 15.0f), "enters: below the flee threshold whatever the join threshold");
+    EnthusiasmValues const v = Defaults();
+    double const margin = EnterMargin(v);
+    Check(margin > 0.0 && Near(margin, v.depletionPerMinute * PICK_MS / RATE_MINUTE_MS) && Near(margin, 20.0 / 3.0),
+          "enters: the margin is an even fight's drain in one pick (6.67)");
+    Check(Enters(50.0, 40.0f, 15.0f, v), "enters: above both");
+    Check(!Enters(40.0, 40.0f, 15.0f, v), "enters: MayJoin is strict");
+    Check(!Enters(30.0, 20.0f, 35.0f, v), "enters: between a join threshold below the flee threshold, not entered");
+    Check(!Enters(35.0, 20.0f, 35.0f, v), "enters: at the flee threshold, not entered");
+    Check(!Enters(35.0 + margin - 0.01, 20.0f, 35.0f, v) && Enters(35.0 + margin, 20.0f, 35.0f, v),
+          "enters: from the flee threshold plus the margin on");
+    Check(!Enters(10.0, -7.5f, 15.0f, v), "enters: below the flee threshold whatever the join threshold");
+    // Every flee threshold the traits and the group hold give: a bot at it never re-enters, whatever its join
+    // threshold; one that never leaves (0 or below) has no floor; and the floor stays inside the scale
+    bool never = true;
+    bool noFloor = true;
+    bool possible = true;
+    for (int step = -4; step <= 4; ++step)
+        for (bool const group : {false, true})
+        {
+            float const flee = FleeThreshold({step / 4.0f, group}, v);
+            if (flee > 0.0f)
+                never = never && !Enters(flee, -v.max, flee, v) && !Enters(flee - 0.01, -v.max, flee, v) &&
+                        !Enters(flee + margin * 0.99, -v.max, flee, v) && Enters(flee + margin, -v.max, flee, v);
+            else
+                noFloor = noFloor && Near(EnterFloor(flee, v), 0.0) && Enters(0.0, -v.max, flee, v);
+            possible = possible && EnterFloor(flee, v) < v.max && Enters(v.max, v.max - 1.0f, flee, v);
+        }
+    Check(never, "enters: a bot at its flee threshold never re-enters (every Caution, with and without the hold)");
+    Check(noFloor, "enters: a flee threshold of 0 or below (the bot never leaves) puts no floor");
+    Check(possible && margin < v.max - FleeThreshold({1.0f, false}, v),
+          "enters: the margin is smaller than the scale above the highest flee threshold, entering stays possible");
+    // A bot that left a hair below its threshold recovers the margin first: 6.67 / 15 per hour = 26.7 min
+    BotEnthusiasm left = At(14.99, 0);
+    NewTraits(left, 1.0f, 0.0f, 0.0f, 0.0f, 0, v);
+    uint32_t const minute = 60 * SECOND;
+    Check(!Enters(ValueAt(left, 6 * SECOND, v), -10.0f, left.fleeNow, v) &&
+              !Enters(ValueAt(left, 26 * minute, v), -10.0f, left.fleeNow, v) &&
+              Enters(ValueAt(left, 27 * minute, v), -10.0f, left.fleeNow, v),
+          "enters: a bot that left (join -10, its side leading) re-enters after 27 min of recovery, not after 6 s");
+    // The join rows are untouched: the weakened Aggression rows and the peaceable never-start decide as before
+    // wherever the value is above the floor
+    JoinFacts peaceable;
+    peaceable.aggression = -1.0f;
+    JoinFacts joining = peaceable;
+    joining.targetAttacksFaction = true;
+    joining.helpfulness = -1.0f;
+    float const weak = JoinThreshold(joining, v);
+    Check(JoinThreshold(peaceable, v) >= v.max && !Enters(v.max, JoinThreshold(peaceable, v), 15.0f, v),
+          "enters: Aggression -1 still never starts");
+    Check(Near(weak, 70.0f - 30.0f) && weak > EnterFloor(15.0f, v) && !Enters(weak, weak, 15.0f, v) &&
+              Enters(weak + 0.01, weak, 15.0f, v) && Enters(weak + 0.01, weak, -5.0f, v),
+          "enters: the weakened Aggression join row (40) decides alone up to Caution 0.9 (floor 39.7)");
+    // The most careful bot's floor (35 + 6.67) lies 1.67 above that row: there the floor decides, as it does for
+    // every join threshold below it
+    Check(Near(EnterFloor(35.0f, v), 35.0 + margin) && !Enters(weak + 0.01, weak, 35.0f, v) &&
+              Enters(EnterFloor(35.0f, v), weak, 35.0f, v),
+          "enters: at Caution 1 the floor (41.67) decides above the weakened row (40)");
 }
 
 void TestSkip()
@@ -132,7 +186,9 @@ void TestSkip()
           "skip: the group hold is read again at the balance's cadence");
     NewGroup(bot, false, 0, v);
     bot.state.value = 15.0;
-    Check(!SkipsScan(bot, 0, v), "skip: at the flee threshold, above the lowest join, it scans");
+    Check(SkipsScan(bot, 0, v), "skip: at the flee threshold it can enter nothing");
+    bot.state.value = 15.0 + EnterMargin(v);
+    Check(!SkipsScan(bot, 0, v), "skip: at the flee threshold's floor, above the lowest join, it scans");
     // Cautious: flee 35 (20 with the group hold) above an aggressive bot's lowest join; the skip uses the higher of
     // the lowest join and the flee threshold as it holds now
     BotEnthusiasm cautious = At(30.0, 0);
@@ -141,7 +197,7 @@ void TestSkip()
               SkipsScan(cautious, 0, v),
           "skip: the higher of the lowest join and the flee threshold");
     NewGroup(cautious, true, 0, v);
-    Check(!SkipsScan(cautious, 0, v) && Enters(30.0, cautious.lowestJoin, cautious.fleeNow),
+    Check(!SkipsScan(cautious, 0, v) && Enters(30.0, cautious.lowestJoin, cautious.fleeNow, v),
           "skip: with the group hold the same value scans and may enter");
     // An open pick keeps the scan
     SetPick(bot, 7, 0);
@@ -187,11 +243,11 @@ void TestTerms()
     BotEnthusiasm peaceable = At(100.0, 0);
     NewTraits(peaceable, -1.0f, 0.0f, -1.0f, 0.0f, 0, v);
     Check(JoinTerms(FactsFor(peaceable, Colour::Green, false, false), v) == 0 &&
-              !Enters(100.0, JoinThreshold(FactsFor(peaceable, Colour::Yellow, false, false), v), peaceable.flee),
+              !Enters(100.0, JoinThreshold(FactsFor(peaceable, Colour::Yellow, false, false), v), peaceable.flee, v),
           "terms: Aggression -1 never starts and applies no terms");
     JoinFacts const helping = FactsFor(peaceable, Colour::Yellow, true, false);
     Check(JoinTerms(helping, v) == (TERM_FACTION | TERM_WEAK_AGGRESSION) &&
-              Near(JoinThreshold(helping, v), 70.0f - 30.0f) && Enters(41.0, JoinThreshold(helping, v), 15.0f),
+              Near(JoinThreshold(helping, v), 70.0f - 30.0f) && Enters(41.0, JoinThreshold(helping, v), 15.0f, v),
           "terms: Aggression -1 joins its faction's fight at the weakened term (least helpful: no helpfulness)");
     // Each term's bit is on exactly when its fact changes the threshold
     for (int mask = 0; mask < 32; ++mask)
@@ -248,7 +304,7 @@ void TestChase()
     // The target dropped: nothing holds it engaged; the edge clears the leave
     Check(Observe(bot, EngagedBy(true, false, false), 12 * SECOND, v) && !bot.engaged && !bot.left,
           "chase: the disengaged edge clears the leave");
-    Check(!Enters(ValueAt(bot, 13 * SECOND, v), LowestJoinThreshold(0.0f, 0.0f, v), bot.fleeNow) &&
+    Check(!Enters(ValueAt(bot, 13 * SECOND, v), LowestJoinThreshold(0.0f, 0.0f, v), bot.fleeNow, v) &&
               SkipsScan(bot, 13 * SECOND, v),
           "chase: a left bot is not re-picked by the scan (below its flee threshold)");
 }
@@ -274,8 +330,8 @@ void TestStalemate()
     Observe(a, false, bLeaves + 5 * SECOND, v);
     Observe(b, false, bLeaves + 5 * SECOND, v);
     float const lowestJoin = LowestJoinThreshold(0.0f, 0.0f, v);
-    Check(!Enters(ValueAt(a, bLeaves + 25 * SECOND, v), lowestJoin, a.fleeNow) &&
-              !Enters(ValueAt(b, bLeaves + 25 * SECOND, v), lowestJoin, b.fleeNow),
+    Check(!Enters(ValueAt(a, bLeaves + 25 * SECOND, v), lowestJoin, a.fleeNow, v) &&
+              !Enters(ValueAt(b, bLeaves + 25 * SECOND, v), lowestJoin, b.fleeNow, v),
           "stalemate: 20 s later neither enters on the other again");
 }
 
@@ -339,7 +395,7 @@ void TestGroup()
     NewGroup(bot, true, 0, v);
     Check(Near(bot.fleeNow, 0.0f) && !Leaves(bot, 8.0, true, true), "group: held, below the plain threshold it stays");
     float const lowestJoin = LowestJoinThreshold(0.0f, 0.0f, v);
-    Check(Enters(8.0, lowestJoin, bot.fleeNow) && !Enters(8.0, lowestJoin, bot.flee),
+    Check(Enters(8.0, lowestJoin, bot.fleeNow, v) && !Enters(8.0, lowestJoin, bot.flee, v),
           "group: the entering check uses the threshold as it holds now");
     NewGroup(bot, false, SECOND, v);
     Check(Near(bot.fleeNow, 15.0f) && Leaves(bot, 8.0, true, true), "group: the hold faded, it leaves");
