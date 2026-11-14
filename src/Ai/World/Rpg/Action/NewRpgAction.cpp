@@ -1027,6 +1027,8 @@ void ReadByFollower(Player&) {}
 void ReadByDestroy(Player&) {}
 // nomount changes nothing on the bot: the check mount state action reads the bit (TestConstraints::MountsOnItsOwn)
 void ReadByMount(Player&) {}
+// flee changes nothing on the bot: the world PvP retreat trigger reads the bit (TestConstraints::Flees)
+void ReadByFlee(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -1036,6 +1038,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
     {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
     {TestConstraints::NOMOUNT, ReadByMount, ReadByMount},
+    {TestConstraints::FLEE, ReadByFlee, ReadByFlee},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 

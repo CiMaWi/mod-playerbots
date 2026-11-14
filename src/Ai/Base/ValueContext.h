@@ -33,6 +33,7 @@
 #include "EstimatedLifetimeValue.h"
 #include "FightEnemiesValue.h"
 #include "FishValues.h"
+#include "FleeAttackersAction.h"
 #include "Formations.h"
 #include "GrindTargetValue.h"
 #include "GroupLeaderValue.h"
@@ -190,6 +191,7 @@ public:
         creators["nearest loot"] = &ValueContext::nearest_loot;
         creators["always loot list"] = &ValueContext::always_loot_list;
         creators["loot strategy"] = &ValueContext::loot_strategy;
+        creators["flee flight"] = &ValueContext::flee_flight;
         creators["last movement"] = &ValueContext::last_movement;
         creators["stay time"] = &ValueContext::stay_time;
         creators["last taxi"] = &ValueContext::last_movement;
@@ -410,6 +412,7 @@ private:
     static UntypedValue* moving(PlayerbotAI* botAI) { return new IsMovingValue(botAI); }
     static UntypedValue* swimming(PlayerbotAI* botAI) { return new IsSwimmingValue(botAI); }
     static UntypedValue* distance(PlayerbotAI* botAI) { return new DistanceValue(botAI); }
+    static UntypedValue* flee_flight(PlayerbotAI* botAI) { return new FleeFlightValue(botAI); }
     static UntypedValue* last_movement(PlayerbotAI* botAI) { return new LastMovementValue(botAI); }
     static UntypedValue* stay_time(PlayerbotAI* botAI) { return new StayTimeValue(botAI); }
 

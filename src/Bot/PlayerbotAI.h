@@ -80,7 +80,8 @@ struct BotLog;
 
 namespace WorldPvp
 {
-class FightMemory;
+struct PvpMemory;
+struct BotEnthusiasm;
 }
 
 enum StrategyType : uint32;
@@ -889,8 +890,10 @@ public:
     NewRpgInfo rpgInfo;
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
-    // World PvP's fight memory (FightBookRules.h), lazily
-    std::unique_ptr<WorldPvp::FightMemory> fightMemory;
+    // World PvP's persistence cache and the ghost's wait (GhostWait.h), lazily
+    std::unique_ptr<WorldPvp::PvpMemory> pvpMemory;
+    // World PvP's enthusiasm (FightEnthusiasm.h), lazily; not saved
+    std::unique_ptr<WorldPvp::BotEnthusiasm> enthusiasm;
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);
     void RecordQuestCompleted(uint32 questId);

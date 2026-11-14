@@ -5,15 +5,23 @@
  */
 
 #include "InvalidTargetValue.h"
+
 #include "AttackersValue.h"
 #include "Playerbots.h"
 #include "PvpValues.h"
 #include "Unit.h"
+#include "WorldPvp.h"
 
 bool InvalidTargetValue::Calculate()
 {
     Unit* target = AI_VALUE(Unit*, qualifier);
     if (IsUnavailableCombatTarget(bot, target))
+        return true;
+
+    // World PvP (WP24): a bot that left its fight by its enthusiasm drops a target it leaves alone (one that does not
+    // attack it), a player or a player's pet
+    if (target && qualifier == "current target" && target->GetCharmerOrOwnerPlayerOrPlayerItself() &&
+        WorldPvp::LeftAlone(botAI, target))
         return true;
 
     Unit* enemy = AI_VALUE(Unit*, "enemy player target");

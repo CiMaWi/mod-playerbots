@@ -13,7 +13,8 @@ FleeManager::FleeManager(Player* bot, float maxAllowedDistance, float /*followAn
     : bot(bot),
       maxAllowedDistance(maxAllowedDistance),
       forceMaxDistance(forceMaxDistance),
-      startPosition(startPosition ? startPosition : WorldPosition(bot))
+      // The default argument is no place (MAPID_INVALID at 0, 0, 0), which WorldPosition's bool counts as set
+      startPosition(startPosition.GetMapId() != MAPID_INVALID ? startPosition : WorldPosition(bot))
 {
 }
 

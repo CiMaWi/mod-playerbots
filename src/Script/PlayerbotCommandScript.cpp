@@ -28,7 +28,6 @@
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
-#include "FightBook.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
@@ -65,6 +64,7 @@
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
+#include "WorldPvp.h"
 #include "WorldSession.h"
 #include "WorldThreadMonitor.h"
 #include "LightweightPerf.h"
@@ -276,12 +276,9 @@ public:
             {"status", WorldLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // World PvP (WP1): list and bot read; ready and meet are lab fixtures (Playerbots.WorldPvp.TestCommands)
+        // World PvP (WP23): enthusiasm shows a bot's value and thresholds and sets the value
         static ChatCommandTable playerbotsFightCommandTable = {
-            {"list", HandleFightListCommand, SEC_PLAYER, Console::Yes},
-            {"bot", HandleFightBotCommand, SEC_PLAYER, Console::Yes},
-            {"ready", HandleFightReadyCommand, SEC_GAMEMASTER, Console::Yes},
-            {"meet", HandleFightMeetCommand, SEC_GAMEMASTER, Console::Yes},
+            {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
@@ -541,29 +538,13 @@ public:
         return true;
     }
 
-    // `playerbots fight list`: the active fights on the GM's map (every open-world map from the console)
-    static bool HandleFightListCommand(ChatHandler* handler) { return WorldPvp::HandleListCommand(handler); }
-
-    // `playerbots fight bot <bot>`: the bot's fight memory, answered by the bot's next update
-    static bool HandleFightBotCommand(ChatHandler* handler, PlayerIdentifier target)
+    // `playerbots fight enthusiasm <bot> [set <0..100>]`: the bot's enthusiasm, its thresholds and the cached terms;
+    // `set` writes the value (a cheat). The world thread runs commands between map updates, so the bot's AI is read
+    // and written here directly
+    static bool HandleFightEnthusiasmCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && WorldPvp::HandleBotCommand(handler, botAI);
-    }
-
-    // `playerbots fight ready <bot>` (labs): the bot's next chance starts a fight when the hard rules pass (WP4)
-    static bool HandleFightReadyCommand(ChatHandler* handler, PlayerIdentifier target)
-    {
-        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && WorldPvp::HandleReadyCommand(handler, botAI);
-    }
-
-    // `playerbots fight meet <bot> <enemy bot>` (labs): places the enemy bot beside the bot, PvP flagged, no attack
-    static bool HandleFightMeetCommand(ChatHandler* handler, PlayerIdentifier target, PlayerIdentifier enemy)
-    {
-        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        PlayerbotAI* enemyAI = botAI ? GetOnlineBotAI(handler, enemy) : nullptr;
-        return enemyAI && WorldPvp::HandleMeetCommand(handler, botAI, enemyAI);
+        return botAI && WorldPvp::HandleEnthusiasmCommand(handler, botAI, std::string_view(rest));
     }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update

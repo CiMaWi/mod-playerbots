@@ -12,6 +12,7 @@
 #include "Event.h"
 #include "FleeManager.h"
 #include "GameGraveyard.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "MapMgr.h"
@@ -23,6 +24,34 @@
 #include "World.h"
 #include "WorldLog.h"
 #include "WorldTravelRules.h"
+
+namespace
+{
+// The death row's reason when the ghost took the spirit healer because an enemy player stood at its corpse (WP7)
+constexpr char const* CAMPED_REASON = "corpse_camped";
+
+// No camping (WP7): the ghost of a persistent bot keeps away from its corpse while an enemy player stands there and
+// takes the spirit healer after its wait; true when that decided the action (wait or spirit healer)
+bool KeepsAwayFromCorpse(PlayerbotAI* botAI, Player* bot, Corpse const* corpse)
+{
+    WorldPvp::GhostPlan const ghost = WorldPvp::PlanGhostFor(botAI, corpse);
+    if (ghost.step == WorldPvp::GhostStep::Corpse)
+        return false;
+    if (ghost.step == WorldPvp::GhostStep::SpiritHealer)
+    {
+        // Never on to the corpse, also when the spirit healer action did nothing this time
+        botAI->DoSpecificAction("spirit healer", Event("ghost wait", CAMPED_REASON), true);
+        return true;
+    }
+    if (bot->isMoving())
+    {
+        bot->GetMotionMaster()->Clear();
+        bot->StopMoving();
+    }
+    botAI->SetNextCheckDelay(ghost.recheckMs);
+    return true;
+}
+}  // namespace
 
 // Top of the default start-zone brackets (Playerbots.ZoneBracket.*).
 constexpr uint32 START_ZONE_GRAVEYARD_MAX_LEVEL = 12;
@@ -77,6 +106,9 @@ bool ReviveFromCorpseAction::Execute(Event event)
 
         if (exhausted)
             return botAI->DoSpecificAction("spirit healer");
+
+        if (KeepsAwayFromCorpse(botAI, bot, corpse))
+            return true;
     }
 
     LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at body", bot->GetGUID().ToString().c_str(),
@@ -128,6 +160,9 @@ bool FindCorpseAction::Execute(Event /*event*/)
             sRandomPlayerbotMgr.Revive(bot);
             return true;
         }
+
+        if (KeepsAwayFromCorpse(botAI, bot, corpse))
+            return true;
     }
 
     WorldPosition botPos(bot);
@@ -356,7 +391,7 @@ Creature* FindSpiritHealer(Player* bot, float range)
 }
 }  // namespace
 
-bool SpiritHealerAction::Execute(Event /*event*/)
+bool SpiritHealerAction::Execute(Event event)
 {
     // GetGrave() picks world graveyards; teleporting there from a BG removes the bot from it.
     if (bot->InBattleground())
@@ -407,8 +442,9 @@ bool SpiritHealerAction::Execute(Event /*event*/)
             {
                 bool const exhausted =
                     WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
-                char const* reason =
-                    exhausted ? "corpse_runs_exhausted" : (deadTime >= 10 * MINUTE ? "dead_too_long" : "no_path");
+                char const* reason = event.getParam() == CAMPED_REASON ? CAMPED_REASON
+                                     : exhausted ? "corpse_runs_exhausted"
+                                     : (deadTime >= 10 * MINUTE ? "dead_too_long" : "no_path");
                 WorldLogFormat::Alternatives weighed;
                 if (WorldLog::Active())
                     weighed = {{"dead_seconds", static_cast<float>(deadTime)}};

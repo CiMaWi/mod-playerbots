@@ -46,12 +46,13 @@
 #include "Engine.h"
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
-#include "FightBook.h"
-#include "FightBookRules.h"
+#include "FightEnthusiasm.h"
+#include "FleeRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
 #include "GameObjectModel.h"
 #include "GameTime.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
@@ -112,6 +113,7 @@
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 #include "WorldLogStatus.h"
+#include "WorldPvp.h"
 #include "WsgRouteState.h"
 
 namespace
@@ -1266,10 +1268,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP's records (WP1): the bot's PvP combat for its map's fight book and the fight commands' requests (a
-    // relaxed load and one empty() check while neither is there)
-    if (WorldPvp::RequestsWaiting() || !bot->GetCombatManager().GetPvPCombatRefs().empty())
-        WorldPvp::OnBotTick(this, bot);
+    // World PvP (WP23, WP24): the enthusiasm's engaged edge and leave check while in PvP combat or engaged (one
+    // empty() check and a flag while neither)
+    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
+        WorldPvp::NoteEngaged(this, bot, getMSTime());
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;
@@ -2883,6 +2885,8 @@ void PlayerbotAI::DoNextAction(bool min)
         aiObjectContext->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<ObjectGuid>("pull strategy target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<LootObject>("loot target")->Set(LootObject());
+        // A dead bot's flight from enemy players is over; it may flee again in its next PvP combat
+        aiObjectContext->GetValue<FleeRules::Flight&>("flee flight")->Get() = FleeRules::Flight();
 
         // The dead engine has no battleground strategy, so its "dead" trigger cannot reset this route.
         if (Battleground* bg = bot->GetBattleground())

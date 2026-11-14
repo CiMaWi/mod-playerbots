@@ -32,6 +32,7 @@ constexpr std::uint16_t FLYABORT = 128;   // as flyfail, as the trip's last fail
 constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
 // mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
 constexpr std::uint16_t NOMOUNT = 1024;
+constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -59,6 +60,7 @@ constexpr Row ROWS[] = {
     {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
     {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
+    {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -167,6 +169,8 @@ inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, boo
 // flyabort: the failure finds the trip's replans spent (TravelLegs::AfterFailure, MAX_REPLANS), so the trip aborts and
 // comes down first (AbortDescent)
 inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
+// flee, read by the world PvP retreat trigger (WorldPvpStrategy.cpp); its apply and undo do nothing
+inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
