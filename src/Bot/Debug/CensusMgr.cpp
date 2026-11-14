@@ -15,7 +15,9 @@
 #include <variant>
 
 #include "Action.h"
+#include "BotRecordMgr.h"
 #include "Creature.h"
+#include "EventWanted.h"
 #include "Group.h"
 #include "Item.h"
 #include "Log.h"
@@ -602,14 +604,20 @@ void CensusMgr::SampleState(bool focusOnly)
 
 void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
 {
-    if (player && WorldLog::Active())
-        EmitWorldLogEvent(player, WorldLogFormat::EVENT_LEVEL, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
+    if (player && EventLog::Wanted())
+        OnEvent(player, WorldLogFormat::EVENT_LEVEL, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
 }
 
 void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
 {
-    if (!type.empty() && bot && WorldLog::Active())
+    if (type.empty() || !bot)
+        return;
+
+    if (WorldLog::Active())
         EmitWorldLogEvent(bot, type, source, id, amount);
+
+    // The bots' record takes its events whether or not the world log runs (its Record row follows the cause's row)
+    BotRecordMgr::Instance().OnEvent(bot, type, source, id, amount);
 }
 
 bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)

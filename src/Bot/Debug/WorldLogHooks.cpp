@@ -10,6 +10,7 @@
 #include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventWanted.h"
 #include "Item.h"
 #include "Map.h"
 #include "ObjectMgr.h"
@@ -27,10 +28,12 @@
 
 // The world log's fact rows (XpGain, Kill, QuestAccept, QuestAbandon, Equip, SkillUp, SpellLearn, TaxiNode, Hearth,
 // MapChange, Resurrect) from core hooks, of bots and real players alike, and the bots' Status and Flight rows. Every
-// row goes through EventLog::Emit (CensusMgr::OnEvent). Registered after PlayerbotsPlayerScript, whose GiveXP hook
-// applies the XP multipliers first. Hooks run on the player's map thread (or the world thread), read only the hooked
-// player and keep only guid-keyed notes between two hooks of one core call. WL7's decision rows (WorldLog::Decision,
-// called from the RPG actions) go to the decision stream the same way: formatted on the calling thread, then queued.
+// row goes through EventLog::Emit (CensusMgr::OnEvent). The hooks of the events the bots' record takes (BotRecordMgr)
+// are gated by EventLog::Wanted, so they also run with the world log off. Registered after PlayerbotsPlayerScript,
+// whose GiveXP hook applies the XP multipliers first. Hooks run on the player's map thread (or the world thread), read
+// only the hooked player and keep only guid-keyed notes between two hooks of one core call. WL7's decision rows
+// (WorldLog::Decision, called from the RPG actions) go to the decision stream the same way: formatted on the calling
+// thread, then queued.
 namespace
 {
 constexpr uint32 SPELL_HEARTHSTONE = 8690;
@@ -100,7 +103,7 @@ std::string_view ScopeWord() { return EventLog::SourceWordOf(EventLog::CurrentSo
 
 void EmitKill(Player* killer, Creature* killed)
 {
-    if (!WorldLog::Active() || !killer || !killed)
+    if (!EventLog::Wanted() || !killer || !killed)
         return;
 
     CreatureTemplate const* creature = killed->GetCreatureTemplate();
@@ -166,7 +169,7 @@ public:
     [[nodiscard]] bool OnPlayerCanEquipItem(Player* player, uint8 /*slot*/, uint16& /*dest*/, Item* /*item*/,
                                             bool /*swap*/, bool notLoading) override
     {
-        if (WorldLog::Active() && player && notLoading)
+        if (EventLog::Wanted() && player && notLoading)
             equipNote = {LowGuid(player), NULL_SLOT, 0, true};
 
         return true;
@@ -175,7 +178,7 @@ public:
     // Runs before the item leaves an occupied equipment slot: its level is the old one
     [[nodiscard]] bool OnPlayerCanUnequipItem(Player* player, uint16 pos, bool /*swap*/) override
     {
-        if (WorldLog::Active() && player && equipNote.open && equipNote.player == LowGuid(player) &&
+        if (EventLog::Wanted() && player && equipNote.open && equipNote.player == LowGuid(player) &&
             Player::IsEquipmentPos(pos))
         {
             equipNote.slot = static_cast<uint8>(pos & 0xFF);
@@ -188,7 +191,7 @@ public:
     // amount: the new item's level minus the old one's (an empty slot counts 0); 0 when the old one is not known
     void OnPlayerEquip(Player* player, Item* item, uint8 /*bag*/, uint8 slot, bool /*update*/) override
     {
-        if (!WorldLog::Active() || !player || !item || !player->IsInWorld())
+        if (!EventLog::Wanted() || !player || !item || !player->IsInWorld())
             return;
 
         EquipNote const note = equipNote;
@@ -210,7 +213,7 @@ public:
     void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
                              uint32 newValue) override
     {
-        if (WorldLog::Active() && player && newValue > value)
+        if (EventLog::Wanted() && player && newValue > value)
             EventLog::Emit(player, "SkillUp", EventLog::SOURCE_OTHER, skillId, newValue);
     }
 
@@ -223,7 +226,7 @@ public:
     // Character creation and login add spells without this hook; a bot's level-up spells come through it
     void OnPlayerLearnSpell(Player* player, uint32 spellId) override
     {
-        if (!WorldLog::Active() || !player || !player->IsInWorld())
+        if (!EventLog::Wanted() || !player || !player->IsInWorld())
             return;
 
         bool const paid = debitNote.player == LowGuid(player) && getMSTimeDiff(debitNote.ms, getMSTime()) <= LESSON_MS;
@@ -244,7 +247,7 @@ public:
     // The core passes a const player; the row only reads it
     void OnPlayerLearnTaxiNode(Player const* player, uint32 nodeId) override
     {
-        if (WorldLog::Active() && player)
+        if (EventLog::Wanted() && player)
             EventLog::Emit(const_cast<Player*>(player), "TaxiNode", EventLog::SOURCE_OTHER, nodeId, 0);
     }
 
@@ -260,7 +263,7 @@ public:
     [[nodiscard]] bool OnPlayerBeforeTeleport(Player* player, uint32 mapId, float /*x*/, float /*y*/, float /*z*/,
                                               float /*orientation*/, uint32 /*options*/, Unit* /*target*/) override
     {
-        if (WorldLog::Active() && player && mapId != player->GetMapId())
+        if (EventLog::Wanted() && player && mapId != player->GetMapId())
         {
             std::lock_guard<std::mutex> lock(oldMapsMutex);
             oldMaps[LowGuid(player)] = player->GetMapId();
@@ -272,7 +275,7 @@ public:
     // Also runs at login (no teleport noted: no row)
     void OnPlayerMapChanged(Player* player) override
     {
-        if (!WorldLog::Active() || !player)
+        if (!EventLog::Wanted() || !player)
             return;
 
         uint32 oldMap = 0;
@@ -292,7 +295,7 @@ public:
 
     void OnPlayerLogout(Player* player) override
     {
-        if (!WorldLog::Active() || !player)
+        if (!EventLog::Wanted() || !player)
             return;
 
         std::lock_guard<std::mutex> lock(oldMapsMutex);
@@ -301,7 +304,7 @@ public:
 
     void OnPlayerResurrect(Player* player, float restorePercent, bool& applySickness) override
     {
-        if (WorldLog::Active() && player)
+        if (EventLog::Wanted() && player)
             EventLog::Emit(player, "Resurrect", EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent), 0,
                            0);
     }
