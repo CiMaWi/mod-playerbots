@@ -463,6 +463,19 @@ int main()
               "route: a long route is cut to twelve rows, the total kept");
     }
 
+    // LC16b: a topic beyond the fourteen, on a test-only row: one argument of a name kind, items in lines
+    {
+        static constexpr ParamRow item[] = {{"item", ParamKind::Item, OrderField::ItemName, "An item you carry.", {}}};
+        static constexpr ParamRow two[] = {{"item", ParamKind::Item, OrderField::ItemName, "An item you carry.", {}},
+                                           {"spell", ParamKind::Spell, OrderField::SpellName, "A spell you know.", {}}};
+        BotStateTopic const next = static_cast<BotStateTopic>(std::size(TopicTable));
+        TopicRow const lines[] = {{next, "item_story", "What you know of an item.", item, 12, true}};
+        TopicRow const plain[] = {{next, "item_story", "What you know of an item.", item, 12, false}};
+        TopicRow const twice[] = {{next, "item_story", "What you know of an item.", two, 12, true}};
+        Check(TopicRowsValid(TopicTable) && TopicRowsValid(lines) && !TopicRowsValid(plain) && !TopicRowsValid(twice),
+              "topics: a new topic takes one name and answers lines");
+    }
+
     std::printf("bridge-bot-topics selftest: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

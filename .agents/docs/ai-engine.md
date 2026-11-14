@@ -78,14 +78,16 @@ change, confirm:
   and mod-ollama-chat needs a `ChannelIntent` value, its `ChannelIntentCount` and a `BridgeIntentPairs` entry
   (`mod-ollama-chat_handler.cpp`; static_asserts fail until all agree), after which its stepped wire takes the act
   from the catalogue; and `tests/bridge-intent-effect-selftest.cpp` must see the row apply
-  and give every refusal it lists. A unit, quest or place parameter takes a name as well as an id: `RunRow` looks
-  it up (`src/Bot/BridgeNames.h`) after the common and group rules, and a row taking a unit or quest lists
-  `UnknownName`. Something a partner can ask a bot about is a topic: one `BotStateTopic` value (append only) in
-  `src/Bot/BridgeBotState.h`, one row in `TopicTable` (`src/Bot/BridgeAbilities.h`: name, sentence, argument,
-  limit), its reader in `Readers` (`src/Bot/BridgeBotState.cpp`), the last value `TopicTableInOrder()` checks, the
-  selftest's `wireTopics` list and mod-ollama-chat's `StateTopic` asserts. `Catalogue()` returns
-  both tables as plain values and `CatalogueHash` their FNV-1a 64; a new row changes the hash, which is how the
-  bridge sees the change.
+  and give every refusal it lists. A parameter's kind, the `Order` field that carries it (one parameter per field) and
+  a unit's filter (whom its name may mean) are described in the header comment of `src/Bot/BridgeAbilities.h`;
+  `RunRow` looks a name up (`src/Bot/BridgeNames.h`) after the common and group rules. A row with a new kind and no
+  real row yet is proven on the selftest's test-only rows. Something a partner can ask a bot about is a topic: one
+  `BotStateTopic` value (append only) in `src/Bot/BridgeBotState.h`, one row in `TopicTable`
+  (`src/Bot/BridgeAbilities.h`: name, sentence, argument (at most one name of any kind), limit, `Lines` for a topic
+  answering in-world sentences, as every new one does), its reader in `Readers` (`src/Bot/BridgeBotState.cpp`), the
+  last value `TopicTableInOrder()` checks, the selftest's `wireTopics` list and mod-ollama-chat's `StateTopic`
+  asserts. `Catalogue()` returns both tables as plain values and `CatalogueHash` their FNV-1a 64; a new row changes
+  the hash, which is how the bridge sees the change.
 - Every `NextAction("...")`, `TriggerNode("...")`, and `engine->addStrategy("...")` matches a
   registered creator exactly. Default strategy sets live in `src/Bot/Factory/AiFactory.cpp`;
   instance strategies are added and removed in balance by `ApplyInstanceStrategies()`.

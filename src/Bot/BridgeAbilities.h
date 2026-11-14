@@ -22,6 +22,14 @@
 // The abilities a conversation partner can ask a bot for, one row each: the acts Execute runs and the topics
 // ReadBotStateTopic reads. A new verb is one Intent value and one row (with its check and effect) in
 // BridgeAbilities.cpp; a new topic is one BotStateTopic value, one row below and its reader in BridgeBotState.cpp.
+// A parameter has a kind and the Order field that carries it, at most one per field (OneParamPerField): a unit
+// (Target or TargetName; its Filter says whom a name may mean), a place (PlaceName or Position), a quest (QuestId or
+// QuestName), an item or a spell (ItemName, SpellName: RunRow looks the name up among what the bot carries or knows
+// and hands the row ActFacts::ItemId or SpellId), a choice (Choice, the index into its Choices; Icon and Shape are
+// the older rows' own), a flag (Enabled) or a count (Count). A row taking a unit, quest, item or spell name lists
+// UnknownName. A topic takes at most one parameter, of a name kind: its text is ReadBotStateTopic's argument and the
+// topic's reader looks it up. A topic marked Lines answers in-world sentences, each item's text one (the record
+// topics' form); every topic beyond the first fourteen does (TopicRowsValid).
 // Plain data and no game type, so a selftest or a module wire can read the table.
 namespace PlayerbotBridge
 {
@@ -45,8 +53,23 @@ enum class OrderField : uint8_t
     PlaceName,  // A known place's name or "x,y,z,map"
     Position,   // MapId, X, Y, Z
     QuestId,
-    Shape,    // FormationShape: the index of the choice plus one
-    Enabled,  // SaveMana's yes or no
+    Shape,      // FormationShape: the index of the choice plus one
+    Enabled,    // SaveMana's yes or no
+    ItemName,   // An item the bot carries, by name
+    SpellName,  // A spell the bot knows, by name
+    Choice,     // The index of the choice, for a row other than Mark and Formation
+    Count,      // At least 1
+};
+
+// Whom a unit parameter's name may mean, among the units the bot perceives and its group. An enemy is a creature no
+// player controls that is not friendly to the bot (hostile or neutral); a friend is a unit friendly to the bot, its
+// group's members or the bot itself; a group member is one of the group's members; anyone is all of these.
+enum class UnitFilter : uint8_t
+{
+    Anyone,
+    Enemy,
+    Friend,
+    GroupMember
 };
 
 // Who must share a group before the row's own check: nobody, the bot (any group), or the partner (the bot's group).
@@ -74,7 +97,19 @@ struct ParamRow
     OrderField Field;
     char const* Sentence;
     std::span<char const* const> Choices;
+    UnitFilter Filter = UnitFilter::Anyone;  // A unit's; not in the catalogue
 };
+
+// At most one parameter per Order field, so a field never carries two parameters' values.
+constexpr bool OneParamPerField(std::span<ParamRow const> params)
+{
+    for (std::size_t index = 0; index < params.size(); ++index)
+        for (std::size_t other = index + 1; other < params.size(); ++other)
+            if (params[index].Field == params[other].Field)
+                return false;
+
+    return true;
+}
 
 // A refusal's stable word (snake_case, for the wire and the world log) and the bot's in-world sentence.
 struct RefusalText
@@ -142,6 +177,8 @@ std::span<Refusal const> CommonRefusals();
 RefusalText const& RefusalWords(Refusal reason);
 
 bool Takes(AbilityRow const& row, OrderField field);
+// The row's parameter carried in the field; null for none.
+ParamRow const* ParamOf(AbilityRow const& row, OrderField field);
 
 // A topic is a read: beyond an online bot (else ReadBotStateTopic answers false) it has no check and no refusal,
 // changes nothing, is done at once, has no state phrase and writes no world-log event. BridgeBotState.h describes
@@ -156,7 +193,26 @@ struct TopicRow
     std::span<ParamRow const> Params;
     // The most items the topic returns.
     std::size_t Limit;
+    // Its items carry an in-world sentence in text; not in the catalogue.
+    bool Lines = false;
 };
+
+constexpr bool IsNameKind(ParamKind kind)
+{
+    return kind == ParamKind::Unit || kind == ParamKind::Place || kind == ParamKind::Item || kind == ParamKind::Spell ||
+           kind == ParamKind::Quest;
+}
+
+// A topic takes at most one parameter, a name, and one beyond the first fourteen (Known's) answers in lines.
+constexpr bool TopicRowsValid(std::span<TopicRow const> rows)
+{
+    for (TopicRow const& row : rows)
+        if (row.Params.size() > 1 || (row.Params.size() == 1 && !IsNameKind(row.Params[0].Kind)) ||
+            (row.Topic > BotStateTopic::Known && !row.Lines))
+            return false;
+
+    return true;
+}
 
 inline constexpr ParamRow RouteParams[] = {
     {"place", ParamKind::Place, OrderField::PlaceName, "A known place's name, or x,y,z,map.", {}}};
@@ -222,17 +278,20 @@ inline constexpr TopicRow TopicTable[] = {
      .Name = "history",
      .Sentence = "What you did that mattered, in order, and the lands, dungeons and foes you know.",
      .Params = {},
-     .Limit = 24},
+     .Limit = 24,
+     .Lines = true},
     {.Topic = BotStateTopic::Lately,
      .Name = "lately",
      .Sentence = "What you did of note lately, newest first.",
      .Params = {},
-     .Limit = 12},
+     .Limit = 12,
+     .Lines = true},
     {.Topic = BotStateTopic::Known,
      .Name = "known",
      .Sentence = "The others you have shared deeds with, and what you shared.",
      .Params = {},
-     .Limit = 12}};
+     .Limit = 12,
+     .Lines = true}};
 
 constexpr bool TopicTableInOrder()
 {
@@ -243,6 +302,7 @@ constexpr bool TopicTableInOrder()
     return static_cast<std::size_t>(BotStateTopic::Known) + 1 == std::size(TopicTable);
 }
 static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
+static_assert(TopicRowsValid(TopicTable), "a topic takes at most one parameter, a name; a new one answers lines");
 
 // Null for a value outside the enum.
 constexpr TopicRow const* FindTopic(BotStateTopic topic)

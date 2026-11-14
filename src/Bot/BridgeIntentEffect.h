@@ -130,6 +130,14 @@ struct Order
     // Execute looks it up among what the bot sees or has in its log; empty otherwise. A place name stays in PlaceName.
     std::string TargetName = {};
     std::string QuestName = {};
+    // An item the bot carries and a spell it knows, by name (at most MaxName characters), for a row that takes one;
+    // empty otherwise. Execute looks them up among the bot's items and spells.
+    std::string ItemName = {};
+    std::string SpellName = {};
+    // A choice parameter's index into its Choices, for a row that takes one (OrderField::Choice); 0 otherwise.
+    uint8_t Choice = 0;
+    // A count, for a row that takes one: at least 1; 0 otherwise.
+    uint32_t Count = 0;
 };
 
 constexpr std::size_t MaxPlaceName = 64;

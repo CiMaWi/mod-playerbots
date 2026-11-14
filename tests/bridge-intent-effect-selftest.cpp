@@ -43,6 +43,7 @@ using PlayerbotBridge::Refusal;
 using PlayerbotBridge::RestoreResult;
 using PlayerbotBridge::Result;
 using PlayerbotBridge::TopicRow;
+using PlayerbotBridge::UnitFilter;
 
 static_assert(!std::is_default_constructible_v<PlayerbotBridge::PostMapJoin>);
 static_assert(!std::is_copy_constructible_v<PlayerbotBridge::PostMapJoin>);
@@ -71,6 +72,14 @@ public:
         PlayerbotBridge::PostMapJoin phase;
         return PlayerbotBridge::Execute(phase, std::span<Order const>(steps), authorize, outcomes);
     }
+    // LC16b: a test-only row through the shape rule, then one step, as ExecuteSteps runs a real row.
+    static Result RunRow(AbilityRow const& row, Order const& order, Refusal& why)
+    {
+        PlayerbotBridge::PostMapJoin phase;
+        return PlayerbotBridge::Malformed(&row, order) ? Result::Rejected
+                                                       : PlayerbotBridge::RunStep(phase, row, order, why);
+    }
+
     static bool Reachable(Order const& order, bool worker = false)
     {
         PlayerbotBridge::PostMapJoin phase;
@@ -131,6 +140,61 @@ void Check(bool value, char const* label)
 // LC1a: what Fixture::Run saw per verb, for the ability table's checks at the end.
 std::map<Intent, std::set<Refusal>> seenRefusals;
 std::set<Intent> seenApplied;
+
+// LC16b: test-only rows for what no real row takes yet: an item, a spell, a choice and a count; a unit a friend's name
+// means. The effect records what the row is handed.
+constexpr char const* const TestLevels[] = {"low", "middle", "high"};
+constexpr ParamRow TestKindParams[] = {
+    {"item", ParamKind::Item, OrderField::ItemName, "An item you carry, by name.", {}},
+    {"spell", ParamKind::Spell, OrderField::SpellName, "A spell you know, by name.", {}},
+    {"level", ParamKind::Choice, OrderField::Choice, "How much.", TestLevels},
+    {"count", ParamKind::Count, OrderField::Count, "How many.", {}}};
+constexpr ParamRow TestFriendParams[] = {
+    {"target", ParamKind::Unit, OrderField::Target, "A friend, by name.", {}, UnitFilter::Friend}};
+static_assert(PlayerbotBridge::OneParamPerField(TestKindParams) && PlayerbotBridge::OneParamPerField(TestFriendParams));
+constexpr Refusal TestRefusals[] = {Refusal::UnknownName};
+
+struct Handed
+{
+    int Calls = 0;
+    uint32_t Item = 0;
+    uint32_t Spell = 0;
+    uint32_t Count = 0;
+    uint8_t Choice = 0;
+    Unit* Target = nullptr;
+};
+Handed handed;
+
+Result TestEffect(PlayerbotBridge::ActFacts const& act, Refusal&)
+{
+    handed = {handed.Calls + 1, act.ItemId, act.SpellId, act.Request.Count, act.Request.Choice, act.Target};
+    return Result::Applied;
+}
+
+constexpr AbilityRow TestKindRow{.Operation = Intent::Stay,
+                                 .Name = "test_kinds",
+                                 .Sentence = "Test.",
+                                 .Params = TestKindParams,
+                                 .Group = PlayerbotBridge::GroupRule::None,
+                                 .GroupRefusal = Refusal::None,
+                                 .Check = nullptr,
+                                 .Refusals = TestRefusals,
+                                 .Effect = TestEffect,
+                                 .Lasting = Part::None,
+                                 .Done = Completion::AtOnce,
+                                 .StatePhrase = "testing"};
+constexpr AbilityRow TestFriendRow{.Operation = Intent::Stay,
+                                   .Name = "test_friend",
+                                   .Sentence = "Test.",
+                                   .Params = TestFriendParams,
+                                   .Group = PlayerbotBridge::GroupRule::None,
+                                   .GroupRefusal = Refusal::None,
+                                   .Check = nullptr,
+                                   .Refusals = TestRefusals,
+                                   .Effect = TestEffect,
+                                   .Lasting = Part::None,
+                                   .Done = Completion::AtOnce,
+                                   .StatePhrase = "testing"};
 
 struct Fixture
 {
@@ -1917,6 +1981,242 @@ int main()
             Check(f.Authorizations == 0, "a malformed name is refused before the admission");
         }
     }
+    // LC16b: an item, a spell, a choice and a count, on a test-only row. The item is looked up among the bot's items
+    // and the spell among its spells, after the common rule; each field is present exactly when the row takes it (a
+    // name within MaxName, a choice among the parameter's, a count of at least 1).
+    {
+        auto const kinds = [](Fixture& f)
+        {
+            f.Command.Target = 0;
+            f.Command.ItemName = "hearthstone";
+            f.Command.SpellName = "Hearthstone";
+            f.Command.Choice = 2;
+            f.Command.Count = 5;
+            f.Bot.Carried = {{"Hearthstone", 6948, 0.0f}, {"Linen Cloth", 2589, 0.0f}};
+            f.Bot.Known = {{"Hearthstone", 8690, 0.0f}, {"Frostbolt", 116, 0.0f}};
+            handed = {};
+        };
+        auto const run = [](Fixture& f, AbilityRow const& row)
+        {
+            f.Why = Refusal::None;
+            f.Events = bridgeActs;
+            Result const result = OllamaBotRandomChatter::RunRow(row, f.Command, f.Why);
+            f.Events = bridgeActs - f.Events;
+            return result;
+        };
+        {
+            Fixture f;
+            kinds(f);
+            Check(run(f, TestKindRow) == Result::Applied && handed.Calls == 1 && handed.Item == 6948 &&
+                      handed.Spell == 8690 && handed.Choice == 2 && handed.Count == 5 && f.Events == 1,
+                  "a row is handed the item it carries, the spell it knows, the choice and the count");
+        }
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = "linen";
+            f.Command.SpellName = "frost";
+            f.Command.Choice = 0;
+            f.Command.Count = 1;
+            Check(run(f, TestKindRow) == Result::Applied && handed.Item == 2589 && handed.Spell == 116 &&
+                      handed.Choice == 0 && handed.Count == 1,
+                  "a part of an item's or a spell's name finds it, the first choice and a count of one pass");
+        }
+        std::vector<std::pair<char const*, char const*>> const unknown = {{"Frostbolt", "Hearthstone"},
+                                                                          {"Hearthstone", "Linen Cloth"},
+                                                                          {"Runecloth", "Frostbolt"},
+                                                                          {"Linen Cloth", "Fireball"}};
+        for (auto const& [item, spell] : unknown)
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = item;
+            f.Command.SpellName = spell;
+            Check(run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::UnknownName && handed.Calls == 0 &&
+                      f.Events == 1,
+                  "an item is not found among the spells, a spell not among the items, an unknown name nowhere");
+        }
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = std::string(PlayerbotBridge::MaxName, 'a');
+            Check(run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::UnknownName,
+                  "an item name of MaxName characters is looked up");
+        }
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = "Runecloth";
+            f.Bot.Alive = false;
+            Check(run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::Dead && handed.Calls == 0,
+                  "an item and a spell are looked up after the common rule");
+        }
+        std::vector<std::function<void(Fixture&)>> const shapes = {
+            [](Fixture& f) { f.Command.ItemName.clear(); },
+            [](Fixture& f) { f.Command.SpellName.clear(); },
+            [](Fixture& f) { f.Command.ItemName = std::string(PlayerbotBridge::MaxName + 1, 'a'); },
+            [](Fixture& f) { f.Command.SpellName = std::string(PlayerbotBridge::MaxName + 1, 'a'); },
+            [](Fixture& f) { f.Command.Choice = static_cast<uint8_t>(std::size(TestLevels)); },
+            [](Fixture& f) { f.Command.Count = 0; },
+            [](Fixture& f) { f.Command.TargetName = "Brannoc"; }};
+        for (auto const& change : shapes)
+        {
+            Fixture f;
+            kinds(f);
+            change(f);
+            Check(
+                run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::None && handed.Calls == 0 && f.Events == 0,
+                "a missing, long or stray name, a choice past the last and a count of zero are malformed");
+        }
+        // A stray item, spell, choice or count on a real row; Mark's icon is its own field, not a choice.
+        std::vector<std::pair<Intent, std::function<void(Order&)>>> const strays = {
+            {Intent::Stay, [](Order& order) { order.ItemName = "Hearthstone"; }},
+            {Intent::Stay, [](Order& order) { order.SpellName = "Frostbolt"; }},
+            {Intent::Stay, [](Order& order) { order.Choice = 1; }},
+            {Intent::Stay, [](Order& order) { order.Count = 1; }},
+            {Intent::Mark, [](Order& order) { order.Choice = 1; }},
+            {Intent::Quest, [](Order& order) { order.Count = 1; }}};
+        for (auto const& [operation, stray] : strays)
+        {
+            Fixture f;
+            f.OneShot(operation);
+            if (operation == Intent::Mark)
+                f.Command.Target = f.Target.Guid.Value;
+            if (operation == Intent::Quest)
+                f.Command.QuestId = 40;
+            stray(f.Command);
+            f.Denied();
+            Check(f.Authorizations == 0, "a stray item, spell, choice or count is refused before the admission");
+        }
+    }
+    // LC16b: whom a unit's name may mean (UnitFilter). An attack means an enemy creature (LC.29: never a player, a
+    // player's pet or a friendly unit; hostile or neutral), focus healing a group member, a mark anyone, a friend a
+    // friendly unit, a group member or the bot itself; the own target passes the same filter.
+    {
+        Unit friendlyGuard;
+        friendlyGuard.Guid = ObjectGuid(8);
+        friendlyGuard.Name = "Stormwind Guard";
+        friendlyGuard.Friendly = true;
+        friendlyGuard.X = 5.0f;
+        Unit hostileGuard;
+        hostileGuard.Guid = ObjectGuid(9);
+        hostileGuard.Name = "Stormwind Guard";
+        hostileGuard.Hostile = true;
+        hostileGuard.X = 30.0f;
+        Player guardPlayer;
+        guardPlayer.Guid = ObjectGuid(10);
+        guardPlayer.Name = "Stormwind Guard";
+        Unit pet;
+        pet.Guid = ObjectGuid(11);
+        pet.Name = "Stormwind Guard";
+        pet.PetType = true;
+        auto const guards = [&](Fixture& f)
+        {
+            ObjectAccessor::Units[8] = &friendlyGuard;
+            ObjectAccessor::Units[9] = &hostileGuard;
+            ObjectAccessor::Units[10] = &guardPlayer;
+            ObjectAccessor::Units[11] = &pet;
+            pet.Owner = &f.Other;
+            f.Target.Name = "Defias Thug";
+            f.Other.Name = "Brannoc";
+            f.Other.Friendly = true;
+            f.Other.X = 10.0f;
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}, {f.Other.Guid, "Brannoc"}};
+            f.AI.Values.Npcs.Data = {f.Target.Guid, friendlyGuard.Guid};
+            f.AI.Values.Friends.Data = {f.Other.Guid, f.Human.Guid};
+            f.Command.Operation = Intent::AttackOwnTarget;
+            f.Command.Target = 0;
+            f.Command.TargetName = "Stormwind Guard";
+        };
+        std::vector<std::pair<char const*, std::function<void(Fixture&)>>> const notEnemies = {
+            {"a friendly guard", [](Fixture&) {}},
+            {"a selected friendly guard", [&](Fixture& f) { f.Bot.Target = friendlyGuard.Guid; }},
+            {"a player", [&](Fixture& f) { f.AI.Values.Possible.Data = {guardPlayer.Guid}; }},
+            {"a player's pet", [&](Fixture& f) { f.AI.Values.Possible.Data = {pet.Guid}; }},
+            {"a group member", [](Fixture& f) { f.Command.TargetName = "Brannoc"; }}};
+        for (auto const& [label, setup] : notEnemies)
+        {
+            Fixture f;
+            guards(f);
+            setup(f);
+            f.Refused(Refusal::UnknownName);
+            Check(attacks == 0, label);
+        }
+        {
+            Fixture f;
+            guards(f);
+            f.Bot.Target = hostileGuard.Guid;
+            f.AI.Values.Npcs.Data.push_back(hostileGuard.Guid);
+            Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &hostileGuard,
+                  "an attack by name means the hostile guard, not the nearer friendly one");
+        }
+        {
+            Fixture f;
+            guards(f);
+            f.OneShot(Intent::FocusHealing);
+            f.Command.Target = 0;
+            f.Command.TargetName = "Brannoc";
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}};
+            f.AI.Values.Npcs.Data.push_back(f.Other.Guid);
+            f.Refused(Refusal::UnknownName);
+        }
+        for (char const* name : {"Brannoc", "Partner"})
+        {
+            Fixture f;
+            guards(f);
+            f.Command.Operation = Intent::Mark;
+            f.Command.TargetName = name;
+            // Brannoc only among the friendly players, the partner only in the group.
+            f.AI.Values.Friends.Data = {f.Other.Guid};
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}};
+            Unit* const meant = std::string_view(name) == "Brannoc" ? static_cast<Unit*>(&f.Other) : &f.Human;
+            Check(f.Run() == Result::Applied && f.Party.Marked == meant->Guid,
+                  "a mark by name means anyone: a friendly player, a group member seen nowhere else");
+        }
+        auto const friendRun = [](Fixture& f)
+        {
+            f.Why = Refusal::None;
+            handed = {};
+            return OllamaBotRandomChatter::RunRow(TestFriendRow, f.Command, f.Why);
+        };
+        Unit hostileNamesake;
+        hostileNamesake.Guid = ObjectGuid(12);
+        hostileNamesake.Name = "Brannoc";
+        hostileNamesake.Hostile = true;
+        hostileNamesake.X = 1.0f;
+        struct FriendCase
+        {
+            char const* Name;
+            std::function<void(Fixture&)> Setup;
+            std::function<Unit const*(Fixture&)> Meant;
+        };
+        std::vector<FriendCase> const friends = {
+            {"Brannoc", [](Fixture&) {}, [](Fixture& f) { return &f.Other; }},
+            {"Brannoc", [&](Fixture& f) { f.Bot.Target = hostileNamesake.Guid; }, [](Fixture& f) { return &f.Other; }},
+            {"Fixturebot", [](Fixture& f) { Ungrouped(f); }, [](Fixture& f) { return &f.Bot; }},
+            {"Partner", [](Fixture& f) { f.AI.Values.Friends.Data = {f.Other.Guid}; },
+             [](Fixture& f) { return &f.Human; }},
+            {"Stormwind Guard", [](Fixture&) {}, [&](Fixture&) { return &friendlyGuard; }}};
+        for (FriendCase const& each : friends)
+        {
+            Fixture f;
+            guards(f);
+            f.Bot.Name = "Fixturebot";
+            ObjectAccessor::Units[12] = &hostileNamesake;
+            f.AI.Values.Npcs.Data.push_back(hostileNamesake.Guid);
+            f.Command.TargetName = each.Name;
+            each.Setup(f);
+            Check(friendRun(f) == Result::Applied && handed.Calls == 1 && handed.Target == each.Meant(f),
+                  "a friend's name means a friendly unit, a group member or the bot itself, never a hostile one");
+        }
+        {
+            Fixture f;
+            guards(f);
+            f.Command.TargetName = "Defias Thug";
+            Check(friendRun(f) == Result::Rejected && f.Why == Refusal::UnknownName && handed.Calls == 0,
+                  "a friend's name never means the bot's neutral target");
+        }
+    }
     // LC2: an order of up to three steps, in order as one command: one admission, then per step its facts, its gate
     // and its event; a step that is not applied ends the order (mutants: authorize per step, a refused step not
     // ending the order, the gate skipped after the first step, four steps).
@@ -2118,6 +2418,7 @@ int main()
                           std::all_of(param.Choices.begin(), param.Choices.end(), filled),
                       "a choice and only a choice has its words");
             }
+            Check(PlayerbotBridge::OneParamPerField(row.Params), "a row has at most one parameter per field");
             std::string_view const phrase = row.StatePhrase;
             for (std::size_t open = phrase.find('{'); open != std::string_view::npos; open = phrase.find('{', open + 1))
             {
@@ -2184,6 +2485,17 @@ int main()
                   PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
                   !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
               "a row takes the fields of its parameters only");
+        // LC16b: whom each unit parameter's name may mean, and the check that a field carries one parameter.
+        auto const filterOf = [](Intent operation)
+        { return PlayerbotBridge::ParamOf(*PlayerbotBridge::FindRow(operation), OrderField::Target)->Filter; };
+        constexpr ParamRow twoTargets[] = {{"target", ParamKind::Unit, OrderField::Target, "A unit.", {}},
+                                           {"other", ParamKind::Unit, OrderField::Target, "Another unit.", {}}};
+        Check(filterOf(Intent::AttackOwnTarget) == UnitFilter::Enemy &&
+                  filterOf(Intent::FocusHealing) == UnitFilter::GroupMember &&
+                  filterOf(Intent::Mark) == UnitFilter::Anyone &&
+                  !PlayerbotBridge::ParamOf(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target) &&
+                  PlayerbotBridge::OneParamPerField(TestKindParams) && !PlayerbotBridge::OneParamPerField(twoTargets),
+              "an attack names an enemy, focus healing a group member, a mark anyone; one parameter per field");
 
         // LC1b: the topic rows. Every topic has a row, in the wire's order and under the wire's word
         // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
@@ -2206,8 +2518,37 @@ int main()
                       (!route || (row.Params[0].Kind == ParamKind::Place && filled(row.Params[0].Name) &&
                                   filled(row.Params[0].Sentence) && row.Params[0].Choices.empty())),
                   "only route takes an argument, a place");
+            Check(row.Lines == (topic >= BotStateTopic::History), "the record topics, and only they, answer lines");
             Check(!PlayerbotBridge::FindRow(row.Name) && names.insert(row.Name).second,
                   "no two rows, act or topic, share a name");
+        }
+        // LC16b: a topic beyond the fourteen takes one name of any kind and answers lines; two parameters, one that
+        // is no name, or a new topic without lines is no valid row.
+        {
+            using PlayerbotBridge::TopicRowsValid;
+            static constexpr ParamRow named[] = {{"unit", ParamKind::Unit, OrderField::Target, "A unit.", {}},
+                                                 {"place", ParamKind::Place, OrderField::PlaceName, "A place.", {}},
+                                                 {"item", ParamKind::Item, OrderField::ItemName, "An item.", {}},
+                                                 {"spell", ParamKind::Spell, OrderField::SpellName, "A spell.", {}},
+                                                 {"quest", ParamKind::Quest, OrderField::QuestId, "A quest.", {}}};
+            static constexpr ParamRow unnamed[] = {
+                {"level", ParamKind::Choice, OrderField::Choice, "How much.", TestLevels},
+                {"enabled", ParamKind::Flag, OrderField::Enabled, "Yes or no.", {}},
+                {"count", ParamKind::Count, OrderField::Count, "How many.", {}}};
+            BotStateTopic const next = static_cast<BotStateTopic>(topics.size());
+            auto const valid = [&](std::span<ParamRow const> params, bool lines)
+            {
+                TopicRow const row[] = {{next, "item_story", "What you know of it.", params, 12, lines}};
+                return TopicRowsValid(row);
+            };
+            bool everyName = TopicRowsValid(topics);
+            for (std::size_t index = 0; index < std::size(named); ++index)
+                everyName = everyName && valid(std::span(named).subspan(index, 1), true);
+            bool noOther = !valid(std::span(named).first(2), true) && !valid(std::span(named).subspan(2, 1), false);
+            for (std::size_t index = 0; index < std::size(unnamed); ++index)
+                noOther = noOther && !valid(std::span(unnamed).subspan(index, 1), true);
+            Check(everyName && noOther && valid({}, true),
+                  "a new topic takes at most one name of any kind and answers lines");
         }
         Check(!PlayerbotBridge::FindTopic(static_cast<BotStateTopic>(topics.size())) &&
                   !PlayerbotBridge::FindTopic("Places") && !PlayerbotBridge::FindTopic(""),

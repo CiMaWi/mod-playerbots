@@ -37,8 +37,9 @@
 
 namespace PlayerbotBridge
 {
-// Read once the order is admitted; Target is set only for a row that takes a unit, once the bot sees it. Place and
-// QuestId are what the order's place and quest mean (a name looked up), set only for a row that takes them.
+// Read once the order is admitted; Target is set only for a row that takes a unit, once the bot sees it. Place,
+// QuestId, ItemId and SpellId are what the order's place, quest, item and spell mean (a name looked up), set only for
+// a row that takes them. A row reads a choice and a count from Request.
 struct ActFacts
 {
     PostMapJoin const& Phase;
@@ -50,6 +51,8 @@ struct ActFacts
     Unit* Target;
     std::string Place;
     uint32_t QuestId;
+    uint32_t ItemId = 0;
+    uint32_t SpellId = 0;
 };
 
 namespace
@@ -366,13 +369,18 @@ bool InGroup(GroupRule rule, ActFacts const& act)
 constexpr char const* const RaidIcons[] = {"star", "circle", "diamond", "triangle", "moon", "square", "cross", "skull"};
 constexpr char const* const FormationShapes[] = {"close", "spread", "line"};
 
+// LC.29: an attack by name means an enemy creature, never a player.
 constexpr ParamRow AttackParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The enemy you have targeted, by name.", {}}};
+    {"target", ParamKind::Unit, OrderField::Target, "The enemy you have targeted, by name.", {}, UnitFilter::Enemy}};
 constexpr ParamRow MarkParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}},
+    {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}, UnitFilter::Anyone},
     {"icon", ParamKind::Choice, OrderField::Icon, "The raid icon to put on it.", RaidIcons}};
-constexpr ParamRow FocusHealParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The group member to heal first, by name.", {}}};
+constexpr ParamRow FocusHealParams[] = {{"target",
+                                         ParamKind::Unit,
+                                         OrderField::Target,
+                                         "The group member to heal first, by name.",
+                                         {},
+                                         UnitFilter::GroupMember}};
 constexpr ParamRow SaveManaParams[] = {
     {"enabled", ParamKind::Flag, OrderField::Enabled, "Yes to save mana, no to spend it freely.", {}}};
 constexpr ParamRow FormationParams[] = {
@@ -710,6 +718,16 @@ Result Execute(PostMapJoin const& phase, std::span<Order const> steps, std::func
     return result;
 }
 
+constexpr bool RowsTakeOneParamPerField()
+{
+    for (AbilityRow const& row : Rows)
+        if (!OneParamPerField(row.Params))
+            return false;
+
+    return true;
+}
+static_assert(RowsTakeOneParamPerField(), "a row has at most one parameter per Order field");
+
 AbilityRow const* FindRow(Intent operation)
 {
     for (AbilityRow const& row : Rows)
@@ -768,11 +786,16 @@ RefusalText const& RefusalWords(Refusal reason)
     return index < std::size(RefusalTexts) ? RefusalTexts[index] : RefusalTexts[0];
 }
 
-bool Takes(AbilityRow const& row, OrderField field)
+ParamRow const* ParamOf(AbilityRow const& row, OrderField field)
 {
-    return std::any_of(row.Params.begin(), row.Params.end(),
-                       [field](ParamRow const& param) { return param.Field == field; });
+    for (ParamRow const& param : row.Params)
+        if (param.Field == field)
+            return &param;
+
+    return nullptr;
 }
+
+bool Takes(AbilityRow const& row, OrderField field) { return ParamOf(row, field) != nullptr; }
 
 Part LastingPart(Intent operation)
 {
@@ -917,26 +940,46 @@ float DistanceTo(Player* bot, float x, float y, float z)
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// A unit the bot perceives that the filter lets a name mean (UnitFilter); group members come from the group's slots.
+bool Admits(UnitFilter filter, Player* bot, Unit* unit)
+{
+    switch (filter)
+    {
+        case UnitFilter::Enemy:
+            return !unit->GetCharmerOrOwnerPlayerOrPlayerItself() && !bot->IsFriendlyTo(unit);
+        case UnitFilter::Friend:
+            return bot->IsFriendlyTo(unit);
+        case UnitFilter::GroupMember:
+            return false;
+        default:
+            return true;
+    }
+}
+
 // The units the bot perceives (the nearest NPCs, possible targets and nearest friendly players it keeps as values)
-// and its group's members. A unit in two lists is the same id twice. The bot's own living target (the unit it fights,
-// then its selection, never the bot) counts as the nearest unit of its name; an exact name still beats a part of one.
-uint64_t UnitNamed(ActFacts const& act, std::string const& name)
+// and its group's members, those the filter admits. A unit in two lists is the same id twice. The bot's own living
+// target (the unit it fights, then its selection, never the bot) counts as the nearest unit of its name; an exact
+// name still beats a part of one. The bot itself is among its friends.
+uint64_t UnitNamed(ActFacts const& act, UnitFilter filter, std::string const& name)
 {
     std::vector<NameCandidate> candidates;
     // The first of equal distance wins, so the unit fought beats the selection.
     for (Unit* own : {act.Bot->GetVictim(), ObjectAccessor::GetUnit(*act.Bot, act.Bot->GetTarget())})
-        if (own && own != act.Bot && own->IsAlive())
+        if (own && Admits(filter, act.Bot, own) && own != act.Bot && own->IsAlive())
             candidates.push_back({own->GetName(), own->GetGUID().GetRawValue(), 0.0f});
+
+    if (filter == UnitFilter::Friend)
+        candidates.push_back({act.Bot->GetName(), act.Bot->GetGUID().GetRawValue(), 0.0f});
 
     for (char const* list : {"nearest npcs", "possible targets", "nearest friendly players"})
         if (Value<GuidVector>* units = act.Ai->GetAiObjectContext()->GetValue<GuidVector>(list))
             for (ObjectGuid const& guid : units->Get())
-                if (Unit* unit = ObjectAccessor::GetUnit(*act.Bot, guid))
+                if (Unit* unit = ObjectAccessor::GetUnit(*act.Bot, guid); unit && Admits(filter, act.Bot, unit))
                     candidates.push_back(
                         {unit->GetName(), guid.GetRawValue(),
                          DistanceTo(act.Bot, unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ())});
 
-    if (act.BotGroup)
+    if (act.BotGroup && filter != UnitFilter::Enemy)
         for (auto const& slot : act.BotGroup->GetMemberSlots())
         {
             Unit* member = ObjectAccessor::GetUnit(*act.Bot, slot.guid);
@@ -950,6 +993,13 @@ uint64_t UnitNamed(ActFacts const& act, std::string const& name)
     return match.Kind == NameMatch::None ? 0 : candidates[match.Index].Id;
 }
 
+// The id of the candidate a name means; 0 for none.
+uint32_t IdNamed(std::vector<NameCandidate> const& candidates, std::string const& name)
+{
+    NameResult const match = ResolveName(name, candidates);
+    return match.Kind == NameMatch::None ? 0 : static_cast<uint32_t>(candidates[match.Index].Id);
+}
+
 // The quests in the bot's log, by title, as ReadQuests walks them; the planner still refuses a failed one.
 uint32_t QuestNamed(Player* bot, std::string const& name)
 {
@@ -961,8 +1011,7 @@ uint32_t QuestNamed(Player* bot, std::string const& name)
             candidates.push_back({quest->GetTitle(), questId, 0.0f});
     }
 
-    NameResult const match = ResolveName(name, candidates);
-    return match.Kind == NameMatch::None ? 0 : static_cast<uint32_t>(candidates[match.Index].Id);
+    return IdNamed(candidates, name);
 }
 
 // A literal "x,y,z,map" as given; else the known place the name means (one on another map as elsewhere), under the
@@ -1008,8 +1057,9 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     // then passes the same test as one given by id.
     if (Takes(row, OrderField::Target))
     {
-        uint64_t const target =
-            act.Request.TargetName.empty() ? act.Request.Target : UnitNamed(act, act.Request.TargetName);
+        uint64_t const target = act.Request.TargetName.empty()
+                                    ? act.Request.Target
+                                    : UnitNamed(act, ParamOf(row, OrderField::Target)->Filter, act.Request.TargetName);
         if (!target)
             return Refuse(why, Refusal::UnknownName);
 
@@ -1028,6 +1078,21 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     if (Takes(row, OrderField::PlaceName))
         act.Place = PlaceNamed(bot, act.Request.PlaceName);
 
+    // An item among what the bot wears and carries, a spell among what it knows: two lists, one per kind.
+    if (Takes(row, OrderField::ItemName))
+    {
+        act.ItemId = IdNamed(CarriedItemNames(bot), act.Request.ItemName);
+        if (!act.ItemId)
+            return Refuse(why, Refusal::UnknownName);
+    }
+
+    if (Takes(row, OrderField::SpellName))
+    {
+        act.SpellId = IdNamed(KnownSpellNames(bot), act.Request.SpellName);
+        if (!act.SpellId)
+            return Refuse(why, Refusal::UnknownName);
+    }
+
     Refusal const reason = row.Check ? row.Check(act) : Refusal::None;
     if (reason != Refusal::None)
         return Refuse(why, reason);
@@ -1038,10 +1103,24 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
 // How many of a parameter's two forms, id and name, an order fills: one for a row that takes it, else none.
 int Forms(bool id, std::string const& name) { return (id ? 1 : 0) + (name.empty() ? 0 : 1); }
 
-// A stray target, shape, enable flag, place or quest on another verb is a mapping error, never an ignored field; a
-// unit or quest comes as an id or a name, never both.
+// The item, spell, choice and count fields: each present exactly when the row takes it, a name within MaxName and a
+// choice among the parameter's Choices.
+bool KindsMalformed(AbilityRow const& row, Order const& order)
+{
+    ParamRow const* choice = ParamOf(row, OrderField::Choice);
+    return Takes(row, OrderField::ItemName) == order.ItemName.empty() || order.ItemName.size() > MaxName ||
+           Takes(row, OrderField::SpellName) == order.SpellName.empty() || order.SpellName.size() > MaxName ||
+           (choice ? order.Choice >= choice->Choices.size() : order.Choice != 0) ||
+           Takes(row, OrderField::Count) == (order.Count == 0);
+}
+
+// A stray target, shape, enable flag, place, quest, item, spell, choice or count on another verb is a mapping error,
+// never an ignored field; a unit or quest comes as an id or a name, never both.
 bool Malformed(AbilityRow const* row, Order const& order)
 {
+    if (KindsMalformed(*row, order))
+        return true;
+
     return !order.Bot || !order.Controller || order.Bot == order.Controller ||
            Forms(order.Target != 0, order.TargetName) != (Takes(*row, OrderField::Target) ? 1 : 0) ||
            order.TargetName.size() > MaxName || Takes(*row, OrderField::PlaceName) != !order.PlaceName.empty() ||
