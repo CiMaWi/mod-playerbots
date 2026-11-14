@@ -3870,6 +3870,8 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
             return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
         case TravelLegs::Act::UseTrigger:
             return UsePortal(*data);
+        case TravelLegs::Act::UseObject:
+            return UseStaticPortal(*data);
         case TravelLegs::Act::TalkFlightMaster:
             return TalkFlightMaster(*data);
         case TravelLegs::Act::UseHearth:
@@ -4067,6 +4069,37 @@ bool NewRpgTravelAction::UsePortal(NewRpgInfo::Travel& data)
     packet << triggerId;
     packet.rpos(0);
     bot->GetSession()->HandleAreaTriggerOpcode(packet);
+    data.trip.triggered = true;
+    return true;
+}
+
+// A static portal leg (WT55d): the portal object a player clicks, which stands at the leg's node. Looked up only on
+// the ticks the bot stands there (StepLeg's UseObject, until the use is sent); used as a player's client does, and
+// the core's own handler checks the use and casts the portal's teleport
+bool NewRpgTravelAction::UseStaticPortal(NewRpgInfo::Travel& data)
+{
+    constexpr float PORTAL_OBJECT_YARDS = 20.0f;  // the object's spawn this far from its node at most
+    uint32 const entry = data.trip.legs[data.trip.legIdx].object;
+    GameObject* portal = bot->FindNearestGameObject(entry, PORTAL_OBJECT_YARDS);
+    if (!portal || !portal->isSpawned())
+    {
+        // Graph data, not leg code (WT.41): the node names an object the world has not spawned there
+        LOG_INFO("playerbots",
+                 "[Route] {} static portal: no object {} within {:.0f} yd at map {} ({:.0f}, {:.0f}, {:.0f})",
+                 bot->GetName(), entry, PORTAL_OBJECT_YARDS, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                 bot->GetPositionZ());
+        return LegFailed(data, TravelLegs::FailReason::Portal);
+    }
+    if (!portal->IsWithinDistInMap(bot, portal->GetInteractionDistance()))
+        return MoveFarTo(
+            WorldPosition(portal->GetMapId(), portal->GetPositionX(), portal->GetPositionY(), portal->GetPositionZ()));
+
+    if (bot->isMoving())
+        bot->StopMoving();
+    bot->SetFacingToObject(portal);
+    WorldPacket use(CMSG_GAMEOBJ_USE, 8);
+    use << portal->GetGUID();
+    bot->GetSession()->HandleGameObjectUseOpcode(use);
     data.trip.triggered = true;
     return true;
 }

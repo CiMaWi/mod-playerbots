@@ -84,6 +84,8 @@ Leg MakeLeg(LegType type, Point from, Point to, std::vector<std::uint32_t> nodes
     leg.fareCopper = fare;
     if (type == LegType::Portal)
         leg.object = 99;
+    if (type == LegType::StaticPortal)
+        leg.object = 190960;
     if (type == LegType::Flight)
         leg.taxiNodes = {10, 11};
     return leg;
@@ -539,11 +541,52 @@ void CheckFlightFailureAndDeadline()
     Check(TravelLegs::PastDeadline(TravelLegs::TRIP_SLACK_MS + 1, 0.0f), "deadline: zero estimate keeps the slack");
 }
 
+// A static portal (WT55d), the portal object a player clicks: walk to its node, use the object there, wait for its
+// teleport; done on the exit's map or near the exit within one map, Fail(portal) after the portal's 20 s
+void CheckStaticPortal()
+{
+    Leg const leg = MakeLeg(LegType::StaticPortal, NODES[2], NODES[3], {2, 3}, 3.0f);
+    Check(!TravelLegs::IsNoOp(leg) && TravelLegs::LegTimeoutMs(leg) == TravelLegs::PORTAL_TIMEOUT_MS,
+          "static portal: no no-op, the portal's timeout");
+    Check(std::string(TravelLegs::ActWord(Act::UseObject)) == "use", "static portal: the act's word");
+    Trip cross = StartedTrip({leg});
+    Check(TravelLegs::StepLeg(cross, At({0, 150.0f, 0.0f, 0.0f}, 2000)).act == Act::Walk,
+          "static portal: walk to its node first");
+    Decision const use = TravelLegs::StepLeg(cross, At(NODES[2], 2000));
+    Check(use.act == Act::UseObject && use.target.x == NODES[2].x, "static portal: use the object at its node");
+    Check(TravelLegs::StepLeg(cross, At({0, 208.0f, 0.0f, 0.0f}, 2500)).act == Act::UseObject,
+          "static portal: past its node the bot keeps heading for the object");
+    auto const edge = TravelLegs::StuckEdge(cross);
+    Check(edge.first == 2 && edge.second == 3, "static portal: its edge is node 2 -> node 3");
+    cross.triggered = true;
+    Check(TravelLegs::StepLeg(cross, At(NODES[2], 3000)).act == Act::Wait, "static portal: waits once used");
+    Check(TravelLegs::StepLeg(cross, At({1, 1300.0f, 1300.0f, 0.0f}, 4000)).act == Act::Done,
+          "static portal: done anywhere on the exit's map");
+    Trip inside = StartedTrip({MakeLeg(LegType::StaticPortal, NODES[1], NODES[2], {1, 2}, 3.0f)});
+    inside.triggered = true;
+    Check(TravelLegs::StepLeg(inside, At(NODES[1], 3000)).act == Act::Wait,
+          "static portal within a map: not done at its own node");
+    Check(TravelLegs::StepLeg(inside, At({0, 230.0f, 0.0f, 0.0f}, 3000)).act == Act::Done,
+          "static portal within a map: done 30 yd from the exit");
+    Trip stuck = StartedTrip({leg}, 0);
+    stuck.triggered = true;
+    Decision const late = TravelLegs::StepLeg(stuck, At(NODES[2], 21000));
+    Check(late.act == Act::Fail && late.reason == FailReason::Portal, "static portal: Fail(portal) after 20 s");
+    Trip wrong = StartedTrip({leg});
+    Decision const away = TravelLegs::StepLeg(wrong, At({530, 0.0f, 0.0f, 0.0f}, 2000));
+    Check(away.act == Act::Fail && away.reason == FailReason::WrongMap, "static portal: Fail(wrong_map) elsewhere");
+    // Through and on: the far side's walk follows
+    Trip through = StartedTrip({leg, MakeLeg(LegType::Walk, NODES[3], NODES[4], {3, 4}, 15.0f)});
+    through.triggered = true;
+    Decision const after = TravelLegs::Advance(through, At(NODES[3], 3000), NodeAt);
+    Check(through.legIdx == 1 && after.act == Act::Walk, "static portal: the walk on the far side follows");
+}
+
 void CheckEventSources()
 {
     bool legs = true;
-    for (LegType const type :
-         {LegType::Walk, LegType::Portal, LegType::Flight, LegType::Transport, LegType::Hearth, LegType::Fly})
+    for (LegType const type : {LegType::Walk, LegType::Portal, LegType::Flight, LegType::Transport, LegType::Hearth,
+                               LegType::Fly, LegType::StaticPortal})
         legs = legs && std::string(TravelLegs::LegDoneSource(type)) ==
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
@@ -1767,6 +1810,7 @@ int main()
     CheckResetAndDeadline();
     CheckFlightFailureAndDeadline();
     CheckEventSources();
+    CheckStaticPortal();
     CheckDeathsAndRecord();
     CheckFlyLeg();
     CheckLanding();

@@ -101,6 +101,7 @@ std::uint32_t BuilderChecks(std::vector<std::string>& failures)
         TravelGraphBuilder::LinkRow made = Walk(from, to, type);
         made.object = object;
         made.distance = type == 1 || !object ? 30.0f : 0.1f;
+        made.extraCost = type == 6 ? 3.0f : 0.0f;  // a static portal's seconds
         return made;
     };
     for (auto const& [from, to] : {std::pair{0u, 1u}, std::pair{1u, 2u}, std::pair{1u, 3u}, std::pair{5u, 6u}})
@@ -122,14 +123,23 @@ std::uint32_t BuilderChecks(std::vector<std::string>& failures)
     check(waited.GetNode(waited.IndexOfId(3)).waitStop && waited.GetNode(waited.IndexOfId(4)).waitStop &&
               !waited.GetNode(waited.IndexOfId(2)).waitStop && !waited.GetNode(waited.IndexOfId(7)).waitStop,
           "a stop is a wait-point link's end with a ride");
-    TravelGraphRoute const crossing = waited.SimpleRoute(waited.IndexOfId(0), waited.IndexOfId(6));
-    std::vector<std::uint32_t> passed;
-    for (std::uint32_t const index : crossing.links)
-        passed.push_back(waited.GetNode(waited.GetLink(index).to).id);
-    check(crossing.found && passed == std::vector<std::uint32_t>{1, 2, 3, 4, 5, 6},
-          "the simple route crosses through both wait points, not by the walk onto the stop or the static portal");
-    check(waited.ArrivalsOnto(0).size() == 1 && waited.ArrivalsOnto(0)[0].node == waited.IndexOfId(4),
-          "only the ride arrives: no arrival by a wait-point link on one map or a static portal");
+    auto const passedIds = [&waited](TravelGraphRoute const& route)
+    {
+        std::vector<std::uint32_t> passed;
+        for (std::uint32_t const index : route.links)
+            passed.push_back(waited.GetNode(waited.GetLink(index).to).id);
+        return passed;
+    };
+    TravelGraphRoute const crossing = waited.SimpleRoute(waited.IndexOfId(0), waited.IndexOfId(5));
+    check(crossing.found && passedIds(crossing) == std::vector<std::uint32_t>{1, 2, 3, 4, 5},
+          "the simple route crosses through both wait points, not by the walk onto the stop");
+    TravelGraphRoute const portal = waited.SimpleRoute(waited.IndexOfId(0), waited.IndexOfId(6));
+    check(portal.found && passedIds(portal) == std::vector<std::uint32_t>{1, 6},
+          "the simple route takes the static portal (WT55d)");
+    auto const arrivals = waited.ArrivalsOnto(0);
+    check(arrivals.size() == 2 && arrivals[0].node == waited.IndexOfId(4) && arrivals[1].node == waited.IndexOfId(6) &&
+              arrivals[1].fixedSeconds == 3.0f,
+          "the ride and the static portal arrive (its seconds fixed): no arrival by a wait-point link on one map");
     return checks;
 }
 }  // namespace

@@ -118,6 +118,7 @@ enum class Act : std::uint8_t
 {
     Walk,              // MoveFarTo(target) on the bot's map
     UseTrigger,        // step into the portal leg's area trigger
+    UseObject,         // use the static portal leg's object at its node, as a player clicks it
     TalkFlightMaster,  // at the flight master of the leg's start: learn the node, pay, take off
     UseHearth,         // the hearthstone leg: cast it (wait for the cooldown and the cast)
     Ride,              // in flight (a cross-map flight continues)
@@ -140,7 +141,7 @@ enum class FailReason : std::uint8_t
     Timeout,      // the leg took longer than its timeout
     WrongMap,     // the bot is on a map the leg does not run on
     Stuck,        // MoveFarTo gave the waypoint up
-    Portal,       // the area trigger did not take the bot through
+    Portal,       // the area trigger or the portal object did not take the bot through
     Fare,         // the purse does not pay the flight
     Landing,      // the flight ended away from the leg's end
     Unsupported,  // a leg type the follower does not run (none since WT19)
@@ -165,6 +166,8 @@ inline char const* ActWord(Act act)
             return "walk";
         case Act::UseTrigger:
             return "trigger";
+        case Act::UseObject:
+            return "use";
         case Act::TalkFlightMaster:
             return "talk";
         case Act::UseHearth:
@@ -260,6 +263,8 @@ inline char const* LegDoneSource(LegType type)
             return "leg_done:hearth";
         case LegType::Fly:
             return "leg_done:fly";
+        case LegType::StaticPortal:
+            return "leg_done:static_portal";
     }
     return "leg_done:?";
 }
@@ -577,8 +582,8 @@ struct Trip
     std::uint32_t next{1};
     // walk: the graph link between waypoints[next - 1] and waypoints[next] as walked (TravelWalk; StartLeg resets it)
     TravelWalk::LinkWalk walk;
-    bool approached{false};     // portal: the bot reached the trigger's node; from there it heads for the trigger
-    bool triggered{false};      // portal: the area trigger was sent
+    bool approached{false};     // portal: the bot reached the trigger's (object's) node; then it heads for that
+    bool triggered{false};      // portal: the area trigger was sent (static portal: the object was used)
     bool taxiActivated{false};  // flight: the taxi was taken (fare paid)
     bool seenInFlight{false};   // flight: the bot was seen in flight; fly: in the air
     // fly: in combat after the takeoff (NoteLife); coming down away from the end then is a combat landing, not a fall
@@ -719,6 +724,7 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
             return static_cast<std::uint32_t>(seconds * WALK_TIMEOUT_FACTOR * 1000.0f) + LEG_SLACK_MS;
         }
         case LegType::Portal:
+        case LegType::StaticPortal:
             return PORTAL_TIMEOUT_MS;
         case LegType::Flight:
         case LegType::Fly:
@@ -1248,6 +1254,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             return {Act::Walk, trip.waypoints[trip.next].at, FailReason::None};
         }
         case LegType::Portal:
+        case LegType::StaticPortal:
         {
             bool const exited =
                 leg.from.mapId != leg.to.mapId ? seen.bot.mapId == leg.to.mapId : within(leg.to, PORTAL_EXIT_YARDS);
@@ -1259,12 +1266,13 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
                 return fail(FailReason::WrongMap);
             if (trip.triggered)
                 return {Act::Wait, leg.to, FailReason::None};
-            // From the trigger's node on, the bot heads for the trigger itself (UsePortal), which may lie further than
-            // WAYPOINT_YARDS on: turning back to the node would alternate with that walk until the leg timed out
+            // From the trigger's (object's) node on, the bot heads for the trigger or object itself (UsePortal,
+            // UseStaticPortal), which may lie further than WAYPOINT_YARDS on: turning back to the node would alternate
+            // with that walk until the leg timed out
             if (!trip.approached && !within(leg.from, WAYPOINT_YARDS))
                 return {Act::Walk, leg.from, FailReason::None};
             trip.approached = true;
-            return {Act::UseTrigger, leg.from, FailReason::None};
+            return {leg.type == LegType::Portal ? Act::UseTrigger : Act::UseObject, leg.from, FailReason::None};
         }
         case LegType::Flight:
         {
@@ -1484,15 +1492,15 @@ inline bool NoteStuck(Trip& trip)
     return again;
 }
 
-// The graph edge the bot is on: a walk's two waypoints around it, or a portal's two nodes; {NO_NODE, NO_NODE} when an
-// end is no graph node (the bot's start, the goal)
+// The graph edge the bot is on: a walk's two waypoints around it, or a (static) portal's two nodes; {NO_NODE, NO_NODE}
+// when an end is no graph node (the bot's start, the goal)
 inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
 {
     std::pair<std::uint32_t, std::uint32_t> const none{NO_NODE, NO_NODE};
     if (trip.legIdx >= trip.legs.size() || trip.next == 0 || trip.next >= trip.waypoints.size())
         return none;
     LegType const type = trip.legs[trip.legIdx].type;
-    if (type != LegType::Walk && type != LegType::Portal)
+    if (type != LegType::Walk && type != LegType::Portal && type != LegType::StaticPortal)
         return none;
     std::uint32_t const from = trip.waypoints[trip.next - 1].node;
     std::uint32_t const to = trip.waypoints[trip.next].node;

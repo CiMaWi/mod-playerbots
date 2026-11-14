@@ -174,8 +174,7 @@ void TravelGraph::Load()
     LOG_INFO("playerbots",
              "[Route] travel graph rows read: {} nodes, {} links, {} points; largest path chunk {} rows; {} links "
              "skipped, {} points without a link; {} taxi paths, {} flight links without one; {} transport links "
-             "whose object is no transport dropped; {} wait-point links, {} stops with a wait point; {} static portals "
-             "(not searched)",
+             "whose object is no transport dropped; {} wait-point links, {} stops with a wait point; {} static portals",
              rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints, _stats.taxiPaths,
              _stats.flightsWithoutTaxi, notTransports, _stats.waitPointLinks, _stats.waitStops,
              _stats.linksByType[static_cast<std::size_t>(TravelLinkType::StaticPortal)]);

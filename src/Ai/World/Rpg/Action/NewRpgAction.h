@@ -148,6 +148,7 @@ private:
     bool RequestRoute(NewRpgInfo::Travel& data);
     bool TakeRoute(NewRpgInfo::Travel& data);
     bool UsePortal(NewRpgInfo::Travel& data);
+    bool UseStaticPortal(NewRpgInfo::Travel& data);
     bool TalkFlightMaster(NewRpgInfo::Travel& data);
     bool UseHearth(NewRpgInfo::Travel& data);
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);

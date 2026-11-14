@@ -681,15 +681,16 @@ public:
         return true;
     }
 
-    // `playerbots route links transport|flight`: the loaded travel graph's links of that kind, a line each (the test
-    // runner's case generators read them). World thread: the graph is immutable once ready
+    // `playerbots route links transport|flight|staticportal`: the loaded travel graph's links of that kind, a line each
+    // (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
     {
         std::string_view const type(kind);
         bool const flights = type == "flight";
-        if (!flights && type != "transport")
+        bool const portals = type == "staticportal";
+        if (!flights && !portals && type != "transport")
         {
-            handler->SendErrorMessage("Usage: .playerbots route links transport|flight");
+            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal");
             return false;
         }
         TravelGraph const& graph = TravelGraph::Instance();
@@ -698,7 +699,9 @@ public:
             handler->SendErrorMessage("ROUTE links: the travel graph is not ready");
             return false;
         }
-        TravelLinkType const wanted = flights ? TravelLinkType::Flight : TravelLinkType::Transport;
+        TravelLinkType const wanted = flights   ? TravelLinkType::Flight
+                                      : portals ? TravelLinkType::StaticPortal
+                                                : TravelLinkType::Transport;
         uint32 count = 0;
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
         {
@@ -719,6 +722,19 @@ public:
                     "ROUTE link flight {} {} {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
                     path->from, path->to, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x,
                     to.y, to.z);
+            }
+            else if (portals)
+            {
+                // The side that may use the portal: the object's faction (the runner's case side, not the search's)
+                GameObjectTemplateAddon const* addon = sObjectMgr->GetGameObjectTemplateAddon(link.object);
+                FactionTemplateEntry const* faction =
+                    addon ? sFactionTemplateStore.LookupEntry(addon->faction) : nullptr;
+                bool const alliance = !faction || !faction->IsHostileToAlliancePlayers();
+                bool const horde = !faction || !faction->IsHostileToHordePlayers();
+                char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
+                handler->PSendSysMessage(
+                    "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
+                    side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z);
             }
             else
             {

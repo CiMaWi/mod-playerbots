@@ -38,7 +38,7 @@ enum class TravelLinkType : std::uint8_t
     Transport = 3,    // object = transport gameobject entry (ships, zeppelins, elevators); 0 = a wait point's link to
                       // its stop, distance = the walk between them
     Flight = 4,       // object = TaxiPath id
-    StaticPortal = 6  // object = the gameobject entry of a portal a player clicks; loaded, not searched yet (WT55d)
+    StaticPortal = 6  // object = the gameobject entry of a portal a player clicks (a static portal leg, WT55d)
 };
 
 constexpr std::size_t TRAVEL_LINK_TYPES = 7;  // TravelLinkType values are below this; 5 is unused
@@ -334,6 +334,7 @@ public:
             case TravelLinkType::Walk:
                 return link.distance / RUN_SPEED;
             case TravelLinkType::Portal:
+            case TravelLinkType::StaticPortal:
                 return link.extraCost;
             case TravelLinkType::Transport:
                 if (!link.object)
@@ -341,8 +342,6 @@ public:
                 return link.extraCost >= 1.0f ? link.extraCost : SHIP_SECONDS;  // elevators store seconds
             case TravelLinkType::Flight:
                 return link.pathLength / FLIGHT_SPEED;
-            case TravelLinkType::StaticPortal:
-                return -1.0f;
         }
         return link.extraCost;
     }
@@ -485,14 +484,14 @@ private:
         _arrivals.clear();
         for (TravelGraphLink const& link : _links)
         {
-            // No jump onto a map: walks, wait-point links on one map, and static portals the search leaves out
-            if (link.type == TravelLinkType::Walk || link.type == TravelLinkType::StaticPortal ||
+            // No jump onto a map: walks and wait-point links on one map
+            if (link.type == TravelLinkType::Walk ||
                 (IsWaitPointLink(link) && _nodes[link.from].mapId == _nodes[link.to].mapId))
                 continue;
             TravelGraphArrival arrival;
             arrival.mapId = _nodes[link.to].mapId;
             arrival.node = link.to;
-            if (link.type == TravelLinkType::Portal)
+            if (link.type == TravelLinkType::Portal || link.type == TravelLinkType::StaticPortal)
                 arrival.fixedSeconds = link.extraCost;
             else if (link.type == TravelLinkType::Transport)
                 arrival.fixedSeconds = 0.0f;  // a ship's wait is a tuning value: no bound
@@ -972,7 +971,10 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     //   The Thundercaller (180 s)
     // - Darnassus -> Stormwind: the portal to Rut'theran Village, at least one ship and long flights; the shipped graph
     //   has no walk link onto The Bravery at Auberdine, so its route flies to Ratchet and sails to Booty Bay (The
-    //   Maiden's Fancy). More than 30 min would be a detour
+    //   Maiden's Fancy). More than 30 min would be a detour. A graph with static portals (the navigation plan's)
+    //   takes Darnassus' portal to the Blasted Lands, the Dark Portal and the Stair of Destiny's portal to Stormwind
+    //   (about 200 s) instead
+    bool const staticPortals = _stats.linksByType[static_cast<std::size_t>(TravelLinkType::StaticPortal)] > 0;
     RouteCase const cases[] = {
         {"Goldshire -> Ironforge",
          {"Goldshire innkeeper", 0, -9462.7f, 16.2f},
@@ -991,9 +993,9 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         {"Darnassus -> Stormwind",
          {"Darnassus", 1, 9947.0f, 2482.0f},
          {"Stormwind City innkeeper", 0, -8867.8f, 673.7f},
-         TravelLinkType::Transport,
+         staticPortals ? TravelLinkType::StaticPortal : TravelLinkType::Transport,
          0,
-         600.0f,
+         staticPortals ? 120.0f : 600.0f,
          1800.0f},
     };
 

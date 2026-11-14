@@ -24,7 +24,7 @@
 //   (Params::transportWaitSeconds, half a period) plus SHIP_RIDE_SECONDS; a wait point's link to its stop (no object)
 //   its walk. A stop with a wait point is reached and left only through the wait point and its rides
 //   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point
-// - static portal: not searched yet (WT55d)
+// - static portal (a portal object a player clicks, WT55d): its stored 3 s, as an area trigger
 // - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
 //   A cooldown above HEARTH_WAIT_CAP_MS (3 min) is no edge: the follower never waits that long
@@ -210,7 +210,8 @@ enum class LegType : std::uint8_t
     Flight,  // a taxi
     Transport,
     Hearth,
-    Fly  // on the bot's own flying mount
+    Fly,          // on the bot's own flying mount
+    StaticPortal  // a portal object a player clicks (graph link type 6): the follower uses it at its node
 };
 
 enum class Failure : std::uint8_t
@@ -230,7 +231,7 @@ struct Leg
     // Graph node indices passed, in order: walk waypoints; a transport leg's stops, between the wait points where the
     // graph has them; the ends otherwise
     std::vector<std::uint32_t> nodes;
-    std::uint32_t object{0};               // area trigger, first TaxiPath or transport entry
+    std::uint32_t object{0};  // area trigger, portal object (static portal), first TaxiPath or transport entry
     std::vector<std::uint32_t> taxiNodes;  // flight legs: the taxi node chain for Player::ActivateTaxiPathTo
     float seconds{0.0f};
     std::uint32_t fareCopper{0};
@@ -288,6 +289,8 @@ inline char const* LegTypeWord(LegType type)
             return "hearth";
         case LegType::Fly:
             return "fly";
+        case LegType::StaticPortal:
+            return "static_portal";
     }
     return "?";
 }
@@ -371,6 +374,7 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
             return ((link.distance - swim) / runSpeed + swim / swimSpeed) * WalkModifier(link, bot);
         }
         case TravelLinkType::Portal:
+        case TravelLinkType::StaticPortal:
             return link.extraCost;
         case TravelLinkType::Transport:
             if (!bot.allowTransport)
@@ -390,8 +394,6 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
             fare = path->price;
             return link.pathLength / params.flightSpeed + FLIGHT_BOARDING_SECONDS + fareSeconds;
         }
-        case TravelLinkType::StaticPortal:
-            return -1.0f;
     }
     return -1.0f;
 }
@@ -619,6 +621,8 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             type = LegType::Hearth;
         else if (link && link->type == TravelLinkType::Portal)
             type = LegType::Portal;
+        else if (link && link->type == TravelLinkType::StaticPortal)
+            type = LegType::StaticPortal;
         else if (link && link->type == TravelLinkType::Flight)
             type = LegType::Flight;
         else if (link && link->type == TravelLinkType::Transport)
