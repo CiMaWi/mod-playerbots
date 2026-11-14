@@ -123,7 +123,7 @@ struct NewRpgInfo
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
     // every errand assigned there: sell, buy (a bag by worth, the shopping list) and repair at its vendor, turn in
-    // completed quests, visit a trainer
+    // completed quests, visit a trainer, the banker and the mailbox (BankVisit.h, MailVisit.h)
     struct ErrandTurnIn
     {
         uint32 questId{0};
@@ -138,6 +138,12 @@ struct NewRpgInfo
         bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
         bool trainerWeapon{false};  // a weapon master (WU15a)
         std::vector<ErrandTurnIn> turnIns;
+        // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
+        // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the
+        // mailbox last, once the sale has made room
+        bool bankBefore{false};
+        bool bankAfter{false};
+        bool mail{false};
     };
     struct Errands
     {
@@ -146,6 +152,7 @@ struct NewRpgInfo
         bool arrived{false};     // the bot reached the current stop
         bool vendorDone{false};  // the current stop's vendor part is done (or its vendor is gone)
         ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
+        uint8 sightSteps{0};     // the steps toward a vendor in reach but out of sight (a ramp, stairs)
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
         uint32 vendorEntry{0};   // the trip's first vendor (the census, the Inventory rows)
         uint32 moneyAtStart{0};

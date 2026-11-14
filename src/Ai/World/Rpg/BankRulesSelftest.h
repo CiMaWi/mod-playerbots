@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "BankRules.h"
+#include "ItemWorthRules.h"
 
 // The scenarios of the bank rules (BankRules.h), shared by tests/bank-rules-selftest.cpp and the console's
 // "playerbots bank selftest". Each scenario adds its decisions to lines; a failed check adds a "FAIL:" line.
@@ -31,6 +32,7 @@ constexpr uint32_t USE = 400;
 constexpr float BETTER = 50.0f;
 constexpr float WORN = 30.0f;
 constexpr uint32_t STACK_20 = 20;
+constexpr uint32_t CARRIED_SEARCH_SEED = 20261113;
 
 struct Result
 {
@@ -411,6 +413,201 @@ inline void CheckDueAfterLevelChange(Checker& checker)
     checker.Check(live.count == 1 && read.count == 1 && read.worth == live.worth,
                   "after the level change the knowledge read at the new level shows the due item");
 }
+
+// The item usage's view of the bags (WB9): the bags' items, the memo the bot keeps (KeptInBags) and what follows from
+// it. Every test item here would sell today (vendor or auction usage); a carried one is ITEM_USAGE_BANK instead,
+// which the sell action skips, and in the space rule it counts at its later worth
+struct CarriedView
+{
+    BankIn in;
+    CarriedKeeps carried;
+};
+
+inline CarriedView ViewOf(uint8_t level, std::vector<KeepItemIn> const& bags)
+{
+    CarriedView view;
+    view.in = MakeIn(level, bags, {}, 0, BANK_ITEM_SLOTS);
+    view.carried = KeptInBags(view.in);
+    return view;
+}
+
+// What a vendor stop sells: the items the memo does not keep (their ordinary usage sells)
+inline std::vector<uint32_t> SoldAtStop(CarriedView const& view)
+{
+    std::vector<uint32_t> sold;
+    for (BankItemIn const& item : view.in.bags)
+        if (!KeptWorthEach(view.carried, item.item.entry, view.in.bot.level))
+            sold.push_back(item.item.entry);
+    return sold;
+}
+
+inline bool Holds(std::vector<uint32_t> const& entries, uint32_t entry)
+{
+    return std::find(entries.begin(), entries.end(), entry) != entries.end();
+}
+
+// The space rule's worth of a bag item: its later worth when the memo keeps it, else what it sells for
+inline uint32_t SpaceWorth(CarriedView const& view, KeepItemIn const& item)
+{
+    WorldTravel::ItemFacts facts;
+    facts.LaterWorthEach = KeptWorthEach(view.carried, item.entry, view.in.bot.level);
+    return WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(facts), item.sellNow, 0, item.count, 1.0f,
+                                  facts.LaterWorthEach);
+}
+
+inline std::string DescribeStop(CarriedView const& view)
+{
+    std::string line = "carried at level " + std::to_string(view.carried.level) + ":";
+    for (KeptEntry const& item : view.carried.items)
+        line += " " + std::to_string(item.entry) + " (later " + std::to_string(item.laterWorth) + ")";
+    line += "; sold at a vendor stop:";
+    for (uint32_t entry : SoldAtStop(view))
+        line += " " + std::to_string(entry);
+    return line;
+}
+
+inline void CheckCarried(Checker& checker)
+{
+    KeepItemIn junk = Gear(1005, 0, 0.0f, 0.0f, 0, 50);
+    junk.wearable = false;
+    CarriedView const view = ViewOf(10, {Gear(1001, 13), Gear(1002, 10), Gear(1003, 13, 20.0f), Gear(1004, 16), junk});
+    checker.Note(
+        "level 10 bags: 1001 upgrade for 13, 1002 upgrade for 10, 1003 worse than worn for 13, 1004 for 16, "
+        "1005 junk");
+    checker.Note("  " + DescribeStop(view));
+    std::vector<uint32_t> const sold = SoldAtStop(view);
+    checker.Check(view.carried.items.size() == 1 && view.carried.items[0].entry == 1001 &&
+                      KeptWorthEach(view.carried, 1001, 10) == USE,
+                  "the memo holds the upgrade for a later level at its later worth, nothing else");
+    checker.Check(!Holds(sold, 1001), "a kept item is not sold");
+    checker.Check(Holds(sold, 1003) && Holds(sold, 1004) && Holds(sold, 1005),
+                  "items the rule does not keep sell as today");
+    checker.Check(Holds(sold, 1002),
+                  "a due upgrade is not carried: the item usage labels it an upgrade first (and equips it)");
+    checker.Check(!KeptWorthEach(view.carried, 1001, 11) && !KeptWorthEach(CarriedKeeps(), 1001, 0),
+                  "read at another level, or never built, the memo keeps nothing");
+}
+
+inline void CheckCarriedReleased(Checker& checker)
+{
+    CarriedView const before = ViewOf(10, {Gear(1101, 13), Gear(1102, 14)});
+    // The bot has since put on better gear for 1101's slot, and 1102 no longer fits its armor kind
+    KeepItemIn outgrown = Gear(1102, 14);
+    outgrown.wearable = false;
+    CarriedView const after = ViewOf(10, {Gear(1101, 13, BETTER, 60.0f), outgrown});
+    checker.Note("released: " + DescribeStop(before) + " -> " + DescribeStop(after));
+    checker.Check(before.carried.items.size() == 2 && !Holds(SoldAtStop(before), 1101), "kept while worth more later");
+    checker.Check(after.carried.items.empty() && Holds(SoldAtStop(after), 1101) && Holds(SoldAtStop(after), 1102),
+                  "a released item falls back to its ordinary usage and is sold");
+    KeepItemIn cheap = Gear(1103, 13, BETTER, WORN, SELL, SELL);
+    checker.Check(SoldAtStop(ViewOf(10, {cheap})).size() == 1,
+                  "later worth not above what it fetches now: never kept, sold");
+}
+
+inline void CheckCarriedSpace(Checker& checker)
+{
+    KeepItemIn junk = Gear(1201, 0, 0.0f, 0.0f, 0, 50);
+    junk.wearable = false;
+    KeepItemIn cheapUse = Gear(1202, 0, 0.0f, 0.0f, 0, 300);
+    cheapUse.wearable = false;
+    KeepItemIn dear = Gear(1203, 0, 0.0f, 0.0f, 0, 900);
+    dear.wearable = false;
+    KeepItemIn const kept = Gear(1204, 13);  // later worth 400, sells for 100
+
+    auto victimOf = [](std::vector<KeepItemIn> const& bags) -> uint32_t
+    {
+        CarriedView const view = ViewOf(10, bags);
+        std::vector<WorldTravel::SpaceCandidate> candidates;
+        for (BankItemIn const& item : view.in.bags)
+            candidates.push_back({SpaceWorth(view, item.item), false});
+        int32_t const victim = WorldTravel::LowestWorthVictim(candidates);
+        return victim == WorldTravel::NO_VICTIM ? 0 : view.in.bags[victim].item.entry;
+    };
+    uint32_t const withJunk = victimOf({kept, dear, junk});
+    uint32_t const keptLast = victimOf({kept, dear});
+    uint32_t const cheaperThere = victimOf({kept, dear, cheapUse});
+    checker.Note("full bags, victims: kept + dear + junk -> " + std::to_string(withJunk) + "; kept + dear -> " +
+                 std::to_string(keptLast) + "; kept + dear + one worth 300 -> " + std::to_string(cheaperThere));
+    checker.Check(withJunk == 1201, "with full bags the junk goes before the kept item");
+    checker.Check(cheaperThere == 1202, "anything worth less than the kept item's later worth goes first");
+    checker.Check(keptLast == 1204, "the kept item goes only when everything else is worth more");
+    CarriedView const view = ViewOf(10, {kept});
+    checker.Check(SpaceWorth(view, view.in.bags[0].item) == USE,
+                  "in the space rule a kept item counts at its later worth, not as priceless");
+}
+
+// Seeded search over random bags (the seed is printed): the memo keeps exactly the items the rule keeps and that are
+// not due, at their later worth; read at another level it keeps nothing; a kept item's space worth is its later worth,
+// above what it fetches now, so the space rule takes it only when no destroyable item is worth less
+inline void CheckCarriedSearch(Checker& checker, uint32_t seed)
+{
+    constexpr uint32_t ROUNDS = 2000;
+    constexpr uint32_t MAX_ITEMS = 12;
+    uint32_t state = seed ? seed : 1;
+    auto next = [&state](uint32_t range) -> uint32_t
+    {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return range ? state % range : 0;
+    };
+
+    uint32_t memoWrong = 0;
+    uint32_t staleKept = 0;
+    uint32_t worthWrong = 0;
+    uint32_t victimWrong = 0;
+    uint32_t keptSeen = 0;
+    uint32_t keptVictims = 0;
+    for (uint32_t round = 0; round < ROUNDS; ++round)
+    {
+        uint8_t const level = static_cast<uint8_t>(1 + next(75));
+        std::vector<KeepItemIn> bags;
+        uint32_t const count = 1 + next(MAX_ITEMS);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            uint8_t const required =
+                static_cast<uint8_t>(std::max<int32_t>(0, level - 3 + static_cast<int32_t>(next(12))));
+            KeepItemIn item = Gear(2000 + i, required, static_cast<float>(next(60)), static_cast<float>(next(60)),
+                                   next(800), next(400));
+            item.wearable = next(4) != 0;
+            item.slotEmpty = next(8) == 0;
+            bags.push_back(item);
+        }
+        CarriedView const view = ViewOf(level, bags);
+        std::vector<WorldTravel::SpaceCandidate> candidates;
+        for (KeepItemIn const& item : bags)
+        {
+            KeepAnswer const answer = DecideKeep(item, view.in.bot);
+            bool const keptNotDue = answer.keeps && !IsDue(answer, view.in.bot);
+            uint32_t const each = KeptWorthEach(view.carried, item.entry, level);
+            if (keptNotDue != (each > 0) || (keptNotDue && each != answer.laterWorth))
+                ++memoWrong;
+            if (KeptWorthEach(view.carried, item.entry, static_cast<uint8_t>(level + 1)))
+                ++staleKept;
+            uint32_t const worth = SpaceWorth(view, item);
+            if (keptNotDue && (worth != answer.laterWorth || worth <= item.sellNow))
+                ++worthWrong;
+            keptSeen += keptNotDue ? 1 : 0;
+            candidates.push_back({worth, false});
+        }
+        int32_t const victim = WorldTravel::LowestWorthVictim(candidates);
+        if (victim == WorldTravel::NO_VICTIM)
+            continue;
+        for (WorldTravel::SpaceCandidate const& candidate : candidates)
+            if (candidate.Worth < candidates[victim].Worth)
+                ++victimWrong;
+        keptVictims += KeptWorthEach(view.carried, bags[victim].entry, level) ? 1 : 0;
+    }
+    checker.Note("seeded search (seed " + std::to_string(seed) + ", " + std::to_string(ROUNDS) +
+                 " bags): " + std::to_string(keptSeen) + " kept items, " + std::to_string(keptVictims) +
+                 " kept victims; wrong memo " + std::to_string(memoWrong) + ", kept at another level " +
+                 std::to_string(staleKept) + ", wrong worth " + std::to_string(worthWrong) +
+                 ", a cheaper item spared " + std::to_string(victimWrong));
+    checker.Check(memoWrong == 0, "search: the memo keeps exactly the kept items not due yet, at their later worth");
+    checker.Check(staleKept == 0, "search: read at another level the memo keeps nothing");
+    checker.Check(worthWrong == 0, "search: a kept item's space worth is its later worth, above its sell worth");
+    checker.Check(victimWrong == 0 && keptSeen > 0, "search: no destroyable item worth less than the victim is spared");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -433,6 +630,10 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckRefused(checker);
     CheckReplan(checker);
     CheckDueAfterLevelChange(checker);
+    CheckCarried(checker);
+    CheckCarriedReleased(checker);
+    CheckCarriedSpace(checker);
+    CheckCarriedSearch(checker, CARRIED_SEARCH_SEED);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;

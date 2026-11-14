@@ -6,6 +6,7 @@
 
 #include "ItemUsageValue.h"
 #include "AiFactory.h"
+#include "BankRulesInput.h"
 #include "ChatHelper.h"
 #include "GuildTaskMgr.h"
 #include "Item.h"
@@ -42,7 +43,8 @@ ItemUsage ItemUsageValue::Calculate()
     if (!proto)
         return ITEM_USAGE_NONE;
 
-    if (IsRealPlayer(botAI->GetMaster()))
+    bool const realMaster = IsRealPlayer(botAI->GetMaster());
+    if (realMaster)
     {
         if (IsItemUsefulForSkill(proto) || IsItemNeededForSkill(proto))
             return ITEM_USAGE_SKILL;
@@ -122,14 +124,18 @@ ItemUsage ItemUsageValue::Calculate()
         return equip;
 
     // A weapon the bot will learn to use at a weapon master stays in the bags (WU15a): its visit needs it carried
-    if (!IsRealPlayer(botAI->GetMaster()) && Planner::WeaponToLearn(bot, proto))
+    if (!realMaster && Planner::WeaponToLearn(bot, proto))
         return ITEM_USAGE_KEEP;
+
+    // Gear the bank rule keeps for a later level, read from what the bot remembers (BankMail::RefreshCarriedKeeps):
+    // the only source of ITEM_USAGE_BANK, and no keep decision here. Never for a bot with a real master
+    bool const keptForLater = !realMaster && BankMail::CarriedWorthEach(botAI, itemId);
 
     // Get item instance to check if it's soulbound
     Item* item = bot->GetItemByEntry(proto->ItemId);
     bool isSoulbound = item && item->IsSoulBound();
 
-    if ((proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON) &&
+    if (!keptForLater && (proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON) &&
         botAI->HasSkill(SKILL_ENCHANTING) &&
         proto->Quality >= ITEM_QUALITY_UNCOMMON)
     {
@@ -186,6 +192,9 @@ ItemUsage ItemUsageValue::Calculate()
                 return ITEM_USAGE_KEEP;  // Have exact amount needed, keep it
         }
     }
+
+    if (keptForLater)
+        return ITEM_USAGE_BANK;
 
     if (proto->Class == ITEM_CLASS_PROJECTILE && bot->CanUseItem(proto) == EQUIP_ERR_OK)
     {
@@ -557,7 +566,8 @@ uint32 ItemUsageValue::SmallestBagSize(Player* bot)
     return smallest;
 }
 
-uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier)
+uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
+                                 uint32 keptWorthEach)
 {
     if (!proto)
         return 0;
@@ -570,8 +580,11 @@ uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uin
             facts.Quest = true;
             break;
         case ITEM_USAGE_KEEP:
-        case ITEM_USAGE_BANK:
             facts.Kept = true;
+            break;
+        case ITEM_USAGE_BANK:
+            facts.LaterWorthEach = keptWorthEach;
+            facts.Kept = !keptWorthEach;
             break;
         case ITEM_USAGE_EQUIP:
         case ITEM_USAGE_REPLACE:
@@ -591,7 +604,8 @@ uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uin
     facts.Quest = facts.Quest || proto->StartQuest;
     facts.Hearthstone = proto->ItemId == ITEM_HEARTHSTONE;
     return WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(facts), proto->SellPrice,
-                                  static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), count, sellMultiplier);
+                                  static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), count, sellMultiplier,
+                                  facts.LaterWorthEach);
 }
 
 bool ItemUsageValue::IsItemUsefulForQuest(Player* player, ItemTemplate const* proto)

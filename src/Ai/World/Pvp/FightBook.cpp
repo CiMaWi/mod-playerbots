@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "BotRecordMgr.h"
 #include "CensusMgr.h"
 #include "Chat.h"
 #include "Creature.h"
@@ -294,6 +295,7 @@ void NoteCombatRefs(Player* player, uint32 nowMs)
 void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
 {
     Player* row = ObjectAccessor::GetPlayer(map, ObjectGuid(fight.starter));
+    std::vector<Player*> present;
     for (FightParticipant const& participant : fight.participants)
     {
         Player* const player = ObjectAccessor::GetPlayer(map, ObjectGuid(participant.guid));
@@ -301,6 +303,7 @@ void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
             continue;
         if (!row)
             row = player;
+        present.push_back(player);
         if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player))
         {
             if (botAI->fightMemory && botAI->fightMemory->fightId == fight.id)
@@ -313,6 +316,17 @@ void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
     }
 
     uint32 const seconds = ElapsedMs(fight.startMs, fight.endMs) / IN_MILLISECONDS;
+    // Every bot of the fight still on the map gets its record row, the others in the fight as its people
+    for (Player* const player : present)
+    {
+        std::string others;
+        for (Player* const other : present)
+            if (other != player)
+                others += Acore::StringFormat("{}{}{}", others.empty() ? "" : " ", GET_PLAYERBOT_AI(other) ? 'b' : 'p',
+                                              other->GetGUID().GetCounter());
+        BotRecordMgr::Instance().OnFightEnd(player, fight.id, seconds, Word(fight.cause), std::move(others));
+    }
+
     LOG_DEBUG("playerbots", "[WorldPvp] fight {} on map {} ended ({}): {} s, {} participants", fight.id, map->GetId(),
               Word(fight.cause), seconds, fight.participants.size());
     if (!WorldLog::Active())

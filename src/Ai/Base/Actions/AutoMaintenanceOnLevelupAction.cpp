@@ -6,6 +6,7 @@
 
 #include "AutoMaintenanceOnLevelupAction.h"
 
+#include "BankRulesInput.h"
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "PlayerbotAIConfig.h"
@@ -51,6 +52,7 @@ bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
     AutoTeleportForLevel();
     NoteHearthstoneLoss(bot, had, "teleport");
     AutoUpgradeEquip();
+    BankMail::RefreshCarriedKeeps(botAI);  // the kept gear is decided again at the new level
 
     // Persistent bots keep their hearthstone (WT.3)
     if (keepsPossessions && !HasHearthstone(bot) && bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1))

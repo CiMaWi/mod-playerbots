@@ -23,8 +23,14 @@ KeepBotIn BuildKeepBot(Player const* bot);
 // worn items), and the room in both
 BankIn BuildBankIn(PlayerbotAI* botAI);
 // Fills the bot's BankKnowledge from the bank's items: the kept list (the bank items the rule keeps now, by later
-// worth), the free bank item slots and the due summary
+// worth), the free bank item slots and the due summary; and refreshes the carried keeps
 void RefreshBankKnowledge(PlayerbotAI* botAI);
+// The bag items the rule keeps for a later level (BankKnowledge::carried), read by the item usage. Refreshed at login,
+// at a level-up, at a bank visit and before the bot sells, destroys for space or plans an errand: the item usage itself
+// never decides a keep. Only gear above the bot's level is read. Empty for a bot that does not keep its possessions
+void RefreshCarriedKeeps(PlayerbotAI* botAI);
+// The later worth of one carried kept item of the entry, or 0 (KeptWorthEach at the bot's level)
+uint32_t CarriedWorthEach(PlayerbotAI* botAI, uint32_t entry);
 }  // namespace BankMail
 
 #endif

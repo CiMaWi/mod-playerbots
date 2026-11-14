@@ -18,6 +18,9 @@
 #include <unordered_map>
 
 #include "AreaDefines.h"
+#include "BankRulesInput.h"
+#include "BankVisit.h"
+#include "BotTraitMgr.h"
 #include "BroadcastHelper.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
@@ -34,6 +37,7 @@
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
+#include "MailVisit.h"
 #include "Map.h"
 #include "ModelIgnoreFlags.h"
 #include "MotionMaster.h"
@@ -48,6 +52,7 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
+#include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -639,6 +644,94 @@ void AddTrainerStops(std::vector<TravelMgr::TrainerInfo const*> const& spawns, u
         stops.push_back({spawn->entry, ErrandPlaceOf(spawn->loc), service});
 }
 
+// Mailboxes and bankers (each kind's nearest few) that join the trip's stops by position
+constexpr std::size_t BANK_MAIL_STOPS = 4;
+
+// The bank and mail part of the trip planner's view (WB8): only a bot the bank rule governs (no real master, keeps its
+// possessions). With an errand to offer, the nearest mailboxes and bankers serving the bot within the walk limit go
+// onto the vendor stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
+void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel::ErrandSnapshot& snapshot)
+{
+    snapshot.Governed = !botAI->HasGameClientMaster() && PlayerbotFactory::KeepsPossessions(bot);
+    if (!snapshot.Governed)
+        return;
+
+    BankMail::BotBankMail& known = botAI->rpgInfo.bankMail;
+    BankMail::RefreshMailKnowledge(bot, known.mail);
+    BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
+    uint32 carried = 0;
+    for (BankMail::KeptEntry const& item : known.bank.carried.items)
+        carried += item.count;
+    snapshot.Orderliness = BotTraitMgr::instance().Trait(bot->GetGUID().GetCounter(), TraitRules::Trait::Orderliness);
+    snapshot.MailWaiting = known.mail.waiting;
+    snapshot.MailDefaultWorth = sPlayerbotAIConfig.BankMail.MailDefaultWorthCopper;
+    snapshot.MailSeenCopper = known.mail.seenCopper;
+    snapshot.MailExpectedCopper = known.mail.expectedCopper;
+    snapshot.BankDueCount = due.count;
+    snapshot.BankDueWorth = due.worth;
+    snapshot.BankDepositSlots = std::min<uint32>(carried, known.bank.freeSlots);
+
+    bool const mail = snapshot.MailWaiting || snapshot.MailSeenCopper || snapshot.MailExpectedCopper;
+    bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots;
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
+    if (!indexes || (!mail && !bank))
+        return;
+
+    std::vector<WorldTravel::ServiceStop> extras;
+    auto add = [&](Planner::ServiceKind kind, uint32 service)
+    {
+        for (Planner::Nearby const& found :
+             indexes->Nearest(kind, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                              BANK_MAIL_STOPS, reachYards))
+        {
+            Planner::Service const& spot = indexes->services[found.index];
+            // The core's interact test for a banker (Player::GetNPCIfCanInteractWith), as FindBankerSpot makes it
+            if (kind == Planner::ServiceKind::Banker &&
+                bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(spot.factionTemplate), bot) <=
+                    REP_UNFRIENDLY)
+                continue;
+            extras.push_back(
+                {kind == Planner::ServiceKind::Banker ? spot.entry : 0, {spot.mapId, spot.x, spot.y, spot.z}, service});
+        }
+    };
+    if (mail)
+        add(Planner::ServiceKind::Mailbox, WorldTravel::SERVICE_MAILBOX);
+    if (bank)
+        add(Planner::ServiceKind::Banker, WorldTravel::SERVICE_BANKER);
+    WorldTravel::MergeServiceStops(snapshot.Stops, extras);
+}
+
+// A bank or mail errand at the stop: the visit's own action (relevance 13, any status) walks to the box and holds
+// the bot until the visit ends with its row; the trip goes on after it. A box beyond the stop's reach or a refused
+// start skips the errand with a row, so the trip never waits for it
+bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kind)
+{
+    float const reach = WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS;
+    char const* refusal = nullptr;
+    char const* reason = "busy";
+    bool started = false;
+    if (kind == WorldTravel::ErrandKind::Mail)
+    {
+        std::optional<BankMail::MailboxSpot> const spot = BankMail::FindMailboxSpot(bot, refusal);
+        if (!spot || spot->distance > reach)
+            reason = "no_mailbox";
+        else
+            started = BankMail::BeginMailVisit(botAI, *spot);
+    }
+    else
+    {
+        std::optional<BankMail::BankerSpot> const spot = BankMail::FindBankerSpot(bot, refusal);
+        if (!spot || spot->distance > reach)
+            reason = "no_banker";
+        else
+            started = BankMail::BeginBankVisit(botAI, *spot);
+    }
+    if (!started)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, WorldTravel::ErrandKindName(kind), reason, 0.0f);
+    return started;
+}
+
 // The bot's completed quests with the nearest ender on its map (the planner's quest index; none before it is built)
 void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& completed)
 {
@@ -987,8 +1080,13 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     NewRpgInfo& info = botAI->rpgInfo;
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
+    uint16 const before = info.constraints;
     if (constrained)
         ApplyConstraints(botAI, bot, info, order, trip);
+    // A released errand choice is made at once: an errand check stamped before the hold (an inn trip, the login)
+    // would otherwise keep the bot from its errands for the retry time (WB8b run 1: up to 5 minutes)
+    if (!TestConstraints::ErrandAllowed(before) && TestConstraints::ErrandAllowed(info.constraints))
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
     if (order.aboard)
         PlaceAboard(botAI, bot, order.aboard);
     bool const applied = constrained || order.aboard;
@@ -1509,7 +1607,10 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     // riding rank or a weapon skill to learn plans its trainer trip
     bool const trainerWanted =
         index && ((trainingDue && training->trainer) || (riding && riding->trainer) || (weapon && weapon->trainer));
-    if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted))
+    // A trip for the mail or the bank needs no vendor either (WB8b)
+    bool const bankMailWanted =
+        !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel());
+    if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted || bankMailWanted))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
                   bot->GetName(), mapId, vendors.size(), refused);
@@ -1527,7 +1628,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         measure.VendorZ = nearest->loc.GetPositionZ();
     }
 
-    // The stacks the sell action would take from the general slots (as the destroy rule counts them)
+    // The stacks the sell action would take from the general slots (as the destroy rule counts them); gear kept for a
+    // later level is not among them
+    BankMail::RefreshCarriedKeeps(botAI);
     uint32 sellableSlots = 0;
     for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
         for (Item* item :
@@ -1643,13 +1746,14 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         snapshot.Stops.insert(snapshot.Stops.end(), masterStops.begin(), masterStops.end());
     }
     AddCompletedQuests(bot, snapshot.Completed);
+    AddBankMail(botAI, bot, reachYards, snapshot);
 
     // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay
     WorldTravel::TripRequest request;
     request.Start = {mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
-    std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TravelProviders());
+    std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
     if (questing)
         offers.erase(std::remove_if(offers.begin(), offers.end(),
                                     [](WorldTravel::ErrandOffer const& offer) { return !offer.Due; }),
@@ -1660,13 +1764,44 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     float tripMinutes = 0.0f;
     std::size_t errandCount = 0;
     bool anyVendor = false;
+    // The bank and mail errands' rows: joined when the stop's other errands pay its detour, else detour (WB8b)
+    std::vector<std::pair<WorldTravel::ErrandOffer, char const*>> bankMail;
     bool anyTrainer = false;
     std::array<bool, WorldTravel::ERRAND_KIND_COUNT> due{};  // a due need's errand is on the trip, by kind
     for (WorldTravel::TripStop const& tripStop : plan.Stops)
     {
         NewRpgInfo::ErrandStop stop;
         stop.pos = WorldPosition(tripStop.Place.MapId, tripStop.Place.X, tripStop.Place.Y, tripStop.Place.Z);
-        if (tripStop.Services & WorldTravel::SERVICE_VENDOR)
+        bool otherErrand = false;
+        float otherWorth = 0.0f;
+        for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
+        {
+            if (errand.Due)
+                due[static_cast<std::size_t>(errand.Kind)] = true;
+            switch (errand.Kind)
+            {
+                case WorldTravel::ErrandKind::BankWithdraw:
+                    stop.bankBefore = true;
+                    continue;
+                case WorldTravel::ErrandKind::BankDeposit:
+                    stop.bankAfter = true;
+                    continue;
+                case WorldTravel::ErrandKind::Mail:
+                    stop.mail = true;
+                    continue;
+                case WorldTravel::ErrandKind::TurnIn:
+                    stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
+                    break;
+                default:
+                    break;
+            }
+            otherErrand = true;
+            otherWorth += errand.WorthCopper;
+        }
+        stop.bankAfter = stop.bankAfter && !stop.bankBefore;
+        // The vendor part runs where the stop has errands besides the bank and the mail (a mailbox beside a vendor
+        // does not send the bot to that vendor)
+        if (otherErrand && (tripStop.Services & WorldTravel::SERVICE_VENDOR))
         {
             stop.vendorEntry = tripStop.Id;
             anyVendor = true;
@@ -1688,12 +1823,15 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             stop.trainerWeapon = !classTrainer && weaponMaster;
             anyTrainer = true;
         }
-        for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
+        if (WorldLog::Active())
         {
-            if (errand.Kind == WorldTravel::ErrandKind::TurnIn)
-                stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
-            if (errand.Due)
-                due[static_cast<std::size_t>(errand.Kind)] = true;
+            bool const joined =
+                tripStop.OnRoute || otherWorth > WorldTravel::DetourCost(request.Rates, tripStop.DetourMinutes);
+            for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
+                if (errand.Kind == WorldTravel::ErrandKind::Mail ||
+                    errand.Kind == WorldTravel::ErrandKind::BankWithdraw ||
+                    errand.Kind == WorldTravel::ErrandKind::BankDeposit)
+                    bankMail.emplace_back(errand, joined ? "joined" : "detour");
         }
         tripMinutes += tripStop.DetourMinutes;
         errandCount += tripStop.Errands.size();
@@ -1718,13 +1856,19 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         LOG_DEBUG("playerbots",
                   "[New RPG] {} errands: trip not worth it (nearest vendor {} at {:.0f} yd, {:.1f} walk min, {} "
                   "sellable, {} free slots, {} errands refused)",
-                  bot->GetName(), nearest->entry, nearestYards, walkMinutes, sellableSlots, snapshot.FreeSlots,
-                  plan.Refused.size());
+                  bot->GetName(), nearest ? nearest->entry : 0, nearest ? nearestYards : 0.0f, walkMinutes,
+                  sellableSlots, snapshot.FreeSlots, plan.Refused.size());
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "not_worth", walkMinutes * MINUTE,
                            weighed);
         return false;
     }
 
+    // The trip's row names the vendor, else the trainer, else its first errand (turn_in, mail, bank_withdraw)
+    char const* tripWord = anyVendor ? "vendor" : "trainer";
+    if (!anyVendor && !anyTrainer)
+        tripWord = plan.Stops.front().Errands.empty()
+                       ? "turn_in"
+                       : WorldTravel::ErrandKindName(plan.Stops.front().Errands.front().Kind);
     botAI->rpgInfo.ChangeToErrands(std::move(stops), bot->GetMoney());
     auto const dueOnTrip = [&due](WorldTravel::ErrandKind kind) { return due[static_cast<std::size_t>(kind)]; };
     if (dueOnTrip(WorldTravel::ErrandKind::Repair))
@@ -1745,10 +1889,14 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                                : dueOnTrip(WorldTravel::ErrandKind::Weapon) ? "weapon_due"
                                : dueOnTrip(WorldTravel::ErrandKind::Ride)   ? "ride_due"
                                                                             : "worth_it";
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
-                       anyVendor ? "vendor" : (anyTrainer ? "trainer" : "turn_in"), reason, tripMinutes * MINUTE,
-                       weighed);
-    // The errands the trip leaves out: the detour rule's refusals (detour_not_worth, too_far, no_stop)
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
+    // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals
+    // (detour_not_worth, too_far, no_stop)
+    if (WorldLog::Active())
+        for (std::pair<WorldTravel::ErrandOffer, char const*> const& errand : bankMail)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
+                               WorldTravel::ErrandKindName(errand.first.Kind), errand.second, 0.0f,
+                               {{"worth", errand.first.WorthCopper}});
     if (WorldLog::Active())
         for (WorldTravel::Refusal const& refusal : plan.Refused)
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
@@ -1761,7 +1909,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 bool NewRpgErrandsAction::Execute(Event /*event*/)
 {
     auto* data = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
-    if (!data)
+    // A mailbox or banker visit of the stop runs under its own action; the trip goes on once it has ended
+    if (!data || BankMail::VisitRuns(botAI->rpgInfo.bankMail))
         return false;
 
     if (data->stop >= data->stops.size())
@@ -1782,12 +1931,27 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         data->arrived = true;
     }
 
-    // The vendor part of the stop; a vendor that is gone leaves the stop's other errands
+    // WB8's order at a stop: the banker first when it withdraws (the items may be worn or sold), then the vendor and
+    // the turn-ins, then a deposit alone and the mailbox
+    if (stop.bankBefore)
+    {
+        stop.bankBefore = false;
+        if (StartStopVisit(botAI, bot, WorldTravel::ErrandKind::BankWithdraw))
+        {
+            data->visited = true;
+            return true;
+        }
+    }
+
+    // The vendor visit of the npc wander: sell by worth, buy (a bag by worth) and repair, all paid. A vendor that is
+    // gone leaves the stop's other errands. Searched within the stop's reach, as the turn-ins: a banker visit before
+    // it leaves the bot up to STOP_JOIN_YARDS from the stop (WB8b run 3: Dalaran's vendor 39 yd from the banker)
     if (stop.vendorEntry && !data->vendorDone)
     {
         if (data->vendor.IsEmpty())
         {
-            Creature* found = bot->FindNearestCreature(stop.vendorEntry, VENDOR_SEARCH_YARDS);
+            Creature* found =
+                bot->FindNearestCreature(stop.vendorEntry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
             if (!found)
             {
                 data->vendorDone = true;
@@ -1809,6 +1973,20 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             if (MoveWorldObjectTo(data->vendor))
                 return true;
             return MoveRandomNear(15.0f);
+        }
+
+        // The sale finds its vendor only in sight. In reach, the walk up to the vendor ends first, and one still out
+        // of sight (Undercity's ramp above Jeremiah Payson, Dalaran's stairs: WB8b runs 5 and 8) gets a few steps
+        // toward it at most; then the bot sells as it stands
+        if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+            return false;
+
+        constexpr uint8 MAX_SIGHT_STEPS = 3;
+        if (data->sightSteps < MAX_SIGHT_STEPS && !bot->IsWithinLOSInMap(vendor))
+        {
+            ++data->sightSteps;
+            if (MoveWorldObjectTo(data->vendor, 1.0f))
+                return true;
         }
 
         // The vendor visit of the npc wander: the use measure before anything changes the bags, then sell by worth,
@@ -1912,11 +2090,22 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         return true;
     }
 
+    if (stop.bankAfter || stop.mail)
+    {
+        WorldTravel::ErrandKind const kind =
+            stop.bankAfter ? WorldTravel::ErrandKind::BankDeposit : WorldTravel::ErrandKind::Mail;
+        (stop.bankAfter ? stop.bankAfter : stop.mail) = false;
+        if (StartStopVisit(botAI, bot, kind))
+            data->visited = true;
+        return true;
+    }
+
     // The stop is done: on to the next
     ++data->stop;
     data->arrived = false;
     data->vendorDone = false;
     data->vendor = ObjectGuid();
+    data->sightSteps = 0;
     return true;
 }
 

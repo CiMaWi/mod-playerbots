@@ -1708,6 +1708,10 @@ void PlayerbotAI::HandleTeleportAck()
         if (!plMover)
             return;
 
+        // A running mailbox or bank visit ends with its row: its walk was planned from where the bot stood, the spot in
+        // reach, and getting back from where it lands is the travel errand's job (WB.12)
+        BankMail::EndVisits(this, BankMail::VisitEnd::Teleport);
+
         WorldPacket p(MSG_MOVE_TELEPORT_ACK, 20);
         p << plMover->GetPackGUID();
         p << uint32(0);  // flags
@@ -9503,9 +9507,11 @@ uint32 PlayerbotAI::ComputeReactDelay()
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
         return base * 5;
 
-    // When not resting, or on a mailbox or banker visit, return 10-30 times the base. A visit takes one step a check:
-    // at the rest area's pace below, a visit of two mails took minutes in a city (WB7d)
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail))
+    // When not resting, on a mailbox or banker visit or on an errand trip, return 10-30 times the base. A visit or a
+    // trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes in a city (WB7d),
+    // and a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b)
+    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail) ||
+        std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data))
         return base * urand(10, 30);
 
     // In other cases, return 20-200 times the base
