@@ -327,6 +327,7 @@ WalkAnswer Ask(Probe const* probe, Vec const& at, Vec const& target, bool keepPo
     WalkAnswer answer;
     answer.result = path.CalculatePath(at.x, at.y, at.z, target.x, target.y, target.z, false);
     answer.type = path.GetPathType();
+    answer.engineHops = EngineHops(MMAP_VERSION);
     answer.first = at;
     answer.last = at;
     Movement::PointsArray const& points = path.GetPath();
@@ -538,7 +539,9 @@ void Finish(TravelGraph const& graph)
         out << "# walk: the bot's, modelled (orders within " << WALK_ORDER_RANGE << " yd, arrival within " << WALK_GOAL
             << " yd 3D, stuck after " << WALK_STUCK_MOVES << " moves without " << WALK_GAIN << " yd gain, at most "
             << WALK_MAX_MOVES << " moves); ok: on the mesh only, shortcut: with a straight move (also the hop: an "
-            << "INCOMPLETE path of two points over " << HOP_MIN << " yd); mode path: over the stored points, "
+            << "INCOMPLETE path of two points over " << HOP_MIN << " yd, on core v20 only: hop rule "
+            << (EngineHops(MMAP_VERSION) ? "on" : "off") << ", MMAP_VERSION " << MMAP_VERSION
+            << "); mode path: over the stored points, "
             << "no-path: none stored\n";
         out << "# navmesh: " << sWorld->GetDataPath() << "mmaps\n";
         out << "# " << (job.stop ? "stopped" : "complete") << (job.limit ? ", first links only" : "") << ", "

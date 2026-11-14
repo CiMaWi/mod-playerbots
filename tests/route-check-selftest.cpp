@@ -61,6 +61,7 @@ int main()
         one.length = Dist3D(at, target);
         one.pointCount = 2;
         one.points = {at, target};
+        one.engineHops = true;
         return one;
     };
     auto const half = []() { return 0.5f; };
@@ -190,6 +191,30 @@ int main()
     std::uint32_t const hopKinds = WalkMove(start, twenty, hopOnly, land, length, nullptr);
     check(hopKinds == (WALK_STRAIGHT | WALK_HOP | WALK_INCOMPLETE) && land.x == 20.0f && length == 20.0f,
           "a hop move: straight, lands on its last point");
+    // The hop rule follows the engine: on core v21 (no append for INCOMPLETE) the same two points are an honest
+    // partial path, a mesh move
+    check(EngineHops(20) && !EngineHops(21) && !EngineHops(22), "the engine appends the hop below navmesh v21");
+    WalkAnswer partial = hopAnswer(PATH_INCOMPLETE, start, twenty);
+    partial.engineHops = false;
+    check(!IsHop(partial), "core v21: two INCOMPLETE points over 4.3 yd apart are no hop");
+    auto partialOnly = [&](Vec const& at, Vec const& target)
+    {
+        WalkAnswer one = hopAnswer(PATH_INCOMPLETE, at, target);
+        one.engineHops = false;
+        return one;
+    };
+    std::uint32_t const partialKinds = WalkMove(start, twenty, partialOnly, land, length, nullptr);
+    check(partialKinds == (WALK_MESH | WALK_INCOMPLETE) && land.x == 20.0f, "core v21: that answer is a mesh move");
+    auto const gapNoHop = [&](Vec const& at, Vec const& target)
+    {
+        WalkAnswer one = gap(at, target);
+        one.engineHops = false;
+        return one;
+    };
+    WalkResult const gapWalkNoHop = Walk(start, sixtyEnd, gapNoHop, half);
+    check(DirectionOf(gapWalkNoHop) == Direction::Ok && gapWalkNoHop.kinds == (WALK_MESH | WALK_INCOMPLETE) &&
+              std::fabs(gapWalkNoHop.meshYd - 60.0f) < 0.01f,
+          "the gap's answers from an engine that does not append: mesh moves only, ok (as before NV19)");
 
     // mode=path: the stored points in order. A mesh with a hole between x 80 and 100: the walk node to node goes
     // around it (one mesh order), the stored points lead into it

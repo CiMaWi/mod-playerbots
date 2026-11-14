@@ -82,8 +82,14 @@ constexpr float WALK_CONE = 3.14159265f;  // the cone's width: (rand - 0.5) x th
 // actual end to that point (:701): an INCOMPLETE answer of two points whose actual end is its last point, which the
 // bot walks as a straight line off the mesh it stands on. A smooth path has a point at least every
 // SMOOTH_PATH_STEP_SIZE (4 yd) plus SMOOTH_PATH_SLOP (0.3 yd), so a two-point INCOMPLETE answer longer than this
-// (2D) is the hop. Core v21 answers the same case NOPATH (:659), a straight line already.
+// (2D) is the hop. Core v21 appends the target to NORMAL paths only and answers the same case NOPATH (:659), a
+// straight line already; there a two-point INCOMPLETE answer is an honest partial path (a straight corridor to the
+// last polygon it reaches), so the hop rule applies only to answers of an engine that appends (EngineHops).
 constexpr float HOP_MIN = 4.3f;
+
+// Whether the engine built with this navmesh version appends the hop: v21 (PR #28361) brought the mesh and the
+// NORMAL-only append together
+constexpr bool EngineHops(int mmapVersion) { return mmapVersion < 21; }
 
 // What a walk's moves were, as bits
 constexpr std::uint32_t WALK_MESH = 0x01;        // along a navmesh path
@@ -104,12 +110,14 @@ struct WalkAnswer
     float length{0.0f};           // along the path's points
     std::uint32_t pointCount{0};  // the path's points
     std::vector<Vec> points;      // the path's points; only needed when the walk keeps a trace
+    bool engineHops{false};       // the answering engine appends the hop (EngineHops)
 };
 
 // The engine's hop (HOP_MIN): the answer's last point was appended, not walked on the mesh
 inline bool IsHop(WalkAnswer const& answer)
 {
-    return (answer.type & PATH_INCOMPLETE) && answer.pointCount == 2 && Dist2D(answer.first, answer.last) > HOP_MIN;
+    return answer.engineHops && (answer.type & PATH_INCOMPLETE) && answer.pointCount == 2 &&
+           Dist2D(answer.first, answer.last) > HOP_MIN;
 }
 
 enum class WalkEnd : std::uint8_t
