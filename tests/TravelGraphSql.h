@@ -8,9 +8,9 @@
 #define _PLAYERBOT_TRAVELGRAPHSQL_H
 
 // The offline selftests' travel graph: the INSERT rows of data/sql/playerbots/base/playerbots_travelnode*.sql and of
-// the updates under data/sql/playerbots/updates/, fed into the TravelGraphBuilder the server's loader uses, plus the
-// TaxiPath and TaxiNodes DBC files the server reads from its stores (tests/travel-graph-selftest.cpp,
-// tests/route-rules-selftest.cpp)
+// the updates under data/sql/playerbots/updates/, or of a graph directory's files alone (a graph that replaces the
+// three tables whole), fed into the TravelGraphBuilder the server's loader uses, plus the TaxiPath and TaxiNodes DBC
+// files the server reads from its stores (tests/travel-graph-selftest.cpp, tests/route-rules-selftest.cpp)
 
 #include <algorithm>
 #include <chrono>
@@ -139,29 +139,44 @@ struct LoadInfo
     std::uint32_t loadMs{0};
 };
 
-// Builds and publishes graph from the module at root; dbcDir empty = no TaxiPath data (no flight is usable)
+// The .sql files of dir in name (date) order
+inline std::vector<std::filesystem::path> SqlFiles(std::filesystem::path const& dir)
+{
+    std::vector<std::filesystem::path> files;
+    for (auto const& entry : std::filesystem::directory_iterator(dir))
+        if (entry.path().extension() == ".sql")
+            files.push_back(entry.path());
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+// Builds and publishes graph from the module at root, or from graphDir's files alone when it is given; dbcDir empty =
+// no TaxiPath data (no flight is usable)
 inline bool Load(std::filesystem::path const& root, std::filesystem::path const& dbcDir, TravelGraph& graph,
-                 LoadInfo& info, std::string& error)
+                 LoadInfo& info, std::string& error, std::filesystem::path const& graphDir = {})
 {
     std::filesystem::path const base = root / "data" / "sql" / "playerbots" / "base";
     std::filesystem::path const updatesDir = root / "data" / "sql" / "playerbots" / "updates";
-    if (!std::filesystem::exists(base / "playerbots_travelnode_path.sql"))
+    if (graphDir.empty() && !std::filesystem::exists(base / "playerbots_travelnode_path.sql"))
     {
         error = "no shipped graph under " + base.string();
         return false;
     }
+    if (!graphDir.empty() && !std::filesystem::is_directory(graphDir))
+    {
+        error = "no graph directory " + graphDir.string();
+        return false;
+    }
 
-    // The updates apply after the base files, in name (date) order. Their DELETEs are ignored: the only one today
-    // (2025_03_03_00) removes rows of node 3780 that the base lacks, and a duplicate node id fails the build
-    std::vector<std::filesystem::path> updates;
-    for (auto const& entry : std::filesystem::directory_iterator(updatesDir))
-        if (entry.path().extension() == ".sql")
-            updates.push_back(entry.path());
-    std::sort(updates.begin(), updates.end());
-
+    // Updates apply after the base files, in name (date) order, with their DELETEs ignored: a delete of the shipped
+    // updates removes rows the base lacks, and a duplicate node id fails the build. A graph directory's files replace
+    // the three tables whole (each starts with a DELETE and numbers the nodes anew), so they are read alone
+    std::vector<std::filesystem::path> const updates = graphDir.empty() ? SqlFiles(updatesDir) : SqlFiles(graphDir);
     auto const files = [&](char const* table)
     {
-        std::vector<std::filesystem::path> list{base / (std::string(table) + ".sql")};
+        std::vector<std::filesystem::path> list;
+        if (graphDir.empty())
+            list.push_back(base / (std::string(table) + ".sql"));
         list.insert(list.end(), updates.begin(), updates.end());
         return list;
     };

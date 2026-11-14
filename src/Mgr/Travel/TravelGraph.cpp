@@ -27,8 +27,8 @@ namespace
 constexpr uint32 PATH_CHUNK_NODES = 100;
 
 // A transport link's object must be a transport gameobject (a ship, zeppelin, elevator or tram car): the follower
-// looks for it among the map's transports. The templates are loaded before OnBeforeWorldInitialized starts the loader
-// and never change afterwards
+// looks for it among the map's transports; object 0 is a wait point's link to its stop. The templates are loaded before
+// OnBeforeWorldInitialized starts the loader and never change afterwards
 bool IsTransportObject(uint32 entry)
 {
     GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(entry);
@@ -101,7 +101,8 @@ void TravelGraph::Load()
             for (uint32 i = 0; i < 3; ++i)
                 row.maxCreature[i] = fields[7 + i].Get<uint8>();
             ++rows[1];
-            if (row.type == static_cast<uint8>(TravelLinkType::Transport) && !IsTransportObject(row.object))
+            if (row.type == static_cast<uint8>(TravelLinkType::Transport) && row.object &&
+                !IsTransportObject(row.object))
             {
                 ++notTransports;
                 continue;
@@ -173,9 +174,11 @@ void TravelGraph::Load()
     LOG_INFO("playerbots",
              "[Route] travel graph rows read: {} nodes, {} links, {} points; largest path chunk {} rows; {} links "
              "skipped, {} points without a link; {} taxi paths, {} flight links without one; {} transport links "
-             "without a transport object dropped",
+             "whose object is no transport dropped; {} wait-point links, {} stops with a wait point; {} static portals "
+             "(not searched)",
              rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints, _stats.taxiPaths,
-             _stats.flightsWithoutTaxi, notTransports);
+             _stats.flightsWithoutTaxi, notTransports, _stats.waitPointLinks, _stats.waitStops,
+             _stats.linksByType[static_cast<std::size_t>(TravelLinkType::StaticPortal)]);
     Publish(loadMs, peakChunkRows);
 }
 
@@ -200,11 +203,11 @@ bool TravelGraph::HandleStatusCommand(ChatHandler* handler, char const* /*args*/
 
     TravelGraphStats const& stats = graph.Stats();
     handler->PSendSysMessage(
-        "ROUTE status: travel graph ready: {} nodes, {} links (walk {}, portal {}, transport {}, "
-        "flight {}), {} points, {:.1f} MB, loaded in {} ms, largest path chunk {} rows",
+        "ROUTE status: travel graph ready: {} nodes, {} links (walk {}, portal {}, transport {} with {} wait-point "
+        "links, flight {}, static portal {}), {} points, {:.1f} MB, loaded in {} ms, largest path chunk {} rows",
         stats.nodes, stats.links, stats.linksByType[1], stats.linksByType[2], stats.linksByType[3],
-        stats.linksByType[4], stats.points, static_cast<double>(stats.memoryBytes) / (1024.0 * 1024.0), stats.loadMs,
-        stats.peakChunkRows);
+        stats.waitPointLinks, stats.linksByType[4], stats.linksByType[6], stats.points,
+        static_cast<double>(stats.memoryBytes) / (1024.0 * 1024.0), stats.loadMs, stats.peakChunkRows);
     handler->PSendSysMessage("{}", TravelRoute::RouteServiceStatus());
     return true;
 }

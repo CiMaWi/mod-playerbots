@@ -1504,7 +1504,7 @@ inline void NoteDeath(Trip& trip)
 }
 
 // A transport leg that timed out (its transport never took the bot, or never let it off): later routes of this trip
-// leave its link out, both ways
+// leave its link out, both ways. Its middle pair of nodes: the ride, between the wait points where the leg has them
 inline void NoteTransportTimeout(Trip& trip)
 {
     if (trip.legIdx >= trip.legs.size())
@@ -1512,7 +1512,8 @@ inline void NoteTransportTimeout(Trip& trip)
     Leg const& leg = trip.legs[trip.legIdx];
     if (leg.type != LegType::Transport || leg.nodes.size() < 2)
         return;
-    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes.front(), leg.nodes.back()};
+    std::size_t const middle = leg.nodes.size() / 2;
+    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes[middle - 1], leg.nodes[middle]};
     if (trip.avoidEdges.size() < AVOID_EDGES &&
         std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
         trip.avoidEdges.push_back(edge);

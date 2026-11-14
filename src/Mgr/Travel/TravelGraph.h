@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_TRAVELGRAPH_H
 #define _PLAYERBOT_TRAVELGRAPH_H
 
-// The shipped travel graph (playerbots_travelnode, _link and _path) as flat, index-based arrays. One loader thread
+// The travel graph (playerbots_travelnode, _link and _path) as flat, index-based arrays. One loader thread
 // fills it once after startup (TravelGraph.cpp); once IsReady() is true nothing writes it again, so any thread reads it
 // without locks. Server-free on purpose: tests/travel-graph-selftest.cpp builds it from the shipped SQL files through
 // the same TravelGraphBuilder and runs the same Selftest().
@@ -33,11 +33,15 @@ class ChatHandler;
 // playerbots_travelnode_link.type (TravelNodePathType in TravelNode.h)
 enum class TravelLinkType : std::uint8_t
 {
-    Walk = 1,       // one map; distance in yards
-    Portal = 2,     // object = area trigger id
-    Transport = 3,  // object = transport gameobject entry (ships, zeppelins, elevators)
-    Flight = 4      // object = TaxiPath id
+    Walk = 1,         // one map; distance in yards
+    Portal = 2,       // object = area trigger id
+    Transport = 3,    // object = transport gameobject entry (ships, zeppelins, elevators); 0 = a wait point's link to
+                      // its stop, distance = the walk between them
+    Flight = 4,       // object = TaxiPath id
+    StaticPortal = 6  // object = the gameobject entry of a portal a player clicks; loaded, not searched yet (WT55d)
 };
+
+constexpr std::size_t TRAVEL_LINK_TYPES = 7;  // TravelLinkType values are below this; 5 is unused
 
 struct TravelGraphNode
 {
@@ -48,6 +52,9 @@ struct TravelGraphNode
     float z{0.0f};
     std::uint32_t firstLink{0};  // the node's links are links[firstLink, firstLink + linkCount), sorted by `to`
     std::uint32_t linkCount{0};
+    // A transport stop with a wait point: routes reach and leave it only through its wait point and its rides
+    // (TravelGraph::OffWaitStop)
+    bool waitStop{false};
 };
 
 struct TravelGraphLink
@@ -101,10 +108,12 @@ struct TravelGraphStats
     std::uint32_t nodes{0};
     std::uint32_t links{0};
     std::uint32_t points{0};
-    std::uint32_t linksByType[5]{};  // index = TravelLinkType value
-    std::uint32_t skippedLinks{0};   // unknown node, a link to itself or an unknown type
-    std::uint32_t orphanPoints{0};   // points of a link that is not in the link table
-    std::size_t memoryBytes{0};      // capacity of all arrays
+    std::uint32_t linksByType[TRAVEL_LINK_TYPES]{};  // index = TravelLinkType value
+    std::uint32_t waitPointLinks{0};                 // transport links without an object: a wait point and its stop
+    std::uint32_t waitStops{0};                      // stops with a wait point (TravelGraphNode::waitStop)
+    std::uint32_t skippedLinks{0};                   // unknown node, a link to itself or an unknown type
+    std::uint32_t orphanPoints{0};                   // points of a link that is not in the link table
+    std::size_t memoryBytes{0};                      // capacity of all arrays
     std::uint32_t loadMs{0};
     std::uint32_t peakChunkRows{0};       // the largest path chunk the loader held at once
     std::uint32_t taxiPaths{0};           // TaxiPath rows known to the graph
@@ -304,6 +313,20 @@ public:
         return found;
     }
 
+    // A transport link without an object joins a wait point to its stop: a walk, no ride
+    static bool IsWaitPointLink(TravelGraphLink const& link)
+    {
+        return link.type == TravelLinkType::Transport && !link.object;
+    }
+
+    // A link other than a transport into or out of a stop with a wait point: no route uses it, the bot waits at the
+    // wait point and crosses from there
+    bool OffWaitStop(TravelGraphLink const& link) const
+    {
+        return link.type != TravelLinkType::Transport && (_nodes[link.from].waitStop || _nodes[link.to].waitStop);
+    }
+
+    // Negative for a link the simple search does not use
     static float SimpleCost(TravelGraphLink const& link)
     {
         switch (link.type)
@@ -313,9 +336,13 @@ public:
             case TravelLinkType::Portal:
                 return link.extraCost;
             case TravelLinkType::Transport:
+                if (!link.object)
+                    return link.distance / RUN_SPEED;
                 return link.extraCost >= 1.0f ? link.extraCost : SHIP_SECONDS;  // elevators store seconds
             case TravelLinkType::Flight:
                 return link.pathLength / FLIGHT_SPEED;
+            case TravelLinkType::StaticPortal:
+                return -1.0f;
         }
         return link.extraCost;
     }
@@ -346,7 +373,10 @@ public:
 
             for (TravelGraphLink const& link : LinksOf(node))
             {
-                float const next = cost + SimpleCost(link);
+                float const seconds = SimpleCost(link);
+                if (seconds < 0.0f || OffWaitStop(link))
+                    continue;
+                float const next = cost + seconds;
                 if (next < best[link.to])
                 {
                     best[link.to] = next;
@@ -367,9 +397,9 @@ public:
         return route;
     }
 
-    // The checks shared by tests/travel-graph-selftest.cpp and `playerbots route selftest`: the shipped data's counts,
-    // CSR consistency, the grid against a brute-force scan and three routes. Returns the number of checks; failures get
-    // one line each, notes the route summaries
+    // The checks shared by tests/travel-graph-selftest.cpp and `playerbots route selftest` on any graph: counts that
+    // agree with each other, CSR consistency, the grid against a brute-force scan and three routes. Returns the number
+    // of checks; failures get one line each, notes the route summaries
     std::uint32_t Selftest(std::vector<std::string>& failures, std::vector<std::string>& notes) const;
 
     // Sets the load figures and marks the graph ready; nothing writes it afterwards
@@ -430,12 +460,34 @@ private:
         }
     }
 
+    // A stop is a node with a ride (a transport link with an object); a wait-point link marks its stop ends
+    void BuildWaitStops()
+    {
+        std::vector<bool> ride(_nodes.size(), false);
+        for (TravelGraphLink const& link : _links)
+            if (link.type == TravelLinkType::Transport && link.object)
+                ride[link.from] = ride[link.to] = true;
+        for (TravelGraphLink const& link : _links)
+        {
+            if (!IsWaitPointLink(link))
+                continue;
+            for (std::uint32_t const end : {link.from, link.to})
+                if (ride[end] && !_nodes[end].waitStop)
+                {
+                    _nodes[end].waitStop = true;
+                    ++_stats.waitStops;
+                }
+        }
+    }
+
     void BuildArrivals()
     {
         _arrivals.clear();
         for (TravelGraphLink const& link : _links)
         {
-            if (link.type == TravelLinkType::Walk)
+            // No jump onto a map: walks, wait-point links on one map, and static portals the search leaves out
+            if (link.type == TravelLinkType::Walk || link.type == TravelLinkType::StaticPortal ||
+                (IsWaitPointLink(link) && _nodes[link.from].mapId == _nodes[link.to].mapId))
                 continue;
             TravelGraphArrival arrival;
             arrival.mapId = _nodes[link.to].mapId;
@@ -570,8 +622,7 @@ public:
         {
             std::uint32_t const from = row.fromId <= maxId ? _indexOfId[row.fromId] : TravelGraph::NO_NODE;
             std::uint32_t const to = row.toId <= maxId ? _indexOfId[row.toId] : TravelGraph::NO_NODE;
-            if (from == TravelGraph::NO_NODE || to == TravelGraph::NO_NODE || from == to || row.type < 1 ||
-                row.type > 4)
+            if (from == TravelGraph::NO_NODE || to == TravelGraph::NO_NODE || from == to || !KnownType(row.type))
             {
                 ++_stats.skippedLinks;
                 continue;
@@ -589,6 +640,8 @@ public:
             link.extraCost = row.extraCost;
             _links.push_back(link);
             ++_stats.linksByType[row.type];
+            if (TravelGraph::IsWaitPointLink(link))
+                ++_stats.waitPointLinks;
         }
         _linkRows.clear();
         _linkRows.shrink_to_fit();
@@ -723,9 +776,10 @@ public:
         graph._points = std::move(_points);
         graph._indexOfId = std::move(_indexOfId);
         graph._taxiPaths = std::move(_taxiPaths);
-        graph.BuildGrid();
-        graph.BuildArrivals();
         graph._stats = _stats;
+        graph.BuildGrid();
+        graph.BuildWaitStops();
+        graph.BuildArrivals();
         graph._stats.memoryBytes = graph.MemoryBytes();
         return true;
     }
@@ -735,6 +789,15 @@ private:
     static constexpr std::uint32_t MAX_TAXI_ID = 100000;
     static constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
     static constexpr std::uint32_t DISORDERED = NO_LINK - 1;
+
+    static bool KnownType(std::uint32_t type)
+    {
+        return type == static_cast<std::uint32_t>(TravelLinkType::Walk) ||
+               type == static_cast<std::uint32_t>(TravelLinkType::Portal) ||
+               type == static_cast<std::uint32_t>(TravelLinkType::Transport) ||
+               type == static_cast<std::uint32_t>(TravelLinkType::Flight) ||
+               type == static_cast<std::uint32_t>(TravelLinkType::StaticPortal);
+    }
 
     std::uint32_t FindLink(std::uint32_t fromId, std::uint32_t toId) const
     {
@@ -769,8 +832,8 @@ private:
     std::uint32_t _disorderedPoints{0};
 };
 
-// The shipped graph: data/sql/playerbots/base/playerbots_travelnode*.sql plus the update
-// data/sql/playerbots/updates/2025_03_03_00.sql (node 3780 'Highlord Mograine' with 2 walk links and 4 points)
+// Any graph: the shipped one (data/sql/playerbots/base/playerbots_travelnode*.sql plus its updates) or one that
+// replaces the three tables whole (the navigation plan's builds)
 inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, std::vector<std::string>& notes) const
 {
     std::uint32_t checks = 0;
@@ -791,14 +854,15 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     if (!check(IsReady(), "graph ready"))
         return checks;
 
-    // 1. The shipped data
-    expect(_nodes.size(), 3781, "nodes");
-    expect(_links.size(), 15041, "links");
-    expect(_points.size(), 1404959, "path points");
-    expect(_stats.linksByType[1], 13885, "walk links");
-    expect(_stats.linksByType[2], 257, "portal links");
-    expect(_stats.linksByType[3], 210, "transport links");
-    expect(_stats.linksByType[4], 689, "flight links");
+    // 1. The counts agree: every link has a known type, every point a link
+    std::size_t typed = 0;
+    for (std::uint32_t const count : _stats.linksByType)
+        typed += count;
+    check(!_nodes.empty() && !_links.empty() && !_points.empty(), "a graph with nodes, links and points");
+    expect(typed, _links.size(), "links by type");
+    expect(_stats.linksByType[0] + _stats.linksByType[5], 0, "links of no type");
+    expect(_stats.waitPointLinks,
+           static_cast<std::size_t>(std::count_if(_links.begin(), _links.end(), IsWaitPointLink)), "wait-point links");
     expect(_stats.skippedLinks, 0, "skipped links");
     expect(_stats.orphanPoints, 0, "points without a link");
 
@@ -809,11 +873,13 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     std::size_t badPaths = 0;
     std::size_t flightsWithoutLength = 0;
     std::size_t thundercaller = 0;
+    std::size_t waitStops = 0;
     for (std::uint32_t index = 0; index < _nodes.size(); ++index)
     {
         TravelGraphNode const& node = _nodes[index];
         if (node.linkCount && node.firstLink != nextLink)
             ++badLinks;
+        waitStops += node.waitStop ? 1 : 0;
         nextLink += node.linkCount;
         std::uint32_t previousTo = NO_NODE;
         for (TravelGraphLink const& link : LinksOf(index))
@@ -837,7 +903,16 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     expect(badPaths, 0, "point ranges out of bounds");
     expect(pointsUsed, _points.size(), "points in link ranges");
     expect(flightsWithoutLength, 0, "flight links without a path length");
-    expect(thundercaller, 2, "transport links of The Thundercaller");
+    expect(waitStops, _stats.waitStops, "stops with a wait point");
+    check(thundercaller >= 2, "The Thundercaller rides " + std::to_string(thundercaller) + " (expected both ways)");
+    char const* const typeNames[TRAVEL_LINK_TYPES] = {"none",   "walk",   "portal",       "transport",
+                                                      "flight", "type 5", "static portal"};
+    std::string counts = "links by type:";
+    for (std::size_t type = 1; type < TRAVEL_LINK_TYPES; ++type)
+        if (_stats.linksByType[type])
+            counts += std::string(" ") + typeNames[type] + " " + std::to_string(_stats.linksByType[type]);
+    notes.push_back(counts + "; wait-point links " + std::to_string(_stats.waitPointLinks) +
+                    ", stops with a wait point " + std::to_string(_stats.waitStops));
 
     // 3. The grid answers like a scan over the map's nodes (squared distances of the k nearest)
     std::size_t gridMisses = 0;
@@ -889,15 +964,15 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         float minSeconds;
         float maxSeconds;
     };
-    // Ranges (simple cost: run 7 yd/s, fly 32 yd/s, ship or zeppelin 180 s, portal 3 s; the shipped data gives 373, 468
-    // and 967 s):
+    // Ranges (simple cost: run 7 yd/s, fly 32 yd/s, ship or zeppelin 180 s, portal 3 s; the shipped graph gives 373,
+    // 468 and 967 s):
     // - Goldshire -> Ironforge: about 1200 yd of running to Stormwind's flight master (170 s) and the 6500 yd flight
     //   (200 s; about 3.5 min in the game); on foot through the Deeprun Tram the walk alone takes more than 5 min
     // - Orgrimmar -> Undercity: about 1900 yd of running (inn to tower, tower to inn with the Undercity elevators) and
     //   The Thundercaller (180 s)
-    // - Darnassus -> Stormwind: the portal to Rut'theran Village, at least one ship and long flights; the graph has no
-    //   walk link onto The Bravery at Auberdine (node 1962), so the route flies to Ratchet and sails to Booty Bay
-    //   (The Maiden's Fancy). More than 30 min would be a detour
+    // - Darnassus -> Stormwind: the portal to Rut'theran Village, at least one ship and long flights; the shipped graph
+    //   has no walk link onto The Bravery at Auberdine, so its route flies to Ratchet and sails to Booty Bay (The
+    //   Maiden's Fancy). More than 30 min would be a detour
     RouteCase const cases[] = {
         {"Goldshire -> Ironforge",
          {"Goldshire innkeeper", 0, -9462.7f, 16.2f},
@@ -922,7 +997,6 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
          1800.0f},
     };
 
-    char const* const typeNames[] = {"none", "walk", "portal", "transport", "flight"};
     for (RouteCase const& route : cases)
     {
         std::uint32_t const from = FindNear(route.from.name, route.from.mapId, route.from.x, route.from.y);
@@ -934,8 +1008,8 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         if (!check(found.found, std::string(route.label) + ": no route"))
             continue;
 
-        std::uint32_t legs[5]{};
-        float yards[5]{};
+        std::uint32_t legs[TRAVEL_LINK_TYPES]{};
+        float yards[TRAVEL_LINK_TYPES]{};
         bool usedObject = !route.mustObject;
         std::string chain;
         float sum = 0.0f;
@@ -969,7 +1043,7 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
                            std::to_string(_nodes[from].id) + ") -> " + std::string(GetName(to)) + " (" +
                            std::to_string(_nodes[to].id) + "), " + num(found.seconds) + " s over " +
                            std::to_string(found.links.size()) + " links:";
-        for (std::size_t type = 1; type < 5; ++type)
+        for (std::size_t type = 1; type < TRAVEL_LINK_TYPES; ++type)
             if (legs[type])
                 note += std::string(" ") + typeNames[type] + " " + std::to_string(legs[type]) + " (" +
                         num(yards[type]) + " yd)";

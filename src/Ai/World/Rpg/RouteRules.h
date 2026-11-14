@@ -21,7 +21,10 @@
 //   node need not be known: a bot reaching a flight master learns its node there (NewRpgTravelFlightAction does), and
 //   a flight chain's later origins are earlier destinations, known already
 // - transport (only with allowTransport; WT19): elevators their stored seconds, ships and zeppelins the expected wait
-//   (Params::transportWaitSeconds, half a period) plus SHIP_RIDE_SECONDS
+//   (Params::transportWaitSeconds, half a period) plus SHIP_RIDE_SECONDS; a wait point's link to its stop (no object)
+//   its walk. A stop with a wait point is reached and left only through the wait point and its rides
+//   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point
+// - static portal: not searched yet (WT55d)
 // - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
 //   A cooldown above HEARTH_WAIT_CAP_MS (3 min) is no edge: the follower never waits that long
@@ -224,7 +227,9 @@ struct Leg
     LegType type{LegType::Walk};
     Point from;
     Point to;
-    std::vector<std::uint32_t> nodes;      // graph node indices passed, in order (walk waypoints; the ends otherwise)
+    // Graph node indices passed, in order: walk waypoints; a transport leg's stops, between the wait points where the
+    // graph has them; the ends otherwise
+    std::vector<std::uint32_t> nodes;
     std::uint32_t object{0};               // area trigger, first TaxiPath or transport entry
     std::vector<std::uint32_t> taxiNodes;  // flight legs: the taxi node chain for Player::ActivateTaxiPathTo
     float seconds{0.0f};
@@ -242,7 +247,9 @@ struct Result
 {
     bool ok{false};
     Failure failure{Failure::None};
-    std::vector<Leg> legs;  // consecutive walk links merge into one leg, consecutive flights into one
+    // Consecutive walk links merge into one leg, consecutive flights into one, a crossing with its wait points' links
+    // into one transport leg
+    std::vector<Leg> legs;
     float totalSeconds{0.0f};
     std::uint32_t expandedNodes{0};
     std::uint32_t flightSearches{0};  // AddFlyLegs' FlightRules::Search calls and their time
@@ -361,6 +368,8 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
         case TravelLinkType::Transport:
             if (!bot.allowTransport)
                 return -1.0f;
+            if (TravelGraph::IsWaitPointLink(link))
+                return link.distance / runSpeed;
             return link.extraCost >= 1.0f ? link.extraCost : params.transportWaitSeconds + SHIP_RIDE_SECONDS;
         case TravelLinkType::Flight:
         {
@@ -374,6 +383,8 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
             fare = path->price;
             return link.pathLength / params.flightSpeed + FLIGHT_BOARDING_SECONDS + fareSeconds;
         }
+        case TravelLinkType::StaticPortal:
+            return -1.0f;
     }
     return -1.0f;
 }
@@ -404,8 +415,12 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
     Point const& goal = request.goal;
     std::vector<std::uint32_t> startNodes = graph.NearestNodes(start.mapId, start.x, start.y, start.z, END_NODES);
     std::vector<std::uint32_t> goalNodes = graph.NearestNodes(goal.mapId, goal.x, goal.y, goal.z, END_NODES);
-    auto const avoided = [&request](std::uint32_t node)
-    { return std::find(request.avoidNodes.begin(), request.avoidNodes.end(), node) != request.avoidNodes.end(); };
+    // A stop with a wait point is no end node: the bot walks to its wait point
+    auto const avoided = [&](std::uint32_t node)
+    {
+        return graph.GetNode(node).waitStop ||
+               std::find(request.avoidNodes.begin(), request.avoidNodes.end(), node) != request.avoidNodes.end();
+    };
     std::erase_if(startNodes, avoided);
     std::erase_if(goalNodes, avoided);
     bool const direct = !request.noDirect && start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS &&
@@ -424,6 +439,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
     std::vector<std::uint32_t> bindNodes;
     if (bot.hasHearthstone)
         bindNodes = graph.NearestNodes(bot.hearth.mapId, bot.hearth.x, bot.hearth.y, bot.hearth.z, END_NODES);
+    std::erase_if(bindNodes, [&graph](std::uint32_t node) { return graph.GetNode(node).waitStop; });
     bool const hearth = bot.hasHearthstone && bot.hearthCooldownMs <= HEARTH_WAIT_CAP_MS &&
                         (!bindNodes.empty() || bot.hearth.mapId == goal.mapId);
 
@@ -551,7 +567,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         {
             std::uint32_t fare = 0;
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
-            if (seconds < 0.0f)
+            if (seconds < 0.0f || graph.OffWaitStop(link))
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
                 continue;
@@ -584,6 +600,9 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         chain.push_back(vertex);
     std::reverse(chain.begin(), chain.end());
 
+    // The open transport leg: has it a ride, did its last link reach a wait point after the ride
+    bool legRides = false;
+    bool legLanded = false;
     for (std::uint32_t const vertex : chain)
     {
         Via const& step = via[vertex];
@@ -599,8 +618,19 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             type = LegType::Transport;
 
         TravelTaxiPath const* path = link ? graph.TaxiPathOf(*link) : nullptr;
-        bool const merge = !result.legs.empty() && result.legs.back().type == type &&
-                           (type == LegType::Walk || type == LegType::Flight);
+        // A crossing is one transport leg: the near wait point's link, one ride, the far wait point's link
+        bool const waitLink = link && TravelGraph::IsWaitPointLink(*link);
+        bool merge = !result.legs.empty() && result.legs.back().type == type &&
+                     (type == LegType::Walk || type == LegType::Flight);
+        if (!result.legs.empty() && result.legs.back().type == LegType::Transport && type == LegType::Transport)
+            merge = waitLink ? !legLanded : !legRides;
+        if (merge && type == LegType::Transport && !waitLink)
+            result.legs.back().object = link->object;
+        if (type == LegType::Transport)
+        {
+            legLanded = merge && waitLink && legRides;
+            legRides = (merge && legRides) || !waitLink;
+        }
         if (!merge)
         {
             Leg leg;
@@ -625,6 +655,28 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             leg.fareCopper += path->price;
         }
     }
+
+    // Wait-point links without a ride between them are a walk
+    std::vector<Leg> legs;
+    legs.reserve(result.legs.size());
+    for (Leg& leg : result.legs)
+    {
+        if (leg.type == LegType::Transport && !leg.object)
+            leg.type = LegType::Walk;
+        if (leg.type != LegType::Walk || legs.empty() || legs.back().type != LegType::Walk)
+        {
+            legs.push_back(std::move(leg));
+            continue;
+        }
+        Leg& walk = legs.back();
+        auto first = leg.nodes.begin();
+        if (first != leg.nodes.end() && !walk.nodes.empty() && walk.nodes.back() == *first)
+            ++first;
+        walk.nodes.insert(walk.nodes.end(), first, leg.nodes.end());
+        walk.to = leg.to;
+        walk.seconds += leg.seconds;
+    }
+    result.legs = std::move(legs);
 
     result.ok = true;
     result.totalSeconds = best[target];

@@ -493,7 +493,7 @@ public:
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
         {
             TravelGraphLink const& link = graph.GetLink(i);
-            if (link.type != TravelLinkType::Transport)
+            if (link.type != TravelLinkType::Transport || !link.object)  // a wait point's link: no transport
                 continue;
             if (std::find(entries.begin(), entries.end(), link.object) == entries.end())
                 entries.push_back(link.object);
