@@ -2263,6 +2263,17 @@ int main()
                   "a topic's entry has no refusal, lasting part, state phrase or event");
         }
 
+        // WB9b: the bags topic tells the bank and the mail too, in one sentence, with room for them
+        {
+            AbilityData const* bags = nullptr;
+            for (AbilityData const& entry : catalogue)
+                if (entry.Kind == AbilityKind::Topic && entry.Name == "bags")
+                    bags = &entry;
+            Check(bags && bags->Sentence == "Your bags, what you keep in the bank and the mail that waits for you." &&
+                      bags->Limit == 12 && catalogue.size() == rows.size() + topics.size(),
+                  "the catalogue lists bags with the bank and mail sentence and limit 12, no new topic or act");
+        }
+
         // LC1b: the canonical text and its hash.
         std::string const text = PlayerbotBridge::CatalogueText(catalogue);
         // LC3: mod-ollama-chat sends the catalogue whole, at most 24,576 encoded bytes, about 1.42 times this text (an

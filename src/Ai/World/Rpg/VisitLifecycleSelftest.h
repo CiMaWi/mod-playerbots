@@ -18,8 +18,8 @@
 // The lifecycle harness of the mailbox and bank visits (VisitLifecycle.h), run by tests/visit-lifecycle-selftest.cpp.
 // A model of one bot's two visit slots, wired as the live code wires the shared rules: the watch in every AI update
 // (PlayerbotAI::UpdateAI), the stepper in the out-of-combat engine (StepMailVisit, StepBankVisit), the ends before a
-// far teleport's or a reset's AfterReset and at a logout. Every state is crossed with every event, then seeded random
-// sequences look for a counterexample to the invariant; the wiring before WB7c must yield one.
+// far teleport's or a reset's AfterReset, at a near teleport and at a logout. Every state is crossed with every event,
+// then seeded random sequences look for a counterexample to the invariant; the wiring before WB7c must yield one.
 namespace BankMail
 {
 namespace VisitLifecycleDetail
@@ -42,6 +42,7 @@ enum class Event : uint8_t
     Die,
     Revive,
     FarTeleport,
+    NearTeleport,  // the bot lands elsewhere on the same map (a test's tele, a hearth on the continent)
     Reset,
     MapChange,  // the bot comes to another map, or back
     Logout,
@@ -54,22 +55,27 @@ constexpr size_t EVENT_COUNT = static_cast<size_t>(Event::Count);
 
 inline char const* EventWord(Event event)
 {
-    static char const* const words[EVENT_COUNT] = {
-        "start_mail",   "start_bank", "update",     "combat_enter", "combat_leave", "die",        "revive",
-        "far_teleport", "reset",      "map_change", "logout",       "login",        "reach_spot", "lose_spot"};
+    static char const* const words[EVENT_COUNT] = {"start_mail",    "start_bank", "update",     "combat_enter",
+                                                   "combat_leave",  "die",        "revive",     "far_teleport",
+                                                   "near_teleport", "reset",      "map_change", "logout",
+                                                   "login",         "reach_spot", "lose_spot"};
     return words[static_cast<size_t>(event)];
 }
 
-// Which hooks the live code has: today's, or the wiring before WB7c (no watch outside the engine, AfterReset and the
-// AI's deletion drop a visit without a row, the mail command did not look at a bank visit)
+// Which hooks the live code has: today's, the wiring before WB7c (no watch outside the engine, AfterReset and the
+// AI's deletion drop a visit without a row, the mail command did not look at a bank visit), or the one before WBL2 (a
+// near teleport left the visit running: the walk went on from wherever the bot landed, up to the 15-minute deadline,
+// and held its one visit slot; WBL2 run 1, a trip visit under a test hold teleported to Orgrimmar)
 struct Wiring
 {
     bool watchEveryUpdate = true;
     bool endBeforeDrop = true;
     bool oneAtATime = true;
+    bool endAtNearTeleport = true;
 };
-constexpr Wiring TODAY{true, true, true};
-constexpr Wiring BEFORE_WB7C{false, false, false};
+constexpr Wiring TODAY{true, true, true, true};
+constexpr Wiring BEFORE_WB7C{false, false, false, false};
+constexpr Wiring BEFORE_WBL2{true, true, true, false};
 
 struct Slot
 {
@@ -80,6 +86,7 @@ struct Slot
     uint32_t mapId = 0;
     bool atSpot = false;
     bool spotLost = false;
+    bool displaced = false;  // a teleport took the bot off the walk the visit planned from its start
 };
 
 class BotModel
@@ -120,6 +127,10 @@ public:
                     break;
                 EndOrDrop(VisitEnd::Teleport);
                 _mapId ^= 1;
+                break;
+            case Event::NearTeleport:
+                if (_online)
+                    EndAtNearTeleport();
                 break;
             case Event::Reset:
                 if (_online)
@@ -259,6 +270,20 @@ private:
         }
     }
 
+    // PlayerbotAI::HandleTeleportAck's near branch: today the visit ends with its row; before WBL2 it ran on
+    void EndAtNearTeleport()
+    {
+        for (VisitKind kind : {VisitKind::Mail, VisitKind::Bank})
+        {
+            if (!SlotOf(kind).runs)
+                continue;
+            if (_wiring.endAtNearTeleport)
+                End(kind, VisitEnd::Teleport);
+            else
+                SlotOf(kind).displaced = true;
+        }
+    }
+
     // EndVisit in MailVisit.cpp and BankVisit.cpp: one row, one counter, the state cleared
     void End(VisitKind kind, VisitEnd end)
     {
@@ -279,6 +304,9 @@ private:
             Slot const& slot = _slots[k];
             if (slot.runs && !_online)
                 Fault("a visit runs while its bot is offline");
+            // A visit walks only from where it started, the spot in reach (WB.12): after a teleport it has no walk
+            if (slot.runs && slot.displaced)
+                Fault("a visit runs on after a teleport took its bot off the walk");
             // Time moves only in an update, and every update watches: an open visit is within its deadline
             if (slot.runs && _nowMs - slot.startedMs >= slot.limitMs)
                 Fault(std::string(kind == VisitKind::Mail ? "mail" : "bank") +
@@ -442,6 +470,8 @@ inline void CheckWords(Checker& checker)
     checker.Check(endOf(pastDeadline, VisitKind::Mail, VisitEnd::Combat), "in combat past the deadline: combat");
     checker.Check(endOf({Event::StartBank, Event::FarTeleport}, VisitKind::Bank, VisitEnd::Teleport),
                   "a far teleport: teleport");
+    checker.Check(endOf({Event::StartMail, Event::NearTeleport}, VisitKind::Mail, VisitEnd::Teleport),
+                  "a near teleport: teleport");
     checker.Check(endOf({Event::StartMail, Event::Reset}, VisitKind::Mail, VisitEnd::Reset), "a reset: reset");
     checker.Check(endOf({Event::StartBank, Event::Die, Event::Update}, VisitKind::Bank, VisitEnd::Death),
                   "death: death");
@@ -502,6 +532,11 @@ inline void CheckSearch(Checker& checker)
     checker.Note("search, wiring before WB7c (seed " + std::to_string(SEARCH_SEED) +
                  "): " + (before.empty() ? "no counterexample" : "counterexample at " + before));
     checker.Check(!before.empty(), "the search finds the counterexample of the wiring before WB7c");
+
+    std::string const beforeWbl2 = Search(BEFORE_WBL2, tried);
+    checker.Note("search, wiring before WBL2: " +
+                 (beforeWbl2.empty() ? std::string("no counterexample") : "counterexample at " + beforeWbl2));
+    checker.Check(!beforeWbl2.empty(), "the search finds the counterexample of the wiring before WBL2");
 
     std::string const today = Search(TODAY, tried);
     checker.Note("search, today's wiring: seed " + std::to_string(SEARCH_SEED) + ", " + std::to_string(tried) +

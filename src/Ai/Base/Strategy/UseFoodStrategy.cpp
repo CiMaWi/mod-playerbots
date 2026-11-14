@@ -7,11 +7,13 @@
 #include "UseFoodStrategy.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "Upkeep.h"
 
 void UseFoodStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     Strategy::InitTriggers(triggers);
-    if (botAI->HasCheat(BotCheatMask::food))
+    // Decided when the strategies are built; a master joining or leaving rebuilds them (ResetStrategies)
+    if (Upkeep::FoodCheat(botAI))
     {
         triggers.push_back(new TriggerNode("medium health", { NextAction("food", 3.0f) }));
         triggers.push_back(new TriggerNode("high mana", { NextAction("drink", 3.0f) }));

@@ -93,7 +93,8 @@ public:
     void InitPotions();
     void InitGlyphs(bool increment = false);
     void InitFood();
-    void InitMounts();
+    // One mount of each type the bot's level and riding skill allow that it has none of; returns the mounts learned
+    uint32 InitMounts(char const* source = "factory_mount");
     void InitBags(bool destroyOld = true);
     // A persistent bot's hearthstone and, above level 1, the history a player of its level plausibly has (WT.3).
     // Idempotent by state; logs what it changed and returns true when it changed anything.

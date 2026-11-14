@@ -19,6 +19,9 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "Upkeep.h"
+#include "World.h"
+#include "WorldLog.h"
 #include "WorldTravelRules.h"
 
 // Top of the default start-zone brackets (Playerbots.ZoneBracket.*).
@@ -387,8 +390,31 @@ bool SpiritHealerAction::Execute(Event /*event*/)
             LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
                       bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
             PlayerbotChatHandler ch(bot);
-            bot->ResurrectPlayer(0.5f);
-            EventLog::Honesty(bot, "Resurrect", "spirit_healer_free");
+            // Free when granted, else what a player pays (WorldSession::SendSpiritResurrect)
+            bool const granted = Upkeep::Granted(bot, UpkeepKind::Resurrect);
+            bot->ResurrectPlayer(0.5f, !granted);
+            if (granted)
+                Upkeep::Note(bot, UpkeepKind::Resurrect, "spirit_healer_free");
+            else
+            {
+                bot->DurabilityLossAll(sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT) / 100.0f, true);
+                if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+                    EventLog::Emit(bot, Upkeep::EVENT_SICK, "spirit_healer", Upkeep::SPELL_RESURRECTION_SICKNESS,
+                                   sickness->GetDuration());
+            }
+            // The death decision row (upkeep §3.14) of a persistent bot: why the spirit healer, not the corpse run
+            if (RandomPlayerbotMgr::HonestTravel() && !botAI->HasGameClientMaster())
+            {
+                bool const exhausted =
+                    WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
+                char const* reason =
+                    exhausted ? "corpse_runs_exhausted" : (deadTime >= 10 * MINUTE ? "dead_too_long" : "no_path");
+                WorldLogFormat::Alternatives weighed;
+                if (WorldLog::Active())
+                    weighed = {{"dead_seconds", static_cast<float>(deadTime)}};
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
+                                   static_cast<float>(dCount / WorldTravel::DEATH_COUNT_PER_DEATH), weighed);
+            }
             bot->SpawnCorpseBones();
             context->GetValue<Unit*>("current target")->Set(nullptr);
             bot->SetTarget();

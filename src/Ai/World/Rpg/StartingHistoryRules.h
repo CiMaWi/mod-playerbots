@@ -8,6 +8,7 @@
 #define _PLAYERBOT_STARTINGHISTORYRULES_H
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -140,6 +141,20 @@ inline BagStep DecideBagSlot(uint32_t currentEntry, uint32_t historyBag)
         return BagStep::Equip;
 
     return BagStep::Keep;
+}
+
+// The riding ranks a player of the level has (upkeep WU14), by the factory's thresholds (UseGroundMountAtMinLevel,
+// UseFastGroundMountAtMinLevel, UseFlyMountAtMinLevel, UseFastFlyMountAtMinLevel): tier n gives the first n ranks
+// and the mount types 0 to n - 1 (slow, fast, flying, fast flying), as InitMounts hands them out; a rank needs the
+// one below it, so a threshold below an unmet earlier one gives nothing
+constexpr std::array<uint32_t, 4> RIDING_HISTORY_SPELLS = {33388, 33391, 34090, 34091};
+
+inline uint32_t RidingTier(uint32_t level, std::array<uint32_t, 4> const& thresholds)
+{
+    uint32_t tier = 0;
+    while (tier < thresholds.size() && level >= thresholds[tier])
+        ++tier;
+    return tier;
 }
 
 inline bool NewCharacter(uint32_t playedSeconds) { return playedSeconds < NEW_CHARACTER_PLAYED_SECONDS; }

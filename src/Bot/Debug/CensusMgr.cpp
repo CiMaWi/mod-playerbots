@@ -33,6 +33,7 @@
 #include "ScriptMgr.h"
 #include "StringFormat.h"
 #include "TravelLegRules.h"
+#include "UpkeepRules.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 
@@ -311,8 +312,16 @@ void NoteTravelDeath(Player* killed)
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(killed);
     if (!botAI)
         return;
-    if (auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
-        TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
+    auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (!travel)
+        return;
+    TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
+    // A death on a fly leg after its takeoff (upkeep WU10): FlightFall death, amount the leg's number. A bot killed on
+    // the ground before it took off (WU11b fix 7: Glettla, killed at Valgarde by the mob that had killed it there
+    // before) died a ground death, counted by its Death row only
+    TravelLegs::Trip const& trip = travel->trip;
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly && trip.seenInFlight)
+        EventLog::Emit(killed, Upkeep::EVENT_FLIGHT_FALL, "death", travel->tripId, trip.legIdx + 1);
 }
 
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)

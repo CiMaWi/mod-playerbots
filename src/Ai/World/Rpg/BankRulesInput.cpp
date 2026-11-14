@@ -17,6 +17,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotFactory.h"
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotMgr.h"
 #include "StatsWeightCalculator.h"
@@ -309,6 +310,30 @@ void ReadBank(Player const* bot, ItemReader& reader, BankIn& in)
             stack->room += keep.stackMax - keep.count;
     }
 }
+
+// Every item in the backpack and the plain bags, with its bag and slot
+template <typename Visit>
+void ForEachBagItem(Player const* bot, Visit visit)
+{
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            visit(item, INVENTORY_SLOT_BAG_0, slot);
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag const* bag = bot->GetBagByPos(bagSlot);
+        if (!IsPlainBag(bag))
+            continue;
+        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+            if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
+                visit(item, bagSlot, static_cast<uint8>(slot));
+    }
+}
+
+// Gear the bot may wear only above its level: the bag items that can be kept and not due (GearForLaterLevel)
+bool MaybeKeptForLater(ItemTemplate const* proto, uint8 level)
+{
+    return (proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR) && proto->RequiredLevel > level;
+}
 }  // namespace
 
 KeepBotIn BuildKeepBot(Player const* bot)
@@ -329,18 +354,8 @@ BankIn BuildBankIn(PlayerbotAI* botAI)
 
     in.bot = BuildKeepBot(bot);
     ItemReader reader(botAI);
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            in.bags.push_back(reader.Read(item, INVENTORY_SLOT_BAG_0, slot));
-    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
-    {
-        Bag const* bag = bot->GetBagByPos(bagSlot);
-        if (!IsPlainBag(bag))
-            continue;
-        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-            if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
-                in.bags.push_back(reader.Read(item, bagSlot, static_cast<uint8>(slot)));
-    }
+    ForEachBagItem(bot, [&in, &reader](Item const* item, uint8 bag, uint8 slot)
+                   { in.bags.push_back(reader.Read(item, bag, slot)); });
     in.bagSpace = BuildBagSpace(bot);
     ReadBank(bot, reader, in);
     return in;
@@ -362,5 +377,41 @@ void RefreshBankKnowledge(PlayerbotAI* botAI)
     for (KeptEntry const& entry : KeptInBank(in))
         known.kept.push_back({entry.entry, entry.count, entry.laterWorth, entry.dueLevel});
     known.freeSlots = static_cast<uint16>(in.bankSpace.freeSlots);
+    RefreshCarriedKeeps(botAI);
+}
+
+void RefreshCarriedKeeps(PlayerbotAI* botAI)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return;
+
+    CarriedKeeps& carried = botAI->rpgInfo.bankMail.bank.carried;
+    carried = CarriedKeeps();
+    if (!PlayerbotFactory::KeepsPossessions(bot))
+        return;
+
+    BankIn in;
+    in.bot = BuildKeepBot(bot);
+    std::optional<ItemReader> reader;  // most bags hold no gear above the bot's level
+    uint8 const level = in.bot.level;
+    ForEachBagItem(bot,
+                   [&in, &reader, botAI, level](Item const* item, uint8 bag, uint8 slot)
+                   {
+                       if (!MaybeKeptForLater(item->GetTemplate(), level))
+                           return;
+                       if (!reader)
+                           reader.emplace(botAI);
+                       in.bags.push_back(reader->Read(item, bag, slot));
+                   });
+    carried = KeptInBags(in);
+}
+
+uint32_t CarriedWorthEach(PlayerbotAI* botAI, uint32_t entry)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return 0;
+    return KeptWorthEach(botAI->rpgInfo.bankMail.bank.carried, entry, bot->GetLevel());
 }
 }  // namespace BankMail

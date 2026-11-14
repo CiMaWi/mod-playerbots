@@ -8,6 +8,7 @@
 
 #include "Playerbots.h"
 #include "TestConstraints.h"
+#include "UpkeepRules.h"
 
 float NewRpgQuestGiverMultiplier::GetValue(Action* action)
 {
@@ -34,4 +35,12 @@ float NewRpgQuestGiverMultiplier::GetValue(Action* action)
     // the engine orders by base relevance and applies multipliers after the pop. So grinding is dropped for the
     // tick instead. SearchQuestGiverAndAcceptOrReward gives up on a giver after a minute, which empties the value.
     return AI_VALUE(ObjectGuid, "new rpg quest giver").IsEmpty() ? 1.0f : 0.0f;
+}
+
+float NewRpgSickMultiplier::GetValue(Action* action)
+{
+    if (!action || action->getName() != "attack anything")
+        return 1.0f;
+
+    return bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) ? 0.0f : 1.0f;
 }

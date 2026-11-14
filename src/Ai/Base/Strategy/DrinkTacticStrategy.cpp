@@ -21,6 +21,7 @@
 #include "PvpTestCounters.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "Upkeep.h"
 
 // G3b: the Drink tactic's game side (the policy in ArenaDrink.h, the numbers in DrinkConfig). In arenas and
 // battlegrounds a bot that knows the tactic drinks in preparation (gates closed, more than PrepMinLeftMs left) and in
@@ -75,8 +76,7 @@ bool IsDrinking(Player* bot)
 // The food cheat, or a drink in the bags (the old DrinkAction's item test)
 bool HasDrinkToUse(PlayerbotAI* botAI)
 {
-    return botAI->HasCheat(BotCheatMask::food) ||
-           botAI->GetAiObjectContext()->GetValue<uint32>("item count", "drink")->Get() > 0;
+    return Upkeep::FoodCheat(botAI) || botAI->GetAiObjectContext()->GetValue<uint32>("item count", "drink")->Get() > 0;
 }
 
 // What the bot itself shows, with no look at the others
@@ -269,7 +269,7 @@ DrinkWhy JudgeSafe(PlayerbotAI* botAI, Player* bot, Battleground* bg, DrinkBotSt
 void NoteStarted(PlayerbotAI* botAI, Player* bot, Battleground* bg, DrinkBotState& state, uint32 nowMs, bool prep,
                  uint32 holdMs)
 {
-    DrinkNoteStart(state, nowMs, prep, botAI->HasCheat(BotCheatMask::food) && holdMs ? nowMs + holdMs : 0);
+    DrinkNoteStart(state, nowMs, prep, Upkeep::FoodCheat(botAI) && holdMs ? nowMs + holdMs : 0);
     botAI->CountTactic(TacticCounter::Drinks);
     if (prep)
         botAI->CountTactic(TacticCounter::PrepDrinks);

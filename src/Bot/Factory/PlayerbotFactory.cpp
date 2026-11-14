@@ -44,6 +44,7 @@
 #include "StartingHistoryRules.h"
 #include "Trainer.h"
 #include "TravelMgr.h"
+#include "Upkeep.h"
 #include "World.h"
 #include <array>
 #include <mutex>
@@ -885,20 +886,30 @@ void PlayerbotFactory::Randomize(bool incremental)
     // if (pmo)
     //     pmo->finish();
 
+    // The consumables are a fresh kit's at a wipe; a keeper's re-randomize leaves what it bought, looted or made, and
+    // only a bot granted the kind (outside the keepers, or in the handout share) gets it again, as that kind's handout
+    auto const consumableKit = [this, wipe, keepsPossessions](UpkeepKind kind, auto&&... inits)
+    {
+        if (wipe)
+            (inits(), ...);
+        else
+            Upkeep::HandOut(bot, kind, keepsPossessions, "factory_randomize", inits...);
+    };
+
     if (sPlayerbotAIConfig.RandomBotPreQuests)
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Quests");
         // Rewards every quest again (money too) and then clears the bags: creation only for a bot that keeps them
         if (wipe)
             InitInstanceQuests();
-        InitAttunementQuests();
+        consumableKit(UpkeepKind::Attunement, [this] { InitAttunementQuests(); });
         if (pmo)
             pmo->finish();
     }
     else
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Quests");
-        InitAttunementQuests();
+        consumableKit(UpkeepKind::Attunement, [this] { InitAttunementQuests(); });
         if (pmo)
             pmo->finish();
     }
@@ -942,7 +953,7 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reputation");
     LOG_DEBUG("playerbots", "Initializing reputation...");
-    InitReputation();
+    consumableKit(UpkeepKind::Reputation, [this] { InitReputation(); });
     if (pmo)
         pmo->finish();
 
@@ -994,31 +1005,31 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Ammo");
     LOG_DEBUG("playerbots", "Initializing ammo...");
-    InitAmmo();
+    consumableKit(UpkeepKind::Ammo, [this] { InitAmmo(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Food");
     LOG_DEBUG("playerbots", "Initializing food...");
-    InitFood();
+    consumableKit(UpkeepKind::Food, [this] { InitFood(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Potions");
     LOG_DEBUG("playerbots", "Initializing potions...");
-    InitPotions();
+    consumableKit(UpkeepKind::Consumable, [this] { InitPotions(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reagents");
     LOG_DEBUG("playerbots", "Initializing reagents...");
-    InitReagents();
+    consumableKit(UpkeepKind::Reagent, [this] { InitReagents(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Keys");
     LOG_DEBUG("playerbots", "Initializing keys...");
-    InitKeyring();
+    consumableKit(UpkeepKind::Key, [this] { InitKeyring(); });
     if (pmo)
         pmo->finish();
 
@@ -1048,12 +1059,14 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Consumable");
     LOG_DEBUG("playerbots", "Initializing consumables...");
-    InitConsumables();
+    // A rogue's consumables are its poisons
+    consumableKit(bot->getClass() == CLASS_ROGUE ? UpkeepKind::Poison : UpkeepKind::Consumable,
+                  [this] { InitConsumables(); });
     if (pmo)
         pmo->finish();
 
     LOG_DEBUG("playerbots", "Initializing glyphs...");
-    InitGlyphs();
+    consumableKit(UpkeepKind::Glyph, [this] { InitGlyphs(); });
     // bot->SaveToDB(false, false);
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Guilds");
@@ -1122,49 +1135,54 @@ void PlayerbotFactory::Refresh()
     // {
     //     InitEquipment(true);
     // }
-    InitAttunementQuests();
-    // Refresh never creates: a bot that keeps its possessions is only restocked
+    // Refresh never creates: a bot that keeps its possessions is only restocked, with the kinds Upkeep grants it
     bool const keepsPossessions = KeepsPossessions(bot);
+    constexpr char const* source = "factory_refresh";
+    Upkeep::HandOut(bot, UpkeepKind::Attunement, keepsPossessions, source, [this] { InitAttunementQuests(); });
     if (!keepsPossessions)
         ClearInventory();
     else if (!bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
         bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
-    InitAmmo();
-    InitFood();
-    InitReagents();
-    InitConsumables();
-    InitPotions();
-    EventLog::Honesty(bot, "Item", "factory_refresh");
-    InitPet();
-    InitPetTalents();
-    InitSkills();
-    EventLog::Honesty(bot, "Skill", "factory_refresh");
-    InitClassSpells();
-    InitAvailableSpells();
-    EventLog::Honesty(bot, "Spell", "factory_refresh");
-    InitReputation();
-    InitSpecialSpells();
-    InitMounts();
-    InitKeyring();
+    Upkeep::HandOut(bot, UpkeepKind::Ammo, keepsPossessions, source, [this] { InitAmmo(); });
+    Upkeep::HandOut(bot, UpkeepKind::Food, keepsPossessions, source, [this] { InitFood(); });
+    Upkeep::HandOut(bot, UpkeepKind::Reagent, keepsPossessions, source, [this] { InitReagents(); });
+    auto const consumables = [this] { InitConsumables(); };
+    auto const potions = [this] { InitPotions(); };
+    if (bot->getClass() == CLASS_ROGUE)  // a rogue's consumables are its poisons
+    {
+        Upkeep::HandOut(bot, UpkeepKind::Poison, keepsPossessions, source, consumables);
+        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, potions);
+    }
+    else
+        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, consumables, potions);
+    Upkeep::HandOut(
+        bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); }, [this] { InitPetTalents(); });
+    Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, source, [this] { InitSkills(); });
+    Upkeep::HandOut(
+        bot, UpkeepKind::TrainerSpell, keepsPossessions, source, [this] { InitClassSpells(); },
+        [this] { InitAvailableSpells(); });
+    Upkeep::HandOut(bot, UpkeepKind::Reputation, keepsPossessions, source, [this] { InitReputation(); });
+    Upkeep::HandOut(bot, UpkeepKind::SpecialSpell, keepsPossessions, source, [this] { InitSpecialSpells(); });
+    if (Upkeep::Granted(bot, UpkeepKind::Mount, keepsPossessions))
+        InitMounts();
+    Upkeep::HandOut(bot, UpkeepKind::Key, keepsPossessions, source, [this] { InitKeyring(); });
     if (!sPlayerbotAIConfig.EquipAndSpecPersistence ||
         bot->GetLevel() < sPlayerbotAIConfig.EquipAndSpecPersistenceLevel)
     {
-        InitTalentsTree(true, true, true);
-        EventLog::Honesty(bot, "Talent", "factory_refresh");
+        Upkeep::HandOut(bot, UpkeepKind::Talent, keepsPossessions, source,
+                        [this] { InitTalentsTree(true, true, true); });
     }
     if (bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
         ApplyEnchantAndGemsNew();
-    bot->DurabilityRepairAll(false, 1.0f, false);
-    EventLog::Honesty(bot, "Repair", "factory_refresh");
+    Upkeep::HandOut(bot, UpkeepKind::Repair, keepsPossessions, source,
+                    [this] { bot->DurabilityRepairAll(false, 1.0f, false); });
     if (bot->isDead())
-    {
-        bot->ResurrectPlayer(1.0f, false);
-        EventLog::Honesty(bot, "Resurrect", "factory_refresh");
-    }
+        Upkeep::HandOut(bot, UpkeepKind::Resurrect, keepsPossessions, source,
+                        [this] { bot->ResurrectPlayer(1.0f, false); });
     uint32 money = urand(level * 1000, level * 5 * 1000);
-    if (!keepsPossessions && bot->GetMoney() < money)
+    if (bot->GetMoney() < money && Upkeep::Granted(bot, UpkeepKind::Gold, keepsPossessions))
     {
-        EventLog::Honesty(bot, "Gold", "factory_refresh", 0, money - bot->GetMoney());
+        Upkeep::Note(bot, UpkeepKind::Gold, source, 0, money - bot->GetMoney());
         bot->SetMoney(money);
     }
     // bot->SaveToDB(false, false);
@@ -3161,13 +3179,31 @@ bool PlayerbotFactory::ApplyStartingHistory()
         }
     }
 
-    bool const changed = hearthstone || nodesAdded || rebound || equipped || replaced || removed;
+    // The riding ranks and the mounts a player of this level has (WU14), by the factory's thresholds; a rank or a
+    // mount type the bot has stays, and the riding skill is not reset
+    uint32 const ridingTier = StartingHistory::RidingTier(
+        level, {sPlayerbotAIConfig.UseGroundMountAtMinLevel, sPlayerbotAIConfig.UseFastGroundMountAtMinLevel,
+                sPlayerbotAIConfig.UseFlyMountAtMinLevel, sPlayerbotAIConfig.UseFastFlyMountAtMinLevel});
+    uint32 ranks = 0;
+    for (uint32 tier = 0; tier < ridingTier; ++tier)
+    {
+        uint32 const spell = StartingHistory::RIDING_HISTORY_SPELLS[tier];
+        if (bot->HasSpell(spell))
+            continue;
+
+        bot->learnSpell(spell);
+        Upkeep::Note(bot, UpkeepKind::Riding, "starting_history", spell);
+        ++ranks;
+    }
+    uint32 const mounts = ridingTier ? InitMounts("starting_history") : 0;
+
+    bool const changed = hearthstone || nodesAdded || rebound || equipped || replaced || removed || ranks || mounts;
     if (changed || keptFactory)
         LOG_INFO("playerbots",
                  "[History] {} level {}: hearthstone {}, flight nodes +{}, bind {}, bags equipped {} replaced {} "
-                 "removed {}, factory bags kept (contents did not fit) {}",
+                 "removed {}, factory bags kept (contents did not fit) {}, riding +{}, mounts +{}",
                  bot->GetName(), level, hearthstone ? "given" : "had", nodesAdded, bind, equipped, replaced, removed,
-                 keptFactory);
+                 keptFactory, ranks, mounts);
 
     return changed;
 }
@@ -3625,15 +3661,26 @@ void PlayerbotFactory::InitSkills()
     //uint32 maxValue = level * 5; //not used, line marked for removal.
     bot->UpdateSkillsForLevel();
 
-    bot->SetSkill(SKILL_RIDING, 0, 0, 0);
-    if (bot->GetLevel() >= sPlayerbotAIConfig.UseGroundMountAtMinLevel)
-        bot->learnSpell(33388);
-    if (bot->GetLevel() >= sPlayerbotAIConfig.UseFastGroundMountAtMinLevel)
-        bot->learnSpell(33391);
-    if (bot->GetLevel() >= sPlayerbotAIConfig.UseFlyMountAtMinLevel)
-        bot->learnSpell(34090);
-    if (bot->GetLevel() >= sPlayerbotAIConfig.UseFastFlyMountAtMinLevel)
-        bot->learnSpell(34091);
+    // The riding ranks by level replace the skill, so a rank the bot bought stays only when riding is not granted.
+    // Dropping the skill also drops Cold Weather Flying, which is no rank: a bot that knew it keeps it (WU26b: every
+    // level-up of a granted bot at 77 or above lost it and kept the bot on the ground in Northrend)
+    if (Upkeep::Granted(bot, UpkeepKind::Riding))
+    {
+        constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
+        bool const coldWeather = bot->HasSpell(SPELL_COLD_WEATHER_FLYING);
+        bot->SetSkill(SKILL_RIDING, 0, 0, 0);
+        if (bot->GetLevel() >= sPlayerbotAIConfig.UseGroundMountAtMinLevel)
+            bot->learnSpell(33388);
+        if (bot->GetLevel() >= sPlayerbotAIConfig.UseFastGroundMountAtMinLevel)
+            bot->learnSpell(33391);
+        if (bot->GetLevel() >= sPlayerbotAIConfig.UseFlyMountAtMinLevel)
+            bot->learnSpell(34090);
+        if (bot->GetLevel() >= sPlayerbotAIConfig.UseFastFlyMountAtMinLevel)
+            bot->learnSpell(34091);
+        if (coldWeather && bot->GetPureSkillValue(SKILL_RIDING))
+            bot->learnSpell(SPELL_COLD_WEATHER_FLYING);
+        Upkeep::Note(bot, UpkeepKind::Riding, "factory_riding");
+    }
 
     uint32 skillLevel = bot->GetLevel() < 40 ? 0 : 1;
     uint32 dualWieldLevel = bot->GetLevel() < 20 ? 0 : 1;
@@ -4373,7 +4420,7 @@ void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bo
     bot->DurabilityRepairAll(false, 1.0f, false);
 }
 
-void PlayerbotFactory::InitMounts()
+uint32 PlayerbotFactory::InitMounts(char const* source)
 {
     uint32 firstmount = sPlayerbotAIConfig.UseGroundMountAtMinLevel;
     uint32 secondmount = sPlayerbotAIConfig.UseFastGroundMountAtMinLevel;
@@ -4381,7 +4428,7 @@ void PlayerbotFactory::InitMounts()
     uint32 fourthmount = sPlayerbotAIConfig.UseFastFlyMountAtMinLevel;
 
     if (bot->GetLevel() < firstmount)
-        return;
+        return 0;
 
     uint32 const ridingSkill = bot->GetPureSkillValue(SKILL_RIDING);
     std::map<uint8, std::map<uint32, std::vector<uint32>>> mounts;
@@ -4461,6 +4508,7 @@ void PlayerbotFactory::InitMounts()
     mounts[bot->getRace()][2] = fslow;
     mounts[bot->getRace()][3] = ffast;
 
+    uint32 learned = 0;
     for (uint32 type = 0; type < 4; type++)
     {
         bool hasMount = false;
@@ -4493,11 +4541,13 @@ void PlayerbotFactory::InitMounts()
         if (spell)
         {
             bot->learnSpell(spell);
-            EventLog::Honesty(bot, "Spell", "factory_mount", spell);
+            Upkeep::Note(bot, UpkeepKind::Mount, source, spell);
+            ++learned;
             LOG_DEBUG("playerbots", "Bot {} ({}) learned {} mount {}", bot->GetGUID().ToString().c_str(),
                       bot->GetLevel(), type == 0 ? "slow" : (type == 1 ? "fast" : "flying"), spell);
         }
     }
+    return learned;
 }
 
 void PlayerbotFactory::UnbindInstance()
@@ -4601,10 +4651,10 @@ std::vector<uint32> PlayerbotFactory::GetCurrentGemsCount()
 
 void PlayerbotFactory::InitFood()
 {
-    if (botAI && botAI->HasCheat(BotCheatMask::food))
-    {
+    // Only a bot that eats without items skips the food: a persistent bot outside the share gets its fresh kit
+    if (Upkeep::FoodCheat(botAI))
         return;
-    }
+
     std::unordered_map<uint32, std::vector<uint32>> items;
     ItemTemplateContainer const* itemTemplateContainer = sObjectMgr->GetItemTemplateStore();
     for (ItemTemplateContainer::const_iterator i = itemTemplateContainer->begin(); i != itemTemplateContainer->end();
@@ -6063,7 +6113,7 @@ void PlayerbotFactory::InitAttunementQuests()
         if (!questsToComplete.empty())
         {
             InitQuests(questsToComplete, false);
-            EventLog::Honesty(bot, "Item", "factory_attunement", 0, questsToComplete.size());
+            Upkeep::Note(bot, UpkeepKind::Attunement, "factory_attunement", 0, questsToComplete.size());
         }
     }
 

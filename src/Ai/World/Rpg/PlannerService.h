@@ -23,11 +23,17 @@ class ChatHandler;
 class Player;
 class PlayerbotAI;
 
+namespace UpkeepNeeds
+{
+struct NeedRates;
+}
+
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
 class QuestIndex;
 class QuestStatsView;
+class UpkeepIndex;
 
 PlannerPool& Pool();
 // World thread: starts the pool with WorldTravel.PlannerThreads workers and its PerfMonitor rows
@@ -36,6 +42,26 @@ void StartPlanner();
 void StopPlanner();
 // Map thread only: the bot as the planner sees it (WT.11)
 Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion);
+
+// The wear of the bot's equipped items, as the snapshot and the repair errand read it (items that never wear skipped)
+struct GearWear
+{
+    std::uint8_t durabilityPercent{100};  // equipped durability over its maximum
+    std::uint8_t lowestPercent{100};      // the most worn equipped item
+    std::uint8_t broken{0};               // equipped items at durability 0
+};
+// Map thread only: one pass over the equipment slots
+GearWear ReadGearWear(Player* bot);
+
+// What DurabilityRepairAll(true, 1.0f, false) charges, the core's formula without a reputation discount: the whole
+// repair and its cheapest worn item (0 when nothing is worn)
+struct RepairPrice
+{
+    std::uint32_t total{0};
+    std::uint32_t cheapest{0};
+};
+// Map thread only: one pass over the items DurabilityRepairAll repairs
+RepairPrice PriceRepair(Player* bot);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due. O(1) unless a snapshot is built
 void PlannerHook(PlayerbotAI* botAI, Player* bot);
@@ -108,6 +134,26 @@ std::string QuestIndexStatus();
 // `playerbots planner quest <id> | stats | flush`: the quest's entry and statistics, the book's state, a flush now
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
 
+// The upkeep index (upkeep plan WU2, PlannerUpkeep.cpp; records and rules in UpkeepIndex.h)
+// World thread, once after StartQuestIndex: gathers the trainers, the vendor stock and the class reagents, builds the
+// index on a worker
+void StartUpkeepIndex();
+// Any thread: the published upkeep index (null before the build); a reader keeps its copy alive
+std::shared_ptr<UpkeepIndex const> CurrentUpkeepIndex();
+// False until the build finished
+bool UpkeepIndexReady();
+// The upkeep index lines of `playerbots planner status|indexes`
+std::vector<std::string> UpkeepIndexStatus();
+// Map thread, from FillSnapshot: the upkeep fields (stock, pet diet, known and learnable trainer spells); no DB, one
+// pass over the bags and one HasSpell per trainer spell of the class and riding lists (the class-and-race fit and the
+// off-list abilities are precomputed in the index)
+void FillUpkeep(Player* bot, Snapshot& snapshot);
+// The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
+// the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
+UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
+// `playerbots planner needs <bot>`: an online bot's needs, reserve and shortfall (UpkeepNeedRules.h), from a snapshot
+// taken on the world thread while no map updates
+bool HandleNeedsCommand(ChatHandler* handler, char const* args);
 // The questing circuit (WT13b, PlannerQuests.cpp; the planner in QuestCircuit.h)
 struct CircuitWeights;
 struct QuestProgress;

@@ -71,6 +71,23 @@ struct Skill
     std::uint16_t max{0};
 };
 
+// The skills a snapshot carries (FillSnapshot reads exactly these, the core's SkillType ids): riding, then the
+// professions. One the snapshot lacks is at 0
+constexpr std::array<std::uint16_t, 15> SNAPSHOT_SKILLS = {762, 129, 185, 356, 171, 164, 333, 202,
+                                                           182, 773, 755, 165, 186, 393, 197};
+
+// A carried item that counts for an upkeep stock kind (upkeep plan WU2, UpkeepIndex.h)
+struct StockItem
+{
+    std::uint32_t item{0};
+    std::uint32_t count{0};
+    std::uint8_t kinds{0};     // a bit per UpkeepStock
+    std::uint8_t diet{0};      // the pet food bit (FoodType - 1); 0 = no pet eats it
+    std::uint8_t subClass{0};  // the item's subclass: ammo counts only the ranged weapon's (arrow 2, bullet 3)
+    std::uint8_t level{0};     // the item's required level: poison counts only the grade the bot keeps
+    std::uint32_t damage{0};   // ammo: its damage x 1000 as the item usage compares it (UpkeepItemFacts::ammoDamage)
+};
+
 struct Goal
 {
     std::uint32_t kind{0};
@@ -97,7 +114,10 @@ struct Snapshot
     std::uint16_t bagFree{0};
     std::uint32_t lowestItemWorth{0};  // not filled yet: worth per item is not cheap on the map thread
     std::uint8_t durabilityPercent{100};
-    std::vector<Skill> skills;  // riding and the professions the bot has
+    std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
+    std::uint8_t brokenItems{0};                // equipped items at durability 0
+    std::uint32_t repairCost{0};                // copper to repair every worn item, the core's formula, no discount
+    std::vector<Skill> skills;                  // riding and the professions the bot has
     std::vector<QuestSlot> quests;
     std::vector<std::uint32_t> rewardedQuests;  // sorted
     bool hasHearthstone{false};
@@ -112,6 +132,27 @@ struct Snapshot
     std::uint32_t deaths{0};  // not filled yet: no cheap per-bot death count exists
     Goal currentGoal;         // WT16 fills the goals
     std::vector<Goal> recentGoals;
+    // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
+    std::vector<StockItem> stock;                     // the backpack and every bag, one entry per item id
+    std::uint8_t petDiet{0};                          // the hunter pet's diet (bit FoodType - 1); 0 = unknown
+    std::uint8_t ammoSubClass{0};                     // the equipped ranged weapon's ammo: arrow 2, bullet 3; 0 = none
+    std::uint32_t ammoDamage{0};                      // the equipped ammo's (PLAYER_AMMO_ID) damage x 1000; 0 = none
+    std::uint32_t upkeepVersion{0};                   // the upkeep index the bit sets align to; 0 = none yet
+    std::vector<std::uint64_t> knownClassSpells;      // bit i: the class trainer list's spell i is known
+    std::vector<std::uint64_t> knownRidingSpells;     // the same over the riding trainer list
+    std::vector<std::uint64_t> canLearnClassSpells;   // bit i: the class list's spell i fits the bot's class and race
+    std::vector<std::uint64_t> canLearnRidingSpells;  // the same over the riding trainer list
+    // Bit i: the abilities the class list's spell i needs that are on neither list (talents, racials, quest spells
+    // such as Summon Warhorse) are all known
+    std::vector<std::uint64_t> offListMetClassSpells;
+    // Bit i: the class list's spell i is known and cast without its reagents (Player::CanNoReagentCast: Glyph of
+    // Renewed Life frees Reincarnation's Ankh); only the reagent spells' positions are filled
+    std::vector<std::uint64_t> reagentFreeClassSpells;
+    // The riding skill the bot's best known mount of each kind needs; a riding rank is complete with a mount of its
+    // skill or better (WU14). The travel shares are no snapshot fields: the needs read them from the slot measure
+    std::uint16_t groundMountSkill{0};
+    std::uint16_t flyingMountSkill{0};
+
     // What the bot knows of its mail and bank (BankMail::BotBankMail); the mail count is renewed with each snapshot
     std::uint16_t mailWaiting{0};
     std::uint32_t mailSeenCopper{0};
@@ -121,10 +162,23 @@ struct Snapshot
     std::uint32_t bankDueWorth{0};
     std::uint16_t bankFreeSlots{0};
 
+    std::uint32_t StockCount(std::uint8_t kindBit) const
+    {
+        std::uint32_t total = 0;
+        for (StockItem const& entry : stock)
+            if (entry.kinds & kindBit)
+                total += entry.count;
+        return total;
+    }
+
     std::size_t ApproxBytes() const
     {
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
-               rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal);
+               rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
+               stock.capacity() * sizeof(StockItem) +
+               (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
+                canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
+                   sizeof(std::uint64_t);
     }
 };
 
