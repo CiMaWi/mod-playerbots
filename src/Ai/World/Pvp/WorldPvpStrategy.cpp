@@ -6,11 +6,11 @@
 
 #include "WorldPvpStrategy.h"
 
-#include "FightBook.h"
 #include "FleeAttackersAction.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "TestConstraints.h"
+#include "WorldPvp.h"
 
 void WorldPvpStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {

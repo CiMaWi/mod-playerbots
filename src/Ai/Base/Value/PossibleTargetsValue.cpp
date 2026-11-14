@@ -9,7 +9,6 @@
 #include "AttackersValue.h"
 #include "CellImpl.h"
 #include "DBCStructure.h"
-#include "FightBook.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Playerbots.h"
@@ -18,6 +17,7 @@
 #include "SpellAuraEffects.h"
 #include "SpellMgr.h"
 #include "Unit.h"
+#include "WorldPvp.h"
 
 // Level difference thresholds for attack probability
 constexpr int32 EXTREME_LEVEL_DIFF = 5;  // Don't attack if enemy is this much higher

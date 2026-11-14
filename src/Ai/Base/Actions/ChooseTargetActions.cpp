@@ -9,7 +9,6 @@
 #include "Battleground.h"
 #include "ChooseRpgTargetAction.h"
 #include "Event.h"
-#include "FightBook.h"
 #include "LootObjectStack.h"
 #include "NewRpgStrategy.h"
 #include "Playerbots.h"
@@ -18,6 +17,7 @@
 #include "PvpValues.h"
 #include "RtiTargetValue.h"
 #include "ServerFacade.h"
+#include "WorldPvp.h"
 
 bool AttackEnemyPlayerAction::isUseful()
 {

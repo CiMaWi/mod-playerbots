@@ -7,7 +7,6 @@
 #include "EnemyPlayerValue.h"
 #include "AttackersValue.h"
 #include "CombatManager.h"
-#include "FightBook.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "PvpValues.h"
@@ -16,13 +15,12 @@
 #include "TargetValue.h"
 #include "TestConstraints.h"
 #include "Vehicle.h"
+#include "WorldPvp.h"
 
 namespace
 {
-// The fight_start rows' reasons for today's scan (world-log.md); REFUSAL_FILTERED: the parent's filter, told apart
-// into level_filter and not_target only for a meeting
+// Today's target checks' refusals (MayEnter's input); REFUSAL_FILTERED: the parent's filter
 constexpr char const* REFUSAL_FILTERED = "filtered";
-constexpr char const* REFUSAL_LEVEL = "level_filter";
 constexpr char const* REFUSAL_NOT_TARGET = "not_target";
 constexpr char const* REFUSAL_NOT_FLAGGED = "not_flagged";
 constexpr char const* REFUSAL_EXCLUSION = "exclusion";
@@ -66,17 +64,8 @@ bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
     if (WorldPvp::StartsByRules(botAI))
         return unit->IsPlayer() && WorldPvp::MayEnter(botAI, unit, Refusal(unit, true));
 
-    // Today's scan; WP1 records each enemy player a persistent bot (a PvpTest fighter) newly meets, with what today's
-    // rules did to it
-    Player* const met = WorldPvp::NewMeeting(botAI, unit);
-    char const* refusal = Refusal(unit, false);
-    if (met)
-    {
-        if (refusal == REFUSAL_FILTERED)
-            refusal = AttackersValue::IsPossibleTarget(unit, bot, range) ? REFUSAL_LEVEL : REFUSAL_NOT_TARGET;
-        WorldPvp::RecordMeeting(botAI, met, refusal);
-    }
-    return !refusal;
+    // Today's scan
+    return !Refusal(unit, false);
 }
 
 char const* NearestEnemyPlayersValue::Refusal(Unit* unit, bool byRules)

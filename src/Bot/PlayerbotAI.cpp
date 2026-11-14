@@ -33,13 +33,12 @@
 #include "Engine.h"
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
-#include "FightBook.h"
-#include "FightBookRules.h"
 #include "FightEnthusiasm.h"
 #include "FleeRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
 #include "GameTime.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
@@ -93,6 +92,7 @@
 #include "Vehicle.h"
 #include "WorldLogBotState.h"
 #include "WorldLogStatus.h"
+#include "WorldPvp.h"
 #include "WsgRouteState.h"
 #include <algorithm>
 #include <atomic>
@@ -848,11 +848,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP's records (WP1): the bot's PvP combat for its map's fight book, its enthusiasm's engaged edge (WP23)
-    // and the fight commands' requests (a relaxed load, one empty() check and a flag while none is there)
-    if (WorldPvp::RequestsWaiting() || !bot->GetCombatManager().GetPvPCombatRefs().empty() ||
-        (enthusiasm && enthusiasm->engaged))
-        WorldPvp::OnBotTick(this, bot);
+    // World PvP (WP23, WP24): the enthusiasm's engaged edge and leave check while in PvP combat or engaged (one
+    // empty() check and a flag while neither)
+    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
+        WorldPvp::NoteEngaged(this, bot, getMSTime());
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;

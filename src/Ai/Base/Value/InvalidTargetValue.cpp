@@ -7,10 +7,10 @@
 #include "InvalidTargetValue.h"
 
 #include "AttackersValue.h"
-#include "FightBook.h"
 #include "Playerbots.h"
 #include "PvpValues.h"
 #include "Unit.h"
+#include "WorldPvp.h"
 
 bool InvalidTargetValue::Calculate()
 {

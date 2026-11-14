@@ -7,14 +7,17 @@
 #ifndef _PLAYERBOT_FIGHTENTHUSIASM_H
 #define _PLAYERBOT_FIGHTENTHUSIASM_H
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include "Enthusiasm.h"
 
 // A bot's enthusiasm as its AI holds it (WP23, PlayerbotAI::enthusiasm) and the steps the glue (FightEnthusiasm.cpp)
-// takes on it: the seed, the engaged edges, the cached traits, local balance and group hold, the one-off edits, the
-// pick, the entering check and the leaving (WP24). Player-free, so tests/fight-enthusiasm-selftest.cpp checks the same
-// code the server runs
+// takes on it: who starts by the rules, the reach test, the seed, the engaged edges, the cached traits, local balance
+// and group hold, the one-off edits, the pick, the entering check and the leaving (WP24). Player-free, so
+// tests/fight-enthusiasm-selftest.cpp checks the same code the server runs
 namespace WorldPvp
 {
 // The target a bot entered on stays its scan's target this long (it closes in and attacks within it)
@@ -24,6 +27,66 @@ constexpr uint32_t ENTHUSIASM_CONTEXT_MS = 5 * 1000;
 // The local balance and the graveyard's distance are read again after this long: the scan's cadence
 // (EnemyPlayerValue, 1 s)
 constexpr uint32_t BALANCE_REFRESH_MS = 1000;
+
+// Where a bot is, for the choice between the rules and today's attack on sight
+struct BotPlace
+{
+    bool persistent = false;
+    // An open-world map (not instanceable)
+    bool openWorld = false;
+    bool battleground = false;
+    // A PvpTest fighter (WP.6)
+    bool forced = false;
+};
+
+// A persistent bot on an open-world map outside battlegrounds and arenas, unless PvpTest forces it, starts fights by
+// the rules; every other bot keeps today's attack on sight
+constexpr bool StartsByRules(BotPlace const& place)
+{
+    return place.persistent && place.openWorld && !place.battleground && !place.forced;
+}
+
+// Whose engaged edges are tracked (and written as PvpEnthusiasm engaged rows): the bots that start by the rules and
+// PvpTest's forced fighters in the same places, whose rows carry the pvptest tag
+constexpr bool TracksEngaged(BotPlace const& place)
+{
+    return place.persistent && place.openWorld && !place.battleground;
+}
+
+// A player's pets are on its side: the bot calls its pet off a unit of side `petVictimSide` (the player the pet's
+// victim belongs to, 0 for none) when it leaves side `leftSide` alone (`leavesAlone`). Kept on, a hunter's pet went on
+// attacking the enemy its owner had left alone, and both sides stayed in PvP combat (WP6 chase-b15)
+constexpr bool PetCalledOff(bool leavesAlone, uint64_t petVictimSide, uint64_t leftSide)
+{
+    return leavesAlone && petVictimSide != 0 && petVictimSide == leftSide;
+}
+
+// The most height between a bot and an enemy player it attacks (EnemyPlayerValue; a cannon has no limit)
+constexpr float REACH_HEIGHT_YARDS = 30.0f;
+
+// Whether a bot can attack an enemy player `heightYards` above or below it, given its line of sight to it (`inSight`
+// asks for it only when the height passes): the attack's own test, applied before entering, so an enemy out of reach
+// is not picked (a priest picked an enemy it never attacked, WP6 stalemate-b35)
+template <typename Sight>
+inline bool InReach(float heightYards, Sight const& inSight)
+{
+    return std::fabs(heightYards) < REACH_HEIGHT_YARDS && inSight();
+}
+
+struct Point
+{
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+// The yards to the nearest of `points` (FAR_YARDS for none)
+inline float NearestYards(std::vector<Point> const& points, float x, float y)
+{
+    float nearest = FAR_YARDS;
+    for (Point const& point : points)
+        nearest = std::min(nearest, std::hypot(point.x - x, point.y - y));
+    return nearest;
+}
 
 // The terms of a join threshold, as the entering row's bit mask (alt.terms, world-log.md)
 enum JoinTerm : uint32_t

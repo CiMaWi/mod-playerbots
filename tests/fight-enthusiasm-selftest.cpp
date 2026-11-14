@@ -8,13 +8,15 @@
 // engaged edges and a new balance settle with the old state first, a bot enters only above its join threshold and its
 // flee floor (the flee threshold plus an even fight's drain in one pick; a bot at its flee threshold never re-enters),
 // the scan skip, the pick, the one-off edits, the entering row's terms and the leaving (WP24: engaged by a held target,
-// the group hold, the leave check once per episode, the chase, the stalemate, who is left alone, no re-entry). Build
+// the group hold, the leave check once per episode, the chase, the stalemate, who is left alone, no re-entry), who
+// starts by the rules, the pet's call-off, the reach test and the nearest graveyard. Build
 // (Git Bash, module root):
 //   clang-cl /nologo /std:c++20 /EHsc /W4 /WX /Od /I src/Ai/World/Pvp tests/fight-enthusiasm-selftest.cpp
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "FightEnthusiasm.h"
 
@@ -404,6 +406,49 @@ void TestGroup()
     NewTraits(bot, 0.0f, 1.0f, 0.0f, 0.0f, 0, v);
     Check(Near(bot.flee, 35.0f) && Near(bot.fleeNow, 20.0f), "group: new traits keep the cached hold");
 }
+
+// Who starts by the rules and whose engaged edges are tracked (PvpTest's forced fighters too); the pet's call-off; the
+// reach test; the nearest graveyard (ported from WP4-WP6's wiring selftest)
+void TestPlaces()
+{
+    BotPlace place;
+    place.persistent = true;
+    place.openWorld = true;
+    Check(StartsByRules(place) && TracksEngaged(place), "a persistent bot in the open world starts by the rules");
+    place.forced = true;
+    Check(!StartsByRules(place) && TracksEngaged(place), "a PvpTest fighter keeps today's path, its edges tracked");
+    place.forced = false;
+    place.battleground = true;
+    Check(!StartsByRules(place) && !TracksEngaged(place), "a battleground or arena keeps today's path");
+    place.battleground = false;
+    place.openWorld = false;
+    Check(!StartsByRules(place) && !TracksEngaged(place), "a dungeon keeps today's path");
+    place.openWorld = true;
+    place.persistent = false;
+    Check(!StartsByRules(place) && !TracksEngaged(place), "a non-persistent bot keeps today's path");
+
+    constexpr uint64_t ENEMY = 77;
+    Check(PetCalledOff(true, ENEMY, ENEMY) && !PetCalledOff(false, ENEMY, ENEMY) && !PetCalledOff(true, 0, ENEMY) &&
+              !PetCalledOff(true, ENEMY + 1, ENEMY),
+          "a bot leaving an enemy alone calls its pet off that enemy's side, and only off that one");
+
+    int sightAsked = 0;
+    auto const seen = [&sightAsked]()
+    {
+        ++sightAsked;
+        return true;
+    };
+    auto const unseen = []() { return false; };
+    Check(InReach(0.0f, seen) && InReach(29.9f, seen) && InReach(-29.9f, seen),
+          "an enemy in sight within the reach height is in reach, above or below");
+    Check(!InReach(0.0f, unseen) && !InReach(REACH_HEIGHT_YARDS, seen) && !InReach(-31.0f, seen),
+          "an enemy out of sight, or too far above or below, is out of reach");
+    Check(sightAsked == 3, "the line of sight is asked only when the height passes");
+
+    std::vector<Point> const graveyards = {{100.0f, 0.0f}, {0.0f, 30.0f}};
+    Check(Near(NearestYards(graveyards, 0.0f, 0.0f), 30.0f), "the nearest graveyard's yards");
+    Check(NearestYards({}, 0.0f, 0.0f) == FAR_YARDS, "a map without graveyards is far from one");
+}
 }  // namespace
 
 int main()
@@ -419,6 +464,7 @@ int main()
     TestStalemate();
     TestLeave();
     TestGroup();
+    TestPlaces();
     std::printf("fight-enthusiasm-selftest: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

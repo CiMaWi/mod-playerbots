@@ -802,7 +802,8 @@ public:
 void AddPlayerbotsSecureLoginScripts();
 void AddPlayerbotsSelfBotAfkScripts();
 void AddPvpTestFightScripts();
-void AddFightBookScripts();
+void AddGhostWaitScripts();
+void AddWorldPvpScripts();
 void AddCcTacticScripts();
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
@@ -834,7 +835,8 @@ void AddPlayerbotsScripts()
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
     AddPvpTestFightScripts();
-    AddFightBookScripts();
+    AddWorldPvpScripts();
+    AddGhostWaitScripts();
     AddCcTacticScripts();
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();

@@ -8,18 +8,23 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "BotTraitMgr.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
 #include "Chat.h"
-#include "FightBook.h"
+#include "Creature.h"
+#include "GameGraveyard.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
@@ -31,20 +36,27 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Random.h"
+#include "ScriptMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
+#include "WorldPvp.h"
 
 namespace WorldPvp
 {
 namespace
 {
 // The one-off edits' event rows (world-log.md): source the cause, id the value before, amount the value after; a
-// death's second row carries the victim's plain join threshold
+// death's second row carries the victim's plain join threshold. The engaged row: id the value at the rising engaged
+// edge, amount 1 for a PvpTest forced fighter (pvptest), else 0
 constexpr char const* EVENT_ENTHUSIASM = "PvpEnthusiasm";
 constexpr char const* SOURCE_DEATH_JOIN = "death_join";
+constexpr char const* SOURCE_ENGAGED = "engaged";
+// The entering rows' choices (fight_start, fight_join)
+constexpr char const* CHOICE_START = "start";
+constexpr char const* CHOICE_JOIN = "join";
 // The entering rows' reasons (world-log.md)
 constexpr char const* REASON_ENTHUSIASM = "enthusiasm";
 constexpr char const* REASON_FACTION = "faction_attacked";
@@ -55,6 +67,66 @@ constexpr char const* REASON_FLED = "fled";
 constexpr char const* REASON_RESUMED = "resumed";
 // The distinct enemy players counted as attacking the bot (the leaving row's attackers)
 constexpr size_t ATTACKERS_COUNTED = 8;
+// A PvpTest fighter stays forced this long after its last aim unless the job clears it first
+constexpr uint32 FORCED_TTL_MS = 30 * MINUTE * IN_MILLISECONDS;
+
+// PvpTest's forced fighters (any thread): guid to the time of the last aim; the count lets the hot path skip the lock
+std::mutex forcedLock;
+std::unordered_map<ObjectGuid, uint32> forced;
+std::atomic<uint32> forcedCount{0};
+
+bool IsForced(ObjectGuid guid, uint32 nowMs)
+{
+    if (!forcedCount.load(std::memory_order_relaxed))
+        return false;
+
+    std::lock_guard lock(forcedLock);
+    auto const found = forced.find(guid);
+    return found != forced.end() && nowMs - found->second <= FORCED_TTL_MS;
+}
+
+// Where the bot is now (the persistence cached, GhostWait.h)
+BotPlace PlaceOf(PlayerbotAI* botAI, uint32 nowMs)
+{
+    BotPlace place;
+    Player* const bot = botAI ? botAI->GetBot() : nullptr;
+    Map const* const map = bot ? bot->GetMap() : nullptr;
+    if (!map)
+        return place;
+    place.openWorld = !map->Instanceable();
+    place.battleground = bot->InBattleground() || bot->InArena();
+    if (!place.openWorld || place.battleground)
+        return place;
+    place.persistent = IsPersistent(botAI, nowMs);
+    place.forced = place.persistent && IsForced(bot->GetGUID(), nowMs);
+    return place;
+}
+
+// The yards from `object` to the nearest graveyard (spirit healers stand at them) of its map
+float GraveyardYards(WorldObject const* object)
+{
+    // The graveyards of each map (their 2D places), copied once from the graveyard store and read-only afterwards
+    static std::once_flag graveyardsOnce;
+    static std::unordered_map<uint32, std::vector<Point>> graveyards;
+    std::call_once(graveyardsOnce,
+                   []()
+                   {
+                       for (auto const& [id, graveyard] : sGraveyard->GetGraveyardData())
+                           graveyards[graveyard.Map].push_back({graveyard.x, graveyard.y});
+                   });
+    auto const found = graveyards.find(object->GetMapId());
+    return found == graveyards.end() ? FAR_YARDS
+                                     : NearestYards(found->second, object->GetPositionX(), object->GetPositionY());
+}
+
+// The leave: the bot stops attacking, no victim, no current target, no selection
+void DropFightTarget(PlayerbotAI* botAI, Player* bot)
+{
+    bot->AttackStop();
+    // A player's selection outlives AttackStop; another bot reads it as an attack (LeftAlone)
+    bot->SetSelection(ObjectGuid::Empty);
+    botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
+}
 
 EnthusiasmValues Values() { return FromConfig(sPlayerbotAIConfig.WorldPvp); }
 
@@ -199,13 +271,25 @@ void HoldPetBack(PlayerbotAI* botAI, Player* bot)
         botAI->PetFollow();
 }
 
-// The engaged edge, the context when due, the group hold when due (cheap: most bots have no group), and the balance
-// and (while engaged) who attacks the bot and what its pet attacks when due while the bot is engaged or could enter
+// The engaged row on the rising edge (world-log.md): the value there, and the pvptest tag
+void RecordEngaged(Player* bot, BotEnthusiasm const& state, uint32 nowMs, EnthusiasmValues const& values)
+{
+    if (!WorldLog::Active())
+        return;
+    EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_ENGAGED,
+                   static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))),
+                   IsForced(bot->GetGUID(), nowMs) ? 1 : 0);
+}
+
+// The engaged edge (its row on the rising one), the context when due, the group hold when due (cheap: most bots have no
+// group), and the balance and (while engaged) who attacks the bot and what its pet attacks when due while the bot is
+// engaged or could enter
 // (`force`: all of it now, for the command)
 void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs, EnthusiasmValues const& values,
              bool force)
 {
-    Observe(state, EngagedNow(botAI, bot), nowMs, values);
+    if (Observe(state, EngagedNow(botAI, bot), nowMs, values) && state.engaged)
+        RecordEngaged(bot, state, nowMs, values);
     if (force || ContextDue(state, nowMs))
         ReadContext(botAI, bot, state, nowMs, values);
     if (force || GroupDue(state, nowMs))
@@ -339,7 +423,96 @@ void EditOne(Player* player, EditCause cause, uint32 nowMs, EnthusiasmValues con
                        static_cast<int64>(std::lround(
                            PlainJoin(state, false, false, state.nearGraveyard, Colour::Yellow, values))));
 }
+// The PvP-kill edits (the killed player's map thread): the victim's death, the killer's kill and the victim's
+// group members' group death
+void NoteEnthusiasmDeath(Player* killer, Player* killed)
+{
+    if (!killer || !killed || killer == killed)
+        return;
+    uint32 const nowMs = getMSTime();
+    EnthusiasmValues const values = Values();
+    EditOne(killed, EditCause::Death, nowMs, values);
+    EditOne(killer, EditCause::Kill, nowMs, values);
+    // Only members on the victim's map: it is this thread's; a member elsewhere is another map thread's
+    Group* const group = killed->GetGroup();
+    if (!group)
+        return;
+    for (GroupReference* reference = group->GetFirstMember(); reference; reference = reference->next())
+    {
+        Player* const member = reference->GetSource();
+        if (member && member != killed && member != killer && member->IsInWorld() &&
+            member->GetMap() == killed->GetMap() && member->IsWithinDist(killed, values.groupDeathYards))
+            EditOne(member, EditCause::GroupDeath, nowMs, values);
+    }
+}
+
+bool OpenWorld(Map const* map) { return map && !map->Instanceable(); }
+
+class WorldPvpPlayerScript : public PlayerScript
+{
+public:
+    WorldPvpPlayerScript()
+        : PlayerScript("WorldPvpPlayerScript", {PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
+    {
+    }
+
+    // The player's map thread
+    void OnPlayerPVPKill(Player* killer, Player* killed) override
+    {
+        if (!killer || !killed || !OpenWorld(killer->GetMap()))
+            return;
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks")
+                                                        : nullptr);
+        NoteEnthusiasmDeath(killer, killed);
+    }
+
+    // The player's map thread; a killing blow by a player's pet, totem or guardian counts for its owner. The core
+    // calls this hook instead of OnPlayerPVPKill when the killer is a creature, so no death is counted twice
+    void OnPlayerKilledByCreature(Creature* killer, Player* killed) override
+    {
+        Player* const owner = killer ? killer->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+        if (!owner || !killed || owner == killed || !OpenWorld(killed->GetMap()))
+            return;
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks")
+                                                        : nullptr);
+        NoteEnthusiasmDeath(owner, killed);
+    }
+};
 }  // namespace
+
+bool StartsByRules(PlayerbotAI* botAI) { return StartsByRules(PlaceOf(botAI, getMSTime())); }
+
+bool Reaches(Unit const* bot, Unit const* enemy)
+{
+    return InReach(bot->GetPositionZ() - enemy->GetPositionZ(),
+                   [bot, enemy]() { return bot->IsWithinLOSInMap(enemy); });
+}
+
+bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
+{
+    Pet* const pet = botAI && target ? botAI->GetBot()->GetPet() : nullptr;
+    Unit* const victim = pet ? pet->GetVictim() : nullptr;
+    Player* const victimSide = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    Player* const leftSide = target ? target->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    if (!victimSide || !leftSide)
+        return false;
+    return PetCalledOff(LeftAlone(botAI, target), victimSide->GetGUID().GetRawValue(),
+                        leftSide->GetGUID().GetRawValue());
+}
+
+void MarkForced(ObjectGuid guid)
+{
+    std::lock_guard lock(forcedLock);
+    forced[guid] = getMSTime();
+    forcedCount.store(static_cast<uint32>(forced.size()), std::memory_order_relaxed);
+}
+
+void ClearForced(ObjectGuid guid)
+{
+    std::lock_guard lock(forcedLock);
+    forced.erase(guid);
+    forcedCount.store(static_cast<uint32>(forced.size()), std::memory_order_relaxed);
+}
 
 void RefreshEnthusiasm(PlayerbotAI* botAI)
 {
@@ -397,7 +570,8 @@ bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit)
 
 void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
-    if (!botAI->enthusiasm && (!EngagedNow(botAI, bot) || !StartsByRules(botAI)))
+    // A forced fighter's edges are tracked too (TracksEngaged): its engaged row carries the pvptest tag
+    if (!botAI->enthusiasm && (!EngagedNow(botAI, bot) || !TracksEngaged(PlaceOf(botAI, nowMs))))
         return;
     EnthusiasmValues const values = Values();
     BotEnthusiasm& state = Of(botAI, nowMs, values);
@@ -423,27 +597,6 @@ bool LeavesFlee(PlayerbotAI* botAI)
 {
     BotEnthusiasm const* const state = botAI ? botAI->enthusiasm.get() : nullptr;
     return state && FleesNow(*state);
-}
-
-void NoteEnthusiasmDeath(Player* killer, Player* killed)
-{
-    if (!killer || !killed || killer == killed)
-        return;
-    uint32 const nowMs = getMSTime();
-    EnthusiasmValues const values = Values();
-    EditOne(killed, EditCause::Death, nowMs, values);
-    EditOne(killer, EditCause::Kill, nowMs, values);
-    // Only members on the victim's map: it is this thread's; a member elsewhere is another map thread's
-    Group* const group = killed->GetGroup();
-    if (!group)
-        return;
-    for (GroupReference* reference = group->GetFirstMember(); reference; reference = reference->next())
-    {
-        Player* const member = reference->GetSource();
-        if (member && member != killed && member != killer && member->IsInWorld() &&
-            member->GetMap() == killed->GetMap() && member->IsWithinDist(killed, values.groupDeathYards))
-            EditOne(member, EditCause::GroupDeath, nowMs, values);
-    }
 }
 
 bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
@@ -512,3 +665,5 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
     return true;
 }
 }  // namespace WorldPvp
+
+void AddWorldPvpScripts() { new WorldPvp::WorldPvpPlayerScript(); }

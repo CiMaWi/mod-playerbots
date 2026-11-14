@@ -555,8 +555,8 @@ public:
     WorldTravelConfig WorldTravel;
     // Playerbots.Upkeep.*: honest upkeep of persistent bots (the handout share)
     UpkeepConfig Upkeep;
-    // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h declares every option
-    // of the world PvP plan; WP1 reads the fight book's and the memory's bounds and the lab switch)
+    // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h: enthusiasm, the scan,
+    // the graveyard term and the ghost's wait)
     WorldPvpConfig WorldPvp;
     // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction): the yards from every attacker
     // that count as escaped, the seconds without a gain that corner the bot, the flight's bound in seconds

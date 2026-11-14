@@ -21,7 +21,6 @@
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
-#include "FightBook.h"
 #include "GuildTaskMgr.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
@@ -53,6 +52,7 @@
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
+#include "WorldPvp.h"
 #include "WorldThreadMonitor.h"
 
 using namespace Acore::ChatCommands;
@@ -257,10 +257,8 @@ public:
             {"status", WorldLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // World PvP (WP1, WP23): list and bot read; enthusiasm shows a bot's value and thresholds and sets the value
+        // World PvP (WP23): enthusiasm shows a bot's value and thresholds and sets the value
         static ChatCommandTable playerbotsFightCommandTable = {
-            {"list", HandleFightListCommand, SEC_PLAYER, Console::Yes},
-            {"bot", HandleFightBotCommand, SEC_PLAYER, Console::Yes},
             {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
@@ -492,16 +490,6 @@ public:
             to.x, to.y, to.z, target.GetName(), order.place);
         TravelOrders::Post(botAI, std::move(order));
         return true;
-    }
-
-    // `playerbots fight list`: the active fights on the GM's map (every open-world map from the console)
-    static bool HandleFightListCommand(ChatHandler* handler) { return WorldPvp::HandleListCommand(handler); }
-
-    // `playerbots fight bot <bot>`: the bot's fight memory, answered by the bot's next update
-    static bool HandleFightBotCommand(ChatHandler* handler, PlayerIdentifier target)
-    {
-        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && WorldPvp::HandleBotCommand(handler, botAI);
     }
 
     // `playerbots fight enthusiasm <bot> [set <0..100>]`: the bot's enthusiasm, its thresholds and the cached terms;

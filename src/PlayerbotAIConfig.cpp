@@ -1234,7 +1234,7 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     // World PvP of persistent bots (Playerbots.WorldPvp.*), optional keys whose defaults (WorldPvpConfig) are the
-    // conf.dist values; the options the code does not read yet keep their declared defaults
+    // conf.dist values
     {
         auto const pvpNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
         {
@@ -1242,57 +1242,18 @@ bool PlayerbotAIConfig::Initialize()
                 sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldPvp.") + key, value, false), minimum,
                 maximum);
         };
-        constexpr uint32 MaxBookCount = 1000;
         constexpr uint32 MaxRadiusYards = 2000;
-        constexpr uint32 MaxPvpMinutes = 24 * 60;
         constexpr uint32 MaxGraceSeconds = 600;
+        constexpr uint32 MaxScanYards = 200;
         WorldPvp = WorldPvpConfig{};
-        pvpNumber("MeetingMemorySeconds", WorldPvp.MeetingMemorySeconds, 0, DAY);
-        pvpNumber("RecentEnemies", WorldPvp.RecentEnemies, 1, WorldPvp::MAX_RECENT_ENEMIES);
-        pvpNumber("Book.MaxActiveFights", WorldPvp.MaxActiveFights, 1, MaxBookCount);
-        pvpNumber("Book.MaxParticipants", WorldPvp.MaxParticipants, 2, MaxBookCount);
-        pvpNumber("Book.FightRadiusYards", WorldPvp.FightRadiusYards, 1, MaxRadiusYards);
-        pvpNumber("Book.FightRadiusMaxYards", WorldPvp.FightRadiusMaxYards, 1, MaxRadiusYards);
-        pvpNumber("Book.MaxFightMinutes", WorldPvp.MaxFightMinutes, 1, MaxPvpMinutes);
-        pvpNumber("Book.EndGraceSeconds", WorldPvp.EndGraceSeconds, 0, MaxGraceSeconds);
-        pvpNumber("CalmMinutes", WorldPvp.CalmMinutes, 0, MaxPvpMinutes);
-        // The fight rules' values (FightRules.h clamps them again); a value out of range keeps the default
+        // A value out of range keeps the default
         auto const pvpRange = [](char const* key, float& value, float minimum, float maximum)
         {
             float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
             value = read >= minimum && read <= maximum ? read : value;
         };
-        constexpr uint32 MaxScanYards = 200;
-        constexpr float MaxHours = 1000.0f;
-        constexpr float MinHours = 0.01f;
         pvpNumber("ScanYards", WorldPvp.ScanYards, 1, MaxScanYards);
-        pvpNumber("RollAgainSeconds", WorldPvp.RollAgainSeconds, 0, DAY);
-        pvpNumber("MinGapMinutes", WorldPvp.MinGapMinutes, 0, MaxPvpMinutes);
         pvpNumber("GraveyardYards", WorldPvp.GraveyardYards, 0, MaxRadiusYards);
-        pvpRange("AggressionOffBelow", WorldPvp.AggressionOffBelow, -1.0f, 1.0f);
-        pvpRange("HoursAtZero", WorldPvp.HoursAtZero, MinHours, MaxHours);
-        pvpRange("HoursAtOne", WorldPvp.HoursAtOne, MinHours, MaxHours);
-        pvpRange("ChanceCap", WorldPvp.ChanceCap, 0.0f, 1.0f);
-        pvpRange("Colour.Green", WorldPvp.GreenFactor, 0.0f, 1.0f);
-        pvpRange("Colour.Yellow", WorldPvp.YellowFactor, 0.0f, 1.0f);
-        pvpRange("Colour.OrangeDaring", WorldPvp.OrangeDaring, 0.0f, 1.0f);
-        pvpRange("Colour.OrangeCareful", WorldPvp.OrangeCareful, 0.0f, 1.0f);
-        pvpRange("OddsCaution", WorldPvp.OddsCaution, 0.0f, 0.5f);
-        pvpNumber("JoinYards", WorldPvp.JoinYards, 1, MaxScanYards);
-        pvpRange("Join.Base", WorldPvp.JoinBase, 0.0f, 1.0f);
-        pvpRange("Join.Aggression", WorldPvp.JoinAggression, 0.0f, 1.0f);
-        pvpRange("Join.Helpfulness", WorldPvp.JoinHelpfulness, 0.0f, 1.0f);
-        pvpRange("Join.Goal", WorldPvp.JoinGoal, 0.0f, 1.0f);
-        pvpRange("Retreat.CautionHealth", WorldPvp.RetreatCautionHealth, 0.0f, 1.0f);
-        pvpRange("Retreat.CautionOdds", WorldPvp.RetreatCautionOdds, 0.0f, 0.5f);
-        pvpNumber("Retreat.HealthPercent", WorldPvp.RetreatHealthPercent, 1, 100);
-        pvpRange("Retreat.Odds", WorldPvp.RetreatOdds, 0.0f, 0.5f);
-        pvpNumber("ChaseSeconds", WorldPvp.ChaseSeconds, 0, MaxGraceSeconds);
-        pvpNumber("ChaseYards", WorldPvp.ChaseYards, 0, MaxRadiusYards);
-        pvpNumber("NoHitSeconds", WorldPvp.NoHitSeconds, 1, MaxGraceSeconds);
-        pvpNumber("StalemateSeconds", WorldPvp.StalemateSeconds, 1, DAY);
-        pvpNumber("CalmYards", WorldPvp.CalmYards, 0, MaxRadiusYards);
-        pvpNumber("ResurrectedSeconds", WorldPvp.ResurrectedSeconds, 0, DAY);
         pvpNumber("GhostEnemyYards", WorldPvp.GhostEnemyYards, 0, MaxRadiusYards);
         pvpNumber("GhostRecheckSeconds", WorldPvp.GhostRecheckSeconds, 1, MaxGraceSeconds);
         pvpNumber("GhostSpiritHealerSeconds", WorldPvp.GhostSpiritHealerSeconds, 0, DAY);
