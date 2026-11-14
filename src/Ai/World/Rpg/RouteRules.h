@@ -1573,28 +1573,40 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
                   same(out->flightPoints.front(), out->from),
               "k) no takeoff here: the fly leg does not start at the first graph node after a walk");
         if (out)
-        {
             notes.push_back("k) no takeoff at Honor Hold: walk " + num(walkedOut.legs.front().seconds) +
                             " s, then fly " + num(out->seconds) + " s from " +
                             num(awayFrom(honorHold, out->from.x, out->from.y)) + " yd out");
-            // The replan after a takeoff refused at that node (WU11b: Dalaran's portal node lies over open cells):
-            // the bot stands where its walk ended, 4 yd from the node, and no flight starts there
-            Snapshot atNode = indoors;
-            atNode.position = {out->from.mapId, out->from.x + 4.0f, out->from.y, out->from.z};
-            Request const replan{atNode, thrallmar};
-            Result const onward = Search(graph, replan, StuckEdges{}, flying);
-            Leg const* again = sound(onward, replan, "k) replan at the refused node") ? flyLeg(onward) : nullptr;
-            check(again && awayFrom(out->from, again->from.x, again->from.y) > FLY_OWN_SPOT_YARDS,
-                  "k) a replan at a node where the takeoff was refused flies from it again");
-            if (again)
-                notes.push_back("k) replan at the refused node: fly " + num(again->seconds) + " s from " +
-                                num(awayFrom(out->from, again->from.x, again->from.y)) + " yd on");
-        }
+    }
+
+    // The replan after a takeoff refused at a node (WU11b: Dalaran's portal node lies over open cells): the bot
+    // stands where its walk ended, 4 yd from the node, and no flight starts there. The trip runs from Thrallmar
+    // indoors, whose walk passes two graph nodes after the refused one: the walk from Honor Hold has only one left,
+    // 110 yd short of Thrallmar, a ground hop (since l)'s priced climb it no longer ends at the node 193 yd out)
+    Snapshot inThrallmar = indoors;
+    inThrallmar.position = thrallmar;
+    Request const fromThrallmar{inThrallmar, honorHold};
+    Result const refusedAt = Search(graph, fromThrallmar, StuckEdges{}, flying);
+    Leg const* refused =
+        sound(refusedAt, fromThrallmar, "k) Thrallmar indoors -> Honor Hold flying") ? flyLeg(refusedAt) : nullptr;
+    check(refused && awayFrom(thrallmar, refused->from.x, refused->from.y) > FLY_OWN_SPOT_YARDS,
+          "k) no takeoff in Thrallmar: no fly leg after a walk");
+    if (refused)
+    {
+        Snapshot atNode = inThrallmar;
+        atNode.position = {refused->from.mapId, refused->from.x + 4.0f, refused->from.y, refused->from.z};
+        Request const replan{atNode, honorHold};
+        Result const onward = Search(graph, replan, StuckEdges{}, flying);
+        Leg const* again = sound(onward, replan, "k) replan at the refused node") ? flyLeg(onward) : nullptr;
+        check(again && awayFrom(refused->from, again->from.x, again->from.y) > FLY_OWN_SPOT_YARDS,
+              "k) a replan at a node where the takeoff was refused flies from it again");
+        if (again)
+            notes.push_back("k) replan at the refused node: fly " + num(again->seconds) + " s from " +
+                            num(awayFrom(refused->from, again->from.x, again->from.y)) + " yd on");
     }
 
     // No-fly ground at each end: the start's own cell (the start 40 yd west of Honor Hold's node: the map's origin
     //    lies 1500 yd west of that node, so the start falls in the next cell west) and 100 yd around Thrallmar's node
-    //    (the shipped graph's walk passes one node 193 yd out). Walk to the first open node, fly, walk in
+    //    (the shipped graph's walk passes one node 110 yd out). Walk to the first open node, fly, walk in
     Point const westOfHold{FLY_MAP_OUTLAND, honorHold.x - 40.0f, honorHold.y, honorHold.z};
     Params towns;
     towns.flightMaps = mapSet({flatMap(honorHold, thrallmar,
@@ -1622,22 +1634,24 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     }
 
     // A floating platform (WU11b, Dalaran): a point more than FLY_PLATFORM_YARDS above its cell's ground is no fly
-    // end. The ground lies 400 yd lower within 150 yd of Thrallmar, so its nodes there float: the flight ends before
-    // them and the bot walks the rest
+    // end. The ground lies 400 yd lower within platformYards of Thrallmar (cell centres: the walk's last graph node, 110
+    // yd out, stays on the plain since l)'s priced climb), so its nodes there float: the flight ends before them and the
+    // bot walks the rest
+    float const platformYards = 100.0f;
     FlightRules::HeightMap const plain = flatMap(honorHold, thrallmar, open);
     check(FlyEnd(plain, {FLY_MAP_OUTLAND, honorHold.x, honorHold.y, 120.0f}) &&
               !FlyEnd(plain, {FLY_MAP_OUTLAND, honorHold.x, honorHold.y, 100.0f + FLY_PLATFORM_YARDS + 1.0f}),
           "k) platform: a point 20 yd above the ground is no fly end, or one 101 yd above is one");
     Params platform;
     platform.flightMaps = mapSet({groundMap(honorHold, thrallmar, open, [&](float x, float y)
-                                            { return awayFrom(thrallmar, x, y) <= 150.0f ? -400.0f : 100.0f; })});
+                                            { return awayFrom(thrallmar, x, y) <= platformYards ? -400.0f : 100.0f; })});
     Result const toPlatform = Search(graph, hellfire, StuckEdges{}, platform);
     if (sound(toPlatform, hellfire, "k) Honor Hold -> Thrallmar on a platform"))
     {
         Leg const* high = flyLeg(toPlatform);
         FlightRules::HeightMap const& sunk = platform.flightMaps->maps.front();
         check(high && toPlatform.legs.back().type == LegType::Walk && FlyEnd(sunk, high->from) &&
-                  FlyEnd(sunk, high->to) && awayFrom(thrallmar, high->to.x, high->to.y) > 100.0f,
+                  FlyEnd(sunk, high->to) && awayFrom(thrallmar, high->to.x, high->to.y) > platformYards,
               "k) platform: the fly leg does not end below the platform before a walk up");
         if (high)
             notes.push_back("k) platform at Thrallmar: the flight ends " +
@@ -1684,7 +1698,7 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
             return;
         Leg const* off = flyLeg(walked);
         check(off && walked.legs.front().type == LegType::Walk && !walked.legs.front().nodes.empty() &&
-                  awayFrom(thrallmar, off->from.x, off->from.y) > 150.0f,
+                  awayFrom(thrallmar, off->from.x, off->from.y) > platformYards,
               "k) " + label + ": the flight does not start beyond the platform");
     };
     Request mayTakeOff = fromPlatform;
