@@ -65,10 +65,11 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args)
     BankKnowledge const& known = botAI->rpgInfo.bankMail.bank;
     handler->PSendSysMessage(
         "BANK {}: kept {} (due {}, worth {}), free slots {}/{}, level {}, keeps possessions {}; "
-        "known: {} kept, {} due, {} free{}",
+        "known: {} kept, {} due, {} free, {} carried{}",
         bot->GetName(), kept.size(), due.count, due.worth, bank.bankSpace.freeSlots, BANK_ITEM_SLOTS, bank.bot.level,
         PlayerbotFactory::KeepsPossessions(bot) ? "yes" : "no", known.kept.size(),
-        DueAt(known.kept, bank.bot.level).count, known.freeSlots, known.built ? "" : " (not built)");
+        DueAt(known.kept, bank.bot.level).count, known.freeSlots, known.carried.items.size(),
+        known.built ? "" : " (not built)");
     for (size_t i = 0; i < kept.size() && i < LINES_SHOWN; ++i)
         handler->PSendSysMessage("  kept {} {} x{}: later {} at level {} ({})", kept[i].entry, ItemName(kept[i].entry),
                                  kept[i].count, kept[i].laterWorth, kept[i].dueLevel, kept[i].provider);

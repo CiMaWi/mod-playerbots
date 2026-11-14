@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "BankMailState.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
 #include "PlannerService.h"
@@ -30,7 +31,8 @@ bool BankVisitActiveTrigger::IsActive()
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
 {
-    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
+    // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
+    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints) || BankMail::VisitRuns(botAI->rpgInfo.bankMail))
         return false;
     Player* bot = botAI->GetBot();
     if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
@@ -77,8 +79,13 @@ bool InventoryPressureTrigger::IsActive()
     if (WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs) && WorldTravel::ErrandMayStart(botAI))
         return true;
 
-    return WorldTravel::ErrandRetryOver(measure, nowMs) &&
-           (WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI));
+    if (!WorldTravel::ErrandRetryOver(measure, nowMs))
+        return false;
+
+    // Mail or a bank errand worth a trip of its own (WB8b: the same check, no trigger of its own; as full bags, it
+    // does not end questing)
+    return (BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI)) ||
+           WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI);
 }
 
 bool InnBindTrigger::IsActive()
