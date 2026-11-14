@@ -34,16 +34,33 @@ int main()
     Vec const start{0.0f, 0.0f, 10.0f};
     Vec const end{100.0f, 0.0f, 10.0f};
 
-    // The bot's walk: engine answers from small made-up worlds
+    // The bot's walk: engine answers from small made-up worlds. A smooth path has a point every 4 yd (pointCount);
+    // the trace keeps only its ends
     auto const answer = [](std::uint32_t type, Vec const& at, Vec const& last)
     {
         WalkAnswer one;
         one.result = true;
         one.type = type;
+        one.first = at;
         one.last = last;
         one.actualEnd = last;
         one.length = Dist3D(at, last);
+        one.pointCount = 1 + std::max(1u, static_cast<std::uint32_t>(std::ceil(Dist2D(at, last) / 4.0f)));
         one.points = {at, last};
+        return one;
+    };
+    // Core v20's hop: the target appended to a one-point path, typed INCOMPLETE, actual end = last
+    auto const hopAnswer = [](std::uint32_t type, Vec const& at, Vec const& target)
+    {
+        WalkAnswer one;
+        one.result = true;
+        one.type = type;
+        one.first = at;
+        one.last = target;
+        one.actualEnd = target;
+        one.length = Dist3D(at, target);
+        one.pointCount = 2;
+        one.points = {at, target};
         return one;
     };
     auto const half = []() { return 0.5f; };
@@ -123,6 +140,100 @@ int main()
     walk = Walk(start, veryFar, creep, half);
     check(walk.end == WalkEnd::Capped && walk.moves == WALK_MAX_MOVES && DirectionOf(walk) == Direction::Capped,
           "WALK_MAX_MOVES moves without arrival: capped");
+
+    // The hop (G33): the mesh ends at x 40; from its edge core v20 appends the target (INCOMPLETE, two points, the
+    // actual end = the last point). The old model took it as a mesh move (ok); it is a straight line: shortcut
+    Vec const edge{40.0f, 0.0f, 10.0f};
+    Vec const sixtyEnd{60.0f, 0.0f, 10.0f};
+    auto const gap = [&](Vec const& at, Vec const& target)
+    {
+        if (target.x <= 40.0f)
+            return answer(PATH_NORMAL, at, target);
+        if (at.x < 40.0f)
+            return answer(PATH_INCOMPLETE, at, edge);
+        return hopAnswer(PATH_INCOMPLETE, at, target);
+    };
+    walk = Walk(start, sixtyEnd, gap, half);
+    check(walk.end == WalkEnd::Arrived && walk.moves == 2 &&
+              walk.kinds == (WALK_MESH | WALK_INCOMPLETE | WALK_STRAIGHT | WALK_HOP) &&
+              std::fabs(walk.straightYd - 20.0f) < 0.01f && std::fabs(walk.meshYd - 40.0f) < 0.01f &&
+              walk.straightSeen && walk.firstStraight.x == 40.0f && DirectionOf(walk) == Direction::Shortcut,
+          "the hop over a gap: a straight line from the mesh's edge, shortcut");
+    check(DirectionValue("fwd", walk) ==
+              "fwd=shortcut moves=2 kinds=mesh+incomplete+straight+hop mesh=40 straight=20 at=60,0,10 from=40,0,10",
+          "a hop's direction value names it");
+    // The same world on core v21: NOPATH instead of the hop, the same class
+    auto const gapV21 = [&](Vec const& at, Vec const& target)
+    {
+        if (target.x <= 40.0f || at.x < 40.0f)
+            return gap(at, target);
+        WalkAnswer one = answer(PATH_NOPATH, at, at);
+        one.pointCount = 2;
+        return one;
+    };
+    WalkResult const v21Gap = Walk(start, sixtyEnd, gapV21, half);
+    check(DirectionOf(v21Gap) == Direction::Shortcut && !(v21Gap.kinds & WALK_HOP) &&
+              std::fabs(v21Gap.straightYd - 20.0f) < 0.01f,
+          "core v21 answers the gap NOPATH: the same shortcut, no hop");
+    // Which answers are hops
+    Vec const twenty{20.0f, 0.0f, 10.0f};
+    check(IsHop(hopAnswer(PATH_INCOMPLETE, start, twenty)) &&
+              IsHop(hopAnswer(PATH_INCOMPLETE | PATH_FARFROMPOLY, start, twenty)),
+          "two points, INCOMPLETE (also far from a polygon), 20 yd: a hop");
+    check(!IsHop(answer(PATH_INCOMPLETE, start, twenty)), "a smooth INCOMPLETE path of 6 points: no hop");
+    check(!IsHop(hopAnswer(PATH_INCOMPLETE, start, Vec{4.2f, 0.0f, 13.0f})),
+          "two points within one smooth step (4.2 yd 2D, 3 yd up): no hop");
+    check(!IsHop(hopAnswer(PATH_NORMAL, start, twenty)), "a NORMAL two-point path: no hop");
+    Vec land;
+    float length = 0.0f;
+    auto hopOnly = [&](Vec const& at, Vec const& target) { return hopAnswer(PATH_INCOMPLETE, at, target); };
+    std::uint32_t const hopKinds = WalkMove(start, twenty, hopOnly, land, length, nullptr);
+    check(hopKinds == (WALK_STRAIGHT | WALK_HOP | WALK_INCOMPLETE) && land.x == 20.0f && length == 20.0f,
+          "a hop move: straight, lands on its last point");
+
+    // mode=path: the stored points in order. A mesh with a hole between x 80 and 100: the walk node to node goes
+    // around it (one mesh order), the stored points lead into it
+    std::vector<Vec> const stored = {start, Vec{30, 0, 10}, Vec{60, 0, 10}, Vec{90, 0, 10}, Vec{120, 0, 10}};
+    auto const around = [&](Vec const& at, Vec const& target)
+    {
+        if (target.x > 80.0f && target.x < 100.0f)
+            return answer(PATH_NORMAL | PATH_NOT_USING_PATH, at, target);
+        return answer(PATH_NORMAL, at, target);
+    };
+    walk = Walk(start, stored.back(), around, half);
+    check(DirectionOf(walk) == Direction::Ok, "node to node around the hole: ok");
+    std::vector<Vec> pathTrace;
+    walk = WalkPath(stored, around, half, &pathTrace);
+    check(walk.end == WalkEnd::Arrived && walk.moves == 4 && (walk.kinds & WALK_STRAIGHT) &&
+              walk.firstStraight.x == 60.0f && std::fabs(walk.straightYd - 30.0f) < 0.01f &&
+              DirectionOf(walk) == Direction::Shortcut,
+          "over the stored points into the hole: a straight move, shortcut");
+    check(pathTrace.size() == 5 && pathTrace[3].x == 90.0f, "the path trace: the start, then every point passed");
+    std::vector<Vec> const backwards(stored.rbegin(), stored.rend());
+    walk = WalkPath(backwards, around, half);
+    check(walk.end == WalkEnd::Arrived && walk.moves == 4 && DirectionOf(walk) == Direction::Shortcut &&
+              walk.firstStraight.x == 120.0f,
+          "the reverse walks the points backwards");
+    std::vector<Vec> const onMesh = {start, Vec{30, 0, 10}, Vec{60, 0, 10}, Vec{75, 0, 10}};
+    walk = WalkPath(onMesh, around, half);
+    check(walk.end == WalkEnd::Arrived && walk.moves == 3 && walk.kinds == WALK_MESH &&
+              DirectionOf(walk) == Direction::Ok,
+          "stored points on the mesh: ok, one move per point");
+    // Points within 10 yd of the bot arrive at once (the follower's goal), as node to node
+    std::vector<Vec> const dense = {start,          Vec{4, 0, 10},  Vec{8, 0, 10}, Vec{12, 0, 10},
+                                    Vec{16, 0, 10}, Vec{20, 0, 10}, Vec{24, 0, 10}};
+    walk = WalkPath(dense, around, half);
+    check(walk.end == WalkEnd::Arrived && walk.moves == 2 && DirectionOf(walk) == Direction::Ok,
+          "dense points: a point is ordered when over 10 yd away");
+    // A stored point past the mesh's end: the leg gets stuck there, so does the walk
+    std::vector<Vec> const past = {start, Vec{30, 0, 10}, Vec{60, 0, 10}, Vec{90, 0, 10}};
+    walk = WalkPath(past, shortMesh, half);
+    check(walk.end == WalkEnd::Stuck && walk.reached.x == 40.0f && DirectionOf(walk) == Direction::Stuck,
+          "a stored point past the mesh's end: stuck there");
+    WalkResult const twoPoints = WalkPath({start, end}, hole, half);
+    WalkResult const nodeWalk = Walk(start, end, hole, half);
+    check(twoPoints.moves == nodeWalk.moves && twoPoints.kinds == nodeWalk.kinds && twoPoints.end == nodeWalk.end,
+          "a way of two points is the walk node to node");
 
     // Keys and lines
     check(NodeKey(530, -1234.4f, 5678.5f, -0.4f) == "530:node:-1234,5679,0", "node key rounds to a yard");
@@ -251,6 +362,31 @@ int main()
     check(PathValue({Vec{1, 2, 3}, Vec{4.5f, 5, 6}}) == "1.0,2.0,3.0;4.5,5.0,6.0" && PathValue({}).empty(),
           "pair path line");
 
+    // The walk model's words
+    CheckOptions options;
+    check(options.Name() == "v21-nodes-40" && !options.SteepExcluded(), "default: v21, node to node, steep cost 40");
+    auto const named = [](std::vector<std::string> const& words)
+    {
+        CheckOptions one;
+        for (std::string const& word : words)
+            if (!IsCheckWord(word) || !TakeCheckWord(word, one))
+                return std::string("bad ") + word;
+        return one.Name();
+    };
+    check(named({"model=v20"}) == "v20-nodes-excluded", "model=v20 leaves steep ground out");
+    check(named({"steep=excluded"}) == "v21-nodes-excluded" && named({"steep=1", "mode=path"}) == "v21-path-1" &&
+              named({"model=v20", "steep=40"}) == "v20-nodes-40" && named({"steep=2.5"}) == "v21-nodes-2.5" &&
+              named({"mode=nodes", "model=v21"}) == "v21-nodes-40",
+          "steep= and mode= words");
+    check(named({"steep=0"}).rfind("bad", 0) == 0 && named({"steep=-1"}).rfind("bad", 0) == 0 &&
+              named({"steep=abc"}).rfind("bad", 0) == 0 && named({"steep="}).rfind("bad", 0) == 0 &&
+              named({"steep=4x"}).rfind("bad", 0) == 0 && named({"mode=pathx"}).rfind("bad", 0) == 0 &&
+              named({"model=v19"}).rfind("bad", 0) == 0,
+          "bad values are refused");
+    check(!IsCheckWord("all") && !IsCheckWord("571") && !IsCheckWord("C:/x/pairs.txt") && IsCheckWord("model=v20") &&
+              IsCheckWord("mode=path"),
+          "only the three words are taken");
+
     // The report
     MapCounts a;
     a.mapId = 571;
@@ -301,11 +437,22 @@ int main()
     std::vector<std::string> const failing = ReportLines({onlyShortcut}, {});
     check(std::find(failing.begin(), failing.end(), "3\tstatus\t-\tfail") != failing.end(),
           "a shortcut link fails the status");
+    MapCounts withNoPath = b;
+    withNoPath.links = 3;
+    withNoPath.byClass[static_cast<int>(Verdict::NoPath)] = 1;
+    std::vector<std::string> const noPathLines = ReportLines({withNoPath}, {});
+    check(
+        withNoPath.Broken() == 0 &&
+            std::find(noPathLines.begin(), noPathLines.end(), "3\tlinks.class.no-path\tall\t1") != noPathLines.end() &&
+            std::find(noPathLines.begin(), noPathLines.end(), "3\tstatus\t-\tpass") != noPathLines.end(),
+        "no-path: counted apart, not broken");
+    check(std::string(VerdictWord(Verdict::NoPath)) == "no-path", "no-path word");
+    check(has("3\tlinks.class.no-path\tall\t0"), "every report counts no-path");
     a.Add(b);
     check(a.links == 8 && a.byClass[static_cast<int>(Verdict::Ok)] == 3, "counts add");
     std::string const summary = SummaryLine("map 571", a);
-    check(summary.find("8 links: 3 ok (1 chained), 1 reverse-only, 1 end-off-mesh, 1 dead, 1 shortcut, 1 capped") !=
-              std::string::npos,
+    check(summary.find("8 links: 3 ok (1 chained), 1 reverse-only, 1 end-off-mesh, 1 dead, 1 shortcut, 1 capped, "
+                       "0 no-path") != std::string::npos,
           "summary line");
     std::cout << "  " << summary << "\n";
 
