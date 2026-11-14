@@ -1634,17 +1634,18 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     }
 
     // A floating platform (WU11b, Dalaran): a point more than FLY_PLATFORM_YARDS above its cell's ground is no fly
-    // end. The ground lies 400 yd lower within platformYards of Thrallmar (cell centres: the walk's last graph node, 110
-    // yd out, stays on the plain since l)'s priced climb), so its nodes there float: the flight ends before them and the
-    // bot walks the rest
+    // end. The ground lies 400 yd lower within platformYards of Thrallmar (cell centres: the walk's last graph node,
+    // 110 yd out, stays on the plain since l)'s priced climb), so its nodes there float: the flight ends before them
+    // and the bot walks the rest
     float const platformYards = 100.0f;
     FlightRules::HeightMap const plain = flatMap(honorHold, thrallmar, open);
     check(FlyEnd(plain, {FLY_MAP_OUTLAND, honorHold.x, honorHold.y, 120.0f}) &&
               !FlyEnd(plain, {FLY_MAP_OUTLAND, honorHold.x, honorHold.y, 100.0f + FLY_PLATFORM_YARDS + 1.0f}),
           "k) platform: a point 20 yd above the ground is no fly end, or one 101 yd above is one");
     Params platform;
-    platform.flightMaps = mapSet({groundMap(honorHold, thrallmar, open, [&](float x, float y)
-                                            { return awayFrom(thrallmar, x, y) <= platformYards ? -400.0f : 100.0f; })});
+    platform.flightMaps =
+        mapSet({groundMap(honorHold, thrallmar, open, [&](float x, float y)
+                          { return awayFrom(thrallmar, x, y) <= platformYards ? -400.0f : 100.0f; })});
     Result const toPlatform = Search(graph, hellfire, StuckEdges{}, platform);
     if (sound(toPlatform, hellfire, "k) Honor Hold -> Thrallmar on a platform"))
     {
