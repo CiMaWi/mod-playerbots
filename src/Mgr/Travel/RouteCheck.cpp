@@ -111,13 +111,16 @@ char const* Title() { return job.pairsMode ? "pairs" : "links"; }
 
 std::uint16_t BotIncludeFlags()
 {
-    return static_cast<std::uint16_t>(NAV_GROUND | NAV_WATER | (job.options.SteepExcluded() ? 0 : NAV_GROUND_STEEP));
+    return static_cast<std::uint16_t>(NAV_GROUND | NAV_WATER | (job.options.SteepExcluded() ? 0 : NAV_GROUND_STEEP) |
+                                      (job.options.areasAll ? (NAV_MAGMA | NAV_FATIGUE_WATER) : 0));
 }
 
 std::uint16_t BotExcludeFlags()
 {
-    return static_cast<std::uint16_t>(NAV_MAGMA | NAV_SLIME | (job.options.v20Model ? 0 : NAV_FATIGUE_WATER) |
-                                      (job.options.SteepExcluded() ? NAV_GROUND_STEEP : 0));
+    std::uint16_t const steep = job.options.SteepExcluded() ? NAV_GROUND_STEEP : 0;
+    if (job.options.areasAll)  // slime stays out: the engine's player filter does not include it
+        return static_cast<std::uint16_t>(NAV_SLIME | steep);
+    return static_cast<std::uint16_t>(NAV_MAGMA | NAV_SLIME | (job.options.v20Model ? 0 : NAV_FATIGUE_WATER) | steep);
 }
 
 // Takes the walk model's words (CheckOptions) out of the arguments, each at its last place in text (the words follow
@@ -315,6 +318,40 @@ void CheckNode(TravelGraph const& graph, std::uint32_t index)
                             OffMeshValue(answer.distance, answer.steep)));
 }
 
+// The areas under an answer's points and the middle of each leg (`areas=all`): the nearest polygon of any kind within
+// a yard sideways and 4 yd up or down; the end of a hop was copied in and is skipped
+std::uint32_t AreasUnder(Map* map, Movement::PointsArray const& points, bool hop)
+{
+    MMapData& mmap = map->GetMapCollisionData().GetMMapData();
+    dtNavMeshQuery const* query = mmap.GetNavMeshQuery();
+    if (!query)
+        return 0;
+    dtQueryFilter any;
+    any.setIncludeFlags(0xffff);
+    any.setExcludeFlags(0);
+    float const extents[3] = {1.0f, 4.0f, 1.0f};
+    std::uint32_t areas = 0;
+    auto const take = [&](G3D::Vector3 const& at)
+    {
+        float const point[3] = {at.y, at.z, at.x};
+        dtPolyRef ref = 0;
+        float closest[3] = {0.0f, 0.0f, 0.0f};
+        dtMeshTile const* tile = nullptr;
+        dtPoly const* poly = nullptr;
+        if (dtStatusSucceed(query->findNearestPoly(point, extents, &any, &ref, closest)) && ref &&
+            dtStatusSucceed(mmap.GetNavMesh()->getTileAndPolyByRef(ref, &tile, &poly)) && poly)
+            areas |= AreaBit(poly->getArea());
+    };
+    std::size_t const count = hop && !points.empty() ? points.size() - 1 : points.size();
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        take(points[i]);
+        if (i + 1 < count)
+            take((points[i] + points[i + 1]) * 0.5f);
+    }
+    return areas;
+}
+
 // One engine answer as a bot's MovePoint asks it: smooth path, no forced destination; the bots' polygons. The
 // points are copied only for a trace
 WalkAnswer Ask(Probe const* probe, Vec const& at, Vec const& target, bool keepPoints)
@@ -342,6 +379,8 @@ WalkAnswer Ask(Probe const* probe, Vec const& at, Vec const& target, bool keepPo
             answer.points.push_back({point.x, point.y, point.z});
     G3D::Vector3 const& actual = path.GetActualEndPosition();
     answer.actualEnd = {actual.x, actual.y, actual.z};
+    if (job.options.areasAll)
+        answer.areas = AreasUnder(probe->GetMap(), points, IsHop(answer));
     return answer;
 }
 
@@ -526,8 +565,8 @@ void Finish(TravelGraph const& graph)
     if (out)
     {
         out << "# route check " << Title() << " [model " << job.options.ModelWord() << ", mode "
-            << job.options.ModeWord() << ", steep " << job.options.SteepWord() << "] (PLAN navigation §3.2 check 3), "
-            << stamp << "\n";
+            << job.options.ModeWord() << ", steep " << job.options.SteepWord() << ", areas "
+            << job.options.AreasOption() << "] (PLAN navigation §3.2 check 3), " << stamp << "\n";
         out << "# graph: " << stats.nodes << " nodes, " << stats.links << " links ("
             << stats.linksByType[static_cast<int>(TravelLinkType::Walk)] << " walk), " << stats.points
             << " path points\n";

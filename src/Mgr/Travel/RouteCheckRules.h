@@ -96,6 +96,45 @@ constexpr std::uint32_t WALK_STRAIGHT = 0x08;    // a straight line (NOPATH, NOT
 constexpr std::uint32_t WALK_CONE_STONE = 0x10;  // the order was a stepping stone of the cone
 constexpr std::uint32_t WALK_HOP = 0x20;         // the straight line was the engine's hop (IsHop)
 
+// The polygon areas a walk touches (`areas=all` reports them): the bits `AreaBit` makes of the area ids
+constexpr std::uint32_t AREA_LAVA = 0x01;
+constexpr std::uint32_t AREA_SLIME = 0x02;
+constexpr std::uint32_t AREA_FATIGUE = 0x04;  // fatigue water
+constexpr std::uint32_t AREA_OTHER = 0x08;    // an area id other than ground, water, steep ground and the above
+
+// The bit of a polygon's area id (the engine's NavTerrain values: ground 1, lava 2, slime 4, water 8, steep 0x10,
+// fatigue water 0x20); ground, water, steep ground and no area are the plain ones and make no bit
+inline std::uint32_t AreaBit(unsigned area)
+{
+    switch (area)
+    {
+        case 0x00:
+        case 0x01:
+        case 0x08:
+        case 0x10:
+            return 0;
+        case 0x02:
+            return AREA_LAVA;
+        case 0x04:
+            return AREA_SLIME;
+        case 0x20:
+            return AREA_FATIGUE;
+        default:
+            return AREA_OTHER;
+    }
+}
+
+inline std::string AreasWord(std::uint32_t areas)
+{
+    static constexpr std::array<std::pair<std::uint32_t, char const*>, 4> NAMES{
+        {{AREA_FATIGUE, "fatigue"}, {AREA_LAVA, "lava"}, {AREA_SLIME, "slime"}, {AREA_OTHER, "other"}}};
+    std::string text;
+    for (auto const& [bit, name] : NAMES)
+        if (areas & bit)
+            text += (text.empty() ? "" : "+") + std::string(name);
+    return text.empty() ? "-" : text;
+}
+
 // One engine answer as the walk reads it
 struct WalkAnswer
 {
@@ -107,6 +146,7 @@ struct WalkAnswer
     float length{0.0f};           // along the path's points
     std::uint32_t pointCount{0};  // the path's points
     std::vector<Vec> points;      // the path's points; only needed when the walk keeps a trace
+    std::uint32_t areas{0};       // AREA_* bits of the polygons under the path (set only under `areas=all`)
 };
 
 // The engine's hop (HOP_MIN): the answer's last point was copied in, not reached on the mesh
@@ -123,6 +163,7 @@ struct WalkStep
     float meshYd{0.0f};      // walked along the path
     float straightYd{0.0f};  // walked in a straight line
     Vec straightFrom;        // where that line began
+    std::uint32_t areas{0};  // AREA_* bits of the path the bot walked
 };
 
 enum class WalkEnd : std::uint8_t
@@ -137,6 +178,7 @@ struct WalkResult
     WalkEnd end{WalkEnd::Capped};
     std::uint32_t moves{0};
     std::uint32_t kinds{0};  // WALK_* bits of every move
+    std::uint32_t areas{0};  // AREA_* bits of every move's path
     float meshYd{0.0f};      // walked along navmesh paths
     float straightYd{0.0f};  // walked in straight lines
     Vec reached;             // where the walk ended
@@ -167,6 +209,7 @@ std::uint32_t WalkMove(Vec const& at, Vec const& target, PathFn& path, WalkStep&
         return WALK_STRAIGHT;
     }
     step.land = answer.last;
+    step.areas = answer.areas;
     if (trace && answer.points.size() > 1)
         trace->insert(trace->end(), answer.points.begin() + 1, answer.points.end());
     else if (trace)
@@ -243,6 +286,7 @@ WalkEnd WalkLeg(Vec& at, Vec const& end, PathFn& path, RandFn& rand, std::vector
             }
             result.meshYd += step.meshYd;
             result.kinds |= kinds;
+            result.areas |= step.areas;
             at = step.land;
         }
         float const now = Dist3D(at, end);
@@ -465,7 +509,8 @@ inline LinkVerdict ClassifyLink(WalkResult const& fwd, WalkResult const* rev, Ve
 }
 
 // One direction in a row: `<name>=<ok|shortcut|stuck|capped> moves=N kinds=a+b mesh=Y straight=Y at=x,y,z
-// [from=x,y,z]` (at: where the walk ended; from: where its first straight move began)
+// [from=x,y,z] [areas=a+b]` (at: where the walk ended; from: where its first straight move began; areas: the
+// hazard areas its paths touched, only when there are some)
 inline std::string DirectionValue(char const* name, WalkResult const& walk)
 {
     char text[256];
@@ -479,6 +524,8 @@ inline std::string DirectionValue(char const* name, WalkResult const& walk)
                       walk.firstStraight.z);
         value += text;
     }
+    if (walk.areas)
+        value += " areas=" + AreasWord(walk.areas);
     return value;
 }
 
@@ -588,6 +635,7 @@ struct CheckOptions
     bool steepGiven{false};
     bool steepExcluded{false};
     float steepCost{STEEP_COST};
+    bool areasAll{false};  // `areas=all`: lava and fatigue water allowed, and the walks' areas reported
 
     bool SteepExcluded() const { return steepGiven ? steepExcluded : v20Model; }
     std::string ModelWord() const { return v20Model ? "v20" : "v21"; }
@@ -603,12 +651,15 @@ struct CheckOptions
     }
 
     // The report's name part: `v21-nodes-40`, `v20-path-excluded`
-    std::string Name() const { return ModelWord() + "-" + ModeWord() + "-" + SteepWord(); }
+    std::string AreasOption() const { return areasAll ? "all" : "default"; }
+
+    std::string Name() const { return ModelWord() + "-" + ModeWord() + "-" + SteepWord() + (areasAll ? "-areas" : ""); }
 };
 
 inline bool IsCheckWord(std::string const& word)
 {
-    return word.rfind("model=", 0) == 0 || word.rfind("mode=", 0) == 0 || word.rfind("steep=", 0) == 0;
+    return word.rfind("model=", 0) == 0 || word.rfind("mode=", 0) == 0 || word.rfind("steep=", 0) == 0 ||
+           word.rfind("areas=", 0) == 0;
 }
 
 // Applies one IsCheckWord word; false when its value is none of the above
@@ -627,6 +678,13 @@ inline bool TakeCheckWord(std::string const& word, CheckOptions& options)
         if (value != "nodes" && value != "path")
             return false;
         options.pathMode = value == "path";
+        return true;
+    }
+    if (word.rfind("areas=", 0) == 0)
+    {
+        if (value != "all" && value != "default")
+            return false;
+        options.areasAll = value == "all";
         return true;
     }
     if (value == "excluded")

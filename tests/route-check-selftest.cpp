@@ -74,6 +74,20 @@ int main()
           "walk on the mesh: arrived in 1 move, mesh only");
     check(DirectionOf(walk) == Direction::Ok, "a walk on the mesh is ok");
     check(trace.size() == 2 && trace[0].x == 0.0f && trace[1].x == 100.0f, "the trace: the start, then the path");
+    // The areas under the walked path add up and show in the row, only when there are some
+    WalkResult const wet = Walk(
+        start, end,
+        [&](Vec const& at, Vec const& target)
+        {
+            WalkAnswer one = answer(PATH_NORMAL, at, target);
+            one.areas = AREA_FATIGUE | AREA_LAVA;
+            return one;
+        },
+        half);
+    check(wet.areas == (AREA_FATIGUE | AREA_LAVA) && walk.areas == 0 &&
+              DirectionValue("fwd", wet).find(" areas=fatigue+lava") != std::string::npos &&
+              DirectionValue("fwd", walk).find("areas=") == std::string::npos,
+          "walk areas: summed over the moves, named only when present");
     // A hole from x 60 on: the path towards the end is INCOMPLETE to x 60, then within 70 yd the order is the end
     // itself and the engine answers the hole with a shortcut: a straight line to the end
     Vec const holeEdge{60.0f, 0.0f, 10.0f};
@@ -423,6 +437,14 @@ int main()
               named({"steep=4x"}).rfind("bad", 0) == 0 && named({"mode=pathx"}).rfind("bad", 0) == 0 &&
               named({"model=v19"}).rfind("bad", 0) == 0,
           "bad values are refused");
+    check(named({"areas=all"}) == "v21-nodes-40-areas" && named({"areas=default"}) == "v21-nodes-40" &&
+              named({"areas=lava"}).rfind("bad", 0) == 0 && named({"areas="}).rfind("bad", 0) == 0 &&
+              IsCheckWord("areas=all") && CheckOptions{}.AreasOption() == "default",
+          "areas= word");
+    check(AreaBit(0x01) == 0 && AreaBit(0x08) == 0 && AreaBit(0x10) == 0 && AreaBit(0x02) == AREA_LAVA &&
+              AreaBit(0x04) == AREA_SLIME && AreaBit(0x20) == AREA_FATIGUE && AreaBit(0x40) == AREA_OTHER &&
+              AreasWord(AREA_FATIGUE | AREA_LAVA) == "fatigue+lava" && AreasWord(0) == "-",
+          "area bits and words");
     check(!IsCheckWord("all") && !IsCheckWord("571") && !IsCheckWord("C:/x/pairs.txt") && IsCheckWord("model=v20") &&
               IsCheckWord("mode=path"),
           "only the three words are taken");
