@@ -60,6 +60,9 @@ public:
     static bool HandlePartyCommand(ChatHandler* handler, char const* args);
     // Groups a character with the test player as the leader (as an accepted invite), or "none" leaves the group
     static bool HandleGroupCommand(ChatHandler* handler, char const* args);
+    // Invites a character as a client would (CMSG_GROUP_INVITE through the test player's session): the character's
+    // answer decides; a bot's own trigger answers at once
+    static bool HandleInviteCommand(ChatHandler* handler, char const* args);
     // Queues a 2v2 arena (rated: in a 2v2 team with the character, founded if missing) grouped with a character;
     // "leave" leaves the queue. The test player accepts every battleground invite
     static bool HandleArenaQueueCommand(ChatHandler* handler, char const* args);
@@ -90,6 +93,7 @@ private:
     bool Whisper(ChatHandler* handler, std::string const& target, std::string const& text);
     bool Party(ChatHandler* handler, std::string const& text);
     bool GroupWith(ChatHandler* handler, std::string const& target);
+    bool Invite(ChatHandler* handler, std::string const& target);
     bool ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated);
     void AcceptInvites(Player* player, uint32 diff);
     bool OpenReadyCheck(ChatHandler* handler, std::string const& target);

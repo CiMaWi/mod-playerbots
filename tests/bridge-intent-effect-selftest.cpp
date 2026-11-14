@@ -2477,11 +2477,244 @@ int main()
         alone.Refused(Refusal::NotInGroup);
         Check(alone.AI.Leaves == 0, "leave_group: an ungrouped bot leaves nothing");
     }
-    // LC1a: the ability table. Every row has every part; the twenty-two verbs with an effect have a row and the four
+    // LC16e: the social rows with a counterpart. join_group: in the partner's group already (nothing sent); an
+    // invitation of the partner's group taken (the partner leads a random bot, the group strategies); the partner's
+    // group (or the one it is forming), its leader's or assistant's invitation sent for the bot and taken; else the
+    // bot invites the partner, from no group or one it leads with room. Another group or invitation, a full group, a
+    // partner who may not invite, a battleground queue: cannot_now. share_quest pushes a quest of the bot's log to its
+    // group; accept_quest takes a quest of the sharer's log (the divider, a group member), never one of the bot's own.
+    {
+        Fixture in;
+        in.OneShot(Intent::JoinGroup);
+        Check(in.Run() == Result::Applied && in.BotSession.Accepts.empty() && in.BotSession.Invites.empty() &&
+                  in.HumanSession.Invites.empty() && in.AI.StrategyResets == 0,
+              "join_group: in the partner's group already, nothing is sent");
+        // The bot is ungrouped and holds no invitation; the partner leads the group it is in
+        auto const loose = [](Fixture& f)
+        {
+            f.OneShot(Intent::JoinGroup);
+            Ungrouped(f);
+            f.Human.Party = &f.Party;
+            f.Bot.Name = "Bo";
+            f.Human.Name = "Hu";
+            f.BotSession.Self = &f.Bot;
+            f.OtherParty.Guid = ObjectGuid(7);
+            f.OtherParty.Leader = f.Other.Guid;
+        };
+        for (bool const forming : {false, true})
+        {
+            Fixture invited;
+            loose(invited);
+            if (forming)
+            {
+                invited.Human.Party = nullptr;
+                invited.Human.Invite = &invited.Party;
+            }
+            invited.Bot.Invite = &invited.Party;
+            invited.AI.Master = nullptr;
+            Check(invited.Run() == Result::Applied && invited.Bot.Party == &invited.Party &&
+                      invited.BotSession.Accepts.size() == 1 && invited.AI.Master == &invited.Human &&
+                      invited.AI.StrategyResets == 1 && invited.AI.Resets == 1 &&
+                      invited.AI.HasStrategy("follow", BOT_STATE_NON_COMBAT) && invited.HumanSession.Invites.empty(),
+                  "join_group: the partner's invitation is taken, of its group or the one it forms");
+        }
+        {
+            Fixture kept;
+            loose(kept);
+            kept.Bot.Invite = &kept.Party;
+            kept.AI.Master = nullptr;
+            randomBots.Random = false;
+            Check(kept.Run() == Result::Applied && !kept.AI.Master,
+                  "join_group: a bot that is no random bot keeps its master");
+            randomBots.Random = true;
+        }
+        auto const askedOf = [&](auto setUp, Result expected)
+        {
+            Fixture asked;
+            loose(asked);
+            asked.HumanSession.Invitee = &asked.Bot;
+            asked.HumanSession.Invitation = &asked.Party;
+            setUp(asked);
+            Result const result = asked.Run();
+            Check(result == expected && asked.HumanSession.Invites.size() == 1 &&
+                      asked.HumanSession.Invites[0].Opcode == CMSG_GROUP_INVITE &&
+                      asked.HumanSession.Invites[0].Strings == std::vector<std::string>{"Bo"} &&
+                      asked.HumanSession.Invites[0].Fields == std::vector<uint64_t>{0} &&
+                      (result == Result::Applied) == (asked.Bot.Party == &asked.Party) &&
+                      asked.BotSession.Invites.empty(),
+                  "join_group: the partner's group invites the bot, which takes it");
+        };
+        askedOf([](Fixture&) {}, Result::Applied);
+        askedOf(
+            [](Fixture& f)
+            {
+                f.Party.Leader = f.Other.Guid;
+                f.Party.Assistant = f.Human.Guid;
+            },
+            Result::Applied);
+        askedOf([](Fixture& f) { f.HumanSession.Invitee = nullptr; }, Result::Failed);
+        askedOf([](Fixture& f) { f.BotSession.Joins = false; }, Result::Failed);
+        auto const inviteOf = [&](auto setUp, Result expected)
+        {
+            Fixture asks;
+            loose(asks);
+            asks.Human.Party = nullptr;
+            asks.BotSession.Invitee = &asks.Human;
+            asks.BotSession.Invitation = &asks.OtherParty;
+            setUp(asks);
+            Check(asks.Run() == expected && asks.BotSession.Invites.size() == 1 &&
+                      asks.BotSession.Invites[0].Strings == std::vector<std::string>{"Hu"} &&
+                      asks.HumanSession.Invites.empty() && asks.BotSession.Accepts.empty() &&
+                      asks.AI.StrategyResets == 0,
+                  "join_group: the bot invites a partner without a group; the partner answers");
+        };
+        inviteOf([](Fixture&) {}, Result::Applied);
+        inviteOf([](Fixture& f) { f.BotSession.Invitee = nullptr; }, Result::Failed);
+        inviteOf(
+            [](Fixture& f)
+            {
+                f.Bot.Party = &f.OtherParty;
+                f.OtherParty.Leader = f.Bot.Guid;
+                f.Command.Group = f.OtherParty.Guid.Value;
+            },
+            Result::Applied);
+        auto const joinRefused = [&](auto setUp)
+        {
+            Fixture no;
+            loose(no);
+            setUp(no);
+            no.Refused(Refusal::CannotNow);
+        };
+        joinRefused([](Fixture& f) { f.Bot.Invite = &f.OtherParty; });
+        joinRefused([](Fixture& f) { f.Party.Full = true; });
+        joinRefused([](Fixture& f) { f.Party.Leader = f.Other.Guid; });
+        joinRefused([](Fixture& f) { f.Bot.Queued = true; });
+        joinRefused(
+            [](Fixture& f)
+            {
+                f.Bot.Party = &f.OtherParty;
+                f.Command.Group = f.OtherParty.Guid.Value;
+            });
+        for (bool const leads : {false, true})
+            joinRefused(
+                [leads](Fixture& f)
+                {
+                    f.Human.Party = nullptr;
+                    f.Bot.Party = &f.OtherParty;
+                    f.Command.Group = f.OtherParty.Guid.Value;
+                    if (leads)
+                    {
+                        f.OtherParty.Leader = f.Bot.Guid;
+                        f.OtherParty.Full = true;
+                    }
+                });
+        joinRefused(
+            [](Fixture& f)
+            {
+                f.Human.Party = nullptr;
+                f.Human.Invite = &f.OtherParty;
+            });
+
+        objectMgr.Quests[60] = {"Kobold Candles"};
+        objectMgr.Quests[61] = {"Lost Necklace"};
+        // The bot holds Kobold Candles, which it may share
+        auto const sharer = [](Fixture& f)
+        {
+            f.OneShot(Intent::ShareQuest);
+            f.Bot.QuestLog[3] = 60;
+            f.Bot.Shareable = {60, 61};
+            f.Command.QuestName = "kobold candles";
+        };
+        for (bool const byId : {false, true})
+        {
+            Fixture share;
+            sharer(share);
+            if (byId)
+            {
+                share.Command.QuestName.clear();
+                share.Command.QuestId = 60;
+            }
+            Check(share.Run() == Result::Applied && share.BotSession.Pushes == std::vector<uint32>{60},
+                  "share_quest: a quest of the log, by title or id, is pushed to the group");
+        }
+        auto const shareRefused = [&](auto setUp, Refusal reason)
+        {
+            Fixture no;
+            sharer(no);
+            setUp(no);
+            no.Refused(reason);
+            Check(no.BotSession.Pushes.empty(), "share_quest: a refused share pushes nothing");
+        };
+        shareRefused([](Fixture& f) { Ungrouped(f); }, Refusal::NotInGroup);
+        shareRefused([](Fixture& f) { f.Command.QuestName = "Lost Necklace"; }, Refusal::UnknownName);
+        shareRefused(
+            [](Fixture& f)
+            {
+                f.Command.QuestName.clear();
+                f.Command.QuestId = 61;
+            },
+            Refusal::UnknownName);
+        shareRefused([](Fixture& f) { f.Bot.Shareable.clear(); }, Refusal::CannotNow);
+
+        // A group member (Other) shared Kobold Candles; the bot holds Lost Necklace itself
+        auto const taker = [](Fixture& f)
+        {
+            f.OneShot(Intent::AcceptQuest);
+            f.Other.QuestLog[0] = 60;
+            f.Bot.QuestLog[0] = 61;
+            f.Bot.Divider = f.Other.Guid;
+            f.BotSession.Self = &f.Bot;
+            f.Command.QuestName = "Kobold Candles";
+        };
+        for (bool const byId : {false, true})
+        {
+            Fixture take;
+            taker(take);
+            if (byId)
+            {
+                take.Command.QuestName.clear();
+                take.Command.QuestId = 60;
+            }
+            Check(take.Run() == Result::Applied && take.BotSession.QuestAccepts.size() == 1 &&
+                      take.BotSession.QuestAccepts[0].Opcode == CMSG_QUESTGIVER_ACCEPT_QUEST &&
+                      take.BotSession.QuestAccepts[0].Fields == std::vector<uint64_t>{5, 60, 0} &&
+                      take.Bot.FindQuestSlot(60) < MAX_QUEST_LOG_SIZE,
+                  "accept_quest: the shared quest, by title or id, is accepted from its sharer");
+        }
+        {
+            Fixture lost;
+            taker(lost);
+            lost.BotSession.Takes = false;
+            Check(lost.Run() == Result::Failed, "accept_quest: a quest the core does not add fails");
+        }
+        auto const acceptRefused = [&](auto setUp, Refusal reason)
+        {
+            Fixture no;
+            taker(no);
+            setUp(no);
+            no.Refused(reason);
+            Check(no.BotSession.QuestAccepts.empty(), "accept_quest: a refused accept sends nothing");
+        };
+        acceptRefused([](Fixture& f) { Ungrouped(f); }, Refusal::NotInGroup);
+        acceptRefused([](Fixture& f) { f.Bot.Divider = ObjectGuid(); }, Refusal::UnknownName);
+        acceptRefused([](Fixture& f) { f.Party.Outsider = f.Other.Guid; }, Refusal::UnknownName);
+        acceptRefused([](Fixture&) { ObjectAccessor::Units.erase(5); }, Refusal::UnknownName);
+        acceptRefused([](Fixture& f) { f.Command.QuestName = "Lost Necklace"; }, Refusal::UnknownName);
+        acceptRefused(
+            [](Fixture& f)
+            {
+                f.Command.QuestName.clear();
+                f.Command.QuestId = 61;
+            },
+            Refusal::UnknownName);
+        acceptRefused([](Fixture& f) { f.Bot.Takeable = false; }, Refusal::CannotNow);
+        acceptRefused([](Fixture& f) { f.Bot.Room = false; }, Refusal::CannotNow);
+    }
+    // LC1a: the ability table. Every row has every part; the twenty-five verbs with an effect have a row and the four
     // without one have none; each row applied above and gave each refusal it lists, and no other.
     {
         std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
-        Check(rows.size() == 22, "twenty-two rows");
+        Check(rows.size() == 25, "twenty-five rows");
         for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
         {
             Intent const operation = static_cast<Intent>(value);
@@ -2568,16 +2801,16 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 26, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 29, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
-        // LC16d appends the social verbs after them.
+        // LC16d and LC16e append the social verbs after them.
         char const* const wireVerbs[] = {
-            "follow",     "stay",        "flee",          "regroup",     "attack_own_target",
-            "pull",       "mark",        "focus_healing", "assign_role", "save_mana",
-            "formation",  "position",    "dungeon_clear", "go_to",       "quest",
-            "errands",    "set_hearth",  "grind_here",    "gather_here", "meet_at",
-            "pause_plan", "resume_plan", "emote",         "roll",        "ready",
-            "leave_group"};
+            "follow",      "stay",        "flee",          "regroup",     "attack_own_target",
+            "pull",        "mark",        "focus_healing", "assign_role", "save_mana",
+            "formation",   "position",    "dungeon_clear", "go_to",       "quest",
+            "errands",     "set_hearth",  "grind_here",    "gather_here", "meet_at",
+            "pause_plan",  "resume_plan", "emote",         "roll",        "ready",
+            "leave_group", "join_group",  "share_quest",   "accept_quest"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];

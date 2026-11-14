@@ -95,6 +95,7 @@ public:
             {"whisper", TestPlayerMgr::HandleWhisperCommand, SEC_GAMEMASTER, Console::Yes},
             {"party", TestPlayerMgr::HandlePartyCommand, SEC_GAMEMASTER, Console::Yes},
             {"group", TestPlayerMgr::HandleGroupCommand, SEC_GAMEMASTER, Console::Yes},
+            {"invite", TestPlayerMgr::HandleInviteCommand, SEC_GAMEMASTER, Console::Yes},
             {"arenaqueue", TestPlayerMgr::HandleArenaQueueCommand, SEC_GAMEMASTER, Console::Yes},
             {"readycheck", TestPlayerMgr::HandleReadyCheckCommand, SEC_GAMEMASTER, Console::Yes},
             {"readyanswer", TestPlayerMgr::HandleReadyAnswerCommand, SEC_GAMEMASTER, Console::Yes},

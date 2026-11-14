@@ -25,13 +25,13 @@
 // BridgeAbilities.cpp; a new topic is one BotStateTopic value, one row below and its reader in BridgeBotState.cpp.
 // A parameter has a kind and the Order field that carries it, at most one per field (OneParamPerField): a unit
 // (Target or TargetName; its Filter says whom a name may mean), a place (PlaceName or Position), a quest (QuestId or
-// QuestName), an item or a spell (ItemName, SpellName: RunRow looks the name up among what the bot carries or knows
-// and hands the row ActFacts::ItemId or SpellId), a choice (Choice, the index into its Choices; Icon and Shape are
-// the older rows' own), a flag (Enabled) or a count (Count). A row taking a unit, quest, item or spell name lists
-// UnknownName. A topic takes at most one parameter, of a name kind: its text is ReadBotStateTopic's argument and the
-// topic's reader looks it up. A topic marked Lines answers in-world sentences, each item's text one (the record
-// topics' form); every topic beyond the first fourteen does (TopicRowsValid).
-// Plain data and no game type, so a selftest or a module wire can read the table.
+// QuestName; its Quests say among which quests: the bot's log, or the one a group member shared), an item or a spell
+// (ItemName, SpellName: RunRow looks the name up among what the bot carries or knows and hands the row ActFacts::ItemId
+// or SpellId), a choice (Choice, the index into its Choices; Icon and Shape are the older rows' own), a flag (Enabled)
+// or a count (Count). A row taking a unit, quest, item or spell name lists UnknownName. A topic takes at most one
+// parameter, of a name kind: its text is ReadBotStateTopic's argument and the topic's reader looks it up. A topic
+// marked Lines answers in-world sentences, each item's text one (the record topics' form); every topic beyond the first
+// fourteen does (TopicRowsValid). Plain data and no game type, so a selftest or a module wire can read the table.
 namespace PlayerbotBridge
 {
 enum class ParamKind : uint8_t
@@ -91,6 +91,14 @@ enum class Completion : uint8_t
     GoalEnds     // A planner goal: done when the goal ends
 };
 
+// Which quests a quest parameter's title or id may mean: the bot's log, or the quests of the group member that shared
+// one with the bot (the core keeps only who shared: Player::GetDivider).
+enum class QuestFrom : uint8_t
+{
+    Log,
+    Shared
+};
+
 struct ParamRow
 {
     char const* Name;
@@ -99,6 +107,7 @@ struct ParamRow
     char const* Sentence;
     std::span<char const* const> Choices;
     UnitFilter Filter = UnitFilter::Anyone;  // A unit's; not in the catalogue
+    QuestFrom Quests = QuestFrom::Log;       // A quest's; not in the catalogue
 };
 
 // At most one parameter per Order field, so a field never carries two parameters' values.
@@ -164,7 +173,7 @@ bool IsUnavailable(Intent operation);
 
 // The number of Intent values: the rows' verbs and the four without one (BridgeAbilities.cpp checks it against the
 // table). A new verb is appended to Intent, given its row and counted here; mod-ollama-chat asserts its own count.
-constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::LeaveGroup) + 1;
+constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::AcceptQuest) + 1;
 
 // The ready checks a bot was sent and has not answered, for the ready row: the core keeps no open check
 // (WorldSession::HandleRaidReadyCheckOpcode only broadcasts), so the bot's packet handler notes each request it gets

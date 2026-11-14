@@ -207,6 +207,20 @@ bool TestPlayerMgr::HandleGroupCommand(ChatHandler* handler, char const* args)
     return Instance().GroupWith(handler, target);
 }
 
+bool TestPlayerMgr::HandleInviteCommand(ChatHandler* handler, char const* args)
+{
+    if (!CheckEnabled(handler))
+        return false;
+
+    std::istringstream in(args ? args : "");
+    std::string target;
+    in >> target;
+    if (target.empty())
+        return Fail(handler, "Usage: .playerbots testplayer invite <character>");
+
+    return Instance().Invite(handler, target);
+}
+
 Player* TestPlayerMgr::OnlinePlayer() const
 {
     return _state == State::Online && _session ? _session->GetPlayer() : nullptr;
@@ -306,6 +320,30 @@ bool TestPlayerMgr::GroupWith(ChatHandler* handler, std::string const& target)
 
     handler->PSendSysMessage("Test player {} groups with {}", _name, member->GetName());
     LOG_INFO("playerbots", "TestPlayer: {} groups with {}", _name, member->GetName());
+    return true;
+}
+
+bool TestPlayerMgr::Invite(ChatHandler* handler, std::string const& target)
+{
+    Player* player = OnlinePlayer();
+    if (!player)
+        return Fail(handler, "No test player is online");
+
+    Player* member = ObjectAccessor::FindPlayerByName(target);
+    if (!member || member == player)
+        return Fail(handler, Acore::StringFormat("{} is not online", target));
+
+    // The client's packet: the name and the roles mask; the core checks it and tells the test player
+    WorldPacket packet(CMSG_GROUP_INVITE, member->GetName().size() + 1 + 4);
+    packet << member->GetName();
+    packet << uint32(0);
+    _session->HandleGroupInviteOpcode(packet);
+    Group* group = player->GetGroup();
+    bool const joined = group && group->IsMember(member->GetGUID());
+    if (!joined && !member->GetGroupInvite())
+        return Fail(handler, Acore::StringFormat("{} got no invitation", member->GetName()));
+
+    handler->PSendSysMessage("Test player {} invited {}", _name, member->GetName());
     return true;
 }
 

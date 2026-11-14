@@ -35,7 +35,9 @@ namespace PlayerbotBridge
 //   Every goal verb: NotPlanner when the planner does not run the bot (Planner.Goals off, a real master such as a
 //   player's group, not persistent), GoalHeld when a group's goal holds the slot.
 // The social verbs (LC16d) are done at once: Emote (emote) a gesture, Roll (roll) a roll of 1-100, Ready (ready) the
-// answer to the group's open ready check, LeaveGroup (leave_group) the bot leaves its group.
+// answer to the group's open ready check, LeaveGroup (leave_group) the bot leaves its group. With a counterpart
+// (LC16e): JoinGroup (join_group) the bot joins the partner's group, ShareQuest (share_quest) shares a quest of its
+// log with its group, AcceptQuest (accept_quest) takes the quest a group member shared with it.
 enum class Intent : uint8_t
 {
     Follow,
@@ -63,7 +65,10 @@ enum class Intent : uint8_t
     Emote,
     Roll,
     Ready,
-    LeaveGroup
+    LeaveGroup,
+    JoinGroup,
+    ShareQuest,
+    AcceptQuest
 };
 
 enum class Result : uint8_t

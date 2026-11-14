@@ -33,6 +33,8 @@
 #include "PositionAction.h"
 #include "PositionValue.h"
 #include "QuestDef.h"
+#include "QuestPackets.h"
+#include "RandomPlayerbotMgr.h"
 #include "StayActions.h"
 #include "TestPlayer.h"
 #include "TravelPlaces.h"
@@ -428,6 +430,145 @@ Result LeaveOnce(ActFacts const& act)
     return Result::Applied;
 }
 
+// The group a player may invite into: its leader or a raid assistant does.
+bool MayInvite(Group* group, Player* inviter)
+{
+    return group->IsLeader(inviter->GetGUID()) || group->IsAssistant(inviter->GetGUID());
+}
+
+// The partner's group, or the one it is forming: an invitation it sent before it had a group leaves it the leader of
+// a group not yet created (WorldSession::HandleGroupInviteOpcode).
+Group* PartnerGroup(Player* partner)
+{
+    if (Group* group = partner->GetGroup())
+        return group;
+
+    Group* forming = partner->GetGroupInvite();
+    return forming && forming->GetLeaderGUID() == partner->GetGUID() ? forming : nullptr;
+}
+
+// join_group: in the partner's group already; the partner's invitation it holds; the partner's group, when the
+// partner may invite and it has room, and the bot has none; else the bot invites the partner, from no group or one it
+// may invite into with room. Another group or invitation, a battleground queue or a full group: cannot_now.
+Refusal JoinCheck(ActFacts const& act)
+{
+    Player* bot = act.Bot;
+    Player* partner = act.Partner;
+    Group* own = act.BotGroup;
+    Group* theirs = PartnerGroup(partner);
+    if (own && own == theirs)
+        return Refusal::None;
+
+    if (bot->InBattlegroundQueue())
+        return Refusal::CannotNow;
+
+    if (Group* invite = bot->GetGroupInvite())
+        return invite == theirs ? Refusal::None : Refusal::CannotNow;
+
+    if (theirs)
+        return !own && MayInvite(theirs, partner) && !theirs->IsFull() ? Refusal::None : Refusal::CannotNow;
+
+    if (partner->GetGroupInvite())
+        return Refusal::CannotNow;
+
+    return !own || (MayInvite(own, bot) && !own->IsFull()) ? Refusal::None : Refusal::CannotNow;
+}
+
+// A client's invitation (InviteToGroupAction::Invite's packet): the core checks it and tells the inviter.
+void SendInvite(Player* inviter, Player* invitee)
+{
+    WorldPacket packet(CMSG_GROUP_INVITE);
+    packet << invitee->GetName();
+    packet << uint32(0);  // The roles mask
+    inviter->GetSession()->HandleGroupInviteOpcode(packet);
+}
+
+// AcceptInvitationAction's accept and what follows it (the partner as a random bot's master, the group strategies),
+// without its security check (the bridge admitted the partner), its "Hello" and its summon.
+Result AcceptInvite(ActFacts const& act)
+{
+    WorldPacket packet(CMSG_GROUP_ACCEPT);
+    packet << uint32(0);  // The roles mask
+    act.Bot->GetSession()->HandleGroupAcceptOpcode(packet);
+    Group* group = act.Bot->GetGroup();
+    if (!group || !group->IsMember(act.Partner->GetGUID()))
+        return Result::Failed;
+
+    if (sRandomPlayerbotMgr.IsRandomBot(act.Bot))
+        act.Ai->SetMaster(act.Partner);
+
+    act.Ai->ResetStrategies();
+    act.Ai->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
+    act.Ai->Reset();
+    return Result::Applied;
+}
+
+// The partner's group takes the bot at once: the partner's invitation (as the playerbots join command has the master
+// send it), then the bot's accept. The bot's own invitation of the partner is applied when sent: the partner answers.
+Result JoinOnce(ActFacts const& act)
+{
+    Player* bot = act.Bot;
+    Player* partner = act.Partner;
+    Group* theirs = PartnerGroup(partner);
+    if (act.BotGroup && act.BotGroup == theirs)
+        return Result::Applied;
+
+    if (bot->GetGroupInvite())
+        return AcceptInvite(act);
+
+    if (theirs)
+    {
+        SendInvite(partner, bot);
+        return bot->GetGroupInvite() ? AcceptInvite(act) : Result::Failed;
+    }
+
+    SendInvite(bot, partner);
+    return partner->GetGroupInvite() ? Result::Applied : Result::Failed;
+}
+
+// A quest of the bot's log (a title was looked up there; an id may name any quest) that the core lets it share.
+Refusal ShareCheck(ActFacts const& act)
+{
+    if (act.Bot->FindQuestSlot(act.QuestId) >= MAX_QUEST_LOG_SIZE)
+        return Refusal::UnknownName;
+
+    return act.Bot->CanShareQuest(act.QuestId) ? Refusal::None : Refusal::CannotNow;
+}
+
+// ShareQuestAction's push without its master test and its "Quest shared": the core offers the quest to each member
+// on the bot's map and tells the bot each answer.
+Result ShareOnce(ActFacts const& act)
+{
+    WorldPacket packet(CMSG_PUSHQUESTTOPARTY);
+    packet << act.QuestId;
+    WorldPackets::Quest::PushQuestToParty push(std::move(packet));
+    push.Read();
+    act.Bot->GetSession()->HandlePushQuestToParty(push);
+    return Result::Applied;
+}
+
+// A quest the bot may take now: not had or done, its level and class, and room in its log.
+Refusal AcceptCheck(ActFacts const& act)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(act.QuestId);
+    return quest && act.Bot->CanTakeQuest(quest, false) && act.Bot->CanAddQuest(quest, false) ? Refusal::None
+                                                                                              : Refusal::CannotNow;
+}
+
+// The client's accept of a shared quest, with the sharer as the quest giver: the core checks the sharer still shares
+// it, tells the sharer and adds the quest. AcceptQuestShareAction's own accept needs a master and reads the quest from
+// a packet the bridge does not have.
+Result AcceptOnce(ActFacts const& act)
+{
+    Player* bot = act.Bot;
+    WorldPacket packet(CMSG_QUESTGIVER_ACCEPT_QUEST);
+    packet << bot->GetDivider();
+    packet << act.QuestId;
+    packet << uint32(0);
+    bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(packet);
+    return bot->FindQuestSlot(act.QuestId) < MAX_QUEST_LOG_SIZE ? Result::Applied : Result::Failed;
+}
+
 bool InGroup(GroupRule rule, ActFacts const& act)
 {
     Group* group = act.BotGroup;
@@ -470,6 +611,15 @@ constexpr ParamRow TripParams[] = {
 constexpr ParamRow QuestParams[] = {
     {"quest", ParamKind::Quest, OrderField::QuestId, "A quest in your log, by its title.", {}}};
 constexpr ParamRow EmoteParams[] = {{"emote", ParamKind::Choice, OrderField::Choice, "The gesture.", EmoteWords}};
+constexpr ParamRow ShareQuestParams[] = {
+    {"quest", ParamKind::Quest, OrderField::QuestId, "A quest in your log, by its title.", {}}};
+constexpr ParamRow AcceptQuestParams[] = {{"quest",
+                                           ParamKind::Quest,
+                                           OrderField::QuestId,
+                                           "The quest a group member shared with you, by its title.",
+                                           {},
+                                           UnitFilter::Anyone,
+                                           QuestFrom::Shared}};
 
 // Each row's refusals besides the common ones, in check order.
 constexpr Refusal FollowRefusals[] = {Refusal::NotWithYou, Refusal::TooFar};
@@ -488,6 +638,8 @@ constexpr Refusal ErrandRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld, Re
 constexpr Refusal HereRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld, Refusal::CannotNow, Refusal::NothingHere};
 constexpr Refusal PlanRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld};
 constexpr Refusal ReadyRefusals[] = {Refusal::CannotNow};
+constexpr Refusal JoinRefusals[] = {Refusal::CannotNow};
+constexpr Refusal QuestShareRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::CannotNow};
 
 constexpr Refusal Common[] = {Refusal::Battleground, Refusal::Travelling, Refusal::Dead};
 
@@ -801,7 +953,44 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return LeaveOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "leaving the group"}};
+     .StatePhrase = "leaving the group"},
+    // No group rule: it makes the group.
+    {.Operation = Intent::JoinGroup,
+     .Name = "join_group",
+     .Sentence = "Join the group of the person you are talking to, or invite them to yours.",
+     .Params = {},
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = JoinCheck,
+     .Refusals = JoinRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return JoinOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "joining your group"},
+    {.Operation = Intent::ShareQuest,
+     .Name = "share_quest",
+     .Sentence = "Share a quest of your log with your group.",
+     .Params = ShareQuestParams,
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = ShareCheck,
+     .Refusals = QuestShareRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return ShareOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "sharing {quest}"},
+    {.Operation = Intent::AcceptQuest,
+     .Name = "accept_quest",
+     .Sentence = "Take the quest a group member has just shared with you.",
+     .Params = AcceptQuestParams,
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = AcceptCheck,
+     .Refusals = QuestShareRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return AcceptOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "taking up {quest}"}};
 
 static_assert(std::size(Rows) + std::size(NoEffect) == IntentCount, "every Intent has a row or a word without one");
 
@@ -1148,18 +1337,39 @@ uint32_t IdNamed(std::vector<NameCandidate> const& candidates, std::string const
     return match.Kind == NameMatch::None ? 0 : static_cast<uint32_t>(candidates[match.Index].Id);
 }
 
-// The quests in the bot's log, by title, as ReadQuests walks them; the planner still refuses a failed one.
-uint32_t QuestNamed(Player* bot, std::string const& name)
+// The quests in a player's log, by title, as ReadQuests walks them.
+std::vector<NameCandidate> LogQuests(Player* player)
 {
     std::vector<NameCandidate> candidates;
     for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
-        uint32 const questId = bot->GetQuestSlotQuestId(slot);
+        uint32 const questId = player->GetQuestSlotQuestId(slot);
         if (Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr)
             candidates.push_back({quest->GetTitle(), questId, 0.0f});
     }
+    return candidates;
+}
 
-    return IdNamed(candidates, name);
+// The quests in the bot's log, by title; the planner still refuses a failed one.
+uint32_t QuestNamed(Player* bot, std::string const& name) { return IdNamed(LogQuests(bot), name); }
+
+// A quest of the sharer's log, by id or title: the sharer the core noted (the divider), still in the bot's group; 0
+// when nothing was shared or the sharer's log has no such quest.
+uint32_t SharedQuestNamed(Player* bot, Group* group, uint32_t id, std::string const& name)
+{
+    ObjectGuid const divider = bot->GetDivider();
+    Player* sharer =
+        divider && group && group->IsMember(divider) ? ObjectAccessor::FindConnectedPlayer(divider) : nullptr;
+    if (!sharer)
+        return 0;
+
+    std::vector<NameCandidate> const candidates = LogQuests(sharer);
+    if (!id)
+        return IdNamed(candidates, name);
+
+    bool const held = std::any_of(candidates.begin(), candidates.end(),
+                                  [id](NameCandidate const& candidate) { return candidate.Id == id; });
+    return held ? id : 0;
 }
 
 // A literal "x,y,z,map" as given; else the known place the name means (one on another map as elsewhere), under the
@@ -1216,9 +1426,13 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
             return Refuse(why, Refusal::TargetNotVisible);
     }
 
-    if (Takes(row, OrderField::QuestId))
+    if (ParamRow const* quest = ParamOf(row, OrderField::QuestId))
     {
-        act.QuestId = act.Request.QuestName.empty() ? act.Request.QuestId : QuestNamed(bot, act.Request.QuestName);
+        if (quest->Quests == QuestFrom::Shared)
+            act.QuestId = SharedQuestNamed(bot, act.BotGroup, act.Request.QuestId, act.Request.QuestName);
+        else
+            act.QuestId = act.Request.QuestName.empty() ? act.Request.QuestId : QuestNamed(bot, act.Request.QuestName);
+
         if (!act.QuestId)
             return Refuse(why, Refusal::UnknownName);
     }
