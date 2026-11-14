@@ -2348,6 +2348,66 @@ Playerbots.WorldPvp.GhostEnemyYards = 40
 Playerbots.WorldPvp.GhostRecheckSeconds = 15
 Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 
+# Enthusiasm (persistent bots in the open world; the rules exist, the fight decisions start reading them in later
+# steps). Every bot has one value on a scale of 0 to Max points; it is not saved and starts at a random level at
+# login. While the bot is not engaged (in PvP combat or holding an enemy player as its target) it rises by
+# RecoveryPerHour points per hour of play; while engaged it falls by DepletionPerMinute points per minute times the
+# local balance's factor. A PvP death costs DeathEdit points at confidence 0, DeathEditConfident for the most
+# confident bot and DeathEditUnconfident for the least (linear between); a kill of an enemy player gives KillEdit; a
+# group member's PvP death within GroupDeathYards yd costs GroupDeathShare (a fraction) of the bot's own death edit.
+# The numbers are starting values that lab nights tune. (Ranges: Max 1-1000; RecoveryPerHour 0-1000;
+# DepletionPerMinute 0.1-1000; the edits 0-1000; GroupDeathYards 0-2000; GroupDeathShare 0-1.)
+# Defaults: 100, 15, 20, 50, 25, 75, 10, 60, 0.3
+Playerbots.WorldPvp.Enthusiasm.Max = 100
+Playerbots.WorldPvp.Enthusiasm.RecoveryPerHour = 15
+Playerbots.WorldPvp.Enthusiasm.DepletionPerMinute = 20
+Playerbots.WorldPvp.Enthusiasm.DeathEdit = 50
+Playerbots.WorldPvp.Enthusiasm.DeathEditConfident = 25
+Playerbots.WorldPvp.Enthusiasm.DeathEditUnconfident = 75
+Playerbots.WorldPvp.Enthusiasm.KillEdit = 10
+Playerbots.WorldPvp.Enthusiasm.GroupDeathYards = 60
+Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
+
+# Enthusiasm's thresholds, in points. A bot attacks an enemy player when its enthusiasm is above its join threshold
+# for that target: JoinBase - JoinAggression x aggression (-1..+1; at the scale's top the bot never starts or
+# joins); + JoinGreen for a green target; - JoinFactionAttacked when the target attacks a player of the bot's
+# faction, and up to JoinFactionHelpfulness more for the most helpful bot (none for the least); - JoinGroupAttacked
+# when it attacks a member of the bot's group; + JoinGraveyard within GraveyardYards of a graveyard or spirit healer;
+# from - JoinBalanceMax when the bot's side clearly leads to + JoinBalanceMax when it is clearly behind. An engaged
+# bot leaves the fight when its enthusiasm falls below its flee threshold: FleeBase + FleeCaution x caution (below 0
+# it never flees), FleeGroupHold lower while a living member of its group within GroupHoldYards yd is engaged.
+# (Ranges: all points 0-1000; GroupHoldYards 0-2000.) Defaults: 60, 40, 20, 30, 15, 50, 40, 30, 15, 20, 15, 40
+Playerbots.WorldPvp.Enthusiasm.JoinBase = 60
+Playerbots.WorldPvp.Enthusiasm.JoinAggression = 40
+Playerbots.WorldPvp.Enthusiasm.JoinGreen = 20
+Playerbots.WorldPvp.Enthusiasm.JoinFactionAttacked = 30
+Playerbots.WorldPvp.Enthusiasm.JoinFactionHelpfulness = 15
+Playerbots.WorldPvp.Enthusiasm.JoinGroupAttacked = 50
+Playerbots.WorldPvp.Enthusiasm.JoinGraveyard = 40
+Playerbots.WorldPvp.Enthusiasm.JoinBalanceMax = 30
+Playerbots.WorldPvp.Enthusiasm.FleeBase = 15
+Playerbots.WorldPvp.Enthusiasm.FleeCaution = 20
+Playerbots.WorldPvp.Enthusiasm.FleeGroupHold = 15
+Playerbots.WorldPvp.Enthusiasm.GroupHoldYards = 40
+
+# Enthusiasm's local balance: the living players of each faction within BalanceYards yd of the bot, the bot
+# included, each weighted by its level colour to the bot (Weight.*) times its health share; the balance is the bot's
+# side's share of the total, 0.5 when even. The bot's side clearly leads at a share of BalanceLead or more and is
+# clearly behind at BalanceBehind or less; the depletion factor goes linearly from DepletionFactorLead there through 1
+# at even to DepletionFactorBehind, and the join threshold's balance term likewise from - JoinBalanceMax through 0 to
+# + JoinBalanceMax. (Ranges: BalanceYards 1-2000; Weight.* 0-100; DepletionFactorLead 0.01-1; DepletionFactorBehind
+# 1-100; BalanceLead 0.51-1; BalanceBehind 0-0.49.) Defaults: 40, 0.25, 0.5, 1, 2, 4, 0.5, 3, 0.75, 0.25
+Playerbots.WorldPvp.Enthusiasm.BalanceYards = 40
+Playerbots.WorldPvp.Enthusiasm.Weight.Grey = 0.25
+Playerbots.WorldPvp.Enthusiasm.Weight.Green = 0.5
+Playerbots.WorldPvp.Enthusiasm.Weight.Yellow = 1
+Playerbots.WorldPvp.Enthusiasm.Weight.Orange = 2
+Playerbots.WorldPvp.Enthusiasm.Weight.Red = 4
+Playerbots.WorldPvp.Enthusiasm.DepletionFactorLead = 0.5
+Playerbots.WorldPvp.Enthusiasm.DepletionFactorBehind = 3
+Playerbots.WorldPvp.Enthusiasm.BalanceLead = 0.75
+Playerbots.WorldPvp.Enthusiasm.BalanceBehind = 0.25
+
 # Mail and bank visits of persistent bots. A bot knows that mail waits and what it expects from it, not what is
 # inside; an unread mail whose content it does not know counts Mail.DefaultWorthCopper. A bank item counts as kept for
 # later while the level it is due at is at most Bank.KeepLevelHorizon levels above the bot's. A visit (the walk

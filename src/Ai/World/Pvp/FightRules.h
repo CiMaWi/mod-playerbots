@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "Enthusiasm.h"
 #include "FightBookRules.h"
 #include "WorldPvpConfig.h"
 
@@ -158,48 +159,7 @@ struct FightRuleValues
 // A trait (-1..+1) as 0 for the lowest and 1 for the highest
 inline float TraitShare(float trait) { return (std::clamp(trait, -1.0f, 1.0f) + 1.0f) * 0.5f; }
 
-// --- Colours ---
-
-enum class Colour : uint8_t
-{
-    Grey,
-    Green,
-    Yellow,
-    Orange,
-    Red
-};
-
-constexpr std::array<char const*, 5> COLOUR_WORDS = {"grey", "green", "yellow", "orange", "red"};
-
-constexpr char const* Word(Colour value) { return COLOUR_WORDS[static_cast<size_t>(value)]; }
-
-// The core's grey level (Acore::XP::GetGrayLevel, Formulas.h)
-constexpr int GreyLevel(int level)
-{
-    if (level <= 5)
-        return 0;
-    if (level <= 39)
-        return level - 5 - level / 10;
-    if (level <= 59)
-        return level - 1 - level / 5;
-    return level - 9;
-}
-
-// The colour of a target of `targetLevel` to a player of `level`, as the core's Acore::XP::GetColorCode gives it
-constexpr Colour ColourOf(uint32_t level, uint32_t targetLevel)
-{
-    int const own = static_cast<int>(level);
-    int const other = static_cast<int>(targetLevel);
-    if (other >= own + 5)
-        return Colour::Red;
-    if (other >= own + 3)
-        return Colour::Orange;
-    if (other >= own - 2)
-        return Colour::Yellow;
-    if (other > GreyLevel(own))
-        return Colour::Green;
-    return Colour::Grey;
-}
+// The colours (Colour, Word, GreyLevel, ColourOf) are in Enthusiasm.h
 
 // Why a bot picks a target: starting a fight, joining one by chance, defending itself, or its group's (or real
 // master's) fight. Starting never picks grey or red (DP.6, WP.3); joining may pick grey but not red; defence and the

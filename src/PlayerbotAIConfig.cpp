@@ -1296,6 +1296,41 @@ bool PlayerbotAIConfig::Initialize()
         pvpNumber("GhostEnemyYards", WorldPvp.GhostEnemyYards, 0, MaxRadiusYards);
         pvpNumber("GhostRecheckSeconds", WorldPvp.GhostRecheckSeconds, 1, MaxGraceSeconds);
         pvpNumber("GhostSpiritHealerSeconds", WorldPvp.GhostSpiritHealerSeconds, 0, DAY);
+        // Enthusiasm (WP22): starting values the nights tune
+        WorldPvpEnthusiasmConfig& zeal = WorldPvp.Enthusiasm;
+        constexpr float MaxPoints = 1000.0f;
+        constexpr float MaxWeight = 100.0f;
+        pvpRange("Enthusiasm.Max", zeal.Max, 1.0f, MaxPoints);
+        pvpRange("Enthusiasm.RecoveryPerHour", zeal.RecoveryPerHour, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.DepletionPerMinute", zeal.DepletionPerMinute, 0.1f, MaxPoints);
+        pvpRange("Enthusiasm.DeathEdit", zeal.DeathEdit, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.DeathEditConfident", zeal.DeathEditConfident, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.DeathEditUnconfident", zeal.DeathEditUnconfident, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.KillEdit", zeal.KillEdit, 0.0f, MaxPoints);
+        pvpNumber("Enthusiasm.GroupDeathYards", zeal.GroupDeathYards, 0, MaxRadiusYards);
+        pvpRange("Enthusiasm.GroupDeathShare", zeal.GroupDeathShare, 0.0f, 1.0f);
+        pvpRange("Enthusiasm.JoinBase", zeal.JoinBase, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinAggression", zeal.JoinAggression, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinGreen", zeal.JoinGreen, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinFactionAttacked", zeal.JoinFactionAttacked, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinFactionHelpfulness", zeal.JoinFactionHelpfulness, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinGroupAttacked", zeal.JoinGroupAttacked, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinGraveyard", zeal.JoinGraveyard, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinBalanceMax", zeal.JoinBalanceMax, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.FleeBase", zeal.FleeBase, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.FleeCaution", zeal.FleeCaution, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.FleeGroupHold", zeal.FleeGroupHold, 0.0f, MaxPoints);
+        pvpNumber("Enthusiasm.GroupHoldYards", zeal.GroupHoldYards, 0, MaxRadiusYards);
+        pvpNumber("Enthusiasm.BalanceYards", zeal.BalanceYards, 1, MaxRadiusYards);
+        pvpRange("Enthusiasm.Weight.Grey", zeal.WeightGrey, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Green", zeal.WeightGreen, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Yellow", zeal.WeightYellow, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Orange", zeal.WeightOrange, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Red", zeal.WeightRed, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.DepletionFactorLead", zeal.DepletionFactorLead, 0.01f, 1.0f);
+        pvpRange("Enthusiasm.DepletionFactorBehind", zeal.DepletionFactorBehind, 1.0f, MaxWeight);
+        pvpRange("Enthusiasm.BalanceLead", zeal.BalanceLead, 0.51f, 1.0f);
+        pvpRange("Enthusiasm.BalanceBehind", zeal.BalanceBehind, 0.0f, 0.49f);
     }
 
     // The flight from attacking enemy players (Playerbots.Flee.*), optional keys whose defaults are the conf.dist
