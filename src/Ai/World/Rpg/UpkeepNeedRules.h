@@ -141,6 +141,7 @@ struct Need
     std::uint8_t beastFamily{0};
     std::uint8_t beastLevel{0};  // its template's highest level
     Planner::Place beastAt;      // the spawn
+    bool swap{false};            // pet: the old pet goes into the stable first (WU21c); copper the slot to buy
     char const* without{""};     // what going without costs the bot
 };
 
@@ -903,15 +904,38 @@ constexpr bool WantedBeast(TameableSpawn const& spawn, std::uint8_t level, bool 
     return spawn.maxLevel <= level && (!spawn.exotic || tamesExotic);
 }
 
-// The nearest wanted spawn on the snapshot's map, or none
-inline TameableSpawn const* NearestBeast(UpkeepIndex const& index, Snapshot const& snapshot)
+// The families a hunter wants as its pet (§3.11, WU21c), by spec as the core marks it: Beast Mastery's talent (its
+// aura, Player::CanTameExoticPets) opens the exotic families, and a Beast Mastery hunter wants one of them; a hunter of
+// another spec wants any family it can tame, so it never swaps. A pet of an unknown family (0) is wanted. The list is
+// data (the core's CreatureFamily numbers)
+constexpr std::array<std::uint8_t, 7> BEAST_MASTERY_FAMILIES = {38 /*chimaera*/,
+                                                                39 /*devilsaur*/,
+                                                                41 /*silithid*/,
+                                                                42 /*worm*/,
+                                                                43 /*rhino*/,
+                                                                45 /*core hound*/,
+                                                                46 /*spirit beast*/};
+
+constexpr bool WantedFamily(std::uint8_t family, bool tamesExotic)
+{
+    if (!tamesExotic || !family)
+        return true;
+    for (std::uint8_t const wanted : BEAST_MASTERY_FAMILIES)
+        if (wanted == family)
+            return true;
+    return false;
+}
+
+// The nearest wanted spawn on the snapshot's map, or none; familyRule: only the families WantedFamily names (the swap)
+inline TameableSpawn const* NearestBeast(UpkeepIndex const& index, Snapshot const& snapshot, bool familyRule = false)
 {
     TameableSpawn const* nearest = nullptr;
     float best = std::numeric_limits<float>::max();
     auto const [first, last] = index.TameableOn(snapshot.position.map);
     for (auto it = first; it != last; ++it)
     {
-        if (!WantedBeast(*it, snapshot.level, snapshot.tamesExotic))
+        if (!WantedBeast(*it, snapshot.level, snapshot.tamesExotic) ||
+            (familyRule && !WantedFamily(it->family, snapshot.tamesExotic)))
             continue;
         float const dx = it->x - snapshot.position.x;
         float const dy = it->y - snapshot.position.y;
@@ -926,10 +950,22 @@ inline TameableSpawn const* NearestBeast(UpkeepIndex const& index, Snapshot cons
     return nearest;
 }
 
+// The swap form (WU21c): a hunter whose pet is of no wanted family stores it at a stable master and tames a wanted
+// beast. Only with a wanted spawn on the map (else the hunter keeps its pet: it never stands without one for a beast
+// it cannot reach) and a slot for the old pet: an empty bought one (copper 0) or the next one to buy (copper its
+// price, due only when the gold above the reserve pays it: PetSwapPayable, read once the reserve is known). With every
+// slot full the hunter keeps its pet
 inline void AddPet(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot)
 {
-    if (snapshot.cls != PET_CLASS_HUNTER || snapshot.level < PET_MIN_LEVEL || !snapshot.knowsTameBeast ||
-        snapshot.hasPet)
+    if (snapshot.cls != PET_CLASS_HUNTER || snapshot.level < PET_MIN_LEVEL || !snapshot.knowsTameBeast)
+        return;
+
+    bool const swap = snapshot.hasPet;
+    if (swap &&
+        (WantedFamily(snapshot.petFamily, snapshot.tamesExotic) || (!snapshot.stableFree && !snapshot.stableSlotPrice)))
+        return;
+    TameableSpawn const* beast = NearestBeast(index, snapshot, swap);
+    if (swap && !beast)
         return;
 
     Need need;
@@ -937,8 +973,10 @@ inline void AddPet(NeedList& list, UpkeepIndex const& index, Snapshot const& sna
     need.kind = UpkeepKind::Pet;
     need.units = 1;
     need.item = SPELL_TAME_BEAST;
-    need.without = "no pet";
-    if (TameableSpawn const* beast = NearestBeast(index, snapshot))
+    need.swap = swap;
+    need.copper = swap && !snapshot.stableFree ? snapshot.stableSlotPrice : 0;
+    need.without = swap ? "keeps the wrong pet" : "no pet";
+    if (beast)
     {
         need.due = true;
         need.beast = beast->entry;
@@ -949,7 +987,18 @@ inline void AddPet(NeedList& list, UpkeepIndex const& index, Snapshot const& sna
     list.needs.push_back(need);
 }
 
-// The pet need makes a trip of its own when it names a spawn (price 0: nothing to fund)
+// A slot is bought only from the gold above the reserve (WU.16 point 7); an empty bought slot costs nothing
+constexpr bool PetSwapPayable(std::uint64_t money, std::uint64_t reserve, std::uint64_t price)
+{
+    return !price || (money > reserve && money - reserve >= price);
+}
+
+// At the stable master the pet must be out and alive: a trip arrives mounted, and the core brings the pet back after
+// the dismount (a DB load); the visit waits this long for it, then gives the swap up (the hunter keeps its pet)
+constexpr std::uint32_t STABLE_PET_WAIT_MS = 10 * 1000;
+
+// The pet need makes a trip of its own when it names a spawn: the tame's (price 0) or the swap's that the gold above
+// the reserve pays (ComputeNeeds clears due otherwise)
 constexpr bool PetErrandDue(Need const& need) { return need.kind == UpkeepKind::Pet && need.due && need.beast; }
 
 // The tame at the beast's spawn (§3.11, WU21b-2): the hunter casts Tame Beast from TAME_CAST_YARDS and channels while
@@ -1142,6 +1191,9 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
     AddRiding(list, index, snapshot, rates, nearer);
     list.reserve = Scaled(list, nearer + list.reserveRiding);
     list.shortfall = list.reserve > list.money ? list.reserve - list.money : 0;
+    for (Need& need : list.needs)
+        if (need.kind == UpkeepKind::Pet && need.swap)
+            need.due = need.due && PetSwapPayable(list.money, list.reserve, need.copper);
     Fund(list);
     return list;
 }
@@ -1186,6 +1238,8 @@ inline std::string Describe(Need const& need)
                           " level " + std::to_string(need.beastLevel) + " at map " + std::to_string(need.beastAt.map) +
                           " " + std::to_string(need.beastAt.x) + " " + std::to_string(need.beastAt.y)
                     : ", no tameable beast on the map";
+    if (need.swap)
+        text += ", the old pet into the stable first (slot " + Money(need.copper) + ")";
     return text + "; without: " + need.without;
 }
 

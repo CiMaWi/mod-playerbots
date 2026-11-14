@@ -88,6 +88,7 @@
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldPacket.h"
+#include "WorldSession.h"
 #include "WorldTravelRules.h"
 
 namespace
@@ -615,7 +616,30 @@ bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
         stop.tameSeenMs = endMs ? endMs : now;
     }
     else if (!stop.tameSeenMs)
-        return false;
+    {
+        // Before a cast: a beast of the stop that fights the bot (it aggroes at its spawn or on the way; WU21c run 2:
+        // a hunter killed the Mistwing Rogue it came for) becomes the pick and is tamed in that fight, as a player
+        // tames; the pick's TAME_REACH_MS bounds it, then the bot fights
+        Creature* attacker = nullptr;
+        for (Unit* unit : bot->getAttackers())
+        {
+            Creature* each = unit->ToCreature();
+            if (each && each->GetEntry() == stop.tameEntry && TameableNow(bot, each, true))
+            {
+                attacker = each;
+                break;
+            }
+        }
+        bool const picked = attacker && attacker->GetGUID() == stop.tameBeast;
+        if (!attacker || (picked && getMSTimeDiff(stop.tamePickMs, now) > UpkeepNeeds::TAME_REACH_MS))
+            return false;
+        if (!picked)
+        {
+            stop.tameBeast = attacker->GetGUID();
+            stop.tamePickMs = now;
+        }
+        stop.tameSeenMs = now;
+    }
 
     Creature* beast = ObjectAccessor::GetCreature(*bot, stop.tameBeast);
     if (!UpkeepNeeds::TameRecastsInFight(stop.tameTries, bot->GetHealthPct(), getMSTimeDiff(stop.tameSeenMs, now)) ||
@@ -635,8 +659,9 @@ bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
 
 // The nearest beast the bot may tame now within TAME_SEARCH_YARDS, one of the stop's entry first (the planned spawn):
 // another hunter may have tamed the planned one. Normal rank only and none whose spells break the channel, as the
-// index gathers them (Planner::BreaksTameChannel, read after the cheap checks)
-Creature* NearestTameable(Player* bot, uint32 entry)
+// index gathers them (Planner::BreaksTameChannel, read after the cheap checks); familyRule: only a family the hunter
+// wants (the tame after a stable swap, WU21c: never the unwanted kind it just stored)
+Creature* NearestTameable(Player* bot, uint32 entry, bool familyRule = false)
 {
     float const reach = UpkeepNeeds::TAME_SEARCH_YARDS;
     std::list<Unit*> found;
@@ -649,6 +674,8 @@ Creature* NearestTameable(Player* bot, uint32 entry)
     {
         Creature* each = unit->ToCreature();
         if (!each || each->GetCreatureTemplate()->rank != CREATURE_ELITE_NORMAL || !TameableNow(bot, each) ||
+            (familyRule && !UpkeepNeeds::WantedFamily(static_cast<uint8>(each->GetCreatureTemplate()->family),
+                                                      bot->CanTameExoticPets())) ||
             Planner::BreaksTameChannel(*each->GetCreatureTemplate()))
             continue;
         std::pair<bool, float> const key{each->GetEntry() != entry, bot->GetExactDist(each)};
@@ -702,10 +729,14 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
             CreatureTemplate const* info = pet->GetCreatureTemplate();
             uint32 const family = info ? info->family : 0;
             std::string const word = FamilyWord(family);
-            EventLog::Emit(bot, Upkeep::EVENT_PET_TAMED, word.c_str(), pet->GetEntry(), int64(pet->GetLevel()));
+            // After a stable swap (WU21c) the source says so; the old pet's entry is the row's alternative stabled
+            EventLog::Emit(bot, Upkeep::EVENT_PET_TAMED, stop.tameStabled ? "stabled" : word.c_str(), pet->GetEntry(),
+                           int64(pet->GetLevel()));
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "tamed",
                                static_cast<float>(pet->GetLevel()),
-                               {{"tries", static_cast<float>(stop.tameTries)}, {"family", static_cast<float>(family)}},
+                               {{"tries", static_cast<float>(stop.tameTries)},
+                                {"family", static_cast<float>(family)},
+                                {"stabled", static_cast<float>(stop.tameStabled)}},
                                pet->GetEntry());
             return TameStep::Done;
         }
@@ -725,7 +756,7 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
     Creature* beast = stop.tameBeast.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*bot, stop.tameBeast);
     if (!TameableNow(bot, beast))
     {
-        beast = NearestTameable(bot, stop.tameEntry);
+        beast = NearestTameable(bot, stop.tameEntry, stop.tameStabled != 0);
         if (!beast)
             return skip(stop.tameTries ? "tame_failed" : "no_beast");
         stop.tameBeast = beast->GetGUID();
@@ -764,6 +795,106 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
         return TameStep::Done;
     }
     return TameStep::Busy;
+}
+
+// The stable visit of an errand stop (upkeep §3.11, WU21c): the pet need's swap form (recomputed here) stores the
+// hunter's unwanted pet through the core's stable handlers, in an empty bought slot or in the next slot, bought first
+// when the gold above the reserve pays it (the handler takes the price). The pet must be there and alive: a trip
+// arrives mounted, and the core brings the pet back after the dismount (waited for up to STABLE_PET_WAIT_MS). Rows:
+// upkeep stable/bought|free (value the copper paid; alternatives price, above = the gold above the reserve before the
+// purchase, slots; ref the old pet's entry), or skip/stable_none (no swap need now), stable_gold (the gold above the
+// reserve does not pay the slot), stable_pet (no live pet to store), stable_failed (a handler refused): the bot keeps
+// its pet then. stored: the old pet's entry once in the stable
+enum class StableStep : uint8
+{
+    Wait,
+    Stored,
+    Skipped
+};
+
+StableStep StableAtMaster(PlayerbotAI* botAI, Creature* master, NewRpgInfo::ErrandStop& stop, uint32& stored)
+{
+    Player* bot = botAI->GetBot();
+    uint32 const now = getMSTime();
+    if (!stop.stableSinceMs)
+        stop.stableSinceMs = now;
+    bool const waited = getMSTimeDiff(stop.stableSinceMs, now) >= UpkeepNeeds::STABLE_PET_WAIT_MS;
+    if (bot->IsMounted() && !waited)
+    {
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        return StableStep::Wait;
+    }
+    PetStable& stable = bot->GetOrInitPetStable();
+    Pet* pet = bot->GetPet();
+    bool const live = pet ? pet->IsAlive() && pet->getPetType() == HUNTER_PET
+                          : stable.UnslottedPets.size() == 1 && stable.UnslottedPets[0].Health &&
+                                stable.UnslottedPets[0].Type == HUNTER_PET;
+    if (!live && stable.CurrentPet && !waited)
+        return StableStep::Wait;
+
+    std::shared_ptr<Planner::UpkeepIndex const> const index =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    UpkeepNeeds::NeedList needs;
+    if (index)
+    {
+        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
+        needs = UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+    }
+    auto const swapNeed = std::find_if(needs.needs.begin(), needs.needs.end(), [](UpkeepNeeds::Need const& need)
+                                       { return need.kind == UpkeepKind::Pet && need.swap; });
+    UpkeepNeeds::Need const* swap = swapNeed != needs.needs.end() ? &*swapNeed : nullptr;
+    uint64 const above = needs.money > needs.reserve ? needs.money - needs.reserve : 0;
+    auto const skip = [bot, master, above](char const* reason, float value)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", reason, value,
+                           {{"above", static_cast<float>(above)}, {"gold", static_cast<float>(bot->GetMoney())}},
+                           master->GetEntry());
+        return StableStep::Skipped;
+    };
+    if (!swap)
+        return skip("stable_none", 0.0f);
+    if (!swap->due)
+        return skip("stable_gold", static_cast<float>(swap->copper));
+    if (!live)
+        return skip("stable_pet", 0.0f);
+
+    uint32 const oldEntry = pet ? pet->GetEntry() : stable.UnslottedPets[0].CreatureId;
+    uint32 const oldNumber =
+        pet ? (stable.CurrentPet ? stable.CurrentPet->PetNumber : 0) : stable.UnslottedPets[0].PetNumber;
+    bool freeSlot = false;
+    for (uint8 slot = 0; slot < stable.MaxStabledPets && slot < MAX_PET_STABLES; ++slot)
+        freeSlot = freeSlot || !stable.StabledPets[slot];
+    uint32 const moneyBefore = bot->GetMoney();
+    uint8 const slotsBefore = stable.MaxStabledPets;
+    // The packets as the client sends them (the stable master's guid); the handlers check the master's reach
+    if (!freeSlot)
+    {
+        WorldPacket buy(CMSG_BUY_STABLE_SLOT, 8);
+        buy << master->GetGUID();
+        bot->GetSession()->HandleBuyStableSlot(buy);
+        if (bot->GetOrInitPetStable().MaxStabledPets <= slotsBefore)
+            return skip("stable_failed", static_cast<float>(swap->copper));
+    }
+    WorldPacket store(CMSG_STABLE_PET, 8);
+    store << master->GetGUID();
+    bot->GetSession()->HandleStablePet(store);
+
+    PetStable const& after = bot->GetOrInitPetStable();
+    bool const inStable = std::any_of(after.StabledPets.begin(), after.StabledPets.end(),
+                                      [oldNumber](Optional<PetStable::PetInfo> const& slot)
+                                      { return slot && slot->PetNumber == oldNumber; });
+    uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+    if (!oldNumber || !inStable || after.CurrentPet || bot->GetPet())
+        return skip("stable_failed", static_cast<float>(paid));
+
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "stable",
+                       after.MaxStabledPets > slotsBefore ? "bought" : "free", static_cast<float>(paid),
+                       {{"price", static_cast<float>(swap->copper)},
+                        {"above", static_cast<float>(above)},
+                        {"slots", static_cast<float>(after.MaxStabledPets)}},
+                       oldEntry);
+    stored = oldEntry;
+    return StableStep::Stored;
 }
 
 // The weapon master visit of an errand stop (upkeep §3.7, WU15a): each weapon skill need (recomputed here) this master
@@ -876,6 +1007,31 @@ void AddTrainerStops(std::vector<TravelMgr::TrainerInfo const*> const& spawns, u
 {
     for (TravelMgr::TrainerInfo const* spawn : spawns)
         stops.push_back({spawn->entry, ErrandPlaceOf(spawn->loc), service});
+}
+
+// The stable masters on the bot's map that trade with it (WU21c), the nearest STABLE_STOPS within reach
+std::vector<TravelMgr::TrainerInfo const*> StableMasterSpawns(Player* bot, float reachYards)
+{
+    constexpr std::size_t STABLE_STOPS = 3;
+    std::vector<std::pair<float, TravelMgr::TrainerInfo const*>> spawns;
+    for (TravelMgr::TrainerInfo const& spawn : TravelMgr::instance().GetStableMasters(bot->GetMapId()))
+    {
+        if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(spawn.factionTemplate), bot) <= REP_UNFRIENDLY)
+            continue;
+        float const yards =
+            bot->GetExactDist(spawn.loc.GetPositionX(), spawn.loc.GetPositionY(), spawn.loc.GetPositionZ());
+        if (yards <= reachYards)
+            spawns.emplace_back(yards, &spawn);
+    }
+    std::sort(spawns.begin(), spawns.end(),
+              [](std::pair<float, TravelMgr::TrainerInfo const*> const& a,
+                 std::pair<float, TravelMgr::TrainerInfo const*> const& b) { return a.first < b.first; });
+    if (spawns.size() > STABLE_STOPS)
+        spawns.resize(STABLE_STOPS);
+    std::vector<TravelMgr::TrainerInfo const*> result;
+    for (std::pair<float, TravelMgr::TrainerInfo const*> const& at : spawns)
+        result.push_back(at.second);
+    return result;
 }
 
 // Mailboxes and bankers (each kind's nearest few) that join the trip's stops by position
@@ -1930,7 +2086,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
     if (weapon)
         snapshot.Weapon = {weapon->item};
-    if (pet)
+    if (pet && pet->swap)
+        snapshot.Stable = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}, pet->copper};
+    else if (pet)
         snapshot.Pet = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
     std::sort(inReach.begin(), inReach.end(),
@@ -1989,6 +2147,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         WorldTravel::JoinTrainers(snapshot.Stops, masterStops, WorldTravel::SERVICE_WEAPON_MASTER);
         snapshot.Stops.insert(snapshot.Stops.end(), masterStops.begin(), masterStops.end());
     }
+    // The stable masters for a swap of the hunter's pet (WU21c)
+    if (pet && pet->swap)
+        AddTrainerStops(StableMasterSpawns(bot, reachYards), WorldTravel::SERVICE_STABLE_MASTER, snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
     AddBankMail(botAI, bot, reachYards, snapshot);
 
@@ -2038,6 +2199,12 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                     break;
                 case WorldTravel::ErrandKind::Tame:
                     stop.tameEntry = errand.Target;
+                    break;
+                case WorldTravel::ErrandKind::Stable:
+                    stop.stableEntry = tripStop.Id;
+                    stop.stableBeast = errand.Target;
+                    stop.stableBeastAt = WorldPosition(snapshot.Stable.Place.MapId, snapshot.Stable.Place.X,
+                                                       snapshot.Stable.Place.Y, snapshot.Stable.Place.Z);
                     break;
                 default:
                     break;
@@ -2135,6 +2302,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                                : dueOnTrip(WorldTravel::ErrandKind::Train)  ? "train_due"
                                : dueOnTrip(WorldTravel::ErrandKind::Weapon) ? "weapon_due"
                                : dueOnTrip(WorldTravel::ErrandKind::Ride)   ? "ride_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Stable) ? "pet_swap"
                                : dueOnTrip(WorldTravel::ErrandKind::Tame)   ? "pet_due"
                                                                             : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
@@ -2370,6 +2538,39 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_trainer", 0.0f, {}, entry);
         stop.trainerEntry = 0;
         data->visited = true;
+        return true;
+    }
+
+    // The stable part of the stop (WU21c): the stable master stands at the stop; the bot walks into reach and stores
+    // its unwanted pet. Once it is stored, the tame of the wanted beast follows as the trip's next stop
+    if (stop.stableEntry)
+    {
+        Creature* master =
+            bot->FindNearestCreature(stop.stableEntry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
+        if (master && !IsWithinInteractionDist(master) &&
+            (MoveWorldObjectTo(master->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
+            return true;
+        uint32 stored = 0;
+        StableStep step = StableStep::Skipped;
+        if (master && IsWithinInteractionDist(master))
+            step = StableAtMaster(botAI, master, stop, stored);
+        else
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "stable_master", 0.0f, {},
+                               stop.stableEntry);
+        if (step == StableStep::Wait)
+            return true;
+        NewRpgInfo::ErrandStop tame;
+        bool const follows = step == StableStep::Stored && stop.stableBeast;
+        if (follows)
+        {
+            tame.pos = stop.stableBeastAt;
+            tame.tameEntry = stop.stableBeast;
+            tame.tameStabled = stored;
+        }
+        stop.stableEntry = 0;
+        data->visited = true;
+        if (follows)
+            data->stops.insert(data->stops.begin() + data->stop + 1, tame);  // stop is not read after this
         return true;
     }
 
@@ -3776,9 +3977,11 @@ bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data)
 
 bool TravelKeepsOnFoot(PlayerbotAI* botAI)
 {
-    // An errand stop's tame goes on foot (Tame Beast is not cast mounted; WU21b-2)
+    // An errand stop's tame goes on foot (Tame Beast is not cast mounted; WU21b-2), and so does its stable visit (a
+    // mounted hunter's pet is away, WU21c run 1: a remount after each dismount kept the visit waiting)
     if (auto const* const errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
-        return errands->arrived && errands->stop < errands->stops.size() && errands->stops[errands->stop].tameEntry;
+        return errands->arrived && errands->stop < errands->stops.size() &&
+               (errands->stops[errands->stop].tameEntry || errands->stops[errands->stop].stableEntry);
     auto const* const data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (!data)
         return false;

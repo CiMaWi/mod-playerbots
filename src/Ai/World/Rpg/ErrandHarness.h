@@ -40,8 +40,9 @@ constexpr uint32_t MOUNT_VENDOR = 604;        // sells the mount of the bot's ra
 constexpr uint32_t OTHER_MOUNT_VENDOR = 605;  // sells another race's mount, cheaper
 constexpr uint32_t CLASS_SPELL = 6673;
 constexpr uint32_t WEAPON_MASTER = 606;
-constexpr uint32_t WEAPON_SPELL = 198;  // One-Handed Maces
-constexpr uint32_t BEAST = 299;         // a tameable beast's creature entry (WU21b)
+constexpr uint32_t WEAPON_SPELL = 198;    // One-Handed Maces
+constexpr uint32_t BEAST = 299;           // a tameable beast's creature entry (WU21b)
+constexpr uint32_t STABLE_MASTER = 9988;  // a stable master's creature entry (WU21c)
 constexpr uint8_t RACE_HUMAN = 1;
 constexpr uint8_t RACE_ORC = 2;
 constexpr uint32_t CHEAPEST_REPAIR = 200;  // copper, the cheapest worn item
@@ -974,6 +975,29 @@ inline void TameTrip(std::vector<Check>& checks)
         "");
 }
 
+// A hunter with an unwanted pet (WU21c): a trip of its own to the stable master (the visit puts the tame after it);
+// without a stable master among the stops the swap is refused and the hunter keeps its pet
+inline void StableTrip(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Stable = {BEAST, At(700.0f, 0.0f), 500};
+    bot.Stops = {{STABLE_MASTER, At(400.0f, 0.0f), SERVICE_STABLE_MASTER}};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const own = plan.Stops.size() == 1 && plan.Stops[0].Id == STABLE_MASTER &&
+                     HasErrand(plan.Stops[0], ErrandKind::Stable) && plan.Stops[0].Errands[0].Due &&
+                     !HasErrand(plan.Stops[0], ErrandKind::Tame) && plan.Refused.empty();
+    Add(checks, "stable: a trip of its own to the stable master, no tame offer beside it", own, Describe(plan));
+
+    ErrandSnapshot none = Bot(10, 0);
+    none.Stable = {BEAST, At(700.0f, 0.0f), 500};
+    TripPlan const refused = Plan(none, Request(none));
+    bool const keeps =
+        refused.Stops.empty() && refused.Refused.size() == 1 && refused.Refused[0].Offer.Kind == ErrandKind::Stable;
+    Add(checks, "stable: no stable master on the map, the swap refused (the hunter keeps its pet)", keeps,
+        Describe(refused));
+    Add(checks, "stable: the service bits stay distinct", ServiceBitsDistinct(), "");
+}
+
 // A vendor within STOP_JOIN_YARDS of the weapon master takes the weapon skill on a route that passes it; a class
 // trainer's own stop beside the master keeps its trainer
 inline void WeaponAtVendor(std::vector<Check>& checks)
@@ -1030,6 +1054,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     WeaponTrip(checks);
     WeaponAtVendor(checks);
     TameTrip(checks);
+    StableTrip(checks);
     return checks;
 }
 }  // namespace ErrandHarness

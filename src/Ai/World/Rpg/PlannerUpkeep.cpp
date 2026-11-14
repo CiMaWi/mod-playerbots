@@ -678,6 +678,14 @@ void FillPet(Player* bot, Snapshot& snapshot)
     }
     if (CreatureTemplate const* creature = entry ? sObjectMgr->GetCreatureTemplate(entry) : nullptr)
         snapshot.petFamily = static_cast<uint8>(creature->family);
+    // The stable (WU21c): an empty bought slot, else the next slot's price as the core's HandleBuyStableSlot reads it
+    PetStable const* stable = bot->GetPetStable();
+    uint8 const slots = stable ? stable->MaxStabledPets : 0;
+    for (uint8 slot = 0; slot < slots && slot < MAX_PET_STABLES; ++slot)
+        snapshot.stableFree = snapshot.stableFree || !stable->StabledPets[slot];
+    if (StableSlotPricesEntry const* price =
+            slots < MAX_PET_STABLES ? sStableSlotPricesStore.LookupEntry(slots + 1) : nullptr)
+        snapshot.stableSlotPrice = price->Price;
 }
 
 void FillUpkeep(Player* bot, Snapshot& snapshot)
@@ -842,9 +850,13 @@ bool HandlePetCommand(ChatHandler* handler, char const* args)
     uint32 entry = 0;
     in >> name >> what >> entry;
     Player* bot = !name.empty() && normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
-    if (!bot || (!what.empty() && what != "has" && what != "none" && what != "unpet" && what != "give"))
+    bool const known = what.empty() || what == "has" || what == "none" || what == "unpet" || what == "give" ||
+                       what == "slots" || what == "stabled" || what == "fund";
+    if (!bot || !known)
     {
-        handler->SendErrorMessage("Usage: playerbots planner pet <online player> [has|none|unpet|give <entry>]");
+        handler->SendErrorMessage(
+            "Usage: playerbots planner pet <online player> [has|none|unpet|give <entry>|slots "
+            "<n>|stabled <n>|fund <copper above the reserve>]");
         return false;
     }
 
@@ -898,6 +910,28 @@ bool HandlePetCommand(ChatHandler* handler, char const* args)
         }
         done = Acore::StringFormat(", gave {}", entry);
     }
+    else if (what == "slots")
+    {
+        // The bought slots (WU21c fixture: 0 = a new character's stable); the stabled pets beyond them stay rows
+        bot->GetOrInitPetStable().MaxStabledPets = static_cast<uint8>(std::min<uint32>(entry, MAX_PET_STABLES));
+        done = Acore::StringFormat(", slots {}", bot->GetPetStable()->MaxStabledPets);
+    }
+    else if (what == "fund")
+    {
+        // The gold set to the bot's own reserve (UpkeepNeeds::ComputeNeeds) plus the copper given (WU21c fixture)
+        std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+        PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
+        if (!index || !botAI)
+        {
+            handler->PSendSysMessage("PLANNER pet {}: error, no upkeep index or not a bot", bot->GetName());
+            return false;
+        }
+        Snapshot const snapshot = FillSnapshot(bot, 0);
+        uint64 const reserve = UpkeepNeeds::ComputeNeeds(snapshot, *index, BotNeedRates(botAI, snapshot)).reserve;
+        uint64 const money = std::min<uint64>(reserve + entry, MAX_MONEY_AMOUNT);
+        bot->SetMoney(static_cast<uint32>(money));
+        done = Acore::StringFormat(", reserve {}, gold set to {}", reserve, money);
+    }
 
     Snapshot probe;
     FillPet(bot, probe);
@@ -909,12 +943,17 @@ bool HandlePetCommand(ChatHandler* handler, char const* args)
     Pet* summoned = bot->GetPet();
     PetStable::PetInfo const* info = StablePet(bot);
     uint32 const petEntry = summoned ? summoned->GetEntry() : (info ? info->CreatureId : 0);
-    bool const failed = (what == "has" && !probe.hasPet) || (what == "none" && probe.hasPet);
+    bool const failed =
+        (what == "has" && !probe.hasPet) || (what == "none" && probe.hasPet) || (what == "stabled" && stabled != entry);
+    std::string const error = what == "stabled" ? Acore::StringFormat("error, {} stabled, not {}", stabled, entry)
+                              : probe.hasPet    ? "error, has a pet"
+                                                : "error, no pet";
     handler->PSendSysMessage(
-        "PLANNER pet {}: {}{}, pet={} family={} level={} summoned={} stabled={} of max {} gold={} tame={} exotic={}",
-        bot->GetName(), failed ? (probe.hasPet ? "error, has a pet" : "error, no pet") : "ok", done, petEntry,
-        probe.petFamily, probe.petLevel, summoned ? 1 : 0, stabled, stable ? stable->MaxStabledPets : 0,
-        bot->GetMoney(), probe.knowsTameBeast ? 1 : 0, probe.tamesExotic ? 1 : 0);
+        "PLANNER pet {}: {}{}, pet={} family={} level={} summoned={} stabled={} of max {} "
+        "price={} gold={} tame={} exotic={}",
+        bot->GetName(), failed ? error : "ok", done, petEntry, probe.petFamily, probe.petLevel, summoned ? 1 : 0,
+        stabled, stable ? stable->MaxStabledPets : 0, probe.stableSlotPrice, bot->GetMoney(),
+        probe.knowsTameBeast ? 1 : 0, probe.tamesExotic ? 1 : 0);
     return !failed;
 }
 }  // namespace Planner

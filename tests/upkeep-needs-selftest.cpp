@@ -1251,6 +1251,81 @@ void PetNeed()
     std::cout << "  " << Describe(*need) << "\n";
 }
 
+// The swap form (WU21c): a Beast Mastery hunter (the exotic aura) with a pet of no wanted family stores it at a stable
+// master and tames a wanted (exotic) beast; a slot is bought only from the gold above the reserve
+void PetSwap()
+{
+    std::cout << "Scenario: the stable swap of an unwanted pet\n";
+    UpkeepIndex const index = PetFixture();
+    auto const petNeed = [](NeedList const& list) { return Find(list, NeedOrder::Pet); };
+    auto const master = [&index](std::uint64_t money)
+    {
+        Snapshot bot = Bot(index, PET_CLASS_HUNTER, 60, money, 60);
+        bot.knowsTameBeast = true;
+        bot.tamesExotic = true;
+        bot.hasPet = true;
+        bot.petFamily = 1;  // a wolf
+        bot.stableSlotPrice = 500;
+        return bot;
+    };
+    Check(
+        !WantedFamily(1, true) && WantedFamily(39, true) && WantedFamily(1, false) && WantedFamily(0, true),
+        "Beast Mastery wants an exotic family, not a wolf; another spec wants any; an unknown family counts as wanted");
+
+    NeedList const rich =
+        Show("Beast Mastery 60 with a wolf, 20 g, no slot bought", master(20 * GOLD), index, Rates(60));
+    Need const* swap = petNeed(rich);
+    Check(swap && swap->swap && swap->beast == BEAST_EXOTIC && swap->copper == 500 && swap->due &&
+              PetErrandDue(*swap) && AnyErrandDue(rich),
+          "a Beast Mastery hunter at 60 swaps its wolf: the exotic beast named, the first slot's 500 c, due");
+    Check(rich.reserve == ComputeNeeds(
+                              [&]
+                              {
+                                  Snapshot s = master(20 * GOLD);
+                                  s.petFamily = 39;
+                                  return s;
+                              }(),
+                              index, Rates(60))
+                              .reserve,
+          "the slot adds nothing to the reserve (it is paid from the gold above it)");
+
+    Snapshot wanted = master(20 * GOLD);
+    wanted.petFamily = 39;  // a devilsaur
+    Check(!petNeed(ComputeNeeds(wanted, index, Rates(60))), "a hunter with a wanted pet does not swap");
+    Snapshot other = master(20 * GOLD);
+    other.tamesExotic = false;
+    Check(!petNeed(ComputeNeeds(other, index, Rates(60))), "a hunter of another spec keeps its wolf");
+
+    std::uint64_t const reserve = rich.reserve;
+    NeedList const poor = Show("the same, 499 c above the reserve", master(reserve + 499), index, Rates(60));
+    Check(petNeed(poor) && !petNeed(poor)->due && !PetErrandDue(*petNeed(poor)),
+          "a slot priced above the free gold (499 c above the reserve) means no swap");
+    NeedList const exact = ComputeNeeds(master(reserve + 500), index, Rates(60));
+    Check(petNeed(exact) && petNeed(exact)->due, "500 c above the reserve pays the slot");
+    Check(!PetSwapPayable(400, 0, 500) && PetSwapPayable(500, 0, 500) && !PetSwapPayable(900, 500, 500) &&
+              PetSwapPayable(0, 500, 0),
+          "the gold above the reserve pays the slot; an empty bought slot costs nothing");
+
+    Snapshot free = master(0);
+    free.stableFree = true;
+    NeedList const freeList = ComputeNeeds(free, index, Rates(60));
+    Check(petNeed(freeList) && petNeed(freeList)->copper == 0 && petNeed(freeList)->due,
+          "an empty bought slot: the swap costs nothing and is due without gold");
+    Snapshot full = master(20 * GOLD);
+    full.stableSlotPrice = 0;  // every slot bought and full
+    Check(!petNeed(ComputeNeeds(full, index, Rates(60))), "every slot full: the hunter keeps its pet");
+    Snapshot away = master(20 * GOLD);
+    away.position = {1, 0.0f, 0.0f, 0.0f};  // only a cat (not wanted) on map 1
+    Check(!petNeed(ComputeNeeds(away, index, Rates(60))),
+          "no wanted beast on the map: no swap (the hunter keeps its pet)");
+    Snapshot lone = master(20 * GOLD);
+    lone.hasPet = false;
+    Check(petNeed(ComputeNeeds(lone, index, Rates(60))) && !petNeed(ComputeNeeds(lone, index, Rates(60)))->swap,
+          "without a pet the tame need of WU21b, no swap");
+    if (swap)
+        std::cout << "  " << Describe(*swap) << "\n";
+}
+
 void TameSteps()
 {
     std::cout << "Scenario: the tame at the beast (break off, cast again in the fight, rest, bounded tries)\n";
@@ -1309,6 +1384,7 @@ int main()
     TrainingPlaces(index);
     WeaponMasters();
     PetNeed();
+    PetSwap();
     TameSteps();
     FlyingRiding(index);
     MeasuredRiding(index);

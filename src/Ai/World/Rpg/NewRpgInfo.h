@@ -166,6 +166,14 @@ struct NewRpgInfo
         uint32 tameCastMs{0};
         uint32 tameSeenMs{0};
         uint32 tamePickMs{0};  // the beast's pick or the last channel's end (TAME_REACH_MS)
+        // The stable at this stop (WU21c): the stable master's entry, the wanted beast and its spawn for the tame stop
+        // the visit puts after this one, the wait for the pet to come back after a dismount; tameStabled on that
+        // tame stop: the old pet's entry (its PetTamed src stabled; only wanted families are tamed there)
+        uint32 stableEntry{0};
+        uint32 stableBeast{0};
+        WorldPosition stableBeastAt{};
+        uint32 stableSinceMs{0};
+        uint32 tameStabled{0};
         std::vector<ErrandTurnIn> turnIns;
         // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
         // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the
