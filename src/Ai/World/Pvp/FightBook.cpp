@@ -1387,20 +1387,10 @@ bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y)
     if (!memory || !Retreating(*memory, getMSTime()))
         return false;
     if (!StartsByRules(botAI))
-    {
-        LOG_DEBUG("playerbots", "[WorldPvp] DIAG retreat of {}: in its window but not by the rules",
-                  botAI->GetBot()->GetName());
         return false;
-    }
     x = memory->retreatX;
     y = memory->retreatY;
     return true;
-}
-
-void GiveUpRetreat(PlayerbotAI* botAI)
-{
-    if (botAI && botAI->fightMemory)
-        GiveUpRetreat(*botAI->fightMemory);
 }
 
 namespace

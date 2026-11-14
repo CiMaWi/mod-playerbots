@@ -59,11 +59,9 @@ bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
 // DropTargetAction: whether this bot, dropping `target` because it leaves it alone or its chase of it ended, calls its
 // pet off too (the pet attacks `target`'s side). O(1)
 bool CallsPetOff(PlayerbotAI* botAI, Unit* target);
-// The "world pvp retreat" trigger and action: while this bot retreats (or disengages) by the rules, the place it moves
-// away from
+// The "world pvp retreat" trigger: whether this bot retreats (or disengages) by the rules now; (x, y): the place its
+// fight memory keeps for it (the flight itself, FleeAttackersAction, runs from its attackers)
 bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y);
-// The retreat action could not move the bot (rooted, every direction blocked): it gives the retreat up
-void GiveUpRetreat(PlayerbotAI* botAI);
 
 struct GhostPlan;
 // FindCorpseAction and ReviveFromCorpseAction, the ghost's map thread (PlanGhost in FightRules.h): a persistent ghost

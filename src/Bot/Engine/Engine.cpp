@@ -8,12 +8,10 @@
 #include "Action.h"
 #include "CensusMgr.h"
 #include "Event.h"
-#include "FightBook.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "Queue.h"
 #include "Strategy.h"
-#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLogBotState.h"
 
@@ -667,19 +665,6 @@ bool Engine::ListenAndExecute(Action* action, Event event)
     // the useful entries out of the ring in seconds)
     if (WorldLog::Active() && this == botAI->GetCurrentEngine() && botAI->GetState() != BOT_STATE_COMBAT)
         WorldLog::NoteAction(botAI->GetBot(), botAI->worldLog, action, EventSourceAccess::Of(event), actionExecuted);
-
-    // DIAG (WPL2 r5, removed with the fix): what a retreating bot's engines run
-    {
-        float diagX = 0.0f;
-        float diagY = 0.0f;
-        // WP21: also what a bot under a flee constraint runs while in PvP combat
-        bool const flees =
-            (botAI->rpgInfo.constraints & TestConstraints::FLEES) && botAI->GetBot()->GetCombatManager().HasPvPCombat();
-        if (flees || WorldPvp::RetreatFrom(botAI, diagX, diagY))
-            LOG_DEBUG("playerbots", "[WorldPvp] DIAG {} in its {}, state {}: {} {}", botAI->GetBot()->GetName(),
-                      flees ? "flight" : "retreat", static_cast<uint32>(botAI->GetState()), action->getName(),
-                      actionExecuted ? "ok" : "failed");
-    }
 
     if (countCategory && actionExecuted)
         botAI->EndExecutedCount(countCategory, countTarget);

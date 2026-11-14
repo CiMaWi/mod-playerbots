@@ -35,6 +35,7 @@
 #include "ExternalEventHelper.h"
 #include "FightBook.h"
 #include "FightBookRules.h"
+#include "FleeRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
 #include "GameTime.h"
@@ -2417,6 +2418,8 @@ void PlayerbotAI::DoNextAction(bool min)
         aiObjectContext->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<ObjectGuid>("pull strategy target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<LootObject>("loot target")->Set(LootObject());
+        // A dead bot's flight from enemy players is over; it may flee again in its next PvP combat
+        aiObjectContext->GetValue<FleeRules::Flight&>("flee flight")->Get() = FleeRules::Flight();
 
         // The dead engine has no battleground strategy, so its "dead" trigger cannot reset this route.
         if (Battleground* bg = bot->GetBattleground())

@@ -2325,9 +2325,11 @@ Playerbots.WorldPvp.CalmYards = 200
 
 # The flight from enemy players (FleeAttackersAction). A bot that flees runs from the enemy players in PvP combat with
 # it. Its flight ends as escaped when it is out of PvP combat or Flee.EscapeYards from every one of them; as cornered
-# when it gained no distance for Flee.CorneredSeconds (it stands and fights and does not flee again in that combat;
-# the time it cannot move, rooted or stunned, does not count); or by its bound after Flee.BoundSeconds. (Ranges:
-# EscapeYards 1-2000; CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
+# when its nearest attacker got no farther from it for Flee.CorneredSeconds (the best distance so far, in steps of
+# 1 yd: a bot that cannot shake a pursuer turns and fights; the time it cannot move, rooted or stunned, does not
+# count, and the measure starts again when it can move); or by its bound after Flee.BoundSeconds. After cornered or
+# the bound it stands and fights and does not flee again in that PvP combat. (Ranges: EscapeYards 1-2000;
+# CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
 Playerbots.Flee.EscapeYards = 40
 Playerbots.Flee.CorneredSeconds = 6
 Playerbots.Flee.BoundSeconds = 30

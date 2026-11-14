@@ -638,10 +638,7 @@ void CheckEndGates()
           "it leaves the fight's enemies alone, except one attacking it");
     Check(!LeavesAlone(Ready(now), ENEMY, false, now), "a bot with neither state leaves nobody alone");
 
-    // WP6-2: the retreat waits, only walls everywhere give it up; a disengage leaves the ended fight's enemies alone;
-    // the aggressor by the meeting's pick
-    Check(GivesUpRetreat(17, 17) && !GivesUpRetreat(16, 17) && !GivesUpRetreat(0, 17) && !GivesUpRetreat(0, 0),
-          "a retreat is given up only when the collision check blocks every direction it tried");
+    // WP6-2: a disengage leaves the ended fight's enemies alone; the aggressor by the meeting's pick
     FightMemory parted = Ready(now);
     StartRetreat(parted, FIGHT, true, 0.0f, 0.0f, now);
     Check(LeavesAlone(parted, ENEMY, false, now + SECOND) && !LeavesAlone(parted, ENEMY, true, now + SECOND),

@@ -481,11 +481,6 @@ inline void ForgetFightElsewhere(FightMemory& memory, bool held, uint32_t nowMs)
     memory.lastFightEndMs = nowMs;
 }
 
-// The retreat's turn after it tried `tried` directions, `blocked` of them blocked by the collision check: it is given
-// up only when every direction is blocked. A bot that cannot move now (rooted, stunned) or whose last move still runs
-// (its delay not over, so a new move is refused) waits: the retreat's window bounds the wait
-inline bool GivesUpRetreat(uint32_t blocked, uint32_t tried) { return tried != 0 && blocked == tried; }
-
 // The bot gives the retreat up and fights where it stands. After a retreat by the rules it still does not rejoin that
 // fight's other enemies
 inline void GiveUpRetreat(FightMemory& memory) { memory.retreating = false; }
