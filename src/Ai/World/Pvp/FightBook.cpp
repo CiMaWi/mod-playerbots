@@ -276,13 +276,6 @@ void ReadGate(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 nowMs
     RefreshGate(memory, facts, nowMs);
 }
 
-// The guid of the bot's real master, 0 for none (WP.6: the bot follows it)
-uint64 RealMasterOf(PlayerbotAI* botAI, Player* bot)
-{
-    Player* const master = botAI->GetMaster();
-    return master && master != bot && IsRealPlayer(master) ? master->GetGUID().GetRawValue() : 0;
-}
-
 // The calm-area answer at the bot's place (InAnyCalmArea over its map's ended fights), asked again when due
 void ReadCalm(Player* bot, FightMemory& memory, uint32 nowMs, FightRuleValues const& values)
 {
@@ -292,56 +285,6 @@ void ReadCalm(Player* bot, FightMemory& memory, uint32 nowMs, FightRuleValues co
         return;
     std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false);
     NoteCalm(memory, entry && InAnyCalmArea(entry->book.Ended(), x, y, nowMs, values), x, y, nowMs);
-}
-
-// The bot stops attacking (a retreat, a disengage): no victim, no current target
-void DropFightTarget(PlayerbotAI* botAI, Player* bot)
-{
-    bot->AttackStop();
-    botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
-}
-
-// What a participant sees of its fight: the strength of its side's alive participants (itself included) and of the
-// enemies it sees, and the centre of those enemies
-struct SideView
-{
-    float own = 0.0f;
-    float other = 0.0f;
-    uint32 enemies = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-};
-
-SideView ViewOf(Player* bot, Fight const& fight, FightRuleValues const& values)
-{
-    uint32 const level = bot->GetLevel();
-    auto const strength = [&](Player const* player)
-    { return Strength(level, player->GetLevel(), player->GetHealthPct() / 100.0f, values); };
-    SideView view;
-    view.own = strength(bot);
-    for (FightParticipant const& participant : fight.participants)
-    {
-        Player* const player = ObjectAccessor::GetPlayer(bot->GetMap(), ObjectGuid(participant.guid));
-        if (!player || player == bot || !player->IsInWorld() || !player->IsAlive())
-            continue;
-        if (player->GetTeamId() == bot->GetTeamId())
-        {
-            view.own += strength(player);
-            continue;
-        }
-        if (!bot->CanSeeOrDetect(player))
-            continue;
-        view.other += strength(player);
-        view.x += player->GetPositionX();
-        view.y += player->GetPositionY();
-        ++view.enemies;
-    }
-    if (view.enemies)
-    {
-        view.x /= static_cast<float>(view.enemies);
-        view.y /= static_cast<float>(view.enemies);
-    }
-    return view;
 }
 
 Combatant MakeCombatant(Player* player, uint32 nowMs)
@@ -525,15 +468,6 @@ void EmitEnd(Map* map, Fight const& fight, uint32 nowMs)
             memory->joinGuid = 0;
             memory->joinFightId = 0;
         }
-        // A timeout or stalemate ends a fight that is still on: its bots by the rules disengage (they step away and
-        // note no PvP combat for a while, so its tail opens no new fight; an enemy that keeps hitting gets one)
-        if (player->IsAlive() &&
-            Disengages(fight.cause, StartsByRules(botAI), player->GetCombatManager().HasPvPCombat(),
-                       FollowsMaster(fight, RealMasterOf(botAI, player))))
-        {
-            StartRetreat(*memory, fight.id, true, fight.centreX, fight.centreY, nowMs);
-            DropFightTarget(botAI, player);
-        }
     }
 
     uint32 const seconds = ElapsedMs(fight.startMs, fight.endMs) / IN_MILLISECONDS;
@@ -605,8 +539,8 @@ void Publish(BookEntry& entry, uint32 nowMs)
 }
 
 // A participant in PvP combat (the book's tick): whether it is in PvP combat with an enemy participant of its fight
-// (the hit clock). A persistent bot attacking a retreated enemy of its fight chases it from now (NoteChase)
-bool ProbeSides(Fight const& fight, FightParticipant const& participant, Player* player, uint32 nowMs)
+// (the hit clock)
+bool ProbeSides(Fight const& fight, FightParticipant const& participant, Player* player)
 {
     auto const enemyOf = [&](Unit* unit) -> FightParticipant const*
     {
@@ -622,62 +556,7 @@ bool ProbeSides(Fight const& fight, FightParticipant const& participant, Player*
         if (sides)
             break;
     }
-
-    // A caster has no victim: its selected target counts (WP6 chase-b70: a warlock's chase was never noted)
-    FightParticipant const* victim = enemyOf(player->GetVictim());
-    if (!victim)
-        victim = enemyOf(ObjectAccessor::GetUnit(*player, player->GetTarget()));
-    if (victim && victim->retreated && !IsForced(player->GetGUID(), nowMs))
-        if (FightMemory* const memory = MemoryOf(player, nowMs))
-            NoteChase(*memory, victim->guid, fight.centreX, fight.centreY, fight.radius, victim->retreatedMs, nowMs);
     return sides;
-}
-
-// Once a second while the bot is in PvP combat: a participant that starts by the rules retreats when its health is
-// low and its side is losing (ShouldRetreat over what it sees of its fight); while it retreats it moves away from the
-// enemies it sees
-void CheckRetreat(PlayerbotAI* botAI, Player* bot, FightMemory& memory, uint32 nowMs)
-{
-    if (!memory.fightId || !bot->IsAlive())
-        return;
-    bool const retreating = Retreating(memory, nowMs);
-    if (retreating && memory.disengaging)
-        return;
-    bool const fromThis = memory.retreatFightId == memory.fightId;
-    if (fromThis && !retreating)
-        return;
-    if (!StartsByRules(botAI))
-        return;
-    std::shared_ptr<BookEntry> const entry = BookOf(bot->GetMap(), false);
-    Fight const* const fight = entry ? entry->book.FindFight(memory.fightId) : nullptr;
-    if (!fight || !fight->Find(bot->GetGUID().GetRawValue()))
-        return;
-
-    FightRuleValues const values(sPlayerbotAIConfig.WorldPvp);
-    SideView const view = ViewOf(bot, *fight, values);
-    if (fromThis)
-    {
-        if (view.enemies)
-        {
-            memory.retreatX = view.x;
-            memory.retreatY = view.y;
-        }
-        return;
-    }
-
-    if (GateDue(memory, nowMs))
-        ReadGate(botAI, bot, memory, nowMs);
-    float const health = bot->GetHealthPct() / 100.0f;
-    if (!view.enemies || !ShouldRetreat(health, OddsShare(view.own, view.other), memory.caution, values) ||
-        FollowsMaster(*fight, RealMasterOf(botAI, bot)))
-        return;
-
-    uint32 const fightId = entry->book.MarkRetreated(bot->GetGUID().GetRawValue(), nowMs);
-    StartRetreat(memory, fightId, false, view.x, view.y, nowMs);
-    DropFightTarget(botAI, bot);
-    if (WorldLog::Active())
-        EventLog::Emit(bot, EVENT_FIGHT_RETREAT, SOURCE_RETREAT, fightId,
-                       static_cast<int64>(std::lround(health * 100.0f)));
 }
 
 void TickBook(Map* map, uint32 diff)
@@ -718,7 +597,7 @@ void TickBook(Map* map, uint32 diff)
             if (!player->GetCombatManager().HasPvPCombat())
                 return false;
             Fight const* const fight = FightHolding(book.Active(), participant, holding);
-            participant.sideCombat = fight && ProbeSides(*fight, participant, player, nowMs);
+            participant.sideCombat = fight && ProbeSides(*fight, participant, player);
             return true;
         },
         [&values](FightClock const& clock) { return CheckFightEnd(clock, values); }, ended);
@@ -980,37 +859,6 @@ bool Reaches(Unit const* bot, Unit const* enemy)
                    [bot, enemy]() { return bot->IsWithinLOSInMap(enemy); });
 }
 
-bool ChaseEnds(PlayerbotAI* botAI, Unit* target)
-{
-    FightMemory* const memory = botAI && target ? botAI->fightMemory.get() : nullptr;
-    if (!memory || !memory->chaseGuid || memory->chaseGuid != target->GetGUID().GetRawValue() || !StartsByRules(botAI))
-        return false;
-    Player* const bot = botAI->GetBot();
-    // The retreated enemy hitting back does not lengthen the chase: it fights only who attacks it (LeftAlone), so
-    // both stop here; kept on, the two defended against each other until the stalemate (WP6 chase-b70)
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp chase") : nullptr);
-    ChaseLimit const limit =
-        ChaseLimitFor(memory->aggression, memory->courtesy, FightRuleValues(sPlayerbotAIConfig.WorldPvp));
-    return CheckChase(*memory, memory->chaseGuid, bot->GetPositionX(), bot->GetPositionY(), getMSTime(), limit);
-}
-
-bool LeftAlone(PlayerbotAI* botAI, Unit* unit)
-{
-    FightMemory const* const memory = botAI && unit ? botAI->fightMemory.get() : nullptr;
-    if (!memory)
-        return false;
-    // A pet is on its owner's side; a unit that belongs to no player (a creature) is never left alone
-    Player* const side = unit->GetCharmerOrOwnerPlayerOrPlayerItself();
-    if (!side)
-        return false;
-    uint64 const guid = side->GetGUID().GetRawValue();
-    uint32 const nowMs = getMSTime();
-    // Cheap first: most bots have neither state; a battleground, arena or PvpTest fight keeps today's targets
-    if (!LeavesAlone(*memory, guid, false, nowMs) || !StartsByRules(botAI))
-        return false;
-    return LeavesAlone(*memory, guid, Attacks(unit, botAI->GetBot()), nowMs);
-}
-
 bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
 {
     Pet* const pet = botAI && target ? botAI->GetBot()->GetPet() : nullptr;
@@ -1019,21 +867,16 @@ bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
     Player* const leftSide = target ? target->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
     if (!victimSide || !leftSide)
         return false;
-    // A chase over ends the pet's too, also while the enemy hits back (ChaseEnds); else the bot's leave-alone
-    bool const leaves = ChaseEnds(botAI, leftSide) || LeftAlone(botAI, target);
-    return PetCalledOff(leaves, victimSide->GetGUID().GetRawValue(), leftSide->GetGUID().GetRawValue());
+    return PetCalledOff(LeftAlone(botAI, target), victimSide->GetGUID().GetRawValue(),
+                        leftSide->GetGUID().GetRawValue());
 }
 
-bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y)
+void DropFightTarget(PlayerbotAI* botAI, Player* bot)
 {
-    FightMemory const* const memory = botAI ? botAI->fightMemory.get() : nullptr;
-    if (!memory || !Retreating(*memory, getMSTime()))
-        return false;
-    if (!StartsByRules(botAI))
-        return false;
-    x = memory->retreatX;
-    y = memory->retreatY;
-    return true;
+    bot->AttackStop();
+    // A player's selection outlives AttackStop; another bot reads it as an attack (LeftAlone)
+    bot->SetSelection(ObjectGuid::Empty);
+    botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
 }
 
 namespace
@@ -1098,10 +941,7 @@ void OnBotTick(PlayerbotAI* botAI, Player* bot)
 
     memory->lastCombatCheckMs = nowMs;
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp hooks") : nullptr);
-    // A disengaging bot notes no PvP combat: the ended fight's tail would open a new one at once
-    if (!Retreating(*memory, nowMs) || !memory->disengaging)
-        NoteCombatRefs(bot, nowMs);
-    CheckRetreat(botAI, bot, *memory, nowMs);
+    NoteCombatRefs(bot, nowMs);
 }
 
 void MarkForced(ObjectGuid guid)

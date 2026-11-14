@@ -6,6 +6,8 @@
 
 #include "FightEnthusiasm.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -46,14 +48,83 @@ constexpr char const* SOURCE_DEATH_JOIN = "death_join";
 constexpr char const* REASON_ENTHUSIASM = "enthusiasm";
 constexpr char const* REASON_FACTION = "faction_attacked";
 constexpr char const* REASON_GROUP = "group_attacked";
+// The leaving row (world-log.md): choice leave, reason fled (an enemy player attacks the bot) or resumed (none does)
+constexpr char const* CHOICE_LEAVE = "leave";
+constexpr char const* REASON_FLED = "fled";
+constexpr char const* REASON_RESUMED = "resumed";
+// The distinct enemy players counted as attacking the bot (the leaving row's attackers)
+constexpr size_t ATTACKERS_COUNTED = 8;
 
 EnthusiasmValues Values() { return FromConfig(sPlayerbotAIConfig.WorldPvp); }
 
-// In PvP combat with an enemy player on an open-world map (battlegrounds and arenas leave the value alone)
+// In PvP combat or holding an alive enemy player (or its pet) as its victim, on an open-world map (battlegrounds and
+// arenas leave the value alone)
 bool EngagedNow(Player* bot)
 {
     Map const* const map = bot->GetMap();
-    return map && !map->Instanceable() && !bot->GetCombatManager().GetPvPCombatRefs().empty();
+    bool const openWorld = map && !map->Instanceable();
+    bool const pvpCombat = openWorld && !bot->GetCombatManager().GetPvPCombatRefs().empty();
+    // The victim only when the references do not answer already (most ticks of an engaged bot)
+    Unit* const victim = openWorld && !pvpCombat ? bot->GetVictim() : nullptr;
+    Player* const enemy = victim && victim->IsAlive() ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    return EngagedBy(openWorld, pvpCombat, enemy && enemy->IsAlive() && enemy->GetTeamId() != bot->GetTeamId());
+}
+
+// Whether `unit` attacks `bot`: its victim is the bot or one of its pets, or its selected target is the bot or its
+// pet (a caster has no victim)
+bool Threatens(Unit* unit, Player* bot)
+{
+    Unit* const victim = unit->GetVictim();
+    if (victim && victim->GetCharmerOrOwnerPlayerOrPlayerItself() == bot)
+        return true;
+    ObjectGuid const target = unit->GetTarget();
+    return target && (target == bot->GetGUID() || target == bot->GetPetGUID());
+}
+
+// The enemy players (alive, of the other team, on the bot's map) in PvP combat with the bot that attack it, by
+// themselves or by a pet (a totem does not count); distinct players, up to ATTACKERS_COUNTED
+uint32 AttackersOf(Player* bot)
+{
+    std::array<Player const*, ATTACKERS_COUNTED> seen{};
+    size_t count = 0;
+    for (auto const& [guid, reference] : bot->GetCombatManager().GetPvPCombatRefs())
+    {
+        Unit* const unit = reference->GetOther(bot);
+        Player* const enemy = unit && !unit->IsTotem() ? unit->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+        if (!enemy || !enemy->IsAlive() || enemy->GetTeamId() == bot->GetTeamId() || enemy->GetMap() != bot->GetMap())
+            continue;
+        if (!Threatens(unit, bot) && (enemy == unit || !Threatens(enemy, bot)))
+            continue;
+        if (std::find(seen.begin(), seen.begin() + count, enemy) != seen.begin() + count)
+            continue;
+        seen[count++] = enemy;
+        if (count == seen.size())
+            break;
+    }
+    return static_cast<uint32>(count);
+}
+
+// The group row: a member other than the bot, in the world on the bot's map (this thread's), alive, within
+// groupHoldYards and in PvP combat (GroupMemberHolds). Engine state only, never a member's AI
+bool GroupEngagedAround(Player* bot, EnthusiasmValues const& values)
+{
+    Group* const group = bot->GetGroup();
+    Map const* const map = bot->GetMap();
+    if (!group || !map || map->Instanceable())
+        return false;
+    for (GroupReference* reference = group->GetFirstMember(); reference; reference = reference->next())
+    {
+        Player* const member = reference->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || member->GetMap() != map)
+            continue;
+        GroupMember entry;
+        entry.alive = member->IsAlive();
+        entry.yards = bot->GetExactDist(member);
+        entry.engaged = !member->GetCombatManager().GetPvPCombatRefs().empty();
+        if (GroupMemberHolds(entry, values))
+            return true;
+    }
+    return false;
 }
 
 // The bot's enthusiasm, made and seeded at random on first use
@@ -112,16 +183,22 @@ float BalanceAround(Player* bot, EnthusiasmValues const& values)
     return LocalBalance(entries, values);
 }
 
-// The engaged edge, the context when due, and the balance when due while the bot is engaged or could enter (`force`:
-// all of it now, for the command)
+// The engaged edge, the context when due, the group hold when due (cheap: most bots have no group), and the balance
+// and (while engaged) who attacks the bot when due while the bot is engaged or could enter (`force`: all of it now,
+// for the command)
 void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs, EnthusiasmValues const& values,
              bool force)
 {
     Observe(state, EngagedNow(bot), nowMs, values);
     if (force || ContextDue(state, nowMs))
         ReadContext(botAI, bot, state, nowMs, values);
+    if (force || GroupDue(state, nowMs))
+        NewGroup(state, GroupEngagedAround(bot, values), nowMs, values);
     if (force || (BalanceDue(state, nowMs) && (state.engaged || !SkipsScan(state, nowMs, values))))
+    {
         NewBalance(state, BalanceAround(bot, values), GraveyardYards(bot) <= values.graveyardYards, nowMs, values);
+        state.attacked = state.engaged && AttackersOf(bot) != 0;
+    }
 }
 
 struct Entering
@@ -161,7 +238,7 @@ Entering Evaluate(PlayerbotAI* botAI, Player* bot, BotEnthusiasm const& state, P
     entering.facts = FactsFor(state, colour, faction, groupAttacked);
     entering.join = JoinThreshold(entering.facts, values);
     entering.value = ValueAt(state, nowMs, values);
-    entering.enters = Enters(entering.value, entering.join, state.flee);
+    entering.enters = Enters(entering.value, entering.join, state.fleeNow);
     return entering;
 }
 
@@ -183,6 +260,36 @@ void RecordEntering(Player* bot, Entering const& entering, EnthusiasmValues cons
                        joining ? WorldLogFormat::DecisionKind::FightJoin : WorldLogFormat::DecisionKind::FightStart,
                        joining ? CHOICE_JOIN : CHOICE_START, reason, static_cast<float>(entering.value), alternatives,
                        0);
+}
+
+// The leaving row: fight_leave, reason fled or resumed, the value, the flee threshold used, its terms (1: the group
+// hold applied) and the enemy players attacking the bot
+void RecordLeave(Player* bot, BotEnthusiasm const& state, double value, uint32 attackers)
+{
+    if (!WorldLog::Active())
+        return;
+    WorldLogFormat::Alternatives alternatives{WorldLogFormat::Alternative{"flee", state.fleeNow}};
+    alternatives.Add({"terms", state.groupEngaged ? 1.0f : 0.0f});
+    alternatives.Add({"attackers", static_cast<float>(attackers)});
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::FightLeave, CHOICE_LEAVE,
+                       attackers ? REASON_FLED : REASON_RESUMED, static_cast<float>(value), alternatives, 0);
+}
+
+// The leave check (PLAN 3.5), after the refresh: once per engaged episode an engaged bot below its flee threshold
+// drops its target, calls its pet off and writes its row; the flight follows by the trigger when it is attacked
+void CheckLeave(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs, EnthusiasmValues const& values)
+{
+    // Cheap first: the flags, then the value, then the rules
+    if (!state.engaged || state.left || state.realMaster)
+        return;
+    double const value = ValueAt(state, nowMs, values);
+    if (!Leaves(state, value, bot->IsAlive(), StartsByRules(botAI)))
+        return;
+    uint32 const attackers = AttackersOf(bot);
+    MarkLeft(state, attackers != 0, nowMs);
+    DropFightTarget(botAI, bot);
+    botAI->PetFollow();
+    RecordLeave(bot, state, value, attackers);
 }
 
 // A plain threshold of the command and the death row: a yellow target, nobody of the bot's side attacked, no
@@ -275,7 +382,29 @@ void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
     if (!botAI->enthusiasm && (!EngagedNow(bot) || !StartsByRules(botAI)))
         return;
     EnthusiasmValues const values = Values();
-    Refresh(botAI, bot, Of(botAI, nowMs, values), nowMs, values, false);
+    BotEnthusiasm& state = Of(botAI, nowMs, values);
+    Refresh(botAI, bot, state, nowMs, values, false);
+    CheckLeave(botAI, bot, state, nowMs, values);
+}
+
+bool LeftAlone(PlayerbotAI* botAI, Unit* unit)
+{
+    BotEnthusiasm const* const state = botAI && unit ? botAI->enthusiasm.get() : nullptr;
+    // Cheap first: most bots have not left; a battleground, arena or PvpTest fight keeps today's targets
+    if (!state || !state->left)
+        return false;
+    // A pet is on its owner's side; a unit that belongs to no player (a creature) is never left alone
+    Player* const side = unit->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (!side || !StartsByRules(botAI))
+        return false;
+    Player* const bot = botAI->GetBot();
+    return LeftAloneBy(*state, Threatens(unit, bot) || (side != unit && Threatens(side, bot)));
+}
+
+bool LeavesFlee(PlayerbotAI* botAI)
+{
+    BotEnthusiasm const* const state = botAI ? botAI->enthusiasm.get() : nullptr;
+    return state && FleesNow(*state);
 }
 
 void NoteEnthusiasmDeath(Player* killer, Player* killed)
@@ -338,6 +467,8 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
     }
     handler->PSendSysMessage("{} value {:.2f}{}{}", prefix, value, seed, set ? " set" : "");
     handler->PSendSysMessage("{} flee {:.2f} caution {:.2f}", prefix, state.flee, state.caution);
+    handler->PSendSysMessage("{} flee_group {:.2f} group {}", prefix, state.fleeLowest, state.groupEngaged ? 1 : 0);
+    handler->PSendSysMessage("{} fleenow {:.2f}", prefix, state.fleeNow);
     handler->PSendSysMessage("{} join {:.2f} aggression {:.2f}", prefix,
                              PlainJoin(state, false, false, false, Colour::Yellow, values), state.aggression);
     handler->PSendSysMessage("{} join_faction {:.2f} helpfulness {:.2f}", prefix,
@@ -357,6 +488,8 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
     bool const picked = IsPick(state, state.pickGuid, nowMs);
     handler->PSendSysMessage("{} pick {} left {} s", prefix, picked ? ObjectGuid(state.pickGuid).GetCounter() : 0,
                              picked ? (PICK_MS - (nowMs - state.pickMs)) / IN_MILLISECONDS : 0);
+    handler->PSendSysMessage("{} left {} attacked {} attackers {}", prefix, state.left ? 1 : 0, state.attacked ? 1 : 0,
+                             AttackersOf(bot));
     return true;
 }
 }  // namespace WorldPvp

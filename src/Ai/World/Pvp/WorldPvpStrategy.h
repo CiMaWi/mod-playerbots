@@ -17,8 +17,8 @@ class PlayerbotAI;
 
 // World PvP (WP6): "world pvp" holds "world pvp retreat" -> "flee attackers" above the rotation (ACTION_EMERGENCY + 1;
 // the defensive cooldowns above it still fire), in the combat and non-combat engines of every bot outside
-// battlegrounds. Only a persistent bot that retreats from an open-world fight by the rules, or disengages at its
-// timeout or stalemate, has the trigger on (FightBook.cpp)
+// battlegrounds. Only a persistent bot that left an open-world fight by its enthusiasm while an enemy player attacks
+// it has the trigger on (WP24, FightEnthusiasm.cpp)
 class WorldPvpStrategy : public Strategy
 {
 public:
@@ -28,7 +28,7 @@ public:
     std::string const getName() override { return "world pvp"; }
 };
 
-// The bot retreats or disengages (O(1): its fight memory's clock), or the test constraint flee is on; the flight
+// The bot left its fight and is attacked (O(1): WorldPvp::LeavesFlee), or the test constraint flee is on; the flight
 // itself, its outcome and the stand after it are the flee action's (FleeAttackersAction::Due)
 class WorldPvpRetreatTrigger : public Trigger
 {

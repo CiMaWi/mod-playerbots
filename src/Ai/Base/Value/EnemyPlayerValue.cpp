@@ -123,7 +123,7 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& [guid, combatRef] : bot->GetCombatManager().GetPvPCombatRefs())
     {
         Unit* pTarget = combatRef->GetOther(bot);
-        // World PvP (WP6): not in a fight the bot retreated from, nor an enemy whose chase just ended
+        // World PvP (WP24): not an enemy a bot that left its fight leaves alone (one that does not attack it)
         if (IsUnavailableCombatTarget(bot, pTarget) || WorldPvp::LeftAlone(botAI, pTarget))
             continue;
         if (pTarget == pVictim || !pTarget->IsPlayer() ||

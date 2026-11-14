@@ -432,7 +432,9 @@ inline void CheckDecisions(Checker& checker)
     std::string kinds;
     for (size_t kind = 0; kind <= DECISION_KIND_COUNT; ++kind)
         kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');
-    checker.Equal(kinds, "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank other ",
+    checker.Equal(kinds,
+                  "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank "
+                  "fight_leave other ",
                   "a word per decision kind");
 
     uint32_t const visit = PackVisitCounts(3, 12, VISIT_COUNT_MAX + 5);

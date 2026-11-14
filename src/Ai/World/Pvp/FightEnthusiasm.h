@@ -12,8 +12,9 @@
 #include "Enthusiasm.h"
 
 // A bot's enthusiasm as its AI holds it (WP23, PlayerbotAI::enthusiasm) and the steps the glue (FightEnthusiasm.cpp)
-// takes on it: the seed, the engaged edges, the cached traits and local balance, the one-off edits, the pick and the
-// entering check. Player-free, so tests/fight-enthusiasm-selftest.cpp checks the same code the server runs
+// takes on it: the seed, the engaged edges, the cached traits, local balance and group hold, the one-off edits, the
+// pick, the entering check and the leaving (WP24). Player-free, so tests/fight-enthusiasm-selftest.cpp checks the same
+// code the server runs
 namespace WorldPvp
 {
 // The target a bot entered on stays its scan's target this long (it closes in and attacks within it)
@@ -50,7 +51,9 @@ struct BotEnthusiasm
     float helpfulness = 0.0f;
     float confidence = 0.0f;
     float lowestJoin = 0.0f;  // LowestJoinThreshold
-    float flee = 0.0f;        // FleeThreshold, no group member engaged (WP24 adds it)
+    float flee = 0.0f;        // FleeThreshold, no group member engaged
+    float fleeLowest = 0.0f;  // FleeThreshold with the group hold on: the lowest the traits allow
+    float fleeNow = 0.0f;     // FleeThreshold as it holds now (groupEngaged)
     bool realMaster = false;
     bool prohibitedZone = false;
     // The local balance (LocalBalance) with its factor and shift, and the graveyard row, read at BALANCE_REFRESH_MS
@@ -60,13 +63,71 @@ struct BotEnthusiasm
     float factor = 1.0f;
     float joinShift = 0.0f;
     bool nearGraveyard = false;
+    // A living member of the bot's group within groupHoldYards is engaged (GroupMemberHolds), read at
+    // BALANCE_REFRESH_MS also while the scan is skipped (a member's fight lowers the threshold the skip uses)
+    bool groupKnown = false;
+    uint32_t groupMs = 0;
+    bool groupEngaged = false;
     // The enemy the bot entered on (raw guid, 0 for none) and when
     uint64_t pickGuid = 0;
     uint32_t pickMs = 0;
-    // In PvP combat with an enemy player (either side's combat reference), since engagedMs
+    // In PvP combat with an enemy player (either side's combat reference) or holding one as its victim (EngagedBy),
+    // since engagedMs
     bool engaged = false;
     uint32_t engagedMs = 0;
+    // The bot left the fight it is engaged in (Leaves), at leftMs; it clears only on the disengaged edge
+    bool left = false;
+    uint32_t leftMs = 0;
+    // An enemy player in PvP combat with the bot has it or its pet as its victim or selected target; read with the
+    // balance while engaged and at the leave edge
+    bool attacked = false;
 };
+
+// Engaged (PLAN 3.2): on an open-world map, in PvP combat or holding an enemy player (or its pet) as its victim; a
+// chase of a runner out of reach has no combat references, yet it drains the value
+inline bool EngagedBy(bool openWorld, bool pvpCombat, bool holdsEnemyPlayer)
+{
+    return openWorld && (pvpCombat || holdsEnemyPlayer);
+}
+
+// What the group row reads of one member other than the bot (engine state only, never its AI): alive, its distance
+// and whether it is engaged (PvP combat on an open-world map). A member that fled still counts until its PvP combat
+// lapses or it is farther than groupHoldYards: the hold fades as members flee or die
+struct GroupMember
+{
+    bool alive = false;
+    float yards = 0.0f;
+    bool engaged = false;
+};
+
+inline bool GroupMemberHolds(GroupMember const& member, EnthusiasmValues const& values)
+{
+    return member.alive && member.engaged && member.yards <= values.groupHoldYards;
+}
+
+// The flee thresholds of the cached caution and group hold
+inline void SetFlee(BotEnthusiasm& bot, EnthusiasmValues const& values)
+{
+    FleeFacts flee;
+    flee.caution = bot.caution;
+    bot.flee = FleeThreshold(flee, values);
+    flee.groupMemberEngaged = true;
+    bot.fleeLowest = FleeThreshold(flee, values);
+    bot.fleeNow = bot.groupEngaged ? bot.fleeLowest : bot.flee;
+}
+
+inline void NewGroup(BotEnthusiasm& bot, bool groupEngaged, uint32_t nowMs, EnthusiasmValues const& values)
+{
+    bot.groupEngaged = groupEngaged;
+    bot.groupKnown = true;
+    bot.groupMs = nowMs;
+    SetFlee(bot, values);
+}
+
+inline bool GroupDue(BotEnthusiasm const& bot, uint32_t nowMs)
+{
+    return !bot.groupKnown || nowMs - bot.groupMs >= BALANCE_REFRESH_MS;
+}
 
 // The first use starts the value at a random level (StartValue of `random`, a uniform draw); later calls do nothing
 inline void Seed(BotEnthusiasm& bot, uint32_t random, uint32_t nowMs, EnthusiasmValues const& values)
@@ -94,6 +155,11 @@ inline bool Observe(BotEnthusiasm& bot, bool engaged, uint32_t nowMs, Enthusiasm
     bot.engagedMs = nowMs;
     if (engaged)
         bot.pickGuid = 0;
+    else
+    {
+        bot.left = false;
+        bot.attacked = false;
+    }
     return true;
 }
 
@@ -118,9 +184,7 @@ inline void NewTraits(BotEnthusiasm& bot, float aggression, float caution, float
     bot.helpfulness = helpfulness;
     bot.confidence = confidence;
     bot.lowestJoin = LowestJoinThreshold(aggression, helpfulness, values);
-    FleeFacts flee;
-    flee.caution = caution;
-    bot.flee = FleeThreshold(flee, values);
+    SetFlee(bot, values);
     bot.contextKnown = true;
     bot.contextMs = nowMs;
 }
@@ -162,11 +226,35 @@ inline void SetPick(BotEnthusiasm& bot, uint64_t guid, uint32_t nowMs)
 }
 
 // The enemy-player scan is skipped while the value can enter nothing (not even at the lowest join threshold the
-// traits allow) and no pick is open; attackers still reach the bot by its combat references
+// traits allow, below the flee threshold as it holds now: the group hold is read every second whatever the skip)
+// and no pick is open; attackers still reach the bot by its combat references
 inline bool SkipsScan(BotEnthusiasm const& bot, uint32_t nowMs, EnthusiasmValues const& values)
 {
-    return !IsPick(bot, bot.pickGuid, nowMs) && !Enters(ValueAt(bot, nowMs, values), bot.lowestJoin, bot.flee);
+    return !IsPick(bot, bot.pickGuid, nowMs) && !Enters(ValueAt(bot, nowMs, values), bot.lowestJoin, bot.fleeNow);
 }
+
+// The leave check (PLAN 3.5), once per engaged episode: an engaged bot that starts by the rules, alive, with no real
+// master, whose value fell below its flee threshold as it holds now. A threshold of 0 or below never fires (the value
+// stops at 0 and MustLeave is strict)
+inline bool Leaves(BotEnthusiasm const& bot, double value, bool alive, bool byRules)
+{
+    return alive && byRules && bot.engaged && !bot.left && !bot.realMaster && MustLeave(value, bot.fleeNow);
+}
+
+inline void MarkLeft(BotEnthusiasm& bot, bool attacked, uint32_t nowMs)
+{
+    bot.left = true;
+    bot.leftMs = nowMs;
+    bot.attacked = attacked;
+}
+
+// A bot that left leaves alone every enemy player (and its pets) that does not attack it; it answers whoever does
+// (a cornered bot stands and fights). The caller checks that the bot starts by the rules
+inline bool LeftAloneBy(BotEnthusiasm const& bot, bool attacksBot) { return bot.left && !attacksBot; }
+
+// The flight trigger's reason: the bot left and an enemy player attacks it (FleeAttackersAction::Due then runs the
+// flight to its outcome and lets a bot that stood fight on in that PvP combat)
+inline bool FleesNow(BotEnthusiasm const& bot) { return bot.left && bot.attacked; }
 
 // The join facts of a target from the cached state and what the caller sees of the target
 inline JoinFacts FactsFor(BotEnthusiasm const& bot, Colour colour, bool targetAttacksFaction, bool targetAttacksGroup)

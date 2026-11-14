@@ -19,9 +19,7 @@ void WorldPvpStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 bool WorldPvpRetreatTrigger::IsActive()
 {
-    float x = 0.0f;
-    float y = 0.0f;
     bool const wants = botAI->GetBot()->IsAlive() &&
-                       (TestConstraints::Flees(botAI->rpgInfo.constraints) || WorldPvp::RetreatFrom(botAI, x, y));
+                       (TestConstraints::Flees(botAI->rpgInfo.constraints) || WorldPvp::LeavesFlee(botAI));
     return FleeAttackersAction::Due(botAI, wants);
 }

@@ -18,10 +18,10 @@ class PlayerbotAI;
 class Unit;
 class WorldObject;
 
-// World PvP (WP1, WP4-WP6, WP23): the fight book of each open-world map (FightBookRules.h holds its rules), the bots'
-// fight memories and meetings, entering a fight by enthusiasm (FightEnthusiasm.cpp, Enthusiasm.h), the end of fights
-// by the fight rules (FightRules.h, fed by FightWiring.h: retreats, chases, timeouts), the fight events and the
-// `playerbots fight` commands.
+// World PvP (WP1, WP4-WP6, WP23, WP24): the fight book of each open-world map (FightBookRules.h holds its rules), the
+// bots' fight memories and meetings, entering and leaving a fight by enthusiasm (FightEnthusiasm.cpp, Enthusiasm.h),
+// the book's fight ends (rows only since WP24: they move no bot), the fight events and the `playerbots fight`
+// commands.
 // Persistent bots in the open world; battlegrounds, arenas and dungeons have no book and keep today's attack on sight.
 namespace WorldPvp
 {
@@ -49,7 +49,9 @@ bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal);
 bool NoteEntering(PlayerbotAI* botAI, Player* enemy);
 // PossibleTargetsValue::AcceptUnit: whether `unit` is the enemy this bot entered on (its pick)
 bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit);
-// OnBotTick (every bot tick while in PvP combat or engaged): the engaged edge and, while engaged, the balance
+// OnBotTick (every bot tick while in PvP combat or engaged): the engaged edge, while engaged the balance, the group
+// hold and who attacks the bot (at the balance's cadence), then the leave check (WP24): an engaged bot below its flee
+// threshold drops its target, calls its pet off and writes its fight_leave row, once per engaged episode
 void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32 nowMs);
 // The PvP-kill hooks, the killed player's map thread: the death edit of a bot victim, the kill edit of a bot killer
 // and the group death edit of the victim's bot group members on its map within GroupDeathYards; a PvpEnthusiasm event
@@ -60,22 +62,19 @@ void NoteEnthusiasmDeath(Player* killer, Player* killed);
 bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // The yards from `object` to the nearest graveyard (spirit healers stand at them) of its map
 float GraveyardYards(WorldObject const* object);
-// InvalidTargetValue ("current target"): whether this bot stops chasing `target`, a retreated enemy of its fight it
-// attacks: the chase's time since the enemy's retreat or its yards beyond the fight passed the bot's limit
-// (ChaseLimitFor: aggression lengthens it, courtesy shortens it), also when the enemy hits back (it fights only who
-// attacks it). O(1) unless `target` is the chased one
-bool ChaseEnds(PlayerbotAI* botAI, Unit* target);
-// EnemyPlayerValue::Calculate and InvalidTargetValue ("current target"): whether this bot, starting by the rules,
-// leaves `unit` alone (neither picks nor keeps it as its target): it retreated from the fight it is in, it disengages,
-// or its chase of `unit` just ended; never an enemy attacking it (self-defence). A player's pet counts as its owner's
-// side: leaving the player alone leaves its pets alone unless they attack the bot
+// EnemyPlayerValue::Calculate, MayEnter and InvalidTargetValue ("current target"): whether this bot, starting by the
+// rules, leaves `unit` alone (neither picks nor keeps it as its target): it left its fight by its enthusiasm (WP24)
+// and neither `unit` nor `unit`'s owner player attacks it (victim or selected target: the bot or its pet); it answers
+// whoever does. O(1) for a bot that has not left
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
-// DropTargetAction: whether this bot, dropping `target` because it leaves it alone or its chase of it ended, calls its
-// pet off too (the pet attacks `target`'s side). O(1)
+// DropTargetAction: whether this bot, dropping `target` because it leaves it alone, calls its pet off too (the pet
+// attacks `target`'s side). O(1)
 bool CallsPetOff(PlayerbotAI* botAI, Unit* target);
-// The "world pvp retreat" trigger: whether this bot retreats (or disengages) by the rules now; (x, y): the place its
-// fight memory keeps for it (the flight itself, FleeAttackersAction, runs from its attackers)
-bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y);
+// The "world pvp retreat" trigger (O(1), cached): the bot left its fight by its enthusiasm and an enemy player attacks
+// it, so it flees (FleeAttackersAction runs from its attackers)
+bool LeavesFlee(PlayerbotAI* botAI);
+// The leave (FightEnthusiasm.cpp): the bot stops attacking, no victim, no current target, no selection
+void DropFightTarget(PlayerbotAI* botAI, Player* bot);
 
 struct GhostPlan;
 // FindCorpseAction and ReviveFromCorpseAction, the ghost's map thread (PlanGhost in FightRules.h): a persistent ghost

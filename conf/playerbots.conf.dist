@@ -2288,10 +2288,9 @@ Playerbots.WorldPvp.JoinYards = 60
 # side's share of the strength it sees to be 0.5 + OddsCaution x its caution (-1..+1) for its full start chance.
 # A bystander joins a fight with Join.Base x (1 + Join.Aggression x aggression) x (1 + Join.Helpfulness x
 # helpfulness, when its side is losing or a player of its faction is the target) x (1 - Join.Goal x the value of
-# its current goal, 0..1); bad odds lower it by caution. A participant retreats (Ending a fight, below) when its
-# health is below Retreat.HealthPercent x (1 + Retreat.CautionHealth x caution) while its side's share of the
-# strength it sees is below Retreat.Odds + Retreat.CautionOdds x caution, never above 0.5 (never while its side is
-# ahead). A value out of range keeps the default. (Ranges: OddsCaution 0-0.5; the Join weights 0-1;
+# its current goal, 0..1); bad odds lower it by caution. The Retreat weights no longer act since WP24 (a bot leaves
+# a fight by its enthusiasm: Enthusiasm's thresholds, below); they stay until the old rules are removed. A value out
+# of range keeps the default. (Ranges: OddsCaution 0-0.5; the Join weights 0-1;
 # Retreat.CautionHealth 0-1; Retreat.CautionOdds 0-0.5.) Defaults: 0.12, 0.4, 0.75, 0.75, 0.75, 0.5, 0.1
 Playerbots.WorldPvp.OddsCaution = 0.12
 Playerbots.WorldPvp.Join.Base = 0.4
@@ -2301,18 +2300,12 @@ Playerbots.WorldPvp.Join.Goal = 0.75
 Playerbots.WorldPvp.Retreat.CautionHealth = 0.5
 Playerbots.WorldPvp.Retreat.CautionOdds = 0.1
 
-# Ending a fight (persistent bots in the open world). A participant that starts fights by the rules retreats when
-# its health is low and its side is losing by what it sees (the retreat lines above, Retreat.HealthPercent and
-# Retreat.Odds): it drops its target, moves away from the enemies for 15 s (it waits while it cannot move and gives
-# the retreat up only when every direction is blocked) and does not rejoin that fight (it still defends itself). A
-# winner chasing a retreated enemy stops ChaseSeconds after the enemy's retreat or ChaseYards beyond the fight's
-# radius, both x (1 + 0.5 x aggression - 0.5 x courtesy), also when the enemy hits back; it calls its pet off too and
-# leaves the enemy alone for 30 s unless it attacks; a bot that comes to the fight later does not take it up. A fight
-# ends wiped as soon as one side has nobody on the map, alive and not retreated (a retreated participant still in
-# PvP combat counts: the chase is part of the fight); as timeout after NoHitSeconds without a hit between the sides
-# (its length to that hit); as stalemate after StalemateSeconds; then the bots still in PvP combat disengage (they
-# step away for 15 s). No bot starts a fight within CalmYards of where a fight ended in the last CalmMinutes (from
-# its own place; joining and self-defence still happen there). (Ranges: Retreat.HealthPercent 1-100; Retreat.Odds
+# The fight book's ends (persistent bots in the open world). Since WP24 they only write the fight's rows and move no
+# bot: a bot leaves a fight by its enthusiasm (Enthusiasm's thresholds, below), which also ends a chase; ChaseSeconds
+# and ChaseYards no longer act. A fight ends wiped as soon as one side has nobody on the map, alive and not retreated;
+# as timeout after NoHitSeconds without a hit between the sides (its length to that hit); as stalemate after
+# StalemateSeconds. No bot starts a fight within CalmYards of where a fight ended in the last CalmMinutes (from its
+# own place; joining and self-defence still happen there). (Ranges: Retreat.HealthPercent 1-100; Retreat.Odds
 # 0-0.5; ChaseSeconds 0-600; ChaseYards 0-2000; NoHitSeconds 1-600; StalemateSeconds 1-86400; CalmYards 0-2000.)
 # Defaults: 30, 0.5, 15, 40, 30, 300, 200
 Playerbots.WorldPvp.Retreat.HealthPercent = 30
@@ -2328,8 +2321,9 @@ Playerbots.WorldPvp.CalmYards = 200
 # when its nearest attacker got no farther from it for Flee.CorneredSeconds (the best distance so far, in steps of
 # 1 yd: a bot that cannot shake a pursuer turns and fights; the time it cannot move, rooted or stunned, does not
 # count, and the measure starts again when it can move); or by its bound after Flee.BoundSeconds. After cornered or
-# the bound it stands and fights and does not flee again in that PvP combat. (Ranges: EscapeYards 1-2000;
-# CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
+# the bound it stands and fights and does not flee again in that PvP combat. A persistent bot in the open world flees
+# when it left its fight by its enthusiasm and an enemy player attacks it (Enthusiasm's thresholds, below).
+# (Ranges: EscapeYards 1-2000; CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
 Playerbots.Flee.EscapeYards = 40
 Playerbots.Flee.CorneredSeconds = 6
 Playerbots.Flee.BoundSeconds = 30
@@ -2376,8 +2370,12 @@ Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 # JoinFactionHelpfulness more for the most helpful bot (none for the least); - JoinGroupAttacked
 # when it attacks a member of the bot's group; + JoinGraveyard within GraveyardYards of a graveyard or spirit healer;
 # from - JoinBalanceMax when the bot's side clearly leads to + JoinBalanceMax when it is clearly behind. An engaged
-# bot leaves the fight when its enthusiasm falls below its flee threshold: FleeBase + FleeCaution x caution (below 0
-# it never flees), FleeGroupHold lower while a living member of its group within GroupHoldYards yd is engaged.
+# bot (in PvP combat, or holding an enemy player as its target) leaves the fight when its enthusiasm falls below its
+# flee threshold: FleeBase + FleeCaution x caution (below 0 it never flees), FleeGroupHold lower while a living
+# member of its group within GroupHoldYards yd is in PvP combat (the hold fades as members flee or die). Leaving, it
+# drops its target and calls its pet off; it flees (Flee.*, above) when an enemy player attacks it, else it resumes
+# what it was doing; it leaves alone every enemy player that does not attack it until its PvP combat ends. A bot
+# with a real master never leaves.
 # (Ranges: all points 0-1000; AggressionJoinFactor 0-1; GroupHoldYards 0-2000.) Defaults: 60, 40, 0.25, 20, 30, 15,
 # 50, 40, 30, 15, 20, 15, 40
 Playerbots.WorldPvp.Enthusiasm.JoinBase = 60

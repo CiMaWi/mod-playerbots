@@ -6,7 +6,9 @@
 
 // Standalone check of a bot's enthusiasm as its AI holds it (src/Ai/World/Pvp/FightEnthusiasm.h, WP23): the seed, the
 // engaged edges and a new balance settle with the old state first, a bot enters only when MayJoin and not MustLeave,
-// the scan skip, the pick, the one-off edits and the entering row's terms. Build (Git Bash, module root):
+// the scan skip, the pick, the one-off edits, the entering row's terms and the leaving (WP24: engaged by a held target,
+// the group hold, the leave check once per episode, the chase, the stalemate, who is left alone, no re-entry). Build
+// (Git Bash, module root):
 //   clang-cl /nologo /std:c++20 /EHsc /W4 /WX /Od /I src/Ai/World/Pvp tests/fight-enthusiasm-selftest.cpp
 #include <cmath>
 #include <cstdint>
@@ -124,13 +126,23 @@ void TestSkip()
     Check(Near(bot.lowestJoin, LowestJoinThreshold(0.0f, 0.0f, v)) && Near(bot.flee, 15.0f),
           "skip: the cached thresholds of the traits");
     Check(SkipsScan(bot, 0, v), "skip: below the flee threshold the bot can enter nothing");
+    NewGroup(bot, true, 0, v);
+    Check(Near(bot.fleeNow, 0.0f) && !SkipsScan(bot, 0, v), "skip: a group member's fight lowers it, the bot scans");
+    Check(!GroupDue(bot, BALANCE_REFRESH_MS - 1) && GroupDue(bot, BALANCE_REFRESH_MS),
+          "skip: the group hold is read again at the balance's cadence");
+    NewGroup(bot, false, 0, v);
     bot.state.value = 15.0;
     Check(!SkipsScan(bot, 0, v), "skip: at the flee threshold, above the lowest join, it scans");
-    // Cautious: flee 35 above an aggressive bot's lowest join; the skip uses the higher
+    // Cautious: flee 35 (20 with the group hold) above an aggressive bot's lowest join; the skip uses the higher of
+    // the lowest join and the flee threshold as it holds now
     BotEnthusiasm cautious = At(30.0, 0);
     NewTraits(cautious, 1.0f, 1.0f, 0.0f, 0.0f, 0, v);
-    Check(cautious.lowestJoin < 30.0f && Near(cautious.flee, 35.0f) && SkipsScan(cautious, 0, v),
+    Check(cautious.lowestJoin < 30.0f && Near(cautious.flee, 35.0f) && Near(cautious.fleeLowest, 20.0f) &&
+              SkipsScan(cautious, 0, v),
           "skip: the higher of the lowest join and the flee threshold");
+    NewGroup(cautious, true, 0, v);
+    Check(!SkipsScan(cautious, 0, v) && Enters(30.0, cautious.lowestJoin, cautious.fleeNow),
+          "skip: with the group hold the same value scans and may enter");
     // An open pick keeps the scan
     SetPick(bot, 7, 0);
     bot.state.value = 0.0;
@@ -204,6 +216,136 @@ void TestTerms()
         Check(greenOk && graveOk && balanceOk && ongoingOk, "terms: bits match the rows, case " + std::to_string(mask));
     }
 }
+BotEnthusiasm Engaged(double value, float caution, uint32_t nowMs, EnthusiasmValues const& v)
+{
+    BotEnthusiasm bot = At(value, nowMs);
+    NewTraits(bot, 0.0f, caution, 0.0f, 0.0f, nowMs, v);
+    Observe(bot, true, nowMs, v);
+    return bot;
+}
+
+// Flagged first: a bot chasing a runner out of reach has no combat references, yet holding it as its victim keeps it
+// engaged, so it drains, leaves once below its flee threshold and does not take the runner up again
+void TestChase()
+{
+    EnthusiasmValues const v = Defaults();
+    Check(EngagedBy(true, false, true) && EngagedBy(true, true, false) && !EngagedBy(true, false, false) &&
+              !EngagedBy(false, true, true),
+          "engaged: PvP combat or a held enemy player, open world only");
+    BotEnthusiasm bot = At(18.0, 0);  // flee 15, 3 above
+    NewTraits(bot, 0.0f, 0.0f, 0.0f, 0.0f, 0, v);
+    Check(Observe(bot, EngagedBy(true, false, true), 0, v) && bot.engaged, "chase: holding the runner engages it");
+    Check(!Leaves(bot, ValueAt(bot, 8 * SECOND, v), true, true), "chase: above the threshold, it chases");
+    double const later = ValueAt(bot, 10 * SECOND, v);
+    Check(later < 15.0 && Leaves(bot, later, true, true), "chase: drained below the flee threshold, it leaves");
+    MarkLeft(bot, false, 10 * SECOND);
+    Check(bot.left && !bot.attacked && bot.leftMs == 10 * SECOND && !FleesNow(bot),
+          "chase: not attacked, it resumes (no flight)");
+    Check(!Leaves(bot, ValueAt(bot, 11 * SECOND, v), true, true), "chase: once per engaged episode");
+    Check(LeftAloneBy(bot, false), "chase: the runner that does not attack it is left alone");
+    // The target dropped: nothing holds it engaged; the edge clears the leave
+    Check(Observe(bot, EngagedBy(true, false, false), 12 * SECOND, v) && !bot.engaged && !bot.left,
+          "chase: the disengaged edge clears the leave");
+    Check(!Enters(ValueAt(bot, 13 * SECOND, v), LowestJoinThreshold(0.0f, 0.0f, v), bot.fleeNow) &&
+              SkipsScan(bot, 13 * SECOND, v),
+          "chase: a left bot is not re-picked by the scan (below its flee threshold)");
+}
+
+// Flagged first: two bots that take no damage both drain; the first to leave is still attacked and flees, the second
+// leaves too, and then neither attacks or takes up the other
+void TestStalemate()
+{
+    EnthusiasmValues const v = Defaults();
+    BotEnthusiasm a = Engaged(17.0, 0.0f, 0, v);
+    BotEnthusiasm b = Engaged(20.0, 0.0f, 0, v);
+    uint32_t const aLeaves = 7 * SECOND;  // 17 - 20 x 7/60 = 14.67
+    Check(Leaves(a, ValueAt(a, aLeaves, v), true, true) && !Leaves(b, ValueAt(b, aLeaves, v), true, true),
+          "stalemate: the lower one leaves first");
+    MarkLeft(a, true, aLeaves);  // b still attacks it
+    Check(FleesNow(a) && !LeftAloneBy(a, true), "stalemate: attacked, it flees and still answers b");
+    uint32_t const bLeaves = 16 * SECOND;  // 20 - 5.33 = 14.67
+    Check(Leaves(b, ValueAt(b, bLeaves, v), true, true), "stalemate: the other one leaves at its threshold");
+    MarkLeft(b, false, bLeaves);  // a dropped its target at its leave
+    a.attacked = false;           // b dropped its target: the next refresh reads no attacker
+    Check(!FleesNow(a) && !FleesNow(b) && LeftAloneBy(a, false) && LeftAloneBy(b, false),
+          "stalemate: neither attacks, each leaves the other alone");
+    Observe(a, false, bLeaves + 5 * SECOND, v);
+    Observe(b, false, bLeaves + 5 * SECOND, v);
+    float const lowestJoin = LowestJoinThreshold(0.0f, 0.0f, v);
+    Check(!Enters(ValueAt(a, bLeaves + 25 * SECOND, v), lowestJoin, a.fleeNow) &&
+              !Enters(ValueAt(b, bLeaves + 25 * SECOND, v), lowestJoin, b.fleeNow),
+          "stalemate: 20 s later neither enters on the other again");
+}
+
+void TestLeave()
+{
+    EnthusiasmValues const v = Defaults();
+    BotEnthusiasm bot = Engaged(10.0, 0.0f, 0, v);
+    Check(Leaves(bot, 10.0, true, true), "leave: engaged below the flee threshold");
+    Check(!Leaves(bot, 10.0, false, true), "leave: not dead");
+    Check(!Leaves(bot, 10.0, true, false), "leave: not a bot that does not start by the rules");
+    Check(!Leaves(bot, 15.0, true, true), "leave: at the threshold it stays (MustLeave is strict)");
+    bot.realMaster = true;
+    Check(!Leaves(bot, 10.0, true, true), "leave: a bot with a real master never leaves");
+    bot.realMaster = false;
+    BotEnthusiasm idle = At(10.0, 0);
+    NewTraits(idle, 0.0f, 0.0f, 0.0f, 0.0f, 0, v);
+    Check(!Leaves(idle, 10.0, true, true), "leave: not engaged, nothing to leave");
+    MarkLeft(bot, true, SECOND);
+    Check(bot.left && FleesNow(bot) && !Leaves(bot, 0.0, true, true), "leave: attacked it flees; once per episode");
+    Check(LeftAloneBy(bot, false) && !LeftAloneBy(bot, true) && !LeftAloneBy(idle, false),
+          "leave: left alone exactly who does not attack a bot that left");
+    Check(!Observe(bot, true, 2 * SECOND, v) && bot.left, "leave: no edge, the leave holds");
+    Check(Observe(bot, false, 3 * SECOND, v) && !bot.left && !bot.attacked && !FleesNow(bot),
+          "leave: the disengaged edge clears it");
+    Observe(bot, true, 4 * SECOND, v);
+    Check(Leaves(bot, ValueAt(bot, 4 * SECOND, v), true, true), "leave: a new engaged episode checks again");
+    // A kill while left does not undo the leave
+    MarkLeft(bot, false, 4 * SECOND);
+    EditBy(bot, EditCause::Kill, 5 * SECOND, v);
+    Check(bot.left, "leave: a kill edit leaves the leave alone");
+    // A flee threshold of 0 or below never fires: the value stops at 0
+    BotEnthusiasm daring = Engaged(0.0, -1.0f, 0, v);
+    Check(Near(daring.fleeNow, -5.0f) && !Leaves(daring, ValueAt(daring, HOUR, v), true, true),
+          "leave: Caution -1 (threshold -5) never leaves");
+    BotEnthusiasm held = Engaged(0.0, 0.0f, 0, v);
+    NewGroup(held, true, 0, v);
+    Check(Near(held.fleeNow, 0.0f) && !Leaves(held, ValueAt(held, HOUR, v), true, true),
+          "leave: Caution 0 with the group hold (threshold 0) never leaves");
+}
+
+void TestGroup()
+{
+    EnthusiasmValues const v = Defaults();
+    GroupMember member;
+    member.alive = true;
+    member.engaged = true;
+    member.yards = 40.0f;
+    Check(GroupMemberHolds(member, v), "group: a living engaged member within 40 yd holds");
+    member.yards = 40.5f;
+    Check(!GroupMemberHolds(member, v), "group: farther than 40 yd it does not");
+    member.yards = 10.0f;
+    member.alive = false;
+    Check(!GroupMemberHolds(member, v), "group: a dead member does not (its death ends the hold at once)");
+    member.alive = true;
+    member.engaged = false;
+    Check(!GroupMemberHolds(member, v), "group: a member whose PvP combat lapsed does not");
+    // The bot stays while its member fights, and leaves once the hold fades
+    BotEnthusiasm bot = Engaged(8.0, 0.0f, 0, v);
+    Check(Near(bot.flee, 15.0f) && Near(bot.fleeLowest, 0.0f) && Near(bot.fleeNow, 15.0f),
+          "group: plain 15, held 0, now plain");
+    NewGroup(bot, true, 0, v);
+    Check(Near(bot.fleeNow, 0.0f) && !Leaves(bot, 8.0, true, true), "group: held, below the plain threshold it stays");
+    float const lowestJoin = LowestJoinThreshold(0.0f, 0.0f, v);
+    Check(Enters(8.0, lowestJoin, bot.fleeNow) && !Enters(8.0, lowestJoin, bot.flee),
+          "group: the entering check uses the threshold as it holds now");
+    NewGroup(bot, false, SECOND, v);
+    Check(Near(bot.fleeNow, 15.0f) && Leaves(bot, 8.0, true, true), "group: the hold faded, it leaves");
+    // A trait change keeps the hold
+    NewGroup(bot, true, 2 * SECOND, v);
+    NewTraits(bot, 0.0f, 1.0f, 0.0f, 0.0f, 0, v);
+    Check(Near(bot.flee, 35.0f) && Near(bot.fleeNow, 20.0f), "group: new traits keep the cached hold");
+}
 }  // namespace
 
 int main()
@@ -215,6 +357,10 @@ int main()
     TestSkip();
     TestEdits();
     TestTerms();
+    TestChase();
+    TestStalemate();
+    TestLeave();
+    TestGroup();
     std::printf("fight-enthusiasm-selftest: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }
