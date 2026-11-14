@@ -7,7 +7,11 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
+#include <array>
 #include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "BankMailState.h"
@@ -18,12 +22,10 @@
 #include "Strategy.h"
 #include "Timer.h"
 #include "TravelLegRules.h"
+#include "TravelLifecycle.h"
 #include "TravelMgr.h"
+#include "TravelProgress.h"
 #include "WorldTravelRules.h"
-
-#include <array>
-#include <string>
-#include <unordered_map>
 
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
@@ -106,12 +108,10 @@ struct NewRpgInfo
         WorldPosition dest{};
         TravelLegs::Trip trip;        // the route's legs and the place on them; no legs: a route is due
         TravelLegs::RouteWait route;  // the route request waited for
-        bool stuck{false};            // MoveFarTo gave the current waypoint up (instead of going IDLE)
-        bool offMesh{false};          // that give-up found the bot off the mesh: the leg fails, the trip ends
+        TravelProgress::State progress;
         uint32 failedMs{0};           // the last failed leg: the new route is asked for REPLAN_DELAY_MS later
         float estimateSeconds{0.0f};  // the first route's
         uint32 tripStartMs{0};
-        uint32 routeStartMs{0};  // the current route's start and estimate: the trip's deadline
         float routeSeconds{0.0f};
         std::string place;  // a GM order's place (`playerbots route go`): its first route is logged
         bool bindInn{false};   // an inn errand: at the end the bot binds at the innkeeper in front of it
@@ -120,6 +120,24 @@ struct NewRpgInfo
         uint32 tripId{0};      // the world log's trip id (WL7)
         // A transport leg's last scan (TravelLegs::TRANSPORT_SCAN_MS)
         uint32 transportScanMs{0};
+        std::optional<TravelLifecycle::PassengerMotion> passengerMotion;
+
+        TravelRoute::Leg const* CurrentLeg() const
+        {
+            return trip.legIdx < trip.legs.size() ? &trip.legs[trip.legIdx] : nullptr;
+        }
+
+        bool HasWalkTarget() const
+        {
+            auto const* leg = CurrentLeg();
+            return leg ? leg->type == TravelRoute::LegType::Walk : bindInn;
+        }
+
+        bool PassengerOwnsProgress() const
+        {
+            auto const* leg = CurrentLeg();
+            return passengerMotion || trip.offFirst.sinceMs || (leg && leg->type == TravelRoute::LegType::Transport);
+        }
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
     // every errand assigned there: sell, buy (a bag by worth, the shopping list) and repair at its vendor, turn in
@@ -136,6 +154,7 @@ struct NewRpgInfo
         uint32 vendorEntry{0};   // the vendor of this stop; 0 = none
         uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
         bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
+        bool trainerWeapon{false};  // a weapon master (WU15a)
         std::vector<ErrandTurnIn> turnIns;
         // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
         // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the
@@ -239,8 +258,13 @@ struct NewRpgInfo
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);
     void Reset();
+    void ResetState(bool farTeleport);
     void SetMoveFarTo(WorldPosition pos);
     std::string ToString();
+
+private:
+    void DiscardPassengerMove();
+    void ReplaceStatus(RpgData replacement);
 };
 
 enum class QuestDropReason : uint8

@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -170,6 +171,39 @@ uint32 FitRaces(uint32 spellId, uint8 cls)
     return races;
 }
 
+// The weapon skill line a trainer spell teaches (WU15a): its learn-skill effect (the skill Player::_addSpell sets),
+// else its skill line ability, when that line is of the weapon category; 0 = none (a profession or riding spell)
+uint32 WeaponSkillOf(uint32 spellId)
+{
+    uint32 skill = 0;
+    if (SpellLearnSkillNode const* learn = sSpellMgr->GetSpellLearnSkill(spellId))
+        skill = learn->skill;
+    else
+    {
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        if (bounds.first != bounds.second)
+            skill = bounds.first->second->SkillLine;
+    }
+    SkillLineEntry const* line = skill ? sSkillLineStore.LookupEntry(skill) : nullptr;
+    return line && line->categoryId == SKILL_CATEGORY_WEAPON ? skill : 0;
+}
+
+// A weapon skill spell's facts: the races per class the trainer's own test lets learn it (FitRaces) whose class and
+// race have the skill line at all (SkillRaceClassInfo: a mage never learns maces)
+WeaponSkillFacts WeaponFacts(uint32 spellId, uint32 skill)
+{
+    WeaponSkillFacts facts{skill, spellId, {}};
+    for (uint8 cls = 1; cls < UPKEEP_CLASS_SLOTS; ++cls)
+    {
+        uint32 skillRaces = 0;
+        for (uint8 race = 1; race < UPKEEP_RACE_SLOTS; ++race)
+            if (GetSkillRaceClassInfo(skill, race, cls))
+                skillRaces |= 1u << (race - 1);
+        facts.races[cls] = skillRaces ? FitRaces(spellId, cls) & skillRaces : 0;
+    }
+    return facts;
+}
+
 // World thread, at startup: plain copies only, so the worker never reads the core's stores (`.reload` changes them)
 UpkeepGather GatherUpkeep()
 {
@@ -229,6 +263,10 @@ UpkeepGather GatherUpkeep()
                     facts.spells.push_back(copy);
                     if (classTrainer)
                         AddReagents(spell.SpellId, static_cast<uint8>(facts.requirement), input.reagents);
+                    // Weapon masters are tradeskill trainers; their weapon skill spells (WU15a)
+                    if (facts.kind == TrainerKind::Tradeskill)
+                        if (uint32 const skill = WeaponSkillOf(spell.SpellId))
+                            input.weaponSkills.push_back(WeaponFacts(spell.SpellId, skill));
                     // Class trainers teach their class; riding trainers any class
                     if (classTrainer || facts.kind == TrainerKind::Mount)
                     {
@@ -291,6 +329,21 @@ std::string ClassCounts(UpkeepStats const& s)
     return text;
 }
 
+// Each weapon skill line with the classes that may learn it (a bit per class id - 1, any race)
+std::string WeaponCounts(UpkeepIndex const& index)
+{
+    std::string text;
+    for (WeaponSkill const& weapon : index.weaponSkills)
+    {
+        uint32 classes = 0;
+        for (std::size_t cls = 1; cls < UPKEEP_CLASS_SLOTS; ++cls)
+            if (weapon.races[cls])
+                classes |= 1u << (cls - 1);
+        text += Acore::StringFormat("{}{}:{:#x}", text.empty() ? "" : " ", weapon.skill, classes);
+    }
+    return text;
+}
+
 std::string KindCounts(UpkeepStats const& s)
 {
     std::string text;
@@ -298,6 +351,21 @@ std::string KindCounts(UpkeepStats const& s)
         text += Acore::StringFormat("{}{} {} vendors / {} items", text.empty() ? "" : ", ", UPKEEP_STOCK_NAMES[kind],
                                     s.vendors[kind], s.items[kind]);
     return text;
+}
+
+// A weapon it wields or carries, by the skill line it needs, once each (WU15a); one its class can never use is none
+void AddWeapon(Snapshot& snapshot, Player* bot, Item const* item)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto || proto->Class != ITEM_CLASS_WEAPON || !(proto->AllowableClass & bot->getClassMask()))
+        return;
+    uint32 const skill = proto->GetSkill();
+    if (!skill || skill > std::numeric_limits<uint16>::max())
+        return;
+    for (OwnedWeapon const& owned : snapshot.ownedWeaponSkills)
+        if (owned.skill == skill)
+            return;
+    snapshot.ownedWeaponSkills.push_back({static_cast<uint16>(skill), bot->GetSkillValue(skill) > 0});
 }
 
 void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, uint8 cls)
@@ -406,9 +474,11 @@ void StartUpkeepIndex()
                 LOG_INFO("playerbots",
                          "Upkeep index built in {} ms on a worker: trainers {}; class spells: {}; vendors per kind: "
                          "{}; {} class reagent items, {} currency-only rows skipped, {} duplicate trainers, {} spell "
-                         "conflicts, about {:.2f} MB (estimate)",
+                         "conflicts; {} weapon skills at {} weapon masters (skill:classes {}), about {:.2f} MB "
+                         "(estimate)",
                          s.buildMs, TrainerCounts(s), ClassCounts(s), KindCounts(s), s.reagentItems, s.currencyOnly,
-                         s.duplicateTrainers, s.spellConflicts, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                         s.duplicateTrainers, s.spellConflicts, s.weaponSkills, s.weaponMasters, WeaponCounts(*index),
+                         static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 upkeepBook.Publish(std::move(index));
                 upkeepState.store(UpkeepIndexState::Ready, std::memory_order_release);
             }
@@ -490,6 +560,18 @@ void FillReagentFree(Player* bot, UpkeepIndex const& index, TrainerList const& l
 }
 }  // namespace
 
+bool WeaponToLearn(Player* bot, ItemTemplate const* proto)
+{
+    if (!proto || proto->Class != ITEM_CLASS_WEAPON || !(proto->AllowableClass & bot->getClassMask()))
+        return false;
+    uint32 const skill = proto->GetSkill();
+    if (!skill || bot->GetSkillValue(skill) > 0)
+        return false;
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    WeaponSkill const* weapon = index ? index->Weapon(skill) : nullptr;
+    return weapon && weapon->Fits(bot->getClass(), bot->getRace()) && weapon->reqLevel <= bot->GetLevel();
+}
+
 void FillUpkeep(Player* bot, Snapshot& snapshot)
 {
     auto const started = std::chrono::steady_clock::now();
@@ -512,15 +594,25 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(ammo))
             snapshot.ammoDamage = AmmoDamage(proto);
 
-    // Every bag counts: quivers, ammo pouches and soul bags hold stock too
+    // Every bag counts: quivers, ammo pouches and soul bags hold stock too; the bag walk also takes the weapons
+    for (EquipmentSlots const slot : {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED})
+        AddWeapon(snapshot, bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
         if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+        {
             AddStock(snapshot, index.get(), item, cls);
+            AddWeapon(snapshot, bot, item);
+        }
     for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
         if (Bag const* bag = bot->GetBagByPos(bagSlot))
             for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
                 if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
+                {
                     AddStock(snapshot, index.get(), item, cls);
+                    AddWeapon(snapshot, bot, item);
+                }
+    std::sort(snapshot.ownedWeaponSkills.begin(), snapshot.ownedWeaponSkills.end(),
+              [](OwnedWeapon const& a, OwnedWeapon const& b) { return a.skill < b.skill; });
 
     if (index)
     {

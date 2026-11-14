@@ -35,6 +35,8 @@ public:
 protected:
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);
+    bool MoveFarToImpl(WorldPosition dest);
+    bool GiveUpMove(WorldPosition const& dest);  // true if the bot was off the mesh
     // Records the Stuck event (cause, status, bot and destination) when MoveFarTo gives a destination up
     WorldTravel::StuckCause RecordStuck(WorldPosition const& dest);
     // The bot on the ground stands where no walkable poly is near (NavMeshSnap); false when the mesh cannot tell

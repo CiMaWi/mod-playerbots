@@ -37,11 +37,12 @@ enum class ErrandKind : uint8_t
     Shop,
     Train,
     Ride,
+    Weapon,        // a weapon skill at a weapon master (WU15a)
     Mail,          // the bank-mail plan (WB8)
     BankWithdraw,  // due items from the bank
     BankDeposit    // kept items into the bank
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 12;
+constexpr uint8_t ERRAND_KIND_COUNT = 13;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -65,6 +66,8 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "train";
         case ErrandKind::Ride:
             return "ride";
+        case ErrandKind::Weapon:
+            return "weapon";
         case ErrandKind::Mail:
             return "mail";
         case ErrandKind::BankWithdraw:
@@ -85,6 +88,9 @@ constexpr uint32_t SERVICE_FLIGHT_MASTER = 1u << 4;
 constexpr uint32_t SERVICE_TRAINER = 1u << 5;         // teaches the bot's class spells
 constexpr uint32_t SERVICE_RIDING_TRAINER = 1u << 6;  // teaches the riding rank the bot buys
 constexpr uint32_t SERVICE_MOUNT_VENDOR = 1u << 7;    // sells that rank's mount for the bot's race
+constexpr uint32_t SERVICE_WEAPON_MASTER = 1u << 10;  // teaches the weapon skill the bot learns (WU15a)
+// A stop has one trainer to visit: a stop with any of these keeps its own
+constexpr uint32_t TRAINER_SERVICES = SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER;
 // A vendor that sells the bot a consumable stock kind: the kind's bit (UpkeepNeeds' StockBit) from this bit on
 constexpr uint32_t SERVICE_STOCK_SHIFT = 24;
 
@@ -94,6 +100,23 @@ constexpr uint32_t StockServices(uint8_t stockKinds)
 }
 constexpr uint32_t SERVICE_MAILBOX = 1u << 8;
 constexpr uint32_t SERVICE_BANKER = 1u << 9;
+// Every service has a bit of its own: two services merged onto one bit fail here
+constexpr uint32_t SERVICE_BITS[] = {SERVICE_QUEST_ENDER,    SERVICE_VENDOR,        SERVICE_REPAIR,
+                                     SERVICE_INNKEEPER,      SERVICE_FLIGHT_MASTER, SERVICE_TRAINER,
+                                     SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,  SERVICE_WEAPON_MASTER,
+                                     SERVICE_MAILBOX,        SERVICE_BANKER};
+constexpr bool ServiceBitsDistinct()
+{
+    uint32_t seen = 0;
+    for (uint32_t const bit : SERVICE_BITS)
+    {
+        if ((seen & bit) || bit >= (1u << SERVICE_STOCK_SHIFT))
+            return false;
+        seen |= bit;
+    }
+    return true;
+}
+static_assert(ServiceBitsDistinct(), "two errand services share a bit");
 // Unopened mail alone is worth at most this share of a usual trip's minutes at the earning rate, so it never pays a
 // detour (a detour costs at least that trip's minutes) yet still joins any stop with a mailbox (WB.4)
 constexpr float UNOPENED_MAIL_TRIP_SHARE = 0.5f;
@@ -192,6 +215,12 @@ struct RidingAt
     bool Learn = true;         // the rank is to learn; false: the rank is known, only its mount is missing
 };
 
+// The weapon skill the bot learns (UpkeepNeeds' weapon need whose funded gold pays it, WU15a); Spell 0 = none
+struct WeaponAt
+{
+    uint32_t Spell = 0;
+};
+
 // What the providers read: filled on the bot's map thread, never a Player
 struct ErrandSnapshot
 {
@@ -226,6 +255,7 @@ struct ErrandSnapshot
     uint8_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
     TrainingAt Training;
     RidingAt Riding;  // one rank per trip, the lowest
+    WeaponAt Weapon;  // one weapon skill per trip
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -352,6 +382,21 @@ inline void ProvideRiding(ErrandSnapshot const& snapshot, std::vector<ErrandOffe
 
     offer.Service = SERVICE_MOUNT_VENDOR;
     offer.Target = snapshot.Riding.MountVendor;
+    offers.push_back(offer);
+}
+
+// A weapon skill (§3.7, WU15a): one trip to a weapon master that teaches it; due once the gold pays it
+inline void ProvideWeaponMaster(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Weapon.Spell)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Weapon;
+    offer.Service = SERVICE_WEAPON_MASTER;
+    offer.WorthCopper = DueWorth(snapshot.Rates);
+    offer.Id = snapshot.Weapon.Spell;
+    offer.Due = true;
     offers.push_back(offer);
 }
 
@@ -489,6 +534,7 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::Shop, "shop", &ProvideShopping},
         {ErrandKind::Train, "train", &ProvideTraining},
         {ErrandKind::Ride, "ride", &ProvideRiding},
+        {ErrandKind::Weapon, "weapon", &ProvideWeaponMaster},
     };
     return rows;
 }
@@ -559,12 +605,13 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
 
 // A stop with a trainer within STOP_JOIN_YARDS takes the training of that trainer, as an errand place within that
 // distance is done at the stop: the stop gets the trainer service and the trainer's entry (the bot walks the few yards
-// on arrival). The first trainer in the order given wins; a stop that already has one, or is a trainer's own, keeps it
+// on arrival). The first trainer in the order given wins; a stop that already has one, or is a trainer's own (of any
+// trainer service), keeps it
 inline void JoinTrainers(std::vector<ServiceStop>& stops, std::vector<ServiceStop> const& trainers, uint32_t service)
 {
     for (ServiceStop& stop : stops)
     {
-        if (stop.Trainer || (stop.Services & service))
+        if (stop.Trainer || (stop.Services & (service | TRAINER_SERVICES)))
             continue;
 
         for (ServiceStop const& trainer : trainers)

@@ -22,12 +22,14 @@
 #include <variant>
 
 #include "Chat.h"
+#include "ConditionMgr.h"
 #include "DBCStores.h"
 #include "GameObjectData.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "GoalModelLog.h"
 #include "Log.h"
+#include "NeedGoalBridge.h"
 #include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -45,6 +47,10 @@
 #include "QuestIndex.h"
 #include "QuestLevelRules.h"
 #include "QuestStats.h"
+#include "QuestUseRules.h"
+#include "SmartScriptMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "World.h"
@@ -259,6 +265,7 @@ QuestRecord RecordOf(Quest const* quest)
     record.xpBase = quest->XPValue(at);
     record.copperReward = quest->GetRewOrReqMoney(at);
     record.prev = quest->GetPrevQuestId();
+    record.prevAny.assign(quest->prevQuests.begin(), quest->prevQuests.end());
     record.next = quest->GetNextQuestId();
     record.nextInChain = quest->GetNextQuestInChain();
     record.exclusiveGroup = quest->GetExclusiveGroup();
@@ -280,6 +287,200 @@ QuestRecord RecordOf(Quest const* quest)
             record.objectives.push_back(
                 {ObjectiveKind::Item, quest->RequiredItemId[i], quest->RequiredItemCount[i], POI_FIRST_ITEM + i, {}});
     return record;
+}
+
+// What a spell can take: its explicit target mask and its effects' implicit targets
+uint8 UseTargetsOf(SpellInfo const& info)
+{
+    uint8 targets = 0;
+    uint32 const mask = info.GetExplicitTargetMask();
+    if (mask & TARGET_FLAG_UNIT_MASK)
+        targets |= UseTarget::UNIT;
+    if (mask & TARGET_FLAG_GAMEOBJECT_MASK)
+        targets |= UseTarget::OBJECT;
+    if ((mask & TARGET_FLAG_CORPSE_MASK) || (info.AttributesEx2 & SPELL_ATTR2_ALLOW_DEAD_TARGET))
+        targets |= UseTarget::DEAD;
+    for (SpellEffectInfo const& effect : info.GetEffects())
+    {
+        if (!effect.IsEffect())
+            continue;
+        for (SpellImplicitTargetInfo const& target : {effect.TargetA, effect.TargetB})
+            switch (target.GetObjectType())
+            {
+                case TARGET_OBJECT_TYPE_UNIT:
+                case TARGET_OBJECT_TYPE_UNIT_AND_DEST:
+                    targets |= target.GetTarget() == TARGET_UNIT_CASTER ? UseTarget::SELF : UseTarget::UNIT;
+                    break;
+                case TARGET_OBJECT_TYPE_GOBJ:
+                case TARGET_OBJECT_TYPE_GOBJ_ITEM:
+                    targets |= UseTarget::OBJECT;
+                    break;
+                case TARGET_OBJECT_TYPE_CORPSE:
+                case TARGET_OBJECT_TYPE_CORPSE_ENEMY:
+                case TARGET_OBJECT_TYPE_CORPSE_ALLY:
+                    targets |= UseTarget::DEAD;
+                    break;
+                case TARGET_OBJECT_TYPE_SRC:
+                case TARGET_OBJECT_TYPE_DEST:
+                    targets |= UseTarget::SELF;
+                    break;
+                default:
+                    break;
+            }
+    }
+    return targets;
+}
+
+// A creature spawned lying dead (stand state or dynamic flag), as the corpses Symbol of Life and the vessels revive
+bool LooksDead(uint32 entry)
+{
+    constexpr uint32 STAND_STATE_MASK = 0xFF;
+    if (CreatureAddon const* addon = sObjectMgr->GetCreatureTemplateAddon(entry))
+        if ((addon->bytes1 & STAND_STATE_MASK) == UNIT_STAND_STATE_DEAD)
+            return true;
+    CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+    return creature && (creature->dynamicflags & UNIT_DYNFLAG_DEAD);
+}
+
+void AddNamed(UseSpell& spell, Condition const* condition)
+{
+    if (!condition || condition->NegativeCondition)
+        return;
+    if (condition->ConditionType == CONDITION_OBJECT_ENTRY_GUID && condition->ConditionValue2 &&
+        (condition->ConditionValue1 == TYPEID_UNIT || condition->ConditionValue1 == TYPEID_GAMEOBJECT))
+    {
+        bool const object = condition->ConditionValue1 == TYPEID_GAMEOBJECT;
+        uint32 const entry = condition->ConditionValue2;
+        spell.named.push_back({entry, object, !object && LooksDead(entry)});
+    }
+    else if (condition->ConditionType == CONDITION_NEAR_CREATURE && condition->ConditionValue1)
+        spell.named.push_back({condition->ConditionValue1, false,
+                               condition->ConditionValue3 != 0 || LooksDead(condition->ConditionValue1)});
+}
+
+// World thread only (GatherQuests): every quest's source items with an on-use spell; each spell's targets, the
+// creatures and objects its conditions name (source types 17 and 13), its focus objects; the objects a key item
+// unlocks; the spell-hit reactions (event 8) of kill targets and the gameobjects whose scripts, directly or through
+// an action list, summon or credit one
+void GatherUses(QuestGather& input)
+{
+    QuestUseGather& uses = input.uses;
+    std::unordered_map<uint32, std::vector<uint32>> focusObjects;
+    std::unordered_map<uint32, float> focusYards;
+    std::unordered_map<uint32, std::vector<uint32>> unlockedBy;  // key item -> gameobject templates
+    std::vector<uint32> scriptedObjects;
+    for (auto const& [entry, info] : *sObjectMgr->GetGameObjectTemplates())
+    {
+        if (info.type == GAMEOBJECT_TYPE_SPELL_FOCUS && info.spellFocus.focusId)
+        {
+            focusObjects[info.spellFocus.focusId].push_back(entry);
+            float const yards = static_cast<float>(info.spellFocus.dist);
+            auto const [it, added] = focusYards.emplace(info.spellFocus.focusId, yards);
+            if (!added)
+                it->second = std::min(it->second, yards);
+        }
+        if (uint32 const lockId = info.GetLockId())
+            if (LockEntry const* lock = sLockStore.LookupEntry(lockId))
+                for (uint32 i = 0; i < MAX_LOCK_CASE; ++i)
+                    if (lock->Type[i] == LOCK_KEY_ITEM && lock->Index[i])
+                        unlockedBy[lock->Index[i]].push_back(entry);
+        if (info.AIName == "SmartGameObjectAI")
+            scriptedObjects.push_back(entry);
+    }
+
+    std::unordered_set<uint32> gathered;
+    auto const addSpell = [&uses, &gathered, &focusObjects, &focusYards](uint32 spellId) -> bool
+    {
+        if (gathered.count(spellId))
+            return true;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info)
+            return false;
+        gathered.insert(spellId);
+        UseSpell spell;
+        spell.spellId = spellId;
+        spell.targets = UseTargetsOf(*info);
+        spell.requiresDead = info->IsRequiringDeadTarget();
+        spell.classFamily = info->SpellFamilyName != SPELLFAMILY_GENERIC;
+        spell.focusId = info->RequiresSpellFocus;
+        spell.rangeYards = info->GetMaxRange(info->IsPositive());
+        if (spell.focusId)
+            if (auto const it = focusObjects.find(spell.focusId); it != focusObjects.end())
+            {
+                spell.focusObjects = it->second;
+                std::sort(spell.focusObjects.begin(), spell.focusObjects.end());
+                spell.focusYards = focusYards[spell.focusId];
+            }
+        for (Condition const* condition :
+             sConditionMgr->GetConditionsForNotGroupedEntry(CONDITION_SOURCE_TYPE_SPELL, spellId))
+            AddNamed(spell, condition);
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (effect.ImplicitTargetConditions)
+                for (Condition const* condition : *effect.ImplicitTargetConditions)
+                    AddNamed(spell, condition);
+        std::sort(spell.named.begin(), spell.named.end(), [](UseEntry const& a, UseEntry const& b)
+                  { return std::tie(a.entry, a.isObject, a.dead) < std::tie(b.entry, b.isObject, b.dead); });
+        spell.named.erase(std::unique(spell.named.begin(), spell.named.end(), [](UseEntry const& a, UseEntry const& b)
+                                      { return a.entry == b.entry && a.isObject == b.isObject; }),
+                          spell.named.end());
+        uses.spells.push_back(std::move(spell));
+        return true;
+    };
+
+    std::unordered_set<uint32> kills;
+    for (QuestRecord const& record : input.quests)
+        for (QuestObjective const& objective : record.objectives)
+            if (objective.kind == ObjectiveKind::Kill)
+                kills.insert(objective.target);
+    for (auto const& [id, quest] : sObjectMgr->GetQuestTemplates())
+    {
+        if (!quest)
+            continue;
+        std::array<uint32, 1 + QUEST_SOURCE_ITEM_IDS_COUNT> sources{quest->GetSrcItemId()};
+        std::copy(std::begin(quest->ItemDrop), std::end(quest->ItemDrop), sources.begin() + 1);
+        std::sort(sources.begin(), sources.end());
+        for (std::size_t i = 0; i < sources.size(); ++i)
+        {
+            ItemTemplate const* item =
+                sources[i] && (!i || sources[i] != sources[i - 1]) ? sObjectMgr->GetItemTemplate(sources[i]) : nullptr;
+            if (!item)
+                continue;
+            for (auto const& use : item->Spells)
+                if (use.SpellId > 0 && use.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE &&
+                    addSpell(static_cast<uint32>(use.SpellId)))
+                {
+                    UseItem entry{id, item->ItemId, static_cast<uint32>(use.SpellId), {}};
+                    if (auto const it = unlockedBy.find(item->ItemId); it != unlockedBy.end())
+                        entry.lockObjects = it->second;
+                    std::sort(entry.lockObjects.begin(), entry.lockObjects.end());
+                    uses.items.push_back(std::move(entry));
+                }
+        }
+    }
+    for (uint32 const creature : kills)
+        for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(creature, SMART_SCRIPT_TYPE_CREATURE))
+            if (holder.event.type == SMART_EVENT_SPELLHIT && holder.event.spellHit.spell &&
+                addSpell(holder.event.spellHit.spell))
+                uses.hits.push_back({creature, holder.event.spellHit.spell});
+    auto const credit = [&uses, &kills](uint32 object, SmartScriptHolder const& holder)
+    {
+        uint32 creature = 0;
+        if (holder.action.type == SMART_ACTION_SUMMON_CREATURE)
+            creature = holder.action.summonCreature.creature;
+        else if (holder.action.type == SMART_ACTION_CALL_KILLEDMONSTER)
+            creature = holder.action.killedMonster.creature;
+        if (creature && kills.count(creature))
+            uses.creators.push_back({object, creature});
+    };
+    for (uint32 const object : scriptedObjects)
+        for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(object, SMART_SCRIPT_TYPE_GAMEOBJECT))
+        {
+            credit(object, holder);
+            if (holder.action.type == SMART_ACTION_CALL_TIMED_ACTIONLIST)
+                for (SmartScriptHolder const& step : sSmartScriptMgr->GetScript(
+                         static_cast<int32>(holder.action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
+                    credit(object, step);
+        }
 }
 
 // World thread only: copies the quest templates, relations, POIs, area triggers and the spawns of givers, enders and
@@ -358,6 +559,7 @@ QuestGather GatherQuests()
         float const radius = at->radius > 0.0f ? at->radius : 0.5f * std::hypot(at->length, at->width);
         input.triggers.push_back({questId, trigger, at->map, at->x, at->y, at->z, radius});
     }
+    GatherUses(input);
     return input;
 }
 
@@ -660,11 +862,14 @@ void StartQuestIndex()
     auto const gatherStart = std::chrono::steady_clock::now();
     auto input = std::make_shared<QuestGather>(GatherQuests());
     uint32 const gatherMs = MsSince(gatherStart);
-    LOG_INFO("server.loading",
-             "Quest index: gathered {} quests in {} ms ({} relations, {} giver and ender spawns, {} target spawns, {} "
-             "POIs, {} area triggers; {} spawns unresolved)",
-             input->quests.size(), gatherMs, input->relations.size(), input->places.size(), input->targets.size(),
-             input->pois.size(), input->triggers.size(), input->unresolved);
+    LOG_INFO(
+        "server.loading",
+        "Quest index: gathered {} quests in {} ms ({} relations, {} giver and ender spawns, {} target spawns, {} "
+        "POIs, {} area triggers; {} spawns unresolved; {} source items with an on-use spell, {} use spells, {} spell "
+        "hits, {} creator objects)",
+        input->quests.size(), gatherMs, input->relations.size(), input->places.size(), input->targets.size(),
+        input->pois.size(), input->triggers.size(), input->unresolved, input->uses.items.size(),
+        input->uses.spells.size(), input->uses.hits.size(), input->uses.creators.size());
 
     bool const posted = Pool().Post(
         [input, gatherMs]
@@ -681,6 +886,17 @@ void StartQuestIndex()
                          "objectives ({} without area), {} quests without a giver, about {:.1f} MB (estimate)",
                          s.buildMs, s.quests, s.givers, s.enders, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
                          static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                QuestUseStats const& u = index->uses.stats;
+                LOG_INFO("playerbots",
+                         "Quest index: {} use rules for {} quests, {} source spells name nothing, {} violations",
+                         u.rules, u.quests, u.unnamed, u.violations);
+                if (u.violations)
+                {
+                    std::vector<std::string> const violations = index->uses.Violations();
+                    constexpr std::size_t SHOWN = 5;
+                    for (std::size_t i = 0; i < std::min(SHOWN, violations.size()); ++i)
+                        LOG_ERROR("playerbots", "Quest index: use rule violation: {}", violations[i]);
+                }
                 questBook.Publish(std::move(index));
                 questState.store(QuestIndexState::Ready, std::memory_order_release);
             }
@@ -802,13 +1018,80 @@ std::string QuestIndexStatus()
                                                               : state == QuestIndexState::Failed ? "failed"
                                                                                                  : "not started");
     QuestIndexStats const& s = quests->stats;
+    QuestUseStats const& u = quests->uses.stats;
     return Acore::StringFormat(
         "PLANNER quest index: ready, {} quests, {} places ({} givers, {} enders, {} unresolved), {} camps, {} "
         "objectives "
         "({} without area), {} quests without a giver, gathered in {} ms, built in {} ms on a worker, about {:.1f} MB "
-        "(estimate)",
+        "(estimate); use rules: {} for {} quests ({} unit, {} dead, {} object, {} focus), {} source spells name "
+        "nothing, {} violations",
         s.quests, s.places, s.givers, s.enders, s.unresolved, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
-        s.gatherMs, s.buildMs, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+        s.gatherMs, s.buildMs, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB, u.rules, u.quests, u.byKind[0],
+        u.byKind[1], u.byKind[2], u.byKind[3], u.unnamed, u.violations);
+}
+
+bool HandleQuestUseCommand(ChatHandler* handler, char const* args)
+{
+    uint32 id = 0;
+    if (!(std::istringstream(args ? args : "") >> id) || !id)
+    {
+        handler->SendErrorMessage("Usage: playerbots planner questuse <quest id>");
+        return false;
+    }
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    QuestRecord const* quest = quests->Find(id);
+    if (!quest)
+    {
+        handler->SendErrorMessage("PLANNER: no quest {}", id);
+        return false;
+    }
+    auto const [first, last] = quests->uses.RulesFor(id);
+    std::vector<UseItem const*> const items = quests->uses.ItemsOf(id);
+    Quest const* proto = sObjectMgr->GetQuestTemplate(id);
+    handler->PSendSysMessage("QUESTUSE {} \"{}\": {} rules, {} source items with an on-use spell", id,
+                             proto ? proto->GetTitle() : "?", std::distance(first, last), items.size());
+    for (auto it = first; it != last; ++it)
+    {
+        QuestUseRule const& rule = *it;
+        bool const objects = rule.kind == UseKind::Object || rule.kind == UseKind::Focus;
+        std::string targets;
+        for (uint32 const entry : rule.entries)
+        {
+            GameObjectTemplate const* object = objects ? sObjectMgr->GetGameObjectTemplate(entry) : nullptr;
+            CreatureTemplate const* creature = objects ? nullptr : sObjectMgr->GetCreatureTemplate(entry);
+            targets += Acore::StringFormat("{}{} \"{}\"", targets.empty() ? "" : ", ", entry,
+                                           object     ? object->name
+                                           : creature ? creature->Name
+                                                      : "?");
+        }
+        std::string const what = rule.spellId == 0 ? std::string("use the object")
+                                 : rule.itemId     ? Acore::StringFormat("item {} spell {}", rule.itemId, rule.spellId)
+                                                   : Acore::StringFormat("class spell {}", rule.spellId);
+        std::string const goal =
+            rule.objective < quest->objectives.size()
+                ? Acore::StringFormat("{} {}", ObjectiveName(quest->objectives[rule.objective].kind),
+                                      quest->objectives[rule.objective].target)
+                : std::string("completes the quest");
+        handler->PSendSysMessage("  {}: {} on {}; range {:.0f} yd{}{}; -> {}", UseKindName(rule.kind), what, targets,
+                                 rule.rangeYards, rule.mustBeDead ? ", target lies dead" : "",
+                                 rule.standAtFocus ? Acore::StringFormat(", stand at focus {}", rule.focusId) : "",
+                                 goal);
+    }
+    for (UseItem const* item : items)
+    {
+        if (std::any_of(first, last, [item](QuestUseRule const& rule)
+                        { return rule.itemId == item->itemId && rule.spellId == item->spellId; }))
+            continue;
+        UseSpell const* spell = quests->uses.Spell(item->spellId);
+        handler->PSendSysMessage("  no rule: item {} spell {} names no target (targets {:#x}, focus {})", item->itemId,
+                                 item->spellId, spell ? spell->targets : 0, spell ? spell->focusId : 0);
+    }
+    return true;
 }
 
 bool HandleQuestCommand(ChatHandler* handler, char const* args)
@@ -899,15 +1182,31 @@ Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const&
     };
 }
 
+// The class-quest table's spells the bot's class trainer teaches (upkeep WU20a): their quests are ordinary ones
+static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
+{
+    std::vector<uint32> taught;
+    TrainerList const* list = upkeep.ClassList(cls);
+    if (!list)
+        return taught;
+    for (ClassQuests::Entry const& entry : ClassQuests::TABLE)
+        if (entry.learns && (list->Find(entry.learns) != TrainerList::NOT_FOUND ||
+                             list->Teacher(entry.learns) != TrainerList::NOT_FOUND))
+            taught.push_back(entry.learns);
+    std::sort(taught.begin(), taught.end());
+    taught.erase(std::unique(taught.begin(), taught.end()), taught.end());
+    return taught;
+}
+
 Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<QuestProgress> const& progress,
-                     Goals::Situation const& situation)
+                     Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates)
 {
     CircuitData data = CircuitDataNow();
     CircuitContext context = data.Context();
     context.protectedQuests = protectedQuests;
     context.progress = progress;
-    return [data = std::move(data), context = std::move(context),
-            situation](Snapshot const& snapshot) -> std::optional<Payload>
+    return [data = std::move(data), context = std::move(context), situation, rates,
+            upkeep = CurrentUpkeepIndex()](Snapshot const& snapshot) -> std::optional<Payload>
     {
         // A failed job answers without a plan: its bot falls back at once (fallback_failed) instead of waiting out
         // the pool's keep time for a result that never comes
@@ -917,7 +1216,13 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
         std::shared_ptr<Goals::GoalPlan const> plan;
         try
         {
-            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, situation));
+            // The needs list on the worker: its reserve and shortfall feed the need factor (upkeep WU16, §3.10)
+            Goals::Situation filled = situation;
+            if (upkeep && filled.governed)
+                filled.trainerTaught = ClassTrainerTaught(*upkeep, snapshot.cls);
+            if (upkeep)
+                NeedBridge::Fill(filled, NeedBridge::InputsOf(UpkeepNeeds::ComputeNeeds(snapshot, *upkeep, rates)));
+            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, filled));
         }
         catch (...)
         {

@@ -76,6 +76,13 @@ struct Skill
 constexpr std::array<std::uint16_t, 15> SNAPSHOT_SKILLS = {762, 129, 185, 356, 171, 164, 333, 202,
                                                            182, 773, 755, 165, 186, 393, 197};
 
+// A weapon the bot wields or carries, by the weapon skill line it needs (upkeep WU15a)
+struct OwnedWeapon
+{
+    std::uint16_t skill{0};
+    bool known{false};  // the skill's value is above 0: Player::CanUseItem's weapon test passes
+};
+
 // A carried item that counts for an upkeep stock kind (upkeep plan WU2, UpkeepIndex.h)
 struct StockItem
 {
@@ -130,6 +137,7 @@ struct Snapshot
     std::uint8_t groupSize{0};  // 0 = no group
     std::uint64_t groupLeader{0};
     std::uint32_t deaths{0};  // not filled yet: no cheap per-bot death count exists
+    std::uint32_t sickMs{0};  // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
     Goal currentGoal;         // WT16 fills the goals
     std::vector<Goal> recentGoals;
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
@@ -152,6 +160,9 @@ struct Snapshot
     // skill or better (WU14). The travel shares are no snapshot fields: the needs read them from the slot measure
     std::uint16_t groundMountSkill{0};
     std::uint16_t flyingMountSkill{0};
+    // The owned-weapon-skills field (WU15a): the main hand, off hand and ranged weapons and those in the bags, a
+    // skill line once each, sorted
+    std::vector<OwnedWeapon> ownedWeaponSkills;
 
     // What the bot knows of its mail and bank (BankMail::BotBankMail); the mail count is renewed with each snapshot
     std::uint16_t mailWaiting{0};
@@ -175,7 +186,7 @@ struct Snapshot
     {
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
                rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
-               stock.capacity() * sizeof(StockItem) +
+               stock.capacity() * sizeof(StockItem) + ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);

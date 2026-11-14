@@ -21,6 +21,7 @@
 
 class ChatHandler;
 class Player;
+struct ItemTemplate;
 class PlayerbotAI;
 
 namespace UpkeepNeeds
@@ -133,6 +134,8 @@ bool QuestsReady();
 std::string QuestIndexStatus();
 // `playerbots planner quest <id> | stats | flush`: the quest's entry and statistics, the book's state, a flush now
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
+// `playerbots planner questuse <quest>`: which item or spell the quest uses on which target (upkeep plan WU20b)
+bool HandleQuestUseCommand(ChatHandler* handler, char const* args);
 
 // The upkeep index (upkeep plan WU2, PlannerUpkeep.cpp; records and rules in UpkeepIndex.h)
 // World thread, once after StartQuestIndex: gathers the trainers, the vendor stock and the class reagents, builds the
@@ -148,6 +151,10 @@ std::vector<std::string> UpkeepIndexStatus();
 // pass over the bags and one HasSpell per trainer spell of the class and riding lists (the class-and-race fit and the
 // off-list abilities are precomputed in the index)
 void FillUpkeep(Player* bot, Snapshot& snapshot);
+// The bot's thread: a weapon of a skill line the bot lacks and would learn at a weapon master (upkeep §3.7, WU15a): its
+// class may wield it, and the index's weapon skill fits its class, race and level. Item usage keeps such a weapon
+// instead of selling it; one binary search in the index
+bool WeaponToLearn(Player* bot, ItemTemplate const* proto);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
@@ -174,9 +181,10 @@ bool HandleCircuitCommand(ChatHandler* handler, char const* args);
 // World thread: the synthetic checks plus the real-data scenarios (the circuit harness's places, synthetic spots)
 bool RunGoalsHarness(ChatHandler* handler);
 // The calling thread: a goals job (PlanGoals) over the published data, with the plan's kept quests protected and the
-// log quests' progress. Answers a GoalsAnswer, also for a failed ranking; none when the quest index was not ready
+// log quests' progress. Answers a GoalsAnswer, also for a failed ranking; none when the quest index was not ready.
+// The rates (BotNeedRates, map thread) let the job compute the needs list for the need factor (upkeep WU16)
 Compute GoalsCompute(std::vector<std::uint32_t> const& protectedQuests, std::vector<QuestProgress> const& progress,
-                     Goals::Situation const& situation);
+                     Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates);
 // `playerbots planner goals selftest | <player name>`: the harness, or the ranked goals of an online player (read
 // only; writes a `goal` decision row when the world log is on)
 bool HandleGoalsCommand(ChatHandler* handler, char const* args);

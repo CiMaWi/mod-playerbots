@@ -50,6 +50,8 @@ struct KindRule
 };
 
 constexpr size_t KIND_COUNT = 20;
+// One kind per row (clang-format would pack the short rows into columns)
+// clang-format off
 constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Food", true},  // food and water
     {"Ammo", true},
@@ -57,12 +59,12 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Poison", true},      // a rogue's InitConsumables
     {"Consumable", true},  // potions, weapon oils and stones
     {"Repair", true},
-    {"Resurrect", true},      // in place, or at the spirit healer without sickness and durability loss
-    {"TrainerSpell", false},  // class and trainer spells
-    {"WeaponSkill", false},   // InitSkills
-    {"Riding", false},        // the riding ranks by level (InitSkills)
-    {"Mount", false},
-    {"SpecialSpell", false},
+    {"Resurrect", true},     // in place, or at the spirit healer without sickness and durability loss
+    {"TrainerSpell", true},  // class and trainer spells; WU15b: bought at the class trainer (WU13)
+    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a), professions stay
+    {"Riding", true},        // the riding ranks by level (InitSkills); WU15b: bought (WU14)
+    {"Mount", true},
+    {"SpecialSpell", true},
     {"ClassQuest", false},  // spells of class quests the bot never did
     {"Pet", false},         // pet and pet talents
     {"Glyph", true},
@@ -72,6 +74,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Gold", true},
     {"Talent", true},  // the talent reset below the persistence level
 }};
+// clang-format on
 
 constexpr char const* KindWord(UpkeepKind kind)
 {
@@ -179,6 +182,10 @@ constexpr char const* EVENT_RIDING_BOUGHT = "RidingBought";  // rank, cost, moun
 constexpr char const* EVENT_SICK = "Sick";                   // src spirit_healer, id the spell, amount its duration ms
 constexpr char const* EVENT_NEED_SHORT = "NeedShort";  // src = the kind word, amount; when a shortfall begins and ends
 constexpr char const* EVENT_FLIGHT_FALL = "FlightFall";
+// Batch G (class quests, WU20a-WU21c), registered at once so later steps touch no wide header
+constexpr char const* EVENT_PET_TAMED = "PetTamed";                          // a hunter tamed a beast: id the creature
+constexpr char const* SOURCE_CLASS_QUEST_GIVEN_UP = "class_quest_given_up";  // a grant after the bot gave the quest up
+constexpr char const* REASON_CLASS_QUEST = "class_quest";  // a goal or circuit row the class-quest bonus decided
 }  // namespace Upkeep
 
 #endif

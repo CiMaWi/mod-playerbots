@@ -8,6 +8,7 @@
 #define PLAYERBOTS_LOOTACTION_H
 
 #include "InventoryAction.h"
+#include "LootInteraction.h"
 #include "MovementActions.h"
 
 class GameObject;
@@ -30,9 +31,11 @@ public:
     OpenLootAction(PlayerbotAI* botAI) : MovementAction(botAI, "open loot") {}
 
     bool Execute(Event event) override;
+    LootInteraction::Attempt TryOpen(bool encounter);
 
 private:
-    bool DoLoot(LootObject& lootObject);
+    struct InteractionAdapter;
+    bool RequestLoot(LootObject& lootObject);
     uint32 GetOpeningSpell(LootObject& lootObject);
     uint32 GetOpeningSpell(LootObject& lootObject, GameObject* go);
     bool CanOpenLock(LootObject& lootObject, SpellInfo const* spellInfo, GameObject* go);

@@ -5,15 +5,43 @@
  */
 
 #include "NewRpgInfo.h"
-#include "Timer.h"
-#include "WorldLogStatus.h"
+
 #include <cmath>
+
+#include "Timer.h"
+#include "TravelTransportGeometry.h"
+#include "WorldLogStatus.h"
+
+void NewRpgInfo::DiscardPassengerMove()
+{
+    if (auto* travel = std::get_if<Travel>(&data); bot && travel)
+        TravelTransportGeometry::DiscardMotion(*bot, travel->passengerMotion);
+}
+
+void NewRpgInfo::ReplaceStatus(RpgData replacement)
+{
+    DiscardPassengerMove();
+    data = std::move(replacement);
+}
+
+void NewRpgInfo::ResetState(bool farTeleport)
+{
+    if (auto* travel = std::get_if<Travel>(&data); bot && travel)
+    {
+        TravelTransportGeometry::SplineControl control{*bot};
+        TravelLifecycle::ResetMotion(travel->passengerMotion, farTeleport, control);
+        travel->progress.Suspend();
+    }
+    Player* const owner = bot;
+    *this = TravelLegs::AfterReset<Travel>(*this, farTeleport);
+    bot = owner;
+}
 
 void NewRpgInfo::ChangeToGoGrind(WorldPosition pos)
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
-    data = GoGrind{pos};
+    ReplaceStatus(GoGrind{pos});
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -21,7 +49,7 @@ void NewRpgInfo::ChangeToGoCamp(WorldPosition pos)
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
-    data = GoCamp{pos};
+    ReplaceStatus(GoCamp{pos});
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -29,7 +57,7 @@ void NewRpgInfo::ChangeToWanderNpc()
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
-    data = WanderNpc{};
+    ReplaceStatus(WanderNpc{});
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -37,7 +65,7 @@ void NewRpgInfo::ChangeToWanderRandom()
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
-    data = WanderRandom{};
+    ReplaceStatus(WanderRandom{});
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -48,7 +76,7 @@ void NewRpgInfo::ChangeToDoQuest(uint32 questId, Quest const* quest)
     DoQuest do_quest;
     do_quest.questId = questId;
     do_quest.quest = quest;
-    data = do_quest;
+    ReplaceStatus(do_quest);
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -61,7 +89,7 @@ void NewRpgInfo::ChangeToTravelFlight(uint32 flightMasterEntry, WorldPosition fl
     flight.flightMasterPos = flightMasterPos;
     flight.path = std::move(path);
     flight.inFlight = false;
-    data = flight;
+    ReplaceStatus(std::move(flight));
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -71,7 +99,7 @@ void NewRpgInfo::ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId)
     startT = getMSTime();
     OutdoorPvP pvp;
     pvp.capturePointSpawnId = capturePointSpawnId;
-    data = pvp;
+    ReplaceStatus(pvp);
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -79,7 +107,7 @@ void NewRpgInfo::ChangeToDoGather()
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
-    data = DoGather{};
+    ReplaceStatus(DoGather{});
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -87,7 +115,7 @@ void NewRpgInfo::ChangeToRest()
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
-    data = Rest{};
+    ReplaceStatus(Rest{});
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -98,10 +126,9 @@ void NewRpgInfo::ChangeToTravel(WorldPosition dest, std::string place)
     Travel travel;
     travel.dest = dest;
     travel.tripStartMs = startT;
-    travel.routeStartMs = startT;
     travel.place = std::move(place);
     travel.tripId = WorldLog::NextTripId();
-    data = std::move(travel);
+    ReplaceStatus(std::move(travel));
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -118,7 +145,7 @@ void NewRpgInfo::ChangeToErrands(std::vector<ErrandStop> stops, uint32 money)
         }
     errands.stops = std::move(stops);
     errands.moneyAtStart = money;
-    data = std::move(errands);
+    ReplaceStatus(std::move(errands));
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
@@ -126,7 +153,7 @@ void NewRpgInfo::ChangeToIdle()
 {
     NewRpgStatus const oldStatus = GetStatus();
     startT = getMSTime();
-    data = Idle{};
+    ReplaceStatus(Idle{});
     questGiver.Clear();
     ignoredQuestGivers.clear();
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
@@ -140,7 +167,7 @@ bool NewRpgInfo::CanChangeTo(NewRpgStatus)
 void NewRpgInfo::Reset()
 {
     NewRpgStatus const oldStatus = GetStatus();
-    data = Idle{};
+    ReplaceStatus(Idle{});
     startT = getMSTime();
     questGiver.Clear();
     ignoredQuestGivers.clear();

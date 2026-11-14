@@ -3019,7 +3019,7 @@ bool RunAwayAction::Execute(Event /*event*/) { return Flee(AI_VALUE(Unit*, "grou
 bool MoveToLootAction::Execute(Event /*event*/)
 {
     LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
-    if (availableLoot->IsLootPending() || bot->GetLootGUID())
+    if (availableLoot->HasInteraction() || bot->GetLootGUID())
     {
         lootWatchGuid.Clear();
         return false;
