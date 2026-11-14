@@ -23,6 +23,7 @@
 #include "BotTraitMgr.h"
 #include "BridgeBotFacts.h"
 #include "BridgeBotState.h"
+#include "BridgeBotTraits.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
@@ -285,6 +286,7 @@ public:
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
             {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"traits", HandleBridgeTraitsCommand, SEC_GAMEMASTER, Console::Yes},
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
@@ -804,6 +806,33 @@ public:
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        return true;
+    }
+
+    // LC15c: what the bridge gets of a bot's nature, as ReadBotPersonality gives it: one "TRAIT <bot> <area> <word>"
+    // per word in the module's order, then "INTEREST <bot> <name>" per interest. Console: any thread, cache read only.
+    static bool HandleBridgeTraitsCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+
+        PlayerbotBridge::BotPersonality personality;
+        if (!PlayerbotBridge::ReadBotPersonality(target.GetGUID(), personality))
+        {
+            handler->SendErrorMessage("{}: no traits", target.GetName());
+            return false;
+        }
+
+        std::string const& name = target.GetName();
+        handler->PSendSysMessage("Bridge traits of {}", name);
+        for (std::size_t i = 0; i < personality.words.size(); ++i)
+        {
+            std::string const area = i < personality.areas.size() ? personality.areas[i] : "none";
+            handler->PSendSysMessage("TRAIT {} {} {}", name, area, personality.words[i]);
+        }
+        for (std::string const& interest : personality.interests)
+            handler->PSendSysMessage("INTEREST {} {}", name, interest);
         return true;
     }
 

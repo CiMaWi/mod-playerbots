@@ -88,6 +88,11 @@ change, confirm:
   last value `TopicTableInOrder()` checks, the selftest's `wireTopics` list and mod-ollama-chat's `StateTopic`
   asserts. `Catalogue()` returns both tables as plain values and `CatalogueHash` their FNV-1a 64; a new row changes
   the hash, which is how the bridge sees the change.
+- The traits wire (`input.traits`): `ReadBotPersonality` (`src/Bot/BridgeBotTraits.cpp`) gives `words`, `areas` (one
+  per word, same order) and `interests`. A trait's area (talk, others, work, wants) is `TRAIT_AREAS` in
+  `src/Ai/World/Rpg/TraitRules.h`, in the `Trait` enum's order; a new trait needs its entry (the build checks the
+  count) and its group in `tests/trait-selftest.cpp`. mod-ollama-chat sends `areas` beside `words` only when it is as
+  long as `words`. `playerbots bridge traits <bot>` prints what the bridge gets.
 - Every `NextAction("...")`, `TriggerNode("...")`, and `engine->addStrategy("...")` matches a
   registered creator exactly. Default strategy sets live in `src/Bot/Factory/AiFactory.cpp`;
   instance strategies are added and removed in balance by `ApplyInstanceStrategies()`.
