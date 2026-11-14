@@ -868,6 +868,8 @@ void ReadByFollower(Player&) {}
 void ReadByDestroy(Player&) {}
 // fightready and joinroll change nothing on the bot: the fight book reads the bits (TestConstraints::FightReady)
 void ReadByFightBook(Player&) {}
+// fleestep and fleemgr change nothing on the bot: the test flight reads the bits (TestConstraints::FleeStep)
+void ReadByFlee(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -878,6 +880,8 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
     {TestConstraints::FIGHTREADY, ReadByFightBook, ReadByFightBook},
     {TestConstraints::JOINROLL, ReadByFightBook, ReadByFightBook},
+    {TestConstraints::FLEESTEP, ReadByFlee, ReadByFlee},
+    {TestConstraints::FLEEMGR, ReadByFlee, ReadByFlee},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 

@@ -93,12 +93,17 @@ void UndoNoDamage(ModelUnits& units) { units.god = false; }
 void ReadByFollower(ModelUnits&) {}   // flyfail, flyabort: the follower reads the bit (FlyLegFails)
 void ReadByDestroy(ModelUnits&) {}    // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
 void ReadByFightBook(ModelUnits&) {}  // fightready, joinroll: the fight book reads the bits (FightReady, JoinRoll)
+void ReadByFlee(ModelUnits&) {}       // fleestep, fleemgr: the test flight reads the bits (FleeStep, FleeMgr)
 
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {
-    {NOFIGHT, ApplyNoFight, UndoNoFight},        {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {FLYFAIL, ReadByFollower, ReadByFollower},   {FLYABORT, ReadByFollower, ReadByFollower},
-    {NODESTROY, ReadByDestroy, ReadByDestroy},   {FIGHTREADY, ReadByFightBook, ReadByFightBook},
-    {JOINROLL, ReadByFightBook, ReadByFightBook}};
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
+                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+                                              {FLYFAIL, ReadByFollower, ReadByFollower},
+                                              {FLYABORT, ReadByFollower, ReadByFollower},
+                                              {NODESTROY, ReadByDestroy, ReadByDestroy},
+                                              {FIGHTREADY, ReadByFightBook, ReadByFightBook},
+                                              {JOINROLL, ReadByFightBook, ReadByFightBook},
+                                              {FLEESTEP, ReadByFlee, ReadByFlee},
+                                              {FLEEMGR, ReadByFlee, ReadByFlee}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -245,6 +250,13 @@ bool RowWorks(Row const& row)
     if (name == "joinroll")
         return untouched && JoinRoll(JOINROLL) && !JoinRoll(HOLD | (STATES & ~JOINROLL)) &&
                !FlyLegFails(JOINROLL, 90.0f, 100.0f, true);
+    // Read by the test flight only: nothing to apply; fleestep wins over fleemgr, no other row flees
+    if (name == "fleestep")
+        return untouched && FleeStep(FLEESTEP) && FleeStep(FLEES) && !FleeStep(HOLD | (STATES & ~FLEESTEP)) &&
+               !FleeMgr(FLEESTEP) && StartsFights(FLEESTEP) && !EndsStatus(0, FLEESTEP);
+    if (name == "fleemgr")
+        return untouched && FleeMgr(FLEEMGR) && !FleeMgr(FLEES) && !FleeMgr(HOLD | (STATES & ~FLEEMGR)) &&
+               !FleeStep(FLEEMGR) && StartsFights(FLEEMGR) && !EndsStatus(0, FLEEMGR);
     // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nodestroy")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -271,7 +283,8 @@ void TestTable()
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
-              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, fightready, joinroll",
+              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, fightready, joinroll, "
+              "fleestep, fleemgr",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

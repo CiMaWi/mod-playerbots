@@ -32,6 +32,9 @@ constexpr std::uint16_t FLYABORT = 128;    // as flyfail, as the trip's last fai
 constexpr std::uint16_t NODESTROY = 256;   // destroys no bag item for space (bank-mail WB7d)
 constexpr std::uint16_t FIGHTREADY = 512;  // its chances start a fight when the hard rules pass (world PvP)
 constexpr std::uint16_t JOINROLL = 1024;   // a bystander's join roll always wins (world PvP)
+constexpr std::uint16_t FLEESTEP = 2048;   // flees from the players attacking it by the retreat's steps (world PvP)
+constexpr std::uint16_t FLEEMGR = 4096;    // flees from the players attacking it by FleeManager points (world PvP)
+constexpr std::uint16_t FLEES = FLEESTEP | FLEEMGR;
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -60,6 +63,8 @@ constexpr Row ROWS[] = {
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
     {"fightready", Kind::State, FIGHTREADY, "a chance starts a fight when the hard rules pass (p 1, never peaceable)"},
     {"joinroll", Kind::State, JOINROLL, "a bystander's join roll always wins (defence, group, master unchanged)"},
+    {"fleestep", Kind::State, FLEESTEP, "flees from its player attackers by the retreat's 20 yd steps"},
+    {"fleemgr", Kind::State, FLEEMGR, "flees from its player attackers by repeated FleeManager points"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -171,6 +176,10 @@ inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
 // Read where the fight book decides (FightBook.cpp); their apply and undo do nothing
 inline bool FightReady(std::uint16_t set) { return (set & FIGHTREADY) != 0; }
 inline bool JoinRoll(std::uint16_t set) { return (set & JOINROLL) != 0; }
+// Read by the test flight (WorldPvpFleeAction, world-pvp WP20); their apply and undo do nothing. fleestep wins when
+// both are on; either one keeps the old retreat off
+inline bool FleeStep(std::uint16_t set) { return (set & FLEESTEP) != 0; }
+inline bool FleeMgr(std::uint16_t set) { return (set & FLEES) == FLEEMGR; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
