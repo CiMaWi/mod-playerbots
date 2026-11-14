@@ -2323,6 +2323,15 @@ Playerbots.WorldPvp.NoHitSeconds = 30
 Playerbots.WorldPvp.StalemateSeconds = 300
 Playerbots.WorldPvp.CalmYards = 200
 
+# The flight from enemy players (FleeAttackersAction). A bot that flees runs from the enemy players in PvP combat with
+# it. Its flight ends as escaped when it is out of PvP combat or Flee.EscapeYards from every one of them; as cornered
+# when it gained no distance for Flee.CorneredSeconds (it stands and fights and does not flee again in that combat;
+# the time it cannot move, rooted or stunned, does not count); or by its bound after Flee.BoundSeconds. (Ranges:
+# EscapeYards 1-2000; CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
+Playerbots.Flee.EscapeYards = 40
+Playerbots.Flee.CorneredSeconds = 6
+Playerbots.Flee.BoundSeconds = 30
+
 # No camping (persistent bots in the open world). No bot starts a fight on a player resurrected in the last
 # ResurrectedSeconds (any player, by any resurrection; nor near a graveyard, GraveyardYards above). The ghost of a bot
 # whose corpse has an enemy player (alive, of the other team, flagged or not) within GhostEnemyYards waits as a ghost

@@ -54,6 +54,7 @@ protected:
     // One turn of stepping away from (fromX, fromY), true while it holds the turn; `gaveUp`: every direction is
     // blocked. `what` names the movement in the debug lines
     bool StepAway(float fromX, float fromY, char const* what, bool& gaveUp);
+    std::string RefusalCause(float x, float y, float z, bool exact);
 
 private:
     // What a step in one direction came to: taken; a wall right in front (the collision check hit something there);
@@ -82,6 +83,9 @@ public:
     WorldPvpFleeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "world pvp flee") {}
 
     bool IsActive() override;
+
+private:
+    uint32 _noteMs = 0;
 };
 
 // The flight from the attacking players' centre at its start, without the fight memory: fleestep by the retreat's
@@ -97,6 +101,7 @@ public:
 
 private:
     bool Begins(uint32 nowMs, char const* what);
+    uint32 Foes(float& x, float& y);
     bool Hop(uint32 nowMs);
     void Note(uint32 nowMs, char const* outcome);
 
@@ -104,6 +109,9 @@ private:
     uint32 _lastMs = 0;
     uint32 _hopMs = 0;
     uint32 _noteMs = 0;
+    uint32 _pulseMs = 0;
+    float _startX = 0.0f;
+    float _startY = 0.0f;
     bool _over = false;
     float _fromX = 0.0f;
     float _fromY = 0.0f;

@@ -14,8 +14,10 @@
 #include "FightBook.h"
 #include "FightWiring.h"
 #include "FleeManager.h"
+#include "LastMovementValue.h"
 #include "Log.h"
 #include "Map.h"
+#include "PathGenerator.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -30,8 +32,9 @@ constexpr float STEP_YARDS = 20.0f;
 constexpr uint32 STEP_HOLD_MS = 4 * IN_MILLISECONDS;
 // A step this close to its end is done
 constexpr float STEP_DONE_YARDS = 2.0f;
-// A direction whose first collision lies this close is blocked
+// A direction whose way ends this close is blocked, as is one whose path is this many times as long as it reaches
 constexpr float STEP_BLOCKED_YARDS = 3.0f;
+constexpr float STEP_DETOUR = 2.0f;
 constexpr float FAN_STEP = static_cast<float>(M_PI) / 8.0f;
 constexpr float FAN_LIMIT = static_cast<float>(M_PI) / 2.0f;
 // The debug line's letter for each Step: taken, wall, edge, refused
@@ -41,6 +44,49 @@ constexpr char STEP_CODES[] = "TWER";
 constexpr uint32 FLIGHT_MS = 30 * IN_MILLISECONDS;
 constexpr uint32 FLIGHT_GAP_MS = 3 * IN_MILLISECONDS;
 constexpr uint32 NOTE_MS = IN_MILLISECONDS;
+
+// DIAG (WP21): the bot's foes by both readings: getAttackers() (units whose victim it is) and its PvP combat
+// references
+struct FoeView
+{
+    uint32 attackers = 0;
+    uint32 attackerPlayers = 0;
+    uint32 refs = 0;
+    float nearestYards = -1.0f;
+    std::string names;
+};
+
+FoeView ViewFoes(Player* bot)
+{
+    FoeView view;
+    auto const note = [&](Unit* unit, char const* how)
+    {
+        float const yards = bot->GetExactDist2d(unit);
+        if (view.nearestYards < 0.0f || yards < view.nearestYards)
+            view.nearestYards = yards;
+        view.names +=
+            Acore::StringFormat(" {}:{}{}@{:.0f}", how, unit->GetName(), unit->IsPlayer() ? "" : "(npc)", yards);
+    };
+    for (Unit* const attacker : bot->getAttackers())
+    {
+        if (!attacker)
+            continue;
+        ++view.attackers;
+        view.attackerPlayers += attacker->IsPlayer() ? 1 : 0;
+        note(attacker, "a");
+    }
+    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvPCombatRefs())
+    {
+        Unit* const other = ref ? ref->GetOther(bot) : nullptr;
+        if (!other || !other->IsInWorld() || other->GetMapId() != bot->GetMapId())
+            continue;
+        ++view.refs;
+        note(other, "r");
+    }
+    return view;
+}
+
+bool Logged() { return sLog->ShouldLog("playerbots", LogLevel::LOG_LEVEL_DEBUG); }
 }  // namespace
 
 void WorldPvpStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -150,32 +196,81 @@ bool WorldPvpRetreatAction::StepAway(float fromX, float fromY, char const* what,
 
 WorldPvpRetreatAction::Step WorldPvpRetreatAction::StepTo(float angle, uint32 nowMs, float& endYards)
 {
-    float x = bot->GetPositionX() + std::cos(angle) * STEP_YARDS;
-    float y = bot->GetPositionY() + std::sin(angle) * STEP_YARDS;
-    float z = bot->GetPositionZ();
-    bool exact = true;
-    bool const clear = bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
-                                                                      bot->GetPositionZ(), x, y, z);
-    // The straight line ends at (x, y): at the first collision, or, with no collision, where the navmesh ends (a
-    // ledge, a slope too steep, most walls). An end right in front blocks the direction either way: a step there does
-    // not move the bot, and taken every tick it kept the other directions untried for the whole retreat
-    endYards = bot->GetExactDist2d(x, y);
-    if (endYards < STEP_BLOCKED_YARDS)
-        return clear ? Step::Edge : Step::Wall;
-    if (!clear)
+    float const botX = bot->GetPositionX();
+    float const botY = bot->GetPositionY();
+    float const botZ = bot->GetPositionZ();
+    float x = botX + std::cos(angle) * STEP_YARDS;
+    float y = botY + std::sin(angle) * STEP_YARDS;
+    float z = botZ;
+    // A step goes as far as the navmesh path to its point leads. (The navmesh ray of CheckCollisionAndGetValidCoords
+    // ends at the bot itself on plain walkable ground, and MoveTo refuses a point its path does not reach.) A path
+    // that ends right in front (a ledge, the mesh's end) or winds to its end is an edge
+    PathGenerator path(bot);
+    path.CalculatePath(botX, botY, botZ, x, y, z, false);
+    Movement::PointsArray const& points = path.GetPath();
+    endYards = 0.0f;
+    if (path.GetPathType() & PATHFIND_NOT_USING_PATH)
     {
-        // A farther collision is walked around on a path to the unclipped point
-        x = bot->GetPositionX() + std::cos(angle) * STEP_YARDS;
-        y = bot->GetPositionY() + std::sin(angle) * STEP_YARDS;
-        z = bot->GetPositionZ();
-        exact = false;
+        // Swimming, flying or no navmesh under the bot: the straight line, as far as nothing is hit
+        bool const clear = bot->GetMap()->CheckCollisionAndGetValidCoords(bot, botX, botY, botZ, x, y, z);
+        endYards = bot->GetExactDist2d(x, y);
+        if (!clear || endYards < STEP_BLOCKED_YARDS)
+            return Step::Wall;
     }
-    if (!MoveTo(bot->GetMapId(), x, y, z, false, false, true, exact, MovementPriority::MOVEMENT_COMBAT))
+    else
+    {
+        if ((path.GetPathType() & PATHFIND_NOPATH) || points.size() < 2)
+            return Step::Wall;
+        float length = 0.0f;
+        for (std::size_t i = 1; i < points.size(); ++i)
+            length += (points[i] - points[i - 1]).length();
+        x = points.back().x;
+        y = points.back().y;
+        z = points.back().z;
+        endYards = bot->GetExactDist2d(x, y);
+        if (endYards < STEP_BLOCKED_YARDS || length > endYards * STEP_DETOUR)
+            return Step::Edge;
+    }
+    if (!MoveTo(bot->GetMapId(), x, y, z, false, false, true, true, MovementPriority::MOVEMENT_COMBAT))
+    {
+        if (Logged())
+            LOG_DEBUG("playerbots",
+                      "[WorldPvp] DIAG step of {} at {:.0f} deg to ({:.1f}, {:.1f}, {:.1f}) is refused: {}",
+                      bot->GetName(), angle * 180.0f / static_cast<float>(M_PI), x, y, z, RefusalCause(x, y, z, true));
         return Step::Refused;
+    }
     _stepMs = nowMs;
     _stepX = x;
     _stepY = y;
     return Step::Taken;
+}
+
+// DIAG (WP21): why MoveTo refused the point, by its own checks in their order
+std::string WorldPvpRetreatAction::RefusalCause(float x, float y, float z, bool exact)
+{
+    if (!IsMovingAllowed())
+        return "cannot move";
+    LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
+    uint32 const agoMs = getMSTime() - last.msTime;
+    if (IsDuplicateMove(x, y, z))
+        return Acore::StringFormat("the same point as its last move {} ms ago", agoMs);
+    if (IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
+        return Acore::StringFormat("waits for its last move (priority {}, {} ms ago, delay {:.0f} ms)",
+                                   static_cast<uint32>(last.priority), agoMs, last.lastdelayTime);
+    if (bot->GetVehicle())
+        return "on a vehicle";
+    if (exact || bot->IsFlying() || bot->isSwimming())
+        return Acore::StringFormat("the point is its own place ({:.2f} yd), flying {}, swimming {}",
+                                   bot->GetExactDist(x, y, z), bot->IsFlying(), bot->isSwimming());
+    PathGenerator path(bot);
+    bool const ok = path.CalculatePath(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), x, y, z, false);
+    float endYards = 0.0f;
+    if (!path.GetPath().empty())
+        endYards = bot->GetExactDist2d(path.GetPath().back().x, path.GetPath().back().y);
+    return Acore::StringFormat(
+        "no path height or the path ends at the bot: path ok {} type {:#x}, {} points, ends "
+        "{:.1f} yd off",
+        ok, static_cast<uint32>(path.GetPathType()), path.GetPath().size(), endYards);
 }
 
 bool WorldPvpFleeTrigger::IsActive()
@@ -183,7 +278,22 @@ bool WorldPvpFleeTrigger::IsActive()
     if (!(botAI->rpgInfo.constraints & TestConstraints::FLEES))
         return false;
     Player* const bot = botAI->GetBot();
-    return bot->IsAlive() && bot->GetCombatManager().HasPvPCombat();
+    bool const active = bot->IsAlive() && bot->GetCombatManager().HasPvPCombat();
+    // DIAG (WP21): why the flight's trigger is off, once a second
+    uint32 const nowMs = getMSTime();
+    if (!active && nowMs - _noteMs >= NOTE_MS && Logged())
+    {
+        _noteMs = nowMs;
+        FoeView const view = ViewFoes(bot);
+        Unit* const victim = bot->GetVictim();
+        LOG_DEBUG("playerbots",
+                  "[WorldPvp] DIAG flee trigger of {} off: alive {}, in combat {}, pvp combat {}, attackers {} ({} "
+                  "players), pvp refs {}, victim {}, state {}:{}",
+                  bot->GetName(), bot->IsAlive(), bot->IsInCombat(), bot->GetCombatManager().HasPvPCombat(),
+                  view.attackers, view.attackerPlayers, view.refs, victim ? victim->GetName() : "none",
+                  static_cast<uint32>(botAI->GetState()), view.names);
+    }
+    return active;
 }
 
 bool WorldPvpFleeAction::isUseful() { return bot->IsAlive() && (botAI->rpgInfo.constraints & TestConstraints::FLEES); }
@@ -209,8 +319,32 @@ bool WorldPvpFleeAction::Execute(Event /*event*/)
                   bot->GetName(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         return false;
     }
+    // DIAG (WP21): the flight's state once a second
+    if (nowMs - _pulseMs >= NOTE_MS && Logged())
+    {
+        _pulseMs = nowMs;
+        FoeView const view = ViewFoes(bot);
+        LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
+        LOG_DEBUG("playerbots",
+                  "[WorldPvp] DIAG {} of {} flight {:.1f} s at ({:.1f}, {:.1f}, {:.1f}): {:.1f} yd from its start, "
+                  "nearest foe {:.1f} yd, attackers {} ({} players), pvp refs {}, moving {}, can move {}, rooted {}, "
+                  "run speed {:.1f}, last move priority {} {} ms ago delay {:.0f} ms, state {}:{}",
+                  what, bot->GetName(), (nowMs - _flightMs) / 1000.0f, bot->GetPositionX(), bot->GetPositionY(),
+                  bot->GetPositionZ(), bot->GetExactDist2d(_startX, _startY), view.nearestYards, view.attackers,
+                  view.attackerPlayers, view.refs, bot->isMoving(), IsMovingAllowed(), bot->IsRooted(),
+                  bot->GetSpeed(MOVE_RUN), static_cast<uint32>(last.priority), nowMs - last.msTime, last.lastdelayTime,
+                  static_cast<uint32>(botAI->GetState()), view.names);
+    }
     if (!steps)
         return Hop(nowMs);
+    // It flees from where its foes are now
+    float x = 0.0f;
+    float y = 0.0f;
+    if (Foes(x, y))
+    {
+        _fromX = x;
+        _fromY = y;
+    }
     bool gaveUp = false;
     bool const held = StepAway(_fromX, _fromY, what, gaveUp);
     if (gaveUp)
@@ -221,31 +355,62 @@ bool WorldPvpFleeAction::Execute(Event /*event*/)
     return held;
 }
 
+// The enemy players in PvP combat with the bot, their number and centre: whoever attacks it or it attacked, a pet at
+// its own place; no totems. (getAttackers() holds only the units whose melee victim the bot is: no caster)
+uint32 WorldPvpFleeAction::Foes(float& x, float& y)
+{
+    x = 0.0f;
+    y = 0.0f;
+    uint32 foes = 0;
+    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvPCombatRefs())
+    {
+        Unit* const other = ref ? ref->GetOther(bot) : nullptr;
+        if (!other || !other->IsInWorld() || other->GetMapId() != bot->GetMapId() || !other->IsAlive() ||
+            other->IsTotem())
+            continue;
+        x += other->GetPositionX();
+        y += other->GetPositionY();
+        ++foes;
+    }
+    if (foes)
+    {
+        x /= foes;
+        y /= foes;
+    }
+    return foes;
+}
+
 // A flight begins when players attack the bot: it flees from their centre then and stops attacking
 bool WorldPvpFleeAction::Begins(uint32 nowMs, char const* what)
 {
     float x = 0.0f;
     float y = 0.0f;
-    uint32 players = 0;
-    for (Unit* const attacker : bot->getAttackers())
-    {
-        if (!attacker || !attacker->IsPlayer())
-            continue;
-        x += attacker->GetPositionX();
-        y += attacker->GetPositionY();
-        ++players;
-    }
+    uint32 const players = Foes(x, y);
     if (!players)
     {
         _flightMs = 0;
+        // DIAG (WP21): why the flight does not begin, once a second
+        if ((!_noteMs || nowMs - _noteMs >= NOTE_MS) && Logged())
+        {
+            _noteMs = nowMs;
+            FoeView const view = ViewFoes(bot);
+            Unit* const victim = bot->GetVictim();
+            LOG_DEBUG("playerbots",
+                      "[WorldPvp] DIAG {} of {} does not begin: no enemy player in PvP combat with it; {} attackers, "
+                      "pvp refs {}, victim "
+                      "{}:{}",
+                      what, bot->GetName(), view.attackers, view.refs, victim ? victim->GetName() : "none", view.names);
+        }
         return false;
     }
     _flightMs = nowMs;
+    _startX = bot->GetPositionX();
+    _startY = bot->GetPositionY();
     _hopMs = 0;
     _noteMs = 0;
     _over = false;
-    _fromX = x / players;
-    _fromY = y / players;
+    _fromX = x;
+    _fromY = y;
     bot->AttackStop();
     context->GetValue<Unit*>("current target")->Set(nullptr);
     LOG_DEBUG("playerbots",
@@ -286,7 +451,7 @@ bool WorldPvpFleeAction::Hop(uint32 nowMs)
     }
     if (!MoveTo(bot->GetMapId(), x, y, z, false, false, true, false, MovementPriority::MOVEMENT_COMBAT))
     {
-        Note(nowMs, "is refused the move");
+        Note(nowMs, ("is refused the move: " + RefusalCause(x, y, z, false)).c_str());
         return false;
     }
     _hopMs = nowMs;

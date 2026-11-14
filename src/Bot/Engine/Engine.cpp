@@ -13,6 +13,7 @@
 #include "Playerbots.h"
 #include "Queue.h"
 #include "Strategy.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLogBotState.h"
 
@@ -671,9 +672,13 @@ bool Engine::ListenAndExecute(Action* action, Event event)
     {
         float diagX = 0.0f;
         float diagY = 0.0f;
-        if (WorldPvp::RetreatFrom(botAI, diagX, diagY))
-            LOG_DEBUG("playerbots", "[WorldPvp] DIAG {} in its retreat, state {}: {} {}", botAI->GetBot()->GetName(),
-                      static_cast<uint32>(botAI->GetState()), action->getName(), actionExecuted ? "ok" : "failed");
+        // WP21: also what a bot under a flee constraint runs while in PvP combat
+        bool const flees =
+            (botAI->rpgInfo.constraints & TestConstraints::FLEES) && botAI->GetBot()->GetCombatManager().HasPvPCombat();
+        if (flees || WorldPvp::RetreatFrom(botAI, diagX, diagY))
+            LOG_DEBUG("playerbots", "[WorldPvp] DIAG {} in its {}, state {}: {} {}", botAI->GetBot()->GetName(),
+                      flees ? "flight" : "retreat", static_cast<uint32>(botAI->GetState()), action->getName(),
+                      actionExecuted ? "ok" : "failed");
     }
 
     if (countCategory && actionExecuted)
