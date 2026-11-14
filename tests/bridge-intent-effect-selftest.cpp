@@ -9,11 +9,13 @@
 // MovementAction::MoveAway/MoveTo and PathGenerator are counting doubles; the formation, mana save level and focus heal
 // values are plain doubles. It does not replace a decision path with a parallel guard implementation.
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <span>
+#include <string_view>
 #include <type_traits>
 
 // clang-format off
@@ -207,6 +209,7 @@ struct Fixture
     PlayerbotAI AI;
     PlayerbotAI HumanAI;
     WorldSession HumanSession;
+    WorldSession BotSession;
     Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
     int Authorizations = 0;
     Refusal Why = Refusal::None;
@@ -228,6 +231,7 @@ struct Fixture
         Bot.Guid = ObjectGuid(1);
         Human.Guid = ObjectGuid(2);
         Human.Session = &HumanSession;
+        Bot.Session = &BotSession;
         Target.Guid = ObjectGuid(4);
         Other.Guid = ObjectGuid(5);
         Bot.Party = Human.Party = &Party;
@@ -2376,12 +2380,109 @@ int main()
             Check(result == old && why == oldWhy, "a one-step order is the old order");
         }
     }
-    // LC1a: the ability table. Every row has every part; the eighteen verbs with an effect have a row and the four
+    // LC16d: the social rows. An emote is the chosen text emote through the opcode handler, at the partner while the
+    // bot sees it (facing it and naming it), else at nobody; a roll is one roll of 1-100, grouped or not; ready
+    // answers "ready" to an open check only (none, finished, answered, expired or no group: cannot_now) and ends it;
+    // leave_group queues the bot's leave, in a group only.
+    {
+        // A gesture by its word, as the bridge sends it: the index into the emote row's choices
+        auto const emoteChoice = [](std::string_view word)
+        {
+            std::span<char const* const> const words = PlayerbotBridge::FindRow(Intent::Emote)->Params[0].Choices;
+            return static_cast<uint8_t>(
+                std::find_if(words.begin(), words.end(), [word](char const* w) { return word == w; }) - words.begin());
+        };
+        Fixture f;
+        f.OneShot(Intent::Emote);
+        f.Command.Choice = emoteChoice("wave");
+        Check(f.Run() == Result::Applied && f.BotSession.Emotes.size() == 1 &&
+                  f.BotSession.Emotes[0].Opcode == CMSG_TEXT_EMOTE &&
+                  f.BotSession.Emotes[0].Fields == std::vector<uint64_t>{TEXT_EMOTE_WAVE, 3, f.Human.Guid.Value} &&
+                  f.Bot.Facing == &f.Human,
+              "emote: a wave at the partner, facing it");
+        Fixture unseen;
+        unseen.OneShot(Intent::Emote);
+        unseen.Command.Choice = emoteChoice("congratulate");
+        unseen.Human.Seen = false;
+        Ungrouped(unseen);
+        Check(unseen.Run() == Result::Applied && unseen.BotSession.Emotes.size() == 1 &&
+                  unseen.BotSession.Emotes[0].Fields == std::vector<uint64_t>{TEXT_EMOTE_CONGRATULATE, 3, 0} &&
+                  !unseen.Bot.Facing,
+              "emote: the last gesture, ungrouped, at nobody when the bot does not see the partner");
+        Fixture stray;
+        stray.OneShot(Intent::Emote);
+        stray.Command.Choice = emoteChoice("no such gesture");
+        stray.Denied();
+        Check(stray.BotSession.Emotes.empty(), "emote: a choice past the gestures is malformed");
+        for (bool const grouped : {true, false})
+        {
+            Fixture roll;
+            roll.OneShot(Intent::Roll);
+            if (!grouped)
+                Ungrouped(roll);
+            Check(roll.Run() == Result::Applied && roll.Bot.Rolls == 1 && roll.Bot.RollMinimum == 1 &&
+                      roll.Bot.RollMaximum == 100,
+                  "roll: one roll of 1-100, grouped or not");
+        }
+        uint64_t const bot = 1;
+        auto const now = std::chrono::steady_clock::now();
+        // A Fixture holds pointers into itself: each is built in place, never returned
+        auto const refused = [&](auto setUp)
+        {
+            Fixture r;
+            r.OneShot(Intent::Ready);
+            PlayerbotBridge::EndReadyCheck(bot);
+            setUp(r);
+            r.Refused(Refusal::CannotNow);
+        };
+        refused([](Fixture&) {});
+        {
+            Fixture open;
+            open.OneShot(Intent::Ready);
+            PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(34));
+            Check(open.Run() == Result::Applied && open.BotSession.ReadyAnswers.size() == 1 &&
+                      open.BotSession.ReadyAnswers[0].Opcode == MSG_RAID_READY_CHECK &&
+                      open.BotSession.ReadyAnswers[0].Fields == std::vector<uint64_t>{1} &&
+                      !PlayerbotBridge::ReadyCheckOpen(bot),
+                  "ready: an open check is answered ready, once");
+        }
+        {
+            Fixture again;
+            again.OneShot(Intent::Ready);
+            again.Refused(Refusal::CannotNow);
+        }
+        refused(
+            [&](Fixture&)
+            {
+                PlayerbotBridge::NoteReadyCheck(bot);
+                PlayerbotBridge::EndReadyCheck(bot);
+            });
+        refused([&](Fixture&) { PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(36)); });
+        refused(
+            [&](Fixture& r)
+            {
+                PlayerbotBridge::NoteReadyCheck(bot);
+                Ungrouped(r);
+            });
+        PlayerbotBridge::NoteReadyCheck(bot);
+        Check(PlayerbotBridge::ReadyCheckOpen(bot) && !PlayerbotBridge::ReadyCheckOpen(2),
+              "ready: a check is the bot's own");
+        PlayerbotBridge::EndReadyCheck(bot);
+        Fixture leave;
+        leave.OneShot(Intent::LeaveGroup);
+        Check(leave.Run() == Result::Applied && leave.AI.Leaves == 1, "leave_group: the bot's leave is queued");
+        Fixture alone;
+        alone.OneShot(Intent::LeaveGroup);
+        Ungrouped(alone);
+        alone.Refused(Refusal::NotInGroup);
+        Check(alone.AI.Leaves == 0, "leave_group: an ungrouped bot leaves nothing");
+    }
+    // LC1a: the ability table. Every row has every part; the twenty-two verbs with an effect have a row and the four
     // without one have none; each row applied above and gave each refusal it lists, and no other.
     {
         std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
-        Check(rows.size() == 18, "eighteen rows");
-        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        Check(rows.size() == 22, "twenty-two rows");
+        for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
         {
             Intent const operation = static_cast<Intent>(value);
             Check((PlayerbotBridge::FindRow(operation) != nullptr) != PlayerbotBridge::IsUnavailable(operation),
@@ -2437,7 +2538,7 @@ int main()
             for (Refusal reason : row.Refusals)
                 Check(seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
             // The planner double gives any goal verb any answer; the planner's own rule is BridgeCheck's.
-            bool const goal = row.Operation >= Intent::GoTo;
+            bool const goal = row.Operation >= Intent::GoTo && row.Operation <= Intent::ResumePlan;
             for (Refusal reason : seen)
                 Check(goal || listed(row.Refusals, reason) || listed(common, reason),
                       "a row gives no refusal it does not list");
@@ -2458,7 +2559,7 @@ int main()
         // finds it again; the module parses the wire's verbs with these.
         std::set<std::string> verbs;
         bool verbsRoundTrip = true;
-        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
         {
             Intent const operation = static_cast<Intent>(value);
             std::string const word = PlayerbotBridge::IntentWord(operation);
@@ -2467,19 +2568,23 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 22, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 26, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
+        // LC16d appends the social verbs after them.
         char const* const wireVerbs[] = {
-            "follow",        "stay",          "flee",        "regroup",    "attack_own_target", "pull",
-            "mark",          "focus_healing", "assign_role", "save_mana",  "formation",         "position",
-            "dungeon_clear", "go_to",         "quest",       "errands",    "set_hearth",        "grind_here",
-            "gather_here",   "meet_at",       "pause_plan",  "resume_plan"};
+            "follow",     "stay",        "flee",          "regroup",     "attack_own_target",
+            "pull",       "mark",        "focus_healing", "assign_role", "save_mana",
+            "formation",  "position",    "dungeon_clear", "go_to",       "quest",
+            "errands",    "set_hearth",  "grind_here",    "gather_here", "meet_at",
+            "pause_plan", "resume_plan", "emote",         "roll",        "ready",
+            "leave_group"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
-        Check(oldWords && !*PlayerbotBridge::IntentWord(static_cast<Intent>(22)) && !PlayerbotBridge::FindIntent("") &&
-                  !PlayerbotBridge::FindIntent("Follow") && !PlayerbotBridge::FindIntent("follow ") &&
-                  !PlayerbotBridge::FindIntent("inventory") && !PlayerbotBridge::FindIntent("regroups"),
+        Check(oldWords && !*PlayerbotBridge::IntentWord(static_cast<Intent>(PlayerbotBridge::IntentCount)) &&
+                  !PlayerbotBridge::FindIntent("") && !PlayerbotBridge::FindIntent("Follow") &&
+                  !PlayerbotBridge::FindIntent("follow ") && !PlayerbotBridge::FindIntent("inventory") &&
+                  !PlayerbotBridge::FindIntent("regroups"),
               "every operation keeps its old wire word; no other word, and no topic, is a verb");
         Check(PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Mark), OrderField::Icon) &&
                   PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&

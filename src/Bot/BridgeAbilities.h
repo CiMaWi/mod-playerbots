@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_BRIDGEABILITIES_H
 #define PLAYERBOTS_BRIDGEABILITIES_H
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -163,7 +164,16 @@ bool IsUnavailable(Intent operation);
 
 // The number of Intent values: the rows' verbs and the four without one (BridgeAbilities.cpp checks it against the
 // table). A new verb is appended to Intent, given its row and counted here; mod-ollama-chat asserts its own count.
-constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::ResumePlan) + 1;
+constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::LeaveGroup) + 1;
+
+// The ready checks a bot was sent and has not answered, for the ready row: the core keeps no open check
+// (WorldSession::HandleRaidReadyCheckOpcode only broadcasts), so the bot's packet handler notes each request it gets
+// (another member's), and a finished check or the row's answer ends it. A check is open for ReadyCheckOpenFor after
+// its request. Any thread.
+constexpr std::chrono::seconds ReadyCheckOpenFor{35};
+void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now());
+void EndReadyCheck(uint64_t bot);
+bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now());
 
 // The wire's verb of an operation: its row's name, else the word the four without a row have on the wire; empty for
 // a value outside the enum. FindIntent is the inverse: a row by name, then the four; none for any other word.

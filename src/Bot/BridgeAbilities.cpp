@@ -12,13 +12,16 @@
 #include <initializer_list>
 #include <iterator>
 #include <list>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "AttackAction.h"
 #include "BridgeGoals.h"
 #include "BridgeNames.h"
 #include "CensusMgr.h"
+#include "EmoteAction.h"
 #include "FollowActions.h"
 #include "Group.h"
 #include "MovementActions.h"
@@ -33,6 +36,7 @@
 #include "StayActions.h"
 #include "TestPlayer.h"
 #include "TravelPlaces.h"
+#include "WorldPacket.h"
 #include "WorldSession.h"
 
 namespace PlayerbotBridge
@@ -350,6 +354,80 @@ Result MarkOnce(ActFacts const& act, Refusal&)
     return act.BotGroup->GetTargetIcon(icon) == act.Target->GetGUID() ? Result::Applied : Result::Failed;
 }
 
+// The gestures: the word on the wire and its text emote, in the same order.
+constexpr char const* const EmoteWords[] = {"wave",  "bow",  "cheer", "laugh",   "dance",   "salute",      "kneel",
+                                            "point", "cry",  "shy",   "thank",   "hello",   "bye",         "nod",
+                                            "no",    "yawn", "sigh",  "whistle", "applaud", "congratulate"};
+constexpr TextEmotes EmoteIds[] = {TEXT_EMOTE_WAVE,  TEXT_EMOTE_BOW,     TEXT_EMOTE_CHEER,   TEXT_EMOTE_LAUGH,
+                                   TEXT_EMOTE_DANCE, TEXT_EMOTE_SALUTE,  TEXT_EMOTE_KNEEL,   TEXT_EMOTE_POINT,
+                                   TEXT_EMOTE_CRY,   TEXT_EMOTE_SHY,     TEXT_EMOTE_THANK,   TEXT_EMOTE_HELLO,
+                                   TEXT_EMOTE_BYE,   TEXT_EMOTE_NOD,     TEXT_EMOTE_NO,      TEXT_EMOTE_YAWN,
+                                   TEXT_EMOTE_SIGH,  TEXT_EMOTE_WHISTLE, TEXT_EMOTE_APPLAUD, TEXT_EMOTE_CONGRATULATE};
+static_assert(std::size(EmoteWords) == std::size(EmoteIds), "one text emote per gesture word");
+
+// A text emote as EmoteActionBase::Emote sends one (through the opcode handler: the animation, the line to those
+// around, the emote hooks), at the partner when the bot sees it: facing it and naming it every time, where the action
+// names its selection half the time. Out of sight the gesture names nobody.
+Result EmoteOnce(ActFacts const& act)
+{
+    uint8_t const choice = act.Request.Choice;
+    if (choice >= std::size(EmoteIds))
+        return Result::Failed;
+
+    Player* bot = act.Bot;
+    TextEmotes const emote = EmoteIds[choice];
+    bool const seen = Visible(bot, act.Partner, act.Request.VisibilityDistance);
+    if (seen)
+        bot->SetFacingToObject(act.Partner);
+
+    WorldPacket packet(CMSG_TEXT_EMOTE);
+    packet << uint32(emote);
+    packet << EmoteActionBase::GetNumberOfEmoteVariants(emote, bot->getRace(), bot->getGender());
+    packet << (seen ? act.Partner->GetGUID() : ObjectGuid::Empty);
+    bot->GetSession()->HandleTextEmoteOpcode(packet);
+    return Result::Applied;
+}
+
+constexpr uint32 RollMinimum = 1;
+constexpr uint32 RollMaximum = 100;
+
+// The "roll" command without an item (RollAction) is this roll, but answers false. The group sees it, else the bot.
+Result RollOnce(ActFacts const& act)
+{
+    act.Bot->DoRandomRoll(RollMinimum, RollMaximum);
+    return Result::Applied;
+}
+
+// Ready checks the bots were sent and have not answered, by bot guid: when each was sent.
+std::mutex readyChecksLock;
+std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> readyChecks;
+
+Refusal ReadyRowCheck(ActFacts const& act)
+{
+    return act.BotGroup && ReadyCheckOpen(act.Bot->GetGUID().GetRawValue()) ? Refusal::None : Refusal::CannotNow;
+}
+
+constexpr uint8 ReadyState = 1;
+
+// The answer "ready" without ReadyCheckAction's readiness line to the master. Its SendReadyConfirm writes the bot's
+// guid before the state, where the handler reads only the state.
+Result ReadyOnce(ActFacts const& act)
+{
+    WorldPacket packet(MSG_RAID_READY_CHECK);
+    packet << ReadyState;
+    act.Bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
+    EndReadyCheck(act.Bot->GetGUID().GetRawValue());
+    return Result::Applied;
+}
+
+// As LeaveGroupAction::Leave without its "Goodbye!" line. The bot's session queues the leave (CMSG_GROUP_DISBAND, a
+// client's leave: a leader's group passes on), so the bot is out of the group at its next session update.
+Result LeaveOnce(ActFacts const& act)
+{
+    act.Ai->LeaveOrDisbandGroup();
+    return Result::Applied;
+}
+
 bool InGroup(GroupRule rule, ActFacts const& act)
 {
     Group* group = act.BotGroup;
@@ -391,6 +469,7 @@ constexpr ParamRow TripParams[] = {
     {"place", ParamKind::Place, OrderField::PlaceName, "A known place's name, or x,y,z,map.", {}}};
 constexpr ParamRow QuestParams[] = {
     {"quest", ParamKind::Quest, OrderField::QuestId, "A quest in your log, by its title.", {}}};
+constexpr ParamRow EmoteParams[] = {{"emote", ParamKind::Choice, OrderField::Choice, "The gesture.", EmoteWords}};
 
 // Each row's refusals besides the common ones, in check order.
 constexpr Refusal FollowRefusals[] = {Refusal::NotWithYou, Refusal::TooFar};
@@ -408,6 +487,7 @@ constexpr Refusal QuestRefusals[] = {Refusal::UnknownName, Refusal::NotPlanner, 
 constexpr Refusal ErrandRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld, Refusal::NothingHere};
 constexpr Refusal HereRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld, Refusal::CannotNow, Refusal::NothingHere};
 constexpr Refusal PlanRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld};
+constexpr Refusal ReadyRefusals[] = {Refusal::CannotNow};
 
 constexpr Refusal Common[] = {Refusal::Battleground, Refusal::Travelling, Refusal::Dead};
 
@@ -672,7 +752,56 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "back to my own plans"}};
+     .StatePhrase = "back to my own plans"},
+    {.Operation = Intent::Emote,
+     .Name = "emote",
+     .Sentence = "Make a gesture, at the person you are talking to when you see them.",
+     .Params = EmoteParams,
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = nullptr,
+     .Refusals = {},
+     .Effect = [](ActFacts const& act, Refusal&) { return EmoteOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "making a {emote} gesture"},
+    {.Operation = Intent::Roll,
+     .Name = "roll",
+     .Sentence = "Roll a random number from 1 to 100; your group sees it.",
+     .Params = {},
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = nullptr,
+     .Refusals = {},
+     .Effect = [](ActFacts const& act, Refusal&) { return RollOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "rolling a die"},
+    // No group rule: an ungrouped bot has no open check, so it answers as a grouped one without one.
+    {.Operation = Intent::Ready,
+     .Name = "ready",
+     .Sentence = "Answer your group's open ready check: you are ready.",
+     .Params = {},
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = ReadyRowCheck,
+     .Refusals = ReadyRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return ReadyOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "ready"},
+    {.Operation = Intent::LeaveGroup,
+     .Name = "leave_group",
+     .Sentence = "Leave your group.",
+     .Params = {},
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = nullptr,
+     .Refusals = GroupSettingRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return LeaveOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "leaving the group"}};
 
 static_assert(std::size(Rows) + std::size(NoEffect) == IntentCount, "every Intent has a row or a word without one");
 
@@ -747,6 +876,25 @@ AbilityRow const* FindRow(std::string_view name)
 }
 
 std::span<AbilityRow const> AbilityRows() { return Rows; }
+
+void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at)
+{
+    std::lock_guard<std::mutex> lock(readyChecksLock);
+    readyChecks[bot] = at;
+}
+
+void EndReadyCheck(uint64_t bot)
+{
+    std::lock_guard<std::mutex> lock(readyChecksLock);
+    readyChecks.erase(bot);
+}
+
+bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at)
+{
+    std::lock_guard<std::mutex> lock(readyChecksLock);
+    auto const check = readyChecks.find(bot);
+    return check != readyChecks.end() && at - check->second < ReadyCheckOpenFor;
+}
 
 bool IsUnavailable(Intent operation)
 {

@@ -532,6 +532,10 @@ public:
         if (botAI != nullptr)
             botAI->HandleBotOutgoingPacket(packet);
 
+        // A ready check answer, to whichever leader the test seam opened a check for
+        if (packet.GetOpcode() == MSG_RAID_READY_CHECK_CONFIRM)
+            TestPlayerMgr::Instance().OnPacketSent(player->GetGUID(), packet);
+
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
             playerbotMgr->HandleMasterOutgoingPacket(packet);
     }

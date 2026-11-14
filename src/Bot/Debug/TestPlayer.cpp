@@ -309,6 +309,82 @@ bool TestPlayerMgr::GroupWith(ChatHandler* handler, std::string const& target)
     return true;
 }
 
+bool TestPlayerMgr::HandleReadyCheckCommand(ChatHandler* handler, char const* args)
+{
+    if (!CheckEnabled(handler))
+        return false;
+
+    std::istringstream in(args ? args : "");
+    std::string target;
+    in >> target;
+    return Instance().OpenReadyCheck(handler, target);
+}
+
+bool TestPlayerMgr::HandleReadyAnswerCommand(ChatHandler* handler, char const* args)
+{
+    if (!CheckEnabled(handler))
+        return false;
+
+    std::istringstream in(args ? args : "");
+    std::string target;
+    in >> target;
+    if (target.empty())
+        return Fail(handler, "Usage: .playerbots testplayer readyanswer <character>");
+
+    ObjectGuid const guid = sCharacterCache->GetCharacterGuidByName(target);
+    std::string answer = "none";
+    {
+        TestPlayerMgr& mgr = Instance();
+        std::lock_guard<std::mutex> lock(mgr._readyLock);
+        auto const found = mgr._readyAnswers.find(guid);
+        if (found != mgr._readyAnswers.end())
+            answer = found->second ? "ready" : "not ready";
+    }
+    handler->PSendSysMessage("READYANSWER {}: {}", target, answer);
+    return true;
+}
+
+bool TestPlayerMgr::OpenReadyCheck(ChatHandler* handler, std::string const& target)
+{
+    Player* player = OnlinePlayer();
+    if (!player)
+        return Fail(handler, "No test player is online");
+
+    // The test player's own group, or the group of the character it names; the group's leader opens the check
+    Player* member = target.empty() ? player : ObjectAccessor::FindPlayerByName(target);
+    if (!member)
+        return Fail(handler, Acore::StringFormat("{} is not online", target));
+
+    Group* group = member->GetGroup();
+    if (!group)
+        return Fail(handler, Acore::StringFormat("{} is in no group", member->GetName()));
+
+    Player* leader = ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID());
+    if (!leader || !leader->IsInWorld() || !leader->GetSession())
+        return Fail(handler, "The group's leader is not in the world");
+
+    {
+        std::lock_guard<std::mutex> lock(_readyLock);
+        _readyOpeners.insert(leader->GetGUID());
+    }
+    WorldPacket request(MSG_RAID_READY_CHECK);
+    leader->GetSession()->HandleRaidReadyCheckOpcode(request);
+    handler->PSendSysMessage("{} opened a ready check for {} members", leader->GetName(), group->GetMembersCount());
+    return true;
+}
+
+void TestPlayerMgr::OnPacketSent(ObjectGuid receiver, WorldPacket const& packet)
+{
+    // A member's answer to a leader that opened a check here: its guid and its state (1 ready)
+    constexpr std::size_t ConfirmSize = sizeof(uint64) + sizeof(uint8);
+    if (packet.GetOpcode() != MSG_RAID_READY_CHECK_CONFIRM || packet.size() < ConfirmSize)
+        return;
+
+    std::lock_guard<std::mutex> lock(_readyLock);
+    if (_readyOpeners.count(receiver))
+        _readyAnswers[ObjectGuid(packet.read<uint64>(0))] = packet.read<uint8>(sizeof(uint64));
+}
+
 bool TestPlayerMgr::HandleArenaQueueCommand(ChatHandler* handler, char const* args)
 {
     if (!CheckEnabled(handler))
@@ -755,6 +831,12 @@ void TestPlayerMgr::Shutdown()
 
 void TestPlayerMgr::Reset()
 {
+    {
+        std::lock_guard<std::mutex> lock(_readyLock);
+        _readyAnswers.clear();
+        _readyOpeners.clear();
+    }
+
     if (_session)
     {
         if (_session->GetPlayer())

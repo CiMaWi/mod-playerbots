@@ -34,6 +34,8 @@ namespace PlayerbotBridge
 //     ResumePlan also ends a bridge goal.
 //   Every goal verb: NotPlanner when the planner does not run the bot (Planner.Goals off, a real master such as a
 //   player's group, not persistent), GoalHeld when a group's goal holds the slot.
+// The social verbs (LC16d) are done at once: Emote (emote) a gesture, Roll (roll) a roll of 1-100, Ready (ready) the
+// answer to the group's open ready check, LeaveGroup (leave_group) the bot leaves its group.
 enum class Intent : uint8_t
 {
     Follow,
@@ -57,7 +59,11 @@ enum class Intent : uint8_t
     GatherHere,
     MeetAt,
     PausePlan,
-    ResumePlan
+    ResumePlan,
+    Emote,
+    Roll,
+    Ready,
+    LeaveGroup
 };
 
 enum class Result : uint8_t
