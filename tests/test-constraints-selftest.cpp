@@ -92,12 +92,16 @@ void ApplyNoDamage(ModelUnits& units)
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
 void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
 void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByMount(ModelUnits&) {}     // nomount: the check mount state action reads the bit (MountsOnItsOwn)
 void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
 
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {
-    {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {FLYFAIL, ReadByFollower, ReadByFollower}, {FLYABORT, ReadByFollower, ReadByFollower},
-    {NODESTROY, ReadByDestroy, ReadByDestroy}, {FLEE, ReadByFlee, ReadByFlee}};
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
+                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+                                              {FLYFAIL, ReadByFollower, ReadByFollower},
+                                              {FLYABORT, ReadByFollower, ReadByFollower},
+                                              {NODESTROY, ReadByDestroy, ReadByDestroy},
+                                              {NOMOUNT, ReadByMount, ReadByMount},
+                                              {FLEE, ReadByFlee, ReadByFlee}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -246,6 +250,12 @@ bool RowWorks(Row const& row)
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !DestroysForSpace(NODESTROY) && !DestroysForSpace(HOLD | NODESTROY) && DestroysForSpace(0) &&
                DestroysForSpace(HOLD | NOFIGHT | NODAMAGE) && (NODESTROY & HOLD) == 0 && !EndsStatus(0, NODESTROY);
+    // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
+    if (name == "nomount")
+        return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
+               !MountsOnItsOwn(NOMOUNT) && !MountsOnItsOwn(HOLD | NOMOUNT) && MountsOnItsOwn(0) &&
+               MountsOnItsOwn(HOLD | NOFIGHT | NODAMAGE | NODESTROY) && (NOMOUNT & HOLD) == 0 &&
+               !EndsStatus(0, NOMOUNT);
     return false;
 }
 
@@ -266,7 +276,7 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, flee",
+    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, nomount, flee",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

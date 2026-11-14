@@ -12,15 +12,20 @@
 #include <initializer_list>
 #include <iterator>
 #include <list>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "AttackAction.h"
 #include "BridgeGoals.h"
 #include "BridgeNames.h"
+#include "BridgeSpellRule.h"
 #include "CensusMgr.h"
+#include "EmoteAction.h"
 #include "FollowActions.h"
 #include "Group.h"
+#include "Log.h"
 #include "MovementActions.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -29,16 +34,24 @@
 #include "Playerbots.h"
 #include "PositionAction.h"
 #include "PositionValue.h"
+#include "PullActions.h"
+#include "PullStrategy.h"
 #include "QuestDef.h"
+#include "QuestPackets.h"
+#include "RandomPlayerbotMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StayActions.h"
 #include "TestPlayer.h"
 #include "TravelPlaces.h"
+#include "WorldPacket.h"
 #include "WorldSession.h"
 
 namespace PlayerbotBridge
 {
-// Read once the order is admitted; Target is set only for a row that takes a unit, once the bot sees it. Place and
-// QuestId are what the order's place and quest mean (a name looked up), set only for a row that takes them.
+// Read once the order is admitted; Target is set only for a row that takes a unit, once the bot sees it. Place,
+// QuestId, ItemId and SpellId are what the order's place, quest, item and spell mean (a name looked up), set only for
+// a row that takes them. A row reads a choice and a count from Request.
 struct ActFacts
 {
     PostMapJoin const& Phase;
@@ -50,6 +63,8 @@ struct ActFacts
     Unit* Target;
     std::string Place;
     uint32_t QuestId;
+    uint32_t ItemId = 0;
+    uint32_t SpellId = 0;
 };
 
 namespace
@@ -325,6 +340,166 @@ Result AttackOnce(ActFacts const& act, Refusal&)
     return attack.ExecuteExactTarget(act.Target) ? Result::Applied : Result::Failed;
 }
 
+// LC.29: a unit the bot may fight on an order is a creature, never a player or a player's pet (also for an order
+// that gives the unit by id, past the name filter), and one the core lets it attack.
+bool MayAttack(ActFacts const& act)
+{
+    return !act.Target->GetCharmerOrOwnerPlayerOrPlayerItself() && act.Bot->IsValidAttackTarget(act.Target);
+}
+
+// An attack by name: any enemy creature the bot sees, not only its own target.
+Refusal AttackByNameCheck(ActFacts const& act)
+{
+    return act.Bot->IsMounted() || !MayAttack(act) ? Refusal::CannotNow : Refusal::None;
+}
+
+// LC17a: a pull stays with the group: one creature within this many yards of the bot (a group member), in its sight.
+constexpr float PullBound = 20.0f;
+
+// A tank pulls with its pull strategy (playerbots' pull request: it draws the creature and comes back to where it
+// stood); any other bot pulls with a ranged attack, its first strike.
+PullStrategy* TankPull(ActFacts const& act)
+{
+    return PlayerbotAI::IsTank(act.Bot) ? PullStrategy::Get(act.Ai) : nullptr;
+}
+
+Refusal PullCheck(ActFacts const& act)
+{
+    if (act.Bot->IsMounted())
+        return Refusal::CannotNow;
+
+    if (!act.Bot->IsWithinDistInMap(act.Target, PullBound) || !act.Bot->IsWithinLOSInMap(act.Target))
+        return Refusal::TooFar;
+
+    PullStrategy* strategy = TankPull(act);
+    bool const able = strategy ? strategy->CanDoPullAction(act.Target) : PlayerbotAI::IsRanged(act.Bot);
+    return able && MayAttack(act) ? Refusal::None : Refusal::CannotNow;
+}
+
+Result PullOnce(ActFacts const& act, Refusal& why)
+{
+    if (PullStrategy* strategy = TankPull(act))
+    {
+        PullRequestAction::Request(act.Ai, strategy, act.Target);
+        return Result::Applied;
+    }
+
+    return AttackOnce(act, why);
+}
+
+// LC17b: the spell rule reads the core's effect values by number (BridgeSpellRule.h).
+static_assert(SpellEffectId::Instakill == SPELL_EFFECT_INSTAKILL &&
+                  SpellEffectId::SchoolDamage == SPELL_EFFECT_SCHOOL_DAMAGE &&
+                  SpellEffectId::PortalTeleport == SPELL_EFFECT_PORTAL_TELEPORT &&
+                  SpellEffectId::TeleportUnits == SPELL_EFFECT_TELEPORT_UNITS &&
+                  SpellEffectId::EnvironmentalDamage == SPELL_EFFECT_ENVIRONMENTAL_DAMAGE &&
+                  SpellEffectId::PowerDrain == SPELL_EFFECT_POWER_DRAIN &&
+                  SpellEffectId::HealthLeech == SPELL_EFFECT_HEALTH_LEECH &&
+                  SpellEffectId::WeaponDamageNoSchool == SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL &&
+                  SpellEffectId::Leap == SPELL_EFFECT_LEAP &&
+                  SpellEffectId::WeaponPercentDamage == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE &&
+                  SpellEffectId::Jump == SPELL_EFFECT_JUMP && SpellEffectId::JumpDest == SPELL_EFFECT_JUMP_DEST &&
+                  SpellEffectId::TeleportUnitsFaceCaster == SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER &&
+                  SpellEffectId::TradeSkill == SPELL_EFFECT_TRADE_SKILL &&
+                  SpellEffectId::WeaponDamage == SPELL_EFFECT_WEAPON_DAMAGE &&
+                  SpellEffectId::PowerBurn == SPELL_EFFECT_POWER_BURN &&
+                  SpellEffectId::InterruptCast == SPELL_EFFECT_INTERRUPT_CAST &&
+                  SpellEffectId::Stuck == SPELL_EFFECT_STUCK && SpellEffectId::Charge == SPELL_EFFECT_CHARGE &&
+                  SpellEffectId::KnockBack == SPELL_EFFECT_KNOCK_BACK &&
+                  SpellEffectId::AttackMe == SPELL_EFFECT_ATTACK_ME &&
+                  SpellEffectId::TeleportGraveyard == SPELL_EFFECT_TELEPORT_GRAVEYARD &&
+                  SpellEffectId::NormalizedWeaponDamage == SPELL_EFFECT_NORMALIZED_WEAPON_DMG &&
+                  SpellEffectId::PullTowards == SPELL_EFFECT_PULL_TOWARDS &&
+                  SpellEffectId::LeapBack == SPELL_EFFECT_LEAP_BACK &&
+                  SpellEffectId::KnockBackDest == SPELL_EFFECT_KNOCK_BACK_DEST &&
+                  SpellEffectId::PullTowardsDest == SPELL_EFFECT_PULL_TOWARDS_DEST &&
+                  SpellEffectId::ChargeDest == SPELL_EFFECT_CHARGE_DEST &&
+                  TradeskillAttribute == SPELL_ATTR0_IS_TRADESKILL && MAX_SPELL_EFFECTS == 3,
+              "the spell rule's effect values are SharedDefines.h's");
+
+// A spell's facts for the spell rule: its SpellInfo, and whether a profession's skill line teaches it (the spell
+// manager's lists, no database query).
+SpellFacts FactsOf(SpellInfo const* spell)
+{
+    SpellFacts facts{spell->IsPassive(), spell->IsPositive(), false, spell->Attributes, {}};
+    for (uint8 index = 0; index < MAX_SPELL_EFFECTS; ++index)
+        facts.Effects[index] = static_cast<uint32_t>(spell->Effects[index].Effect);
+
+    SkillLineAbilityMapBounds const skills = sSpellMgr->GetSkillLineAbilityMapBounds(spell->Id);
+    for (auto skill = skills.first; skill != skills.second; ++skill)
+        facts.Profession = facts.Profession || IsProfessionSkill(skill->second->SkillLine);
+
+    return facts;
+}
+
+// Whom a spell lands on: the named friend for a spell cast on a unit (or a friend's body), else the bot (a conjure,
+// a portal, an aura of its own): the effect falls where the bot stands whoever was named.
+Unit* CastTarget(ActFacts const& act, SpellInfo const* spell)
+{
+    return spell->GetExplicitTargetMask() & (TARGET_FLAG_UNIT_MASK | TARGET_FLAG_CORPSE_MASK) ? act.Target : act.Bot;
+}
+
+// The power and reagents the cast costs: CanCastSpell checks the cast without them.
+bool CanPay(Player* bot, SpellInfo const* spell)
+{
+    if (spell->PowerType < MAX_POWERS && static_cast<int64>(bot->GetPower(static_cast<Powers>(spell->PowerType))) <
+                                             spell->CalcPowerCost(bot, spell->GetSchoolMask()))
+        return false;
+
+    if (bot->CanNoReagentCast(spell))
+        return true;
+
+    for (uint8 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+        if (spell->Reagent[index] > 0 && !bot->HasItemCount(spell->Reagent[index], spell->ReagentCount[index]))
+            return false;
+
+    return true;
+}
+
+// A helpful spell (BridgeSpellRule.h) on a friend or the bot itself (also for a unit given by id), within the spell's
+// range, off cooldown, paid for.
+Refusal CastCheck(ActFacts const& act)
+{
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(act.SpellId);
+    if (!spell || !HelpfulSpell(FactsOf(spell)) || (act.Target != act.Bot && !act.Bot->IsFriendlyTo(act.Target)))
+        return Refusal::CannotNow;
+
+    Unit* target = CastTarget(act, spell);
+    if (target != act.Bot && !act.Bot->IsWithinDistInMap(target, spell->GetMaxRange(true, act.Bot)))
+        return Refusal::TooFar;
+
+    return act.Bot->HasSpellCooldown(spell->Id) || !CanPay(act.Bot, spell) ? Refusal::CannotNow : Refusal::None;
+}
+
+// One cast through playerbots' own path: dismounted first, standing up and still (as CastCustomSpellAction; a seated
+// bot's CastSpell would only stand it up), then its CanCastSpell check (the core's cast check: a dead friend for a
+// resurrection, a target it may cast on, the global cooldown: an order that meets the bot's own cast is refused, the
+// speaker may ask again) and CastSpell. A refusal or a failure there writes one debug line of why.
+Result CastOnce(ActFacts const& act, Refusal& why)
+{
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(act.SpellId);
+    Unit* target = CastTarget(act, spell);
+    Player* bot = act.Bot;
+    if (bot->IsMounted() && !bot->IsFlying() && !spell->HasAttribute(SPELL_ATTR0_ALLOW_WHILE_MOUNTED))
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+
+    bool const seated = !bot->IsStandState();
+    if (seated)
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+
+    if (bot->isMoving())
+        bot->StopMoving();
+
+    bool const checked = act.Ai->CanCastSpell(spell->Id, target, true);
+    if (checked && act.Ai->CastSpell(spell->Id, target))
+        return Result::Applied;
+
+    LOG_DEBUG("playerbots", "Bridge cast {} by {} on {}: {} (prepare {}, seated {}, casting {}, gcd {})", spell->Id,
+              bot->GetName(), target->GetName(), checked ? "failed" : "refused", act.Ai->LastPrepareResult(), seated,
+              bot->IsNonMeleeSpellCast(false), bot->GetGlobalCooldownMgr().HasGlobalCooldown(spell));
+    return checked ? Result::Failed : Refuse(why, Refusal::CannotNow);
+}
+
 // The bot marks as itself (as RtiAction does): in a raid only as its leader or an assistant, and never a player who
 // is not connected or is hostile to the bot.
 Refusal MarkCheck(ActFacts const& act)
@@ -347,6 +522,219 @@ Result MarkOnce(ActFacts const& act, Refusal&)
     return act.BotGroup->GetTargetIcon(icon) == act.Target->GetGUID() ? Result::Applied : Result::Failed;
 }
 
+// The gestures: the word on the wire and its text emote, in the same order.
+constexpr char const* const EmoteWords[] = {"wave",  "bow",  "cheer", "laugh",   "dance",   "salute",      "kneel",
+                                            "point", "cry",  "shy",   "thank",   "hello",   "bye",         "nod",
+                                            "no",    "yawn", "sigh",  "whistle", "applaud", "congratulate"};
+constexpr TextEmotes EmoteIds[] = {TEXT_EMOTE_WAVE,  TEXT_EMOTE_BOW,     TEXT_EMOTE_CHEER,   TEXT_EMOTE_LAUGH,
+                                   TEXT_EMOTE_DANCE, TEXT_EMOTE_SALUTE,  TEXT_EMOTE_KNEEL,   TEXT_EMOTE_POINT,
+                                   TEXT_EMOTE_CRY,   TEXT_EMOTE_SHY,     TEXT_EMOTE_THANK,   TEXT_EMOTE_HELLO,
+                                   TEXT_EMOTE_BYE,   TEXT_EMOTE_NOD,     TEXT_EMOTE_NO,      TEXT_EMOTE_YAWN,
+                                   TEXT_EMOTE_SIGH,  TEXT_EMOTE_WHISTLE, TEXT_EMOTE_APPLAUD, TEXT_EMOTE_CONGRATULATE};
+static_assert(std::size(EmoteWords) == std::size(EmoteIds), "one text emote per gesture word");
+
+// A text emote as EmoteActionBase::Emote sends one (through the opcode handler: the animation, the line to those
+// around, the emote hooks), at the partner when the bot sees it: facing it and naming it every time, where the action
+// names its selection half the time. Out of sight the gesture names nobody.
+Result EmoteOnce(ActFacts const& act)
+{
+    uint8_t const choice = act.Request.Choice;
+    if (choice >= std::size(EmoteIds))
+        return Result::Failed;
+
+    Player* bot = act.Bot;
+    TextEmotes const emote = EmoteIds[choice];
+    bool const seen = Visible(bot, act.Partner, act.Request.VisibilityDistance);
+    if (seen)
+        bot->SetFacingToObject(act.Partner);
+
+    WorldPacket packet(CMSG_TEXT_EMOTE);
+    packet << uint32(emote);
+    packet << EmoteActionBase::GetNumberOfEmoteVariants(emote, bot->getRace(), bot->getGender());
+    packet << (seen ? act.Partner->GetGUID() : ObjectGuid::Empty);
+    bot->GetSession()->HandleTextEmoteOpcode(packet);
+    return Result::Applied;
+}
+
+constexpr uint32 RollMinimum = 1;
+constexpr uint32 RollMaximum = 100;
+
+// The "roll" command without an item (RollAction) is this roll, but answers false. The group sees it, else the bot.
+Result RollOnce(ActFacts const& act)
+{
+    act.Bot->DoRandomRoll(RollMinimum, RollMaximum);
+    return Result::Applied;
+}
+
+// Ready checks the bots were sent and have not answered, by bot guid: when each was sent.
+std::mutex readyChecksLock;
+std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> readyChecks;
+
+Refusal ReadyRowCheck(ActFacts const& act)
+{
+    return act.BotGroup && ReadyCheckOpen(act.Bot->GetGUID().GetRawValue()) ? Refusal::None : Refusal::CannotNow;
+}
+
+constexpr uint8 ReadyState = 1;
+
+// The answer "ready" without ReadyCheckAction's readiness line to the master. Its SendReadyConfirm writes the bot's
+// guid before the state, where the handler reads only the state.
+Result ReadyOnce(ActFacts const& act)
+{
+    WorldPacket packet(MSG_RAID_READY_CHECK);
+    packet << ReadyState;
+    act.Bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
+    EndReadyCheck(act.Bot->GetGUID().GetRawValue());
+    return Result::Applied;
+}
+
+// As LeaveGroupAction::Leave without its "Goodbye!" line. The bot's session queues the leave (CMSG_GROUP_DISBAND, a
+// client's leave: a leader's group passes on), so the bot is out of the group at its next session update.
+Result LeaveOnce(ActFacts const& act)
+{
+    act.Ai->LeaveOrDisbandGroup();
+    return Result::Applied;
+}
+
+// The group a player may invite into: its leader or a raid assistant does.
+bool MayInvite(Group* group, Player* inviter)
+{
+    return group->IsLeader(inviter->GetGUID()) || group->IsAssistant(inviter->GetGUID());
+}
+
+// The partner's group, or the one it is forming: an invitation it sent before it had a group leaves it the leader of
+// a group not yet created (WorldSession::HandleGroupInviteOpcode).
+Group* PartnerGroup(Player* partner)
+{
+    if (Group* group = partner->GetGroup())
+        return group;
+
+    Group* forming = partner->GetGroupInvite();
+    return forming && forming->GetLeaderGUID() == partner->GetGUID() ? forming : nullptr;
+}
+
+// join_group: in the partner's group already; the partner's invitation it holds; the partner's group, when the
+// partner may invite and it has room, and the bot has none; else the bot invites the partner, from no group or one it
+// may invite into with room. Another group or invitation, a battleground queue or a full group: cannot_now.
+Refusal JoinCheck(ActFacts const& act)
+{
+    Player* bot = act.Bot;
+    Player* partner = act.Partner;
+    Group* own = act.BotGroup;
+    Group* theirs = PartnerGroup(partner);
+    if (own && own == theirs)
+        return Refusal::None;
+
+    if (bot->InBattlegroundQueue())
+        return Refusal::CannotNow;
+
+    if (Group* invite = bot->GetGroupInvite())
+        return invite == theirs ? Refusal::None : Refusal::CannotNow;
+
+    if (theirs)
+        return !own && MayInvite(theirs, partner) && !theirs->IsFull() ? Refusal::None : Refusal::CannotNow;
+
+    if (partner->GetGroupInvite())
+        return Refusal::CannotNow;
+
+    return !own || (MayInvite(own, bot) && !own->IsFull()) ? Refusal::None : Refusal::CannotNow;
+}
+
+// A client's invitation (InviteToGroupAction::Invite's packet): the core checks it and tells the inviter.
+void SendInvite(Player* inviter, Player* invitee)
+{
+    WorldPacket packet(CMSG_GROUP_INVITE);
+    packet << invitee->GetName();
+    packet << uint32(0);  // The roles mask
+    inviter->GetSession()->HandleGroupInviteOpcode(packet);
+}
+
+// AcceptInvitationAction's accept and what follows it (the partner as a random bot's master, the group strategies),
+// without its security check (the bridge admitted the partner), its "Hello" and its summon.
+Result AcceptInvite(ActFacts const& act)
+{
+    WorldPacket packet(CMSG_GROUP_ACCEPT);
+    packet << uint32(0);  // The roles mask
+    act.Bot->GetSession()->HandleGroupAcceptOpcode(packet);
+    Group* group = act.Bot->GetGroup();
+    if (!group || !group->IsMember(act.Partner->GetGUID()))
+        return Result::Failed;
+
+    if (sRandomPlayerbotMgr.IsRandomBot(act.Bot))
+        act.Ai->SetMaster(act.Partner);
+
+    act.Ai->ResetStrategies();
+    act.Ai->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
+    act.Ai->Reset();
+    return Result::Applied;
+}
+
+// The partner's group takes the bot at once: the partner's invitation (as the playerbots join command has the master
+// send it), then the bot's accept. The bot's own invitation of the partner is applied when sent: the partner answers.
+Result JoinOnce(ActFacts const& act)
+{
+    Player* bot = act.Bot;
+    Player* partner = act.Partner;
+    Group* theirs = PartnerGroup(partner);
+    if (act.BotGroup && act.BotGroup == theirs)
+        return Result::Applied;
+
+    if (bot->GetGroupInvite())
+        return AcceptInvite(act);
+
+    if (theirs)
+    {
+        SendInvite(partner, bot);
+        return bot->GetGroupInvite() ? AcceptInvite(act) : Result::Failed;
+    }
+
+    SendInvite(bot, partner);
+    return partner->GetGroupInvite() ? Result::Applied : Result::Failed;
+}
+
+// A quest of the bot's log (a title was looked up there; an id may name any quest) that the core lets it share.
+Refusal ShareCheck(ActFacts const& act)
+{
+    if (act.Bot->FindQuestSlot(act.QuestId) >= MAX_QUEST_LOG_SIZE)
+        return Refusal::UnknownName;
+
+    return act.Bot->CanShareQuest(act.QuestId) ? Refusal::None : Refusal::CannotNow;
+}
+
+// ShareQuestAction's push without its master test and its "Quest shared": the core offers the quest to each member
+// on the bot's map and tells the bot each answer.
+Result ShareOnce(ActFacts const& act)
+{
+    WorldPacket packet(CMSG_PUSHQUESTTOPARTY);
+    packet << act.QuestId;
+    WorldPackets::Quest::PushQuestToParty push(std::move(packet));
+    push.Read();
+    act.Bot->GetSession()->HandlePushQuestToParty(push);
+    return Result::Applied;
+}
+
+// A quest the bot may take now: not had or done, its level and class, and room in its log.
+Refusal AcceptCheck(ActFacts const& act)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(act.QuestId);
+    return quest && act.Bot->CanTakeQuest(quest, false) && act.Bot->CanAddQuest(quest, false) ? Refusal::None
+                                                                                              : Refusal::CannotNow;
+}
+
+// The client's accept of a shared quest, with the sharer as the quest giver: the core checks the sharer still shares
+// it, tells the sharer and adds the quest. AcceptQuestShareAction's own accept needs a master and reads the quest from
+// a packet the bridge does not have.
+Result AcceptOnce(ActFacts const& act)
+{
+    Player* bot = act.Bot;
+    WorldPacket packet(CMSG_QUESTGIVER_ACCEPT_QUEST);
+    packet << bot->GetDivider();
+    packet << act.QuestId;
+    packet << uint32(0);
+    bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(packet);
+    return bot->FindQuestSlot(act.QuestId) < MAX_QUEST_LOG_SIZE ? Result::Applied : Result::Failed;
+}
+
 bool InGroup(GroupRule rule, ActFacts const& act)
 {
     Group* group = act.BotGroup;
@@ -366,13 +754,34 @@ bool InGroup(GroupRule rule, ActFacts const& act)
 constexpr char const* const RaidIcons[] = {"star", "circle", "diamond", "triangle", "moon", "square", "cross", "skull"};
 constexpr char const* const FormationShapes[] = {"close", "spread", "line"};
 
+// LC.29: an attack by name means an enemy creature, never a player. AttackParams are the old form's own target.
 constexpr ParamRow AttackParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The enemy you have targeted, by name.", {}}};
+    {"target", ParamKind::Unit, OrderField::Target, "The enemy you have targeted, by name.", {}, UnitFilter::Enemy}};
+constexpr ParamRow AttackByNameParams[] = {{"target",
+                                            ParamKind::Unit,
+                                            OrderField::Target,
+                                            "A hostile or neutral creature you can see, by name.",
+                                            {},
+                                            UnitFilter::Enemy}};
+constexpr ParamRow PullParams[] = {
+    {"target", ParamKind::Unit, OrderField::Target, "One creature near your group, by name.", {}, UnitFilter::Enemy}};
+constexpr ParamRow CastParams[] = {
+    {"spell", ParamKind::Spell, OrderField::SpellName, "A helpful spell of yours, by name.", {}},
+    {"target",
+     ParamKind::Unit,
+     OrderField::Target,
+     "Whom it is for, by name; your own name for yourself.",
+     {},
+     UnitFilter::Friend}};
 constexpr ParamRow MarkParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}},
+    {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}, UnitFilter::Anyone},
     {"icon", ParamKind::Choice, OrderField::Icon, "The raid icon to put on it.", RaidIcons}};
-constexpr ParamRow FocusHealParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The group member to heal first, by name.", {}}};
+constexpr ParamRow FocusHealParams[] = {{"target",
+                                         ParamKind::Unit,
+                                         OrderField::Target,
+                                         "The group member to heal first, by name.",
+                                         {},
+                                         UnitFilter::GroupMember}};
 constexpr ParamRow SaveManaParams[] = {
     {"enabled", ParamKind::Flag, OrderField::Enabled, "Yes to save mana, no to spend it freely.", {}}};
 constexpr ParamRow FormationParams[] = {
@@ -383,12 +792,27 @@ constexpr ParamRow TripParams[] = {
     {"place", ParamKind::Place, OrderField::PlaceName, "A known place's name, or x,y,z,map.", {}}};
 constexpr ParamRow QuestParams[] = {
     {"quest", ParamKind::Quest, OrderField::QuestId, "A quest in your log, by its title.", {}}};
+constexpr ParamRow EmoteParams[] = {{"emote", ParamKind::Choice, OrderField::Choice, "The gesture.", EmoteWords}};
+constexpr ParamRow ShareQuestParams[] = {
+    {"quest", ParamKind::Quest, OrderField::QuestId, "A quest in your log, by its title.", {}}};
+constexpr ParamRow AcceptQuestParams[] = {{"quest",
+                                           ParamKind::Quest,
+                                           OrderField::QuestId,
+                                           "The quest a group member shared with you, by its title.",
+                                           {},
+                                           UnitFilter::Anyone,
+                                           QuestFrom::Shared}};
 
 // Each row's refusals besides the common ones, in check order.
 constexpr Refusal FollowRefusals[] = {Refusal::NotWithYou, Refusal::TooFar};
 constexpr Refusal FleeRefusals[] = {Refusal::CannotNow};
 constexpr Refusal AttackRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::NoTarget,
                                       Refusal::CannotNow};
+constexpr Refusal AttackByNameRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::CannotNow};
+constexpr Refusal PullRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
+                                    Refusal::TooFar, Refusal::CannotNow};
+constexpr Refusal CastRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::TooFar,
+                                    Refusal::CannotNow};
 constexpr Refusal GroupTargetRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
                                            Refusal::CannotNow};
 constexpr Refusal GroupSettingRefusals[] = {Refusal::NotInGroup};
@@ -400,6 +824,9 @@ constexpr Refusal QuestRefusals[] = {Refusal::UnknownName, Refusal::NotPlanner, 
 constexpr Refusal ErrandRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld, Refusal::NothingHere};
 constexpr Refusal HereRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld, Refusal::CannotNow, Refusal::NothingHere};
 constexpr Refusal PlanRefusals[] = {Refusal::NotPlanner, Refusal::GoalHeld};
+constexpr Refusal ReadyRefusals[] = {Refusal::CannotNow};
+constexpr Refusal JoinRefusals[] = {Refusal::CannotNow};
+constexpr Refusal QuestShareRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::CannotNow};
 
 constexpr Refusal Common[] = {Refusal::Battleground, Refusal::Travelling, Refusal::Dead};
 
@@ -409,10 +836,8 @@ struct NoEffectVerb
     Intent Operation;
     char const* Word;
 };
-constexpr NoEffectVerb NoEffect[] = {{Intent::Regroup, "regroup"},
-                                     {Intent::Pull, "pull"},
-                                     {Intent::AssignRole, "assign_role"},
-                                     {Intent::DungeonClear, "dungeon_clear"}};
+constexpr NoEffectVerb NoEffect[] = {
+    {Intent::Regroup, "regroup"}, {Intent::AssignRole, "assign_role"}, {Intent::DungeonClear, "dungeon_clear"}};
 
 // Indexed by Refusal; the words and sentences the bridge wire already uses.
 constexpr RefusalText RefusalTexts[] = {
@@ -484,14 +909,14 @@ constexpr AbilityRow Rows[] = {
      .Lasting = Part::None,
      .Done = Completion::Arrived,
      .StatePhrase = "backing away from my enemy"},
-    {.Operation = Intent::AttackOwnTarget,
-     .Name = "attack_own_target",
-     .Sentence = "Attack the enemy you have targeted.",
-     .Params = AttackParams,
+    {.Operation = Intent::Attack,
+     .Name = "attack",
+     .Sentence = "Attack a hostile or neutral creature you can see, by its name; never a player or a pet.",
+     .Params = AttackByNameParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
-     .Check = AttackCheck,
-     .Refusals = AttackRefusals,
+     .Check = AttackByNameCheck,
+     .Refusals = AttackByNameRefusals,
      .Effect = AttackOnce,
      .Lasting = Part::None,
      .Done = Completion::TargetGone,
@@ -664,7 +1089,153 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "back to my own plans"}};
+     .StatePhrase = "back to my own plans"},
+    {.Operation = Intent::Emote,
+     .Name = "emote",
+     .Sentence = "Make a gesture, at the person you are talking to when you see them.",
+     .Params = EmoteParams,
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = nullptr,
+     .Refusals = {},
+     .Effect = [](ActFacts const& act, Refusal&) { return EmoteOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "making a {emote} gesture"},
+    {.Operation = Intent::Roll,
+     .Name = "roll",
+     .Sentence = "Roll a random number from 1 to 100; your group sees it.",
+     .Params = {},
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = nullptr,
+     .Refusals = {},
+     .Effect = [](ActFacts const& act, Refusal&) { return RollOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "rolling a die"},
+    // No group rule: an ungrouped bot has no open check, so it answers as a grouped one without one.
+    {.Operation = Intent::Ready,
+     .Name = "ready",
+     .Sentence = "Answer your group's open ready check: you are ready.",
+     .Params = {},
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = ReadyRowCheck,
+     .Refusals = ReadyRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return ReadyOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "ready"},
+    {.Operation = Intent::LeaveGroup,
+     .Name = "leave_group",
+     .Sentence = "Leave your group.",
+     .Params = {},
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = nullptr,
+     .Refusals = GroupSettingRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return LeaveOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "leaving the group"},
+    // No group rule: it makes the group.
+    {.Operation = Intent::JoinGroup,
+     .Name = "join_group",
+     .Sentence = "Join the group of the person you are talking to, or invite them to yours.",
+     .Params = {},
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = JoinCheck,
+     .Refusals = JoinRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return JoinOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "joining your group"},
+    {.Operation = Intent::ShareQuest,
+     .Name = "share_quest",
+     .Sentence = "Share a quest of your log with your group.",
+     .Params = ShareQuestParams,
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = ShareCheck,
+     .Refusals = QuestShareRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return ShareOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "sharing {quest}"},
+    {.Operation = Intent::AcceptQuest,
+     .Name = "accept_quest",
+     .Sentence = "Take the quest a group member has just shared with you.",
+     .Params = AcceptQuestParams,
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = AcceptCheck,
+     .Refusals = QuestShareRefusals,
+     .Effect = [](ActFacts const& act, Refusal&) { return AcceptOnce(act); },
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "taking up {quest}"},
+    {.Operation = Intent::Pull,
+     .Name = "pull",
+     .Sentence = "As your group's tank or with a ranged attack, draw one creature near your group into a fight.",
+     .Params = PullParams,
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = PullCheck,
+     .Refusals = PullRefusals,
+     .Effect = PullOnce,
+     .Lasting = Part::None,
+     .Done = Completion::TargetGone,
+     .StatePhrase = "pulling {target}"},
+    {.Operation = Intent::Cast,
+     .Name = "cast",
+     .Sentence = "Cast a helpful spell of yours (a buff, a heal, a cure, a resurrection, conjured food or water, a "
+                 "portal) on a friend or yourself.",
+     .Params = CastParams,
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = CastCheck,
+     .Refusals = CastRefusals,
+     .Effect = CastOnce,
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "casting {spell} on {target}"},
+    // The old form's own-target attack (mod-ollama-chat's frozen verbs, LC.23); the catalogue offers attack.
+    {.Operation = Intent::AttackOwnTarget,
+     .Name = "attack_own_target",
+     .Sentence = "Attack the enemy you have targeted.",
+     .Params = AttackParams,
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = AttackCheck,
+     .Refusals = AttackRefusals,
+     .Effect = AttackOnce,
+     .Lasting = Part::None,
+     .Done = Completion::TargetGone,
+     .StatePhrase = "attacking {target}",
+     .OldFormOnly = true}};
+
+// The rows the catalogue lists come first; the old form's rows close the table (AbilityRows is the first part).
+constexpr std::size_t ListedRows()
+{
+    std::size_t listed = 0;
+    while (listed < std::size(Rows) && !Rows[listed].OldFormOnly)
+        ++listed;
+
+    return listed;
+}
+
+constexpr bool OldFormRowsClose()
+{
+    for (std::size_t index = ListedRows(); index < std::size(Rows); ++index)
+        if (!Rows[index].OldFormOnly)
+            return false;
+
+    return true;
+}
+
+static_assert(OldFormRowsClose(), "the old form's rows close the table, after every row the catalogue lists");
 
 static_assert(std::size(Rows) + std::size(NoEffect) == IntentCount, "every Intent has a row or a word without one");
 
@@ -710,6 +1281,16 @@ Result Execute(PostMapJoin const& phase, std::span<Order const> steps, std::func
     return result;
 }
 
+constexpr bool RowsTakeOneParamPerField()
+{
+    for (AbilityRow const& row : Rows)
+        if (!OneParamPerField(row.Params))
+            return false;
+
+    return true;
+}
+static_assert(RowsTakeOneParamPerField(), "a row has at most one parameter per Order field");
+
 AbilityRow const* FindRow(Intent operation)
 {
     for (AbilityRow const& row : Rows)
@@ -728,7 +1309,26 @@ AbilityRow const* FindRow(std::string_view name)
     return nullptr;
 }
 
-std::span<AbilityRow const> AbilityRows() { return Rows; }
+std::span<AbilityRow const> AbilityRows() { return std::span<AbilityRow const>(Rows).first(ListedRows()); }
+
+void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at)
+{
+    std::lock_guard<std::mutex> lock(readyChecksLock);
+    readyChecks[bot] = at;
+}
+
+void EndReadyCheck(uint64_t bot)
+{
+    std::lock_guard<std::mutex> lock(readyChecksLock);
+    readyChecks.erase(bot);
+}
+
+bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at)
+{
+    std::lock_guard<std::mutex> lock(readyChecksLock);
+    auto const check = readyChecks.find(bot);
+    return check != readyChecks.end() && at - check->second < ReadyCheckOpenFor;
+}
 
 bool IsUnavailable(Intent operation)
 {
@@ -768,11 +1368,16 @@ RefusalText const& RefusalWords(Refusal reason)
     return index < std::size(RefusalTexts) ? RefusalTexts[index] : RefusalTexts[0];
 }
 
-bool Takes(AbilityRow const& row, OrderField field)
+ParamRow const* ParamOf(AbilityRow const& row, OrderField field)
 {
-    return std::any_of(row.Params.begin(), row.Params.end(),
-                       [field](ParamRow const& param) { return param.Field == field; });
+    for (ParamRow const& param : row.Params)
+        if (param.Field == field)
+            return &param;
+
+    return nullptr;
 }
+
+bool Takes(AbilityRow const& row, OrderField field) { return ParamOf(row, field) != nullptr; }
 
 Part LastingPart(Intent operation)
 {
@@ -831,8 +1436,9 @@ void Line(std::string& text, std::initializer_list<std::string_view> fields)
 std::vector<AbilityData> Catalogue()
 {
     std::vector<AbilityData> catalogue;
-    catalogue.reserve(std::size(Rows) + std::size(TopicTable));
-    for (AbilityRow const& row : Rows)
+    std::span<AbilityRow const> const rows = AbilityRows();
+    catalogue.reserve(rows.size() + std::size(TopicTable));
+    for (AbilityRow const& row : rows)
     {
         AbilityData& entry = catalogue.emplace_back();
         entry.Kind = AbilityKind::Act;
@@ -917,26 +1523,49 @@ float DistanceTo(Player* bot, float x, float y, float z)
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// A unit the bot perceives that the filter lets a name mean (UnitFilter); group members come from the group's slots.
+bool Admits(UnitFilter filter, Player* bot, Unit* unit)
+{
+    switch (filter)
+    {
+        case UnitFilter::Enemy:
+            return !unit->GetCharmerOrOwnerPlayerOrPlayerItself() && !bot->IsFriendlyTo(unit);
+        case UnitFilter::Friend:
+            return bot->IsFriendlyTo(unit);
+        case UnitFilter::GroupMember:
+            return false;
+        default:
+            return true;
+    }
+}
+
 // The units the bot perceives (the nearest NPCs, possible targets and nearest friendly players it keeps as values)
-// and its group's members. A unit in two lists is the same id twice. The bot's own living target (the unit it fights,
-// then its selection, never the bot) counts as the nearest unit of its name; an exact name still beats a part of one.
-uint64_t UnitNamed(ActFacts const& act, std::string const& name)
+// and its group's members, those the filter admits. A unit in two lists is the same id twice. The bot's own living
+// target (the unit it fights, then its selection, never the bot) counts as the nearest unit of its name; an exact
+// name still beats a part of one. The bot itself is among its friends.
+uint64_t UnitNamed(ActFacts const& act, UnitFilter filter, std::string const& name)
 {
     std::vector<NameCandidate> candidates;
     // The first of equal distance wins, so the unit fought beats the selection.
     for (Unit* own : {act.Bot->GetVictim(), ObjectAccessor::GetUnit(*act.Bot, act.Bot->GetTarget())})
-        if (own && own != act.Bot && own->IsAlive())
+        if (own && Admits(filter, act.Bot, own) && own != act.Bot && own->IsAlive())
             candidates.push_back({own->GetName(), own->GetGUID().GetRawValue(), 0.0f});
 
-    for (char const* list : {"nearest npcs", "possible targets", "nearest friendly players"})
-        if (Value<GuidVector>* units = act.Ai->GetAiObjectContext()->GetValue<GuidVector>(list))
+    if (filter == UnitFilter::Friend)
+        candidates.push_back({act.Bot->GetName(), act.Bot->GetGUID().GetRawValue(), 0.0f});
+
+    // A friend's name means a dead friend in sight too (a resurrection's target), not only a living one or a group
+    // member; an enemy's never means the dead.
+    char const* const dead = filter == UnitFilter::Friend ? "nearest corpses" : nullptr;
+    for (char const* list : {"nearest npcs", "possible targets", "nearest friendly players", dead})
+        if (Value<GuidVector>* units = list ? act.Ai->GetAiObjectContext()->GetValue<GuidVector>(list) : nullptr)
             for (ObjectGuid const& guid : units->Get())
-                if (Unit* unit = ObjectAccessor::GetUnit(*act.Bot, guid))
+                if (Unit* unit = ObjectAccessor::GetUnit(*act.Bot, guid); unit && Admits(filter, act.Bot, unit))
                     candidates.push_back(
                         {unit->GetName(), guid.GetRawValue(),
                          DistanceTo(act.Bot, unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ())});
 
-    if (act.BotGroup)
+    if (act.BotGroup && filter != UnitFilter::Enemy)
         for (auto const& slot : act.BotGroup->GetMemberSlots())
         {
             Unit* member = ObjectAccessor::GetUnit(*act.Bot, slot.guid);
@@ -950,19 +1579,46 @@ uint64_t UnitNamed(ActFacts const& act, std::string const& name)
     return match.Kind == NameMatch::None ? 0 : candidates[match.Index].Id;
 }
 
-// The quests in the bot's log, by title, as ReadQuests walks them; the planner still refuses a failed one.
-uint32_t QuestNamed(Player* bot, std::string const& name)
+// The id of the candidate a name means; 0 for none.
+uint32_t IdNamed(std::vector<NameCandidate> const& candidates, std::string const& name)
+{
+    NameResult const match = ResolveName(name, candidates);
+    return match.Kind == NameMatch::None ? 0 : static_cast<uint32_t>(candidates[match.Index].Id);
+}
+
+// The quests in a player's log, by title, as ReadQuests walks them.
+std::vector<NameCandidate> LogQuests(Player* player)
 {
     std::vector<NameCandidate> candidates;
     for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
-        uint32 const questId = bot->GetQuestSlotQuestId(slot);
+        uint32 const questId = player->GetQuestSlotQuestId(slot);
         if (Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr)
             candidates.push_back({quest->GetTitle(), questId, 0.0f});
     }
+    return candidates;
+}
 
-    NameResult const match = ResolveName(name, candidates);
-    return match.Kind == NameMatch::None ? 0 : static_cast<uint32_t>(candidates[match.Index].Id);
+// The quests in the bot's log, by title; the planner still refuses a failed one.
+uint32_t QuestNamed(Player* bot, std::string const& name) { return IdNamed(LogQuests(bot), name); }
+
+// A quest of the sharer's log, by id or title: the sharer the core noted (the divider), still in the bot's group; 0
+// when nothing was shared or the sharer's log has no such quest.
+uint32_t SharedQuestNamed(Player* bot, Group* group, uint32_t id, std::string const& name)
+{
+    ObjectGuid const divider = bot->GetDivider();
+    Player* sharer =
+        divider && group && group->IsMember(divider) ? ObjectAccessor::FindConnectedPlayer(divider) : nullptr;
+    if (!sharer)
+        return 0;
+
+    std::vector<NameCandidate> const candidates = LogQuests(sharer);
+    if (!id)
+        return IdNamed(candidates, name);
+
+    bool const held = std::any_of(candidates.begin(), candidates.end(),
+                                  [id](NameCandidate const& candidate) { return candidate.Id == id; });
+    return held ? id : 0;
 }
 
 // A literal "x,y,z,map" as given; else the known place the name means (one on another map as elsewhere), under the
@@ -1000,7 +1656,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
         return Refuse(why, Refusal::Dead);
 
     // Following and the group settings are group play: the partner shares the bot's group. Stay, flee, a position,
-    // an attack and a goal need no group; a mark and focus healing need the bot's own group.
+    // an attack and a goal need no group; a mark, a pull and focus healing need the bot's own group.
     if (!InGroup(row.Group, act))
         return Refuse(why, row.GroupRefusal);
 
@@ -1008,8 +1664,9 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     // then passes the same test as one given by id.
     if (Takes(row, OrderField::Target))
     {
-        uint64_t const target =
-            act.Request.TargetName.empty() ? act.Request.Target : UnitNamed(act, act.Request.TargetName);
+        uint64_t const target = act.Request.TargetName.empty()
+                                    ? act.Request.Target
+                                    : UnitNamed(act, ParamOf(row, OrderField::Target)->Filter, act.Request.TargetName);
         if (!target)
             return Refuse(why, Refusal::UnknownName);
 
@@ -1018,15 +1675,34 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
             return Refuse(why, Refusal::TargetNotVisible);
     }
 
-    if (Takes(row, OrderField::QuestId))
+    if (ParamRow const* quest = ParamOf(row, OrderField::QuestId))
     {
-        act.QuestId = act.Request.QuestName.empty() ? act.Request.QuestId : QuestNamed(bot, act.Request.QuestName);
+        if (quest->Quests == QuestFrom::Shared)
+            act.QuestId = SharedQuestNamed(bot, act.BotGroup, act.Request.QuestId, act.Request.QuestName);
+        else
+            act.QuestId = act.Request.QuestName.empty() ? act.Request.QuestId : QuestNamed(bot, act.Request.QuestName);
+
         if (!act.QuestId)
             return Refuse(why, Refusal::UnknownName);
     }
 
     if (Takes(row, OrderField::PlaceName))
         act.Place = PlaceNamed(bot, act.Request.PlaceName);
+
+    // An item among what the bot wears and carries, a spell among what it knows: two lists, one per kind.
+    if (Takes(row, OrderField::ItemName))
+    {
+        act.ItemId = IdNamed(CarriedItemNames(bot), act.Request.ItemName);
+        if (!act.ItemId)
+            return Refuse(why, Refusal::UnknownName);
+    }
+
+    if (Takes(row, OrderField::SpellName))
+    {
+        act.SpellId = IdNamed(KnownSpellNames(bot), act.Request.SpellName);
+        if (!act.SpellId)
+            return Refuse(why, Refusal::UnknownName);
+    }
 
     Refusal const reason = row.Check ? row.Check(act) : Refusal::None;
     if (reason != Refusal::None)
@@ -1038,10 +1714,24 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
 // How many of a parameter's two forms, id and name, an order fills: one for a row that takes it, else none.
 int Forms(bool id, std::string const& name) { return (id ? 1 : 0) + (name.empty() ? 0 : 1); }
 
-// A stray target, shape, enable flag, place or quest on another verb is a mapping error, never an ignored field; a
-// unit or quest comes as an id or a name, never both.
+// The item, spell, choice and count fields: each present exactly when the row takes it, a name within MaxName and a
+// choice among the parameter's Choices.
+bool KindsMalformed(AbilityRow const& row, Order const& order)
+{
+    ParamRow const* choice = ParamOf(row, OrderField::Choice);
+    return Takes(row, OrderField::ItemName) == order.ItemName.empty() || order.ItemName.size() > MaxName ||
+           Takes(row, OrderField::SpellName) == order.SpellName.empty() || order.SpellName.size() > MaxName ||
+           (choice ? order.Choice >= choice->Choices.size() : order.Choice != 0) ||
+           Takes(row, OrderField::Count) == (order.Count == 0);
+}
+
+// A stray target, shape, enable flag, place, quest, item, spell, choice or count on another verb is a mapping error,
+// never an ignored field; a unit or quest comes as an id or a name, never both.
 bool Malformed(AbilityRow const* row, Order const& order)
 {
+    if (KindsMalformed(*row, order))
+        return true;
+
     return !order.Bot || !order.Controller || order.Bot == order.Controller ||
            Forms(order.Target != 0, order.TargetName) != (Takes(*row, OrderField::Target) ? 1 : 0) ||
            order.TargetName.size() > MaxName || Takes(*row, OrderField::PlaceName) != !order.PlaceName.empty() ||

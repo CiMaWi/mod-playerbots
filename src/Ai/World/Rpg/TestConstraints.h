@@ -21,16 +21,18 @@
 // selftest line
 namespace TestConstraints
 {
-constexpr std::uint16_t PLANNER = 1;       // planner goals and jobs
-constexpr std::uint16_t STATUS = 2;        // the weighted random status pick
-constexpr std::uint16_t ERRAND = 4;        // vendor errands and inn binds
-constexpr std::uint16_t HEARTH = 8;        // hearth legs, the off-mesh hearth and the planner's inn goal
-constexpr std::uint16_t NOFIGHT = 16;      // starts no fight; creatures ignore the bot and its pets
-constexpr std::uint16_t NODAMAGE = 32;     // takes no damage
-constexpr std::uint16_t FLYFAIL = 64;      // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
-constexpr std::uint16_t FLYABORT = 128;    // as flyfail, as the trip's last failure: the trip ends once the bot is down
-constexpr std::uint16_t NODESTROY = 256;   // destroys no bag item for space (bank-mail WB7d)
-constexpr std::uint16_t FLEE = 2048;       // in PvP combat it flees from the enemy players attacking it (world PvP)
+constexpr std::uint16_t PLANNER = 1;      // planner goals and jobs
+constexpr std::uint16_t STATUS = 2;       // the weighted random status pick
+constexpr std::uint16_t ERRAND = 4;       // vendor errands and inn binds
+constexpr std::uint16_t HEARTH = 8;       // hearth legs, the off-mesh hearth and the planner's inn goal
+constexpr std::uint16_t NOFIGHT = 16;     // starts no fight; creatures ignore the bot and its pets
+constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
+constexpr std::uint16_t FLYFAIL = 64;     // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
+constexpr std::uint16_t FLYABORT = 128;   // as flyfail, as the trip's last failure: the trip ends once the bot is down
+constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
+// mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
+constexpr std::uint16_t NOMOUNT = 1024;
+constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -57,6 +59,7 @@ constexpr Row ROWS[] = {
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
     {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
+    {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
 };
 
@@ -171,6 +174,9 @@ inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
+// nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
+// random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
+inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

@@ -9,11 +9,13 @@
 // MovementAction::MoveAway/MoveTo and PathGenerator are counting doubles; the formation, mana save level and focus heal
 // values are plain doubles. It does not replace a decision path with a parallel guard implementation.
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <span>
+#include <string_view>
 #include <type_traits>
 
 // clang-format off
@@ -43,6 +45,7 @@ using PlayerbotBridge::Refusal;
 using PlayerbotBridge::RestoreResult;
 using PlayerbotBridge::Result;
 using PlayerbotBridge::TopicRow;
+using PlayerbotBridge::UnitFilter;
 
 static_assert(!std::is_default_constructible_v<PlayerbotBridge::PostMapJoin>);
 static_assert(!std::is_copy_constructible_v<PlayerbotBridge::PostMapJoin>);
@@ -71,6 +74,14 @@ public:
         PlayerbotBridge::PostMapJoin phase;
         return PlayerbotBridge::Execute(phase, std::span<Order const>(steps), authorize, outcomes);
     }
+    // LC16b: a test-only row through the shape rule, then one step, as ExecuteSteps runs a real row.
+    static Result RunRow(AbilityRow const& row, Order const& order, Refusal& why)
+    {
+        PlayerbotBridge::PostMapJoin phase;
+        return PlayerbotBridge::Malformed(&row, order) ? Result::Rejected
+                                                       : PlayerbotBridge::RunStep(phase, row, order, why);
+    }
+
     static bool Reachable(Order const& order, bool worker = false)
     {
         PlayerbotBridge::PostMapJoin phase;
@@ -132,6 +143,61 @@ void Check(bool value, char const* label)
 std::map<Intent, std::set<Refusal>> seenRefusals;
 std::set<Intent> seenApplied;
 
+// LC16b: test-only rows for what no real row takes yet: an item, a spell, a choice and a count; a unit a friend's name
+// means. The effect records what the row is handed.
+constexpr char const* const TestLevels[] = {"low", "middle", "high"};
+constexpr ParamRow TestKindParams[] = {
+    {"item", ParamKind::Item, OrderField::ItemName, "An item you carry, by name.", {}},
+    {"spell", ParamKind::Spell, OrderField::SpellName, "A spell you know, by name.", {}},
+    {"level", ParamKind::Choice, OrderField::Choice, "How much.", TestLevels},
+    {"count", ParamKind::Count, OrderField::Count, "How many.", {}}};
+constexpr ParamRow TestFriendParams[] = {
+    {"target", ParamKind::Unit, OrderField::Target, "A friend, by name.", {}, UnitFilter::Friend}};
+static_assert(PlayerbotBridge::OneParamPerField(TestKindParams) && PlayerbotBridge::OneParamPerField(TestFriendParams));
+constexpr Refusal TestRefusals[] = {Refusal::UnknownName};
+
+struct Handed
+{
+    int Calls = 0;
+    uint32_t Item = 0;
+    uint32_t Spell = 0;
+    uint32_t Count = 0;
+    uint8_t Choice = 0;
+    Unit* Target = nullptr;
+};
+Handed handed;
+
+Result TestEffect(PlayerbotBridge::ActFacts const& act, Refusal&)
+{
+    handed = {handed.Calls + 1, act.ItemId, act.SpellId, act.Request.Count, act.Request.Choice, act.Target};
+    return Result::Applied;
+}
+
+constexpr AbilityRow TestKindRow{.Operation = Intent::Stay,
+                                 .Name = "test_kinds",
+                                 .Sentence = "Test.",
+                                 .Params = TestKindParams,
+                                 .Group = PlayerbotBridge::GroupRule::None,
+                                 .GroupRefusal = Refusal::None,
+                                 .Check = nullptr,
+                                 .Refusals = TestRefusals,
+                                 .Effect = TestEffect,
+                                 .Lasting = Part::None,
+                                 .Done = Completion::AtOnce,
+                                 .StatePhrase = "testing"};
+constexpr AbilityRow TestFriendRow{.Operation = Intent::Stay,
+                                   .Name = "test_friend",
+                                   .Sentence = "Test.",
+                                   .Params = TestFriendParams,
+                                   .Group = PlayerbotBridge::GroupRule::None,
+                                   .GroupRefusal = Refusal::None,
+                                   .Check = nullptr,
+                                   .Refusals = TestRefusals,
+                                   .Effect = TestEffect,
+                                   .Lasting = Part::None,
+                                   .Done = Completion::AtOnce,
+                                   .StatePhrase = "testing"};
+
 struct Fixture
 {
     Player Bot;
@@ -143,6 +209,7 @@ struct Fixture
     PlayerbotAI AI;
     PlayerbotAI HumanAI;
     WorldSession HumanSession;
+    WorldSession BotSession;
     Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
     int Authorizations = 0;
     Refusal Why = Refusal::None;
@@ -155,6 +222,10 @@ struct Fixture
         mutations = attacks = marks = follows = usefulFollow = stays = stops = flees = fleeRuns = moves = paths = 0;
         security = melee = followUseful = followResult = fleeResult = moveResult = healer = formationLoad = true;
         waitForAttack = prohibited = unavailable = moveFromGroup = fleeBackwards = false;
+        tank = false;
+        ranged = hasPull = pullable = true;
+        pulls = 0;
+        pulled = nullptr;
         fleeFrom = nullptr;
         fleeDistance = 0.0f;
         pathType = PATHFIND_NORMAL;
@@ -164,6 +235,7 @@ struct Fixture
         Bot.Guid = ObjectGuid(1);
         Human.Guid = ObjectGuid(2);
         Human.Session = &HumanSession;
+        Bot.Session = &BotSession;
         Target.Guid = ObjectGuid(4);
         Other.Guid = ObjectGuid(5);
         Bot.Party = Human.Party = &Party;
@@ -358,10 +430,10 @@ int main()
         Fixture f;
         f.Command.Operation = static_cast<Intent>(operation);
         if (f.Command.Operation != Intent::AttackOwnTarget && f.Command.Operation != Intent::Mark &&
-            f.Command.Operation != Intent::Follow && f.Command.Operation != Intent::Stay &&
-            f.Command.Operation != Intent::Flee && f.Command.Operation != Intent::Position &&
-            f.Command.Operation != Intent::Formation && f.Command.Operation != Intent::SaveMana &&
-            f.Command.Operation != Intent::FocusHealing)
+            f.Command.Operation != Intent::Pull && f.Command.Operation != Intent::Follow &&
+            f.Command.Operation != Intent::Stay && f.Command.Operation != Intent::Flee &&
+            f.Command.Operation != Intent::Position && f.Command.Operation != Intent::Formation &&
+            f.Command.Operation != Intent::SaveMana && f.Command.Operation != Intent::FocusHealing)
         {
             f.Denied(Result::Unavailable);
             Check(f.Authorizations == 0, "unavailable before admission callback");
@@ -369,9 +441,10 @@ int main()
         }
     }
     {
-        // Regroup, pull, assign role and dungeon clear have no safe playerbots effect (DS.9) and stay refused.
-        Check(unavailableVerbs == 4, "four verbs stay unavailable");
-        for (Intent operation : {Intent::Regroup, Intent::Pull, Intent::AssignRole, Intent::DungeonClear})
+        // Regroup, assign role and dungeon clear have no safe playerbots effect (DS.9) and stay refused; pull has a
+        // row since LC17a.
+        Check(unavailableVerbs == 3, "three verbs stay unavailable");
+        for (Intent operation : {Intent::Regroup, Intent::AssignRole, Intent::DungeonClear})
         {
             Fixture f;
             f.OneShot(operation);
@@ -1917,6 +1990,242 @@ int main()
             Check(f.Authorizations == 0, "a malformed name is refused before the admission");
         }
     }
+    // LC16b: an item, a spell, a choice and a count, on a test-only row. The item is looked up among the bot's items
+    // and the spell among its spells, after the common rule; each field is present exactly when the row takes it (a
+    // name within MaxName, a choice among the parameter's, a count of at least 1).
+    {
+        auto const kinds = [](Fixture& f)
+        {
+            f.Command.Target = 0;
+            f.Command.ItemName = "hearthstone";
+            f.Command.SpellName = "Hearthstone";
+            f.Command.Choice = 2;
+            f.Command.Count = 5;
+            f.Bot.Carried = {{"Hearthstone", 6948, 0.0f}, {"Linen Cloth", 2589, 0.0f}};
+            f.Bot.Known = {{"Hearthstone", 8690, 0.0f}, {"Frostbolt", 116, 0.0f}};
+            handed = {};
+        };
+        auto const run = [](Fixture& f, AbilityRow const& row)
+        {
+            f.Why = Refusal::None;
+            f.Events = bridgeActs;
+            Result const result = OllamaBotRandomChatter::RunRow(row, f.Command, f.Why);
+            f.Events = bridgeActs - f.Events;
+            return result;
+        };
+        {
+            Fixture f;
+            kinds(f);
+            Check(run(f, TestKindRow) == Result::Applied && handed.Calls == 1 && handed.Item == 6948 &&
+                      handed.Spell == 8690 && handed.Choice == 2 && handed.Count == 5 && f.Events == 1,
+                  "a row is handed the item it carries, the spell it knows, the choice and the count");
+        }
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = "linen";
+            f.Command.SpellName = "frost";
+            f.Command.Choice = 0;
+            f.Command.Count = 1;
+            Check(run(f, TestKindRow) == Result::Applied && handed.Item == 2589 && handed.Spell == 116 &&
+                      handed.Choice == 0 && handed.Count == 1,
+                  "a part of an item's or a spell's name finds it, the first choice and a count of one pass");
+        }
+        std::vector<std::pair<char const*, char const*>> const unknown = {{"Frostbolt", "Hearthstone"},
+                                                                          {"Hearthstone", "Linen Cloth"},
+                                                                          {"Runecloth", "Frostbolt"},
+                                                                          {"Linen Cloth", "Fireball"}};
+        for (auto const& [item, spell] : unknown)
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = item;
+            f.Command.SpellName = spell;
+            Check(run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::UnknownName && handed.Calls == 0 &&
+                      f.Events == 1,
+                  "an item is not found among the spells, a spell not among the items, an unknown name nowhere");
+        }
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = std::string(PlayerbotBridge::MaxName, 'a');
+            Check(run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::UnknownName,
+                  "an item name of MaxName characters is looked up");
+        }
+        {
+            Fixture f;
+            kinds(f);
+            f.Command.ItemName = "Runecloth";
+            f.Bot.Alive = false;
+            Check(run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::Dead && handed.Calls == 0,
+                  "an item and a spell are looked up after the common rule");
+        }
+        std::vector<std::function<void(Fixture&)>> const shapes = {
+            [](Fixture& f) { f.Command.ItemName.clear(); },
+            [](Fixture& f) { f.Command.SpellName.clear(); },
+            [](Fixture& f) { f.Command.ItemName = std::string(PlayerbotBridge::MaxName + 1, 'a'); },
+            [](Fixture& f) { f.Command.SpellName = std::string(PlayerbotBridge::MaxName + 1, 'a'); },
+            [](Fixture& f) { f.Command.Choice = static_cast<uint8_t>(std::size(TestLevels)); },
+            [](Fixture& f) { f.Command.Count = 0; },
+            [](Fixture& f) { f.Command.TargetName = "Brannoc"; }};
+        for (auto const& change : shapes)
+        {
+            Fixture f;
+            kinds(f);
+            change(f);
+            Check(
+                run(f, TestKindRow) == Result::Rejected && f.Why == Refusal::None && handed.Calls == 0 && f.Events == 0,
+                "a missing, long or stray name, a choice past the last and a count of zero are malformed");
+        }
+        // A stray item, spell, choice or count on a real row; Mark's icon is its own field, not a choice.
+        std::vector<std::pair<Intent, std::function<void(Order&)>>> const strays = {
+            {Intent::Stay, [](Order& order) { order.ItemName = "Hearthstone"; }},
+            {Intent::Stay, [](Order& order) { order.SpellName = "Frostbolt"; }},
+            {Intent::Stay, [](Order& order) { order.Choice = 1; }},
+            {Intent::Stay, [](Order& order) { order.Count = 1; }},
+            {Intent::Mark, [](Order& order) { order.Choice = 1; }},
+            {Intent::Quest, [](Order& order) { order.Count = 1; }}};
+        for (auto const& [operation, stray] : strays)
+        {
+            Fixture f;
+            f.OneShot(operation);
+            if (operation == Intent::Mark)
+                f.Command.Target = f.Target.Guid.Value;
+            if (operation == Intent::Quest)
+                f.Command.QuestId = 40;
+            stray(f.Command);
+            f.Denied();
+            Check(f.Authorizations == 0, "a stray item, spell, choice or count is refused before the admission");
+        }
+    }
+    // LC16b: whom a unit's name may mean (UnitFilter). An attack means an enemy creature (LC.29: never a player, a
+    // player's pet or a friendly unit; hostile or neutral), focus healing a group member, a mark anyone, a friend a
+    // friendly unit, a group member or the bot itself; the own target passes the same filter.
+    {
+        Unit friendlyGuard;
+        friendlyGuard.Guid = ObjectGuid(8);
+        friendlyGuard.Name = "Stormwind Guard";
+        friendlyGuard.Friendly = true;
+        friendlyGuard.X = 5.0f;
+        Unit hostileGuard;
+        hostileGuard.Guid = ObjectGuid(9);
+        hostileGuard.Name = "Stormwind Guard";
+        hostileGuard.Hostile = true;
+        hostileGuard.X = 30.0f;
+        Player guardPlayer;
+        guardPlayer.Guid = ObjectGuid(10);
+        guardPlayer.Name = "Stormwind Guard";
+        Unit pet;
+        pet.Guid = ObjectGuid(11);
+        pet.Name = "Stormwind Guard";
+        pet.PetType = true;
+        auto const guards = [&](Fixture& f)
+        {
+            ObjectAccessor::Units[8] = &friendlyGuard;
+            ObjectAccessor::Units[9] = &hostileGuard;
+            ObjectAccessor::Units[10] = &guardPlayer;
+            ObjectAccessor::Units[11] = &pet;
+            pet.Owner = &f.Other;
+            f.Target.Name = "Defias Thug";
+            f.Other.Name = "Brannoc";
+            f.Other.Friendly = true;
+            f.Other.X = 10.0f;
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}, {f.Other.Guid, "Brannoc"}};
+            f.AI.Values.Npcs.Data = {f.Target.Guid, friendlyGuard.Guid};
+            f.AI.Values.Friends.Data = {f.Other.Guid, f.Human.Guid};
+            f.Command.Operation = Intent::AttackOwnTarget;
+            f.Command.Target = 0;
+            f.Command.TargetName = "Stormwind Guard";
+        };
+        std::vector<std::pair<char const*, std::function<void(Fixture&)>>> const notEnemies = {
+            {"a friendly guard", [](Fixture&) {}},
+            {"a selected friendly guard", [&](Fixture& f) { f.Bot.Target = friendlyGuard.Guid; }},
+            {"a player", [&](Fixture& f) { f.AI.Values.Possible.Data = {guardPlayer.Guid}; }},
+            {"a player's pet", [&](Fixture& f) { f.AI.Values.Possible.Data = {pet.Guid}; }},
+            {"a group member", [](Fixture& f) { f.Command.TargetName = "Brannoc"; }}};
+        for (auto const& [label, setup] : notEnemies)
+        {
+            Fixture f;
+            guards(f);
+            setup(f);
+            f.Refused(Refusal::UnknownName);
+            Check(attacks == 0, label);
+        }
+        {
+            Fixture f;
+            guards(f);
+            f.Bot.Target = hostileGuard.Guid;
+            f.AI.Values.Npcs.Data.push_back(hostileGuard.Guid);
+            Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &hostileGuard,
+                  "an attack by name means the hostile guard, not the nearer friendly one");
+        }
+        {
+            Fixture f;
+            guards(f);
+            f.OneShot(Intent::FocusHealing);
+            f.Command.Target = 0;
+            f.Command.TargetName = "Brannoc";
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}};
+            f.AI.Values.Npcs.Data.push_back(f.Other.Guid);
+            f.Refused(Refusal::UnknownName);
+        }
+        for (char const* name : {"Brannoc", "Partner"})
+        {
+            Fixture f;
+            guards(f);
+            f.Command.Operation = Intent::Mark;
+            f.Command.TargetName = name;
+            // Brannoc only among the friendly players, the partner only in the group.
+            f.AI.Values.Friends.Data = {f.Other.Guid};
+            f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Human.Guid, "Partner"}};
+            Unit* const meant = std::string_view(name) == "Brannoc" ? static_cast<Unit*>(&f.Other) : &f.Human;
+            Check(f.Run() == Result::Applied && f.Party.Marked == meant->Guid,
+                  "a mark by name means anyone: a friendly player, a group member seen nowhere else");
+        }
+        auto const friendRun = [](Fixture& f)
+        {
+            f.Why = Refusal::None;
+            handed = {};
+            return OllamaBotRandomChatter::RunRow(TestFriendRow, f.Command, f.Why);
+        };
+        Unit hostileNamesake;
+        hostileNamesake.Guid = ObjectGuid(12);
+        hostileNamesake.Name = "Brannoc";
+        hostileNamesake.Hostile = true;
+        hostileNamesake.X = 1.0f;
+        struct FriendCase
+        {
+            char const* Name;
+            std::function<void(Fixture&)> Setup;
+            std::function<Unit const*(Fixture&)> Meant;
+        };
+        std::vector<FriendCase> const friends = {
+            {"Brannoc", [](Fixture&) {}, [](Fixture& f) { return &f.Other; }},
+            {"Brannoc", [&](Fixture& f) { f.Bot.Target = hostileNamesake.Guid; }, [](Fixture& f) { return &f.Other; }},
+            {"Fixturebot", [](Fixture& f) { Ungrouped(f); }, [](Fixture& f) { return &f.Bot; }},
+            {"Partner", [](Fixture& f) { f.AI.Values.Friends.Data = {f.Other.Guid}; },
+             [](Fixture& f) { return &f.Human; }},
+            {"Stormwind Guard", [](Fixture&) {}, [&](Fixture&) { return &friendlyGuard; }}};
+        for (FriendCase const& each : friends)
+        {
+            Fixture f;
+            guards(f);
+            f.Bot.Name = "Fixturebot";
+            ObjectAccessor::Units[12] = &hostileNamesake;
+            f.AI.Values.Npcs.Data.push_back(hostileNamesake.Guid);
+            f.Command.TargetName = each.Name;
+            each.Setup(f);
+            Check(friendRun(f) == Result::Applied && handed.Calls == 1 && handed.Target == each.Meant(f),
+                  "a friend's name means a friendly unit, a group member or the bot itself, never a hostile one");
+        }
+        {
+            Fixture f;
+            guards(f);
+            f.Command.TargetName = "Defias Thug";
+            Check(friendRun(f) == Result::Rejected && f.Why == Refusal::UnknownName && handed.Calls == 0,
+                  "a friend's name never means the bot's neutral target");
+        }
+    }
     // LC2: an order of up to three steps, in order as one command: one admission, then per step its facts, its gate
     // and its event; a step that is not applied ends the order (mutants: authorize per step, a refused step not
     // ending the order, the gate skipped after the first step, four steps).
@@ -2076,16 +2385,762 @@ int main()
             Check(result == old && why == oldWhy, "a one-step order is the old order");
         }
     }
-    // LC1a: the ability table. Every row has every part; the eighteen verbs with an effect have a row and the four
-    // without one have none; each row applied above and gave each refusal it lists, and no other.
+    // LC16d: the social rows. An emote is the chosen text emote through the opcode handler, at the partner while the
+    // bot sees it (facing it and naming it), else at nobody; a roll is one roll of 1-100, grouped or not; ready
+    // answers "ready" to an open check only (none, finished, answered, expired or no group: cannot_now) and ends it;
+    // leave_group queues the bot's leave, in a group only.
+    {
+        // A gesture by its word, as the bridge sends it: the index into the emote row's choices
+        auto const emoteChoice = [](std::string_view word)
+        {
+            std::span<char const* const> const words = PlayerbotBridge::FindRow(Intent::Emote)->Params[0].Choices;
+            return static_cast<uint8_t>(
+                std::find_if(words.begin(), words.end(), [word](char const* w) { return word == w; }) - words.begin());
+        };
+        Fixture f;
+        f.OneShot(Intent::Emote);
+        f.Command.Choice = emoteChoice("wave");
+        Check(f.Run() == Result::Applied && f.BotSession.Emotes.size() == 1 &&
+                  f.BotSession.Emotes[0].Opcode == CMSG_TEXT_EMOTE &&
+                  f.BotSession.Emotes[0].Fields == std::vector<uint64_t>{TEXT_EMOTE_WAVE, 3, f.Human.Guid.Value} &&
+                  f.Bot.Facing == &f.Human,
+              "emote: a wave at the partner, facing it");
+        Fixture unseen;
+        unseen.OneShot(Intent::Emote);
+        unseen.Command.Choice = emoteChoice("congratulate");
+        unseen.Human.Seen = false;
+        Ungrouped(unseen);
+        Check(unseen.Run() == Result::Applied && unseen.BotSession.Emotes.size() == 1 &&
+                  unseen.BotSession.Emotes[0].Fields == std::vector<uint64_t>{TEXT_EMOTE_CONGRATULATE, 3, 0} &&
+                  !unseen.Bot.Facing,
+              "emote: the last gesture, ungrouped, at nobody when the bot does not see the partner");
+        Fixture stray;
+        stray.OneShot(Intent::Emote);
+        stray.Command.Choice = emoteChoice("no such gesture");
+        stray.Denied();
+        Check(stray.BotSession.Emotes.empty(), "emote: a choice past the gestures is malformed");
+        for (bool const grouped : {true, false})
+        {
+            Fixture roll;
+            roll.OneShot(Intent::Roll);
+            if (!grouped)
+                Ungrouped(roll);
+            Check(roll.Run() == Result::Applied && roll.Bot.Rolls == 1 && roll.Bot.RollMinimum == 1 &&
+                      roll.Bot.RollMaximum == 100,
+                  "roll: one roll of 1-100, grouped or not");
+        }
+        uint64_t const bot = 1;
+        auto const now = std::chrono::steady_clock::now();
+        // A Fixture holds pointers into itself: each is built in place, never returned
+        auto const refused = [&](auto setUp)
+        {
+            Fixture r;
+            r.OneShot(Intent::Ready);
+            PlayerbotBridge::EndReadyCheck(bot);
+            setUp(r);
+            r.Refused(Refusal::CannotNow);
+        };
+        refused([](Fixture&) {});
+        {
+            Fixture open;
+            open.OneShot(Intent::Ready);
+            PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(34));
+            Check(open.Run() == Result::Applied && open.BotSession.ReadyAnswers.size() == 1 &&
+                      open.BotSession.ReadyAnswers[0].Opcode == MSG_RAID_READY_CHECK &&
+                      open.BotSession.ReadyAnswers[0].Fields == std::vector<uint64_t>{1} &&
+                      !PlayerbotBridge::ReadyCheckOpen(bot),
+                  "ready: an open check is answered ready, once");
+        }
+        {
+            Fixture again;
+            again.OneShot(Intent::Ready);
+            again.Refused(Refusal::CannotNow);
+        }
+        refused(
+            [&](Fixture&)
+            {
+                PlayerbotBridge::NoteReadyCheck(bot);
+                PlayerbotBridge::EndReadyCheck(bot);
+            });
+        refused([&](Fixture&) { PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(36)); });
+        refused(
+            [&](Fixture& r)
+            {
+                PlayerbotBridge::NoteReadyCheck(bot);
+                Ungrouped(r);
+            });
+        PlayerbotBridge::NoteReadyCheck(bot);
+        Check(PlayerbotBridge::ReadyCheckOpen(bot) && !PlayerbotBridge::ReadyCheckOpen(2),
+              "ready: a check is the bot's own");
+        PlayerbotBridge::EndReadyCheck(bot);
+        Fixture leave;
+        leave.OneShot(Intent::LeaveGroup);
+        Check(leave.Run() == Result::Applied && leave.AI.Leaves == 1, "leave_group: the bot's leave is queued");
+        Fixture alone;
+        alone.OneShot(Intent::LeaveGroup);
+        Ungrouped(alone);
+        alone.Refused(Refusal::NotInGroup);
+        Check(alone.AI.Leaves == 0, "leave_group: an ungrouped bot leaves nothing");
+    }
+    // LC16e: the social rows with a counterpart. join_group: in the partner's group already (nothing sent); an
+    // invitation of the partner's group taken (the partner leads a random bot, the group strategies); the partner's
+    // group (or the one it is forming), its leader's or assistant's invitation sent for the bot and taken; else the
+    // bot invites the partner, from no group or one it leads with room. Another group or invitation, a full group, a
+    // partner who may not invite, a battleground queue: cannot_now. share_quest pushes a quest of the bot's log to its
+    // group; accept_quest takes a quest of the sharer's log (the divider, a group member), never one of the bot's own.
+    {
+        Fixture in;
+        in.OneShot(Intent::JoinGroup);
+        Check(in.Run() == Result::Applied && in.BotSession.Accepts.empty() && in.BotSession.Invites.empty() &&
+                  in.HumanSession.Invites.empty() && in.AI.StrategyResets == 0,
+              "join_group: in the partner's group already, nothing is sent");
+        // The bot is ungrouped and holds no invitation; the partner leads the group it is in
+        auto const loose = [](Fixture& f)
+        {
+            f.OneShot(Intent::JoinGroup);
+            Ungrouped(f);
+            f.Human.Party = &f.Party;
+            f.Bot.Name = "Bo";
+            f.Human.Name = "Hu";
+            f.BotSession.Self = &f.Bot;
+            f.OtherParty.Guid = ObjectGuid(7);
+            f.OtherParty.Leader = f.Other.Guid;
+        };
+        for (bool const forming : {false, true})
+        {
+            Fixture invited;
+            loose(invited);
+            if (forming)
+            {
+                invited.Human.Party = nullptr;
+                invited.Human.Invite = &invited.Party;
+            }
+            invited.Bot.Invite = &invited.Party;
+            invited.AI.Master = nullptr;
+            Check(invited.Run() == Result::Applied && invited.Bot.Party == &invited.Party &&
+                      invited.BotSession.Accepts.size() == 1 && invited.AI.Master == &invited.Human &&
+                      invited.AI.StrategyResets == 1 && invited.AI.Resets == 1 &&
+                      invited.AI.HasStrategy("follow", BOT_STATE_NON_COMBAT) && invited.HumanSession.Invites.empty(),
+                  "join_group: the partner's invitation is taken, of its group or the one it forms");
+        }
+        {
+            Fixture kept;
+            loose(kept);
+            kept.Bot.Invite = &kept.Party;
+            kept.AI.Master = nullptr;
+            randomBots.Random = false;
+            Check(kept.Run() == Result::Applied && !kept.AI.Master,
+                  "join_group: a bot that is no random bot keeps its master");
+            randomBots.Random = true;
+        }
+        auto const askedOf = [&](auto setUp, Result expected)
+        {
+            Fixture asked;
+            loose(asked);
+            asked.HumanSession.Invitee = &asked.Bot;
+            asked.HumanSession.Invitation = &asked.Party;
+            setUp(asked);
+            Result const result = asked.Run();
+            Check(result == expected && asked.HumanSession.Invites.size() == 1 &&
+                      asked.HumanSession.Invites[0].Opcode == CMSG_GROUP_INVITE &&
+                      asked.HumanSession.Invites[0].Strings == std::vector<std::string>{"Bo"} &&
+                      asked.HumanSession.Invites[0].Fields == std::vector<uint64_t>{0} &&
+                      (result == Result::Applied) == (asked.Bot.Party == &asked.Party) &&
+                      asked.BotSession.Invites.empty(),
+                  "join_group: the partner's group invites the bot, which takes it");
+        };
+        askedOf([](Fixture&) {}, Result::Applied);
+        askedOf(
+            [](Fixture& f)
+            {
+                f.Party.Leader = f.Other.Guid;
+                f.Party.Assistant = f.Human.Guid;
+            },
+            Result::Applied);
+        askedOf([](Fixture& f) { f.HumanSession.Invitee = nullptr; }, Result::Failed);
+        askedOf([](Fixture& f) { f.BotSession.Joins = false; }, Result::Failed);
+        auto const inviteOf = [&](auto setUp, Result expected)
+        {
+            Fixture asks;
+            loose(asks);
+            asks.Human.Party = nullptr;
+            asks.BotSession.Invitee = &asks.Human;
+            asks.BotSession.Invitation = &asks.OtherParty;
+            setUp(asks);
+            Check(asks.Run() == expected && asks.BotSession.Invites.size() == 1 &&
+                      asks.BotSession.Invites[0].Strings == std::vector<std::string>{"Hu"} &&
+                      asks.HumanSession.Invites.empty() && asks.BotSession.Accepts.empty() &&
+                      asks.AI.StrategyResets == 0,
+                  "join_group: the bot invites a partner without a group; the partner answers");
+        };
+        inviteOf([](Fixture&) {}, Result::Applied);
+        inviteOf([](Fixture& f) { f.BotSession.Invitee = nullptr; }, Result::Failed);
+        inviteOf(
+            [](Fixture& f)
+            {
+                f.Bot.Party = &f.OtherParty;
+                f.OtherParty.Leader = f.Bot.Guid;
+                f.Command.Group = f.OtherParty.Guid.Value;
+            },
+            Result::Applied);
+        auto const joinRefused = [&](auto setUp)
+        {
+            Fixture no;
+            loose(no);
+            setUp(no);
+            no.Refused(Refusal::CannotNow);
+        };
+        joinRefused([](Fixture& f) { f.Bot.Invite = &f.OtherParty; });
+        joinRefused([](Fixture& f) { f.Party.Full = true; });
+        joinRefused([](Fixture& f) { f.Party.Leader = f.Other.Guid; });
+        joinRefused([](Fixture& f) { f.Bot.Queued = true; });
+        joinRefused(
+            [](Fixture& f)
+            {
+                f.Bot.Party = &f.OtherParty;
+                f.Command.Group = f.OtherParty.Guid.Value;
+            });
+        for (bool const leads : {false, true})
+            joinRefused(
+                [leads](Fixture& f)
+                {
+                    f.Human.Party = nullptr;
+                    f.Bot.Party = &f.OtherParty;
+                    f.Command.Group = f.OtherParty.Guid.Value;
+                    if (leads)
+                    {
+                        f.OtherParty.Leader = f.Bot.Guid;
+                        f.OtherParty.Full = true;
+                    }
+                });
+        joinRefused(
+            [](Fixture& f)
+            {
+                f.Human.Party = nullptr;
+                f.Human.Invite = &f.OtherParty;
+            });
+
+        objectMgr.Quests[60] = {"Kobold Candles"};
+        objectMgr.Quests[61] = {"Lost Necklace"};
+        // The bot holds Kobold Candles, which it may share
+        auto const sharer = [](Fixture& f)
+        {
+            f.OneShot(Intent::ShareQuest);
+            f.Bot.QuestLog[3] = 60;
+            f.Bot.Shareable = {60, 61};
+            f.Command.QuestName = "kobold candles";
+        };
+        for (bool const byId : {false, true})
+        {
+            Fixture share;
+            sharer(share);
+            if (byId)
+            {
+                share.Command.QuestName.clear();
+                share.Command.QuestId = 60;
+            }
+            Check(share.Run() == Result::Applied && share.BotSession.Pushes == std::vector<uint32>{60},
+                  "share_quest: a quest of the log, by title or id, is pushed to the group");
+        }
+        auto const shareRefused = [&](auto setUp, Refusal reason)
+        {
+            Fixture no;
+            sharer(no);
+            setUp(no);
+            no.Refused(reason);
+            Check(no.BotSession.Pushes.empty(), "share_quest: a refused share pushes nothing");
+        };
+        shareRefused([](Fixture& f) { Ungrouped(f); }, Refusal::NotInGroup);
+        shareRefused([](Fixture& f) { f.Command.QuestName = "Lost Necklace"; }, Refusal::UnknownName);
+        shareRefused(
+            [](Fixture& f)
+            {
+                f.Command.QuestName.clear();
+                f.Command.QuestId = 61;
+            },
+            Refusal::UnknownName);
+        shareRefused([](Fixture& f) { f.Bot.Shareable.clear(); }, Refusal::CannotNow);
+
+        // A group member (Other) shared Kobold Candles; the bot holds Lost Necklace itself
+        auto const taker = [](Fixture& f)
+        {
+            f.OneShot(Intent::AcceptQuest);
+            f.Other.QuestLog[0] = 60;
+            f.Bot.QuestLog[0] = 61;
+            f.Bot.Divider = f.Other.Guid;
+            f.BotSession.Self = &f.Bot;
+            f.Command.QuestName = "Kobold Candles";
+        };
+        for (bool const byId : {false, true})
+        {
+            Fixture take;
+            taker(take);
+            if (byId)
+            {
+                take.Command.QuestName.clear();
+                take.Command.QuestId = 60;
+            }
+            Check(take.Run() == Result::Applied && take.BotSession.QuestAccepts.size() == 1 &&
+                      take.BotSession.QuestAccepts[0].Opcode == CMSG_QUESTGIVER_ACCEPT_QUEST &&
+                      take.BotSession.QuestAccepts[0].Fields == std::vector<uint64_t>{5, 60, 0} &&
+                      take.Bot.FindQuestSlot(60) < MAX_QUEST_LOG_SIZE,
+                  "accept_quest: the shared quest, by title or id, is accepted from its sharer");
+        }
+        {
+            Fixture lost;
+            taker(lost);
+            lost.BotSession.Takes = false;
+            Check(lost.Run() == Result::Failed, "accept_quest: a quest the core does not add fails");
+        }
+        auto const acceptRefused = [&](auto setUp, Refusal reason)
+        {
+            Fixture no;
+            taker(no);
+            setUp(no);
+            no.Refused(reason);
+            Check(no.BotSession.QuestAccepts.empty(), "accept_quest: a refused accept sends nothing");
+        };
+        acceptRefused([](Fixture& f) { Ungrouped(f); }, Refusal::NotInGroup);
+        acceptRefused([](Fixture& f) { f.Bot.Divider = ObjectGuid(); }, Refusal::UnknownName);
+        acceptRefused([](Fixture& f) { f.Party.Outsider = f.Other.Guid; }, Refusal::UnknownName);
+        acceptRefused([](Fixture&) { ObjectAccessor::Units.erase(5); }, Refusal::UnknownName);
+        acceptRefused([](Fixture& f) { f.Command.QuestName = "Lost Necklace"; }, Refusal::UnknownName);
+        acceptRefused(
+            [](Fixture& f)
+            {
+                f.Command.QuestName.clear();
+                f.Command.QuestId = 61;
+            },
+            Refusal::UnknownName);
+        acceptRefused([](Fixture& f) { f.Bot.Takeable = false; }, Refusal::CannotNow);
+        acceptRefused([](Fixture& f) { f.Bot.Room = false; }, Refusal::CannotNow);
+    }
+    // LC17a: an attack by name means any enemy creature the bot sees, not only its own target: the nearer of two of
+    // a name; mounted, a player or a player's pet given by id, or a unit the core does not let it attack: cannot_now.
+    // A pull: in the bot's group; one creature within PullBound (20 yd) and in sight, else too_far; a tank with its
+    // pull strategy requests the pull (PullRequestAction::Request), a ranged attacker attacks, anyone else: cannot_now.
+    {
+        Unit farWolf;
+        farWolf.Guid = ObjectGuid(12);
+        farWolf.Name = "Mangy Wolf";
+        farWolf.Hostile = true;
+        farWolf.X = 20.0f;
+        auto const wolves = [&](Fixture& f, Intent operation)
+        {
+            ObjectAccessor::Units[12] = &farWolf;
+            f.Command.Operation = operation;
+            f.Command.Target = 0;
+            f.Command.TargetName = "Mangy Wolf";
+            f.Target.Name = "Mangy Wolf";
+            f.Target.Hostile = true;
+            f.Target.X = 6.0f;
+            f.Target.Yards = 6.0f;
+            // The bot's selection is a player of the group, not an enemy: no own target.
+            f.Bot.Target = f.Other.Guid;
+            f.AI.Values.Possible.Data = {farWolf.Guid, f.Target.Guid};
+        };
+        for (Intent operation : {Intent::Attack, Intent::Pull})
+        {
+            Fixture f;
+            wolves(f, operation);
+            Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target && pulls == 0,
+                  "an attack or a ranged pull by name strikes the nearer creature of the name, no own target needed");
+        }
+        {
+            Fixture f;
+            wolves(f, Intent::Attack);
+            f.Bot.Victim = &f.Target;
+            Check(f.Run() == Result::Applied && attacks == 0, "an attack by name already under way is applied");
+        }
+        {
+            // LC17b: the dead in sight count for a friend's name only: a dead creature of the name, nearer, is not it.
+            Fixture f;
+            wolves(f, Intent::Attack);
+            Unit carcass;
+            carcass.Guid = ObjectGuid(16);
+            carcass.Name = "Mangy Wolf";
+            carcass.Hostile = true;
+            carcass.Alive = false;
+            carcass.X = 2.0f;
+            ObjectAccessor::Units[16] = &carcass;
+            f.AI.Values.Corpses.Data = {carcass.Guid};
+            Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+                  "an attack by name never means a dead creature of the name");
+            ObjectAccessor::Units.erase(16);
+        }
+        {
+            Fixture f;
+            wolves(f, Intent::Pull);
+            tank = true;
+            ranged = false;
+            Check(f.Run() == Result::Applied && pulls == 1 && pulled == &f.Target && attacks == 0 &&
+                      f.AI.State == BOT_STATE_COMBAT,
+                  "a tank pulls the named creature with its pull strategy");
+        }
+        Player stranger;
+        stranger.Guid = ObjectGuid(13);
+        stranger.Name = "Mangy Wolf";
+        Unit pet;
+        pet.Guid = ObjectGuid(14);
+        pet.Name = "Mangy Wolf";
+        pet.PetType = true;
+        Unit friendly;
+        friendly.Guid = ObjectGuid(15);
+        friendly.Name = "Stormwind Guard";
+        friendly.Friendly = true;
+        using Denial = std::pair<std::function<void(Fixture&)>, Refusal>;
+        auto const byId = [&](Unit& unit)
+        {
+            return [&unit](Fixture& f)
+            {
+                ObjectAccessor::Units[unit.Guid.Value] = &unit;
+                f.Command.TargetName.clear();
+                f.Command.Target = unit.Guid.Value;
+            };
+        };
+        std::vector<Denial> const either = {
+            {[](Fixture& f) { f.Bot.Mounted = true; }, Refusal::CannotNow},
+            {[](Fixture& f) { f.Bot.Valid = false; }, Refusal::CannotNow},
+            {byId(stranger), Refusal::CannotNow},
+            {[&](Fixture& f)
+             {
+                 pet.Owner = &f.Other;
+                 byId(pet)(f);
+             },
+             Refusal::CannotNow},
+            {[&](Fixture& f)
+             {
+                 ObjectAccessor::Units[15] = &friendly;
+                 f.AI.Values.Npcs.Data = {friendly.Guid};
+                 f.Command.TargetName = "Stormwind Guard";
+             },
+             Refusal::UnknownName},
+            {[&](Fixture& f)
+             {
+                 ObjectAccessor::Units[13] = &stranger;
+                 f.AI.Values.Possible.Data = {stranger.Guid};
+             },
+             Refusal::UnknownName},
+            {[](Fixture& f) { f.Command.TargetName = "Nobody Atall"; }, Refusal::UnknownName},
+            {[](Fixture& f) { f.Target.Seen = false; }, Refusal::TargetNotVisible}};
+        std::vector<Denial> const pullOnly = {{Ungrouped, Refusal::NotInGroup},
+                                              {[](Fixture& f) { f.Target.Yards = 25.0f; }, Refusal::TooFar},
+                                              {[](Fixture& f) { f.Target.Los = false; }, Refusal::TooFar},
+                                              {[](Fixture&) { ranged = false; }, Refusal::CannotNow},
+                                              {[](Fixture&)
+                                               {
+                                                   tank = true;
+                                                   hasPull = false;
+                                                   ranged = false;
+                                               },
+                                               Refusal::CannotNow},
+                                              {[](Fixture&)
+                                               {
+                                                   tank = true;
+                                                   pullable = false;
+                                               },
+                                               Refusal::CannotNow}};
+        for (Intent operation : {Intent::Attack, Intent::Pull})
+            for (std::vector<Denial> const* list : {&either, &pullOnly})
+            {
+                if (list == &pullOnly && operation != Intent::Pull)
+                    continue;
+
+                for (auto const& [deny, reason] : *list)
+                {
+                    Fixture f;
+                    wolves(f, operation);
+                    deny(f);
+                    f.Refused(reason);
+                    Check(pulls == 0, "a refused attack or pull pulls nothing");
+                }
+            }
+        // The attack's bound is what the bot sees (the order's visibility distance), not the pull's (AttackAction
+        // itself needs the unit in sight: Failed above).
+        {
+            Fixture f;
+            wolves(f, Intent::Attack);
+            f.Target.Yards = 25.0f;
+            Check(f.Run() == Result::Applied && attacks == 1, "an attack by name has no pull bound");
+        }
+        {
+            Fixture f;
+            wolves(f, Intent::Pull);
+            tank = true;
+            hasPull = false;
+            Check(f.Run() == Result::Applied && attacks == 1 && pulls == 0,
+                  "a tank without its pull strategy pulls with a ranged attack");
+        }
+        ObjectAccessor::Units.erase(12);
+        ObjectAccessor::Units.erase(13);
+        ObjectAccessor::Units.erase(14);
+        ObjectAccessor::Units.erase(15);
+    }
+    // LC17b: a cast by name: a helpful spell of the bot's own (BridgeSpellRule.h) on a friend or on itself, through
+    // playerbots' CanCastSpell and CastSpell; a spell that takes no unit (a conjure) lands on the bot. Harm, a craft,
+    // a passive, travel, a target out of the spell's range, a cooldown, too little power, a missing reagent, a hostile
+    // unit given by id or the core's own check: no cast.
+    {
+        SkillLineAbilityEntry const firstAid{129};
+        SkillLineAbilityEntry const arcane{237};
+        auto const spell = [](uint32 id, uint32 effect, uint32 mask)
+        {
+            SpellInfo info;
+            info.Id = id;
+            info.Effects[0].Effect = effect;
+            info.TargetMask = mask;
+            return info;
+        };
+        auto const caster = [&](Fixture& f, char const* spellName)
+        {
+            spellManager.Spells = {{1243, spell(1243, SPELL_EFFECT_APPLY_AURA, TARGET_FLAG_UNIT_ALLY)},
+                                   {5504, spell(5504, SPELL_EFFECT_CREATE_ITEM, 0)},
+                                   {2006, spell(2006, SPELL_EFFECT_RESURRECT, TARGET_FLAG_UNIT_DEAD)},
+                                   {3561, spell(3561, SPELL_EFFECT_TELEPORT_UNITS, 0)},
+                                   {116, spell(116, SPELL_EFFECT_SCHOOL_DAMAGE, TARGET_FLAG_UNIT)},
+                                   {3275, spell(3275, SPELL_EFFECT_CREATE_ITEM, 0)},
+                                   {11232, spell(11232, SPELL_EFFECT_APPLY_AURA, 0)}};
+            spellManager.Spells[116].Positive = false;
+            spellManager.Spells[11232].Passive = true;
+            spellManager.Skills = {{3275, &firstAid}, {5504, &arcane}};
+            f.Bot.Name = "Fixturebot";
+            f.Bot.Known = {
+                {"Power Word: Fortitude", 1243, 0.0f}, {"Conjure Water", 5504, 0.0f}, {"Resurrection", 2006, 0.0f},
+                {"Teleport: Stormwind", 3561, 0.0f},   {"Frostbolt", 116, 0.0f},      {"Linen Bandage", 3275, 0.0f},
+                {"Arcane Mind", 11232, 0.0f}};
+            f.Command.Operation = Intent::Cast;
+            f.Command.Target = 0;
+            f.Command.TargetName = "Brannoc";
+            f.Command.SpellName = spellName;
+            f.Other.Name = "Brannoc";
+            f.Other.Friendly = true;
+            f.Other.Yards = 10.0f;
+            f.AI.Values.Friends.Data = {f.Other.Guid};
+        };
+        struct CastCase
+        {
+            char const* Spell;
+            char const* Name;
+            std::function<void(Fixture&)> Setup;
+            std::function<Unit const*(Fixture&)> Meant;
+            char const* What;
+        };
+        std::vector<CastCase> const applied = {
+            {"Power Word: Fortitude", "Brannoc", [](Fixture&) {}, [](Fixture& f) { return &f.Other; },
+             "a buff by name lands on the friend named"},
+            {"Power Word: Fortitude", "Fixturebot", [](Fixture&) {}, [](Fixture& f) { return &f.Bot; },
+             "the bot's own name means the bot itself"},
+            {"Conjure Water", "Brannoc", [](Fixture&) {}, [](Fixture& f) { return &f.Bot; },
+             "a spell that takes no unit (a conjure) is cast as the bot's own, whoever is named"},
+            {"Resurrection", "Brannoc",
+             [](Fixture& f)
+             {
+                 f.Other.Alive = false;
+                 f.AI.Values.Friends.Data.clear();
+                 f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Other.Guid, "Brannoc"}};
+             },
+             [](Fixture& f) { return &f.Other; }, "a resurrection is cast on a dead group member by name"},
+            {"Resurrection", "Brannoc",
+             [](Fixture& f)
+             {
+                 f.Other.Alive = false;
+                 f.AI.Values.Friends.Data.clear();
+                 f.AI.Values.Corpses.Data = {f.Other.Guid};
+             },
+             [](Fixture& f) { return &f.Other; }, "a resurrection is cast on a dead friend in sight, out of the group"},
+            {"Power Word: Fortitude", "Brannoc", [](Fixture&) { spellManager.Spells[1243].Cost = 100; },
+             [](Fixture& f) { return &f.Other; }, "a cast the bot's power pays for is cast"},
+            {"Power Word: Fortitude", "Brannoc",
+             [](Fixture&)
+             {
+                 spellManager.Spells[1243].PowerType = 0xFFFFFFFE;  // POWER_HEALTH: no power to pay
+                 spellManager.Spells[1243].Cost = 500;
+             },
+             [](Fixture& f) { return &f.Other; }, "a cast that costs health needs no power"},
+            {"Power Word: Fortitude", "Brannoc",
+             [](Fixture& f)
+             {
+                 spellManager.Spells[1243].Reagent[1] = 17029;
+                 spellManager.Spells[1243].ReagentCount[1] = 2;
+                 f.Bot.Items[17029] = 2;
+             },
+             [](Fixture& f) { return &f.Other; }, "a cast with its reagents carried is cast"},
+            {"Power Word: Fortitude", "Brannoc",
+             [](Fixture& f)
+             {
+                 spellManager.Spells[1243].Reagent[0] = 17029;
+                 spellManager.Spells[1243].ReagentCount[0] = 1;
+                 f.Bot.NoReagent = true;
+             },
+             [](Fixture& f) { return &f.Other; }, "a cast the bot may cast without reagents is cast"},
+            {"Power Word: Fortitude", "Brannoc", [](Fixture& f) { f.Other.Yards = 30.0f; },
+             [](Fixture& f) { return &f.Other; }, "a friend at the spell's range is in reach"}};
+        for (CastCase const& each : applied)
+        {
+            Fixture f;
+            caster(f, each.Spell);
+            f.Command.TargetName = each.Name;
+            each.Setup(f);
+            Unit const* const meant = each.Meant(f);
+            auto const known = std::find_if(f.Bot.Known.begin(), f.Bot.Known.end(),
+                                            [&](auto const& spell) { return spell.Name == each.Spell; });
+            Check(f.Run() == Result::Applied && f.AI.CanCastCalls == 1 && f.AI.Casts == 1 && f.AI.CastId == known->Id &&
+                      f.AI.CastOn == meant,
+                  each.What);
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.Bot.Mounted = true;
+            f.Bot.Moving = true;
+            Check(f.Run() == Result::Applied && f.Bot.Dismounts == 1 && stops == 1 && !f.AI.CastMounted &&
+                      !f.AI.CastMoving,
+                  "a mounted, moving bot dismounts and stands still before it casts");
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.Bot.Seated = true;
+            Check(f.Run() == Result::Applied && f.AI.Casts == 1 && !f.AI.CastSeated,
+                  "a seated bot stands up before it casts");
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.Bot.Mounted = true;
+            f.Bot.Flying = true;
+            f.Run();
+            Check(f.Bot.Dismounts == 0, "a bot on a flying mount is never dismounted for a cast (a fall)");
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            spellManager.Spells[1243].Attributes = SPELL_ATTR0_ALLOW_WHILE_MOUNTED;
+            f.Bot.Mounted = true;
+            Check(f.Run() == Result::Applied && f.Bot.Dismounts == 0, "a spell cast mounted keeps the mount");
+        }
+        {
+            // The dead in sight are no friend's name but a friend's: a hostile corpse of the name is still no friend.
+            Fixture f;
+            caster(f, "Resurrection");
+            Unit body;
+            body.Guid = ObjectGuid(16);
+            body.Name = "Brannoc";
+            body.Hostile = true;
+            body.Alive = false;
+            ObjectAccessor::Units[16] = &body;
+            f.AI.Values.Friends.Data.clear();
+            f.AI.Values.Corpses.Data = {body.Guid};
+            f.Refused(Refusal::UnknownName);
+            ObjectAccessor::Units.erase(16);
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.AI.CastResult = false;
+            Check(f.Run() == Result::Failed && f.AI.Casts == 1, "a cast the core does not start has failed");
+        }
+        Unit wolf;
+        wolf.Guid = ObjectGuid(12);
+        wolf.Name = "Brannoc";
+        wolf.Hostile = true;
+        using Denial = std::pair<std::function<void(Fixture&)>, Refusal>;
+        std::vector<Denial> const denials = {
+            {[](Fixture& f) { f.Command.SpellName = "Nonexistent Spell"; }, Refusal::UnknownName},
+            {[](Fixture& f) { f.Command.TargetName = "Nobody Atall"; }, Refusal::UnknownName},
+            {[&](Fixture& f)
+             {
+                 // Only a hostile unit of the name: a friend's name never means it.
+                 ObjectAccessor::Units[12] = &wolf;
+                 f.AI.Values.Friends.Data.clear();
+                 f.AI.Values.Possible.Data = {wolf.Guid};
+             },
+             Refusal::UnknownName},
+            {[](Fixture& f) { f.Other.Seen = false; }, Refusal::TargetNotVisible},
+            {[](Fixture& f) { f.Other.Yards = 31.0f; }, Refusal::TargetNotVisible},
+            {[](Fixture& f)
+             {
+                 spellManager.Spells[1243].Range = 20.0f;
+                 f.Other.Yards = 25.0f;
+             },
+             Refusal::TooFar},
+            {[](Fixture& f)
+             {
+                 f.Other.Alive = false;
+                 f.AI.Values.Friends.Data.clear();
+                 f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Other.Guid, "Brannoc"}};
+                 f.Command.SpellName = "Resurrection";
+                 spellManager.Spells[2006].Range = 20.0f;
+                 f.Other.Yards = 25.0f;
+             },
+             Refusal::TooFar},
+            {[](Fixture& f) { f.Command.SpellName = "Frostbolt"; }, Refusal::CannotNow},
+            {[](Fixture& f) { f.Command.SpellName = "Teleport: Stormwind"; }, Refusal::CannotNow},
+            {[](Fixture& f)
+             {
+                 f.Command.SpellName = "Teleport: Stormwind";
+                 f.Command.TargetName = "Fixturebot";
+             },
+             Refusal::CannotNow},
+            {[](Fixture& f) { f.Command.SpellName = "Linen Bandage"; }, Refusal::CannotNow},
+            {[](Fixture& f) { f.Command.SpellName = "Arcane Mind"; }, Refusal::CannotNow},
+            {[](Fixture&)
+             {
+                 // A harm the core counts positive (a damage effect beside a helpful one) is still harm.
+                 spellManager.Spells[1243].Effects[2].Effect = SPELL_EFFECT_SCHOOL_DAMAGE;
+             },
+             Refusal::CannotNow},
+            {[](Fixture&) { spellManager.Spells[1243].Positive = false; }, Refusal::CannotNow},
+            {[](Fixture&) { spellManager.Spells[1243].Attributes = SPELL_ATTR0_IS_TRADESKILL; }, Refusal::CannotNow},
+            {[](Fixture& f) { f.Bot.Cooldowns = {1243}; }, Refusal::CannotNow},
+            {[](Fixture&) { spellManager.Spells[1243].Cost = 101; }, Refusal::CannotNow},
+            {[](Fixture& f)
+             {
+                 spellManager.Spells[1243].Reagent[1] = 17029;
+                 spellManager.Spells[1243].ReagentCount[1] = 2;
+                 f.Bot.Items[17029] = 1;
+             },
+             Refusal::CannotNow},
+            {[&](Fixture& f)
+             {
+                 // A hostile unit given by id passes no name filter: the row's own check refuses it.
+                 ObjectAccessor::Units[12] = &wolf;
+                 f.Command.TargetName.clear();
+                 f.Command.Target = wolf.Guid.Value;
+             },
+             Refusal::CannotNow},
+            {[](Fixture& f) { f.AI.CanCast = false; }, Refusal::CannotNow}};
+        for (auto const& [deny, reason] : denials)
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            deny(f);
+            f.Refused(reason);
+            Check(f.AI.Casts == 0, "a refused cast casts nothing");
+        }
+        ObjectAccessor::Units.erase(12);
+    }
+    // LC1a: the ability table. Every row has every part; the twenty-seven verbs with an effect have a row in the
+    // catalogue, attack_own_target an old-form row out of it, and the three without one have none; each row applied
+    // above and gave each refusal it lists, and no other.
     {
         std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
-        Check(rows.size() == 18, "eighteen rows");
-        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        Check(rows.size() == 27, "twenty-seven rows in the catalogue");
+        std::vector<AbilityRow const*> every;
+        for (AbilityRow const& row : rows)
+            every.push_back(&row);
+        for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
+            if (AbilityRow const* row = PlayerbotBridge::FindRow(static_cast<Intent>(value)); row && row->OldFormOnly)
+                every.push_back(row);
+        Check(every.size() == 28 && every.back()->Operation == Intent::AttackOwnTarget &&
+                  std::none_of(rows.begin(), rows.end(), [](AbilityRow const& row) { return row.OldFormOnly; }) &&
+                  PlayerbotBridge::FindRow("attack_own_target") == every.back(),
+              "one old-form row, attack_own_target, out of the catalogue's rows and found by its verb and name");
+        for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
         {
             Intent const operation = static_cast<Intent>(value);
             Check((PlayerbotBridge::FindRow(operation) != nullptr) != PlayerbotBridge::IsUnavailable(operation),
-                  "every verb has a row or is one of the four without an effect");
+                  "every verb has a row or is one of the three without an effect");
         }
         Check(!PlayerbotBridge::FindRow(static_cast<Intent>(255)) &&
                   !PlayerbotBridge::IsUnavailable(static_cast<Intent>(255)) && !PlayerbotBridge::FindRow("regroup") &&
@@ -2099,8 +3154,9 @@ int main()
         auto const listed = [](std::span<Refusal const> list, Refusal reason)
         { return std::find(list.begin(), list.end(), reason) != list.end(); };
         std::set<std::string> names;
-        for (AbilityRow const& row : rows)
+        for (AbilityRow const* each : every)
         {
+            AbilityRow const& row = *each;
             Check(PlayerbotBridge::FindRow(row.Operation) == &row && PlayerbotBridge::FindRow(row.Name) == &row &&
                       names.insert(row.Name).second,
                   "a row is found by its verb and by its own name");
@@ -2118,6 +3174,7 @@ int main()
                           std::all_of(param.Choices.begin(), param.Choices.end(), filled),
                       "a choice and only a choice has its words");
             }
+            Check(PlayerbotBridge::OneParamPerField(row.Params), "a row has at most one parameter per field");
             std::string_view const phrase = row.StatePhrase;
             for (std::size_t open = phrase.find('{'); open != std::string_view::npos; open = phrase.find('{', open + 1))
             {
@@ -2136,7 +3193,7 @@ int main()
             for (Refusal reason : row.Refusals)
                 Check(seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
             // The planner double gives any goal verb any answer; the planner's own rule is BridgeCheck's.
-            bool const goal = row.Operation >= Intent::GoTo;
+            bool const goal = row.Operation >= Intent::GoTo && row.Operation <= Intent::ResumePlan;
             for (Refusal reason : seen)
                 Check(goal || listed(row.Refusals, reason) || listed(common, reason),
                       "a row gives no refusal it does not list");
@@ -2157,7 +3214,7 @@ int main()
         // finds it again; the module parses the wire's verbs with these.
         std::set<std::string> verbs;
         bool verbsRoundTrip = true;
-        for (int value = 0; value <= static_cast<int>(Intent::ResumePlan); ++value)
+        for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
         {
             Intent const operation = static_cast<Intent>(value);
             std::string const word = PlayerbotBridge::IntentWord(operation);
@@ -2166,24 +3223,41 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 22, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 31, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
+        // LC16d and LC16e append the social verbs after them, LC17a the attack by name.
         char const* const wireVerbs[] = {
-            "follow",        "stay",          "flee",        "regroup",    "attack_own_target", "pull",
-            "mark",          "focus_healing", "assign_role", "save_mana",  "formation",         "position",
-            "dungeon_clear", "go_to",         "quest",       "errands",    "set_hearth",        "grind_here",
-            "gather_here",   "meet_at",       "pause_plan",  "resume_plan"};
+            "follow",      "stay",        "flee",          "regroup",      "attack_own_target",
+            "pull",        "mark",        "focus_healing", "assign_role",  "save_mana",
+            "formation",   "position",    "dungeon_clear", "go_to",        "quest",
+            "errands",     "set_hearth",  "grind_here",    "gather_here",  "meet_at",
+            "pause_plan",  "resume_plan", "emote",         "roll",         "ready",
+            "leave_group", "join_group",  "share_quest",   "accept_quest", "attack",
+            "cast"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
-        Check(oldWords && !*PlayerbotBridge::IntentWord(static_cast<Intent>(22)) && !PlayerbotBridge::FindIntent("") &&
-                  !PlayerbotBridge::FindIntent("Follow") && !PlayerbotBridge::FindIntent("follow ") &&
-                  !PlayerbotBridge::FindIntent("inventory") && !PlayerbotBridge::FindIntent("regroups"),
+        Check(oldWords && !*PlayerbotBridge::IntentWord(static_cast<Intent>(PlayerbotBridge::IntentCount)) &&
+                  !PlayerbotBridge::FindIntent("") && !PlayerbotBridge::FindIntent("Follow") &&
+                  !PlayerbotBridge::FindIntent("follow ") && !PlayerbotBridge::FindIntent("inventory") &&
+                  !PlayerbotBridge::FindIntent("regroups"),
               "every operation keeps its old wire word; no other word, and no topic, is a verb");
         Check(PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Mark), OrderField::Icon) &&
                   PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
                   !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
               "a row takes the fields of its parameters only");
+        // LC16b: whom each unit parameter's name may mean, and the check that a field carries one parameter.
+        auto const filterOf = [](Intent operation)
+        { return PlayerbotBridge::ParamOf(*PlayerbotBridge::FindRow(operation), OrderField::Target)->Filter; };
+        constexpr ParamRow twoTargets[] = {{"target", ParamKind::Unit, OrderField::Target, "A unit.", {}},
+                                           {"other", ParamKind::Unit, OrderField::Target, "Another unit.", {}}};
+        Check(filterOf(Intent::AttackOwnTarget) == UnitFilter::Enemy && filterOf(Intent::Attack) == UnitFilter::Enemy &&
+                  filterOf(Intent::Pull) == UnitFilter::Enemy && filterOf(Intent::Cast) == UnitFilter::Friend &&
+                  filterOf(Intent::FocusHealing) == UnitFilter::GroupMember &&
+                  filterOf(Intent::Mark) == UnitFilter::Anyone &&
+                  !PlayerbotBridge::ParamOf(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target) &&
+                  PlayerbotBridge::OneParamPerField(TestKindParams) && !PlayerbotBridge::OneParamPerField(twoTargets),
+              "an attack names an enemy, focus healing a group member, a mark anyone; one parameter per field");
 
         // LC1b: the topic rows. Every topic has a row, in the wire's order and under the wire's word
         // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
@@ -2206,8 +3280,37 @@ int main()
                       (!route || (row.Params[0].Kind == ParamKind::Place && filled(row.Params[0].Name) &&
                                   filled(row.Params[0].Sentence) && row.Params[0].Choices.empty())),
                   "only route takes an argument, a place");
+            Check(row.Lines == (topic >= BotStateTopic::History), "the record topics, and only they, answer lines");
             Check(!PlayerbotBridge::FindRow(row.Name) && names.insert(row.Name).second,
                   "no two rows, act or topic, share a name");
+        }
+        // LC16b: a topic beyond the fourteen takes one name of any kind and answers lines; two parameters, one that
+        // is no name, or a new topic without lines is no valid row.
+        {
+            using PlayerbotBridge::TopicRowsValid;
+            static constexpr ParamRow named[] = {{"unit", ParamKind::Unit, OrderField::Target, "A unit.", {}},
+                                                 {"place", ParamKind::Place, OrderField::PlaceName, "A place.", {}},
+                                                 {"item", ParamKind::Item, OrderField::ItemName, "An item.", {}},
+                                                 {"spell", ParamKind::Spell, OrderField::SpellName, "A spell.", {}},
+                                                 {"quest", ParamKind::Quest, OrderField::QuestId, "A quest.", {}}};
+            static constexpr ParamRow unnamed[] = {
+                {"level", ParamKind::Choice, OrderField::Choice, "How much.", TestLevels},
+                {"enabled", ParamKind::Flag, OrderField::Enabled, "Yes or no.", {}},
+                {"count", ParamKind::Count, OrderField::Count, "How many.", {}}};
+            BotStateTopic const next = static_cast<BotStateTopic>(topics.size());
+            auto const valid = [&](std::span<ParamRow const> params, bool lines)
+            {
+                TopicRow const row[] = {{next, "item_story", "What you know of it.", params, 12, lines}};
+                return TopicRowsValid(row);
+            };
+            bool everyName = TopicRowsValid(topics);
+            for (std::size_t index = 0; index < std::size(named); ++index)
+                everyName = everyName && valid(std::span(named).subspan(index, 1), true);
+            bool noOther = !valid(std::span(named).first(2), true) && !valid(std::span(named).subspan(2, 1), false);
+            for (std::size_t index = 0; index < std::size(unnamed); ++index)
+                noOther = noOther && !valid(std::span(unnamed).subspan(index, 1), true);
+            Check(everyName && noOther && valid({}, true),
+                  "a new topic takes at most one name of any kind and answers lines");
         }
         Check(!PlayerbotBridge::FindTopic(static_cast<BotStateTopic>(topics.size())) &&
                   !PlayerbotBridge::FindTopic("Places") && !PlayerbotBridge::FindTopic(""),
@@ -2216,6 +3319,13 @@ int main()
         // LC1b: the catalogue is the acts, then the topics, each entry its row's parts as plain values.
         std::vector<AbilityData> const catalogue = PlayerbotBridge::Catalogue();
         Check(catalogue.size() == rows.size() + topics.size(), "the catalogue holds every act and topic row");
+        auto const listedName = [&catalogue](std::string const& name)
+        {
+            return std::any_of(catalogue.begin(), catalogue.end(),
+                               [&name](AbilityData const& entry) { return entry.Name == name; });
+        };
+        Check(listedName("attack") && listedName("pull") && listedName("cast") && !listedName("attack_own_target"),
+              "the catalogue holds attack and pull and no attack_own_target");
         auto const sameParams =
             [](std::vector<PlayerbotBridge::ParamData> const& data, std::span<ParamRow const> params)
         {

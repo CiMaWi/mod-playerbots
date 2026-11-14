@@ -238,6 +238,21 @@ constexpr std::array<TraitWords, TRAIT_COUNT> WORDS = {{
     {"worldliness", {"rather green", "very green"}, {"rather seasoned", "a veteran"}},
 }};
 
+// LC15c: the area of each trait, in the Trait enum's order; the bridge groups the words by it (LC.33). The wire names
+// are the bridge's TRAIT_AREAS (bridge/claude/envelope.mjs): talk, others, work, wants.
+constexpr std::size_t AREA_COUNT = 4;
+constexpr std::array<std::string_view, AREA_COUNT> AREA_NAMES = {"talk", "others", "work", "wants"};
+constexpr std::array<uint8_t, TRAIT_COUNT> TRAIT_AREAS = {
+    2, 3, 2, 2, 1, 1, 1, 1, 1, 3,  // drive curiosity caution aggression sociability helpfulness leadership loyalty
+                                   // generosity thrift
+    3, 2, 2, 2, 2, 1, 3, 0, 1, 0,  // greed orderliness thoroughness competitiveness patience courtesy rootedness
+                                   // talkativeness warmth humour
+    0, 0, 3, 3, 3, 3, 1, 0, 1, 3,  // register confidence outlook piety zeal lore suspicion theatricality mischief
+                                   // worldliness
+};
+
+constexpr std::string_view AreaOf(Trait trait) { return AREA_NAMES[TRAIT_AREAS[static_cast<std::size_t>(trait)]]; }
+
 // No commas: the names are joined into comma lists
 constexpr std::array<std::string_view, INTEREST_COUNT> INTEREST_NAMES = {
     "fishing",      "cooking", "collecting pets and mounts",
@@ -267,6 +282,17 @@ constexpr bool AllNamed()
     return true;
 }
 static_assert(AllNamed(), "every trait needs a name and four words, every interest a comma-free name");
+
+// Every trait has exactly one of the four areas
+constexpr bool AllInAnArea()
+{
+    for (uint8_t const area : TRAIT_AREAS)
+        if (area >= AREA_COUNT)
+            return false;
+
+    return true;
+}
+static_assert(AllInAnArea(), "every trait needs one of the four areas");
 
 // Roll applies the pairs in order on the raw draws: a follower used as an anchor would chain the correlations
 constexpr bool FollowersAreNoAnchors()
@@ -439,8 +465,8 @@ inline std::string Word(Trait trait, int value)
     return std::string(mild);
 }
 
-// Every noticeable trait as words, strongest first (ties in trait order): what the LLM gets
-inline std::vector<std::string> Describe(BotTraits const& traits)
+// The noticeable traits, strongest first (ties in trait order)
+inline std::vector<std::size_t> NoticeableOrder(BotTraits const& traits)
 {
     std::vector<std::size_t> order;
     for (std::size_t i = 0; i < TRAIT_COUNT; ++i)
@@ -450,12 +476,27 @@ inline std::vector<std::string> Describe(BotTraits const& traits)
     std::stable_sort(order.begin(), order.end(), [&traits](std::size_t a, std::size_t b)
                      { return std::abs(traits.Values[a]) > std::abs(traits.Values[b]); });
 
+    return order;
+}
+
+// Every noticeable trait as words, strongest first (ties in trait order): what the LLM gets
+inline std::vector<std::string> Describe(BotTraits const& traits)
+{
     std::vector<std::string> words;
-    words.reserve(order.size());
-    for (std::size_t const i : order)
+    for (std::size_t const i : NoticeableOrder(traits))
         words.emplace_back(Word(static_cast<Trait>(i), traits.Values[i]));
 
     return words;
+}
+
+// LC15c: the area of each word of Describe, one per word in the same order
+inline std::vector<std::string> DescribeAreas(BotTraits const& traits)
+{
+    std::vector<std::string> areas;
+    for (std::size_t const i : NoticeableOrder(traits))
+        areas.emplace_back(AreaOf(static_cast<Trait>(i)));
+
+    return areas;
 }
 
 inline std::vector<std::string> InterestNames(BotTraits const& traits)

@@ -82,7 +82,7 @@ enum class RouteRow : std::uint8_t
 template <typename Row>
 BotStateItem Item(std::string name, std::uint32_t value, std::uint32_t extra, Row row)
 {
-    return {std::move(name), value, extra, static_cast<std::uint8_t>(row)};
+    return {std::move(name), value, extra, static_cast<std::uint8_t>(row), {}};
 }
 
 // Lower-case words of [a-z_] for the goal, reason and trait fields: digits, '.', '+' and '%' are dropped, so no trait
@@ -208,9 +208,11 @@ inline void OptionsItems(PlanInput const& in, std::vector<BotStateItem>& items)
         std::string text = std::string(Goals::KindWord(option.kind)) + " " + option.reason;
         for (std::string const& note : option.traitNotes)
             text += " " + note;
-        items.push_back({Words(text), Rounded(option.valuePerMinute),
+        items.push_back({Words(text),
+                         Rounded(option.valuePerMinute),
                          RoundUp(option.minutes * Goals::SECONDS_PER_MINUTE),
-                         static_cast<std::uint8_t>(IsCurrent(option, in.view.goal) ? 1 : 0)});
+                         static_cast<std::uint8_t>(IsCurrent(option, in.view.goal) ? 1 : 0),
+                         {}});
     }
 }
 
