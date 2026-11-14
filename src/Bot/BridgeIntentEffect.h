@@ -40,7 +40,7 @@ namespace PlayerbotBridge
 // log with its group, AcceptQuest (accept_quest) takes the quest a group member shared with it.
 // The fight verbs (LC17a): Attack (attack) an enemy creature by name, any the bot sees (AttackOwnTarget is the old
 // form's own-target attack, out of the catalogue); Pull (pull) one creature near the bot's group, by its tank or a
-// ranged attacker.
+// ranged attacker. Cast (cast, LC17b) a helpful spell of the bot's own on a friend by name, or on itself.
 enum class Intent : uint8_t
 {
     Follow,
@@ -72,7 +72,8 @@ enum class Intent : uint8_t
     JoinGroup,
     ShareQuest,
     AcceptQuest,
-    Attack
+    Attack,
+    Cast
 };
 
 enum class Result : uint8_t

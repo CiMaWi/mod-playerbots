@@ -2753,6 +2753,22 @@ int main()
             Check(f.Run() == Result::Applied && attacks == 0, "an attack by name already under way is applied");
         }
         {
+            // LC17b: the dead in sight count for a friend's name only: a dead creature of the name, nearer, is not it.
+            Fixture f;
+            wolves(f, Intent::Attack);
+            Unit carcass;
+            carcass.Guid = ObjectGuid(16);
+            carcass.Name = "Mangy Wolf";
+            carcass.Hostile = true;
+            carcass.Alive = false;
+            carcass.X = 2.0f;
+            ObjectAccessor::Units[16] = &carcass;
+            f.AI.Values.Corpses.Data = {carcass.Guid};
+            Check(f.Run() == Result::Applied && attacks == 1 && f.Bot.LastAttacked == &f.Target,
+                  "an attack by name never means a dead creature of the name");
+            ObjectAccessor::Units.erase(16);
+        }
+        {
             Fixture f;
             wolves(f, Intent::Pull);
             tank = true;
@@ -2860,19 +2876,263 @@ int main()
         ObjectAccessor::Units.erase(14);
         ObjectAccessor::Units.erase(15);
     }
-    // LC1a: the ability table. Every row has every part; the twenty-six verbs with an effect have a row in the
+    // LC17b: a cast by name: a helpful spell of the bot's own (BridgeSpellRule.h) on a friend or on itself, through
+    // playerbots' CanCastSpell and CastSpell; a spell that takes no unit (a conjure) lands on the bot. Harm, a craft,
+    // a passive, travel, a target out of the spell's range, a cooldown, too little power, a missing reagent, a hostile
+    // unit given by id or the core's own check: no cast.
+    {
+        SkillLineAbilityEntry const firstAid{129};
+        SkillLineAbilityEntry const arcane{237};
+        auto const spell = [](uint32 id, uint32 effect, uint32 mask)
+        {
+            SpellInfo info;
+            info.Id = id;
+            info.Effects[0].Effect = effect;
+            info.TargetMask = mask;
+            return info;
+        };
+        auto const caster = [&](Fixture& f, char const* spellName)
+        {
+            spellManager.Spells = {{1243, spell(1243, SPELL_EFFECT_APPLY_AURA, TARGET_FLAG_UNIT_ALLY)},
+                                   {5504, spell(5504, SPELL_EFFECT_CREATE_ITEM, 0)},
+                                   {2006, spell(2006, SPELL_EFFECT_RESURRECT, TARGET_FLAG_UNIT_DEAD)},
+                                   {3561, spell(3561, SPELL_EFFECT_TELEPORT_UNITS, 0)},
+                                   {116, spell(116, SPELL_EFFECT_SCHOOL_DAMAGE, TARGET_FLAG_UNIT)},
+                                   {3275, spell(3275, SPELL_EFFECT_CREATE_ITEM, 0)},
+                                   {11232, spell(11232, SPELL_EFFECT_APPLY_AURA, 0)}};
+            spellManager.Spells[116].Positive = false;
+            spellManager.Spells[11232].Passive = true;
+            spellManager.Skills = {{3275, &firstAid}, {5504, &arcane}};
+            f.Bot.Name = "Fixturebot";
+            f.Bot.Known = {
+                {"Power Word: Fortitude", 1243, 0.0f}, {"Conjure Water", 5504, 0.0f}, {"Resurrection", 2006, 0.0f},
+                {"Teleport: Stormwind", 3561, 0.0f},   {"Frostbolt", 116, 0.0f},      {"Linen Bandage", 3275, 0.0f},
+                {"Arcane Mind", 11232, 0.0f}};
+            f.Command.Operation = Intent::Cast;
+            f.Command.Target = 0;
+            f.Command.TargetName = "Brannoc";
+            f.Command.SpellName = spellName;
+            f.Other.Name = "Brannoc";
+            f.Other.Friendly = true;
+            f.Other.Yards = 10.0f;
+            f.AI.Values.Friends.Data = {f.Other.Guid};
+        };
+        struct CastCase
+        {
+            char const* Spell;
+            char const* Name;
+            std::function<void(Fixture&)> Setup;
+            std::function<Unit const*(Fixture&)> Meant;
+            char const* What;
+        };
+        std::vector<CastCase> const applied = {
+            {"Power Word: Fortitude", "Brannoc", [](Fixture&) {}, [](Fixture& f) { return &f.Other; },
+             "a buff by name lands on the friend named"},
+            {"Power Word: Fortitude", "Fixturebot", [](Fixture&) {}, [](Fixture& f) { return &f.Bot; },
+             "the bot's own name means the bot itself"},
+            {"Conjure Water", "Brannoc", [](Fixture&) {}, [](Fixture& f) { return &f.Bot; },
+             "a spell that takes no unit (a conjure) is cast as the bot's own, whoever is named"},
+            {"Resurrection", "Brannoc",
+             [](Fixture& f)
+             {
+                 f.Other.Alive = false;
+                 f.AI.Values.Friends.Data.clear();
+                 f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Other.Guid, "Brannoc"}};
+             },
+             [](Fixture& f) { return &f.Other; }, "a resurrection is cast on a dead group member by name"},
+            {"Resurrection", "Brannoc",
+             [](Fixture& f)
+             {
+                 f.Other.Alive = false;
+                 f.AI.Values.Friends.Data.clear();
+                 f.AI.Values.Corpses.Data = {f.Other.Guid};
+             },
+             [](Fixture& f) { return &f.Other; }, "a resurrection is cast on a dead friend in sight, out of the group"},
+            {"Power Word: Fortitude", "Brannoc", [](Fixture&) { spellManager.Spells[1243].Cost = 100; },
+             [](Fixture& f) { return &f.Other; }, "a cast the bot's power pays for is cast"},
+            {"Power Word: Fortitude", "Brannoc",
+             [](Fixture&)
+             {
+                 spellManager.Spells[1243].PowerType = 0xFFFFFFFE;  // POWER_HEALTH: no power to pay
+                 spellManager.Spells[1243].Cost = 500;
+             },
+             [](Fixture& f) { return &f.Other; }, "a cast that costs health needs no power"},
+            {"Power Word: Fortitude", "Brannoc",
+             [](Fixture& f)
+             {
+                 spellManager.Spells[1243].Reagent[1] = 17029;
+                 spellManager.Spells[1243].ReagentCount[1] = 2;
+                 f.Bot.Items[17029] = 2;
+             },
+             [](Fixture& f) { return &f.Other; }, "a cast with its reagents carried is cast"},
+            {"Power Word: Fortitude", "Brannoc",
+             [](Fixture& f)
+             {
+                 spellManager.Spells[1243].Reagent[0] = 17029;
+                 spellManager.Spells[1243].ReagentCount[0] = 1;
+                 f.Bot.NoReagent = true;
+             },
+             [](Fixture& f) { return &f.Other; }, "a cast the bot may cast without reagents is cast"},
+            {"Power Word: Fortitude", "Brannoc", [](Fixture& f) { f.Other.Yards = 30.0f; },
+             [](Fixture& f) { return &f.Other; }, "a friend at the spell's range is in reach"}};
+        for (CastCase const& each : applied)
+        {
+            Fixture f;
+            caster(f, each.Spell);
+            f.Command.TargetName = each.Name;
+            each.Setup(f);
+            Unit const* const meant = each.Meant(f);
+            auto const known = std::find_if(f.Bot.Known.begin(), f.Bot.Known.end(),
+                                            [&](auto const& spell) { return spell.Name == each.Spell; });
+            Check(f.Run() == Result::Applied && f.AI.CanCastCalls == 1 && f.AI.Casts == 1 && f.AI.CastId == known->Id &&
+                      f.AI.CastOn == meant,
+                  each.What);
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.Bot.Mounted = true;
+            f.Bot.Moving = true;
+            Check(f.Run() == Result::Applied && f.Bot.Dismounts == 1 && stops == 1 && !f.AI.CastMounted &&
+                      !f.AI.CastMoving,
+                  "a mounted, moving bot dismounts and stands still before it casts");
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.Bot.Seated = true;
+            Check(f.Run() == Result::Applied && f.AI.Casts == 1 && !f.AI.CastSeated,
+                  "a seated bot stands up before it casts");
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.Bot.Mounted = true;
+            f.Bot.Flying = true;
+            f.Run();
+            Check(f.Bot.Dismounts == 0, "a bot on a flying mount is never dismounted for a cast (a fall)");
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            spellManager.Spells[1243].Attributes = SPELL_ATTR0_ALLOW_WHILE_MOUNTED;
+            f.Bot.Mounted = true;
+            Check(f.Run() == Result::Applied && f.Bot.Dismounts == 0, "a spell cast mounted keeps the mount");
+        }
+        {
+            // The dead in sight are no friend's name but a friend's: a hostile corpse of the name is still no friend.
+            Fixture f;
+            caster(f, "Resurrection");
+            Unit body;
+            body.Guid = ObjectGuid(16);
+            body.Name = "Brannoc";
+            body.Hostile = true;
+            body.Alive = false;
+            ObjectAccessor::Units[16] = &body;
+            f.AI.Values.Friends.Data.clear();
+            f.AI.Values.Corpses.Data = {body.Guid};
+            f.Refused(Refusal::UnknownName);
+            ObjectAccessor::Units.erase(16);
+        }
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            f.AI.CastResult = false;
+            Check(f.Run() == Result::Failed && f.AI.Casts == 1, "a cast the core does not start has failed");
+        }
+        Unit wolf;
+        wolf.Guid = ObjectGuid(12);
+        wolf.Name = "Brannoc";
+        wolf.Hostile = true;
+        using Denial = std::pair<std::function<void(Fixture&)>, Refusal>;
+        std::vector<Denial> const denials = {
+            {[](Fixture& f) { f.Command.SpellName = "Nonexistent Spell"; }, Refusal::UnknownName},
+            {[](Fixture& f) { f.Command.TargetName = "Nobody Atall"; }, Refusal::UnknownName},
+            {[&](Fixture& f)
+             {
+                 // Only a hostile unit of the name: a friend's name never means it.
+                 ObjectAccessor::Units[12] = &wolf;
+                 f.AI.Values.Friends.Data.clear();
+                 f.AI.Values.Possible.Data = {wolf.Guid};
+             },
+             Refusal::UnknownName},
+            {[](Fixture& f) { f.Other.Seen = false; }, Refusal::TargetNotVisible},
+            {[](Fixture& f) { f.Other.Yards = 31.0f; }, Refusal::TargetNotVisible},
+            {[](Fixture& f)
+             {
+                 spellManager.Spells[1243].Range = 20.0f;
+                 f.Other.Yards = 25.0f;
+             },
+             Refusal::TooFar},
+            {[](Fixture& f)
+             {
+                 f.Other.Alive = false;
+                 f.AI.Values.Friends.Data.clear();
+                 f.Party.Slots = {{f.Bot.Guid, "Fixturebot"}, {f.Other.Guid, "Brannoc"}};
+                 f.Command.SpellName = "Resurrection";
+                 spellManager.Spells[2006].Range = 20.0f;
+                 f.Other.Yards = 25.0f;
+             },
+             Refusal::TooFar},
+            {[](Fixture& f) { f.Command.SpellName = "Frostbolt"; }, Refusal::CannotNow},
+            {[](Fixture& f) { f.Command.SpellName = "Teleport: Stormwind"; }, Refusal::CannotNow},
+            {[](Fixture& f)
+             {
+                 f.Command.SpellName = "Teleport: Stormwind";
+                 f.Command.TargetName = "Fixturebot";
+             },
+             Refusal::CannotNow},
+            {[](Fixture& f) { f.Command.SpellName = "Linen Bandage"; }, Refusal::CannotNow},
+            {[](Fixture& f) { f.Command.SpellName = "Arcane Mind"; }, Refusal::CannotNow},
+            {[](Fixture&)
+             {
+                 // A harm the core counts positive (a damage effect beside a helpful one) is still harm.
+                 spellManager.Spells[1243].Effects[2].Effect = SPELL_EFFECT_SCHOOL_DAMAGE;
+             },
+             Refusal::CannotNow},
+            {[](Fixture&) { spellManager.Spells[1243].Positive = false; }, Refusal::CannotNow},
+            {[](Fixture&) { spellManager.Spells[1243].Attributes = SPELL_ATTR0_IS_TRADESKILL; }, Refusal::CannotNow},
+            {[](Fixture& f) { f.Bot.Cooldowns = {1243}; }, Refusal::CannotNow},
+            {[](Fixture&) { spellManager.Spells[1243].Cost = 101; }, Refusal::CannotNow},
+            {[](Fixture& f)
+             {
+                 spellManager.Spells[1243].Reagent[1] = 17029;
+                 spellManager.Spells[1243].ReagentCount[1] = 2;
+                 f.Bot.Items[17029] = 1;
+             },
+             Refusal::CannotNow},
+            {[&](Fixture& f)
+             {
+                 // A hostile unit given by id passes no name filter: the row's own check refuses it.
+                 ObjectAccessor::Units[12] = &wolf;
+                 f.Command.TargetName.clear();
+                 f.Command.Target = wolf.Guid.Value;
+             },
+             Refusal::CannotNow},
+            {[](Fixture& f) { f.AI.CanCast = false; }, Refusal::CannotNow}};
+        for (auto const& [deny, reason] : denials)
+        {
+            Fixture f;
+            caster(f, "Power Word: Fortitude");
+            deny(f);
+            f.Refused(reason);
+            Check(f.AI.Casts == 0, "a refused cast casts nothing");
+        }
+        ObjectAccessor::Units.erase(12);
+    }
+    // LC1a: the ability table. Every row has every part; the twenty-seven verbs with an effect have a row in the
     // catalogue, attack_own_target an old-form row out of it, and the three without one have none; each row applied
     // above and gave each refusal it lists, and no other.
     {
         std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
-        Check(rows.size() == 26, "twenty-six rows in the catalogue");
+        Check(rows.size() == 27, "twenty-seven rows in the catalogue");
         std::vector<AbilityRow const*> every;
         for (AbilityRow const& row : rows)
             every.push_back(&row);
         for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
             if (AbilityRow const* row = PlayerbotBridge::FindRow(static_cast<Intent>(value)); row && row->OldFormOnly)
                 every.push_back(row);
-        Check(every.size() == 27 && every.back()->Operation == Intent::AttackOwnTarget &&
+        Check(every.size() == 28 && every.back()->Operation == Intent::AttackOwnTarget &&
                   std::none_of(rows.begin(), rows.end(), [](AbilityRow const& row) { return row.OldFormOnly; }) &&
                   PlayerbotBridge::FindRow("attack_own_target") == every.back(),
               "one old-form row, attack_own_target, out of the catalogue's rows and found by its verb and name");
@@ -2963,7 +3223,7 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 30, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 31, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
         // LC16d and LC16e append the social verbs after them, LC17a the attack by name.
         char const* const wireVerbs[] = {
@@ -2972,7 +3232,8 @@ int main()
             "formation",   "position",    "dungeon_clear", "go_to",        "quest",
             "errands",     "set_hearth",  "grind_here",    "gather_here",  "meet_at",
             "pause_plan",  "resume_plan", "emote",         "roll",         "ready",
-            "leave_group", "join_group",  "share_quest",   "accept_quest", "attack"};
+            "leave_group", "join_group",  "share_quest",   "accept_quest", "attack",
+            "cast"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
@@ -2991,7 +3252,7 @@ int main()
         constexpr ParamRow twoTargets[] = {{"target", ParamKind::Unit, OrderField::Target, "A unit.", {}},
                                            {"other", ParamKind::Unit, OrderField::Target, "Another unit.", {}}};
         Check(filterOf(Intent::AttackOwnTarget) == UnitFilter::Enemy && filterOf(Intent::Attack) == UnitFilter::Enemy &&
-                  filterOf(Intent::Pull) == UnitFilter::Enemy &&
+                  filterOf(Intent::Pull) == UnitFilter::Enemy && filterOf(Intent::Cast) == UnitFilter::Friend &&
                   filterOf(Intent::FocusHealing) == UnitFilter::GroupMember &&
                   filterOf(Intent::Mark) == UnitFilter::Anyone &&
                   !PlayerbotBridge::ParamOf(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target) &&
@@ -3063,7 +3324,7 @@ int main()
             return std::any_of(catalogue.begin(), catalogue.end(),
                                [&name](AbilityData const& entry) { return entry.Name == name; });
         };
-        Check(listedName("attack") && listedName("pull") && !listedName("attack_own_target"),
+        Check(listedName("attack") && listedName("pull") && listedName("cast") && !listedName("attack_own_target"),
               "the catalogue holds attack and pull and no attack_own_target");
         auto const sameParams =
             [](std::vector<PlayerbotBridge::ParamData> const& data, std::span<ParamRow const> params)

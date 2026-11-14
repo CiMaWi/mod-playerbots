@@ -20,10 +20,12 @@
 #include "AttackAction.h"
 #include "BridgeGoals.h"
 #include "BridgeNames.h"
+#include "BridgeSpellRule.h"
 #include "CensusMgr.h"
 #include "EmoteAction.h"
 #include "FollowActions.h"
 #include "Group.h"
+#include "Log.h"
 #include "MovementActions.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -37,6 +39,8 @@
 #include "QuestDef.h"
 #include "QuestPackets.h"
 #include "RandomPlayerbotMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StayActions.h"
 #include "TestPlayer.h"
 #include "TravelPlaces.h"
@@ -383,6 +387,119 @@ Result PullOnce(ActFacts const& act, Refusal& why)
     return AttackOnce(act, why);
 }
 
+// LC17b: the spell rule reads the core's effect values by number (BridgeSpellRule.h).
+static_assert(SpellEffectId::Instakill == SPELL_EFFECT_INSTAKILL &&
+                  SpellEffectId::SchoolDamage == SPELL_EFFECT_SCHOOL_DAMAGE &&
+                  SpellEffectId::PortalTeleport == SPELL_EFFECT_PORTAL_TELEPORT &&
+                  SpellEffectId::TeleportUnits == SPELL_EFFECT_TELEPORT_UNITS &&
+                  SpellEffectId::EnvironmentalDamage == SPELL_EFFECT_ENVIRONMENTAL_DAMAGE &&
+                  SpellEffectId::PowerDrain == SPELL_EFFECT_POWER_DRAIN &&
+                  SpellEffectId::HealthLeech == SPELL_EFFECT_HEALTH_LEECH &&
+                  SpellEffectId::WeaponDamageNoSchool == SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL &&
+                  SpellEffectId::Leap == SPELL_EFFECT_LEAP &&
+                  SpellEffectId::WeaponPercentDamage == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE &&
+                  SpellEffectId::Jump == SPELL_EFFECT_JUMP && SpellEffectId::JumpDest == SPELL_EFFECT_JUMP_DEST &&
+                  SpellEffectId::TeleportUnitsFaceCaster == SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER &&
+                  SpellEffectId::TradeSkill == SPELL_EFFECT_TRADE_SKILL &&
+                  SpellEffectId::WeaponDamage == SPELL_EFFECT_WEAPON_DAMAGE &&
+                  SpellEffectId::PowerBurn == SPELL_EFFECT_POWER_BURN &&
+                  SpellEffectId::InterruptCast == SPELL_EFFECT_INTERRUPT_CAST &&
+                  SpellEffectId::Stuck == SPELL_EFFECT_STUCK && SpellEffectId::Charge == SPELL_EFFECT_CHARGE &&
+                  SpellEffectId::KnockBack == SPELL_EFFECT_KNOCK_BACK &&
+                  SpellEffectId::AttackMe == SPELL_EFFECT_ATTACK_ME &&
+                  SpellEffectId::TeleportGraveyard == SPELL_EFFECT_TELEPORT_GRAVEYARD &&
+                  SpellEffectId::NormalizedWeaponDamage == SPELL_EFFECT_NORMALIZED_WEAPON_DMG &&
+                  SpellEffectId::PullTowards == SPELL_EFFECT_PULL_TOWARDS &&
+                  SpellEffectId::LeapBack == SPELL_EFFECT_LEAP_BACK &&
+                  SpellEffectId::KnockBackDest == SPELL_EFFECT_KNOCK_BACK_DEST &&
+                  SpellEffectId::PullTowardsDest == SPELL_EFFECT_PULL_TOWARDS_DEST &&
+                  SpellEffectId::ChargeDest == SPELL_EFFECT_CHARGE_DEST &&
+                  TradeskillAttribute == SPELL_ATTR0_IS_TRADESKILL && MAX_SPELL_EFFECTS == 3,
+              "the spell rule's effect values are SharedDefines.h's");
+
+// A spell's facts for the spell rule: its SpellInfo, and whether a profession's skill line teaches it (the spell
+// manager's lists, no database query).
+SpellFacts FactsOf(SpellInfo const* spell)
+{
+    SpellFacts facts{spell->IsPassive(), spell->IsPositive(), false, spell->Attributes, {}};
+    for (uint8 index = 0; index < MAX_SPELL_EFFECTS; ++index)
+        facts.Effects[index] = static_cast<uint32_t>(spell->Effects[index].Effect);
+
+    SkillLineAbilityMapBounds const skills = sSpellMgr->GetSkillLineAbilityMapBounds(spell->Id);
+    for (auto skill = skills.first; skill != skills.second; ++skill)
+        facts.Profession = facts.Profession || IsProfessionSkill(skill->second->SkillLine);
+
+    return facts;
+}
+
+// Whom a spell lands on: the named friend for a spell cast on a unit (or a friend's body), else the bot (a conjure,
+// a portal, an aura of its own): the effect falls where the bot stands whoever was named.
+Unit* CastTarget(ActFacts const& act, SpellInfo const* spell)
+{
+    return spell->GetExplicitTargetMask() & (TARGET_FLAG_UNIT_MASK | TARGET_FLAG_CORPSE_MASK) ? act.Target : act.Bot;
+}
+
+// The power and reagents the cast costs: CanCastSpell checks the cast without them.
+bool CanPay(Player* bot, SpellInfo const* spell)
+{
+    if (spell->PowerType < MAX_POWERS && static_cast<int64>(bot->GetPower(static_cast<Powers>(spell->PowerType))) <
+                                             spell->CalcPowerCost(bot, spell->GetSchoolMask()))
+        return false;
+
+    if (bot->CanNoReagentCast(spell))
+        return true;
+
+    for (uint8 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+        if (spell->Reagent[index] > 0 && !bot->HasItemCount(spell->Reagent[index], spell->ReagentCount[index]))
+            return false;
+
+    return true;
+}
+
+// A helpful spell (BridgeSpellRule.h) on a friend or the bot itself (also for a unit given by id), within the spell's
+// range, off cooldown, paid for.
+Refusal CastCheck(ActFacts const& act)
+{
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(act.SpellId);
+    if (!spell || !HelpfulSpell(FactsOf(spell)) || (act.Target != act.Bot && !act.Bot->IsFriendlyTo(act.Target)))
+        return Refusal::CannotNow;
+
+    Unit* target = CastTarget(act, spell);
+    if (target != act.Bot && !act.Bot->IsWithinDistInMap(target, spell->GetMaxRange(true, act.Bot)))
+        return Refusal::TooFar;
+
+    return act.Bot->HasSpellCooldown(spell->Id) || !CanPay(act.Bot, spell) ? Refusal::CannotNow : Refusal::None;
+}
+
+// One cast through playerbots' own path: dismounted first, standing up and still (as CastCustomSpellAction; a seated
+// bot's CastSpell would only stand it up), then its CanCastSpell check (the core's cast check: a dead friend for a
+// resurrection, a target it may cast on, the global cooldown: an order that meets the bot's own cast is refused, the
+// speaker may ask again) and CastSpell. A refusal or a failure there writes one debug line of why.
+Result CastOnce(ActFacts const& act, Refusal& why)
+{
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(act.SpellId);
+    Unit* target = CastTarget(act, spell);
+    Player* bot = act.Bot;
+    if (bot->IsMounted() && !bot->IsFlying() && !spell->HasAttribute(SPELL_ATTR0_ALLOW_WHILE_MOUNTED))
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+
+    bool const seated = !bot->IsStandState();
+    if (seated)
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+
+    if (bot->isMoving())
+        bot->StopMoving();
+
+    bool const checked = act.Ai->CanCastSpell(spell->Id, target, true);
+    if (checked && act.Ai->CastSpell(spell->Id, target))
+        return Result::Applied;
+
+    LOG_DEBUG("playerbots", "Bridge cast {} by {} on {}: {} (prepare {}, seated {}, casting {}, gcd {})", spell->Id,
+              bot->GetName(), target->GetName(), checked ? "failed" : "refused", act.Ai->LastPrepareResult(), seated,
+              bot->IsNonMeleeSpellCast(false), bot->GetGlobalCooldownMgr().HasGlobalCooldown(spell));
+    return checked ? Result::Failed : Refuse(why, Refusal::CannotNow);
+}
+
 // The bot marks as itself (as RtiAction does): in a raid only as its leader or an assistant, and never a player who
 // is not connected or is hostile to the bot.
 Refusal MarkCheck(ActFacts const& act)
@@ -648,6 +765,14 @@ constexpr ParamRow AttackByNameParams[] = {{"target",
                                             UnitFilter::Enemy}};
 constexpr ParamRow PullParams[] = {
     {"target", ParamKind::Unit, OrderField::Target, "One creature near your group, by name.", {}, UnitFilter::Enemy}};
+constexpr ParamRow CastParams[] = {
+    {"spell", ParamKind::Spell, OrderField::SpellName, "A helpful spell of yours, by name.", {}},
+    {"target",
+     ParamKind::Unit,
+     OrderField::Target,
+     "Whom it is for, by name; your own name for yourself.",
+     {},
+     UnitFilter::Friend}};
 constexpr ParamRow MarkParams[] = {
     {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}, UnitFilter::Anyone},
     {"icon", ParamKind::Choice, OrderField::Icon, "The raid icon to put on it.", RaidIcons}};
@@ -686,6 +811,8 @@ constexpr Refusal AttackRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVi
 constexpr Refusal AttackByNameRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::CannotNow};
 constexpr Refusal PullRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
                                     Refusal::TooFar, Refusal::CannotNow};
+constexpr Refusal CastRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::TooFar,
+                                    Refusal::CannotNow};
 constexpr Refusal GroupTargetRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
                                            Refusal::CannotNow};
 constexpr Refusal GroupSettingRefusals[] = {Refusal::NotInGroup};
@@ -1061,6 +1188,19 @@ constexpr AbilityRow Rows[] = {
      .Lasting = Part::None,
      .Done = Completion::TargetGone,
      .StatePhrase = "pulling {target}"},
+    {.Operation = Intent::Cast,
+     .Name = "cast",
+     .Sentence = "Cast a helpful spell of yours (a buff, a heal, a cure, a resurrection, conjured food or water, a "
+                 "portal) on a friend or yourself.",
+     .Params = CastParams,
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = CastCheck,
+     .Refusals = CastRefusals,
+     .Effect = CastOnce,
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "casting {spell} on {target}"},
     // The old form's own-target attack (mod-ollama-chat's frozen verbs, LC.23); the catalogue offers attack.
     {.Operation = Intent::AttackOwnTarget,
      .Name = "attack_own_target",
@@ -1414,8 +1554,11 @@ uint64_t UnitNamed(ActFacts const& act, UnitFilter filter, std::string const& na
     if (filter == UnitFilter::Friend)
         candidates.push_back({act.Bot->GetName(), act.Bot->GetGUID().GetRawValue(), 0.0f});
 
-    for (char const* list : {"nearest npcs", "possible targets", "nearest friendly players"})
-        if (Value<GuidVector>* units = act.Ai->GetAiObjectContext()->GetValue<GuidVector>(list))
+    // A friend's name means a dead friend in sight too (a resurrection's target), not only a living one or a group
+    // member; an enemy's never means the dead.
+    char const* const dead = filter == UnitFilter::Friend ? "nearest corpses" : nullptr;
+    for (char const* list : {"nearest npcs", "possible targets", "nearest friendly players", dead})
+        if (Value<GuidVector>* units = list ? act.Ai->GetAiObjectContext()->GetValue<GuidVector>(list) : nullptr)
             for (ObjectGuid const& guid : units->Get())
                 if (Unit* unit = ObjectAccessor::GetUnit(*act.Bot, guid); unit && Admits(filter, act.Bot, unit))
                     candidates.push_back(

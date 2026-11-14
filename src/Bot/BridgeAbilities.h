@@ -181,7 +181,7 @@ bool IsUnavailable(Intent operation);
 
 // The number of Intent values: the rows' verbs and the three without one (BridgeAbilities.cpp checks it against the
 // table). A new verb is appended to Intent, given its row and counted here; mod-ollama-chat asserts its own count.
-constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::Attack) + 1;
+constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::Cast) + 1;
 
 // The ready checks a bot was sent and has not answered, for the ready row: the core keeps no open check
 // (WorldSession::HandleRaidReadyCheckOpcode only broadcasts), so the bot's packet handler notes each request it gets
