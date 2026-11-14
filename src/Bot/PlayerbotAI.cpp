@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 
+#include "LightweightPerf.h"
 #include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "ArenaCcSpells.h"
@@ -1223,6 +1224,7 @@ void PlayerbotAI::BeginAboard(uint32 entry)
 
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
+    LightweightPerf::AiScope perf;
     // Handle the AI check delay
     if (nextAICheckDelay > elapsed)
         nextAICheckDelay -= elapsed;
