@@ -15,7 +15,9 @@
 #include <variant>
 
 #include "Action.h"
+#include "BotRecordMgr.h"
 #include "Creature.h"
+#include "EventWanted.h"
 #include "Group.h"
 #include "Item.h"
 #include "Log.h"
@@ -31,6 +33,7 @@
 #include "ScriptMgr.h"
 #include "StringFormat.h"
 #include "TravelLegRules.h"
+#include "UpkeepRules.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 
@@ -309,8 +312,16 @@ void NoteTravelDeath(Player* killed)
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(killed);
     if (!botAI)
         return;
-    if (auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
-        TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
+    auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (!travel)
+        return;
+    TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
+    // A death on a fly leg after its takeoff (upkeep WU10): FlightFall death, amount the leg's number. A bot killed on
+    // the ground before it took off (WU11b fix 7: Glettla, killed at Valgarde by the mob that had killed it there
+    // before) died a ground death, counted by its Death row only
+    TravelLegs::Trip const& trip = travel->trip;
+    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly && trip.seenInFlight)
+        EventLog::Emit(killed, Upkeep::EVENT_FLIGHT_FALL, "death", travel->tripId, trip.legIdx + 1);
 }
 
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
@@ -593,14 +604,20 @@ void CensusMgr::SampleState(bool focusOnly)
 
 void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
 {
-    if (player && WorldLog::Active())
-        EmitWorldLogEvent(player, WorldLogFormat::EVENT_LEVEL, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
+    if (player && EventLog::Wanted())
+        OnEvent(player, WorldLogFormat::EVENT_LEVEL, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
 }
 
 void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
 {
-    if (!type.empty() && bot && WorldLog::Active())
+    if (type.empty() || !bot)
+        return;
+
+    if (WorldLog::Active())
         EmitWorldLogEvent(bot, type, source, id, amount);
+
+    // The bots' record takes its events whether or not the world log runs (its Record row follows the cause's row)
+    BotRecordMgr::Instance().OnEvent(bot, type, source, id, amount);
 }
 
 bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)

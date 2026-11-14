@@ -1361,6 +1361,40 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
         WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }
+    // Honest upkeep of persistent bots (Playerbots.Upkeep.*); the defaults (UpkeepConfig) are the conf.dist values
+    {
+        constexpr uint32 MaxHandoutShare = 100;
+        Upkeep = UpkeepConfig{};
+        Upkeep.HandoutShare = std::min<uint32>(
+            sConfigMgr->GetOption<uint32>("Playerbots.Upkeep.HandoutShare", Upkeep.HandoutShare, false),
+            MaxHandoutShare);
+    }
+
+    // Mail and bank visits of persistent bots (Playerbots.BankMail.*), optional keys whose defaults (BankMailConfig)
+    // are the conf.dist values
+    {
+        constexpr uint32 MaxMailWorthCopper = 10000;
+        constexpr uint32 MaxKeepLevelHorizon = 20;
+        constexpr uint32 MinVisitDeadlineSeconds = 60;
+        constexpr uint32 MaxVisitDeadlineSeconds = HOUR;
+        constexpr uint32 MaxVisitStepSeconds = 60;
+        constexpr uint32 MaxMailsPerVisit = 100;
+        auto const bankMailNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
+        {
+            value = std::clamp<uint32>(
+                sConfigMgr->GetOption<uint32>(std::string("Playerbots.BankMail.") + key, value, false), minimum,
+                maximum);
+        };
+        BankMail = BankMailConfig{};
+        bankMailNumber("Mail.DefaultWorthCopper", BankMail.MailDefaultWorthCopper, 0, MaxMailWorthCopper);
+        bankMailNumber("Bank.KeepLevelHorizon", BankMail.KeepLevelHorizon, 0, MaxKeepLevelHorizon);
+        bankMailNumber("Mail.VisitDeadlineSeconds", BankMail.MailVisitDeadlineSeconds, MinVisitDeadlineSeconds,
+                       MaxVisitDeadlineSeconds);
+        bankMailNumber("Bank.VisitDeadlineSeconds", BankMail.BankVisitDeadlineSeconds, MinVisitDeadlineSeconds,
+                       MaxVisitDeadlineSeconds);
+        bankMailNumber("VisitStepSeconds", BankMail.VisitStepSeconds, 1, MaxVisitStepSeconds);
+        bankMailNumber("Mail.PerVisit", BankMail.MailsPerVisit, 1, MaxMailsPerVisit);
+    }
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)

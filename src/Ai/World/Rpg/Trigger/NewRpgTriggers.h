@@ -25,12 +25,19 @@ protected:
 
 namespace WorldTravel
 {
-// A persistent bot alone in the open world, alive and out of combat, in an RPG status an errand may interrupt (the
-// trigger and the destroy rule share it)
-bool ErrandMayStart(PlayerbotAI* botAI);
+// A persistent bot alone in the open world, alive, out of combat and not sick, in an RPG status an errand may interrupt
+// (UpkeepRules.h ErrandMayStart; needDue: for a due upkeep need, which may also end questing). The triggers and the
+// destroy rule share it
+bool ErrandMayStart(PlayerbotAI* botAI, bool needDue = false);
+// Map thread: the repair need makes an errand worth a trip of its own (UpkeepNeedRules.h RepairErrandDue)
+bool RepairErrandWanted(Player* bot);
+// Map thread: a due stock the gold pays a lot of, due training or a riding rank bought (UpkeepNeedRules.h
+// AnyErrandDue); one snapshot and needs list, for the errand check after its retry time only
+bool NeedErrandWanted(PlayerbotAI* botAI);
 }  // namespace WorldTravel
 
-// A persistent bot with full bags in an RPG status it may leave, due for an errand check (ItemWorthRules.h ErrandDue)
+// A persistent bot with full bags, gear due for repair or a due consumable stock, in an RPG status it may leave, due
+// for an errand check (ItemWorthRules.h ErrandDue and ErrandRetryOver)
 class InventoryPressureTrigger : public Trigger
 {
 public:
@@ -39,6 +46,22 @@ public:
 
 private:
     static constexpr int32 CHECK_SECONDS = 30;
+};
+
+// A mailbox visit runs (BankMail::BeginMailVisit; started only by a command until the trips start one): a bool
+class MailVisitActiveTrigger : public Trigger
+{
+public:
+    MailVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mail visit active") {}
+    bool IsActive() override;
+};
+
+// A banker visit runs (BankMail::BeginBankVisit; started only by a command until the trips start one): a bool
+class BankVisitActiveTrigger : public Trigger
+{
+public:
+    BankVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "bank visit active") {}
+    bool IsActive() override;
 };
 
 // A persistent bot whose bind is far (WorldTravel::BindIsFar) and whose inn check is due (every 30 minutes)

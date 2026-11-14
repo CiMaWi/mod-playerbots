@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "BankRulesInput.h"
 #include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Event.h"
@@ -106,6 +107,7 @@ bool SellAction::Execute(Event event)
 
     if (text == "vendor")
     {
+        BankMail::RefreshCarriedKeeps(botAI);  // gear kept for a later level is not sold (ITEM_USAGE_BANK)
         SellVendorItemsVisitor visitor(this, context);
         IterateItems(&visitor);
         botAI->ConsolidateItems();  // re-stack what the partial sells fragmented

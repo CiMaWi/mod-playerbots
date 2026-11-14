@@ -13,6 +13,7 @@
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "BankMailConfig.h"
 #include "BotAttributes.h"
 #include "DBCEnums.h"
 #include "NaturalCastConfig.h"
@@ -24,6 +25,7 @@
 #include "SkillGrowth.h"
 #include "TacticGate.h"
 #include "Tactics.h"
+#include "UpkeepConfig.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
 #include <algorithm>
@@ -551,9 +553,13 @@ public:
     PathConfig NaturalPath;
     // Playerbots.WorldTravel.*: honest travel of persistent bots (sight rule, corpse runs, stuck spots)
     WorldTravelConfig WorldTravel;
+    // Playerbots.Upkeep.*: honest upkeep of persistent bots (the handout share)
+    UpkeepConfig Upkeep;
     // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h declares every option
     // of the world PvP plan; WP1 reads the fight book's and the memory's bounds and the lab switch)
     WorldPvpConfig WorldPvp;
+    // Playerbots.BankMail.*: persistent bots' mail and bank visits
+    BankMailConfig BankMail;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
     LosConfig TacticLos;
     PillarConfig TacticPillar;

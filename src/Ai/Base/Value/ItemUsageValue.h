@@ -36,7 +36,7 @@ enum ItemUsage : uint32
     ITEM_USAGE_KEEP = 11,
     ITEM_USAGE_VENDOR = 12,
     ITEM_USAGE_AMMO = 13,
-    ITEM_USAGE_BANK = 14  // reserved for the bank (WB); nothing returns it yet
+    ITEM_USAGE_BANK = 14  // gear the bank rule keeps for a later level (BankRules.h); never sold
 };
 
 class ItemUsageValue : public CalculatedValue<ItemUsage>, public Qualified
@@ -78,8 +78,10 @@ public:
     // Slots of the smallest equipped bag; 0 while a bag slot is empty
     static uint32 SmallestBagSize(Player* bot);
     // Worth in copper of count items with this usage (ItemWorthRules.h); sellMultiplier: what a vendor pays the bot
-    // per copper of sell price. Quest, kept and banked items, upgrades and the hearthstone are priceless.
-    static uint32 ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier);
+    // per copper of sell price. Quest and kept items, upgrades and the hearthstone are priceless. A bank item
+    // (ITEM_USAGE_BANK) is worth keptWorthEach per item (BankMail::CarriedWorthEach), priceless while that is 0.
+    static uint32 ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
+                            uint32 keptWorthEach = 0);
 };
 
 class ItemUpgradeValue : public ItemUsageValue

@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "BankMailState.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -139,7 +140,8 @@ struct NewRpgInfo
         }
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
-    // every errand assigned there: sell, buy (a bag by worth) and repair at its vendor, turn in completed quests
+    // every errand assigned there: sell, buy (a bag by worth, the shopping list) and repair at its vendor, turn in
+    // completed quests, visit a trainer, the banker and the mailbox (BankVisit.h, MailVisit.h)
     struct ErrandTurnIn
     {
         uint32 questId{0};
@@ -149,8 +151,16 @@ struct NewRpgInfo
     struct ErrandStop
     {
         WorldPosition pos{};
-        uint32 vendorEntry{0};  // the vendor of this stop; 0 = none
+        uint32 vendorEntry{0};   // the vendor of this stop; 0 = none
+        uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
+        bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
         std::vector<ErrandTurnIn> turnIns;
+        // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
+        // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the
+        // mailbox last, once the sale has made room
+        bool bankBefore{false};
+        bool bankAfter{false};
+        bool mail{false};
     };
     struct Errands
     {
@@ -159,6 +169,7 @@ struct NewRpgInfo
         bool arrived{false};     // the bot reached the current stop
         bool vendorDone{false};  // the current stop's vendor part is done (or its vendor is gone)
         ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
+        uint8 sightSteps{0};     // the steps toward a vendor in reach but out of sight (a ramp, stairs)
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
         uint32 vendorEntry{0};   // the trip's first vendor (the census, the Inventory rows)
         uint32 moneyAtStart{0};
@@ -184,6 +195,9 @@ struct NewRpgInfo
         std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
     };
     PlannerState planner;
+    // Mail and bank knowledge and visits (BankMailState.h); Reset() keeps it, so a visit survives a status change;
+    // a far teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
+    BankMail::BotBankMail bankMail;
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};

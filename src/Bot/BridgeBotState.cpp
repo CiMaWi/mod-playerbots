@@ -12,21 +12,34 @@
 #include <thread>
 
 #include "Bag.h"
+#include "BankMailState.h"
+#include "BotRecordMgr.h"
+#include "BridgeAbilities.h"
+#include "BridgeAround.h"
 #include "BridgeBotTopics.h"
+#include "BridgeNames.h"
+#include "CharacterCache.h"
+#include "Creature.h"
 #include "DBCStores.h"
+#include "Formulas.h"
+#include "GameObject.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "LootObjectStack.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "Pet.h"
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "RecordWords.h"
 #include "RouteService.h"
+#include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "ThreadCheck.h"
@@ -178,6 +191,26 @@ void ReadBags(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
         if (Bag* bag = bot->GetBagByPos(bagSlot))
             in.slots += bag->GetBagSize();
     in.plan = &plan;
+    // Stored knowledge only (WB.4: how much mail waits, never what is inside), as the WB2 and WB5 commands read it
+    BankMail::BotBankMail const& known = ai->rpgInfo.bankMail;
+    in.mailWaiting = BankMail::CountWaitingMail(bot);
+    in.mailSeenCopper = known.mail.seenCopper;
+    in.mailExpectedCopper = known.mail.expectedCopper;
+    in.keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    if (in.keepsPossessions)
+    {
+        auto const addKept = [&](uint32 entry, uint8 dueLevel, bool inBank)
+        {
+            if (ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(entry))
+                in.kept.push_back({itemTemplate->Name1, dueLevel, inBank, dueLevel <= bot->GetLevel()});
+        };
+        for (BankMail::KeptItem const& kept : known.bank.kept)
+            addKept(kept.entry, kept.dueLevel, true);
+        for (BankMail::KeptEntry const& kept : known.bank.carried.items)
+            addKept(kept.entry, kept.dueLevel, false);
+        in.bankFree = known.bank.freeSlots;
+        in.bankSlots = BankMail::BANK_ITEM_SLOTS;
+    }
     Topics::BagsItems(in, items);
 }
 
@@ -214,13 +247,292 @@ void ReadRoute(Player* bot, std::string const& argument, std::vector<BotStateIte
         auto const started = std::chrono::steady_clock::now();
         TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *goal);
         std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
-        in.route = TravelRoute::Search(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams());
+        // The ground route (no fly legs): flight searches run only on the route service's workers (contract C3)
+        in.route = TravelRoute::GroundSearch(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams());
         auto const us =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
         if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "bridge route topic"))
             row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
     }
     Topics::RouteItems(in, items);
+}
+
+// A DBC name in the server's locale, else in English
+template <typename Names>
+std::string DbcName(Names const& names)
+{
+    char const* name = names[sWorld->GetDefaultDbcLocale()];
+    return name && *name ? name : (names[LOCALE_enUS] ? names[LOCALE_enUS] : "");
+}
+
+// LC7: the game's names of a record row's ids, from templates, DBC stores and the character cache (no DB)
+class GameLookup final : public RecordWords::Lookup
+{
+public:
+    std::string PlaceName(uint32 area, uint32 zone) const override
+    {
+        std::string name = AreaName(area);
+        return name.empty() ? AreaName(zone) : name;
+    }
+
+    std::string ZoneName(uint32 zone) const override { return AreaName(zone); }
+
+    std::string CreatureName(uint32 entry) const override
+    {
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+        return creature ? creature->Name : std::string();
+    }
+
+    bool Boss(uint32 entry) const override
+    {
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+        return creature && (creature->rank == CREATURE_ELITE_WORLDBOSS ||
+                            creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS));
+    }
+
+    std::string QuestTitle(uint32 id) const override
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(id);
+        return quest ? quest->GetTitle() : std::string();
+    }
+
+    std::string ItemName(uint32 id) const override
+    {
+        ItemTemplate const* item = sObjectMgr->GetItemTemplate(id);
+        return item ? item->Name1 : std::string();
+    }
+
+    std::string SpellName(uint32 id) const override
+    {
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(id);
+        return spell ? DbcName(spell->SpellName) : std::string();
+    }
+
+    std::string SkillName(uint32 id) const override
+    {
+        SkillLineEntry const* skill = sSkillLineStore.LookupEntry(id);
+        return skill ? DbcName(skill->name) : std::string();
+    }
+
+    std::string FlightPointName(uint32 node) const override
+    {
+        TaxiNodesEntry const* entry = sTaxiNodesStore.LookupEntry(node);
+        return entry ? DbcName(entry->name) : std::string();
+    }
+
+    std::string DungeonName(uint32 map) const override
+    {
+        MapEntry const* entry = sMapStore.LookupEntry(map);
+        return entry && entry->IsDungeon() ? DbcName(entry->name) : std::string();
+    }
+
+    std::optional<RecordWords::Person> Character(uint32 guid) const override
+    {
+        CharacterCacheEntry const* character =
+            sCharacterCache->GetCharacterCacheByGuid(ObjectGuid::Create<HighGuid::Player>(guid));
+        if (!character)
+            return std::nullopt;
+        return RecordWords::Person{character->Name, character->Race, character->Class};
+    }
+};
+
+using RecordReader = std::vector<RecordWords::Entry> (*)(std::vector<RecordRules::Row> const& rows, uint32 self,
+                                                         uint32 now, RecordWords::Lookup const& lookup);
+
+void ReadRecord(Player* bot, RecordReader reader, std::vector<BotStateItem>& items)
+{
+    uint32 const self = bot->GetGUID().GetCounter();
+    std::vector<RecordRules::Row> const rows = BotRecordMgr::Instance().Rows(self);
+    uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+    for (RecordWords::Entry& entry : reader(rows, self, now, GameLookup()))
+        items.push_back({std::move(entry.Name), entry.Value, entry.Extra, entry.Code, std::move(entry.Text)});
+}
+
+std::vector<RecordWords::Entry> LatelyEntries(std::vector<RecordRules::Row> const& rows, uint32 self, uint32 now,
+                                              RecordWords::Lookup const& lookup)
+{
+    return RecordWords::Lately(rows, self, now, lookup);
+}
+
+// What a topic's reader gets
+struct TopicSource
+{
+    Player* Bot;
+    PlayerbotAI* Ai;
+    std::string const& Argument;
+};
+
+using Items = std::vector<BotStateItem>;
+
+struct TopicReader
+{
+    BotStateTopic Topic;
+    void (*Read)(TopicSource const& source, Items& items);
+};
+
+// Each topic row's reader (BridgeAbilities.h TopicTable), in the rows' order
+constexpr TopicReader Readers[] = {
+    {BotStateTopic::Inventory, [](TopicSource const& in, Items& items) { ReadInventory(in.Bot, items); }},
+    {BotStateTopic::Quests, [](TopicSource const& in, Items& items) { ReadQuests(in.Bot, items); }},
+    {BotStateTopic::Cooldowns, [](TopicSource const& in, Items& items) { ReadCooldowns(in.Bot, items); }},
+    {BotStateTopic::Strategies, [](TopicSource const& in, Items& items) { ReadStrategies(in.Ai, items); }},
+    {BotStateTopic::Spells, [](TopicSource const& in, Items& items) { ReadSpells(in.Bot, items); }},
+    {BotStateTopic::Plan,
+     [](TopicSource const& in, Items& items) { Topics::PlanItems(PlanInputOf(in.Bot, in.Ai), items); }},
+    {BotStateTopic::Options,
+     [](TopicSource const& in, Items& items) { Topics::OptionsItems(PlanInputOf(in.Bot, in.Ai), items); }},
+    {BotStateTopic::Route, [](TopicSource const& in, Items& items) { ReadRoute(in.Bot, in.Argument, items); }},
+    {BotStateTopic::QuestPlan,
+     [](TopicSource const& in, Items& items) { Topics::QuestPlanItems(PlanInputOf(in.Bot, in.Ai), items); }},
+    {BotStateTopic::Bags, [](TopicSource const& in, Items& items) { ReadBags(in.Bot, in.Ai, items); }},
+    {BotStateTopic::Places, [](TopicSource const& in, Items& items) { ReadPlaces(in.Bot, items); }},
+    {BotStateTopic::History,
+     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::History, items); }},
+    {BotStateTopic::Lately, [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &LatelyEntries, items); }},
+    {BotStateTopic::Known,
+     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::KnownBots, items); }}};
+
+constexpr bool ReadersInOrder()
+{
+    for (std::size_t index = 0; index < std::size(Readers); ++index)
+        if (Readers[index].Topic != TopicTable[index].Topic)
+            return false;
+
+    return std::size(Readers) == std::size(TopicTable);
+}
+static_assert(ReadersInOrder(), "one reader per topic row, in the rows' order");
+
+// The service of a friendly NPC, the first of its flags in this order; nullptr for none.
+char const* ServiceWord(Creature const* creature)
+{
+    static constexpr std::pair<NPCFlags, char const*> Services[] = {
+        {UNIT_NPC_FLAG_INNKEEPER, "innkeeper"}, {UNIT_NPC_FLAG_FLIGHTMASTER, "flightmaster"},
+        {UNIT_NPC_FLAG_BANKER, "banker"},       {UNIT_NPC_FLAG_AUCTIONEER, "auctioneer"},
+        {UNIT_NPC_FLAG_TRAINER, "trainer"},     {UNIT_NPC_FLAG_REPAIR, "repair"},
+        {UNIT_NPC_FLAG_VENDOR_MASK, "vendor"}};
+    for (auto const& [flag, word] : Services)
+        if (creature->HasNpcFlag(flag))
+            return word;
+
+    return nullptr;
+}
+
+// A quest giver's task for the bot (its "can accept / turn in quest npc" values; a game object's qualifier is the
+// negative entry): reward before quest; nullptr for none.
+char const* TaskWord(AiObjectContext* context, int32 giver)
+{
+    if (context->GetValue<bool>("can turn in quest npc", giver)->Get())
+        return "reward";
+    if (context->GetValue<bool>("can accept quest npc", giver)->Get())
+        return "quest";
+
+    return nullptr;
+}
+
+// A perceived unit as a candidate: alive, visible and selectable; a hostile one with its danger, a person, a quest
+// giver with a task, a friendly NPC with a service. False for anything else (a plain NPC, a pet, a trigger).
+bool UnitCandidate(Player* bot, PlayerbotAI* ai, Unit* unit, float distance, std::vector<AroundCandidate>& out)
+{
+    if (!unit || unit == bot || !unit->IsAlive() || !Visible(bot, unit) || unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+        return false;
+    Creature* creature = unit->ToCreature();
+    if (creature && creature->IsTrigger())
+        return false;
+
+    std::string const name = unit->GetName();
+    if (unit->IsHostileTo(bot) || unit == bot->GetVictim())
+    {
+        uint32 const rank = creature ? creature->GetCreatureTemplate()->rank : 0;
+        out.push_back({name, AroundKind::Hostile,
+                       HostileDetail(bot->GetLevel(), unit->GetLevel(), Acore::XP::GetGrayLevel(bot->GetLevel()), rank),
+                       distance});
+        return true;
+    }
+    if (Player* player = unit->ToPlayer())
+    {
+        PlayerbotAI* other = GET_PLAYERBOT_AI(player);
+        char const* const detail = bot->GetGroup() && bot->GetGroup()->IsMember(player->GetGUID()) ? "group"
+                                   : other && other->IsBotAI()                                     ? "bot"
+                                                                                                   : "player";
+        out.push_back({name, AroundKind::Person, detail, distance});
+        return true;
+    }
+    if (!creature)
+        return false;
+
+    if (creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER))
+        if (char const* task = TaskWord(ai->GetAiObjectContext(), static_cast<int32>(creature->GetEntry())))
+        {
+            out.push_back({name, AroundKind::Task, task, distance});
+            return true;
+        }
+    if (char const* service = ServiceWord(creature))
+    {
+        out.push_back({name, AroundKind::Service, service, distance});
+        return true;
+    }
+    return false;
+}
+
+// SpellFocusObject.dbc ids
+constexpr uint32 SpellFocusAnvil = 1;
+constexpr uint32 SpellFocusForge = 3;
+constexpr uint32 SpellFocusFire = 4;
+
+// A useful object: a mailbox, an anvil, a forge or a fire (named by its word when it has no name, as most campfires),
+// or a quest-giving object with a task.
+void ObjectCandidate(Player* bot, PlayerbotAI* ai, GameObject* object, std::vector<AroundCandidate>& out)
+{
+    if (!object || !object->IsInWorld() || !object->isSpawned() || !bot->IsInMap(object) || !bot->InSamePhase(object))
+        return;
+    GameObjectTemplate const* info = object->GetGOInfo();
+    char const* detail = nullptr;
+    AroundKind kind = AroundKind::Object;
+    if (info->type == GAMEOBJECT_TYPE_MAILBOX)
+        detail = "mailbox";
+    else if (info->type == GAMEOBJECT_TYPE_SPELL_FOCUS)
+        detail = info->spellFocus.focusId == SpellFocusAnvil   ? "anvil"
+                 : info->spellFocus.focusId == SpellFocusForge ? "forge"
+                 : info->spellFocus.focusId == SpellFocusFire  ? "fire"
+                                                               : nullptr;
+    else if (info->type == GAMEOBJECT_TYPE_QUESTGIVER)
+    {
+        kind = AroundKind::Task;
+        detail = TaskWord(ai->GetAiObjectContext(), -static_cast<int32>(object->GetEntry()));
+    }
+    if (detail)
+        out.push_back({object->GetName().empty() ? std::string(detail) : object->GetName(), kind, detail,
+                       bot->GetExactDist(object)});
+}
+
+// P §3.3 "around you" from the bot's own values. Cost: five grid visits per state (the four unit lists recalculate on
+// every read, the object list when a second old) and the quest values of each quest giver; a state is read at
+// request rate (a chat turn, a wake) on the world thread with the maps idle, never from a trigger or per tick.
+std::vector<AroundEntry> ReadAround(Player* bot, PlayerbotAI* ai)
+{
+    AiObjectContext* context = ai->GetAiObjectContext();
+    std::vector<AroundCandidate> candidates;
+    std::vector<ObjectGuid> seen;
+    // The unit fought, then the selection, at distance 0: they lead their name; a unit in two lists counts once.
+    for (Unit* own : {bot->GetVictim(), ObjectAccessor::GetUnit(*bot, bot->GetTarget())})
+        if (own && std::find(seen.begin(), seen.end(), own->GetGUID()) == seen.end() &&
+            UnitCandidate(bot, ai, own, 0.0f, candidates))
+            seen.push_back(own->GetGUID());
+
+    for (char const* list : {"possible targets", "nearest hostile npcs", "nearest npcs", "nearest friendly players"})
+        for (ObjectGuid const& guid : context->GetValue<GuidVector>(list)->Get())
+        {
+            if (std::find(seen.begin(), seen.end(), guid) != seen.end())
+                continue;
+            seen.push_back(guid);
+            if (Unit* unit = ObjectAccessor::GetUnit(*bot, guid))
+                UnitCandidate(bot, ai, unit, bot->GetExactDist(unit), candidates);
+        }
+
+    for (ObjectGuid const& guid : context->GetValue<GuidVector>("nearest game objects")->Get())
+        ObjectCandidate(bot, ai, ObjectAccessor::GetGameObject(*bot, guid), candidates);
+
+    return SelectAround(std::move(candidates), bot->GetName());
 }
 }  // namespace
 
@@ -312,6 +624,18 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
             facts.partnerZ = partner->GetPositionZ();
         }
     }
+
+    facts.around = ReadAround(bot, ai);
+    if (Guardian* servant = bot->GetGuardianPet(); servant && servant->IsInWorld() && servant->IsAlive())
+        facts.servantName = servant->GetName();
+    Unit::AuraEffectList const& mounts = bot->GetAuraEffectsByType(SPELL_AURA_MOUNTED);
+    if (!mounts.empty() && mounts.front()->GetSpellInfo()->SpellName[0])
+        facts.mountName = mounts.front()->GetSpellInfo()->SpellName[0];
+    else if (Unit* vehicle = bot->GetVehicleBase())
+        facts.mountName = vehicle->GetName();
+    uint32 const self = bot->GetGUID().GetCounter();
+    facts.deeds = RecordWords::Deeds(BotRecordMgr::Instance().Rows(self), self,
+                                     static_cast<uint32>(GameTime::GetGameTime().count()), GameLookup());
     return true;
 }
 
@@ -328,48 +652,50 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::stri
         return false;
     Player* bot = ObjectAccessor::FindConnectedPlayer(botGuid);
     PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
-    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI())
+    if (!bot || !bot->IsInWorld() || !ai || !ai->IsBotAI() || !FindTopic(topic))
         return false;
-    switch (topic)
-    {
-        case BotStateTopic::Inventory:
-            ReadInventory(bot, items);
-            break;
-        case BotStateTopic::Quests:
-            ReadQuests(bot, items);
-            break;
-        case BotStateTopic::Cooldowns:
-            ReadCooldowns(bot, items);
-            break;
-        case BotStateTopic::Strategies:
-            ReadStrategies(ai, items);
-            break;
-        case BotStateTopic::Spells:
-            ReadSpells(bot, items);
-            break;
-        case BotStateTopic::Plan:
-            Topics::PlanItems(PlanInputOf(bot, ai), items);
-            break;
-        case BotStateTopic::Options:
-            Topics::OptionsItems(PlanInputOf(bot, ai), items);
-            break;
-        case BotStateTopic::Route:
-            ReadRoute(bot, argument, items);
-            break;
-        case BotStateTopic::QuestPlan:
-            Topics::QuestPlanItems(PlanInputOf(bot, ai), items);
-            break;
-        case BotStateTopic::Bags:
-            ReadBags(bot, ai, items);
-            break;
-        case BotStateTopic::Places:
-            ReadPlaces(bot, items);
-            break;
-        default:
-            return false;
-    }
+
+    Readers[static_cast<std::size_t>(topic)].Read({bot, ai, argument}, items);
     if (items.size() > BotStateTopicMaxItems)
         items.resize(BotStateTopicMaxItems);
     return true;
+}
+
+std::vector<NameCandidate> CarriedItemNames(Player* bot)
+{
+    std::vector<NameCandidate> candidates;
+    auto const add = [&candidates](Item* item)
+    {
+        if (item)
+            candidates.push_back({item->GetTemplate()->Name1, item->GetEntry(), 0.0f});
+    };
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        add(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        add(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                add(bag->GetItemByPos(static_cast<uint8>(slot)));
+    return candidates;
+}
+
+std::vector<NameCandidate> KnownSpellNames(Player* bot)
+{
+    std::vector<NameCandidate> candidates;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active || !known->IsInSpec(bot->GetActiveSpec()))
+            continue;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+        if (!spell || spell->IsPassive() || spell->HasAttribute(SPELL_ATTR0_DO_NOT_DISPLAY) ||
+            spell->SpellFamilyName == SPELLFAMILY_GENERIC || !spell->SpellName[0])
+            continue;
+        SpellInfo const* next = spell->GetNextRankSpell();
+        if (next && bot->HasSpell(next->Id))
+            continue;
+        candidates.push_back({spell->SpellName[0], spellId, 0.0f});
+    }
+    return candidates;
 }
 }  // namespace PlayerbotBridge

@@ -592,6 +592,9 @@ public:
     Aura* GetAura(std::string const spellName, Unit* unit, bool checkIsOwner = false, bool checkDuration = false,
                   int checkStack = -1);
     bool CastSpell(uint32 spellId, Unit* target, Item* itemTarget = nullptr);
+    // The core's SpellCastResult when the last CastSpell(spellId, target) failed in Spell::prepare(), else -1 (upkeep
+    // WU11b fix 7: why a flying mount the cast check allowed was not cast); read right after the call
+    int32 LastPrepareResult() const { return lastPrepareResult; }
     bool CastSpell(uint32 spellId, float x, float y, float z, Item* itemTarget = nullptr);
     bool canDispel(SpellInfo const* spellInfo, uint32 dispelType);
 
@@ -716,6 +719,8 @@ public:
     // Natural reaction (Playerbots.Natural.Reaction.*, NaturalReaction.h): ln(median) and spread of the bot's reaction
     // time, cached by SetPvpSkill for every skilled bot (read only while the option is on)
     ReactionState const& GetReactionState() const { return reactionState; }
+    // The reaction engine, for the world log's case hold line (null before the engines are made)
+    ReactionEngine const* GetReactionEngine() const { return reactionEngine; }
     // G0h3's reaction types: the choice, load, ease, think, anticipation and queue prices from the bot's attributes,
     // cached by SetPvpSkill (all 0 at skill 0)
     ReactionTypeState const& GetReactionTypes() const { return reactionTypes; }
@@ -1000,6 +1005,7 @@ protected:
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;
+    int32 lastPrepareResult = -1;  // LastPrepareResult
     std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
     PvpTestCcCounters pvpTestCc;
     std::array<uint32, PVPTEST_TACTIC_COUNT> pvpTestTactics{};

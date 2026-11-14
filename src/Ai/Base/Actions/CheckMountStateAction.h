@@ -9,6 +9,7 @@
 
 #include "UseItemAction.h"
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 const uint16 SPELL_TRAVEL_FORM = 783;
@@ -43,6 +44,25 @@ public:
     bool Mount();
 
     static void CompleteDismount(Player* bot);
+    // Own flying (upkeep WU10): riding 225, and Cold Weather Flying on Northrend's virtual map
+    static bool RidingAllowsFlying(Player const* bot, uint32 virtualMapId);
+    // The fastest flying mount spell the bot knows and may ride: its speed bonus in percent (149, 279), 0 for none
+    static int32 FlyingMountSpeed(Player const* bot);
+    // Why the bot cannot mount a flyer and lift off where it stands (a travel fly leg's takeoff), nullptr when it can:
+    // no_fly_area (its real area, WMO areas such as Dalaran's included, has no flying; riding; a battleground),
+    // battle (a battlefield's zone in battle), indoors, water
+    static char const* NoTakeoffHere(Player const* bot);
+    // A travel fly leg's mount: the fastest flying mount the bot knows and may cast now, a preferred one first. ""
+    // when a cast started, else why not: no_mount (none known for its riding), refused (the cast check refused all).
+    // Not through Execute: its current-target, master and below-the-floor rules are for mounting on the move, and they
+    // refused a bot that stood still on open ground (WU11b: Tarae in Dragonblight)
+    static char const* CastFlyingMount(Player* bot, PlayerbotAI* botAI);
+    // A travel fly leg's end: off the mount, the stale flying flags cleared, down on the ground
+    static void LandAndDismount(Player* bot);
+    // The floor below the bot as {ground, water surface}: the ground with MAX_FALL_DISTANCE search (vmap too), the
+    // water over it (TravelLegs::FLY_NO_GROUND: none). The one sampler of a fly leg's descent, a dismount's log and
+    // the body a killed flyer lies on (TravelLegs::BodyZ takes the higher of the two)
+    static std::pair<float, float> FloorBelow(Player* bot);
     static void LoadPreferredMounts();
 
 private:

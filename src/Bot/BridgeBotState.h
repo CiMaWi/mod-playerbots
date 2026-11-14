@@ -11,13 +11,19 @@
 #include <string>
 #include <vector>
 
+#include "BridgeAround.h"
+
 class ObjectGuid;
+class Player;
 
 // DS.14/J5f: raw facts about a bot for one conversation-bridge request. Read on the world thread while map threads
-// are idle (the chat hook, a wake submit, the post-map-join update), from stored values and Player fields only;
-// nothing here scans the world. The bridge module filters and bounds them before anything reaches a model.
+// are idle (the chat hook, a wake submit, the post-map-join update), from stored values and Player fields; only
+// `around` scans the world, through the bot's own values. The bridge module filters and bounds them before anything
+// reaches a model.
 namespace PlayerbotBridge
 {
+struct NameCandidate;  // BridgeNames.h
+
 struct BotStateFacts
 {
     float healthPct = 0.0f;
@@ -67,6 +73,13 @@ struct BotStateFacts
     bool passive = false;
     uint32_t freeBagSlots = 0;
     uint32_t money = 0;
+    // LC8: what the bot perceives around it (SelectAround over its nearest-unit and nearest-object values; the only
+    // facts here that visit the grid), the servant or pet it has out and what it rides, by name (empty: none).
+    std::vector<AroundEntry> around;
+    std::string servantName;
+    std::string mountName;
+    // LC7: the bot's recent deeds from its record, newest first, one in-world sentence each (RecordWords.h Deeds)
+    std::vector<std::string> deeds;
 };
 
 // False (facts reset) off the world thread, or for a guid that is not an online bot in the world.
@@ -86,7 +99,10 @@ enum class BotStateTopic : uint8_t
     Route,
     QuestPlan,
     Bags,
-    Places
+    Places,
+    History,  // LC7: the record's readers (RecordWords.h builds the entries)
+    Lately,
+    Known
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.
@@ -108,29 +124,47 @@ enum class BotStateTopic : uint8_t
 //               seconds, extra = fare; code 2 failed: name = unknown_place, graph_not_ready, no_route, ...
 //   QuestPlan (12): one row per circuit quest in walking order: name = title, value = quest id, code 0 take at a
 //               giver, 1 task (extra = task points), 2 turn in, 3 carried to another hub, 4 deferred
-//   Bags (6):   code 0 free: value = free slots, extra = all slots; code 1 the next sell stop and code 2 a bag
-//               purchase from the plan: name = reason word, value = seconds, extra = vendor or item
+//   Bags (12):  code 0 free: value = free slots, extra = all slots; code 1 the next sell stop and code 2 a bag
+//               purchase from the plan: name = reason word, value = seconds, extra = vendor or item; code 3 mail
+//               waiting: value = unopened mails; code 4 mail seen: value = copper worth left there; code 5 mail
+//               expected: value = copper; code 6 kept item (a bot the bank rule governs, due ones first, at most four):
+//               name = item name, value = the level it is due at, extra = 1 in the bank, 0 in the bags; code 7 bank
+//               free: value = free bank slots, extra = all of them
 //   Places (24): code 0 hearth: name = bind area, value = cooldown seconds left, extra 1 = carries a hearthstone;
 //               known flight points, value = taxi node: code 1 on the bot's map, nearest first, extra = yards;
 //               code 2 elsewhere by node, extra = map id
-// No topic carries a trait value or the hidden PvP skill: traits appear only as words.
+//   History (24): text = one sentence; code 0 a permanent row in time order: name = kind word, value = days ago;
+//               then what the bot knows of the world, name = its name, value = events behind it: code 1 a zone,
+//               code 2 a dungeon, code 3 a boss
+//   Lately (12): the recent deeds, newest first: name = kind word, text = sentence, value = seconds ago
+//   Known (12):  the bots of shared events: name = the bot's name, text = its people, calling and what was shared,
+//               value = days since the last, extra = events shared
+// No topic carries a trait value or the hidden PvP skill: traits appear only as words. No text holds a number.
 struct BotStateItem
 {
     std::string name;
     uint32_t value = 0;
     uint32_t extra = 0;
     uint8_t code = 0;
+    std::string text;  // The record topics' sentence; empty for the others
 };
 
 constexpr std::size_t BotStateTopicMaxItems = 64;  // The reader never returns more.
 
 // False (items cleared) off the world thread, for an unknown topic or a guid that is not an online bot in the world.
-// Only the bot's own items, quest log, cooldowns, strategies, spellbook, published plan, taxi mask and bind point;
-// nothing here scans the world. Route runs one route search over the travel graph (a fraction of a millisecond).
+// Only the bot's own items, quest log, cooldowns, strategies, spellbook, published plan, taxi mask, bind point and
+// record; nothing here scans the world. Route runs one route search over the travel graph (a fraction of a
+// millisecond).
 bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vector<BotStateItem>& items);
 // The same with the topic's argument: Route's place; the other topics ignore it.
 bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::string const& argument,
                        std::vector<BotStateItem>& items);
+
+// LC2: what an order's item or spell name may mean, for ResolveName, when a row takes one (none does yet). World
+// thread, an online bot: the items it wears and carries as the inventory topic lists them (Id the item entry), and
+// the spells it can cast as the spells topic lists them (Id the spell id, the highest known rank).
+std::vector<NameCandidate> CarriedItemNames(Player* bot);
+std::vector<NameCandidate> KnownSpellNames(Player* bot);
 }  // namespace PlayerbotBridge
 
 #endif

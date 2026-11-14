@@ -1186,7 +1186,9 @@ void PlayerbotAI::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs
     bool const combat = bot->IsInCombat();
     bool const passenger =
         travel.PassengerOwnsProgress() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
-    bool const external = passenger || bot->IsInFlight() || bot->GetVehicle() || travel.route.waiting;
+    // The flight down after a failed fly leg (TravelLegs::StartDescent) counts as riding: a trip never ends in the air
+    bool const external =
+        passenger || bot->IsInFlight() || bot->GetVehicle() || travel.route.waiting || travel.trip.descending;
     Owner owner = Owner::Exempt;
     if (combat)
         owner = Owner::Combat;
@@ -1246,6 +1248,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // minute apart for an idle bot, time enough for a new pet to start a fight (one bit test for every other bot)
     if (rpgInfo.constraints & TestConstraints::STATES)
         TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
+
+    // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
+    // does not run (in combat, dead); one test while no visit runs
+    if (BankMail::VisitRuns(rpgInfo.bankMail))
+        BankMail::WatchVisits(this);
 
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
@@ -2138,6 +2145,10 @@ void PlayerbotAI::HandleTeleportAck()
         if (!plMover)
             return;
 
+        // A running mailbox or bank visit ends with its row: its walk was planned from where the bot stood, the spot in
+        // reach, and getting back from where it lands is the travel errand's job (WB.12)
+        BankMail::EndVisits(this, BankMail::VisitEnd::Teleport);
+
         WorldPacket p(MSG_MOVE_TELEPORT_ACK, 20);
         p << plMover->GetPackGUID();
         p << uint32(0);  // flags
@@ -2213,7 +2224,11 @@ void PlayerbotAI::Reset(bool full, bool farTeleport)
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setStatus(TRAVEL_STATUS_EXPIRED);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
         NewRpgStatus const statusBefore = rpgInfo.GetStatus();
+        // A bank or mail visit ends with its row; the knowledge survives the reset (BankMail::AfterReset)
+        BankMail::EndVisits(this, farTeleport ? BankMail::VisitEnd::Teleport : BankMail::VisitEnd::Reset);
+        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
         rpgInfo.ResetState(farTeleport);
+        rpgInfo.bankMail = bankMail;
         WorldLog::StatusReason const reasonScope(farTeleport ? "teleport" : "reset");
         WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
     }
@@ -5435,6 +5450,7 @@ void NoteFakeKickCast(Player* caster, Spell* spell)
 
 bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 {
+    lastPrepareResult = -1;
     if (!spellId)
         return false;
 
@@ -5703,6 +5719,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     if (result != SPELL_CAST_OK)
     {
+        lastPrepareResult = static_cast<int32>(result);
         // if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
         //     LOG_DEBUG("playerbots", "Spell cast failed. - target name: {}, spellid: {}, bot name: {}, result: {}",
         //         target->GetName(), spellId, bot->GetName(), result);
@@ -9944,8 +9961,11 @@ uint32 PlayerbotAI::ComputeReactDelay()
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
         return base * 5;
 
-    // When not resting, return 10-30 times the base
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))
+    // When not resting, on a mailbox or banker visit or on an errand trip, return 10-30 times the base. A visit or a
+    // trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes in a city (WB7d),
+    // and a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b)
+    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail) ||
+        std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data))
         return base * urand(10, 30);
 
     // In other cases, return 20-200 times the base

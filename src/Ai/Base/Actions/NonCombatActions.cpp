@@ -9,6 +9,7 @@
 #include "CensusMgr.h"
 #include "Event.h"
 #include "Playerbots.h"
+#include "Upkeep.h"
 
 namespace
 {
@@ -41,7 +42,7 @@ bool DrinkAction::Execute(Event event)
     if (IsDisallowedFoodState(bot))
         return false;
 
-    if (botAI->HasCheat(BotCheatMask::food))
+    if (Upkeep::FoodCheat(botAI))
     {
         EventLog::Honesty(bot, "Food", "food_cheat");
         // if (bot->IsNonMeleeSpellCast(true))
@@ -98,7 +99,7 @@ bool DrinkAction::isPossible()
 
     // The item is the "drink" item whatever this action is called (G3b: the prep drink and the safe drink are
     // DrinkActions under their own names; for the old action getName() is "drink" too)
-    return botAI->HasCheat(BotCheatMask::food) || AI_VALUE2(uint32, "item count", "drink") > 0;
+    return Upkeep::FoodCheat(botAI) || AI_VALUE2(uint32, "item count", "drink") > 0;
 }
 
 bool EatAction::Execute(Event event)
@@ -106,7 +107,7 @@ bool EatAction::Execute(Event event)
     if (IsDisallowedFoodState(bot))
         return false;
 
-    if (botAI->HasCheat(BotCheatMask::food))
+    if (Upkeep::FoodCheat(botAI))
     {
         EventLog::Honesty(bot, "Food", "food_cheat");
         // if (bot->IsNonMeleeSpellCast(true))
@@ -160,5 +161,5 @@ bool EatAction::isPossible()
         return false;
     }
 
-    return botAI->HasCheat(BotCheatMask::food) || UseItemAction::isPossible();
+    return Upkeep::FoodCheat(botAI) || UseItemAction::isPossible();
 }

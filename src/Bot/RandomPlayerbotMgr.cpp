@@ -54,6 +54,7 @@
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "Unit.h"
+#include "Upkeep.h"
 #include "World.h"
 #include "WorldSessionMgr.h"
 #include "WorldTravelRules.h"
@@ -2665,10 +2666,11 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (bot->isDead() && HonestTravel())
         return;
 
-    if (bot->isDead())
+    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    if (bot->isDead() && Upkeep::Granted(bot, UpkeepKind::Resurrect, keepsPossessions))
     {
         bot->ResurrectPlayer(1.0f);
-        EventLog::Honesty(bot, "Resurrect", "mgr_refresh");
+        Upkeep::Note(bot, UpkeepKind::Resurrect, "mgr_refresh");
         bot->SpawnCorpseBones();
         botAI->ResetStrategies(false);
     }
@@ -2685,8 +2687,11 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
 
     botAI->Reset();
 
-    bot->DurabilityRepairAll(false, 1.0f, false);
-    EventLog::Honesty(bot, "Repair", "mgr_refresh");
+    if (Upkeep::Granted(bot, UpkeepKind::Repair, keepsPossessions))
+    {
+        bot->DurabilityRepairAll(false, 1.0f, false);
+        Upkeep::Note(bot, UpkeepKind::Repair, "mgr_refresh");
+    }
     bot->SetFullHealth();
     bot->SetPvP(sWorld->IsPvPRealm());
     PlayerbotFactory factory(bot, bot->GetLevel());
@@ -2698,13 +2703,12 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (bot->GetMaxPower(POWER_ENERGY) > 0)
         bot->SetPower(POWER_ENERGY, bot->GetMaxPower(POWER_ENERGY));
 
-    // A bot that keeps its possessions earns its gold
-    if (!PlayerbotFactory::KeepsPossessions(bot))
+    if (Upkeep::Granted(bot, UpkeepKind::Gold, keepsPossessions))
     {
         uint32 money = bot->GetMoney();
         uint32 const refreshMoney = 500 * sqrt(urand(1, bot->GetLevel() * 5));
         bot->SetMoney(money + refreshMoney);
-        EventLog::Honesty(bot, "Gold", "mgr_refresh", 0, refreshMoney);
+        Upkeep::Note(bot, UpkeepKind::Gold, "mgr_refresh", 0, refreshMoney);
     }
 
     if (bot->GetGroup())

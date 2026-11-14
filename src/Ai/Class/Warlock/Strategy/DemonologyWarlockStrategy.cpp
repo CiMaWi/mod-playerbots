@@ -80,6 +80,10 @@ void DemonologyWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         )
     );
 
+    // Drain Soul on a dying target only while a warlock without handed-out shards is short of them
+    // (CastDrainSoulAction::isUseful), before Soul Fire, which spends one
+    triggers.push_back(new TriggerNode("target critical health", {NextAction("drain soul", 17.1f)}));
+
     // Procs
     triggers.push_back(
         new TriggerNode(

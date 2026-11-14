@@ -5,6 +5,7 @@
  */
 
 #include "DestroyItemAction.h"
+#include "BankRulesInput.h"
 #include "CensusMgr.h"
 #include "Event.h"
 #include "InventorySlots.h"
@@ -15,6 +16,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
+#include "TestConstraints.h"
 #include <algorithm>
 
 namespace
@@ -72,7 +74,11 @@ bool DestroyItemAction::DestroyOne(Item* item)
     return true;
 }
 
-bool SmartDestroyItemAction::isUseful() { return !IsRealPlayer(botAI->GetMaster()); }
+// A test's nodestroy bot destroys nothing on its own (TestConstraints::DestroysForSpace)
+bool SmartDestroyItemAction::isUseful()
+{
+    return !IsRealPlayer(botAI->GetMaster()) && TestConstraints::DestroysForSpace(botAI->rpgInfo.constraints);
+}
 
 bool SmartDestroyItemAction::Execute(Event /*event*/)
 {
@@ -122,6 +128,11 @@ bool SmartDestroyItemAction::Execute(Event /*event*/)
 
 bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
 {
+    if (!TestConstraints::DestroysForSpace(botAI->rpgInfo.constraints))
+        return false;
+
+    // Gear kept for a later level counts at its later worth, from what the bags hold now
+    BankMail::RefreshCarriedKeeps(botAI);
     CollectItemsVisitor visitor;
     IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
 
@@ -136,7 +147,8 @@ bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
         if (!candidate.Protected)
         {
             ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());
-            candidate.Worth = ItemUsageValue::ItemWorth(item->GetTemplate(), usage, item->GetCount(), sellMultiplier);
+            candidate.Worth = ItemUsageValue::ItemWorth(item->GetTemplate(), usage, item->GetCount(), sellMultiplier,
+                                                        BankMail::CarriedWorthEach(botAI, item->GetEntry()));
             if (usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH)
                 ++sellableSlots;
         }

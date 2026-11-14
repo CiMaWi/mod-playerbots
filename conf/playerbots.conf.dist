@@ -664,6 +664,8 @@ Playerbots.AutoGearScoreLimit = 0
 # "raid" (bots use certain cheats implemented into raid strategies)
 # To use multiple cheats, separate them by commas below (e.g., to enable all, use "gold,health,mana,power,raid,taxi")
 # Default: food, taxi, and raid are enabled
+# "food" no longer feeds persistent bots (random bots that keep their possessions under honest travel, outside
+# Playerbots.Upkeep.HandoutShare): they eat and drink what they bought, looted or conjured, and rest without it
 Playerbots.BotCheats = "food,taxi,raid"
 
 # List of attunement quests (comma-separated list of quest IDs) that are automatically completed for all bots.
@@ -2209,6 +2211,14 @@ Playerbots.WorldTravel.Planner.NoopSeconds = 0
 Playerbots.WorldTravel.Planner.Goals = 1
 Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 
+# Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, riding, gold, attunements,
+# keys, reputation, glyphs, talent resets and the like) end
+# kind by kind for them, and they buy and train what they need. HandoutShare keeps this percent of persistent bots on
+# every handout, chosen by guid so that the world log names the same bots as a cohort: a bot is in the share when
+# (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < HandoutShare. A test switch for comparisons and forced checks
+# (0-100). Default: 0
+Playerbots.Upkeep.HandoutShare = 0
+
 # World PvP of persistent bots in the open world (battlegrounds, arenas and dungeons keep their own rules). Every
 # open-world map keeps a fight book: its active fights (a cluster of PvP combat with two sides, its starter and
 # reason, participants, deaths and end), shown by `.playerbots fight list`, and its ended fights for CalmMinutes.
@@ -2254,6 +2264,20 @@ Playerbots.WorldPvp.Retreat.CautionOdds = 0.1
 # `.playerbots fight meet <bot> <enemy bot>` (places the enemy beside the bot, PvP flagged, without an attack): a
 # switch for test servers. (Range: 0-1.) Default: 0
 Playerbots.WorldPvp.TestCommands = 0
+
+# Mail and bank visits of persistent bots. A bot knows that mail waits and what it expects from it, not what is
+# inside; an unread mail whose content it does not know counts Mail.DefaultWorthCopper. A bank item counts as kept for
+# later while the level it is due at is at most Bank.KeepLevelHorizon levels above the bot's. A visit (the walk
+# included) is given up after Mail.VisitDeadlineSeconds or Bank.VisitDeadlineSeconds; one step of it (a take from a
+# mail, a deposit) waits at most VisitStepSeconds for the server's answer; one mailbox visit opens at most
+# Mail.PerVisit mails. (Ranges: DefaultWorthCopper 0-10000; KeepLevelHorizon 0-20; VisitDeadlineSeconds 60-3600;
+# VisitStepSeconds 1-60; PerVisit 1-100.) Defaults: 100, 5, 900, 900, 10, 50
+Playerbots.BankMail.Mail.DefaultWorthCopper = 100
+Playerbots.BankMail.Bank.KeepLevelHorizon = 5
+Playerbots.BankMail.Mail.VisitDeadlineSeconds = 900
+Playerbots.BankMail.Bank.VisitDeadlineSeconds = 900
+Playerbots.BankMail.VisitStepSeconds = 10
+Playerbots.BankMail.Mail.PerVisit = 50
 
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600

@@ -15,6 +15,7 @@
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
+#include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "QuestLevelRules.h"
@@ -43,6 +44,8 @@
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "Upkeep.h"
+#include "UpkeepRules.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
@@ -321,10 +324,15 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     // live node it passes, or a quest POI change) skips this gate:
     // letting the old spline finish would keep walking the bot
     // toward a target it no longer has.
+    //
+    // A finalized move spline is no move to wait for, whatever the
+    // movement flags say: they can stay "moving" after the spline
+    // ended (WU11b fix 13: Throke in the air, moving 71 s after its
+    // last move), and the gate held such a bot forever.
     if (!newDest)
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
-        if (bot->isMoving() && lastMove.lastMoveToMapId == bot->GetMapId())
+        if (bot->isMoving() && !bot->movespline->Finalized() && lastMove.lastMoveToMapId == bot->GetMapId())
         {
             float remaining = bot->GetExactDist(lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ);
             if (remaining > 10.0f)
@@ -1157,15 +1165,34 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
 static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_ERRANDS == 11 && RPG_TRAVEL == 10 &&
                   RPG_DO_GATHER == 9 && RPG_REST == 7,
               "WorldLog::RPG_STATUS_WORDS follows NewRpgStatus");
+static_assert(uint32(RPG_GO_GRIND) == Upkeep::RPG_STATUS_GO_GRIND &&
+                  uint32(RPG_WANDER_RANDOM) == Upkeep::RPG_STATUS_WANDER_RANDOM &&
+                  uint32(RPG_DO_QUEST) == Upkeep::RPG_STATUS_DO_QUEST &&
+                  uint32(RPG_OUTDOOR_PVP) == Upkeep::RPG_STATUS_OUTDOOR_PVP &&
+                  uint32(RPG_DO_GATHER) == Upkeep::RPG_STATUS_DO_GATHER && RPG_STATUS_END <= 32,
+              "UpkeepRules.h's fighting statuses follow NewRpgStatus");
+static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP) == Upkeep::RPG_STATUS_GO_CAMP &&
+                  uint32(RPG_WANDER_NPC) == Upkeep::RPG_STATUS_WANDER_NPC &&
+                  uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS,
+              "UpkeepRules.h's errand statuses follow NewRpgStatus");
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason)
 {
     WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
+    // A bot with resurrection sickness rests (upkeep §3.5). A bot low on health or mana with nothing to eat or drink
+    // (no food cheat) picks no status that fights; with none left it rests without eating (§3.6)
+    bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    bool const hungry = AI_VALUE2(uint8, "health", "self target") < sPlayerbotAIConfig.LowHealth &&
+                        !AI_VALUE2(uint32, "item count", "food");
+    bool const thirsty = AI_VALUE2(bool, "has mana", "self target") &&
+                         AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana &&
+                         !AI_VALUE2(uint32, "item count", "drink");
+    bool const needsRest = (hungry || thirsty) && !bot->IsInCombat() && !Upkeep::FoodCheat(botAI);
     for (NewRpgStatus status : candidateStatus)
     {
-        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0)
+        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusPickable(status, sick, needsRest))
             continue;
 
         if (CheckRpgStatusAvailable(status))
