@@ -55,6 +55,7 @@ constexpr std::uint32_t LEGS_PER_TICK = 4;            // finished legs passed in
 constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;       // reached waypoints passed in one tick at most
 constexpr std::uint8_t MAX_RESUBMITS = 3;             // route requests asked again per trip after a late or lost answer
 constexpr std::size_t AVOID_NODES = 4;                // route ends a trip leaves out after stuck walks
+constexpr std::size_t AVOID_WALKS = 4;                // walks off the graph a trip leaves out after refusals (WT56)
 constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leaves out (deaths, timed-out transports)
 constexpr std::uint8_t LEG_DEATHS = 2;                // deaths on one leg fail it (FailReason::Death)
 constexpr std::uint8_t TRIP_DEATHS = 3;               // deaths on one trip end it
@@ -154,7 +155,8 @@ enum class FailReason : std::uint8_t
     TransportLost,
     NoExit,   // no exit at the leg's end: the bot walked its boarding crossing back where it boarded (Boarding::Back)
     Takeoff,  // a fly leg: no takeoff where the bot stands, or no flying mount after FLY_MOUNT_TRIES tries
-    NoPath    // a walk along a graph link: the engine has no path at its far node (TravelWalk, WT58): refused
+    NoPath,   // a walk along a graph link: the engine has no path at its far node (TravelWalk, WT58): refused
+    NoWalk    // a walk off the graph: the navmesh probe found no real path when the bot started it (WT56): refused
 };
 
 // The follower's act for the logs (the case's hold line, the selftest's traces)
@@ -240,6 +242,8 @@ inline char const* FailWord(FailReason reason)
             return "takeoff";
         case FailReason::NoPath:
             return "no_path";
+        case FailReason::NoWalk:
+            return "no_walk";
     }
     return "?";
 }
@@ -309,6 +313,8 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:takeoff";
         case FailReason::NoPath:
             return "leg_failed:no_path";
+        case FailReason::NoWalk:
+            return "leg_failed:no_walk";
     }
     return "leg_failed:?";
 }
@@ -353,6 +359,8 @@ inline char const* AbortSource(FailReason reason)
             return "abort:takeoff";
         case FailReason::NoPath:
             return "abort:no_path";
+        case FailReason::NoWalk:
+            return "abort:no_walk";
     }
     return "abort:?";
 }
@@ -582,6 +590,9 @@ struct Trip
     std::uint32_t next{1};
     // walk: the graph link between waypoints[next - 1] and waypoints[next] as walked (TravelWalk; StartLeg resets it)
     TravelWalk::LinkWalk walk;
+    // walk: the walk off the graph between waypoints[next - 1] and waypoints[next] as probed on the navmesh (WT56;
+    // StartLeg resets it)
+    TravelWalk::PieceWalk piece;
     bool approached{false};     // portal: the bot reached the trigger's (object's) node; then it heads for that
     bool triggered{false};      // portal: the area trigger was sent (static portal: the object was used)
     bool taxiActivated{false};  // flight: the taxi was taken (fare paid)
@@ -605,6 +616,8 @@ struct Trip
     std::uint8_t resubmits{0};         // route requests asked again after a late or lost answer (Resubmit)
     std::vector<std::uint32_t> avoid;  // after stuck walks: nodes later routes neither start nor end at (NoteStuck)
     bool noDirect{false};              // after a stuck walk towards the goal: no straight walk from the bot to it
+    // after walks off the graph the navmesh refused (NoteWalkRefused): their ends, which later routes do not walk
+    std::vector<std::pair<Point, Point>> avoidWalks;
     bool stuckSeen{false};
     Point stuckAt;           // the waypoint of the trip's last stuck walk
     LegRecord record;        // the current leg's (StartLeg starts it anew)
@@ -912,6 +925,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.legStartMs = nowMs;
     trip.next = 1;
     trip.walk = {};
+    trip.piece = {};
     trip.approached = false;
     trip.triggered = false;
     trip.taxiActivated = false;
@@ -1545,6 +1559,23 @@ inline void NoteRefused(Trip& trip)
         trip.avoidEdges.push_back(edge);
 }
 
+// A walk off the graph the navmesh refused (WT56, TravelWalk::ProbePiece): later routes of this trip do not walk off
+// the graph between the same two points again (Request::avoidWalks: the bot's start to a node, the last node to the
+// goal, the direct walk; a walk to a node beside the goal is the same walk). Its nodes stay usable: from the node a
+// refused walk to the goal started at, the bot may walk the graph on. A graph link between two nodes leaves nothing
+// out (NoPath's case)
+inline void NoteWalkRefused(Trip& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk || trip.next == 0 ||
+        trip.next >= trip.waypoints.size())
+        return;
+    Waypoint const& from = trip.waypoints[trip.next - 1];
+    Waypoint const& to = trip.waypoints[trip.next];
+    if ((from.node != NO_NODE && to.node != NO_NODE) || trip.avoidWalks.size() >= AVOID_WALKS)
+        return;
+    trip.avoidWalks.emplace_back(from.at, to.at);
+}
+
 // A transport leg that timed out (its transport never took the bot, or never let it off): later routes of this trip
 // leave its link out, both ways. Its ride's pair of nodes (rideAt), between the wait points where the leg has them
 inline void NoteTransportTimeout(Trip& trip)
@@ -1569,7 +1600,8 @@ inline void NoteTransportTimeout(Trip& trip)
 // (Snapshot::takeoffHere, AddFlyLegs), so the bot walks to the next open point and tries there. Such replans have their
 // own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is
 // an ordinary takeoff failure. A timed-out transport leg, a lost ride and a walk back after no exit replan without
-// its link (NoteTransportTimeout), and so does a walk link refused for no path (NoteRefused)
+// its link (NoteTransportTimeout), and so does a walk link refused for no path (NoteRefused); a walk off the graph the
+// navmesh refused replans without that walk (NoteWalkRefused)
 inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
 {
     bool const spotRetry = reason == FailReason::Takeoff && spotClosed && trip.spotFails < MAX_SPOT_FAILS;
@@ -1593,6 +1625,8 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
         NoteDeath(trip);
     if (reason == FailReason::NoPath)
         NoteRefused(trip);
+    if (reason == FailReason::NoWalk)
+        NoteWalkRefused(trip);
     if (reason == FailReason::Timeout || reason == FailReason::TransportLost || reason == FailReason::NoExit)
         NoteTransportTimeout(trip);
     ++trip.replans;

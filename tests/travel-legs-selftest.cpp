@@ -333,6 +333,55 @@ void CheckStuckAvoid()
           "no path on the hop from the bot's start: no edge to leave out");
     TravelLegs::StartLeg(refused, 1, 6000, NodeAt);
     Check(!refused.walk.Active() && refused.walk.from == TravelLegs::NO_NODE, "a new leg starts with no link walked");
+
+    // WT56: a walk off the graph the navmesh refused (no_walk): the replan does not walk between its two points again
+    // (the bot's start to the first node, the last node to the goal, the direct walk); no node or edge is left out. A
+    // graph link between two nodes leaves nothing out (no_path's case); the fourth refusal ends the trip
+    auto const isWalk = [](std::pair<Point, Point> const& walk, Point const& from, Point const& to)
+    { return TravelRoute::Distance(walk.first, from) < 0.01f && TravelRoute::Distance(walk.second, to) < 0.01f; };
+    Trip offGraph = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f)});
+    Check(offGraph.waypoints.size() == 4 && offGraph.waypoints[0].node == TravelLegs::NO_NODE &&
+              offGraph.waypoints[3].node == TravelLegs::NO_NODE,
+          "no walk: the leg's start and end are off the graph");
+    Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Replan &&
+              offGraph.avoidWalks.size() == 1 && isWalk(offGraph.avoidWalks[0], START, NODES[0]) &&
+              offGraph.avoid.empty() && !offGraph.noDirect && offGraph.avoidEdges.empty() && offGraph.replans == 1,
+          "no walk to the first node: the replan leaves the start -> node 0 walk out");
+    offGraph.next = 3;
+    Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Replan &&
+              offGraph.avoidWalks.size() == 2 && isWalk(offGraph.avoidWalks[1], NODES[1], NODES[2]) &&
+              offGraph.avoid.empty(),
+          "no walk from the last node to the goal: the replan leaves the node 1 -> goal walk out");
+    offGraph.next = 2;
+    Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Replan &&
+              offGraph.avoidWalks.size() == 2 && offGraph.avoidEdges.empty() && offGraph.replans == 3,
+          "no walk on a graph link leaves nothing out");
+    Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Abort,
+          "no walk after MAX_REPLANS replans ends the trip");
+    Point const nearGoal{0, 58.0f, 0.0f, 0.0f};
+    Trip straight = StartedTrip({MakeLeg(LegType::Walk, START, nearGoal, {}, 10.0f)});
+    Check(TravelLegs::AfterFailure(straight, FailReason::NoWalk) == Recovery::Replan &&
+              straight.avoidWalks.size() == 1 && isWalk(straight.avoidWalks[0], START, nearGoal) &&
+              !straight.noDirect && straight.avoid.empty() && straight.replans == 1,
+          "no walk on the direct walk: the replan leaves the start -> goal walk out");
+    TravelRoute::Request avoiding;
+    avoiding.avoidWalks = straight.avoidWalks;
+    Check(avoiding.AvoidsWalk({0, START.x + 6.0f, 6.0f, 0.0f}, {0, nearGoal.x, 7.0f, 0.0f}) &&
+              !avoiding.AvoidsWalk(nearGoal, START) &&
+              !avoiding.AvoidsWalk(START, {0, nearGoal.x + 11.0f, 0.0f, 0.0f}) &&
+              !avoiding.AvoidsWalk({1, START.x, 0.0f, 0.0f}, {1, nearGoal.x, 0.0f, 0.0f}),
+          "an avoided walk: both ends within 10 yd, in its direction, on its map");
+    Check(std::string(TravelLegs::FailWord(FailReason::NoWalk)) == "no_walk" &&
+              std::string(TravelLegs::LegFailedSource(FailReason::NoWalk)) == "leg_failed:no_walk" &&
+              std::string(TravelLegs::AbortSource(FailReason::NoWalk)) == "abort:no_walk",
+          "no walk: its words");
+    straight.piece.probe = TravelWalk::Probe::Walk;
+    straight.piece.leg = 0;
+    straight.piece.next = 1;
+    straight.piece.orders.push_back({10.0f, 0.0f, 0.0f});
+    TravelLegs::StartLeg(straight, 0, 7000, NodeAt);
+    Check(!straight.piece.For(0, 1) && straight.piece.orders.empty() && straight.piece.probe == TravelWalk::Probe::None,
+          "a new leg starts with no piece probed");
 }
 
 void CheckWrongMapAndFare()
@@ -591,7 +640,7 @@ void CheckEventSources()
                            std::string("leg_done:") + TravelRoute::LegTypeWord(type);
     Check(legs, "events: leg_done:<leg type> for every leg type");
     bool reasons = true;
-    for (int r = 0; r <= static_cast<int>(FailReason::NoPath); ++r)
+    for (int r = 0; r <= static_cast<int>(FailReason::NoWalk); ++r)
     {
         FailReason const reason = static_cast<FailReason>(r);
         std::string const word = TravelLegs::FailWord(reason);

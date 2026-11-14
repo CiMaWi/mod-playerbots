@@ -16,8 +16,13 @@
 // straight last step of a walked path, is walked and counted. The points stay in the graph: the state is an index.
 // NewRpgTravelAction and NewRpgBaseAction::MoveFarToImpl feed it on the bot's map thread;
 // tests/travel-walk-selftest.cpp drives it with made-up links and answers.
+// The walks off the graph (WT56: the bot's start to its first node, the last node to the goal, a direct walk) are
+// probed on the navmesh once, when the bot starts them (ProbePiece): a chain of path calls, each from the last one's
+// end, accepted only by the path's type flags; the bot walks the points probed (PieceTarget), and a refused walk fails
+// its leg at once (TravelLegs::FailReason::NoWalk), so that the replan leaves it out.
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -28,9 +33,12 @@ constexpr std::uint32_t NO_NODE = std::numeric_limits<std::uint32_t>::max();  //
 constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
 constexpr std::uint32_t NO_POINT = std::numeric_limits<std::uint32_t>::max();  // the order is the link's far node
 
-// PathType bits (core PathGenerator.h; NewRpgBaseAction.cpp checks them against the engine's enum)
+// PathType bits (core PathGenerator.h; NewRpgBaseAction.cpp and NewRpgAction.cpp check them against the engine's enum)
+constexpr std::uint32_t PATH_NORMAL = 0x01;
+constexpr std::uint32_t PATH_INCOMPLETE = 0x04;  // a partial path: it ends closer to the goal
 constexpr std::uint32_t PATH_NOPATH = 0x08;
 constexpr std::uint32_t PATH_NOT_USING_PATH = 0x10;   // a player's answer when an end has no polygon: a line
+constexpr std::uint32_t PATH_SHORT = 0x20;            // longer than the point limit: replaced by a straight line
 constexpr std::uint32_t PATH_FARFROMPOLY_END = 0x80;  // the end lies more than 7 yd from a polygon
 
 // Tuning (WT.40, revisable from the nights' walk_link rows)
@@ -43,6 +51,8 @@ constexpr float REACH_YARDS = 10.0f;  // a stored point counts as reached this c
 constexpr float HOP_STEP_YARDS = 5.0f;  // a path's last step longer than this is the engine's hop (smooth steps: 4 yd)
 constexpr float PROGRESS_YARDS = 2.0f;  // an order whose path end gains less on its point makes no progress
 constexpr std::uint8_t NO_PROGRESS_STRIKES = 3;  // orders without progress (or repeated) on one point: fallback
+constexpr std::uint8_t PROBE_STEPS = 10;         // path calls a walk off the graph's probe makes at most (#2747)
+constexpr std::size_t PROBE_ORDERS = 32;         // the probed points the bot orders at most; then the walk's end
 
 enum class Mode : std::uint8_t
 {
@@ -267,6 +277,140 @@ inline char const* RowWord(LinkWalk const& walk)
             return "fallback";
         case Mode::Refused:
             return "refused";
+    }
+    return "?";
+}
+// A walk off the graph (WT56), probed on the navmesh when the bot starts it
+struct ProbePoint
+{
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+};
+
+// One path call's answer: CalculatePath's return, the path's type and its points (the first one is the call's start)
+struct ProbeAnswer
+{
+    bool result{false};
+    std::uint32_t type{0};
+    std::vector<ProbePoint> points;
+};
+
+enum class Probe : std::uint8_t
+{
+    None,      // not probed
+    Walk,      // a real path to the walk's end: the bot walks its points
+    PathType,  // refused: a call answered no real path (the engine's straight line, no path, too long, failed)
+    Stall,     // refused: a partial path gained under PROGRESS_YARDS on the end from the last one's end
+    Steps      // refused: still farther than REACH_YARDS from the end after PROBE_STEPS calls
+};
+
+// The walk off the graph the bot walks now (Trip::piece; StartLeg resets it): its leg and the waypoint it heads for,
+// the probe's verdict, its path calls and the points to order, PieceTarget's index into them
+struct PieceWalk
+{
+    std::uint32_t leg{NO_POINT};
+    std::uint32_t next{NO_POINT};
+    Probe probe{Probe::None};
+    std::uint8_t steps{0};
+    std::vector<ProbePoint> orders;
+    std::uint32_t index{0};
+
+    bool For(std::uint32_t legIdx, std::uint32_t waypoint) const
+    {
+        return probe != Probe::None && leg == legIdx && next == waypoint;
+    }
+    bool Refused() const { return probe != Probe::None && probe != Probe::Walk; }
+};
+
+// A real navmesh path by its type flags, ported from mod-playerbots PR #2747 (Celandriel, TravelMgr.cpp
+// WorldPosition::getPathStepFrom): NORMAL or INCOMPLETE, and none of NOT_USING_PATH, NOPATH, SHORT (the engine replaced
+// those with a straight line through whatever is in the way, also where it keeps the NORMAL bit). MoveFarTo's own
+// rule (NORMAL, INCOMPLETE, FARFROMPOLY and nothing else) differs only on a blank and a SHORTCUT answer, both refused
+inline bool Accepts(ProbeAnswer const& answer)
+{
+    return answer.result && !answer.points.empty() && (answer.type & (PATH_NORMAL | PATH_INCOMPLETE)) &&
+           !(answer.type & (PATH_NOT_USING_PATH | PATH_NOPATH | PATH_SHORT));
+}
+
+// The probe of a walk from `from` to `to`: step(start, to) -> ProbeAnswer calls the engine; a chain of such calls, each
+// from the last one's end, as #2747's WorldPosition::getPathFromPath (a fresh path per step). Walk once a path ends
+// within REACH_YARDS of `to`; refused at the first answer that is no real path, gains under PROGRESS_YARDS or is the
+// PROBE_STEPS-th short of the end. The orders: the paths' points at least SPACING_YARDS apart, none within
+// SPACING_YARDS / 2 of `to` (the follower orders the walk's end itself), at most PROBE_ORDERS
+template <class From, class To, class Step>
+PieceWalk ProbePiece(From const& from, To const& to, Step const& step)
+{
+    PieceWalk piece;
+    ProbePoint const end{to.x, to.y, to.z};
+    ProbePoint at{from.x, from.y, from.z};
+    ProbePoint kept = at;
+    while (piece.probe == Probe::None)
+    {
+        ProbeAnswer const answer = step(at, end);
+        ++piece.steps;
+        if (!Accepts(answer))
+        {
+            piece.probe = Probe::PathType;
+            break;
+        }
+        for (ProbePoint const& point : answer.points)
+        {
+            if (piece.orders.size() < PROBE_ORDERS && Distance(point, kept) >= SPACING_YARDS &&
+                Distance(point, end) >= SPACING_YARDS / 2.0f)
+            {
+                piece.orders.push_back(point);
+                kept = point;
+            }
+        }
+        ProbePoint const reached = answer.points.back();
+        if (Distance(reached, end) <= REACH_YARDS)
+            piece.probe = Probe::Walk;
+        else if (Distance(at, end) - Distance(reached, end) < PROGRESS_YARDS)
+            piece.probe = Probe::Stall;
+        else if (piece.steps >= PROBE_STEPS)
+            piece.probe = Probe::Steps;
+        at = reached;
+    }
+    if (piece.Refused())
+        piece.orders.clear();
+    return piece;
+}
+
+// The order on a probed walk: the furthest probed point within LOOKAHEAD_YARDS of the bot past the one it reached (as
+// Target on a link's stored points), or NO_POINT for the walk's end once the last point is passed or the end lies
+// within LOOKAHEAD_YARDS
+template <class Bot, class End>
+std::uint32_t PieceTarget(PieceWalk& piece, Bot const& bot, End const& end)
+{
+    std::uint32_t const count = static_cast<std::uint32_t>(piece.orders.size());
+    while (piece.index < count)
+    {
+        bool const reached = Distance(bot, piece.orders[piece.index]) <= REACH_YARDS;
+        bool const ahead = piece.index + 1 < count ? Distance(bot, piece.orders[piece.index + 1]) <= LOOKAHEAD_YARDS
+                                                   : Distance(bot, end) <= LOOKAHEAD_YARDS;
+        if (!reached && !ahead)
+            break;
+        ++piece.index;
+    }
+    return piece.index < count ? piece.index : NO_POINT;
+}
+
+// The probe's word (the refusal's log line)
+inline char const* ProbeWord(Probe probe)
+{
+    switch (probe)
+    {
+        case Probe::None:
+            return "none";
+        case Probe::Walk:
+            return "walk";
+        case Probe::PathType:
+            return "path_type";
+        case Probe::Stall:
+            return "stall";
+        case Probe::Steps:
+            return "steps";
     }
     return "?";
 }

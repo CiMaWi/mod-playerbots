@@ -8,11 +8,15 @@
 // TaxiPath/TaxiNodes DBC files: the fixed snapshots a) - f) and the fare budget h) of TravelRoute::Selftest and the
 // worker test g) of TravelRoute::ServiceSelftest (RouteService.h) and the named places p) of TravelPlaces::Selftest
 // (TravelPlaces.h), the checks `playerbots route selftest` also runs on the loaded graph; i) a trip's replans after
-// stuck walks (TravelLegRules.h) on that graph; and w) a crossing through wait points on a hand-made graph.
+// stuck walks (TravelLegRules.h) on that graph; n) replans after walks off the graph the navmesh refused (WT56) at
+// Thunder Bluff's foot and near a road node, and a source check that the planner holds no slope or climb rule; and
+// w) a crossing through wait points on a hand-made graph.
 // Usage: route-rules-selftest [module root] [dbc dir] [graph dir] (defaults: the current directory,
 // C:/Games/AzerothCore/Server/data/dbc, the shipped graph)
 #include <chrono>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -118,6 +122,185 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
                                : std::string(", then ") + TravelRoute::FailureWord(goalSide.failure);
     }
     notes.push_back(summary);
+    return checks;
+}
+
+// n) Walks off the graph (WT56): the planner's source holds no slope or climb rule (it proposes such walks by distance
+//    alone; the bot's map thread probes them on the navmesh). With a model of the navmesh, the follower's refusals
+//    (AfterFailure with NoWalk, from where the refused walk starts) never plan the same walk again, and the trip ends
+//    in a route without a refused walk, in no route, or in an abort within MAX_REPLANS. Thunder Bluff's foot, whose
+//    model refuses every walk off the graph between the mesa's top and the ground below; a road node whose goal 60 yd
+//    off takes no walk from the start (the bot's start walks only along the graph): the first node's walk is refused
+//    and the next route starts at another node; and one whose goal takes no walk to it (a goal in a closed building)
+std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::path const& root,
+                                   std::vector<std::string>& failures, std::vector<std::string>& notes)
+{
+    using TravelRoute::Point;
+    std::uint32_t checks = 0;
+    auto const check = [&checks, &failures](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("n) " + what);
+        return ok;
+    };
+    std::ifstream in(root / "src/Ai/World/Rpg/RouteRules.h", std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    std::string const source = text.str();
+    check(source.find("GroundSearch") != std::string::npos, "RouteRules.h not read");
+    for (char const* token : {"StraightWalk", "CLIMB_", "fabs(a.z - b.z)"})
+        check(source.find(token) == std::string::npos, std::string("the planner's source holds ") + token);
+
+    auto const nodeAt = [&graph](std::uint32_t index) -> Point
+    {
+        TravelGraphNode const& node = graph.GetNode(index);
+        return {node.mapId, node.x, node.y, node.z};
+    };
+    auto const samePiece = [](std::pair<Point, Point> const& a, std::pair<Point, Point> const& b)
+    {
+        return TravelRoute::Distance(a.first, b.first) <= TravelLegs::WAYPOINT_YARDS &&
+               TravelRoute::Distance(a.second, b.second) <= TravelRoute::SAME_WALK_YARDS;
+    };
+    struct Loop
+    {
+        bool proposedDirect{false};
+        bool repeated{false};
+        std::vector<std::pair<Point, Point>> refused;
+        std::vector<TravelRoute::Result> routes;
+        std::string outcome;
+        std::string story;
+    };
+    // Plans, refuses the first walk off the graph the model refuses, replans from that walk's start, until a route
+    // takes no refused walk, there is no route or the trip aborts
+    auto const loop = [&](TravelRoute::Request request, auto const& refuses)
+    {
+        Loop run;
+        TravelLegs::Trip trip;
+        for (std::uint32_t round = 0; round <= TravelLegs::MAX_REPLANS + 1u && run.outcome.empty(); ++round)
+        {
+            request.avoidNodes = trip.avoid;
+            request.noDirect = trip.noDirect;
+            request.avoidWalks = trip.avoidWalks;
+            TravelRoute::Result const route =
+                TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{});
+            run.routes.push_back(route);
+            if (!route.ok)
+            {
+                run.outcome = TravelRoute::FailureWord(route.failure);
+                break;
+            }
+            if (round == 0)
+                run.proposedDirect = route.legs.size() == 1 && route.legs.front().type == TravelRoute::LegType::Walk &&
+                                     route.legs.front().nodes.empty();
+            trip.legs = route.legs;
+            bool found = false;
+            for (std::uint32_t i = 0; i < trip.legs.size() && !found; ++i)
+            {
+                if (trip.legs[i].type != TravelRoute::LegType::Walk || TravelLegs::IsNoOp(trip.legs[i]))
+                    continue;
+                TravelLegs::StartLeg(trip, i, 0, nodeAt);
+                for (std::uint32_t k = 1; k < trip.waypoints.size() && !found; ++k)
+                {
+                    TravelLegs::Waypoint const& from = trip.waypoints[k - 1];
+                    TravelLegs::Waypoint const& to = trip.waypoints[k];
+                    if ((from.node != TravelGraph::NO_NODE && to.node != TravelGraph::NO_NODE) || !refuses(from, to))
+                        continue;
+                    std::pair<Point, Point> const piece{from.at, to.at};
+                    for (auto const& before : run.refused)
+                        run.repeated = run.repeated || samePiece(before, piece);
+                    run.refused.push_back(piece);
+                    trip.next = k;
+                    found = true;
+                    run.story += from.node == TravelGraph::NO_NODE && to.node == TravelGraph::NO_NODE ? " direct"
+                                 : to.node == TravelGraph::NO_NODE                                    ? " to the goal"
+                                                                                                      : " to a node";
+                    request.snapshot.position = from.at;  // the follower refuses a walk where it starts
+                }
+            }
+            if (!found)
+            {
+                run.outcome = "a route of";
+                for (TravelRoute::Leg const& leg : route.legs)
+                    run.outcome += std::string(" ") + TravelRoute::LegTypeWord(leg.type);
+                break;
+            }
+            if (TravelLegs::AfterFailure(trip, TravelLegs::FailReason::NoWalk) == TravelLegs::Recovery::Abort)
+                run.outcome = "abort:no_walk";
+        }
+        return run;
+    };
+    auto const firstNode = [](TravelRoute::Result const& route)
+    {
+        return !route.ok || route.legs.empty() || route.legs.front().nodes.empty() ? TravelGraph::NO_NODE
+                                                                                   : route.legs.front().nodes.front();
+    };
+
+    // Thunder Bluff: the mesa's top is its own mesh
+    Point const bluffFoot{1, -1290.7f, 172.0f, 67.4f};
+    Point const bluffTop{1, -1274.74f, 121.51f, 134.98f};
+    auto const onTop = [&](Point const& at)
+    { return at.mapId == 1 && at.z > 120.0f && std::hypot(at.x - bluffTop.x, at.y - bluffTop.y) < 150.0f; };
+    auto const below = [&](Point const& at)
+    { return at.mapId == 1 && at.z < 100.0f && std::hypot(at.x - bluffTop.x, at.y - bluffTop.y) < 250.0f; };
+    TravelRoute::Request climb;
+    climb.snapshot.position = bluffFoot;
+    climb.snapshot.team = 1;
+    climb.snapshot.level = 10;
+    climb.snapshot.money = 10000;
+    climb.snapshot.allowTransport = true;
+    climb.goal = bluffTop;
+    Loop const mesa = loop(climb, [&](TravelLegs::Waypoint const& from, TravelLegs::Waypoint const& to)
+                           { return (onTop(from.at) && below(to.at)) || (below(from.at) && onTop(to.at)); });
+    check(mesa.proposedDirect, "Thunder Bluff: the planner does not propose the 86 yd direct walk from the foot");
+    check(!mesa.refused.empty() && !mesa.repeated && !mesa.outcome.empty(),
+          "Thunder Bluff: a refused walk was planned again, or the refusals did not end within MAX_REPLANS");
+    notes.push_back("n) Thunder Bluff foot -> mesa, refused:" + mesa.story + ", then " + mesa.outcome);
+
+    // A road node (two walk links) with a goal 60 yd off, as i)
+    std::uint32_t road = TravelGraph::NO_NODE;
+    for (std::uint32_t index = 0; index < graph.NodeCount() && road == TravelGraph::NO_NODE; ++index)
+    {
+        std::size_t walks = 0;
+        for (TravelGraphLink const& link : graph.LinksOf(index))
+            walks += link.type == TravelLinkType::Walk ? 1 : 0;
+        if (walks >= 2)
+            road = index;
+    }
+    if (!check(road != TravelGraph::NO_NODE, "no node with two walk links"))
+        return checks;
+    Point const at = nodeAt(road);
+    TravelRoute::Request near;
+    near.snapshot.position = {at.mapId, at.x + 15.0f, at.y, at.z};
+    near.goal = {at.mapId, at.x + 75.0f, at.y, at.z};
+    // The start takes the direct walk and the walk to the first route's first node only
+    TravelRoute::Request viaNodes = near;
+    viaNodes.noDirect = true;
+    std::uint32_t const firstRefused =
+        firstNode(TravelRoute::Search(graph, viaNodes, TravelRoute::StuckEdges{}, TravelRoute::Params{}));
+    Loop const start = loop(near,
+                            [&](TravelLegs::Waypoint const& from, TravelLegs::Waypoint const& to)
+                            {
+                                return TravelRoute::Distance(from.at, near.snapshot.position) <= 1.0f &&
+                                       (to.node == TravelGraph::NO_NODE || to.node == firstRefused);
+                            });
+    check(start.proposedDirect && start.refused.size() == 2 && !start.repeated && start.routes.size() == 3 &&
+              firstRefused != TravelGraph::NO_NODE && firstNode(start.routes[1]) == firstRefused &&
+              (!start.routes[2].ok ||
+               (firstNode(start.routes[2]) != TravelGraph::NO_NODE && firstNode(start.routes[2]) != firstRefused)),
+          "road: after the direct walk and the walk to the first node were refused, the route does not start at "
+          "another node");
+    notes.push_back("n) road node " + std::to_string(graph.GetNode(road).id) + ", refused:" + start.story + ", then " +
+                    start.outcome);
+    // The goal takes no walk to it: every refusal is a new walk, and the trip ends
+    Loop const closed =
+        loop(near, [&](TravelLegs::Waypoint const&, TravelLegs::Waypoint const& to)
+             { return to.node == TravelGraph::NO_NODE && TravelRoute::Distance(to.at, near.goal) < 1.0f; });
+    check(!closed.repeated && closed.refused.size() >= 2 &&
+              (closed.outcome == "abort:no_walk" || closed.outcome == "no route" ||
+               closed.outcome == "no travel node on the goal map"),
+          "road: a goal without a walk to it does not end the trip by refusals, or repeats one");
+    notes.push_back("n) road node, closed goal, refused:" + closed.story + ", then " + closed.outcome);
     return checks;
 }
 
@@ -321,10 +504,10 @@ int main(int argc, char** argv)
     std::vector<std::string> failures;
     std::vector<std::string> notes;
     auto const started = std::chrono::steady_clock::now();
-    std::uint32_t const checks = TravelRoute::Selftest(graph, failures, notes) +
-                                 TravelRoute::ServiceSelftest(graph, failures, notes) +
-                                 TravelPlaces::Selftest(graph, failures, notes) +
-                                 StuckReplanSelftest(graph, failures, notes) + WaitPointSelftest(failures);
+    std::uint32_t const checks =
+        TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes) +
+        TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
+        NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)
