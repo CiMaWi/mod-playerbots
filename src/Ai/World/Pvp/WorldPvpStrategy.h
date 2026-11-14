@@ -49,8 +49,18 @@ public:
     bool Execute(Event event) override;
 
 private:
-    // One step at `angle`, true when taken; `blocked`: the collision check finds a wall right in front that way
-    bool StepTo(float angle, uint32 nowMs, bool& blocked);
+    // What a step in one direction came to: taken; a wall right in front (the collision check hit something there);
+    // an edge right in front (the walkable ground ends there with nothing hit); or the move was refused
+    enum class Step : uint8
+    {
+        Taken,
+        Wall,
+        Edge,
+        Refused
+    };
+
+    // One step at `angle`; `endYards`: how far the straight line that way goes before it is cut short
+    Step StepTo(float angle, uint32 nowMs, float& endYards);
 
     uint32 _stepMs = 0;
     float _stepX = 0.0f;

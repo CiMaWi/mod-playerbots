@@ -1384,8 +1384,14 @@ bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
 bool RetreatFrom(PlayerbotAI* botAI, float& x, float& y)
 {
     FightMemory const* const memory = botAI ? botAI->fightMemory.get() : nullptr;
-    if (!memory || !Retreating(*memory, getMSTime()) || !StartsByRules(botAI))
+    if (!memory || !Retreating(*memory, getMSTime()))
         return false;
+    if (!StartsByRules(botAI))
+    {
+        LOG_DEBUG("playerbots", "[WorldPvp] DIAG retreat of {}: in its window but not by the rules",
+                  botAI->GetBot()->GetName());
+        return false;
+    }
     x = memory->retreatX;
     y = memory->retreatY;
     return true;
