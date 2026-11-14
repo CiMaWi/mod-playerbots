@@ -92,15 +92,17 @@ bool UseItemAction::UseGameObject(ObjectGuid guid)
             return fail("gameobject_approach_unavailable_error",
                         "Move closer or enable the loot or gather strategy to approach this object");
 
-        LootObject previous = AI_VALUE(LootObject, "loot target");
         LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
+        if (availableLoot->HasInteraction() && availableLoot->InteractionGuid() != guid)
+            botAI->CancelLootInteraction("order");
+
+        LootObject previous = AI_VALUE(LootObject, "loot target");
         bool added = availableLoot->Add(guid);
         context->GetValue<LootObject>("loot target")->Set(loot);
 
-        bool retryGuaranteed = inRange && (bot->isMoving() || bot->IsMounted());
         std::string objectName = chat->FormatGameobject(go);
-        bool requested = botAI->DoSpecificAction(inRange ? "open loot" : "move to loot", Event(), true);
-        if (!requested && !retryGuaranteed)
+        bool const consumed = botAI->DoSpecificAction(inRange ? "open loot" : "move to loot", Event(), true);
+        if (!consumed)
         {
             if (added && availableLoot->CanAttemptLoot(guid))
                 availableLoot->Remove(guid);
@@ -111,9 +113,10 @@ bool UseItemAction::UseGameObject(ObjectGuid guid)
             return fail("gameobject_open_failed_error", "Could not approach or open the game object");
         }
 
+        bool const requested = inRange && availableLoot->IsLootPending() && availableLoot->InteractionGuid() == guid;
         botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-            inRange && requested ? "gameobject_open_requested" : "gameobject_loot_queued",
-            inRange && requested ? "Opening requested: %gameobject" : "Queued for looting: %gameobject",
+            requested ? "gameobject_open_requested" : "gameobject_loot_queued",
+            requested ? "Opening requested: %gameobject" : "Queued for looting: %gameobject",
             {{"%gameobject", objectName}}));
         return true;
     }

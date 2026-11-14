@@ -35,6 +35,7 @@ class NaturalTrace
 public:
     // The off path of every hook: 0 while no unit is traced (always with Enable = 0)
     static bool Any() { return Live.load(std::memory_order_relaxed) != 0; }
+    static bool IsSelected(Player const* player);
 
     // Map thread: the pre-gate point at the top of PlayerbotAI::UpdateAI (bots) and OnPlayerAfterUpdate (other
     // players): a target change row at once, a pos row when the unit's next 100 ms slot is due
