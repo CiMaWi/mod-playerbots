@@ -886,14 +886,15 @@ void PlayerbotFactory::Randomize(bool incremental)
     // if (pmo)
     //     pmo->finish();
 
-    // The consumables are a fresh kit's at a wipe; a keeper's re-randomize leaves what it bought, looted or made, and
-    // only a bot granted the kind (outside the keepers, or in the handout share) gets it again, as that kind's handout
+    // The consumables, spells, skills and mounts are a fresh kit's at a wipe (a creation); a keeper's re-randomize
+    // leaves what it bought, looted, made or trained, and only a bot granted the kind (outside the keepers, or in the
+    // handout share) gets it again, as that kind's handout. True when the kind ran
     auto const consumableKit = [this, wipe, keepsPossessions](UpkeepKind kind, auto&&... inits)
     {
-        if (wipe)
-            (inits(), ...);
-        else
-            Upkeep::HandOut(bot, kind, keepsPossessions, "factory_randomize", inits...);
+        if (!wipe)
+            return Upkeep::HandOut(bot, kind, keepsPossessions, "factory_randomize", inits...);
+        (inits(), ...);
+        return true;
     };
 
     if (sPlayerbotAIConfig.RandomBotPreQuests)
@@ -917,14 +918,16 @@ void PlayerbotFactory::Randomize(bool incremental)
     LOG_DEBUG("playerbots", "Initializing skills (step 1)...");
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Skills1");
     bot->LearnDefaultSkills();
-    InitSkills();
+    // A keeper's professions stay as they are (another plan's, WR): maxed also when the skills are not handed out
+    if (!consumableKit(UpkeepKind::WeaponSkill, [this] { InitSkills(); }))
+        InitProfessionSkills();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Spells1");
     LOG_DEBUG("playerbots", "Initializing spells (step 1)...");
-    InitClassSpells();
-    InitAvailableSpells();
+    bool const trainerSpells =
+        consumableKit(UpkeepKind::TrainerSpell, [this] { InitClassSpells(); }, [this] { InitAvailableSpells(); });
     if (pmo)
         pmo->finish();
 
@@ -947,7 +950,8 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Spells2");
     LOG_DEBUG("playerbots", "Initializing spells (step 2)...");
-    InitAvailableSpells();
+    if (trainerSpells)
+        InitAvailableSpells();
     if (pmo)
         pmo->finish();
 
@@ -959,13 +963,15 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     LOG_DEBUG("playerbots", "Initializing special spells...");
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Spells3");
-    InitSpecialSpells();
+    consumableKit(UpkeepKind::SpecialSpell, [this] { InitSpecialSpells(); });
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Mounts");
     LOG_DEBUG("playerbots", "Initializing mounts...");
-    InitMounts();
+    // InitMounts writes the Mount row itself when it learns one
+    if (wipe || Upkeep::Granted(bot, UpkeepKind::Mount, keepsPossessions))
+        InitMounts();
     // bot->SaveToDB(false, false);
     if (pmo)
         pmo->finish();
@@ -1157,7 +1163,8 @@ void PlayerbotFactory::Refresh()
         Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, consumables, potions);
     Upkeep::HandOut(
         bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); }, [this] { InitPetTalents(); });
-    Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, source, [this] { InitSkills(); });
+    if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, source, [this] { InitSkills(); }))
+        InitProfessionSkills();
     Upkeep::HandOut(
         bot, UpkeepKind::TrainerSpell, keepsPossessions, source, [this] { InitClassSpells(); },
         [this] { InitAvailableSpells(); });
@@ -3656,6 +3663,12 @@ void PlayerbotFactory::UpdateTradeSkills()
     }
 }
 
+void PlayerbotFactory::InitProfessionSkills()
+{
+    InitTradeSkills();
+    InitInventorySkill();
+}
+
 void PlayerbotFactory::InitSkills()
 {
     //uint32 maxValue = level * 5; //not used, line marked for removal.
@@ -3799,8 +3812,7 @@ void PlayerbotFactory::InitSkills()
             break;
     }
 
-    InitTradeSkills();
-    InitInventorySkill();
+    InitProfessionSkills();
 
     // switch (bot->getClass())
     // {

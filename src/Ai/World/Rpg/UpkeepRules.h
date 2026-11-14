@@ -50,6 +50,8 @@ struct KindRule
 };
 
 constexpr size_t KIND_COUNT = 20;
+// One kind per row (clang-format would pack the short rows into columns)
+// clang-format off
 constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Food", true},  // food and water
     {"Ammo", true},
@@ -57,12 +59,12 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Poison", true},      // a rogue's InitConsumables
     {"Consumable", true},  // potions, weapon oils and stones
     {"Repair", true},
-    {"Resurrect", true},      // in place, or at the spirit healer without sickness and durability loss
-    {"TrainerSpell", false},  // class and trainer spells
-    {"WeaponSkill", false},   // InitSkills
-    {"Riding", false},        // the riding ranks by level (InitSkills)
-    {"Mount", false},
-    {"SpecialSpell", false},
+    {"Resurrect", true},     // in place, or at the spirit healer without sickness and durability loss
+    {"TrainerSpell", true},  // class and trainer spells; WU15b: bought at the class trainer (WU13)
+    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a), professions stay
+    {"Riding", true},        // the riding ranks by level (InitSkills); WU15b: bought (WU14)
+    {"Mount", true},
+    {"SpecialSpell", true},
     {"ClassQuest", false},  // spells of class quests the bot never did
     {"Pet", false},         // pet and pet talents
     {"Glyph", true},
@@ -72,6 +74,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Gold", true},
     {"Talent", true},  // the talent reset below the persistence level
 }};
+// clang-format on
 
 constexpr char const* KindWord(UpkeepKind kind)
 {
