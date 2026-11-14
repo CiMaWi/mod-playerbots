@@ -35,6 +35,10 @@ constexpr std::uint32_t PATH_FARFROMPOLY_END = 0x80;  // the end lies more than 
 
 // Tuning (WT.40, revisable from the nights' walk_link rows)
 constexpr float SPACING_YARDS = 25.0f;  // stored points ordered at least this far apart
+// The order is the furthest such point within LOOKAHEAD_YARDS of the bot, moved on at every follower tick: the
+// follower ticks about every 5-6 s on a lab with 600 bots (WT58 run 1: 75 ticks in 474 s), and an order shorter than
+// a tick's walk (6 s at 14 yd/s mounted: 84 yd) stops the bot at each point (25 yd orders: walks 1.6 times slower)
+constexpr float LOOKAHEAD_YARDS = 90.0f;
 constexpr float REACH_YARDS = 10.0f;  // a stored point counts as reached this close: the next order starts on the move
 constexpr float HOP_STEP_YARDS = 5.0f;  // a path's last step longer than this is the engine's hop (smooth steps: 4 yd)
 constexpr float PROGRESS_YARDS = 2.0f;  // an order whose path end gains less on its point makes no progress
@@ -175,8 +179,9 @@ void Begin(LinkWalk& walk, std::uint32_t from, std::uint32_t to, std::uint32_t l
         walk.after = NextPoint(points, reversed, walk.point, PointAt(points, reversed, walk.point), toAt);
 }
 
-// The order now: the stored point to head for (past the ones the bot reached, or passed within reach of the next),
-// or NO_POINT for the far node. Reaching a point clears the strikes
+// The order now: the furthest stored point within LOOKAHEAD_YARDS of the bot (past the one it reached), or NO_POINT
+// for the far node once the last point is reached or the far node lies within LOOKAHEAD_YARDS. Moving on clears the
+// strikes
 template <class Points, class Bot, class Far>
 std::uint32_t Target(LinkWalk& walk, Points const& points, Bot const& bot, Far const& toAt)
 {
@@ -184,12 +189,13 @@ std::uint32_t Target(LinkWalk& walk, Points const& points, Bot const& bot, Far c
         return NO_POINT;
     while (walk.point != NO_POINT)
     {
-        if (Distance(bot, PointAt(points, walk.reversed, walk.point)) <= REACH_YARDS)
-            walk.point = walk.after;
-        else if (walk.after != NO_POINT && Distance(bot, PointAt(points, walk.reversed, walk.after)) <= REACH_YARDS)
-            walk.point = NextPoint(points, walk.reversed, walk.after, PointAt(points, walk.reversed, walk.after), toAt);
-        else
+        bool const reached = Distance(bot, PointAt(points, walk.reversed, walk.point)) <= REACH_YARDS;
+        bool const ahead = walk.after != NO_POINT
+                               ? Distance(bot, PointAt(points, walk.reversed, walk.after)) <= LOOKAHEAD_YARDS
+                               : Distance(bot, toAt) <= LOOKAHEAD_YARDS;
+        if (!reached && !ahead)
             break;
+        walk.point = walk.after;
         walk.after = walk.point == NO_POINT ? NO_POINT
                                             : NextPoint(points, walk.reversed, walk.point,
                                                         PointAt(points, walk.reversed, walk.point), toAt);

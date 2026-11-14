@@ -90,6 +90,7 @@ struct Walked
 {
     std::vector<float> xs;
     bool onlyLinkPoints{true};
+    bool inWindow{true};  // every stored point ordered lies within LOOKAHEAD_YARDS of the bot
     LinkWalk walk;
 };
 
@@ -108,6 +109,7 @@ Walked WalkLink(Graph const& graph, std::uint32_t from, std::uint32_t to)
         bool const ofLink = point == NO_POINT || std::any_of(points.begin(), points.end(), [&order](P const& p)
                                                              { return p.x == order.x && p.y == order.y; });
         walked.onlyLinkPoints = walked.onlyLinkPoints && ofLink;
+        walked.inWindow = walked.inWindow && (point == NO_POINT || Distance(bot, order) <= LOOKAHEAD_YARDS);
         walked.xs.push_back(order.x);
         if (Judge(walked.walk, Answer(NORMAL), true) == Verdict::Refuse)
             break;
@@ -160,18 +162,20 @@ int main()
     Rows<L> const dc = PickRows<L>(linksOf, 3, 2, walkable);
     check(dc.link && dc.link->pathCount == 4 && !dc.reversed, "rows: D->C uses its own rows");
 
-    // The leg A -> D: each link's thinned points in order, the far node last; B->C by its nodes
+    // The leg A -> D: each link's thinned points in order, each order the furthest within LOOKAHEAD_YARDS of the bot,
+    // the far node last; B->C by its nodes
     Walked const w1 = WalkLink(graph, 0, 1);
     Walked const w2 = WalkLink(graph, 1, 2);
     Walked const w3 = WalkLink(graph, 2, 3);
-    check(same(w1.xs, {40.0f, 80.0f, 100.0f}) && w1.walk.mode == Mode::Stored, "leg A->D: A->B orders 40, 80, B");
+    check(same(w1.xs, {80.0f, 100.0f}) && w1.walk.mode == Mode::Stored, "leg A->D: A->B orders 80 (40 passed), B");
     check(same(w2.xs, {100.0f}) && w2.xs.size() == 1 && w2.walk.mode == Mode::Nodes,
           "leg A->D: B->C without rows orders its far node only");
-    check(same(w3.xs, {125.0f, 150.0f, 175.0f, 200.0f}) && w3.walk.mode == Mode::Stored,
-          "leg A->D: C->D orders 125, 150, 175, D");
+    check(same(w3.xs, {175.0f, 200.0f}) && w3.walk.mode == Mode::Stored,
+          "leg A->D: C->D orders 175 (the furthest of 125, 150, 175 within reach), D");
     check(w1.onlyLinkPoints && w2.onlyLinkPoints && w3.onlyLinkPoints,
           "leg A->D: every order is a stored point of its link or its far node");
-    check(w1.walk.moves == 3 && w3.walk.moves == 4 && w1.walk.hops == 0, "leg A->D: one move per order, no hops");
+    check(w1.walk.moves == 2 && w3.walk.moves == 2 && w1.walk.hops == 0, "leg A->D: one move per order, no hops");
+    check(w1.inWindow && w3.inWindow, "leg A->D: every stored order lies within LOOKAHEAD_YARDS of the bot");
     std::vector<std::uint32_t> const thin = Thinned(graph.PathOf(*ab.link), false, graph.nodes[0], graph.nodes[1]);
     bool spaced = !thin.empty();
     P previous = graph.nodes[0];
@@ -188,9 +192,9 @@ int main()
     Walked const r1 = WalkLink(graph, 3, 2);
     Walked const r2 = WalkLink(graph, 2, 1);
     Walked const r3 = WalkLink(graph, 1, 0);
-    check(same(r1.xs, {160.0f, 130.0f, 100.0f}), "leg D->A: D->C orders its own 160, 130, C");
+    check(same(r1.xs, {130.0f, 100.0f}), "leg D->A: D->C orders its own 130 (160 passed), C");
     check(same(r2.xs, {100.0f}) && r2.walk.mode == Mode::Nodes, "leg D->A: C->B orders B");
-    check(same(r3.xs, {60.0f, 20.0f, 0.0f}) && r3.walk.reversed, "leg D->A: B->A orders A->B's 60, 20 reversed, A");
+    check(same(r3.xs, {20.0f, 0.0f}) && r3.walk.reversed, "leg D->A: B->A orders A->B's 20 (60 passed) reversed, A");
     check(r1.onlyLinkPoints && r3.onlyLinkPoints, "leg D->A: every order is a stored point of its link or its node");
 
     // A stored point off the mesh: the earlier points stay, the rest of the link goes to its far node, and the next
@@ -200,15 +204,14 @@ int main()
         check(points.size() == 9 && graph.links[5].from == 2 && graph.links[5].to == 3, "off mesh: the fixture's C->D");
         LinkWalk walk;
         Begin(walk, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
-        std::uint32_t point = Target(walk, points, graph.nodes[2], graph.nodes[3]);
-        check(Judge(walk, Answer(NORMAL), true) == Verdict::Walk, "off mesh: the first point is walked");
-        P const first = PointAt(points, false, point);
-        point = Target(walk, points, first, graph.nodes[3]);
-        check(point != NO_POINT && PointAt(points, false, point).x == 150.0f, "off mesh: the next point after 125");
+        P const first = graph.nodes[2];
+        std::uint32_t const point = Target(walk, points, first, graph.nodes[3]);
+        check(point != NO_POINT && PointAt(points, false, point).x == 175.0f,
+              "off mesh: the order is the furthest point within reach, 175");
         check(Judge(walk, Answer(NORMAL | 0x10, 25.0f), true) == Verdict::Fallback && walk.mode == Mode::Fallback,
               "off mesh: a shortcut answer (no polygon at the point) falls back");
         check(Target(walk, points, first, graph.nodes[3]) == NO_POINT, "off mesh: the fallback heads for the far node");
-        check(Judge(walk, Answer(NORMAL), false) == Verdict::Walk && walk.moves == 2,
+        check(Judge(walk, Answer(NORMAL), false) == Verdict::Walk && walk.moves == 1,
               "off mesh: the fallback walks node to node, counted");
         check(std::string(RowWord(walk)) == "fallback", "off mesh: the row says fallback");
         LinkWalk noPath;
@@ -283,12 +286,17 @@ int main()
         Target(reset, points, PointAt(points, false, at), graph.nodes[3]);
         check(reset.strikes == 0 && Judge(reset, Answer(NORMAL, 3.0f, 0.5f), true) == Verdict::Walk,
               "no progress: reaching a point clears the strikes");
-        // A bot that went past a point (within reach of the next) skips it
+        // A bot within LOOKAHEAD_YARDS of the far node heads for it
         LinkWalk skip;
         Begin(skip, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
-        std::uint32_t const skipped = Target(skip, points, P{150.0f, 60.0f, 0.0f}, graph.nodes[3]);
-        check(skipped != NO_POINT && PointAt(points, false, skipped).x == 175.0f,
-              "skip: a bot at the second point heads for the third");
+        check(Target(skip, points, P{150.0f, 60.0f, 0.0f}, graph.nodes[3]) == NO_POINT,
+              "window: a bot 50 yd from the far node heads for it");
+        // Short of the window the order stays: a bot 95 yd before the first point keeps it
+        LinkWalk stay;
+        Begin(stay, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
+        std::uint32_t const kept = Target(stay, points, P{30.0f, 60.0f, 0.0f}, graph.nodes[3]);
+        check(kept != NO_POINT && PointAt(points, false, kept).x == 125.0f,
+              "window: a bot 95 yd before the first point orders it");
     }
 
     // The row words and the inactive walk
