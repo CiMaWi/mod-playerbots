@@ -2174,10 +2174,22 @@ void PlayerbotAI::Reset(bool full, bool farTeleport)
     CancelLootInteraction("reset");
     pendingDismount.store(false, std::memory_order_relaxed);
     tracedMount = MountPath::None;
+    // The RPG state starts over; a bank or mail visit ends with its row and the knowledge survives the reset
+    // (BankMail::AfterReset). Also on a far teleport during a flight (a taxi path crossing maps), which skips the rest
+    auto const resetRpgState = [this, farTeleport]()
+    {
+        NewRpgStatus const statusBefore = rpgInfo.GetStatus();
+        BankMail::EndVisits(this, farTeleport ? BankMail::VisitEnd::Teleport : BankMail::VisitEnd::Reset);
+        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
+        rpgInfo.ResetState(farTeleport);
+        rpgInfo.bankMail = bankMail;
+        WorldLog::StatusReason const reasonScope(farTeleport ? "teleport" : "reset");
+        WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
+    };
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
         if (farTeleport)
-            rpgInfo.ResetState(true);
+            resetRpgState();
         return;
     }
 
@@ -2223,14 +2235,7 @@ void PlayerbotAI::Reset(bool full, bool farTeleport)
             ->setTarget(TravelMgr::instance().nullTravelDestination, TravelMgr::instance().nullWorldPosition, true);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setStatus(TRAVEL_STATUS_EXPIRED);
         aiObjectContext->GetValue<TravelTarget*>("travel target")->Get()->setExpireIn(1000);
-        NewRpgStatus const statusBefore = rpgInfo.GetStatus();
-        // A bank or mail visit ends with its row; the knowledge survives the reset (BankMail::AfterReset)
-        BankMail::EndVisits(this, farTeleport ? BankMail::VisitEnd::Teleport : BankMail::VisitEnd::Reset);
-        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
-        rpgInfo.ResetState(farTeleport);
-        rpgInfo.bankMail = bankMail;
-        WorldLog::StatusReason const reasonScope(farTeleport ? "teleport" : "reset");
-        WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
+        resetRpgState();
     }
 
     aiObjectContext->GetValue<GuidSet&>("ignore rpg target")->Get().clear();
