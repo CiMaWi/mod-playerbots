@@ -9968,11 +9968,13 @@ uint32 PlayerbotAI::ComputeReactDelay()
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
         return base * 5;
 
-    // When not resting, on a mailbox or banker visit or on an errand trip, return 10-30 times the base. A visit or a
-    // trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes in a city (WB7d),
-    // and a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b)
+    // When not resting, on a mailbox or banker visit, on an errand trip or a route's trip, return 10-30 times the
+    // base. A visit or a trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes
+    // in a city (WB7d), a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b), and a
+    // route's first step at a city's portal came after the portal leg's 20 s had run out (WT55d)
     if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail) ||
-        std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data))
+        std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data) ||
+        std::holds_alternative<NewRpgInfo::Travel>(rpgInfo.data))
         return base * urand(10, 30);
 
     // In other cases, return 20-200 times the base
