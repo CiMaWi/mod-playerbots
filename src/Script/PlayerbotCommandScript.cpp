@@ -66,6 +66,8 @@
 #include "WorldLog.h"
 #include "WorldSession.h"
 #include "WorldThreadMonitor.h"
+#include "LightweightPerf.h"
+#include "Metric.h"
 
 using namespace Acore::ChatCommands;
 
@@ -293,6 +295,7 @@ public:
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
             {"worldthread", WorldThreadMonitor::HandleCommand, SEC_GAMEMASTER, Console::Yes},
+            {"tickperf", HandleTickPerfCommand, SEC_PLAYER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", BotTraitMgr::HandleTraitsCommand, SEC_GAMEMASTER, Console::Yes},
@@ -331,6 +334,21 @@ public:
         };
 
         return commandTable;
+    }
+
+    static bool HandleTickPerfCommand(ChatHandler* handler, char const* args)
+    {
+        if (handler->GetSession() || !PlayerbotThreadCheck::IsWorldThread())
+        {
+            handler->SendSysMessage("Tick performance snapshots require the world-thread console");
+            return false;
+        }
+        std::string_view const command(args ? args : "");
+        if (command != "reset" && command != "take")
+            return false;
+
+        handler->PSendSysMessage("TICKPERF {}", LightweightPerf::Snapshot(command == "reset", sMetric->IsEnabled()));
+        return true;
     }
 
     static bool HandlePlayerbotCommand(ChatHandler* handler, char const* args)
