@@ -111,8 +111,12 @@ enum class BotStateTopic : uint8_t
 //               seconds, extra = fare; code 2 failed: name = unknown_place, graph_not_ready, no_route, ...
 //   QuestPlan (12): one row per circuit quest in walking order: name = title, value = quest id, code 0 take at a
 //               giver, 1 task (extra = task points), 2 turn in, 3 carried to another hub, 4 deferred
-//   Bags (6):   code 0 free: value = free slots, extra = all slots; code 1 the next sell stop and code 2 a bag
-//               purchase from the plan: name = reason word, value = seconds, extra = vendor or item
+//   Bags (12):  code 0 free: value = free slots, extra = all slots; code 1 the next sell stop and code 2 a bag
+//               purchase from the plan: name = reason word, value = seconds, extra = vendor or item; code 3 mail
+//               waiting: value = unopened mails; code 4 mail seen: value = copper worth left there; code 5 mail
+//               expected: value = copper; code 6 kept item (a bot the bank rule governs, due ones first, at most four):
+//               name = item name, value = the level it is due at, extra = 1 in the bank, 0 in the bags; code 7 bank
+//               free: value = free bank slots, extra = all of them
 //   Places (24): code 0 hearth: name = bind area, value = cooldown seconds left, extra 1 = carries a hearthstone;
 //               known flight points, value = taxi node: code 1 on the bot's map, nearest first, extra = yards;
 //               code 2 elsewhere by node, extra = map id
