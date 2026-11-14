@@ -155,6 +155,7 @@ struct NewRpgInfo
         uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
         bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
         bool trainerWeapon{false};  // a weapon master (WU15a)
+        uint32 tameEntry{0};        // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
         std::vector<ErrandTurnIn> turnIns;
         // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
         // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the

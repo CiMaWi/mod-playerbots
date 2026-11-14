@@ -1162,6 +1162,95 @@ void WeaponMasters()
           "a profession spell on the merged list is no weapon need");
 }
 
+// The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a
+// wanted family at or below its level on its map; an exotic one only with Beast Mastery's aura
+constexpr std::uint32_t BEAST_WOLF = 299;     // family 1, levels 10-11, 100 yd
+constexpr std::uint32_t BEAST_BOAR = 113;     // family 5, levels 8-9, 300 yd
+constexpr std::uint32_t BEAST_BEAR = 1188;    // family 4, level 30, 20 yd
+constexpr std::uint32_t BEAST_EXOTIC = 6498;  // family 39 (devilsaur), exotic, level 5, 50 yd
+constexpr std::uint32_t BEAST_CAT = 2042;     // family 2, on another map, 5 yd
+
+UpkeepIndex PetFixture()
+{
+    UpkeepGather input;
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainerEntries = {{TRAINER_RIDING, TRAINER_RIDING}};
+    input.tameable = {{0, 100.0f, 0.0f, 0.0f, BEAST_WOLF, 1, 10, 11, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 8, 9, false},
+                      {0, 0.0f, 20.0f, 0.0f, BEAST_BEAR, 4, 30, 30, false},
+                      {0, 0.0f, 50.0f, 0.0f, BEAST_EXOTIC, 39, 5, 5, true},
+                      {1, 5.0f, 0.0f, 0.0f, BEAST_CAT, 2, 5, 6, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 8, 9, false}};  // the same spawn twice: kept once
+    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    index.version = 7;
+    return index;
+}
+
+void PetNeed()
+{
+    std::cout << "Scenario: the pet need of a hunter without a pet\n";
+    UpkeepIndex const index = PetFixture();
+    Check(index.stats.tameableSpawns == 5 && index.stats.tameableEntries == 5 &&
+              index.TameableOn(0).second - index.TameableOn(0).first == 4,
+          "the index keeps each tameable spawn once, by map");
+    auto const petNeed = [](NeedList const& list) { return Find(list, NeedOrder::Pet); };
+    auto const hunter = [&index](std::uint8_t level)
+    {
+        Snapshot bot = Bot(index, PET_CLASS_HUNTER, level, 20 * GOLD, level);
+        bot.knowsTameBeast = true;
+        return bot;
+    };
+
+    Snapshot const lone = hunter(12);
+    NeedList const lonely = Show("hunter 12, Tame Beast, no pet", lone, index, Rates(12));
+    Need const* need = petNeed(lonely);
+    Check(need && need->kind == UpkeepKind::Pet && need->beast == BEAST_WOLF && need->beastFamily == 1 &&
+              need->copper == 0 && need->due && PetErrandDue(*need) && AnyErrandDue(lonely),
+          "the nearest wanted spawn: the wolf at 100 yd (the bear is above the level, the devilsaur exotic, the cat "
+          "on another map), due at once, price 0, a trip");
+    Check(need && need->beastAt.map == 0 && need->beastAt.x == 100.0f, "the need names the spawn's place");
+    Check(lonely.reserve == ComputeNeeds(
+                                [&lone]
+                                {
+                                    Snapshot s = lone;
+                                    s.hasPet = true;
+                                    return s;
+                                }(),
+                                index, Rates(12))
+                                .reserve,
+          "the pet need adds nothing to the reserve");
+
+    Snapshot pet = hunter(12);
+    pet.hasPet = true;
+    Check(!petNeed(ComputeNeeds(pet, index, Rates(12))), "a hunter with a pet (summoned or not) has no pet need");
+    Snapshot untaught = hunter(12);
+    untaught.knowsTameBeast = false;
+    Check(!petNeed(ComputeNeeds(untaught, index, Rates(12))), "a hunter without Tame Beast has no pet need");
+    Check(!petNeed(ComputeNeeds(hunter(9), index, Rates(9))), "a level 9 hunter (Tame Beast learned) has no pet need");
+    Snapshot mage = Bot(index, CLASS_MAGE, 12, 20 * GOLD, 12);
+    mage.knowsTameBeast = true;
+    Check(!petNeed(ComputeNeeds(mage, index, Rates(12))), "a mage has no pet need");
+
+    NeedList const ten = ComputeNeeds(hunter(10), index, Rates(10));
+    Check(petNeed(ten) && petNeed(ten)->beast == BEAST_BOAR,
+          "at 10 the wolf (up to 11) is above the level: the boar at 300 yd");
+    Snapshot alone = hunter(12);
+    alone.position = {2, 0.0f, 0.0f, 0.0f};
+    NeedList const nothing = ComputeNeeds(alone, index, Rates(12));
+    Check(petNeed(nothing) && !petNeed(nothing)->due && !petNeed(nothing)->beast && !AnyErrandDue(nothing),
+          "no tameable spawn on the map: the need stays, no trip");
+    Snapshot low = hunter(12);
+    low.position = {0, 0.0f, 25.0f, 0.0f};
+    Check(petNeed(ComputeNeeds(low, index, Rates(12)))->beast == BEAST_WOLF,
+          "beside the level 30 bear only a beast at or below the level is named");
+
+    Snapshot master = hunter(12);
+    master.tamesExotic = true;
+    Check(petNeed(ComputeNeeds(master, index, Rates(12)))->beast == BEAST_EXOTIC,
+          "with Beast Mastery's aura the exotic beast at 50 yd is the nearest");
+    std::cout << "  " << Describe(*need) << "\n";
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1182,6 +1271,7 @@ int main()
     RidingPlaces(index);
     TrainingPlaces(index);
     WeaponMasters();
+    PetNeed();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

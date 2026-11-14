@@ -41,6 +41,7 @@ constexpr uint32_t OTHER_MOUNT_VENDOR = 605;  // sells another race's mount, che
 constexpr uint32_t CLASS_SPELL = 6673;
 constexpr uint32_t WEAPON_MASTER = 606;
 constexpr uint32_t WEAPON_SPELL = 198;  // One-Handed Maces
+constexpr uint32_t BEAST = 299;         // a tameable beast's creature entry (WU21b)
 constexpr uint8_t RACE_HUMAN = 1;
 constexpr uint8_t RACE_ORC = 2;
 constexpr uint32_t CHEAPEST_REPAIR = 200;  // copper, the cheapest worn item
@@ -946,6 +947,33 @@ inline void WeaponTrip(std::vector<Check>& checks)
     Add(checks, "weapon: a trip of its own to the weapon master, one stop", own, Describe(plan));
 }
 
+// A hunter without a pet (WU21b): a trip of its own to the beast's spawn, a stop with no service; a spawn beyond the
+// walk limit is refused too_far, and the bot plays on
+inline void TameTrip(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Pet = {BEAST, At(700.0f, 0.0f)};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const own = plan.Stops.size() == 1 && plan.Stops[0].Id == BEAST && !plan.Stops[0].Services &&
+                     plan.Stops[0].Errands.size() == 1 && HasErrand(plan.Stops[0], ErrandKind::Tame) &&
+                     plan.Stops[0].Errands[0].Due && plan.Refused.empty();
+    Add(checks, "tame: a trip of its own to the beast's spawn", own, Describe(plan));
+
+    ErrandSnapshot far = Bot(10, 0);
+    far.Pet = {BEAST, At(100000.0f, 0.0f)};
+    TripPlan const refused = Plan(far, Request(far));
+    bool const tooFar = refused.Stops.empty() && refused.Refused.size() == 1 &&
+                        refused.Refused[0].Offer.Kind == ErrandKind::Tame &&
+                        std::string(refused.Refused[0].Reason) == "too_far";
+    Add(checks, "tame: a spawn beyond the walk limit is refused too_far", tooFar, Describe(refused));
+
+    ErrandSnapshot none = Bot(10, 0);
+    Add(checks, "tame: no beast, no tame offer",
+        std::none_of(CollectOffers(none, TravelProviders()).begin(), CollectOffers(none, TravelProviders()).end(),
+                     [](ErrandOffer const& offer) { return offer.Kind == ErrandKind::Tame; }),
+        "");
+}
+
 // A vendor within STOP_JOIN_YARDS of the weapon master takes the weapon skill on a route that passes it; a class
 // trainer's own stop beside the master keeps its trainer
 inline void WeaponAtVendor(std::vector<Check>& checks)
@@ -1001,6 +1029,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     RidingWithoutVendor(checks);
     WeaponTrip(checks);
     WeaponAtVendor(checks);
+    TameTrip(checks);
     return checks;
 }
 }  // namespace ErrandHarness

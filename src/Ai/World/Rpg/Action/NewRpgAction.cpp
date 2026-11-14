@@ -533,6 +533,18 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
                        creature->GetEntry());
 }
 
+// The tame part of an errand stop (upkeep §3.11, WU21b): the bot stands at the spawn of the pet need's beast.
+// WU21b-1 stub: it finds the beast and writes the row; WU21b-2 brings the tame action (approach, cast Tame Beast, keep
+// channelling while the beast fights, break off at low health and try another, PetTamed)
+void TameAtBeast(PlayerbotAI* botAI, uint32 entry)
+{
+    Player* bot = botAI->GetBot();
+    Creature* beast =
+        bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", beast ? "tame_pending" : "no_beast", 0.0f, {},
+                       entry);
+}
+
 // The weapon master visit of an errand stop (upkeep §3.7, WU15a): each weapon skill need (recomputed here) this master
 // teaches, taught and paid through the core's trainer path at the reputation price when the need's funded share pays
 // it; the core's own test (CanTeachSpell) runs before the teach and reads it back. The skill then rises by use, as the
@@ -1585,6 +1597,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     UpkeepNeeds::Need const* training = nullptr;
     UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest the funded gold pays
     UpkeepNeeds::Need const* weapon = nullptr;  // one weapon skill per trip, the first the funded gold pays
+    UpkeepNeeds::Need const* pet = nullptr;     // a hunter without a pet: the beast to tame (WU21b)
     bool const buysAtVendors = BuysAtVendors(botAI);
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
@@ -1594,6 +1607,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             riding = &need;
         else if (!weapon && buysAtVendors && UpkeepNeeds::WeaponErrandDue(need))
             weapon = &need;
+        else if (!pet && buysAtVendors && UpkeepNeeds::PetErrandDue(need))
+            pet = &need;
         uint8 const bit = Planner::StockBit(need.stock);
         if (!need.due || !UpkeepNeeds::StockPayable(need) || (dueInReach & bit))
             continue;
@@ -1607,7 +1622,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
     // Due training makes a trip only when the gold pays a spell (UpkeepNeeds::TrainingErrandDue, as AnyErrandDue)
     bool const trainingDue = training && UpkeepNeeds::TrainingErrandDue(*training);
-    bool const needDue = repairing || dueInReach || trainingDue || riding || weapon;
+    bool const needDue = repairing || dueInReach || trainingDue || riding || weapon || pet;
 
     // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training, a
     // riding rank or a weapon skill to learn plans its trainer trip
@@ -1616,7 +1631,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     // A trip for the mail or the bank needs no vendor either (WB8b)
     bool const bankMailWanted =
         !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel());
-    if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted || bankMailWanted))
+    if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted || bankMailWanted || pet))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
                   bot->GetName(), mapId, vendors.size(), refused);
@@ -1694,6 +1709,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
     if (weapon)
         snapshot.Weapon = {weapon->item};
+    if (pet)
+        snapshot.Pet = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
     std::sort(inReach.begin(), inReach.end(),
               [](std::pair<float, TravelMgr::VendorInfo const*> const& a,
@@ -1798,6 +1815,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                 case WorldTravel::ErrandKind::TurnIn:
                     stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
                     break;
+                case WorldTravel::ErrandKind::Tame:
+                    stop.tameEntry = errand.Target;
+                    break;
                 default:
                     break;
             }
@@ -1894,6 +1914,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                                : dueOnTrip(WorldTravel::ErrandKind::Train)  ? "train_due"
                                : dueOnTrip(WorldTravel::ErrandKind::Weapon) ? "weapon_due"
                                : dueOnTrip(WorldTravel::ErrandKind::Ride)   ? "ride_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Tame)   ? "pet_due"
                                                                             : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
     // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals
@@ -2092,6 +2113,15 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         else
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_trainer", 0.0f, {}, entry);
         stop.trainerEntry = 0;
+        data->visited = true;
+        return true;
+    }
+
+    // The tame part of the stop: the stop is the beast's spawn (WU21b)
+    if (stop.tameEntry)
+    {
+        TameAtBeast(botAI, stop.tameEntry);
+        stop.tameEntry = 0;
         data->visited = true;
         return true;
     }

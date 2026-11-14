@@ -1104,8 +1104,9 @@ void PlayerbotFactory::Randomize(bool incremental)
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Pet");
         LOG_DEBUG("playerbots", "Initializing pet...");
-        InitPet();
-        // bot->SaveToDB(false, false);
+        // A creation's pet (a wipe); a keeper's re-randomize keeps the pet it tamed, or none, unless granted the kind
+        // (WU21b). Pet talents are free points: spent at every randomize
+        consumableKit(UpkeepKind::Pet, [this] { InitPet(); });
         InitPetTalents();
         if (pmo)
             pmo->finish();
@@ -1161,8 +1162,8 @@ void PlayerbotFactory::Refresh()
     }
     else
         Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, consumables, potions);
-    Upkeep::HandOut(
-        bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); }, [this] { InitPetTalents(); });
+    Upkeep::HandOut(bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); });
+    InitPetTalents();  // free points, outside the switch (WU21b)
     if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, source, [this] { InitSkills(); }))
         InitProfessionSkills();
     Upkeep::HandOut(

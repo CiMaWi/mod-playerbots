@@ -161,6 +161,9 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
 // `playerbots planner needs <bot>`: an online bot's needs, reserve and shortfall (UpkeepNeedRules.h), from a snapshot
 // taken on the world thread while no map updates
 bool HandleNeedsCommand(ChatHandler* handler, char const* args);
+// The pet fixture of the functional tests (WU21b, a test cheat): playerbots planner pet <bot> [has|none|unpet|give
+// <entry>]
+bool HandlePetCommand(ChatHandler* handler, char const* args);
 // The questing circuit (WT13b, PlannerQuests.cpp; the planner in QuestCircuit.h)
 struct CircuitWeights;
 struct QuestProgress;

@@ -224,9 +224,19 @@ UpkeepGather GatherUpkeep()
                                              sPlayerbotAIConfig.RandomBotMaps.end());
     std::unordered_set<ObjectGuid::LowType> const creatureEvents = EventCreatureSpawns();
     std::unordered_set<uint32> placedVendors;
+    // The same spawns give the tameable beasts (WU21b): templates the core lets a hunter tame, of normal rank (an
+    // elite or rare beast outlasts the channel's fight)
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
-        if (botMaps.count(data.mapid) && !creatureEvents.count(guid))
-            placedVendors.insert(data.id);
+    {
+        if (!botMaps.count(data.mapid) || creatureEvents.count(guid))
+            continue;
+        placedVendors.insert(data.id);
+        CreatureTemplate const* beast = sObjectMgr->GetCreatureTemplate(data.id);
+        if (beast && beast->IsTameable(true) && beast->rank == CREATURE_ELITE_NORMAL)
+            input.tameable.push_back({data.mapid, data.posX, data.posY, data.posZ, data.id,
+                                      static_cast<uint8>(beast->family), beast->minlevel, beast->maxlevel,
+                                      beast->IsExotic()});
+    }
 
     std::unordered_map<Trainer::Trainer const*, uint32> trainerKeys;  // the core keeps one object per trainer id
     std::unordered_set<uint32> itemsSeen;
@@ -474,11 +484,11 @@ void StartUpkeepIndex()
                 LOG_INFO("playerbots",
                          "Upkeep index built in {} ms on a worker: trainers {}; class spells: {}; vendors per kind: "
                          "{}; {} class reagent items, {} currency-only rows skipped, {} duplicate trainers, {} spell "
-                         "conflicts; {} weapon skills at {} weapon masters (skill:classes {}), about {:.2f} MB "
-                         "(estimate)",
+                         "conflicts; {} weapon skills at {} weapon masters (skill:classes {}); {} tameable beast "
+                         "spawns of {} entries; about {:.2f} MB (estimate)",
                          s.buildMs, TrainerCounts(s), ClassCounts(s), KindCounts(s), s.reagentItems, s.currencyOnly,
                          s.duplicateTrainers, s.spellConflicts, s.weaponSkills, s.weaponMasters, WeaponCounts(*index),
-                         static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                         s.tameableSpawns, s.tameableEntries, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 upkeepBook.Publish(std::move(index));
                 upkeepState.store(UpkeepIndexState::Ready, std::memory_order_release);
             }
@@ -572,6 +582,37 @@ bool WeaponToLearn(Player* bot, ItemTemplate const* proto)
     return weapon && weapon->Fits(bot->getClass(), bot->getRace()) && weapon->reqLevel <= bot->GetLevel();
 }
 
+// The hunter's pet (WU21b): the summoned one, else the stable's current or unslotted pet (dismissed or dead), which
+// the core's Tame Beast counts as a pet too (Unit::InitTamedPet)
+PetStable::PetInfo const* StablePet(Player* bot)
+{
+    PetStable const* stable = bot->GetPetStable();
+    if (!stable)
+        return nullptr;
+    return stable->CurrentPet ? &*stable->CurrentPet : stable->GetUnslottedHunterPet();
+}
+
+void FillPet(Player* bot, Snapshot& snapshot)
+{
+    snapshot.knowsTameBeast = bot->HasSpell(UpkeepNeeds::SPELL_TAME_BEAST);
+    snapshot.tamesExotic = bot->CanTameExoticPets();
+    uint32 entry = 0;
+    if (Pet* pet = bot->GetPet(); pet && pet->getPetType() == HUNTER_PET)
+    {
+        entry = pet->GetEntry();
+        snapshot.petLevel = static_cast<uint8>(pet->GetLevel());
+        snapshot.hasPet = true;
+    }
+    else if (PetStable::PetInfo const* info = StablePet(bot))
+    {
+        entry = info->CreatureId;
+        snapshot.petLevel = info->Level;
+        snapshot.hasPet = true;
+    }
+    if (CreatureTemplate const* creature = entry ? sObjectMgr->GetCreatureTemplate(entry) : nullptr)
+        snapshot.petFamily = static_cast<uint8>(creature->family);
+}
+
 void FillUpkeep(Player* bot, Snapshot& snapshot)
 {
     auto const started = std::chrono::steady_clock::now();
@@ -583,6 +624,8 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
             if (CreatureTemplate const* creature = pet->GetCreatureTemplate())
                 if (CreatureFamilyEntry const* family = sCreatureFamilyStore.LookupEntry(creature->family))
                     snapshot.petDiet = static_cast<uint8>(family->petFoodMask);
+    if (cls == CLASS_HUNTER)
+        FillPet(bot, snapshot);
     // The ammo the ranged weapon fires: only that ammo counts and is bought (WU6)
     if (Item const* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
         if (ItemTemplate const* proto = ranged->GetTemplate())
@@ -722,5 +765,89 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     if (differ)
         LOG_ERROR("playerbots", "{}", check);
     return true;
+}
+
+bool HandlePetCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    std::string what;
+    uint32 entry = 0;
+    in >> name >> what >> entry;
+    Player* bot = !name.empty() && normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+    if (!bot || (!what.empty() && what != "has" && what != "none" && what != "unpet" && what != "give"))
+    {
+        handler->SendErrorMessage("Usage: playerbots planner pet <online player> [has|none|unpet|give <entry>]");
+        return false;
+    }
+
+    // A console command: the world thread inside World::Update, outside the map threads (as planner needs)
+    PLAYERBOT_CHECK_WORLD_THREAD("planner pet");
+    std::string done;
+    if (what == "unpet")
+    {
+        // The summoned pet, then every pet the stable keeps (current, unslotted, stabled): rows deleted, slots kept
+        uint32 removed = 0;
+        if (Pet* pet = bot->GetPet())
+        {
+            bot->RemovePet(pet, PET_SAVE_AS_DELETED);
+            ++removed;
+        }
+        if (PetStable* stable = bot->GetPetStable())
+        {
+            if (stable->CurrentPet)
+            {
+                Pet::DeleteFromDB(stable->CurrentPet->PetNumber);
+                stable->CurrentPet.reset();
+                ++removed;
+            }
+            for (PetStable::PetInfo const& info : stable->UnslottedPets)
+                Pet::DeleteFromDB(info.PetNumber);
+            removed += static_cast<uint32>(stable->UnslottedPets.size());
+            stable->UnslottedPets.clear();
+            for (Optional<PetStable::PetInfo>& slot : stable->StabledPets)
+                if (slot)
+                {
+                    Pet::DeleteFromDB(slot->PetNumber);
+                    slot.reset();
+                    ++removed;
+                }
+        }
+        done = Acore::StringFormat(", removed {}", removed);
+    }
+    else if (what == "give")
+    {
+        CreatureTemplate const* creature = entry ? sObjectMgr->GetCreatureTemplate(entry) : nullptr;
+        if (!creature || !creature->IsTameable(true))
+        {
+            handler->PSendSysMessage("PLANNER pet {}: error, {} is no tameable creature", bot->GetName(), entry);
+            return false;
+        }
+        Pet* pet = bot->CreatePet(entry);
+        if (!pet)
+        {
+            handler->PSendSysMessage("PLANNER pet {}: error, the core made no pet (one exists?)", bot->GetName());
+            return false;
+        }
+        done = Acore::StringFormat(", gave {}", entry);
+    }
+
+    Snapshot probe;
+    FillPet(bot, probe);
+    PetStable const* stable = bot->GetPetStable();
+    uint32 stabled = 0;
+    if (stable)
+        for (Optional<PetStable::PetInfo> const& slot : stable->StabledPets)
+            stabled += slot ? 1 : 0;
+    Pet* summoned = bot->GetPet();
+    PetStable::PetInfo const* info = StablePet(bot);
+    uint32 const petEntry = summoned ? summoned->GetEntry() : (info ? info->CreatureId : 0);
+    bool const failed = (what == "has" && !probe.hasPet) || (what == "none" && probe.hasPet);
+    handler->PSendSysMessage(
+        "PLANNER pet {}: {}{}, pet={} family={} level={} summoned={} stabled={} of max {} gold={} tame={} exotic={}",
+        bot->GetName(), failed ? (probe.hasPet ? "error, has a pet" : "error, no pet") : "ok", done, petEntry,
+        probe.petFamily, probe.petLevel, summoned ? 1 : 0, stabled, stable ? stable->MaxStabledPets : 0,
+        bot->GetMoney(), probe.knowsTameBeast ? 1 : 0, probe.tamesExotic ? 1 : 0);
+    return !failed;
 }
 }  // namespace Planner

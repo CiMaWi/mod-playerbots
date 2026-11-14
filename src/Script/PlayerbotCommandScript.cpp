@@ -249,6 +249,7 @@ public:
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"pet", Planner::HandlePetCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
             {"goals", Planner::HandleGoalsCommand, SEC_GAMEMASTER, Console::Yes},
             {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},

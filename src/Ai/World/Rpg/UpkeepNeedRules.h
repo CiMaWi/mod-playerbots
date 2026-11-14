@@ -32,6 +32,7 @@
 namespace UpkeepNeeds
 {
 using Planner::Snapshot;
+using Planner::TameableSpawn;
 using Planner::TrainerList;
 using Planner::TrainerSpell;
 using Planner::UpkeepIndex;
@@ -113,7 +114,7 @@ enum class NeedOrder : std::uint8_t
     ReagentPoison,
     Training,
     Riding,
-    Pet  // batch G (WU21b): a hunter's pet and its stable; no need of this order yet
+    Pet  // a hunter's pet (WU21b) and its stable (WU21c)
 };
 
 // One thing the bot must or wants to pay for
@@ -136,7 +137,11 @@ struct Need
     std::uint32_t lotSize{1};               // consumables: the best offer's lot (buyCount) ...
     std::uint32_t lotPrice{0};              // ... and its price
     std::uint32_t keptGrade{0};             // ammo and poison: the grade the bot keeps (KeptGrade)
-    char const* without{""};                // what going without costs the bot
+    std::uint32_t beast{0};                 // pet: the creature entry to tame, 0 = no spawn on the bot's map
+    std::uint8_t beastFamily{0};
+    std::uint8_t beastLevel{0};  // its template's highest level
+    Planner::Place beastAt;      // the spawn
+    char const* without{""};     // what going without costs the bot
 };
 
 // What a riding rank is worth to the bot now
@@ -883,6 +888,70 @@ constexpr bool RidingErrandDue(Need const& need)
     return need.kind == UpkeepKind::Riding && need.due && need.copper > 0 && need.funded >= need.copper;
 }
 
+// The pet need (§3.11, WU21b): a hunter of PET_MIN_LEVEL or above that knows Tame Beast and has no pet (a dismissed
+// or dead one counts as a pet: the core's Tame Beast tames nothing then) wants the nearest spawn of a wanted family at
+// or below its level on its map. Due at once, price 0 (taming costs nothing). A wanted family, for now (WU21b's brief,
+// Unclear 1): any tameable one, an exotic one only with Beast Mastery's aura (the core refuses it otherwise); WU21c's
+// wanted-family list by spec replaces WantedBeast. Without a spawn on the map the need stays, no trip (the bot plays
+// on)
+constexpr std::uint32_t SPELL_TAME_BEAST = 1515;
+constexpr std::uint8_t PET_MIN_LEVEL = 10;    // Tame Beast and pets from 10 (the class quest)
+constexpr std::uint8_t PET_CLASS_HUNTER = 3;  // the core's CLASS_HUNTER
+
+constexpr bool WantedBeast(TameableSpawn const& spawn, std::uint8_t level, bool tamesExotic)
+{
+    return spawn.maxLevel <= level && (!spawn.exotic || tamesExotic);
+}
+
+// The nearest wanted spawn on the snapshot's map, or none
+inline TameableSpawn const* NearestBeast(UpkeepIndex const& index, Snapshot const& snapshot)
+{
+    TameableSpawn const* nearest = nullptr;
+    float best = std::numeric_limits<float>::max();
+    auto const [first, last] = index.TameableOn(snapshot.position.map);
+    for (auto it = first; it != last; ++it)
+    {
+        if (!WantedBeast(*it, snapshot.level, snapshot.tamesExotic))
+            continue;
+        float const dx = it->x - snapshot.position.x;
+        float const dy = it->y - snapshot.position.y;
+        float const dz = it->z - snapshot.position.z;
+        float const yards = dx * dx + dy * dy + dz * dz;
+        if (yards < best)
+        {
+            best = yards;
+            nearest = &*it;
+        }
+    }
+    return nearest;
+}
+
+inline void AddPet(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot)
+{
+    if (snapshot.cls != PET_CLASS_HUNTER || snapshot.level < PET_MIN_LEVEL || !snapshot.knowsTameBeast ||
+        snapshot.hasPet)
+        return;
+
+    Need need;
+    need.order = NeedOrder::Pet;
+    need.kind = UpkeepKind::Pet;
+    need.units = 1;
+    need.item = SPELL_TAME_BEAST;
+    need.without = "no pet";
+    if (TameableSpawn const* beast = NearestBeast(index, snapshot))
+    {
+        need.due = true;
+        need.beast = beast->entry;
+        need.beastFamily = beast->family;
+        need.beastLevel = beast->maxLevel;
+        need.beastAt = {beast->map, beast->x, beast->y, beast->z};
+    }
+    list.needs.push_back(need);
+}
+
+// The pet need makes a trip of its own when it names a spawn (price 0: nothing to fund)
+constexpr bool PetErrandDue(Need const& need) { return need.kind == UpkeepKind::Pet && need.due && need.beast; }
+
 // A weapon skill makes a trip of its own once its funded gold pays its price (WU15a); a bot without the gold keeps
 // playing, the need stays. The visit's reputation price is never above copper
 constexpr bool WeaponErrandDue(Need const& need)
@@ -991,6 +1060,7 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
             list.reserveStock += need.copper;
     AddTraining(list, index, snapshot, rates);
     AddWeaponSkills(list, index, snapshot);
+    AddPet(list, index, snapshot);
 
     std::uint64_t const nearer = list.reserveRepair + list.reserveStock + list.reserveTraining;
     AddRiding(list, index, snapshot, rates, nearer);
@@ -1034,6 +1104,12 @@ inline std::string Describe(Need const& need)
         text += ", trainer " + std::to_string(need.trainer);
     if (need.order == NeedOrder::Training)
         text += ", " + std::to_string(need.levelsBehind) + " levels behind";
+    if (need.kind == UpkeepKind::Pet)
+        text += need.beast
+                    ? ", beast " + std::to_string(need.beast) + " family " + std::to_string(need.beastFamily) +
+                          " level " + std::to_string(need.beastLevel) + " at map " + std::to_string(need.beastAt.map) +
+                          " " + std::to_string(need.beastAt.x) + " " + std::to_string(need.beastAt.y)
+                    : ", no tameable beast on the map";
     return text + "; without: " + need.without;
 }
 
@@ -1064,7 +1140,8 @@ inline bool StockErrandDue(NeedList const& list)
 
 // A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training the
 // gold pays (TrainingErrandDue), a riding rank or a weapon skill the funded gold pays (RidingErrandDue,
-// WeaponErrandDue). The repair is the trigger's own test first (RepairErrandDue reads the cheapest item's price)
+// WeaponErrandDue), a pet to tame (PetErrandDue). The repair is the trigger's own test first (RepairErrandDue reads the
+// cheapest item's price)
 inline bool AnyErrandDue(NeedList const& list)
 {
     for (Need const& need : list.needs)
@@ -1072,6 +1149,7 @@ inline bool AnyErrandDue(NeedList const& list)
         bool const due = need.kind == UpkeepKind::TrainerSpell  ? TrainingErrandDue(need)
                          : need.kind == UpkeepKind::Riding      ? RidingErrandDue(need)
                          : need.kind == UpkeepKind::WeaponSkill ? WeaponErrandDue(need)
+                         : need.kind == UpkeepKind::Pet         ? PetErrandDue(need)
                                                                 : need.due && StockPayable(need);
         if (due)
             return true;

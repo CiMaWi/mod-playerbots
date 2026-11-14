@@ -40,9 +40,10 @@ enum class ErrandKind : uint8_t
     Weapon,        // a weapon skill at a weapon master (WU15a)
     Mail,          // the bank-mail plan (WB8)
     BankWithdraw,  // due items from the bank
-    BankDeposit    // kept items into the bank
+    BankDeposit,   // kept items into the bank
+    Tame           // a hunter without a pet tames a beast at its spawn (upkeep WU21b)
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 13;
+constexpr uint8_t ERRAND_KIND_COUNT = 14;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -74,6 +75,8 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "bank_withdraw";
         case ErrandKind::BankDeposit:
             return "bank_deposit";
+        case ErrandKind::Tame:
+            return "tame";
     }
     return "other";
 }
@@ -221,6 +224,13 @@ struct WeaponAt
     uint32_t Spell = 0;
 };
 
+// The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
+struct PetAt
+{
+    uint32_t Beast = 0;  // the creature entry
+    ErrandPlace Place;
+};
+
 // What the providers read: filled on the bot's map thread, never a Player
 struct ErrandSnapshot
 {
@@ -256,6 +266,7 @@ struct ErrandSnapshot
     TrainingAt Training;
     RidingAt Riding;  // one rank per trip, the lowest
     WeaponAt Weapon;  // one weapon skill per trip
+    PetAt Pet;
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -400,6 +411,23 @@ inline void ProvideWeaponMaster(ErrandSnapshot const& snapshot, std::vector<Erra
     offers.push_back(offer);
 }
 
+// A hunter without a pet (§3.11, WU21b): a trip to the beast's spawn, due at once; no service, the place is the beast's
+inline void ProvideTame(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Pet.Beast)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Tame;
+    offer.Placed = true;
+    offer.Place = snapshot.Pet.Place;
+    offer.WorthCopper = DueWorth(snapshot.Rates);
+    offer.Id = snapshot.Pet.Beast;
+    offer.Target = snapshot.Pet.Beast;
+    offer.Due = true;
+    offers.push_back(offer);
+}
+
 // The errand check on a map without a vendor that trades with the bot (WU12 NOTE 4): a trainer need still plans its
 // trip (class training or a riding rank, their trainers are stops of their own); without one it is skipped
 constexpr bool ErrandCheckPlans(bool vendorOnMap, bool trainerWanted) { return vendorOnMap || trainerWanted; }
@@ -535,6 +563,7 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::Train, "train", &ProvideTraining},
         {ErrandKind::Ride, "ride", &ProvideRiding},
         {ErrandKind::Weapon, "weapon", &ProvideWeaponMaster},
+        {ErrandKind::Tame, "tame", &ProvideTame},
     };
     return rows;
 }
