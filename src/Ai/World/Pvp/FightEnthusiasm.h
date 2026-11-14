@@ -241,11 +241,14 @@ inline bool Leaves(BotEnthusiasm const& bot, double value, bool alive, bool byRu
     return alive && byRules && bot.engaged && !bot.left && !bot.realMaster && MustLeave(value, bot.fleeNow);
 }
 
+// Leaving also ends the pick: a scan while engaged opens a new one, and a pick still open when the leave clears on
+// the disengaged edge would be attacked again without a new decision
 inline void MarkLeft(BotEnthusiasm& bot, bool attacked, uint32_t nowMs)
 {
     bot.left = true;
     bot.leftMs = nowMs;
     bot.attacked = attacked;
+    bot.pickGuid = 0;
 }
 
 // A bot that left leaves alone every enemy player (and its pets) that does not attack it; it answers whoever does

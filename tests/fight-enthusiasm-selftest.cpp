@@ -238,7 +238,9 @@ void TestChase()
     Check(!Leaves(bot, ValueAt(bot, 8 * SECOND, v), true, true), "chase: above the threshold, it chases");
     double const later = ValueAt(bot, 10 * SECOND, v);
     Check(later < 15.0 && Leaves(bot, later, true, true), "chase: drained below the flee threshold, it leaves");
+    SetPick(bot, 42, 9 * SECOND);  // a scan while engaged opened a new pick
     MarkLeft(bot, false, 10 * SECOND);
+    Check(!IsPick(bot, 42, 10 * SECOND) && bot.pickGuid == 0, "chase: leaving ends the pick");
     Check(bot.left && !bot.attacked && bot.leftMs == 10 * SECOND && !FleesNow(bot),
           "chase: not attacked, it resumes (no flight)");
     Check(!Leaves(bot, ValueAt(bot, 11 * SECOND, v), true, true), "chase: once per engaged episode");
