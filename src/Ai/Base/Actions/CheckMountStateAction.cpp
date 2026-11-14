@@ -21,6 +21,7 @@
 #include "ServerFacade.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
+#include "TestConstraints.h"
 #include "TravelLegRules.h"
 
 static constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
@@ -235,6 +236,10 @@ bool CheckMountStateAction::isUseful()
 
 bool CheckMountStateAction::Mount()
 {
+    // A test's nomount bot stays on foot (TestConstraints::MountsOnItsOwn)
+    if (!TestConstraints::MountsOnItsOwn(botAI->rpgInfo.constraints))
+        return false;
+
     // Remove current Shapeshift if need be
     if (botInShapeshiftForm != FORM_TRAVEL &&
         botInShapeshiftForm != FORM_FLIGHT &&

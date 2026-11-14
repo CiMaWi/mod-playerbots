@@ -32,6 +32,8 @@
 #include "Playerbots.h"
 #include "PositionAction.h"
 #include "PositionValue.h"
+#include "PullActions.h"
+#include "PullStrategy.h"
 #include "QuestDef.h"
 #include "QuestPackets.h"
 #include "RandomPlayerbotMgr.h"
@@ -334,6 +336,53 @@ Result AttackOnce(ActFacts const& act, Refusal&)
     return attack.ExecuteExactTarget(act.Target) ? Result::Applied : Result::Failed;
 }
 
+// LC.29: a unit the bot may fight on an order is a creature, never a player or a player's pet (also for an order
+// that gives the unit by id, past the name filter), and one the core lets it attack.
+bool MayAttack(ActFacts const& act)
+{
+    return !act.Target->GetCharmerOrOwnerPlayerOrPlayerItself() && act.Bot->IsValidAttackTarget(act.Target);
+}
+
+// An attack by name: any enemy creature the bot sees, not only its own target.
+Refusal AttackByNameCheck(ActFacts const& act)
+{
+    return act.Bot->IsMounted() || !MayAttack(act) ? Refusal::CannotNow : Refusal::None;
+}
+
+// LC17a: a pull stays with the group: one creature within this many yards of the bot (a group member), in its sight.
+constexpr float PullBound = 20.0f;
+
+// A tank pulls with its pull strategy (playerbots' pull request: it draws the creature and comes back to where it
+// stood); any other bot pulls with a ranged attack, its first strike.
+PullStrategy* TankPull(ActFacts const& act)
+{
+    return PlayerbotAI::IsTank(act.Bot) ? PullStrategy::Get(act.Ai) : nullptr;
+}
+
+Refusal PullCheck(ActFacts const& act)
+{
+    if (act.Bot->IsMounted())
+        return Refusal::CannotNow;
+
+    if (!act.Bot->IsWithinDistInMap(act.Target, PullBound) || !act.Bot->IsWithinLOSInMap(act.Target))
+        return Refusal::TooFar;
+
+    PullStrategy* strategy = TankPull(act);
+    bool const able = strategy ? strategy->CanDoPullAction(act.Target) : PlayerbotAI::IsRanged(act.Bot);
+    return able && MayAttack(act) ? Refusal::None : Refusal::CannotNow;
+}
+
+Result PullOnce(ActFacts const& act, Refusal& why)
+{
+    if (PullStrategy* strategy = TankPull(act))
+    {
+        PullRequestAction::Request(act.Ai, strategy, act.Target);
+        return Result::Applied;
+    }
+
+    return AttackOnce(act, why);
+}
+
 // The bot marks as itself (as RtiAction does): in a raid only as its leader or an assistant, and never a player who
 // is not connected or is hostile to the bot.
 Refusal MarkCheck(ActFacts const& act)
@@ -588,9 +637,17 @@ bool InGroup(GroupRule rule, ActFacts const& act)
 constexpr char const* const RaidIcons[] = {"star", "circle", "diamond", "triangle", "moon", "square", "cross", "skull"};
 constexpr char const* const FormationShapes[] = {"close", "spread", "line"};
 
-// LC.29: an attack by name means an enemy creature, never a player.
+// LC.29: an attack by name means an enemy creature, never a player. AttackParams are the old form's own target.
 constexpr ParamRow AttackParams[] = {
     {"target", ParamKind::Unit, OrderField::Target, "The enemy you have targeted, by name.", {}, UnitFilter::Enemy}};
+constexpr ParamRow AttackByNameParams[] = {{"target",
+                                            ParamKind::Unit,
+                                            OrderField::Target,
+                                            "A hostile or neutral creature you can see, by name.",
+                                            {},
+                                            UnitFilter::Enemy}};
+constexpr ParamRow PullParams[] = {
+    {"target", ParamKind::Unit, OrderField::Target, "One creature near your group, by name.", {}, UnitFilter::Enemy}};
 constexpr ParamRow MarkParams[] = {
     {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}, UnitFilter::Anyone},
     {"icon", ParamKind::Choice, OrderField::Icon, "The raid icon to put on it.", RaidIcons}};
@@ -626,6 +683,9 @@ constexpr Refusal FollowRefusals[] = {Refusal::NotWithYou, Refusal::TooFar};
 constexpr Refusal FleeRefusals[] = {Refusal::CannotNow};
 constexpr Refusal AttackRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::NoTarget,
                                       Refusal::CannotNow};
+constexpr Refusal AttackByNameRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::CannotNow};
+constexpr Refusal PullRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
+                                    Refusal::TooFar, Refusal::CannotNow};
 constexpr Refusal GroupTargetRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
                                            Refusal::CannotNow};
 constexpr Refusal GroupSettingRefusals[] = {Refusal::NotInGroup};
@@ -649,10 +709,8 @@ struct NoEffectVerb
     Intent Operation;
     char const* Word;
 };
-constexpr NoEffectVerb NoEffect[] = {{Intent::Regroup, "regroup"},
-                                     {Intent::Pull, "pull"},
-                                     {Intent::AssignRole, "assign_role"},
-                                     {Intent::DungeonClear, "dungeon_clear"}};
+constexpr NoEffectVerb NoEffect[] = {
+    {Intent::Regroup, "regroup"}, {Intent::AssignRole, "assign_role"}, {Intent::DungeonClear, "dungeon_clear"}};
 
 // Indexed by Refusal; the words and sentences the bridge wire already uses.
 constexpr RefusalText RefusalTexts[] = {
@@ -724,14 +782,14 @@ constexpr AbilityRow Rows[] = {
      .Lasting = Part::None,
      .Done = Completion::Arrived,
      .StatePhrase = "backing away from my enemy"},
-    {.Operation = Intent::AttackOwnTarget,
-     .Name = "attack_own_target",
-     .Sentence = "Attack the enemy you have targeted.",
-     .Params = AttackParams,
+    {.Operation = Intent::Attack,
+     .Name = "attack",
+     .Sentence = "Attack a hostile or neutral creature you can see, by its name; never a player or a pet.",
+     .Params = AttackByNameParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
-     .Check = AttackCheck,
-     .Refusals = AttackRefusals,
+     .Check = AttackByNameCheck,
+     .Refusals = AttackByNameRefusals,
      .Effect = AttackOnce,
      .Lasting = Part::None,
      .Done = Completion::TargetGone,
@@ -990,7 +1048,54 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return AcceptOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "taking up {quest}"}};
+     .StatePhrase = "taking up {quest}"},
+    {.Operation = Intent::Pull,
+     .Name = "pull",
+     .Sentence = "As your group's tank or with a ranged attack, draw one creature near your group into a fight.",
+     .Params = PullParams,
+     .Group = GroupRule::BotGroup,
+     .GroupRefusal = Refusal::NotInGroup,
+     .Check = PullCheck,
+     .Refusals = PullRefusals,
+     .Effect = PullOnce,
+     .Lasting = Part::None,
+     .Done = Completion::TargetGone,
+     .StatePhrase = "pulling {target}"},
+    // The old form's own-target attack (mod-ollama-chat's frozen verbs, LC.23); the catalogue offers attack.
+    {.Operation = Intent::AttackOwnTarget,
+     .Name = "attack_own_target",
+     .Sentence = "Attack the enemy you have targeted.",
+     .Params = AttackParams,
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = AttackCheck,
+     .Refusals = AttackRefusals,
+     .Effect = AttackOnce,
+     .Lasting = Part::None,
+     .Done = Completion::TargetGone,
+     .StatePhrase = "attacking {target}",
+     .OldFormOnly = true}};
+
+// The rows the catalogue lists come first; the old form's rows close the table (AbilityRows is the first part).
+constexpr std::size_t ListedRows()
+{
+    std::size_t listed = 0;
+    while (listed < std::size(Rows) && !Rows[listed].OldFormOnly)
+        ++listed;
+
+    return listed;
+}
+
+constexpr bool OldFormRowsClose()
+{
+    for (std::size_t index = ListedRows(); index < std::size(Rows); ++index)
+        if (!Rows[index].OldFormOnly)
+            return false;
+
+    return true;
+}
+
+static_assert(OldFormRowsClose(), "the old form's rows close the table, after every row the catalogue lists");
 
 static_assert(std::size(Rows) + std::size(NoEffect) == IntentCount, "every Intent has a row or a word without one");
 
@@ -1064,7 +1169,7 @@ AbilityRow const* FindRow(std::string_view name)
     return nullptr;
 }
 
-std::span<AbilityRow const> AbilityRows() { return Rows; }
+std::span<AbilityRow const> AbilityRows() { return std::span<AbilityRow const>(Rows).first(ListedRows()); }
 
 void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at)
 {
@@ -1191,8 +1296,9 @@ void Line(std::string& text, std::initializer_list<std::string_view> fields)
 std::vector<AbilityData> Catalogue()
 {
     std::vector<AbilityData> catalogue;
-    catalogue.reserve(std::size(Rows) + std::size(TopicTable));
-    for (AbilityRow const& row : Rows)
+    std::span<AbilityRow const> const rows = AbilityRows();
+    catalogue.reserve(rows.size() + std::size(TopicTable));
+    for (AbilityRow const& row : rows)
     {
         AbilityData& entry = catalogue.emplace_back();
         entry.Kind = AbilityKind::Act;
@@ -1407,7 +1513,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
         return Refuse(why, Refusal::Dead);
 
     // Following and the group settings are group play: the partner shares the bot's group. Stay, flee, a position,
-    // an attack and a goal need no group; a mark and focus healing need the bot's own group.
+    // an attack and a goal need no group; a mark, a pull and focus healing need the bot's own group.
     if (!InGroup(row.Group, act))
         return Refuse(why, row.GroupRefusal);
 

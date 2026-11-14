@@ -31,7 +31,10 @@
 // or a count (Count). A row taking a unit, quest, item or spell name lists UnknownName. A topic takes at most one
 // parameter, of a name kind: its text is ReadBotStateTopic's argument and the topic's reader looks it up. A topic
 // marked Lines answers in-world sentences, each item's text one (the record topics' form); every topic beyond the first
-// fourteen does (TopicRowsValid). Plain data and no game type, so a selftest or a module wire can read the table.
+// fourteen does (TopicRowsValid). A row marked OldFormOnly keeps an old wire verb working (FindRow, IntentWord) but is
+// not in the catalogue: such rows close the table, and AbilityRows lists the others, the catalogue's acts in order
+// (mod-ollama-chat pairs them by position). Plain data and no game type, so a selftest or a module wire can read the
+// table.
 namespace PlayerbotBridge
 {
 enum class ParamKind : uint8_t
@@ -158,22 +161,27 @@ struct AbilityRow
     // 7. The selftest proves each row applies and gives each listed refusal. Each applied, failed or refused order
     //    writes one ActEventType event to the world log: source word Name, id the Refusal (0 when none), amount the
     //    Result.
+    // 8. A verb of the old wire form only (LC17a: attack_own_target, replaced by attack): out of the catalogue and of
+    //    AbilityRows, not part of the hash.
+    bool OldFormOnly = false;
 };
 
 // The world log's event type for an order (CensusMgr.h EventLog).
 constexpr char const* ActEventType = "BridgeAct";
 
-// Null for a verb without a row: the four without an effect (IsUnavailable) and any value outside the enum.
+// Null for a verb without a row: the three without an effect (IsUnavailable) and any value outside the enum. Both
+// find an OldFormOnly row too.
 AbilityRow const* FindRow(Intent operation);
 AbilityRow const* FindRow(std::string_view name);
+// The rows the catalogue lists, in its order: every row but the OldFormOnly ones.
 std::span<AbilityRow const> AbilityRows();
 
-// Regroup, Pull, AssignRole and DungeonClear: wire verbs with no safe playerbots effect; Execute answers Unavailable.
+// Regroup, AssignRole and DungeonClear: wire verbs with no safe playerbots effect; Execute answers Unavailable.
 bool IsUnavailable(Intent operation);
 
-// The number of Intent values: the rows' verbs and the four without one (BridgeAbilities.cpp checks it against the
+// The number of Intent values: the rows' verbs and the three without one (BridgeAbilities.cpp checks it against the
 // table). A new verb is appended to Intent, given its row and counted here; mod-ollama-chat asserts its own count.
-constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::AcceptQuest) + 1;
+constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::Attack) + 1;
 
 // The ready checks a bot was sent and has not answered, for the ready row: the core keeps no open check
 // (WorldSession::HandleRaidReadyCheckOpcode only broadcasts), so the bot's packet handler notes each request it gets
@@ -184,8 +192,8 @@ void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at = std
 void EndReadyCheck(uint64_t bot);
 bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now());
 
-// The wire's verb of an operation: its row's name, else the word the four without a row have on the wire; empty for
-// a value outside the enum. FindIntent is the inverse: a row by name, then the four; none for any other word.
+// The wire's verb of an operation: its row's name, else the word the three without a row have on the wire; empty for
+// a value outside the enum. FindIntent is the inverse: a row by name, then the three; none for any other word.
 char const* IntentWord(Intent operation);
 std::optional<Intent> FindIntent(std::string_view word);
 

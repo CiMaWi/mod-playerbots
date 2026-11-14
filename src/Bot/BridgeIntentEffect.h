@@ -38,6 +38,9 @@ namespace PlayerbotBridge
 // answer to the group's open ready check, LeaveGroup (leave_group) the bot leaves its group. With a counterpart
 // (LC16e): JoinGroup (join_group) the bot joins the partner's group, ShareQuest (share_quest) shares a quest of its
 // log with its group, AcceptQuest (accept_quest) takes the quest a group member shared with it.
+// The fight verbs (LC17a): Attack (attack) an enemy creature by name, any the bot sees (AttackOwnTarget is the old
+// form's own-target attack, out of the catalogue); Pull (pull) one creature near the bot's group, by its tank or a
+// ranged attacker.
 enum class Intent : uint8_t
 {
     Follow,
@@ -68,7 +71,8 @@ enum class Intent : uint8_t
     LeaveGroup,
     JoinGroup,
     ShareQuest,
-    AcceptQuest
+    AcceptQuest,
+    Attack
 };
 
 enum class Result : uint8_t
