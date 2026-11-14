@@ -258,8 +258,8 @@ void TestTerms()
         NewTraits(any, 0.5f, 0.0f, 0.5f, 0.0f, 0, v);
         any.nearGraveyard = (mask & 8) != 0;
         any.balance = (mask & 16) ? 0.9f : EVEN_BALANCE;
-        JoinFacts const facts = FactsFor(any, (mask & 1) ? Colour::Green : Colour::Yellow, (mask & 2) != 0,
-                                         (mask & 4) != 0);
+        JoinFacts const facts =
+            FactsFor(any, (mask & 1) ? Colour::Green : Colour::Yellow, (mask & 2) != 0, (mask & 4) != 0);
         uint32_t const terms = JoinTerms(facts, v);
         JoinFacts off = facts;
         off.colour = Colour::Yellow;

@@ -90,9 +90,9 @@ void ApplyNoDamage(ModelUnits& units)
     ++units.applies;
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
-void ReadByFollower(ModelUnits&) {}   // flyfail, flyabort: the follower reads the bit (FlyLegFails)
-void ReadByDestroy(ModelUnits&) {}    // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
-void ReadByFlee(ModelUnits&) {}       // flee: the world PvP retreat trigger reads the bit (Flees)
+void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
+void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {
     {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -266,8 +266,7 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(Names() ==
-              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, flee",
+    Check(Names() == "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, flee",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

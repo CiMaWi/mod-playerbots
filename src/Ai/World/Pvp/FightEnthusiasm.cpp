@@ -355,13 +355,12 @@ void RecordEntering(Player* bot, Entering const& entering, EnthusiasmValues cons
     WorldLogFormat::Alternatives alternatives{WorldLogFormat::Alternative{"join", entering.join}};
     alternatives.Add({"colour", static_cast<float>(entering.facts.colour)});
     alternatives.Add({"terms", static_cast<float>(JoinTerms(entering.facts, values))});
-    char const* const reason = !joining                             ? REASON_ENTHUSIASM
+    char const* const reason = !joining                            ? REASON_ENTHUSIASM
                                : entering.facts.targetAttacksGroup ? REASON_GROUP
                                                                    : REASON_FACTION;
-    WorldLog::Decision(bot,
-                       joining ? WorldLogFormat::DecisionKind::FightJoin : WorldLogFormat::DecisionKind::FightStart,
-                       joining ? CHOICE_JOIN : CHOICE_START, reason, static_cast<float>(entering.value), alternatives,
-                       0);
+    WorldLog::Decision(
+        bot, joining ? WorldLogFormat::DecisionKind::FightJoin : WorldLogFormat::DecisionKind::FightStart,
+        joining ? CHOICE_JOIN : CHOICE_START, reason, static_cast<float>(entering.value), alternatives, 0);
 }
 
 // The leaving row: fight_leave, reason fled or resumed, the value, the flee threshold used, its terms (1: the group
@@ -420,9 +419,10 @@ void EditOne(Player* player, EditCause cause, uint32 nowMs, EnthusiasmValues con
                    static_cast<int64>(std::lround(after)));
     if (cause == EditCause::Death)
         EventLog::Emit(player, EVENT_ENTHUSIASM, SOURCE_DEATH_JOIN, 0,
-                       static_cast<int64>(std::lround(
-                           PlainJoin(state, false, false, state.nearGraveyard, Colour::Yellow, values))));
+                       static_cast<int64>(
+                           std::lround(PlainJoin(state, false, false, state.nearGraveyard, Colour::Yellow, values))));
 }
+
 // The PvP-kill edits (the killed player's map thread): the victim's death, the killer's kill and the victim's
 // group members' group death
 void NoteEnthusiasmDeath(Player* killer, Player* killed)
@@ -537,8 +537,7 @@ bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal)
     uint32 const nowMs = getMSTime();
     if (IsPick(*state, enemy->GetGUID().GetRawValue(), nowMs))
         return true;
-    if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)) ||
-        LeftAlone(botAI, enemy))
+    if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)) || LeftAlone(botAI, enemy))
         return false;
     return Evaluate(botAI, bot, *state, enemy, nowMs, Values()).enters;
 }
