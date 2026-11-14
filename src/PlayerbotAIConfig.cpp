@@ -1361,6 +1361,14 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
         WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }
+    // Honest upkeep of persistent bots (Playerbots.Upkeep.*); the defaults (UpkeepConfig) are the conf.dist values
+    {
+        constexpr uint32 MaxHandoutShare = 100;
+        Upkeep = UpkeepConfig{};
+        Upkeep.HandoutShare = std::min<uint32>(
+            sConfigMgr->GetOption<uint32>("Playerbots.Upkeep.HandoutShare", Upkeep.HandoutShare, false),
+            MaxHandoutShare);
+    }
 
     // Mail and bank visits of persistent bots (Playerbots.BankMail.*), optional keys whose defaults (BankMailConfig)
     // are the conf.dist values

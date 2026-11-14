@@ -47,6 +47,7 @@ struct KeptItem
 struct BankKnowledge
 {
     std::vector<KeptItem> kept;  // the bank items the keep rule keeps now, by later worth (BankRulesInput.h)
+    CarriedKeeps carried;        // the bag items it keeps for a later level, for the item usage (RefreshCarriedKeeps)
     uint16 freeSlots{0};         // free bank item slots (the 28; bank bags are not counted)
     bool built{false};           // set at login (BuildBankKnowledge)
 };
@@ -133,6 +134,13 @@ inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
                              state.bankVisit.phase != BankVisitPhase::None);
 }
 
+// What can start a trip without full bags (WB8b, the errand trigger): worth the bot saw or expects in its mail, or a
+// kept item come due at the level. Unopened mail alone never pays a detour (WB.4), so it only joins trips
+inline bool ErrandWaits(BotBankMail const& state, uint8 level)
+{
+    return state.mail.seenCopper || state.mail.expectedCopper || DueAt(state.bank.kept, level).count;
+}
+
 // A far teleport or a PlayerbotAI::Reset(true) rebuilds NewRpgInfo (TravelLegs::AfterReset keeps only the route
 // requests). The bot's knowledge (waiting mail, seen worth, bank slots, kept items) survives it; a running visit
 // was ended with its row just before (EndVisits), so nothing of it is left to keep.
@@ -162,8 +170,8 @@ VisitWatchIn WatchInOf(Player const* bot, uint32 mapId, uint32 startedMs, uint32
 // The bot's map thread, in every AI update while a visit runs, whatever engine runs (the stepping engine does not run
 // in combat or dead): ends a visit at its deadline, at death or on another map, with its row
 void WatchVisits(PlayerbotAI* botAI);
-// The world thread or the bot's map thread, before its state is dropped (a far teleport, Reset(true), a logout):
-// ends a running visit of either kind with its row
+// The world thread or the bot's map thread, before its state is dropped (a far teleport, Reset(true), a logout) or
+// at a near teleport: ends a running visit of either kind with its row
 void EndVisits(PlayerbotAI* botAI, VisitEnd end);
 }  // namespace BankMail
 

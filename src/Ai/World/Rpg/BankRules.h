@@ -30,6 +30,8 @@
 //   BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& refused = {});
 //                                                    // withdraw steps, then deposit steps; refused items stay put
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
+//   CarriedKeeps KeptInBags(BankIn const& in);                            // the bag items kept for a later level
+//   uint32_t KeptWorthEach(CarriedKeeps const&, uint32_t entry, uint8_t level);  // the item usage's O(k) lookup
 //   DueTotal DueAt(std::vector<Kept> const& kept, uint8_t level);         // the kept items due at the level
 //   char const* ChoiceWord(BankChoice), ReasonWord(BankReason);           // the `bank` decision row's words
 // BankRulesInput.h builds BankIn from the live bags and bank (BuildBankIn) and refreshes the bot's BankKnowledge.
@@ -490,6 +492,48 @@ inline std::vector<KeptEntry> KeptInBank(BankIn const& in)
         entries.push_back({decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth,
                            decided.answer.dueLevel, decided.answer.provider});
     return entries;
+}
+
+// The bag items the rule keeps for a later level, as the bot remembers them for its item usage (ITEM_USAGE_BANK):
+// such an item is not sold, and when space runs short it counts at its later worth. Decided at one level and read
+// only at that level, so a level change never leaves an item kept by an old answer.
+struct CarriedKeeps
+{
+    std::vector<KeptEntry> items;  // by later worth
+    uint8_t level = 0;             // the bot's level when they were decided; 0 = never
+};
+
+// Kept and not due yet: a due item is gear the bot may wear now, which the item usage labels as an upgrade first
+inline CarriedKeeps KeptInBags(BankIn const& in)
+{
+    using namespace BankRulesDetail;
+    std::vector<Decided> kept;
+    for (BankItemIn const& item : in.bags)
+    {
+        KeepAnswer const answer = DecideKeep(item.item, in.bot);
+        if (answer.keeps && !IsDue(answer, in.bot))
+            kept.push_back({&item, answer});
+    }
+    SortByLaterWorth(kept);
+
+    CarriedKeeps carried;
+    carried.level = in.bot.level;
+    for (Decided const& decided : kept)
+        carried.items.push_back({decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth,
+                                 decided.answer.dueLevel, decided.answer.provider});
+    return carried;
+}
+
+// The later worth of one carried item of the entry (at least 1), read at the bot's level now; 0 when no item of the
+// entry is kept or the level is not the one they were decided at. A loop over the few kept items, no keep decision
+inline uint32_t KeptWorthEach(CarriedKeeps const& carried, uint32_t entry, uint8_t level)
+{
+    if (!carried.level || carried.level != level)
+        return 0;
+    for (KeptEntry const& item : carried.items)
+        if (item.entry == entry)
+            return std::max<uint32_t>(item.laterWorth / std::max<uint32_t>(item.count, 1), 1);
+    return 0;
 }
 
 // One line of what a plan does, for the selftest and the command

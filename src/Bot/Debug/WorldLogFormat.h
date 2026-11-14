@@ -410,17 +410,21 @@ enum class DecisionKind : uint8_t
     Trip,
     Errand,
     Inn,
+    Upkeep,
+    Death,
     Circuit,
     Goal,
     FightStart,  // world PvP (WP1): one row per meeting
     FightJoin,   // world PvP (WP5): one row per bystander and fight
     Mail,
-    Bank
+    Bank,
+    QuestUse  // upkeep batch G (WU20b-WU20c): a quest item or spell used where its objective needs it
 };
 
-constexpr size_t DECISION_KIND_COUNT = 11;
+constexpr size_t DECISION_KIND_COUNT = 14;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status", "route", "trip", "errand", "inn", "circuit", "goal", "fight_start", "fight_join", "mail", "bank"};
+    "rpg_status", "route", "trip",        "errand",     "inn",  "upkeep", "death",
+    "circuit",    "goal",  "fight_start", "fight_join", "mail", "bank",   "quest_use"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

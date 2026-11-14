@@ -8,19 +8,36 @@
 #include "PlayerbotsDatabase.h"
 #include "AreaDefines.h"
 #include "BattleGroundTactics.h"
+#include "BattlefieldMgr.h"
 #include "BattlegroundEY.h"
 #include "BattlegroundWS.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "GridTerrainData.h"
+#include "LootInteraction.h"
+#include "Map.h"
+#include "NewRpgAction.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "Spell.h"
 #include "SpellAuraEffects.h"
+#include "TravelLegRules.h"
 
 static constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
 static constexpr float PARACHUTE_LAND_THRESHOLD = 15.0f;
+
+// On a flying mount (or in a flight form) and in the air by the real height (TravelLegs::InTheAir), flag or not
+// (WU11c: a flight aura applied in the air sets CAN_FLY only, so Meldel flew without the flying flag)
+static bool FlyerInTheAir(Player* bot)
+{
+    if (!bot->HasIncreaseMountedFlightSpeedAura() && !bot->HasFlyAura())
+        return false;
+    return TravelLegs::InTheAir(bot->GetPositionZ(),
+                                bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()));
+}
 
 // Preferred mounts per bot, loaded once at startup by LoadPreferredMounts()
 std::unordered_map<uint32, PreferredMountCache> CheckMountStateAction::mountCache;
@@ -67,7 +84,7 @@ MountData CollectMountData(Player const* bot)
     return data;
 }
 
-bool CheckMountStateAction::Execute(Event /*event*/)
+bool CheckMountStateAction::Execute(Event event)
 {
     // Forced flight dismount:
     // Bots get stale flight movement flags after a forced dismount (e.g: Dalaran) because the post landing dismount cleanup
@@ -82,7 +99,31 @@ bool CheckMountStateAction::Execute(Event /*event*/)
             bot->GetPositionZ() - floorZ <= PARACHUTE_LAND_THRESHOLD)
             bot->RemoveAurasByType(SPELL_AURA_FEATHER_FALL);
     }
-    ClearStaleFlightFlags();
+    if (!botAI->HasPendingDismount())
+        ClearStaleFlightFlags();
+    // In the air by the real height, not the flag: a bot on its flyer on the ground keeps the flag, one in the air
+    // may lack it
+    bool const inTheAir = FlyerInTheAir(bot);
+
+    auto const tryMount = [&]
+    {
+        auto path = PlayerbotAI::MountPath::None;
+        if (event.getPacket().GetOpcode() == SMSG_FORCE_RUN_SPEED_CHANGE)
+            path = PlayerbotAI::MountPath::Packet;
+        else if (event.GetSource() == "timer")
+            path = PlayerbotAI::MountPath::Timer;
+        if (!LootInteraction::MountAllowed(botAI->HasLootInteraction(), bool(bot->GetLootGUID())))
+        {
+            botAI->TraceTravelMount(path, false);
+            return false;
+        }
+
+        bool const wasMounted = bot->IsMounted();
+        bool const mounted = Mount();
+        if (mounted && !wasMounted)
+            botAI->TraceTravelMount(path, true);
+        return mounted;
+    };
 
     // Determine if there are no attackers
     bool noAttackers = !AI_VALUE2(bool, "combat", "self target") || !AI_VALUE(uint8, "attacker count");
@@ -99,7 +140,9 @@ bool CheckMountStateAction::Execute(Event /*event*/)
         float combatReach = bot->GetCombatReach() + currentTarget->GetCombatReach();
         float distanceToTarget = bot->GetExactDist(currentTarget);
 
-        shouldDismount = (distanceToTarget <= dismountDistance + combatReach);
+        // Not in the air: the bot would fall (WU11b: Nennaro, attacked 36 yd up on a fly leg's climb, came down 13 s
+        // after the takeoff); it flies on or lands first
+        shouldDismount = !inTheAir && distanceToTarget <= dismountDistance + combatReach;
         shouldMount = (distanceToTarget > mountDistance + combatReach);
     }
     else
@@ -127,7 +170,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
     if (!noRealMaster && !inBattleground)
     {
         if (ShouldFollowMasterMountState(master, noAttackers, shouldMount))
-            return Mount();
+            return tryMount();
 
         else if (ShouldDismountForMaster(master) && bot->IsMounted())
         {
@@ -141,10 +184,9 @@ bool CheckMountStateAction::Execute(Event /*event*/)
     // No real master (random bot or SelfBot) OR bot in BG
     if ((noRealMaster || inBattleground) && !bot->IsMounted() &&
         noAttackers && shouldMount && !bot->IsInCombat())
-        return Mount();
+        return tryMount();
 
-    if (!bot->IsFlying() && shouldDismount && bot->IsMounted() &&
-        (enemy || dps || (!noAttackers && bot->IsInCombat())))
+    if (!inTheAir && shouldDismount && bot->IsMounted() && (enemy || dps || (!noAttackers && bot->IsInCombat())))
     {
         Dismount();
         return true;
@@ -180,6 +222,10 @@ bool CheckMountStateAction::isUseful()
     float posZ = bot->GetPositionZ();
     float groundLevel = bot->GetMapWaterOrGroundLevel(bot->GetPositionX(), bot->GetPositionY(), posZ);
     if (!bot->IsMounted() && !bot->HasWaterWalkAura() && posZ < groundLevel)
+        return false;
+
+    // Not useful when a transport leg keeps the bot on foot (waiting at the dock, boarding, aboard)
+    if (!bot->IsMounted() && TravelKeepsOnFoot(botAI))
         return false;
 
     // Not useful when bot does not have mount strat and is not currently mounted
@@ -256,16 +302,36 @@ bool CheckMountStateAction::Mount()
 
 void CheckMountStateAction::Dismount()
 {
+    // A flyer dismounted more than AIRBORNE_YARDS above the terrain (WU11b fix 11: Hudohrgand lost its mount about
+    // 45 yd from its takeoff over Honor Hold, not in combat, right after this action ran; the logs could not show
+    // why): the probe that judged it on the ground, its target and fight, for the log only. The terrain counts with
+    // the water over it (fix 12: a bot swimming at the sea's surface is not above the seabed)
+    if (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura())
+    {
+        float const x = bot->GetPositionX();
+        float const y = bot->GetPositionY();
+        float const z = bot->GetPositionZ();
+        auto const [groundZ, waterZ] = FloorBelow(bot);
+        float const terrainZ = std::max(groundZ, waterZ);
+        if (terrainZ > TravelLegs::FLY_NO_GROUND && z - terrainZ > TravelLegs::AIRBORNE_YARDS)
+        {
+            Unit* const target = AI_VALUE(Unit*, "current target");
+            LOG_INFO("playerbots",
+                     "[Route] {} dismounts {:.0f} yd above the terrain or water in area {} at ({:.0f}, {:.0f}, "
+                     "{:.0f}): floor {:.0f}, flying {}, combat {}, target {} at {:.0f} yd",
+                     bot->GetName(), z - terrainZ, bot->GetAreaId(), x, y, z, bot->GetMapHeight(x, y, z),
+                     bot->IsFlying(), bot->IsInCombat(), target ? target->GetName() : "none",
+                     target ? bot->GetExactDist(target) : 0.0f);
+        }
+    }
     if (bot->isMoving())
         bot->StopMoving();
 
     WorldPacket emptyPacket;
     bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
-
-    ClearStaleFlightFlags();
 }
 
-void CheckMountStateAction::ClearStaleFlightFlags()
+static void ClearStaleFlightFlagsOf(Player* bot)
 {
     if (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura())
         return;
@@ -278,17 +344,47 @@ void CheckMountStateAction::ClearStaleFlightFlags()
     }
 }
 
-void CheckMountStateAction::CompleteDismount(Player* bot)
+void CheckMountStateAction::ClearStaleFlightFlags() { ClearStaleFlightFlagsOf(bot); }
+
+std::pair<float, float> CheckMountStateAction::FloorBelow(Player* bot)
+{
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    float const groundZ = bot->GetMapHeight(x, y, bot->GetPositionZ(), true, MAX_FALL_DISTANCE);
+    // The water over the ground (the sea's surface, not its floor); none where the ground is dry or not found
+    LiquidData const water =
+        groundZ > TravelLegs::FLY_NO_GROUND
+            ? bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, groundZ, bot->GetCollisionHeight(), {})
+            : LiquidData();
+    return {groundZ, water.Status != LIQUID_MAP_NO_WATER ? water.Level : TravelLegs::FLY_NO_GROUND};
+}
+
+void CheckMountStateAction::LandAndDismount(Player* bot)
 {
     if (!bot || !bot->IsInWorld())
+        return;
+    if (bot->isMoving())
+        bot->StopMoving();
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    ClearStaleFlightFlagsOf(bot);
+    CompleteDismount(bot);
+}
+
+void CheckMountStateAction::CompleteDismount(Player* bot)
+{
+    if (!bot->IsAlive() || bot->IsMounted() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport() ||
+        bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) || bot->HasIncreaseMountedFlightSpeedAura() ||
+        bot->HasFlyAura() || !bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_DISABLE_GRAVITY))
         return;
 
     float const x = bot->GetPositionX();
     float const y = bot->GetPositionY();
     float const startZ = bot->GetPositionZ();
 
-    float groundZ = startZ;
-    bot->UpdateAllowedPositionZ(x, y, groundZ);
+    float const groundZ = bot->GetMapHeight(x, y, startZ, true, MAX_FALL_DISTANCE);
+    if (groundZ <= INVALID_HEIGHT || startZ - groundZ <= 0.1f)
+        return;
 
     bot->GetMotionMaster()->MoveFall();
     MovementInfo fallInfo = bot->m_movementInfo;
@@ -496,22 +592,97 @@ bool CheckMountStateAction::ShouldDismountForMaster(Player* master) const
     return !isMasterMounted && bot->IsMounted();
 }
 
-static bool BotCanUseFlyingMount(Player const* bot)
+bool CheckMountStateAction::RidingAllowsFlying(Player const* bot, uint32 virtualMapId)
 {
     if (bot->GetPureSkillValue(SKILL_RIDING) < 225)
         return false;
+    return virtualMapId != MAP_NORTHREND || bot->HasSpell(SPELL_COLD_WEATHER_FLYING);
+}
 
+int32 CheckMountStateAction::FlyingMountSpeed(Player const* bot)
+{
+    MountData const data = CollectMountData(bot);
+    auto const flying = data.allSpells.find(1);
+    if (flying == data.allSpells.end() || flying->second.empty())
+        return 0;
+    // The scaling Winged Steed's own points are not its flight speed: at least the slow flyer's
+    return std::max(flying->second.rbegin()->first, 149);
+}
+
+static bool BotCanUseFlyingMount(Player const* bot)
+{
     AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetAreaId());
     if (!area || !area->IsFlyable())
         return false;
     if (area->flags & AREA_FLAG_NO_FLY_ZONE)
         return false;
 
-    uint32 const vmap = GetVirtualMapForMapAndZone(bot->GetMapId(), bot->GetZoneId());
-    if (vmap == MAP_NORTHREND && !bot->HasSpell(SPELL_COLD_WEATHER_FLYING))
-        return false;
+    uint32 const virtualMapId = GetVirtualMapForMapAndZone(bot->GetMapId(), bot->GetZoneId());
+    return CheckMountStateAction::RidingAllowsFlying(bot, virtualMapId);
+}
 
-    return true;
+char const* CheckMountStateAction::NoTakeoffHere(Player const* bot)
+{
+    if (bot->InBattleground() || !BotCanUseFlyingMount(bot))
+        return "no_fly_area";
+    if (Battlefield const* battlefield = sBattlefieldMgr->GetBattlefieldToZoneId(bot->GetZoneId()))
+        if (!battlefield->CanFlyIn())
+            return "battle";
+    if (!bot->IsOutdoors())
+        return "indoors";
+    if (bot->IsInWater())
+        return "water";
+    return nullptr;
+}
+
+char const* CheckMountStateAction::CastFlyingMount(Player* bot, PlayerbotAI* botAI)
+{
+    // A cast the check allowed that still did not start (rare, WU11b: Hellengi's three silent refusals): why, for
+    // the log only. A shapeshift form the mount cannot be cast in (WU11b fix 9: the druids Pilge and Barilas, prepare
+    // result 68, SPELL_FAILED_NOT_SHAPESHIFT) is left first, as a player cancels it; never in the air (by the height:
+    // a stale flag on the ground kept Seyo's form)
+    auto const cast = [bot, botAI](uint32 spellId) -> char const*
+    {
+        ShapeshiftForm const form = bot->GetShapeshiftForm();
+        if (form != FORM_NONE && !FlyerInTheAir(bot))
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+                if (info->CheckShapeshift(form) != SPELL_CAST_OK)
+                    bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+        if (botAI->CastSpell(spellId, bot))
+            return "";
+        LOG_INFO("playerbots",
+                 "[Route] {} flying mount {} not cast: prepare result {}, stand state {}, moving {}, flying {}",
+                 bot->GetName(), spellId, botAI->LastPrepareResult(), bot->getStandState(), bot->isMoving(),
+                 bot->IsFlying());
+        return "refused";
+    };
+    auto const preferred = mountCache.find(bot->GetGUID().GetRawValue());
+    if (preferred != mountCache.end())
+        for (uint32 const spellId : preferred->second.flightMounts)
+            if (botAI->CanCastSpell(spellId, bot))
+                return cast(spellId);
+
+    MountData const data = CollectMountData(bot);
+    auto const flying = data.allSpells.find(1);
+    if (flying == data.allSpells.end() || flying->second.empty())
+        return "no_mount";
+    for (auto speed = flying->second.rbegin(); speed != flying->second.rend(); ++speed)
+        for (uint32 const spellId : speed->second)
+            if (botAI->CanCastSpell(spellId, bot))
+                return cast(spellId);
+    // Why, for the log only (rare: a fly leg's counted try): the core's cast check of the fastest one
+    uint32 const fastest = flying->second.rbegin()->second.front();
+    SpellCastResult result = SPELL_FAILED_UNKNOWN;
+    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(fastest))
+    {
+        Spell spell(bot, info, TRIGGERED_NONE);
+        spell.m_targets.SetUnitTarget(bot);
+        result = spell.CheckCast(true);
+    }
+    LOG_INFO("playerbots", "[Route] {} flying mount {} refused: cast result {}, moving {}, lost control {}",
+             bot->GetName(), fastest, static_cast<uint32>(result), bot->isMoving(),
+             bot->HasUnitState(UNIT_STATE_LOST_CONTROL));
+    return "refused";
 }
 
 int32 CheckMountStateAction::CalculateMasterMountSpeed(Player* master) const

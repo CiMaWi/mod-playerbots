@@ -131,6 +131,7 @@ RollVote LootRollAction::CalculateRollVote(ItemTemplate const* proto, ItemUsage 
         case ITEM_USAGE_USE:
         case ITEM_USAGE_AH:
         case ITEM_USAGE_VENDOR:
+        case ITEM_USAGE_BANK:
             needVote = GREED;
             break;
         case ITEM_USAGE_DISENCHANT:

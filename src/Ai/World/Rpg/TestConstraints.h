@@ -27,7 +27,10 @@ constexpr std::uint16_t ERRAND = 4;       // vendor errands and inn binds
 constexpr std::uint16_t HEARTH = 8;       // hearth legs, the off-mesh hearth and the planner's inn goal
 constexpr std::uint16_t NOFIGHT = 16;     // starts no fight; creatures ignore the bot and its pets
 constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
-constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d; other plans use 64, 128)
+constexpr std::uint16_t FLYFAIL = 64;     // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
+constexpr std::uint16_t FLYABORT = 128;   // as flyfail, as the trip's last failure: the trip ends once the bot is down
+constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
+constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
 {
@@ -50,6 +53,8 @@ constexpr Row ROWS[] = {
     {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
     {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
+    {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
+    {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
 };
 
@@ -131,6 +136,11 @@ inline std::uint16_t Next(std::uint16_t set, std::uint16_t on, std::uint16_t off
 // row changing never does
 inline bool EndsStatus(std::uint16_t before, std::uint16_t after) { return (after & ~before & CHOICES) != 0; }
 
+// The errand row turning off frees the errand checks at once: the retry wait after the last check (ERRAND_RETRY_MS,
+// ItemWorthRules.h) starts over from no check, so a check from before the hold does not delay the released bot's first
+// errand by up to five minutes
+inline bool FreesErrands(std::uint16_t before, std::uint16_t after) { return (before & ~after & ERRAND) != 0; }
+
 // The gates. What an idle bot's status update may do on its own
 struct IdleGate
 {
@@ -144,6 +154,16 @@ inline bool HearthAllowed(std::uint16_t set) { return !(set & HEARTH); }
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
+// flyfail and flyabort, read by the fly leg's follower on a tick in the air (NewRpgAction.cpp; nothing to apply or
+// undo): the leg fails as its timeout would, once the bot has flown half the leg's straight 2D length and is in the
+// air, so the failure lies where a test chose the leg's middle (over land, over water)
+inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, bool inTheAir)
+{
+    return (set & FLY_FAILS) && inTheAir && flownYards * 2.0f >= legYards;
+}
+// flyabort: the failure finds the trip's replans spent (TravelLegs::AfterFailure, MAX_REPLANS), so the trip aborts and
+// comes down first (AbortDescent)
+inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }

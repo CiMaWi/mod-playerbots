@@ -25,6 +25,7 @@
 #include "SkillGrowth.h"
 #include "TacticGate.h"
 #include "Tactics.h"
+#include "UpkeepConfig.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
 #include <algorithm>
@@ -552,6 +553,8 @@ public:
     PathConfig NaturalPath;
     // Playerbots.WorldTravel.*: honest travel of persistent bots (sight rule, corpse runs, stuck spots)
     WorldTravelConfig WorldTravel;
+    // Playerbots.Upkeep.*: honest upkeep of persistent bots (the handout share)
+    UpkeepConfig Upkeep;
     // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h declares every option
     // of the world PvP plan; WP1 reads the fight book's and the memory's bounds and the lab switch)
     WorldPvpConfig WorldPvp;

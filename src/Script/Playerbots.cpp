@@ -12,6 +12,7 @@
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "BotProfileMgr.h"
+#include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
 #include "CcTacticStrategy.h"
 #include "Channel.h"
@@ -22,6 +23,7 @@
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
 #include "DefensiveTacticStrategy.h"
+#include "FlightMap.h"
 #include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
 #include <mysqld_error.h>
@@ -633,6 +635,7 @@ public:
         GatherNodeMgr::instance().Load();
         BotProfileMgr::instance().Load();
         BotTraitMgr::instance().Load();      // One query for all rows, before any bot logs in
+        BotRecordMgr::Instance().Load();     // The bots' record: one query for all rows, before any bot logs in
         AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
         PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
@@ -644,6 +647,8 @@ public:
             Planner::StartPlanner();
             Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
             Planner::StartQuestIndex();      // the same for the quest index
+            Planner::StartUpkeepIndex();     // and for the upkeep index
+            Planner::StartFlightMap();       // the flying height maps, read on their own thread
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
@@ -711,6 +716,7 @@ public:
         Planner::StopPlanner();                        // joins the planner workers; waiting jobs are dropped
         TravelRoute::RouteService::Instance().Stop();  // joins the route workers; waiting requests are dropped
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close
+        Planner::StopFlightMap();            // the same for the flight maps, at their next terrain file
         TestPlayerMgr::Instance().Shutdown();
         CensusMgr::Instance().Shutdown();
         AcquaintanceMgr::Instance().Shutdown();

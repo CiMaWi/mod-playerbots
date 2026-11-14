@@ -15,6 +15,7 @@
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
+#include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "QuestLevelRules.h"
@@ -43,6 +44,8 @@
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "Upkeep.h"
+#include "UpkeepRules.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
@@ -216,22 +219,62 @@ WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
     return cause;
 }
 
+bool NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    WorldTravel::SightPoint const offMeshAt{info.offMeshPos.GetMapId(), info.offMeshPos.GetPositionX(),
+                                            info.offMeshPos.GetPositionY(), info.offMeshPos.GetPositionZ()};
+    bool const backingOff =
+        WorldTravel::OffMeshBackoff(info.offMeshTs != 0, GetMSTimeDiffToNow(info.offMeshTs), offMeshAt, here);
+    WorldTravel::StuckCause const cause = backingOff ? WorldTravel::StuckCause::OffMesh : RecordStuck(dest);
+    bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
+    if (offMesh)
+    {
+        if (!backingOff)
+            RecoverOffMesh();
+    }
+    else
+    {
+        // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h);
+        // off the mesh the destination is not to blame
+        WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
+                                              info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
+        info.stuckRepeats = WorldTravel::NextStuckRepeats(
+            info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);
+        info.stuckAvoidPos = dest;
+        info.stuckBotPos = WorldPosition(bot);
+        info.stuckAvoidTs = getMSTime();
+    }
+    info.SetMoveFarTo(WorldPosition());
+    return offMesh;
+}
+
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
+{
+    auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (!travel || !travel->HasWalkTarget())
+        return MoveFarToImpl(dest);
+    return TravelProgress::ContinueWalk(
+        travel->progress, [&] { return botAI->ReadTravelWalk(); }, [&] { return MoveFarToImpl(dest); },
+        [&](char const* reason) { botAI->TraceTravelInteraction("route_resume", reason); });
+}
+
+bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
 {
     if (dest == WorldPosition())
         return false;
 
-    // Don't start a ground move while the bot is on a taxi: the MovePoint issued
-    // below would fight the active flight spline. Returning true consumes the tick
-    // instead of returning false, because the callers of MoveFarTo fall through to
-    // MoveRandomNear, which is also a ground move.
-    if (bot->IsInFlight())
+    // The taxi or transport still owns movement even if the RPG goal changes. Consume the tick so a caller
+    // cannot fall through to MoveRandomNear while the bot is aboard.
+    if (bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT))
         return true;
 
     bool newDest = dest != botAI->rpgInfo.moveFarPos;
     // A route follower's waypoints are graph nodes: the route search avoids stuck edges itself (StuckBook), so the
     // avoided-spot memo below would only end the trip early
-    bool const travelling = std::holds_alternative<NewRpgInfo::Travel>(botAI->rpgInfo.data);
+    auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (newDest)
     {
         // A destination given up after a Stuck event is not walked to again for a while
@@ -240,10 +283,9 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
                                             info.stuckAvoidPos.GetPositionY(), info.stuckAvoidPos.GetPositionZ()};
         WorldTravel::SightPoint const wanted{dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(),
                                              dest.GetPositionZ()};
-        if (!travelling &&
-            WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
-                                       sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, given,
-                                       wanted, info.stuckRepeats))
+        if (!travel && WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+                                                  sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS,
+                                                  given, wanted, info.stuckRepeats))
         {
             WorldLog::StatusReason const reasonScope("stuck");
             botAI->rpgInfo.ChangeToIdle();
@@ -275,18 +317,22 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     //
     // If the bot is still actively walking toward its last
     // committed point on the same map, just let the current spline
-    // finish. The stuck counter below continues to track real
-    // progress toward dest and gives the destination up if the
-    // committed paths genuinely aren't closing the gap.
+    // finish. The travel observer samples owned splines even while
+    // action delay or this gate prevents reissuing a move.
     //
     // A changed destination (e.g. the gather state switching to a
     // live node it passes, or a quest POI change) skips this gate:
     // letting the old spline finish would keep walking the bot
     // toward a target it no longer has.
+    //
+    // A finalized move spline is no move to wait for, whatever the
+    // movement flags say: they can stay "moving" after the spline
+    // ended (WU11b fix 13: Throke in the air, moving 71 s after its
+    // last move), and the gate held such a bot forever.
     if (!newDest)
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
-        if (bot->isMoving() && lastMove.lastMoveToMapId == bot->GetMapId())
+        if (bot->isMoving() && !bot->movespline->Finalized() && lastMove.lastMoveToMapId == bot->GetMapId())
         {
             float remaining = bot->GetExactDist(lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ);
             if (remaining > 10.0f)
@@ -294,13 +340,16 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         }
     }
 
-    // stuck check
-    float disToDest = bot->GetDistance(dest);
-    // Require a meaningful improvement (5yd) to reset the stuck counter.
-    // The old 1yd threshold was small enough that bots oscillating back
-    // and forth around an obstacle would keep "making progress" forever
-    // and never give up on the destination below.
-    if (disToDest + 5.0f < botAI->rpgInfo.nearestMoveFarDis)
+    float const disToDest = bot->GetDistance(dest);
+    if (travel)
+    {
+        if (travel->progress.ShouldProbeOffMesh() && BotOffMesh())
+        {
+            travel->progress.Latch(TravelProgress::Overdue::OffMesh);
+            return true;
+        }
+    }
+    else if (disToDest + TravelProgress::ADVANCE_YARDS < botAI->rpgInfo.nearestMoveFarDis)
     {
         botAI->rpgInfo.nearestMoveFarDis = disToDest;
         botAI->rpgInfo.stuckTs = getMSTime();
@@ -309,45 +358,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     else if ((++botAI->rpgInfo.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgInfo.stuckTs) >= stuckTime) ||
              (botAI->rpgInfo.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
     {
-        // No meaningful progress toward dest for `stuckTime`, or none at all off the mesh: give the destination up,
-        // record why and go IDLE. Still at the spot where a recovery left the bot off the mesh: give it up quietly
-        // (no Stuck event, no recovery) until the back-off is over
-        NewRpgInfo& info = botAI->rpgInfo;
-        WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                                           bot->GetPositionZ()};
-        WorldTravel::SightPoint const offMeshAt{info.offMeshPos.GetMapId(), info.offMeshPos.GetPositionX(),
-                                                info.offMeshPos.GetPositionY(), info.offMeshPos.GetPositionZ()};
-        bool const backingOff =
-            WorldTravel::OffMeshBackoff(info.offMeshTs != 0, GetMSTimeDiffToNow(info.offMeshTs), offMeshAt, here);
-        WorldTravel::StuckCause const cause = backingOff ? WorldTravel::StuckCause::OffMesh : RecordStuck(dest);
-        bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
-        if (offMesh)
-        {
-            if (!backingOff)
-                RecoverOffMesh();
-        }
-        else
-        {
-            // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h);
-            // off the mesh the destination is not to blame
-            WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
-                                                  info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
-            info.stuckRepeats = WorldTravel::NextStuckRepeats(
-                info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
-                sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);
-            info.stuckAvoidPos = dest;
-            info.stuckBotPos = WorldPosition(bot);
-            info.stuckAvoidTs = getMSTime();
-        }
-        botAI->rpgInfo.SetMoveFarTo(WorldPosition());
-        // A route follower stays in RPG_TRAVEL: its next tick fails the leg and asks for a new route (off the mesh:
-        // the trip ends)
-        if (auto* travel = std::get_if<NewRpgInfo::Travel>(&info.data))
-        {
-            travel->stuck = true;
-            travel->offMesh = offMesh;
-            return true;
-        }
+        GiveUpMove(dest);
         WorldLog::StatusReason const reasonScope("stuck");
         botAI->rpgInfo.ChangeToIdle();
         return true;
@@ -1154,15 +1165,34 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
 static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_ERRANDS == 11 && RPG_TRAVEL == 10 &&
                   RPG_DO_GATHER == 9 && RPG_REST == 7,
               "WorldLog::RPG_STATUS_WORDS follows NewRpgStatus");
+static_assert(uint32(RPG_GO_GRIND) == Upkeep::RPG_STATUS_GO_GRIND &&
+                  uint32(RPG_WANDER_RANDOM) == Upkeep::RPG_STATUS_WANDER_RANDOM &&
+                  uint32(RPG_DO_QUEST) == Upkeep::RPG_STATUS_DO_QUEST &&
+                  uint32(RPG_OUTDOOR_PVP) == Upkeep::RPG_STATUS_OUTDOOR_PVP &&
+                  uint32(RPG_DO_GATHER) == Upkeep::RPG_STATUS_DO_GATHER && RPG_STATUS_END <= 32,
+              "UpkeepRules.h's fighting statuses follow NewRpgStatus");
+static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP) == Upkeep::RPG_STATUS_GO_CAMP &&
+                  uint32(RPG_WANDER_NPC) == Upkeep::RPG_STATUS_WANDER_NPC &&
+                  uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS,
+              "UpkeepRules.h's errand statuses follow NewRpgStatus");
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason)
 {
     WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
+    // A bot with resurrection sickness rests (upkeep §3.5). A bot low on health or mana with nothing to eat or drink
+    // (no food cheat) picks no status that fights; with none left it rests without eating (§3.6)
+    bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    bool const hungry = AI_VALUE2(uint8, "health", "self target") < sPlayerbotAIConfig.LowHealth &&
+                        !AI_VALUE2(uint32, "item count", "food");
+    bool const thirsty = AI_VALUE2(bool, "has mana", "self target") &&
+                         AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana &&
+                         !AI_VALUE2(uint32, "item count", "drink");
+    bool const needsRest = (hungry || thirsty) && !bot->IsInCombat() && !Upkeep::FoodCheat(botAI);
     for (NewRpgStatus status : candidateStatus)
     {
-        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0)
+        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusPickable(status, sick, needsRest))
             continue;
 
         if (CheckRpgStatusAvailable(status))

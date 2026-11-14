@@ -78,6 +78,11 @@ constexpr int MIN_VALUE = -100;
 constexpr int MAX_VALUE = 100;
 constexpr int NOTICEABLE = 30;  // |value| from which the LLM gets the trait
 constexpr int STRONG = 65;      // |value| from which it gets the strong word
+// LC9: four grades of a word by |value|: somewhat 30-44, rather 45-64, very 65-84, extremely 85 and up [E]
+constexpr int GRADE_SOMEWHAT = NOTICEABLE;
+constexpr int GRADE_RATHER = 45;
+constexpr int GRADE_VERY = STRONG;
+constexpr int GRADE_EXTREMELY = 85;
 constexpr double DEVIATION = 45.0;
 // A centre never leaves this, so even the most typical group keeps the occasional opposite
 constexpr int MAX_CENTRE = 70;
@@ -392,15 +397,46 @@ inline float Unit(BotTraits const& traits, Trait trait)
 
 inline bool IsNoticeable(int value) { return std::abs(value) >= NOTICEABLE; }
 
-// The word for one trait value; empty when the trait is not noticeable
-inline std::string_view Word(Trait trait, int value)
+// The grade of a value: 0 below the first mark (silent), 1 somewhat, 2 rather, 3 very, 4 extremely
+constexpr int Grade(int value)
 {
-    if (!IsNoticeable(value))
+    int const size = value < 0 ? -value : value;
+    if (size >= GRADE_EXTREMELY)
+        return 4;
+    if (size >= GRADE_VERY)
+        return 3;
+    if (size >= GRADE_RATHER)
+        return 2;
+    return size >= GRADE_SOMEWHAT ? 1 : 0;
+}
+
+// The word for one trait value in four grades; empty when the trait is not noticeable. The table's mild word is
+// "rather X" (grade 1 and 2: somewhat X, rather X), its strong word "very X" or a special word of its own: "very X"
+// is kept at 65-84 and becomes "extremely X" from 85, a special word ("reckless", "a loner") stays for both.
+inline std::string Word(Trait trait, int value)
+{
+    int const grade = Grade(value);
+    if (grade == 0)
         return {};
 
     TraitWords const& words = WORDS[Index(trait)];
-    std::size_t const intensity = std::abs(value) >= STRONG ? 1 : 0;
-    return value > 0 ? words.High[intensity] : words.Low[intensity];
+    std::array<std::string_view, 2> const& pole = value > 0 ? words.High : words.Low;
+    if (grade >= 3)
+    {
+        std::string_view const strong = pole[1];
+        constexpr std::string_view VERY = "very ";
+        if (grade == 4 && strong.substr(0, VERY.size()) == VERY)
+            return "extremely " + std::string(strong.substr(VERY.size()));
+
+        return std::string(strong);
+    }
+
+    constexpr std::string_view RATHER = "rather ";
+    std::string_view const mild = pole[0];
+    if (grade == 1 && mild.substr(0, RATHER.size()) == RATHER)
+        return "somewhat " + std::string(mild.substr(RATHER.size()));
+
+    return std::string(mild);
 }
 
 // Every noticeable trait as words, strongest first (ties in trait order): what the LLM gets

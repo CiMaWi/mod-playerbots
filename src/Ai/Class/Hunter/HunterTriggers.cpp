@@ -14,6 +14,7 @@
 #include "Playerbots.h"
 #include "SharedDefines.h"
 #include "TargetValue.h"
+#include "Upkeep.h"
 
 bool KillCommandTrigger::IsActive()
 {
@@ -102,6 +103,13 @@ bool HunterLowAmmoTrigger::IsActive()
 {
     uint32 ammoCount = AI_VALUE2(uint32, "item count", "ammo");
     return bot->GetGroup() && ammoCount > 0 && ammoCount < 100;
+}
+
+bool HunterNoAmmoTrigger::IsActive()
+{
+    // FindAmmo is the item usage's own test (a projectile of the ranged weapon's kind the bot can use; EQUIP while no
+    // ammo is equipped), so the equip action takes what it finds
+    return !Upkeep::EquippedAmmoId(bot) && botAI->FindAmmo();
 }
 
 bool HunterHasAmmoTrigger::IsActive()

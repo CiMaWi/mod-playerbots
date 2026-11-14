@@ -6,6 +6,7 @@
 
 #include "AutoMaintenanceOnLevelupAction.h"
 
+#include "BankRulesInput.h"
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "PlayerbotAIConfig.h"
@@ -14,9 +15,13 @@
 #include "SharedDefines.h"
 #include "SpellMgr.h"
 #include "StartingHistoryRules.h"
+#include "Upkeep.h"
+#include "WorldLog.h"
 
 namespace
 {
+constexpr char const* SOURCE_LEVELUP = "levelup_maintenance";
+
 bool HasHearthstone(Player* bot) { return bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true); }
 
 // Names the level-up step after which a persistent bot's hearthstone is gone; WT5 saw every level-up lose it
@@ -35,6 +40,9 @@ void NoteHearthstoneLoss(Player* bot, bool& had, char const* step)
 bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
 {
     bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    // The world log's mark that the level-up maintenance ran, also for a bot it hands nothing out to (WU15b)
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "levelup", keepsPossessions ? "keeps" : "granted",
+                       static_cast<float>(bot->GetLevel()));
     bool had = keepsPossessions;
     NoteHearthstoneLoss(bot, had, "before");
     AutoPickTalents();
@@ -44,6 +52,7 @@ bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
     AutoTeleportForLevel();
     NoteHearthstoneLoss(bot, had, "teleport");
     AutoUpgradeEquip();
+    BankMail::RefreshCarriedKeeps(botAI);  // the kept gear is decided again at the new level
 
     // Persistent bots keep their hearthstone (WT.3)
     if (keepsPossessions && !HasHearthstone(bot) && bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1))
@@ -79,8 +88,12 @@ void AutoMaintenanceOnLevelupAction::AutoPickTalents()
         return;
 
     PlayerbotFactory factory(bot, bot->GetLevel());
-    factory.InitTalentsTree(true, true, isRandomBot);
-    EventLog::Honesty(bot, "Talent", "levelup_maintenance");
+    // The free points are spent as a player does; the premade spec is laid over the choices (reset) only for a bot
+    // granted the kind, so a persistent bot outside the handout share keeps the talents it has
+    bool const reset = isRandomBot && Upkeep::Granted(bot, UpkeepKind::Talent);
+    factory.InitTalentsTree(true, true, reset);
+    if (reset)
+        EventLog::Honesty(bot, "Talent", SOURCE_LEVELUP);
     factory.InitPetTalents();
 }
 
@@ -108,19 +121,22 @@ void AutoMaintenanceOnLevelupAction::LearnSpells(std::ostringstream* out)
     if (sPlayerbotAIConfig.AutoLearnTrainerSpells && sRandomPlayerbotMgr.IsRandomBot(bot))
         LearnTrainerSpells(out);
 
-    if (sPlayerbotAIConfig.AutoLearnQuestSpells && sRandomPlayerbotMgr.IsRandomBot(bot))
+    if (sPlayerbotAIConfig.AutoLearnQuestSpells && sRandomPlayerbotMgr.IsRandomBot(bot) &&
+        Upkeep::Granted(bot, UpkeepKind::ClassQuest))
         LearnQuestSpells(out);
 }
 
 void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*out*/)
 {
     PlayerbotFactory factory(bot, bot->GetLevel());
-    factory.InitSkills();
-    EventLog::Honesty(bot, "Skill", "levelup_maintenance");
-    factory.InitClassSpells();
-    factory.InitAvailableSpells();
-    EventLog::Honesty(bot, "Spell", "levelup_maintenance");
-    factory.InitPet();
+    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, SOURCE_LEVELUP,
+                         [&factory] { factory.InitSkills(); }))
+        factory.InitProfessionSkills();
+    Upkeep::HandOut(
+        bot, UpkeepKind::TrainerSpell, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitClassSpells(); },
+        [&factory] { factory.InitAvailableSpells(); });
+    Upkeep::HandOut(bot, UpkeepKind::Pet, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitPet(); });
 }
 
 void AutoMaintenanceOnLevelupAction::LearnQuestSpells(std::ostringstream* out)
@@ -169,6 +185,7 @@ void AutoMaintenanceOnLevelupAction::LearnQuestSpells(std::ostringstream* out)
             continue;
 
         bot->CastSpell(bot, spellId, true);
+        Upkeep::Note(bot, UpkeepKind::ClassQuest, SOURCE_LEVELUP, spellId);
 
         uint32 rewSpellId = quest->GetRewSpell();
         if (rewSpellId)
@@ -203,23 +220,35 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
         return;
 
     PlayerbotFactory factory(bot, bot->GetLevel());
-    bool had = PlayerbotFactory::KeepsPossessions(bot) && HasHearthstone(bot);
+    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    bool had = keepsPossessions && HasHearthstone(bot);
 
-    factory.CleanupConsumables();
-    NoteHearthstoneLoss(bot, had, "cleanup consumables");
+    // The cleanup clears the way for the restock below: a bot not granted it keeps what it bought (the five
+    // consumable kinds are honest together, UpkeepRules.h)
+    if (Upkeep::Granted(bot, UpkeepKind::Consumable, keepsPossessions))
+    {
+        factory.CleanupConsumables();
+        NoteHearthstoneLoss(bot, had, "cleanup consumables");
+    }
 
-    factory.InitAmmo();
-    factory.InitReagents();
-    factory.InitFood();
-    factory.InitConsumables();
-    factory.InitPotions();
+    Upkeep::HandOut(bot, UpkeepKind::Ammo, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitAmmo(); });
+    Upkeep::HandOut(bot, UpkeepKind::Reagent, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitReagents(); });
+    Upkeep::HandOut(bot, UpkeepKind::Food, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitFood(); });
+    auto const consumables = [&factory] { factory.InitConsumables(); };
+    auto const potions = [&factory] { factory.InitPotions(); };
+    if (bot->getClass() == CLASS_ROGUE)  // a rogue's consumables are its poisons
+    {
+        Upkeep::HandOut(bot, UpkeepKind::Poison, keepsPossessions, SOURCE_LEVELUP, consumables);
+        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, SOURCE_LEVELUP, potions);
+    }
+    else
+        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, SOURCE_LEVELUP, consumables, potions);
     NoteHearthstoneLoss(bot, had, "restock");
-    EventLog::Honesty(bot, "Item", "levelup_maintenance");
 
     if (sPlayerbotAIConfig.AutoUpgradeEquip)
     {
         factory.InitEquipment(true);
         NoteHearthstoneLoss(bot, had, "equipment");
-        EventLog::Honesty(bot, "Item", "levelup_maintenance");
+        EventLog::Honesty(bot, "Item", SOURCE_LEVELUP);
     }
 }

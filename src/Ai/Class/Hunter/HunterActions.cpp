@@ -5,11 +5,14 @@
  */
 
 #include "HunterActions.h"
+#include "Bag.h"
 #include "Event.h"
 #include "GenericSpellActions.h"
 #include "NaturalTurn.h"
+#include "Pet.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "Upkeep.h"
 
 bool CastViperStingAction::isUseful()
 {
@@ -49,15 +52,90 @@ Value<Unit*>* CastFreezingTrap::GetTargetValue()
     return context->GetValue<Unit*>("cc target", "freezing trap");
 }
 
-bool FeedPetAction::Execute(Event /*event*/)
+namespace
 {
-    if (Pet* pet = bot->GetPet(); pet && pet->getPetType() == HUNTER_PET &&
-        pet->GetHappinessState() != HAPPY)
+constexpr uint32 SPELL_FEED_PET = 6991;
+constexpr uint32 SPELL_FEED_PET_EFFECT = 1539;  // Feed Pet's trigger spell: the pet eats for 10 s
+constexpr time_t FOOD_SEARCH_WAIT_SECONDS = 30;
+
+// The first food in the bags the pet eats and still gains from (Pet::HaveInDiet, GetCurrentFoodBenefitLevel: the
+// core's Feed Pet checks)
+Item* FindPetFood(Player* bot, Pet* pet)
+{
+    auto const feeds = [pet](Item* item)
     {
-        pet->SetPower(POWER_HAPPINESS, pet->GetMaxPower(Powers(POWER_HAPPINESS)));
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        return proto && proto->Class == ITEM_CLASS_CONSUMABLE && proto->SubClass == ITEM_SUBCLASS_FOOD &&
+               pet->HaveInDiet(proto) && pet->GetCurrentFoodBenefitLevel(proto->ItemLevel) > 0;
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    {
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); feeds(item))
+            return item;
     }
 
-    return true;
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* bag = bot->GetBagByPos(bagSlot);
+        if (!bag)
+            continue;
+
+        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+        {
+            if (Item* item = bag->GetItemByPos(static_cast<uint8>(slot)); feeds(item))
+                return item;
+        }
+    }
+
+    return nullptr;
+}
+}  // namespace
+
+// A bot granted Food keeps the old shortcut (happiness set to the maximum, no food). A persistent bot outside the
+// handout share feeds its pet as a player does: Feed Pet on food from its bags that matches the pet's diet (upkeep
+// WU7b); without such food the pet stays unhappy (less damage) until the bot buys some
+bool FeedPetAction::isUseful()
+{
+    if (Upkeep::Granted(bot, UpkeepKind::Food))
+        return true;
+
+    Pet* pet = bot->GetPet();
+    if (!pet || pet->getPetType() != HUNTER_PET || pet->GetHappinessState() == HAPPY ||
+        pet->HasAura(SPELL_FEED_PET_EFFECT) || !bot->HasSpell(SPELL_FEED_PET))
+        return false;
+
+    time_t const now = time(nullptr);
+    if (now < nextFoodSearch)
+        return false;
+
+    if (FindPetFood(bot, pet))
+        return true;
+
+    nextFoodSearch = now + FOOD_SEARCH_WAIT_SECONDS;
+    return false;
+}
+
+bool FeedPetAction::Execute(Event /*event*/)
+{
+    if (Upkeep::Granted(bot, UpkeepKind::Food))
+    {
+        if (Pet* pet = bot->GetPet(); pet && pet->getPetType() == HUNTER_PET &&
+            pet->GetHappinessState() != HAPPY)
+        {
+            pet->SetPower(POWER_HAPPINESS, pet->GetMaxPower(Powers(POWER_HAPPINESS)));
+            Upkeep::Note(bot, UpkeepKind::Food, "pet_happiness");
+        }
+
+        return true;
+    }
+
+    Pet* pet = bot->GetPet();
+    if (!pet || pet->getPetType() != HUNTER_PET)
+        return false;
+
+    Item* food = FindPetFood(bot, pet);
+    return food && botAI->CastSpell(SPELL_FEED_PET, pet, food);
 }
 
 bool CastAutoShotAction::isUseful()
