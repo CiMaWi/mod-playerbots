@@ -1595,6 +1595,25 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 }
             }
         }
+        // Tame Beast's channel (upkeep WU21b-2): the beast fights the hunter through it while the bot stands and
+        // channels; at low health the bot breaks it off and fights on this update (its errand stop tries again)
+        else if (currentSpell->getState() == SPELL_STATE_CASTING)
+        {
+            if (NewRpgErrandsAction::HoldTameChannel(this))
+            {
+                YieldThread(bot, GetReactDelay());
+                return;
+            }
+            currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            if (!currentSpell)
+                currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        }
+    }
+    else if (NewRpgErrandsAction::HoldTameChannel(this))
+    {
+        // Tame Beast cast again in the fight of the beast that broke its channel (its stun or knockback, WU21b-2)
+        YieldThread(bot, GetReactDelay());
+        return;
     }
 
     // An own cast gone before its predicted end (interrupted by the enemy, or for a full-health target) ended by this

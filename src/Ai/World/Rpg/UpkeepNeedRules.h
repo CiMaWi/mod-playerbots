@@ -952,6 +952,78 @@ inline void AddPet(NeedList& list, UpkeepIndex const& index, Snapshot const& sna
 // The pet need makes a trip of its own when it names a spawn (price 0: nothing to fund)
 constexpr bool PetErrandDue(Need const& need) { return need.kind == UpkeepKind::Pet && need.due && need.beast; }
 
+// The tame at the beast's spawn (§3.11, WU21b-2): the hunter casts Tame Beast from TAME_CAST_YARDS and channels while
+// the beast fights it; below TAME_BREAK_OFF_HEALTH_PCT it breaks the channel off and fights the beast. A new try waits
+// until the health is back to TAME_START_HEALTH_PCT, for TAME_REST_MS at most (a bot never stalls), and a stop casts
+// TAME_MAX_TRIES times at most; then it is given up and the need plans a new trip at the errand retry. Tuning values,
+// read from the nights
+constexpr float TAME_CAST_YARDS = 20.0f;
+constexpr float TAME_BREAK_OFF_HEALTH_PCT = 35.0f;
+constexpr float TAME_START_HEALTH_PCT = 60.0f;
+constexpr std::uint32_t TAME_REST_MS = 60 * 1000;
+constexpr std::uint8_t TAME_MAX_TRIES = 3;
+// A pick that gets no cast within this time (the walk to the beast, the dismount) gives the stop up: every wait ends
+constexpr std::uint32_t TAME_REACH_MS = 60 * 1000;
+
+constexpr bool TameBreaksOff(float healthPct) { return healthPct < TAME_BREAK_OFF_HEALTH_PCT; }
+
+enum class TameNext : std::uint8_t
+{
+    Cast,
+    Rest,
+    GiveUp
+};
+
+// The step at the stop before a cast: the casts made there, the bot's health and the ms since the bot arrived or its
+// last channel ended
+constexpr TameNext TameNextStep(std::uint8_t tries, float healthPct, std::uint32_t sinceMs)
+{
+    if (tries >= TAME_MAX_TRIES)
+        return TameNext::GiveUp;
+    if (healthPct < TAME_START_HEALTH_PCT && sinceMs < TAME_REST_MS)
+        return TameNext::Rest;
+    return TameNext::Cast;
+}
+
+// A channel the beast broke while its fight goes on (its stun or knockback: Swoop, Wing Buffet; damage only pushes a
+// channel back) is cast again at once on the same beast, as a player tames: the ability is spent for a while (once
+// per fight, or on a timer longer than the channel). Only with tries left and the start health, and within
+// TAME_RECAST_MS of the channel's end (the stun, the fall of a knockback); else the bot fights the beast and the
+// stop's rest and next try follow
+constexpr std::uint32_t TAME_RECAST_MS = 6 * 1000;
+
+constexpr bool TameRecastsInFight(std::uint8_t tries, float healthPct, std::uint32_t sinceEndMs)
+{
+    return tries < TAME_MAX_TRIES && healthPct >= TAME_START_HEALTH_PCT && sinceEndMs <= TAME_RECAST_MS;
+}
+
+// A beast whose own spells break the channel is no tame target (WU.4; WU21b-2 round 4: the Bonestripper Buzzard's
+// Swoop stuns every 10 s, so the 20 s channel never ends): a spell effect that knocks back or interrupts a cast, or
+// an aura that stuns, fears, confuses or silences. One rule over the beast's spells (its creature_template_spell
+// spells and its SmartAI's casts, Planner::BreaksTameChannel), read where the index gathers the tameable spawns and
+// where the stop searches for a beast. The core's numbers (SharedDefines.h SpellEffects, SpellAuraDefines.h AuraType;
+// PlannerUpkeep.cpp asserts them)
+constexpr std::uint32_t EFFECT_INTERRUPT_CAST = 68;
+constexpr std::uint32_t EFFECT_KNOCK_BACK = 98;
+constexpr std::uint32_t EFFECT_KNOCK_BACK_DEST = 144;
+constexpr std::uint32_t AURA_MOD_CONFUSE = 5;
+constexpr std::uint32_t AURA_MOD_FEAR = 7;
+constexpr std::uint32_t AURA_MOD_STUN = 12;
+constexpr std::uint32_t AURA_MOD_SILENCE = 27;
+
+constexpr bool BreaksTameChannel(std::uint32_t effect, std::uint32_t aura)
+{
+    return effect == EFFECT_INTERRUPT_CAST || effect == EFFECT_KNOCK_BACK || effect == EFFECT_KNOCK_BACK_DEST ||
+           aura == AURA_MOD_CONFUSE || aura == AURA_MOD_FEAR || aura == AURA_MOD_STUN || aura == AURA_MOD_SILENCE;
+}
+
+// A tame target has TAME_MIN_SPAWNS spawns at least (WU21b-2 round 5): a single named spawn (Ripp 19458, Aspatha
+// 25498) is gone for its respawn once one hunter tames or kills it (its pack fights every bot that arrives), and the
+// next hunter the need sends finds none at the stop; of an entry with several spawns the stop takes the next one
+constexpr std::uint32_t TAME_MIN_SPAWNS = 2;
+
+constexpr bool TameTargetSpawns(std::uint32_t spawns) { return spawns >= TAME_MIN_SPAWNS; }
+
 // A weapon skill makes a trip of its own once its funded gold pays its price (WU15a); a bot without the gold keeps
 // playing, the need stays. The visit's reputation price is never above copper
 constexpr bool WeaponErrandDue(Need const& need)

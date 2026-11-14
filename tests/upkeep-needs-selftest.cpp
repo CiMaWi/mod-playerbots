@@ -1251,6 +1251,43 @@ void PetNeed()
     std::cout << "  " << Describe(*need) << "\n";
 }
 
+void TameSteps()
+{
+    std::cout << "Scenario: the tame at the beast (break off, cast again in the fight, rest, bounded tries)\n";
+    Check(!TameBreaksOff(100.0f) && !TameBreaksOff(TAME_BREAK_OFF_HEALTH_PCT) && TameBreaksOff(34.0f),
+          "the channel holds down to the break-off health and breaks off below it");
+    Check(TameNextStep(0, 100.0f, 0) == TameNext::Cast, "a healthy hunter casts at once on arrival");
+    Check(TameNextStep(1, 40.0f, 1000) == TameNext::Rest && TameNextStep(0, 40.0f, 0) == TameNext::Rest,
+          "a hurt hunter rests before a try (after a broken channel or on arrival)");
+    Check(TameNextStep(1, 40.0f, TAME_REST_MS) == TameNext::Cast,
+          "the rest ends after TAME_REST_MS whatever the health (a bot never stalls)");
+    Check(TameNextStep(1, TAME_START_HEALTH_PCT, 0) == TameNext::Cast, "back to the start health: another try");
+    Check(TameNextStep(TAME_MAX_TRIES - 1, 100.0f, 0) == TameNext::Cast &&
+              TameNextStep(TAME_MAX_TRIES, 100.0f, 0) == TameNext::GiveUp,
+          "the stop casts TAME_MAX_TRIES times at most, then gives up");
+    Check(TAME_START_HEALTH_PCT > TAME_BREAK_OFF_HEALTH_PCT, "a try starts above the break-off health");
+    Check(TameRecastsInFight(1, 90.0f, 0) && TameRecastsInFight(1, TAME_START_HEALTH_PCT, TAME_RECAST_MS),
+          "a channel the beast broke (stun, knockback) is cast again at once in its fight");
+    Check(!TameRecastsInFight(TAME_MAX_TRIES, 90.0f, 0), "no cast again in the fight past the tries");
+    Check(!TameRecastsInFight(1, TAME_START_HEALTH_PCT - 1.0f, 0),
+          "a hurt hunter fights the beast instead (the stop's rest and next try follow)");
+    Check(!TameRecastsInFight(1, 90.0f, TAME_RECAST_MS + 1), "the wait for a cast again ends (a bot never stalls)");
+
+    // The beasts' spells, as Spell.dbc gives their effects (effect, aura): APPLY_AURA 6, SCHOOL_DAMAGE 2,
+    // WEAPON_DAMAGE 58; MOD_ROOT 26, MOD_DECREASE_SPEED 33
+    Check(!BreaksTameChannel(58, 0) && BreaksTameChannel(6, AURA_MOD_STUN),
+          "Swoop (weapon damage, a stun) breaks the channel: the buzzard is no tame target");
+    Check(BreaksTameChannel(EFFECT_KNOCK_BACK, 0), "Wing Buffet's knockback breaks the channel: the moth is none");
+    Check(BreaksTameChannel(6, AURA_MOD_FEAR) && BreaksTameChannel(6, AURA_MOD_CONFUSE) &&
+              BreaksTameChannel(6, AURA_MOD_SILENCE) && BreaksTameChannel(EFFECT_INTERRUPT_CAST, 0) &&
+              BreaksTameChannel(EFFECT_KNOCK_BACK_DEST, 0),
+          "a fear, a confuse, a silence or an interrupt breaks it too");
+    Check(!BreaksTameChannel(2, 0) && !BreaksTameChannel(6, 26) && !BreaksTameChannel(6, 33),
+          "a bite, a root or a slow only hurts: such a beast stays a tame target");
+    Check(!TameTargetSpawns(1) && TameTargetSpawns(2) && TameTargetSpawns(40),
+          "a single named spawn is no tame target (one tame or kill takes it); a beast with several spawns is");
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1272,6 +1309,7 @@ int main()
     TrainingPlaces(index);
     WeaponMasters();
     PetNeed();
+    TameSteps();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

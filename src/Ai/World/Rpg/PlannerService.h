@@ -21,6 +21,7 @@
 
 class ChatHandler;
 class Player;
+struct CreatureTemplate;
 struct ItemTemplate;
 class PlayerbotAI;
 
@@ -164,6 +165,10 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args);
 // The pet fixture of the functional tests (WU21b, a test cheat): playerbots planner pet <bot> [has|none|unpet|give
 // <entry>]
 bool HandlePetCommand(ChatHandler* handler, char const* args);
+// Any thread: the beast's own spells break a tame's channel (UpkeepNeedRules.h BreaksTameChannel over the effects of
+// its creature_template_spell spells and its SmartAI's casts); such a beast is no tame target (WU.4): the index
+// gathers no spawn of it and the search for a beast at the stop passes it over. Reads the core's loaded stores only
+bool BreaksTameChannel(CreatureTemplate const& beast);
 // The questing circuit (WT13b, PlannerQuests.cpp; the planner in QuestCircuit.h)
 struct CircuitWeights;
 struct QuestProgress;

@@ -36,6 +36,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "SmartScriptMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -72,6 +73,53 @@ static_assert(std::tuple_size_v<decltype(TrainerSpell::reqAbility)> ==
                   std::tuple_size_v<decltype(Trainer::Spell::ReqAbility)>,
               "one required ability per core slot");
 static_assert(std::tuple_size_v<decltype(TrainerSpell::teaches)> == MAX_SPELL_EFFECTS, "one taught spell per effect");
+static_assert(UpkeepNeeds::EFFECT_INTERRUPT_CAST == SPELL_EFFECT_INTERRUPT_CAST &&
+                  UpkeepNeeds::EFFECT_KNOCK_BACK == SPELL_EFFECT_KNOCK_BACK &&
+                  UpkeepNeeds::EFFECT_KNOCK_BACK_DEST == SPELL_EFFECT_KNOCK_BACK_DEST &&
+                  UpkeepNeeds::AURA_MOD_CONFUSE == SPELL_AURA_MOD_CONFUSE &&
+                  UpkeepNeeds::AURA_MOD_FEAR == SPELL_AURA_MOD_FEAR &&
+                  UpkeepNeeds::AURA_MOD_STUN == SPELL_AURA_MOD_STUN &&
+                  UpkeepNeeds::AURA_MOD_SILENCE == SPELL_AURA_MOD_SILENCE,
+              "the tame channel's breaking effects and auras are the core's");
+
+bool BreaksTameChannel(CreatureTemplate const& beast)
+{
+    auto const breaks = [](uint32 spellId)
+    {
+        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        if (!info)
+            return false;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (UpkeepNeeds::BreaksTameChannel(effect.Effect, static_cast<uint32>(effect.ApplyAuraName)))
+                return true;
+        return false;
+    };
+    for (uint32 spellId : beast.spells)
+        if (breaks(spellId))
+            return true;
+    if (beast.AIName != "SmartAI")
+        return false;  // its smart_scripts rows do not run
+    for (SmartScriptHolder const& row :
+         sSmartScriptMgr->GetScript(static_cast<int32>(beast.Entry), SMART_SCRIPT_TYPE_CREATURE))
+    {
+        switch (row.GetActionType())
+        {
+            case SMART_ACTION_CAST:
+            case SMART_ACTION_SELF_CAST:
+            case SMART_ACTION_INVOKER_CAST:
+                if (breaks(row.action.cast.spell))
+                    return true;
+                break;
+            case SMART_ACTION_CROSS_CAST:
+                if (breaks(row.action.crossCast.spell))
+                    return true;
+                break;
+            default:
+                break;
+        }
+    }
+    return false;
+}
 
 namespace
 {
@@ -225,18 +273,37 @@ UpkeepGather GatherUpkeep()
     std::unordered_set<ObjectGuid::LowType> const creatureEvents = EventCreatureSpawns();
     std::unordered_set<uint32> placedVendors;
     // The same spawns give the tameable beasts (WU21b): templates the core lets a hunter tame, of normal rank (an
-    // elite or rare beast outlasts the channel's fight)
+    // elite or rare beast outlasts the channel's fight), whose own spells do not break the channel (WU.4), with
+    // several spawns (UpkeepNeeds::TameTargetSpawns)
+    std::unordered_map<uint32, bool> tameTargets;   // by entry: a tame target, read once per template
+    std::unordered_map<uint32, uint32> tameSpawns;  // by entry: the spawns of a tame target
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
     {
         if (!botMaps.count(data.mapid) || creatureEvents.count(guid))
             continue;
         placedVendors.insert(data.id);
         CreatureTemplate const* beast = sObjectMgr->GetCreatureTemplate(data.id);
-        if (beast && beast->IsTameable(true) && beast->rank == CREATURE_ELITE_NORMAL)
-            input.tameable.push_back({data.mapid, data.posX, data.posY, data.posZ, data.id,
-                                      static_cast<uint8>(beast->family), beast->minlevel, beast->maxlevel,
-                                      beast->IsExotic()});
+        if (!beast || !beast->IsTameable(true) || beast->rank != CREATURE_ELITE_NORMAL)
+            continue;
+        auto const [target, added] = tameTargets.try_emplace(data.id, false);
+        if (added)
+            target->second = !BreaksTameChannel(*beast);
+        if (!target->second)
+            continue;
+        ++tameSpawns[data.id];
+        input.tameable.push_back({data.mapid, data.posX, data.posY, data.posZ, data.id,
+                                  static_cast<uint8>(beast->family), beast->minlevel, beast->maxlevel,
+                                  beast->IsExotic()});
     }
+    std::erase_if(input.tameable,
+                  [&tameSpawns](auto const& spawn) { return !UpkeepNeeds::TameTargetSpawns(tameSpawns[spawn.entry]); });
+    LOG_INFO("playerbots",
+             "Upkeep index: {} of {} tameable beast templates break the tame's channel, {} have a single spawn (no "
+             "target)",
+             std::count_if(tameTargets.begin(), tameTargets.end(), [](auto const& each) { return !each.second; }),
+             tameTargets.size(),
+             std::count_if(tameSpawns.begin(), tameSpawns.end(),
+                           [](auto const& each) { return !UpkeepNeeds::TameTargetSpawns(each.second); }));
 
     std::unordered_map<Trainer::Trainer const*, uint32> trainerKeys;  // the core keeps one object per trainer id
     std::unordered_set<uint32> itemsSeen;

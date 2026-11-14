@@ -244,7 +244,8 @@ struct ReagentSpell
 };
 
 // A spawn of a tameable beast (WU21b, §3.11): a creature template the core lets a hunter tame
-// (CreatureTemplate::IsTameable(true)), of normal rank, spawned on a random-bot map outside a game event; the pet
+// (CreatureTemplate::IsTameable(true)), of normal rank, whose own spells do not break the channel
+// (Planner::BreaksTameChannel), spawned on a random-bot map outside a game event; the pet
 // need names the nearest one of a wanted family at or below the hunter's level
 struct TameableSpawn
 {

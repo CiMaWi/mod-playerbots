@@ -10,11 +10,14 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <list>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 
 #include "AreaDefines.h"
@@ -53,6 +56,7 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
+#include "Pet.h"
 #include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -67,6 +71,8 @@
 #include "RandomPlayerbotMgr.h"
 #include "RouteService.h"
 #include "SharedDefines.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 #include "StartingHistoryRules.h"
 #include "TestConstraints.h"
 #include "Timer.h"
@@ -533,16 +539,231 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
                        creature->GetEntry());
 }
 
-// The tame part of an errand stop (upkeep §3.11, WU21b): the bot stands at the spawn of the pet need's beast.
-// WU21b-1 stub: it finds the beast and writes the row; WU21b-2 brings the tame action (approach, cast Tame Beast, keep
-// channelling while the beast fights, break off at low health and try another, PetTamed)
-void TameAtBeast(PlayerbotAI* botAI, uint32 entry)
+// The family's word for PetTamed's source: the DBC's English name in lower case, '_' for a space ("wind_serpent")
+std::string FamilyWord(uint32 family)
+{
+    CreatureFamilyEntry const* entry = sCreatureFamilyStore.LookupEntry(family);
+    std::string word = entry && entry->Name[0] && *entry->Name[0] ? entry->Name[0] : "unknown";
+    for (char& c : word)
+        c = c == ' ' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return word;
+}
+
+// A beast the bot may tame now: alive, wild, out of combat (no other's fight), at or below the bot's level and
+// tameable by it (an exotic one with Beast Mastery's aura), as the core's Tame Beast checks
+bool TameableNow(Player* bot, Creature const* beast, bool inOwnFight = false)
+{
+    return beast && beast->IsAlive() && (!beast->IsInCombat() || (inOwnFight && beast->GetVictim() == bot)) &&
+           !beast->IsPet() && beast->GetOwnerGUID().IsEmpty() && beast->GetLevel() <= bot->GetLevel() &&
+           beast->GetCreatureTemplate()->IsTameable(bot->CanTameExoticPets());
+}
+
+// A cast that ended without a pet: the row tame/channel_broken (its length as the AI updates saw it run, the beast's
+// yards, -1 dead or gone); the stop's rest and reach bounds start now
+void NoteBrokenChannel(Player* bot, NewRpgInfo::ErrandStop& stop, uint32 now)
+{
+    stop.tameCast = false;
+    stop.tameSinceMs = now;
+    stop.tamePickMs = now;
+    Creature const* beast = ObjectAccessor::GetCreature(*bot, stop.tameBeast);
+    float const channelS =
+        stop.tameSeenMs ? static_cast<float>(getMSTimeDiff(stop.tameCastMs, stop.tameSeenMs)) / IN_MILLISECONDS : 0.0f;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "channel_broken", bot->GetHealthPct(),
+                       {{"tries", static_cast<float>(stop.tameTries)},
+                        {"channel_s", channelS},
+                        {"beast_yd", beast && beast->IsAlive() ? bot->GetExactDist(beast) : -1.0f}},
+                       stop.tameEntry);
+}
+
+// The core's cast, as a player casts it (the bot's combat cast layer is for rotations): no swing at the beast (a melee
+// swing breaks the channel), faced and selected; a cast counts a try and writes the row tame/cast
+SpellCastResult CastTame(Player* bot, NewRpgInfo::ErrandStop& stop, Creature* beast)
+{
+    if (bot->GetVictim())
+        bot->AttackStop();
+    bot->SetSelection(beast->GetGUID());
+    bot->SetFacingToObject(beast);
+    SpellCastResult const result = bot->CastSpell(beast, UpkeepNeeds::SPELL_TAME_BEAST, false);
+    if (result != SPELL_CAST_OK)
+        return result;
+
+    ++stop.tameTries;
+    stop.tameCast = true;
+    stop.tameCastMs = getMSTime();
+    stop.tameSeenMs = 0;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "cast", static_cast<float>(beast->GetLevel()),
+                       {{"tries", static_cast<float>(stop.tameTries)}}, beast->GetEntry());
+    return result;
+}
+
+// The channel's end in the beast's fight without a pet (WU21b-2 round 4: Swoop's stun and Wing Buffet's knockback
+// broke it at 6-8 s, damage only pushes it back): cast again on the same beast at once while TameRecastsInFight
+// holds, waiting out the stun or the knockback's fall; tameSeenMs, the channel's end, marks the cast again as due.
+// True while the bot's AI waits for it; false lets the bot fight, and the stop reads the rest after the fight
+bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
+{
+    uint32 const now = getMSTime();
+    if (stop.tameCast)
+    {
+        Pet const* pet = bot->GetPet();
+        if (pet && pet->getPetType() == HUNTER_PET)
+            return false;
+        uint32 const endMs = stop.tameSeenMs ? stop.tameSeenMs : stop.tameCastMs;
+        if (!UpkeepNeeds::TameRecastsInFight(stop.tameTries, bot->GetHealthPct(), getMSTimeDiff(endMs, now)))
+            return false;
+        NoteBrokenChannel(bot, stop, now);
+        stop.tameSeenMs = endMs ? endMs : now;
+    }
+    else if (!stop.tameSeenMs)
+        return false;
+
+    Creature* beast = ObjectAccessor::GetCreature(*bot, stop.tameBeast);
+    if (!UpkeepNeeds::TameRecastsInFight(stop.tameTries, bot->GetHealthPct(), getMSTimeDiff(stop.tameSeenMs, now)) ||
+        !TameableNow(bot, beast, true))
+    {
+        stop.tameSeenMs = 0;
+        return false;
+    }
+    if (bot->IsFalling() || bot->HasUnitState(UNIT_STATE_CONTROLLED))
+        return true;
+    if (bot->isMoving())
+        bot->StopMoving();
+    // Out of range or still moving after a knockback: tried again on the next update, until TAME_RECAST_MS
+    CastTame(bot, stop, beast);
+    return true;
+}
+
+// The nearest beast the bot may tame now within the stop's reach, one of the stop's entry first (the planned spawn):
+// another hunter may have tamed the planned one. Normal rank only and none whose spells break the channel, as the
+// index gathers them (Planner::BreaksTameChannel, read after the cheap checks)
+Creature* NearestTameable(Player* bot, uint32 entry)
+{
+    float const reach = WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS;
+    std::list<Unit*> found;
+    Acore::AnyUnitInObjectRangeCheck check(bot, reach);
+    Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, found, check);
+    Cell::VisitObjects(bot, searcher, reach);
+    Creature* nearest = nullptr;
+    std::pair<bool, float> best{true, std::numeric_limits<float>::max()};
+    for (Unit* unit : found)
+    {
+        Creature* each = unit->ToCreature();
+        if (!each || each->GetCreatureTemplate()->rank != CREATURE_ELITE_NORMAL || !TameableNow(bot, each) ||
+            Planner::BreaksTameChannel(*each->GetCreatureTemplate()))
+            continue;
+        std::pair<bool, float> const key{each->GetEntry() != entry, bot->GetExactDist(each)};
+        if (key < best)
+        {
+            best = key;
+            nearest = each;
+        }
+    }
+    return nearest;
+}
+
+enum class TameStep : uint8
+{
+    Busy,      // a cast or its channel runs: the stop holds
+    Rest,      // the bot rests before a new try: other actions (food) may run
+    Approach,  // the picked beast is out of reach or sight: walk to it
+    Done       // tamed or given up: the stop's tame is over
+};
+
+// The tame part of an errand stop (upkeep §3.11, WU21b-2): the bot stands at the spawn of the pet need's beast, picks
+// the nearest beast of that entry it may tame, walks into reach and casts Tame Beast; the channel holds while the beast
+// fights (HoldTameChannel holds the bot's AI and breaks it off at low health). Each end of a channel is read on the
+// next tick out of combat: a hunter pet now is the tame (PetTamed, id the beast's entry, amount the pet's level, source
+// the family word, and the upkeep row tame/tamed); else the row tame/channel_broken and another try, after a rest, with
+// the same beast while it may be tamed or the next nearest. Rows: tame/cast per cast; skip/tame_failed (tries used, or
+// no beast left after a broken channel), skip/no_beast (none at the stop), skip/tame_refused (the core refused the
+// cast: value its SpellCastResult), skip/tame_stuck (no cast within TAME_REACH_MS of the pick), all with the tries made
+TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
 {
     Player* bot = botAI->GetBot();
-    Creature* beast =
-        bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS);
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", beast ? "tame_pending" : "no_beast", 0.0f, {},
-                       entry);
+    if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) || bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        return TameStep::Busy;
+
+    uint32 const now = getMSTime();
+    if (!stop.tameSinceMs)
+        stop.tameSinceMs = now;
+    auto const skip = [bot, &stop](char const* reason)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", reason,
+                           static_cast<float>(stop.tameTries), {{"tries", static_cast<float>(stop.tameTries)}},
+                           stop.tameEntry);
+        return TameStep::Done;
+    };
+
+    if (stop.tameCast)
+    {
+        Pet* pet = bot->GetPet();
+        if (pet && pet->getPetType() == HUNTER_PET)
+        {
+            CreatureTemplate const* info = pet->GetCreatureTemplate();
+            uint32 const family = info ? info->family : 0;
+            std::string const word = FamilyWord(family);
+            EventLog::Emit(bot, Upkeep::EVENT_PET_TAMED, word.c_str(), pet->GetEntry(), int64(pet->GetLevel()));
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "tamed",
+                               static_cast<float>(pet->GetLevel()),
+                               {{"tries", static_cast<float>(stop.tameTries)}, {"family", static_cast<float>(family)}},
+                               pet->GetEntry());
+            return TameStep::Done;
+        }
+        NoteBrokenChannel(bot, stop, now);
+    }
+
+    switch (UpkeepNeeds::TameNextStep(stop.tameTries, bot->GetHealthPct(), getMSTimeDiff(stop.tameSinceMs, now)))
+    {
+        case UpkeepNeeds::TameNext::GiveUp:
+            return skip("tame_failed");
+        case UpkeepNeeds::TameNext::Rest:
+            return TameStep::Rest;
+        case UpkeepNeeds::TameNext::Cast:
+            break;
+    }
+
+    Creature* beast = stop.tameBeast.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*bot, stop.tameBeast);
+    if (!TameableNow(bot, beast))
+    {
+        beast = NearestTameable(bot, stop.tameEntry);
+        if (!beast)
+            return skip(stop.tameTries ? "tame_failed" : "no_beast");
+        stop.tameBeast = beast->GetGUID();
+        stop.tamePickMs = now;
+    }
+
+    if (getMSTimeDiff(stop.tamePickMs, now) > UpkeepNeeds::TAME_REACH_MS)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "tame_stuck", bot->GetExactDist(beast),
+                           {{"dz", beast->GetPositionZ() - bot->GetPositionZ()},
+                            {"los", bot->IsWithinLOSInMap(beast) ? 1.0f : 0.0f},
+                            {"moving", bot->isMoving() ? 1.0f : 0.0f}},
+                           beast->GetEntry());
+        return TameStep::Done;
+    }
+    if (bot->GetExactDist(beast) > UpkeepNeeds::TAME_CAST_YARDS || !bot->IsWithinLOSInMap(beast))
+        return TameStep::Approach;
+    // Tame Beast is not cast mounted or moving (a trip arrives mounted)
+    if (bot->IsMounted())
+    {
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        return TameStep::Busy;
+    }
+    if (bot->isMoving())
+    {
+        bot->StopMoving();
+        return TameStep::Busy;
+    }
+
+    SpellCastResult const result = CastTame(bot, stop, beast);
+    if (result != SPELL_CAST_OK)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "tame_refused",
+                           static_cast<float>(result), {{"tries", static_cast<float>(stop.tameTries)}},
+                           beast->GetEntry());
+        return TameStep::Done;
+    }
+    return TameStep::Busy;
 }
 
 // The weapon master visit of an errand stop (upkeep §3.7, WU15a): each weapon skill need (recomputed here) this master
@@ -1933,6 +2154,41 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     return true;
 }
 
+bool NewRpgErrandsAction::HoldTameChannel(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    auto* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    NewRpgInfo::ErrandStop* stop =
+        errands && errands->stop < errands->stops.size() ? &errands->stops[errands->stop] : nullptr;
+    Spell const* channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    if (!channel || channel->GetSpellInfo()->Id != UpkeepNeeds::SPELL_TAME_BEAST)
+    {
+        // No channel of Tame Beast: cast again in the fight of a beast that broke it
+        if (!stop || !stop->tameEntry || channel || bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) || !bot->IsInCombat())
+            return false;
+        return RecastTameInFight(bot, *stop);
+    }
+
+    // The channel runs: noted for the stop's channel_broken row
+    if (stop)
+        stop->tameSeenMs = getMSTime();
+    if (!UpkeepNeeds::TameBreaksOff(bot->GetHealthPct()))
+    {
+        // The bot stands and channels: no swing or shot at the beast it tames
+        if (bot->GetVictim())
+            bot->AttackStop();
+        if (bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+            bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+        return true;
+    }
+
+    Unit const* beast = channel->m_targets.GetUnitTarget();
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "broke_off", bot->GetHealthPct(), {},
+                       beast ? beast->GetEntry() : 0);
+    bot->InterruptSpell(CURRENT_CHANNELED_SPELL);
+    return false;
+}
+
 bool NewRpgErrandsAction::Execute(Event /*event*/)
 {
     auto* data = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
@@ -2117,10 +2373,22 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         return true;
     }
 
-    // The tame part of the stop: the stop is the beast's spawn (WU21b)
+    // The tame part of the stop: the stop is the beast's spawn (WU21b). A walk to the picked beast that fails gives
+    // the tame up
     if (stop.tameEntry)
     {
-        TameAtBeast(botAI, stop.tameEntry);
+        TameStep const step = TameAtBeast(botAI, stop);
+        if (step == TameStep::Approach)
+        {
+            if (MoveWorldObjectTo(stop.tameBeast, UpkeepNeeds::TAME_CAST_YARDS / 2) ||
+                IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+                return true;
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "tame_path",
+                               static_cast<float>(stop.tameTries), {{"tries", static_cast<float>(stop.tameTries)}},
+                               stop.tameEntry);
+        }
+        else if (step != TameStep::Done)
+            return step == TameStep::Busy;
         stop.tameEntry = 0;
         data->visited = true;
         return true;
@@ -3508,6 +3776,9 @@ bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data)
 
 bool TravelKeepsOnFoot(PlayerbotAI* botAI)
 {
+    // An errand stop's tame goes on foot (Tame Beast is not cast mounted; WU21b-2)
+    if (auto const* const errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
+        return errands->arrived && errands->stop < errands->stops.size() && errands->stops[errands->stop].tameEntry;
     auto const* const data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (!data)
         return false;

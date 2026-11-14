@@ -156,6 +156,16 @@ struct NewRpgInfo
         bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
         bool trainerWeapon{false};  // a weapon master (WU15a)
         uint32 tameEntry{0};        // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
+        // The tame at the stop (WU21b-2): the beast picked, the casts made, a cast whose channel's end is still to be
+        // read, when the bot arrived or its last channel ended (the rest before a new try), the last cast and the
+        // last AI update that saw its channel run (the channel's length in the channel_broken row)
+        ObjectGuid tameBeast;
+        uint8 tameTries{0};
+        bool tameCast{false};
+        uint32 tameSinceMs{0};
+        uint32 tameCastMs{0};
+        uint32 tameSeenMs{0};
+        uint32 tamePickMs{0};  // the beast's pick or the last channel's end (TAME_REACH_MS)
         std::vector<ErrandTurnIn> turnIns;
         // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
         // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the
