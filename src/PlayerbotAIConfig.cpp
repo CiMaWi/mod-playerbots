@@ -1270,6 +1270,8 @@ bool PlayerbotAIConfig::Initialize()
         pvpRange("Enthusiasm.KillEdit", zeal.KillEdit, 0.0f, MaxPoints);
         pvpNumber("Enthusiasm.GroupDeathYards", zeal.GroupDeathYards, 0, MaxRadiusYards);
         pvpRange("Enthusiasm.GroupDeathShare", zeal.GroupDeathShare, 0.0f, 1.0f);
+        pvpRange("Enthusiasm.StartCost", zeal.StartCost, 0.0f, MaxPoints);
+        pvpNumber("Enthusiasm.StartCostShare", zeal.StartCostShare, 0, 100);
         pvpRange("Enthusiasm.JoinBase", zeal.JoinBase, 0.0f, MaxPoints);
         pvpRange("Enthusiasm.JoinAggression", zeal.JoinAggression, 0.0f, MaxPoints);
         pvpRange("Enthusiasm.AggressionJoinFactor", zeal.AggressionJoinFactor, 0.0f, 1.0f);

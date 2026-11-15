@@ -20,8 +20,6 @@
 // tests/fight-enthusiasm-selftest.cpp checks the same code the server runs
 namespace WorldPvp
 {
-// The target a bot entered on stays its scan's target this long (it closes in and attacks within it)
-constexpr uint32_t PICK_MS = 20 * 1000;
 // The traits, the real master and the prohibited zone are read again after this long
 constexpr uint32_t ENTHUSIASM_CONTEXT_MS = 5 * 1000;
 // The local balance and the graveyard's distance are read again after this long: the scan's cadence
@@ -119,6 +117,8 @@ struct BotEnthusiasm
     float fleeNow = 0.0f;     // FleeThreshold as it holds now (groupEngaged)
     bool realMaster = false;
     bool prohibitedZone = false;
+    // In the start-cost share (StartCostShare by ShareSlot.h's guid mix): its starts cost, its kills give nothing
+    bool inShare = false;
     // The local balance (LocalBalance) with its factor and shift, and the graveyard row, read at BALANCE_REFRESH_MS
     bool balanceKnown = false;
     uint32_t balanceMs = 0;
@@ -270,29 +270,6 @@ inline double EditBy(BotEnthusiasm& bot, EditCause cause, uint32_t nowMs, Enthus
     return before;
 }
 
-// What an even fight drains while one pick lasts (6.67 points at the defaults): the margin entering keeps above the
-// flee threshold
-inline double EnterMargin(EnthusiasmValues const& values)
-{
-    return DepletionPerMs(BalanceDepletionFactor(EVEN_BALANCE, values), values) * PICK_MS;
-}
-
-// The lowest value that enters beside a flee threshold: the threshold plus EnterMargin, so a bot enters no fight it
-// would leave before its pick ends. A bot that left a hair below its threshold recovers past it within seconds, and
-// where its join threshold lies lower (its side leads) it would enter, drain for a second and leave again (wp-leave
-// run 3: four times in 13 s); now it needs the margin's recovery first (27 min at the defaults). Under a threshold
-// of 0 or below there is no floor: that bot never leaves (the value stops at 0, MustLeave is strict)
-inline double EnterFloor(float fleeThreshold, EnthusiasmValues const& values)
-{
-    return fleeThreshold > 0.0f ? fleeThreshold + EnterMargin(values) : 0.0;
-}
-
-// A bot enters a fight only above its join threshold and at or above its flee threshold's floor (EnterFloor)
-inline bool Enters(double value, float joinThreshold, float fleeThreshold, EnthusiasmValues const& values)
-{
-    return MayJoin(value, joinThreshold) && value >= EnterFloor(fleeThreshold, values);
-}
-
 inline bool IsPick(BotEnthusiasm const& bot, uint64_t guid, uint32_t nowMs)
 {
     return guid && bot.pickGuid == guid && nowMs - bot.pickMs < PICK_MS;
@@ -352,6 +329,13 @@ inline JoinFacts FactsFor(BotEnthusiasm const& bot, Colour colour, bool targetAt
     facts.nearGraveyard = bot.nearGraveyard;
     facts.balance = bot.balance;
     return facts;
+}
+
+// Whether a pick on a target of these facts is a start the bot pays for (PaysStart): not a join, the bot not engaged,
+// in the start-cost share
+inline bool PaysStart(BotEnthusiasm const& bot, JoinFacts const& facts)
+{
+    return PaysStart(!FightOngoing(facts), bot.engaged, bot.inShare);
 }
 
 // The rows JoinThreshold applied to these facts (JoinTerm bits); none when Aggression alone puts a start at the top

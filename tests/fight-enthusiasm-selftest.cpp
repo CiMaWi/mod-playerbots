@@ -171,6 +171,20 @@ void TestEnters()
     Check(Near(EnterFloor(35.0f, v), 35.0 + margin) && !Enters(weak + 0.01, weak, 35.0f, v) &&
               Enters(EnterFloor(35.0f, v), weak, 35.0f, v),
           "enters: at Caution 1 the floor (41.67) decides above the weakened row (40)");
+    // Starting costs enthusiasm (WP34): the AI's state says who pays; a join, an engaged bot and one outside the
+    // share pay nothing
+    BotEnthusiasm starter = At(50.0, 0);
+    starter.inShare = true;
+    JoinFacts const start;
+    JoinFacts joins;
+    joins.targetAttacksFaction = true;
+    bool const paysIdle = PaysStart(starter, start) && !PaysStart(starter, joins);
+    starter.engaged = true;
+    bool const paysEngaged = PaysStart(starter, start);
+    starter.engaged = false;
+    starter.inShare = false;
+    Check(paysIdle && !paysEngaged && !PaysStart(starter, start),
+          "enters: a start pays in the share while not engaged; a join, an engaged bot and a bot outside pay nothing");
 }
 
 void TestSkip()

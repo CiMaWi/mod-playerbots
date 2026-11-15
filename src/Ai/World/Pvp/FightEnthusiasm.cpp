@@ -37,6 +37,7 @@
 #include "Playerbots.h"
 #include "Random.h"
 #include "ScriptMgr.h"
+#include "ShareSlot.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -233,6 +234,7 @@ void ReadContext(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 n
     Player* const master = botAI->GetMaster();
     state.realMaster = master && master != bot && IsRealPlayer(master);
     state.prohibitedZone = sPlayerbotAIConfig.IsPvpProhibited(bot->GetZoneId(), bot->GetAreaId());
+    state.inShare = BotShare::InShare(bot->GetGUID().GetCounter(), values.startCostShare);
 }
 
 // LocalBalance over the living players within balanceYards: the bot, its side and the enemies it sees. The lists are
@@ -326,6 +328,7 @@ void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs
 struct Entering
 {
     bool enters = false;
+    bool pays = false;  // a start the bot pays for (PaysStart)
     BanReason ban = BanReason::None;
     JoinFacts facts;
     float join = 0.0f;
@@ -360,7 +363,8 @@ Entering Evaluate(PlayerbotAI* botAI, Player* bot, BotEnthusiasm const& state, P
     entering.facts = FactsFor(state, colour, faction, groupAttacked);
     entering.join = JoinThreshold(entering.facts, values);
     entering.value = ValueAt(state, nowMs, values);
-    entering.enters = Enters(entering.value, entering.join, state.fleeNow, values);
+    entering.pays = PaysStart(state, entering.facts);
+    entering.enters = Enters(entering.value, entering.join, state.fleeNow, values, entering.pays);
     return entering;
 }
 
@@ -433,6 +437,9 @@ void EditOne(Player* player, EditCause cause, uint32 nowMs, EnthusiasmValues con
     BotEnthusiasm& state = Of(botAI, nowMs, values);
     if (ContextDue(state, nowMs))
         ReadContext(botAI, player, state, nowMs, values);
+    // A bot in the start-cost share gets no kill edit (WP.20): its starts cost instead
+    if (cause == EditCause::Kill && state.inShare)
+        return;
     double const before = EditBy(state, cause, nowMs, values);
     double const after = ValueAt(state, nowMs, values);
     EventLog::Emit(player, EVENT_ENTHUSIASM, Word(cause), static_cast<uint32>(std::lround(before)),
@@ -578,6 +585,13 @@ bool NoteEntering(PlayerbotAI* botAI, Player* enemy)
         return false;
     SetPick(*state, guid, nowMs);
     RecordEntering(bot, entering, values, enemy->GetGUID().GetCounter());
+    if (entering.pays)
+    {
+        // The start's cost (WP34), with its row: the value before and after
+        double const before = EditBy(*state, EditCause::Start, nowMs, values);
+        EventLog::Emit(bot, EVENT_ENTHUSIASM, Word(EditCause::Start), static_cast<uint32>(std::lround(before)),
+                       static_cast<int64>(std::lround(ValueAt(*state, nowMs, values))));
+    }
     return true;
 }
 
@@ -676,6 +690,8 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
                              state.joinShift);
     handler->PSendSysMessage("{} engaged {} for {} s", prefix, state.engaged ? 1 : 0,
                              state.engaged ? (nowMs - state.engagedMs) / IN_MILLISECONDS : 0);
+    handler->PSendSysMessage("{} share {} slot {} cost {:.2f}", prefix, state.inShare ? 1 : 0,
+                             BotShare::ShareSlot(bot->GetGUID().GetCounter()), values.startCost);
     bool const picked = IsPick(state, state.pickGuid, nowMs);
     handler->PSendSysMessage("{} pick {} left {} s", prefix, picked ? ObjectGuid(state.pickGuid).GetCounter() : 0,
                              picked ? (PICK_MS - (nowMs - state.pickMs)) / IN_MILLISECONDS : 0);
