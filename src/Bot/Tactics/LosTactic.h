@@ -86,7 +86,7 @@ struct LosParams
 };
 
 // What the numbers read of a bot (PlayerbotAI: the skill, three attributes, the effort; full ability = skill 0 or
-// PlayerbotAI::HasFullSkillAbility)
+// BotTactics::HasFullSkillAbility)
 struct LosGateInputs
 {
     uint8 Skill = 0;

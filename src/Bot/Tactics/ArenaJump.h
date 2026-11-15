@@ -34,7 +34,7 @@ class Player;
 // - JumpTestMachine: `tactics jump test` (stage 6 yd behind the spot, walk in, jump, wait for the landing, settle,
 //   measure, walk back on the first jump; n jumps per spot) with a record and a failure mode per jump.
 // Rays and floors are injected callables (the map's in game, a synthetic arena in the selftest). The game side is
-// ArenaJump.cpp (the commands, the static checks, PlayerbotAI::StepJumpTest on the bot's map thread).
+// ArenaJump.cpp (the commands, the static checks, BotTactics::StepJumpTest on the bot's map thread).
 
 constexpr float JUMP_GRAVITY = 19.291105f;          // Movement::gravity (MovementUtil.cpp)
 constexpr float JUMP_SPEED_Z = 7.9555473f;          // a player's own jump (the client's jump velocity): apex 1.64 yd
@@ -976,8 +976,8 @@ private:
     std::vector<JumpTestRecord> records_;
 };
 
-// Per bot (PlayerbotAI::GetJumpState): the test's queue of spots, armed by `tactics jump test` on the world thread
-// (while no map updates) and stepped by PlayerbotAI::StepJumpTest on the bot's map thread. Frozen: the jump test
+// Per bot (BotTactics::GetJumpState): the test's queue of spots, armed by `tactics jump test` on the world thread
+// (while no map updates) and stepped by BotTactics::StepJumpTest on the bot's map thread. Frozen: the jump test
 // drives the bot, so UpdateAI runs no engine (PlayerbotAI::jumpTest).
 struct JumpBotState
 {

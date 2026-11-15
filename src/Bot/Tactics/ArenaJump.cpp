@@ -32,7 +32,7 @@
 
 // The game side of the jump spots (G2g-a): `tactics jump scan` and `tactics jump test` run on the world thread
 // between the map updates (they read a map no map thread updates now, as `tactics cover scan` does); the test arms
-// the bot's JumpBotState and PlayerbotAI::StepJumpTest steps it on the bot's own map thread.
+// the bot's JumpBotState and BotTactics::StepJumpTest steps it on the bot's own map thread.
 
 namespace
 {

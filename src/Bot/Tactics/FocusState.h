@@ -15,7 +15,7 @@
 #include "ObjectGuid.h"
 
 // One bot's state of the target hold and the team plan (G1b, PLAN 3.15), owned by its PlayerbotAI
-// (PlayerbotAI::GetFocusState). Touched by the bot's own update on its map thread; the GM commands (tactics show,
+// (BotTactics::GetFocusState). Touched by the bot's own update on its map thread; the GM commands (tactics show,
 // tactics force) read or write it on the world thread while the map threads wait, as SetPvpSkill does. There is no
 // team object: the team's only shared channel is its group's target icons (DT.1), skull = kill, moon = control.
 

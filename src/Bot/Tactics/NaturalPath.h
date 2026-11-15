@@ -620,7 +620,7 @@ inline bool PathWalkLeg(PathConfig const& config, bool inCombat, float yards)
            yards <= static_cast<float>(config.WalkMaxLegYards);
 }
 
-// The per-bot state (PlayerbotAI::GetPathState; the bot's own update, tactics show on the world thread)
+// The per-bot state (BotTactics::GetPathState; the bot's own update, tactics show on the world thread)
 struct PathBotState
 {
     uint32 InSightCheckedMs = 0;  // NaturalPathHere's real-player-in-sight cache (OutsidePvpInSight)

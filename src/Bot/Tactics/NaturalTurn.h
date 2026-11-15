@@ -327,7 +327,7 @@ struct TurnStepOut
     bool Abandoned = false;  // someone else turned the bot: the turn ended
 };
 
-// The per-bot state (PlayerbotAI::GetTurnState; the bot's own update, tactics show on the world thread)
+// The per-bot state (BotTactics::GetTurnState; the bot's own update, tactics show on the world thread)
 struct TurnBotState
 {
     TurnParams Params;
