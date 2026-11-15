@@ -95,11 +95,19 @@
 #include "WorldSession.h"
 #include "WorldTravelRules.h"
 
+using namespace NewRpgInternal;
+
 namespace
+{
+// The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
+constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
+}  // namespace
+
+namespace NewRpgInternal
 {
 // Ends the bot's errand: stamps the errand check, measures t from a visited vendor and records the run; an errand given
 // up records abortSource (a literal: errand_abort, or errand_sick when the sickness ended it)
-void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource = "errand_abort")
+void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource)
 {
     WorldLog::StatusReason const reasonScope("finished");
     NewRpgInfo& info = botAI->rpgInfo;
@@ -125,9 +133,6 @@ void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource = "
     info.ChangeToIdle();
 }
 
-// The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
-constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
-
 // Gives the bot's trip up: the Travel event (source "abort:<reason>", a literal), the trip's abort decision, idle
 void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* why, char const* source)
 {
@@ -144,7 +149,10 @@ void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* 
     WorldLog::StatusReason const reasonScope("abort");
     botAI->rpgInfo.ChangeToIdle();
 }
+}  // namespace NewRpgInternal
 
+namespace
+{
 // The stock per upkeep kind now as the needs count it (one snapshot: the kept grade reads the level and the equipped
 // ammo), for the use measure
 UpkeepNeeds::StockLevels StockLevelsOf(Player* bot)

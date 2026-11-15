@@ -8,6 +8,7 @@
 #define PLAYERBOTS_NEWRPGINTERNAL_H
 
 #include "Define.h"
+#include "NewRpgInfo.h"
 
 class Player;
 class PlayerbotAI;
@@ -18,6 +19,10 @@ namespace NewRpgInternal
 {
 // Transport legs, called by the test orders (`route aboard`)
 void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);
+
+// The two finishers, called by the status update's sick branch (CS14 removes both declarations)
+void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource = "errand_abort");
+void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* why, char const* source);
 }  // namespace NewRpgInternal
 
 #endif
