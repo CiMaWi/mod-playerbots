@@ -66,7 +66,6 @@
 #include "WorldLog.h"
 #include "WorldPvp.h"
 #include "WorldSession.h"
-#include "WorldThreadMonitor.h"
 #include "LightweightPerf.h"
 #include "Metric.h"
 
@@ -297,7 +296,6 @@ public:
             {"inspect", HandleInspectCommand, SEC_GAMEMASTER, Console::Yes},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
-            {"worldthread", WorldThreadMonitor::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"tickperf", HandleTickPerfCommand, SEC_PLAYER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},

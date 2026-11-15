@@ -57,7 +57,6 @@
 #include "RouteService.h"
 #include "TravelGraph.h"
 #include "WorldScript.h"
-#include "WorldThreadMonitor.h"
 #include "cmath"
 
 class PlayerbotsDatabaseScript : public DatabaseScript
@@ -661,8 +660,6 @@ public:
     void OnUpdate(uint32 diff) override
     {
         PlayerbotThreadCheck::SetWorldThread();  // Thread checks (Playerbots.DebugThreadChecks) compare against this
-        // Opt-in world-thread busy share (Playerbots.PerfMonWorldThread); returns at once when off
-        WorldThreadMonitor::Instance().BeginHook();
         {
             // Playerbots.PerfMonEnabled: one PerfMonitor row per call ("WorldHook ...", totals per world tick), so
             // the pmon dump splits the serial world-thread cost; without the monitor the scopes do nothing
@@ -710,7 +707,6 @@ public:
             // World thread only
             TimeHookCall("WorldHook UpdateAI", [diff] { sRandomPlayerbotMgr.UpdateAI(diff); });
         }
-        WorldThreadMonitor::Instance().EndHook();
     }
 
     // Runs before the sessions are kicked on server shutdown
