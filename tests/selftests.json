@@ -253,6 +253,19 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "tactics-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Bot/Tactics",
+                "src/Util",
+                "{core}/src/common"
+            ],
+            "flags": [
+                "/O2"
+            ],
+            "success": "TACTICS standalone: \\d+ suites, 0 failed \\(PASS\\)"
+        },
+        {
             "file": "test-constraints-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg"
