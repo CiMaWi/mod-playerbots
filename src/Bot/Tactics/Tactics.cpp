@@ -11,6 +11,8 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <format>
+#include <functional>
 #include <sstream>
 #include <vector>
 
@@ -307,20 +309,9 @@ double Correlation(std::vector<double> const& x, std::vector<double> const& y)
 }
 
 // Pure checks of the skill gate (TacticGate.h) on synthetic guids, skills and times; no bots, no config
-void RunGateSelftest(ChatHandler* handler)
+template <typename Check, typename Say>
+void RunGateChecks(Check&& check, Say&& say)
 {
-    uint32 checks = 0;
-    uint32 failures = 0;
-    auto const check = [&](bool ok, std::string const& what)
-    {
-        ++checks;
-        if (ok)
-            return;
-
-        ++failures;
-        handler->PSendSysMessage("TACTICS selftest gate FAILED: {}", what);
-    };
-
     constexpr uint64 FirstGuid = 1000;
     constexpr uint32 Guids = 1000;
     constexpr uint32 WindowMs = 1500;
@@ -339,11 +330,11 @@ void RunGateSelftest(ChatHandler* handler)
             ++lerpMismatches;
     }
 
-    check(lerpMismatches == 0, Acore::StringFormat("e = 1 differs from the old lerp at {} skills", lerpMismatches));
+    check(lerpMismatches == 0, std::format("e = 1 differs from the old lerp at {} skills", lerpMismatches));
     // The plan's "about 76 %": 1 - (1 - 0.5)^2 = 0.75 exactly
     float const half = SkillCurve(SkillPosition(50), 2.0f);
-    handler->PSendSysMessage("TACTICS selftest gate: e = 2, skill 50 sits {:.4f} of the way", half);
-    check(std::fabs(half - 0.75f) < 0.02f, Acore::StringFormat("e = 2 at skill 50: {:.4f}, not 0.75", half));
+    say(std::format("e = 2, skill 50 sits {:.4f} of the way", half));
+    check(std::fabs(half - 0.75f) < 0.02f, std::format("e = 2 at skill 50: {:.4f}, not 0.75", half));
     check(SkillCurve(0.0f, 2.0f) == 0.0f && SkillCurve(1.0f, 2.0f) == 1.0f && SkillCurve(0.0f, 0.5f) == 0.0f &&
               SkillCurve(1.0f, 0.5f) == 1.0f,
           "curve ends are not 0 and 1");
@@ -381,13 +372,11 @@ void RunGateSelftest(ChatHandler* handler)
     }
 
     double const jitterMean = static_cast<double>(jitterSum) / Guids;
-    handler->PSendSysMessage("TACTICS selftest gate: knowledge jitter over {} guids: {} to {}, mean {:.2f}", Guids,
-                             minJitter, maxJitter, jitterMean);
+    say(std::format("knowledge jitter over {} guids: {} to {}, mean {:.2f}", Guids, minJitter, maxJitter, jitterMean));
     check(minJitter == -15 && maxJitter == 15,
-          Acore::StringFormat("knowledge jitter {} to {}, not -15 to 15", minJitter, maxJitter));
-    check(std::fabs(jitterMean) < 1.5, Acore::StringFormat("knowledge jitter mean {:.2f} (tolerance 1.5)", jitterMean));
-    check(patchy >= 900,
-          Acore::StringFormat("knowledge not patchy: {} of {} differ between two tactics", patchy, Guids));
+          std::format("knowledge jitter {} to {}, not -15 to 15", minJitter, maxJitter));
+    check(std::fabs(jitterMean) < 1.5, std::format("knowledge jitter mean {:.2f} (tolerance 1.5)", jitterMean));
+    check(patchy >= 900, std::format("knowledge not patchy: {} of {} differ between two tactics", patchy, Guids));
     check(spreadZero == 0, "spread 0 still jitters");
     check(baseZero == 0, "threshold 0 is not known by every bot");
 
@@ -408,9 +397,9 @@ void RunGateSelftest(ChatHandler* handler)
                 ++used;
 
         double const rate = used / 100.0;
-        handler->PSendSysMessage("TACTICS selftest gate: chance {} %: used in {:.2f} % of 10000 windows", chance, rate);
+        say(std::format("chance {} %: used in {:.2f} % of 10000 windows", chance, rate));
         check(std::fabs(rate - chance) <= 3.0,
-              Acore::StringFormat("chance {} %: rate {:.2f} % over 10000 windows (tolerance 3 points)", chance, rate));
+              std::format("chance {} %: rate {:.2f} % over 10000 windows (tolerance 3 points)", chance, rate));
     }
 
     uint32 unstable = 0;
@@ -438,9 +427,9 @@ void RunGateSelftest(ChatHandler* handler)
         }
     }
 
-    check(unstable == 0, Acore::StringFormat("{} answers changed inside a window", unstable));
+    check(unstable == 0, std::format("{} answers changed inside a window", unstable));
     check(windows >= 390 && usedWindows > 0 && usedWindows < windows,
-          Acore::StringFormat("{} windows, {} used: the answer does not change between windows", windows, usedWindows));
+          std::format("{} windows, {} used: the answer does not change between windows", windows, usedWindows));
     check(!TacticUsedInWindow(FirstGuid, TacticId::Hold, 0, WindowMs, 0) &&
               TacticUsedInWindow(FirstGuid, TacticId::Hold, 100, WindowMs, 0),
           "chance 0 used or chance 100 not used");
@@ -452,7 +441,7 @@ void RunGateSelftest(ChatHandler* handler)
         if (SkillEffort(params, static_cast<uint8>(1 + guid % 99), guid) != SKILL_GATE_FULL)
             ++notFull;
 
-    check(notFull == 0, Acore::StringFormat("default effort below 100 for {} bots", notFull));
+    check(notFull == 0, std::format("default effort below 100 for {} bots", notFull));
     params.EffortAtSkill1 = 20;
     params.EffortAtSkill99 = 90;
     check(SkillEffort(params, 1, FirstGuid) == 20 && SkillEffort(params, 99, FirstGuid) == 90 &&
@@ -469,7 +458,7 @@ void RunGateSelftest(ChatHandler* handler)
     }
 
     check(minEffort == 45 && maxEffort == 65,
-          Acore::StringFormat("effort at skill 50, spread 10: {} to {}, not 45 to 65", minEffort, maxEffort));
+          std::format("effort at skill 50, spread 10: {} to {}, not 45 to 65", minEffort, maxEffort));
     params.EffortAtSkill1 = 0;
     params.EffortSpread = 50;
     bool clamped = true;
@@ -509,8 +498,8 @@ void RunGateSelftest(ChatHandler* handler)
     }
 
     check(minTrait == 20 && maxTrait == 80,
-          Acore::StringFormat("style traits {} to {}, not 20 to 80 at spread 30", minTrait, maxTrait));
-    check(skillDependent == 0, Acore::StringFormat("style changes with skill for {} guids", skillDependent));
+          std::format("style traits {} to {}, not 20 to 80 at spread 30", minTrait, maxTrait));
+    check(skillDependent == 0, std::format("style changes with skill for {} guids", skillDependent));
     double worst = 0.0;
     for (uint32 trait = 0; trait < SKILL_STYLE_TRAIT_COUNT; ++trait)
     {
@@ -519,9 +508,8 @@ void RunGateSelftest(ChatHandler* handler)
         worst = std::max(worst, std::fabs(Correlation(traits[trait], traits[(trait + 1) % SKILL_STYLE_TRAIT_COUNT])));
     }
 
-    handler->PSendSysMessage("TACTICS selftest gate: style over {} guids: traits {} to {}, largest |r| {:.3f}", Guids,
-                             minTrait, maxTrait, worst);
-    check(worst < 0.1, Acore::StringFormat("style correlates with skill or another trait: |r| {:.3f}", worst));
+    say(std::format("style over {} guids: traits {} to {}, largest |r| {:.3f}", Guids, minTrait, maxTrait, worst));
+    check(worst < 0.1, std::format("style correlates with skill or another trait: |r| {:.3f}", worst));
     check(SkillStyle(0, FirstGuid, SkillStyleTrait::Caution) == SKILL_STYLE_NEUTRAL, "style spread 0 is not 50");
 
     // The whole gate: defaults change nothing (known, always used), skill 0 is full ability, thresholds bite
@@ -550,9 +538,8 @@ void RunGateSelftest(ChatHandler* handler)
             ++highMisses;
     }
 
-    check(
-        lowKnows == 0 && highMisses == 0,
-        Acore::StringFormat("threshold 40 +- 15: {} bots at skill 20 know it, {} at 60 do not", lowKnows, highMisses));
+    check(lowKnows == 0 && highMisses == 0,
+          std::format("threshold 40 +- 15: {} bots at skill 20 know it, {} at 60 do not", lowKnows, highMisses));
     TacticGateState const known = ComputeTacticGate(params, holdTactics, 99, FirstGuid);
     check(!TacticGatePasses(known, TacticId::Hold, false, FirstGuid, WindowMs, 4242) &&
               TacticGatePasses(known, TacticId::Hold, true, FirstGuid, WindowMs, 4242),
@@ -560,31 +547,16 @@ void RunGateSelftest(ChatHandler* handler)
     check(SkillExemptFor(true, true) && !SkillExemptFor(false, true) && !SkillExemptFor(true, false) &&
               !SkillExemptFor(false, false),
           "the real-master exemption is not option and master");
-
-    handler->PSendSysMessage("TACTICS selftest gate: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
 }
 
 // Pure checks of the natural reaction (NaturalReaction.h) with the configured numbers on synthetic hashes, skills and
 // times; no bots
-void RunReactionSelftest(ChatHandler* handler)
+template <typename Check, typename Say>
+void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, float exponent)
 {
-    uint32 checks = 0;
-    uint32 failures = 0;
-    auto const check = [&](bool ok, std::string const& what)
-    {
-        ++checks;
-        if (ok)
-            return;
-
-        ++failures;
-        handler->PSendSysMessage("TACTICS selftest reaction FAILED: {}", what);
-    };
     auto const within = [](double value, double expected, double tolerance)
     { return std::fabs(value - expected) <= tolerance * std::fabs(expected); };
 
-    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
-    float const exponent = sPlayerbotAIConfig.SkillGate.CurveExponent;
     constexpr uint32 Draws = 10000;
     constexpr uint32 MissWindowMs = 1500;
 
@@ -632,15 +604,15 @@ void RunReactionSelftest(ChatHandler* handler)
         double const mean = sum / Draws;
         double const measuredSigma = std::sqrt(std::max(0.0, sumSquares / Draws - mean * mean));
         check(within(measuredMedian, median, 0.05),
-              Acore::StringFormat("skill {}: median {:.1f} ms, configured {:.1f}", skill, measuredMedian, median));
+              std::format("skill {}: median {:.1f} ms, configured {:.1f}", skill, measuredMedian, median));
         check(sigma == 0.0 ? measuredSigma < 1e-6 : within(measuredSigma, sigma, 0.05),
-              Acore::StringFormat("skill {}: sigma {:.4f}, configured {:.4f}", skill, measuredSigma, sigma));
-        check(belowMin == 0 && stable, Acore::StringFormat("skill {}: {} draws under the minimum, stable {}", skill,
-                                                           belowMin, stable ? "yes" : "no"));
-        handler->PSendSysMessage(
-            "TACTICS selftest reaction: skill {}: median {:.1f} ms (configured {:.1f}), sigma "
-            "{:.4f} ({:.4f}), raised to the minimum {:.1f} %",
-            skill, measuredMedian, median, measuredSigma, sigma, raised * 100.0 / Draws);
+              std::format("skill {}: sigma {:.4f}, configured {:.4f}", skill, measuredSigma, sigma));
+        check(belowMin == 0 && stable,
+              std::format("skill {}: {} draws under the minimum, stable {}", skill, belowMin, stable ? "yes" : "no"));
+        say(
+            std::format("skill {}: median {:.1f} ms (configured {:.1f}), sigma "
+                        "{:.4f} ({:.4f}), raised to the minimum {:.1f} %",
+                        skill, measuredMedian, median, measuredSigma, sigma, raised * 100.0 / Draws));
     }
 
     // Behind adds its penalty and a change of focus its cost, each within its range
@@ -664,9 +636,9 @@ void RunReactionSelftest(ChatHandler* handler)
     double const behindMid = (params.BehindMinMs + params.BehindMaxMs) / 2.0;
     double const switchMid = (params.SwitchMinMs + params.SwitchMaxMs) / 2.0;
     check(behindOk && (behindMid == 0.0 || within(behindSum / Draws, behindMid, 0.05)),
-          Acore::StringFormat("behind penalty mean {:.1f} ms, expected {:.1f}", behindSum / Draws, behindMid));
+          std::format("behind penalty mean {:.1f} ms, expected {:.1f}", behindSum / Draws, behindMid));
     check(switchOk && (switchMid == 0.0 || within(switchSum / Draws, switchMid, 0.05)),
-          Acore::StringFormat("switch cost mean {:.1f} ms, expected {:.1f}", switchSum / Draws, switchMid));
+          std::format("switch cost mean {:.1f} ms, expected {:.1f}", switchSum / Draws, switchMid));
 
     // The event: blocked until its reaction time, then it passes and takes the focus; a quiet gap after the notice
     // starts the next event
@@ -700,8 +672,8 @@ void RunReactionSelftest(ChatHandler* handler)
     }
 
     check(!restarted && sparse.Noticed && now - 50000 < sparse.ReadyAfterMs + 1000,
-          Acore::StringFormat("a query a second: passed after {} ms, reaction {} ms, restarted {}", now - 50000,
-                              sparse.ReadyAfterMs, restarted ? "yes" : "no"));
+          std::format("a query a second: passed after {} ms, reaction {} ms, restarted {}", now - 50000,
+                      sparse.ReadyAfterMs, restarted ? "yes" : "no"));
 
     // Focus: another category within FocusTimeoutMs pays the switch cost, later not; behind adds its penalty
     uint32 const soon = passedAt + 100;
@@ -728,7 +700,7 @@ void RunReactionSelftest(ChatHandler* handler)
     }
 
     check(within(missed * 100.0 / Draws, 30.0, 0.05),
-          Acore::StringFormat("miss share {:.2f} % at 30 %", missed * 100.0 / Draws));
+          std::format("miss share {:.2f} % at 30 %", missed * 100.0 / Draws));
     ReactionEvent lost;
     StartReactionEvent(lost, none, middle, params, Guid, 4, 95, false, 0);
     for (uint32 start = 1; !lost.Missed && start < 100; ++start)
@@ -752,10 +724,10 @@ void RunReactionSelftest(ChatHandler* handler)
     StampReactionEvent(timed, timing, endToEnd, 120, ReactionStampSource::CastBar, TickMs);
     uint32 const sum = timed.ReadyAfterMs + endToEnd.PingMs + endToEnd.DisplayMs + TickMs;
     check(timed.TargetMs == sum && timed.StampAgeMs == 120 && timed.DueAfterMs == (sum > 120 ? sum - 120 : 0),
-          Acore::StringFormat("end-to-end target {} ms due after {} ms; expected reaction {} + ping {} + display {} + "
-                              "ticks {} = {}, 120 ms of it gone",
-                              timed.TargetMs, timed.DueAfterMs, timed.ReadyAfterMs, endToEnd.PingMs, endToEnd.DisplayMs,
-                              TickMs, sum));
+          std::format("end-to-end target {} ms due after {} ms; expected reaction {} + ping {} + display {} + "
+                      "ticks {} = {}, 120 ms of it gone",
+                      timed.TargetMs, timed.DueAfterMs, timed.ReadyAfterMs, endToEnd.PingMs, endToEnd.DisplayMs, TickMs,
+                      sum));
     check((timed.DueAfterMs == 0 || !ReactionEventPasses(timed, timing, 1, 70000 + timed.DueAfterMs - 1)) &&
               ReactionEventPasses(timed, timing, 1, 70000 + timed.DueAfterMs),
           "an end-to-end event does not pass at its due time");
@@ -854,13 +826,12 @@ void RunReactionSelftest(ChatHandler* handler)
         StreamResult const result =
             stream(streamCase.IntervalMs, streamCase.JitterMs, streamCase.Pauses, 7000 + streamCase.IntervalMs);
         double const meanGap = streamCase.IntervalMs + streamCase.JitterMs / 2.0;
-        check(
-            result.Early == 0 && std::fabs(result.MeanErrorMs) <= 0.1 * meanGap && result.LatencyMs >= 0.25 * meanGap &&
-                result.LatencyMs <= 0.75 * meanGap,
-            Acore::StringFormat("check stream {} ms + 0-{} ms{}: mean pass - target {:.1f} ms, mean latency {:.1f} ms, "
-                                "{} passes before the server time",
-                                streamCase.IntervalMs, streamCase.JitterMs, streamCase.Pauses ? " with casts" : "",
-                                result.MeanErrorMs, result.LatencyMs, result.Early));
+        check(result.Early == 0 && std::fabs(result.MeanErrorMs) <= 0.1 * meanGap &&
+                  result.LatencyMs >= 0.25 * meanGap && result.LatencyMs <= 0.75 * meanGap,
+              std::format("check stream {} ms + 0-{} ms{}: mean pass - target {:.1f} ms, mean latency {:.1f} ms, "
+                          "{} passes before the server time",
+                          streamCase.IntervalMs, streamCase.JitterMs, streamCase.Pauses ? " with casts" : "",
+                          result.MeanErrorMs, result.LatencyMs, result.Early));
     }
 
     // The cadence's stagger: upstream's guid % 201 at 200, at most StaggerMs
@@ -968,9 +939,9 @@ void RunReactionSelftest(ChatHandler* handler)
         };
         check(hickOk(low) && hickOk(mid) && hickOk(high) &&
                   (low.HickMsPerDoubling == 0.0f || high.HickMsPerDoubling < low.HickMsPerDoubling),
-              Acore::StringFormat("doubling the options does not add {:.1f} / {:.1f} / {:.1f} ms at Wisdom 1 / 50 / 99 "
-                                  "(+-5 %), or not less at high Wisdom",
-                                  low.HickMsPerDoubling, mid.HickMsPerDoubling, high.HickMsPerDoubling));
+              std::format("doubling the options does not add {:.1f} / {:.1f} / {:.1f} ms at Wisdom 1 / 50 / 99 "
+                          "(+-5 %), or not less at high Wisdom",
+                          low.HickMsPerDoubling, mid.HickMsPerDoubling, high.HickMsPerDoubling));
         ReactionEventInputs four;
         four.Options = 4;
         ReactionEvent const single = startAt(on, mid, ReactionEventInputs(), 7, 0);
@@ -1025,21 +996,21 @@ void RunReactionSelftest(ChatHandler* handler)
                    std::fabs(result.AddedMissPercent - prices.LoadMissPercentPerEvent) <= 1.0;
         };
         check(loadMatches(loadLow, low) && loadMatches(loadHigh, high),
-              Acore::StringFormat("a second pending event adds {:.1f} ms and {:.2f} % misses at Focus 1 (configured {} "
-                                  "ms, {} %), {:.1f} ms and {:.2f} % at Focus 99 ({} ms, {} %)",
-                                  loadLow.AddedMs, loadLow.AddedMissPercent, low.LoadMsPerEvent,
-                                  low.LoadMissPercentPerEvent, loadHigh.AddedMs, loadHigh.AddedMissPercent,
-                                  high.LoadMsPerEvent, high.LoadMissPercentPerEvent));
+              std::format("a second pending event adds {:.1f} ms and {:.2f} % misses at Focus 1 (configured {} "
+                          "ms, {} %), {:.1f} ms and {:.2f} % at Focus 99 ({} ms, {} %)",
+                          loadLow.AddedMs, loadLow.AddedMissPercent, low.LoadMsPerEvent, low.LoadMissPercentPerEvent,
+                          loadHigh.AddedMs, loadHigh.AddedMissPercent, high.LoadMsPerEvent,
+                          high.LoadMissPercentPerEvent));
         check(loadHigh.AddedMs < loadLow.AddedMs && loadHigh.AddedMissPercent < loadLow.AddedMissPercent &&
                   (high.LoadTopProtect == 0.0f || loadHigh.TopAddedMs < loadHigh.AddedMs),
-              Acore::StringFormat("the load is not lighter at high Focus, or the top event not protected (top +{:.1f} "
-                                  "ms)",
-                                  loadHigh.TopAddedMs));
-        handler->PSendSysMessage(
-            "TACTICS selftest reaction: load +{:.0f} ms / +{:.1f} % misses per event at Focus 1, +{:.0f} / +{:.1f} at "
-            "99 (top event +{:.0f} ms)",
-            loadLow.AddedMs, loadLow.AddedMissPercent, loadHigh.AddedMs, loadHigh.AddedMissPercent,
-            loadHigh.TopAddedMs);
+              std::format("the load is not lighter at high Focus, or the top event not protected (top +{:.1f} "
+                          "ms)",
+                          loadHigh.TopAddedMs));
+        say(
+            std::format("load +{:.0f} ms / +{:.1f} % misses per event at Focus 1, +{:.0f} / +{:.1f} at "
+                        "99 (top event +{:.0f} ms)",
+                        loadLow.AddedMs, loadLow.AddedMissPercent, loadHigh.AddedMs, loadHigh.AddedMissPercent,
+                        loadHigh.TopAddedMs));
 
         // Ease: common < rare < focus target < new target at every Dexterity (the focus target at a new target's
         // price below FocusDexterity), and the price lands in the reaction
@@ -1090,8 +1061,8 @@ void RunReactionSelftest(ChatHandler* handler)
 
         double const saved = drawSum > 0.0 ? 1.0 - shortenedSum / drawSum : 0.0;
         check(anticipatedOk && within(saved, mid.AnticipateShare, 0.05),
-              Acore::StringFormat("a predicted cast saves {:.3f} of the draw, configured {:.3f} (Foresight 50)", saved,
-                                  mid.AnticipateShare));
+              std::format("a predicted cast saves {:.3f} of the draw, configured {:.3f} (Foresight 50)", saved,
+                          mid.AnticipateShare));
 
         // Thinking: the shortcut's cost lands in the reaction, a deep check charged later moves the pass, the deep
         // share follows Wisdom, the wait Patience
@@ -1123,8 +1094,8 @@ void RunReactionSelftest(ChatHandler* handler)
                   low.ThinkDeepPercent <= high.ThinkDeepPercent &&
                   ComputeReactionTypeState(on, restless, exponent).PatienceWaitMs == on.Think.PatienceWaitMsAt0 &&
                   ComputeReactionTypeState(on, patient, exponent).PatienceWaitMs == on.Think.PatienceWaitMsAt100,
-              Acore::StringFormat("deep checks {:.1f} % at Wisdom 50 (configured {} %), or the wait not from Patience",
-                                  deepChosen * 100.0 / Draws, mid.ThinkDeepPercent));
+              std::format("deep checks {:.1f} % at Wisdom 50 (configured {} %), or the wait not from Patience",
+                          deepChosen * 100.0 / Draws, mid.ThinkDeepPercent));
 
         // The queue-like follow-up: after an own cast or GCD that ends before the next check, the check lands within
         // the draw of the end (exactly at it when that is before the regular check), never later than the regular one
@@ -1145,9 +1116,9 @@ void RunReactionSelftest(ChatHandler* handler)
             }
         }
 
-        check(queueOk, Acore::StringFormat("the follow-up check does not land within its draw of the end ({}-{} ms at "
-                                           "Speed 1, {}-{} ms at 99) or comes after the regular check",
-                                           low.QueueMinMs, low.QueueMaxMs, high.QueueMinMs, high.QueueMaxMs));
+        check(queueOk, std::format("the follow-up check does not land within its draw of the end ({}-{} ms at "
+                                   "Speed 1, {}-{} ms at 99) or comes after the regular check",
+                                   low.QueueMinMs, low.QueueMaxMs, high.QueueMinMs, high.QueueMaxMs));
 
         // The opponent memory: the fake rate after the casts and cancels seen (an interrupt is no cancel, the same
         // cast seen twice one cast), a repeated spell predicted, bounded to its slots, cleared for the next match
@@ -1197,9 +1168,9 @@ void RunReactionSelftest(ChatHandler* handler)
                    memory.Find(1000 + OPPONENT_MEMORY_SLOTS - 1);
         memory.Clear(78);
         memoryOk = memoryOk && memory.MatchId == 78 && memory.Find(9) == nullptr && memory.Find(1001) == nullptr;
-        check(memoryOk, Acore::StringFormat("the opponent memory: fake rate {:.3f} after {} cancels in {} casts, "
-                                            "expected {:.3f}; or a repeat, the bound or the clear failed",
-                                            rate, cancels, casts, static_cast<float>(cancels) / casts));
+        check(memoryOk, std::format("the opponent memory: fake rate {:.3f} after {} cancels in {} casts, "
+                                    "expected {:.3f}; or a repeat, the bound or the clear failed",
+                                    rate, cancels, casts, static_cast<float>(cancels) / casts));
 
         // The busy bot: its own cast stops for a kick of an important cast only when it would end too late; no kick a
         // busy bot reaches only within the margin of the cast's end; both off by their flags
@@ -1274,11 +1245,10 @@ void RunReactionSelftest(ChatHandler* handler)
         watch.NoteStop(after, 7, 2139);
         bool const spent = !watch.StopDue(after + 100);
         watch.Watch(8, 116, after + 2 * castMs, after + castMs);
-        check(
-            stops == 1 && backedOff && again && spent && watch.StopDue(after + castMs) && watch.UnfollowedStops == 1,
-            Acore::StringFormat("the busy stop is not once per enemy cast: {} stops in one cast, backoff {}, after it "
-                                "{}, spent {}",
-                                stops, backedOff ? "held" : "broken", again ? "due" : "not due", spent ? "yes" : "no"));
+        check(stops == 1 && backedOff && again && spent && watch.StopDue(after + castMs) && watch.UnfollowedStops == 1,
+              std::format("the busy stop is not once per enemy cast: {} stops in one cast, backoff {}, after it "
+                          "{}, spent {}",
+                          stops, backedOff ? "held" : "broken", again ? "due" : "not due", spent ? "yes" : "no"));
 
         // An unanswered event loads the others while its trigger asks, up to the pending gap after its last query;
         // a noticed or missed one does not
@@ -1294,32 +1264,19 @@ void RunReactionSelftest(ChatHandler* handler)
                   !ReactionEventPending(waiting, 1001 + REACTION_PENDING_GAP_MS) &&
                   !ReactionEventPending(answered, 1000) && !ReactionEventPending(lost, 1000),
               "an unanswered event does not count as pending for exactly the pending gap");
-        handler->PSendSysMessage(
-            "TACTICS selftest reaction: types at attribute 50: choice {:.0f} ms per doubling, load {} ms / {} %, ease "
-            "{}/{}/{}/{} ms, think {}/{} ms (deep {} %), anticipate {:.2f}, queue {}-{} ms",
-            mid.HickMsPerDoubling, mid.LoadMsPerEvent, mid.LoadMissPercentPerEvent, mid.EaseMs[0], mid.EaseMs[1],
-            mid.EaseMs[2], mid.EaseMs[3], mid.ThinkShortcutMs, mid.ThinkDeepMs, mid.ThinkDeepPercent,
-            mid.AnticipateShare, mid.QueueMinMs, mid.QueueMaxMs);
+        say(
+            std::format("types at attribute 50: choice {:.0f} ms per doubling, load {} ms / {} %, ease "
+                        "{}/{}/{}/{} ms, think {}/{} ms (deep {} %), anticipate {:.2f}, queue {}-{} ms",
+                        mid.HickMsPerDoubling, mid.LoadMsPerEvent, mid.LoadMissPercentPerEvent, mid.EaseMs[0],
+                        mid.EaseMs[1], mid.EaseMs[2], mid.EaseMs[3], mid.ThinkShortcutMs, mid.ThinkDeepMs,
+                        mid.ThinkDeepPercent, mid.AnticipateShare, mid.QueueMinMs, mid.QueueMaxMs));
     }
-
-    handler->PSendSysMessage("TACTICS selftest reaction: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
 }
 
 // Pure checks of the attribute model (BotAttributes.h) on synthetic guids and skills; no bots, no config
-void RunAttributesSelftest(ChatHandler* handler)
+template <typename Check, typename Say>
+void RunAttributesChecks(Check&& check, Say&& say)
 {
-    uint32 checks = 0;
-    uint32 failures = 0;
-    auto const check = [&](bool ok, std::string const& what)
-    {
-        ++checks;
-        if (ok)
-            return;
-
-        ++failures;
-        handler->PSendSysMessage("TACTICS selftest attributes FAILED: {}", what);
-    };
     auto const at = [](BotAttribute attribute) { return static_cast<uint32>(attribute); };
 
     constexpr uint64 FirstGuid = 1000;
@@ -1355,9 +1312,8 @@ void RunAttributesSelftest(ChatHandler* handler)
         }
     }
 
-    check(factored && worstProduct < 1e-9,
-          Acore::StringFormat("the proposed matrix: factorised {}, L L^T off by {:.2e}", factored ? "yes" : "no",
-                              worstProduct));
+    check(factored && worstProduct < 1e-9, std::format("the proposed matrix: factorised {}, L L^T off by {:.2e}",
+                                                       factored ? "yes" : "no", worstProduct));
 
     // A matrix that is not positive definite (three strong links that contradict each other) is refused, and so is
     // an asymmetric one; the factor is then the identity
@@ -1404,12 +1360,12 @@ void RunAttributesSelftest(ChatHandler* handler)
         worstLoading =
             std::max(worstLoading, std::fabs(Correlation(scores[index], skillScores) - model.Loading[index]));
 
-    handler->PSendSysMessage(
-        "TACTICS selftest attributes: over {} guids the own parts' correlations are off by at most {:.4f}, the "
-        "attributes' correlations with the skill from their loadings by {:.4f}",
-        Guids, worstPair, worstLoading);
-    check(worstPair < 0.03, Acore::StringFormat("an own parts' correlation is off by {:.4f}", worstPair));
-    check(worstLoading < 0.03, Acore::StringFormat("a correlation with the skill is off by {:.4f}", worstLoading));
+    say(
+        std::format("over {} guids the own parts' correlations are off by at most {:.4f}, the "
+                    "attributes' correlations with the skill from their loadings by {:.4f}",
+                    Guids, worstPair, worstLoading));
+    check(worstPair < 0.03, std::format("an own parts' correlation is off by {:.4f}", worstPair));
+    check(worstLoading < 0.03, std::format("a correlation with the skill is off by {:.4f}", worstLoading));
 
     // Defaults: every ability is the skill, exactly, and every trait 50, over 1-99 and at the ends of four
     // distributions (normal, wide normal, uniform, narrow uniform)
@@ -1434,7 +1390,7 @@ void RunAttributesSelftest(ChatHandler* handler)
     }
 
     check(defaultMismatches == 0,
-          Acore::StringFormat("{} attributes differ from the skill (or 50) at the defaults", defaultMismatches));
+          std::format("{} attributes differ from the skill (or 50) at the defaults", defaultMismatches));
 
     // At the defaults the gate and the reaction state are the skill's, bit for bit, G0g's jitters included
     TacticGateParams gateParams;
@@ -1475,9 +1431,9 @@ void RunAttributesSelftest(ChatHandler* handler)
         }
     }
 
-    check(gateMismatches == 0, Acore::StringFormat("{} gates differ from G0g's at the defaults", gateMismatches));
+    check(gateMismatches == 0, std::format("{} gates differ from G0g's at the defaults", gateMismatches));
     check(reactionMismatches == 0,
-          Acore::StringFormat("{} reaction states differ from G0h's at the defaults", reactionMismatches));
+          std::format("{} reaction states differ from G0h's at the defaults", reactionMismatches));
 
     // Skill 0 (the skill system off): abilities 0 and traits 50, also with the model on
     BotAttributeValues const off = ComputeBotAttributes(model, distributions[0], 0, 0, FirstGuid);
@@ -1497,7 +1453,7 @@ void RunAttributesSelftest(ChatHandler* handler)
             ++repeatMismatches;
     }
 
-    check(repeatMismatches == 0, Acore::StringFormat("{} guids drew different attributes twice", repeatMismatches));
+    check(repeatMismatches == 0, std::format("{} guids drew different attributes twice", repeatMismatches));
 
     // With the model on, two bots of skill 50 differ and every value stays in its range
     uint32 varied = 0;
@@ -1518,8 +1474,8 @@ void RunAttributesSelftest(ChatHandler* handler)
     }
 
     check(varied > 900 && inRange,
-          Acore::StringFormat("model on at skill 50: {} of 1000 bots differ from the skill, in range {}", varied,
-                              inRange ? "yes" : "no"));
+          std::format("model on at skill 50: {} of 1000 bots differ from the skill, in range {}", varied,
+                      inRange ? "yes" : "no"));
 
     // The trait map: 50 + 50 * clamp(z / 3, -1, 1) (the score holds the spread), exactly 50 at spread 0
     check(PersonalityFromScore(1.0f, 0.0) == 50 && PersonalityFromScore(1.0f, 3.0) == 100 &&
@@ -1540,8 +1496,7 @@ void RunAttributesSelftest(ChatHandler* handler)
             ++spreadOff;
     }
 
-    check(spreadOff == 0,
-          Acore::StringFormat("{} of 1000 traits at spread 2 do not weight the own part once", spreadOff));
+    check(spreadOff == 0, std::format("{} of 1000 traits at spread 2 do not weight the own part once", spreadOff));
 
     // The map back to 1-99 inverts the skill's score (normal and uniform)
     uint32 roundTrips = 0;
@@ -1554,7 +1509,7 @@ void RunAttributesSelftest(ChatHandler* handler)
         }
     }
 
-    check(roundTrips == 0, Acore::StringFormat("{} skills do not survive the map to a score and back", roundTrips));
+    check(roundTrips == 0, std::format("{} skills do not survive the map to a score and back", roundTrips));
 
     // Spread 0 with a loading below 1: no own part, the score is loading * z_skill
     BotAttributeParams shrink;
@@ -1590,27 +1545,13 @@ void RunAttributesSelftest(ChatHandler* handler)
               split.Get(BotAttribute::Knowledge) == 65 && split.Get(BotAttribute::Speed) == 35 &&
               split.Get(BotAttribute::Dexterity) == 50,
           "the learnable and fixed attributes do not read the grown and the first skill");
-
-    handler->PSendSysMessage("TACTICS selftest attributes: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS",
-                             checks, failures);
 }
 
 // Pure checks of the target hold and the team plan (ArenaFocus.h) on synthetic enemies; the numbers are the conf.dist
 // defaults (FocusConfig{}), never the server's config
-void RunFocusSelftest(ChatHandler* handler)
+template <typename Check>
+void RunFocusChecks(Check&& check)
 {
-    uint32 checks = 0;
-    uint32 failures = 0;
-    auto const check = [&](bool ok, std::string const& what)
-    {
-        ++checks;
-        if (ok)
-            return;
-
-        ++failures;
-        handler->PSendSysMessage("TACTICS selftest focus FAILED: {}", what);
-    };
-
     constexpr uint64 Seed = 4242;
     constexpr float Linear = 1.0f;
     constexpr uint32 Now = 100000;
@@ -1973,9 +1914,6 @@ void RunFocusSelftest(ChatHandler* handler)
 
     // G4e: the focus target (ArenaFocusTarget.h)
     ArenaFocusTargetTest::RunFocusTargetSelftest(check);
-
-    handler->PSendSysMessage("TACTICS selftest focus: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
 }
 
 // The core's DR rules for one player target of player casters (Unit::GetDiminishing, IncrDiminishing,
@@ -2467,246 +2405,6 @@ void RunInterruptSelftest(ChatHandler* handler)
 
     handler->PSendSysMessage("TACTICS selftest interrupt: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS",
                              checks, failures);
-}
-
-// G5d: the Defensive and Protect tactics' pure policy (ArenaDefensive.h; the offline harness runs the same checks)
-void RunDefensiveSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunDefensiveChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest defensive FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest defensive: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS",
-                             checks, failures);
-}
-
-// G5e: the Fake tactic's pure policy (NaturalCast.h; the offline harness runs the same checks)
-void RunFakeSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunFakeChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest fake FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest fake: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G2a: the natural facing's pure parts (NaturalTurn.h; the offline harness runs the same checks)
-void RunTurnSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunTurnChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest turn FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest turn: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G2b: the natural tracking's pure parts (NaturalMove.h; the offline harness runs the same checks)
-void RunTrackSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunTrackChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest track FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest track: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G2c: the natural paths' pure parts (NaturalPath.h; the offline harness runs the same checks)
-void RunPathSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunPathChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest path FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest path: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G2d: the arena cover's pure parts (ArenaCover.h; the offline harness runs the same checks)
-void RunCoverSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunCoverChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest cover FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest cover: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G2e: the Los tactic's pure parts (LosTactic.h; the offline harness runs the same checks)
-void RunLosSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunLosChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest los FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest los: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G2f: the Pillar tactic's pure parts (PillarTactic.h; the offline harness runs the same checks)
-void RunPillarSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunPillarChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest pillar FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest pillar: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G2g: the jump spots' pure parts (ArenaJump.h; the offline harness runs the same checks)
-void RunJumpSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunJumpChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest jump FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest jump: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G3b: the Drink tactic's pure parts (ArenaDrink.h; the offline harness runs the same checks)
-void RunDrinkSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunDrinkChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest drink FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest drink: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G6b's skill growth (SkillGrowth.h): the curve, the potential, the 99 cap, the rounding, the attributes
-void RunGrowthSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunSkillGrowthChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest growth FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest growth: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
-}
-
-// G3a: the Kite tactic's pure parts (ArenaKite.h; the offline harness runs the same checks)
-void RunKiteSelftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    RunKiteChecks(
-        [&](bool ok, std::string const& what)
-        {
-            ++checks;
-            if (ok)
-                return;
-
-            ++failures;
-            handler->PSendSysMessage("TACTICS selftest kite FAILED: {}", what);
-        });
-
-    handler->PSendSysMessage("TACTICS selftest kite: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
-                             failures);
 }
 
 void RunCcSelftest(ChatHandler* handler)
@@ -4107,6 +3805,83 @@ void RunCcSelftest(ChatHandler* handler)
     handler->PSendSysMessage("TACTICS selftest cc: {} ({} checks, {} failed)", failures ? "FAIL" : "PASS", checks,
                              failures);
 }
+// One check of a suite (check(ok, what)) and one line it prints (say(line)); the runner counts and prefixes them
+using TacticCheck = std::function<void(bool, std::string const&)>;
+using TacticSay = std::function<void(std::string const&)>;
+
+// The numbers a suite reads from the server's config (the reaction suite); the offline test keeps the defaults
+struct TacticSuiteInputs
+{
+    ReactionParams Reaction;
+    float CurveExponent = TacticGateParams().CurveExponent;
+};
+
+// One pure suite of `.playerbots tactics selftest <name>`, run by the server and by tests/tactics-selftest.cpp
+struct TacticSuite
+{
+    char const* Name;
+    void (*Run)(TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const& inputs);
+};
+
+// The pure suites; scope, cc and interrupt need the server (the command's parser, the spell store) and stay in
+// Tactics.cpp. The follower-table builder's suite (design 6.4) joins in CS16f.
+constexpr std::array<TacticSuite, 16> TACTIC_SUITES = {{
+    {"gate",
+     [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const&) { RunGateChecks(check, say); }},
+    {"reaction", [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const& inputs)
+     { RunReactionChecks(check, say, inputs.Reaction, inputs.CurveExponent); }},
+    {"attributes",
+     [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const&) { RunAttributesChecks(check, say); }},
+    {"focus", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunFocusChecks(check); }},
+    {"defensive",
+     [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunDefensiveChecks(check); }},
+    {"fake", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunFakeChecks(check); }},
+    {"turn", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunTurnChecks(check); }},
+    {"track", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunTrackChecks(check); }},
+    {"path", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunPathChecks(check); }},
+    {"cover", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunCoverChecks(check); }},
+    {"los", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunLosChecks(check); }},
+    {"pillar", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunPillarChecks(check); }},
+    {"jump", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunJumpChecks(check); }},
+    {"drink", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunDrinkChecks(check); }},
+    {"kite", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunKiteChecks(check); }},
+    {"growth",
+     [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunSkillGrowthChecks(check); }},
+}};
+
+// Runs one suite: every failure and every line of the suite go to print with the prefix "TACTICS selftest <name>",
+// then the total; true when no check failed
+inline bool RunTacticSuite(TacticSuite const& suite, TacticSuiteInputs const& inputs,
+                           std::function<void(std::string const&)> const& print)
+{
+    uint32 checks = 0;
+    uint32 failures = 0;
+    std::string const prefix = std::string("TACTICS selftest ") + suite.Name;
+    suite.Run(
+        [&](bool ok, std::string const& what)
+        {
+            ++checks;
+            if (ok)
+                return;
+
+            ++failures;
+            print(prefix + " FAILED: " + what);
+        },
+        [&](std::string const& line) { print(prefix + ": " + line); }, inputs);
+    print(std::format("{}: {} ({} checks, {} failed)", prefix, failures ? "FAIL" : "PASS", checks, failures));
+    return failures == 0;
+}
+
+// The suites that need the server
+struct ServerTacticSuite
+{
+    char const* Name;
+    void (*Run)(ChatHandler* handler);
+};
+
+constexpr std::array<ServerTacticSuite, 3> SERVER_TACTIC_SUITES = {
+    {{"scope", RunScopeSelftest}, {"cc", RunCcSelftest}, {"interrupt", RunInterruptSelftest}}};
+
 }  // namespace
 
 char const* TacticName(TacticId id)
@@ -4765,74 +4540,41 @@ bool TacticCommands::HandleStatsCommand(ChatHandler* handler, char const* args)
 bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* args)
 {
     std::string const name = Lower(Trim(args ? args : ""));
-    if (!name.empty() && name != "scope" && name != "gate" && name != "reaction" && name != "attributes" &&
-        name != "focus" && name != "cc" && name != "interrupt" && name != "defensive" && name != "fake" &&
-        name != "turn" && name != "track" && name != "path" && name != "cover" && name != "los" && name != "pillar" &&
-        name != "kite" && name != "drink" && name != "jump" && name != "growth")
+    bool const all = name.empty() || name == "all";
+    bool found = all;
+    std::string known = "all";
+    for (ServerTacticSuite const& suite : SERVER_TACTIC_SUITES)
     {
-        handler->PSendSysMessage(
-            "No tactics selftest '{}'. Known: scope, gate, reaction, attributes, focus, cc, interrupt, defensive, "
-            "fake, turn, track, path, cover, los, pillar, kite, drink, jump, growth",
-            name);
+        found = found || name == suite.Name;
+        known += std::string(", ") + suite.Name;
+    }
+
+    for (TacticSuite const& suite : TACTIC_SUITES)
+    {
+        found = found || name == suite.Name;
+        known += std::string(", ") + suite.Name;
+    }
+
+    if (!found)
+    {
+        handler->PSendSysMessage("No tactics selftest '{}'. Known: {}", name, known);
         return false;
     }
 
-    if (name.empty() || name == "scope")
-        RunScopeSelftest(handler);
+    for (ServerTacticSuite const& suite : SERVER_TACTIC_SUITES)
+    {
+        if (all || name == suite.Name)
+            suite.Run(handler);
+    }
 
-    if (name.empty() || name == "gate")
-        RunGateSelftest(handler);
-
-    if (name.empty() || name == "reaction")
-        RunReactionSelftest(handler);
-
-    if (name.empty() || name == "attributes")
-        RunAttributesSelftest(handler);
-
-    if (name.empty() || name == "focus")
-        RunFocusSelftest(handler);
-
-    if (name.empty() || name == "cc")
-        RunCcSelftest(handler);
-
-    if (name.empty() || name == "interrupt")
-        RunInterruptSelftest(handler);
-
-    if (name.empty() || name == "defensive")
-        RunDefensiveSelftest(handler);
-
-    if (name.empty() || name == "fake")
-        RunFakeSelftest(handler);
-
-    if (name.empty() || name == "turn")
-        RunTurnSelftest(handler);
-
-    if (name.empty() || name == "track")
-        RunTrackSelftest(handler);
-
-    if (name.empty() || name == "path")
-        RunPathSelftest(handler);
-
-    if (name.empty() || name == "cover")
-        RunCoverSelftest(handler);
-
-    if (name.empty() || name == "los")
-        RunLosSelftest(handler);
-
-    if (name.empty() || name == "pillar")
-        RunPillarSelftest(handler);
-
-    if (name.empty() || name == "jump")
-        RunJumpSelftest(handler);
-
-    if (name.empty() || name == "drink")
-        RunDrinkSelftest(handler);
-
-    if (name.empty() || name == "kite")
-        RunKiteSelftest(handler);
-
-    if (name.empty() || name == "growth")
-        RunGrowthSelftest(handler);
+    TacticSuiteInputs inputs;
+    inputs.Reaction = sPlayerbotAIConfig.NaturalReaction;
+    inputs.CurveExponent = sPlayerbotAIConfig.SkillGate.CurveExponent;
+    for (TacticSuite const& suite : TACTIC_SUITES)
+    {
+        if (all || name == suite.Name)
+            RunTacticSuite(suite, inputs, [handler](std::string const& line) { handler->PSendSysMessage("{}", line); });
+    }
 
     return true;
 }
