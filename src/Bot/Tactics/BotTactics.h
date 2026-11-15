@@ -20,7 +20,10 @@
 
 class Player;
 class PlayerbotAI;
+class Spell;
+class SpellInfo;
 class Unit;
+struct CastNote;
 struct CcBotState;
 struct CoverBotState;
 struct DefensiveBotState;
@@ -123,6 +126,11 @@ public:
     // check after RefreshNaturalTiming (the opponent memory, the tracking ring, the followers).
     bool PreGate();
     void OnCheck(uint32 nowMs, bool busyModel);
+    // The cast hooks, in PlayerbotAI::CastSpell: BeforeCast before the stand check (a turn wait's end), AfterCast
+    // after prepare() (the kick note, the cancel lag stamp, the harness counts, the focus act, the fake cast, the
+    // trace). note: what CastSpell read for the tactics before prepare() changed the target (BotTacticsInternal.h)
+    void BeforeCast(Unit* target, SpellInfo const* spellInfo);
+    void AfterCast(uint32 spellId, SpellInfo const* spellInfo, Spell* spell, Unit* target, CastNote const& note);
     // The jump test (G2g, `tactics jump test`): while set, UpdateAI runs StepJumpTest instead of the engines (a frozen
     // test bot); one bool test else
     void StepJumpTest(uint32 nowMs);

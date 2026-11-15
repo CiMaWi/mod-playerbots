@@ -19,17 +19,22 @@
 #include "CcState.h"
 #include "DefensiveTacticStrategy.h"
 #include "FocusState.h"
+#include "Group.h"
 #include "MapMgr.h"
 #include "NaturalCast.h"
 #include "NaturalMove.h"
 #include "NaturalPath.h"
 #include "NaturalReaction.h"
+#include "NaturalTrace.h"
 #include "NaturalTurn.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PvpTestCounters.h"
 #include "ReactionEngine.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 
 BotTactics::BotTactics(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
@@ -343,6 +348,93 @@ void BotTactics::OnCheck(uint32 nowMs, bool busyModel)
         else
             FollowDefensive(botAI, bot, nowMs);
     }
+}
+
+// The cast hooks (CS5 design 4.1): CastSpell calls BeforeCast before its stand check and AfterCast once the cast
+// is prepared
+void BotTactics::BeforeCast(Unit* target, SpellInfo const* spellInfo)
+{
+    // G2a: a cast that waited for the bot's turn goes ahead (tactics.turnWaitMs; casts that need the facing only)
+    if (turnState && turnState->CastWaitSinceMs != 0 && (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
+    {
+        // the span ends here whatever it was (a wait at another target, or one the bot gave up, counts nothing)
+        uint32 const waitMs = turnState->TakeCastWait(target->GetGUID().GetRawValue(), getMSTime());
+        if (waitMs != 0)
+        {
+            ++turnState->CastWaits;
+            turnState->CastWaitMs += waitMs;
+            botAI->CountTactic(TacticCounter::TurnWaitMs, waitMs);
+        }
+    }
+}
+
+void BotTactics::AfterCast(uint32 spellId, SpellInfo const* spellInfo, Spell* spell, Unit* target, CastNote const& note)
+{
+    if (note.followsKick && note.interruptHit.Use == InterruptUse::Kick)
+        NoteInterruptKick(botAI, bot, spellInfo, note.interruptHit, getMSTime());
+
+    // 13e-decide fix (Interrupt.SeeCancelLag): the bot pressed an interrupt at the enemy's cast; the ended bar it still
+    // sees is then no bait (no second interrupt on it, InterruptSpellTrigger)
+    if (interruptState && target && target != bot && sPlayerbotAIConfig.TacticInterrupt.SeeCancelLag &&
+        InterruptUseOf(spellInfo) != InterruptUse::None)
+    {
+        if (InterruptCastSlot* const slot = interruptState->Latest(target->GetGUID().GetCounter()))
+            slot->PressedMs = std::max(getMSTime(), 1u);
+    }
+
+    if (note.counting)
+    {
+        botAI->CountPvpTestCast(spellId, note.drGroup, note.atImmune);
+        // G4d-c: a cast into the core's DR immunity (cc.atImmune), beside the CC cast lines: what the bot's memory
+        // held of the group (none: never seen or its slot went to another group) against the core's level
+        if (note.atImmune && sLog->ShouldLog("playerbots", LogLevel::LOG_LEVEL_TRACE))
+        {
+            uint32 const nowMs = getMSTime();
+            uint8 memoryLevel = 0;
+            uint32 sinceSeenMs = 0;
+            int32 endsInMs = 0;
+            bool const held =
+                ccState && ccState->Memory.Recall(target->GetGUID().GetRawValue(), static_cast<uint8>(note.drGroup),
+                                                  nowMs, memoryLevel, sinceSeenMs, endsInMs);
+            LOG_TRACE("playerbots",
+                      "CC immune: {} {} ({}) on {} group {} ({}) by {}, memory {} (seen {} ms ago, aura end {} ms; "
+                      "aware {}, miss {}%), core {}, at {} ms",
+                      bot->GetName(), spellInfo->SpellName[0] ? spellInfo->SpellName[0] : "?", spellId,
+                      target->GetName(),
+                      note.drGroup < PVPTEST_DR_GROUP_COUNT ? PVPTEST_DR_GROUP_NAMES[note.drGroup] : "?", note.drGroup,
+                      ccState && ccState->TeamCcCasting ? "team cc" : "other",
+                      held ? std::to_string(memoryLevel) : std::string("none"), held ? sinceSeenMs : 0,
+                      held ? endsInMs : 0, ccState && ccState->Params.DrAware ? 1 : 0,
+                      ccState ? ccState->Params.DrMissPct : 0, static_cast<uint32>(DIMINISHING_LEVEL_IMMUNE), nowMs);
+        }
+
+        CountInterruptHit(botAI, target, note.interruptHit, getMSTime());
+        // tactics.ccOnTarget (G4b): the planned CC target is the group's moon in an arena, else the bot's kept one
+        if (IsPvpTestCcGroup(note.drGroup) && target != bot)
+        {
+            Group* const group = bot->GetGroup();
+            ObjectGuid planned = group && botAI->GetTacticContext() == TacticContext::Arena
+                                     ? group->GetTargetIcon(FOCUS_ICON_MOON)
+                                     : ObjectGuid::Empty;
+            if (planned.IsEmpty() && ccState)
+                planned = ccState->CcTarget;
+
+            if (!planned.IsEmpty() && planned == target->GetGUID())
+                botAI->CountTactic(TacticCounter::CcOnTarget);
+        }
+    }
+
+    // G4e: focus and switch actions (the harness's counters, tactics show, the trace line)
+    if (note.notesFocus)
+        NoteFocusAct(botAI, bot, spellInfo, target, note.oldSel, note.ownBefore, note.counting, note.drGroup);
+
+    // G5e: a long cast may be a fake (one tactic test; a pending fake ends with a new long cast)
+    if (botAI->TacticEnabledHere(TacticId::Fake) || (fakeState && fakeState->Pending()))
+        DecideFakeCast(botAI, bot, spellId, getMSTime());
+
+    // G0e: a cast with a cast time begins (an instant one was cast inside prepare: its finish row is enough)
+    if (NaturalTrace::Any())
+        NaturalTrace::OnBotCastStart(bot, spell, target);
 }
 
 bool BotTactics::HasFullSkillAbility()
