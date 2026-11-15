@@ -7,11 +7,15 @@
 #ifndef PLAYERBOTS_NEWRPGINTERNAL_H
 #define PLAYERBOTS_NEWRPGINTERNAL_H
 
+#include <cstdint>
 #include <vector>
 
 #include "Define.h"
 #include "NewRpgInfo.h"
+#include "TravelLegRules.h"
+#include "TravelLifecycle.h"
 #include "TravelMgr.h"
+#include "TravelTransportGeometry.h"
 
 class Creature;
 class Player;
@@ -33,8 +37,24 @@ class UpkeepIndex;
 // rpg-action-layer §5.2). Private to src/Ai/World/Rpg/: a file that calls one has `using namespace NewRpgInternal;`
 namespace NewRpgInternal
 {
+// Transport legs: the passenger names the transport legs and the route follower share
+using TravelLifecycle::MotionKind;
+using TravelLifecycle::Outcome;
+using TravelLifecycle::PassengerMotion;
+using TravelLifecycle::Point;
+namespace TransportGeometry = TravelTransportGeometry;
+
 // Transport legs, called by the test orders (`route aboard`)
 void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);
+
+// Transport legs, called by the route follower
+void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion,
+                        std::vector<Point> const& via = {});
+bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
+                    char const* why = nullptr, char const* source = nullptr);
+
+// The route follower, called by the transport legs (a trip's onward waypoints)
+TravelRoute::Point GraphNodeAt(std::uint32_t index);
 
 // The two finishers, called by the status update's sick branch (CS14 removes both declarations)
 void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource = "errand_abort");
