@@ -267,7 +267,7 @@ TravelWalk::EngineAnswer ReadWalkAnswer(Player* bot, PathGenerator const& path, 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 {
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
-    if (!travel || !travel->HasWalkTarget())
+    if (!travel || !TravelLegs::HasWalkTarget(travel->trip, travel->bindInn))
         return MoveFarToImpl(dest);
     return TravelProgress::ContinueWalk(
         travel->progress, [&] { return botAI->GetTravel().ReadTravelWalk(); }, [&] { return MoveFarToImpl(dest); },

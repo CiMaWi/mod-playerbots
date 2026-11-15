@@ -113,18 +113,6 @@ struct NewRpgInfo
         {
             return trip.legIdx < trip.legs.size() ? &trip.legs[trip.legIdx] : nullptr;
         }
-
-        bool HasWalkTarget() const
-        {
-            auto const* leg = CurrentLeg();
-            return leg ? leg->type == TravelRoute::LegType::Walk : bindInn;
-        }
-
-        bool PassengerOwnsProgress() const
-        {
-            auto const* leg = CurrentLeg();
-            return passengerMotion || trip.offFirst.sinceMs || (leg && leg->type == TravelRoute::LegType::Transport);
-        }
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
     // every errand assigned there: sell, buy (a bag by worth, the shopping list) and repair at its vendor, turn in

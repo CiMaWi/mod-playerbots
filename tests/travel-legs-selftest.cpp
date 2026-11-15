@@ -526,8 +526,15 @@ void CheckFlightFailureAndDeadline()
     trip.legIdx = 4;  // the flight leg, nodes 5 -> 6
     auto const hop = TravelLegs::FirstFlightHop(trip);
     Check(hop.first == 5 && hop.second == 6, "taxi: the reported edge is the flight's first hop 5 -> 6");
+    Check(!TravelLegs::HasWalkTarget(trip, true), "a flight leg has no walk target");
     trip.legIdx = 1;
     Check(TravelLegs::FirstFlightHop(trip).first == TravelLegs::NO_NODE, "taxi: a walk leg has no flight hop");
+    Check(TravelLegs::HasWalkTarget(trip, false) && !TravelLegs::PassengerOwnsProgress(trip, false),
+          "a walk leg is walked; the passenger code does not own it");
+    Check(TravelLegs::PassengerOwnsProgress(trip, true), "a running passenger move owns the progress");
+    Trip noLeg;
+    Check(TravelLegs::HasWalkTarget(noLeg, true) && !TravelLegs::HasWalkTarget(noLeg, false),
+          "past the last leg only an inn errand walks");
     Check(TravelLegs::AfterFailure(trip, FailReason::Taxi) == TravelLegs::Recovery::Replan && trip.replans == 1,
           "taxi: a failed taxi start asks for a new route");
     Check(std::string(TravelLegs::FailWord(FailReason::Taxi)) == "taxi", "taxi: its word");
