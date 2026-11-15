@@ -56,7 +56,7 @@
 
 namespace
 {
-uint32 constexpr HEARTHSTONE_CAST_SPELL = 8690;  // the stone's spell (NewRpgAction.cpp's HEARTHSTONE_SPELL)
+uint32 constexpr HEARTHSTONE_CAST_SPELL = 8690;  // the stone's spell (NewRpgRoute.cpp's HEARTHSTONE_SPELL)
 }  // namespace
 
 bool NewRpgBaseAction::BotOffMesh()
