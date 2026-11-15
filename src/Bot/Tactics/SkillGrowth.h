@@ -13,6 +13,7 @@
 
 #include "BotAttributes.h"
 #include "Define.h"
+#include "SkillGrowthConfig.h"
 #include "SplitMix64.h"
 
 // Skill growth (G6b; Playerbots.Skill.Growth.*; DD.1, DT.7, DT.14): a bot that plays an arena or battleground to its
@@ -25,14 +26,6 @@
 // rounded stochastically (floor, plus one with the fraction's chance from a hash of the match and the guid), so the
 // expected skill after n matches is first roll + gap x (1 - (1 - gain / gap)^n). Pure functions: no bots, no config
 // singleton, no generator state, so .playerbots tactics selftest growth and the harnesses drive them.
-
-struct SkillGrowthParams
-{
-    double GainPerMatch = 0.8;      // skill points per match at the first roll
-    double RealPlayerFactor = 3.0;  // times the gain with a real player (or the headless test player) on the team
-    uint32 PotentialMin = 10;       // the potential's gap above the first roll, drawn per bot
-    uint32 PotentialMax = 40;
-};
 
 constexpr uint64 SKILL_GROWTH_POTENTIAL_SALT = 0x6B0761A5D2C3B4F7ULL;
 constexpr uint64 SKILL_GROWTH_ROUND_SALT = 0x3C6EF372FE94F82BULL;
