@@ -1871,10 +1871,14 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             auto& data = std::get<NewRpgInfo::TravelFlight>(info.data);
             if (data.inFlight && !bot->IsInFlight())
             {
-                // flight arrival
-                WorldLog::StatusReason const reasonScope("arrived");
-                info.ChangeToIdle();
-                return true;
+                // flight arrival; a quest giver near the landing is visited first, driven by the travel action
+                // (upstream #3026)
+                if (AI_VALUE(ObjectGuid, "new rpg quest giver").IsEmpty())
+                {
+                    WorldLog::StatusReason const reasonScope("arrived");
+                    info.ChangeToIdle();
+                    return true;
+                }
             }
             break;
         }
@@ -5011,12 +5015,19 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
         return false;
 
     auto& data = *dataPtr;
+    if (!bot->IsInFlight() && SearchQuestGiverAndAcceptOrReward())
+        return true;
+
     if (bot->IsInFlight())
     {
         data.inFlight = true;
         ContinueCrossMapTaxi();
         return false;
     }
+
+    // after landing, stop here and let the status update switch to idle
+    if (data.inFlight)
+        return false;
 
     switch (StartTaxi(data.flightMasterEntry, data.flightMasterPos, data.path))
     {
