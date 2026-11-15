@@ -165,14 +165,14 @@ bool NewRpgInfo::CanChangeTo(NewRpgStatus)
     return true;
 }
 
+// The status core's idle step (RpgStatus::End runs the clean-up before it and writes the Status row after it); CS14f
+// replaces it by the core's private builders
 void NewRpgInfo::Reset()
 {
-    NewRpgStatus const oldStatus = GetStatus();
     ReplaceStatus(Idle{});
     startT = getMSTime();
     questGiver.Clear();
     ignoredQuestGivers.clear();
-    WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
 void NewRpgInfo::SetMoveFarTo(WorldPosition pos)

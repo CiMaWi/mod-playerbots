@@ -39,8 +39,8 @@ private:
 inline char const* CurrentStatusReason() { return statusReason ? statusReason : STATUS_REASON_OTHER; }
 
 // A Status row (src the reason, id the new status, amount the old) when the status changed and the world log is on;
-// bot null (an RpgInfo of no bot) logs nothing
-void NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus);
+// bot null (an RpgInfo of no bot) logs nothing. word (a literal): the reason; null takes the scope's (CS14f removes it)
+void NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus, char const* word = nullptr);
 // A QuestAbandon row for a quest the bot drops without the client's abandon packet (DropQuestAction)
 void NoteQuestAbandon(Player* bot, uint32_t questId);
 

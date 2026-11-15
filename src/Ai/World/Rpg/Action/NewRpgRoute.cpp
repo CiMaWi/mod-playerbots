@@ -50,6 +50,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgStatusEnd.h"
 #include "NewRpgStrategy.h"
 #include "NewRpgTriggers.h"
 #include "Object.h"
@@ -90,38 +91,11 @@
 #include "WaypointMovementGenerator.h"
 #include "World.h"
 #include "WorldLog.h"
-#include "WorldLogStatus.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "WorldTravelRules.h"
 
 using namespace NewRpgInternal;
-
-namespace
-{
-// The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
-constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
-}  // namespace
-
-namespace NewRpgInternal
-{
-// Gives the bot's trip up: the Travel event (source "abort:<reason>", a literal), the trip's abort decision, idle
-void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* why, char const* source)
-{
-    Player* bot = botAI->GetBot();
-    if (data.place.empty())
-        LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
-    else
-        LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
-    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
-    EventLog::Emit(bot, "Travel", source, data.tripId, seconds);
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort",
-                       WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX), static_cast<float>(seconds),
-                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
-    WorldLog::StatusReason const reasonScope("abort");
-    botAI->rpgInfo.ChangeToIdle();
-}
-}  // namespace NewRpgInternal
 
 namespace
 {
@@ -1402,15 +1376,8 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
                                noInnkeeper ? "no_innkeeper" : "not_interactable", yards, {}, data.tripId);
         }
     }
-    if (data.place.empty())
-        LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
-                  seconds, data.estimateSeconds, replans);
-    else
-        LOG_INFO("playerbots", "[Route] {} arrived at {} after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
-                 data.place, seconds, data.estimateSeconds, replans);
-    EventLog::Emit(bot, "Travel", "arrived", data.tripId, seconds);
-    WorldLog::StatusReason const reasonScope("arrived");
-    botAI->rpgInfo.ChangeToIdle();
+    // The status core's arrive arm: the log line and the arrived Travel event
+    RpgStatus::End(botAI, StatusEnd::Outcome::Arrived);
     return true;
 }
 
@@ -1419,5 +1386,7 @@ void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel& data, char const* why, char
     // Not on a ship's deck: the bot gets off first, then the trip ends (WT19-d)
     if (OffFirstBegins(bot, data, TravelLegs::OffFirstEnd::Abort, why, source))
         return;
-    GiveTripUp(botAI, data, why, source);
+    // The status core's abort arm: the log line, the Travel event and the trip's abort decision (CS14c gives each end
+    // its own outcome)
+    RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "abort", .source = source, .text = why});
 }
