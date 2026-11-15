@@ -2273,10 +2273,11 @@ Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 # StartCost points at once, and the bot starts only while its value less the cost is still at or above its entering
 # floor (its flee threshold plus what an even fight drains in 20 s), so it does not start and leave at once. Joining a
 # fight and being attacked cost nothing. Recovery of 15 points an hour keeps up about one start per hour at most.
-# StartCostShare is the percent of persistent bots that pay it, chosen by guid as Upkeep.HandoutShare is, so that the
-# world log names the same bots as a cohort: a bot is in the share when
-# (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit; one outside
-# it pays nothing and keeps its KillEdit. (Ranges: StartCost 0-1000; StartCostShare 0-100.) Defaults: 15, 100
+# StartCostShare is the percent of bots that pay it: a slice of all bots chosen by guid, the same bots as
+# Upkeep.HandoutShare's slice at the same percent, so that the world log names them as a cohort: a bot is in the
+# share when (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit;
+# one outside it pays nothing and keeps its KillEdit. (Ranges: StartCost 0-1000; StartCostShare 0-100.)
+# Defaults: 15, 100
 Playerbots.WorldPvp.Enthusiasm.StartCost = 15
 Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 

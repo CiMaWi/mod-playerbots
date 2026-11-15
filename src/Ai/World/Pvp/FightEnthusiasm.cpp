@@ -341,6 +341,12 @@ Entering Evaluate(PlayerbotAI* botAI, Player* bot, BotEnthusiasm const& state, P
                   EnthusiasmValues const& values)
 {
     Entering entering;
+    // WP35: no new pick while the bot fights (its combat engine runs): that engine has no action that attacks an
+    // enemy player the bot does not fight yet, so such a pick lapsed unattacked and came back every PICK_MS. An open
+    // pick holds (MayEnter and NoteEntering ask IsPick first); whoever attacks the bot reaches it by its combat
+    // references
+    if (botAI->GetState() == BOT_STATE_COMBAT)
+        return entering;
     Colour const colour = ColourOf(bot->GetLevel(), enemy->GetLevel());
     Unit* const victim = enemy->GetVictim();
     Player* const victimPlayer = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;

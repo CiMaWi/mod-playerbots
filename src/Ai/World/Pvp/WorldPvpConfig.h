@@ -31,8 +31,9 @@ struct WorldPvpEnthusiasmConfig
     uint32_t GroupDeathYards = 60;
     float GroupDeathShare = 0.3f;
     // Starting costs enthusiasm (WP34): a pick that begins a fight (not a join) while the bot is not engaged costs
-    // StartCost at once, for the bots in the start-cost share: StartCostShare percent (0..100) of the persistent bots,
-    // by the guid mix of ShareSlot.h. A bot in the share gets no KillEdit
+    // StartCost at once, for the bots in the start-cost share: StartCostShare percent (0..100) of all bots, a slice
+    // chosen by the guid mix of ShareSlot.h (the same bots as Upkeep.HandoutShare's slice). A bot in the share gets
+    // no KillEdit
     float StartCost = 15.0f;
     uint32_t StartCostShare = 100;
     // Join threshold: JoinBase - JoinAggression x aggression; +JoinGreen for a green target; -JoinFactionAttacked and

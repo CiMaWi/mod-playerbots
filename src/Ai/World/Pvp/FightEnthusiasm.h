@@ -207,8 +207,10 @@ inline double ValueAt(BotEnthusiasm const& bot, uint32_t nowMs, EnthusiasmValues
     return Read(bot.state, nowMs, bot.engaged, bot.factor, values);
 }
 
-// An engaged edge: settles the value with the old state first, then flips it; becoming engaged ends the pick (the
-// fight goes on by the combat references). True on an edge
+// An engaged edge: settles the value with the old state first, then flips it. The pick holds through the engaged
+// edge (WP35: a bot engaged by its held target before any combat reference exists scanned that target again in the
+// same update, a second entering row and a second start cost) and ends at the disengaged edge (an open pick would be
+// attacked again without a new decision). True on an edge
 inline bool Observe(BotEnthusiasm& bot, bool engaged, uint32_t nowMs, EnthusiasmValues const& values)
 {
     if (engaged == bot.engaged)
@@ -216,10 +218,9 @@ inline bool Observe(BotEnthusiasm& bot, bool engaged, uint32_t nowMs, Enthusiasm
     bot.state = Settle(bot.state, nowMs, bot.engaged, bot.factor, values);
     bot.engaged = engaged;
     bot.engagedMs = nowMs;
-    if (engaged)
-        bot.pickGuid = 0;
-    else
+    if (!engaged)
     {
+        bot.pickGuid = 0;
         bot.left = false;
         bot.attacked = false;
     }

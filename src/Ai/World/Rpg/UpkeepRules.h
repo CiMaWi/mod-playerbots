@@ -11,7 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "ShareSlot.h"
+#include "../ShareSlot.h"
 
 // Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who keeps every
 // handout (the handout share). Player-free for tests/upkeep-selftest.cpp; Upkeep.h applies it to a bot. Kept out of

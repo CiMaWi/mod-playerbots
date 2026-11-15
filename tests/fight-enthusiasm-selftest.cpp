@@ -79,11 +79,15 @@ void TestEdges()
     Check(Observe(bot, false, HOUR + MINUTE, v) && Near(bot.state.value, 35.0) && !bot.engaged,
           "edge: leaving settles the drain first");
     Check(Near(ValueAt(bot, 2 * HOUR + MINUTE, v), 50.0), "edge: not engaged, it recovers again");
-    // Becoming engaged ends the pick
+    // WP35: the pick holds through the engaged edge, so the scan of the same update finds it open (NoteEntering
+    // writes no second entering row and charges no second start cost); the disengaged edge ends it
     SetPick(bot, 42, 2 * HOUR);
     Check(IsPick(bot, 42, 2 * HOUR + SECOND), "pick: open");
     Observe(bot, true, 2 * HOUR + SECOND, v);
-    Check(!IsPick(bot, 42, 2 * HOUR + 2 * SECOND) && bot.pickGuid == 0, "pick: ended by the engaged edge");
+    Check(IsPick(bot, 42, 2 * HOUR + SECOND) && IsPick(bot, 42, 2 * HOUR + 2 * SECOND),
+          "pick: held through the engaged edge (no second entering row, no second cost)");
+    Observe(bot, false, 2 * HOUR + 5 * SECOND, v);
+    Check(!IsPick(bot, 42, 2 * HOUR + 5 * SECOND) && bot.pickGuid == 0, "pick: ended by the disengaged edge");
 }
 
 // Review item 2: a new balance settles with the old factor up to now
