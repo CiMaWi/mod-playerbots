@@ -75,10 +75,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight()))
     {
-        // Today's two rows (to idle with the finishers' words, then to rest) until CS14f ends it in one
-        if (status == RPG_ERRANDS || status == RPG_TRAVEL)
-            RpgStatus::End(botAI, StatusEnd::Outcome::Sick, {.word = status == RPG_ERRANDS ? "finished" : "abort"});
-        RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "sick", StatusEnd::Outcome::Sick);
+        RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "sick", StatusEnd::Outcome::Sick);  // one Status row
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         return true;
     }
