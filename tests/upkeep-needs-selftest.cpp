@@ -15,404 +15,10 @@
 // Shopping (WU6): ammo of the ranged weapon's type only, a due stock as an errand of its own when the gold pays a lot,
 // the shopping list in the fixed order within each need's funded share, the vendor covering the most due needs (the
 // nearest on a tie, repairers only for a repair), and the use per hour measured from stock falls between visits.
-#include <cstdint>
-#include <iostream>
-#include <limits>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-#include "ItemWorthRules.h"
-#include "UpkeepNeedRules.h"
-
-using namespace Planner;
-using namespace UpkeepNeeds;
+#include "upkeep-fixture.h"
 
 namespace
 {
-int passed = 0;
-int failed = 0;
-
-void Check(bool condition, std::string const& what)
-{
-    if (condition)
-    {
-        ++passed;
-        std::cout << "  ok: " << what << "\n";
-        return;
-    }
-
-    ++failed;
-    std::cout << "  FAIL: " << what << "\n";
-}
-
-constexpr std::uint8_t CLASS_WARRIOR = 1;
-constexpr std::uint8_t RACE_HUMAN = 1;
-constexpr std::uint8_t RACE_ORC = 2;
-
-constexpr std::uint32_t TRAINER_WARRIOR_STARTER = 99;  // a starter trainer: the first levels only
-constexpr std::uint32_t TRAINER_WARRIOR = 100;
-constexpr std::uint32_t TRAINER_MAGE = 110;
-constexpr std::uint32_t TRAINER_HUNTER = 120;
-constexpr std::uint32_t TRAINER_PALADIN = 130;
-constexpr std::uint32_t TRAINER_DRUID = 140;
-constexpr std::uint32_t TRAINER_WARLOCK = 150;
-constexpr std::uint32_t TRAINER_PRIEST = 160;
-constexpr std::uint32_t TRAINER_RIDING = 300;
-constexpr std::uint32_t VENDOR_INN = 5000;
-constexpr std::uint32_t VENDOR_ARMS = 5001;
-constexpr std::uint32_t VENDOR_REAGENT = 5002;
-constexpr std::uint32_t VENDOR_STABLE = 5003;
-constexpr std::uint32_t VENDOR_MOUNTS = 5004;
-constexpr std::uint32_t VENDOR_GENERAL = 5005;  // bread and arrows
-constexpr std::uint32_t VENDOR_POISON = 5006;   // two poisons of one grade, the bigger lot dearer per unit
-
-constexpr std::uint32_t ITEM_BREAD = 4540;
-constexpr std::uint32_t ITEM_GOOD_BREAD = 4542;
-constexpr std::uint32_t ITEM_WATER = 159;
-constexpr std::uint32_t ITEM_ARROW = 2512;
-constexpr std::uint32_t ITEM_RAZOR_ARROW = 3030;   // level 25, at the weapon vendor only
-constexpr std::uint32_t ITEM_TERRORSHAFT = 41586;  // level 75, at the weapon vendor, worse than the level 72 arrows
-constexpr std::uint32_t ITEM_SARONITE = 41165;     // Saronite Razorheads: level 72, the handout's, sold by no vendor
-constexpr std::uint32_t ITEM_INSTANT_1 = 6947;     // level 20
-constexpr std::uint32_t ITEM_INSTANT_2 = 6949;     // level 28, lot 1
-constexpr std::uint32_t ITEM_DEADLY_1 = 2892;      // level 28, lot 5, dearer per unit, at the stable only
-constexpr std::uint32_t ITEM_BULLET = 2516;        // cheaper than the arrows: a bow must still never get them
-constexpr std::uint32_t ITEM_MEAT = 117;
-constexpr std::uint32_t ITEM_POWDER = 17020;
-constexpr std::uint32_t ITEM_HORSE = 2414;
-constexpr std::uint32_t ITEM_FAST_HORSE = 18776;
-constexpr std::uint32_t ITEM_GRYPHON = 25470;
-constexpr std::uint32_t ITEM_FAST_GRYPHON = 25473;
-constexpr std::uint32_t ITEM_BADGE_GRYPHON = 44690;  // gold and currency
-constexpr std::uint32_t ITEM_WOLF = 1132;            // orcs only
-
-constexpr std::uint32_t SPELL_APPRENTICE = 33388;
-constexpr std::uint32_t SPELL_JOURNEYMAN = 33391;
-constexpr std::uint32_t SPELL_EXPERT = 34090;
-constexpr std::uint32_t SPELL_ARTISAN = 34091;
-constexpr std::uint32_t SPELL_COLD_WEATHER = 54197;
-constexpr std::uint32_t SPELL_WARHORSE = 13819;  // a quest spell, on no trainer list
-constexpr std::uint32_t SPELL_CHARGER = 23214;
-constexpr std::uint32_t SPELL_HOLY_SHIELD_1 = 20925;  // the talent
-constexpr std::uint32_t SPELL_HOLY_SHIELD_2 = 20927;
-constexpr std::uint32_t SPELL_FLIGHT_FORM = 33943;  // on no trainer list
-constexpr std::uint32_t SPELL_SWIFT_FLIGHT_FORM = 40120;
-constexpr std::uint32_t SPELL_FELSTEED = 1710;  // a learn spell
-constexpr std::uint32_t SPELL_FELSTEED_TAUGHT = 5784;
-constexpr std::uint32_t SPELL_DREADSTEED = 23161;
-constexpr std::uint32_t SPELL_MAGE_POWDER = 2010;  // the mage's level 10 spell uses the powder
-
-// Ammo damage x 1000 as the item usage compares it (world DB: Terrorshaft 46.5, Saronite Razorheads 67.5)
-constexpr std::uint32_t DAMAGE_ARROW = 2500;
-constexpr std::uint32_t DAMAGE_BULLET = 2500;
-constexpr std::uint32_t DAMAGE_RAZOR = 7500;
-constexpr std::uint32_t DAMAGE_TERRORSHAFT = 46500;
-constexpr std::uint32_t DAMAGE_SARONITE = 67500;
-constexpr std::uint8_t ARROWS = static_cast<std::uint8_t>(UpkeepItem::SUBCLASS_ARROW);
-
-constexpr std::uint32_t GOLD = COPPER_PER_GOLD;
-constexpr std::uint8_t MEAT_DIET = 1;  // FoodType 1
-
-TrainerSpell Spell(std::uint32_t id, std::uint32_t cost, std::uint8_t level) { return {id, cost, 0, 0, {}, level, {}}; }
-
-TrainerSpell RidingSpell(std::uint32_t id, std::uint32_t cost, std::uint8_t level, std::uint32_t skillRank)
-{
-    return {id, cost, skillRank ? SKILL_RIDING : 0u, skillRank, {}, level, {}};
-}
-
-UpkeepItemFacts Item(std::uint32_t id, std::uint32_t itemClass, std::uint32_t subClass, std::uint32_t price,
-                     std::uint32_t count, std::uint32_t level)
-{
-    UpkeepItemFacts facts;
-    facts.item = id;
-    facts.itemClass = itemClass;
-    facts.subClass = subClass;
-    facts.allowableClass = 0xFFFFFFFF;
-    facts.allowableRace = 0xFFFFFFFF;
-    facts.buyPrice = price;
-    facts.buyCount = count;
-    facts.requiredLevel = level;
-    return facts;
-}
-
-UpkeepItemFacts Mount(std::uint32_t id, std::uint32_t price, std::uint32_t skillRank, std::uint32_t race)
-{
-    UpkeepItemFacts mount = Item(id, UpkeepItem::CLASS_MISC, UpkeepItem::SUBCLASS_MOUNT, price, 1, 20);
-    mount.requiredSkill = SKILL_RIDING;
-    mount.requiredSkillRank = skillRank;
-    mount.allowableRace = race ? 1u << (race - 1) : 0xFFFFFFFF;
-    return mount;
-}
-
-// Warrior spells every other level with a costly rank at 20, a mage and a hunter list, the riding trainer at the
-// game's prices and a gold+currency gryphon beside the gold ones
-UpkeepIndex Fixture()
-{
-    using namespace UpkeepItem;
-    UpkeepGather input;
-    std::vector<TrainerSpell> warrior;
-    for (std::uint8_t level = 2; level <= 40; level += 2)
-        warrior.push_back(Spell(1000 + level, level == 20 ? 30000 : 100u * level, level));
-    input.trainers.push_back(
-        {TRAINER_WARRIOR_STARTER, TrainerKind::Class, CLASS_WARRIOR, {warrior.begin(), warrior.begin() + 3}});
-    input.trainers.push_back({TRAINER_WARRIOR, TrainerKind::Class, CLASS_WARRIOR, warrior});
-    std::vector<TrainerSpell> mage;
-    for (std::uint8_t level = 4; level <= 20; level += 2)
-        mage.push_back(Spell(2000 + level, 200u * level, level));
-    TrainerSpell rank2 = Spell(2100, 900, 12);  // a second rank needs the first
-    rank2.reqAbility[0] = 2010;
-    TrainerSpell talentRank = Spell(2200, 900, 12);  // needs a talent off the list: not counted
-    talentRank.reqAbility[0] = 99999;
-    mage.push_back(rank2);
-    mage.push_back(talentRank);
-    input.trainers.push_back({TRAINER_MAGE, TrainerKind::Class, CLASS_MAGE, mage});
-    input.trainers.push_back({TRAINER_HUNTER, TrainerKind::Class, CLASS_HUNTER, {Spell(3010, 500, 10)}});
-    // trainer_spell rows of paladin trainer 3 and druid trainer 33: the charger needs Summon Warhorse (on no list)
-    // and journeyman riding, Holy Shield rank 2 the talent, Swift Flight Form Flight Form (on no list) and riding 300
-    TrainerSpell charger = Spell(SPELL_CHARGER, 3500, 40);
-    charger.reqAbility[0] = SPELL_WARHORSE;
-    charger.reqAbility[1] = SPELL_JOURNEYMAN;
-    TrainerSpell holyShield = Spell(SPELL_HOLY_SHIELD_2, 1400, 50);
-    holyShield.reqAbility[0] = SPELL_HOLY_SHIELD_1;
-    input.trainers.push_back({TRAINER_PALADIN, TrainerKind::Class, CLASS_PALADIN, {holyShield, charger}});
-    TrainerSpell swiftFlight = RidingSpell(SPELL_SWIFT_FLIGHT_FORM, 20 * GOLD, 71, 300);
-    swiftFlight.reqAbility[0] = SPELL_FLIGHT_FORM;
-    input.trainers.push_back({TRAINER_DRUID, TrainerKind::Class, CLASS_DRUID, {swiftFlight}});
-    // warlock trainer 31: Felsteed 1710 teaches 5784, which Dreadsteed needs with journeyman riding
-    TrainerSpell felsteed = Spell(SPELL_FELSTEED, 1000, 20);
-    felsteed.teaches[0] = SPELL_FELSTEED_TAUGHT;
-    TrainerSpell dreadsteed = Spell(SPELL_DREADSTEED, 5000, 40);
-    dreadsteed.reqAbility[0] = SPELL_FELSTEED_TAUGHT;
-    dreadsteed.reqAbility[1] = SPELL_JOURNEYMAN;
-    input.trainers.push_back({TRAINER_WARLOCK, TrainerKind::Class, CLASS_WARLOCK, {felsteed, dreadsteed}});
-    input.trainers.push_back(
-        {TRAINER_RIDING,
-         TrainerKind::Mount,
-         0,
-         {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0), RidingSpell(SPELL_JOURNEYMAN, 50 * GOLD, 40, 75),
-          RidingSpell(SPELL_EXPERT, 250 * GOLD, 60, 150), RidingSpell(SPELL_ARTISAN, 5000 * GOLD, 70, 225),
-          RidingSpell(SPELL_COLD_WEATHER, 1000 * GOLD, 77, 225)}});
-    // priest trainer rows from acore_world: 25315 costs 6500 and needs 10929, which costs 42000
-    TrainerSpell dearPrerequisite = Spell(10929, 42000, 52);
-    TrainerSpell cheapRank = Spell(25315, 6500, 58);
-    cheapRank.reqAbility[0] = 10929;
-    input.trainers.push_back({TRAINER_PRIEST, TrainerKind::Class, CLASS_PRIEST, {dearPrerequisite, cheapRank}});
-    input.trainerEntries = {{TRAINER_PRIEST, TRAINER_PRIEST},   {TRAINER_WARRIOR, TRAINER_WARRIOR},
-                            {TRAINER_MAGE, TRAINER_MAGE},       {TRAINER_HUNTER, TRAINER_HUNTER},
-                            {TRAINER_PALADIN, TRAINER_PALADIN}, {TRAINER_DRUID, TRAINER_DRUID},
-                            {TRAINER_WARLOCK, TRAINER_WARLOCK}, {TRAINER_RIDING, TRAINER_RIDING}};
-    input.trainerEntries.emplace_back(TRAINER_WARRIOR_STARTER, TRAINER_WARRIOR_STARTER);
-
-    UpkeepItemFacts bread = Item(ITEM_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
-    bread.spellCategory = CATEGORY_FOOD;
-    UpkeepItemFacts goodBread = Item(ITEM_GOOD_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 200, 1, 15);
-    goodBread.spellCategory = CATEGORY_FOOD;
-    UpkeepItemFacts water = Item(ITEM_WATER, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
-    water.spellCategory = CATEGORY_DRINK;
-    UpkeepItemFacts meat = Item(ITEM_MEAT, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
-    meat.foodType = 1;
-    UpkeepItemFacts arrow = Item(ITEM_ARROW, CLASS_PROJECTILE, SUBCLASS_ARROW, 10, 200, 1);
-    arrow.ammoDamage = DAMAGE_ARROW;
-    UpkeepItemFacts bullet = Item(ITEM_BULLET, CLASS_PROJECTILE, SUBCLASS_BULLET, 5, 200, 1);
-    bullet.ammoDamage = DAMAGE_BULLET;
-    UpkeepItemFacts razor = Item(ITEM_RAZOR_ARROW, CLASS_PROJECTILE, SUBCLASS_ARROW, 10, 200, 25);
-    razor.ammoDamage = DAMAGE_RAZOR;
-    UpkeepItemFacts terrorshaft = Item(ITEM_TERRORSHAFT, CLASS_PROJECTILE, SUBCLASS_ARROW, 1000, 200, 75);
-    terrorshaft.ammoDamage = DAMAGE_TERRORSHAFT;
-    std::vector<UpkeepItemFacts> poisons = {
-        Item(ITEM_INSTANT_1, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE_OTHER, 50, 1, 20),
-        Item(ITEM_INSTANT_2, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE_OTHER, 100, 1, 28),
-        Item(ITEM_DEADLY_1, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE_OTHER, 600, 5, 28)};
-    for (UpkeepItemFacts& poison : poisons)
-        poison.allowableClass = CLASS_MASK_ROGUE;
-    UpkeepItemFacts powder = Item(ITEM_POWDER, CLASS_MISC, 1, 1000, 1, 0);
-    input.items = {bread,
-                   goodBread,
-                   water,
-                   meat,
-                   arrow,
-                   bullet,
-                   razor,
-                   terrorshaft,
-                   poisons[0],
-                   poisons[1],
-                   poisons[2],
-                   powder,
-                   Mount(ITEM_HORSE, 1 * GOLD, 75, RACE_HUMAN),
-                   Mount(ITEM_WOLF, 1 * GOLD / 2, 75, RACE_ORC),
-                   Mount(ITEM_FAST_HORSE, 10 * GOLD, 150, RACE_HUMAN),
-                   Mount(ITEM_GRYPHON, 50 * GOLD, 225, 0),
-                   Mount(ITEM_FAST_GRYPHON, 100 * GOLD, 300, 0),
-                   Mount(ITEM_BADGE_GRYPHON, 1 * GOLD, 300, 0)};
-    input.vendorItems = {
-        {VENDOR_INN, ITEM_BREAD, 0, 0, 0, true},
-        {VENDOR_INN, ITEM_GOOD_BREAD, 0, 0, 0, true},
-        {VENDOR_INN, ITEM_WATER, 0, 0, 0, true},
-        {VENDOR_STABLE, ITEM_MEAT, 0, 0, 0, true},
-        {VENDOR_ARMS, ITEM_ARROW, 0, 0, 0, true},
-        {VENDOR_ARMS, ITEM_BULLET, 0, 0, 0, true},
-        {VENDOR_ARMS, ITEM_RAZOR_ARROW, 0, 0, 0, true},
-        {VENDOR_ARMS, ITEM_TERRORSHAFT, 0, 0, 0, true},
-        {VENDOR_POISON, ITEM_INSTANT_1, 0, 0, 0, true},
-        {VENDOR_POISON, ITEM_INSTANT_2, 0, 0, 0, true},
-        {VENDOR_STABLE, ITEM_DEADLY_1, 0, 0, 0, true},
-        {VENDOR_GENERAL, ITEM_BREAD, 0, 0, 0, true},
-        {VENDOR_GENERAL, ITEM_ARROW, 0, 0, 0, true},
-        {VENDOR_REAGENT, ITEM_POWDER, 0, 0, 0, true},
-        {VENDOR_MOUNTS, ITEM_HORSE, 0, 0, 0, true},
-        {VENDOR_MOUNTS, ITEM_WOLF, 0, 0, 0, true},
-        {VENDOR_MOUNTS, ITEM_FAST_HORSE, 0, 0, 0, true},
-        {VENDOR_MOUNTS, ITEM_GRYPHON, 0, 0, 0, true},
-        {VENDOR_MOUNTS, ITEM_FAST_GRYPHON, 0, 0, 0, true},
-        {VENDOR_MOUNTS, ITEM_BADGE_GRYPHON, 0, 0, 2400, true},  // gold and badges
-    };
-    input.reagents = {{ITEM_POWDER, CLASS_MAGE, SPELL_MAGE_POWDER}};
-    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
-    index.version = 7;
-    return index;
-}
-
-void Mark(std::vector<std::uint64_t>& bits, TrainerList const& list, std::uint32_t spellId)
-{
-    std::size_t const position = list.Find(spellId);
-    if (position != TrainerList::NOT_FOUND)
-        SetSpellBit(bits, position);
-}
-
-// A bot that knows its class spells up to trainedTo and the riding ranks given; every spell fits it
-Snapshot Bot(UpkeepIndex const& index, std::uint8_t cls, std::uint8_t level, std::uint32_t money,
-             std::uint8_t trainedTo, std::vector<std::uint32_t> const& riding = {})
-{
-    Snapshot bot;
-    bot.cls = cls;
-    bot.race = RACE_HUMAN;
-    bot.level = level;
-    bot.money = money;
-    bot.upkeepVersion = index.version;
-    if (TrainerList const* list = index.ClassList(cls))
-    {
-        bot.knownClassSpells = SpellBits(list->spells.size());
-        bot.canLearnClassSpells = SpellBits(list->spells.size());
-        for (std::size_t position = 0; position < list->spells.size(); ++position)
-        {
-            SetSpellBit(bot.canLearnClassSpells, position);
-            if (list->spells[position].reqLevel <= trainedTo)
-                SetSpellBit(bot.knownClassSpells, position);
-        }
-    }
-    TrainerList const* ridingList = index.RidingList(bot.race);
-    bot.knownRidingSpells = SpellBits(ridingList->spells.size());
-    bot.canLearnRidingSpells = SpellBits(ridingList->spells.size());
-    for (std::size_t position = 0; position < ridingList->spells.size(); ++position)
-        SetSpellBit(bot.canLearnRidingSpells, position);
-    std::uint16_t skill = 0;
-    for (std::uint32_t const spell : riding)
-    {
-        Mark(bot.knownRidingSpells, *ridingList, spell);
-        for (RidingRank const& rank : RIDING_RANKS)
-            if (rank.spellId == spell)
-            {
-                skill = std::max(skill, rank.skill);
-                // The mount of each rank it knows, as the factory gives it (a scenario takes it away)
-                if (rank.kind == RideKind::Ground)
-                    bot.groundMountSkill = std::max(bot.groundMountSkill, rank.skill);
-                else if (rank.kind == RideKind::Air)
-                    bot.flyingMountSkill = std::max(bot.flyingMountSkill, rank.skill);
-            }
-    }
-    if (skill)
-        bot.skills.push_back({SKILL_RIDING, skill, skill});
-    // Hunters carry a bow with the level 1 arrows equipped; stock at its target unless a scenario says otherwise:
-    // only the need under test shows
-    if (cls == CLASS_HUNTER)
-    {
-        bot.ammoSubClass = ARROWS;
-        bot.ammoDamage = DAMAGE_ARROW;
-    }
-    NeedRates const rates;
-    for (UpkeepStock const kind : {UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::Ammo, UpkeepStock::Reagent})
-        if (std::uint32_t const target = StockTarget(bot, rates, kind))
-            bot.stock.push_back({1000u + static_cast<std::uint32_t>(kind), target, StockBit(kind), 0,
-                                 kind == UpkeepStock::Ammo ? bot.ammoSubClass : std::uint8_t(0), level,
-                                 kind == UpkeepStock::Ammo ? bot.ammoDamage : 0u});
-    return bot;
-}
-
-// The bot knows the abilities off the lists that this class spell needs (FillOffList's bit)
-void KnowsOffList(Snapshot& bot, UpkeepIndex const& index, std::uint32_t spellId)
-{
-    TrainerList const* list = index.ClassList(bot.cls);
-    bot.offListMetClassSpells.resize(SpellBits(list->spells.size()).size());
-    Mark(bot.offListMetClassSpells, *list, spellId);
-}
-
-void SetStock(Snapshot& bot, UpkeepStock kind, std::uint32_t count, std::uint8_t diet = 0)
-{
-    for (StockItem& entry : bot.stock)
-        if (entry.kinds & StockBit(kind))
-            entry.count = 0;
-    bool const ammo = kind == UpkeepStock::Ammo;
-    bot.stock.push_back({2000u + static_cast<std::uint32_t>(kind), count, StockBit(kind), diet,
-                         ammo ? bot.ammoSubClass : std::uint8_t(0), bot.level, ammo ? bot.ammoDamage : 0u});
-}
-
-TraitRules::BotTraits Traits(int thrift, int thoroughness, bool collector)
-{
-    TraitRules::BotTraits traits;
-    traits.Values[TraitRules::Index(TraitRules::Trait::Thrift)] = static_cast<std::int8_t>(thrift);
-    traits.Values[TraitRules::Index(TraitRules::Trait::Thoroughness)] = static_cast<std::int8_t>(thoroughness);
-    if (collector)
-        traits.Interests[0] = static_cast<std::uint8_t>(TraitRules::Interest::Collecting) + 1;
-    return traits;
-}
-
-// WorldTravel's band default e, as the caller passes it
-NeedRates Rates(std::uint8_t level, float walkMinutesPerHour = DEFAULT_WALK_MINUTES_PER_HOUR)
-{
-    NeedRates rates;
-    rates.earnCopperPerMinute =
-        static_cast<float>(WorldTravel::DEFAULT_SLOT_BANDS[WorldTravel::LevelBand(level)].EarnCopperPerMinute);
-    rates.walkMinutesPerHour = walkMinutesPerHour;
-    return rates;
-}
-
-// The rates of a bot whose slot measure took an hour of legs (WU14): walk minutes on the ground outside flying areas,
-// sky minutes walked in Outland's open flying areas (walking and where a flyer flies) and north minutes walked under
-// Northrend's open sky without cold weather flying; the rest of the hour without travel
-NeedRates Measured(std::uint8_t level, float walk, float sky = 0.0f, float north = 0.0f)
-{
-    using WorldTravel::LegKind;
-    using WorldTravel::LegShares;
-    constexpr std::uint32_t START = 1000;
-    constexpr std::uint32_t MAP_OUTLAND = 530;
-    NeedRates rates = Rates(level);
-    WorldTravel::SlotMeasure measure;
-    std::uint32_t now = START;
-    auto const leg = [&measure, &now](std::uint8_t shares, float minutes)
-    {
-        std::uint32_t const ms = static_cast<std::uint32_t>(minutes * 60000.0f);
-        now += ms;
-        WorldTravel::NoteTravelLeg(measure, shares, ms, now);
-    };
-    leg(LegShares(LegKind::Walk, 0, false, false), walk);
-    leg(LegShares(LegKind::Walk, MAP_OUTLAND, true, false), sky);
-    leg(LegShares(LegKind::Walk, WorldTravel::TRAVEL_MAP_NORTHREND, true, false), north);
-    WorldTravel::NoteTravelLeg(measure, 0, 0, START + WorldTravel::MS_PER_HOUR);
-    FillTravel(rates, measure);
-    return rates;
-}
-
-NeedList Show(std::string const& who, Snapshot const& bot, UpkeepIndex const& index, NeedRates const& rates)
-{
-    NeedList const list = ComputeNeeds(bot, index, rates);
-    std::cout << " " << who << " (level " << int(bot.level) << ", e " << rates.earnCopperPerMinute << " c/min, walk "
-              << rates.walkMinutesPerHour << " min/h, flight " << rates.flightMinutesPerHour << ", northrend "
-              << rates.northrendFlightMinutesPerHour << "):\n";
-    for (std::string const& line : DescribeAll(list))
-        std::cout << "    " << line << "\n";
-    return list;
-}
 
 Need const* Find(NeedList const& list, NeedOrder order, UpkeepStock stock = UpkeepStock::Count)
 {
@@ -1504,6 +1110,374 @@ void RidingFunded(UpkeepIndex const& index)
           "the rank shows BUY with a funded share below its price: not an errand; once funded whole it is");
 }
 
+// Weapon skills (WU15a): a weapon the bot carries whose skill it lacks and its class may learn, at the weapon master
+void WeaponMasters()
+{
+    std::cout << "Scenario: weapon skills at the weapon master\n";
+    UpkeepIndex const index = WeaponFixture();
+    auto const weaponNeed = [](NeedList const& list) -> Need const*
+    {
+        for (Need const& need : list.needs)
+            if (need.kind == UpkeepKind::WeaponSkill)
+                return &need;
+        return nullptr;
+    };
+
+    Snapshot warrior = Bot(index, CLASS_WARRIOR, 15, 20 * GOLD, 15);
+    Carries(warrior, SKILL_MACES);
+    NeedList const mace = ComputeNeeds(warrior, index, Rates(15));
+    Need const* need = weaponNeed(mace);
+    Check(need && need->order == NeedOrder::Training && need->item == SPELL_MACES &&
+              need->trainer == TRAINER_WEAPON_MASTER && need->copper == WEAPON_PRICE && need->funded >= need->copper &&
+              need->due && WeaponErrandDue(*need) && AnyErrandDue(mace),
+          "a warrior carrying a mace without Maces trips to its weapon master");
+    Check(mace.reserveTraining >= WEAPON_PRICE && mace.reserve >= WEAPON_PRICE,
+          "the skill's price joins the training reserve");
+
+    Snapshot poor = warrior;
+    poor.money = 500;
+    NeedList const shortGold = ComputeNeeds(poor, index, Rates(15));
+    Need const* unpaid = weaponNeed(shortGold);
+    Check(unpaid && unpaid->funded < unpaid->copper && !WeaponErrandDue(*unpaid) && !AnyErrandDue(shortGold),
+          "with 500 copper the need stays and makes no trip");
+
+    Snapshot mage = Bot(index, CLASS_MAGE, 15, 20 * GOLD, 15);
+    Carries(mage, SKILL_MACES);
+    Check(!weaponNeed(ComputeNeeds(mage, index, Rates(15))),
+          "a mage carrying a mace has no need: its class never learns");
+    Carries(mage, SKILL_DAGGERS);
+    Need const* dagger = nullptr;
+    NeedList const daggers = ComputeNeeds(mage, index, Rates(15));
+    dagger = weaponNeed(daggers);
+    Check(dagger && dagger->item == SPELL_DAGGERS && dagger->trainer == TRAINER_WEAPON_MASTER,
+          "a mage carrying a dagger without Daggers has the need");
+
+    Snapshot unarmed = Bot(index, CLASS_WARRIOR, 15, 20 * GOLD, 15);
+    Check(!weaponNeed(ComputeNeeds(unarmed, index, Rates(15))), "a bot without a weapon it cannot use has no need");
+    Carries(unarmed, SKILL_MACES, true);
+    Check(!weaponNeed(ComputeNeeds(unarmed, index, Rates(15))), "a bot that knows the skill has no need");
+    Snapshot smith = Bot(index, CLASS_WARRIOR, 15, 20 * GOLD, 15);
+    Carries(smith, SKILL_BLACKSMITHING);
+    Check(!weaponNeed(ComputeNeeds(smith, index, Rates(15))),
+          "a profession spell on the merged list is no weapon need");
+}
+
+// The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a
+// wanted family at or below its level on its map; an exotic one only with Beast Mastery's aura
+constexpr std::uint32_t BEAST_WOLF = 299;     // family 1, levels 10-11, 100 yd
+constexpr std::uint32_t BEAST_BOAR = 113;     // family 5, levels 8-9, 300 yd
+constexpr std::uint32_t BEAST_BEAR = 1188;    // family 4, level 30, 20 yd
+constexpr std::uint32_t BEAST_EXOTIC = 6498;  // family 39 (devilsaur), exotic, level 5, 50 yd
+constexpr std::uint32_t BEAST_CAT = 2042;     // family 2, on another map, 5 yd
+
+UpkeepIndex PetFixture()
+{
+    UpkeepGather input;
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainerEntries = {{TRAINER_RIDING, TRAINER_RIDING}};
+    input.tameable = {{0, 100.0f, 0.0f, 0.0f, BEAST_WOLF, 1, 11, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 9, false},
+                      {0, 0.0f, 20.0f, 0.0f, BEAST_BEAR, 4, 30, false},
+                      {0, 0.0f, 50.0f, 0.0f, BEAST_EXOTIC, 39, 5, true},
+                      {1, 5.0f, 0.0f, 0.0f, BEAST_CAT, 2, 6, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 9, false}};  // the same spawn twice: kept once
+    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    index.version = 7;
+    return index;
+}
+
+void PetNeed()
+{
+    std::cout << "Scenario: the pet need of a hunter without a pet\n";
+    UpkeepIndex const index = PetFixture();
+    Check(index.stats.tameableSpawns == 5 && index.stats.tameableEntries == 5 &&
+              index.TameableOn(0).second - index.TameableOn(0).first == 4,
+          "the index keeps each tameable spawn once, by map");
+    Check(index.TameTarget(0, BEAST_WOLF) && index.TameTarget(0, BEAST_EXOTIC) && index.TameTarget(1, BEAST_CAT) &&
+              !index.TameTarget(1, BEAST_WOLF) && !index.TameTarget(0, BEAST_CAT) && !index.TameTarget(2, BEAST_WOLF),
+          "the tame stop's lookup: an entry is a tame target on the map the index keeps it on, nowhere else");
+    auto const petNeed = [](NeedList const& list) { return Find(list, NeedOrder::Pet); };
+    auto const hunter = [&index](std::uint8_t level)
+    {
+        Snapshot bot = Bot(index, PET_CLASS_HUNTER, level, 20 * GOLD, level);
+        bot.knowsTameBeast = true;
+        return bot;
+    };
+
+    Snapshot const lone = hunter(12);
+    NeedList const lonely = Show("hunter 12, Tame Beast, no pet", lone, index, Rates(12));
+    Need const* need = petNeed(lonely);
+    Check(need && need->kind == UpkeepKind::Pet && need->beast == BEAST_WOLF && need->beastFamily == 1 &&
+              need->copper == 0 && need->due && PetErrandDue(*need) && AnyErrandDue(lonely),
+          "the nearest wanted spawn: the wolf at 100 yd (the bear is above the level, the devilsaur exotic, the cat "
+          "on another map), due at once, price 0, a trip");
+    Check(need && need->beastAt.map == 0 && need->beastAt.x == 100.0f, "the need names the spawn's place");
+    Check(lonely.reserve == ComputeNeeds(
+                                [&lone]
+                                {
+                                    Snapshot s = lone;
+                                    s.hasPet = true;
+                                    return s;
+                                }(),
+                                index, Rates(12))
+                                .reserve,
+          "the pet need adds nothing to the reserve");
+
+    Snapshot pet = hunter(12);
+    pet.hasPet = true;
+    Check(!petNeed(ComputeNeeds(pet, index, Rates(12))), "a hunter with a pet (summoned or not) has no pet need");
+    Snapshot untaught = hunter(12);
+    untaught.knowsTameBeast = false;
+    Check(!petNeed(ComputeNeeds(untaught, index, Rates(12))), "a hunter without Tame Beast has no pet need");
+    Check(!petNeed(ComputeNeeds(hunter(9), index, Rates(9))), "a level 9 hunter (Tame Beast learned) has no pet need");
+    Snapshot mage = Bot(index, CLASS_MAGE, 12, 20 * GOLD, 12);
+    mage.knowsTameBeast = true;
+    Check(!petNeed(ComputeNeeds(mage, index, Rates(12))), "a mage has no pet need");
+
+    NeedList const ten = ComputeNeeds(hunter(10), index, Rates(10));
+    Check(petNeed(ten) && petNeed(ten)->beast == BEAST_BOAR,
+          "at 10 the wolf (up to 11) is above the level: the boar at 300 yd");
+    Snapshot alone = hunter(12);
+    alone.position = {2, 0.0f, 0.0f, 0.0f};
+    NeedList const nothing = ComputeNeeds(alone, index, Rates(12));
+    Check(petNeed(nothing) && !petNeed(nothing)->due && !petNeed(nothing)->beast && !AnyErrandDue(nothing),
+          "no tameable spawn on the map: the need stays, no trip");
+    Snapshot low = hunter(12);
+    low.position = {0, 0.0f, 25.0f, 0.0f};
+    Check(petNeed(ComputeNeeds(low, index, Rates(12)))->beast == BEAST_WOLF,
+          "beside the level 30 bear only a beast at or below the level is named");
+
+    Snapshot master = hunter(12);
+    master.tamesExotic = true;
+    Check(petNeed(ComputeNeeds(master, index, Rates(12)))->beast == BEAST_EXOTIC,
+          "with Beast Mastery's aura the exotic beast at 50 yd is the nearest");
+    std::cout << "  " << Describe(*need) << "\n";
+}
+
+// The swap form (WU21c): a Beast Mastery hunter (the exotic aura) with a pet of no wanted family stores it at a stable
+// master and tames a wanted (exotic) beast; a slot is bought only from the gold above the reserve
+void PetSwap()
+{
+    std::cout << "Scenario: the stable swap of an unwanted pet\n";
+    UpkeepIndex const index = PetFixture();
+    auto const petNeed = [](NeedList const& list) { return Find(list, NeedOrder::Pet); };
+    auto const master = [&index](std::uint64_t money)
+    {
+        Snapshot bot = Bot(index, PET_CLASS_HUNTER, 60, money, 60);
+        bot.knowsTameBeast = true;
+        bot.tamesExotic = true;
+        bot.hasPet = true;
+        bot.petFamily = 1;  // a wolf
+        bot.stableSlotPrice = 500;
+        return bot;
+    };
+    Check(
+        !WantedFamily(1, true) && WantedFamily(39, true) && WantedFamily(1, false) && WantedFamily(0, true),
+        "Beast Mastery wants an exotic family, not a wolf; another spec wants any; an unknown family counts as wanted");
+
+    NeedList const rich =
+        Show("Beast Mastery 60 with a wolf, 20 g, no slot bought", master(20 * GOLD), index, Rates(60));
+    Need const* swap = petNeed(rich);
+    Check(swap && swap->swap && swap->beast == BEAST_EXOTIC && swap->copper == 500 && swap->due &&
+              PetErrandDue(*swap) && AnyErrandDue(rich),
+          "a Beast Mastery hunter at 60 swaps its wolf: the exotic beast named, the first slot's 500 c, due");
+    Check(rich.reserve == ComputeNeeds(
+                              [&]
+                              {
+                                  Snapshot s = master(20 * GOLD);
+                                  s.petFamily = 39;
+                                  return s;
+                              }(),
+                              index, Rates(60))
+                              .reserve,
+          "the slot adds nothing to the reserve (it is paid from the gold above it)");
+
+    Snapshot wanted = master(20 * GOLD);
+    wanted.petFamily = 39;  // a devilsaur
+    Check(!petNeed(ComputeNeeds(wanted, index, Rates(60))), "a hunter with a wanted pet does not swap");
+    Snapshot other = master(20 * GOLD);
+    other.tamesExotic = false;
+    Check(!petNeed(ComputeNeeds(other, index, Rates(60))), "a hunter of another spec keeps its wolf");
+
+    std::uint64_t const reserve = rich.reserve;
+    NeedList const poor = Show("the same, 499 c above the reserve", master(reserve + 499), index, Rates(60));
+    Check(petNeed(poor) && !petNeed(poor)->due && !PetErrandDue(*petNeed(poor)),
+          "a slot priced above the free gold (499 c above the reserve) means no swap");
+    NeedList const exact = ComputeNeeds(master(reserve + 500), index, Rates(60));
+    Check(petNeed(exact) && petNeed(exact)->due, "500 c above the reserve pays the slot");
+    Check(!PetSwapPayable(400, 0, 500) && PetSwapPayable(500, 0, 500) && !PetSwapPayable(900, 500, 500) &&
+              PetSwapPayable(0, 500, 0),
+          "the gold above the reserve pays the slot; an empty bought slot costs nothing");
+
+    Snapshot free = master(0);
+    free.stableFree = true;
+    NeedList const freeList = ComputeNeeds(free, index, Rates(60));
+    Check(petNeed(freeList) && petNeed(freeList)->copper == 0 && petNeed(freeList)->due,
+          "an empty bought slot: the swap costs nothing and is due without gold");
+    Snapshot full = master(20 * GOLD);
+    full.stableSlotPrice = 0;  // every slot bought and full
+    Check(!petNeed(ComputeNeeds(full, index, Rates(60))), "every slot full: the hunter keeps its pet");
+    Snapshot away = master(20 * GOLD);
+    away.position = {1, 0.0f, 0.0f, 0.0f};  // only a cat (not wanted) on map 1
+    Check(!petNeed(ComputeNeeds(away, index, Rates(60))),
+          "no wanted beast on the map: no swap (the hunter keeps its pet)");
+    Snapshot lone = master(20 * GOLD);
+    lone.hasPet = false;
+    Check(petNeed(ComputeNeeds(lone, index, Rates(60))) && !petNeed(ComputeNeeds(lone, index, Rates(60)))->swap,
+          "without a pet the tame need of WU21b, no swap");
+    if (swap)
+        std::cout << "  " << Describe(*swap) << "\n";
+}
+
+void TameSteps()
+{
+    std::cout << "Scenario: the tame at the beast (break off, cast again in the fight, rest, bounded tries)\n";
+    Check(!TameBreaksOff(100.0f) && !TameBreaksOff(TAME_BREAK_OFF_HEALTH_PCT) && TameBreaksOff(34.0f),
+          "the channel holds down to the break-off health and breaks off below it");
+    Check(TameNextStep(0, 100.0f, 0) == TameNext::Cast, "a healthy hunter casts at once on arrival");
+    Check(TameNextStep(1, 40.0f, 1000) == TameNext::Rest && TameNextStep(0, 40.0f, 0) == TameNext::Rest,
+          "a hurt hunter rests before a try (after a broken channel or on arrival)");
+    Check(TameNextStep(1, 40.0f, TAME_REST_MS) == TameNext::Cast,
+          "the rest ends after TAME_REST_MS whatever the health (a bot never stalls)");
+    Check(TameNextStep(1, TAME_START_HEALTH_PCT, 0) == TameNext::Cast, "back to the start health: another try");
+    Check(TameNextStep(TAME_MAX_TRIES - 1, 100.0f, 0) == TameNext::Cast &&
+              TameNextStep(TAME_MAX_TRIES, 100.0f, 0) == TameNext::GiveUp,
+          "the stop casts TAME_MAX_TRIES times at most, then gives up");
+    Check(TAME_START_HEALTH_PCT > TAME_BREAK_OFF_HEALTH_PCT, "a try starts above the break-off health");
+    {
+        // The reach bound over a chase (WU21e run 2): a re-pick every 10 s keeps the start, the stop ends in time
+        std::uint32_t start = 0;
+        std::uint32_t stuckAt = 0;
+        for (std::uint32_t now = 5000; now <= 400000 && !stuckAt; now += 1000)
+        {
+            start = TameReachStartMs(start, now);  // the pick of this tick, a new beast every 10 s
+            if (now - start > TAME_REACH_MS)
+                stuckAt = now;
+        }
+        Check(stuckAt == 5000 + TAME_REACH_MS + 1000, "re-picks keep the reach bound's start: a chase ends after it");
+        Check(TameReachStartMs(0, 90000) == 90000 && TameReachStartMs(5000, 90000) == 5000,
+              "a reset (a channel's end, a fight at the stop, a respawn wait) starts the bound anew at the next pick");
+    }
+    Check(TameRecastsInFight(1, 90.0f, 0) && TameRecastsInFight(1, TAME_START_HEALTH_PCT, TAME_RECAST_MS),
+          "a channel the beast broke (stun, knockback) is cast again at once in its fight");
+    Check(!TameRecastsInFight(TAME_MAX_TRIES, 90.0f, 0), "no cast again in the fight past the tries");
+    Check(!TameRecastsInFight(1, TAME_START_HEALTH_PCT - 1.0f, 0),
+          "a hurt hunter fights the beast instead (the stop's rest and next try follow)");
+    Check(!TameRecastsInFight(1, 90.0f, TAME_RECAST_MS + 1), "the wait for a cast again ends (a bot never stalls)");
+
+    // The beasts' spells, as Spell.dbc gives their effects (effect, aura): APPLY_AURA 6, SCHOOL_DAMAGE 2,
+    // WEAPON_DAMAGE 58; MOD_ROOT 26, MOD_DECREASE_SPEED 33
+    Check(!BreaksTameChannel(58, 0) && BreaksTameChannel(6, AURA_MOD_STUN),
+          "Swoop (weapon damage, a stun) breaks the channel: the buzzard is no tame target");
+    Check(BreaksTameChannel(EFFECT_KNOCK_BACK, 0), "Wing Buffet's knockback breaks the channel: the moth is none");
+    Check(BreaksTameChannel(6, AURA_MOD_FEAR) && BreaksTameChannel(6, AURA_MOD_CONFUSE) &&
+              BreaksTameChannel(6, AURA_MOD_SILENCE) && BreaksTameChannel(EFFECT_INTERRUPT_CAST, 0) &&
+              BreaksTameChannel(EFFECT_KNOCK_BACK_DEST, 0),
+          "a fear, a confuse, a silence or an interrupt breaks it too");
+    Check(!BreaksTameChannel(2, 0) && !BreaksTameChannel(6, 26) && !BreaksTameChannel(6, 33),
+          "a bite, a root or a slow only hurts: such a beast stays a tame target");
+    Check(!TameTargetSpawns(1) && TameTargetSpawns(2) && TameTargetSpawns(40),
+          "a single named spawn is no tame target (one tame or kill takes it); a beast with several spawns is");
+}
+
+// The threats of each beast of a pack at the hunter's spot 10 yards short of it on the way in from (hx, hy)
+std::vector<std::uint32_t> PackThreats(std::vector<TameSiteUnit> const& units, float hx, float hy, float assist)
+{
+    std::vector<std::uint32_t> counts;
+    for (std::size_t i = 0; i < units.size(); ++i)
+    {
+        float const yards = std::hypot(hx - units[i].x, hy - units[i].y);
+        float const share = yards > TAME_CAST_YARDS / 2 ? TAME_CAST_YARDS / 2 / yards : 1.0f;
+        float const sx = units[i].x + (hx - units[i].x) * share;
+        float const sy = units[i].y + (hy - units[i].y) * share;
+        std::uint32_t count = 0;
+        for (std::size_t j = 0; j < units.size(); ++j)
+            if (j != i && TameThreat(units[j], units[i].x, units[i].y, sx, sy, assist))
+                ++count;
+        counts.push_back(count);
+    }
+    return counts;
+}
+
+void TameSiteRules()
+{
+    std::cout << "Scenario: the tame's site (WU.23: threats, the pick, clear or give up, the respawn wait, patrols)\n";
+    Check(TameSpawnStands(0) && TameSpawnStands(1) && !TameSpawnStands(MOVEMENT_WAYPOINT),
+          "a standing or wandering spawn is a tame target, a patrolling one (a waypoint path) is not");
+
+    float const assist = 10.0f;  // the core's CreatureFamilyAssistanceRadius default
+    TameSiteUnit const hostile{30.0f, 0.0f, 20.0f, true, false};
+    Check(TameThreat(hostile, 0.0f, 20.0f, 10.0f, 0.0f, assist), "a hostile whose aggro reach covers the spot");
+    Check(!TameThreat({60.0f, 0.0f, 20.0f, true, false}, 0.0f, 20.0f, 10.0f, 0.0f, assist),
+          "a hostile beyond its aggro reach of the spot is none (the bot is no closer)");
+    Check(TameThreat({5.0f, 25.0f, 0.0f, false, true}, 0.0f, 20.0f, 10.0f, 0.0f, assist) &&
+              TameThreat({6.0f, 9.0f, 0.0f, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a pack member near the beast, or near its run to the hunter, answers its call for help");
+    Check(!TameThreat({40.0f, 40.0f, 0.0f, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist) &&
+              !TameThreat({1.0f, 21.0f, 20.0f, false, false}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a far pack member, or a neutral creature of another faction beside the beast, joins nothing");
+    Check(TameThreat({80.0f, 80.0f, 0.0f, false, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a creature that fights the hunter already is a threat wherever it stands (no cast amid a fight)");
+
+    // A pack along x: three wolves within the assistance radius of each other, one 40 yards out at its edge; the
+    // hunter comes from the far side of the edge wolf
+    std::vector<TameSiteUnit> pack = {{0.0f, 0.0f, 15.0f, false, true},
+                                      {6.0f, 0.0f, 15.0f, false, true},
+                                      {12.0f, 0.0f, 15.0f, false, true},
+                                      {52.0f, 0.0f, 15.0f, false, true}};
+    std::vector<std::uint32_t> const counts = PackThreats(pack, 90.0f, 0.0f, assist);
+    Check(counts[3] == 0 && counts[0] > 0 && counts[1] > 0 && counts[2] > 0,
+          "of a pack the edge member has no threat, the others one or more");
+    TamePick const edge{counts[3], false, 38.0f};
+    TamePick const inner{counts[2], false, 78.0f};
+    Check(TameBetter(edge, inner) && !TameBetter(inner, edge),
+          "the pick takes the edge member (a site where none joins)");
+    Check(TameBetter({0, true, 80.0f}, {1, false, 20.0f}),
+          "a beast of another entry with a clean site beats the planned entry's beast whose pack would join");
+    Check(TameBetter({0, false, 80.0f}, {0, true, 20.0f}) && TameBetter({1, false, 20.0f}, {1, false, 30.0f}),
+          "at equal threats the planned entry first, then the nearest");
+
+    // Two hunters at one pack: the first tames the edge member (in its fight, so no threat and no pick); the second
+    // takes the nearest of the rest and fights its pack-mates first
+    pack.pop_back();
+    std::vector<std::uint32_t> const rest = PackThreats(pack, 90.0f, 0.0f, assist);
+    Check(rest[2] > 0 && TameSiteNext(rest[2], 0) == TameSite::Clear,
+          "the second hunter at the pack clears the members that would join, then casts");
+    Check(TameSiteNext(0, 0) == TameSite::Cast && TameSiteNext(0, TAME_MAX_CLEARS) == TameSite::Cast,
+          "a clean site casts at once, also after clears");
+    Check(
+        TameSiteNext(2, TAME_MAX_CLEARS - 1) == TameSite::Clear && TameSiteNext(1, TAME_MAX_CLEARS) == TameSite::GiveUp,
+        "a site still busy after TAME_MAX_CLEARS fights gives the stop up (a bot never stalls)");
+
+    // The respawn wait, from the spawn's respawn time: wanted beasts get the long budget, any pet the short one
+    Check(TameWaitMs(60 * 1000, 0, false) == 60 * 1000 + TAME_RESPAWN_GRACE_MS &&
+              TameWaitMs(300 * 1000, 0, false) == 300 * 1000 + TAME_RESPAWN_GRACE_MS,
+          "any pet: a respawn within the short budget (the common 5 min) is waited for, the grace on top");
+    Check(
+        TameWaitMs(400 * 1000, 0, false) == 0 && TameWaitMs(400 * 1000, 0, true) == 400 * 1000 + TAME_RESPAWN_GRACE_MS,
+        "a respawn beyond 5 min: any pet takes another target, the wanted beast is waited for");
+    Check(TameWaitMs(600 * 1000, 400 * 1000, true) == 0 && TameWaitMs(100 * 1000, 400 * 1000, true) > 0,
+          "the budget counts from the first wait: a second wait only while it fits");
+    Check(TameWaitMs(TAME_WAIT_WANTED_MS + 1, 0, true) == 0 && TameWaitMs(0, TAME_WAIT_WANTED_MS + 1, true) == 0,
+          "every wait ends: a respawn beyond the budget, or the budget spent, means no wait");
+    Check(TameWaitMs(0, 0, false) == TAME_RESPAWN_GRACE_MS, "a respawn due now waits the grid's update only");
+
+    // When the next beast is free (WU21f, lab7 at 2000 bots: the Mulgore plainstriders killed by others, their
+    // creatures removed, only the map's respawn records left): the soonest of what the wait reads
+    std::int64_t const now = 1'000'000;
+    Check(TameFreeInS(TAME_FREE_NONE, false, now + 90, now) == 90 &&
+              TameWaitMs(TameFreeInS(TAME_FREE_NONE, false, now + 90, now) * 1000, 0, false) > 0,
+          "beasts all killed by others: the removed spawn's respawn record arms the wait");
+    Check(TameFreeInS(TameFreeInS(TAME_FREE_NONE, false, now + 200, now), false, now + 40, now) == 40,
+          "several dead spawns: the soonest respawn");
+    Check(TameFreeInS(TameFreeInS(TAME_FREE_NONE, false, now + 200, now), true, 0, now) == 0,
+          "a beast in another's fight is free at once: the wait reads again after the grace");
+    Check(TameFreeInS(TAME_FREE_NONE, false, now - 3, now) == 0, "a respawn overdue (the 5 s respawn pass) is due now");
+    Check(TameFreeInS(TAME_FREE_NONE, false, now + 400, now) == 400 &&
+              TameWaitMs(TameFreeInS(TAME_FREE_NONE, false, now + 400, now) * 1000, 0, false) == 0,
+          "a respawn beyond the any-pet budget arms no wait: the stop is given up, the need's next trip tries again");
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1523,6 +1497,11 @@ int main()
     GroundRiding(index);
     RidingPlaces(index);
     TrainingPlaces(index);
+    WeaponMasters();
+    PetNeed();
+    PetSwap();
+    TameSteps();
+    TameSiteRules();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

@@ -475,6 +475,64 @@ std::string_view ClassName(uint8_t cls)
     return cls < std::size(names) ? names[cls] : "";
 }
 
+// LC15c: every trait has exactly one of the four areas, the bridge's groups of LC15 (talk, others, work, wants), and
+// the words' areas are as many as the words, in the same order
+void CheckAreas(std::vector<BotTraits> const& bots)
+{
+    struct Group
+    {
+        std::string_view Area;
+        std::vector<Trait> Members;
+    };
+    std::vector<Group> const groups = {
+        {"talk", {Trait::Talkativeness, Trait::Register, Trait::Humour, Trait::Theatricality, Trait::Confidence}},
+        {"others",
+         {Trait::Sociability, Trait::Warmth, Trait::Courtesy, Trait::Helpfulness, Trait::Generosity, Trait::Loyalty,
+          Trait::Suspicion, Trait::Leadership, Trait::Mischief}},
+        {"work",
+         {Trait::Caution, Trait::Aggression, Trait::Patience, Trait::Drive, Trait::Competitiveness, Trait::Thoroughness,
+          Trait::Orderliness}},
+        {"wants",
+         {Trait::Greed, Trait::Thrift, Trait::Piety, Trait::FactionZeal, Trait::Lore, Trait::Curiosity,
+          Trait::Rootedness, Trait::Outlook, Trait::Worldliness}},
+    };
+
+    std::size_t covered = 0;
+    bool grouped = true;
+    for (Group const& group : groups)
+        for (Trait const trait : group.Members)
+        {
+            ++covered;
+            grouped &= TraitRules::AreaOf(trait) == group.Area;
+        }
+
+    Check(covered == TraitRules::TRAIT_COUNT, "the area table names each of the 30 traits exactly once");
+    Check(grouped, "every trait has the area of its group: talk, others, work, wants");
+
+    bool aligned = true;
+    bool known = true;
+    for (BotTraits const& bot : bots)
+    {
+        std::vector<std::string> const words = TraitRules::Describe(bot);
+        std::vector<std::string> const areas = TraitRules::DescribeAreas(bot);
+        aligned &= areas.size() == words.size();
+        for (std::size_t k = 0; k < words.size() && k < areas.size(); ++k)
+        {
+            bool match = false;
+            for (std::size_t i = 0; i < TraitRules::TRAIT_COUNT; ++i)
+                match |= TraitRules::Word(static_cast<Trait>(i), bot.Values[i]) == words[k] &&
+                         TraitRules::AreaOf(static_cast<Trait>(i)) == areas[k];
+
+            known &= match;
+            known &= std::find(TraitRules::AREA_NAMES.begin(), TraitRules::AREA_NAMES.end(), areas[k]) !=
+                     TraitRules::AREA_NAMES.end();
+        }
+    }
+
+    Check(aligned, "areas are as long as words");
+    Check(known, "the k-th area is the area of the k-th word's trait and one of the four names");
+}
+
 void PrintSample()
 {
     // Valid WotLK combinations, spread over races and classes
@@ -513,6 +571,7 @@ int main()
     CheckCorrelations(bots);
     CheckWords(bots);
     CheckInterests(bots);
+    CheckAreas(bots);
     PrintSample();
 
     std::cout << passed << " passed, " << failed << " failed\n";

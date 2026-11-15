@@ -544,6 +544,39 @@ void CheckPrecomputed()
 }
 }  // namespace
 
+// Weapon masters (WU15a) are tradeskill trainers as the profession trainers are, merged into one list: the index tells
+// them apart by the gathered weapon skill spells, once per skill line with every master that teaches it
+void CheckWeaponMasters()
+{
+    constexpr std::uint32_t MASTER = 600;
+    constexpr std::uint32_t OTHER_MASTER = 610;
+    constexpr std::uint32_t SMITH = 620;
+    UpkeepGather input;
+    input.trainers.push_back({MASTER, TrainerKind::Tradeskill, 0, {{198, 1000, 0, 0, {}, 0, {}}}});
+    input.trainers.push_back(
+        {OTHER_MASTER, TrainerKind::Tradeskill, 0, {{198, 1000, 0, 0, {}, 0, {}}, {200, 1000, 0, 0, {}, 20, {}}}});
+    input.trainers.push_back({SMITH, TrainerKind::Tradeskill, 0, {{2018, 10, 0, 0, {}, 5, {}}}});
+    input.trainerEntries = {{MASTER, MASTER}, {OTHER_MASTER, OTHER_MASTER}, {SMITH, SMITH}};
+    WeaponSkillFacts maces{54, 198, {}};
+    maces.races[CLASS_WARRIOR] = 1u << (RACE_HUMAN - 1);
+    WeaponSkillFacts polearms{229, 200, {}};
+    input.weaponSkills = {polearms, maces, maces};
+    UpkeepIndex const index = UpkeepIndex::Build(std::move(input));
+    WeaponSkill const* mace = index.Weapon(54);
+    WeaponSkill const* polearm = index.Weapon(229);
+    Check(index.weaponSkills.size() == 2 && mace && polearm && mace->spellId == 198 && mace->moneyCost == 1000 &&
+              mace->trainers == std::vector<std::uint32_t>{MASTER, OTHER_MASTER} &&
+              polearm->trainers == std::vector<std::uint32_t>{OTHER_MASTER} && polearm->reqLevel == 20,
+          "a weapon skill once per line, with every master that teaches it and the first master's terms");
+    Check(mace->Fits(CLASS_WARRIOR, RACE_HUMAN) && !mace->Fits(CLASS_MAGE, RACE_HUMAN) &&
+              !polearm->Fits(CLASS_WARRIOR, RACE_HUMAN),
+          "the fit is the gathered races per class");
+    Check(index.WeaponMaster(MASTER) && index.WeaponMaster(OTHER_MASTER) && !index.WeaponMaster(SMITH) &&
+              !index.Weapon(164) && index.stats.weaponSkills == 2 && index.stats.weaponMasters == 2,
+          "the profession trainer on the merged tradeskill list is no weapon master");
+    Check(index.stats.estimatedBytes == index.ApproxBytes(), "the memory estimate counts the weapon skills");
+}
+
 int main()
 {
     CheckExtendedCost();
@@ -560,6 +593,7 @@ int main()
               empty.Offers(UpkeepStock::Food).empty(),
           "an empty gather builds an empty index");
     CheckPublication();
+    CheckWeaponMasters();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

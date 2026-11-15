@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../ShareSlot.h"
+
 // Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who keeps every
 // handout (the handout share). Player-free for tests/upkeep-selftest.cpp; Upkeep.h applies it to a bot. Kept out of
 // PlayerbotAIConfig.h so that flipping a kind rebuilds only the handout sites.
@@ -50,6 +52,8 @@ struct KindRule
 };
 
 constexpr size_t KIND_COUNT = 20;
+// One kind per row (clang-format would pack the short rows into columns)
+// clang-format off
 constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Food", true},  // food and water
     {"Ammo", true},
@@ -57,14 +61,14 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Poison", true},      // a rogue's InitConsumables
     {"Consumable", true},  // potions, weapon oils and stones
     {"Repair", true},
-    {"Resurrect", true},      // in place, or at the spirit healer without sickness and durability loss
-    {"TrainerSpell", false},  // class and trainer spells
-    {"WeaponSkill", false},   // InitSkills
-    {"Riding", false},        // the riding ranks by level (InitSkills)
-    {"Mount", false},
-    {"SpecialSpell", false},
+    {"Resurrect", true},     // in place, or at the spirit healer without sickness and durability loss
+    {"TrainerSpell", true},  // class and trainer spells; WU15b: bought at the class trainer (WU13)
+    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a), professions stay
+    {"Riding", true},        // the riding ranks by level (InitSkills); WU15b: bought (WU14)
+    {"Mount", true},
+    {"SpecialSpell", true},
     {"ClassQuest", false},  // spells of class quests the bot never did
-    {"Pet", false},         // pet and pet talents
+    {"Pet", true},          // the pet; WU21b: tamed at a beast's spawn (pet talents are free points, no handout)
     {"Glyph", true},
     {"Key", true},  // keyring
     {"Reputation", true},
@@ -72,6 +76,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Gold", true},
     {"Talent", true},  // the talent reset below the persistence level
 }};
+// clang-format on
 
 constexpr char const* KindWord(UpkeepKind kind)
 {
@@ -85,19 +90,13 @@ constexpr bool IsHonest(UpkeepKind kind)
     return index < KIND_COUNT && KIND_RULES[index].honest;
 }
 
-// The handout share (Playerbots.Upkeep.HandoutShare): a bot's slot 0..99 is a fixed mix of its guid counter, so it
-// stays in one cohort across builds and restarts and SQL names the same bots:
-// ((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < share
-constexpr uint32_t SHARE_MIX = 2654435761u;
-constexpr uint32_t SHARE_SHIFT = 16;
-constexpr uint32_t SHARE_PERCENT_MAX = 100;
-
-constexpr uint32_t ShareSlot(uint32_t guidCounter)
-{
-    return ((guidCounter * SHARE_MIX) >> SHARE_SHIFT) % SHARE_PERCENT_MAX;
-}
-
-constexpr bool InShare(uint32_t guidCounter, uint32_t sharePercent) { return ShareSlot(guidCounter) < sharePercent; }
+// The handout share (Playerbots.Upkeep.HandoutShare): the guid mix of ShareSlot.h, which world PvP's start-cost
+// share uses too, so SQL names the same bots
+using BotShare::InShare;
+using BotShare::SHARE_MIX;
+using BotShare::SHARE_PERCENT_MAX;
+using BotShare::SHARE_SHIFT;
+using BotShare::ShareSlot;
 
 // A bot gets a handout unless it keeps its possessions, the kind is honest and the bot is outside the share
 constexpr bool Granted(bool keepsPossessions, bool honest, uint32_t guidCounter, uint32_t sharePercent)
@@ -179,6 +178,10 @@ constexpr char const* EVENT_RIDING_BOUGHT = "RidingBought";  // rank, cost, moun
 constexpr char const* EVENT_SICK = "Sick";                   // src spirit_healer, id the spell, amount its duration ms
 constexpr char const* EVENT_NEED_SHORT = "NeedShort";  // src = the kind word, amount; when a shortfall begins and ends
 constexpr char const* EVENT_FLIGHT_FALL = "FlightFall";
+// Batch G (class quests, WU20a-WU21c), registered at once so later steps touch no wide header
+constexpr char const* EVENT_PET_TAMED = "PetTamed";  // a hunter tamed a beast: id the creature (WU21b-2 writes it)
+constexpr char const* SOURCE_CLASS_QUEST_GIVEN_UP = "class_quest_given_up";  // a grant after the bot gave the quest up
+constexpr char const* REASON_CLASS_QUEST = "class_quest";  // a goal or circuit row the class-quest bonus decided
 }  // namespace Upkeep
 
 #endif

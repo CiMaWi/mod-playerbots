@@ -706,6 +706,20 @@ int main()
               "the started option leads the row, the others keep their order");
     }
 
+    // NeedShort: a window opens at the first short plan, stays open while plans stay short, closes at 0
+    {
+        BotGoals goals;
+        bool const quiet = NoteShort(goals, 0, "") == ShortChange::None;
+        bool const begins = NoteShort(goals, 120000, "Riding") == ShortChange::Begin && goals.shortOpen;
+        bool const stays = NoteShort(goals, 90000, "Repair") == ShortChange::None && goals.shortKind == "Riding";
+        bool const ends = NoteShort(goals, 0, "") == ShortChange::End && !goals.shortOpen;
+        bool const endKind = goals.shortKind == "Riding";
+        bool const again = NoteShort(goals, 0, "") == ShortChange::None &&
+                           NoteShort(goals, 500, "Food") == ShortChange::Begin && goals.shortKind == "Food";
+        Check(quiet && begins && stays && ends && endKind && again,
+              "NeedShort: a begin at the first shortfall, none while it lasts (kind kept), an end at 0, then anew");
+    }
+
     std::printf("goal apply selftest: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

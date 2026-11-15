@@ -21,6 +21,7 @@
 #include "AiFactory.h"
 #include "ArenaCcSpells.h"
 #include "ArenaCover.h"
+#include "BridgeAbilities.h"
 #include "ArenaDefensive.h"
 #include "ArenaDrink.h"
 #include "ArenaInterrupt.h"
@@ -45,12 +46,13 @@
 #include "Engine.h"
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
-#include "FightBook.h"
-#include "FightBookRules.h"
+#include "FightEnthusiasm.h"
+#include "FleeRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
 #include "GameObjectModel.h"
 #include "GameTime.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
@@ -111,6 +113,7 @@
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 #include "WorldLogStatus.h"
+#include "WorldPvp.h"
 #include "WsgRouteState.h"
 
 namespace
@@ -1265,10 +1268,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP's records (WP1): the bot's PvP combat for its map's fight book and the fight commands' requests (a
-    // relaxed load and one empty() check while neither is there)
-    if (WorldPvp::RequestsWaiting() || !bot->GetCombatManager().GetPvPCombatRefs().empty())
-        WorldPvp::OnBotTick(this, bot);
+    // World PvP (WP23, WP24): the enthusiasm's engaged edge and leave check while in PvP combat or engaged (one
+    // empty() check and a flag while neither)
+    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
+        WorldPvp::NoteEngaged(this, bot, getMSTime());
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;
@@ -1595,6 +1598,25 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 }
             }
         }
+        // Tame Beast's channel (upkeep WU21b-2): the beast fights the hunter through it while the bot stands and
+        // channels; at low health the bot breaks it off and fights on this update (its errand stop tries again)
+        else if (currentSpell->getState() == SPELL_STATE_CASTING)
+        {
+            if (NewRpgErrandsAction::HoldTameChannel(this))
+            {
+                YieldThread(bot, GetReactDelay());
+                return;
+            }
+            currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            if (!currentSpell)
+                currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        }
+    }
+    else if (NewRpgErrandsAction::HoldTameChannel(this))
+    {
+        // Tame Beast cast again in the fight of the beast that broke its channel (its stun or knockback, WU21b-2)
+        YieldThread(bot, GetReactDelay());
+        return;
     }
 
     // An own cast gone before its predicted end (interrupted by the enemy, or for a full-health target) ended by this
@@ -1672,7 +1694,7 @@ bool PlayerbotAI::UpdateAIReaction(uint32 elapsed, bool minimal, bool canControl
         if (reaction)
         {
             if (reaction->ShouldInterruptCast())
-                bot->InterruptNonMeleeSpells(true);
+                bot->CastStop();
 
             if (reaction->ShouldInterruptMovement())
                 bot->StopMoving();
@@ -2742,6 +2764,17 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             pendingDismount.store(true, std::memory_order_relaxed);
             return;
         }
+        // LC16d: the bridge's ready row answers the open check; a request names its sender, never the bot's own
+        case MSG_RAID_READY_CHECK:
+            if (packet.size() >= sizeof(uint64) && ObjectGuid(packet.read<uint64>(0)) != bot->GetGUID())
+                PlayerbotBridge::NoteReadyCheck(bot->GetGUID().GetRawValue());
+
+            botOutgoingPacketHandlers.AddPacket(packet);
+            return;
+        case MSG_RAID_READY_CHECK_FINISHED:
+            PlayerbotBridge::EndReadyCheck(bot->GetGUID().GetRawValue());
+            botOutgoingPacketHandlers.AddPacket(packet);
+            return;
         default:
             botOutgoingPacketHandlers.AddPacket(packet);
     }
@@ -2871,6 +2904,8 @@ void PlayerbotAI::DoNextAction(bool min)
         aiObjectContext->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<ObjectGuid>("pull strategy target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<LootObject>("loot target")->Set(LootObject());
+        // A dead bot's flight from enemy players is over; it may flee again in its next PvP combat
+        aiObjectContext->GetValue<FleeRules::Flight&>("flee flight")->Get() = FleeRules::Flight();
 
         // The dead engine has no battleground strategy, so its "dead" trigger cannot reset this route.
         if (Battleground* bg = bot->GetBattleground())

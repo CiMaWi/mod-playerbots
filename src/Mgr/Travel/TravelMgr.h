@@ -877,6 +877,7 @@ public:
     FlightMasterInfo const* GetNearestFlightMasterInfo(Player* bot) const;
     std::vector<std::vector<uint32>> GetOptimalFlightDestinations(Player* bot);
     const std::vector<WorldLocation> GetTeleportLocations(Player* bot);
+    const std::vector<WorldLocation> GetTeleportLocations(Player* bot, uint32 level);
     const std::vector<WorldLocation> GetTravelHubs(Player* bot);
     std::vector<WorldLocation> GetCityLocations(Player* bot);
     // Returns the world locations of quest givers the bot can accept a quest from right now
@@ -911,6 +912,7 @@ public:
         uint32 factionTemplate;
     };
     std::vector<TrainerInfo> const& GetTrainers(uint32 mapId) const;
+    std::vector<TrainerInfo> const& GetStableMasters(uint32 mapId) const;  // the stable masters' spawns (WU21c)
     bool GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const;
 
     bool SelectAuctioneerByMap(Player* bot, NpcLocation& outAuctioneer);
@@ -1046,6 +1048,7 @@ private:
     std::vector<InnInfo> hordeInnCache;
     std::unordered_map<uint32, std::vector<VendorInfo>> vendorsByMap;
     std::unordered_map<uint32, std::vector<TrainerInfo>> trainersByMap;
+    std::unordered_map<uint32, std::vector<TrainerInfo>> stableMastersByMap;
     std::map<uint8, std::vector<BankerLocation>> bankerLocsPerLevelCache;
     std::unordered_map<uint32, WorldLocation> bankerEntryToLocation;
     std::map<uint8, std::vector<WorldLocation>> locsPerLevelCache;

@@ -23,11 +23,11 @@
 #include "BotTraitMgr.h"
 #include "BridgeBotFacts.h"
 #include "BridgeBotState.h"
+#include "BridgeBotTraits.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
-#include "FightBook.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
@@ -64,6 +64,7 @@
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
+#include "WorldPvp.h"
 #include "WorldSession.h"
 #include "WorldThreadMonitor.h"
 #include "LightweightPerf.h"
@@ -97,7 +98,10 @@ public:
             {"whisper", TestPlayerMgr::HandleWhisperCommand, SEC_GAMEMASTER, Console::Yes},
             {"party", TestPlayerMgr::HandlePartyCommand, SEC_GAMEMASTER, Console::Yes},
             {"group", TestPlayerMgr::HandleGroupCommand, SEC_GAMEMASTER, Console::Yes},
+            {"invite", TestPlayerMgr::HandleInviteCommand, SEC_GAMEMASTER, Console::Yes},
             {"arenaqueue", TestPlayerMgr::HandleArenaQueueCommand, SEC_GAMEMASTER, Console::Yes},
+            {"readycheck", TestPlayerMgr::HandleReadyCheckCommand, SEC_GAMEMASTER, Console::Yes},
+            {"readyanswer", TestPlayerMgr::HandleReadyAnswerCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsPvpTestPlanCommandTable = {
@@ -247,7 +251,9 @@ public:
             {"service", Planner::HandleServiceCommand, SEC_GAMEMASTER, Console::Yes},
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"pet", Planner::HandlePetCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
             {"goals", Planner::HandleGoalsCommand, SEC_GAMEMASTER, Console::Yes},
             {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},
@@ -271,12 +277,9 @@ public:
             {"status", WorldLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // World PvP (WP1): list and bot read; ready and meet are lab fixtures (Playerbots.WorldPvp.TestCommands)
+        // World PvP (WP23): enthusiasm shows a bot's value and thresholds and sets the value
         static ChatCommandTable playerbotsFightCommandTable = {
-            {"list", HandleFightListCommand, SEC_PLAYER, Console::Yes},
-            {"bot", HandleFightBotCommand, SEC_PLAYER, Console::Yes},
-            {"ready", HandleFightReadyCommand, SEC_GAMEMASTER, Console::Yes},
-            {"meet", HandleFightMeetCommand, SEC_GAMEMASTER, Console::Yes},
+            {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
@@ -284,6 +287,7 @@ public:
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
             {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"traits", HandleBridgeTraitsCommand, SEC_GAMEMASTER, Console::Yes},
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
@@ -535,29 +539,13 @@ public:
         return true;
     }
 
-    // `playerbots fight list`: the active fights on the GM's map (every open-world map from the console)
-    static bool HandleFightListCommand(ChatHandler* handler) { return WorldPvp::HandleListCommand(handler); }
-
-    // `playerbots fight bot <bot>`: the bot's fight memory, answered by the bot's next update
-    static bool HandleFightBotCommand(ChatHandler* handler, PlayerIdentifier target)
+    // `playerbots fight enthusiasm <bot> [set <0..100>]`: the bot's enthusiasm, its thresholds and the cached terms;
+    // `set` writes the value (a cheat). The world thread runs commands between map updates, so the bot's AI is read
+    // and written here directly
+    static bool HandleFightEnthusiasmCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && WorldPvp::HandleBotCommand(handler, botAI);
-    }
-
-    // `playerbots fight ready <bot>` (labs): the bot's next chance starts a fight when the hard rules pass (WP4)
-    static bool HandleFightReadyCommand(ChatHandler* handler, PlayerIdentifier target)
-    {
-        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && WorldPvp::HandleReadyCommand(handler, botAI);
-    }
-
-    // `playerbots fight meet <bot> <enemy bot>` (labs): places the enemy bot beside the bot, PvP flagged, no attack
-    static bool HandleFightMeetCommand(ChatHandler* handler, PlayerIdentifier target, PlayerIdentifier enemy)
-    {
-        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        PlayerbotAI* enemyAI = botAI ? GetOnlineBotAI(handler, enemy) : nullptr;
-        return enemyAI && WorldPvp::HandleMeetCommand(handler, botAI, enemyAI);
+        return botAI && WorldPvp::HandleEnthusiasmCommand(handler, botAI, std::string_view(rest));
     }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update
@@ -835,6 +823,33 @@ public:
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        return true;
+    }
+
+    // LC15c: what the bridge gets of a bot's nature, as ReadBotPersonality gives it: one "TRAIT <bot> <area> <word>"
+    // per word in the module's order, then "INTEREST <bot> <name>" per interest. Console: any thread, cache read only.
+    static bool HandleBridgeTraitsCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+
+        PlayerbotBridge::BotPersonality personality;
+        if (!PlayerbotBridge::ReadBotPersonality(target.GetGUID(), personality))
+        {
+            handler->SendErrorMessage("{}: no traits", target.GetName());
+            return false;
+        }
+
+        std::string const& name = target.GetName();
+        handler->PSendSysMessage("Bridge traits of {}", name);
+        for (std::size_t i = 0; i < personality.words.size(); ++i)
+        {
+            std::string const area = i < personality.areas.size() ? personality.areas[i] : "none";
+            handler->PSendSysMessage("TRAIT {} {} {}", name, area, personality.words[i]);
+        }
+        for (std::string const& interest : personality.interests)
+            handler->PSendSysMessage("INTEREST {} {}", name, interest);
         return true;
     }
 

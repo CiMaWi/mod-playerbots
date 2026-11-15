@@ -39,6 +39,10 @@ constexpr uint32_t RIDING_TRAINER = 603;
 constexpr uint32_t MOUNT_VENDOR = 604;        // sells the mount of the bot's race
 constexpr uint32_t OTHER_MOUNT_VENDOR = 605;  // sells another race's mount, cheaper
 constexpr uint32_t CLASS_SPELL = 6673;
+constexpr uint32_t WEAPON_MASTER = 606;
+constexpr uint32_t WEAPON_SPELL = 198;    // One-Handed Maces
+constexpr uint32_t BEAST = 299;           // a tameable beast's creature entry (WU21b)
+constexpr uint32_t STABLE_MASTER = 9988;  // a stable master's creature entry (WU21c)
 constexpr uint8_t RACE_HUMAN = 1;
 constexpr uint8_t RACE_ORC = 2;
 constexpr uint32_t CHEAPEST_REPAIR = 200;  // copper, the cheapest worn item
@@ -931,6 +935,107 @@ inline void RidingWithoutVendor(std::vector<Check>& checks)
         none.Stops.empty() && none.Refused.empty() && !some.Stops.empty(), Describe(none) + " / " + Describe(some));
 }
 
+// A weapon skill the gold pays (WU15a): a trip of its own to the weapon master, not to the class trainer nearer by
+inline void WeaponTrip(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Weapon = {WEAPON_SPELL};
+    bot.Stops = {{TRAINER, At(600.0f, 0.0f), SERVICE_TRAINER},
+                 {WEAPON_MASTER, At(1500.0f, 0.0f), SERVICE_WEAPON_MASTER}};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const own = plan.Stops.size() == 1 && !plan.Stops[0].OnRoute && plan.Stops[0].Id == WEAPON_MASTER &&
+                     HasErrand(plan.Stops[0], ErrandKind::Weapon) && plan.Refused.empty();
+    Add(checks, "weapon: a trip of its own to the weapon master, one stop", own, Describe(plan));
+}
+
+// A hunter without a pet (WU21b): a trip of its own to the beast's spawn, a stop with no service; a spawn beyond the
+// walk limit is refused too_far, and the bot plays on
+inline void TameTrip(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Pet = {BEAST, At(700.0f, 0.0f)};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const own = plan.Stops.size() == 1 && plan.Stops[0].Id == BEAST && !plan.Stops[0].Services &&
+                     plan.Stops[0].Errands.size() == 1 && HasErrand(plan.Stops[0], ErrandKind::Tame) &&
+                     plan.Stops[0].Errands[0].Due && plan.Refused.empty();
+    Add(checks, "tame: a trip of its own to the beast's spawn", own, Describe(plan));
+
+    ErrandSnapshot far = Bot(10, 0);
+    far.Pet = {BEAST, At(100000.0f, 0.0f)};
+    TripPlan const refused = Plan(far, Request(far));
+    bool const tooFar = refused.Stops.empty() && refused.Refused.size() == 1 &&
+                        refused.Refused[0].Offer.Kind == ErrandKind::Tame &&
+                        std::string(refused.Refused[0].Reason) == "too_far";
+    Add(checks, "tame: a spawn beyond the walk limit is refused too_far", tooFar, Describe(refused));
+
+    ErrandSnapshot none = Bot(10, 0);
+    Add(checks, "tame: no beast, no tame offer",
+        std::none_of(CollectOffers(none, TravelProviders()).begin(), CollectOffers(none, TravelProviders()).end(),
+                     [](ErrandOffer const& offer) { return offer.Kind == ErrandKind::Tame; }),
+        "");
+}
+
+// A hunter with an unwanted pet (WU21c): a trip of its own to the stable master (the visit puts the tame after it);
+// without a stable master among the stops the swap is refused and the hunter keeps its pet; a beast beyond the tame's
+// walk limit is refused too_far with a stable master near (WU21d: the pet is never stored for a beast out of reach)
+inline void StableTrip(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Stable = {BEAST, At(700.0f, 0.0f)};
+    bot.Stops = {{STABLE_MASTER, At(400.0f, 0.0f), SERVICE_STABLE_MASTER}};
+    TripPlan const plan = Plan(bot, Request(bot));
+    bool const own = plan.Stops.size() == 1 && plan.Stops[0].Id == STABLE_MASTER &&
+                     HasErrand(plan.Stops[0], ErrandKind::Stable) && plan.Stops[0].Errands[0].Due &&
+                     !HasErrand(plan.Stops[0], ErrandKind::Tame) && plan.Refused.empty();
+    Add(checks, "stable: a trip of its own to the stable master, no tame offer beside it", own, Describe(plan));
+
+    ErrandSnapshot none = Bot(10, 0);
+    none.Stable = {BEAST, At(700.0f, 0.0f)};
+    TripPlan const refused = Plan(none, Request(none));
+    bool const keeps =
+        refused.Stops.empty() && refused.Refused.size() == 1 && refused.Refused[0].Offer.Kind == ErrandKind::Stable;
+    Add(checks, "stable: no stable master on the map, the swap refused (the hunter keeps its pet)", keeps,
+        Describe(refused));
+
+    ErrandSnapshot far = Bot(10, 0);
+    far.Stable = {BEAST, At(100000.0f, 0.0f)};
+    far.Stops = {{STABLE_MASTER, At(400.0f, 0.0f), SERVICE_STABLE_MASTER}};
+    TripPlan const distant = Plan(far, Request(far));
+    bool const tooFar = distant.Stops.empty() && distant.Refused.size() == 1 &&
+                        distant.Refused[0].Offer.Kind == ErrandKind::Stable &&
+                        std::string(distant.Refused[0].Reason) == "too_far";
+    Add(checks, "stable: a beast beyond the tame's walk limit, the swap refused too_far (the pet stays out)", tooFar,
+        Describe(distant));
+    Add(checks, "stable: the service bits stay distinct", ServiceBitsDistinct(), "");
+}
+
+// A vendor within STOP_JOIN_YARDS of the weapon master takes the weapon skill on a route that passes it; a class
+// trainer's own stop beside the master keeps its trainer
+inline void WeaponAtVendor(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Weapon = {WEAPON_SPELL};
+    std::vector<ServiceStop> const masters = {{WEAPON_MASTER, At(800.0f, 0.0f), SERVICE_WEAPON_MASTER}};
+    std::vector<ServiceStop> stops = {{PLAIN_VENDOR, At(830.0f, 0.0f), SERVICE_VENDOR},
+                                      {TRAINER, At(810.0f, 0.0f), SERVICE_TRAINER}};
+    JoinTrainers(stops, masters, SERVICE_WEAPON_MASTER);
+    bool const tagged = (stops[0].Services & SERVICE_WEAPON_MASTER) && stops[0].Trainer == WEAPON_MASTER;
+    bool const kept = stops[1].Trainer == 0 && stops[1].Services == SERVICE_TRAINER;
+    Add(checks, "weapon: a vendor within 40 yd of the master carries it, a class trainer's stop keeps its own",
+        tagged && kept, "vendor trainer " + std::to_string(stops[0].Trainer));
+
+    TripStop route;
+    route.Place = stops[0].Place;
+    route.Services = stops[0].Services;
+    route.Id = stops[0].Id;
+    route.Trainer = stops[0].Trainer;
+    bot.Stops = {stops[0]};
+    TripPlan const plan = Plan(bot, Request(bot, {route}));
+    bool const joins = plan.Stops.size() == 1 && plan.Stops[0].OnRoute && plan.Stops[0].Trainer == WEAPON_MASTER &&
+                       HasErrand(plan.Stops[0], ErrandKind::Weapon) && plan.Refused.empty();
+    Add(checks, "weapon: the skill joins the route's vendor stop that carries the master", joins, Describe(plan));
+}
+
 constexpr uint64_t DEFAULT_SEED = 20261113;
 constexpr uint32_t SEARCH_ITERATIONS = 20000;
 
@@ -957,6 +1062,10 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     TrainingRefused(checks);
     RidingTrip(checks);
     RidingWithoutVendor(checks);
+    WeaponTrip(checks);
+    WeaponAtVendor(checks);
+    TameTrip(checks);
+    StableTrip(checks);
     return checks;
 }
 }  // namespace ErrandHarness
