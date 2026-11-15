@@ -572,20 +572,20 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
     if (!object)
         return false;
 
-    NewRpgInfo& info = botAI->rpgInfo;
-    if (info.questGiver != npcOrGo || GetMSTimeDiffToNow(info.questGiverLastTry) > questGiverRetryGap)
+    RpgMemos& memo = botAI->rpgMemos;
+    if (memo.questGiver != npcOrGo || GetMSTimeDiffToNow(memo.questGiverLastTry) > questGiverRetryGap)
     {
-        info.questGiver = npcOrGo;
-        info.questGiverSince = getMSTime();
+        memo.questGiver = npcOrGo;
+        memo.questGiverSince = getMSTime();
     }
-    info.questGiverLastTry = getMSTime();
+    memo.questGiverLastTry = getMSTime();
 
     // Unreachable, or an offer the interaction never clears: let the status action and grinding resume.
-    if (GetMSTimeDiffToNow(info.questGiverSince) > questGiverGiveUpTime)
+    if (GetMSTimeDiffToNow(memo.questGiverSince) > questGiverGiveUpTime)
     {
         LOG_DEBUG("playerbots", "[New RPG] {} gives up on quest giver {}", bot->GetName(), npcOrGo.ToString());
-        info.ignoredQuestGivers.insert(npcOrGo);
-        info.questGiver.Clear();
+        memo.ignoredQuestGivers.insert(npcOrGo);
+        memo.questGiver.Clear();
         return false;
     }
 

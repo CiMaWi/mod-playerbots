@@ -21,7 +21,6 @@
 #include "TravelLifecycleTypes.h"
 #include "TravelMgr.h"
 #include "TravelProgressState.h"
-#include "WorldTravelTypes.h"
 
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
@@ -195,34 +194,7 @@ struct NewRpgInfo
     {
     };
 
-    uint32 startT{0};     // start timestamp of the current status
-    uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
-    std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
-
-    // MOVE_FAR
-    float nearestMoveFarDis{FLT_MAX};
-    uint32 stuckTs{0};
-    uint32 stuckAttempts{0};
-    WorldPosition moveFarPos;
-    // The destination given up after the last Stuck event, avoided for WorldTravel.StuckAvoidSeconds
-    WorldPosition stuckAvoidPos;
-    uint32 stuckAvoidTs{0};
-    WorldPosition stuckBotPos;  // where the bot stood at that Stuck event
-    uint32 stuckRepeats{0};     // give-ups in a row at the same obstacle (WorldTravel::NextStuckRepeats)
-    WorldPosition offMeshPos;   // where the last off-mesh recovery left the bot (seen, no_poly): it backs off there
-    uint32 offMeshTs{0};        // its time; 0 = none (WorldTravel::OffMeshBackoff)
-    // END MOVE_FAR
-
-    // GHOST (SpiritHealerAction): the last spirit healer search and the last fallback teleport
-    uint32 ghostHealerTs{0};
-    uint32 ghostTeleportTs{0};
-
-    // QUEST GIVER
-    ObjectGuid questGiver;  // giver the bot is walking to or talking with
-    uint32 questGiverSince{0};
-    uint32 questGiverLastTry{0};
-    GuidSet ignoredQuestGivers;  // skipped until the next IDLE
-    // END QUEST GIVER
+    uint32 startT{0};  // start timestamp of the current status
 
     using RpgData = std::variant<
         Idle,
@@ -244,7 +216,6 @@ struct NewRpgInfo
     static NewRpgStatus StatusFromString(std::string const& name);
     bool HasStatusPersisted(uint32 maxDuration) { return GetMSTimeDiffToNow(startT) > maxDuration; }
     bool CanChangeTo(NewRpgStatus status);
-    void SetMoveFarTo(WorldPosition pos);
     std::string ToString();
 
 private:

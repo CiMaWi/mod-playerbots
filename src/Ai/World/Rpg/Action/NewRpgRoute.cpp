@@ -639,7 +639,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
 
         if (data->progress.Owns(bot->movespline->GetId()) && !bot->movespline->Finalized())
             bot->StopMoving();
-        bool const offMesh = GiveUpMove(botAI->rpgInfo.moveFarPos);
+        bool const offMesh = GiveUpMove(botAI->rpgMemos.moveFarPos);
         if (!offMesh && !data->CurrentLeg() && data->bindInn)
         {
             botAI->GetTravel().TraceTravelInteraction("route_recovery", "stuck");
@@ -1375,7 +1375,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
         if (!bound && (noInnkeeper || std::string_view(why) == "innkeeper not interactable"))
         {
             WorldTravel::AvoidInn(
-                botAI->rpgInfo.innAvoid, getMSTime(),
+                botAI->rpgMemos.innAvoid, getMSTime(),
                 {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()});
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "avoid",
                                noInnkeeper ? "no_innkeeper" : "not_interactable", yards, {}, data.tripId);

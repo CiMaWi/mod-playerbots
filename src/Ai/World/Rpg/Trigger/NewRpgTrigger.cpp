@@ -85,7 +85,7 @@ bool InventoryPressureTrigger::IsActive()
 
 bool InnBindTrigger::IsActive()
 {
-    if (!WorldTravel::ErrandMayStart(botAI) || !WorldTravel::InnCheckDue(botAI->rpgInfo.lastInnMs, getMSTime()) ||
+    if (!WorldTravel::ErrandMayStart(botAI) || !WorldTravel::InnCheckDue(botAI->rpgMemos.lastInnMs, getMSTime()) ||
         !sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 

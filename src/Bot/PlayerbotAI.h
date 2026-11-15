@@ -32,6 +32,7 @@
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
 #include "QuestStatTypes.h"
+#include "RpgMemos.h"
 #include "SpellAuras.h"
 #include "TacticIds.h"
 #include "Util.h"
@@ -784,6 +785,9 @@ public:
     BankMail::BotBankMail bankMail;
     // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
     uint16 testConstraints{0};
+    // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
+    // giver's; a reset starts them fresh
+    RpgMemos rpgMemos;
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
     // World PvP's persistence cache and the ghost's wait (GhostWait.h), lazily
