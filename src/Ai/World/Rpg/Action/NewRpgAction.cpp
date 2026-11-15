@@ -22,6 +22,7 @@
 #include <unordered_set>
 
 #include "AreaDefines.h"
+#include "BankMailService.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
 #include "BotTraitMgr.h"
