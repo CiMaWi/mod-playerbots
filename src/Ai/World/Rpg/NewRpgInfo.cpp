@@ -9,6 +9,7 @@
 #include <cmath>
 
 #include "Timer.h"
+#include "TravelLegRules.h"
 #include "TravelTransportGeometry.h"
 #include "WorldLogStatus.h"
 

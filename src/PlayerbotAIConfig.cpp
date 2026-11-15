@@ -7,6 +7,7 @@
 #include "PlayerbotAIConfig.h"
 #include "BisListMgr.h"
 #include "Config.h"
+#include "ItemWorthRules.h"
 #include "LadderMgr.h"
 #include "NewRpgInfo.h"
 #include "PlayerbotDungeonRepository.h"
