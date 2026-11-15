@@ -563,7 +563,7 @@ inline Goals::Ranked ChosenFirst(Goals::Ranked ranked, std::size_t index)
     return ranked;
 }
 
-// A bot's planner side on its map thread (NewRpgInfo::PlannerState::goals). A reset of the AI starts it anew
+// A bot's planner side on its map thread (Planner::BotState::goals). A reset of the AI starts it anew
 struct BotGoals
 {
     Slot slot;
