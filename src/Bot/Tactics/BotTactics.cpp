@@ -437,6 +437,42 @@ void BotTactics::AfterCast(uint32 spellId, SpellInfo const* spellInfo, Spell* sp
         NaturalTrace::OnBotCastStart(bot, spell, target);
 }
 
+// The own cast at a check (UpdateAI, a spell still preparing): its window as the bot sees it, and the busy stop
+// for a kick; true when the bot stops the cast
+bool BotTactics::OnOwnCast(Spell* currentSpell, uint32 ownLeft, bool busyModel, uint32 nowMs)
+{
+    ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
+    bool stoppedForKick = false;
+    reactionBusy.CastStartMs =
+        nowMs - static_cast<uint32>(std::max(0, currentSpell->GetCastTime() - static_cast<int32>(ownLeft)));
+    reactionBusy.CastEndMs = nowMs + ownLeft;
+    if (busyModel && reaction.Reeval.Enable)
+    {
+        if (PerfMonitor::IsEnabled())
+        {
+            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::BusyStop"));
+            stoppedForKick = StopOwnCastForKickDue(botAI, bot, ownLeft, nowMs);
+        }
+        else
+            stoppedForKick = StopOwnCastForKickDue(botAI, bot, ownLeft, nowMs);
+    }
+
+    return stoppedForKick;
+}
+
+// After the engines ran (UpdateAI): a busy stop the bot's kick did not follow
+void BotTactics::NoteUnfollowedStop(bool stoppedForKick, uint32 nowMs)
+{
+    if (stoppedForKick && !bot->HasSpellCooldown(reactionBusy.KickSpellId))
+    {
+        reactionBusy.NoteStopUnfollowed(nowMs);
+        LOG_TRACE("playerbots.reaction", "busy stop unfollowed skill {} kick {} at {}", botAI->GetPvpSkill(),
+                  reactionBusy.KickSpellId, nowMs);
+        if (PerfMonitor::IsEnabled())
+            PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::UnfollowedStop"));
+    }
+}
+
 bool BotTactics::HasFullSkillAbility()
 {
     if (botAI->GetPvpSkill() == 0)

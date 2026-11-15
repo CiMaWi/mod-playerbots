@@ -131,6 +131,10 @@ public:
     // trace). note: what CastSpell read for the tactics before prepare() changed the target (BotTacticsInternal.h)
     void BeforeCast(Unit* target, SpellInfo const* spellInfo);
     void AfterCast(uint32 spellId, SpellInfo const* spellInfo, Spell* spell, Unit* target, CastNote const& note);
+    // The own cast, in UpdateAI while a spell prepares: OnOwnCast stamps its window and decides the busy stop for a
+    // kick (true: the bot stops it); NoteUnfollowedStop, after the engines ran, notes a stop the kick did not follow
+    bool OnOwnCast(Spell* currentSpell, uint32 ownLeft, bool busyModel, uint32 nowMs);
+    void NoteUnfollowedStop(bool stoppedForKick, uint32 nowMs);
     // The jump test (G2g, `tactics jump test`): while set, UpdateAI runs StepJumpTest instead of the engines (a frozen
     // test bot); one bool test else
     void StepJumpTest(uint32 nowMs);
@@ -149,8 +153,9 @@ public:
     uint32 GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const;
 
 private:
-    // PlayerbotAI's update loop and cast path read and write the states in place until the hooks are BotTactics'
-    // methods (CS16e, the hooks)
+    // PlayerbotAI reads and writes the state in place where its own control flow decides (CS16e kept these):
+    // UpdateAI's timing flags, queued check (reactionTypes, reactionBusy) and an own cast's end, CanCastSpell's
+    // cyclone chain (ccState), CastSpell's focus selection (focusState) and GetReactDelay (cadenceCombat)
     friend class PlayerbotAI;
 
     PlayerbotAI* const botAI;
