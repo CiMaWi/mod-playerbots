@@ -203,7 +203,7 @@ void FillBankMail(Player* bot, Snapshot& snapshot)
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
         return;
-    BankMail::BotBankMail& known = botAI->rpgInfo.bankMail;
+    BankMail::BotBankMail& known = botAI->bankMail;
     BankMail::RefreshMailKnowledge(bot, known.mail);
     BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     snapshot.mailWaiting = known.mail.waiting;

@@ -93,7 +93,7 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     if (!snapshot.Governed)
         return;
 
-    BankMail::BotBankMail& known = botAI->rpgInfo.bankMail;
+    BankMail::BotBankMail& known = botAI->bankMail;
     BankMail::RefreshMailKnowledge(bot, known.mail);
     BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     uint32 carried = 0;
@@ -324,7 +324,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         index && ((trainingDue && training->trainer) || (riding && riding->trainer) || (weapon && weapon->trainer));
     // A trip for the mail or the bank needs no vendor either (WB8b)
     bool const bankMailWanted =
-        !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel());
+        !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel());
     if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted || bankMailWanted || pet))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
