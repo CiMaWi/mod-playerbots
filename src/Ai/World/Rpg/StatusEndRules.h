@@ -138,6 +138,36 @@ constexpr bool DurationIsNormalEnd(std::uint32_t status)
 
 // The reset rule: a reset ends the status as Interrupted, except that a trip keeps its status across a far teleport.
 constexpr bool KeepsStatus(bool farTeleport, bool isTravel) { return farTeleport && isTravel; }
+
+// A trip's abort source when its end names none: "abort:" and the outcome's word (the Travel event's source; after the
+// prefix, the reason of the trip's abort decision and of the server-log line)
+constexpr char const* TripAbortSource(Outcome outcome)
+{
+    switch (outcome)
+    {
+        case Outcome::Arrived:
+            return "abort:arrived";
+        case Outcome::Finished:
+            return "abort:finished";
+        case Outcome::TimedOut:
+            return "abort:timeout";
+        case Outcome::Stuck:
+            return "abort:stuck";
+        case Outcome::Abandoned:
+            return "abort:abandoned";
+        case Outcome::Interrupted:
+            return "abort:interrupted";
+        case Outcome::Ordered:
+            return "abort:order";
+        case Outcome::Sick:
+            return "abort:sick";
+    }
+    return "abort:abandoned";
+}
+
+// Whether a trip's abort line goes to the server log at INFO: a trip to a named place, and every ordered end (a test
+// reads a GM's hold or stop from the log); any other at DEBUG
+constexpr bool TripAbortLogsInfo(bool hasPlace, Outcome outcome) { return hasPlace || outcome == Outcome::Ordered; }
 }  // namespace StatusEnd
 
 #endif

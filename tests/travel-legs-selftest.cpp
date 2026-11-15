@@ -648,6 +648,25 @@ void CheckEventSources()
                   TravelLegs::AbortSource(reason) == "abort:" + word;
     }
     Check(reasons, "events: leg_failed:<reason> and abort:<reason> for every reason");
+    // The trip's outcome of a failed leg (RpgStatus::End), one line per reason
+    using StatusEnd::Outcome;
+    std::pair<FailReason, Outcome> const outcomes[] = {
+        {FailReason::None, Outcome::Abandoned},          {FailReason::Timeout, Outcome::TimedOut},
+        {FailReason::WrongMap, Outcome::Abandoned},      {FailReason::Stuck, Outcome::Stuck},
+        {FailReason::Portal, Outcome::Abandoned},        {FailReason::Fare, Outcome::Abandoned},
+        {FailReason::Landing, Outcome::Abandoned},       {FailReason::Unsupported, Outcome::Abandoned},
+        {FailReason::NoAnswer, Outcome::Abandoned},      {FailReason::NoRoute, Outcome::Abandoned},
+        {FailReason::Taxi, Outcome::Abandoned},          {FailReason::Hearth, Outcome::Abandoned},
+        {FailReason::OffMesh, Outcome::Stuck},           {FailReason::Death, Outcome::Abandoned},
+        {FailReason::TransportLost, Outcome::Abandoned}, {FailReason::NoExit, Outcome::Abandoned},
+        {FailReason::Takeoff, Outcome::Abandoned},       {FailReason::NoPath, Outcome::Abandoned},
+        {FailReason::NoWalk, Outcome::Abandoned},
+    };
+    static_assert(sizeof(outcomes) / sizeof(outcomes[0]) == static_cast<std::size_t>(FailReason::NoWalk) + 1,
+                  "every fail reason has its outcome line");
+    for (auto const& [reason, outcome] : outcomes)
+        Check(TravelLegs::FailOutcome(reason) == outcome, std::string("outcome: ") + TravelLegs::FailWord(reason) +
+                                                              " ends the trip as " + StatusEnd::Word(outcome));
     Check(std::string(TravelLegs::LegFailedSource(FailReason::OffMesh)) == "leg_failed:off_mesh" &&
               std::string(TravelLegs::AbortSource(FailReason::OffMesh)) == "abort:off_mesh",
           "events: off_mesh words");
