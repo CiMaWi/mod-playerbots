@@ -1461,6 +1461,21 @@ void TameSiteRules()
     Check(TameWaitMs(TAME_WAIT_WANTED_MS + 1, 0, true) == 0 && TameWaitMs(0, TAME_WAIT_WANTED_MS + 1, true) == 0,
           "every wait ends: a respawn beyond the budget, or the budget spent, means no wait");
     Check(TameWaitMs(0, 0, false) == TAME_RESPAWN_GRACE_MS, "a respawn due now waits the grid's update only");
+
+    // When the next beast is free (WU21f, lab7 at 2000 bots: the Mulgore plainstriders killed by others, their
+    // creatures removed, only the map's respawn records left): the soonest of what the wait reads
+    std::int64_t const now = 1'000'000;
+    Check(TameFreeInS(TAME_FREE_NONE, false, now + 90, now) == 90 &&
+              TameWaitMs(TameFreeInS(TAME_FREE_NONE, false, now + 90, now) * 1000, 0, false) > 0,
+          "beasts all killed by others: the removed spawn's respawn record arms the wait");
+    Check(TameFreeInS(TameFreeInS(TAME_FREE_NONE, false, now + 200, now), false, now + 40, now) == 40,
+          "several dead spawns: the soonest respawn");
+    Check(TameFreeInS(TameFreeInS(TAME_FREE_NONE, false, now + 200, now), true, 0, now) == 0,
+          "a beast in another's fight is free at once: the wait reads again after the grace");
+    Check(TameFreeInS(TAME_FREE_NONE, false, now - 3, now) == 0, "a respawn overdue (the 5 s respawn pass) is due now");
+    Check(TameFreeInS(TAME_FREE_NONE, false, now + 400, now) == 400 &&
+              TameWaitMs(TameFreeInS(TAME_FREE_NONE, false, now + 400, now) * 1000, 0, false) == 0,
+          "a respawn beyond the any-pet budget arms no wait: the stop is given up, the need's next trip tries again");
 }
 
 int main()
