@@ -151,7 +151,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
     botAI->CancelLootInteraction("order");
-    RpgStatus::Start(botAI, RpgStatus::TripTo(order.dest, order.place), "order", StatusEnd::Outcome::Interrupted);
+    RpgStatus::Start(botAI, RpgStatus::TripTo(order.dest, order.place), "order", StatusEnd::Outcome::Ordered);
     return true;
 }
 
