@@ -37,6 +37,20 @@ struct InterruptHit
     uint32 ElapsedMs = 0;
 };
 
+// What CastSpell reads for the tactics before prepare() (the target's DR level, the kick's hit, the own target
+// before the cast) and hands to BotTactics::AfterCast
+struct CastNote
+{
+    ObjectGuid oldSel;
+    ObjectGuid ownBefore;
+    InterruptHit interruptHit;
+    uint32 drGroup = 0;
+    bool counting = false;
+    bool followsKick = false;
+    bool atImmune = false;
+    bool notesFocus = false;
+};
+
 enum class FakeStep : uint8
 {
     Pending,
