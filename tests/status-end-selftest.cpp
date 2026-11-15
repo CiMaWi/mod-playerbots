@@ -138,6 +138,16 @@ int main()
         counts.Check(named && unnamed == (outcome == Outcome::Ordered), "trip abort log level", detail);
     }
 
+    // Change 3 (design 4.3): an ordered end of a trip (`rpg idle`, a bridge pause, a GM hold or stop) runs the trip's
+    // abort arm: the Travel event abort:order (or the order's own source), the trip's abort decision and the INFO
+    // line; an ordered end of errands still runs no clean-up (gap E2)
+    counts.Check(StatusEnd::CleansUp(StatusEnd::STATUS_TRAVEL, Outcome::Ordered) &&
+                     std::strcmp(StatusEnd::TripAbortSource(Outcome::Ordered), "abort:order") == 0 &&
+                     StatusEnd::TripAbortLogsInfo(false, Outcome::Ordered),
+                 "ordered trip end", "travel x order: abort:order, the abort decision, an INFO line");
+    counts.Check(!StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Ordered), "ordered errand end",
+                 "errands x order: no clean-up");
+
     std::printf("status end selftest: %d passed, %d failed\n", counts.passed, counts.failed);
     return counts.failed ? 1 : 0;
 }

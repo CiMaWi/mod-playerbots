@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "NewRpgAction.h"
-#include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -78,7 +78,7 @@ bool TellRpgStatusAction::Execute(Event event)
     if (status == RPG_IDLE)
     {
         botAI->CancelLootInteraction("order");
-        info.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Ordered);  // a trip writes its abort rows (abort:order)
         WhisperStatusChange(owner, "IDLE");
         return true;
     }
