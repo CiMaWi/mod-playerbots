@@ -154,7 +154,7 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
                 AbortTrip(botAI->GetBot(), *trip, outcome, note);
         }
     }
-    if (oldStatus != RPG_IDLE && toIdle)
+    if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle);
     RpgStatusCore::Replace(info, std::move(next));
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), word);

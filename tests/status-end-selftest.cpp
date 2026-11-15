@@ -148,6 +148,17 @@ int main()
     counts.Check(!StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Ordered), "ordered errand end",
                  "errands x order: no clean-up");
 
+    // Change 2 for starts (CS14f): an errand or inn start ends a running status as Interrupted (no clean-up of
+    // errands or a trip: gaps E1, T1), a sick start as Sick (both clean up: one row errand_sick / abort:sick); the
+    // planner judges neither
+    counts.Check(!StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Interrupted) &&
+                     !StatusEnd::CleansUp(StatusEnd::STATUS_TRAVEL, Outcome::Interrupted) &&
+                     !StatusEnd::Judged(Outcome::Interrupted),
+                 "interrupting start", "errand or inn start: no clean-up, not judged");
+    counts.Check(StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Sick) &&
+                     StatusEnd::CleansUp(StatusEnd::STATUS_TRAVEL, Outcome::Sick) && !StatusEnd::Judged(Outcome::Sick),
+                 "sick start", "sick rest over errands or a trip: their clean-up, not judged");
+
     // Change 1 (CS14d): a stuck errand walk runs the errand's clean-up; it was the one judged outcome that did not
     counts.Check(StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Stuck), "stuck errand end",
                  "errands x stuck: the clean-up runs");

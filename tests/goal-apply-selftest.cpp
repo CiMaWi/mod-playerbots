@@ -416,6 +416,22 @@ int main()
             NoteStatusEnd(goals, Outcome::Finished, true);
             Check(goals.idleSinceMs == 0 && !goals.waitCounted, "an end to idle ends a wait for a plan");
         }
+        // A start that replaces the goal's status (CS14f): an errand or inn start ends it as Interrupted, a sick start
+        // as Sick, both to a next status: the run is marked, the wait stays as it was
+        for (Outcome const outcome : {Outcome::Interrupted, Outcome::Sick})
+        {
+            BotGoals goals = begun();
+            goals.idleSinceMs = 5;
+            goals.waitCounted = true;
+            NoteStatusEnd(goals, outcome, false);
+            bool const sick = outcome == Outcome::Sick;
+            Check(goals.run.outside && goals.idleSinceMs == 5 && goals.waitCounted,
+                  sick ? "a sick start over the goal's status marks the run and keeps the wait"
+                       : "an errand start over the goal's status marks the run and keeps the wait");
+            NoteStatusEnd(goals, Outcome::Finished, true);
+            Check(!stalls(goals), sick ? "the rest's own end then does not stall the goal"
+                                       : "the errand trip's own end then does not stall the goal");
+        }
     }
 
     // Keys: one per goal and executor, never a circuit's
