@@ -5,6 +5,8 @@
  */
 
 #include "PlayerbotAIBase.h"
+
+#include "NaturalReaction.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 

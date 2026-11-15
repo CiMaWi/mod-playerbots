@@ -6,6 +6,7 @@
 
 #include "PartyMemberToDispel.h"
 
+#include "BotTactics.h"
 #include "NaturalReaction.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -27,7 +28,7 @@ private:
 Unit* PartyMemberToDispel::Get()
 {
     // A cached value older than the cadence's interval is computed again; without the cadence nothing changes
-    if (lastCheckTime && botAI->IsNaturalCadenceActive() &&
+    if (lastCheckTime && botAI->GetTactics().IsNaturalCadenceActive() &&
         getMSTime() - lastCheckTime >=
             ReactionCheckIntervalMs(checkInterval, true, sPlayerbotAIConfig.NaturalCadenceCheckMs))
         lastCheckTime = 0;

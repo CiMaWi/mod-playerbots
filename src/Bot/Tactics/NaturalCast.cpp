@@ -11,6 +11,7 @@
 #include <cmath>
 #include <vector>
 
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
@@ -83,7 +84,7 @@ void DecideFakeCast(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 nowM
     if (!info || info->Id != spellId || spell->getState() != SPELL_STATE_PREPARING)
         return;
 
-    FakeBotState& state = botAI->GetFakeState();
+    FakeBotState& state = botAI->GetTactics().GetFakeState();
     state.ClearPending();
     if (!botAI->TacticEnabledHere(TacticId::Fake))
         return;
@@ -98,7 +99,7 @@ void DecideFakeCast(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 nowM
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalCast::Decide")
                                                     : nullptr);
-    OpponentMemory const& memory = botAI->GetOpponentMemory();
+    OpponentMemory const& memory = botAI->GetTactics().GetOpponentMemory();
     uint64 kickerGuid = 0;
     uint8 kickerClass = 0;
     for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
@@ -173,7 +174,7 @@ void DecideFakeCast(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 nowM
     state.KickerGuid = kickerGuid;
     state.KickerClass = kickerClass;
     state.Hash = input.Hash;
-    botAI->SetNaturalPreGate(true);
+    botAI->GetTactics().SetNaturalPreGate(true);
     LOG_TRACE("playerbots",
               "Fake: {} plans to cancel {} ({}) at {} of {} ms ({} %), kicker {} class {} ({} in view, {} live), "
               "skill {}, at {} ms",
@@ -204,9 +205,9 @@ FakeStep StepFakeCast(PlayerbotAI* botAI, Player* bot, FakeBotState& state, uint
     ObjectGuid const kickerGuid(state.KickerGuid);
     Player* const kicker = ObjectAccessor::GetPlayer(*bot, kickerGuid);
     bool const threat =
-        FakeKickerInView(bot, kicker, params) &&
-        FakeKickerLive(botAI->GetOpponentMemory().KickSeenWithin(kickerGuid.GetCounter(), nowMs, params.KickSeenMs),
-                       params.RemembersKicks);
+        FakeKickerInView(bot, kicker, params) && FakeKickerLive(botAI->GetTactics().GetOpponentMemory().KickSeenWithin(
+                                                                    kickerGuid.GetCounter(), nowMs, params.KickSeenMs),
+                                                                params.RemembersKicks);
     if (!threat)
     {
         ++state.Finished;
@@ -269,9 +270,9 @@ void NoteFakeKickCast(Player* caster, Spell* spell)
         if (!botAI || !botAI->TacticEnabledHere(TacticId::Fake))
             continue;
 
-        botAI->GetOpponentMemory().NoteKick(caster->GetGUID().GetCounter(), info->Id, nowMs);
+        botAI->GetTactics().GetOpponentMemory().NoteKick(caster->GetGUID().GetCounter(), info->Id, nowMs);
         botAI->CountTactic(TacticCounter::KickSeen);
-        FakeBotState& state = botAI->GetFakeState();
+        FakeBotState& state = botAI->GetTactics().GetFakeState();
         ++state.KicksSeen;
         if (seer != target || !FakeBaited(state.LastCancelMs, nowMs, state.Params.BaitedWindowMs))
             continue;

@@ -16,12 +16,10 @@
 #include <sstream>
 #include <string>
 
-#include "LightweightPerf.h"
 #include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "ArenaCcSpells.h"
 #include "ArenaCover.h"
-#include "BridgeAbilities.h"
 #include "ArenaDefensive.h"
 #include "ArenaDrink.h"
 #include "ArenaInterrupt.h"
@@ -30,8 +28,10 @@
 #include "ArenaKite.h"
 #include "BankMailService.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "BotTravel.h"
+#include "BridgeAbilities.h"
 #include "BudgetValues.h"
 #include "CcState.h"
 #include "CcTacticStrategy.h"
@@ -62,6 +62,7 @@
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
+#include "LightweightPerf.h"
 #include "Log.h"
 #include "LogLevelAction.h"
 #include "LootObjectStack.h"
@@ -187,7 +188,8 @@ PlayerbotAI::PlayerbotAI()
       currentState(BOT_STATE_NON_COMBAT),
       chatHelper(this),
       chatFilter(this),
-      security(nullptr)
+      security(nullptr),
+      tactics(std::make_unique<BotTactics>(this, nullptr))
 {
     for (uint8 i = 0; i < BOT_STATE_MAX; i++)
         engines[i] = nullptr;
@@ -206,7 +208,8 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       master(nullptr),
       chatHelper(this),
       chatFilter(this),
-      security(bot)  // reorder args - whipowill
+      security(bot),  // reorder args - whipowill
+      tactics(std::make_unique<BotTactics>(this, bot))
 {
     rpgInfo.bot = bot;
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
@@ -361,7 +364,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;
-    if (timingCombat)
+    if (tactics->timingCombat)
     {
         if (PerformanceData* const row = sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Time (combat)"))
             row->Record(static_cast<uint64_t>(elapsed) * 1000);
@@ -372,14 +375,14 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         NaturalTrace::Sample(bot);
 
     // G5e and G2a: the natural pre-gate stepper (a fake cast's cancel instant, a turn's steps); one bool test idle
-    if (naturalPreGate)
-        StepNaturalPreGate(getMSTime());
+    if (tactics->naturalPreGate)
+        tactics->StepNaturalPreGate(getMSTime());
 
     // G2g: the jump test drives a frozen test bot (no engine runs); one bool test idle
-    if (jumpTest)
+    if (tactics->jumpTest)
     {
         passengerCadence.Revalidate = true;
-        StepJumpTest(getMSTime());
+        tactics->StepJumpTest(getMSTime());
         return;
     }
 
@@ -499,13 +502,13 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (traceTravel)
         LogTravelGate(*bot, *traceTravel, maintenanceMs, "pre_action");
 
-    RefreshNaturalTiming();
+    tactics->RefreshNaturalTiming();
 
     // G0h3-b where the natural reaction runs (its contexts, combat in a started match, a skill): the opponent memory,
     // the busy bot and the queue-like follow-up
     uint32 const nowMs = getMSTime();
     ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
-    bool const busyModel = stretchOff && cadenceCombat && pvpSkill != 0;
+    bool const busyModel = tactics->stretchOff && tactics->cadenceCombat && pvpSkill != 0;
     if (reaction.Memory.Enable)
     {
         if (PerfMonitor::IsEnabled())
@@ -530,7 +533,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         FollowInterruptFight(this, bot, nowMs);
 
     // G4e: the focus target, while the FocusTarget tactic is on here or a focus is left to clear
-    if (TacticEnabledHere(TacticId::FocusTarget) || (focusState && focusState->Target.Pick.Guid != 0))
+    if (TacticEnabledHere(TacticId::FocusTarget) || (tactics->focusState && tactics->focusState->Target.Pick.Guid != 0))
         FollowFocusTarget(this, bot, nowMs);
 
     // G5d: the Defensive tactic's health sampler, focus and opener while it is on here; deaths with a self-defensive
@@ -555,7 +558,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         uint32 const checkMs = GetReactDelay();
         uint64 const guid = bot->GetGUID().GetCounter();
         uint32 const regular = checkMs + CheckStaggerMs(guid, checkStaggerMs);
-        uint32 const draw = QueueDrawMs(reactionTypes, SplitMix64((guid << 32) ^ (nowMs + remainingMs)));
+        uint32 const draw = QueueDrawMs(tactics->reactionTypes, SplitMix64((guid << 32) ^ (nowMs + remainingMs)));
         uint32 const delay = QueueCheckDelayMs(remainingMs, regular, draw);
         if (delay >= regular)
         {
@@ -565,7 +568,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
         nextAICheckDelay = delay;
         lastCheckDelay = delay;
-        ++reactionBusy.QueuedChecks;
+        ++tactics->reactionBusy.QueuedChecks;
         if (PerfMonitor::IsEnabled())
             PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::QueuedCheck"));
     };
@@ -654,9 +657,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
                 // The own cast as the bot sees it; stopped for a kick (user note 1) the engine runs in this check
                 uint32 const ownLeft = static_cast<uint32>(std::max(0, currentSpell->GetCastTimeRemaining()));
-                reactionBusy.CastStartMs =
+                tactics->reactionBusy.CastStartMs =
                     nowMs - static_cast<uint32>(std::max(0, currentSpell->GetCastTime() - static_cast<int32>(ownLeft)));
-                reactionBusy.CastEndMs = nowMs + ownLeft;
+                tactics->reactionBusy.CastEndMs = nowMs + ownLeft;
                 if (busyModel && reaction.Reeval.Enable)
                 {
                     if (PerfMonitor::IsEnabled())
@@ -671,7 +674,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 if (stoppedForKick)
                 {
                     bot->InterruptSpell(currentSpell->GetCurrentContainer());
-                    reactionBusy.CastEndMs = nowMs;
+                    tactics->reactionBusy.CastEndMs = nowMs;
                 }
                 else
                 {
@@ -708,9 +711,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // An own cast gone before its predicted end (interrupted by the enemy, or for a full-health target) ended by this
     // check at the latest, so its overlap with a later event is not overstated
-    if (busyModel && static_cast<int32>(reactionBusy.CastEndMs - nowMs) > 0 &&
+    if (busyModel && static_cast<int32>(tactics->reactionBusy.CastEndMs - nowMs) > 0 &&
         (!currentSpell || currentSpell->getState() != SPELL_STATE_PREPARING))
-        reactionBusy.CastEndMs = nowMs;
+        tactics->reactionBusy.CastEndMs = nowMs;
 
     if (spellInterruptRequested)
     {
@@ -731,7 +734,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     UpdateAIGroupMaster();
 
     // Update internal AI
-    if (timingScope && PerfMonitor::IsEnabled())
+    if (tactics->timingScope && PerfMonitor::IsEnabled())
     {
         PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::UpdateAIInternal (scope)"));
         UpdateAIInternal(elapsed, minimal);
@@ -740,11 +743,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         UpdateAIInternal(elapsed, minimal);
 
     // A stop the engine's kick did not follow (its trigger or target picked another action): no stop for a while
-    if (stoppedForKick && !bot->HasSpellCooldown(reactionBusy.KickSpellId))
+    if (stoppedForKick && !bot->HasSpellCooldown(tactics->reactionBusy.KickSpellId))
     {
-        reactionBusy.NoteStopUnfollowed(nowMs);
+        tactics->reactionBusy.NoteStopUnfollowed(nowMs);
         LOG_TRACE("playerbots.reaction", "busy stop unfollowed skill {} kick {} at {}", GetPvpSkill(),
-                  reactionBusy.KickSpellId, nowMs);
+                  tactics->reactionBusy.KickSpellId, nowMs);
         if (PerfMonitor::IsEnabled())
             PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::UnfollowedStop"));
     }
@@ -756,10 +759,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         SpellInfo const* const info = last.id ? sSpellMgr->GetSpellInfo(last.id) : nullptr;
         if (info && info->StartRecoveryCategory != 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
         {
-            if (static_cast<int32>(reactionBusy.GcdEndMs - nowMs) <= 0)
-                reactionBusy.GcdEndMs = nowMs + NaturalGcdMs(bot, info);
+            if (static_cast<int32>(tactics->reactionBusy.GcdEndMs - nowMs) <= 0)
+                tactics->reactionBusy.GcdEndMs = nowMs + NaturalGcdMs(bot, info);
 
-            yieldQueued(reactionBusy.GcdEndMs - nowMs);
+            yieldQueued(tactics->reactionBusy.GcdEndMs - nowMs);
             return;
         }
     }
@@ -3929,9 +3932,10 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         // unless an immunity besides the cyclone's blocks it (the state is read only here, never made)
         if (target->IsImmunedToSpell(spellInfo))
         {
-            bool const chainThroughCyclone = ccState && ccState->ChainImmuneEndMs && ccState->PickRow != CC_NO_ROW &&
-                                             ccState->PickTarget == target->GetGUID() &&
-                                             ccState->KnownSpell[ccState->PickRow] == spellid &&
+            bool const chainThroughCyclone = tactics->ccState && tactics->ccState->ChainImmuneEndMs &&
+                                             tactics->ccState->PickRow != CC_NO_ROW &&
+                                             tactics->ccState->PickTarget == target->GetGUID() &&
+                                             tactics->ccState->KnownSpell[tactics->ccState->PickRow] == spellid &&
                                              !CcImmuneBesidesCyclone(target, spellInfo);
             if (spellid != 44572 && !chainThroughCyclone)  // Deep Freeze
             {
@@ -4201,7 +4205,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     // and an action on the focus target (never the own target), which gives the selection back after the cast, a
     // failed one too (FocusSelectionAfterCast)
     bool const notesFocus = target != bot && (pvpTestCounting || TacticEnabledHere(TacticId::FocusTarget));
-    bool const onFocus = focusState && focusState->Target.Is(target->GetGUID());
+    bool const onFocus = tactics->focusState && tactics->focusState->Target.Is(target->GetGUID());
     ObjectGuid ownBefore;
     if (notesFocus || onFocus)
     {
@@ -4210,7 +4214,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     }
 
     bool const focusAct = onFocus && ClassifyFocusAct(target->GetGUID().GetRawValue(), ownBefore.GetRawValue(),
-                                                      focusState->Target.Pick.Guid) == FocusAct::Focus;
+                                                      tactics->focusState->Target.Pick.Guid) == FocusAct::Focus;
     auto const restoreFocusSelection = [this, &oldSel, target, focusAct]()
     {
         if (focusAct)
@@ -4226,7 +4230,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         // 180-degree arc (the engine tries again after CastRetryMs); else the snap, as before
         if (!FaceTarget(faceTo, TurnSnapSite::CastSpell))
         {
-            GetTurnState().NoteCastWait(target->GetGUID().GetRawValue(), getMSTime());
+            tactics->GetTurnState().NoteCastWait(target->GetGUID().GetRawValue(), getMSTime());
 
             SetNextCheckDelay(sPlayerbotAIConfig.NaturalFacing.CastRetryMs);
             restoreFocusSelection();
@@ -4236,14 +4240,15 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     }
 
     // G2a: a cast that waited for the bot's turn goes ahead (tactics.turnWaitMs; casts that need the facing only)
-    if (turnState && turnState->CastWaitSinceMs != 0 && (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
+    if (tactics->turnState && tactics->turnState->CastWaitSinceMs != 0 &&
+        (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
     {
         // the span ends here whatever it was (a wait at another target, or one the bot gave up, counts nothing)
-        uint32 const waitMs = turnState->TakeCastWait(target->GetGUID().GetRawValue(), getMSTime());
+        uint32 const waitMs = tactics->turnState->TakeCastWait(target->GetGUID().GetRawValue(), getMSTime());
         if (waitMs != 0)
         {
-            ++turnState->CastWaits;
-            turnState->CastWaitMs += waitMs;
+            ++tactics->turnState->CastWaits;
+            tactics->turnState->CastWaitMs += waitMs;
             CountTactic(TacticCounter::TurnWaitMs, waitMs);
         }
     }
@@ -4493,10 +4498,10 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     // 13e-decide fix (Interrupt.SeeCancelLag): the bot pressed an interrupt at the enemy's cast; the ended bar it still
     // sees is then no bait (no second interrupt on it, InterruptSpellTrigger)
-    if (interruptState && target && target != bot && sPlayerbotAIConfig.TacticInterrupt.SeeCancelLag &&
+    if (tactics->interruptState && target && target != bot && sPlayerbotAIConfig.TacticInterrupt.SeeCancelLag &&
         InterruptUseOf(spellInfo) != InterruptUse::None)
     {
-        if (InterruptCastSlot* const slot = interruptState->Latest(target->GetGUID().GetCounter()))
+        if (InterruptCastSlot* const slot = tactics->interruptState->Latest(target->GetGUID().GetCounter()))
             slot->PressedMs = std::max(getMSTime(), 1u);
     }
 
@@ -4511,18 +4516,19 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
             uint8 memoryLevel = 0;
             uint32 sinceSeenMs = 0;
             int32 endsInMs = 0;
-            bool const held =
-                ccState && ccState->Memory.Recall(target->GetGUID().GetRawValue(), static_cast<uint8>(drGroup), nowMs,
-                                                  memoryLevel, sinceSeenMs, endsInMs);
+            bool const held = tactics->ccState && tactics->ccState->Memory.Recall(target->GetGUID().GetRawValue(),
+                                                                                  static_cast<uint8>(drGroup), nowMs,
+                                                                                  memoryLevel, sinceSeenMs, endsInMs);
             LOG_TRACE("playerbots",
                       "CC immune: {} {} ({}) on {} group {} ({}) by {}, memory {} (seen {} ms ago, aura end {} ms; "
                       "aware {}, miss {}%), core {}, at {} ms",
                       bot->GetName(), spellInfo->SpellName[0] ? spellInfo->SpellName[0] : "?", spellId,
                       target->GetName(), drGroup < PVPTEST_DR_GROUP_COUNT ? PVPTEST_DR_GROUP_NAMES[drGroup] : "?",
-                      drGroup, ccState && ccState->TeamCcCasting ? "team cc" : "other",
+                      drGroup, tactics->ccState && tactics->ccState->TeamCcCasting ? "team cc" : "other",
                       held ? std::to_string(memoryLevel) : std::string("none"), held ? sinceSeenMs : 0,
-                      held ? endsInMs : 0, ccState && ccState->Params.DrAware ? 1 : 0,
-                      ccState ? ccState->Params.DrMissPct : 0, static_cast<uint32>(DIMINISHING_LEVEL_IMMUNE), nowMs);
+                      held ? endsInMs : 0, tactics->ccState && tactics->ccState->Params.DrAware ? 1 : 0,
+                      tactics->ccState ? tactics->ccState->Params.DrMissPct : 0,
+                      static_cast<uint32>(DIMINISHING_LEVEL_IMMUNE), nowMs);
         }
 
         CountInterruptHit(this, target, interruptHit, getMSTime());
@@ -4533,8 +4539,8 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
             ObjectGuid planned = group && GetTacticContext() == TacticContext::Arena
                                      ? group->GetTargetIcon(FOCUS_ICON_MOON)
                                      : ObjectGuid::Empty;
-            if (planned.IsEmpty() && ccState)
-                planned = ccState->CcTarget;
+            if (planned.IsEmpty() && tactics->ccState)
+                planned = tactics->ccState->CcTarget;
 
             if (!planned.IsEmpty() && planned == target->GetGUID())
                 CountTactic(TacticCounter::CcOnTarget);
@@ -4546,7 +4552,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         NoteFocusAct(this, bot, spellInfo, target, oldSel, ownBefore, counting, drGroup);
 
     // G5e: a long cast may be a fake (one tactic test; a pending fake ends with a new long cast)
-    if (TacticEnabledHere(TacticId::Fake) || (fakeState && fakeState->Pending()))
+    if (TacticEnabledHere(TacticId::Fake) || (tactics->fakeState && tactics->fakeState->Pending()))
         DecideFakeCast(this, bot, spellId, getMSTime());
 
     // G0e: a cast with a cast time begins (an instant one was cast inside prepare: its finish row is enough)
@@ -7524,8 +7530,9 @@ uint32 PlayerbotAI::GetReactDelay()
     // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
-    float const factor = IsSkillExempt() ? 1.0f : GetEffectiveSkillReactFactor();
-    return StretchedReactDelayMs(ComputeReactDelay(), cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs, factor);
+    float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
+    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs,
+                                 factor);
 }
 
 uint32 PlayerbotAI::ComputeReactDelay()

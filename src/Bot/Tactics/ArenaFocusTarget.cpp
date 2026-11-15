@@ -8,6 +8,7 @@
 
 #include "AiObjectContext.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "CcState.h"
 #include "FocusState.h"
@@ -38,7 +39,7 @@ bool FocusSeenHealing(PlayerbotAI* botAI, Unit* unit)
         return spellId != 0 && ArenaInterrupt::Classify(InterruptSpellFactsOf(sSpellMgr->GetSpellInfo(spellId))) ==
                                    ArenaInterrupt::Kind::Heal;
     };
-    OpponentMemorySlot const* const slot = botAI->GetOpponentMemory().Find(unit->GetGUID().GetCounter());
+    OpponentMemorySlot const* const slot = botAI->GetTactics().GetOpponentMemory().Find(unit->GetGUID().GetCounter());
     return slot && (healSpell(slot->SpellId) || healSpell(slot->PrevSpellId));
 }
 
@@ -59,7 +60,7 @@ void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
     // Every call (the change check too; the picks are tactics show's `picks` and the `focus pick` lines)
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "FocusTarget::Pick")
                                                     : nullptr);
-    FocusTargetState& focus = botAI->GetFocusState().Target;
+    FocusTargetState& focus = botAI->GetTactics().GetFocusState().Target;
     Battleground* const battleground = bot->GetBattleground();
     uint32 const matchId =
         battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
@@ -71,8 +72,8 @@ void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     uint8 const skill = botAI->GetPvpSkill();
-    if (!botAI->TacticActive(TacticId::FocusTarget) ||
-        !FocusTargetCapable(skill, botAI->GetAttribute(BotAttribute::Dexterity),
+    if (!botAI->GetTactics().TacticActive(TacticId::FocusTarget) ||
+        !FocusTargetCapable(skill, botAI->GetTactics().GetAttribute(BotAttribute::Dexterity),
                             config.NaturalReaction.Ease.FocusDexterity))
     {
         focus.Pick.Set(0, FocusSource::None, nowMs);
@@ -85,7 +86,7 @@ void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
                                 : ObjectGuid::Empty;
     Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
     ObjectGuid const own = current ? current->GetGUID() : ObjectGuid::Empty;
-    CcBotState const& cc = botAI->GetCcState();
+    CcBotState const& cc = botAI->GetTactics().GetCcState();
     ObjectGuid const ccTarget = FocusBefore(nowMs, cc.CcTargetUntilMs) ? cc.CcTarget : ObjectGuid::Empty;
     Unit* const kept = focus.Pick.Guid ? botAI->GetUnit(ObjectGuid(focus.Pick.Guid)) : nullptr;
     if (FocusBefore(nowMs, focus.NextPickMs) && moon == focus.SeenMoon && own == focus.SeenOwn &&
@@ -130,7 +131,7 @@ void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
     if (input.Moon && input.Healer)
     {
         // Teamwork: the plan's moon over the healer, one draw per match and moon (skill 0: Teamwork 99)
-        uint8 const teamwork = skill == 0 ? 99 : botAI->GetAttribute(BotAttribute::Teamwork);
+        uint8 const teamwork = skill == 0 ? 99 : botAI->GetTactics().GetAttribute(BotAttribute::Teamwork);
         uint64 const hash =
             SplitMix64(bot->GetGUID().GetCounter()) ^ (static_cast<uint64>(matchId) << 32) ^ moon.GetCounter();
         input.TakesMoon = FocusTakesMoon(FocusMoonShare(teamwork, config.TacticFocus.FocusTargetMoonPctAtTeamwork1,
@@ -170,7 +171,7 @@ void NoteFocusAct(PlayerbotAI* botAI, Player* bot, SpellInfo const* spellInfo, U
 
     Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
     ObjectGuid const ownAfter = current ? current->GetGUID() : ObjectGuid::Empty;
-    FocusTargetState& focus = botAI->GetFocusState().Target;
+    FocusTargetState& focus = botAI->GetTactics().GetFocusState().Target;
     FocusAct const act = ClassifyFocusAct(target->GetGUID().GetRawValue(), ownBefore.GetRawValue(), focus.Pick.Guid);
     if (act == FocusAct::None || (act == FocusAct::Switch && !kick))
         return;

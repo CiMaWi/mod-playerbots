@@ -4,6 +4,8 @@
  * or (at your option) any later version.
  */
 
+#include "BotTactics.h"
+
 #include <algorithm>
 
 #include "ArenaCover.h"
@@ -28,14 +30,25 @@
 #include "PlayerbotAIConfig.h"
 #include "ReactionEngine.h"
 
+BotTactics::BotTactics(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
+
+BotTactics::~BotTactics() = default;
+
+void BotTactics::NoteTacticUse(TacticId id) const { NoteTacticActivation(id, botAI->GetTacticContext()); }
+
 void PlayerbotAI::SetPvpSkill(uint8 skill, uint8 firstRoll)
 {
     pvpSkill = skill;
     pvpSkillFirstRoll = firstRoll ? firstRoll : skill;
+    skillNoticeCounters = SkillNoticeCounters();
+    tactics->SetSkill(skill, pvpSkillFirstRoll);
+}
+
+void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
+{
     skillReactFactor = 1.0f;
     skillNoticeMissPercent = 0;
     skillNoticeDelayMs = 0;
-    skillNoticeCounters = SkillNoticeCounters();
     reactionTypes = ReactionTypeState();
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     // Called before the bot's first update (login) or on the world thread (GM commands, the harness, lab pins and
@@ -47,7 +60,7 @@ void PlayerbotAI::SetPvpSkill(uint8 skill, uint8 firstRoll)
     // DT.14: the learnable ones read the (grown) skill, the fixed ones the first roll (G6b; the skill without growth)
     SkillDistributionParams const distribution{config.SkillDistributionUniform, config.SkillMean, config.SkillSd,
                                                config.SkillMin, config.SkillMax};
-    attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, pvpSkillFirstRoll, guid);
+    attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, firstRoll, guid);
     // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
     tacticGate = ComputeTacticGate(config.SkillGate, config.TacticConfig,
                                    AttributeGateInputs(config.SkillAttributes, attributes, skill), guid);
@@ -103,7 +116,7 @@ void PlayerbotAI::SetPvpSkill(uint8 skill, uint8 firstRoll)
     }
 }
 
-FocusBotState& PlayerbotAI::GetFocusState()
+FocusBotState& BotTactics::GetFocusState()
 {
     if (!focusState)
     {
@@ -118,7 +131,7 @@ FocusBotState& PlayerbotAI::GetFocusState()
     return *focusState;
 }
 
-CcBotState& PlayerbotAI::GetCcState()
+CcBotState& BotTactics::GetCcState()
 {
     if (!ccState)
     {
@@ -132,7 +145,7 @@ CcBotState& PlayerbotAI::GetCcState()
     return *ccState;
 }
 
-InterruptBotState& PlayerbotAI::GetInterruptState()
+InterruptBotState& BotTactics::GetInterruptState()
 {
     if (!interruptState)
         interruptState = std::make_unique<InterruptBotState>();
@@ -140,7 +153,7 @@ InterruptBotState& PlayerbotAI::GetInterruptState()
     return *interruptState;
 }
 
-DefensiveBotState& PlayerbotAI::GetDefensiveState()
+DefensiveBotState& BotTactics::GetDefensiveState()
 {
     if (!defensiveState)
     {
@@ -154,19 +167,19 @@ DefensiveBotState& PlayerbotAI::GetDefensiveState()
     return *defensiveState;
 }
 
-FakeBotState& PlayerbotAI::GetFakeState()
+FakeBotState& BotTactics::GetFakeState()
 {
     if (!fakeState)
     {
         // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
         fakeState = std::make_unique<FakeBotState>();
-        fakeState->Params = ComputeFakeParams(pvpSkill, attributes, sPlayerbotAIConfig.TacticFake);
+        fakeState->Params = ComputeFakeParams(botAI->GetPvpSkill(), attributes, sPlayerbotAIConfig.TacticFake);
     }
 
     return *fakeState;
 }
 
-TurnBotState& PlayerbotAI::GetTurnState()
+TurnBotState& BotTactics::GetTurnState()
 {
     if (!turnState)
     {
@@ -174,13 +187,13 @@ TurnBotState& PlayerbotAI::GetTurnState()
         PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         turnState = std::make_unique<TurnBotState>();
         turnState->Params =
-            ComputeTurnParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
+            ComputeTurnParams(botAI->GetPvpSkill(), attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
     }
 
     return *turnState;
 }
 
-TrackBotState& PlayerbotAI::GetTrackState()
+TrackBotState& BotTactics::GetTrackState()
 {
     if (!trackState)
     {
@@ -188,26 +201,27 @@ TrackBotState& PlayerbotAI::GetTrackState()
         PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         trackState = std::make_unique<TrackBotState>();
         trackState->Params =
-            ComputeTrackParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
+            ComputeTrackParams(botAI->GetPvpSkill(), attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
     }
 
     return *trackState;
 }
 
-PathBotState& PlayerbotAI::GetPathState()
+PathBotState& BotTactics::GetPathState()
 {
     if (!pathState)
     {
         // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
         PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         pathState = std::make_unique<PathBotState>();
-        pathState->Params = ComputePathParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalPath);
+        pathState->Params =
+            ComputePathParams(botAI->GetPvpSkill(), attributes, config.SkillGate.CurveExponent, config.NaturalPath);
     }
 
     return *pathState;
 }
 
-CoverBotState& PlayerbotAI::GetCoverState()
+CoverBotState& BotTactics::GetCoverState()
 {
     if (!coverState)
         coverState = std::make_unique<CoverBotState>();
@@ -215,7 +229,7 @@ CoverBotState& PlayerbotAI::GetCoverState()
     return *coverState;
 }
 
-KiteBotState& PlayerbotAI::GetKiteState()
+KiteBotState& BotTactics::GetKiteState()
 {
     if (!kiteState)
         kiteState = std::make_unique<KiteBotState>();
@@ -223,7 +237,7 @@ KiteBotState& PlayerbotAI::GetKiteState()
     return *kiteState;
 }
 
-DrinkBotState& PlayerbotAI::GetDrinkState()
+DrinkBotState& BotTactics::GetDrinkState()
 {
     if (!drinkState)
         drinkState = std::make_unique<DrinkBotState>();
@@ -231,7 +245,7 @@ DrinkBotState& PlayerbotAI::GetDrinkState()
     return *drinkState;
 }
 
-JumpBotState& PlayerbotAI::GetJumpState()
+JumpBotState& BotTactics::GetJumpState()
 {
     if (!jumpState)
         jumpState = std::make_unique<JumpBotState>();
@@ -242,18 +256,18 @@ JumpBotState& PlayerbotAI::GetJumpState()
 // The pre-gate stepper (G5e's fake cast, G2a's turn): UpdateAI calls it on every Player::Update while naturalPreGate,
 // before the AI check delay and CanUpdateAI, so a fake's cancel lands within half a map tick of its instant whatever
 // nextAICheckDelay is, and a turn moves every update. naturalPreGate stays on while anything is pending.
-void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
+void BotTactics::StepNaturalPreGate(uint32 nowMs)
 {
     bool pending = false;
     if (fakeState && fakeState->Pending())
     {
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalCast::Step")
                                                         : nullptr);
-        FakeStep const step = StepFakeCast(this, bot, *fakeState, nowMs, lastUpdateDiff);
+        FakeStep const step = StepFakeCast(botAI, bot, *fakeState, nowMs, botAI->GetLastUpdateDiff());
         pending = step == FakeStep::Pending;
         // After a fake the bot acts at its next ordinary check, not at the end of the bar it waited for
         if (step == FakeStep::Cancelled)
-            nextAICheckDelay = std::min(nextAICheckDelay, GetReactDelay());
+            botAI->nextAICheckDelay = std::min(botAI->nextAICheckDelay, botAI->GetReactDelay());
     }
 
     // G2a: the turn's step (the server orientation every update, heartbeats by the packet rule)
@@ -267,27 +281,27 @@ void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
     naturalPreGate = pending;
 }
 
-bool PlayerbotAI::HasFullSkillAbility()
+bool BotTactics::HasFullSkillAbility()
 {
-    if (pvpSkill == 0)
+    if (botAI->GetPvpSkill() == 0)
         return true;
 
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
+    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
         return true;
 
-    return IsSkillExempt();
+    return botAI->IsSkillExempt();
 }
 
-bool PlayerbotAI::TacticActive(TacticId id)
+bool BotTactics::TacticActive(TacticId id)
 {
-    if (!TacticEnabledHere(id))
+    if (!botAI->TacticEnabledHere(id))
         return false;
 
     return TacticGatePasses(tacticGate, id, HasFullSkillAbility(), bot->GetGUID().GetCounter(),
                             sPlayerbotAIConfig.SkillNoticeWindowMs, getMSTime());
 }
 
-void PlayerbotAI::SetFightEnemiesSnapshot(GuidVector const& enemies)
+void BotTactics::SetFightEnemiesSnapshot(GuidVector const& enemies)
 {
     uint32 const count = std::min<uint32>(enemies.size(), TACTIC_FIGHT_ENEMIES_MAX);
     for (uint32 index = 0; index < count; ++index)
@@ -297,7 +311,7 @@ void PlayerbotAI::SetFightEnemiesSnapshot(GuidVector const& enemies)
 }
 
 // Debug only: entries of two consecutive results may mix
-uint32 PlayerbotAI::GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const
+uint32 BotTactics::GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const
 {
     uint32 const count = std::min(fightEnemyCount.load(std::memory_order_acquire), TACTIC_FIGHT_ENEMIES_MAX);
     for (uint32 index = 0; index < count; ++index)
@@ -306,7 +320,7 @@ uint32 PlayerbotAI::GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_
     return count;
 }
 
-void PlayerbotAI::RefreshNaturalTiming()
+void BotTactics::RefreshNaturalTiming()
 {
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     bool const measured = PerfMonitor::IsEnabled();
@@ -317,13 +331,13 @@ void PlayerbotAI::RefreshNaturalTiming()
         timingCombat = false;
         cadenceCombat = false;
         stretchOff = false;
-        checkStaggerMs = UPSTREAM_CHECK_STAGGER_MS;
+        botAI->checkStaggerMs = UPSTREAM_CHECK_STAGGER_MS;
         return;
     }
 
-    TacticContext const context = ProbeTacticContext(bot);
+    TacticContext const context = PlayerbotAI::ProbeTacticContext(bot);
     timingScope = ScopeAllows(config.NaturalCadenceContexts, context);
-    timingCombat = timingScope && (bot->IsInCombat() || currentState == BOT_STATE_COMBAT);
+    timingCombat = timingScope && (bot->IsInCombat() || botAI->currentState == BOT_STATE_COMBAT);
     if (timingCombat && (bot->InBattleground() || bot->InArena()))
     {
         // A match counts once its gates are open
@@ -334,7 +348,7 @@ void PlayerbotAI::RefreshNaturalTiming()
     cadenceCombat = config.NaturalCadenceEnable && timingCombat;
     stretchOff = config.NaturalCadenceEnable && timingScope && config.NaturalReactionActive &&
                  ScopeAllows(config.NaturalReactionContexts, context);
-    checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
+    botAI->checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
     if (!measured || !timingScope)
         return;
 
@@ -343,14 +357,14 @@ void PlayerbotAI::RefreshNaturalTiming()
         PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Checks (combat)"));
 }
 
-float PlayerbotAI::GetEffectiveSkillReactFactor() const
+float BotTactics::GetEffectiveSkillReactFactor() const
 {
     // Where the natural cadence and reaction both run, the reaction model carries the skill, unless
     // Natural.Cadence.SkillStretch keeps the stretch (G6d-a)
     if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive ||
         !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadenceSkillStretch))
         return 1.0f;
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
+    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
         return 1.0f;
     return skillReactFactor;
 }

@@ -11,6 +11,7 @@
 
 #include "Action.h"
 #include "AiObjectContext.h"
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "CcTacticStrategy.h"
 #include "MatchTrace.h"
@@ -59,11 +60,11 @@ void PlayerbotAI::SetPvpTestCounting(bool on)
 {
     // G5c-c: an open hold episode never spans two records (a forced Interrupt mask ends here, so the match end's own
     // close may never run); not counted
-    if (interruptState)
+    if (tactics->interruptState)
     {
         uint32 const nowMs = getMSTime();
-        uint32 const heldMs = interruptState->Hold.HeldMs(nowMs);
-        NoteInterruptHoldEnd(this, interruptState->EndMatch(), heldMs, "match", nowMs, false);
+        uint32 const heldMs = tactics->interruptState->Hold.HeldMs(nowMs);
+        NoteInterruptHoldEnd(this, tactics->interruptState->EndMatch(), heldMs, "match", nowMs, false);
     }
 
     if (on)

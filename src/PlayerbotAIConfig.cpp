@@ -6,6 +6,7 @@
 
 #include "PlayerbotAIConfig.h"
 #include "BisListMgr.h"
+#include "BotAttributes.h"
 #include "Config.h"
 #include "ItemWorthRules.h"
 #include "LadderMgr.h"
@@ -17,6 +18,7 @@
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "Tactics.h"
 #include "Talentspec.h"
 #include "ThreadCheck.h"
 #include "TravelMgr.h"

@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "CombatManager.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -73,7 +74,7 @@ GuidVector FightEnemiesValue::Calculate()
         result.push_back(unit->GetGUID());
     }
 
-    botAI->SetFightEnemiesSnapshot(result);
+    botAI->GetTactics().SetFightEnemiesSnapshot(result);
     return result;
 }
 

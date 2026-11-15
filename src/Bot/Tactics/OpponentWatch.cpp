@@ -9,6 +9,7 @@
 #include "ArenaDefensive.h"
 #include "ArenaInterrupt.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "DefensiveTacticStrategy.h"
 #include "Group.h"
@@ -95,17 +96,17 @@ bool StopOwnCastForKickDue(PlayerbotAI* botAI, Player* bot, uint32 ownLeftMs, ui
         return false;
 
     // One decision per enemy cast, due from the bar's start (a pushback moves the end within half the cast)
-    ReactionBusyState& busy = botAI->GetReactionBusy();
+    ReactionBusyState& busy = botAI->GetTactics().GetReactionBusy();
     uint32 const enemyGuid = enemy->GetGUID().GetCounter();
     uint32 const spellId = cast->GetSpellInfo()->Id;
     uint32 const endMs = nowMs + enemyLeft;
     if (!busy.Watches(enemyGuid, spellId, endMs, castMs / 2))
     {
         uint64 const guid = bot->GetGUID().GetCounter();
-        uint32 ready = ReactionMs(botAI->GetReactionState(), params.MinMs,
+        uint32 ready = ReactionMs(botAI->GetTactics().GetReactionState(), params.MinMs,
                                   SplitMix64((guid << 32) ^ enemyGuid ^ endMs ^ BusyWatchSalt));
         if (params.Think.Enable)
-            ready += botAI->GetReactionTypes().ThinkShortcutMs;
+            ready += botAI->GetTactics().GetReactionTypes().ThinkShortcutMs;
 
         uint32 const tick =
             params.ServerTickMs >= 0 ? static_cast<uint32>(params.ServerTickMs) : botAI->GetLastUpdateDiff() / 2;
@@ -156,7 +157,7 @@ bool CountsForGroup(Player* bot)
 // lock, a silence, a stun or fear, death) was cancelled. Cleared when the match changes or ends.
 void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowMs)
 {
-    OpponentMemory& memory = botAI->GetOpponentMemory();
+    OpponentMemory& memory = botAI->GetTactics().GetOpponentMemory();
     Battleground* const battleground = bot->GetBattleground();
     uint32 const matchId =
         battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
@@ -194,7 +195,7 @@ void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowM
     bool defensiveScan = false;
     if (sPlayerbotAIConfig.TacticDefensive.OpponentEnable && botAI->TacticEnabledHere(TacticId::Defensive))
     {
-        DefensiveBotState& defensive = botAI->GetDefensiveState();
+        DefensiveBotState& defensive = botAI->GetTactics().GetDefensiveState();
         defensiveScan = defensive.LastObserveMs == 0 || nowMs - defensive.LastObserveMs >= DEFENSIVE_OBSERVE_MS;
         if (defensiveScan)
             defensive.LastObserveMs = std::max(nowMs, 1u);
