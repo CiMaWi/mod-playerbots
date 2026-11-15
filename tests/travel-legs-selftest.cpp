@@ -1847,6 +1847,51 @@ void CheckWaitPoints()
           "wait point: a timeout leaves the ride out, stop to stop");
 }
 
+// WT55e (WT.42): a wait point whose crossing was refused takes the quay the old search found from it (the follower's
+// NoteBoardCheck): the bot walks there while the ship is docked and boards from it; the ship's leaving ends the docking
+// and the next one starts at the wait point, whose crossing is checked anew
+void CheckWaitPointQuay()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::StepLeg;
+    Point const waitA = NODES[7];
+    Point const searched{0, 43.7f, 0.0f, 0.0f};  // the searched quay, 3.7 yd from the wait point
+    Trip trip = StartedTrip({WaitShipLeg()});
+    StepLeg(trip, On(waitA, 2000, 0, Gone()));
+    Decision const board = StepLeg(trip, On(waitA, 3000, 0, Sight(SHIP_AT_A, false)));
+    Check(board.act == Act::Board && trip.boarding == Boarding::Board && !trip.boardChecked,
+          "wait point quay: docked, the boarding starts at the wait point, not yet checked");
+    TravelLegs::NoteBoardCheck(trip, &searched);
+    Decision const toQuay = StepLeg(trip, On(waitA, 3500, 0, Sight(SHIP_AT_A, false)));
+    Check(toQuay.act == Act::Walk && Near(toQuay.target, searched) && trip.boarding == Boarding::Wait &&
+              trip.searchedQuay && trip.boardChecked,
+          "wait point quay: refused and a quay found: walks from the wait point to it while the ship is docked");
+    Decision const fromQuay = StepLeg(trip, On(searched, 4000, 0, Sight(SHIP_AT_A, false)));
+    Check(fromQuay.act == Act::Board && trip.boarding == Boarding::Board &&
+              Near(TravelLegs::WaitPoint(trip, trip.legs[0]), searched) && trip.boardChecked,
+          "wait point quay: at the searched quay: boards from it, the docking stays checked");
+    StepLeg(trip, On(searched, 5000, 0, Sight({0, 131.0f, 0.0f, 0.0f}, true)));
+    Check(!trip.boardChecked && !trip.searchedQuay && Near(TravelLegs::WaitPoint(trip, trip.legs[0]), waitA),
+          "wait point quay: the ship leaves: the docking is over, the wait point is the wait again");
+    StepLeg(trip, On(searched, 8000, 0, Sight({0, 160.0f, 0.0f, 0.0f}, true)));
+    Check(trip.misses == 1 && trip.boarding == Boarding::Wait, "wait point quay: not aboard after the grace: a miss");
+    Decision const back = StepLeg(trip, On(searched, 100000, 0, Sight(SHIP_AT_A, false)));
+    Check(back.act == Act::Walk && Near(back.target, waitA) && !trip.boardChecked,
+          "wait point quay: the next docking starts at the wait point, checked anew");
+    TravelLegs::NoteBoardCheck(trip, &searched);
+    TravelLegs::StartLeg(trip, 0, 101000, NodeAt);
+    Check(!trip.boardChecked && !trip.searchedQuay, "wait point quay: a new leg clears the docking's check");
+
+    Trip accepted = StartedTrip({WaitShipLeg()});
+    StepLeg(accepted, On(waitA, 2000, 0, Gone()));
+    StepLeg(accepted, On(waitA, 3000, 0, Sight(SHIP_AT_A, false)));
+    TravelLegs::NoteBoardCheck(accepted, nullptr);
+    Decision const stays = StepLeg(accepted, On(waitA, 4000, 0, Sight(SHIP_AT_A, false)));
+    Check(stays.act == Act::Board && accepted.boarding == Boarding::Board && !accepted.searchedQuay &&
+              Near(TravelLegs::WaitPoint(accepted, accepted.legs[0]), waitA),
+          "wait point quay: accepted (or nothing found): boards from the wait point as before");
+}
+
 int main()
 {
     CheckFullRoute();
@@ -1874,6 +1919,7 @@ int main()
     CheckOffFirst();
     CheckBoarding();
     CheckWaitPoints();
+    CheckWaitPointQuay();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

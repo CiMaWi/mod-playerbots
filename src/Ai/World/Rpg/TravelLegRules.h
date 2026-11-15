@@ -646,6 +646,10 @@ struct Trip
     Point quay;
     bool hasQuay{false};
     bool quaySought{false};
+    // WT55e: this docking's crossing from the stop's wait point was checked (refused, the quay was searched from it),
+    // and the quay is the search's place, not the wait point (NoteBoardCheck; the docking's end clears both)
+    bool boardChecked{false};
+    bool searchedQuay{false};
     std::vector<TransportNote> transportNotes;
     OffFirst offFirst;  // the whole trip's (StartLeg leaves it)
     // After a fly leg failed in the air (StartDescent): the bot flies down to descentTo before the replan
@@ -955,6 +959,8 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.boardCrossing = {};
     trip.hasQuay = keepQuay;
     trip.quaySought = keepQuay;
+    trip.boardChecked = false;
+    trip.searchedQuay = false;
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
@@ -1068,6 +1074,28 @@ inline void SetQuay(Trip& trip, Point const* quay)
 
 // Where a transport leg's bot walks to and waits: the wait point or the quay once found, else the dock node
 inline Point const& WaitPoint(Trip const& trip, Leg const& leg) { return trip.hasQuay ? trip.quay : leg.from; }
+
+// The follower checked this docking's crossing from the stop's wait point (WT55e, WT.42: TravelLifecycle::BoardFrom).
+// A quay its refusal searched is the boarding's start: the bot walks there under Boarding::Wait's guard, then boards
+inline void NoteBoardCheck(Trip& trip, Point const* searched)
+{
+    trip.boardChecked = true;
+    if (!searched)
+        return;
+    SetQuay(trip, searched);
+    trip.searchedQuay = true;
+    if (trip.boarding == Boarding::Board)
+        trip.boarding = Boarding::Wait;
+}
+
+// The docking is over: the next one checks the wait point's crossing again, and the bot waits at the wait point
+inline void EndBoardCheck(Trip& trip, Leg const& leg)
+{
+    if (trip.searchedQuay)
+        SetQuay(trip, &leg.from);
+    trip.boardChecked = false;
+    trip.searchedQuay = false;
+}
 
 // The hop may come at this docking: the follower then asks whether a real player sees it (TransportSight::unseen)
 inline bool WantsSightCheck(Trip const& trip)
@@ -1188,8 +1216,10 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         trip.waitSinceMs = nowMs;
         enter(Boarding::Wait);
     }
-    Decision const wait{within(waitAt, WAIT_RETURN_YARDS) ? Act::Wait : Act::Walk, waitAt, FailReason::None};
     bool const docked = DockedAt(trip, StopFrom(leg));
+    if (!docked)
+        EndBoardCheck(trip, leg);
+    Decision const wait{within(waitAt, WAIT_RETURN_YARDS) ? Act::Wait : Act::Walk, waitAt, FailReason::None};
     if (trip.boarding == Boarding::Wait)
     {
         if (!docked)

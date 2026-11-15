@@ -403,6 +403,36 @@ std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, P
     return std::nullopt;
 }
 
+// Where a boarding at a stop's wait point starts (WT55e, WT.42): the wait point where its crossing passes the board
+// check, else the quay the old search (FindQuay) finds from it; nothing found, the wait point still
+struct BoardChoice
+{
+    Point Start;
+    CrossingCheck Gate{CrossingCheck::Accepted};  // the wait point's crossing
+    bool Searched{false};                         // the quay search ran
+    bool Found{false};                            // Start is the search's quay
+};
+
+// The check is the boarding's own (the deck point toward the hull's centre, CheckBoard); the search runs only after a
+// refusal. The follower asks once per docking (TravelLegs::NoteBoardCheck)
+template <class Geometry>
+BoardChoice BoardFrom(Geometry const& geometry, Point const& wait, Point const& origin, Point const& centre,
+                      CrossingTally* tally = nullptr)
+{
+    BoardChoice choice{wait};
+    auto const deck = geometry.DeckFrom(wait, BOARD_DECK_INSET_YARDS, centre);
+    choice.Gate = deck ? CheckBoard(geometry, wait, *deck) : CrossingCheck::NoDeck;
+    if (choice.Gate == CrossingCheck::Accepted)
+        return choice;
+    choice.Searched = true;
+    if (auto const quay = FindQuay(geometry, wait, origin, centre, tally))
+    {
+        choice.Start = *quay;
+        choice.Found = true;
+    }
+    return choice;
+}
+
 // The mesh adapter supplies actual ground and a complete ground corridor. The deck crossing is checked separately.
 // Off the hull means no transport surface under the point (the geometry's model test, not the model's bounding box).
 template <class Geometry>

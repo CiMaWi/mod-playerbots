@@ -3302,19 +3302,64 @@ Point BoardStart(Player const& bot, TravelLegs::Trip const& trip)
     return TransportGeometry::PositionOf(bot);
 }
 
-// A Board walk, for the debug log: the deck point, the bot's height and the distance
-void LogBoardMove(Player* bot, uint32 entry, Point const& deck)
+// Where the boarding starts, for the debug log (WT55e): the stop's wait point, a quay a search found (from the wait
+// point after its crossing was refused, or at a stop without one), or where the bot stands
+char const* BoardStartName(TravelLegs::Trip const& trip)
+{
+    if (!trip.hasQuay)
+        return "bot";
+    bool const atWait = trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].waitFrom && !trip.searchedQuay;
+    return atWait ? "wait" : "quay";
+}
+
+// A stop's wait point whose crossing the board check refuses (WT55e, WT.42: no deck point, the deck's height, the
+// crossing): the old quay search runs from the wait point, as at a stop without one, and the quay it finds is the
+// boarding's start (BoardStart); the bot walks there first. Where the check accepts, nothing changes and no search
+// runs. Once per docking (Trip::boardChecked, cleared when the vessel leaves). Returns whether the bot walks to a quay
+bool SeekBoardQuay(Player* bot, NewRpgInfo::Travel& data, Transport& transport)
+{
+    TravelLegs::Trip& trip = data.trip;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    if (!leg.waitFrom || trip.boardChecked || !TransportGeometry::Available(*bot, transport))
+        return false;
+    bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
+    TravelLifecycle::CrossingTally tally;
+    Point const wait{leg.from.x, leg.from.y, leg.from.z};
+    TravelLifecycle::BoardChoice const choice = TravelLifecycle::BoardFrom(
+        TransportGeometry::GroundGeometry{*bot, &transport}, wait, TransportGeometry::PositionOf(transport),
+        TransportGeometry::HullCentre(transport), trace ? &tally : nullptr);
+    TravelRoute::Point const quay{leg.from.mapId, choice.Start.X, choice.Start.Y, choice.Start.Z};
+    TravelLegs::NoteBoardCheck(trip, choice.Found ? &quay : nullptr);
+    if (!trace || !choice.Searched)
+        return choice.Found;
+    std::string const found =
+        choice.Found ? Acore::StringFormat("{:.2f},{:.2f},{:.2f}", quay.x, quay.y, quay.z) : std::string("none");
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] board_search bot={} trip={} leg={} entry={} gate={} wait={:.2f},{:.2f},{:.2f} "
+              "quay={} d={:.1f}",
+              bot->GetGUID().GetCounter(), data.tripId, trip.legIdx, transport.GetEntry(),
+              CROSSING_NAMES[static_cast<std::size_t>(choice.Gate)], wait.X, wait.Y, wait.Z, found,
+              std::sqrt(TravelLifecycle::DistanceSquared(wait, choice.Start)));
+    if (!choice.Found)
+        LogCrossingSearch(*bot, data, transport, "quay", tally);
+    return choice.Found;
+}
+
+// A Board walk, for the debug log: the deck point, the bot's height and the distance, and where the boarding starts
+void LogBoardMove(Player* bot, uint32 entry, Point const& deck, char const* start)
 {
     if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return;
-    LOG_DEBUG(
-        "playerbots", "[Route] {} boards transport {}: deck point ({:.1f}, {:.1f}, {:.1f}), bot z {:.1f}, {:.1f} yd",
-        bot->GetName(), entry, deck.X, deck.Y, deck.Z, bot->GetPositionZ(), bot->GetExactDist(deck.X, deck.Y, deck.Z));
+    LOG_DEBUG("playerbots",
+              "[Route] {} boards transport {}: deck point ({:.1f}, {:.1f}, {:.1f}), bot z {:.1f}, {:.1f} yd, start {}",
+              bot->GetName(), entry, deck.X, deck.Y, deck.Z, bot->GetPositionZ(),
+              bot->GetExactDist(deck.X, deck.Y, deck.Z), start);
 }
 
 // A scan at a still transport that does not board a traced bot, for the debug log: the first gate that holds it back.
 // wait_z: off the wait point's floor; no_deck: no deck point; deck_z: the deck point beyond a floor's step from the
-// bot; ground: not on ground; prepare: PrepareTransportMove (mounted, casting); accept: the crossing check.
+// bot; ground: not on ground; prepare: PrepareTransportMove (mounted, casting); accept: the crossing check. start:
+// where the boarding starts (BoardStartName)
 void LogBoardGate(Player* bot, NewRpgInfo::Travel const& data, Transport const& transport,
                   std::optional<Point> const& deck, bool ready, bool accept)
 {
@@ -3334,10 +3379,10 @@ void LogBoardGate(Player* bot, NewRpgInfo::Travel const& data, Transport const& 
     char const* const hold = TransportMoveHold(*bot);
     LOG_DEBUG("playerbots",
               "[TravelLifecycle] board_gate bot={} trip={} leg={} entry={} at={:.2f},{:.2f},{:.2f} gate={} "
-              "wait_dz={:.2f} deck={} mounted={} hold={}",
+              "wait_dz={:.2f} deck={} mounted={} hold={} start={}",
               bot->GetGUID().GetCounter(), data.tripId, trip.legIdx, transport.GetEntry(), bot->GetPositionX(),
               bot->GetPositionY(), bot->GetPositionZ(), gate, waitDz, point, bot->IsMounted() ? 1 : 0,
-              hold ? hold : "none");
+              hold ? hold : "none", BoardStartName(trip));
 }
 
 // A miss this tick, for the debug log: whether the bot stood over the hull (the passenger check's test) or beside it
@@ -4035,12 +4080,15 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         case TravelLegs::Act::Board:
             if (transport)
                 LogBoardDockFoot(bot, *data, *transport);
+            // Refused at the wait point: a quay the search found there is walked to first (WT55e)
+            if (transport && !data->passengerMotion && SeekBoardQuay(bot, *data, *transport))
+                return true;
             if (transport && deck && seen.boardingReady && !data->passengerMotion && PrepareTransportMove(*bot))
             {
                 Point const from = BoardStart(*bot, data->trip);
                 if (TravelLifecycle::AcceptBoard(TransportGeometry::GroundGeometry{*bot, transport}, from, *deck))
                 {
-                    LogBoardMove(bot, transport->GetEntry(), *deck);
+                    LogBoardMove(bot, transport->GetEntry(), *deck, BoardStartName(data->trip));
                     IssueTransportMove(*bot, *data, Intent(*bot, *transport, MotionKind::Board, *deck), {from});
                     if (data->passengerMotion)
                         data->trip.boardCrossing = TravelLegs::StoreCrossing(
