@@ -1055,8 +1055,9 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     if (order == BridgeOrder::Pause || order == BridgeOrder::Resume)
     {
+        // An ordered end: a trip writes its abort rows (abort:order, the status core's trip arm)
         if (GoalApply::BridgePause(goals, order == BridgeOrder::Pause, now))
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Ordered);
         if (order == BridgeOrder::Resume)
             state.snapshotDue = true;
         Publish(bot, goals);
