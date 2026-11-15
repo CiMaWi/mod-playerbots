@@ -52,6 +52,26 @@ std::vector<TravelMgr::TrainerInfo const*> TrainerSpawns(Player* bot, Planner::U
                                                          float reachYards);
 void AddTrainerStops(std::vector<TravelMgr::TrainerInfo const*> const& spawns, uint32 service,
                      std::vector<WorldTravel::ServiceStop>& stops);
+
+// Stable, called by the errand visit: the tame and the stable parts of an errand stop
+enum class TameStep : uint8
+{
+    Busy,      // a cast or its channel runs: the stop holds
+    Rest,      // the bot rests before a new try: other actions (food) may run
+    Approach,  // the picked beast is out of reach or sight: walk to it
+    Done       // tamed or given up: the stop's tame is over
+};
+
+TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop);
+
+enum class StableStep : uint8
+{
+    Wait,
+    Stored,
+    Skipped
+};
+
+StableStep StableAtMaster(PlayerbotAI* botAI, Creature* master, NewRpgInfo::ErrandStop& stop, uint32& stored);
 }  // namespace NewRpgInternal
 
 #endif
