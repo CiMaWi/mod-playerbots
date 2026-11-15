@@ -17,6 +17,7 @@
 #include "Battleground.h"
 #include "BotTacticsInternal.h"
 #include "CcState.h"
+#include "DefensiveTacticStrategy.h"
 #include "FocusState.h"
 #include "MapMgr.h"
 #include "NaturalCast.h"
@@ -279,6 +280,69 @@ void BotTactics::StepNaturalPreGate(uint32 nowMs)
     }
 
     naturalPreGate = pending;
+}
+
+// The pre-gate hook (CS5 design 4.1): UpdateAI calls it on every Player::Update before the AI check delay. G5e and
+// G2a: the natural pre-gate stepper (a fake cast's cancel instant, a turn's steps); G2g: the jump test drives a frozen
+// test bot (no engine runs). One bool test each idle; true when the jump test took the update.
+bool BotTactics::PreGate()
+{
+    if (naturalPreGate)
+        StepNaturalPreGate(getMSTime());
+
+    if (jumpTest)
+    {
+        StepJumpTest(getMSTime());
+        return true;
+    }
+
+    return false;
+}
+
+// The check hook (CS5 design 4.1): UpdateAI calls it at each AI check after RefreshNaturalTiming. busyModel: the
+// natural reaction's busy bot runs here (UpdateAI's own-cast rules read it too)
+void BotTactics::OnCheck(uint32 nowMs, bool busyModel)
+{
+    ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
+    if (reaction.Memory.Enable)
+    {
+        if (PerfMonitor::IsEnabled())
+        {
+            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
+            ObserveOpponents(botAI, bot, busyModel, nowMs);
+        }
+        else
+            ObserveOpponents(botAI, bot, busyModel, nowMs);
+    }
+
+    // G2b: the tracking ring follows the bot's target at every check of a fight, not only at its chase calls
+    if (sPlayerbotAIConfig.NaturalTrack.Enable)
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalMove::Feed")
+                                                        : nullptr);
+        FeedNaturalTrack(botAI, bot, nowMs);
+    }
+
+    // G5c-c: the Interrupt tactic's match and the enemies' health trend, only while it follows the kick
+    if (InterruptFollows(sPlayerbotAIConfig.TacticInterrupt))
+        FollowInterruptFight(botAI, bot, nowMs);
+
+    // G4e: the focus target, while the FocusTarget tactic is on here or a focus is left to clear
+    if (botAI->TacticEnabledHere(TacticId::FocusTarget) || (focusState && focusState->Target.Pick.Guid != 0))
+        FollowFocusTarget(botAI, bot, nowMs);
+
+    // G5d: the Defensive tactic's health sampler, focus and opener while it is on here; deaths with a self-defensive
+    // ready on both sides of a harness match
+    if (botAI->IsPvpTestCounting() || botAI->TacticEnabledHere(TacticId::Defensive))
+    {
+        if (PerfMonitor::IsEnabled())
+        {
+            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "Defensive::Follow"));
+            FollowDefensive(botAI, bot, nowMs);
+        }
+        else
+            FollowDefensive(botAI, bot, nowMs);
+    }
 }
 
 bool BotTactics::HasFullSkillAbility()

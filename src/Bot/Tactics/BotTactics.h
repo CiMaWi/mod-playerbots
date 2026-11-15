@@ -118,6 +118,11 @@ public:
     KiteBotState& GetKiteState();
     DrinkBotState& GetDrinkState();
     JumpBotState& GetJumpState();
+    // The hooks (CS5 design 4.1), on the bot's own update. PreGate: on every Player::Update before the AI check delay
+    // (the natural pre-gate stepper, the jump test); true when the jump test took the update. OnCheck: at each AI
+    // check after RefreshNaturalTiming (the opponent memory, the tracking ring, the followers).
+    bool PreGate();
+    void OnCheck(uint32 nowMs, bool busyModel);
     // The jump test (G2g, `tactics jump test`): while set, UpdateAI runs StepJumpTest instead of the engines (a frozen
     // test bot); one bool test else
     void StepJumpTest(uint32 nowMs);

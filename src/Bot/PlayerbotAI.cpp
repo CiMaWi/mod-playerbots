@@ -374,15 +374,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
 
-    // G5e and G2a: the natural pre-gate stepper (a fake cast's cancel instant, a turn's steps); one bool test idle
-    if (tactics->naturalPreGate)
-        tactics->StepNaturalPreGate(getMSTime());
-
-    // G2g: the jump test drives a frozen test bot (no engine runs); one bool test idle
-    if (tactics->jumpTest)
+    // G5e, G2a and G2g: the tactics' pre-gate hook (the natural stepper, the jump test); two bool tests idle
+    if (tactics->PreGate())
     {
         passengerCadence.Revalidate = true;
-        tactics->StepJumpTest(getMSTime());
         return;
     }
 
@@ -509,45 +504,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     uint32 const nowMs = getMSTime();
     ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
     bool const busyModel = tactics->stretchOff && tactics->cadenceCombat && pvpSkill != 0;
-    if (reaction.Memory.Enable)
-    {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
-            ObserveOpponents(this, bot, busyModel, nowMs);
-        }
-        else
-            ObserveOpponents(this, bot, busyModel, nowMs);
-    }
-
-    // G2b: the tracking ring follows the bot's target at every check of a fight, not only at its chase calls
-    if (sPlayerbotAIConfig.NaturalTrack.Enable)
-    {
-        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalMove::Feed")
-                                                        : nullptr);
-        FeedNaturalTrack(this, bot, nowMs);
-    }
-
-    // G5c-c: the Interrupt tactic's match and the enemies' health trend, only while it follows the kick
-    if (InterruptFollows(sPlayerbotAIConfig.TacticInterrupt))
-        FollowInterruptFight(this, bot, nowMs);
-
-    // G4e: the focus target, while the FocusTarget tactic is on here or a focus is left to clear
-    if (TacticEnabledHere(TacticId::FocusTarget) || (tactics->focusState && tactics->focusState->Target.Pick.Guid != 0))
-        FollowFocusTarget(this, bot, nowMs);
-
-    // G5d: the Defensive tactic's health sampler, focus and opener while it is on here; deaths with a self-defensive
-    // ready on both sides of a harness match
-    if (pvpTestCounting || TacticEnabledHere(TacticId::Defensive))
-    {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "Defensive::Follow"));
-            FollowDefensive(this, bot, nowMs);
-        }
-        else
-            FollowDefensive(this, bot, nowMs);
-    }
+    // The tactics' check hook: the opponent memory, the tracking ring and the interrupt, focus and defensive
+    // followers
+    tactics->OnCheck(nowMs, busyModel);
 
     bool stoppedForKick = false;
 
