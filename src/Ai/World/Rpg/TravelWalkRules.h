@@ -27,12 +27,10 @@
 #include <limits>
 #include <vector>
 
+#include "TravelWalkTypes.h"
+
 namespace TravelWalk
 {
-constexpr std::uint32_t NO_NODE = std::numeric_limits<std::uint32_t>::max();  // TravelGraph::NO_NODE
-constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
-constexpr std::uint32_t NO_POINT = std::numeric_limits<std::uint32_t>::max();  // the order is the link's far node
-
 // PathType bits (core PathGenerator.h; NewRpgBaseAction.cpp and NewRpgAction.cpp check them against the engine's enum)
 constexpr std::uint32_t PATH_NORMAL = 0x01;
 constexpr std::uint32_t PATH_INCOMPLETE = 0x04;  // a partial path: it ends closer to the goal
@@ -54,41 +52,12 @@ constexpr std::uint8_t NO_PROGRESS_STRIKES = 3;  // orders without progress (or 
 constexpr std::uint8_t PROBE_STEPS = 10;         // path calls a walk off the graph's probe makes at most (#2747)
 constexpr std::size_t PROBE_ORDERS = 32;         // the probed points the bot orders at most; then the walk's end
 
-enum class Mode : std::uint8_t
-{
-    None,      // not on a graph link (the walks between the bot, the graph and the goal)
-    Stored,    // the link's stored points
-    Nodes,     // a link without stored points: to its far node
-    Fallback,  // a stored point failed: the rest of the link to its far node
-    Refused    // no path at the far node: the follower fails the leg
-};
-
 enum class Verdict : std::uint8_t
 {
     Walk,
     Hop,       // walked; the path ends in a straight step longer than HOP_STEP_YARDS
     Fallback,  // not walked: the next order is the far node
     Refuse     // not walked: the link is refused
-};
-
-// One link walked (Trip::walk): its ends, whose points, the order now and the counts for the walk_link row
-struct LinkWalk
-{
-    std::uint32_t from{NO_NODE};  // graph node indices
-    std::uint32_t to{NO_NODE};
-    std::uint32_t link{NO_LINK};  // the link whose stored points are walked
-    bool reversed{false};         // its points walked from the last
-    Mode mode{Mode::None};
-    std::uint32_t point{NO_POINT};    // the stored point ordered now (index in walking order)
-    std::uint32_t after{NO_POINT};    // the one after it
-    std::uint32_t ordered{NO_POINT};  // the point of the last order: ordering it again is no progress
-    bool orderedOnce{false};
-    std::uint8_t strikes{0};
-    std::uint16_t moves{0};
-    std::uint16_t hops{0};
-
-    bool Active() const { return mode != Mode::None; }
-    bool On(std::uint32_t a, std::uint32_t b) const { return Active() && from == a && to == b; }
 };
 
 // The engine's answer to one order, read before the move
@@ -281,47 +250,12 @@ inline char const* RowWord(LinkWalk const& walk)
     return "?";
 }
 
-// A walk off the graph (WT56), probed on the navmesh when the bot starts it
-struct ProbePoint
-{
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-};
-
 // One path call's answer: CalculatePath's return, the path's type and its points (the first one is the call's start)
 struct ProbeAnswer
 {
     bool result{false};
     std::uint32_t type{0};
     std::vector<ProbePoint> points;
-};
-
-enum class Probe : std::uint8_t
-{
-    None,      // not probed
-    Walk,      // a real path to the walk's end: the bot walks its points
-    PathType,  // refused: a call answered no real path (the engine's straight line, no path, too long, failed)
-    Stall,     // refused: a partial path gained under PROGRESS_YARDS on the end from the last one's end
-    Steps      // refused: still farther than REACH_YARDS from the end after PROBE_STEPS calls
-};
-
-// The walk off the graph the bot walks now (Trip::piece; StartLeg resets it): its leg and the waypoint it heads for,
-// the probe's verdict, its path calls and the points to order, PieceTarget's index into them
-struct PieceWalk
-{
-    std::uint32_t leg{NO_POINT};
-    std::uint32_t next{NO_POINT};
-    Probe probe{Probe::None};
-    std::uint8_t steps{0};
-    std::vector<ProbePoint> orders;
-    std::uint32_t index{0};
-
-    bool For(std::uint32_t legIdx, std::uint32_t waypoint) const
-    {
-        return probe != Probe::None && leg == legIdx && next == waypoint;
-    }
-    bool Refused() const { return probe != Probe::None && probe != Probe::Walk; }
 };
 
 // A real navmesh path by its type flags, ported from mod-playerbots PR #2747 (Celandriel, TravelMgr.cpp

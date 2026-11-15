@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "WorldTravelTypes.h"
+
 // The Player-free rules of honest world travel for persistent bots: the sight rule for teleports, the busy test, the
 // corpse-run limit and the Stuck event's cause and position packing. Header-only so tests/world-travel-selftest.cpp
 // checks the same code the server runs.
@@ -33,14 +35,6 @@ constexpr uint32_t GHOST_TELEPORT_RETRY_MS = 5 * 60 * 1000;
 
 // The rules apply to persistent bots; arena instances (ArenaOnly) keep their own cycle
 inline bool AppliesTo(bool persistent, bool arenaOnly) { return persistent && !arenaOnly; }
-
-struct SightPoint
-{
-    uint32_t MapId = 0;
-    float X = 0.0f;
-    float Y = 0.0f;
-    float Z = 0.0f;
-};
 
 // A real player counts as a viewer unless it is an invisible game master
 inline bool IsViewer(bool gameMaster, bool gmVisible) { return !gameMaster || gmVisible; }
@@ -390,11 +384,6 @@ inline bool InnSpawnUsable(uint32_t spawnPhaseMask, bool hostileToPlayers, bool 
 constexpr uint32_t INN_AVOID_MS = 60 * 60 * 1000;
 constexpr float INN_AVOID_YARDS = 15.0f;
 constexpr size_t INN_AVOID_SPOTS = 4;
-struct AvoidedSpot
-{
-    SightPoint at;
-    uint32_t sinceMs = 0;  // getMSTime() when the bind failed there
-};
 
 inline bool InnAvoided(std::vector<AvoidedSpot> const& spots, uint32_t nowMs, SightPoint const& spot)
 {
