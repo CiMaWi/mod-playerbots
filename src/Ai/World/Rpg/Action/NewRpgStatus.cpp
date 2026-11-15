@@ -639,11 +639,6 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                 botAI->rpgInfo.ChangeToDoGather();
                 return true;
             }
-            case RPG_IDLE:
-            {
-                botAI->rpgInfo.ChangeToIdle();
-                return true;
-            }
             case RPG_REST:
             {
                 botAI->rpgInfo.ChangeToRest();

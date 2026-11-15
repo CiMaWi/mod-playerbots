@@ -92,7 +92,6 @@ OPvPCapturePoint* NewRpgOutdoorPvpAction::SelectNewObjective(OutdoorPvP::OPvPCap
 
     if (capturePointMap.empty())
     {
-        botAI->rpgInfo.ChangeToIdle();
         return objective;
     }
     for (auto const& [guid, point] : capturePointMap)
@@ -111,7 +110,6 @@ OPvPCapturePoint* NewRpgOutdoorPvpAction::SelectNewObjective(OutdoorPvP::OPvPCap
     if (candidateObjectives.empty())
     {
         LOG_DEBUG("playerbots", "[New RPG] Bot {} found no valid outdoor PVP objectives to capture", bot->GetName());
-        botAI->rpgInfo.ChangeToIdle();
         return objective;
     }
     int randomIndex = urand(0, candidateObjectives.size() - 1);

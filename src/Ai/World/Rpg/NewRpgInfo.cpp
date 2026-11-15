@@ -150,29 +150,9 @@ void NewRpgInfo::ChangeToErrands(std::vector<ErrandStop> stops, uint32 money)
     WorldLog::NoteStatus(bot, oldStatus, GetStatus());
 }
 
-void NewRpgInfo::ChangeToIdle()
-{
-    NewRpgStatus const oldStatus = GetStatus();
-    startT = getMSTime();
-    ReplaceStatus(Idle{});
-    questGiver.Clear();
-    ignoredQuestGivers.clear();
-    WorldLog::NoteStatus(bot, oldStatus, GetStatus());
-}
-
 bool NewRpgInfo::CanChangeTo(NewRpgStatus)
 {
     return true;
-}
-
-// The status core's idle step (RpgStatus::End runs the clean-up before it and writes the Status row after it); CS14f
-// replaces it by the core's private builders
-void NewRpgInfo::Reset()
-{
-    ReplaceStatus(Idle{});
-    startT = getMSTime();
-    questGiver.Clear();
-    ignoredQuestGivers.clear();
 }
 
 void NewRpgInfo::SetMoveFarTo(WorldPosition pos)

@@ -280,14 +280,13 @@ struct NewRpgInfo
     void ChangeToRest();
     void ChangeToTravel(WorldPosition dest, std::string place = {});
     void ChangeToErrands(std::vector<ErrandStop> stops, uint32 money);
-    void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);
-    void Reset();
     void ResetState(bool farTeleport);
     void SetMoveFarTo(WorldPosition pos);
     std::string ToString();
 
 private:
+    friend struct RpgStatusCore;  // the status core (NewRpgStatusEnd.cpp): a status ends only there
     void DiscardPassengerMove();
     void ReplaceStatus(RpgData replacement);
 };

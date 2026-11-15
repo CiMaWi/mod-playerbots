@@ -36,6 +36,20 @@ static_assert(uint32(RPG_IDLE) == StatusEnd::STATUS_IDLE && uint32(RPG_GO_GRIND)
                   uint32(RPG_STATUS_END) == StatusEnd::STATUS_COUNT,
               "StatusEndRules.h's status numbers follow NewRpgStatus");
 
+// The status core's way into NewRpgInfo (its friend): only the core replaces a status
+struct RpgStatusCore
+{
+    // The idle step of an end: the status data replaced, the start time set, the quest giver and the ignored ones
+    // cleared
+    static void ToIdle(NewRpgInfo& info)
+    {
+        info.ReplaceStatus(NewRpgInfo::Idle{});
+        info.startT = getMSTime();
+        info.questGiver.Clear();
+        info.ignoredQuestGivers.clear();
+    }
+};
+
 namespace
 {
 using StatusEnd::Outcome;
@@ -111,7 +125,7 @@ void Change(PlayerbotAI* botAI, Outcome outcome, StatusEnd::Note const& note, ch
                 AbortTrip(botAI->GetBot(), *trip, outcome, note);
         }
     }
-    info.Reset();
+    RpgStatusCore::ToIdle(info);
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), word);
 }
 }  // namespace
