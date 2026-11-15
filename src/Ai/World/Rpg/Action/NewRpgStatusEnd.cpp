@@ -182,7 +182,9 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
         TravelLifecycle::ResetMotion(trip->passengerMotion, farTeleport, control);
         trip->progress.Suspend();
     }
-    RpgStatusCore::Renew(info, StatusEnd::KeepsStatus(farTeleport, trip != nullptr));
+    StatusEnd::ResetList const list = StatusEnd::ResetOf(farTeleport, trip != nullptr);
+    RpgStatusCore::Renew(info, list.status == StatusEnd::ResetEffect::Kept);
+    StatusEnd::ApplyReset(list.planner, botAI->planner);
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
 }
 

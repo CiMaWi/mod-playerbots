@@ -64,7 +64,7 @@ constexpr uint32 SELFTEST_FAILURES_SHOWN = 5;
 constexpr uint32 STATE_ZONE_SHIFT = 8;
 constexpr uint32 STATE_ALIVE_BIT = 1u << 24;
 constexpr uint32 STATE_GROUP_BIT = 1u << 25;
-constexpr uint32 STATE_SCOPE_BIT = 1u << 31;  // in PlannerState::stateKey: the bot keeps its possessions
+constexpr uint32 STATE_SCOPE_BIT = 1u << 31;  // in Planner::BotState::stateKey: the bot keeps its possessions
 constexpr double NANOS_PER_MICRO = 1000.0;
 static_assert(SNAPSHOT_SKILLS ==
                   std::array<std::uint16_t, 15>{SKILL_RIDING, SKILL_FIRST_AID, SKILL_COOKING, SKILL_FISHING,
@@ -334,7 +334,7 @@ void Publish(Player* bot, GoalApply::BotGoals& goals)
 
 GoalApply::BotGoals& GoalsOf(PlayerbotAI* botAI, Player* bot)
 {
-    std::shared_ptr<GoalApply::BotGoals>& goals = botAI->rpgInfo.planner.goals;
+    std::shared_ptr<GoalApply::BotGoals>& goals = botAI->planner.goals;
     if (!goals)
     {
         goals = std::make_shared<GoalApply::BotGoals>();
@@ -664,7 +664,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoal
 }
 
 // The goals job: the snapshot with the current goal, the plan's kept quests and the log quests' ages
-void SubmitGoals(PlayerbotAI* botAI, Player* bot, NewRpgInfo::PlannerState& state, uint32 now)
+void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint32 now)
 {
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
@@ -791,7 +791,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
 
 void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle)
 {
-    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    Planner::BotState& state = botAI->planner;
     if (toIdle)
         state.snapshotDue = true;  // a goal ended
     if (state.goals)
@@ -803,7 +803,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     RowTimer const timer("planner hook");
     // The scope (KeepsPossessions: lookups in the random bot lists) is checked again only when the state key
     // changes; a real master takes a bot through a group invite, which changes the key. Bit 31 keeps the verdict
-    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    Planner::BotState& state = botAI->planner;
     uint32 const key = StateKey(bot);
     if (key != (state.stateKey & ~STATE_SCOPE_BIT))
     {
@@ -900,7 +900,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
 
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> const& workable)
 {
-    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    Planner::BotState& state = botAI->planner;
     if (!(state.stateKey & STATE_SCOPE_BIT))
         return {};
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
@@ -998,13 +998,13 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
 
 bool KeepsQuest(PlayerbotAI* botAI, uint32 quest)
 {
-    GoalApply::BotGoals const* goals = botAI->rpgInfo.planner.goals.get();
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     return sPlayerbotAIConfig.WorldTravel.PlannerGoals && goals && goals->plan && GoalApply::Keeps(goals->keep, quest);
 }
 
 int PlannedPoi(PlayerbotAI* botAI, uint32 quest, std::vector<std::pair<float, float>> const& points)
 {
-    GoalApply::BotGoals const* goals = botAI->rpgInfo.planner.goals.get();
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     if (!sPlayerbotAIConfig.WorldTravel.PlannerGoals || !goals || !goals->plan)
         return -1;
     return GoalApply::NearestToTasks(goals->plan->circuit, quest, points);
@@ -1023,7 +1023,7 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
 {
     using GoalApply::BridgeAnswer;
     using GoalApply::BridgeOrder;
-    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    Planner::BotState& state = botAI->planner;
     GoalApply::BridgeFacts facts;
     // The planner's scope as OnIdle sees it: only there does the goal go on and end
     facts.inScope =

@@ -90,7 +90,7 @@ void ApplyConstraints(PlayerbotAI* botAI, Player* bot, NewRpgInfo& info, TravelO
     uint16 const before = info.constraints;
     uint16 const after = TestConstraints::Next(before, order.on, order.off);
     info.constraints = after;
-    info.planner.snapshotDue = true;
+    botAI->planner.snapshotDue = true;
     if (TestConstraints::FreesErrands(before, after))
         botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
     TestConstraints::ChangeStates(STATE_OPS, *bot, before, after);

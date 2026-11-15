@@ -7,7 +7,6 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
-#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -28,11 +27,6 @@
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
 class Player;
-
-namespace Planner::GoalApply
-{
-struct BotGoals;  // GoalInterface.h
-}
 
 struct NewRpgInfo
 {
@@ -206,17 +200,6 @@ struct NewRpgInfo
     uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
     uint16 constraints{0};  // a test's constraints (TestConstraints bits, `playerbots route constraint`); not saved
     std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
-    // The planner's view of the bot (Planner::PlannerHook, PlannerService.cpp); a reset only costs a new snapshot
-    struct PlannerState
-    {
-        uint32 stateVersion{0};    // counts the bot's situation changes; a result of an older version is not used
-        uint32 stateKey{0};        // level, zone, life and group as last seen
-        uint32 lastSnapshotMs{0};  // 0 = none yet
-        bool snapshotDue{true};    // the situation changed or a goal ended since the last snapshot
-        bool pending{false};       // a job is out; its result is taken before the next one is submitted
-        std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
-    };
-    PlannerState planner;
     // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
     // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
     BankMail::BotBankMail bankMail;
