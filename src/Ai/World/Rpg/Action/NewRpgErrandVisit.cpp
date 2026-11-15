@@ -314,12 +314,7 @@ namespace NewRpgInternal
 // A bot that buys at vendors (the shopping list, a riding rank and its mount): a random bot in honest travel without a
 // real player as master. The riding errand is taken only for such a bot, so a rank is never taught where the mount
 // could not be bought (a known rank without its mount keeps the need open)
-bool BuysAtVendors(PlayerbotAI* botAI)
-{
-    Player* bot = botAI->GetBot();
-    return RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) &&
-           !IsRealPlayer(botAI->GetMaster());
-}
+bool BuysAtVendors(PlayerbotAI* botAI) { return botAI->KeepsPossessions(); }
 }  // namespace NewRpgInternal
 
 bool NewRpgErrandsAction::Execute(Event /*event*/)

@@ -11,6 +11,7 @@
 #include "AiObjectContext.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
+#include "BotKind.h"
 #include "CensusMgr.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
@@ -2988,7 +2989,7 @@ void PlayerbotFactory::InitBags(bool destroyOld)
         return;
 
     // Persistent bots loot or buy their bags (WT.5); randomize and maintenance keep the bags they have
-    if (RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot))
+    if (BotKind::IsPersistentBot(bot))
         return;
 
     for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
@@ -4277,14 +4278,7 @@ void PlayerbotFactory::InitInstanceQuests()
     bot->SetUInt32Value(PLAYER_XP, currentXP);
 }
 
-bool PlayerbotFactory::KeepsPossessions(Player* bot)
-{
-    if (!RandomPlayerbotMgr::HonestTravel() || !sRandomPlayerbotMgr.IsRandomBot(bot))
-        return false;
-
-    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-    return botAI && !IsRealPlayer(botAI->GetMaster());
-}
+bool PlayerbotFactory::KeepsPossessions(Player* bot) { return BotKind::KeepsPossessions(bot); }
 
 void PlayerbotFactory::ClearInventory()
 {

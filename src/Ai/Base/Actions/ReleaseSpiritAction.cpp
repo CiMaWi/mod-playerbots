@@ -5,6 +5,7 @@
  */
 
 #include "ReleaseSpiritAction.h"
+#include "BotKind.h"
 #include "CensusMgr.h"
 #include "CheckMountStateAction.h"
 #include "Corpse.h"
@@ -31,7 +32,7 @@ namespace
 // SpiritHealerAction writes the row as the spirit healer revives the bot
 void LogCorpseRun(PlayerbotAI* botAI, Player* bot, uint32 deathCount)
 {
-    if (bot->InBattleground() || !RandomPlayerbotMgr::HonestTravel() || botAI->HasGameClientMaster() ||
+    if (bot->InBattleground() || !BotKind::LivingWorld() || botAI->HasGameClientMaster() ||
         WorldTravel::CorpseRunsExhausted(deathCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures))
         return;
 

@@ -62,8 +62,7 @@ bool BuyAction::Execute(Event event)
     bool vendored = false;
     bool result = false;
     // Persistent bots buy bags by worth, at most one per visit
-    bool const honestBags = buyUseful && RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) &&
-                            !IsRealPlayer(botAI->GetMaster());
+    bool const honestBags = buyUseful && botAI->KeepsPossessions();
     bool boughtBag = false;
     // A bot not granted them gets its consumables and a hunter's ammo from its shopping list (upkeep §3.6), not here
     bool const shopsAmmo = bot->getClass() == CLASS_HUNTER && !Upkeep::Granted(bot, UpkeepKind::Ammo);

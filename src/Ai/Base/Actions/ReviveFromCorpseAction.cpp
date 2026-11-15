@@ -6,6 +6,7 @@
 
 #include "ReviveFromCorpseAction.h"
 
+#include "BotKind.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
 #include "Corpse.h"
@@ -99,10 +100,9 @@ bool ReviveFromCorpseAction::Execute(Event event)
     if (!botAI->HasGameClientMaster())
     {
         uint32 dCount = AI_VALUE(uint32, "death count");
-        bool const exhausted =
-            RandomPlayerbotMgr::HonestTravel()
-                ? WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures)
-                : dCount >= 5;
+        bool const exhausted = BotKind::LivingWorld() ? WorldTravel::CorpseRunsExhausted(
+                                                            dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures)
+                                                      : dCount >= 5;
 
         if (exhausted)
             return botAI->DoSpecificAction("spirit healer");
@@ -142,7 +142,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // }
 
     uint32 dCount = AI_VALUE(uint32, "death count");
-    bool const honest = RandomPlayerbotMgr::HonestTravel();
+    bool const honest = BotKind::LivingWorld();
 
     if (!botAI->HasGameClientMaster())
     {
@@ -438,7 +438,7 @@ bool SpiritHealerAction::Execute(Event event)
                                    sickness->GetDuration());
             }
             // The death decision row (upkeep §3.14) of a persistent bot: why the spirit healer, not the corpse run
-            if (RandomPlayerbotMgr::HonestTravel() && !botAI->HasGameClientMaster())
+            if (BotKind::LivingWorld() && !botAI->HasGameClientMaster())
             {
                 bool const exhausted =
                     WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
@@ -477,7 +477,7 @@ bool SpiritHealerAction::Execute(Event event)
     if (moved)
         return true;
 
-    if (sRandomPlayerbotMgr.IsRandomBot(bot) && RandomPlayerbotMgr::HonestTravel())
+    if (botAI->IsPersistentBot())
     {
         // A persistent ghost at its grave waits for the healer; a far one is teleported unseen and rate-limited
         WorldTravel::GhostInput ghost;

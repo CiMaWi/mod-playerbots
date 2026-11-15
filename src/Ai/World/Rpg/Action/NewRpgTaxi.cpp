@@ -85,7 +85,7 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, Worl
     if (!StartingHistory::PathKnown(nodes, known))
     {
         // Persistent bots pick only discovered routes; other setups still fly and the flight is counted
-        if (RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot))
+        if (botAI->IsPersistentBot())
             return TaxiStart::Undiscovered;
 
         EventLog::Honesty(bot, "Flight", "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
