@@ -21,6 +21,7 @@ class LootObjectStack;
 class Player;
 class PlayerbotAI;
 class Transport;
+struct TravelTraceIdentity;  // BotTravelInternal.h
 
 // The bot's travel block (CS5 design 4.1): the passenger check's cadence, a test's aboard placement, the loot
 // interaction travel waits on, the route request ids and the travel trace. Made by PlayerbotAI's constructors, never
@@ -52,6 +53,11 @@ public:
                                 std::optional<std::pair<uint32, uint32>> leg = std::nullopt);
     TravelProgress::Motion ReadTravelWalk(bool checkPosition = false) const;
     void TraceTravelMount(MountPath path, bool accepted);
+
+    // UpdateAI's travel hook ahead of the AI's delays: the passenger check, a test's aboard placement, a
+    // pending dismount, the loot interaction's and the trip's progress, the mount trace
+    void PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
+                 std::optional<TravelTraceIdentity> const& traceTravel);
 
     // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass until it rides
     // that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
