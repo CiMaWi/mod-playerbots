@@ -31,7 +31,6 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
-#include "PvpTestCounters.h"
 #include "SpellAuras.h"
 #include "TacticGate.h"
 #include "Tactics.h"
@@ -57,6 +56,9 @@ struct PathBotState;
 struct TrackBotState;
 struct TurnBotState;
 enum class TurnSnapSite : uint8;  // NaturalTurn.h
+// PvpTestCounters.h
+enum class TacticCounter : uint8;
+struct PvpTestCounterBlock;
 class ReactionEngine;
 class Gameobject;
 class Item;
@@ -729,36 +731,30 @@ public:
     // ends for the queue-like follow-up and the busy-bot rules (G0h3-b). The bot's own update only.
     OpponentMemory& GetOpponentMemory() { return opponentMemory; }
     ReactionBusyState& GetReactionBusy() { return reactionBusy; }
-    // PvP test harness: while a match runs, the actions of the notice categories that executed (cast successfully),
-    // one slot per category in the order of SkillNoticeCounters. Counting costs nothing outside a match: one flag.
-    // Turning it on zeroes the counts.
+    // PvP test harness (PvpTestCounters.h): while a match runs, the actions of the notice categories that executed
+    // (cast successfully), crowd control by DR group (casts, receipts, trinket and racial breaks) and the tactics'
+    // named counters. Turning counting on makes the block at the first time and zeroes it; outside a match each count
+    // costs one flag test. The block stays until logout; a bot that never counted reads an empty one.
     void SetPvpTestCounting(bool on);
     bool IsPvpTestCounting() const { return pvpTestCounting; }
-    std::array<uint32, SkillNoticeCounters::Categories> const& GetPvpTestExecuted() const { return pvpTestExecuted; }
-    // Crowd control by DR group (casts, receipts, trinket and racial breaks) and the tactics' named counters; counted
-    // only while counting is on, zeroed when it is turned on
-    PvpTestCcCounters const& GetPvpTestCc() const { return pvpTestCc; }
-    std::array<uint32, PVPTEST_TACTIC_COUNT> const& GetPvpTestTactics() const { return pvpTestTactics; }
+    PvpTestCounterBlock const& GetPvpTestCounters() const;
     void CountPvpTestReceivedCc(uint32 drGroup);
     void CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune);
     void CountPvpTestOwnBreak()
     {
         if (pvpTestCounting)
-            ++pvpTestCc.OwnBreaks;
+            AddPvpTestOwnBreak();
     }
     // G5a: the bot dispelled a partner's CC that had been on it ageMs (dispel cc on party)
     void CountPvpTestPartnerDispel(uint32 ageMs)
     {
-        if (!pvpTestCounting)
-            return;
-
-        ++pvpTestCc.PartnerDispel;
-        pvpTestTactics[static_cast<uint32>(TacticCounter::PartnerDispelMs)] += ageMs;
+        if (pvpTestCounting)
+            AddPvpTestPartnerDispel(ageMs);
     }
     void CountTactic(TacticCounter counter, uint32 amount = 1)
     {
         if (pvpTestCounting)
-            pvpTestTactics[static_cast<uint32>(counter)] += amount;
+            AddPvpTestTactic(counter, amount);
     }
     // Tactics (Tactics.h): one bit per TacticId. The mask comes from config at login (ResetTacticMask); the PvP
     // harness overrides it per side for a match, and turning counting off gives the config mask back. Written on the
@@ -928,6 +924,11 @@ private:
                                    bool mixed = false);
     bool IsTellAllowed(PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);
     void UpdateAIGroupMaster();
+    // The counts behind CountPvpTestOwnBreak, CountPvpTestPartnerDispel and CountTactic, once the flag is set
+    // (PvpTestCounters.cpp)
+    void AddPvpTestOwnBreak();
+    void AddPvpTestPartnerDispel(uint32 ageMs);
+    void AddPvpTestTactic(TacticCounter counter, uint32 amount);
     Item* FindItemInInventory(std::function<bool(ItemTemplate const*)> checkItem) const;
     void HandleCommands();
     void HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang = LANG_UNIVERSAL);
@@ -1009,9 +1010,8 @@ protected:
     uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;
     int32 lastPrepareResult = -1;  // LastPrepareResult
-    std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
-    PvpTestCcCounters pvpTestCc;
-    std::array<uint32, PVPTEST_TACTIC_COUNT> pvpTestTactics{};
+    // Made by SetPvpTestCounting(true), kept until logout
+    std::unique_ptr<PvpTestCounterBlock> pvpTestCounters;
     std::atomic<uint32> tacticMask{0};
     std::atomic<bool> tacticMaskForced{false};
     std::atomic<uint8> tacticContext{static_cast<uint8>(TacticContext::Pve)};

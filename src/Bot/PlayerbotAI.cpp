@@ -91,6 +91,7 @@
 #include "Playerbots.h"
 #include "PointMovementGenerator.h"
 #include "PositionValue.h"
+#include "PvpTestCounters.h"
 #include "QuestStatEvents.h"
 #include "RBAC.h"
 #include "RaceMgr.h"
@@ -9664,14 +9665,19 @@ void PlayerbotAI::SetPvpTestCounting(bool on)
         NoteInterruptHoldEnd(this, interruptState->EndMatch(), heldMs, "match", nowMs, false);
     }
 
-    pvpTestCounting = on;
     if (on)
     {
-        pvpTestExecuted.fill(0);
-        pvpTestCc = PvpTestCcCounters();
-        pvpTestTactics.fill(0);
+        // The block before the flag: a count that sees the flag finds it
+        if (pvpTestCounters)
+            *pvpTestCounters = PvpTestCounterBlock();
+        else
+            pvpTestCounters = std::make_unique<PvpTestCounterBlock>();
+
+        pvpTestCounting = true;
         return;
     }
+
+    pvpTestCounting = false;
 
     // A tactic mask the harness forced lasts for the match only, Avoid.EnsureTrinket's trinket too (G5a)
     CcRestoreTrinket(this);
@@ -9748,19 +9754,24 @@ constexpr uint32 SPELL_ESCAPE_ARTIST = 20589;
 
 void PlayerbotAI::CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune)
 {
+    // Called while counting only, so the block exists
+    if (!pvpTestCounters)
+        return;
+
+    PvpTestCcCounters& cc = pvpTestCounters->Cc;
     if (IsPvpTestCcGroup(drGroup))
     {
-        ++pvpTestCc.Cast[drGroup];
+        ++cc.Cast[drGroup];
         if (atImmune)
-            ++pvpTestCc.AtImmune;
+            ++cc.AtImmune;
     }
 
     // The trinket and the racials have no DR group; "pvp trinket" (G5a, an item use) counts its use here too
     if (spellId == SPELL_PVP_TRINKET)
-        ++pvpTestCc.Trinket;
+        ++cc.Trinket;
     else if (spellId == SPELL_EVERY_MAN_FOR_HIMSELF || spellId == SPELL_WILL_OF_THE_FORSAKEN ||
              spellId == SPELL_ESCAPE_ARTIST)
-        ++pvpTestCc.RacialBreak;
+        ++cc.RacialBreak;
     else
         return;
 
@@ -9770,8 +9781,8 @@ void PlayerbotAI::CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune
 
 void PlayerbotAI::CountPvpTestReceivedCc(uint32 drGroup)
 {
-    if (pvpTestCounting && IsPvpTestCcGroup(drGroup))
-        ++pvpTestCc.Received[drGroup];
+    if (pvpTestCounting && pvpTestCounters && IsPvpTestCcGroup(drGroup))
+        ++pvpTestCounters->Cc.Received[drGroup];
 }
 
 namespace
@@ -9835,7 +9846,9 @@ void PlayerbotAI::EndExecutedCount(uint8 category, ObjectGuid previousTarget)
         target = current->GetGUID();
     }
 
-    ++pvpTestExecuted[category - 1];
+    if (pvpTestCounters)
+        ++pvpTestCounters->Executed[category - 1];
+
     // A traced arena keeps the action (M10; one test while no trace runs)
     MatchTrace::OnAction(bot, category, target);
 }

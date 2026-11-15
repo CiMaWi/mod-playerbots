@@ -93,9 +93,9 @@ std::string CountersToJson(PvpTestBotRecord const& bot)
     PvpTestCcCounters const& cc = bot.Cc;
     std::string json = Acore::StringFormat(
         "\"cc\":{{\"cast\":{},\"atImmune\":{},\"received\":{},\"ownBreaks\":{},\"trinket\":{},\"racialBreak\":{},"
-        "\"partnerDispel\":{},\"lostEarly\":{}}},\"tactics\":{{",
+        "\"partnerDispel\":{}}},\"tactics\":{{",
         DrGroupsToJson(cc.Cast), cc.AtImmune, DrGroupsToJson(cc.Received), cc.OwnBreaks, cc.Trinket, cc.RacialBreak,
-        cc.PartnerDispel, cc.LostEarly);
+        cc.PartnerDispel);
     for (uint32 index = 0; index < PVPTEST_TACTIC_COUNT; ++index)
     {
         if (index)
