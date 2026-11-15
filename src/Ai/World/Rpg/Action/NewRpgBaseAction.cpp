@@ -19,6 +19,7 @@
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
 #include "Object.h"
@@ -299,8 +300,7 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
                                                   sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS,
                                                   given, wanted, info.stuckRepeats))
         {
-            WorldLog::StatusReason const reasonScope("stuck");
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);
             return true;
         }
 
@@ -371,8 +371,7 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
              (botAI->rpgInfo.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
     {
         GiveUpMove(dest);
-        WorldLog::StatusReason const reasonScope("stuck");
-        botAI->rpgInfo.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);
         return true;
     }
 

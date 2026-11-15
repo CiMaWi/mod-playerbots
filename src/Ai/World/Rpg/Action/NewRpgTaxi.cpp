@@ -14,6 +14,7 @@
 #include "MoveSpline.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectDefines.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -57,8 +58,7 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
         case TaxiStart::Refused:
             break;
     }
-    WorldLog::StatusReason const reasonScope("failed");
-    info.ChangeToIdle();
+    RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "failed"});
     return true;
 }
 

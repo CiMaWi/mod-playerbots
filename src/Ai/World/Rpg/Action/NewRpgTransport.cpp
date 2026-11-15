@@ -1047,7 +1047,7 @@ void SendTransportNotes(Player* bot, TravelLegs::Trip& trip)
 // The gate before a trip's end, a route request or a walk (WT19-d, TravelLegs::BeginOffFirst): true when the bot
 // rides a ship or zeppelin and gets off first (`Transport off_first`)
 bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end, char const* why,
-                    char const* source)
+                    char const* source, StatusEnd::Outcome outcome)
 {
     Transport const* const ridden = bot->GetTransport();
     if (!ridden)
@@ -1057,7 +1057,7 @@ bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstE
         return true;
     uint32 const period = TransportGeometry::Period(*ridden);
     if (!TravelLegs::BeginOffFirst(trip, ridden->GetEntry(), ridden->GetGUID().GetRawValue(), period, getMSTime(), end,
-                                   why, source))
+                                   why, source, outcome))
         return false;
     TransportGeometry::DiscardMotion(*bot, data.passengerMotion);
     SendTransportNotes(bot, trip);

@@ -7,8 +7,8 @@
 // Offline proof of applying the planner's goals (travel plan WT16, GoalInterface.h): the A/B rule, source precedence,
 // the ticket match, the idle step's fallback reasons and bounded wait, the interlude's return, the executors (each
 // quest option to what it names), the keep list, the circuit's next task, the one stall rule of every goal the
-// planner starts (keys, the log signature without XP, the circuit and delivery loops it ends) and the planned point
-// of interest.
+// planner starts (keys, the log signature without XP, the circuit and delivery loops it ends), the ends from outside
+// it does not judge (change 2, CS14e) and the planned point of interest.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/goal-apply-selftest.cpp
 
 #include <cstdio>
@@ -341,6 +341,97 @@ int main()
         Check(goals.stalled && goals.stalled->keys.size() == MAX_STALLED && MayStart(goals, 100, before) &&
                   !MayStart(goals, 101, before),
               "the stall list is bounded: the oldest key starts again first");
+    }
+
+    // Change 2 (consolidation CS14e): the status core tells the run why its status ended (NoteStatusEnd). An end the
+    // goal did not cause leaves its run unjudged; an end by itself is judged by the log as before
+    {
+        using StatusEnd::Outcome;
+        constexpr std::uint64_t KEY = 50;
+        constexpr std::uint64_t LOG = 7;
+        auto const begun = [](bool xpCounts = false)
+        {
+            BotGoals goals;
+            BeginRun(goals, KEY, LOG, 100, xpCounts);
+            return goals;
+        };
+        // The run ends with the log unchanged (and the given XP): does its key stall?
+        auto const stalls = [](BotGoals& goals, std::uint64_t xp = 100)
+        {
+            EndRun(goals, LOG, xp);
+            return !goals.run.running && !MayStart(goals, KEY, LOG);
+        };
+        auto const endedBy = [&begun, &stalls](Outcome outcome)
+        {
+            BotGoals goals = begun();
+            NoteStatusEnd(goals, outcome, true);
+            return stalls(goals);
+        };
+        Check(!endedBy(Outcome::Interrupted), "ended from outside, the goal is not stalled: a planner switch");
+        Check(!endedBy(Outcome::Ordered), "ended from outside, the goal is not stalled: a hold");
+        Check(!endedBy(Outcome::Ordered), "ended from outside, the goal is not stalled: a pause");
+        Check(!endedBy(Outcome::Ordered), "ended from outside, the goal is not stalled: an order");
+        Check(!endedBy(Outcome::Sick), "ended from outside, the goal is not stalled: sickness");
+        Check(endedBy(Outcome::Arrived) && endedBy(Outcome::Finished) && endedBy(Outcome::TimedOut) &&
+                  endedBy(Outcome::Stuck) && endedBy(Outcome::Abandoned),
+              "arrived, finished, timeout, stuck, abandoned with the log unchanged: stalled as before");
+        {
+            BotGoals goals = begun();
+            NoteStatusEnd(goals, Outcome::Interrupted, true);
+            NoteStatusEnd(goals, Outcome::Finished, true);
+            Check(!stalls(goals), "the interrupter's own end does not judge the goal (the mark is sticky)");
+        }
+        {
+            BotGoals goals = begun();
+            NoteStatusEnd(goals, Outcome::Ordered, true);
+            ContinueRun(goals);
+            NoteStatusEnd(goals, Outcome::Finished, true);
+            Check(stalls(goals), "interrupted, resumed, then ended by itself: stalled (mutant: the mark never clears)");
+        }
+        {
+            BotGoals goals = begun(true);
+            NoteStatusEnd(goals, Outcome::Arrived, true);
+            NoteStatusEnd(goals, Outcome::TimedOut, true);
+            Check(stalls(goals), "go grind arrived, then the wander timed out without XP: stalled as before");
+            goals = begun(true);
+            NoteStatusEnd(goals, Outcome::Arrived, true);
+            NoteStatusEnd(goals, Outcome::TimedOut, true);
+            Check(!stalls(goals, 101), "the same chain with XP gained: progress, no stall");
+        }
+        {
+            BotGoals goals = begun();
+            EndRun(goals, LOG);
+            BeginRun(goals, KEY + 1, LOG);
+            NoteStatusEnd(goals, Outcome::Interrupted, true);
+            EndRun(goals, LOG + 1);
+            Check(!goals.stalled && MayStart(goals, KEY, LOG), "an outside end with a changed log lifts every stall");
+            NoteStatusEnd(goals, Outcome::Interrupted, true);
+            Check(!goals.run.outside, "an end while no run runs marks nothing");
+            BeginRun(goals, KEY, LOG);
+            goals.idleSinceMs = 5;
+            goals.waitCounted = true;
+            NoteStatusEnd(goals, Outcome::Finished, false);
+            Check(goals.idleSinceMs == 5 && goals.waitCounted && !goals.run.outside,
+                  "a judged end to a next status keeps the wait as it was");
+            NoteStatusEnd(goals, Outcome::Finished, true);
+            Check(goals.idleSinceMs == 0 && !goals.waitCounted, "an end to idle ends a wait for a plan");
+        }
+        // A start that replaces the goal's status (CS14f): an errand or inn start ends it as Interrupted, a sick start
+        // as Sick, both to a next status: the run is marked, the wait stays as it was
+        for (Outcome const outcome : {Outcome::Interrupted, Outcome::Sick})
+        {
+            BotGoals goals = begun();
+            goals.idleSinceMs = 5;
+            goals.waitCounted = true;
+            NoteStatusEnd(goals, outcome, false);
+            bool const sick = outcome == Outcome::Sick;
+            Check(goals.run.outside && goals.idleSinceMs == 5 && goals.waitCounted,
+                  sick ? "a sick start over the goal's status marks the run and keeps the wait"
+                       : "an errand start over the goal's status marks the run and keeps the wait");
+            NoteStatusEnd(goals, Outcome::Finished, true);
+            Check(!stalls(goals), sick ? "the rest's own end then does not stall the goal"
+                                       : "the errand trip's own end then does not stall the goal");
+        }
     }
 
     // Keys: one per goal and executor, never a circuit's

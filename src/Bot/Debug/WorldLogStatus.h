@@ -19,28 +19,9 @@ namespace WorldLog
 {
 constexpr char const* STATUS_REASON_OTHER = "other";
 
-inline thread_local char const* statusReason = nullptr;
-
-// RAII reason (a literal) for the status changes inside the scope; nests and restores the previous one, no allocation
-class StatusReason
-{
-public:
-    explicit StatusReason(char const* reason) : _previous(statusReason) { statusReason = reason; }
-    ~StatusReason() { statusReason = _previous; }
-
-    StatusReason(StatusReason const&) = delete;
-    StatusReason& operator=(StatusReason const&) = delete;
-
-private:
-    char const* _previous;
-};
-
-// The innermost reason on this thread, or "other"
-inline char const* CurrentStatusReason() { return statusReason ? statusReason : STATUS_REASON_OTHER; }
-
 // A Status row (src the reason, id the new status, amount the old) when the status changed and the world log is on;
-// bot null (an RpgInfo of no bot) logs nothing
-void NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus);
+// bot null (an RpgInfo of no bot) logs nothing. word: the status core's reason (RpgStatus, a literal); null "other"
+void NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus, char const* word);
 // A QuestAbandon row for a quest the bot drops without the client's abandon packet (DropQuestAction)
 void NoteQuestAbandon(Player* bot, uint32_t questId);
 
@@ -76,7 +57,7 @@ private:
 
 inline TripCounter tripCounter;
 
-// The id of a new trip (NewRpgInfo::ChangeToTravel): its Travel events' world-log id and its decisions' ref
+// The id of a new trip (the status core, RpgStatus::Start): its Travel events' world-log id and its decisions' ref
 inline uint32_t NextTripId() { return tripCounter.Next(); }
 }  // namespace WorldLog
 

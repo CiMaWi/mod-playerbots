@@ -168,7 +168,7 @@ private:
     bool Arrive(NewRpgInfo::Travel& data, bool stuck = false);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
-    void EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source);
+    void EndTrip(NewRpgInfo::Travel& data, StatusEnd::Outcome outcome, char const* why, char const* source);
 };
 
 // Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its

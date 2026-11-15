@@ -318,6 +318,22 @@ inline char const* AbortSource(FailReason reason)
     return "abort:?";
 }
 
+// The outcome of a trip a failed leg ends (RpgStatus::End): a timed-out leg TimedOut, a stuck walk or a bot off the
+// mesh Stuck, every other failure Abandoned
+constexpr StatusEnd::Outcome FailOutcome(FailReason reason)
+{
+    switch (reason)
+    {
+        case FailReason::Timeout:
+            return StatusEnd::Outcome::TimedOut;
+        case FailReason::Stuck:
+        case FailReason::OffMesh:
+            return StatusEnd::Outcome::Stuck;
+        default:
+            return StatusEnd::Outcome::Abandoned;
+    }
+}
+
 constexpr char const* TRANSPORT_EVENT_TYPE = "Transport";
 constexpr char const* HOP_HONESTY_KIND = "Teleport";
 constexpr char const* HOP_HONESTY_SOURCE = "transport_hop";
@@ -1165,7 +1181,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
 // for StepOffFirst. Not while one is under way, and not again on a trip after a period passed aboard
 inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t guid, std::uint32_t periodMs,
                           std::uint32_t nowMs, OffFirstEnd end = OffFirstEnd::None, char const* why = nullptr,
-                          char const* source = nullptr)
+                          char const* source = nullptr, StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned)
 {
     OffFirst& off = trip.offFirst;
     if (!guid || off.sinceMs || off.gaveUp)
@@ -1177,6 +1193,7 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t gui
     off.end = end;
     off.why = why;
     off.source = source;
+    off.outcome = outcome;
     // The scans start anew: the first one counts as under way
     trip.sight = {};
     trip.still = false;
@@ -1599,25 +1616,6 @@ inline std::uint32_t TripDeadlineMs(float estimateSeconds)
 }
 
 inline bool PastDeadline(std::uint32_t activeMs, float routeSeconds) { return activeMs > TripDeadlineMs(routeSeconds); }
-
-// PlayerbotAI::Reset(true) renews the bot's RPG state, also after every far teleport (HandleTeleportAck). What
-// survives it: a test's constraints (the route request ids are BotTravel's, which a reset keeps); on a far teleport
-// also a trip in progress with its status start (a portal or a cross-map flight leg ends on the new map; a teleport
-// that is not the trip's fails the leg as wrong_map and replans). Every other status and the MOVE_FAR state start
-// over as before. Info: NewRpgInfo (data a std::variant, startT, constraints); TravelData: its RPG_TRAVEL
-// alternative
-template <class TravelData, class Info>
-Info AfterReset(Info const& before, bool farTeleport)
-{
-    Info after;
-    after.constraints = before.constraints;  // a state row's flag stays on the Player
-    if (farTeleport && std::holds_alternative<TravelData>(before.data))
-    {
-        after.startT = before.startT;
-        after.data = before.data;
-    }
-    return after;
-}
 }  // namespace TravelLegs
 
 #endif

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "LootInteraction.h"
+#include "StatusEndRules.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
 #include "TravelProgress.h"
@@ -1226,10 +1227,11 @@ void CheckUnconsumedBoardTransfer()
     Check(before.passengerMotion->Result == Outcome::Boarded && !before.trip.passengerGuid,
           "maintenance attaches while the scheduled follower has not consumed boarding");
     ResetMotion(before.passengerMotion, true, adapter);
-    info = TravelLegs::AfterReset<Info::Travel>(info, true);
+    // A far teleport keeps the trip as it is (StatusEnd::KeepsStatus: RpgStatus::Reset leaves the status alone)
+    Check(StatusEnd::KeepsStatus(true, std::holds_alternative<Info::Travel>(info.data)), "a far reset keeps the trip");
     auto& after = std::get<Info::Travel>(info.data);
     Check(after.passengerMotion && after.passengerMotion->Result == Outcome::Boarded,
-          "the production far reset policy preserves the unconsumed boarding result with the continuing trip");
+          "the far reset policy preserves the unconsumed boarding result with the continuing trip");
     adapter.Aboard.Available = false;
     Check(!PassengerOutcome(*after.passengerMotion, adapter.ReadMembership()),
           "unavailable cross-map membership defers boarding consumption");

@@ -23,6 +23,7 @@
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgStatusEnd.h"
 #include "NewRpgTriggers.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -37,7 +38,6 @@
 #include "UpkeepNeedRules.h"
 #include "UpkeepRules.h"
 #include "WorldLog.h"
-#include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
 
 using namespace NewRpgInternal;
@@ -311,34 +311,6 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
 
 namespace NewRpgInternal
 {
-// Ends the bot's errand: stamps the errand check, measures t from a visited vendor and records the run; an errand given
-// up records abortSource (a literal: errand_abort, or errand_sick when the sickness ended it)
-void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource)
-{
-    WorldLog::StatusReason const reasonScope("finished");
-    NewRpgInfo& info = botAI->rpgInfo;
-    auto const* data = std::get_if<NewRpgInfo::Errands>(&info.data);
-    if (!data)
-        return;
-
-    Player* bot = botAI->GetBot();
-    WorldTravel::SlotMeasure& measure =
-        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
-    uint32 const now = getMSTime();
-    float const minutes = static_cast<float>(getMSTimeDiff(info.startT, now)) / (MINUTE * IN_MILLISECONDS);
-    WorldTravel::StampErrandCheck(measure, now);
-    if (visited)
-    {
-        WorldTravel::AddTripMinutes(measure, minutes);
-        EventLog::Emit(bot, "Inventory", "errand_run", data->vendorEntry,
-                       int64(bot->GetMoney()) - int64(data->moneyAtStart));
-    }
-    else
-        EventLog::Emit(bot, "Inventory", abortSource, data->vendorEntry, int64(minutes));
-
-    info.ChangeToIdle();
-}
-
 // A bot that buys at vendors (the shopping list, a riding rank and its mount): a random bot in honest travel without a
 // real player as master. The riding errand is taken only for such a bot, so a rank is never taught where the mount
 // could not be bought (a known rank without its mount keeps the need open)
@@ -359,7 +331,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 
     if (data->stop >= data->stops.size())
     {
-        FinishErrands(botAI, data->visited);
+        RpgStatus::End(botAI, StatusEnd::Outcome::Finished);
         return true;
     }
 
