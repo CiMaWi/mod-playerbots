@@ -1368,6 +1368,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             bot->SetPower(bot->getPowerType(), bot->GetMaxPower(bot->getPowerType()));
     }
 
+    perf.MarkPregate();
     AllowActivity();
 
     // Wake up if combat state changed (unless casting).
