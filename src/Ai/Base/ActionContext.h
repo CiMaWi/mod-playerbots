@@ -30,6 +30,7 @@
 #include "DropQuestAction.h"
 #include "EmoteAction.h"
 #include "FishingAction.h"
+#include "FleeAttackersAction.h"
 #include "FocusStrategy.h"
 #include "FollowActions.h"
 #include "GenericSpellActions.h"
@@ -141,6 +142,7 @@ public:
         creators["kite step"] = &ActionContext::kite_step;
         creators["prep drink"] = &ActionContext::prep_drink;
         creators["safe drink"] = &ActionContext::safe_drink;
+        creators["flee attackers"] = &ActionContext::flee_attackers;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
@@ -395,6 +397,7 @@ private:
     static Action* kite_step(PlayerbotAI* botAI) { return new KiteStepAction(botAI); }
     static Action* prep_drink(PlayerbotAI* botAI) { return new PrepDrinkAction(botAI); }
     static Action* safe_drink(PlayerbotAI* botAI) { return new SafeDrinkAction(botAI); }
+    static Action* flee_attackers(PlayerbotAI* botAI) { return new FleeAttackersAction(botAI); }
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }

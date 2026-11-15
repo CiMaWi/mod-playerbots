@@ -26,8 +26,9 @@ public:
     bool AcceptUnit(Unit* unit) override;
 
 private:
-    // nullptr when today's rules take the unit as an attack-on-sight target, else the word of the rule that passed
-    char const* Refusal(Unit* unit);
+    // nullptr when today's rules take the unit as an attack-on-sight target, else the word of the rule that passed;
+    // byRules leaves out the parent's level filter (the fight rules check the colours themselves)
+    char const* Refusal(Unit* unit, bool byRules);
 };
 
 class EnemyPlayerValue : public UnitCalculatedValue

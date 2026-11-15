@@ -24,6 +24,7 @@ bool ReadBotPersonality(ObjectGuid const& botGuid, BotPersonality& out)
         return false;
 
     out.words = TraitRules::Describe(*traits);
+    out.areas = TraitRules::DescribeAreas(*traits);
     out.interests = TraitRules::InterestNames(*traits);
     return true;
 }

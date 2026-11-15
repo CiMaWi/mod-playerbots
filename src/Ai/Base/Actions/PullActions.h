@@ -19,12 +19,17 @@
 #include "GenericSpellActions.h"
 #include "ReachTargetActions.h"
 
+class PullStrategy;
+
 class PullRequestAction : public Action
 {
 public:
     PullRequestAction(PlayerbotAI* botAI, std::string const name) : Action(botAI, name) {}
 
     bool Execute(Event event) override;
+    // The pull once its target passed the checks: the bot's spot to come back to, the strategy's request, the
+    // current target and the combat engine (also the bridge's pull row, LC17a).
+    static void Request(PlayerbotAI* botAI, PullStrategy* strategy, Unit* target);
 
 protected:
     virtual Unit* GetPullTarget(Event event) = 0;

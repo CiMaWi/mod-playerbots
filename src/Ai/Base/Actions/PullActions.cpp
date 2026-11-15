@@ -84,6 +84,14 @@ bool PullRequestAction::Execute(Event event)
         return false;
     }
 
+    Request(botAI, strategy, target);
+    return true;
+}
+
+void PullRequestAction::Request(PlayerbotAI* botAI, PullStrategy* strategy, Unit* target)
+{
+    Player* bot = botAI->GetBot();
+    AiObjectContext* context = botAI->GetAiObjectContext();
     PositionMap& posMap = AI_VALUE(PositionMap&, "position");
     PositionInfo pullPosition = posMap["pull"];
     pullPosition.Set(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
@@ -93,7 +101,6 @@ bool PullRequestAction::Execute(Event event)
     context->GetValue<Unit*>("current target")->Set(target);
     botAI->ChangeEngine(BOT_STATE_COMBAT);
     botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
-    return true;
 }
 
 Unit* PullMyTargetAction::GetPullTarget(Event event)
