@@ -1,0 +1,244 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#include "BotTravel.h"
+
+#include "Log.h"
+#include "LootObjectStack.h"
+#include "MotionMaster.h"
+#include "MoveSpline.h"
+#include "NaturalTrace.h"
+#include "NewRpgInfo.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
+#include "PointMovementGenerator.h"
+#include "Transport.h"
+#include "TransportMgr.h"
+#include "TravelLegRules.h"
+#include "TravelLifecycle.h"
+#include "TravelProgress.h"
+#include "WorldLog.h"
+
+std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel)
+{
+    if (!travel || travel->place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return std::nullopt;
+    return TravelTraceIdentity{travel->tripId, travel->trip.legIdx, travel->trip.legStartMs};
+}
+
+void LogTravelGate(Player const& player, TravelTraceIdentity const& trace, uint32 nowMs, char const* gate)
+{
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] gate bot={} trip={} leg={} generation={} tick_ms={} outcome={} combat={} control={} "
+              "taxi={}",
+              player.GetGUID().GetCounter(), trace.Trip, trace.Leg, trace.Generation, nowMs, gate, player.IsInCombat(),
+              !player.HasUnitState(UNIT_STATE_LOST_CONTROL), player.IsInFlight());
+}
+
+char const* ContactName(TravelLifecycle::Contact contact)
+{
+    using TravelLifecycle::Contact;
+    switch (contact)
+    {
+        case Contact::Unavailable:
+            return "unavailable";
+        case Contact::OffSurface:
+            return "off_surface";
+        case Contact::AboveDeck:
+            return "above_deck";
+        case Contact::Feet:
+            return "feet";
+    }
+    return "unavailable";
+}
+
+char const* MotionStateName(TravelLifecycle::MotionState state)
+{
+    using TravelLifecycle::MotionState;
+    switch (state)
+    {
+        case MotionState::None:
+            return "none";
+        case MotionState::Moving:
+            return "moving";
+        case MotionState::Reached:
+            return "reached";
+        case MotionState::Cancelled:
+            return "cancelled";
+    }
+    return "none";
+}
+
+char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
+{
+    using TravelLifecycle::Outcome;
+    switch (outcome)
+    {
+        case Outcome::Pending:
+            return "pending";
+        case Outcome::Boarded:
+            return "boarded";
+        case Outcome::Exited:
+            return "exited";
+        case Outcome::Cancelled:
+            return "cancelled";
+        case Outcome::Lost:
+            return "lost";
+    }
+    return "pending";
+}
+
+// A ship or zeppelin between its stops (MotionTransport::IsMoving is private): the core holds it at a stop frame while
+// its path timer lies in that frame's [ArriveTime, DepartureTime)
+bool UnderWay(Transport const& transport)
+{
+    MotionTransport const* const ship = transport.ToMotionTransport();
+    if (!ship || !ship->GetPeriod() || ship->GetKeyFrames().size() <= 1)
+        return false;
+    uint32 const timer = ship->GetPathProgress() % ship->GetPeriod();
+    for (KeyFrame const& frame : ship->GetKeyFrames())
+        if (frame.IsStopFrame() && frame.ArriveTime <= timer && timer < frame.DepartureTime)
+            return false;
+    return true;
+}
+
+bool PlayerbotAI::ReconcileFollowPassenger(Transport const& expected)
+{
+    if (expected.IsStaticTransport())
+        return false;
+
+    PassengerAdapter adapter(*bot, std::nullopt);
+    TravelLifecycle::Sample const sample = TravelLifecycle::Reconcile(
+        adapter, nullptr, TravelLifecycle::MotionState::None, expected.GetGUID().GetRawValue());
+    return !sample.Before.Guid && sample.After.Available && sample.After.Guid == expected.GetGUID().GetRawValue();
+}
+
+bool PlayerbotAI::LootInteractionExpired() const
+{
+    return activeLootInteraction && activeLootInteraction->InteractionExpired();
+}
+
+bool PlayerbotAI::ConsumeLootExpiry()
+{
+    return activeLootInteraction && bot->IsAlive() && !bot->IsInCombat() && CanMove() &&
+           activeLootInteraction->ConsumeExpiry();
+}
+
+void PlayerbotAI::CancelLootInteraction(std::string_view reason)
+{
+    if (activeLootInteraction)
+        activeLootInteraction->Cancel(reason);
+}
+
+void PlayerbotAI::TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot,
+                                         uint32 interaction, std::string_view path, float yards,
+                                         std::optional<std::pair<uint32, uint32>> leg)
+{
+    if (!NaturalTrace::IsSelected(bot) || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+
+    auto const* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
+    uint32 const trip = travel ? travel->tripId : 0;
+    auto const [index, generation] = leg.value_or(
+        travel && travel->CurrentLeg() ? std::pair{travel->trip.legIdx, travel->trip.legStartMs} : std::pair{0u, 0u});
+    LOG_DEBUG("playerbots",
+              "[TravelInteraction] bot={} tick_ms={} at_ms={} trip={} leg={} event={} loot={} interaction={} path={} "
+              "detail={} mounted={} obligation={} generation={} request={} yards={:.2f}",
+              bot->GetGUID().GetCounter(), getMSTime(), WorldLog::NowMs(), trip, index, event, loot.GetRawValue(),
+              interaction, path, detail, uint32(bot->IsMounted()), trip, generation,
+              travel ? travel->route.requestId : 0, yards);
+}
+
+std::string_view MountPathWord(PlayerbotAI::MountPath path)
+{
+    return path == PlayerbotAI::MountPath::Packet ? "packet" : "timer";
+}
+
+void PlayerbotAI::TraceTravelMount(MountPath path, bool accepted)
+{
+    if (path == MountPath::None || !NaturalTrace::IsSelected(bot))
+        return;
+
+    ObjectGuid const loot = activeLootInteraction ? activeLootInteraction->InteractionGuid() : bot->GetLootGUID();
+    uint32 const generation = activeLootInteraction ? activeLootInteraction->InteractionGeneration() : 0;
+    TraceTravelInteraction(accepted ? "mount_accept" : "mount_veto", accepted ? "issued" : "loot", loot, generation,
+                           MountPathWord(path));
+    if (accepted)
+    {
+        tracedMount = path;
+        tracedMountAt = getMSTime();
+    }
+}
+
+TravelProgress::Motion PlayerbotAI::ReadTravelWalk(bool checkPosition) const
+{
+    auto const& spline = *bot->movespline;
+    auto* const master = bot->GetMotionMaster();
+    auto const* point =
+        master && !master->empty() ? dynamic_cast<PointMovementGenerator<Player>*>(master->top()) : nullptr;
+    TravelProgress::Motion motion{spline.GetId(), !spline.Finalized(), 0.0f, false, 0};
+    if (!point || !spline.Initialized() || spline.onTransport || spline.isFalling() || spline.isCyclic() ||
+        bot->GetTransport() || bot->GetVehicle() || bot->IsInFlight())
+        return motion;
+    motion.Generator = reinterpret_cast<std::uintptr_t>(point);
+    motion.Destination.mapId = bot->GetMapId();
+    point->GetDestination(motion.Destination.x, motion.Destination.y, motion.Destination.z);
+    motion.PositionMatches = true;
+    if (checkPosition)
+    {
+        auto const position = spline.ComputePosition();
+        float const tolerance = TravelProgress::SPLINE_POSITION_TOLERANCE_YARDS;
+        motion.PositionMatches = bot->GetExactDistSq(position.x, position.y, position.z) <= tolerance * tolerance;
+    }
+    motion.Yards = spline.Velocity() * static_cast<float>(spline.timePassed()) / 1000.0f;
+    return motion;
+}
+
+void PlayerbotAI::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove)
+{
+    using TravelProgress::Owner;
+    auto& progress = travel.progress;
+    if (revalidate)
+        progress.Suspend();
+
+    auto const* leg = travel.CurrentLeg();
+    bool const combat = bot->IsInCombat();
+    bool const passenger =
+        travel.PassengerOwnsProgress() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
+    // The flight down after a failed fly leg (TravelLegs::StartDescent) counts as riding: a trip never ends in the air
+    bool const external =
+        passenger || bot->IsInFlight() || bot->GetVehicle() || travel.route.waiting || travel.trip.descending;
+    Owner owner = Owner::Exempt;
+    if (combat)
+        owner = Owner::Combat;
+    else if (bot->IsAlive() && !external)
+    {
+        if (!canMove)
+            owner = Owner::Control;
+        else if (HasLootInteraction())
+            owner = Owner::Loot;
+        else
+            owner = !leg || leg->type == TravelRoute::LegType::Walk ? Owner::Walk : Owner::Leg;
+    }
+    auto const sample =
+        TravelProgress::Maintain(progress, {nowMs, owner, combat, CompletedLootInteractions()}, travel.trip,
+                                 travel.route, travel.routeSeconds, [&] { return ReadTravelWalk(true); });
+    if (sample.Selected)
+        TraceTravelInteraction("route_selected", travel.bindInn ? "inn" : "order");
+    if (sample.CombatChanged)
+        TraceTravelInteraction(combat ? "combat_begin" : "combat_end", "combat");
+    if (sample.LootCompleted)
+        TraceTravelInteraction("route_progress", "loot");
+    if (sample.Yards > 0.0f)
+        TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
+}
+
+void PlayerbotAI::BeginAboard(uint32 entry)
+{
+    aboardEntry = entry;
+    aboardSinceMs = getMSTime();
+    passengerCadence.Revalidate = true;
+}
