@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+#include "TravelLifecycleTypes.h"
+
 namespace TravelLifecycle
 {
 constexpr std::uint32_t PASSENGER_INTERVAL_MS = 1000;
@@ -26,13 +28,6 @@ constexpr std::uint32_t PASSENGER_INTERVAL_MS = 1000;
 // one probe off the surface while it stands still is the hull's model a step away from its passengers (WT54-6: two
 // riders of 187568 dropped at sea on the same sample), not an exit
 constexpr std::uint8_t OFF_SURFACE_SAMPLES = 2;
-
-struct Point
-{
-    float X = 0.0f;
-    float Y = 0.0f;
-    float Z = 0.0f;
-};
 
 constexpr float CROSSING_YARDS = 25.0f;
 // The ring searches around a transport for a quay or an exit sample a bearing every 5 degrees (WT54-5): a zeppelin's
@@ -76,12 +71,6 @@ inline float DistanceSquared(Point const& a, Point const& b)
     float const dz = a.Z - b.Z;
     return dx * dx + dy * dy + dz * dz;
 }
-
-struct DockPose
-{
-    Point Position;
-    float Orientation = 0.0f;
-};
 
 inline bool SameDock(DockPose const& issued, DockPose const& current)
 {
@@ -587,57 +576,6 @@ std::optional<ExitPath> FindWaitExit(Geometry const& geometry, Point const& from
     return ExitPath{*deck, wait, wait, std::move(*walk)};
 }
 
-enum class MotionKind : std::uint8_t
-{
-    Board,
-    Exit
-};
-enum class MotionState : std::uint8_t
-{
-    None,
-    Moving,
-    Reached,
-    Cancelled
-};
-enum class Outcome : std::uint8_t
-{
-    Pending,
-    Boarded,
-    Exited,
-    Cancelled,
-    Lost
-};
-enum class Contact : std::uint8_t
-{
-    Unavailable,
-    OffSurface,
-    AboveDeck,
-    Feet
-};
-enum class DockState : std::uint8_t
-{
-    Unavailable,
-    Still,
-    Departed
-};
-
-struct PassengerMotion
-{
-    MotionKind Kind = MotionKind::Board;
-    std::uint64_t Transport = 0;
-    std::uint32_t Entry = 0;
-    std::uint32_t Map = 0;
-    std::uint32_t Spline = 0;
-    Point Endpoint;
-    Outcome Result = Outcome::Pending;
-    bool CompletionSampled = false;
-    bool ContactOnly = false;  // the existing unseen hop has no issued spline
-    DockPose Dock;
-    Point ExitFrom;
-    Point Onward;
-    bool ToWaitPoint = false;  // an exit to the stop's wait point (FindWaitExit)
-};
-
 // An exit holds where the bot stands at its end, at the dock it was issued at: the found crossing's checks again
 // (CheckExit from its deck edge), or for an exit to the wait point the boarding's from there (CheckBoard)
 template <class Geometry>
@@ -704,15 +642,6 @@ void ResetMotion(std::optional<PassengerMotion>& intent, bool continuingTrip, Ad
     if (!continuingTrip || intent->Kind != MotionKind::Board || intent->Result != Outcome::Boarded)
         intent.reset();
 }
-
-struct Cadence
-{
-    std::uint32_t LastProbeMs = 0;
-    std::uint32_t Map = 0;
-    bool Sampled = false;
-    bool Revalidate = false;
-    std::uint8_t OffSurface = 0;  // the rider's samples off its deck in a row (OFF_SURFACE_SAMPLES)
-};
 
 struct Membership
 {

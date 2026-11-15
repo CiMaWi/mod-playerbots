@@ -54,6 +54,7 @@
 #include <vector>
 
 #include "FlightRules.h"
+#include "RouteTypes.h"
 #include "TravelGraph.h"
 
 namespace TravelRoute
@@ -82,14 +83,6 @@ constexpr float FLY_OWN_SPOT_YARDS = 10.0f;    // route points this close to the
                                                // within 5 yd of its node)
 constexpr float FLY_PLATFORM_YARDS = FlightRules::PLATFORM_YARDS;  // this far above its cell's ground: no fly end
 constexpr float FLY_TAKEOFF_WALK_YARDS = 500.0f;  // a platform point walks at most this far to a takeoff spot
-
-struct Point
-{
-    std::uint32_t mapId{0};
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-};
 
 inline float Distance(Point const& a, Point const& b)
 {
@@ -198,54 +191,6 @@ struct Params
     bool heuristic{true};  // false: plain Dijkstra over the same costs (the selftest's reference)
     // The published height maps (FlightMap.h's Planner::FlightMaps()); null: no fly legs
     std::shared_ptr<FlightRules::FlightMapSet const> flightMaps;
-};
-
-enum class LegType : std::uint8_t
-{
-    Walk,
-    Portal,
-    Flight,  // a taxi
-    Transport,
-    Hearth,
-    Fly,          // on the bot's own flying mount
-    StaticPortal  // a portal object a player clicks (graph link type 6): the follower uses it at its node
-};
-
-enum class Failure : std::uint8_t
-{
-    None,
-    GraphNotReady,  // never waited for: no route now
-    NoStartNode,    // no graph node on the bot's map (an instance, a map without travel nodes)
-    NoGoalNode,
-    NoRoute
-};
-
-struct Leg
-{
-    LegType type{LegType::Walk};
-    Point from;
-    Point to;
-    // Graph node indices passed, in order: walk waypoints; a transport leg's stops, between the wait points where the
-    // graph has them; the ends otherwise
-    std::vector<std::uint32_t> nodes;
-    std::uint32_t object{0};  // area trigger, portal object (static portal), first TaxiPath or transport entry
-    std::vector<std::uint32_t> taxiNodes;  // flight legs: the taxi node chain for Player::ActivateTaxiPathTo
-    float seconds{0.0f};
-    std::uint32_t fareCopper{0};
-    // Fly legs: the planned flight from the takeoff on the ground to the landing on the ground
-    // (FlightRoute::waypoints), its yards (climbs included), its held heights and the bot's clearance it was planned
-    // with
-    std::vector<Point> flightPoints;
-    float flightYards{0.0f};
-    std::uint32_t flightLevels{0};
-    float flightClearance{0.0f};
-    // Transport legs: the index in nodes of the ride's first stop, the ride's stops, and whether an end is a wait point
-    // (waitFrom, waitTo: from or to is then the wait point, else the stop itself; TravelLegs::StopFrom, StopTo)
-    std::uint32_t rideAt{0};
-    Point stopFrom;
-    Point stopTo;
-    bool waitFrom{false};
-    bool waitTo{false};
 };
 
 struct Result
