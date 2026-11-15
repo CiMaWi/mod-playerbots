@@ -4,8 +4,6 @@
  * or (at your option) any later version.
  */
 
-#include "NewRpgAction.h"
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -48,6 +46,7 @@
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
+#include "NewRpgAction.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
