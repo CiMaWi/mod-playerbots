@@ -22,6 +22,11 @@
 
 class Player;
 
+namespace TravelLegs
+{
+struct Decision;  // TravelLegRules.h
+}
+
 class TellRpgStatusAction : public NewRpgBaseAction
 {
 public:

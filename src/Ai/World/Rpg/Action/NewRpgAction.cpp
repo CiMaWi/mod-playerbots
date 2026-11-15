@@ -84,6 +84,7 @@
 #include "TravelGraph.h"
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
+#include "TravelProgress.h"
 #include "TravelTransportGeometry.h"
 #include "UpkeepNeedRules.h"
 #include "UpkeepRules.h"
