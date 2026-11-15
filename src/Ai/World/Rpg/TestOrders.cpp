@@ -85,11 +85,11 @@ static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "e
 // command to the take (also on an idle bot). A choice row turning on ends the current status unless a trip comes with
 // it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit; the
 // errand row turning off forgets the last errand check (TestConstraints::FreesErrands)
-void ApplyConstraints(PlayerbotAI* botAI, Player* bot, NewRpgInfo& info, TravelOrder const& order, bool tripFollows)
+void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order, bool tripFollows)
 {
-    uint16 const before = info.constraints;
+    uint16 const before = botAI->testConstraints;
     uint16 const after = TestConstraints::Next(before, order.on, order.off);
-    info.constraints = after;
+    botAI->testConstraints = after;
     botAI->planner.snapshotDue = true;
     if (TestConstraints::FreesErrands(before, after))
         botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
@@ -110,12 +110,12 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     NewRpgInfo& info = botAI->rpgInfo;
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
-    uint16 const before = info.constraints;
+    uint16 const before = botAI->testConstraints;
     if (constrained)
-        ApplyConstraints(botAI, bot, info, order, trip);
+        ApplyConstraints(botAI, bot, order, trip);
     // A released errand choice is made at once: an errand check stamped before the hold (an inn trip, the login)
     // would otherwise keep the bot from its errands for the retry time (WB8b run 1: up to 5 minutes)
-    if (!TestConstraints::ErrandAllowed(before) && TestConstraints::ErrandAllowed(info.constraints))
+    if (!TestConstraints::ErrandAllowed(before) && TestConstraints::ErrandAllowed(botAI->testConstraints))
         botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
     if (order.aboard)
         PlaceAboard(botAI, bot, order.aboard);

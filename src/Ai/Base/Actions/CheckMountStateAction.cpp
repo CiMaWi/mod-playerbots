@@ -266,7 +266,7 @@ bool CheckMountStateAction::isUseful()
 bool CheckMountStateAction::Mount()
 {
     // A test's nomount bot stays on foot (TestConstraints::MountsOnItsOwn)
-    if (!TestConstraints::MountsOnItsOwn(botAI->rpgInfo.constraints))
+    if (!TestConstraints::MountsOnItsOwn(botAI->testConstraints))
         return false;
 
     // Remove current Shapeshift if need be

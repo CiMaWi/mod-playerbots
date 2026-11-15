@@ -777,7 +777,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     // A test's flyfail or flyabort row: past the leg's middle and in the air the fly leg fails as its timeout would
     // (the way down after a failure in the air, upkeep WU26b); flyabort spends the trip's replans first. One bit test
     // outside such a test
-    uint16 const constraints = botAI->rpgInfo.constraints;
+    uint16 const constraints = botAI->testConstraints;
     if (next.act == TravelLegs::Act::Fly && (constraints & TestConstraints::FLY_FAILS))
     {
         TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
@@ -921,9 +921,9 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     // hearthstone is a leg while its stone is in the bags and it is ready or cooling for at most the wait cap (the
     // search); not again after a hearth leg of this trip failed
     snapshot.hasHearthstone =
-        snapshot.hasHearthstone && !data.noHearth && TestConstraints::HearthAllowed(botAI->rpgInfo.constraints);
+        snapshot.hasHearthstone && !data.noHearth && TestConstraints::HearthAllowed(botAI->testConstraints);
     snapshot.allowTransport = true;
-    if (!TestConstraints::TaxiAllowed(botAI->rpgInfo.constraints))
+    if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
         snapshot.knownTaxi.fill(0);
     TravelRoute::Request request;
     request.snapshot = snapshot;

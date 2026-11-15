@@ -322,8 +322,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can be a
     // minute apart for an idle bot, time enough for a new pet to start a fight (one bit test for every other bot)
-    if (rpgInfo.constraints & TestConstraints::STATES)
-        TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
+    if (testConstraints & TestConstraints::STATES)
+        TravelOrders::KeepConstraints(bot, testConstraints);
 
     // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
     // does not run (in combat, dead); one test while no visit runs
@@ -5827,9 +5827,9 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
         return GetAiObjectContext()->FormatValues();
     }
     else if (command == "constraints")
-        return "constraints " + TestConstraints::Format(rpgInfo.constraints);
+        return "constraints " + TestConstraints::Format(testConstraints);
     else if (command == "hold")
-        return "hold " + TestConstraints::Format(static_cast<uint16>(rpgInfo.constraints & TestConstraints::HOLD));
+        return "hold " + TestConstraints::Format(static_cast<uint16>(testConstraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;

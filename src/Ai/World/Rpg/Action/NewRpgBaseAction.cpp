@@ -126,7 +126,7 @@ void NewRpgBaseAction::RecoverOffMesh()
     // The hearthstone when it is ready: the stone's own spell, no bot teleport and no sight check
     char const* refusal = nullptr;
     float castResult = 0.0f;
-    bool const hearthReady = TestConstraints::HearthAllowed(botAI->rpgInfo.constraints) &&
+    bool const hearthReady = TestConstraints::HearthAllowed(botAI->testConstraints) &&
                              bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) &&
                              !bot->HasSpellCooldown(HEARTHSTONE_CAST_SPELL) && !bot->IsInCombat() &&
                              !bot->IsNonMeleeSpellCast(false);

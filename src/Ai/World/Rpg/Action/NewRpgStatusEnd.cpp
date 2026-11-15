@@ -60,13 +60,12 @@ struct RpgStatusCore
         }
     }
 
-    // A reset's state: a fresh one with the bot and a test's constraints (a state row's flag stays on the Player); a
-    // kept status with its start. The route request ids are BotTravel's, which a reset keeps
+    // A reset's state: a fresh one with the bot; a kept status with its start. The route request ids are
+    // BotTravel's and a test's constraints PlayerbotAI's, which a reset keeps
     static void Renew(NewRpgInfo& info, bool keepsStatus)
     {
         NewRpgInfo after;
         after.bot = info.bot;
-        after.constraints = info.constraints;
         if (keepsStatus)
         {
             after.startT = info.startT;
@@ -185,6 +184,7 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
     StatusEnd::ResetList const list = StatusEnd::ResetOf(farTeleport, trip != nullptr);
     RpgStatusCore::Renew(info, list.status == StatusEnd::ResetEffect::Kept);
     StatusEnd::ApplyReset(list.planner, botAI->planner);
+    StatusEnd::ApplyReset(list.testConstraints, botAI->testConstraints);
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
 }
 

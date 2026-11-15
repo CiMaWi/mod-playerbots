@@ -669,7 +669,7 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
     // A test keeping the hearth off: no hearth or inn goal either (GoalModel AddHearth)
-    if (!TestConstraints::HearthAllowed(botAI->rpgInfo.constraints))
+    if (!TestConstraints::HearthAllowed(botAI->testConstraints))
         snapshot.hasHearthstone = false;
     GoalApply::Active const& current = goals.slot.Query();
     snapshot.currentGoal = {static_cast<uint32>(current.kind), current.target, current.startedMs};
@@ -816,7 +816,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     if (!(state.stateKey & STATE_SCOPE_BIT))
         return;
     // A test's hold on the planner (TestConstraints): no jobs, no goals taken
-    if (!TestConstraints::GateOf(botAI->rpgInfo.constraints).planner)
+    if (!TestConstraints::GateOf(botAI->testConstraints).planner)
         return;
 
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
