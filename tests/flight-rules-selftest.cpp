@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "FlightRules.h"
+#include "FlightSelftest.h"
 
 using namespace FlightRules;
 

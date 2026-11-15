@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "RouteRules.h"
+#include "RouteSelftest.h"
 #include "RouteService.h"
 #include "TravelGraphSql.h"
 #include "TravelLegRules.h"
