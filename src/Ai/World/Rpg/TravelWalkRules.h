@@ -280,6 +280,7 @@ inline char const* RowWord(LinkWalk const& walk)
     }
     return "?";
 }
+
 // A walk off the graph (WT56), probed on the navmesh when the bot starts it
 struct ProbePoint
 {

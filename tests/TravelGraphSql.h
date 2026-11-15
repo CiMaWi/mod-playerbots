@@ -150,6 +150,22 @@ inline std::vector<std::filesystem::path> SqlFiles(std::filesystem::path const& 
     return files;
 }
 
+// True when file deletes every row of table before its first INSERT (a graph build's "DELETE FROM `table`;")
+inline bool EmptiesTable(std::filesystem::path const& file, std::string const& table)
+{
+    std::ifstream in(file, std::ios::binary);
+    std::string const statement = "DELETE FROM `" + table + "`;";
+    std::string line;
+    while (std::getline(in, line) && line.rfind("INSERT", 0) != 0)
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line == statement)
+            return true;
+    }
+    return false;
+}
+
 // Builds and publishes graph from the module at root, or from graphDir's files alone when it is given; dbcDir empty =
 // no TaxiPath data (no flight is usable)
 inline bool Load(std::filesystem::path const& root, std::filesystem::path const& dbcDir, TravelGraph& graph,
@@ -169,15 +185,21 @@ inline bool Load(std::filesystem::path const& root, std::filesystem::path const&
     }
 
     // Updates apply after the base files, in name (date) order, with their DELETEs ignored: a delete of the shipped
-    // updates removes rows the base lacks, and a duplicate node id fails the build. A graph directory's files replace
-    // the three tables whole (each starts with a DELETE and numbers the nodes anew), so they are read alone
+    // updates removes rows the base lacks, and a duplicate node id fails the build. A graph build's files replace
+    // the three tables whole (each starts with a DELETE and numbers the nodes anew): a graph directory's are read
+    // alone, and a shipped update that empties a table starts that table's list anew
     std::vector<std::filesystem::path> const updates = graphDir.empty() ? SqlFiles(updatesDir) : SqlFiles(graphDir);
     auto const files = [&](char const* table)
     {
         std::vector<std::filesystem::path> list;
         if (graphDir.empty())
             list.push_back(base / (std::string(table) + ".sql"));
-        list.insert(list.end(), updates.begin(), updates.end());
+        for (auto const& update : updates)
+        {
+            if (graphDir.empty() && EmptiesTable(update, table))
+                list.clear();
+            list.push_back(update);
+        }
         return list;
     };
 

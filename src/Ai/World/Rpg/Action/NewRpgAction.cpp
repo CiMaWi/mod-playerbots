@@ -3019,10 +3019,11 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
                    TravelLegs::TransportSource(TravelLegs::TransportEvent::NoExit), ridden.GetEntry(), 0);
 }
 
-// WT55b, data for the navigation plan's NV18 (WT55c removes it with the searches): at a stop with a wait point the
-// old searches decide nothing. Once per vessel, stop and role in a server run they still run for a traced bot, and a
-// dock_foot line says where they would have put the crossing's foot. A bounded set (vessels x stops x 2 roles) the
-// map threads share; the board role runs in the rate-limited transport scan, the exit role at the exit search
+// WT55b, data for the navigation plan's NV18 (it goes with the searches, WT.47 and WT70): at a stop with a wait
+// point the old searches decide nothing. Once per vessel, stop and role in a server run they still run for a traced
+// bot, and a dock_foot line says where they would have put the crossing's foot. A bounded set (vessels x stops x 2
+// roles) the map threads share; the board role runs in the rate-limited transport scan, the exit role at the exit
+// search
 std::mutex dockFootLock;
 std::unordered_set<uint64> dockFeet;
 
