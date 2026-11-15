@@ -1,0 +1,142 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#include <vector>
+
+#include "CensusMgr.h"
+#include "Creature.h"
+#include "DBCStores.h"
+#include "Log.h"
+#include "MotionMaster.h"
+#include "MoveSpline.h"
+#include "NewRpgAction.h"
+#include "NewRpgInfo.h"
+#include "ObjectDefines.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
+#include "RandomPlayerbotMgr.h"
+#include "StartingHistoryRules.h"
+#include "WaypointMovementGenerator.h"
+#include "WorldLogStatus.h"
+#include "WorldSession.h"
+
+bool NewRpgTravelFlightAction::Execute(Event /*event*/)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    auto* dataPtr = std::get_if<NewRpgInfo::TravelFlight>(&info.data);
+    if (!dataPtr)
+        return false;
+
+    auto& data = *dataPtr;
+    if (!bot->IsInFlight() && SearchQuestGiverAndAcceptOrReward())
+        return true;
+
+    if (bot->IsInFlight())
+    {
+        data.inFlight = true;
+        ContinueCrossMapTaxi();
+        return false;
+    }
+
+    // after landing, stop here and let the status update switch to idle
+    if (data.inFlight)
+        return false;
+
+    switch (StartTaxi(data.flightMasterEntry, data.flightMasterPos, data.path))
+    {
+        case TaxiStart::Moving:
+        case TaxiStart::Started:
+            return true;
+        case TaxiStart::Stalled:
+            return false;
+        case TaxiStart::NoMaster:
+        case TaxiStart::Undiscovered:
+        case TaxiStart::Refused:
+            break;
+    }
+    WorldLog::StatusReason const reasonScope("failed");
+    info.ChangeToIdle();
+    return true;
+}
+
+NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, WorldPosition const& masterPos,
+                                                        std::vector<uint32> const& nodes)
+{
+    if (bot->GetDistance(masterPos) > INTERACTION_DISTANCE)
+        return MoveFarTo(masterPos) ? TaxiStart::Moving : TaxiStart::Stalled;
+
+    Creature* flightMaster = bot->FindNearestCreature(masterEntry, INTERACTION_DISTANCE * 3);
+    if (!flightMaster || !flightMaster->IsAlive())
+        return TaxiStart::NoMaster;
+    if (bot->GetDistance(flightMaster) > INTERACTION_DISTANCE)
+        return MoveFarTo(flightMaster) ? TaxiStart::Moving : TaxiStart::Stalled;
+
+    botAI->RemoveShapeshift();
+    if (bot->IsMounted())
+        bot->Dismount();
+
+    // Learning the master's own node is natural: a player learns it here too
+    bot->GetSession()->SendLearnNewTaxiNode(flightMaster);
+
+    auto const known = [this](uint32 node) { return bot->m_taxi.IsTaximaskNodeKnown(node); };
+    if (!StartingHistory::PathKnown(nodes, known))
+    {
+        // Persistent bots pick only discovered routes; other setups still fly and the flight is counted
+        if (RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot))
+            return TaxiStart::Undiscovered;
+
+        EventLog::Honesty(bot, "Flight", "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
+    }
+
+    // Pays the fare; fails when a node is not usable or the purse is short
+    if (!bot->ActivateTaxiPathTo(nodes, flightMaster, 0))
+    {
+        LOG_DEBUG("playerbots", "[New RPG] {} active taxi path {} (from {} to {}) failed", bot->GetName(),
+                  flightMaster->GetEntry(), nodes.empty() ? 0 : nodes.front(), nodes.empty() ? 0 : nodes.back());
+        return TaxiStart::Refused;
+    }
+    return TaxiStart::Started;
+}
+
+void NewRpgBaseAction::ContinueCrossMapTaxi()
+{
+    if (bot->IsBeingTeleported())
+        return;
+
+    if (!bot->movespline->Finalized())
+        return;
+
+    MotionMaster* mm = bot->GetMotionMaster();
+    if (!mm || mm->GetCurrentMovementGeneratorType() != FLIGHT_MOTION_TYPE)
+        return;
+
+    // Check if we are at our destination.
+    uint32 nextDest = bot->m_taxi.GetTaxiDestination();
+    if (!nextDest)
+        return;
+
+    // Confirm next node needs different map.
+    TaxiNodesEntry const* nextNode = sTaxiNodesStore.LookupEntry(nextDest);
+    if (!nextNode || nextNode->map_id == bot->GetMapId())
+        return;
+
+    FlightPathMovementGenerator* flight = dynamic_cast<FlightPathMovementGenerator*>(mm->top());
+    if (!flight)
+        return;
+
+    LOG_DEBUG("playerbots", "[New RPG] {} continuing taxi across map boundary (next node {} on map {})",
+              bot->GetName(), nextDest, nextNode->map_id);
+
+    flight->SetCurrentNodeAfterTeleport();
+
+    if (flight->HasArrived())
+        return;
+
+    TaxiPathNodeEntry const* node = flight->GetPath()[flight->GetCurrentNode()];
+    flight->SkipCurrentNode();
+
+    bot->TeleportTo(nextNode->map_id, node->x, node->y, node->z, bot->GetOrientation(), TELE_TO_NOT_LEAVE_TAXI);
+}
