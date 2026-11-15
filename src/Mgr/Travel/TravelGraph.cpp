@@ -14,9 +14,11 @@
 #include "ObjectMgr.h"
 #include "PlayerbotsDatabase.h"
 #include "QueryResult.h"
+#include "RouteSelftest.h"
 #include "RouteService.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "TravelGraphSelftest.h"
 #include "TravelPlaces.h"
 
 namespace

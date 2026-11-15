@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "TravelGraph.h"
+#include "TravelGraphSelftest.h"
 #include "TravelGraphSql.h"
 
 namespace
