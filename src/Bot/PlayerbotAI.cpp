@@ -616,19 +616,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
                 // The own cast as the bot sees it; stopped for a kick (user note 1) the engine runs in this check
                 uint32 const ownLeft = static_cast<uint32>(std::max(0, currentSpell->GetCastTimeRemaining()));
-                tactics->reactionBusy.CastStartMs =
-                    nowMs - static_cast<uint32>(std::max(0, currentSpell->GetCastTime() - static_cast<int32>(ownLeft)));
-                tactics->reactionBusy.CastEndMs = nowMs + ownLeft;
-                if (busyModel && reaction.Reeval.Enable)
-                {
-                    if (PerfMonitor::IsEnabled())
-                    {
-                        PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::BusyStop"));
-                        stoppedForKick = StopOwnCastForKickDue(this, bot, ownLeft, nowMs);
-                    }
-                    else
-                        stoppedForKick = StopOwnCastForKickDue(this, bot, ownLeft, nowMs);
-                }
+                stoppedForKick = tactics->OnOwnCast(currentSpell, ownLeft, busyModel, nowMs);
 
                 if (stoppedForKick)
                 {
@@ -702,14 +690,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         UpdateAIInternal(elapsed, minimal);
 
     // A stop the engine's kick did not follow (its trigger or target picked another action): no stop for a while
-    if (stoppedForKick && !bot->HasSpellCooldown(tactics->reactionBusy.KickSpellId))
-    {
-        tactics->reactionBusy.NoteStopUnfollowed(nowMs);
-        LOG_TRACE("playerbots.reaction", "busy stop unfollowed skill {} kick {} at {}", GetPvpSkill(),
-                  tactics->reactionBusy.KickSpellId, nowMs);
-        if (PerfMonitor::IsEnabled())
-            PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::UnfollowedStop"));
-    }
+    tactics->NoteUnfollowedStop(stoppedForKick, nowMs);
 
     // The GCD of the spell the bot cast last (its end noted once, when it begins): the queue's follow-up
     if (busyModel && reaction.Queue.Enable && nextAICheckDelay == 0)
