@@ -57,6 +57,7 @@
 #include "StringConvert.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
+#include "TestOrders.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
 #include "Tokenize.h"
