@@ -20,20 +20,14 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
-bool MailVisitActiveTrigger::IsActive()
-{
-    return botAI->rpgInfo.bankMail.mailVisit.phase != BankMail::MailVisitPhase::None;
-}
+bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }
 
-bool BankVisitActiveTrigger::IsActive()
-{
-    return botAI->rpgInfo.bankMail.bankVisit.phase != BankMail::BankVisitPhase::None;
-}
+bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
 {
     // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
-    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints) || BankMail::VisitRuns(botAI->rpgInfo.bankMail))
+    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints) || BankMail::VisitRuns(botAI->bankMail))
         return false;
     Player* bot = botAI->GetBot();
     if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
@@ -85,7 +79,7 @@ bool InventoryPressureTrigger::IsActive()
 
     // Mail or a bank errand worth a trip of its own (WB8b: the same check, no trigger of its own; as full bags, it
     // does not end questing)
-    return (BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI)) ||
+    return (BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI)) ||
            WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI);
 }
 

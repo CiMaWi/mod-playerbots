@@ -327,7 +327,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
     // does not run (in combat, dead); one test while no visit runs
-    if (BankMail::VisitRuns(rpgInfo.bankMail))
+    if (BankMail::VisitRuns(bankMail))
         BankMail::WatchVisits(this);
 
     // The world log's Flight rows: one compare while the flight state stays
@@ -1168,9 +1168,8 @@ void PlayerbotAI::Reset(bool full, bool farTeleport)
     auto const resetRpgState = [this, farTeleport]()
     {
         BankMail::EndVisits(this, farTeleport ? BankMail::VisitEnd::Teleport : BankMail::VisitEnd::Reset);
-        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
         RpgStatus::Reset(this, farTeleport);
-        rpgInfo.bankMail = bankMail;
+        bankMail = BankMail::AfterReset(bankMail);  // the knowledge stays
     };
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
@@ -7392,7 +7391,7 @@ uint32 PlayerbotAI::ComputeReactDelay()
     // base. A visit or a trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes
     // in a city (WB7d), a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b), and a
     // route's first step at a city's portal came after the portal leg's 20 s had run out (WT55d)
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail) ||
+    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(bankMail) ||
         std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data) ||
         std::holds_alternative<NewRpgInfo::Travel>(rpgInfo.data))
         return base * urand(10, 30);

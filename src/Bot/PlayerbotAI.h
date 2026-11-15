@@ -14,6 +14,7 @@
 #include <stack>
 #include <unordered_set>
 
+#include "BankMailState.h"
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
@@ -778,6 +779,9 @@ public:
     NewRpgInfo rpgInfo;
     // The planner's view of the bot (PlannerBotState.h); a reset starts it fresh
     Planner::BotState planner;
+    // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
+    // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
+    BankMail::BotBankMail bankMail;
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
     // World PvP's persistence cache and the ghost's wait (GhostWait.h), lazily

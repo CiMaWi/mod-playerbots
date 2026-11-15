@@ -326,7 +326,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 {
     auto* data = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
     // A mailbox or banker visit of the stop runs under its own action; the trip goes on once it has ended
-    if (!data || BankMail::VisitRuns(botAI->rpgInfo.bankMail))
+    if (!data || BankMail::VisitRuns(botAI->bankMail))
         return false;
 
     if (data->stop >= data->stops.size())

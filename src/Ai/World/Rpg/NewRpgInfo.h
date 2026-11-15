@@ -11,7 +11,6 @@
 #include <string>
 #include <unordered_set>
 
-#include "BankMailState.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -200,9 +199,6 @@ struct NewRpgInfo
     uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
     uint16 constraints{0};  // a test's constraints (TestConstraints bits, `playerbots route constraint`); not saved
     std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
-    // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
-    // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
-    BankMail::BotBankMail bankMail;
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};
