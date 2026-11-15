@@ -607,6 +607,11 @@ public:
     // Checks if the bot is summoned an altbot of a player
     bool IsAltBot();
     bool HasGameClientMaster();
+    // The bot-kind facts (BotKind.h, BotKindRules.h): a random bot of a living world, and one nobody at a game
+    // client leads. RefreshKind reads B again; it runs after the AI is attached and in SetMaster.
+    bool IsPersistentBot() const;
+    bool KeepsPossessions();
+    void RefreshKind();
     Player* GetGroupLeader();
     uint32 GetFixedBotNumber(uint32 maxNum = 100);
     GrouperType GetGrouperType();
@@ -639,7 +644,11 @@ public:
     BotCheatMask GetCheat() { return cheatMask; }
     void SetCheat(BotCheatMask mask) { cheatMask = mask; }
 
-    void SetMaster(Player* newMaster) { master = newMaster; }
+    void SetMaster(Player* newMaster)
+    {
+        master = newMaster;
+        RefreshKind();
+    }
     AiObjectContext* GetAiObjectContext() { return aiObjectContext; }
     ChatHelper* GetChatHelper() { return &chatHelper; }
     bool IsOpposing(Player* player);
@@ -826,6 +835,7 @@ private:
 protected:
     Player* bot;
     Player* master;
+    std::atomic<bool> randomBot{false};  // B, a random bot (RefreshKind); written where master is, read anywhere
     uint32 accountId;
     AiObjectContext* aiObjectContext;
     Engine* currentEngine;

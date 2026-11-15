@@ -1893,6 +1893,7 @@ void PlayerbotsMgr::AddPlayerbotData(Player* player, bool isBotAI)
         }
         PlayerbotAI* botAI = new PlayerbotAI(player);
         ASSERT(_playerbotsAIMap.emplace(player->GetGUID(), botAI).second);
+        botAI->RefreshKind();
     }
 }
 
