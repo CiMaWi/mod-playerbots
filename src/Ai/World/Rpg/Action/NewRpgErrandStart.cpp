@@ -29,6 +29,7 @@
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgStatusEnd.h"
 #include "NewRpgTriggers.h"
 #include "ObjectMgr.h"
 #include "PlannerIndexes.h"
@@ -200,7 +201,6 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
         return false;
 
-    WorldLog::StatusReason const reasonScope("errand");
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     // The repair need the trigger saw (its wear test first)
     bool const repairWanted = WorldTravel::RepairErrandWanted(bot);
@@ -600,7 +600,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         tripWord = plan.Stops.front().Errands.empty()
                        ? "turn_in"
                        : WorldTravel::ErrandKindName(plan.Stops.front().Errands.front().Kind);
-    botAI->rpgInfo.ChangeToErrands(std::move(stops), bot->GetMoney());
+    RpgStatus::Start(botAI, RpgStatus::ErrandTrip(std::move(stops), bot->GetMoney()), "errand");
     auto const dueOnTrip = [&due](WorldTravel::ErrandKind kind) { return due[static_cast<std::size_t>(kind)]; };
     if (dueOnTrip(WorldTravel::ErrandKind::Repair))
     {
@@ -641,7 +641,6 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 
 bool NewRpgStartInnAction::Execute(Event /*event*/)
 {
-    WorldLog::StatusReason const reasonScope("inn");
     if (!WorldTravel::ErrandMayStart(botAI))
         return false;
 
@@ -695,7 +694,7 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
     TravelMgr::InnInfo const& inn = inns[innIndex[static_cast<size_t>(pick)]];
     LOG_DEBUG("playerbots", "[Route] {} inn errand: bind far, inn at ({:.0f}, {:.0f}) in zone {}", bot->GetName(),
               inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.zoneId);
-    info.ChangeToTravel(WorldPosition(inn.loc));
+    RpgStatus::Start(botAI, RpgStatus::TripTo(WorldPosition(inn.loc)), "inn");
     uint32 tripId = 0;
     if (auto* travel = std::get_if<NewRpgInfo::Travel>(&info.data))
     {

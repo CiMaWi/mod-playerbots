@@ -33,7 +33,7 @@ inline bool ErrandWaits(BotBankMail const& state, uint8 level)
     return state.mail.seenCopper || state.mail.expectedCopper || DueAt(state.bank.kept, level).count;
 }
 
-// A far teleport or a PlayerbotAI::Reset(true) rebuilds NewRpgInfo (TravelLegs::AfterReset keeps only the route
+// A far teleport or a PlayerbotAI::Reset(true) renews NewRpgInfo (RpgStatus::Reset keeps only the route
 // requests). The bot's knowledge (waiting mail, seen worth, bank slots, kept items) survives it; a running visit
 // was ended with its row just before (EndVisits), so nothing of it is left to keep.
 inline BotBankMail AfterReset(BotBankMail const& before)

@@ -373,18 +373,6 @@ inline void CheckEventWords(Checker& checker)
     checker.Equal(EventLog::ResurrectWord("accept resurrect", false, 0.0f), "spell", "nothing restored: a spell");
     checker.Equal(EventLog::ResurrectWord("other", false, 1.0f), "other", "a full restore: other");
 
-    std::string reasons = WorldLog::CurrentStatusReason();
-    {
-        WorldLog::StatusReason const outer("pick");
-        reasons.append(" ").append(WorldLog::CurrentStatusReason());
-        {
-            WorldLog::StatusReason const inner("arrived");
-            reasons.append(" ").append(WorldLog::CurrentStatusReason());
-        }
-        reasons.append(" ").append(WorldLog::CurrentStatusReason());
-    }
-    reasons.append(" ").append(WorldLog::CurrentStatusReason());
-    checker.Equal(reasons, "other pick arrived pick other", "the status reason nests and restores");
 }
 
 // (g) WL7: decision rows have the header's 13 fields with 0, 1 and 3 alternatives, clean their words and keep two

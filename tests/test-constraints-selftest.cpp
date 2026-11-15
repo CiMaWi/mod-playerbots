@@ -337,7 +337,7 @@ void TestOrderWhileHeld()
             bot.Update();
         }
         else
-            bot.status = Status::Idle;  // Travel arrived / abort:<reason> end in ChangeToIdle
+            bot.status = Status::Idle;  // Travel arrived / abort:<reason> end in RpgStatus::End
         Check(bot.status == Status::Idle && bot.set == HOLD && bot.Update() == Step::Nothing &&
                   bot.Update(false) == Step::Nothing,
               std::string("held again after ") + end);
