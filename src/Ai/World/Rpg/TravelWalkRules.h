@@ -31,7 +31,7 @@
 
 namespace TravelWalk
 {
-// PathType bits (core PathGenerator.h; NewRpgBaseAction.cpp and NewRpgAction.cpp check them against the engine's enum)
+// PathType bits (core PathGenerator.h; NewRpgBaseAction.cpp and NewRpgRoute.cpp check them against the engine's enum)
 constexpr std::uint32_t PATH_NORMAL = 0x01;
 constexpr std::uint32_t PATH_INCOMPLETE = 0x04;  // a partial path: it ends closer to the goal
 constexpr std::uint32_t PATH_NOPATH = 0x08;
