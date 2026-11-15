@@ -107,6 +107,8 @@
 #include "TestConstraints.h"
 #include "ThreadCheck.h"
 #include "Transport.h"
+#include "TravelLegRules.h"
+#include "TravelProgress.h"
 #include "TravelTransportGeometry.h"
 #include "Unit.h"
 #include "UpdateTime.h"

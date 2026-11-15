@@ -21,11 +21,11 @@
 #include "QuestDef.h"
 #include "Strategy.h"
 #include "Timer.h"
-#include "TravelLegRules.h"
-#include "TravelLifecycle.h"
+#include "TravelLegTypes.h"
+#include "TravelLifecycleTypes.h"
 #include "TravelMgr.h"
-#include "TravelProgress.h"
-#include "WorldTravelRules.h"
+#include "TravelProgressState.h"
+#include "WorldTravelTypes.h"
 
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
