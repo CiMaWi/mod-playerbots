@@ -5,13 +5,13 @@
  */
 
 #include "CheckMountStateAction.h"
-#include "BotTravel.h"
 #include "PlayerbotsDatabase.h"
 #include "AreaDefines.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldMgr.h"
 #include "BattlegroundEY.h"
 #include "BattlegroundWS.h"
+#include "BotTravel.h"
 #include "DBCStores.h"
 #include "Event.h"
 #include "GridTerrainData.h"
