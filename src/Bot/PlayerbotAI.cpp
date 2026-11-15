@@ -30,6 +30,7 @@
 #include "ArenaKite.h"
 #include "BankMailService.h"
 #include "Battleground.h"
+#include "BotTacticsInternal.h"
 #include "BudgetValues.h"
 #include "CcState.h"
 #include "CcTacticStrategy.h"
@@ -312,6 +313,7 @@ PlayerbotAI::~PlayerbotAI()
 namespace
 {
 constexpr uint64 BusyWatchSalt = 0x510E527FADE682D1ULL;
+}  // namespace
 
 // The GCD a spell starts (Spell::TriggerGlobalCooldown without the spell mods)
 uint32 NaturalGcdMs(Player* bot, SpellInfo const* info)
@@ -328,6 +330,8 @@ uint32 NaturalGcdMs(Player* bot, SpellInfo const* info)
     return static_cast<uint32>(std::clamp(gcd, 1000, 1500));
 }
 
+namespace
+{
 // The bot's own interrupt by class (the interrupt triggers' spells; a warlock's is its pet's and needs no stop)
 char const* OwnInterruptName(uint8 playerClass)
 {
@@ -351,6 +355,7 @@ char const* OwnInterruptName(uint8 playerClass)
             return nullptr;
     }
 }
+}  // namespace
 
 // User note 1 (G0h3-b): a casting bot sees its target's cast bar like any player. Once its reaction is over (its draw
 // and the shortcut's think cost, end to end from the bar's start) it stops its own cast for a ready kick of an
@@ -409,6 +414,8 @@ bool StopOwnCastForKickDue(PlayerbotAI* botAI, Player* bot, uint32 ownLeftMs, ui
     return true;
 }
 
+namespace
+{
 // G5b: whether the bot is the one of its group that counts what its side sees once (the lowest guid of the bots alive
 // in its map): every bot of a side watches the same enemy heal, tactics.intHealDone counts it once
 bool CountsForGroup(Player* bot)
@@ -427,6 +434,7 @@ bool CountsForGroup(Player* bot)
 
     return true;
 }
+}  // namespace
 
 // The opponent memory (G0h3-b, DT.12): at the bot's own checks in a started match, the cast bars of its target and
 // of its attackers (as many as the memory holds); a bar gone before its end without a visible interrupt (a school
@@ -558,10 +566,13 @@ bool InterruptFollows(InterruptConfig const& config)
     return config.HoldPolicy != 0 || config.AttentionMsAtSkill1 != 0 || config.AttentionMsAtSkill99 != 0;
 }
 
+namespace
+{
 uint8 InterruptHpPct(Unit const* unit)
 {
     return static_cast<uint8>(std::clamp(static_cast<int32>(unit->GetHealthPct() + 0.5f), 0, 100));
 }
+}  // namespace
 
 // The end of a hold episode: tactics.intHoldPaid and intHoldVain (harness matches only; count false for the match's
 // end, which may come after the harness took the record) and its trace line
@@ -580,6 +591,8 @@ void NoteInterruptHoldEnd(PlayerbotAI* botAI, InterruptHoldEnd end, uint32 heldM
               cause, botAI->GetPvpSkill(), heldMs, nowMs);
 }
 
+namespace
+{
 // The bot's spec for its warrior kicks (InterruptKickFacts)
 InterruptWarriorSpec InterruptWarriorSpecOf(Player* bot)
 {
@@ -627,6 +640,7 @@ void StartInterruptMatch(PlayerbotAI* botAI, Player* bot, InterruptBotState& sta
             state.AddKickSpell(spellId, nowMs + bot->GetSpellCooldownDelay(spellId));
     }
 }
+}  // namespace
 
 // G5c-c: at the bot's checks while the Interrupt tactic follows (InterruptFollows): the match (StartInterruptMatch at
 // a new one) and, under HoldPolicy 1 in a fight, every HOLD_TREND_SAMPLE_MS the enemy players' health bars and their
@@ -693,6 +707,8 @@ void FollowInterruptFight(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
     }
 }
 
+namespace
+{
 // G4e: an enemy the bot has seen heal (a heal bar now, or a heal among its last casts in the opponent memory; DT.12)
 bool FocusSeenHealing(PlayerbotAI* botAI, Unit* unit)
 {
@@ -716,6 +732,7 @@ bool FocusCandidate(Player* bot, Unit* unit, ObjectGuid own)
     return unit && unit->IsPlayer() && unit->IsInWorld() && unit->IsInMap(bot) && unit->IsAlive() &&
            unit->GetGUID() != own && bot->IsValidAttackTarget(unit);
 }
+}  // namespace
 
 // G4e: the focus target at the bot's checks while the FocusTarget tactic is on here (or a focus is left): cleared at
 // a new match and while the tactic or the Dexterity gate fails; picked again at once when the moon, the own target or
@@ -820,6 +837,8 @@ void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
                   nowMs);
 }
 
+namespace
+{
 struct TravelTraceIdentity
 {
     uint32 Trip;
@@ -5040,20 +5059,6 @@ bool PlayerbotAI::CastSpell(std::string const name, Unit* target, Item* itemTarg
     return result;
 }
 
-namespace
-{
-// G5b: what the bot's interrupt (a kick, a silence, a stun) hits, read before the cast: an instant kick ends the bar
-// within the cast itself
-struct InterruptHit
-{
-    InterruptUse Use = InterruptUse::None;
-    bool Bar = false;
-    ArenaInterrupt::Kind CastKind = ArenaInterrupt::Kind::Other;
-    uint32 SpellId = 0;
-    uint32 CastMs = 0;
-    uint32 ElapsedMs = 0;
-};
-
 InterruptHit ReadInterruptHit(Player* bot, SpellInfo const* spellInfo, Unit* target)
 {
     InterruptHit hit;
@@ -5076,6 +5081,8 @@ InterruptHit ReadInterruptHit(Player* bot, SpellInfo const* spellInfo, Unit* tar
     return hit;
 }
 
+namespace
+{
 // Another enemy of the fight in view (spell range and line of sight) casting a heal (at most TACTIC_FIGHT_ENEMIES_MAX
 // units; at a damage interrupt only)
 bool OtherEnemyHealing(PlayerbotAI* botAI, Unit* target)
@@ -5093,6 +5100,7 @@ bool OtherEnemyHealing(PlayerbotAI* botAI, Unit* target)
 
     return false;
 }
+}  // namespace
 
 // tactics.intHeal/intCc/intDamage/intLate/intWasted (harness matches only): a kick at no bar is wasted (the cast was
 // faked or ended), a stun at none is ordinary CC; a damage interrupt while another enemy heals is wasted too
@@ -5227,6 +5235,8 @@ void NoteFocusAct(PlayerbotAI* botAI, Player* bot, SpellInfo const* spellInfo, U
               ownAfter.GetCounter(), selectionBefore.GetCounter(), bot->GetTarget().GetCounter(), getMSTime());
 }
 
+namespace
+{
 // G5e: an enemy player in view that could kick the bot's cast now (DT.12, what a player sees: its class, its reach,
 // its facing or its target)
 bool FakeKickerInView(Player* bot, Player* enemy, FakeParams const& params)
@@ -5267,6 +5277,7 @@ bool FakeUtilityCast(SpellInfo const* info)
 
     return false;
 }
+}  // namespace
 
 // G5e: the bot's cast began (CastSpell). A new long generic cast ends any pending fake and may become one: the fight's
 // enemies in view that could kick it, without those whose kick the bot remembers used lately; a fake's cancel instant
@@ -5377,13 +5388,6 @@ void DecideFakeCast(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 nowM
               botAI->GetPvpSkill(), nowMs);
 }
 
-enum class FakeStep : uint8
-{
-    Pending,
-    Done,
-    Cancelled
-};
-
 // G5e: the pending fake at the pre-gate point. The cast gone (kicked, interrupted, replaced) ends it; at its instant
 // the cast is cancelled while the kicker still threatens it (in view, its kick not seen used), else it finishes.
 FakeStep StepFakeCast(PlayerbotAI* botAI, Player* bot, FakeBotState& state, uint32 nowMs, uint32 tickMs)
@@ -5431,14 +5435,10 @@ FakeStep StepFakeCast(PlayerbotAI* botAI, Player* bot, FakeBotState& state, uint
               plannedMs, state.LastErrorMs, kickerGuid.GetCounter(), botAI->GetPvpSkill(), state.NextFakeAtMs, nowMs);
     return FakeStep::Cancelled;
 }
-}  // namespace
 
-namespace
-{
 // G5e review note 1: set once any bot's tactic mask holds Fake (SetTacticMask: the config mask at login or reload, a
 // forced mask), never cleared; until then a kick needs no search for bots that note it
 std::atomic<bool> fakeTacticSeen{false};
-}  // namespace
 
 // G5e (NaturalCast.h): a kick aimed at one enemy, cast by any player (OnPlayerSpellCast, the caster's map thread). The
 // filter comes first (the tactics on, the Fake tactic in some bot's mask, a kick, a player target on the caster's
@@ -9084,8 +9084,6 @@ bool NaturalPathHere(PlayerbotAI* botAI, uint32 nowMs)
     return state.InSight;
 }
 
-namespace
-{
 // G2a: one step of the bot's turn at the pre-gate point. A moving, controlled or dead bot ends it (a moving bot faces
 // its path); the correction looks its target up again (same map). True while the turn has work left.
 bool StepNaturalTurn(Player* bot, TurnBotState& state, uint32 nowMs)
@@ -9128,7 +9126,6 @@ bool StepNaturalTurn(Player* bot, TurnBotState& state, uint32 nowMs)
 
     return state.Active();
 }
-}  // namespace
 
 // The pre-gate stepper (G5e's fake cast, G2a's turn): UpdateAI calls it on every Player::Update while naturalPreGate,
 // before the AI check delay and CanUpdateAI, so a fake's cancel lands within half a map tick of its instant whatever
