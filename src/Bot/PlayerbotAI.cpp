@@ -909,7 +909,7 @@ void PlayerbotAI::TraceTravelInteraction(std::string_view event, std::string_vie
               travel ? travel->route.requestId : 0, yards);
 }
 
-static std::string_view MountPathWord(PlayerbotAI::MountPath path)
+std::string_view MountPathWord(PlayerbotAI::MountPath path)
 {
     return path == PlayerbotAI::MountPath::Packet ? "packet" : "timer";
 }
