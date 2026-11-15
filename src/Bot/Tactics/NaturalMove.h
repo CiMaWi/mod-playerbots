@@ -32,8 +32,8 @@
 // predicts. The predicted point is at most MaxLeadYards from the seen one; a target that moved less than MinMoveYards
 // in the half second before the seen instant is standing; a chaser out of its reach that neither closed on the target
 // nor ran for StuckMs aims at the true position for a while. Every draw comes from a hash of the bot, the instant and
-// its call number (no RNG state). The game side is in MovementActions.cpp (ReachCombatTo) and PlayerbotAI.cpp
-// (NaturalTrackHere, the params by SetPvpSkill); the numbers are TrackConfig's.
+// its call number (no RNG state). The game side is in MovementActions.cpp (ReachCombatTo) and NaturalMove.cpp
+// (NaturalTrackHere; the params by SetPvpSkill in BotTactics.cpp); the numbers are TrackConfig's.
 
 constexpr float TRACK_PI = 3.14159265358979323846f;
 constexpr float TRACK_TWO_PI = 2.0f * TRACK_PI;
@@ -628,7 +628,7 @@ inline void TrackObserve(TrackBotState& state, TrackConfig const& config, uint64
     state.Ring.Push(TrackSample{nowMs, x, y, z}, config.RingSamples);
 }
 
-// The ring's feed at the bot's own checks in a fight (PlayerbotAI.cpp FeedNaturalTrack): the current target's true
+// The ring's feed at the bot's own checks in a fight (NaturalMove.cpp FeedNaturalTrack): the current target's true
 // position, so a chase after a pause (an in-range cast, a held move) sees the target as it was lag ms ago, not where
 // it is now (a ring fed only by chase calls was stale then and started again on one sample of age 0). It never starts
 // the ring again over another target's live ring (a chase to a CC or kick target keeps its history); a stale or empty
@@ -1109,7 +1109,7 @@ void RunTrackChecks(Check&& check)
           "a tracked chase refreshes a move 250 ms old by more than 1 yd; RefreshMs 0 keeps the hold");
 }
 
-// The game side (PlayerbotAI.cpp): whether the bot tracks naturally now (the option, the Natural tactic here, a PvP
+// The game side (NaturalMove.cpp): whether the bot tracks naturally now (the option, the Natural tactic here, a PvP
 // context of Natural.Track.Contexts, or out of PvP and out of instances in a real player's sight with
 // OutsidePvpInSight, cached for InSightCacheMs). The bot's own update, or the world thread while the maps wait.
 class PlayerbotAI;

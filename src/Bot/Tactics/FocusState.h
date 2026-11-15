@@ -126,8 +126,9 @@ struct FocusMatchState
     uint32 MoonReleases = 0;
 };
 
-// G4e: the focus target (ArenaFocusTarget.h), picked at the bot's checks (PlayerbotAI.cpp's FollowFocusTarget) while
-// the FocusTarget tactic is active and its Dexterity reaches the threshold; none otherwise, so a reader compares guids
+// G4e: the focus target (ArenaFocusTarget.h), picked at the bot's checks (ArenaFocusTarget.cpp's FollowFocusTarget)
+// while the FocusTarget tactic is active and its Dexterity reaches the threshold; none otherwise, so a reader compares
+// guids
 struct FocusTargetState
 {
     FocusTargetPick Pick;
