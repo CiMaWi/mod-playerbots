@@ -253,6 +253,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "status-end-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "tactics-selftest.cpp",
             "includes": [
                 "src/Bot",
