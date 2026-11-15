@@ -6,6 +6,7 @@
 
 #include "UseItemAction.h"
 #include "AcceptQuestAction.h"
+#include "BotTravel.h"
 #include "ChatHelper.h"
 #include "Event.h"
 #include "ItemPackets.h"
@@ -94,7 +95,7 @@ bool UseItemAction::UseGameObject(ObjectGuid guid)
 
         LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
         if (availableLoot->HasInteraction() && availableLoot->InteractionGuid() != guid)
-            botAI->CancelLootInteraction("order");
+            botAI->GetTravel().CancelLootInteraction("order");
 
         LootObject previous = AI_VALUE(LootObject, "loot target");
         bool added = availableLoot->Add(guid);

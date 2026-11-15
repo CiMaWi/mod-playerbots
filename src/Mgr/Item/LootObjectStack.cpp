@@ -6,6 +6,7 @@
 
 #include "LootObjectStack.h"
 
+#include "BotTravel.h"
 #include "CensusMgr.h"
 #include "LootMgr.h"
 #include "Object.h"
@@ -469,7 +470,7 @@ bool LootObjectStack::PrepareLoot(ObjectGuid guid, bool encounter, uint32 now)
     _interactionMap = bot->GetMapId();
     _interactionInstance = bot->GetInstanceId();
     _encounterInteraction = encounter;
-    ai->activeLootInteraction = this;
+    ai->GetTravel().activeLootInteraction = this;
     return true;
 }
 
@@ -545,7 +546,7 @@ void LootObjectStack::Finish()
     ClearSelection(InteractionGuid());
     _interaction.Clear();
     _castSpellId = 0;
-    GET_PLAYERBOT_AI(bot)->activeLootInteraction = nullptr;
+    GET_PLAYERBOT_AI(bot)->GetTravel().activeLootInteraction = nullptr;
 }
 
 void LootObjectStack::Cancel(std::string_view reason)
@@ -589,7 +590,7 @@ void LootObjectStack::Observe(uint32 now, bool canMove)
     if (_interaction.Current == LootInteraction::Phase::AwaitingRelease)
     {
         if (LootInteraction::ConsumeClosed(_interaction, bot->GetLootGUID().GetRawValue(),
-                                           GET_PLAYERBOT_AI(bot)->completedLootInteractions,
+                                           GET_PLAYERBOT_AI(bot)->GetTravel().completedLootInteractions,
                                            [&](char const* detail)
                                            {
                                                EventLog::Emit(bot, "TravelLootRelease", detail, InteractionGeneration(),
@@ -612,7 +613,8 @@ void LootObjectStack::Observe(uint32 now, bool canMove)
 
 void LootObjectStack::Trace(std::string_view event, std::string_view detail)
 {
-    GET_PLAYERBOT_AI(bot)->TraceTravelInteraction(event, detail, InteractionGuid(), InteractionGeneration());
+    GET_PLAYERBOT_AI(bot)->GetTravel().TraceTravelInteraction(event, detail, InteractionGuid(),
+                                                              InteractionGeneration());
 }
 
 void LootObjectStack::DeferLoot(ObjectGuid guid)

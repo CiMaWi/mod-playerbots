@@ -1601,16 +1601,15 @@ inline std::uint32_t TripDeadlineMs(float estimateSeconds)
 inline bool PastDeadline(std::uint32_t activeMs, float routeSeconds) { return activeMs > TripDeadlineMs(routeSeconds); }
 
 // PlayerbotAI::Reset(true) renews the bot's RPG state, also after every far teleport (HandleTeleportAck). What
-// survives it: the route request counter always (ids restarting at 0 would let an older answer pass Judge as
-// current) and a test's constraints; on a far teleport also a trip in progress with its status start (a portal or a
-// cross-map flight leg ends on the new map; a teleport that is not the trip's fails the leg as wrong_map and replans).
-// Every other status and the MOVE_FAR state start over as before. Info: NewRpgInfo (data a std::variant, startT,
-// routeRequests, constraints); TravelData: its RPG_TRAVEL alternative
+// survives it: a test's constraints (the route request ids are BotTravel's, which a reset keeps); on a far teleport
+// also a trip in progress with its status start (a portal or a cross-map flight leg ends on the new map; a teleport
+// that is not the trip's fails the leg as wrong_map and replans). Every other status and the MOVE_FAR state start
+// over as before. Info: NewRpgInfo (data a std::variant, startT, constraints); TravelData: its RPG_TRAVEL
+// alternative
 template <class TravelData, class Info>
 Info AfterReset(Info const& before, bool farTeleport)
 {
     Info after;
-    after.routeRequests = before.routeRequests;
     after.constraints = before.constraints;  // a state row's flag stays on the Player
     if (farTeleport && std::holds_alternative<TravelData>(before.data))
     {

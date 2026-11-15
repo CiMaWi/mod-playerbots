@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgBaseAction.h"
+#include "BotTravel.h"
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "ChatHelper.h"
@@ -268,8 +269,8 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     if (!travel || !travel->HasWalkTarget())
         return MoveFarToImpl(dest);
     return TravelProgress::ContinueWalk(
-        travel->progress, [&] { return botAI->ReadTravelWalk(); }, [&] { return MoveFarToImpl(dest); },
-        [&](char const* reason) { botAI->TraceTravelInteraction("route_resume", reason); });
+        travel->progress, [&] { return botAI->GetTravel().ReadTravelWalk(); }, [&] { return MoveFarToImpl(dest); },
+        [&](char const* reason) { botAI->GetTravel().TraceTravelInteraction("route_resume", reason); });
 }
 
 bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)

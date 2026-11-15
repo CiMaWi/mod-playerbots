@@ -22,6 +22,7 @@
 #include "Battleground.h"
 #include "BotTactics.h"
 #include "BotTacticsInternal.h"
+#include "BotTravel.h"
 #include "BotTravelInternal.h"
 #include "BridgeAbilities.h"
 #include "BudgetValues.h"
@@ -176,7 +177,8 @@ PlayerbotAI::PlayerbotAI()
       chatHelper(this),
       chatFilter(this),
       security(nullptr),
-      tactics(std::make_unique<BotTactics>(this, nullptr))
+      tactics(std::make_unique<BotTactics>(this, nullptr)),
+      botTravel(std::make_unique<BotTravel>(this, nullptr))
 {
     for (uint8 i = 0; i < BOT_STATE_MAX; i++)
         engines[i] = nullptr;
@@ -196,7 +198,8 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       chatHelper(this),
       chatFilter(this),
       security(bot),  // reorder args - whipowill
-      tactics(std::make_unique<BotTactics>(this, bot))
+      tactics(std::make_unique<BotTactics>(this, bot)),
+      botTravel(std::make_unique<BotTravel>(this, bot))
 {
     rpgInfo.bot = bot;
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
@@ -314,15 +317,15 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
     {
-        passengerCadence.Revalidate = true;
+        botTravel->passengerCadence.Revalidate = true;
         pendingDismount.store(false, std::memory_order_relaxed);
-        tracedMount = MountPath::None;
+        botTravel->tracedMount = BotTravel::MountPath::None;
         return;
     }
 
     // A test's order (TravelOrders) ahead of the reaction and the AI's delays, the engine then runs in this update; so
     // does it for a bot placed aboard until its placement is decided (below)
-    if (TravelOrders::TakeAndApply(this, bot) || aboardEntry)
+    if (TravelOrders::TakeAndApply(this, bot) || botTravel->aboardEntry)
         nextAICheckDelay = 0;
 
     // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can be a
@@ -364,33 +367,34 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G5e, G2a and G2g: the tactics' pre-gate hook (the natural stepper, the jump test); two bool tests idle
     if (tactics->PreGate())
     {
-        passengerCadence.Revalidate = true;
+        botTravel->passengerCadence.Revalidate = true;
         return;
     }
 
     uint32 const maintenanceMs = getMSTime();
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
     auto const traceTravel = TravelTraceFor(travel);
-    bool const revalidateProgress = passengerCadence.Revalidate;
+    bool const revalidateProgress = botTravel->passengerCadence.Revalidate;
     PassengerAdapter passenger(*bot, traceTravel);
-    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
+    TravelLifecycle::Maintain(botTravel->passengerCadence, maintenanceMs, bot->GetMapId(),
                               travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
     // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
     // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence
-    if (aboardEntry)
+    if (botTravel->aboardEntry)
     {
         Transport const* ridden = bot->GetTransport();
-        bool const placed = ridden && ridden->GetEntry() == aboardEntry;
-        uint32 const sinceMs = GetMSTimeDiffToNow(aboardSinceMs);
-        if (placed || sinceMs > ABOARD_DEADLINE_MS)
+        bool const placed = ridden && ridden->GetEntry() == botTravel->aboardEntry;
+        uint32 const sinceMs = GetMSTimeDiffToNow(botTravel->aboardSinceMs);
+        if (placed || sinceMs > BotTravel::ABOARD_DEADLINE_MS)
         {
-            LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), aboardEntry,
+            LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), botTravel->aboardEntry,
                      placed ? "placed" : "failed", sinceMs);
-            EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
-            aboardEntry = 0;
+            EventLog::Emit(bot, BotTravel::ABOARD_EVENT_TYPE, placed ? "placed" : "failed", botTravel->aboardEntry,
+                           sinceMs);
+            botTravel->aboardEntry = 0;
         }
         else
-            passengerCadence.Revalidate = true;
+            botTravel->passengerCadence.Revalidate = true;
     }
     if (HasPendingDismount())
     {
@@ -399,25 +403,26 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         else if (CanMove() && !bot->IsRooted() && pendingDismount.exchange(false, std::memory_order_relaxed))
             CheckMountStateAction::CompleteDismount(bot);
     }
-    if (activeLootInteraction || travel)
+    if (botTravel->activeLootInteraction || travel)
     {
         PerfMonitorScope scope(
             travel && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Progress") : nullptr);
         bool const canMove = CanMove();
-        if (activeLootInteraction)
-            activeLootInteraction->Observe(maintenanceMs, canMove);
+        if (botTravel->activeLootInteraction)
+            botTravel->activeLootInteraction->Observe(maintenanceMs, canMove);
         if (travel)
-            ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
+            botTravel->ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
     }
-    if (tracedMount != MountPath::None)
+    if (botTravel->tracedMount != BotTravel::MountPath::None)
     {
         if (bot->IsMounted())
         {
-            TraceTravelInteraction("mount_state", "mounted", ObjectGuid::Empty, 0, MountPathWord(tracedMount));
-            tracedMount = MountPath::None;
+            botTravel->TraceTravelInteraction("mount_state", "mounted", ObjectGuid::Empty, 0,
+                                              MountPathWord(botTravel->tracedMount));
+            botTravel->tracedMount = BotTravel::MountPath::None;
         }
-        else if (maintenanceMs - tracedMountAt >= LootInteraction::PhaseMs)
-            tracedMount = MountPath::None;
+        else if (maintenanceMs - botTravel->tracedMountAt >= LootInteraction::PhaseMs)
+            botTravel->tracedMount = BotTravel::MountPath::None;
     }
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
@@ -524,7 +529,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!currentSpell)
         currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
 
-    if (LootInteractionExpired() && activeLootInteraction->OwnsCast(currentSpell))
+    if (botTravel->LootInteractionExpired() && botTravel->activeLootInteraction->OwnsCast(currentSpell))
     {
         bot->InterruptSpell(currentSpell->GetCurrentContainer());
         currentSpell = nullptr;
@@ -1212,9 +1217,9 @@ void PlayerbotAI::HandleTeleportAck()
 
 void PlayerbotAI::Reset(bool full, bool farTeleport)
 {
-    CancelLootInteraction("reset");
+    botTravel->CancelLootInteraction("reset");
     pendingDismount.store(false, std::memory_order_relaxed);
-    tracedMount = MountPath::None;
+    botTravel->tracedMount = BotTravel::MountPath::None;
     // The RPG state starts over; a bank or mail visit ends with its row and the knowledge survives the reset
     // (BankMail::AfterReset). Also on a far teleport during a flight (a taxi path crossing maps), which skips the rest
     auto const resetRpgState = [this, farTeleport]()
@@ -1987,8 +1992,8 @@ void PlayerbotAI::DoNextAction(bool min)
     }
 
     bool minimal = !this->AllowActivity();
-    if (LootInteractionExpired() && !minimal && !min && currentState == BOT_STATE_NON_COMBAT &&
-        !HasStrategy("new rpg", BOT_STATE_NON_COMBAT) && ConsumeLootExpiry())
+    if (botTravel->LootInteractionExpired() && !minimal && !min && currentState == BOT_STATE_NON_COMBAT &&
+        !HasStrategy("new rpg", BOT_STATE_NON_COMBAT) && botTravel->ConsumeLootExpiry())
         return;
 
     if (auto const trace = TravelTraceFor(std::get_if<NewRpgInfo::Travel>(&rpgInfo.data)))

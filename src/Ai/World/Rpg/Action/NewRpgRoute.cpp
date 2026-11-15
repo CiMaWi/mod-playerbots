@@ -23,6 +23,7 @@
 #include "BankRulesInput.h"
 #include "BankVisit.h"
 #include "BotTraitMgr.h"
+#include "BotTravel.h"
 #include "BroadcastHelper.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
@@ -572,7 +573,7 @@ bool NewRpgTravelAction::ConsumeScheduledWork(PlayerbotAI* botAI)
     using TravelProgress::Work;
     auto* const data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     Overdue const reason = data ? data->progress.Reason() : Overdue::None;
-    bool const lootExpired = botAI->LootInteractionExpired();
+    bool const lootExpired = botAI->GetTravel().LootInteractionExpired();
     if (reason == Overdue::None && !lootExpired)
         return false;
 
@@ -583,10 +584,11 @@ bool NewRpgTravelAction::ConsumeScheduledWork(PlayerbotAI* botAI)
         return false;
 
     bool const canMove = bot->IsAlive() && !bot->IsInCombat() && botAI->CanMove();
-    Work const work = TravelProgress::ScheduledWork(canMove, reason, botAI->HasLootInteraction(), lootExpired);
+    Work const work =
+        TravelProgress::ScheduledWork(canMove, reason, botAI->GetTravel().HasLootInteraction(), lootExpired);
     if (work == Work::Recover)
         return NewRpgTravelAction(botAI).StepTravel(data, data->progress.TakeReason());
-    return work == Work::DeferLoot && botAI->ConsumeLootExpiry();
+    return work == Work::DeferLoot && botAI->GetTravel().ConsumeLootExpiry();
 }
 
 bool NewRpgTravelAction::Execute(Event /*event*/)
@@ -596,7 +598,7 @@ bool NewRpgTravelAction::Execute(Event /*event*/)
         return false;
     if (ConsumeScheduledWork(botAI))
         return true;
-    if (botAI->HasLootInteraction() && !PassengerOwnsTravel(*bot, *data))
+    if (botAI->GetTravel().HasLootInteraction() && !PassengerOwnsTravel(*bot, *data))
         return false;
     return StepTravel(data, TravelProgress::Overdue::None);
 }
@@ -616,7 +618,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         if (step == TravelLegs::OffStep::GiveUp || step == TravelLegs::OffStep::Lost)
         {
             bool const expired = step == TravelLegs::OffStep::GiveUp;
-            botAI->TraceTravelInteraction("route_recovery", expired ? "stuck_aboard" : "transport_lost");
+            botAI->GetTravel().TraceTravelInteraction("route_recovery", expired ? "stuck_aboard" : "transport_lost");
             EndTrip(*data, expired ? "stuck aboard" : "transport lost",
                     expired ? "abort:stuck_aboard" : "abort:transport_lost");
             return true;
@@ -647,7 +649,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     uint32 const quayLeg = trip.boarding == TravelLegs::Boarding::Approach ? MotionQuayLeg(trip) : TravelLegs::NO_NODE;
     if (overdue == Overdue::RouteDeadline)
     {
-        botAI->TraceTravelInteraction("route_recovery", "deadline");
+        botAI->GetTravel().TraceTravelInteraction("route_recovery", "deadline");
         EndTrip(*data, "deadline", "abort:deadline");
         return true;
     }
@@ -655,7 +657,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     {
         if (!data->progress.AttemptedWalk())
         {
-            botAI->TraceTravelInteraction("route_recovery", "stalled");
+            botAI->GetTravel().TraceTravelInteraction("route_recovery", "stalled");
             EndTrip(*data, "stalled", "abort:stalled");
             return true;
         }
@@ -665,7 +667,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         bool const offMesh = GiveUpMove(botAI->rpgInfo.moveFarPos);
         if (!offMesh && !data->CurrentLeg() && data->bindInn)
         {
-            botAI->TraceTravelInteraction("route_recovery", "stuck");
+            botAI->GetTravel().TraceTravelInteraction("route_recovery", "stuck");
             return Arrive(*data, true);
         }
         return LegFailed(*data, offMesh ? TravelLegs::FailReason::OffMesh : TravelLegs::FailReason::Stuck);
@@ -766,8 +768,8 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     bool const waypointReached =
         wasWalk && (legChanged || trip.next > waypointBefore) && data->progress.WaypointReached();
     if (waypointReached)
-        botAI->TraceTravelInteraction("route_progress", "waypoint", ObjectGuid::Empty, 0, "none", 0.0f,
-                                      std::pair{legBefore, legStartBefore});
+        botAI->GetTravel().TraceTravelInteraction("route_progress", "waypoint", ObjectGuid::Empty, 0, "none", 0.0f,
+                                                  std::pair{legBefore, legStartBefore});
     if (legChanged)
         data->progress.StartLeg(!wasWalk || waypointReached);
     if (data->passengerMotion &&
@@ -938,7 +940,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
 
 bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
 {
-    TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, ++botAI->rpgInfo.routeRequests);
+    TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, botAI->GetTravel().NextRouteRequest());
     // Transports run (WT19; a timed-out transport leg's link is left out through avoidEdges). Flights only to
     // discovered nodes (the snapshot's taxi mask), their fares within the purse (the search's fare budget). The
     // hearthstone is a leg while its stone is in the bags and it is ready or cooling for at most the wait cap (the
@@ -972,7 +974,7 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
         EndTrip(data, "no route service", "abort:no_service");  // the graph is not loaded yet: never wait
         return true;
     }
-    botAI->TraceTravelInteraction("route_request", "issued");
+    botAI->GetTravel().TraceTravelInteraction("route_request", "issued");
     return true;
 }
 
@@ -986,7 +988,7 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
     {
         if (!TravelLegs::Resubmit(data.trip))
             return LegFailed(data, TravelLegs::FailReason::NoAnswer);
-        botAI->TraceTravelInteraction("route_recovery", "resubmit");
+        botAI->GetTravel().TraceTravelInteraction("route_recovery", "resubmit");
         LOG_DEBUG("playerbots", "[Route] {} {} ({} ms since the request), asked again", bot->GetName(), why,
                   now - data.route.requestedMs);
         return RequestRoute(data);
@@ -1173,7 +1175,7 @@ bool NewRpgTravelAction::UseHearth(NewRpgInfo::Travel& data)
 
 bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason)
 {
-    botAI->TraceTravelInteraction("route_recovery", TravelLegs::FailWord(reason));
+    botAI->GetTravel().TraceTravelInteraction("route_recovery", TravelLegs::FailWord(reason));
     TransportGeometry::DiscardMotion(*bot, data.passengerMotion);
     TravelLegs::Trip& trip = data.trip;
     LOG_DEBUG("playerbots", "[Route] {} leg {}/{} failed: {}", bot->GetName(), trip.legIdx + 1, trip.legs.size(),

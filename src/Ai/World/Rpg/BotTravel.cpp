@@ -4,8 +4,9 @@
  * or (at your option) any later version.
  */
 
-#include "BotTravelInternal.h"
+#include "BotTravel.h"
 
+#include "BotTravelInternal.h"
 #include "Log.h"
 #include "LootObjectStack.h"
 #include "MotionMaster.h"
@@ -105,7 +106,9 @@ bool UnderWay(Transport const& transport)
     return true;
 }
 
-bool PlayerbotAI::ReconcileFollowPassenger(Transport const& expected)
+BotTravel::BotTravel(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
+
+bool BotTravel::ReconcileFollowPassenger(Transport const& expected)
 {
     if (expected.IsStaticTransport())
         return false;
@@ -116,31 +119,31 @@ bool PlayerbotAI::ReconcileFollowPassenger(Transport const& expected)
     return !sample.Before.Guid && sample.After.Available && sample.After.Guid == expected.GetGUID().GetRawValue();
 }
 
-bool PlayerbotAI::LootInteractionExpired() const
+bool BotTravel::LootInteractionExpired() const
 {
     return activeLootInteraction && activeLootInteraction->InteractionExpired();
 }
 
-bool PlayerbotAI::ConsumeLootExpiry()
+bool BotTravel::ConsumeLootExpiry()
 {
-    return activeLootInteraction && bot->IsAlive() && !bot->IsInCombat() && CanMove() &&
+    return activeLootInteraction && bot->IsAlive() && !bot->IsInCombat() && botAI->CanMove() &&
            activeLootInteraction->ConsumeExpiry();
 }
 
-void PlayerbotAI::CancelLootInteraction(std::string_view reason)
+void BotTravel::CancelLootInteraction(std::string_view reason)
 {
     if (activeLootInteraction)
         activeLootInteraction->Cancel(reason);
 }
 
-void PlayerbotAI::TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot,
-                                         uint32 interaction, std::string_view path, float yards,
-                                         std::optional<std::pair<uint32, uint32>> leg)
+void BotTravel::TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot,
+                                       uint32 interaction, std::string_view path, float yards,
+                                       std::optional<std::pair<uint32, uint32>> leg)
 {
     if (!NaturalTrace::IsSelected(bot) || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return;
 
-    auto const* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
+    auto const* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     uint32 const trip = travel ? travel->tripId : 0;
     auto const [index, generation] = leg.value_or(
         travel && travel->CurrentLeg() ? std::pair{travel->trip.legIdx, travel->trip.legStartMs} : std::pair{0u, 0u});
@@ -152,12 +155,12 @@ void PlayerbotAI::TraceTravelInteraction(std::string_view event, std::string_vie
               travel ? travel->route.requestId : 0, yards);
 }
 
-std::string_view MountPathWord(PlayerbotAI::MountPath path)
+std::string_view MountPathWord(BotTravel::MountPath path)
 {
-    return path == PlayerbotAI::MountPath::Packet ? "packet" : "timer";
+    return path == BotTravel::MountPath::Packet ? "packet" : "timer";
 }
 
-void PlayerbotAI::TraceTravelMount(MountPath path, bool accepted)
+void BotTravel::TraceTravelMount(MountPath path, bool accepted)
 {
     if (path == MountPath::None || !NaturalTrace::IsSelected(bot))
         return;
@@ -173,7 +176,7 @@ void PlayerbotAI::TraceTravelMount(MountPath path, bool accepted)
     }
 }
 
-TravelProgress::Motion PlayerbotAI::ReadTravelWalk(bool checkPosition) const
+TravelProgress::Motion BotTravel::ReadTravelWalk(bool checkPosition) const
 {
     auto const& spline = *bot->movespline;
     auto* const master = bot->GetMotionMaster();
@@ -197,7 +200,7 @@ TravelProgress::Motion PlayerbotAI::ReadTravelWalk(bool checkPosition) const
     return motion;
 }
 
-void PlayerbotAI::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove)
+void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove)
 {
     using TravelProgress::Owner;
     auto& progress = travel.progress;
@@ -236,7 +239,7 @@ void PlayerbotAI::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs
         TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
 }
 
-void PlayerbotAI::BeginAboard(uint32 entry)
+void BotTravel::BeginAboard(uint32 entry)
 {
     aboardEntry = entry;
     aboardSinceMs = getMSTime();

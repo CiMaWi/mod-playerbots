@@ -12,6 +12,7 @@
 #include <utility>
 #include <variant>
 
+#include "BotTravel.h"
 #include "CensusMgr.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
@@ -145,7 +146,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
             return applied;
         }
-        botAI->CancelLootInteraction("order");
+        botAI->GetTravel().CancelLootInteraction("order");
         EndTripByOrder(bot, info, *data, "stopped");
         return true;
     }
@@ -166,7 +167,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     }
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
-    botAI->CancelLootInteraction("order");
+    botAI->GetTravel().CancelLootInteraction("order");
     info.ChangeToTravel(order.dest, order.place);
     return true;
 }
