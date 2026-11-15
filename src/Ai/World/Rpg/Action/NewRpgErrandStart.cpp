@@ -646,7 +646,7 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
 
     // Checked at most every INN_RETRY_MS, whatever comes of it
     NewRpgInfo& info = botAI->rpgInfo;
-    info.lastInnMs = std::max<uint32>(getMSTime(), 1);
+    botAI->rpgMemos.lastInnMs = std::max<uint32>(getMSTime(), 1);
 
     // The bot's team's inns on its map (startup cache): the nearest one whose zone fits its level, within 10 minutes of
     // walking (straight line at run speed)
@@ -660,9 +660,10 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
         if (inn.loc.GetMapId() != bot->GetMapId())
             continue;
         // A spot whose bind found no usable innkeeper lately (Arrive)
-        if (!info.innAvoid.empty() && WorldTravel::InnAvoided(info.innAvoid, getMSTime(),
-                                                              {inn.loc.GetMapId(), inn.loc.GetPositionX(),
-                                                               inn.loc.GetPositionY(), inn.loc.GetPositionZ()}))
+        if (!botAI->rpgMemos.innAvoid.empty() &&
+            WorldTravel::InnAvoided(
+                botAI->rpgMemos.innAvoid, getMSTime(),
+                {inn.loc.GetMapId(), inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.loc.GetPositionZ()}))
             continue;
 
         StartingHistory::Bracket bracket;

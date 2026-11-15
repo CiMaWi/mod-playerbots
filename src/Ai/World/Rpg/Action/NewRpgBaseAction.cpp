@@ -152,8 +152,8 @@ void NewRpgBaseAction::RecoverOffMesh()
     if (WorldTravel::OffMeshStays(recovery))
     {
         // Nothing moved the bot: its next give-ups here are quiet for a while (WorldTravel::OffMeshBackoff)
-        botAI->rpgInfo.offMeshPos = WorldPosition(bot);
-        botAI->rpgInfo.offMeshTs = std::max<uint32>(getMSTime(), 1);
+        botAI->rpgMemos.offMeshPos = WorldPosition(bot);
+        botAI->rpgMemos.offMeshTs = std::max<uint32>(getMSTime(), 1);
     }
     if (recovery != WorldTravel::OffMeshRecovery::Snap)
         return;
@@ -211,12 +211,12 @@ WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
 
 bool NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
 {
-    NewRpgInfo& info = botAI->rpgInfo;
+    RpgMemos& memo = botAI->rpgMemos;
     WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-    WorldTravel::SightPoint const offMeshAt{info.offMeshPos.GetMapId(), info.offMeshPos.GetPositionX(),
-                                            info.offMeshPos.GetPositionY(), info.offMeshPos.GetPositionZ()};
+    WorldTravel::SightPoint const offMeshAt{memo.offMeshPos.GetMapId(), memo.offMeshPos.GetPositionX(),
+                                            memo.offMeshPos.GetPositionY(), memo.offMeshPos.GetPositionZ()};
     bool const backingOff =
-        WorldTravel::OffMeshBackoff(info.offMeshTs != 0, GetMSTimeDiffToNow(info.offMeshTs), offMeshAt, here);
+        WorldTravel::OffMeshBackoff(memo.offMeshTs != 0, GetMSTimeDiffToNow(memo.offMeshTs), offMeshAt, here);
     WorldTravel::StuckCause const cause = backingOff ? WorldTravel::StuckCause::OffMesh : RecordStuck(dest);
     bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
     if (offMesh)
@@ -228,16 +228,16 @@ bool NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
     {
         // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h);
         // off the mesh the destination is not to blame
-        WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
-                                              info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
-        info.stuckRepeats = WorldTravel::NextStuckRepeats(
-            info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
-            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);
-        info.stuckAvoidPos = dest;
-        info.stuckBotPos = WorldPosition(bot);
-        info.stuckAvoidTs = getMSTime();
+        WorldTravel::SightPoint const lastBot{memo.stuckBotPos.GetMapId(), memo.stuckBotPos.GetPositionX(),
+                                              memo.stuckBotPos.GetPositionY(), memo.stuckBotPos.GetPositionZ()};
+        memo.stuckRepeats = WorldTravel::NextStuckRepeats(
+            memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
+            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, memo.stuckRepeats, lastBot, here);
+        memo.stuckAvoidPos = dest;
+        memo.stuckBotPos = WorldPosition(bot);
+        memo.stuckAvoidTs = getMSTime();
     }
-    info.SetMoveFarTo(WorldPosition());
+    memo.SetMoveFarTo(WorldPosition());
     return offMesh;
 }
 
@@ -284,28 +284,28 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     if (bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT))
         return true;
 
-    bool newDest = dest != botAI->rpgInfo.moveFarPos;
+    bool newDest = dest != botAI->rpgMemos.moveFarPos;
     // A route follower's waypoints are graph nodes: the route search avoids stuck edges itself (StuckBook), so the
     // avoided-spot memo below would only end the trip early
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (newDest)
     {
         // A destination given up after a Stuck event is not walked to again for a while
-        NewRpgInfo const& info = botAI->rpgInfo;
-        WorldTravel::SightPoint const given{info.stuckAvoidPos.GetMapId(), info.stuckAvoidPos.GetPositionX(),
-                                            info.stuckAvoidPos.GetPositionY(), info.stuckAvoidPos.GetPositionZ()};
+        RpgMemos const& memo = botAI->rpgMemos;
+        WorldTravel::SightPoint const given{memo.stuckAvoidPos.GetMapId(), memo.stuckAvoidPos.GetPositionX(),
+                                            memo.stuckAvoidPos.GetPositionY(), memo.stuckAvoidPos.GetPositionZ()};
         WorldTravel::SightPoint const wanted{dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(),
                                              dest.GetPositionZ()};
-        if (!travel && WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+        if (!travel && WorldTravel::IsAvoidedSpot(memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
                                                   sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS,
-                                                  given, wanted, info.stuckRepeats))
+                                                  given, wanted, memo.stuckRepeats))
         {
             RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);
             return true;
         }
 
         // clear stuck information if it's a new dest
-        botAI->rpgInfo.SetMoveFarTo(dest);
+        botAI->rpgMemos.SetMoveFarTo(dest);
     }
 
     // performance optimization
@@ -361,14 +361,14 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
             return true;
         }
     }
-    else if (disToDest + TravelProgress::ADVANCE_YARDS < botAI->rpgInfo.nearestMoveFarDis)
+    else if (disToDest + TravelProgress::ADVANCE_YARDS < botAI->rpgMemos.nearestMoveFarDis)
     {
-        botAI->rpgInfo.nearestMoveFarDis = disToDest;
-        botAI->rpgInfo.stuckTs = getMSTime();
-        botAI->rpgInfo.stuckAttempts = 0;
+        botAI->rpgMemos.nearestMoveFarDis = disToDest;
+        botAI->rpgMemos.stuckTs = getMSTime();
+        botAI->rpgMemos.stuckAttempts = 0;
     }
-    else if ((++botAI->rpgInfo.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgInfo.stuckTs) >= stuckTime) ||
-             (botAI->rpgInfo.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
+    else if ((++botAI->rpgMemos.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgMemos.stuckTs) >= stuckTime) ||
+             (botAI->rpgMemos.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
     {
         GiveUpMove(dest);
         RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);

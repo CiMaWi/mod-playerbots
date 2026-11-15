@@ -171,7 +171,7 @@ bool IsQuestCapableDoing(Player* bot, Quest const* quest)
 ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit)
 {
     Player* bot = botAI->GetBot();
-    GuidSet const& ignored = botAI->rpgInfo.ignoredQuestGivers;
+    GuidSet const& ignored = botAI->rpgMemos.ignoredQuestGivers;
     WorldObject* nearestObject = nullptr;
 
     for (char const* candidates : {"possible new rpg targets", "possible new rpg game objects"})

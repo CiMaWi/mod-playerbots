@@ -44,7 +44,7 @@ struct RpgStatusCore
 {
     // The replacing step of a change: the status data replaced and its start time set; a trip takes its start and
     // world log id, idle clears the quest giver and the ignored ones
-    static void Replace(NewRpgInfo& info, NewRpgInfo::RpgData next)
+    static void Replace(NewRpgInfo& info, RpgMemos& memo, NewRpgInfo::RpgData next)
     {
         info.ReplaceStatus(std::move(next));
         info.startT = getMSTime();
@@ -55,8 +55,8 @@ struct RpgStatusCore
         }
         else if (std::holds_alternative<NewRpgInfo::Idle>(info.data))
         {
-            info.questGiver.Clear();
-            info.ignoredQuestGivers.clear();
+            memo.questGiver.Clear();
+            memo.ignoredQuestGivers.clear();
         }
     }
 
@@ -154,7 +154,7 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     }
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle);
-    RpgStatusCore::Replace(info, std::move(next));
+    RpgStatusCore::Replace(info, botAI->rpgMemos, std::move(next));
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), word);
 }
 }  // namespace
@@ -184,6 +184,7 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
     StatusEnd::ResetList const list = StatusEnd::ResetOf(farTeleport, trip != nullptr);
     RpgStatusCore::Renew(info, list.status == StatusEnd::ResetEffect::Kept);
     StatusEnd::ApplyReset(list.planner, botAI->planner);
+    StatusEnd::ApplyReset(list.rpgMemos, botAI->rpgMemos);
     StatusEnd::ApplyReset(list.testConstraints, botAI->testConstraints);
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
 }

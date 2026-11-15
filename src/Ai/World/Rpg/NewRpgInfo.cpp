@@ -27,14 +27,6 @@ bool NewRpgInfo::CanChangeTo(NewRpgStatus)
     return true;
 }
 
-void NewRpgInfo::SetMoveFarTo(WorldPosition pos)
-{
-    nearestMoveFarDis = FLT_MAX;
-    stuckTs = 0;
-    stuckAttempts = 0;
-    moveFarPos = pos;
-}
-
 NewRpgStatus NewRpgInfo::StatusFromString(std::string const& name)
 {
     if (name == "idle")           return RPG_IDLE;
