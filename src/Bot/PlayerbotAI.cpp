@@ -105,6 +105,7 @@
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "TestConstraints.h"
+#include "TestOrders.h"
 #include "ThreadCheck.h"
 #include "Transport.h"
 #include "TravelLegRules.h"
