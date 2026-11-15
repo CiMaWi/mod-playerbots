@@ -1162,6 +1162,307 @@ void WeaponMasters()
           "a profession spell on the merged list is no weapon need");
 }
 
+// The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a
+// wanted family at or below its level on its map; an exotic one only with Beast Mastery's aura
+constexpr std::uint32_t BEAST_WOLF = 299;     // family 1, levels 10-11, 100 yd
+constexpr std::uint32_t BEAST_BOAR = 113;     // family 5, levels 8-9, 300 yd
+constexpr std::uint32_t BEAST_BEAR = 1188;    // family 4, level 30, 20 yd
+constexpr std::uint32_t BEAST_EXOTIC = 6498;  // family 39 (devilsaur), exotic, level 5, 50 yd
+constexpr std::uint32_t BEAST_CAT = 2042;     // family 2, on another map, 5 yd
+
+UpkeepIndex PetFixture()
+{
+    UpkeepGather input;
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainerEntries = {{TRAINER_RIDING, TRAINER_RIDING}};
+    input.tameable = {{0, 100.0f, 0.0f, 0.0f, BEAST_WOLF, 1, 11, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 9, false},
+                      {0, 0.0f, 20.0f, 0.0f, BEAST_BEAR, 4, 30, false},
+                      {0, 0.0f, 50.0f, 0.0f, BEAST_EXOTIC, 39, 5, true},
+                      {1, 5.0f, 0.0f, 0.0f, BEAST_CAT, 2, 6, false},
+                      {0, 300.0f, 0.0f, 0.0f, BEAST_BOAR, 5, 9, false}};  // the same spawn twice: kept once
+    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    index.version = 7;
+    return index;
+}
+
+void PetNeed()
+{
+    std::cout << "Scenario: the pet need of a hunter without a pet\n";
+    UpkeepIndex const index = PetFixture();
+    Check(index.stats.tameableSpawns == 5 && index.stats.tameableEntries == 5 &&
+              index.TameableOn(0).second - index.TameableOn(0).first == 4,
+          "the index keeps each tameable spawn once, by map");
+    Check(index.TameTarget(0, BEAST_WOLF) && index.TameTarget(0, BEAST_EXOTIC) && index.TameTarget(1, BEAST_CAT) &&
+              !index.TameTarget(1, BEAST_WOLF) && !index.TameTarget(0, BEAST_CAT) && !index.TameTarget(2, BEAST_WOLF),
+          "the tame stop's lookup: an entry is a tame target on the map the index keeps it on, nowhere else");
+    auto const petNeed = [](NeedList const& list) { return Find(list, NeedOrder::Pet); };
+    auto const hunter = [&index](std::uint8_t level)
+    {
+        Snapshot bot = Bot(index, PET_CLASS_HUNTER, level, 20 * GOLD, level);
+        bot.knowsTameBeast = true;
+        return bot;
+    };
+
+    Snapshot const lone = hunter(12);
+    NeedList const lonely = Show("hunter 12, Tame Beast, no pet", lone, index, Rates(12));
+    Need const* need = petNeed(lonely);
+    Check(need && need->kind == UpkeepKind::Pet && need->beast == BEAST_WOLF && need->beastFamily == 1 &&
+              need->copper == 0 && need->due && PetErrandDue(*need) && AnyErrandDue(lonely),
+          "the nearest wanted spawn: the wolf at 100 yd (the bear is above the level, the devilsaur exotic, the cat "
+          "on another map), due at once, price 0, a trip");
+    Check(need && need->beastAt.map == 0 && need->beastAt.x == 100.0f, "the need names the spawn's place");
+    Check(lonely.reserve == ComputeNeeds(
+                                [&lone]
+                                {
+                                    Snapshot s = lone;
+                                    s.hasPet = true;
+                                    return s;
+                                }(),
+                                index, Rates(12))
+                                .reserve,
+          "the pet need adds nothing to the reserve");
+
+    Snapshot pet = hunter(12);
+    pet.hasPet = true;
+    Check(!petNeed(ComputeNeeds(pet, index, Rates(12))), "a hunter with a pet (summoned or not) has no pet need");
+    Snapshot untaught = hunter(12);
+    untaught.knowsTameBeast = false;
+    Check(!petNeed(ComputeNeeds(untaught, index, Rates(12))), "a hunter without Tame Beast has no pet need");
+    Check(!petNeed(ComputeNeeds(hunter(9), index, Rates(9))), "a level 9 hunter (Tame Beast learned) has no pet need");
+    Snapshot mage = Bot(index, CLASS_MAGE, 12, 20 * GOLD, 12);
+    mage.knowsTameBeast = true;
+    Check(!petNeed(ComputeNeeds(mage, index, Rates(12))), "a mage has no pet need");
+
+    NeedList const ten = ComputeNeeds(hunter(10), index, Rates(10));
+    Check(petNeed(ten) && petNeed(ten)->beast == BEAST_BOAR,
+          "at 10 the wolf (up to 11) is above the level: the boar at 300 yd");
+    Snapshot alone = hunter(12);
+    alone.position = {2, 0.0f, 0.0f, 0.0f};
+    NeedList const nothing = ComputeNeeds(alone, index, Rates(12));
+    Check(petNeed(nothing) && !petNeed(nothing)->due && !petNeed(nothing)->beast && !AnyErrandDue(nothing),
+          "no tameable spawn on the map: the need stays, no trip");
+    Snapshot low = hunter(12);
+    low.position = {0, 0.0f, 25.0f, 0.0f};
+    Check(petNeed(ComputeNeeds(low, index, Rates(12)))->beast == BEAST_WOLF,
+          "beside the level 30 bear only a beast at or below the level is named");
+
+    Snapshot master = hunter(12);
+    master.tamesExotic = true;
+    Check(petNeed(ComputeNeeds(master, index, Rates(12)))->beast == BEAST_EXOTIC,
+          "with Beast Mastery's aura the exotic beast at 50 yd is the nearest");
+    std::cout << "  " << Describe(*need) << "\n";
+}
+
+// The swap form (WU21c): a Beast Mastery hunter (the exotic aura) with a pet of no wanted family stores it at a stable
+// master and tames a wanted (exotic) beast; a slot is bought only from the gold above the reserve
+void PetSwap()
+{
+    std::cout << "Scenario: the stable swap of an unwanted pet\n";
+    UpkeepIndex const index = PetFixture();
+    auto const petNeed = [](NeedList const& list) { return Find(list, NeedOrder::Pet); };
+    auto const master = [&index](std::uint64_t money)
+    {
+        Snapshot bot = Bot(index, PET_CLASS_HUNTER, 60, money, 60);
+        bot.knowsTameBeast = true;
+        bot.tamesExotic = true;
+        bot.hasPet = true;
+        bot.petFamily = 1;  // a wolf
+        bot.stableSlotPrice = 500;
+        return bot;
+    };
+    Check(
+        !WantedFamily(1, true) && WantedFamily(39, true) && WantedFamily(1, false) && WantedFamily(0, true),
+        "Beast Mastery wants an exotic family, not a wolf; another spec wants any; an unknown family counts as wanted");
+
+    NeedList const rich =
+        Show("Beast Mastery 60 with a wolf, 20 g, no slot bought", master(20 * GOLD), index, Rates(60));
+    Need const* swap = petNeed(rich);
+    Check(swap && swap->swap && swap->beast == BEAST_EXOTIC && swap->copper == 500 && swap->due &&
+              PetErrandDue(*swap) && AnyErrandDue(rich),
+          "a Beast Mastery hunter at 60 swaps its wolf: the exotic beast named, the first slot's 500 c, due");
+    Check(rich.reserve == ComputeNeeds(
+                              [&]
+                              {
+                                  Snapshot s = master(20 * GOLD);
+                                  s.petFamily = 39;
+                                  return s;
+                              }(),
+                              index, Rates(60))
+                              .reserve,
+          "the slot adds nothing to the reserve (it is paid from the gold above it)");
+
+    Snapshot wanted = master(20 * GOLD);
+    wanted.petFamily = 39;  // a devilsaur
+    Check(!petNeed(ComputeNeeds(wanted, index, Rates(60))), "a hunter with a wanted pet does not swap");
+    Snapshot other = master(20 * GOLD);
+    other.tamesExotic = false;
+    Check(!petNeed(ComputeNeeds(other, index, Rates(60))), "a hunter of another spec keeps its wolf");
+
+    std::uint64_t const reserve = rich.reserve;
+    NeedList const poor = Show("the same, 499 c above the reserve", master(reserve + 499), index, Rates(60));
+    Check(petNeed(poor) && !petNeed(poor)->due && !PetErrandDue(*petNeed(poor)),
+          "a slot priced above the free gold (499 c above the reserve) means no swap");
+    NeedList const exact = ComputeNeeds(master(reserve + 500), index, Rates(60));
+    Check(petNeed(exact) && petNeed(exact)->due, "500 c above the reserve pays the slot");
+    Check(!PetSwapPayable(400, 0, 500) && PetSwapPayable(500, 0, 500) && !PetSwapPayable(900, 500, 500) &&
+              PetSwapPayable(0, 500, 0),
+          "the gold above the reserve pays the slot; an empty bought slot costs nothing");
+
+    Snapshot free = master(0);
+    free.stableFree = true;
+    NeedList const freeList = ComputeNeeds(free, index, Rates(60));
+    Check(petNeed(freeList) && petNeed(freeList)->copper == 0 && petNeed(freeList)->due,
+          "an empty bought slot: the swap costs nothing and is due without gold");
+    Snapshot full = master(20 * GOLD);
+    full.stableSlotPrice = 0;  // every slot bought and full
+    Check(!petNeed(ComputeNeeds(full, index, Rates(60))), "every slot full: the hunter keeps its pet");
+    Snapshot away = master(20 * GOLD);
+    away.position = {1, 0.0f, 0.0f, 0.0f};  // only a cat (not wanted) on map 1
+    Check(!petNeed(ComputeNeeds(away, index, Rates(60))),
+          "no wanted beast on the map: no swap (the hunter keeps its pet)");
+    Snapshot lone = master(20 * GOLD);
+    lone.hasPet = false;
+    Check(petNeed(ComputeNeeds(lone, index, Rates(60))) && !petNeed(ComputeNeeds(lone, index, Rates(60)))->swap,
+          "without a pet the tame need of WU21b, no swap");
+    if (swap)
+        std::cout << "  " << Describe(*swap) << "\n";
+}
+
+void TameSteps()
+{
+    std::cout << "Scenario: the tame at the beast (break off, cast again in the fight, rest, bounded tries)\n";
+    Check(!TameBreaksOff(100.0f) && !TameBreaksOff(TAME_BREAK_OFF_HEALTH_PCT) && TameBreaksOff(34.0f),
+          "the channel holds down to the break-off health and breaks off below it");
+    Check(TameNextStep(0, 100.0f, 0) == TameNext::Cast, "a healthy hunter casts at once on arrival");
+    Check(TameNextStep(1, 40.0f, 1000) == TameNext::Rest && TameNextStep(0, 40.0f, 0) == TameNext::Rest,
+          "a hurt hunter rests before a try (after a broken channel or on arrival)");
+    Check(TameNextStep(1, 40.0f, TAME_REST_MS) == TameNext::Cast,
+          "the rest ends after TAME_REST_MS whatever the health (a bot never stalls)");
+    Check(TameNextStep(1, TAME_START_HEALTH_PCT, 0) == TameNext::Cast, "back to the start health: another try");
+    Check(TameNextStep(TAME_MAX_TRIES - 1, 100.0f, 0) == TameNext::Cast &&
+              TameNextStep(TAME_MAX_TRIES, 100.0f, 0) == TameNext::GiveUp,
+          "the stop casts TAME_MAX_TRIES times at most, then gives up");
+    Check(TAME_START_HEALTH_PCT > TAME_BREAK_OFF_HEALTH_PCT, "a try starts above the break-off health");
+    {
+        // The reach bound over a chase (WU21e run 2): a re-pick every 10 s keeps the start, the stop ends in time
+        std::uint32_t start = 0;
+        std::uint32_t stuckAt = 0;
+        for (std::uint32_t now = 5000; now <= 400000 && !stuckAt; now += 1000)
+        {
+            start = TameReachStartMs(start, now);  // the pick of this tick, a new beast every 10 s
+            if (now - start > TAME_REACH_MS)
+                stuckAt = now;
+        }
+        Check(stuckAt == 5000 + TAME_REACH_MS + 1000, "re-picks keep the reach bound's start: a chase ends after it");
+        Check(TameReachStartMs(0, 90000) == 90000 && TameReachStartMs(5000, 90000) == 5000,
+              "a reset (a channel's end, a fight at the stop, a respawn wait) starts the bound anew at the next pick");
+    }
+    Check(TameRecastsInFight(1, 90.0f, 0) && TameRecastsInFight(1, TAME_START_HEALTH_PCT, TAME_RECAST_MS),
+          "a channel the beast broke (stun, knockback) is cast again at once in its fight");
+    Check(!TameRecastsInFight(TAME_MAX_TRIES, 90.0f, 0), "no cast again in the fight past the tries");
+    Check(!TameRecastsInFight(1, TAME_START_HEALTH_PCT - 1.0f, 0),
+          "a hurt hunter fights the beast instead (the stop's rest and next try follow)");
+    Check(!TameRecastsInFight(1, 90.0f, TAME_RECAST_MS + 1), "the wait for a cast again ends (a bot never stalls)");
+
+    // The beasts' spells, as Spell.dbc gives their effects (effect, aura): APPLY_AURA 6, SCHOOL_DAMAGE 2,
+    // WEAPON_DAMAGE 58; MOD_ROOT 26, MOD_DECREASE_SPEED 33
+    Check(!BreaksTameChannel(58, 0) && BreaksTameChannel(6, AURA_MOD_STUN),
+          "Swoop (weapon damage, a stun) breaks the channel: the buzzard is no tame target");
+    Check(BreaksTameChannel(EFFECT_KNOCK_BACK, 0), "Wing Buffet's knockback breaks the channel: the moth is none");
+    Check(BreaksTameChannel(6, AURA_MOD_FEAR) && BreaksTameChannel(6, AURA_MOD_CONFUSE) &&
+              BreaksTameChannel(6, AURA_MOD_SILENCE) && BreaksTameChannel(EFFECT_INTERRUPT_CAST, 0) &&
+              BreaksTameChannel(EFFECT_KNOCK_BACK_DEST, 0),
+          "a fear, a confuse, a silence or an interrupt breaks it too");
+    Check(!BreaksTameChannel(2, 0) && !BreaksTameChannel(6, 26) && !BreaksTameChannel(6, 33),
+          "a bite, a root or a slow only hurts: such a beast stays a tame target");
+    Check(!TameTargetSpawns(1) && TameTargetSpawns(2) && TameTargetSpawns(40),
+          "a single named spawn is no tame target (one tame or kill takes it); a beast with several spawns is");
+}
+
+// The threats of each beast of a pack at the hunter's spot 10 yards short of it on the way in from (hx, hy)
+std::vector<std::uint32_t> PackThreats(std::vector<TameSiteUnit> const& units, float hx, float hy, float assist)
+{
+    std::vector<std::uint32_t> counts;
+    for (std::size_t i = 0; i < units.size(); ++i)
+    {
+        float const yards = std::hypot(hx - units[i].x, hy - units[i].y);
+        float const share = yards > TAME_CAST_YARDS / 2 ? TAME_CAST_YARDS / 2 / yards : 1.0f;
+        float const sx = units[i].x + (hx - units[i].x) * share;
+        float const sy = units[i].y + (hy - units[i].y) * share;
+        std::uint32_t count = 0;
+        for (std::size_t j = 0; j < units.size(); ++j)
+            if (j != i && TameThreat(units[j], units[i].x, units[i].y, sx, sy, assist))
+                ++count;
+        counts.push_back(count);
+    }
+    return counts;
+}
+
+void TameSiteRules()
+{
+    std::cout << "Scenario: the tame's site (WU.23: threats, the pick, clear or give up, the respawn wait, patrols)\n";
+    Check(TameSpawnStands(0) && TameSpawnStands(1) && !TameSpawnStands(MOVEMENT_WAYPOINT),
+          "a standing or wandering spawn is a tame target, a patrolling one (a waypoint path) is not");
+
+    float const assist = 10.0f;  // the core's CreatureFamilyAssistanceRadius default
+    TameSiteUnit const hostile{30.0f, 0.0f, 20.0f, true, false};
+    Check(TameThreat(hostile, 0.0f, 20.0f, 10.0f, 0.0f, assist), "a hostile whose aggro reach covers the spot");
+    Check(!TameThreat({60.0f, 0.0f, 20.0f, true, false}, 0.0f, 20.0f, 10.0f, 0.0f, assist),
+          "a hostile beyond its aggro reach of the spot is none (the bot is no closer)");
+    Check(TameThreat({5.0f, 25.0f, 0.0f, false, true}, 0.0f, 20.0f, 10.0f, 0.0f, assist) &&
+              TameThreat({6.0f, 9.0f, 0.0f, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a pack member near the beast, or near its run to the hunter, answers its call for help");
+    Check(!TameThreat({40.0f, 40.0f, 0.0f, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist) &&
+              !TameThreat({1.0f, 21.0f, 20.0f, false, false}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a far pack member, or a neutral creature of another faction beside the beast, joins nothing");
+    Check(TameThreat({80.0f, 80.0f, 0.0f, false, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a creature that fights the hunter already is a threat wherever it stands (no cast amid a fight)");
+
+    // A pack along x: three wolves within the assistance radius of each other, one 40 yards out at its edge; the
+    // hunter comes from the far side of the edge wolf
+    std::vector<TameSiteUnit> pack = {{0.0f, 0.0f, 15.0f, false, true},
+                                      {6.0f, 0.0f, 15.0f, false, true},
+                                      {12.0f, 0.0f, 15.0f, false, true},
+                                      {52.0f, 0.0f, 15.0f, false, true}};
+    std::vector<std::uint32_t> const counts = PackThreats(pack, 90.0f, 0.0f, assist);
+    Check(counts[3] == 0 && counts[0] > 0 && counts[1] > 0 && counts[2] > 0,
+          "of a pack the edge member has no threat, the others one or more");
+    TamePick const edge{counts[3], false, 38.0f};
+    TamePick const inner{counts[2], false, 78.0f};
+    Check(TameBetter(edge, inner) && !TameBetter(inner, edge),
+          "the pick takes the edge member (a site where none joins)");
+    Check(TameBetter({0, true, 80.0f}, {1, false, 20.0f}),
+          "a beast of another entry with a clean site beats the planned entry's beast whose pack would join");
+    Check(TameBetter({0, false, 80.0f}, {0, true, 20.0f}) && TameBetter({1, false, 20.0f}, {1, false, 30.0f}),
+          "at equal threats the planned entry first, then the nearest");
+
+    // Two hunters at one pack: the first tames the edge member (in its fight, so no threat and no pick); the second
+    // takes the nearest of the rest and fights its pack-mates first
+    pack.pop_back();
+    std::vector<std::uint32_t> const rest = PackThreats(pack, 90.0f, 0.0f, assist);
+    Check(rest[2] > 0 && TameSiteNext(rest[2], 0) == TameSite::Clear,
+          "the second hunter at the pack clears the members that would join, then casts");
+    Check(TameSiteNext(0, 0) == TameSite::Cast && TameSiteNext(0, TAME_MAX_CLEARS) == TameSite::Cast,
+          "a clean site casts at once, also after clears");
+    Check(
+        TameSiteNext(2, TAME_MAX_CLEARS - 1) == TameSite::Clear && TameSiteNext(1, TAME_MAX_CLEARS) == TameSite::GiveUp,
+        "a site still busy after TAME_MAX_CLEARS fights gives the stop up (a bot never stalls)");
+
+    // The respawn wait, from the spawn's respawn time: wanted beasts get the long budget, any pet the short one
+    Check(TameWaitMs(60 * 1000, 0, false) == 60 * 1000 + TAME_RESPAWN_GRACE_MS &&
+              TameWaitMs(300 * 1000, 0, false) == 300 * 1000 + TAME_RESPAWN_GRACE_MS,
+          "any pet: a respawn within the short budget (the common 5 min) is waited for, the grace on top");
+    Check(
+        TameWaitMs(400 * 1000, 0, false) == 0 && TameWaitMs(400 * 1000, 0, true) == 400 * 1000 + TAME_RESPAWN_GRACE_MS,
+        "a respawn beyond 5 min: any pet takes another target, the wanted beast is waited for");
+    Check(TameWaitMs(600 * 1000, 400 * 1000, true) == 0 && TameWaitMs(100 * 1000, 400 * 1000, true) > 0,
+          "the budget counts from the first wait: a second wait only while it fits");
+    Check(TameWaitMs(TAME_WAIT_WANTED_MS + 1, 0, true) == 0 && TameWaitMs(0, TAME_WAIT_WANTED_MS + 1, true) == 0,
+          "every wait ends: a respawn beyond the budget, or the budget spent, means no wait");
+    Check(TameWaitMs(0, 0, false) == TAME_RESPAWN_GRACE_MS, "a respawn due now waits the grid's update only");
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1182,6 +1483,10 @@ int main()
     RidingPlaces(index);
     TrainingPlaces(index);
     WeaponMasters();
+    PetNeed();
+    PetSwap();
+    TameSteps();
+    TameSiteRules();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

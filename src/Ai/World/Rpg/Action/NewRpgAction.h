@@ -132,6 +132,12 @@ public:
 
     // A vendor that walks along its route stays within this distance of its spawn point
     static constexpr float VENDOR_SEARCH_YARDS = 30.0f;
+
+    // Tame Beast's channel on the bot's AI update (WU21b-2): the bot is in combat through it, so the errand action
+    // does not run. True while the channel holds: the bot stands and channels, its AI waits (no attack of the beast
+    // it tames); below the break-off health the channel is broken off and the bot fights (false). Without the channel,
+    // in the fight of a beast that broke it (stun, knockback): true while it is cast again (TameRecastsInFight)
+    static bool HoldTameChannel(PlayerbotAI* botAI);
 };
 
 // Follows the trip's route leg by leg (RPG_TRAVEL): asks the route service, walks the waypoints, takes portals; a
