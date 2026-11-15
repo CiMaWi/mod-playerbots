@@ -21,7 +21,10 @@
 //   node need not be known: a bot reaching a flight master learns its node there (NewRpgTravelFlightAction does), and
 //   a flight chain's later origins are earlier destinations, known already
 // - transport (only with allowTransport; WT19): elevators their stored seconds, ships and zeppelins the expected wait
-//   (Params::transportWaitSeconds, half a period) plus SHIP_RIDE_SECONDS
+//   (Params::transportWaitSeconds, half a period) plus SHIP_RIDE_SECONDS; a wait point's link to its stop (no object)
+//   its walk. A stop with a wait point is reached and left only through the wait point and its rides
+//   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point
+// - static portal (a portal object a player clicks, WT55d): its stored 3 s, as an area trigger
 // - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
 //   A cooldown above HEARTH_WAIT_CAP_MS (3 min) is no edge: the follower never waits that long
@@ -58,6 +61,7 @@ namespace TravelRoute
 constexpr std::size_t TAXI_MASK_SIZE = 14;    // TaxiMaskSize (DBCStructure.h): 448 taxi nodes, PlayerTaxi's layout
 constexpr std::size_t END_NODES = 5;          // graph nodes the bot, the goal and the bind point connect to
 constexpr float DIRECT_YARDS = 100.0f;        // start and goal this close on one map may also be walked directly
+constexpr float SAME_WALK_YARDS = 10.0f;      // a walk off the graph with both ends this close to a refused one's
 constexpr float HEARTH_CAST_SECONDS = 10.0f;  // the hearthstone's cast
 constexpr std::uint32_t HEARTH_WAIT_CAP_MS = 3 * 60 * 1000;  // a cooldown longer than this is no hearth edge
 constexpr float FLIGHT_BOARDING_SECONDS = 5.0f;              // talking to the flight master, mounting and landing
@@ -95,24 +99,10 @@ inline float Distance(Point const& a, Point const& b)
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-// A straight walk off the graph (start to goal, to or from an end's nearest nodes, bind point to goal) climbs at most
-// its horizontal run plus a step: a cliff or a tower top is no straight walk however close it is (Thunder Bluff's
-// mesa is 53 yd across from its base and 68 yd up)
-constexpr float CLIMB_STEP_YARDS = 4.0f;
-
-inline bool StraightWalk(Point const& a, Point const& b)
-{
-    return std::fabs(a.z - b.z) <= std::hypot(a.x - b.x, a.y - b.y) + CLIMB_STEP_YARDS;
-}
-
-// An off-graph walk's seconds price its climb: a straight line up a steep slope is no run at full speed, and a graph
-// way (a ramp, an elevator) should win where there is one (Thunder Bluff's foot: 74 yd across and 66 yd up)
-constexpr float CLIMB_COST_FACTOR = 2.0f;
-
-inline float WalkSeconds(Point const& a, Point const& b, float runSpeed)
-{
-    return (Distance(a, b) + CLIMB_COST_FACTOR * std::fabs(a.z - b.z)) / runSpeed;
-}
+// A walk off the graph (start to goal, to or from an end's nearest nodes, bind point to goal) is proposed by distance
+// alone and priced as a run over it: the search has no navmesh. The bot's map thread probes such a walk on the navmesh
+// when it starts it (TravelWalk::ProbePiece, WT56); a refused one fails its leg at once, and the replan leaves it out
+inline float WalkSeconds(Point const& a, Point const& b, float runSpeed) { return Distance(a, b) / runSpeed; }
 
 // What the search knows of the bot: plain data, filled on the bot's map thread (WT7b's FillSnapshot)
 struct Snapshot
@@ -177,6 +167,9 @@ struct Request
     bool noDirect{false};
     // After deaths on walks of the trip (TravelLegs::NoteDeath): graph edges (node indices, either way) not used
     std::vector<std::pair<std::uint32_t, std::uint32_t>> avoidEdges;
+    // After walks off the graph the navmesh refused (TravelLegs::NoteWalkRefused, WT56): their start and end points;
+    // no walk off the graph with both ends within SAME_WALK_YARDS of a pair's, in its direction
+    std::vector<std::pair<Point, Point>> avoidWalks;
     // After a failed fly leg of the trip (TravelLegs::AfterFailure): no fly legs
     bool noFly{false};
 
@@ -184,6 +177,13 @@ struct Request
     {
         for (auto const& [a, b] : avoidEdges)
             if ((a == from && b == to) || (a == to && b == from))
+                return true;
+        return false;
+    }
+    bool AvoidsWalk(Point const& from, Point const& to) const
+    {
+        for (auto const& [a, b] : avoidWalks)
+            if (a.mapId == from.mapId && Distance(a, from) <= SAME_WALK_YARDS && Distance(b, to) <= SAME_WALK_YARDS)
                 return true;
         return false;
     }
@@ -207,7 +207,8 @@ enum class LegType : std::uint8_t
     Flight,  // a taxi
     Transport,
     Hearth,
-    Fly  // on the bot's own flying mount
+    Fly,          // on the bot's own flying mount
+    StaticPortal  // a portal object a player clicks (graph link type 6): the follower uses it at its node
 };
 
 enum class Failure : std::uint8_t
@@ -224,8 +225,10 @@ struct Leg
     LegType type{LegType::Walk};
     Point from;
     Point to;
-    std::vector<std::uint32_t> nodes;      // graph node indices passed, in order (walk waypoints; the ends otherwise)
-    std::uint32_t object{0};               // area trigger, first TaxiPath or transport entry
+    // Graph node indices passed, in order: walk waypoints; a transport leg's stops, between the wait points where the
+    // graph has them; the ends otherwise
+    std::vector<std::uint32_t> nodes;
+    std::uint32_t object{0};  // area trigger, portal object (static portal), first TaxiPath or transport entry
     std::vector<std::uint32_t> taxiNodes;  // flight legs: the taxi node chain for Player::ActivateTaxiPathTo
     float seconds{0.0f};
     std::uint32_t fareCopper{0};
@@ -236,13 +239,22 @@ struct Leg
     float flightYards{0.0f};
     std::uint32_t flightLevels{0};
     float flightClearance{0.0f};
+    // Transport legs: the index in nodes of the ride's first stop, the ride's stops, and whether an end is a wait point
+    // (waitFrom, waitTo: from or to is then the wait point, else the stop itself; TravelLegs::StopFrom, StopTo)
+    std::uint32_t rideAt{0};
+    Point stopFrom;
+    Point stopTo;
+    bool waitFrom{false};
+    bool waitTo{false};
 };
 
 struct Result
 {
     bool ok{false};
     Failure failure{Failure::None};
-    std::vector<Leg> legs;  // consecutive walk links merge into one leg, consecutive flights into one
+    // Consecutive walk links merge into one leg, consecutive flights into one, a crossing with its wait points' links
+    // into one transport leg
+    std::vector<Leg> legs;
     float totalSeconds{0.0f};
     std::uint32_t expandedNodes{0};
     std::uint32_t flightSearches{0};  // AddFlyLegs' FlightRules::Search calls and their time
@@ -274,6 +286,8 @@ inline char const* LegTypeWord(LegType type)
             return "hearth";
         case LegType::Fly:
             return "fly";
+        case LegType::StaticPortal:
+            return "static_portal";
     }
     return "?";
 }
@@ -357,10 +371,13 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
             return ((link.distance - swim) / runSpeed + swim / swimSpeed) * WalkModifier(link, bot);
         }
         case TravelLinkType::Portal:
+        case TravelLinkType::StaticPortal:
             return link.extraCost;
         case TravelLinkType::Transport:
             if (!bot.allowTransport)
                 return -1.0f;
+            if (TravelGraph::IsWaitPointLink(link))
+                return link.distance / runSpeed;
             return link.extraCost >= 1.0f ? link.extraCost : params.transportWaitSeconds + SHIP_RIDE_SECONDS;
         case TravelLinkType::Flight:
         {
@@ -404,12 +421,15 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
     Point const& goal = request.goal;
     std::vector<std::uint32_t> startNodes = graph.NearestNodes(start.mapId, start.x, start.y, start.z, END_NODES);
     std::vector<std::uint32_t> goalNodes = graph.NearestNodes(goal.mapId, goal.x, goal.y, goal.z, END_NODES);
-    auto const avoided = [&request](std::uint32_t node)
-    { return std::find(request.avoidNodes.begin(), request.avoidNodes.end(), node) != request.avoidNodes.end(); };
+    // A stop with a wait point is no end node: the bot walks to its wait point
+    auto const avoided = [&](std::uint32_t node)
+    {
+        return graph.GetNode(node).waitStop ||
+               std::find(request.avoidNodes.begin(), request.avoidNodes.end(), node) != request.avoidNodes.end();
+    };
     std::erase_if(startNodes, avoided);
     std::erase_if(goalNodes, avoided);
-    bool const direct = !request.noDirect && start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS &&
-                        StraightWalk(start, goal);
+    bool const direct = !request.noDirect && start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS;
     if (startNodes.empty() && !direct)
     {
         result.failure = Failure::NoStartNode;
@@ -424,6 +444,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
     std::vector<std::uint32_t> bindNodes;
     if (bot.hasHearthstone)
         bindNodes = graph.NearestNodes(bot.hearth.mapId, bot.hearth.x, bot.hearth.y, bot.hearth.z, END_NODES);
+    std::erase_if(bindNodes, [&graph](std::uint32_t node) { return graph.GetNode(node).waitStop; });
     bool const hearth = bot.hasHearthstone && bot.hearthCooldownMs <= HEARTH_WAIT_CAP_MS &&
                         (!bindNodes.empty() || bot.hearth.mapId == goal.mapId);
 
@@ -516,7 +537,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
     {
         Point const a = pointOf(from);
         Point const b = pointOf(to);
-        if (StraightWalk(a, b))
+        if (!request.AvoidsWalk(a, b))
             relax(from, to, WalkSeconds(a, b, runSpeed), NO_LINK, Step::Walk, 0);
     };
 
@@ -538,8 +559,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             for (std::uint32_t const node : vertex == source ? startNodes : bindNodes)
                 walkTo(vertex, node);
             if (vertex == source ? direct
-                                 : bot.hearth.mapId == goal.mapId && Distance(bot.hearth, goal) <= DIRECT_YARDS &&
-                                       StraightWalk(bot.hearth, goal))
+                                 : bot.hearth.mapId == goal.mapId && Distance(bot.hearth, goal) <= DIRECT_YARDS)
                 walkTo(vertex, target);
             if (vertex == source && hearth)
                 relax(source, bind, HEARTH_CAST_SECONDS + static_cast<float>(bot.hearthCooldownMs) / 1000.0f, NO_LINK,
@@ -551,7 +571,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         {
             std::uint32_t fare = 0;
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
-            if (seconds < 0.0f)
+            if (seconds < 0.0f || graph.OffWaitStop(link))
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
                 continue;
@@ -584,6 +604,9 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         chain.push_back(vertex);
     std::reverse(chain.begin(), chain.end());
 
+    // The open transport leg: has it a ride, did its last link reach a wait point after the ride
+    bool legRides = false;
+    bool legLanded = false;
     for (std::uint32_t const vertex : chain)
     {
         Via const& step = via[vertex];
@@ -593,14 +616,27 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             type = LegType::Hearth;
         else if (link && link->type == TravelLinkType::Portal)
             type = LegType::Portal;
+        else if (link && link->type == TravelLinkType::StaticPortal)
+            type = LegType::StaticPortal;
         else if (link && link->type == TravelLinkType::Flight)
             type = LegType::Flight;
         else if (link && link->type == TravelLinkType::Transport)
             type = LegType::Transport;
 
         TravelTaxiPath const* path = link ? graph.TaxiPathOf(*link) : nullptr;
-        bool const merge = !result.legs.empty() && result.legs.back().type == type &&
-                           (type == LegType::Walk || type == LegType::Flight);
+        // A crossing is one transport leg: the near wait point's link, one ride, the far wait point's link
+        bool const waitLink = link && TravelGraph::IsWaitPointLink(*link);
+        bool merge = !result.legs.empty() && result.legs.back().type == type &&
+                     (type == LegType::Walk || type == LegType::Flight);
+        if (!result.legs.empty() && result.legs.back().type == LegType::Transport && type == LegType::Transport)
+            merge = waitLink ? !legLanded : !legRides;
+        if (merge && type == LegType::Transport && !waitLink)
+            result.legs.back().object = link->object;
+        if (type == LegType::Transport)
+        {
+            legLanded = merge && waitLink && legRides;
+            legRides = (merge && legRides) || !waitLink;
+        }
         if (!merge)
         {
             Leg leg;
@@ -615,6 +651,16 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         }
 
         Leg& leg = result.legs.back();
+        if (type == LegType::Transport && !waitLink)
+        {
+            // The ride: its first stop is the node passed last, a node before it the near wait point
+            leg.rideAt = leg.nodes.empty() ? 0 : static_cast<std::uint32_t>(leg.nodes.size() - 1);
+            leg.waitFrom = leg.nodes.size() > 1;
+            leg.stopFrom = pointOf(step.vertex);
+            leg.stopTo = pointOf(vertex);
+        }
+        else if (type == LegType::Transport && legRides)
+            leg.waitTo = true;
         leg.to = pointOf(vertex);
         leg.seconds += best[vertex] - best[step.vertex];
         if (vertex < nodeCount)
@@ -625,6 +671,28 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             leg.fareCopper += path->price;
         }
     }
+
+    // Wait-point links without a ride between them are a walk
+    std::vector<Leg> legs;
+    legs.reserve(result.legs.size());
+    for (Leg& leg : result.legs)
+    {
+        if (leg.type == LegType::Transport && !leg.object)
+            leg.type = LegType::Walk;
+        if (leg.type != LegType::Walk || legs.empty() || legs.back().type != LegType::Walk)
+        {
+            legs.push_back(std::move(leg));
+            continue;
+        }
+        Leg& walk = legs.back();
+        auto first = leg.nodes.begin();
+        if (first != leg.nodes.end() && !walk.nodes.empty() && walk.nodes.back() == *first)
+            ++first;
+        walk.nodes.insert(walk.nodes.end(), first, leg.nodes.end());
+        walk.to = leg.to;
+        walk.seconds += leg.seconds;
+    }
+    result.legs = std::move(legs);
 
     result.ok = true;
     result.totalSeconds = best[target];
@@ -1804,51 +1872,48 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         check(legCount(flownNorth, LegType::Fly) == 1 && flownNorth.totalSeconds < noColdWeather.totalSeconds,
               "k) Northrend with Cold Weather Flying: no quicker fly leg");
 
-    // l) No straight walk climbs a cliff (WT43): from Thunder Bluff's foot to its mesa, 53 yd across and 68 yd up, the
-    //    way is not one walk leg; a gentle slope of the same length still is. From the elevator scenario's start (74 yd
-    //    across, 66 yd up: inside the cutoff) the priced climb makes the elevator win.
+    // l) Walks off the graph are proposed by distance alone (WT56): from Thunder Bluff's foot to its mesa (53 yd
+    //    across, 68 yd up) and back, and from the elevator scenario's start (74 yd across, 66 yd up), the route is
+    //    one direct walk priced as a run over its distance. The bot's map thread probes it on the navmesh and a
+    //    refusal replans without it (route-rules-selftest n). Without the direct walk the route runs through nodes
+    //    or there is none; a goal beyond DIRECT_YARDS is no direct walk
     Point const bluffFoot{1, -1290.7f, 172.0f, 67.4f};
     Point const liftStart{1, -1279.9f, 195.38f, 69.44f};
     Point const bluffTop{1, -1274.74f, 121.51f, 134.98f};
-    check(!StraightWalk(bluffFoot, bluffTop) && !StraightWalk(bluffTop, bluffFoot),
-          "l) a 68 yd climb over 53 yd is a straight walk");
-    check(StraightWalk(bluffFoot, {1, -1274.74f, 121.51f, 100.0f}), "l) a 33 yd rise over 53 yd is no straight walk");
-    check(StraightWalk({1, 0.0f, 0.0f, 0.0f}, {1, 0.5f, 0.0f, 3.0f}), "l) a step beside a node is no straight walk");
     Snapshot climber;
     climber.position = bluffFoot;
     climber.team = 1;
     climber.level = 10;
     climber.money = 10000;
     climber.allowTransport = true;
-    Request const climb{climber, bluffTop};
-    Result const climbed = Search(graph, climb, StuckEdges{}, aStar);
-    auto const nodeAt = [&graph](std::uint32_t index) -> Point
+    auto const directWalk = [](Result const& route)
     {
-        TravelGraphNode const& node = graph.GetNode(index);
-        return {node.mapId, node.x, node.y, node.z};
+        return route.ok && route.legs.size() == 1 && route.legs.front().type == LegType::Walk &&
+               route.legs.front().nodes.empty();
     };
-    bool cliffWalk = false;
-    for (Leg const& leg : climbed.legs)
-    {
-        if (leg.type != LegType::Walk)
-            continue;
-        // The off-graph pieces of a walk leg: its start to its first node and its last node to its end
-        Point const first = leg.nodes.empty() ? leg.to : nodeAt(leg.nodes.front());
-        Point const last = leg.nodes.empty() ? leg.from : nodeAt(leg.nodes.back());
-        cliffWalk = cliffWalk || !StraightWalk(leg.from, first) || !StraightWalk(last, leg.to);
-    }
-    check(!cliffWalk, "l) Thunder Bluff foot -> mesa walks straight up the cliff");
+    Result const climbed = Search(graph, Request{climber, bluffTop}, StuckEdges{}, aStar);
+    check(directWalk(climbed), "l) Thunder Bluff foot -> mesa is not one direct walk");
     notes.push_back("l) Thunder Bluff foot -> mesa: " +
                     (climbed.ok ? describe(climbed) : std::string(FailureWord(climbed.failure))));
-    check(WalkSeconds(liftStart, bluffTop, 7.0f) > 2.0f * Distance(liftStart, bluffTop) / 7.0f,
-          "l) a steep walk is priced as a level one");
+    Snapshot onTop = climber;
+    onTop.position = bluffTop;
+    check(directWalk(Search(graph, Request{onTop, bluffFoot}, StuckEdges{}, aStar)),
+          "l) Thunder Bluff mesa -> foot is not one direct walk");
     climber.position = liftStart;
-    Result const lifted = Search(graph, Request{climber, bluffTop}, StuckEdges{}, aStar);
-    bool const byLift = lifted.ok && std::any_of(lifted.legs.begin(), lifted.legs.end(),
-                                                 [](Leg const& leg) { return leg.type == LegType::Transport; });
-    check(byLift, "l) the elevator scenario's start walks straight up to the mesa");
-    notes.push_back("l) elevator scenario start -> mesa: " +
-                    (lifted.ok ? describe(lifted) : std::string(FailureWord(lifted.failure))));
+    check(directWalk(Search(graph, Request{climber, bluffTop}, StuckEdges{}, aStar)),
+          "l) the elevator scenario's start -> mesa is not one direct walk");
+    check(std::fabs(WalkSeconds(liftStart, bluffTop, 7.0f) - Distance(liftStart, bluffTop) / 7.0f) < 0.01f,
+          "l) a walk off the graph is priced by more than its distance");
+    climber.position = bluffFoot;
+    Request noDirect{climber, bluffTop};
+    noDirect.noDirect = true;
+    Result const around = Search(graph, noDirect, StuckEdges{}, aStar);
+    check(!directWalk(around), "l) without the direct walk the route still walks directly");
+    notes.push_back("l) Thunder Bluff foot -> mesa without the direct walk: " +
+                    (around.ok ? describe(around) : std::string(FailureWord(around.failure))));
+    check(!directWalk(Search(graph, Request{climber, {1, bluffFoot.x + 150.0f, bluffFoot.y, bluffFoot.z}}, StuckEdges{},
+                             aStar)),
+          "l) a goal 150 yd off is one direct walk");
     return checks;
 }
 }  // namespace TravelRoute

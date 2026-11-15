@@ -30,6 +30,7 @@ constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
 constexpr std::uint16_t FLYFAIL = 64;     // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
 constexpr std::uint16_t FLYABORT = 128;   // as flyfail, as the trip's last failure: the trip ends once the bot is down
 constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
+constexpr std::uint16_t NOTAXI = 512;     // plans no flight leg (travel WT55a: walk-only trips)
 // mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
 constexpr std::uint16_t NOMOUNT = 1024;
 constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
@@ -59,6 +60,7 @@ constexpr Row ROWS[] = {
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
     {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
+    {"notaxi", Kind::State, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
     {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
 };
@@ -174,6 +176,9 @@ inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
+// notaxi, read by the trip's route request (NewRpgAction.cpp; nothing to apply or undo): the search knows no flight
+// master, so the route and the bot take no taxi (also after the bot learns a flight node on the way)
+inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
