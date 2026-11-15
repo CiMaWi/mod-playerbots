@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankRulesSelftest.h"

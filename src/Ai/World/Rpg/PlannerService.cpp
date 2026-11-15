@@ -16,6 +16,7 @@
 #include <unordered_map>
 
 #include "Bag.h"
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"

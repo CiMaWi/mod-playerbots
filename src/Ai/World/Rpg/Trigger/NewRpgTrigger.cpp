@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
