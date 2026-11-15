@@ -141,8 +141,17 @@ struct Snapshot
     Goal currentGoal;         // WT16 fills the goals
     std::vector<Goal> recentGoals;
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
-    std::vector<StockItem> stock;                     // the backpack and every bag, one entry per item id
-    std::uint8_t petDiet{0};                          // the hunter pet's diet (bit FoodType - 1); 0 = unknown
+    std::vector<StockItem> stock;  // the backpack and every bag, one entry per item id
+    std::uint8_t petDiet{0};       // the hunter pet's diet (bit FoodType - 1); 0 = unknown
+    // The hunter's pet (WU21b): a current pet, summoned or not (dismissed or dead: PetStable::CurrentPet), or the
+    // unslotted one; any of them makes the core's Tame Beast tame nothing
+    bool hasPet{false};
+    std::uint8_t petFamily{0};  // its creature family; 0 = unknown
+    std::uint8_t petLevel{0};
+    bool knowsTameBeast{false};                       // Tame Beast (1515)
+    bool tamesExotic{false};                          // Player::CanTameExoticPets: Beast Mastery's aura
+    bool stableFree{false};                           // a bought stable slot is empty (WU21c)
+    std::uint32_t stableSlotPrice{0};                 // the next slot's price; 0 = every slot bought
     std::uint8_t ammoSubClass{0};                     // the equipped ranged weapon's ammo: arrow 2, bullet 3; 0 = none
     std::uint32_t ammoDamage{0};                      // the equipped ammo's (PLAYER_AMMO_ID) damage x 1000; 0 = none
     std::uint32_t upkeepVersion{0};                   // the upkeep index the bit sets align to; 0 = none yet

@@ -66,7 +66,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Mount", true},
     {"SpecialSpell", true},
     {"ClassQuest", false},  // spells of class quests the bot never did
-    {"Pet", false},         // pet and pet talents
+    {"Pet", true},          // the pet; WU21b: tamed at a beast's spawn (pet talents are free points, no handout)
     {"Glyph", true},
     {"Key", true},  // keyring
     {"Reputation", true},
@@ -183,7 +183,7 @@ constexpr char const* EVENT_SICK = "Sick";                   // src spirit_heale
 constexpr char const* EVENT_NEED_SHORT = "NeedShort";  // src = the kind word, amount; when a shortfall begins and ends
 constexpr char const* EVENT_FLIGHT_FALL = "FlightFall";
 // Batch G (class quests, WU20a-WU21c), registered at once so later steps touch no wide header
-constexpr char const* EVENT_PET_TAMED = "PetTamed";                          // a hunter tamed a beast: id the creature
+constexpr char const* EVENT_PET_TAMED = "PetTamed";  // a hunter tamed a beast: id the creature (WU21b-2 writes it)
 constexpr char const* SOURCE_CLASS_QUEST_GIVEN_UP = "class_quest_given_up";  // a grant after the bot gave the quest up
 constexpr char const* REASON_CLASS_QUEST = "class_quest";  // a goal or circuit row the class-quest bonus decided
 }  // namespace Upkeep

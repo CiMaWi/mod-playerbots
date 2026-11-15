@@ -4450,6 +4450,13 @@ std::vector<TravelMgr::TrainerInfo> const& TravelMgr::GetTrainers(uint32 mapId) 
     return it == trainersByMap.end() ? none : it->second;
 }
 
+std::vector<TravelMgr::TrainerInfo> const& TravelMgr::GetStableMasters(uint32 mapId) const
+{
+    static std::vector<TrainerInfo> const none;
+    auto const it = stableMastersByMap.find(mapId);
+    return it == stableMastersByMap.end() ? none : it->second;
+}
+
 bool TravelMgr::GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const
 {
     auto const itr = zone2LevelBracket.find(zoneId);
@@ -4781,6 +4788,7 @@ void TravelMgr::PrepareDestinationCache()
         eventSpawns.insert(eventCreatureGuids[i].begin(), eventCreatureGuids[i].end());
     vendorsByMap.clear();
     trainersByMap.clear();
+    stableMastersByMap.clear();
 
     LOG_INFO("playerbots", "Preparing destination caches for {} levels...", maxLevel);
     // Temporary map to group creatures by entry and area
@@ -4828,6 +4836,11 @@ void TravelMgr::PrepareDestinationCache()
                 {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
             ++trainerCount;
         }
+
+        // ERRAND STABLE MASTERS (upkeep WU21c: a hunter's swap of an unwanted pet; the errand judges the faction)
+        if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_STABLEMASTER) && !eventSpawns.count(guid))
+            stableMastersByMap[mapId].push_back(
+                {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
 
         // CREATURES
         if (creatureTemplate->npcflag == 0 &&

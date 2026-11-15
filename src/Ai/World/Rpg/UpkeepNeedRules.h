@@ -32,6 +32,7 @@
 namespace UpkeepNeeds
 {
 using Planner::Snapshot;
+using Planner::TameableSpawn;
 using Planner::TrainerList;
 using Planner::TrainerSpell;
 using Planner::UpkeepIndex;
@@ -113,7 +114,7 @@ enum class NeedOrder : std::uint8_t
     ReagentPoison,
     Training,
     Riding,
-    Pet  // batch G (WU21b): a hunter's pet and its stable; no need of this order yet
+    Pet  // a hunter's pet (WU21b) and its stable (WU21c)
 };
 
 // One thing the bot must or wants to pay for
@@ -136,7 +137,12 @@ struct Need
     std::uint32_t lotSize{1};               // consumables: the best offer's lot (buyCount) ...
     std::uint32_t lotPrice{0};              // ... and its price
     std::uint32_t keptGrade{0};             // ammo and poison: the grade the bot keeps (KeptGrade)
-    char const* without{""};                // what going without costs the bot
+    std::uint32_t beast{0};                 // pet: the creature entry to tame, 0 = no spawn on the bot's map
+    std::uint8_t beastFamily{0};
+    std::uint8_t beastLevel{0};  // its template's highest level
+    Planner::Place beastAt;      // the spawn
+    bool swap{false};            // pet: the old pet goes into the stable first (WU21c); copper the slot to buy
+    char const* without{""};     // what going without costs the bot
 };
 
 // What a riding rank is worth to the bot now
@@ -883,6 +889,306 @@ constexpr bool RidingErrandDue(Need const& need)
     return need.kind == UpkeepKind::Riding && need.due && need.copper > 0 && need.funded >= need.copper;
 }
 
+// The pet need (§3.11, WU21b): a hunter of PET_MIN_LEVEL or above that knows Tame Beast and has no pet (a dismissed
+// or dead one counts as a pet: the core's Tame Beast tames nothing then) wants the nearest spawn of a wanted family at
+// or below its level on its map. Due at once, price 0 (taming costs nothing). A wanted family, for now (WU21b's brief,
+// Unclear 1): any tameable one, an exotic one only with Beast Mastery's aura (the core refuses it otherwise); WU21c's
+// wanted-family list by spec replaces WantedBeast. Without a spawn on the map the need stays, no trip (the bot plays
+// on)
+constexpr std::uint32_t SPELL_TAME_BEAST = 1515;
+constexpr std::uint8_t PET_MIN_LEVEL = 10;    // Tame Beast and pets from 10 (the class quest)
+constexpr std::uint8_t PET_CLASS_HUNTER = 3;  // the core's CLASS_HUNTER
+
+constexpr bool WantedBeast(TameableSpawn const& spawn, std::uint8_t level, bool tamesExotic)
+{
+    return spawn.maxLevel <= level && (!spawn.exotic || tamesExotic);
+}
+
+// The families a hunter wants as its pet (§3.11, WU21c), by spec as the core marks it: Beast Mastery's talent (its
+// aura, Player::CanTameExoticPets) opens the exotic families, and a Beast Mastery hunter wants one of them; a hunter of
+// another spec wants any family it can tame, so it never swaps. A pet of an unknown family (0) is wanted. The list is
+// data (the core's CreatureFamily numbers)
+constexpr std::array<std::uint8_t, 7> BEAST_MASTERY_FAMILIES = {38 /*chimaera*/,
+                                                                39 /*devilsaur*/,
+                                                                41 /*silithid*/,
+                                                                42 /*worm*/,
+                                                                43 /*rhino*/,
+                                                                45 /*core hound*/,
+                                                                46 /*spirit beast*/};
+
+constexpr bool WantedFamily(std::uint8_t family, bool tamesExotic)
+{
+    if (!tamesExotic || !family)
+        return true;
+    for (std::uint8_t const wanted : BEAST_MASTERY_FAMILIES)
+        if (wanted == family)
+            return true;
+    return false;
+}
+
+// The nearest wanted spawn on the snapshot's map, or none; familyRule: only the families WantedFamily names (the swap)
+inline TameableSpawn const* NearestBeast(UpkeepIndex const& index, Snapshot const& snapshot, bool familyRule = false)
+{
+    TameableSpawn const* nearest = nullptr;
+    float best = std::numeric_limits<float>::max();
+    auto const [first, last] = index.TameableOn(snapshot.position.map);
+    for (auto it = first; it != last; ++it)
+    {
+        if (!WantedBeast(*it, snapshot.level, snapshot.tamesExotic) ||
+            (familyRule && !WantedFamily(it->family, snapshot.tamesExotic)))
+            continue;
+        float const dx = it->x - snapshot.position.x;
+        float const dy = it->y - snapshot.position.y;
+        float const dz = it->z - snapshot.position.z;
+        float const yards = dx * dx + dy * dy + dz * dz;
+        if (yards < best)
+        {
+            best = yards;
+            nearest = &*it;
+        }
+    }
+    return nearest;
+}
+
+// The swap form (WU21c): a hunter whose pet is of no wanted family stores it at a stable master and tames a wanted
+// beast. Only with a wanted spawn on the map (else the hunter keeps its pet: it never stands without one for a beast
+// it cannot reach; a spawn beyond the tame's walk limit is refused too_far by the trip, WorldTravel::PlanTrip) and a
+// slot for the old pet: an empty bought one (copper 0) or the next one to buy (copper its
+// price, due only when the gold above the reserve pays it: PetSwapPayable, read once the reserve is known). With every
+// slot full the hunter keeps its pet
+inline void AddPet(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot)
+{
+    if (snapshot.cls != PET_CLASS_HUNTER || snapshot.level < PET_MIN_LEVEL || !snapshot.knowsTameBeast)
+        return;
+
+    bool const swap = snapshot.hasPet;
+    if (swap &&
+        (WantedFamily(snapshot.petFamily, snapshot.tamesExotic) || (!snapshot.stableFree && !snapshot.stableSlotPrice)))
+        return;
+    TameableSpawn const* beast = NearestBeast(index, snapshot, swap);
+    if (swap && !beast)
+        return;
+
+    Need need;
+    need.order = NeedOrder::Pet;
+    need.kind = UpkeepKind::Pet;
+    need.units = 1;
+    need.item = SPELL_TAME_BEAST;
+    need.swap = swap;
+    need.copper = swap && !snapshot.stableFree ? snapshot.stableSlotPrice : 0;
+    need.without = swap ? "keeps the wrong pet" : "no pet";
+    if (beast)
+    {
+        need.due = true;
+        need.beast = beast->entry;
+        need.beastFamily = beast->family;
+        need.beastLevel = beast->maxLevel;
+        need.beastAt = {beast->map, beast->x, beast->y, beast->z};
+    }
+    list.needs.push_back(need);
+}
+
+// A slot is bought only from the gold above the reserve (WU.16 point 7); an empty bought slot costs nothing
+constexpr bool PetSwapPayable(std::uint64_t money, std::uint64_t reserve, std::uint64_t price)
+{
+    return !price || (money > reserve && money - reserve >= price);
+}
+
+// At the stable master the pet must be out and alive: a trip arrives mounted, and the core brings the pet back after
+// the dismount (a DB load); the visit waits this long for it, then gives the swap up (the hunter keeps its pet)
+constexpr std::uint32_t STABLE_PET_WAIT_MS = 10 * 1000;
+
+// The pet need makes a trip of its own when it names a spawn: the tame's (price 0) or the swap's that the gold above
+// the reserve pays (ComputeNeeds clears due otherwise)
+constexpr bool PetErrandDue(Need const& need) { return need.kind == UpkeepKind::Pet && need.due && need.beast; }
+
+// The tame at the beast's spawn (§3.11, WU21b-2): the hunter casts Tame Beast from TAME_CAST_YARDS and channels while
+// the beast fights it; below TAME_BREAK_OFF_HEALTH_PCT it breaks the channel off and fights the beast. A new try waits
+// until the health is back to TAME_START_HEALTH_PCT, for TAME_REST_MS at most (a bot never stalls), and a stop casts
+// TAME_MAX_TRIES times at most; then it is given up and the need plans a new trip at the errand retry. Tuning values,
+// read from the nights
+constexpr float TAME_CAST_YARDS = 20.0f;
+constexpr float TAME_BREAK_OFF_HEALTH_PCT = 35.0f;
+constexpr float TAME_START_HEALTH_PCT = 60.0f;
+constexpr std::uint32_t TAME_REST_MS = 60 * 1000;
+constexpr std::uint8_t TAME_MAX_TRIES = 3;
+// A pick that gets no cast within this time (the walk to the beast, the dismount) gives the stop up: every wait ends
+constexpr std::uint32_t TAME_REACH_MS = 60 * 1000;
+// The reach bound's start (0 = not started): the first tick past the stop's rest starts it (the arrival, a channel's
+// end, a clear's fight, a respawn wait reset it to 0), and a new pick of a beast keeps it (WU21e run 2: re-picks of
+// wandering Frostwing Chimaeras restarted it, the chase on the Isle of Spears cliffs never ended)
+constexpr std::uint32_t TameReachStartMs(std::uint32_t startMs, std::uint32_t nowMs)
+{
+    return startMs ? startMs : nowMs;
+}
+// The stop looks for a beast as far as a player sees one on a continent (Visibility.Distance.Continents' default): a
+// hunter arrives up to 30 yards short of the spawn, and when another hunter or a fight took the beasts there, the next
+// spawns of the entry stand 70-100 yards on (WU21b-4: Borean wolves 25675, the nearest left 92 yards from the bot)
+constexpr float TAME_SEARCH_YARDS = 100.0f;
+
+constexpr bool TameBreaksOff(float healthPct) { return healthPct < TAME_BREAK_OFF_HEALTH_PCT; }
+
+enum class TameNext : std::uint8_t
+{
+    Cast,
+    Rest,
+    GiveUp
+};
+
+// The step at the stop before a cast: the casts made there, the bot's health and the ms since the bot arrived or its
+// last channel ended
+constexpr TameNext TameNextStep(std::uint8_t tries, float healthPct, std::uint32_t sinceMs)
+{
+    if (tries >= TAME_MAX_TRIES)
+        return TameNext::GiveUp;
+    if (healthPct < TAME_START_HEALTH_PCT && sinceMs < TAME_REST_MS)
+        return TameNext::Rest;
+    return TameNext::Cast;
+}
+
+// A channel the beast broke while its fight goes on (its stun or knockback: Swoop, Wing Buffet; damage only pushes a
+// channel back) is cast again at once on the same beast, as a player tames: the ability is spent for a while (once
+// per fight, or on a timer longer than the channel). Only with tries left and the start health, and within
+// TAME_RECAST_MS of the channel's end (the stun, the fall of a knockback); else the bot fights the beast and the
+// stop's rest and next try follow
+constexpr std::uint32_t TAME_RECAST_MS = 6 * 1000;
+
+constexpr bool TameRecastsInFight(std::uint8_t tries, float healthPct, std::uint32_t sinceEndMs)
+{
+    return tries < TAME_MAX_TRIES && healthPct >= TAME_START_HEALTH_PCT && sinceEndMs <= TAME_RECAST_MS;
+}
+
+// A beast whose own spells break the channel is no tame target (WU.4; WU21b-2 round 4: the Bonestripper Buzzard's
+// Swoop stuns every 10 s, so the 20 s channel never ends): a spell effect that knocks back or interrupts a cast, or
+// an aura that stuns, fears, confuses or silences. One rule over the beast's spells (its creature_template_spell
+// spells and its SmartAI's casts, Planner::BreaksTameChannel), read where the index gathers the tameable spawns and
+// where the stop searches for a beast. The core's numbers (SharedDefines.h SpellEffects, SpellAuraDefines.h AuraType;
+// PlannerUpkeep.cpp asserts them)
+constexpr std::uint32_t EFFECT_INTERRUPT_CAST = 68;
+constexpr std::uint32_t EFFECT_KNOCK_BACK = 98;
+constexpr std::uint32_t EFFECT_KNOCK_BACK_DEST = 144;
+constexpr std::uint32_t AURA_MOD_CONFUSE = 5;
+constexpr std::uint32_t AURA_MOD_FEAR = 7;
+constexpr std::uint32_t AURA_MOD_STUN = 12;
+constexpr std::uint32_t AURA_MOD_SILENCE = 27;
+
+constexpr bool BreaksTameChannel(std::uint32_t effect, std::uint32_t aura)
+{
+    return effect == EFFECT_INTERRUPT_CAST || effect == EFFECT_KNOCK_BACK || effect == EFFECT_KNOCK_BACK_DEST ||
+           aura == AURA_MOD_CONFUSE || aura == AURA_MOD_FEAR || aura == AURA_MOD_STUN || aura == AURA_MOD_SILENCE;
+}
+
+// A tame target has TAME_MIN_SPAWNS spawns at least (WU21b-2 round 5): a single named spawn (Ripp 19458, Aspatha
+// 25498) is gone for its respawn once one hunter tames or kills it (its pack fights every bot that arrives), and the
+// next hunter the need sends finds none at the stop; of an entry with several spawns the stop takes the next one
+constexpr std::uint32_t TAME_MIN_SPAWNS = 2;
+
+constexpr bool TameTargetSpawns(std::uint32_t spawns) { return spawns >= TAME_MIN_SPAWNS; }
+
+// A patrolling spawn is no tame target (WU.23; WU21d: the Vilewing Chimaera's five spawns walk waypoint paths and the
+// stop found none to cast at): the index counts and places only standing spawns, and the stop's search skips a
+// patrolling beast. The core's MovementGeneratorType WAYPOINT_MOTION_TYPE (PlannerUpkeep.cpp asserts it)
+constexpr std::uint8_t MOVEMENT_WAYPOINT = 2;
+
+constexpr bool TameSpawnStands(std::uint8_t movementType) { return movementType != MOVEMENT_WAYPOINT; }
+
+// The tame's site (WU.23): before the 20 s channel the hunter looks at the creatures that would join its fight. A
+// creature is a threat when it is hostile and its aggro reach covers the hunter's spot, or when it answers the beast's
+// call for help (the core's assistance: free, of the beast's faction, within the assistance radius of the beast,
+// which calls again as it runs from its place to the hunter: the segment between them), or when it fights the hunter
+// already (WU21e run 1: a cast amid a clear's fight lost its beast to that fight). TAME_SITE_MARGIN_YARDS covers
+// where the hunter stands at the cast; TAME_SITE_YARDS is the search around it (the widest aggro reach and the margin)
+constexpr float TAME_SITE_MARGIN_YARDS = 5.0f;
+constexpr float TAME_SITE_YARDS = 50.0f;
+
+struct TameSiteUnit
+{
+    float x{0.0f};
+    float y{0.0f};
+    float aggroYards{0.0f};  // its aggro reach against the hunter (Creature::GetAggroRange)
+    bool hostile{false};     // it attacks the hunter on sight
+    bool assists{false};     // it answers the beast's call for help (Creature::CanAssistTo)
+    bool attacking{false};   // it fights the hunter now
+};
+
+// The distance in the plane from a point to the segment a-b
+inline float SegmentYards(float px, float py, float ax, float ay, float bx, float by)
+{
+    float const dx = bx - ax;
+    float const dy = by - ay;
+    float const length2 = dx * dx + dy * dy;
+    float const t = length2 > 0.0f ? std::clamp(((px - ax) * dx + (py - ay) * dy) / length2, 0.0f, 1.0f) : 0.0f;
+    return std::hypot(ax + t * dx - px, ay + t * dy - py);
+}
+
+inline bool TameThreat(TameSiteUnit const& unit, float beastX, float beastY, float spotX, float spotY,
+                       float assistYards)
+{
+    if (unit.attacking ||
+        (unit.hostile && std::hypot(unit.x - spotX, unit.y - spotY) <= unit.aggroYards + TAME_SITE_MARGIN_YARDS))
+        return true;
+    return unit.assists &&
+           SegmentYards(unit.x, unit.y, beastX, beastY, spotX, spotY) <= assistYards + TAME_SITE_MARGIN_YARDS;
+}
+
+// The stop's pick among the beasts it may tame (WU.23): the fewest threats first (an edge member of a pack, a beast
+// away from hostiles: the hunter goes where nothing joins, and a second hunter at the pack takes another member), then
+// one of the stop's entry (the planned spawn), then the nearest
+struct TamePick
+{
+    std::uint32_t threats{0};
+    bool otherEntry{false};
+    float yards{0.0f};
+};
+
+constexpr bool TameBetter(TamePick const& a, TamePick const& b)
+{
+    if (a.threats != b.threats)
+        return a.threats < b.threats;
+    if (a.otherEntry != b.otherEntry)
+        return !a.otherEntry;
+    return a.yards < b.yards;
+}
+
+// At the cast the site is read again from the hunter's spot: with no threat it casts, else it fights the nearest
+// threat first (an ordinary fight clears it) and looks again, TAME_MAX_CLEARS times at most; a site that stays busy
+// gives the stop up (the need plans a new trip at the errand retry)
+constexpr std::uint8_t TAME_MAX_CLEARS = 4;
+
+enum class TameSite : std::uint8_t
+{
+    Cast,
+    Clear,
+    GiveUp
+};
+
+constexpr TameSite TameSiteNext(std::uint32_t threats, std::uint8_t clears)
+{
+    if (!threats)
+        return TameSite::Cast;
+    return clears < TAME_MAX_CLEARS ? TameSite::Clear : TameSite::GiveUp;
+}
+
+// No beast to tame at the stop (WU.23): the hunter waits for the soonest respawn of a standing spawn of the stop's
+// entry near it, read from the spawn's own respawn time, when the wait fits its budget, counted from the stop's first
+// wait (every wait ends): a hunter that wants one beast (the stable swap's family, an exotic) waits up to
+// TAME_WAIT_WANTED_MS, one that needs any pet TAME_WAIT_ANY_MS (the world's common respawn of 5 min: WU21e run 1, a
+// second hunter at the Hellfire worgs gave up and tamed one at its next trip 6 min later); else it takes another
+// target at the need's next trip
+constexpr std::uint32_t TAME_WAIT_ANY_MS = 5 * 60 * 1000;
+constexpr std::uint32_t TAME_WAIT_WANTED_MS = 15 * 60 * 1000;
+constexpr std::uint32_t TAME_RESPAWN_GRACE_MS = 5 * 1000;  // the beast shows after its grid's next update
+
+// The ms to wait from now (0 = no wait): respawnInMs the soonest respawn, waitedMs since the stop's first wait
+constexpr std::uint32_t TameWaitMs(std::uint32_t respawnInMs, std::uint32_t waitedMs, bool wanted)
+{
+    std::uint32_t const budget = wanted ? TAME_WAIT_WANTED_MS : TAME_WAIT_ANY_MS;
+    if (respawnInMs > budget || waitedMs > budget)
+        return 0;
+    std::uint32_t const wait = respawnInMs + TAME_RESPAWN_GRACE_MS;
+    return waitedMs + wait <= budget + TAME_RESPAWN_GRACE_MS ? wait : 0;
+}
+
 // A weapon skill makes a trip of its own once its funded gold pays its price (WU15a); a bot without the gold keeps
 // playing, the need stays. The visit's reputation price is never above copper
 constexpr bool WeaponErrandDue(Need const& need)
@@ -991,11 +1297,15 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
             list.reserveStock += need.copper;
     AddTraining(list, index, snapshot, rates);
     AddWeaponSkills(list, index, snapshot);
+    AddPet(list, index, snapshot);
 
     std::uint64_t const nearer = list.reserveRepair + list.reserveStock + list.reserveTraining;
     AddRiding(list, index, snapshot, rates, nearer);
     list.reserve = Scaled(list, nearer + list.reserveRiding);
     list.shortfall = list.reserve > list.money ? list.reserve - list.money : 0;
+    for (Need& need : list.needs)
+        if (need.kind == UpkeepKind::Pet && need.swap)
+            need.due = need.due && PetSwapPayable(list.money, list.reserve, need.copper);
     Fund(list);
     return list;
 }
@@ -1034,6 +1344,14 @@ inline std::string Describe(Need const& need)
         text += ", trainer " + std::to_string(need.trainer);
     if (need.order == NeedOrder::Training)
         text += ", " + std::to_string(need.levelsBehind) + " levels behind";
+    if (need.kind == UpkeepKind::Pet)
+        text += need.beast
+                    ? ", beast " + std::to_string(need.beast) + " family " + std::to_string(need.beastFamily) +
+                          " level " + std::to_string(need.beastLevel) + " at map " + std::to_string(need.beastAt.map) +
+                          " " + std::to_string(need.beastAt.x) + " " + std::to_string(need.beastAt.y)
+                    : ", no tameable beast on the map";
+    if (need.swap)
+        text += ", the old pet into the stable first (slot " + Money(need.copper) + ")";
     return text + "; without: " + need.without;
 }
 
@@ -1064,7 +1382,8 @@ inline bool StockErrandDue(NeedList const& list)
 
 // A need that starts the errand check's trip planning (§3.3): a due stock the gold pays a lot of, due training the
 // gold pays (TrainingErrandDue), a riding rank or a weapon skill the funded gold pays (RidingErrandDue,
-// WeaponErrandDue). The repair is the trigger's own test first (RepairErrandDue reads the cheapest item's price)
+// WeaponErrandDue), a pet to tame (PetErrandDue). The repair is the trigger's own test first (RepairErrandDue reads the
+// cheapest item's price)
 inline bool AnyErrandDue(NeedList const& list)
 {
     for (Need const& need : list.needs)
@@ -1072,6 +1391,7 @@ inline bool AnyErrandDue(NeedList const& list)
         bool const due = need.kind == UpkeepKind::TrainerSpell  ? TrainingErrandDue(need)
                          : need.kind == UpkeepKind::Riding      ? RidingErrandDue(need)
                          : need.kind == UpkeepKind::WeaponSkill ? WeaponErrandDue(need)
+                         : need.kind == UpkeepKind::Pet         ? PetErrandDue(need)
                                                                 : need.due && StockPayable(need);
         if (due)
             return true;
