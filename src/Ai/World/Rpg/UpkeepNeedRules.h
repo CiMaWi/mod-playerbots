@@ -1014,6 +1014,13 @@ constexpr std::uint32_t TAME_REST_MS = 60 * 1000;
 constexpr std::uint8_t TAME_MAX_TRIES = 3;
 // A pick that gets no cast within this time (the walk to the beast, the dismount) gives the stop up: every wait ends
 constexpr std::uint32_t TAME_REACH_MS = 60 * 1000;
+// The reach bound's start (0 = not started): the first tick past the stop's rest starts it (the arrival, a channel's
+// end, a clear's fight, a respawn wait reset it to 0), and a new pick of a beast keeps it (WU21e run 2: re-picks of
+// wandering Frostwing Chimaeras restarted it, the chase on the Isle of Spears cliffs never ended)
+constexpr std::uint32_t TameReachStartMs(std::uint32_t startMs, std::uint32_t nowMs)
+{
+    return startMs ? startMs : nowMs;
+}
 // The stop looks for a beast as far as a player sees one on a continent (Visibility.Distance.Continents' default): a
 // hunter arrives up to 30 yards short of the spawn, and when another hunter or a fight took the beasts there, the next
 // spawns of the entry stand 70-100 yards on (WU21b-4: Borean wolves 25675, the nearest left 92 yards from the bot)

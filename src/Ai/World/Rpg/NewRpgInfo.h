@@ -165,7 +165,7 @@ struct NewRpgInfo
         uint32 tameSinceMs{0};
         uint32 tameCastMs{0};
         uint32 tameSeenMs{0};
-        uint32 tamePickMs{0};  // the beast's pick or the last channel's end (TAME_REACH_MS)
+        uint32 tamePickMs{0};  // the reach bound's start past the rest, kept by a new pick (TameReachStartMs)
         // The site and the respawn (WU.23): the threats fought at the cast (TAME_MAX_CLEARS), a fight to clear one
         // whose end starts the rest and reach bounds again; the first wait for a respawn, the wait's end after it
         uint8 tameClears{0};

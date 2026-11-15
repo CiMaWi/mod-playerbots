@@ -1344,6 +1344,20 @@ void TameSteps()
               TameNextStep(TAME_MAX_TRIES, 100.0f, 0) == TameNext::GiveUp,
           "the stop casts TAME_MAX_TRIES times at most, then gives up");
     Check(TAME_START_HEALTH_PCT > TAME_BREAK_OFF_HEALTH_PCT, "a try starts above the break-off health");
+    {
+        // The reach bound over a chase (WU21e run 2): a re-pick every 10 s keeps the start, the stop ends in time
+        std::uint32_t start = 0;
+        std::uint32_t stuckAt = 0;
+        for (std::uint32_t now = 5000; now <= 400000 && !stuckAt; now += 1000)
+        {
+            start = TameReachStartMs(start, now);  // the pick of this tick, a new beast every 10 s
+            if (now - start > TAME_REACH_MS)
+                stuckAt = now;
+        }
+        Check(stuckAt == 5000 + TAME_REACH_MS + 1000, "re-picks keep the reach bound's start: a chase ends after it");
+        Check(TameReachStartMs(0, 90000) == 90000 && TameReachStartMs(5000, 90000) == 5000,
+              "a reset (a channel's end, a fight at the stop, a respawn wait) starts the bound anew at the next pick");
+    }
     Check(TameRecastsInFight(1, 90.0f, 0) && TameRecastsInFight(1, TAME_START_HEALTH_PCT, TAME_RECAST_MS),
           "a channel the beast broke (stun, knockback) is cast again at once in its fight");
     Check(!TameRecastsInFight(TAME_MAX_TRIES, 90.0f, 0), "no cast again in the fight past the tries");

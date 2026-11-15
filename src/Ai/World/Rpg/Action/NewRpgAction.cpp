@@ -562,12 +562,12 @@ bool TameableNow(Player* bot, Creature const* beast, bool inOwnFight = false)
 }
 
 // A cast that ended without a pet: the row tame/channel_broken (its length as the AI updates saw it run, the beast's
-// yards, -1 dead or gone); the stop's rest and reach bounds start now
+// yards, -1 dead or gone); the stop's rest starts now, its reach bound at the rest's end
 void NoteBrokenChannel(Player* bot, NewRpgInfo::ErrandStop& stop, uint32 now)
 {
     stop.tameCast = false;
     stop.tameSinceMs = now;
-    stop.tamePickMs = now;
+    stop.tamePickMs = 0;
     Creature const* beast = ObjectAccessor::GetCreature(*bot, stop.tameBeast);
     float const channelS =
         stop.tameSeenMs ? static_cast<float>(getMSTimeDiff(stop.tameCastMs, stop.tameSeenMs)) / IN_MILLISECONDS : 0.0f;
@@ -606,6 +606,9 @@ SpellCastResult CastTame(Player* bot, NewRpgInfo::ErrandStop& stop, Creature* be
 bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
 {
     uint32 const now = getMSTime();
+    // Any fight at the stop, a clear's or an attacker's, restarts the rest and the reach bound at its end (WU21e run
+    // 3: a Bladewing Bloodletter's aggro fight spent the bound of the walk to the next beast)
+    stop.tameClearing = true;
     if (stop.tameCast)
     {
         Pet const* pet = bot->GetPet();
@@ -635,13 +638,16 @@ bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
             }
         }
         bool const picked = attacker && attacker->GetGUID() == stop.tameBeast;
-        if (!attacker || (picked && getMSTimeDiff(stop.tamePickMs, now) > UpkeepNeeds::TAME_REACH_MS))
+        if (!attacker ||
+            (picked && stop.tamePickMs && getMSTimeDiff(stop.tamePickMs, now) > UpkeepNeeds::TAME_REACH_MS))
             return false;
         if (!picked)
         {
             stop.tameBeast = attacker->GetGUID();
             stop.tamePickMs = now;
         }
+        // The picked beast attacks after a reset: its bound starts now
+        stop.tamePickMs = UpkeepNeeds::TameReachStartMs(stop.tamePickMs, now);
         stop.tameSeenMs = now;
     }
 
@@ -783,6 +789,7 @@ bool ArmTameWait(Player* bot, NewRpgInfo::ErrandStop& stop, uint32 now)
     if (!stop.tameWaitFirstMs)
         stop.tameWaitFirstMs = now;
     stop.tameWaitUntilMs = waitedMs + waitMs;
+    stop.tamePickMs = 0;  // the respawned beast's reach bound starts after the wait
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "wait",
                        static_cast<float>(waitMs) / IN_MILLISECONDS,
                        {{"respawn_s", static_cast<float>(respawnS)},
@@ -818,9 +825,10 @@ enum class TameStep : uint8
 // the same beast while it may be tamed or the next nearest. Rows: tame/cast per cast; skip/tame_failed (tries used, or
 // no beast left after a broken channel), skip/no_beast (none at the stop, no respawn to wait for or the waits' budget
 // spent), skip/tame_refused (the core refused the cast: value its SpellCastResult), skip/tame_stuck (no cast within
-// TAME_REACH_MS of the pick), skip/tame_site (the site stayed busy after TAME_MAX_CLEARS fights), all with the tries
-// made and the seconds waited for a respawn. The site (WU.23): the pick avoids beasts whose fight others would join,
-// the cast fights such a creature first (tame/clear), and with no beast the stop waits for a respawn (tame/wait)
+// TAME_REACH_MS of the rest's end, whatever the re-picks), skip/tame_site (the site stayed busy after TAME_MAX_CLEARS
+// fights), all with the tries made and the seconds waited for a respawn. The site (WU.23): the pick avoids beasts whose
+// fight others would join, the cast fights such a creature first (tame/clear), and with no beast the stop waits for a
+// respawn (tame/wait)
 TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
 {
     Player* bot = botAI->GetBot();
@@ -832,10 +840,11 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
         stop.tameSinceMs = now;
     if (stop.tameClearing)
     {
-        // A clear's fight is over: the rest and the reach bound start again
+        // A fight at the stop is over (a clear, an attacker: RecastTameInFight): the rest starts again, the reach
+        // bound at its end
         stop.tameClearing = false;
         stop.tameSinceMs = now;
-        stop.tamePickMs = now;
+        stop.tamePickMs = 0;
     }
     auto const skip = [bot, &stop, now](char const* reason)
     {
@@ -890,9 +899,9 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
         if (!beast)
             return ArmTameWait(bot, stop, now) ? TameStep::Rest : skip(stop.tameTries ? "tame_failed" : "no_beast");
         stop.tameBeast = beast->GetGUID();
-        stop.tamePickMs = now;
     }
 
+    stop.tamePickMs = UpkeepNeeds::TameReachStartMs(stop.tamePickMs, now);
     if (getMSTimeDiff(stop.tamePickMs, now) > UpkeepNeeds::TAME_REACH_MS)
     {
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "tame_stuck", bot->GetExactDist(beast),
