@@ -85,10 +85,6 @@ bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
 // The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
 
-// The two finishers, called by the status update's sick branch (CS14 removes both declarations)
-void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource = "errand_abort");
-void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* why, char const* source);
-
 // Errands and trainers: the errand trip's helpers, called by the errand start, the errand visit and the trainer visits
 bool BuysAtVendors(PlayerbotAI* botAI);
 WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc);

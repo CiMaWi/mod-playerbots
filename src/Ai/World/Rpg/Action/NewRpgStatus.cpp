@@ -18,6 +18,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -74,10 +75,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight()))
     {
-        if (status == RPG_ERRANDS)
-            FinishErrands(botAI, false, "errand_sick");
-        else if (auto const* trip = std::get_if<NewRpgInfo::Travel>(&info.data))
-            GiveTripUp(botAI, *trip, "sick", "abort:sick");
+        // Today's two rows (to idle with the finishers' words, then to rest) until CS14f ends it in one
+        if (status == RPG_ERRANDS || status == RPG_TRAVEL)
+            RpgStatus::End(botAI, StatusEnd::Outcome::Sick, {.word = status == RPG_ERRANDS ? "finished" : "abort"});
         WorldLog::StatusReason const reasonScope("sick");
         info.ChangeToRest();
         bot->SetStandState(UNIT_STAND_STATE_SIT);
@@ -144,8 +144,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // WANDER_RANDOM -> IDLE
             if (info.HasStatusPersisted(statusWanderRandomDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -154,8 +153,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (info.HasStatusPersisted(statusWanderNpcDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -165,8 +163,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // DO_QUEST -> IDLE
             if (info.HasStatusPersisted(statusDoQuestDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -180,8 +177,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 // (upstream #3026)
                 if (AI_VALUE(ObjectGuid, "new rpg quest giver").IsEmpty())
                 {
-                    WorldLog::StatusReason const reasonScope("arrived");
-                    info.ChangeToIdle();
+                    RpgStatus::End(botAI, StatusEnd::Outcome::Arrived);
                     return true;
                 }
             }
@@ -192,8 +188,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // REST -> IDLE; a sick bot's rest lasts until the sickness ends
             if (Upkeep::RestEnds(info.HasStatusPersisted(statusRestDuration), sick))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -202,8 +197,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (info.HasStatusPersisted(statusOutDoorPvPDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -213,8 +207,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // DO_GATHER -> IDLE
             if (info.HasStatusPersisted(statusDoGatherDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -224,8 +217,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // ERRANDS -> IDLE: a trip that has not ended in time is given up
             if (info.HasStatusPersisted(WorldTravel::ERRAND_DEADLINE_MS))
             {
-                auto const* errands = std::get_if<NewRpgInfo::Errands>(&info.data);
-                FinishErrands(botAI, errands && errands->visited);
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -303,8 +295,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         }
         if (npcOrGo.IsEmpty())
         {
-            WorldLog::StatusReason const reasonScope("no_target");
-            info.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Finished, {.word = "no_target"});
             return true;
         }
         data.npcOrGo = npcOrGo;

@@ -236,6 +236,26 @@ inline void SaleRuleKept(std::vector<Check>& checks)
             " mismatches");
 }
 
+// An errand trip's end (the status core's errand clean-up): every end stamps the check, only a healthy trip with a
+// visited stop adds its minutes
+inline void ErrandEnds(std::vector<Check>& checks)
+{
+    SlotMeasure aborted;
+    ErrandEndRow const abortRow = ErrandEnd(aborted, 1000, 7.0f, false, false);
+    Add(checks, "end: a trip without a visited stop stamps the check, records errand_abort and adds no minutes",
+        abortRow == ErrandEndRow::Abort && aborted.ErrandChecked && aborted.ErrandCheckMs == 1000 && !aborted.HasTrip,
+        ErrandEndWord(abortRow));
+    SlotMeasure run;
+    ErrandEndRow const runRow = ErrandEnd(run, 2000, 7.0f, true, false);
+    Add(checks, "end: a trip with a visited stop stamps the check, records errand_run and adds its minutes",
+        runRow == ErrandEndRow::Run && run.ErrandChecked && run.HasTrip && run.TripMinutes == 7.0f,
+        ErrandEndWord(runRow));
+    SlotMeasure sick;
+    ErrandEndRow const sickRow = ErrandEnd(sick, 3000, 7.0f, true, true);
+    Add(checks, "end: a sick end after a visited stop stamps the check, records errand_sick and adds no minutes",
+        sickRow == ErrandEndRow::Sick && sick.ErrandChecked && !sick.HasTrip, ErrandEndWord(sickRow));
+}
+
 // Nothing near offers the service: refused as no_stop, nothing else changes
 inline void NoStop(std::vector<Check>& checks)
 {
@@ -1053,6 +1073,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     TwoAtOneStop(checks);
     SaleRuleKept(checks);
     NoStop(checks);
+    ErrandEnds(checks);
     LaterProvider(checks);
     RepairByNeed(checks);
     ShopByCover(checks);
