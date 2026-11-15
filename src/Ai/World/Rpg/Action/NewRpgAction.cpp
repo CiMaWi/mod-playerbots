@@ -128,7 +128,7 @@ namespace
 constexpr uint32 HEARTHSTONE_SPELL = 8690;
 }  // namespace
 
-namespace
+namespace NewRpgInternal
 {
 // A route exists only once the graph is ready (the route service answers only then), and it never changes after
 TravelRoute::Point GraphNodeAt(std::uint32_t index)
@@ -136,6 +136,10 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index)
     TravelGraphNode const& node = TravelGraph::Instance().GetNode(index);
     return {node.mapId, node.x, node.y, node.z};
 }
+}  // namespace NewRpgInternal
+
+namespace
+{
 
 // WT58: the graph link a walk leg walks now, between waypoints[next - 1] and waypoints[next]; none on the walks
 // between the bot, the graph and the goal, and on every other leg
@@ -318,11 +322,6 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, TravelRoute::Point con
 }
 
 constexpr float HOP_LIFT_YARDS = 0.5f;  // the hop lands this far above the deck point (as the off-mesh snap does)
-using TravelLifecycle::MotionKind;
-using TravelLifecycle::Outcome;
-using TravelLifecycle::PassengerMotion;
-using TravelLifecycle::Point;
-namespace TransportGeometry = TravelTransportGeometry;
 
 // The current leg is a transport leg past its approach: the bot waits at the dock, boards, rides or steps off. The
 // follower scans for the transport then, and the trip's deadline waits (the next departure may be minutes away)
@@ -571,11 +570,14 @@ PassengerMotion Intent(Player const& bot, Transport const& transport, MotionKind
     return motion;
 }
 
+}  // namespace
+
+namespace NewRpgInternal
+{
 // A boarding walks straight onto the deck; an exit walks across the deck by its deck walk's corners to the deck's edge
 // (via) and on to the quay. Via points within 0.2 yd of the point before are left out (a spline refuses a segment
 // shorter than 0.1 yd)
-void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion,
-                        std::vector<Point> const& via = {})
+void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion, std::vector<Point> const& via)
 {
     if (bot.IsSitState())
         bot.SetStandState(UNIT_STAND_STATE_STAND);
@@ -601,6 +603,10 @@ void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion m
     motion.Spline = bot.movespline->GetId();
     data.passengerMotion = motion;
 }
+}  // namespace NewRpgInternal
+
+namespace
+{
 
 // A ship or zeppelin at a stop it keeps for the attach's deadline (MotionTransport::IsMoving is private: its key
 // frames, as MotionTransport::Update reads them)
@@ -1332,10 +1338,14 @@ void SendTransportNotes(Player* bot, TravelLegs::Trip& trip)
     trip.transportNotes.clear();
 }
 
+}  // namespace
+
+namespace NewRpgInternal
+{
 // The gate before a trip's end, a route request or a walk (WT19-d, TravelLegs::BeginOffFirst): true when the bot
 // rides a ship or zeppelin and gets off first (`Transport off_first`)
-bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
-                    char const* why = nullptr, char const* source = nullptr)
+bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end, char const* why,
+                    char const* source)
 {
     Transport const* const ridden = bot->GetTransport();
     if (!ridden)
@@ -1356,6 +1366,10 @@ bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstE
               waiting);
     return true;
 }
+}  // namespace NewRpgInternal
+
+namespace
+{
 
 // OffFirst shares the normal local-frame exit, including membership acknowledgment.
 TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data)
