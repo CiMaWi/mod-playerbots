@@ -6,7 +6,8 @@
 
 // Standalone run of the pure tactic suites (src/Bot/Tactics/TacticChecks.h) with the conf.dist defaults: the same
 // suites and the same lines as `.playerbots tactics selftest`, one "<name>: PASS (<n> checks, 0 failed)" per suite.
-// The server's scope, cc and interrupt suites need the command parser or the spell store and are not run here.
+// The server's scope, cc and interrupt suites (the command parser, the spell store) and gate (BotProfileMgr.cpp's
+// percentile math) are not run here.
 #include <cstdio>
 #include <string>
 
