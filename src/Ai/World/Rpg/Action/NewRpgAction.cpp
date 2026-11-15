@@ -184,6 +184,10 @@ uint32 BuyLots(Player* bot, Creature* vendor, uint32 slot, uint32 item, uint32 l
     return bought;
 }
 
+}  // namespace
+
+namespace NewRpgInternal
+{
 // A bot that buys at vendors (the shopping list, a riding rank and its mount): a random bot in honest travel without a
 // real player as master. The riding errand is taken only for such a bot, so a rank is never taught where the mount
 // could not be bought (a known rank without its mount keeps the need open)
@@ -193,7 +197,10 @@ bool BuysAtVendors(PlayerbotAI* botAI)
     return RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) &&
            !IsRealPlayer(botAI->GetMaster());
 }
+}  // namespace NewRpgInternal
 
+namespace
+{
 // The riding need's mount at the vendor that sells it (upkeep §3.8, WU14): a fresh need list (the shopping spent
 // gold), the rank bought by worth whose mount this vendor sells, bought through the core's purchase at its gold-only
 // row within the need's funded share and learned as the item's own use learns it (the learning spell in its second
@@ -1142,11 +1149,18 @@ void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
                        static_cast<float>(copper), weighed, creature->GetEntry());
 }
 
+}  // namespace
+
+namespace NewRpgInternal
+{
 WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc)
 {
     return {loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()};
 }
+}  // namespace NewRpgInternal
 
+namespace
+{
 // The spawns on the bot's map of the trainer an upkeep need names (the index's entries of its key) that trade with
 // the bot, the nearest TRAINER_STOPS within reach
 std::vector<TravelMgr::TrainerInfo const*> TrainerSpawns(Player* bot, Planner::UpkeepIndex const& index, uint32 key,

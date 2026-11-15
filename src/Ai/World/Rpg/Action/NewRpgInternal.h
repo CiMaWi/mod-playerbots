@@ -12,6 +12,12 @@
 
 class Player;
 class PlayerbotAI;
+class WorldLocation;
+
+namespace WorldTravel
+{
+struct ErrandPlace;
+}  // namespace WorldTravel
 
 // The RPG action layer's shared helpers: each is defined in one file of the layer and called from another (design
 // rpg-action-layer §5.2). Private to src/Ai/World/Rpg/: a file that calls one has `using namespace NewRpgInternal;`
@@ -23,6 +29,10 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);
 // The two finishers, called by the status update's sick branch (CS14 removes both declarations)
 void FinishErrands(PlayerbotAI* botAI, bool visited, char const* abortSource = "errand_abort");
 void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* why, char const* source);
+
+// Errands and trainers: the errand trip's helpers, called by the errand start, the errand visit and the trainer visits
+bool BuysAtVendors(PlayerbotAI* botAI);
+WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc);
 }  // namespace NewRpgInternal
 
 #endif
