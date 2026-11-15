@@ -20,6 +20,7 @@
 #include "ArenaTeamMgr.h"
 #include "Battleground.h"
 #include "BattlegroundScore.h"
+#include "BotTactics.h"
 #include "Chat.h"
 #include "Log.h"
 #include "MatchTrace.h"
@@ -212,7 +213,7 @@ PvpTestBotRecord MakeBot(Player* player, bool count)
         if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
             bot.Skill = botAI->GetPvpSkill();
 
-        bot.CopyOf = botAI->GetAttributeTemplate();
+        bot.CopyOf = botAI->GetTactics().GetAttributeTemplate();
         if (count)
             botAI->SetPvpTestCounting(true);
     }

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "Log.h"
 #include "Map.h"
@@ -38,7 +39,7 @@ bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs)
     if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
         return false;
 
-    TurnBotState& state = botAI->GetTurnState();
+    TurnBotState& state = botAI->GetTactics().GetTurnState();
     if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
     {
         state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
@@ -105,10 +106,10 @@ bool PlayerbotAI::FaceTarget(WorldObject* target, TurnSnapSite site)
     uint32 const nowMs = getMSTime();
     if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !NaturalFacingHere(this, nowMs))
     {
-        if (turnState)
+        if (tactics->turnState)
         {
-            turnState->Stop();
-            ++turnState->Snaps;
+            tactics->turnState->Stop();
+            ++tactics->turnState->Snaps;
         }
 
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Snap")
@@ -132,7 +133,7 @@ bool PlayerbotAI::FaceTarget(WorldObject* target, TurnSnapSite site)
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Face")
                                                     : nullptr);
-    TurnBotState& state = GetTurnState();
+    TurnBotState& state = tactics->GetTurnState();
     uint64 const targetGuid = target->GetGUID().GetRawValue();
     // A direction turn that holds (blink back's 180 before its cast, TurnDirectionHolds) is not turned back: the
     // orientation stays, the answer is the arc's
@@ -146,7 +147,7 @@ bool PlayerbotAI::FaceTarget(WorldObject* target, TurnSnapSite site)
         if (plan.Leg.Spline && !bot->IsRooted())
             bot->SetFacingTo(plan.Leg.Goal());
 
-        naturalPreGate = true;
+        tactics->naturalPreGate = true;
         CountTactic(TacticCounter::TurnFlicks);
         LOG_TRACE("playerbots",
                   "Turn: {} turns {} deg to {} in {} ms ({}), error {:.1f} deg, correction in {} ms (0: none), "
@@ -172,13 +173,14 @@ bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
     if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !NaturalFacingHere(botAI, nowMs))
     {
         if (sPlayerbotAIConfig.NaturalFacing.Enable)
-            TurnDirectionEnd(botAI->GetTurnState());  // the cast goes now: an earlier attempt holds nothing
+            TurnDirectionEnd(
+                botAI->GetTactics().GetTurnState());  // the cast goes now: an earlier attempt holds nothing
 
         bot->SetOrientation(bot->GetAngle(target) + offsetRad);
         return true;
     }
 
-    TurnBotState& state = botAI->GetTurnState();
+    TurnBotState& state = botAI->GetTactics().GetTurnState();
     uint64 const key = target->GetGUID().GetRawValue();
     float const goalRad = TurnWrap(bot->GetAngle(target) + offsetRad);
     TurnDirectionStep const step = TurnDirectionNext(state, key, bot->GetOrientation(), goalRad, nowMs);
@@ -210,7 +212,7 @@ bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
     if (plan.Leg.Spline && !bot->IsRooted())
         bot->SetFacingTo(plan.Leg.Goal());
 
-    botAI->SetNaturalPreGate(true);
+    botAI->GetTactics().SetNaturalPreGate(true);
     botAI->CountTactic(TacticCounter::TurnFlicks);
     LOG_TRACE(
         "playerbots",
@@ -223,5 +225,6 @@ bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
 
 bool NaturalDirectionTurnHolds(PlayerbotAI* botAI)
 {
-    return sPlayerbotAIConfig.NaturalFacing.Enable && TurnDirectionHolds(botAI->GetTurnState(), getMSTime());
+    return sPlayerbotAIConfig.NaturalFacing.Enable &&
+           TurnDirectionHolds(botAI->GetTactics().GetTurnState(), getMSTime());
 }

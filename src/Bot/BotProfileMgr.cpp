@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
@@ -405,7 +406,7 @@ void BotProfileMgr::QueueMatchEnd(Battleground* bg)
     {
         PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
         // A lab copy draws from its template (G0j-b) and has no practice of its own
-        if (!botAI || botAI->GetAttributeTemplate())
+        if (!botAI || botAI->GetTactics().GetAttributeTemplate())
             continue;
 
         TeamId const team = player->GetBgTeamId();
@@ -488,7 +489,7 @@ void BotProfileMgr::UpdateGrowth()
         }
 
         // Offline: the login reads the grown profile. A skill set otherwise since the match stays
-        if (botAI && !botAI->GetAttributeTemplate() && botAI->GetPvpSkill() == it->Previous)
+        if (botAI && !botAI->GetTactics().GetAttributeTemplate() && botAI->GetPvpSkill() == it->Previous)
         {
             botAI->SetPvpSkill(it->Skill, it->FirstRoll);
             ++_growthApplied;
@@ -757,12 +758,13 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
                                             counters.blocked[i], counters.allowed[i]);
 
         handler->PSendSysMessage("Notice: miss {}%, delay up to {} ms; blocked/allowed: {}",
-                                 botAI->GetSkillNoticeMissPercent(), botAI->GetSkillNoticeDelayMs(), verdicts);
+                                 botAI->GetTactics().GetSkillNoticeMissPercent(),
+                                 botAI->GetTactics().GetSkillNoticeDelayMs(), verdicts);
     }
 
     // The attributes drawn from the skill (Playerbots.Skill.Attributes.*; at the defaults every ability is the skill)
     if (botAI)
-        handler->PSendSysMessage("Attributes: {}", FormatBotAttributes(botAI->GetAttributes()));
+        handler->PSendSysMessage("Attributes: {}", FormatBotAttributes(botAI->GetTactics().GetAttributes()));
 
     return true;
 }

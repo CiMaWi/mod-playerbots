@@ -7,6 +7,7 @@
 #include "NaturalMove.h"
 
 #include "AiObjectContext.h"
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "Map.h"
 #include "NaturalPath.h"
@@ -30,8 +31,8 @@ void FeedNaturalTrack(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
         bot->IsFriendlyTo(target))
         return;
 
-    TrackFeed(botAI->GetTrackState(), sPlayerbotAIConfig.NaturalTrack, target->GetGUID().GetRawValue(), nowMs,
-              target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+    TrackFeed(botAI->GetTactics().GetTrackState(), sPlayerbotAIConfig.NaturalTrack, target->GetGUID().GetRawValue(),
+              nowMs, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
 }
 
 // G2b: whether the bot tracks naturally now (NaturalMove.h); as NaturalFacingHere with the Track options
@@ -51,7 +52,7 @@ bool NaturalTrackHere(PlayerbotAI* botAI, uint32 nowMs)
     if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
         return false;
 
-    TrackBotState& state = botAI->GetTrackState();
+    TrackBotState& state = botAI->GetTactics().GetTrackState();
     if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
     {
         state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
@@ -78,7 +79,7 @@ bool NaturalPathHere(PlayerbotAI* botAI, uint32 nowMs)
     if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
         return false;
 
-    PathBotState& state = botAI->GetPathState();
+    PathBotState& state = botAI->GetTactics().GetPathState();
     if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
     {
         state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));

@@ -29,6 +29,7 @@
 #include "ArenaKite.h"
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
+#include "BotTactics.h"
 #include "CcState.h"
 #include "CcTacticStrategy.h"
 #include "CharacterCache.h"
@@ -471,7 +472,7 @@ bool ForceCcDr(ChatHandler* handler, PlayerbotAI* botAI, std::string const& name
         if (!memberAI)
             return;
 
-        CcBotState const& state = memberAI->GetCcState();
+        CcBotState const& state = memberAI->GetTactics().GetCcState();
         memories += Acore::StringFormat("{}{} {}{}", memories.empty() ? "" : ", ", member->GetName(),
                                         static_cast<uint32>(state.Memory.Level(enemy.GetRawValue(), drGroup, nowMs)),
                                         state.Params.DrAware ? "" : " (not DR aware)");
@@ -2343,7 +2344,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
 
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     uint32 const mask = botAI->GetTacticMask();
-    TacticGateState const& gate = botAI->GetTacticGate();
+    TacticGateState const& gate = botAI->GetTactics().GetTacticGate();
     handler->PSendSysMessage("TACTICS {}: Playerbots.Tactics.Enable {}, context {}{}, skill {}", name,
                              config.TacticsEnable ? 1 : 0, TacticContextName(botAI->GetTacticContext()),
                              config.TacticsEnable ? "" : " (not probed while off)", botAI->GetPvpSkill());
@@ -2380,9 +2381,10 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "  effective: known {}, effort {}, react factor {:.3f}, notice miss {} %, delay up to {} ms",
         full ? "all" : FormatTacticMask(gate.KnownMask), full ? SKILL_GATE_FULL : gate.Effort,
-        exempt ? 1.0f : botAI->GetEffectiveSkillReactFactor(), exempt ? 0u : botAI->GetSkillNoticeMissPercent(),
-        exempt ? 0u : botAI->GetSkillNoticeDelayMs());
-    ReactionState const& reaction = botAI->GetReactionState();
+        exempt ? 1.0f : botAI->GetTactics().GetEffectiveSkillReactFactor(),
+        exempt ? 0u : botAI->GetTactics().GetSkillNoticeMissPercent(),
+        exempt ? 0u : botAI->GetTactics().GetSkillNoticeDelayMs());
+    ReactionState const& reaction = botAI->GetTactics().GetReactionState();
     handler->PSendSysMessage("  natural reaction: {} (contexts {}); median {:.0f} ms, sigma {:.3f}",
                              config.NaturalReactionActive ? "on" : "off",
                              FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
@@ -2391,13 +2393,15 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         "  natural timing: cadence {} (contexts {}), check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
         "check {}, stretch {}; end to end {} (with the faster check; ping {} ms, display {} ms, ticks {})",
         config.NaturalCadenceEnable ? "on" : "off", FormatTacticScope(config.NaturalCadenceContexts),
-        config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs, botAI->IsInNaturalTimingScope() ? "yes" : "no",
-        botAI->IsInNaturalTimingCombat() ? "yes" : "no", botAI->IsNaturalCadenceActive() ? "yes" : "no",
-        SkillStretchApplies(botAI->IsSkillStretchOff(), config.NaturalCadenceSkillStretch) ? "on" : "off",
+        config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs,
+        botAI->GetTactics().IsInNaturalTimingScope() ? "yes" : "no",
+        botAI->GetTactics().IsInNaturalTimingCombat() ? "yes" : "no",
+        botAI->GetTactics().IsNaturalCadenceActive() ? "yes" : "no",
+        SkillStretchApplies(botAI->GetTactics().IsSkillStretchOff(), config.NaturalCadenceSkillStretch) ? "on" : "off",
         timing.EndToEnd ? "on" : "off", timing.PingMs, timing.DisplayMs,
         timing.ServerTickMs < 0 ? std::string("half the map update")
                                 : Acore::StringFormat("{} ms", timing.ServerTickMs));
-    ReactionTypeState const& prices = botAI->GetReactionTypes();
+    ReactionTypeState const& prices = botAI->GetTactics().GetReactionTypes();
     auto const onOff = [](bool on) { return on ? "on" : "off"; };
     handler->PSendSysMessage(
         "  reaction types: choice {} ({:.0f} ms per doubling), load {} ({} ms, {} % per event, top {:.2f}), ease {} "
@@ -2411,18 +2415,18 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         onOff(timing.Reeval.Enable), onOff(timing.Reeval.BusySkip), onOff(timing.Memory.Enable),
         onOff(timing.MovementEnable));
     handler->PSendSysMessage("  cached: effort {}, style aggression {} / caution {} / patience {}", gate.Effort,
-                             botAI->GetSkillStyle(SkillStyleTrait::Aggression),
-                             botAI->GetSkillStyle(SkillStyleTrait::Caution),
-                             botAI->GetSkillStyle(SkillStyleTrait::Patience));
-    uint32 const attributeTemplate = botAI->GetAttributeTemplate();
+                             botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Aggression),
+                             botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Caution),
+                             botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Patience));
+    uint32 const attributeTemplate = botAI->GetTactics().GetAttributeTemplate();
     handler->PSendSysMessage(
         "  attributes ({}{}): {}",
         AttributesAtDefaults(config.SkillAttributes) ? "defaults: every ability is the skill" : "drawn",
         attributeTemplate ? Acore::StringFormat(", from template guid {}", attributeTemplate) : std::string(),
-        FormatBotAttributes(botAI->GetAttributes()));
+        FormatBotAttributes(botAI->GetTactics().GetAttributes()));
 
     // The target hold and the team plan (G1b, FocusState.h)
-    FocusBotState& focus = botAI->GetFocusState();
+    FocusBotState& focus = botAI->GetTactics().GetFocusState();
     HoldParams const& holdParams = focus.Params.Hold;
     TeamParams const& teamParams = focus.Params.Team;
     handler->PSendSysMessage(
@@ -2456,9 +2460,10 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     {
         PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         ArenaInterrupt::Params const interrupt = ArenaInterrupt::ComputeParams(
-            botAI->GetPvpSkill(), botAI->GetAttribute(BotAttribute::Patience),
-            botAI->GetAttribute(BotAttribute::Knowledge), config.SkillGate.CurveExponent, config.TacticInterrupt);
-        InterruptBotState const& decisions = botAI->GetInterruptState();
+            botAI->GetPvpSkill(), botAI->GetTactics().GetAttribute(BotAttribute::Patience),
+            botAI->GetTactics().GetAttribute(BotAttribute::Knowledge), config.SkillGate.CurveExponent,
+            config.TacticInterrupt);
+        InterruptBotState const& decisions = botAI->GetTactics().GetInterruptState();
         handler->PSendSysMessage(
             "  interrupt: {}; heal share {:.2f}, damage {:.2f}, cc {:.2f}, sigma {:.2f}, patience {:+.2f}; judged heal "
             "{} "
@@ -2472,7 +2477,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             decisions.Kicks);
         // G5c-c: the hold policy's numbers at the bot's Knowledge and Patience, the window's reaction, the episodes
         uint32 const windowMs =
-            ArenaInterrupt::HoldReactionMs(reaction, botAI->GetReactionTypes(), ReactionEase::Common,
+            ArenaInterrupt::HoldReactionMs(reaction, botAI->GetTactics().GetReactionTypes(), ReactionEase::Common,
                                            timing.EndToEnd ? timing.PingMs + timing.DisplayMs : 0, timing.MinMs);
         bool const kickReady = decisions.KickReady(nowMs);
         handler->PSendSysMessage(
@@ -2525,9 +2530,10 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     {
         PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         FocusTargetState const& target = focus.Target;
-        uint8 const dexterity = botAI->GetAttribute(BotAttribute::Dexterity);
+        uint8 const dexterity = botAI->GetTactics().GetAttribute(BotAttribute::Dexterity);
         uint8 const threshold = config.NaturalReaction.Ease.FocusDexterity;
-        uint8 const teamwork = botAI->GetPvpSkill() == 0 ? 99 : botAI->GetAttribute(BotAttribute::Teamwork);
+        uint8 const teamwork =
+            botAI->GetPvpSkill() == 0 ? 99 : botAI->GetTactics().GetAttribute(BotAttribute::Teamwork);
         handler->PSendSysMessage(
             "  focus target: {}, capable {} (dexterity {}, threshold {}), moon share {:.2f}; focus {} ({}) for {} ms, "
             "picks {}; kicks {}, cc {} on it, switch kicks {}",
@@ -2541,7 +2547,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     }
     // G5d: the Defensive and Protect tactics (the bot's lines, its sampler now, what it pressed and held)
     {
-        DefensiveBotState const& defensive = botAI->GetDefensiveState();
+        DefensiveBotState const& defensive = botAI->GetTactics().GetDefensiveState();
         DefensiveParams const& params = defensive.Params;
         Player* const self = botAI->GetBot();
         uint32 const hpPct = self->IsAlive() ? static_cast<uint32>(std::ceil(self->GetHealthPct())) : 0;
@@ -2561,7 +2567,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     }
     // G5e: the Fake tactic (its numbers, what it decided, cancelled and baited, the kicks it saw)
     {
-        FakeBotState const& fake = botAI->GetFakeState();
+        FakeBotState const& fake = botAI->GetTactics().GetFakeState();
         FakeParams const& params = fake.Params;
         handler->PSendSysMessage(
             "  fake: {}, known {}, chance {} %, cancel at {} % (sigma {} %), repeat {} ms, kick memory {}; decided {}, "
@@ -2575,7 +2581,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     }
     // G2a: the natural facing (its numbers, what the bot turned, sent and waited)
     {
-        TurnBotState const& turn = botAI->GetTurnState();
+        TurnBotState const& turn = botAI->GetTactics().GetTurnState();
         TurnParams const& params = turn.Params;
         handler->PSendSysMessage(
             "  turn: {}, mode {}, 180 in {} ms, error {:.1f} deg, correction {} %, keyboard {} %; turns {} (keyboard "
@@ -2589,7 +2595,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     }
     // G2b: the natural tracking (its numbers, how the bot chased)
     {
-        TrackBotState const& track = botAI->GetTrackState();
+        TrackBotState const& track = botAI->GetTactics().GetTrackState();
         TrackParams const& params = track.Params;
         auto const mode = [&track](TrackMode which) { return track.Modes[static_cast<uint32>(which)]; };
         handler->PSendSysMessage(
@@ -2605,7 +2611,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     }
     // G2c: the natural paths (its numbers, what the bot walked)
     {
-        PathBotState const& path = botAI->GetPathState();
+        PathBotState const& path = botAI->GetTactics().GetPathState();
         PathParams const& params = path.Params;
         PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
         handler->PSendSysMessage(
@@ -2675,7 +2681,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     }
     // G3a: the Kite tactic (its gate, the melee and the episode, what it did)
     {
-        KiteBotState const& kite = botAI->GetKiteState();
+        KiteBotState const& kite = botAI->GetTactics().GetKiteState();
         KiteParams const& params = kite.Params;
         handler->PSendSysMessage(
             "  kite: {}, known {}, memory {}, gives up after {} ms; melee on it {} ({:.1f} yd), nearest melee {}; "
@@ -2691,7 +2697,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
             kite.Stays, kite.Guarded, kite.Refused, kite.LosBreaksSeen, kite.MemoryAvoided, KiteMoveName(kite.LastMove),
             kite.LastMoveMs ? getMSTimeDiff(kite.LastMoveMs, nowMs) : 0u);
     }
-    CcBotState const& cc = botAI->GetCcState();
+    CcBotState const& cc = botAI->GetTactics().GetCcState();
     std::string ccRows;
     for (uint8 index = 0; index < CC_OPTION_COUNT; ++index)
     {
@@ -2778,7 +2784,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
                              iconName(botAI->GetBot()->GetTarget()), match.LastMarkMs);
 
     std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX> enemies;
-    uint32 const enemyCount = botAI->GetFightEnemiesSnapshot(enemies);
+    uint32 const enemyCount = botAI->GetTactics().GetFightEnemiesSnapshot(enemies);
     std::string enemyNames;
     for (uint32 index = 0; index < enemyCount; ++index)
         enemyNames += (enemyNames.empty() ? "" : ", ") + GuidName(enemies[index]);
@@ -2998,7 +3004,7 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
         // whatever the own-break window); no CC is cast
         if (cc)
         {
-            CcBotState& ccState = ai->GetCcState();
+            CcBotState& ccState = ai->GetTactics().GetCcState();
             ccState.ForcedCcGuid = enemy;
             ccState.ForcedCcUntilMs = nowMs + CC_FORCE_MS;
             ccState.ExcludedUntilMs = 0;
@@ -3006,7 +3012,7 @@ bool TacticCommands::HandleForceCommand(ChatHandler* handler, char const* args)
             return;
         }
 
-        FocusBotState& state = ai->GetFocusState();
+        FocusBotState& state = ai->GetTactics().GetFocusState();
         state.ForcedImmuneGuid = enemy;
         state.ForcedImmuneAtMs = nowMs;
         state.ForcedImmuneUntilMs = nowMs + FOCUS_FORCE_IMMUNE_MS;

@@ -25,6 +25,7 @@
 #include "BattlegroundMgr.h"
 #include "BattlegroundQueue.h"
 #include "BotProfileMgr.h"
+#include "BotTactics.h"
 #include "CcTacticStrategy.h"
 #include "CharacterCache.h"
 #include "Chat.h"
@@ -721,7 +722,7 @@ void PvpTestArenaJob::CaptureRoster()
                 if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
                     bot.Skill = botAI->GetPvpSkill();
 
-                bot.CopyOf = botAI->GetAttributeTemplate();
+                bot.CopyOf = botAI->GetTactics().GetAttributeTemplate();
                 botAI->SetPvpTestCounting(true);
             }
 
@@ -1034,8 +1035,8 @@ bool PvpTestArenaJob::ApplyCopies(std::string& error)
             Player* player = ObjectAccessor::FindConnectedPlayer(side->Members[index]);
             PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
             // Already this template's copy only when the online AI says so too (not a record a logout left behind)
-            if (guid == templateGuid ||
-                (botAI && botAI->GetAttributeTemplate() == templateGuid && copies.TemplateOf(guid) == templateGuid))
+            if (guid == templateGuid || (botAI && botAI->GetTactics().GetAttributeTemplate() == templateGuid &&
+                                         copies.TemplateOf(guid) == templateGuid))
                 continue;
 
             std::string pinError;

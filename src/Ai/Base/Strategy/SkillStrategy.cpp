@@ -10,6 +10,7 @@
 #include <string>
 
 #include "ArenaInterrupt.h"
+#include "BotTactics.h"
 #include "FocusState.h"
 #include "GenericSpellActions.h"
 #include "NaturalReaction.h"
@@ -345,8 +346,8 @@ bool SkillMultiplier::IsTargetSwitch(Action* action, Unit*& target)
 
 bool SkillMultiplier::HasNoticed(SkillNoticeCategory category) const
 {
-    uint32 const missPercent = botAI->GetSkillNoticeMissPercent();
-    uint32 const delayMs = botAI->GetSkillNoticeDelayMs();
+    uint32 const missPercent = botAI->GetTactics().GetSkillNoticeMissPercent();
+    uint32 const delayMs = botAI->GetTactics().GetSkillNoticeDelayMs();
     if (missPercent == 0 && delayMs == 0)
         return true;
 
@@ -508,7 +509,7 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
         // focus ease; on a friend the button's ease stays
         if (ease != ReactionEase::NewTarget && target && target != bot && bot->IsHostileTo(target) &&
             AI_VALUE(Unit*, "current target") != target)
-            inputs.Ease = FocusActionEase(ease, true, botAI->GetFocusState().Target.Is(target->GetGUID()));
+            inputs.Ease = FocusActionEase(ease, true, botAI->GetTactics().GetFocusState().Target.Is(target->GetGUID()));
     }
 
     if (category != SkillNoticeCategory::Interrupt)
@@ -520,7 +521,8 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
     inputs.Depth = ReactionThinkDepth::Shortcut;
     if (target && botAI->TacticEnabledHere(TacticId::Interrupt))
     {
-        InterruptCastSlot const* const decided = botAI->GetInterruptState().Latest(target->GetGUID().GetCounter());
+        InterruptCastSlot const* const decided =
+            botAI->GetTactics().GetInterruptState().Latest(target->GetGUID().GetCounter());
         if (decided && decided->Deep)
         {
             inputs.Depth = ReactionThinkDepth::Deep;
@@ -538,7 +540,7 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
         if (spell && spell->GetSpellInfo())
         {
             // The bar the memory has in view (a pushback moves its end) or the one seen now
-            OpponentMemory const& memory = botAI->GetOpponentMemory();
+            OpponentMemory const& memory = botAI->GetTactics().GetOpponentMemory();
             uint32 const guid = target->GetGUID().GetCounter();
             uint32 const spellId = spell->GetSpellInfo()->Id;
             OpponentMemorySlot const* slot = memory.Find(guid);
@@ -560,7 +562,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
     uint32 const now = getMSTime();
     ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
     // A kick skipped as out of reach (user note 2) waits for the next enemy cast, not for the miss window
-    ReactionBusyState& busy = botAI->GetReactionBusy();
+    ReactionBusyState& busy = botAI->GetTactics().GetReactionBusy();
     if (event.Active && event.Busy == static_cast<uint8>(ReactionBusyAnswer::Skipped) &&
         static_cast<int32>(now - busy.SkipEndMs) >= 0)
         event.Active = false;
@@ -578,13 +580,14 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
                             !bot->HasInArc(params.ConeDegrees * static_cast<float>(M_PI) / 180.0f, target);
         ReactionEventInputs const inputs =
             reactionNatural[index] ? EventInputs(category, ease, target, now) : ReactionEventInputs();
-        StartReactionEvent(event, reactionFocus, botAI->GetReactionState(), params, bot->GetGUID().GetCounter(),
-                           static_cast<uint8>(category), botAI->GetSkillNoticeMissPercent(), behind, now,
-                           botAI->GetReactionTypes(), inputs);
+        StartReactionEvent(event, reactionFocus, botAI->GetTactics().GetReactionState(), params,
+                           bot->GetGUID().GetCounter(), static_cast<uint8>(category),
+                           botAI->GetTactics().GetSkillNoticeMissPercent(), behind, now,
+                           botAI->GetTactics().GetReactionTypes(), inputs);
         // End to end only where the faster check runs: at upstream's combat interval (250 ms in battlegrounds and
         // arenas, 500 ms elsewhere, x the skill's stretch, plus up to 200 ms of stagger) the learnt latency would eat
         // most of the draw
-        if (reactionNatural[index] && params.EndToEnd && botAI->IsNaturalCadenceActive())
+        if (reactionNatural[index] && params.EndToEnd && botAI->GetTactics().IsNaturalCadenceActive())
         {
             ReactionStampSource source = ReactionStampSource::FirstQuery;
             uint32 const age = VisibleEventAgeMs(bot, category, target, source);
@@ -647,7 +650,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
 void SkillMultiplier::MeetBusy(ReactionEvent& event, SkillNoticeCategory category, Action* action, Unit* target,
                                uint32 nowMs, bool starting)
 {
-    ReactionBusyState& busy = botAI->GetReactionBusy();
+    ReactionBusyState& busy = botAI->GetTactics().GetReactionBusy();
     if (starting)
     {
         // The bot's own cast between the event's server time and its first query: the time it did not look
@@ -706,7 +709,7 @@ void SkillMultiplier::MeetBusy(ReactionEvent& event, SkillNoticeCategory categor
 
     uint32 const enemyLeft = static_cast<uint32>(std::clamp(cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
     ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
-    bool const stamped = params.EndToEnd && botAI->IsNaturalCadenceActive();
+    bool const stamped = params.EndToEnd && botAI->GetTactics().IsNaturalCadenceActive();
     int32 const freeMs = BusyFreeDueMs(event, static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), stamped);
     if (!InterruptOutOfReach(rules, std::max(event.DueAfterMs, waitMs), freeMs, enemyLeft))
         return;

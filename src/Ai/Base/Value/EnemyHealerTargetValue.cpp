@@ -10,6 +10,7 @@
 
 #include "ArenaInterrupt.h"
 #include "ArenaInterruptSpells.h"
+#include "BotTactics.h"
 #include "FocusState.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
@@ -20,7 +21,7 @@ Unit* EnemyHealerTargetValue::Calculate()
 {
     std::string const spell = qualifier;
     // G5b: a bot that knows the Interrupt tactic weighs the casts of the fight's enemies; else the first helpful cast
-    if (botAI->TacticEnabledHere(TacticId::Interrupt) && botAI->TacticActive(TacticId::Interrupt))
+    if (botAI->TacticEnabledHere(TacticId::Interrupt) && botAI->GetTactics().TacticActive(TacticId::Interrupt))
         return BestInterruptTarget(spell);
 
     GuidVector attackers = botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get();
@@ -62,7 +63,7 @@ Unit* EnemyHealerTargetValue::BestInterruptTarget(std::string const& spell)
         uint32 bestScore = 0;
         float const range = botAI->GetRange("spell");
         // G4e: a cast on the bot's focus target scores FocusTargetKickBonus over the others of its kind
-        FocusTargetState const& focus = botAI->GetFocusState().Target;
+        FocusTargetState const& focus = botAI->GetTactics().GetFocusState().Target;
         uint32 const focusBonus = sPlayerbotAIConfig.TacticFocus.FocusTargetKickBonus;
         for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
         {
@@ -93,12 +94,12 @@ Unit* EnemyHealerTargetValue::BestInterruptTarget(std::string const& spell)
     if (!unit || unit == target || !botAI->IsInterruptableSpellCasting(unit, spell))
         return nullptr;
 
-    return botAI->DecideInterrupt(unit) ? unit : nullptr;
+    return botAI->GetTactics().DecideInterrupt(unit) ? unit : nullptr;
 }
 
 Unit* FocusTargetValue::Calculate()
 {
-    FocusTargetState const& focus = botAI->GetFocusState().Target;
+    FocusTargetState const& focus = botAI->GetTactics().GetFocusState().Target;
     if (!focus.Pick.Guid)
         return nullptr;
 

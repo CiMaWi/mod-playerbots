@@ -12,6 +12,7 @@
 
 #include "BotAttributes.h"
 #include "BotProfileMgr.h"
+#include "BotTactics.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "LadderMgr.h"
@@ -191,7 +192,7 @@ bool LabCopyMgr::Pin(Player* templatePlayer, Player* copy, std::string& error, s
 
     bool const loadout = PvpGearMgr::Instance().PinLoadout(copyGuid, templateGuid);
     // The template's guid draws the attributes and the gate in SetPvpSkill, with the template's skill
-    copyAI->SetAttributeTemplate(templateGuid);
+    copyAI->GetTactics().SetAttributeTemplate(templateGuid);
     copyAI->SetPvpSkill(templateAI->GetPvpSkill(), templateAI->GetPvpSkillFirstRoll());
     if (talentsCopied)
         copyAI->ResetStrategies();
@@ -228,7 +229,7 @@ bool LabCopyMgr::Unpin(uint32 copyGuid, std::string& error, std::string& detail)
         return false;
     }
 
-    copyAI->SetAttributeTemplate(0);
+    copyAI->GetTactics().SetAttributeTemplate(0);
     std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(copyGuid);
     copyAI->SetPvpSkill(profile ? profile->Skill : 0, profile ? BotProfileMgr::FirstRoll(*profile) : 0);
     bool restored = false;
@@ -255,7 +256,7 @@ void LabCopyMgr::OnLogout(Player* bot)
     PLAYERBOT_CHECK_WORLD_THREAD("LabCopyMgr::OnLogout");
     PvpGearMgr::Instance().UnpinLoadout(pinned->first);
     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-        botAI->SetAttributeTemplate(0);
+        botAI->GetTactics().SetAttributeTemplate(0);
 
     bool restored = false;
     char const* talents = RestoreTalents(bot, pinned->second.OwnTalents, pinned->second.TalentsChanged, restored);
@@ -408,7 +409,7 @@ bool LabCopyMgr::HandleShowCommand(ChatHandler* handler, char const* args)
 
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     uint32 const guid = bot->GetGUID().GetCounter();
-    uint32 const templateGuid = botAI->GetAttributeTemplate();
+    uint32 const templateGuid = botAI->GetTactics().GetAttributeTemplate();
     std::string templateName;
     if (templateGuid)
         sCharacterCache->GetCharacterNameByGuid(ObjectGuid::Create<HighGuid::Player>(templateGuid), templateName);
@@ -417,7 +418,7 @@ bool LabCopyMgr::HandleShowCommand(ChatHandler* handler, char const* args)
         "ATTRIBUTES {} (guid {}, class {}, race {}, level {}): skill {}, {}", name, guid, bot->getClass(),
         bot->getRace(), bot->GetLevel(), botAI->GetPvpSkill(),
         templateGuid ? Acore::StringFormat("copy of {} (guid {})", templateName, templateGuid) : std::string("own"));
-    handler->PSendSysMessage("  attributes: {}", FormatBotAttributes(botAI->GetAttributes()));
+    handler->PSendSysMessage("  attributes: {}", FormatBotAttributes(botAI->GetTactics().GetAttributes()));
     handler->PSendSysMessage("  talents {}", TalentLink(bot));
     handler->PSendSysMessage("  loadout {}", LoadoutSummary(guid));
     return true;

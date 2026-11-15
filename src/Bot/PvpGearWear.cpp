@@ -17,6 +17,7 @@
 #include <mutex>
 
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "CcState.h"
 #include "CcTacticStrategy.h"
 #include "DatabaseEnv.h"
@@ -330,7 +331,7 @@ bool PvpGearMgr::Wear(Player* bot, char const* reason)
     // purchase), so it comes off first; the bot is alive here, so the restore does not defer (G5a review 2)
     if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot))
     {
-        CcBotState const& cc = botAI->GetCcState();
+        CcBotState const& cc = botAI->GetTactics().GetCcState();
         if (!cc.EnsuredTrinket.IsEmpty() || !cc.EnsuredReplaced.IsEmpty())
             CcRestoreTrinket(botAI);
     }

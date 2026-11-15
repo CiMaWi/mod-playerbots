@@ -10,6 +10,7 @@
 #include <array>
 
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "Event.h"
 #include "Group.h"
 #include "Log.h"
@@ -44,9 +45,9 @@ DrinkParams const& BotDrinkParams(PlayerbotAI* botAI, Player* bot, DrinkBotState
 
     DrinkGateInputs in;
     in.Skill = botAI->GetPvpSkill();
-    in.FullAbility = in.Skill == 0 || botAI->HasFullSkillAbility();
-    in.Knowledge = botAI->GetAttribute(BotAttribute::Knowledge);
-    in.Effort = botAI->GetSkillEffort();
+    in.FullAbility = in.Skill == 0 || botAI->GetTactics().HasFullSkillAbility();
+    in.Knowledge = botAI->GetTactics().GetAttribute(BotAttribute::Knowledge);
+    in.Effort = botAI->GetTactics().GetSkillEffort();
     state.Params = ComputeDrinkParams(sPlayerbotAIConfig.TacticDrink, in);
     state.Healer = PlayerbotAI::IsHeal(bot);
     state.ParamsMs = std::max(nowMs, 1u);
@@ -274,7 +275,7 @@ void NoteStarted(PlayerbotAI* botAI, Player* bot, Battleground* bg, DrinkBotStat
     if (prep)
         botAI->CountTactic(TacticCounter::PrepDrinks);
 
-    botAI->NoteTacticUse(TacticId::Drink);
+    botAI->GetTactics().NoteTacticUse(TacticId::Drink);
     std::string enemy = "none";
     if (state.EnemyYards < DRINK_NO_ENEMY_YARDS)
         enemy = Acore::StringFormat("{:.0f}", state.EnemyYards);

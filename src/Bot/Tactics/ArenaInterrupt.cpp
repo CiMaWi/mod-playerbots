@@ -13,6 +13,7 @@
 #include "AiObjectContext.h"
 #include "ArenaInterruptConfig.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "BotTacticsInternal.h"
 #include "FocusState.h"
 #include "Log.h"
@@ -121,7 +122,7 @@ void FollowInterruptFight(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
     if (!botAI->TacticEnabledHere(TacticId::Interrupt))
         return;
 
-    InterruptBotState& state = botAI->GetInterruptState();
+    InterruptBotState& state = botAI->GetTactics().GetInterruptState();
     Battleground* const battleground = bot->GetBattleground();
     uint32 const matchId =
         battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
@@ -264,7 +265,7 @@ void CountInterruptHit(PlayerbotAI* botAI, Unit* target, InterruptHit const& hit
     char const* bound = "off";
     if (botAI->TacticEnabledHere(TacticId::Interrupt))
     {
-        InterruptCastSlot const* slot = botAI->GetInterruptState().Latest(target->GetGUID().GetCounter());
+        InterruptCastSlot const* slot = botAI->GetTactics().GetInterruptState().Latest(target->GetGUID().GetCounter());
         if (slot && slot->SpellId == hit.SpellId && slot->ActiveAtMs != 0)
         {
             bool const firstQueryStamp = !sPlayerbotAIConfig.NaturalReaction.EndToEnd ||
@@ -289,7 +290,7 @@ void CountInterruptHit(PlayerbotAI* botAI, Unit* target, InterruptHit const& hit
 void NoteInterruptKick(PlayerbotAI* botAI, Player* bot, SpellInfo const* spellInfo, InterruptHit const& hit,
                        uint32 nowMs)
 {
-    InterruptBotState& state = botAI->GetInterruptState();
+    InterruptBotState& state = botAI->GetTactics().GetInterruptState();
     uint32 cooldownMs = bot->GetSpellCooldownDelay(spellInfo->Id);
     if (cooldownMs == 0)
         cooldownMs = std::max(spellInfo->RecoveryTime, spellInfo->CategoryRecoveryTime);
@@ -309,7 +310,7 @@ namespace
 // TACTIC_FIGHT_ENEMIES_MAX units, once per enemy cast; the sight test only for a candidate healer.
 bool InterruptHealerInReach(PlayerbotAI* botAI, Player* bot, Unit* caster, bool wantHealer, uint8& casting)
 {
-    OpponentMemory const& memory = botAI->GetOpponentMemory();
+    OpponentMemory const& memory = botAI->GetTactics().GetOpponentMemory();
     auto const healSpell = [](uint32 spellId)
     {
         return spellId != 0 && ArenaInterrupt::Classify(InterruptSpellFactsOf(sSpellMgr->GetSpellInfo(spellId))) ==
@@ -424,7 +425,7 @@ uint8 FillInterruptHold(PlayerbotAI* botAI, Player* bot, Unit* caster, ArenaInte
         }
     }
 
-    OpponentMemory const& memory = botAI->GetOpponentMemory();
+    OpponentMemory const& memory = botAI->GetTactics().GetOpponentMemory();
     for (uint32 index = 0; index < count; ++index)
     {
         Unit* const unit = units[index];
@@ -487,7 +488,7 @@ uint8 FillInterruptHold(PlayerbotAI* botAI, Player* bot, Unit* caster, ArenaInte
 }
 }  // namespace
 
-bool PlayerbotAI::DecideInterrupt(Unit* enemy)
+bool BotTactics::DecideInterrupt(Unit* enemy)
 {
     InterruptBar bar;
     if (!ReadInterruptBar(enemy, bar))
@@ -525,7 +526,7 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
                                               static_cast<uint8>(SkillNoticeCategory::Interrupt), startMs) ^
                             enemyGuid;
         ArenaInterrupt::Params const params = ArenaInterrupt::ComputeParams(
-            pvpSkill, attributes.Get(BotAttribute::Patience), attributes.Get(BotAttribute::Knowledge),
+            botAI->GetPvpSkill(), attributes.Get(BotAttribute::Patience), attributes.Get(BotAttribute::Knowledge),
             config.SkillGate.CurveExponent, config.TacticInterrupt);
         ArenaInterrupt::Input input;
         input.CastMs = bar.CastMs;
@@ -541,7 +542,7 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
         if (holding)
         {
             uint32 const heldMs = state.Hold.HeldMs(nowMs);
-            NoteInterruptHoldEnd(this, state.ResetHold(nowMs, params.Hold.ResetMs), heldMs, "reset", nowMs);
+            NoteInterruptHoldEnd(botAI, state.ResetHold(nowMs, params.Hold.ResetMs), heldMs, "reset", nowMs);
         }
 
         bool healer = false;
@@ -557,7 +558,7 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
                                            ? sPerfMonitor.acquire(PERF_MON_TOTAL, "ArenaInterrupt::HoldScan")
                                            : nullptr);
                 ArenaInterrupt::InterruptHoldInput& hold = input.Hold;
-                casting = FillInterruptHold(this, bot, enemy, params, state, nowMs, hold);
+                casting = FillInterruptHold(botAI, bot, enemy, params, state, nowMs, hold);
                 ReactionParams const& reaction = config.NaturalReaction;
                 hold.ReactionMs = ArenaInterrupt::HoldReactionMs(
                     reactionState, reactionTypes, ReactionEase::Common,
@@ -570,7 +571,7 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
             {
                 bool const wantHealer = !holding && input.CastKind == ArenaInterrupt::Kind::Damage &&
                                         config.TacticInterrupt.HoldForHealer != 0;
-                healer = InterruptHealerInReach(this, bot, enemy, wantHealer, casting);
+                healer = InterruptHealerInReach(botAI, bot, enemy, wantHealer, casting);
                 input.HealerInRange = healer;
             }
 
@@ -598,13 +599,13 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
             if (slot->Decision.Why == ArenaInterrupt::Reason::Held)
             {
                 state.NoteHeld(nowMs);
-                CountTactic(TacticCounter::IntHold);
+                botAI->CountTactic(TacticCounter::IntHold);
             }
             else if (slot->Decision.Why == ArenaInterrupt::Reason::HoldExpired && state.NoteHoldExpired(nowMs))
-                CountTactic(TacticCounter::IntHoldExpired);
+                botAI->CountTactic(TacticCounter::IntHoldExpired);
 
             if (state.HoldEpisodes != episodes)
-                CountTactic(TacticCounter::IntHoldEpisodes);
+                botAI->CountTactic(TacticCounter::IntHoldEpisodes);
         }
 
         // G5c-c's fields come after G5b's (the analysis joins by position): the use draw, the attention gap and how
@@ -616,10 +617,10 @@ bool PlayerbotAI::DecideInterrupt(Unit* enemy)
                   "share {:.2f} why {} healer {} fake {:.2f} casting {} at {} use {:.2f} gap {} ready {} hp {} loss "
                   "{:.1f} proj {} high {:.2f} need {:.2f} recent {} cover {} healcast {} react {} reach {} motive "
                   "{:.2f} held {} expired {} focus {}",
-                  pvpSkill, enemyGuid, slot->SpellId, bar.CastMs, bar.ElapsedMs, input.Deep ? "deep" : "shortcut",
-                  input.Deep ? ArenaInterrupt::KindName(input.CastKind) : "-", decision.Kick ? 1 : 0, decision.CommitMs,
-                  decision.Share, ArenaInterrupt::ReasonName(decision.Why), healer ? 1 : 0, input.FakeRate,
-                  slot->Casting, nowMs, decision.UseDraw, decision.AttentionGapMs,
+                  botAI->GetPvpSkill(), enemyGuid, slot->SpellId, bar.CastMs, bar.ElapsedMs,
+                  input.Deep ? "deep" : "shortcut", input.Deep ? ArenaInterrupt::KindName(input.CastKind) : "-",
+                  decision.Kick ? 1 : 0, decision.CommitMs, decision.Share, ArenaInterrupt::ReasonName(decision.Why),
+                  healer ? 1 : 0, input.FakeRate, slot->Casting, nowMs, decision.UseDraw, decision.AttentionGapMs,
                   input.ReadyMs == ArenaInterrupt::ATTENTION_UNKNOWN_MS ? -1 : static_cast<int64>(input.ReadyMs),
                   hold.FriendHpPct, hold.FriendLossPctPerS, decision.Hold.ProjectedHpPct, decision.Hold.HpHigh,
                   decision.Hold.Need, hold.RecentCastHeal ? 1 : 0, hold.InstantCover ? 1 : 0, hold.HealCastMs,
