@@ -96,9 +96,9 @@ constexpr std::uint8_t EVERY_OUTCOME = 0xFF;
 
 // The clean-up runs at every end of a status that has one (only errands and travel do), except for today's gaps,
 // kept so that CS14 changes behaviour only where its plan names it. Errands: not on Interrupted (gap E1) or Ordered
-// (gap E2); not yet on Stuck (CS14d's change 1 lets a stuck errand walk clean up). Travel: not on Interrupted (gap T1).
+// (gap E2); a stuck errand walk cleans up (CS14d's change 1). Travel: not on Interrupted (gap T1).
 constexpr std::uint8_t ERRANDS_CLEAN_UP =
-    EVERY_OUTCOME & ~(OutcomeBit(Outcome::Stuck) | OutcomeBit(Outcome::Interrupted) | OutcomeBit(Outcome::Ordered));
+    EVERY_OUTCOME & ~(OutcomeBit(Outcome::Interrupted) | OutcomeBit(Outcome::Ordered));
 constexpr std::uint8_t TRAVEL_CLEAN_UP = EVERY_OUTCOME & ~OutcomeBit(Outcome::Interrupted);
 
 // One row per status. durationIsNormalEnd: TimedOut is the status's normal end, not a failure to do its work.

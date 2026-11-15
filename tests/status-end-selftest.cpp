@@ -42,7 +42,7 @@ constexpr bool EXPECTED_CLEAN_UP[StatusEnd::STATUS_COUNT][StatusEnd::OUTCOME_COU
     {false, false, false, false, false, false, false, false},  // outdoor PvP
     {false, false, false, false, false, false, false, false},  // do gather
     {true, true, true, true, true, false, true, true},         // travel: gap T1 (Interrupted)
-    {true, true, true, false, true, false, false, true},       // errands: Stuck until CS14d, gaps E1, E2
+    {true, true, true, true, true, false, false, true},        // errands: gaps E1, E2 (Stuck cleans up: CS14d)
 };
 
 constexpr bool EXPECTED_JUDGED[StatusEnd::OUTCOME_COUNT] = {true, true, true, true, true, false, false, false};
@@ -147,6 +147,17 @@ int main()
                  "ordered trip end", "travel x order: abort:order, the abort decision, an INFO line");
     counts.Check(!StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Ordered), "ordered errand end",
                  "errands x order: no clean-up");
+
+    // Change 1 (CS14d): a stuck errand walk runs the errand's clean-up; it was the one judged outcome that did not
+    counts.Check(StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Stuck), "stuck errand end",
+                 "errands x stuck: the clean-up runs");
+    int falseCells = 0;
+    for (std::uint32_t st = StatusEnd::STATUS_TRAVEL; st <= StatusEnd::STATUS_ERRANDS; ++st)  // the two with one
+        for (std::uint32_t o = 0; o < StatusEnd::OUTCOME_COUNT; ++o)
+            if (!StatusEnd::CleansUp(st, static_cast<Outcome>(o)))
+                ++falseCells;
+    std::snprintf(detail, sizeof(detail), "%d false cells", falseCells);
+    counts.Check(falseCells == 3, "clean-up table gaps", detail);
 
     std::printf("status end selftest: %d passed, %d failed\n", counts.passed, counts.failed);
     return counts.failed ? 1 : 0;

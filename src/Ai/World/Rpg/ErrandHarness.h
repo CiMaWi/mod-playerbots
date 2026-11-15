@@ -254,6 +254,19 @@ inline void ErrandEnds(std::vector<Check>& checks)
     ErrandEndRow const sickRow = ErrandEnd(sick, 3000, 7.0f, true, true);
     Add(checks, "end: a sick end after a visited stop stamps the check, records errand_sick and adds no minutes",
         sickRow == ErrandEndRow::Sick && sick.ErrandChecked && !sick.HasTrip, ErrandEndWord(sickRow));
+    // CS14d: a stuck walk is a not-sick end, now cleaned up (the status core runs this for Outcome::Stuck)
+    SlotMeasure stuckEarly;
+    ErrandEndRow const stuckEarlyRow = ErrandEnd(stuckEarly, 4000, 5.0f, false, false);
+    Add(checks, "end: stuck before any stop stamps the check, records errand_abort and adds no minutes",
+        stuckEarlyRow == ErrandEndRow::Abort && stuckEarly.ErrandChecked && stuckEarly.ErrandCheckMs == 4000 &&
+            !stuckEarly.HasTrip,
+        ErrandEndWord(stuckEarlyRow));
+    SlotMeasure stuckLate;
+    ErrandEndRow const stuckLateRow = ErrandEnd(stuckLate, 5000, 5.0f, true, false);
+    Add(checks, "end: stuck after a visited stop stamps the check, records errand_run and adds its minutes",
+        stuckLateRow == ErrandEndRow::Run && stuckLate.ErrandChecked && stuckLate.HasTrip &&
+            stuckLate.TripMinutes == 5.0f,
+        ErrandEndWord(stuckLateRow));
 }
 
 // Nothing near offers the service: refused as no_stop, nothing else changes
