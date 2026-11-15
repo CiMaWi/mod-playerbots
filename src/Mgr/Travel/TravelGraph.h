@@ -968,7 +968,9 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     // - Goldshire -> Ironforge: about 1200 yd of running to Stormwind's flight master (170 s) and the 6500 yd flight
     //   (200 s; about 3.5 min in the game); on foot through the Deeprun Tram the walk alone takes more than 5 min
     // - Orgrimmar -> Undercity: about 1900 yd of running (inn to tower, tower to inn with the Undercity elevators) and
-    //   The Thundercaller (180 s)
+    //   The Thundercaller (180 s). A graph with static portals takes Orgrimmar's portal to the Blasted Lands, the
+    //   Dark Portal, a flight to Shattrath and its portal to Undercity (about 420 s) instead: the simple cost has no
+    //   level or side
     // - Darnassus -> Stormwind: the portal to Rut'theran Village, at least one ship and long flights; the shipped graph
     //   has no walk link onto The Bravery at Auberdine, so its route flies to Ratchet and sails to Booty Bay (The
     //   Maiden's Fancy). More than 30 min would be a detour. A graph with static portals (the navigation plan's)
@@ -986,8 +988,8 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         {"Orgrimmar -> Undercity",
          {"Orgrimmar innkeeper", 1, 1633.9f, -4439.4f},
          {"Undercity innkeeper", 0, 1637.0f, 220.0f},
-         TravelLinkType::Transport,
-         164871,
+         staticPortals ? TravelLinkType::StaticPortal : TravelLinkType::Transport,
+         staticPortals ? 183327u : 164871u,
          300.0f,
          900.0f},
         {"Darnassus -> Stormwind",

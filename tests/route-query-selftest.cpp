@@ -5,7 +5,9 @@
  */
 
 // Standalone check of `playerbots route query` (src/Mgr/Travel/RouteQuery.h): the argument parsing and, on the
-// shipped travel graph, the legs from Orgrimmar's zeppelin tower to Undercity (The Thundercaller, entry 164871). Given
+// shipped travel graph, the legs from Orgrimmar's zeppelin tower to the Tirisfal tower's wait point (The
+// Thundercaller, entry 164871; with static portals a trip to Undercity's inn takes the Shattrath portal, and the tower
+// has no walk down, navigation N1 and NV26). Given
 // a graph directory (a graph with wait points, the navigation plan's), also five crossings by their vessels, each one
 // transport leg through both wait points, and three trips through static portals (WT55d). The crossings start at the
 // vessel's tower or harbour where a city's portals would beat the vessel from its inn.
@@ -60,7 +62,7 @@ int main(int argc, char** argv)
         std::cout << "route-query-selftest: graph build failed: " << error << "\n";
         return 2;
     }
-    RouteQuery::Parse("1331.11,-4649.45,53.63,1 undercity", parsed, error);
+    RouteQuery::Parse("1331.11,-4649.45,53.63,1 2064,290,97,0", parsed, error);
     std::vector<std::string> const lines = RouteQuery::Run(graph, parsed);
     bool thundercaller = false;
     for (std::string const& line : lines)
@@ -68,7 +70,7 @@ int main(int argc, char** argv)
         std::cout << "  " << line << "\n";
         thundercaller = thundercaller || line.find("The Thundercaller") != std::string::npos;
     }
-    check(thundercaller, "orgrimmar -> undercity uses The Thundercaller");
+    check(thundercaller, "orgrimmar -> tirisfal tower uses The Thundercaller");
     check(lines.size() >= 3 && lines.back().find("legs") != std::string::npos, "totals line");
 
     // No transport leg starts or ends at a stop with a wait point: the bot boards from the wait point (lifts too)
@@ -83,7 +85,7 @@ int main(int argc, char** argv)
                             });
     };
     check(boardsFromWaitPoints(TravelRoute::Search(graph, RouteQuery::RequestOf(parsed), {}, {})),
-          "orgrimmar -> undercity boards no transport at a stop with a wait point");
+          "orgrimmar -> tirisfal tower boards no transport at a stop with a wait point");
 
     // The wait points' text names an end only where the leg has a wait point there (WT55b)
     TravelRoute::Leg half;
@@ -111,7 +113,7 @@ int main(int argc, char** argv)
             char const* name;
         };
         Crossing const crossings[] = {
-            {"1331.11,-4649.45,53.63,1 undercity horde", 164871, "The Thundercaller"},
+            {"1331.11,-4649.45,53.63,1 2064,290,97,0 horde", 164871, "The Thundercaller"},
             {"ratchet -14457.7,495.3,15.2,0 horde", 20808, "The Maiden's Fancy"},
             {"-8647.4,1329.38,5.7,0 6406.5,515.4,8.7,1 alliance", 176310, "The Bravery"},
             {"stormwind 2282.3,5210.8,12.6,571 alliance", 190536, "Stormwind's Pride"},
