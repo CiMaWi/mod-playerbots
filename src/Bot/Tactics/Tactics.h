@@ -11,7 +11,7 @@
 #include <optional>
 #include <string>
 
-#include "Common.h"
+#include "Define.h"
 
 class ChatHandler;
 

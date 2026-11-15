@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_ARENAFOCUSCONFIG_H
 #define _PLAYERBOT_ARENAFOCUSCONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 
 // The numbers of the target hold (Playerbots.Tactics.Hold.*) and the team plan (Playerbots.Tactics.Focus.*), read once
 // at config load (PlayerbotAIConfig::TacticFocus); the initial values are the conf.dist defaults (proposals, G6a tunes

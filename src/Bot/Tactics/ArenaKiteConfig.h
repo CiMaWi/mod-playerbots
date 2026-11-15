@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_ARENAKITECONFIG_H
 #define _PLAYERBOT_ARENAKITECONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 
 // The numbers of the Kite tactic (Playerbots.Tactics.Kite.*, G3a), the Drink tactic (Playerbots.Tactics.Drink.*, G3b)
 // and the Jump tactic (Playerbots.Tactics.Jump.*, G2g), read once at config load (PlayerbotAIConfig::TacticKite,

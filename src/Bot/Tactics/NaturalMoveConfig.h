@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_NATURALMOVECONFIG_H
 #define _PLAYERBOT_NATURALMOVECONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 #include "Tactics.h"
 
 constexpr uint32 MinTrackRingSamples = 4;   // the bounds of TrackConfig::RingSamples

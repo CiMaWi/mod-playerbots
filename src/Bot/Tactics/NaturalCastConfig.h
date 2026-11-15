@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_NATURALCASTCONFIG_H
 #define _PLAYERBOT_NATURALCASTCONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 
 // The numbers of the Fake tactic (Playerbots.Tactics.Fake.*, G5e), read once at config load
 // (PlayerbotAIConfig::TacticFake); the initial values are the conf.dist defaults (proposals). Kept apart from

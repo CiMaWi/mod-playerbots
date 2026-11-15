@@ -49,11 +49,10 @@ struct TacticSuite
     void (*Run)(TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const& inputs);
 };
 
-// The pure suites; scope, cc and interrupt need the server (the command's parser, the spell store) and stay in
-// Tactics.cpp. The follower-table builder's suite (design 6.4) joins in CS16f.
-inline constexpr std::array<TacticSuite, 16> TACTIC_SUITES = {{
-    {"gate",
-     [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const&) { RunGateChecks(check, say); }},
+// The suites the offline test runs; scope, cc and interrupt need the server (the command's parser, the spell store),
+// gate BotProfileMgr.cpp's percentile math: Tactics.cpp runs them. The follower-table builder's suite (design 6.4)
+// joins in CS16f.
+inline constexpr std::array<TacticSuite, 15> TACTIC_SUITES = {{
     {"reaction", [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const& inputs)
      { RunReactionChecks(check, say, inputs.Reaction, inputs.CurveExponent); }},
     {"attributes",

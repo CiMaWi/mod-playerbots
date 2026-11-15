@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "BotAttributes.h"
+#include "BotProfileMgr.h"
 #include "TacticGate.h"
 
 // Pearson correlation of two equally long series (0 when one of them is constant)

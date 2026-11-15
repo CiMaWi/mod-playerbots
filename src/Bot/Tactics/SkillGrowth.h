@@ -12,7 +12,7 @@
 #include <string>
 
 #include "BotAttributes.h"
-#include "Common.h"
+#include "Define.h"
 #include "SplitMix64.h"
 
 // Skill growth (G6b; Playerbots.Skill.Growth.*; DD.1, DT.7, DT.14): a bot that plays an arena or battleground to its

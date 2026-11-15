@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "Common.h"
+#include "Define.h"
 
 class Battleground;
 class ChatHandler;

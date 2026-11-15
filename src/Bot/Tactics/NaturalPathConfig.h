@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_NATURALPATHCONFIG_H
 #define _PLAYERBOT_NATURALPATHCONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 #include "Tactics.h"
 
 // The numbers of the natural paths (Playerbots.Natural.Path.*, G2c), read once at config load

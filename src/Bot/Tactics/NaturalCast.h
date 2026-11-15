@@ -12,7 +12,7 @@
 #include <string>
 
 #include "BotAttributes.h"
-#include "Common.h"
+#include "Define.h"
 #include "NaturalCastConfig.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"

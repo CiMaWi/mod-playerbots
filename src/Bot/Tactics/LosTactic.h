@@ -15,7 +15,7 @@
 
 #include "ArenaCover.h"
 #include "ArenaCoverConfig.h"
-#include "Common.h"
+#include "Define.h"
 #include "SplitMix64.h"
 #include "TacticGate.h"
 

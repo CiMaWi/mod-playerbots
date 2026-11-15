@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "ArenaCover.h"
-#include "Common.h"
+#include "Define.h"
 
 class ChatHandler;
 class Player;
