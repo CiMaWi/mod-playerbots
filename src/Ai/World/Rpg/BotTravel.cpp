@@ -7,12 +7,15 @@
 #include "BotTravel.h"
 
 #include "BotTravelInternal.h"
+#include "CensusMgr.h"
+#include "CheckMountStateAction.h"
 #include "Log.h"
 #include "LootObjectStack.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NaturalTrace.h"
 #include "NewRpgInfo.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PointMovementGenerator.h"
@@ -244,4 +247,58 @@ void BotTravel::BeginAboard(uint32 entry)
     aboardEntry = entry;
     aboardSinceMs = getMSTime();
     passengerCadence.Revalidate = true;
+}
+
+void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
+                        std::optional<TravelTraceIdentity> const& traceTravel)
+{
+    bool const revalidateProgress = passengerCadence.Revalidate;
+    PassengerAdapter passenger(*bot, traceTravel);
+    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
+                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
+    // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
+    // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence
+    if (aboardEntry)
+    {
+        Transport const* ridden = bot->GetTransport();
+        bool const placed = ridden && ridden->GetEntry() == aboardEntry;
+        uint32 const sinceMs = GetMSTimeDiffToNow(aboardSinceMs);
+        if (placed || sinceMs > ABOARD_DEADLINE_MS)
+        {
+            LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), aboardEntry,
+                     placed ? "placed" : "failed", sinceMs);
+            EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
+            aboardEntry = 0;
+        }
+        else
+            passengerCadence.Revalidate = true;
+    }
+    if (botAI->HasPendingDismount())
+    {
+        if (!bot->IsAlive() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport())
+            botAI->pendingDismount.store(false, std::memory_order_relaxed);
+        else if (botAI->CanMove() && !bot->IsRooted() &&
+                 botAI->pendingDismount.exchange(false, std::memory_order_relaxed))
+            CheckMountStateAction::CompleteDismount(bot);
+    }
+    if (activeLootInteraction || travel)
+    {
+        PerfMonitorScope scope(
+            travel && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Progress") : nullptr);
+        bool const canMove = botAI->CanMove();
+        if (activeLootInteraction)
+            activeLootInteraction->Observe(maintenanceMs, canMove);
+        if (travel)
+            ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
+    }
+    if (tracedMount != MountPath::None)
+    {
+        if (bot->IsMounted())
+        {
+            TraceTravelInteraction("mount_state", "mounted", ObjectGuid::Empty, 0, MountPathWord(tracedMount));
+            tracedMount = MountPath::None;
+        }
+        else if (maintenanceMs - tracedMountAt >= LootInteraction::PhaseMs)
+            tracedMount = MountPath::None;
+    }
 }

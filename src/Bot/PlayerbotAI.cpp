@@ -374,56 +374,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     uint32 const maintenanceMs = getMSTime();
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
     auto const traceTravel = TravelTraceFor(travel);
-    bool const revalidateProgress = botTravel->passengerCadence.Revalidate;
-    PassengerAdapter passenger(*bot, traceTravel);
-    TravelLifecycle::Maintain(botTravel->passengerCadence, maintenanceMs, bot->GetMapId(),
-                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
-    // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
-    // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence
-    if (botTravel->aboardEntry)
-    {
-        Transport const* ridden = bot->GetTransport();
-        bool const placed = ridden && ridden->GetEntry() == botTravel->aboardEntry;
-        uint32 const sinceMs = GetMSTimeDiffToNow(botTravel->aboardSinceMs);
-        if (placed || sinceMs > BotTravel::ABOARD_DEADLINE_MS)
-        {
-            LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), botTravel->aboardEntry,
-                     placed ? "placed" : "failed", sinceMs);
-            EventLog::Emit(bot, BotTravel::ABOARD_EVENT_TYPE, placed ? "placed" : "failed", botTravel->aboardEntry,
-                           sinceMs);
-            botTravel->aboardEntry = 0;
-        }
-        else
-            botTravel->passengerCadence.Revalidate = true;
-    }
-    if (HasPendingDismount())
-    {
-        if (!bot->IsAlive() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport())
-            pendingDismount.store(false, std::memory_order_relaxed);
-        else if (CanMove() && !bot->IsRooted() && pendingDismount.exchange(false, std::memory_order_relaxed))
-            CheckMountStateAction::CompleteDismount(bot);
-    }
-    if (botTravel->activeLootInteraction || travel)
-    {
-        PerfMonitorScope scope(
-            travel && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Progress") : nullptr);
-        bool const canMove = CanMove();
-        if (botTravel->activeLootInteraction)
-            botTravel->activeLootInteraction->Observe(maintenanceMs, canMove);
-        if (travel)
-            botTravel->ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
-    }
-    if (botTravel->tracedMount != BotTravel::MountPath::None)
-    {
-        if (bot->IsMounted())
-        {
-            botTravel->TraceTravelInteraction("mount_state", "mounted", ObjectGuid::Empty, 0,
-                                              MountPathWord(botTravel->tracedMount));
-            botTravel->tracedMount = BotTravel::MountPath::None;
-        }
-        else if (maintenanceMs - botTravel->tracedMountAt >= LootInteraction::PhaseMs)
-            botTravel->tracedMount = BotTravel::MountPath::None;
-    }
+    botTravel->PreGate(maintenanceMs, travel, traceTravel);
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
