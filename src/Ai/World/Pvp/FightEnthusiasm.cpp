@@ -50,10 +50,12 @@ namespace
 {
 // The one-off edits' event rows (world-log.md): source the cause, id the value before, amount the value after; a
 // death's second row carries the victim's plain join threshold. The engaged row: id the value at the rising engaged
-// edge, amount 1 for a PvpTest forced fighter (pvptest), else 0
+// edge, amount 1 for a PvpTest forced fighter (pvptest), else 0. The disengaged row on the falling edge: id the value
+// there, amount the whole seconds engaged (rounded to the nearest); none for a forced fighter
 constexpr char const* EVENT_ENTHUSIASM = "PvpEnthusiasm";
 constexpr char const* SOURCE_DEATH_JOIN = "death_join";
 constexpr char const* SOURCE_ENGAGED = "engaged";
+constexpr char const* SOURCE_DISENGAGED = "disengaged";
 // The entering rows' choices (fight_start, fight_join)
 constexpr char const* CHOICE_START = "start";
 constexpr char const* CHOICE_JOIN = "join";
@@ -285,11 +287,29 @@ void RecordEngaged(Player* bot, BotEnthusiasm const& state, uint32 nowMs, Enthus
 // group), and the balance and (while engaged) who attacks the bot and what its pet attacks when due while the bot is
 // engaged or could enter
 // (`force`: all of it now, for the command)
+// The disengaged row on the falling edge: the value there and the whole seconds engaged; no row for a forced fighter
+void RecordDisengaged(Player* bot, BotEnthusiasm const& state, uint32 startMs, uint32 nowMs,
+                      EnthusiasmValues const& values)
+{
+    if (!WorldLog::Active() || IsForced(bot->GetGUID(), nowMs))
+        return;
+    EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_DISENGAGED,
+                   static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))),
+                   static_cast<int64>(std::lround(static_cast<uint32>(nowMs - startMs) / 1000.0)));
+}
+
 void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs, EnthusiasmValues const& values,
              bool force)
 {
-    if (Observe(state, EngagedNow(botAI, bot), nowMs, values) && state.engaged)
-        RecordEngaged(bot, state, nowMs, values);
+    // Observe resets engagedMs on every edge: keep the rising time for the falling edge's row
+    uint32 const startMs = state.engagedMs;
+    if (Observe(state, EngagedNow(botAI, bot), nowMs, values))
+    {
+        if (state.engaged)
+            RecordEngaged(bot, state, nowMs, values);
+        else
+            RecordDisengaged(bot, state, startMs, nowMs, values);
+    }
     if (force || ContextDue(state, nowMs))
         ReadContext(botAI, bot, state, nowMs, values);
     if (force || GroupDue(state, nowMs))
@@ -346,7 +366,7 @@ Entering Evaluate(PlayerbotAI* botAI, Player* bot, BotEnthusiasm const& state, P
 
 // The entering row: fight_start (reason enthusiasm) or fight_join (faction_attacked, group_attacked) with the value,
 // the join threshold, the colour and the terms applied
-void RecordEntering(Player* bot, Entering const& entering, EnthusiasmValues const& values)
+void RecordEntering(Player* bot, Entering const& entering, EnthusiasmValues const& values, uint32 targetCounter)
 {
     if (!WorldLog::Active())
         return;
@@ -360,7 +380,7 @@ void RecordEntering(Player* bot, Entering const& entering, EnthusiasmValues cons
                                                                    : REASON_FACTION;
     WorldLog::Decision(
         bot, joining ? WorldLogFormat::DecisionKind::FightJoin : WorldLogFormat::DecisionKind::FightStart,
-        joining ? CHOICE_JOIN : CHOICE_START, reason, static_cast<float>(entering.value), alternatives, 0);
+        joining ? CHOICE_JOIN : CHOICE_START, reason, static_cast<float>(entering.value), alternatives, targetCounter);
 }
 
 // The leaving row: fight_leave, reason fled or resumed, the value, the flee threshold used, its terms (1: the group
@@ -557,7 +577,7 @@ bool NoteEntering(PlayerbotAI* botAI, Player* enemy)
     if (!entering.enters)
         return false;
     SetPick(*state, guid, nowMs);
-    RecordEntering(bot, entering, values);
+    RecordEntering(bot, entering, values, enemy->GetGUID().GetCounter());
     return true;
 }
 
