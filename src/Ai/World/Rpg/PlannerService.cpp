@@ -788,6 +788,15 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     return snapshot;
 }
 
+void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle)
+{
+    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    if (toIdle)
+        state.snapshotDue = true;  // a goal ended
+    if (state.goals)
+        GoalApply::NoteStatusEnd(*state.goals, outcome, toIdle);
+}
+
 void PlannerHook(PlayerbotAI* botAI, Player* bot)
 {
     RowTimer const timer("planner hook");
@@ -811,18 +820,6 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
 
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
     uint32 const now = getMSTime();
-    bool const idle = botAI->rpgInfo.GetStatus() == RPG_IDLE;
-    if (idle && !state.wasIdle)
-    {
-        state.snapshotDue = true;  // a goal ended
-        // A wait that another action ended (an errand, an inn, a travel order) leaves no stale start behind
-        if (state.goals)
-        {
-            state.goals->idleSinceMs = 0;
-            state.goals->waitCounted = false;
-        }
-    }
-    state.wasIdle = idle;
 
     if (state.pending)
     {
@@ -919,13 +916,15 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         return {false, true, nullptr};
 
     // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
-    // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start. An
+    // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start, unless
+    // its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting again clears that mark. An
     // external goal goes on in the weighted group too: it has no planner goals, but the bridge may set one
     if ((!weighted || goals.slot.HasExternal()) && config.PlannerGoals && goals.slot.Query().Is() && !goals.switchTo)
     {
         GoalApply::Active const current = goals.slot.Query();
         if (GoalApply::RunsCircuit(current) && goals.run.running && StartQuest(botAI, bot, goals, tests))
         {
+            GoalApply::ContinueRun(goals);
             goalsContinued.fetch_add(1, std::memory_order_relaxed);
             Publish(bot, goals);
             return {true, false, nullptr};
@@ -938,6 +937,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             GoalApply::Executor const executor = GoalApply::ExecutorFor(resumed, ReachOf(bot, resumed, tests));
             if (StartGoal(botAI, bot, goals, resumed, executor, tests))
             {
+                GoalApply::ContinueRun(goals);
                 goalsResumed.fetch_add(1, std::memory_order_relaxed);
                 Publish(bot, goals);
                 return {true, false, nullptr};

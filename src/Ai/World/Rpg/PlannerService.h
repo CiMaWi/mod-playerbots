@@ -18,6 +18,7 @@
 #include "PlannerIndexes.h"
 #include "PlannerPool.h"
 #include "QuestStatEvents.h"
+#include "StatusEndRules.h"
 
 class ChatHandler;
 class Player;
@@ -67,6 +68,9 @@ RepairPrice PriceRepair(Player* bot);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due. O(1) unless a snapshot is built
 void PlannerHook(PlayerbotAI* botAI, Player* bot);
+// The status core (RpgStatus::End) on the bot's map thread, for every status that ends: an end to idle makes a
+// snapshot due and ends a wait for a plan; the goal's run learns the outcome (GoalApply::NoteStatusEnd). O(1)
+void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or

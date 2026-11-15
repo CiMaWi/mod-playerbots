@@ -14,6 +14,7 @@
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "NewRpgInfo.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -107,8 +108,8 @@ void AbortTrip(Player* bot, NewRpgInfo::Travel const& data, Outcome outcome, Sta
                        {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
 }
 
-// Every status change of the core, in this order: the ending status's clean-up (it reads the status data), idle, the
-// one Status row. CS14e adds the planner's note after the clean-up; CS14f lets a start pass its next status
+// Every status change of the core, in this order: the ending status's clean-up (it reads the status data), the
+// planner's note (the goal's run learns the outcome), idle, the one Status row. CS14f lets a start pass its next status
 void Change(PlayerbotAI* botAI, Outcome outcome, StatusEnd::Note const& note, char const* word)
 {
     NewRpgInfo& info = botAI->rpgInfo;
@@ -125,6 +126,8 @@ void Change(PlayerbotAI* botAI, Outcome outcome, StatusEnd::Note const& note, ch
                 AbortTrip(botAI->GetBot(), *trip, outcome, note);
         }
     }
+    if (oldStatus != RPG_IDLE)
+        Planner::OnStatusEnd(botAI, outcome, true);
     RpgStatusCore::ToIdle(info);
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), word);
 }

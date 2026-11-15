@@ -216,8 +216,7 @@ struct NewRpgInfo
         uint32 stateKey{0};        // level, zone, life and group as last seen
         uint32 lastSnapshotMs{0};  // 0 = none yet
         bool snapshotDue{true};    // the situation changed or a goal ended since the last snapshot
-        bool wasIdle{false};
-        bool pending{false};  // a job is out; its result is taken before the next one is submitted
+        bool pending{false};       // a job is out; its result is taken before the next one is submitted
         std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
     };
     PlannerState planner;
