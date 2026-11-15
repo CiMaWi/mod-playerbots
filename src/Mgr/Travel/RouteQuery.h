@@ -129,10 +129,9 @@ inline std::string ObjectText(TravelRoute::Leg const& leg)
     return text;
 }
 
-// Plans the route on the graph and returns the output lines
-inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& query)
+// The made-up bot's request
+inline TravelRoute::Request RequestOf(Parsed const& query)
 {
-    std::vector<std::string> lines;
     TravelRoute::Request request;
     request.snapshot.position = query.from;
     request.snapshot.team = query.team;
@@ -141,6 +140,25 @@ inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& quer
     request.snapshot.knownTaxi.fill(~0u);
     request.snapshot.allowTransport = true;
     request.goal = query.to;
+    return request;
+}
+
+// A transport leg's wait points, where the graph has them: an end joined to its stop by a wait-point link (waitFrom,
+// waitTo), else none (the leg ends at the stop)
+inline std::string WaitPointText(TravelGraph const& graph, TravelRoute::Leg const& leg)
+{
+    if (leg.type != TravelRoute::LegType::Transport || leg.nodes.empty() || (!leg.waitFrom && !leg.waitTo))
+        return "";
+    auto const name = [&graph](bool wait, std::uint32_t node)
+    { return wait ? "'" + std::string(graph.GetName(node)) + "'" : std::string("none"); };
+    return ", wait points " + name(leg.waitFrom, leg.nodes.front()) + " -> " + name(leg.waitTo, leg.nodes.back());
+}
+
+// Plans the route on the graph and returns the output lines
+inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& query)
+{
+    std::vector<std::string> lines;
+    TravelRoute::Request const request = RequestOf(query);
     lines.push_back("ROUTE query: " + PointText(query.from) + " -> " + PointText(query.to) + ", " +
                     (query.team ? "Horde" : "Alliance") + (query.sideGiven ? "" : " (default side)") + ", level " +
                     std::to_string(query.level) + ", all flight masters known, transport allowed");
@@ -157,7 +175,7 @@ inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& quer
         std::snprintf(buffer, sizeof(buffer), "%u. %-9s %6.1f s", ++number, TravelRoute::LegTypeWord(leg.type),
                       leg.seconds);
         lines.push_back(std::string("ROUTE query: ") + buffer + "  " + PointText(leg.from) + " -> " +
-                        PointText(leg.to) + ObjectText(leg));
+                        PointText(leg.to) + ObjectText(leg) + WaitPointText(graph, leg));
     }
     lines.push_back("ROUTE query: " + std::to_string(route.legs.size()) + " legs, " +
                     std::to_string(static_cast<int>(route.totalSeconds)) + " s, fare " +

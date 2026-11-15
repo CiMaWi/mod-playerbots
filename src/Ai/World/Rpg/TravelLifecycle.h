@@ -403,6 +403,36 @@ std::optional<Point> FindQuay(Geometry const& geometry, Point const& approach, P
     return std::nullopt;
 }
 
+// Where a boarding at a stop's wait point starts (WT55e, WT.42): the wait point where its crossing passes the board
+// check, else the quay the old search (FindQuay) finds from it; nothing found, the wait point still
+struct BoardChoice
+{
+    Point Start;
+    CrossingCheck Gate{CrossingCheck::Accepted};  // the wait point's crossing
+    bool Searched{false};                         // the quay search ran
+    bool Found{false};                            // Start is the search's quay
+};
+
+// The check is the boarding's own (the deck point toward the hull's centre, CheckBoard); the search runs only after a
+// refusal. The follower asks once per docking (TravelLegs::NoteBoardCheck)
+template <class Geometry>
+BoardChoice BoardFrom(Geometry const& geometry, Point const& wait, Point const& origin, Point const& centre,
+                      CrossingTally* tally = nullptr)
+{
+    BoardChoice choice{wait};
+    auto const deck = geometry.DeckFrom(wait, BOARD_DECK_INSET_YARDS, centre);
+    choice.Gate = deck ? CheckBoard(geometry, wait, *deck) : CrossingCheck::NoDeck;
+    if (choice.Gate == CrossingCheck::Accepted)
+        return choice;
+    choice.Searched = true;
+    if (auto const quay = FindQuay(geometry, wait, origin, centre, tally))
+    {
+        choice.Start = *quay;
+        choice.Found = true;
+    }
+    return choice;
+}
+
 // The mesh adapter supplies actual ground and a complete ground corridor. The deck crossing is checked separately.
 // Off the hull means no transport surface under the point (the geometry's model test, not the model's bounding box).
 template <class Geometry>
@@ -528,6 +558,35 @@ std::optional<ExitPath> FindExit(Geometry const& geometry, Point const& from, Po
     return std::nullopt;
 }
 
+// WT60: leaving is boarding in reverse. At a stop with a wait point the exit takes that point, the graph's ground: its
+// deck point is the boarding's (DeckFrom toward the hull's centre, BOARD_DECK_INSET_YARDS in), the crossing between
+// them passes the boarding's checks (CheckBoard), and the rider walks across the deck to that deck point (DeckPath).
+// No ground to leave on is searched for, and the wait point is not tested off the hull: a zeppelin's gondola docks
+// within a yard of its tower's wait point. gate: Accepted, or the first check that failed (NoDeck, Height, Distance,
+// Ground, Crossing, DeckWalk). The exit's onward point is the wait point itself: the walk on is the next leg's
+template <class Geometry>
+std::optional<ExitPath> FindWaitExit(Geometry const& geometry, Point const& from, Point const& wait,
+                                     Point const& centre, CrossingCheck& gate)
+{
+    auto const deck = geometry.DeckFrom(wait, BOARD_DECK_INSET_YARDS, centre);
+    if (!deck)
+    {
+        gate = CrossingCheck::NoDeck;
+        return std::nullopt;
+    }
+    gate = CheckBoard(geometry, wait, *deck);
+    if (gate != CrossingCheck::Accepted)
+        return std::nullopt;
+    std::uint32_t expanded = 0;
+    auto walk = geometry.DeckPath(from, *deck, DECK_PATH_CELLS, expanded);
+    if (!walk)
+    {
+        gate = CrossingCheck::DeckWalk;
+        return std::nullopt;
+    }
+    return ExitPath{*deck, wait, wait, std::move(*walk)};
+}
+
 enum class MotionKind : std::uint8_t
 {
     Board,
@@ -576,7 +635,18 @@ struct PassengerMotion
     DockPose Dock;
     Point ExitFrom;
     Point Onward;
+    bool ToWaitPoint = false;  // an exit to the stop's wait point (FindWaitExit)
 };
+
+// An exit holds where the bot stands at its end, at the dock it was issued at: the found crossing's checks again
+// (CheckExit from its deck edge), or for an exit to the wait point the boarding's from there (CheckBoard)
+template <class Geometry>
+bool ExitHolds(Geometry const& geometry, PassengerMotion const& motion, Point const& at)
+{
+    if (motion.ToWaitPoint)
+        return CheckBoard(geometry, at, motion.ExitFrom) == CrossingCheck::Accepted;
+    return AcceptExit(geometry, motion.ExitFrom, at, motion.Onward);
+}
 
 struct SplineObservation
 {

@@ -19,6 +19,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "AreaDefines.h"
 #include "BankRulesInput.h"
@@ -1585,6 +1586,8 @@ void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 void ReadByFollower(Player&) {}
 // nodestroy changes nothing on the bot: the smart destroy action reads the bit (TestConstraints::DestroysForSpace)
 void ReadByDestroy(Player&) {}
+// notaxi changes nothing on the bot: the route request reads the bit (TestConstraints::TaxiAllowed)
+void ReadByRoute(Player&) {}
 // nomount changes nothing on the bot: the check mount state action reads the bit (TestConstraints::MountsOnItsOwn)
 void ReadByMount(Player&) {}
 // flee changes nothing on the bot: the world PvP retreat trigger reads the bit (TestConstraints::Flees)
@@ -1597,6 +1600,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FLYFAIL, ReadByFollower, ReadByFollower},
     {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
     {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
+    {TestConstraints::NOTAXI, ReadByRoute, ReadByRoute},
     {TestConstraints::NOMOUNT, ReadByMount, ReadByMount},
     {TestConstraints::FLEE, ReadByFlee, ReadByFlee},
 };
@@ -3023,6 +3027,186 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index)
     return {node.mapId, node.x, node.y, node.z};
 }
 
+// WT58: the graph link a walk leg walks now, between waypoints[next - 1] and waypoints[next]; none on the walks
+// between the bot, the graph and the goal, and on every other leg
+std::pair<std::uint32_t, std::uint32_t> WalkLinkEnds(TravelLegs::Trip const& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != TravelRoute::LegType::Walk)
+        return {TravelLegs::NO_NODE, TravelLegs::NO_NODE};
+    return TravelLegs::StuckEdge(trip);
+}
+
+// The links a walk leg walks along: walk links and a wait point's link to its stop (a ride's points are its voyage)
+bool WalkableLink(TravelGraphLink const& link)
+{
+    return link.type == TravelLinkType::Walk || (link.type == TravelLinkType::Transport && !link.object);
+}
+
+// A walk leg's order along its graph link (TravelWalkRules.h): the link's next stored point, else target (the far
+// node, or a waypoint off the graph). The points stay in the graph; the trip holds an index
+TravelRoute::Point WalkLinkTarget(TravelLegs::Trip& trip, TravelRoute::Point const& bot,
+                                  TravelRoute::Point const& target)
+{
+    TravelWalk::LinkWalk& walk = trip.walk;
+    auto const [from, to] = WalkLinkEnds(trip);
+    if (from == TravelLegs::NO_NODE)
+    {
+        walk = {};
+        return target;
+    }
+    TravelGraph const& graph = TravelGraph::Instance();
+    if (!walk.On(from, to))
+    {
+        TravelWalk::Rows<TravelGraphLink> const rows = TravelWalk::PickRows<TravelGraphLink>(
+            [&graph](std::uint32_t node) { return graph.LinksOf(node); }, from, to, WalkableLink);
+        std::span<TravelGraphPoint const> const points =
+            rows.link ? graph.PathOf(*rows.link) : std::span<TravelGraphPoint const>{};
+        TravelWalk::Begin(walk, from, to, rows.link ? graph.IndexOfLink(*rows.link) : TravelWalk::NO_LINK, points,
+                          rows.reversed, graph.GetNode(from), graph.GetNode(to));
+    }
+    if (walk.mode != TravelWalk::Mode::Stored)
+        return target;
+    std::span<TravelGraphPoint const> const points = graph.PathOf(graph.GetLink(walk.link));
+    std::uint32_t const point = TravelWalk::Target(walk, points, bot, graph.GetNode(to));
+    if (point == TravelWalk::NO_POINT)
+        return target;
+    TravelGraphPoint const& at = TravelWalk::PointAt(points, walk.reversed, point);
+    return {at.mapId, at.x, at.y, at.z};
+}
+
+static_assert(TravelWalk::PATH_NORMAL == PATHFIND_NORMAL && TravelWalk::PATH_INCOMPLETE == PATHFIND_INCOMPLETE &&
+                  TravelWalk::PATH_NOPATH == PATHFIND_NOPATH &&
+                  TravelWalk::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH &&
+                  TravelWalk::PATH_SHORT == PATHFIND_SHORT,
+              "TravelWalk::Accepts reads the engine's PathType bits");
+
+// The navmesh tile under a point is loaded (PathGenerator::HaveTile): the engine loads a grid's tiles with the grid,
+// and a path call to a point on an unloaded tile answers the straight line whatever the ground
+bool NavTileLoaded(Player* bot, TravelRoute::Point const& at)
+{
+    dtNavMesh const* const mesh = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
+    if (!mesh)
+        return false;
+    int tx = -1;
+    int ty = -1;
+    float const point[3] = {at.y, at.z, at.x};
+    mesh->calcTileLoc(point, &tx, &ty);
+    return tx >= 0 && ty >= 0 && mesh->getTileAt(tx, ty, 0) != nullptr;
+}
+
+// The polygons a navmesh fragment has at most (NavFragment): a cheap bound on the flood, once per walk off the graph
+constexpr std::size_t FRAGMENT_POLYS = 16;
+
+// A point on a navmesh fragment: the nearest polygon a bot may walk (NavMeshSnap's filter, the off-mesh box) belongs to
+// a connected piece of fewer than FRAGMENT_POLYS polygons, linked to nothing else. The extractor leaves such pieces
+// where it cut walkable floor apart (the polygons of a hall floor with no neighbours, WT56): the bots walk there, but
+// no path leaves such a piece, so the navmesh cannot judge a walk from or to it. False where no polygon is in the box
+// (the bot is off the mesh: the follower's off-mesh recovery) or the map has no navmesh
+bool NavFragment(Player* bot, TravelRoute::Point const& at)
+{
+    MMapData& mmap = bot->GetMap()->GetMapCollisionData().GetMMapData();
+    dtNavMesh const* const mesh = mmap.GetNavMesh();
+    dtNavMeshQuery const* const query = mmap.GetNavMeshQuery();
+    if (!mesh || !query)
+        return false;
+    dtQueryFilter filter;
+    filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
+    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
+    float const point[3] = {at.y, at.z, at.x};
+    float const extents[3] = {WorldTravel::OFF_MESH_ACROSS_YARDS, WorldTravel::OFF_MESH_VERTICAL_YARDS,
+                              WorldTravel::OFF_MESH_ACROSS_YARDS};
+    dtPolyRef start = 0;
+    float nearest[3] = {0.0f, 0.0f, 0.0f};
+    if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &start, nearest)) || !start)
+        return false;
+    std::array<dtPolyRef, FRAGMENT_POLYS> piece{start};
+    std::size_t count = 1;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        dtMeshTile const* tile = nullptr;
+        dtPoly const* poly = nullptr;
+        mesh->getTileAndPolyByRefUnsafe(piece[i], &tile, &poly);
+        for (unsigned int link = poly->firstLink; link != DT_NULL_LINK; link = tile->links[link].next)
+        {
+            dtPolyRef const neighbour = tile->links[link].ref;
+            if (!neighbour || std::find(piece.begin(), piece.begin() + count, neighbour) != piece.begin() + count)
+                continue;
+            dtMeshTile const* nextTile = nullptr;
+            dtPoly const* nextPoly = nullptr;
+            mesh->getTileAndPolyByRefUnsafe(neighbour, &nextTile, &nextPoly);
+            if (!filter.passFilter(neighbour, nextTile, nextPoly))
+                continue;
+            if (count == FRAGMENT_POLYS)
+                return false;
+            piece[count++] = neighbour;
+        }
+    }
+    return true;
+}
+
+// WT56: a walk leg's walk off the graph (the bot's start to its first node, the last node to the goal, a direct walk)
+// is probed on the navmesh once, from where the bot stands when it starts it (TravelWalk::ProbePiece: the chain of
+// mod-playerbots PR #2747, a fresh path per call, on the bot's map thread). The calls ask for the straight path: its
+// corners are the points the bot orders, and its point limit counts corners, where the smooth path's 4 yd steps would
+// answer a walk of some 300 yd as too long. A walk to a point on an unloaded tile, or on a map without a navmesh, is
+// not probed (walked as before); nor is one with an end on a navmesh fragment (NavFragment), which no path leaves.
+// Walked: target becomes the probed point to order next. False: the navmesh refused it
+bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, TravelRoute::Point const& at, TravelRoute::Point& target)
+{
+    if (trip.walk.Active() || trip.legIdx >= trip.legs.size() ||
+        trip.legs[trip.legIdx].type != TravelRoute::LegType::Walk || trip.next == 0 ||
+        trip.next >= trip.waypoints.size())
+        return true;
+    TravelLegs::Waypoint const& from = trip.waypoints[trip.next - 1];
+    TravelLegs::Waypoint const& to = trip.waypoints[trip.next];
+    if ((from.node != TravelLegs::NO_NODE && to.node != TravelLegs::NO_NODE) || to.at.mapId != bot->GetMapId() ||
+        TravelRoute::Distance(target, to.at) > TravelLegs::WAYPOINT_YARDS)
+        return true;  // a graph link (WalkLinkTarget), another map, or an order that is not the waypoint (a quay)
+    TravelWalk::PieceWalk& piece = trip.piece;
+    if (!piece.For(trip.legIdx, trip.next))
+    {
+        auto const step = [bot](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
+        {
+            PathGenerator path(bot);
+            path.SetUseStraightPath(true);
+            TravelWalk::ProbeAnswer answer;
+            answer.result = path.CalculatePath(start.x, start.y, start.z, end.x, end.y, end.z, false);
+            answer.type = path.GetPathType();
+            for (G3D::Vector3 const& point : path.GetPath())
+                answer.points.push_back({point.x, point.y, point.z});
+            return answer;
+        };
+        bool const fromFragment = NavTileLoaded(bot, at) && NavFragment(bot, at);
+        bool const toFragment = NavTileLoaded(bot, to.at) && NavFragment(bot, to.at);
+        if (!NavTileLoaded(bot, at) || !NavTileLoaded(bot, to.at) || fromFragment || toFragment)
+            piece = TravelWalk::PieceWalk{};
+        else
+            piece = TravelWalk::ProbePiece(at, to.at, step);
+        if (fromFragment || toFragment)
+            LOG_INFO("playerbots",
+                     "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
+                     "{:.1f}) not probed: its {} lies on a navmesh fragment",
+                     bot->GetName(), trip.legIdx + 1, trip.legs.size(), at.x, at.y, at.z, to.at.x, to.at.y, to.at.z,
+                     fromFragment ? (toFragment ? "start and end" : "start") : "end");
+        if (piece.probe == TravelWalk::Probe::None)
+            piece.probe = TravelWalk::Probe::Walk;  // not probed: no points, the waypoint itself
+        piece.leg = trip.legIdx;
+        piece.next = trip.next;
+        if (piece.Refused())
+            LOG_INFO("playerbots",
+                     "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
+                     "{:.1f}) refused by the navmesh: {} after {} path calls",
+                     bot->GetName(), trip.legIdx + 1, trip.legs.size(), at.x, at.y, at.z, to.at.x, to.at.y, to.at.z,
+                     TravelWalk::ProbeWord(piece.probe), piece.steps);
+    }
+    if (piece.Refused())
+        return false;
+    std::uint32_t const point = TravelWalk::PieceTarget(piece, at, to.at);
+    if (point != TravelWalk::NO_POINT)
+        target = {target.mapId, piece.orders[point].x, piece.orders[point].y, piece.orders[point].z};
+    return true;
+}
+
 constexpr float HOP_LIFT_YARDS = 0.5f;  // the hop lands this far above the deck point (as the off-mesh snap does)
 using TravelLifecycle::MotionKind;
 using TravelLifecycle::Outcome;
@@ -3056,8 +3240,9 @@ Transport* FindLegTransport(Player* bot, TravelRoute::Leg const& leg, uint64 exp
     {
         if (!transport || transport->GetEntry() != leg.object || !TransportGeometry::Available(*bot, *transport))
             return;
-        float const yards = transport->IsStaticTransport() ? transport->GetExactDist(leg.from.x, leg.from.y, leg.from.z)
-                                                           : transport->GetExactDist2d(leg.from.x, leg.from.y);
+        TravelRoute::Point const& stop = TravelLegs::StopFrom(leg);
+        float const yards = transport->IsStaticTransport() ? transport->GetExactDist(stop.x, stop.y, stop.z)
+                                                           : transport->GetExactDist2d(stop.x, stop.y);
         if (yards < bestYards)
         {
             best = transport;
@@ -3174,10 +3359,11 @@ std::optional<float> MeasureDeckDrop(Transport const& transport, uint32 phase)
 // aimed again once it is known. The walk's point before the stop is no level (WT54-5: a graph node at the tower's foot)
 void AimApproachEnd(Player* bot, TravelRoute::Point& end, TravelRoute::Leg const& leg, uint64 expected)
 {
-    if (end.mapId != leg.from.mapId)
+    TravelRoute::Point const& stopAt = TravelLegs::StopFrom(leg);
+    if (end.mapId != stopAt.mapId)
         return;
-    Point const stop{leg.from.x, leg.from.y, leg.from.z};
-    bool const atStop = TravelRoute::Distance(end, leg.from) < 0.1f;
+    Point const stop{stopAt.x, stopAt.y, stopAt.z};
+    bool const atStop = TravelRoute::Distance(end, stopAt) < 0.1f;
     auto drop = KnownDeckDrop(leg.object);
     if (!drop)
         if (Transport* const transport = FindLegTransport(bot, leg, expected))
@@ -3517,17 +3703,58 @@ std::optional<BackPath> BackCrossing(Player const& bot, NewRpgInfo::Travel const
     return path;
 }
 
-void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std::vector<Point> const& route)
+// The exit to a stop's wait point, for the debug log (WT60): the first gate that held it (the crossing checks' words),
+// the deck point, and whether the wait point lies off the hull and on ground by the old search's tests
+void LogExitGate(Player const& bot, NewRpgInfo::Travel const& data, Transport const& ridden, Point const& wait,
+                 std::optional<TravelLifecycle::ExitPath> const& exit, TravelLifecycle::CrossingCheck gate)
+{
+    TransportGeometry::GroundGeometry const geometry{bot, &ridden};
+    std::string deck("none");
+    if (exit)
+        deck = Acore::StringFormat("{:.2f},{:.2f},{:.2f}", exit->Deck.X, exit->Deck.Y, exit->Deck.Z);
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] exit_gate bot={} trip={} leg={} entry={} at={:.2f},{:.2f},{:.2f} gate={} "
+              "wait={:.2f},{:.2f},{:.2f} deck={} wait_off_hull={} wait_ground={} corners={}",
+              bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, ridden.GetEntry(), bot.GetPositionX(),
+              bot.GetPositionY(), bot.GetPositionZ(), CROSSING_NAMES[static_cast<std::size_t>(gate)], wait.X, wait.Y,
+              wait.Z, deck, geometry.OffHull(wait) ? 1 : 0, geometry.OnGround(wait) ? 1 : 0,
+              exit ? exit->Walk.size() : 0);
+}
+
+// Leaving is boarding in reverse (WT60): at a stop with a wait point the exit crosses from the deck point beside it
+// (FindWaitExit). Where it has none, or that crossing fails (the model between the wait point and the deck point
+// toward the hull's centre, as at Ratchet and Auberdine's pier), the old search finds ground off the hull toward the
+// route (FindExit; GroundOffHull only where no wait point and no route point gives the onward point). A failed exit
+// tries the boarding crossing walked back (WT43b), else it is a no_exit and the leg rides back
+void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std::optional<Point> const& waitPoint,
+             std::vector<Point> const& route)
 {
     if (data.passengerMotion || data.trip.exitSought || !PrepareTransportMove(bot))
         return;
     bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
     TravelLifecycle::CrossingTally tally;
-    std::vector<Point> onward = route;
-    if (!TravelLifecycle::OnwardPoint(TransportGeometry::GroundGeometry{bot, &ridden}, route))
-        if (auto const ground = GroundOffHull(bot, ridden, trace))
-            onward.push_back(*ground);
-    auto const exit = TransportGeometry::FindExit(bot, ridden, onward, trace ? &tally : nullptr);
+    std::optional<TravelLifecycle::ExitPath> exit;
+    if (waitPoint)
+    {
+        TravelLifecycle::CrossingCheck gate = TravelLifecycle::CrossingCheck::NoDeck;
+        if (TransportGeometry::Available(bot, ridden))
+            exit = TravelLifecycle::FindWaitExit(TransportGeometry::GroundGeometry{bot, &ridden},
+                                                 TransportGeometry::PositionOf(bot), *waitPoint,
+                                                 TransportGeometry::HullCentre(ridden), gate);
+        if (trace)
+            LogExitGate(bot, data, ridden, *waitPoint, exit, gate);
+    }
+    bool const toWaitPoint = exit.has_value();
+    if (!exit)
+    {
+        std::vector<Point> onward = route;
+        if (!waitPoint && !TravelLifecycle::OnwardPoint(TransportGeometry::GroundGeometry{bot, &ridden}, route))
+            if (auto const ground = GroundOffHull(bot, ridden, trace))
+                onward.push_back(*ground);
+        exit = TransportGeometry::FindExit(bot, ridden, onward, trace ? &tally : nullptr);
+        if (!exit && trace)
+            LogCrossingSearch(bot, data, ridden, "exit", tally);
+    }
     if (exit)
     {
         if (trace)
@@ -3548,11 +3775,10 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
         PassengerMotion motion = Intent(bot, ridden, MotionKind::Exit, exit->Ground);
         motion.ExitFrom = exit->Deck;
         motion.Onward = exit->Onward;
+        motion.ToWaitPoint = toWaitPoint;
         IssueTransportMove(bot, data, motion, exit->Walk);
         return;
     }
-    if (trace)
-        LogCrossingSearch(bot, data, ridden, "exit", tally);
     if (auto const back = BackCrossing(bot, data, ridden, trace))
     {
         PassengerMotion motion = Intent(bot, ridden, MotionKind::Exit, back->Ground);
@@ -3569,13 +3795,70 @@ void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std
                    TravelLegs::TransportSource(TravelLegs::TransportEvent::NoExit), ridden.GetEntry(), 0);
 }
 
-// Where the bot goes after a transport's quay, for the exit search: the next walk leg's waypoints after its start
-// (its graph nodes, then its end), or the start of the next leg of another kind; the trip's destination when the
-// next leg lies on another map or there is none. deckZ: the rider's floor, the level the ground beside the stop is
-// looked for at
+// WT55b, data for the navigation plan's NV18 (it goes with the searches, WT.47 and WT70): at a stop with a wait
+// point the old searches decide nothing. Once per vessel, stop and role in a server run they still run for a traced
+// bot, and a dock_foot line says where they would have put the crossing's foot. A bounded set (vessels x stops x 2
+// roles) the map threads share; the board role runs in the rate-limited transport scan, the exit role at the exit
+// search
+std::mutex dockFootLock;
+std::unordered_set<uint64> dockFeet;
+
+bool TracedDockFoot(NewRpgInfo::Travel const& data, uint32 entry, uint32 stopNode, bool exit)
+{
+    if (data.place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return false;
+    uint64 const key = (uint64(entry) << 32) | (uint64(stopNode) << 1) | (exit ? 1u : 0u);
+    std::lock_guard<std::mutex> guard(dockFootLock);
+    return dockFeet.insert(key).second;
+}
+
+std::string DockFootPoint(std::optional<Point> const& at)
+{
+    return at ? Acore::StringFormat("{:.2f},{:.2f},{:.2f}", at->X, at->Y, at->Z) : std::string("none");
+}
+
+void LogDockFoot(TravelRoute::Leg const& leg, bool exit, std::optional<Point> const& foot,
+                 std::optional<Point> const& deck, char const* firstFail)
+{
+    TravelGraph const& graph = TravelGraph::Instance();
+    uint32 const stopNode = leg.nodes[exit ? leg.rideAt + 1 : leg.rideAt];
+    uint32 const waitNode = exit ? leg.nodes.back() : leg.nodes.front();
+    TravelRoute::Point const& waitAt = exit ? leg.to : leg.from;
+    TravelRoute::Point const& stopAt = exit ? TravelLegs::StopTo(leg) : TravelLegs::StopFrom(leg);
+    Point const wait{waitAt.x, waitAt.y, waitAt.z};
+    auto const flat = [](Point const& a, Point const& b) { return std::hypot(a.X - b.X, a.Y - b.Y); };
+    auto const full = [](Point const& a, Point const& b)
+    { return std::sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y) + (a.Z - b.Z) * (a.Z - b.Z)); };
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] dock_foot entry={} stop={} stopname='{}' wait={} role={} wait_at={} foot={} deck={} "
+              "d_wait_foot={:.1f} d_foot_deck={:.1f} d_wait_stop={:.1f} first_fail={}",
+              leg.object, graph.GetNode(stopNode).id, graph.GetName(stopNode), graph.GetNode(waitNode).id,
+              exit ? "exit" : "board", DockFootPoint(wait), DockFootPoint(foot), DockFootPoint(deck),
+              foot ? flat(wait, *foot) : -1.0f, foot && deck ? full(*foot, *deck) : -1.0f,
+              flat(wait, Point{stopAt.x, stopAt.y, stopAt.z}), firstFail);
+}
+
+// The exit role: the ground off the hull the rider would have stepped onto, from the deck at the far stop
+void LogExitDockFoot(Player& bot, NewRpgInfo::Travel const& data, Transport const& ridden)
+{
+    TravelRoute::Leg const& leg = data.trip.legs[data.trip.legIdx];
+    if (!leg.waitTo || leg.rideAt + 1 >= leg.nodes.size() || data.passengerMotion || data.trip.exitSought ||
+        !TracedDockFoot(data, leg.object, leg.nodes[leg.rideAt + 1], true))
+        return;
+    std::optional<Point> const foot = GroundOffHull(bot, ridden, true);
+    LogDockFoot(leg, true, foot, TransportGeometry::PositionOf(bot), "none");
+}
+
+// Where the bot goes after a transport's quay, for the exit search: the far stop's wait point where the leg has one,
+// then the next walk leg's waypoints after its start (its graph nodes, then its end), or the start of the next leg of
+// another kind; the trip's destination when the next leg lies on another map or there is none. deckZ: the rider's
+// floor, the level the ground beside the stop is looked for at
 std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 mapId, Point const& dest, float deckZ)
 {
     std::vector<Point> route;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.waitTo && leg.to.mapId == mapId)
+        route.push_back({leg.to.x, leg.to.y, leg.to.z});
     if (trip.legIdx + 1 < trip.legs.size())
     {
         TravelRoute::Leg const& onward = trip.legs[trip.legIdx + 1];
@@ -3592,10 +3875,11 @@ std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 ma
     if (route.empty())
         route.push_back(dest);
     // A point at the leg's end node is the vessel's own stop (in the berth's water, or in the air at a zeppelin's
-    // origin), with no ground to walk on: the ground beside it instead, as for the approach walk (SeekQuay)
-    TravelRoute::Point const& end = trip.legs[trip.legIdx].to;
+    // origin), with no ground to walk on: the ground beside it instead, as for the approach walk (SeekQuay). A leg
+    // that ends at a wait point ends on walkable ground
+    TravelRoute::Point const& end = leg.to;
     for (Point& point : route)
-        if (end.mapId == mapId &&
+        if (!leg.waitTo && end.mapId == mapId &&
             TravelRoute::Distance(end, {mapId, point.X, point.Y, point.Z}) <= TravelLegs::SAME_POINT_YARDS)
             point = GroundBesideStop(map, point, deckZ).value_or(point);
     return route;
@@ -3606,8 +3890,9 @@ void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, float moved)
 {
     TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
     TravelLegs::TransportSight const& sight = trip.sight;
-    float const dx = sight.at.x - leg.to.x;
-    float const dy = sight.at.y - leg.to.y;
+    TravelRoute::Point const& stop = TravelLegs::StopTo(leg);
+    float const dx = sight.at.x - stop.x;
+    float const dy = sight.at.y - stop.y;
     LOG_DEBUG("playerbots",
               "[Route] {} aboard {} on map {}: {:.1f} yd (2D) from the leg's end on map {}, still {}, moving {}, "
               "static {}, {:.1f} yd moved since the last scan (-1: none)",
@@ -3630,7 +3915,8 @@ uint32 MotionQuayLeg(TravelLegs::Trip const& trip)
             return TravelLegs::NO_NODE;
     }
     TravelRoute::Leg const& leg = trip.legs[index];
-    if (leg.type != TravelRoute::LegType::Transport)
+    // A stop with a wait point is waited at there (WT.42): no quay to look for
+    if (leg.type != TravelRoute::LegType::Transport || leg.waitFrom)
         return TravelLegs::NO_NODE;
     GameObjectTemplate const* const info = sObjectMgr->GetGameObjectTemplate(leg.object);
     return info && info->type == GAMEOBJECT_TYPE_MO_TRANSPORT ? index : TravelLegs::NO_NODE;
@@ -3656,6 +3942,9 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
         bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
     }
 
+    // A stop with a wait point: StepTransport waits and crosses there, no search
+    if (trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport && trip.legs[trip.legIdx].waitFrom)
+        return;
     if (trip.hasQuay || getMSTimeDiff(data.transportScanMs, seen.nowMs) < TravelLegs::TRANSPORT_SCAN_MS)
         return;
     if (seen.quayLeg == TravelLegs::NO_NODE)
@@ -3687,7 +3976,8 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
     {
         if (approachWalk || data.place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
             return;
-        float const dock = transport ? transport->GetExactDist2d(leg.from.x, leg.from.y) : -1.0f;
+        float const dock =
+            transport ? transport->GetExactDist2d(TravelLegs::StopFrom(leg).x, TravelLegs::StopFrom(leg).y) : -1.0f;
         if (transport && !trip.still && dock > TravelLegs::SHIP_DOCK_YARDS)
             return;  // under way far off: the common case of a wait
         LOG_DEBUG("playerbots",
@@ -3696,7 +3986,7 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
                   bot->GetGUID().GetCounter(), data.tripId, trip.legIdx, leg.object, reason, trip.still ? 1 : 0, dock,
                   bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     };
-    if (!transport || !TravelLegs::DockedAt(trip, leg.from))
+    if (!transport || !TravelLegs::DockedAt(trip, TravelLegs::StopFrom(leg)))
     {
         trip.quaySought = false;
         holdQuay(transport ? "undocked" : "no_transport");
@@ -3752,6 +4042,32 @@ void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& se
               leg.object, quay.x, quay.y, quay.z);
 }
 
+// The board role of the dock_foot line (LogDockFoot): the quay FindQuay finds from the wait point, with the vessel
+// docked, and the deck point from there
+void LogBoardDockFoot(Player* bot, NewRpgInfo::Travel const& data, Transport& transport)
+{
+    TravelLegs::Trip const& trip = data.trip;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    if (!leg.waitFrom || leg.rideAt + 1 >= leg.nodes.size() ||
+        !TracedDockFoot(data, leg.object, leg.nodes[leg.rideAt], false))
+        return;
+    TravelRoute::Point seed = leg.from;
+    AimApproachEnd(bot, seed, leg, trip.sight.guid);
+    Point const from{seed.x, seed.y, seed.z};
+    TransportGeometry::GroundGeometry const geometry{*bot, &transport};
+    TravelLifecycle::CrossingTally tally;
+    auto const foot = TravelLifecycle::FindQuay(geometry, from, TransportGeometry::PositionOf(transport),
+                                                TransportGeometry::HullCentre(transport), &tally);
+    char const* firstFail = "none";
+    for (std::size_t i = 0; !foot && i < CROSSING_NAMES.size(); ++i)
+        if (tally.Counts[i])
+        {
+            firstFail = CROSSING_NAMES[i];
+            break;
+        }
+    LogDockFoot(leg, false, foot, geometry.DeckFrom(foot ? *foot : from), firstFail);
+}
+
 // Where a boarding starts (WT54-10): the quay the bot waits at, whose crossing FindQuay accepted, else where it
 // stands. A bot within QUAY_REACH_YARDS of its quay does not walk to it, and from its own spot the crossing can differ
 // (run 12, Orgrimmar's platform: accepted from the quay, blocked 0.6 yd beside it), so the board check, its deck point
@@ -3763,19 +4079,64 @@ Point BoardStart(Player const& bot, TravelLegs::Trip const& trip)
     return TransportGeometry::PositionOf(bot);
 }
 
-// A Board walk, for the debug log: the deck point, the bot's height and the distance
-void LogBoardMove(Player* bot, uint32 entry, Point const& deck)
+// Where the boarding starts, for the debug log (WT55e): the stop's wait point, a quay a search found (from the wait
+// point after its crossing was refused, or at a stop without one), or where the bot stands
+char const* BoardStartName(TravelLegs::Trip const& trip)
+{
+    if (!trip.hasQuay)
+        return "bot";
+    bool const atWait = trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].waitFrom && !trip.searchedQuay;
+    return atWait ? "wait" : "quay";
+}
+
+// A stop's wait point whose crossing the board check refuses (WT55e, WT.42: no deck point, the deck's height, the
+// crossing): the old quay search runs from the wait point, as at a stop without one, and the quay it finds is the
+// boarding's start (BoardStart); the bot walks there first. Where the check accepts, nothing changes and no search
+// runs. Once per docking (Trip::boardChecked, cleared when the vessel leaves). Returns whether the bot walks to a quay
+bool SeekBoardQuay(Player* bot, NewRpgInfo::Travel& data, Transport& transport)
+{
+    TravelLegs::Trip& trip = data.trip;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    if (!leg.waitFrom || trip.boardChecked || !TransportGeometry::Available(*bot, transport))
+        return false;
+    bool const trace = !data.place.empty() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
+    TravelLifecycle::CrossingTally tally;
+    Point const wait{leg.from.x, leg.from.y, leg.from.z};
+    TravelLifecycle::BoardChoice const choice = TravelLifecycle::BoardFrom(
+        TransportGeometry::GroundGeometry{*bot, &transport}, wait, TransportGeometry::PositionOf(transport),
+        TransportGeometry::HullCentre(transport), trace ? &tally : nullptr);
+    TravelRoute::Point const quay{leg.from.mapId, choice.Start.X, choice.Start.Y, choice.Start.Z};
+    TravelLegs::NoteBoardCheck(trip, choice.Found ? &quay : nullptr);
+    if (!trace || !choice.Searched)
+        return choice.Found;
+    std::string const found =
+        choice.Found ? Acore::StringFormat("{:.2f},{:.2f},{:.2f}", quay.x, quay.y, quay.z) : std::string("none");
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] board_search bot={} trip={} leg={} entry={} gate={} wait={:.2f},{:.2f},{:.2f} "
+              "quay={} d={:.1f}",
+              bot->GetGUID().GetCounter(), data.tripId, trip.legIdx, transport.GetEntry(),
+              CROSSING_NAMES[static_cast<std::size_t>(choice.Gate)], wait.X, wait.Y, wait.Z, found,
+              std::sqrt(TravelLifecycle::DistanceSquared(wait, choice.Start)));
+    if (!choice.Found)
+        LogCrossingSearch(*bot, data, transport, "quay", tally);
+    return choice.Found;
+}
+
+// A Board walk, for the debug log: the deck point, the bot's height and the distance, and where the boarding starts
+void LogBoardMove(Player* bot, uint32 entry, Point const& deck, char const* start)
 {
     if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return;
-    LOG_DEBUG(
-        "playerbots", "[Route] {} boards transport {}: deck point ({:.1f}, {:.1f}, {:.1f}), bot z {:.1f}, {:.1f} yd",
-        bot->GetName(), entry, deck.X, deck.Y, deck.Z, bot->GetPositionZ(), bot->GetExactDist(deck.X, deck.Y, deck.Z));
+    LOG_DEBUG("playerbots",
+              "[Route] {} boards transport {}: deck point ({:.1f}, {:.1f}, {:.1f}), bot z {:.1f}, {:.1f} yd, start {}",
+              bot->GetName(), entry, deck.X, deck.Y, deck.Z, bot->GetPositionZ(),
+              bot->GetExactDist(deck.X, deck.Y, deck.Z), start);
 }
 
 // A scan at a still transport that does not board a traced bot, for the debug log: the first gate that holds it back.
 // wait_z: off the wait point's floor; no_deck: no deck point; deck_z: the deck point beyond a floor's step from the
-// bot; ground: not on ground; prepare: PrepareTransportMove (mounted, casting); accept: the crossing check.
+// bot; ground: not on ground; prepare: PrepareTransportMove (mounted, casting); accept: the crossing check. start:
+// where the boarding starts (BoardStartName)
 void LogBoardGate(Player* bot, NewRpgInfo::Travel const& data, Transport const& transport,
                   std::optional<Point> const& deck, bool ready, bool accept)
 {
@@ -3795,10 +4156,10 @@ void LogBoardGate(Player* bot, NewRpgInfo::Travel const& data, Transport const& 
     char const* const hold = TransportMoveHold(*bot);
     LOG_DEBUG("playerbots",
               "[TravelLifecycle] board_gate bot={} trip={} leg={} entry={} at={:.2f},{:.2f},{:.2f} gate={} "
-              "wait_dz={:.2f} deck={} mounted={} hold={}",
+              "wait_dz={:.2f} deck={} mounted={} hold={} start={}",
               bot->GetGUID().GetCounter(), data.tripId, trip.legIdx, transport.GetEntry(), bot->GetPositionX(),
               bot->GetPositionY(), bot->GetPositionZ(), gate, waitDz, point, bot->IsMounted() ? 1 : 0,
-              hold ? hold : "none");
+              hold ? hold : "none", BoardStartName(trip));
 }
 
 // A miss this tick, for the debug log: whether the bot stood over the hull (the passenger check's test) or beside it
@@ -3909,7 +4270,7 @@ TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data)
             Point const onward =
                 GroundBesideStop(bot->GetMap(), TransportGeometry::PositionOf(*ridden), bot->GetPositionZ())
                     .value_or(TransportGeometry::PositionOf(*bot));
-            WalkOff(*bot, data, *ridden, std::vector<Point>{onward});
+            WalkOff(*bot, data, *ridden, std::nullopt, std::vector<Point>{onward});
         }
         else if (step == TravelLegs::OffStep::Wait && wasStill)
         {
@@ -3963,6 +4324,21 @@ void LogWalkLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, Trave
               bot->GetName(), index + 1, data.trip.legs.size(), how, TravelRoute::Distance(leg.from, leg.to), path,
               seconds, seconds > 0.0f ? path / seconds : 0.0f, leg.seconds, TravelRoute::Distance(at, leg.to),
               TravelLegs::MountWord(record), record.mountedTicks, record.ticks, combat);
+}
+
+// A graph link's walk (WT58): its trip decision row, walk_link once the walk moved on past it or walk_link_failed when
+// the leg failed on it: how (stored, nodes, fallback, refused), its moves, its ends' node ids and its hops
+void LogWalkLink(Player* bot, NewRpgInfo::Travel const& data, TravelWalk::LinkWalk const& walk, bool done)
+{
+    if (!walk.Active())
+        return;
+    TravelGraph const& graph = TravelGraph::Instance();
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, done ? "walk_link" : "walk_link_failed",
+                       TravelWalk::RowWord(walk), static_cast<float>(walk.moves),
+                       {{"from", static_cast<float>(graph.GetNode(walk.from).id)},
+                        {"to", static_cast<float>(graph.GetNode(walk.to).id)},
+                        {"hops", static_cast<float>(walk.hops)}},
+                       data.tripId);
 }
 
 constexpr float FLY_SAMPLE_YARDS = 50.0f;     // the real-height check samples the ground ahead this far apart
@@ -4357,8 +4733,19 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     float const peakBefore = trip.peakZ;
     bool const wasWalk = data->CurrentLeg() && data->CurrentLeg()->type == TravelRoute::LegType::Walk &&
                          !TravelLegs::IsNoOp(*data->CurrentLeg());
+    TravelWalk::LinkWalk const walkBefore = trip.walk;
     TravelLegs::Decision next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
     bool const legChanged = trip.legIdx != legBefore;
+    // The graph link walked until now ends with its row once the walk moved on past it (WT58)
+    if (walkBefore.Active())
+    {
+        auto const [linkFrom, linkTo] = WalkLinkEnds(trip);
+        if (legChanged || linkFrom != walkBefore.from || linkTo != walkBefore.to)
+        {
+            LogWalkLink(bot, *data, walkBefore, true);
+            data->trip.walk = {};
+        }
+    }
     bool const waypointReached =
         wasWalk && (legChanged || trip.next > waypointBefore) && data->progress.WaypointReached();
     if (waypointReached)
@@ -4435,9 +4822,27 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         case TravelLegs::Act::Walk:
             if (trip.legIdx != legBefore && seen.quayLeg != trip.legIdx && MotionQuayLeg(trip) != TravelLegs::NO_NODE)
                 return true;  // the new approach gets a quay observation before walking
+            // Along a graph link: its stored points (WT58); the engine's "no path" at its far node refused it
+            if (trip.walk.mode == TravelWalk::Mode::Refused)
+                return LegFailed(*data, TravelLegs::FailReason::NoPath);
+            next.target = WalkLinkTarget(data->trip, seen.bot, next.target);
+            // Off the graph: the navmesh probe's points (WT56); a walk the navmesh refused fails the leg at once, and
+            // the replan leaves it out. Refused where the bot stands off the mesh: the off-mesh recovery instead
+            if (!WalkPieceTarget(bot, data->trip, seen.bot, next.target))
+            {
+                if (!BotOffMesh())
+                    return LegFailed(*data, TravelLegs::FailReason::NoWalk);
+                data->trip.piece.probe = TravelWalk::Probe::Walk;
+                data->trip.piece.orders.clear();
+                data->progress.Latch(TravelProgress::Overdue::OffMesh);
+                return true;
+            }
+            data->trip.lastTarget = next.target;
             return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
         case TravelLegs::Act::UseTrigger:
             return UsePortal(*data);
+        case TravelLegs::Act::UseObject:
+            return UseStaticPortal(*data);
         case TravelLegs::Act::TalkFlightMaster:
             return TalkFlightMaster(*data);
         case TravelLegs::Act::UseHearth:
@@ -4455,12 +4860,17 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
             ContinueCrossMapTaxi();
             return false;
         case TravelLegs::Act::Board:
+            if (transport)
+                LogBoardDockFoot(bot, *data, *transport);
+            // Refused at the wait point: a quay the search found there is walked to first (WT55e)
+            if (transport && !data->passengerMotion && SeekBoardQuay(bot, *data, *transport))
+                return true;
             if (transport && deck && seen.boardingReady && !data->passengerMotion && PrepareTransportMove(*bot))
             {
                 Point const from = BoardStart(*bot, data->trip);
                 if (TravelLifecycle::AcceptBoard(TransportGeometry::GroundGeometry{*bot, transport}, from, *deck))
                 {
-                    LogBoardMove(bot, transport->GetEntry(), *deck);
+                    LogBoardMove(bot, transport->GetEntry(), *deck, BoardStartName(data->trip));
                     IssueTransportMove(*bot, *data, Intent(*bot, *transport, MotionKind::Board, *deck), {from});
                     if (data->passengerMotion)
                         data->trip.boardCrossing = TravelLegs::StoreCrossing(
@@ -4481,12 +4891,21 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
             if (ridden && seen.transport.scanned && seen.transport.guid == membership.Guid)
             {
                 Point const dest{data->dest.GetPositionX(), data->dest.GetPositionY(), data->dest.GetPositionZ()};
-                if (trip.boarding == TravelLegs::Boarding::Back)  // the quay it waited on
-                    WalkOff(*bot, *data, *ridden,
-                            std::vector<Point>{Point{next.target.x, next.target.y, next.target.z}});
+                TravelRoute::Leg const& rideLeg = trip.legs[trip.legIdx];
+                // Off at the stop's wait point where it has one: the far one, or after no exit the one it waited on
+                Point const target{next.target.x, next.target.y, next.target.z};
+                bool const back = trip.boarding == TravelLegs::Boarding::Back;
+                bool const atWaitPoint =
+                    (back ? rideLeg.waitFrom : rideLeg.waitTo) && next.target.mapId == bot->GetMapId();
+                std::optional<Point> const waitPoint = atWaitPoint ? std::optional<Point>{target} : std::nullopt;
+                if (back)  // the quay or wait point it waited on
+                    WalkOff(*bot, *data, *ridden, waitPoint, std::vector<Point>{target});
                 else
-                    WalkOff(*bot, *data, *ridden,
+                {
+                    LogExitDockFoot(*bot, *data, *ridden);
+                    WalkOff(*bot, *data, *ridden, waitPoint,
                             OnwardRoute(trip, bot->GetMap(), bot->GetMapId(), dest, bot->GetPositionZ()));
+                }
             }
             return true;
         case TravelLegs::Act::Fail:
@@ -4510,6 +4929,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     snapshot.hasHearthstone =
         snapshot.hasHearthstone && !data.noHearth && TestConstraints::HearthAllowed(botAI->rpgInfo.constraints);
     snapshot.allowTransport = true;
+    if (!TestConstraints::TaxiAllowed(botAI->rpgInfo.constraints))
+        snapshot.knownTaxi.fill(0);
     TravelRoute::Request request;
     request.snapshot = snapshot;
     request.goal = {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()};
@@ -4518,6 +4939,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     request.noDirect = data.trip.noDirect;
     // The walks this bot died on twice (TravelLegs::NoteDeath): their graph edges are left out, for its trip only
     request.avoidEdges = data.trip.avoidEdges;
+    // The walks off the graph the navmesh refused (TravelLegs::NoteWalkRefused): not walked again in this trip
+    request.avoidWalks = data.trip.avoidWalks;
     // After a failed fly leg the trip's later routes walk (TravelLegs::AfterFailure)
     request.noFly = data.trip.noFly;
     TravelLegs::RouteWait const waiting{snapshot.requestId, snapshot.position.mapId, snapshot.takenMs, true,
@@ -4622,6 +5045,37 @@ bool NewRpgTravelAction::UsePortal(NewRpgInfo::Travel& data)
     packet << triggerId;
     packet.rpos(0);
     bot->GetSession()->HandleAreaTriggerOpcode(packet);
+    data.trip.triggered = true;
+    return true;
+}
+
+// A static portal leg (WT55d): the portal object a player clicks, which stands at the leg's node. Looked up only on
+// the ticks the bot stands there (StepLeg's UseObject, until the use is sent); used as a player's client does, and
+// the core's own handler checks the use and casts the portal's teleport
+bool NewRpgTravelAction::UseStaticPortal(NewRpgInfo::Travel& data)
+{
+    constexpr float PORTAL_OBJECT_YARDS = 20.0f;  // the object's spawn this far from its node at most
+    uint32 const entry = data.trip.legs[data.trip.legIdx].object;
+    GameObject* portal = bot->FindNearestGameObject(entry, PORTAL_OBJECT_YARDS);
+    if (!portal || !portal->isSpawned())
+    {
+        // Graph data, not leg code (WT.41): the node names an object the world has not spawned there
+        LOG_INFO("playerbots",
+                 "[Route] {} static portal: no object {} within {:.0f} yd at map {} ({:.0f}, {:.0f}, {:.0f})",
+                 bot->GetName(), entry, PORTAL_OBJECT_YARDS, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                 bot->GetPositionZ());
+        return LegFailed(data, TravelLegs::FailReason::Portal);
+    }
+    if (!portal->IsWithinDistInMap(bot, portal->GetInteractionDistance()))
+        return MoveFarTo(
+            WorldPosition(portal->GetMapId(), portal->GetPositionX(), portal->GetPositionY(), portal->GetPositionZ()));
+
+    if (bot->isMoving())
+        bot->StopMoving();
+    bot->SetFacingToObject(portal);
+    WorldPacket use(CMSG_GAMEOBJ_USE, 8);
+    use << portal->GetGUID();
+    bot->GetSession()->HandleGameObjectUseOpcode(use);
     data.trip.triggered = true;
     return true;
 }
@@ -4767,6 +5221,19 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         }
     }
 
+    // The graph link the leg failed on (WT58): its row; a refusal's line names the link's ends
+    if (trip.walk.Active())
+    {
+        if (reason == TravelLegs::FailReason::NoPath)
+        {
+            TravelGraph const& graph = TravelGraph::Instance();
+            LOG_DEBUG("playerbots", "[Route] {} walk leg {}/{} link {} ({}) -> {} ({}) refused: no path",
+                      bot->GetName(), trip.legIdx + 1, trip.legs.size(), graph.GetNode(trip.walk.from).id,
+                      graph.GetName(trip.walk.from), graph.GetNode(trip.walk.to).id, graph.GetName(trip.walk.to));
+        }
+        LogWalkLink(bot, data, trip.walk, false);
+        trip.walk = {};
+    }
     // A takeoff refused where the bot stands keeps flying: the replan starts no flight at this spot (AddFlyLegs)
     bool const spotClosed =
         reason == TravelLegs::FailReason::Takeoff && CheckMountStateAction::NoTakeoffHere(bot) != nullptr;
