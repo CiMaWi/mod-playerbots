@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "ClassQuestRules.h"
 #include "PlannerIndexes.h"
 #include "PlannerPool.h"
 #include "QuestIndex.h"
@@ -108,6 +109,7 @@ struct CircuitContext
     CrowdingSnapshot const* crowding{nullptr};
     CircuitWeights weights;
     std::vector<std::uint32_t> protectedQuests;  // never abandoned: a group's or the bridge's goal (WT16 fills)
+    std::vector<std::pair<std::uint32_t, float>> unlockBonus;  // (quest, bonus XP), sorted: class quests (WU20a)
     std::vector<QuestProgress> progress;
     std::uint32_t greyDiff{Circuit::GREY_DIFF};
     TravelCost travel;  // moving on; empty = straight yards at the run speed (same map only)
@@ -171,7 +173,8 @@ struct CircuitTake
     std::uint32_t quest{0};
     std::uint32_t giver{Circuit::NONE};  // place index
     float valuePerMinute{0.0f};
-    bool carried{false};  // no objective, its ender at another hub: delivered when moving on
+    bool carried{false};     // no objective, its ender at another hub: delivered when moving on
+    bool classQuest{false};  // its value carries the class-quest unlock bonus (upkeep WU20a)
 };
 
 struct CircuitTask
@@ -620,8 +623,7 @@ private:
             return SkipReason::Instance;
         if ((quest.flags & GROUP_FLAGS) && _bot.groupSize <= 1)
             return SkipReason::Solo;
-        if ((quest.prev > 0 && !Rewarded(static_cast<std::uint32_t>(quest.prev))) ||
-            (quest.prev < 0 && !InLog(static_cast<std::uint32_t>(-quest.prev))))
+        if (!PrerequisiteMet(quest))
             return SkipReason::Prerequisite;
         if (quest.exclusiveGroup > 0 &&
             std::binary_search(_takenGroups.begin(), _takenGroups.end(), quest.exclusiveGroup))
@@ -703,9 +705,30 @@ private:
         return placement;
     }
 
+    // The core's rule: one previous quest rewarded (positive) or active (negative). PrevQuestId alone misses the quests
+    // naming this one as their NextQuestId (1795 after 1804/1805, upkeep WU20a)
+    bool PrerequisiteMet(QuestRecord const& quest) const
+    {
+        auto const met = [this](std::int32_t prev)
+        { return prev > 0 ? Rewarded(static_cast<std::uint32_t>(prev)) : InLog(static_cast<std::uint32_t>(-prev)); };
+        if (quest.prevAny.empty())
+            return !quest.prev || met(quest.prev);
+        return std::any_of(quest.prevAny.begin(), quest.prevAny.end(), met);
+    }
+
+    // A class quest's unlock bonus in XP (ClassQuests::Bonuses), 0 for every other quest
+    float UnlockBonus(std::uint32_t quest) const
+    {
+        auto const& bonus = _context.unlockBonus;
+        auto const it = std::lower_bound(bonus.begin(), bonus.end(), quest,
+                                         [](std::pair<std::uint32_t, float> const& entry, std::uint32_t id)
+                                         { return entry.first < id; });
+        return it != bonus.end() && it->first == quest ? it->second : 0.0f;
+    }
+
     float Value(QuestRecord const& quest) const
     {
-        return static_cast<float>(quest.xpBase) * _weights.xp +
+        return (static_cast<float>(quest.xpBase) + UnlockBonus(quest.id)) * _weights.xp +
                static_cast<float>(std::max(quest.copperReward, 0)) * _weights.copper;
     }
 
@@ -895,7 +918,8 @@ private:
                 continue;
             }
             std::uint32_t const id = candidate.record->id;
-            _plan.take.push_back({id, candidate.giver, candidate.valuePerMinute, candidate.carried});
+            _plan.take.push_back(
+                {id, candidate.giver, candidate.valuePerMinute, candidate.carried, UnlockBonus(id) > 0.0f});
             if (candidate.carried)
                 _carriedTakes.push_back(id);
             else

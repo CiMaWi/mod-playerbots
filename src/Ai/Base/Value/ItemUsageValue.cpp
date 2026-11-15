@@ -12,6 +12,7 @@
 #include "Item.h"
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
+#include "PlannerService.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
@@ -121,6 +122,10 @@ ItemUsage ItemUsageValue::Calculate()
     ItemUsage equip = QueryItemUsageForEquip(proto, randomPropertyId);
     if (equip != ITEM_USAGE_NONE)
         return equip;
+
+    // A weapon the bot will learn to use at a weapon master stays in the bags (WU15a): its visit needs it carried
+    if (!realMaster && Planner::WeaponToLearn(bot, proto))
+        return ITEM_USAGE_KEEP;
 
     // Gear the bank rule keeps for a later level, read from what the bot remembers (BankMail::RefreshCarriedKeeps):
     // the only source of ITEM_USAGE_BANK, and no keep decision here. Never for a bot with a real master

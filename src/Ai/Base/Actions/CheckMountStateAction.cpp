@@ -24,6 +24,7 @@
 #include "ServerFacade.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
+#include "TestConstraints.h"
 #include "TravelLegRules.h"
 
 static constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
@@ -263,6 +264,10 @@ bool CheckMountStateAction::isUseful()
 
 bool CheckMountStateAction::Mount()
 {
+    // A test's nomount bot stays on foot (TestConstraints::MountsOnItsOwn)
+    if (!TestConstraints::MountsOnItsOwn(botAI->rpgInfo.constraints))
+        return false;
+
     // Remove current Shapeshift if need be
     if (botInShapeshiftForm != FORM_TRAVEL &&
         botInShapeshiftForm != FORM_FLIGHT &&
@@ -383,18 +388,20 @@ void CheckMountStateAction::CompleteDismount(Player* bot)
     float const startZ = bot->GetPositionZ();
 
     float const groundZ = bot->GetMapHeight(x, y, startZ, true, MAX_FALL_DISTANCE);
-    if (groundZ <= INVALID_HEIGHT || startZ - groundZ <= 0.1f)
-        return;
-
-    bot->GetMotionMaster()->MoveFall();
-    MovementInfo fallInfo = bot->m_movementInfo;
-    // Need to set the start of the fall, otherwise the fall may start from too high of a Z and kill the bot.
-    bot->SetFallInformation(0, startZ);
-    fallInfo.pos.Relocate(x, y, groundZ);
-    bot->HandleFall(fallInfo);
-    // Re-anchor at the ground: Player::IsFalling() compares standing Z to this, so startZ reads as a fall.
-    bot->SetFallInformation(0, groundZ);
-    bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
+    if (groundZ > INVALID_HEIGHT && startZ - groundZ > 0.1f)
+    {
+        bot->GetMotionMaster()->MoveFall();
+        MovementInfo fallInfo = bot->m_movementInfo;
+        // Need to set the start of the fall, otherwise the fall may start from too high of a Z and kill the bot.
+        bot->SetFallInformation(0, startZ);
+        fallInfo.pos.Relocate(x, y, groundZ);
+        bot->HandleFall(fallInfo);
+        // Re-anchor at the ground: Player::IsFalling() compares standing Z to this, so startZ reads as a fall.
+        bot->SetFallInformation(0, groundZ);
+        bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
+    }
+    // A completed dismount leaves no flight flags: the core clears only CAN_FLY, and IsFlying() blocks every cast.
+    ClearStaleFlightFlagsOf(bot);
 }
 
 bool CheckMountStateAction::TryForms(Player* master, int32 masterMountType, int32 masterSpeed) const

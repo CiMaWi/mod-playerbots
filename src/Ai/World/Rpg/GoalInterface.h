@@ -36,6 +36,13 @@ constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start
 // The weighted group: the character guid's low part, as dim_bots' guid
 inline bool InWeightedGroup(std::uint64_t guidLow) { return guidLow % AB_MODULUS == 0; }
 
+// A governed bot (upkeep 3.11): a persistent planner bot, outside the weighted group and without a real master,
+// whatever the handout share. Its class quests get the unlock bonus (ClassQuestRules.h)
+inline bool Governed(bool keepsPossessions, std::uint64_t guidLow, bool realMaster)
+{
+    return keepsPossessions && !InWeightedGroup(guidLow) && !realMaster;
+}
+
 enum class Source : std::uint8_t
 {
     Planner,
@@ -582,6 +589,8 @@ struct BotGoals
     std::uint32_t pausedMs{0};
     std::uint32_t publishedChanges{0};  // the slot's change count and the pause as last published (MarkPublished)
     bool publishedPaused{false};
+    bool shortOpen{false};  // a NeedShort window is open: the plans taken since its begin had a shortfall
+    std::string shortKind;  // its kind word, as at the begin (the end row repeats it)
 };
 
 // A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on
@@ -607,6 +616,31 @@ inline void TakePlan(BotGoals& goals, std::shared_ptr<Goals::GoalPlan const> pla
     goals.planUsed = false;
     goals.keep = goals.plan ? KeepList(goals.plan->circuit) : std::vector<std::uint32_t>();
     goals.circuitLogged = false;
+}
+
+// NeedShort (upkeep §3.14): a taken plan's shortfall opens a window when there was none and closes it when it is back
+// at 0. A change of the unpaid kind inside a window is no new window
+enum class ShortChange : std::uint8_t
+{
+    None,
+    Begin,
+    End
+};
+
+inline ShortChange NoteShort(BotGoals& goals, std::uint64_t shortfallCopper, std::string const& kind)
+{
+    if (shortfallCopper > 0 && !goals.shortOpen)
+    {
+        goals.shortOpen = true;
+        goals.shortKind = kind;
+        return ShortChange::Begin;
+    }
+    if (shortfallCopper == 0 && goals.shortOpen)
+    {
+        goals.shortOpen = false;
+        return ShortChange::End;
+    }
+    return ShortChange::None;
 }
 
 // A goal with this key may start: not while its key stalled and the log is still as it was then
