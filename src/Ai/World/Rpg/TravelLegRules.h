@@ -31,8 +31,8 @@ using TravelRoute::Leg;
 using TravelRoute::LegType;
 using TravelRoute::Point;
 
-constexpr std::uint32_t NO_NODE = TravelGraph::NO_NODE;
-static_assert(TravelWalk::NO_NODE == NO_NODE, "TravelWalk shares the graph's NO_NODE");
+constexpr std::uint32_t NO_NODE = TravelWalk::NO_NODE;  // TravelGraph::NO_NODE
+static_assert(TravelGraph::NO_NODE == NO_NODE, "TravelLegs and TravelWalk share the graph's NO_NODE");
 constexpr float SAME_POINT_YARDS = 0.5f;       // a leg end this close to a graph node is that node
 constexpr float WAYPOINT_YARDS = 5.0f;         // a walk waypoint is reached this close
 constexpr float GOAL_YARDS = 10.0f;            // the route's last waypoint
