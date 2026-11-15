@@ -23,6 +23,7 @@
 #include "NewRpgBaseAction.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
@@ -38,7 +39,6 @@
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
 #include "TravelMgr.h"
-#include "WorldLogStatus.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
@@ -63,8 +63,7 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
         default:
             break;
     }
-    WorldLog::StatusReason const reasonScope("finished");
-    info.ChangeToIdle();
+    RpgStatus::End(botAI, StatusEnd::Outcome::Finished);
     return true;
 }
 
@@ -104,8 +103,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo))
         {
             // can't find a poi pos to go, stop doing quest for now
-            WorldLog::StatusReason const reasonScope("no_poi");
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_poi"});
             return true;
         }
         // A planner bot goes to the point nearest its plan's tasks for the quest, others to a random one
@@ -177,8 +175,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             botAI->lowPriorityQuest.insert(questId);
             botAI->RecordQuestAbandoned(questId, QuestAbandonReason::NoProgress);
             LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
-            WorldLog::StatusReason const reasonScope("abandon");
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "abandon"});
             return true;
         }
         // clear and select another poi later
@@ -209,8 +206,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
         {
             // can't find a poi pos to reward, stop doing quest for now
-            WorldLog::StatusReason const reasonScope("no_poi");
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_poi"});
             return false;
         }
         assert(poiInfo.size() > 0);
@@ -254,8 +250,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         botAI->lowPriorityQuest.insert(questId);
         botAI->RecordQuestAbandoned(questId, QuestAbandonReason::CannotTurnIn);
         LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
-        WorldLog::StatusReason const reasonScope("abandon");
-        botAI->rpgInfo.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "abandon"});
         return true;
     }
     return false;

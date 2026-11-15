@@ -10,14 +10,13 @@
 
 #include "BotTravel.h"
 #include "NewRpgAction.h"
-#include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotTextMgr.h"
 #include "QuestDef.h"
 #include "SharedDefines.h"
-#include "WorldLogStatus.h"
 #include "WorldSession.h"
 
 void TellRpgStatusAction::WhisperStatusChange(Player* owner, std::string const& statusName)
@@ -30,7 +29,6 @@ void TellRpgStatusAction::WhisperStatusChange(Player* owner, std::string const& 
 
 bool TellRpgStatusAction::Execute(Event event)
 {
-    WorldLog::StatusReason const reasonScope("order");
     Player* owner = event.getOwner();
     if (!owner)
         return false;
@@ -74,31 +72,32 @@ bool TellRpgStatusAction::Execute(Event event)
     }
 
     NewRpgStatus status = NewRpgInfo::StatusFromString(name);
-    NewRpgInfo& info = botAI->rpgInfo;
+    auto const start = [this](NewRpgInfo::RpgData next)
+    { RpgStatus::Start(botAI, std::move(next), "order", StatusEnd::Outcome::Ordered); };
 
     if (status == RPG_IDLE)
     {
         botAI->GetTravel().CancelLootInteraction("order");
-        info.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Ordered);  // a trip writes its abort rows (abort:order)
         WhisperStatusChange(owner, "IDLE");
         return true;
     }
     else if (status == RPG_REST)
     {
-        info.ChangeToRest();
+        start(NewRpgInfo::Rest{});
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         WhisperStatusChange(owner, "REST");
         return true;
     }
     else if (status == RPG_WANDER_RANDOM)
     {
-        info.ChangeToWanderRandom();
+        start(NewRpgInfo::WanderRandom{});
         WhisperStatusChange(owner, "WANDER_RANDOM");
         return true;
     }
     else if (status == RPG_WANDER_NPC)
     {
-        info.ChangeToWanderNpc();
+        start(NewRpgInfo::WanderNpc{});
         WhisperStatusChange(owner, "WANDER_NPC");
         return true;
     }
@@ -112,7 +111,7 @@ bool TellRpgStatusAction::Execute(Event event)
             bot->Whisper(msg, LANG_UNIVERSAL, owner);
             return false;
         }
-        info.ChangeToGoGrind(pos);
+        start(NewRpgInfo::GoGrind{pos});
         WhisperStatusChange(owner, "GO_GRIND");
         return true;
     }
@@ -126,7 +125,7 @@ bool TellRpgStatusAction::Execute(Event event)
             bot->Whisper(msg, LANG_UNIVERSAL, owner);
             return false;
         }
-        info.ChangeToGoCamp(pos);
+        start(NewRpgInfo::GoCamp{pos});
         WhisperStatusChange(owner, "GO_CAMP");
         return true;
     }
@@ -142,13 +141,13 @@ bool TellRpgStatusAction::Execute(Event event)
             bot->Whisper(msg, LANG_UNIVERSAL, owner);
             return false;
         }
-        info.ChangeToTravelFlight(flightMasterEntry, flightMasterPos, std::move(path));
+        start(NewRpgInfo::TravelFlight{flightMasterEntry, flightMasterPos, std::move(path)});
         WhisperStatusChange(owner, "TRAVEL_FLIGHT");
         return true;
     }
     else if (status == RPG_OUTDOOR_PVP)
     {
-        info.ChangeToOutdoorPvp();
+        start(NewRpgInfo::OutdoorPvP{});
         WhisperStatusChange(owner, "OUTDOOR_PVP");
         return true;
     }
@@ -161,7 +160,7 @@ bool TellRpgStatusAction::Execute(Event event)
             bot->Whisper(msg, LANG_UNIVERSAL, owner);
             return false;
         }
-        info.ChangeToDoGather();
+        start(NewRpgInfo::DoGather{});
         WhisperStatusChange(owner, "DO_GATHER");
         return true;
     }
@@ -199,7 +198,7 @@ bool TellRpgStatusAction::Execute(Event event)
             bot->Whisper(msg, LANG_UNIVERSAL, owner);
             return false;
         }
-        info.ChangeToDoQuest(questId, quest);
+        start(NewRpgInfo::DoQuest{quest, questId});
         WhisperStatusChange(owner, "DO_QUEST " + std::to_string(questId));
         return true;
     }
@@ -214,7 +213,6 @@ bool TellRpgStatusAction::Execute(Event event)
 
 bool StartRpgDoQuestAction::Execute(Event event)
 {
-    WorldLog::StatusReason const reasonScope("order");
     Player* owner = event.getOwner();
     if (!owner)
         return false;
@@ -225,7 +223,7 @@ bool StartRpgDoQuestAction::Execute(Event event)
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
     if (quest)
     {
-        botAI->rpgInfo.ChangeToDoQuest(questId, quest);
+        RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, questId}, "order", StatusEnd::Outcome::Ordered);
         bot->Whisper("Start to do quest " + std::to_string(questId), LANG_UNIVERSAL, owner);
         return true;
     }

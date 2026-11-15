@@ -18,6 +18,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -74,12 +75,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight()))
     {
-        if (status == RPG_ERRANDS)
-            FinishErrands(botAI, false, "errand_sick");
-        else if (auto const* trip = std::get_if<NewRpgInfo::Travel>(&info.data))
-            GiveTripUp(botAI, *trip, "sick", "abort:sick");
-        WorldLog::StatusReason const reasonScope("sick");
-        info.ChangeToRest();
+        RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "sick", StatusEnd::Outcome::Sick);  // one Status row
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         return true;
     }
@@ -119,8 +115,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // GO_GRIND -> WANDER_RANDOM
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
-                WorldLog::StatusReason const reasonScope("arrived");
-                info.ChangeToWanderRandom();
+                RpgStatus::Start(botAI, NewRpgInfo::WanderRandom{}, "arrived", StatusEnd::Outcome::Arrived);
                 return true;
             }
             break;
@@ -133,8 +128,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // GO_CAMP -> WANDER_NPC
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
-                WorldLog::StatusReason const reasonScope("arrived");
-                info.ChangeToWanderNpc();
+                RpgStatus::Start(botAI, NewRpgInfo::WanderNpc{}, "arrived", StatusEnd::Outcome::Arrived);
                 return true;
             }
             break;
@@ -144,8 +138,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // WANDER_RANDOM -> IDLE
             if (info.HasStatusPersisted(statusWanderRandomDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -154,8 +147,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (info.HasStatusPersisted(statusWanderNpcDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -165,8 +157,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // DO_QUEST -> IDLE
             if (info.HasStatusPersisted(statusDoQuestDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -180,8 +171,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 // (upstream #3026)
                 if (AI_VALUE(ObjectGuid, "new rpg quest giver").IsEmpty())
                 {
-                    WorldLog::StatusReason const reasonScope("arrived");
-                    info.ChangeToIdle();
+                    RpgStatus::End(botAI, StatusEnd::Outcome::Arrived);
                     return true;
                 }
             }
@@ -192,8 +182,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // REST -> IDLE; a sick bot's rest lasts until the sickness ends
             if (Upkeep::RestEnds(info.HasStatusPersisted(statusRestDuration), sick))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -202,8 +191,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (info.HasStatusPersisted(statusOutDoorPvPDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -213,8 +201,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // DO_GATHER -> IDLE
             if (info.HasStatusPersisted(statusDoGatherDuration))
             {
-                WorldLog::StatusReason const reasonScope("timeout");
-                info.ChangeToIdle();
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -224,8 +211,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // ERRANDS -> IDLE: a trip that has not ended in time is given up
             if (info.HasStatusPersisted(WorldTravel::ERRAND_DEADLINE_MS))
             {
-                auto const* errands = std::get_if<NewRpgInfo::Errands>(&info.data);
-                FinishErrands(botAI, errands && errands->visited);
+                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;
             }
             break;
@@ -303,8 +289,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         }
         if (npcOrGo.IsEmpty())
         {
-            WorldLog::StatusReason const reasonScope("no_target");
-            info.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Finished, {.word = "no_target"});
             return true;
         }
         data.npcOrGo = npcOrGo;
@@ -515,7 +500,6 @@ static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP)
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason)
 {
-    WorldLog::StatusReason const reasonScope("pick");
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
     // A bot with resurrection sickness rests (upkeep §3.5). A bot low on health or mana with nothing to eat or drink
@@ -541,7 +525,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     // Safety check. Default to "rest" if all RPG weights = 0
     if (availableStatus.empty() || probSum == 0)
     {
-        botAI->rpgInfo.ChangeToRest();
+        RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "pick");
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(RPG_REST),
                            "none_available", 0.0f);
@@ -576,12 +560,12 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
         {
             case RPG_WANDER_RANDOM:
             {
-                botAI->rpgInfo.ChangeToWanderRandom();
+                RpgStatus::Start(botAI, NewRpgInfo::WanderRandom{}, "pick");
                 return true;
             }
             case RPG_WANDER_NPC:
             {
-                botAI->rpgInfo.ChangeToWanderNpc();
+                RpgStatus::Start(botAI, NewRpgInfo::WanderNpc{}, "pick");
                 return true;
             }
             case RPG_GO_GRIND:
@@ -589,7 +573,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                 WorldPosition pos = SelectRandomGrindPos(bot);
                 if (pos != WorldPosition())
                 {
-                    botAI->rpgInfo.ChangeToGoGrind(pos);
+                    RpgStatus::Start(botAI, NewRpgInfo::GoGrind{pos}, "pick");
                     return true;
                 }
                 return false;
@@ -599,7 +583,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                 WorldPosition pos = SelectRandomCampPos(bot);
                 if (pos != WorldPosition())
                 {
-                    botAI->rpgInfo.ChangeToGoCamp(pos);
+                    RpgStatus::Start(botAI, NewRpgInfo::GoCamp{pos}, "pick");
                     return true;
                 }
                 return false;
@@ -625,7 +609,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
                     if (quest)
                     {
-                        botAI->rpgInfo.ChangeToDoQuest(questId, quest);
+                        RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, questId}, "pick");
                         return true;
                     }
                 }
@@ -638,35 +622,31 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                 std::vector<uint32> path;
                 if (SelectRandomFlightTaxiNode(flightMasterEntry, flightMasterPos, path))
                 {
-                    botAI->rpgInfo.ChangeToTravelFlight(flightMasterEntry, flightMasterPos, path);
+                    RpgStatus::Start(
+                        botAI, NewRpgInfo::TravelFlight{flightMasterEntry, flightMasterPos, std::move(path)}, "pick");
                     return true;
                 }
                 return false;
             }
             case RPG_DO_GATHER:
             {
-                botAI->rpgInfo.ChangeToDoGather();
-                return true;
-            }
-            case RPG_IDLE:
-            {
-                botAI->rpgInfo.ChangeToIdle();
+                RpgStatus::Start(botAI, NewRpgInfo::DoGather{}, "pick");
                 return true;
             }
             case RPG_REST:
             {
-                botAI->rpgInfo.ChangeToRest();
+                RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "pick");
                 bot->SetStandState(UNIT_STAND_STATE_SIT);
                 return true;
             }
             case RPG_OUTDOOR_PVP:
             {
-                botAI->rpgInfo.ChangeToOutdoorPvp();
+                RpgStatus::Start(botAI, NewRpgInfo::OutdoorPvP{}, "pick");
                 return true;
             }
             default:
             {
-                botAI->rpgInfo.ChangeToRest();
+                RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "pick");
                 bot->SetStandState(UNIT_STAND_STATE_SIT);
                 return true;
             }

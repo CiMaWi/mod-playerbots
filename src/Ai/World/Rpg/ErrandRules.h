@@ -855,6 +855,40 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
     RankBeforeMount(plan.Stops);
     return plan;
 }
+
+// How an errand trip's end is recorded (the status core's errand clean-up, CS14)
+enum class ErrandEndRow : uint8_t
+{
+    Run,    // errand_run: a stop was visited, the trip's minutes count for t
+    Abort,  // errand_abort: no stop was visited
+    Sick    // errand_sick: resurrection sickness ended the trip; its minutes do not count
+};
+
+// Every end stamps the errand check; only a healthy trip with a visited stop adds its minutes to t
+inline ErrandEndRow ErrandEnd(SlotMeasure& measure, uint32_t nowMs, float minutes, bool visited, bool sick)
+{
+    StampErrandCheck(measure, nowMs);
+    if (sick)
+        return ErrandEndRow::Sick;
+    if (!visited)
+        return ErrandEndRow::Abort;
+    AddTripMinutes(measure, minutes);
+    return ErrandEndRow::Run;
+}
+
+constexpr char const* ErrandEndWord(ErrandEndRow row)
+{
+    switch (row)
+    {
+        case ErrandEndRow::Run:
+            return "errand_run";
+        case ErrandEndRow::Abort:
+            return "errand_abort";
+        case ErrandEndRow::Sick:
+            return "errand_sick";
+    }
+    return "";
+}
 }  // namespace WorldTravel
 
 #endif

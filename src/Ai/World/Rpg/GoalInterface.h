@@ -20,6 +20,7 @@
 
 #include "BridgeGoals.h"
 #include "GoalModel.h"
+#include "StatusEndRules.h"
 
 // WT16: the goals interface (3.12) and the rules for applying the planner's answers. Player-free, so the offline
 // selftest (tests/goal-apply-selftest.cpp) checks them; PlannerService.cpp applies them on the bot's map thread.
@@ -449,7 +450,8 @@ inline std::uint64_t LogSignature(std::vector<QuestSlot> const& quests, std::uin
 // with the log signature as it was at the goal's start, that key stalls until the signature changes, and options
 // with a stalled key do not start, so the plan's next option or the counted fallback runs. It ends every "start,
 // fail, start again" loop: takes the givers refuse, a delivery without a reward POI or one that failed at the ender,
-// a trip without a route, a move between two dry hubs.
+// a trip without a route, a move between two dry hubs. A run whose status was ended from outside (a planner switch,
+// an order, a hold, a pause, sickness: StatusEnd::Judged false) is not judged (NoteStatusEnd, consolidation CS14e).
 //
 // The local circuit's key: its hub, else its home camp (a circuit outside every hub's core), never equal to a hub's
 // key
@@ -495,6 +497,7 @@ struct Run
     std::uint64_t startXp{0};
     bool xpCounts{false};  // XpIsProgress(kind): XP gained is progress
     bool running{false};
+    bool outside{false};  // its status was ended from outside since the executor last started (NoteStatusEnd)
 };
 
 constexpr std::uint32_t PAUSE_MS = 10 * 60 * 1000;  // a paused plan goes on by itself after this long
@@ -654,22 +657,46 @@ inline bool MayStart(BotGoals const& goals, std::uint64_t key, std::uint64_t log
 inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std::uint64_t xp = 0, bool xpCounts = false)
 {
     goals.quest = {};
-    goals.run = {key, log, xp, xpCounts, true};
+    goals.run = {key, log, xp, xpCounts, true, false};
 }
+
+// The status core tells the planner that the bot's status ended (Planner::OnStatusEnd). An end the running goal did
+// not cause (StatusEnd::Judged false: a planner switch, a hold, a pause, an order, sickness) marks its run "ended from
+// outside", and EndRun closes it without a stall. The mark is sticky: the interrupter's own end does not clear it;
+// the goal's executor starting again does (ContinueRun), and a new goal's run starts without it. An end to idle also
+// ends a wait for a plan: a wait that another action ended (an errand, an inn, an order) leaves no stale start behind
+inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toIdle)
+{
+    if (toIdle)
+    {
+        goals.idleSinceMs = 0;
+        goals.waitCounted = false;
+    }
+    if (goals.run.running && !StatusEnd::Judged(outcome))
+        goals.run.outside = true;
+}
+
+// The running goal's executor starts again (the circuit's next step, the goal resumed after an interlude): the end
+// of what it starts now is judged again
+inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 
 // The running goal's executor ended: its key stalls when the log is as it was at the goal's start; a changed log
 // lifts every stall. A grind, gather or money goal that gained XP made progress: it does not stall, and the others
-// stay stalled (a kill on the way lifts nothing)
+// stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd) closes without a stall;
+// a changed log still lifts every stall
 inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
 {
     if (!goals.run.running)
         return;
     goals.run.running = false;
+    bool const outside = std::exchange(goals.run.outside, false);
     if (log != goals.run.startLog)
     {
         goals.stalled.reset();
         return;
     }
+    if (outside)
+        return;
     if (goals.run.xpCounts && xp > goals.run.startXp)
         return;
     if (!goals.stalled || goals.stalled->log != log)

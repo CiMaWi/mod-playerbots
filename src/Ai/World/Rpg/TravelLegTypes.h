@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "RouteTypes.h"
+#include "StatusEndRules.h"
 #include "TravelLifecycleTypes.h"
 #include "TravelWalkTypes.h"
 
@@ -174,8 +175,9 @@ struct OffFirst
     std::uint64_t guid{0};
     std::uint32_t boundMs{0};
     OffFirstEnd end{OffFirstEnd::None};
-    char const* why{nullptr};  // Abort: EndTrip's words (string literals)
+    char const* why{nullptr};  // Abort: EndTrip's words (string literals) and the end's outcome
     char const* source{nullptr};
+    StatusEnd::Outcome outcome{StatusEnd::Outcome::Abandoned};
     bool gaveUp{false};  // a period passed aboard: no second wait on this trip
 };
 

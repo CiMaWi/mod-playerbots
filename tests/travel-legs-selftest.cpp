@@ -23,7 +23,6 @@
 #include <iostream>
 #include <limits>
 #include <string>
-#include <variant>
 #include <vector>
 
 #include "TravelLegRules.h"
@@ -505,58 +504,14 @@ void CheckWaypointsAndAnswers()
     Check(!TravelLegs::Resubmit(asking) && asking.replans == 0, "the fourth late answer fails the leg");
 }
 
-// NewRpgInfo's shape for TravelLegs::AfterReset: a status variant, its start and the request counter beside other state
-struct FakeInfo
-{
-    struct Idle
-    {
-    };
-    struct Travel
-    {
-        Trip trip;
-    };
-    struct Errands
-    {
-        std::uint32_t vendor{0};
-    };
-    std::variant<Idle, Travel, Errands> data{Idle{}};
-    std::uint32_t startT{0};
-    std::uint16_t constraints{0};
-    float nearestMoveFarDis{1.0e9f};
-};
-
 void CheckResetAndDeadline()
 {
-    FakeInfo travelling;
-    travelling.data = FakeInfo::Travel{StartedTrip(FullRoute())};
-    std::get<FakeInfo::Travel>(travelling.data).trip.legIdx = 2;  // on the portal leg
-    travelling.startT = 1234;
-    travelling.constraints = 48;
-    travelling.nearestMoveFarDis = 3.0f;
-
-    // A far teleport (the portal's worldport) keeps the trip where it was
-    FakeInfo const ported = TravelLegs::AfterReset<FakeInfo::Travel>(travelling, true);
-    FakeInfo::Travel const* kept = std::get_if<FakeInfo::Travel>(&ported.data);
-    Check(kept && kept->trip.legIdx == 2 && kept->trip.legs.size() == FullRoute().size() && ported.startT == 1234,
-          "a far teleport keeps the trip on its leg");
-    Check(ported.nearestMoveFarDis == 1.0e9f, "a far teleport resets the MOVE_FAR state");
-    // The kept portal leg is done on the exit's map at the next tick
-    Trip portal = kept ? kept->trip : Trip{};
-    Check(kept && TravelLegs::StepLeg(portal, At({1, 1000.0f, 1000.0f, 0.0f}, 3000)).act == Act::Done,
+    // A far teleport (the portal's worldport) keeps the trip on its leg (StatusEnd::KeepsStatus, status-end); the kept
+    // portal leg is done on the exit's map at the next tick
+    Trip portal = StartedTrip(FullRoute());
+    portal.legIdx = 2;  // on the portal leg
+    Check(TravelLegs::StepLeg(portal, At({1, 1000.0f, 1000.0f, 0.0f}, 3000)).act == Act::Done,
           "the kept portal leg is done on the exit's map");
-
-    // Any other full reset ends the trip
-    FakeInfo const reset = TravelLegs::AfterReset<FakeInfo::Travel>(travelling, false);
-    Check(std::holds_alternative<FakeInfo::Idle>(reset.data) && reset.startT == 0, "a full reset ends the trip");
-    Check(ported.constraints == 48 && reset.constraints == 48,
-          "a far teleport and a full reset keep a test's constraints");
-    // Other statuses start over on a far teleport, as before
-    FakeInfo errands;
-    errands.data = FakeInfo::Errands{42};
-    errands.startT = 99;
-    FakeInfo const away = TravelLegs::AfterReset<FakeInfo::Travel>(errands, true);
-    Check(std::holds_alternative<FakeInfo::Idle>(away.data) && away.startT == 0,
-          "a far teleport resets other statuses");
 
     // The whole trip's bound: estimate x 3 + 10 min; before the first answer the slack alone
     Check(TravelLegs::TripDeadlineMs(0.0f) == 600000u, "trip deadline: 10 min before a route");
@@ -643,6 +598,25 @@ void CheckEventSources()
                   TravelLegs::AbortSource(reason) == "abort:" + word;
     }
     Check(reasons, "events: leg_failed:<reason> and abort:<reason> for every reason");
+    // The trip's outcome of a failed leg (RpgStatus::End), one line per reason
+    using StatusEnd::Outcome;
+    std::pair<FailReason, Outcome> const outcomes[] = {
+        {FailReason::None, Outcome::Abandoned},          {FailReason::Timeout, Outcome::TimedOut},
+        {FailReason::WrongMap, Outcome::Abandoned},      {FailReason::Stuck, Outcome::Stuck},
+        {FailReason::Portal, Outcome::Abandoned},        {FailReason::Fare, Outcome::Abandoned},
+        {FailReason::Landing, Outcome::Abandoned},       {FailReason::Unsupported, Outcome::Abandoned},
+        {FailReason::NoAnswer, Outcome::Abandoned},      {FailReason::NoRoute, Outcome::Abandoned},
+        {FailReason::Taxi, Outcome::Abandoned},          {FailReason::Hearth, Outcome::Abandoned},
+        {FailReason::OffMesh, Outcome::Stuck},           {FailReason::Death, Outcome::Abandoned},
+        {FailReason::TransportLost, Outcome::Abandoned}, {FailReason::NoExit, Outcome::Abandoned},
+        {FailReason::Takeoff, Outcome::Abandoned},       {FailReason::NoPath, Outcome::Abandoned},
+        {FailReason::NoWalk, Outcome::Abandoned},
+    };
+    static_assert(sizeof(outcomes) / sizeof(outcomes[0]) == static_cast<std::size_t>(FailReason::NoWalk) + 1,
+                  "every fail reason has its outcome line");
+    for (auto const& [reason, outcome] : outcomes)
+        Check(TravelLegs::FailOutcome(reason) == outcome, std::string("outcome: ") + TravelLegs::FailWord(reason) +
+                                                              " ends the trip as " + StatusEnd::Word(outcome));
     Check(std::string(TravelLegs::LegFailedSource(FailReason::OffMesh)) == "leg_failed:off_mesh" &&
               std::string(TravelLegs::AbortSource(FailReason::OffMesh)) == "abort:off_mesh",
           "events: off_mesh words");

@@ -311,12 +311,13 @@ public:
 };
 }  // namespace
 
-void WorldLog::NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus)
+void WorldLog::NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus, char const* word)
 {
     if (oldStatus == newStatus || !bot || !WorldLog::Active())
         return;
 
-    EventLog::Emit(bot, "Status", WorldLog::CurrentStatusReason(), static_cast<uint32>(newStatus), oldStatus);
+    EventLog::Emit(bot, "Status", word ? word : WorldLog::STATUS_REASON_OTHER, static_cast<uint32>(newStatus),
+                   oldStatus);
 }
 
 void WorldLog::Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::string_view choice,

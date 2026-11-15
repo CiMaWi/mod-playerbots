@@ -51,6 +51,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgStatusEnd.h"
 #include "NewRpgStrategy.h"
 #include "NewRpgTriggers.h"
 #include "Object.h"
@@ -91,38 +92,11 @@
 #include "WaypointMovementGenerator.h"
 #include "World.h"
 #include "WorldLog.h"
-#include "WorldLogStatus.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "WorldTravelRules.h"
 
 using namespace NewRpgInternal;
-
-namespace
-{
-// The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
-constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
-}  // namespace
-
-namespace NewRpgInternal
-{
-// Gives the bot's trip up: the Travel event (source "abort:<reason>", a literal), the trip's abort decision, idle
-void GiveTripUp(PlayerbotAI* botAI, NewRpgInfo::Travel const& data, char const* why, char const* source)
-{
-    Player* bot = botAI->GetBot();
-    if (data.place.empty())
-        LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
-    else
-        LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
-    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
-    EventLog::Emit(bot, "Travel", source, data.tripId, seconds);
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort",
-                       WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX), static_cast<float>(seconds),
-                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
-    WorldLog::StatusReason const reasonScope("abort");
-    botAI->rpgInfo.ChangeToIdle();
-}
-}  // namespace NewRpgInternal
 
 namespace
 {
@@ -619,7 +593,8 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         {
             bool const expired = step == TravelLegs::OffStep::GiveUp;
             botAI->GetTravel().TraceTravelInteraction("route_recovery", expired ? "stuck_aboard" : "transport_lost");
-            EndTrip(*data, expired ? "stuck aboard" : "transport lost",
+            EndTrip(*data, expired ? StatusEnd::Outcome::Stuck : StatusEnd::Outcome::Abandoned,
+                    expired ? "stuck aboard" : "transport lost",
                     expired ? "abort:stuck_aboard" : "abort:transport_lost");
             return true;
         }
@@ -627,7 +602,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         if (off.end == TravelLegs::OffFirstEnd::Arrive)
             return Arrive(*data);
         if (off.end == TravelLegs::OffFirstEnd::Abort)
-            EndTrip(*data, off.why, off.source);
+            EndTrip(*data, off.outcome, off.why, off.source);
         return true;
     }
     Transport* const ridden = bot->GetTransport();
@@ -650,7 +625,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     if (overdue == Overdue::RouteDeadline)
     {
         botAI->GetTravel().TraceTravelInteraction("route_recovery", "deadline");
-        EndTrip(*data, "deadline", "abort:deadline");
+        EndTrip(*data, StatusEnd::Outcome::TimedOut, "deadline", "abort:deadline");
         return true;
     }
     if (overdue == Overdue::Walk || overdue == Overdue::OffMesh)
@@ -658,7 +633,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         if (!data->progress.AttemptedWalk())
         {
             botAI->GetTravel().TraceTravelInteraction("route_recovery", "stalled");
-            EndTrip(*data, "stalled", "abort:stalled");
+            EndTrip(*data, StatusEnd::Outcome::Stuck, "stalled", "abort:stalled");
             return true;
         }
 
@@ -971,7 +946,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     };
     if (!TravelProgress::SubmitRoute(data.route, waiting, submit))
     {
-        EndTrip(data, "no route service", "abort:no_service");  // the graph is not loaded yet: never wait
+        // The graph is not loaded yet: never wait
+        EndTrip(data, StatusEnd::Outcome::Abandoned, "no route service", "abort:no_service");
         return true;
     }
     botAI->GetTravel().TraceTravelInteraction("route_request", "issued");
@@ -1282,7 +1258,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
     }
     if (aborts)
     {
-        EndTrip(data, TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
+        EndTrip(data, TravelLegs::FailOutcome(reason), TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
         return true;
     }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "replan", TravelLegs::FailWord(reason),
@@ -1336,7 +1312,8 @@ bool NewRpgTravelAction::FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision 
             break;
     }
     if (endsTrip)
-        EndTrip(data, TravelLegs::FailWord(endReason), TravelLegs::AbortSource(endReason));
+        EndTrip(data, TravelLegs::FailOutcome(endReason), TravelLegs::FailWord(endReason),
+                TravelLegs::AbortSource(endReason));
     return true;
 }
 
@@ -1404,22 +1381,17 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
                                noInnkeeper ? "no_innkeeper" : "not_interactable", yards, {}, data.tripId);
         }
     }
-    if (data.place.empty())
-        LOG_DEBUG("playerbots", "[Route] {} arrived after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
-                  seconds, data.estimateSeconds, replans);
-    else
-        LOG_INFO("playerbots", "[Route] {} arrived at {} after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
-                 data.place, seconds, data.estimateSeconds, replans);
-    EventLog::Emit(bot, "Travel", "arrived", data.tripId, seconds);
-    WorldLog::StatusReason const reasonScope("arrived");
-    botAI->rpgInfo.ChangeToIdle();
+    // The status core's arrive arm: the log line and the arrived Travel event
+    RpgStatus::End(botAI, StatusEnd::Outcome::Arrived);
     return true;
 }
 
-void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source)
+void NewRpgTravelAction::EndTrip(NewRpgInfo::Travel& data, StatusEnd::Outcome outcome, char const* why,
+                                 char const* source)
 {
     // Not on a ship's deck: the bot gets off first, then the trip ends (WT19-d)
-    if (OffFirstBegins(bot, data, TravelLegs::OffFirstEnd::Abort, why, source))
+    if (OffFirstBegins(bot, data, TravelLegs::OffFirstEnd::Abort, why, source, outcome))
         return;
-    GiveTripUp(botAI, data, why, source);
+    // The status core's abort arm: the log line, the Travel event and the trip's abort decision
+    RpgStatus::End(botAI, outcome, {.word = "abort", .source = source, .text = why});
 }
