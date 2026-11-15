@@ -10,15 +10,15 @@
 
 #include "TravelTransportGeometry.h"
 
-void NewRpgInfo::DiscardPassengerMove()
+void NewRpgInfo::DiscardPassengerMove(Player* bot)
 {
     if (auto* travel = std::get_if<Travel>(&data); bot && travel)
         TravelTransportGeometry::DiscardMotion(*bot, travel->passengerMotion);
 }
 
-void NewRpgInfo::ReplaceStatus(RpgData replacement)
+void NewRpgInfo::ReplaceStatus(Player* bot, RpgData replacement)
 {
-    DiscardPassengerMove();
+    DiscardPassengerMove(bot);
     data = std::move(replacement);
 }
 

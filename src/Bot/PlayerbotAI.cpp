@@ -193,7 +193,6 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       tactics(std::make_unique<BotTactics>(this, bot)),
       botTravel(std::make_unique<BotTravel>(this, bot))
 {
-    rpgInfo.bot = bot;
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
         bot->SetTaxiCheater(true);
 
