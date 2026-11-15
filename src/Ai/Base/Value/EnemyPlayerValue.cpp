@@ -141,7 +141,7 @@ Unit* EnemyPlayerValue::Calculate()
 
     // A test's nofight bot starts no fight with a player either (TestConstraints::StartsFights), nor joins one; it
     // answers one already fighting it (above)
-    if (!TestConstraints::StartsFights(botAI->rpgInfo.constraints))
+    if (!TestConstraints::StartsFights(botAI->testConstraints))
         return nullptr;
 
     // 2. Find enemy player in range. A bot that starts fights by the rules skips it while its enthusiasm can enter

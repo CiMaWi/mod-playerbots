@@ -27,7 +27,7 @@ bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
 {
     // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
-    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints) || BankMail::VisitRuns(botAI->bankMail))
+    if (!TestConstraints::ErrandAllowed(botAI->testConstraints) || BankMail::VisitRuns(botAI->bankMail))
         return false;
     Player* bot = botAI->GetBot();
     if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))

@@ -198,7 +198,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 {
     // A held errand row refuses the trip also when the trigger fired before the hold was taken (WU15a's wm57 bot
     // started a vendor trip 1.5 s after its hold and kept walking it through the case)
-    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
+    if (!TestConstraints::ErrandAllowed(botAI->testConstraints))
         return false;
 
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();

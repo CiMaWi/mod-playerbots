@@ -782,6 +782,8 @@ public:
     // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
     // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
     BankMail::BotBankMail bankMail;
+    // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
+    uint16 testConstraints{0};
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
     // World PvP's persistence cache and the ghost's wait (GhostWait.h), lazily
