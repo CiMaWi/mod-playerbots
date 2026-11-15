@@ -118,6 +118,37 @@ int main()
         }
     }
 
+    // The reset list (RpgStatus::Reset): the status starts over unless a far teleport keeps a trip, which keeps its
+    // start; the planner's view and the RPG memos start fresh; a test's constraints stay
+    struct StatusModel
+    {
+        std::uint32_t startT{0};
+        int data{0};
+    };
+    for (int farTeleport = 0; farTeleport < 2; ++farTeleport)
+    {
+        for (int isTravel = 0; isTravel < 2; ++isTravel)
+        {
+            StatusEnd::ResetList const list = StatusEnd::ResetOf(farTeleport != 0, isTravel != 0);
+            StatusModel status{4000, 7};
+            int planner = 3;
+            int memos = 2;
+            std::uint16_t constraints = 0x21;
+            StatusEnd::ApplyReset(list.status, status);
+            StatusEnd::ApplyReset(list.planner, planner);
+            StatusEnd::ApplyReset(list.rpgMemos, memos);
+            StatusEnd::ApplyReset(list.testConstraints, constraints);
+            bool const kept = farTeleport != 0 && isTravel != 0;
+            std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: status %s, start %u", farTeleport,
+                          isTravel, kept ? "kept" : "fresh", static_cast<unsigned>(status.startT));
+            counts.Check(kept ? status.startT == 4000 && status.data == 7 : status.startT == 0 && status.data == 0,
+                         "reset list", detail);
+            std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: planner %d, memos %d, constraints %u",
+                          farTeleport, isTravel, planner, memos, static_cast<unsigned>(constraints));
+            counts.Check(planner == 0 && memos == 0 && constraints == 0x21, "reset list", detail);
+        }
+    }
+
     for (std::uint32_t o = 0; o < StatusEnd::OUTCOME_COUNT; ++o)
     {
         Outcome const outcome = static_cast<Outcome>(o);
