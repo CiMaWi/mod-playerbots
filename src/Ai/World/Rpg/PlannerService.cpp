@@ -1097,6 +1097,8 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
         goals.quest = std::move(progress);
         return BridgeAnswer::Failed;
     }
+    // The start's outside mark belongs to the status the order replaced, whose run BeginRun already replaced
+    GoalApply::ContinueRun(goals);
     GoalApply::TakeBridgeGoal(goals, std::move(goal));
     Publish(bot, goals);
     return BridgeAnswer::Done;
