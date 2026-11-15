@@ -21,7 +21,7 @@
 // G4e: the focus target, the pure parts. A bot whose Dexterity reaches Natural.Reaction.Ease.FocusDexterity keeps a
 // second enemy (in an arena the moon, else the enemy healer or the CC target) and kicks or controls it at the focus
 // ease while its own target stays; below the threshold the same action is priced as a new target (G0h3), as before.
-// The game side is PlayerbotAI.cpp's FollowFocusTarget; the state is FocusState.h's FocusTargetState.
+// The game side is ArenaFocusTarget.cpp's FollowFocusTarget; the state is FocusState.h's FocusTargetState.
 
 enum class FocusSource : uint8
 {

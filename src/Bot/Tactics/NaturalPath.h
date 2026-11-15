@@ -34,7 +34,7 @@ class PlayerbotAI;
 // (Hops.Enable: a short running jump along the first leg of a run, on flat ground, the arc ray-checked, never within
 // EdgeYards of an edge, never within 3 s of a cast) and walking (Walk.Enable: short legs out of combat). Every draw
 // comes from a hash (no RNG state). The game side is in MovementActions.cpp (MoveTo, FollowNaturalPath) and
-// PlayerbotAI.cpp (NaturalPathHere, the params by SetPvpSkill); the numbers are PathConfig's.
+// NaturalMove.cpp (NaturalPathHere; the params by SetPvpSkill in BotTactics.cpp); the numbers are PathConfig's.
 
 constexpr float PATH_PI = 3.14159265358979323846f;
 constexpr float PATH_GRAVITY = 19.291105f;        // Movement::gravity (MovementUtil.cpp)
@@ -1006,7 +1006,7 @@ void RunPathChecks(Check&& check)
     }
 }
 
-// Whether the bot walks natural paths now (PlayerbotAI.cpp; as NaturalTrackHere with the Path options)
+// Whether the bot walks natural paths now (NaturalMove.cpp; as NaturalTrackHere with the Path options)
 bool NaturalPathHere(PlayerbotAI* botAI, uint32 nowMs);
 
 // Per check after the bot's action (PlayerbotAI::UpdateAIInternal; MovementActions.cpp): ends a walked leg's walk

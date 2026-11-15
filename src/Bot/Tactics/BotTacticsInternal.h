@@ -23,7 +23,7 @@ struct InterruptConfig;
 struct TurnBotState;
 
 // The tactic followers' game side that more than one of PlayerbotAI.cpp and the src/Bot/Tactics .cpp files calls;
-// only these files include this header.
+// only these files and src/Bot/Debug/PvpTestCounters.cpp include this header.
 
 // G5b: what the bot's interrupt (a kick, a silence, a stun) hits, read before the cast: an instant kick ends the bar
 // within the cast itself

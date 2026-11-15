@@ -27,7 +27,8 @@
 // turns like a keyboard (a constant rate). The pre-gate stepper writes the server orientation every step and sends
 // a heartbeat only on a change of more than PacketMinDeg at most every PacketMinMs (Mode 1), or one facing spline per
 // leg of at least SplineMinDeg (Mode 2). Every draw comes from a hash of the bot, the turn's start and its number (no
-// RNG state). The game side is in PlayerbotAI.cpp (FaceTarget, StepNaturalPreGate); the numbers are TurnConfig's.
+// RNG state). The game side is in NaturalTurn.cpp (FaceTarget) and BotTactics.cpp (StepNaturalPreGate); the numbers
+// are TurnConfig's.
 
 constexpr float TURN_PI = 3.14159265358979323846f;
 constexpr float TURN_TWO_PI = 2.0f * TURN_PI;
@@ -428,7 +429,7 @@ struct TurnBotState
     }
 };
 
-// A direction turn (PlayerbotAI.cpp NaturalTurnForCast): a turn to a direction relative to a target before a cast
+// A direction turn (NaturalTurn.cpp NaturalTurnForCast): a turn to a direction relative to a target before a cast
 // that goes the way the bot faces (disengage faces the target, blink turns its back on it). Ready: the cast may go now
 // (the bot faces the direction within TURN_DIRECTION_READY_DEG, or the flick of this target's direction turn is over
 // and left it within TURN_DIRECTION_DONE_DEG, its aim error); Wait: that flick goes on; Turn: a new turn is due (none
@@ -981,7 +982,7 @@ void RunTurnChecks(Check&& check)
           "the snap's reasons and callers have their own names");
 }
 
-// The game side (PlayerbotAI.cpp): whether the bot turns naturally now (the option, the Natural tactic here, a PvP
+// The game side (NaturalTurn.cpp): whether the bot turns naturally now (the option, the Natural tactic here, a PvP
 // context of Natural.Facing.Contexts, or out of PvP and out of instances in a real player's sight with
 // OutsidePvpInSight, cached for InSightCacheMs). The bot's own update, or the world thread while the maps wait.
 class PlayerbotAI;
