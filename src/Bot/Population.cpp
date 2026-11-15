@@ -18,6 +18,7 @@
 
 #include "AcquaintanceMgr.h"
 #include "AsyncCallbackProcessor.h"
+#include "BotKind.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
@@ -1720,6 +1721,7 @@ void Population::LoadConfig(bool reload)
 {
     bool const persistent = sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false);
     s_persistent.store(persistent, std::memory_order_relaxed);
+    BotKind::LoadLivingWorld();
 
     LOG_INFO("playerbots", "[Population] {}Playerbots.Population.Persistent = {}{}", reload ? "reload: " : "",
              persistent ? 1 : 0, persistent ? " (bot levels never go down)" : "");

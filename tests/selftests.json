@@ -8,6 +8,13 @@
             "success": "BANK selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
+            "file": "bot-kind-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "bot-record-readers-selftest.cpp",
             "includes": [
                 "src/Bot"

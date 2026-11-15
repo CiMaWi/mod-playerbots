@@ -7,6 +7,7 @@
 #include "PlayerbotAIConfig.h"
 #include "BisListMgr.h"
 #include "BotAttributes.h"
+#include "BotKind.h"
 #include "Config.h"
 #include "ItemWorthRules.h"
 #include "LadderMgr.h"
@@ -1977,6 +1978,8 @@ bool PlayerbotAIConfig::Initialize()
         ArenaOnlyEnable = false;
         RandomBotAutoJoinRatedArenaUncapped = false;
     }
+
+    BotKind::LoadLivingWorld();
 
     if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
         LOG_INFO("server.loading",
