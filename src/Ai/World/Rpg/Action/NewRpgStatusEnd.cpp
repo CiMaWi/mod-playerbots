@@ -7,6 +7,7 @@
 #include "NewRpgStatusEnd.h"
 
 #include <string_view>
+#include <utility>
 #include <variant>
 
 #include "CensusMgr.h"
@@ -20,6 +21,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Timer.h"
+#include "TravelTransportGeometry.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 #include "WorldLogStatus.h"
@@ -40,14 +42,38 @@ static_assert(uint32(RPG_IDLE) == StatusEnd::STATUS_IDLE && uint32(RPG_GO_GRIND)
 // The status core's way into NewRpgInfo (its friend): only the core replaces a status
 struct RpgStatusCore
 {
-    // The idle step of an end: the status data replaced, the start time set, the quest giver and the ignored ones
-    // cleared
-    static void ToIdle(NewRpgInfo& info)
+    // The replacing step of a change: the status data replaced and its start time set; a trip takes its start and
+    // world log id, idle clears the quest giver and the ignored ones
+    static void Replace(NewRpgInfo& info, NewRpgInfo::RpgData next)
     {
-        info.ReplaceStatus(NewRpgInfo::Idle{});
+        info.ReplaceStatus(std::move(next));
         info.startT = getMSTime();
-        info.questGiver.Clear();
-        info.ignoredQuestGivers.clear();
+        if (auto* trip = std::get_if<NewRpgInfo::Travel>(&info.data))
+        {
+            trip->tripStartMs = info.startT;
+            trip->tripId = WorldLog::NextTripId();
+        }
+        else if (std::holds_alternative<NewRpgInfo::Idle>(info.data))
+        {
+            info.questGiver.Clear();
+            info.ignoredQuestGivers.clear();
+        }
+    }
+
+    // A reset's state: a fresh one with the bot, the route request ids (ids restarting at 0 would let an older answer
+    // pass as current) and a test's constraints (a state row's flag stays on the Player); a kept status with its start
+    static void Renew(NewRpgInfo& info, bool keepsStatus)
+    {
+        NewRpgInfo after;
+        after.bot = info.bot;
+        after.routeRequests = info.routeRequests;
+        after.constraints = info.constraints;
+        if (keepsStatus)
+        {
+            after.startT = info.startT;
+            after.data = std::move(info.data);
+        }
+        info = std::move(after);
     }
 };
 
@@ -109,11 +135,13 @@ void AbortTrip(Player* bot, NewRpgInfo::Travel const& data, Outcome outcome, Sta
 }
 
 // Every status change of the core, in this order: the ending status's clean-up (it reads the status data), the
-// planner's note (the goal's run learns the outcome), idle, the one Status row. CS14f lets a start pass its next status
-void Change(PlayerbotAI* botAI, Outcome outcome, StatusEnd::Note const& note, char const* word)
+// planner's note (the goal's run learns the outcome), the next status, the one Status row
+void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, StatusEnd::Note const& note,
+            char const* word)
 {
     NewRpgInfo& info = botAI->rpgInfo;
     NewRpgStatus const oldStatus = info.GetStatus();
+    bool const toIdle = std::holds_alternative<NewRpgInfo::Idle>(next);
     if (oldStatus != RPG_IDLE && StatusEnd::CleansUp(oldStatus, outcome))
     {
         if (auto const* errands = std::get_if<NewRpgInfo::Errands>(&info.data))
@@ -126,14 +154,57 @@ void Change(PlayerbotAI* botAI, Outcome outcome, StatusEnd::Note const& note, ch
                 AbortTrip(botAI->GetBot(), *trip, outcome, note);
         }
     }
-    if (oldStatus != RPG_IDLE)
-        Planner::OnStatusEnd(botAI, outcome, true);
-    RpgStatusCore::ToIdle(info);
+    if (oldStatus != RPG_IDLE && toIdle)
+        Planner::OnStatusEnd(botAI, outcome, toIdle);
+    RpgStatusCore::Replace(info, std::move(next));
     WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), word);
 }
 }  // namespace
 
 void RpgStatus::End(PlayerbotAI* botAI, StatusEnd::Outcome outcome, StatusEnd::Note note)
 {
-    Change(botAI, outcome, note, note.word ? note.word : StatusEnd::Word(outcome));
+    Change(botAI, NewRpgInfo::Idle{}, outcome, note, note.word ? note.word : StatusEnd::Word(outcome));
+}
+
+void RpgStatus::Start(PlayerbotAI* botAI, NewRpgInfo::RpgData next, char const* word, StatusEnd::Outcome why,
+                      StatusEnd::Note note)
+{
+    Change(botAI, std::move(next), why, note, word);
+}
+
+void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    NewRpgStatus const oldStatus = info.GetStatus();
+    auto* const trip = std::get_if<NewRpgInfo::Travel>(&info.data);
+    if (trip && info.bot)
+    {
+        TravelTransportGeometry::SplineControl control{*info.bot};
+        TravelLifecycle::ResetMotion(trip->passengerMotion, farTeleport, control);
+        trip->progress.Suspend();
+    }
+    RpgStatusCore::Renew(info, StatusEnd::KeepsStatus(farTeleport, trip != nullptr));
+    WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
+}
+
+NewRpgInfo::Travel RpgStatus::TripTo(WorldPosition dest, std::string place)
+{
+    NewRpgInfo::Travel trip;
+    trip.dest = dest;
+    trip.place = std::move(place);
+    return trip;
+}
+
+NewRpgInfo::Errands RpgStatus::ErrandTrip(std::vector<NewRpgInfo::ErrandStop> stops, uint32 money)
+{
+    NewRpgInfo::Errands errands;
+    for (NewRpgInfo::ErrandStop const& stop : stops)
+        if (stop.vendorEntry)
+        {
+            errands.vendorEntry = stop.vendorEntry;
+            break;
+        }
+    errands.stops = std::move(stops);
+    errands.moneyAtStart = money;
+    return errands;
 }

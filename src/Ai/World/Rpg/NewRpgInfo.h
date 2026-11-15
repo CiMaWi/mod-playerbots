@@ -220,8 +220,8 @@ struct NewRpgInfo
         std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
     };
     PlannerState planner;
-    // Mail and bank knowledge and visits (BankMailState.h); Reset() keeps it, so a visit survives a status change;
-    // a far teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
+    // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
+    // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
     BankMail::BotBankMail bankMail;
 
     // MOVE_FAR
@@ -268,24 +268,12 @@ struct NewRpgInfo
     NewRpgStatus GetStatus();
     static NewRpgStatus StatusFromString(std::string const& name);
     bool HasStatusPersisted(uint32 maxDuration) { return GetMSTimeDiffToNow(startT) > maxDuration; }
-    void ChangeToGoGrind(WorldPosition pos);
-    void ChangeToGoCamp(WorldPosition pos);
-    void ChangeToWanderNpc();
-    void ChangeToWanderRandom();
-    void ChangeToDoQuest(uint32 questId, Quest const* quest);
-    void ChangeToTravelFlight(uint32 flightMasterEntry, WorldPosition flightMasterPos, std::vector<uint32> path);
-    void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
-    void ChangeToDoGather();
-    void ChangeToRest();
-    void ChangeToTravel(WorldPosition dest, std::string place = {});
-    void ChangeToErrands(std::vector<ErrandStop> stops, uint32 money);
     bool CanChangeTo(NewRpgStatus status);
-    void ResetState(bool farTeleport);
     void SetMoveFarTo(WorldPosition pos);
     std::string ToString();
 
 private:
-    friend struct RpgStatusCore;  // the status core (NewRpgStatusEnd.cpp): a status ends only there
+    friend struct RpgStatusCore;  // the status core (NewRpgStatusEnd.cpp): a status ends and starts only there
     void DiscardPassengerMove();
     void ReplaceStatus(RpgData replacement);
 };

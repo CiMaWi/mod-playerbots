@@ -316,7 +316,7 @@ void WorldLog::NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus, cha
     if (oldStatus == newStatus || !bot || !WorldLog::Active())
         return;
 
-    EventLog::Emit(bot, "Status", word ? word : WorldLog::CurrentStatusReason(), static_cast<uint32>(newStatus),
+    EventLog::Emit(bot, "Status", word ? word : WorldLog::STATUS_REASON_OTHER, static_cast<uint32>(newStatus),
                    oldStatus);
 }
 

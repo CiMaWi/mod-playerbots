@@ -76,6 +76,7 @@
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
 #include "NewRpgAction.h"
+#include "NewRpgStatusEnd.h"
 #include "NewRpgStrategy.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -2207,13 +2208,10 @@ void PlayerbotAI::Reset(bool full, bool farTeleport)
     // (BankMail::AfterReset). Also on a far teleport during a flight (a taxi path crossing maps), which skips the rest
     auto const resetRpgState = [this, farTeleport]()
     {
-        NewRpgStatus const statusBefore = rpgInfo.GetStatus();
         BankMail::EndVisits(this, farTeleport ? BankMail::VisitEnd::Teleport : BankMail::VisitEnd::Reset);
         BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
-        rpgInfo.ResetState(farTeleport);
+        RpgStatus::Reset(this, farTeleport);
         rpgInfo.bankMail = bankMail;
-        WorldLog::StatusReason const reasonScope(farTeleport ? "teleport" : "reset");
-        WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
     };
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {

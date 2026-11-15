@@ -51,6 +51,7 @@
 #include "UpkeepNeedRules.h"
 #include "World.h"
 #include "WorldLog.h"
+#include "WorldLogStatus.h"
 
 namespace Planner
 {
@@ -409,15 +410,15 @@ bool StartQuest(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Que
             break;
         if (Quest const* quest = sObjectMgr->GetQuestTemplate(next.quest))
         {
-            botAI->rpgInfo.ChangeToDoQuest(next.quest, quest);
+            RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, next.quest}, WorldLog::STATUS_REASON_OTHER);
             return true;
         }
     }
     if (Placed(bot, circuit.start, true) &&
         bot->GetDistance2d(circuit.start.x, circuit.start.y) > GoalApply::GIVER_YARDS)
-        botAI->rpgInfo.ChangeToGoCamp(PositionOf(circuit.start));
+        RpgStatus::Start(botAI, NewRpgInfo::GoCamp{PositionOf(circuit.start)}, WorldLog::STATUS_REASON_OTHER);
     else
-        botAI->rpgInfo.ChangeToWanderNpc();
+        RpgStatus::Start(botAI, NewRpgInfo::WanderNpc{}, WorldLog::STATUS_REASON_OTHER);
     return true;
 }
 
@@ -433,27 +434,27 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
         case GoalApply::Executor::Deliver:
             if (Quest const* quest = sObjectMgr->GetQuestTemplate(goal.target))
             {
-                info.ChangeToDoQuest(goal.target, quest);
+                RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, goal.target}, WorldLog::STATUS_REASON_OTHER);
                 return true;
             }
             return false;
         case GoalApply::Executor::Grind:
             if (!Placed(bot, goal.place, true))
                 return false;
-            info.ChangeToGoGrind(PositionOf(goal.place));
+            RpgStatus::Start(botAI, NewRpgInfo::GoGrind{PositionOf(goal.place)}, WorldLog::STATUS_REASON_OTHER);
             return true;
         case GoalApply::Executor::Gather:
-            info.ChangeToDoGather();
+            RpgStatus::Start(botAI, NewRpgInfo::DoGather{}, WorldLog::STATUS_REASON_OTHER);
             return true;
         case GoalApply::Executor::Travel:
             // ApplyTravelOrder's refusals: the route follower starts alive, on the ground and in the open world
             if (!Placed(bot, goal.place, false) || !bot->IsAlive() || bot->IsInFlight() ||
                 bot->GetMap()->Instanceable())
                 return false;
-            info.ChangeToTravel(PositionOf(goal.place));
+            RpgStatus::Start(botAI, RpgStatus::TripTo(PositionOf(goal.place)), WorldLog::STATUS_REASON_OTHER);
             return true;
         case GoalApply::Executor::Rest:
-            info.ChangeToRest();
+            RpgStatus::Start(botAI, NewRpgInfo::Rest{}, WorldLog::STATUS_REASON_OTHER);
             bot->SetStandState(UNIT_STAND_STATE_SIT);
             return true;
         default:

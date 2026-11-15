@@ -26,7 +26,6 @@
 #include "Timer.h"
 #include "UpkeepRules.h"
 #include "WorldLog.h"
-#include "WorldLogStatus.h"
 
 using namespace NewRpgInternal;
 
@@ -122,7 +121,6 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     bool const applied = constrained || order.aboard;
     if (!trip)
         return applied;
-    WorldLog::StatusReason const reasonScope("order");
     if (order.stop)
     {
         auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data);
@@ -153,7 +151,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
     botAI->CancelLootInteraction("order");
-    info.ChangeToTravel(order.dest, order.place);
+    RpgStatus::Start(botAI, RpgStatus::TripTo(order.dest, order.place), "order", StatusEnd::Outcome::Interrupted);
     return true;
 }
 
