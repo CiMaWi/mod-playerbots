@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 
+#include "BankMailService.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
 #include "GameTime.h"

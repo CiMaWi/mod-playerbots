@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "Bag.h"
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotRecordMgr.h"
 #include "BridgeAbilities.h"

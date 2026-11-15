@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "CensusMgr.h"
 #include "GameObject.h"

@@ -28,6 +28,7 @@
 #include "ArenaInterruptSpells.h"
 #include "ArenaJump.h"
 #include "ArenaKite.h"
+#include "BankMailService.h"
 #include "Battleground.h"
 #include "BudgetValues.h"
 #include "CcState.h"
