@@ -10,6 +10,7 @@
 #include <optional>
 #include <string_view>
 
+#include "BotTravel.h"
 #include "Define.h"
 #include "Log.h"
 #include "NewRpgInfo.h"
@@ -35,7 +36,7 @@ char const* ContactName(TravelLifecycle::Contact contact);
 char const* MotionStateName(TravelLifecycle::MotionState state);
 char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome);
 bool UnderWay(Transport const& transport);
-std::string_view MountPathWord(PlayerbotAI::MountPath path);
+std::string_view MountPathWord(BotTravel::MountPath path);
 
 class PassengerAdapter
 {

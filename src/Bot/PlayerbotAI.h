@@ -12,7 +12,6 @@
 #include <memory>
 #include <mutex>
 #include <stack>
-#include <string_view>
 #include <unordered_set>
 
 #include "Chat.h"
@@ -38,6 +37,7 @@
 class Action;
 class AiObjectContext;
 class BotTactics;
+class BotTravel;
 class Creature;
 class Engine;
 class ExternalEventHelper;
@@ -49,12 +49,10 @@ struct PvpTestCounterBlock;
 class ReactionEngine;
 class Gameobject;
 class Item;
-class LootObjectStack;
 class Player;
 class PlayerbotMgr;
 class Spell;
 class SpellInfo;
-class Transport;
 class Unit;
 class WorldObject;
 class WorldPosition;
@@ -683,6 +681,9 @@ public:
     // The bot's tactics (BotTactics.h): its skill profile, natural timing, opponent memory and tactic states
     BotTactics& GetTactics() { return *tactics; }
     BotTactics const& GetTactics() const { return *tactics; }
+    // The bot's travel block (BotTravel.h): passenger check, aboard placement, loot interaction, travel trace
+    BotTravel& GetTravel() { return *botTravel; }
+    BotTravel const& GetTravel() const { return *botTravel; }
     void SetArenaOnlyState(ArenaOnlyState state) { arenaOnlyState = state; }
     // The bot's last map update diff (ms): the natural reaction's server ticks are half of it
     uint32 GetLastUpdateDiff() const { return lastUpdateDiff; }
@@ -768,23 +769,6 @@ public:
     std::set<uint32> GetAllCurrentQuestIds();
     std::set<uint32> GetCurrentIncompleteQuestIds();
     void PetFollow();
-    bool ReconcileFollowPassenger(Transport const& expected);
-    bool HasLootInteraction() const { return activeLootInteraction != nullptr; }
-    uint32 CompletedLootInteractions() const { return completedLootInteractions; }
-    bool LootInteractionExpired() const;
-    bool ConsumeLootExpiry();
-    void CancelLootInteraction(std::string_view reason);
-    void TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot = ObjectGuid::Empty,
-                                uint32 interaction = 0, std::string_view path = "none", float yards = 0.0f,
-                                std::optional<std::pair<uint32, uint32>> leg = std::nullopt);
-    TravelProgress::Motion ReadTravelWalk(bool checkPosition = false) const;
-    enum class MountPath : uint8
-    {
-        None,
-        Timer,
-        Packet
-    };
-    void TraceTravelMount(MountPath path, bool accepted);
     bool HasPendingDismount() const { return pendingDismount.load(std::memory_order_relaxed); }
     static float GetItemScoreMultiplier(ItemQualities quality);
     static bool IsHealingSpell(uint32 spellFamilyName, flag96 spellFamilyFlags);
@@ -809,23 +793,14 @@ public:
     // Schedules a callback to run once after <delayMs> milliseconds.
     void AddTimedEvent(std::function<void()> callback, uint32 delayMs);
 
-    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass until it rides
-    // that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
-    void BeginAboard(uint32 entry);
-    static constexpr uint32 ABOARD_DEADLINE_MS = 5000;
-    static constexpr char const* ABOARD_EVENT_TYPE = "Aboard";
     // Set on the world thread when an order for this bot is posted (TravelOrders::Post), cleared when none is left: the
     // map thread's one atomic load per update
     std::atomic<bool> orderPosted{false};
 
 private:
     friend class BotTactics;
-    friend class LootObjectStack;
-    LootObjectStack* activeLootInteraction = nullptr;
-    uint32 completedLootInteractions = 0;
+    friend class BotTravel;
     std::atomic<bool> pendingDismount{false};
-    MountPath tracedMount = MountPath::None;
-    uint32 tracedMountAt = 0;
 
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
@@ -876,10 +851,6 @@ protected:
     bool inCombat = false;
     BotCheatMask cheatMask = BotCheatMask::none;
     Position jumpDestination = Position();
-    TravelLifecycle::Cadence passengerCadence;
-    void ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove);
-    uint32 aboardEntry = 0;    // BeginAboard's transport; 0 = none pending
-    uint32 aboardSinceMs = 0;  // getMSTime() of the placement
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
     uint8 pvpSkillFirstRoll = 0;
@@ -896,6 +867,7 @@ protected:
     std::atomic<uint8> tacticContext{static_cast<uint8>(TacticContext::Pve)};
     // Made by the constructors, never null (CS5 design 4.1)
     std::unique_ptr<BotTactics> tactics;
+    std::unique_ptr<BotTravel> botTravel;
     // The work mask (CS5 design 6.2): unused until CS16f
     std::atomic<uint32> work{0};
     std::atomic<bool> strategySnapshotRequested{false};

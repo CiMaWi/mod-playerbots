@@ -521,7 +521,6 @@ struct FakeInfo
     };
     std::variant<Idle, Travel, Errands> data{Idle{}};
     std::uint32_t startT{0};
-    std::uint32_t routeRequests{0};
     std::uint16_t constraints{0};
     float nearestMoveFarDis{1.0e9f};
 };
@@ -532,7 +531,6 @@ void CheckResetAndDeadline()
     travelling.data = FakeInfo::Travel{StartedTrip(FullRoute())};
     std::get<FakeInfo::Travel>(travelling.data).trip.legIdx = 2;  // on the portal leg
     travelling.startT = 1234;
-    travelling.routeRequests = 17;
     travelling.constraints = 48;
     travelling.nearestMoveFarDis = 3.0f;
 
@@ -541,27 +539,24 @@ void CheckResetAndDeadline()
     FakeInfo::Travel const* kept = std::get_if<FakeInfo::Travel>(&ported.data);
     Check(kept && kept->trip.legIdx == 2 && kept->trip.legs.size() == FullRoute().size() && ported.startT == 1234,
           "a far teleport keeps the trip on its leg");
-    Check(ported.routeRequests == 17 && ported.nearestMoveFarDis == 1.0e9f,
-          "a far teleport keeps the request ids and resets the MOVE_FAR state");
+    Check(ported.nearestMoveFarDis == 1.0e9f, "a far teleport resets the MOVE_FAR state");
     // The kept portal leg is done on the exit's map at the next tick
     Trip portal = kept ? kept->trip : Trip{};
     Check(kept && TravelLegs::StepLeg(portal, At({1, 1000.0f, 1000.0f, 0.0f}, 3000)).act == Act::Done,
           "the kept portal leg is done on the exit's map");
 
-    // Any other full reset ends the trip but keeps the request ids
+    // Any other full reset ends the trip
     FakeInfo const reset = TravelLegs::AfterReset<FakeInfo::Travel>(travelling, false);
-    Check(std::holds_alternative<FakeInfo::Idle>(reset.data) && reset.startT == 0 && reset.routeRequests == 17,
-          "a full reset ends the trip and keeps the request ids");
+    Check(std::holds_alternative<FakeInfo::Idle>(reset.data) && reset.startT == 0, "a full reset ends the trip");
     Check(ported.constraints == 48 && reset.constraints == 48,
           "a far teleport and a full reset keep a test's constraints");
     // Other statuses start over on a far teleport, as before
     FakeInfo errands;
     errands.data = FakeInfo::Errands{42};
     errands.startT = 99;
-    errands.routeRequests = 5;
     FakeInfo const away = TravelLegs::AfterReset<FakeInfo::Travel>(errands, true);
-    Check(std::holds_alternative<FakeInfo::Idle>(away.data) && away.startT == 0 && away.routeRequests == 5,
-          "a far teleport resets other statuses (request ids kept)");
+    Check(std::holds_alternative<FakeInfo::Idle>(away.data) && away.startT == 0,
+          "a far teleport resets other statuses");
 
     // The whole trip's bound: estimate x 3 + 10 min; before the first answer the slack alone
     Check(TravelLegs::TripDeadlineMs(0.0f) == 600000u, "trip deadline: 10 min before a route");

@@ -5,6 +5,7 @@
  */
 
 #include "CheckMountStateAction.h"
+#include "BotTravel.h"
 #include "PlayerbotsDatabase.h"
 #include "AreaDefines.h"
 #include "BattleGroundTactics.h"
@@ -108,21 +109,21 @@ bool CheckMountStateAction::Execute(Event event)
 
     auto const tryMount = [&]
     {
-        auto path = PlayerbotAI::MountPath::None;
+        auto path = BotTravel::MountPath::None;
         if (event.getPacket().GetOpcode() == SMSG_FORCE_RUN_SPEED_CHANGE)
-            path = PlayerbotAI::MountPath::Packet;
+            path = BotTravel::MountPath::Packet;
         else if (event.GetSource() == "timer")
-            path = PlayerbotAI::MountPath::Timer;
-        if (!LootInteraction::MountAllowed(botAI->HasLootInteraction(), bool(bot->GetLootGUID())))
+            path = BotTravel::MountPath::Timer;
+        if (!LootInteraction::MountAllowed(botAI->GetTravel().HasLootInteraction(), bool(bot->GetLootGUID())))
         {
-            botAI->TraceTravelMount(path, false);
+            botAI->GetTravel().TraceTravelMount(path, false);
             return false;
         }
 
         bool const wasMounted = bot->IsMounted();
         bool const mounted = Mount();
         if (mounted && !wasMounted)
-            botAI->TraceTravelMount(path, true);
+            botAI->GetTravel().TraceTravelMount(path, true);
         return mounted;
     };
 

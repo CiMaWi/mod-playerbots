@@ -1205,7 +1205,6 @@ void CheckUnconsumedBoardTransfer()
             std::optional<PassengerMotion> passengerMotion;
         };
         std::variant<std::monostate, Travel> data;
-        std::uint32_t routeRequests = 19;
         std::uint32_t startT = 10;
         std::uint16_t constraints = 0;
     } info;
@@ -1229,7 +1228,7 @@ void CheckUnconsumedBoardTransfer()
     ResetMotion(before.passengerMotion, true, adapter);
     info = TravelLegs::AfterReset<Info::Travel>(info, true);
     auto& after = std::get<Info::Travel>(info.data);
-    Check(after.passengerMotion && after.passengerMotion->Result == Outcome::Boarded && info.routeRequests == 19,
+    Check(after.passengerMotion && after.passengerMotion->Result == Outcome::Boarded,
           "the production far reset policy preserves the unconsumed boarding result with the continuing trip");
     adapter.Aboard.Available = false;
     Check(!PassengerOutcome(*after.passengerMotion, adapter.ReadMembership()),

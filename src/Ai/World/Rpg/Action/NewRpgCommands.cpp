@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "BotTravel.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "ObjectMgr.h"
@@ -77,7 +78,7 @@ bool TellRpgStatusAction::Execute(Event event)
 
     if (status == RPG_IDLE)
     {
-        botAI->CancelLootInteraction("order");
+        botAI->GetTravel().CancelLootInteraction("order");
         info.ChangeToIdle();
         WhisperStatusChange(owner, "IDLE");
         return true;
