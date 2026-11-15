@@ -72,7 +72,7 @@ bool TellRpgStatusAction::Execute(Event event)
 
     NewRpgStatus status = NewRpgInfo::StatusFromString(name);
     auto const start = [this](NewRpgInfo::RpgData next)
-    { RpgStatus::Start(botAI, std::move(next), "order", StatusEnd::Outcome::Interrupted); };
+    { RpgStatus::Start(botAI, std::move(next), "order", StatusEnd::Outcome::Ordered); };
 
     if (status == RPG_IDLE)
     {
@@ -222,7 +222,7 @@ bool StartRpgDoQuestAction::Execute(Event event)
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
     if (quest)
     {
-        RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, questId}, "order", StatusEnd::Outcome::Interrupted);
+        RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, questId}, "order", StatusEnd::Outcome::Ordered);
         bot->Whisper("Start to do quest " + std::to_string(questId), LANG_UNIVERSAL, owner);
         return true;
     }

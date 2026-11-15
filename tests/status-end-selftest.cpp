@@ -147,6 +147,11 @@ int main()
                  "ordered trip end", "travel x order: abort:order, the abort decision, an INFO line");
     counts.Check(!StatusEnd::CleansUp(StatusEnd::STATUS_ERRANDS, Outcome::Ordered), "ordered errand end",
                  "errands x order: no clean-up");
+    // Change 3 for starts (CS14f): a chat order's start or a GM trip order over a running trip ends it as Ordered
+    // (the abort arm runs), where the Interrupted start before it ran none (gap T1)
+    counts.Check(StatusEnd::CleansUp(StatusEnd::STATUS_TRAVEL, Outcome::Ordered) &&
+                     !StatusEnd::CleansUp(StatusEnd::STATUS_TRAVEL, Outcome::Interrupted),
+                 "ordered start over a trip", "Start(order) over travel: the abort arm; Start(interrupted): none");
 
     // Change 2 for starts (CS14f): an errand or inn start ends a running status as Interrupted (no clean-up of
     // errands or a trip: gaps E1, T1), a sick start as Sick (both clean up: one row errand_sick / abort:sick); the
