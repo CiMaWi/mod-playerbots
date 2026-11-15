@@ -1078,6 +1078,110 @@ constexpr std::uint32_t TAME_MIN_SPAWNS = 2;
 
 constexpr bool TameTargetSpawns(std::uint32_t spawns) { return spawns >= TAME_MIN_SPAWNS; }
 
+// A patrolling spawn is no tame target (WU.23; WU21d: the Vilewing Chimaera's five spawns walk waypoint paths and the
+// stop found none to cast at): the index counts and places only standing spawns, and the stop's search skips a
+// patrolling beast. The core's MovementGeneratorType WAYPOINT_MOTION_TYPE (PlannerUpkeep.cpp asserts it)
+constexpr std::uint8_t MOVEMENT_WAYPOINT = 2;
+
+constexpr bool TameSpawnStands(std::uint8_t movementType) { return movementType != MOVEMENT_WAYPOINT; }
+
+// The tame's site (WU.23): before the 20 s channel the hunter looks at the creatures that would join its fight. A
+// creature is a threat when it is hostile and its aggro reach covers the hunter's spot, or when it answers the beast's
+// call for help (the core's assistance: free, of the beast's faction, within the assistance radius of the beast,
+// which calls again as it runs from its place to the hunter: the segment between them), or when it fights the hunter
+// already (WU21e run 1: a cast amid a clear's fight lost its beast to that fight). TAME_SITE_MARGIN_YARDS covers
+// where the hunter stands at the cast; TAME_SITE_YARDS is the search around it (the widest aggro reach and the margin)
+constexpr float TAME_SITE_MARGIN_YARDS = 5.0f;
+constexpr float TAME_SITE_YARDS = 50.0f;
+
+struct TameSiteUnit
+{
+    float x{0.0f};
+    float y{0.0f};
+    float aggroYards{0.0f};  // its aggro reach against the hunter (Creature::GetAggroRange)
+    bool hostile{false};     // it attacks the hunter on sight
+    bool assists{false};     // it answers the beast's call for help (Creature::CanAssistTo)
+    bool attacking{false};   // it fights the hunter now
+};
+
+// The distance in the plane from a point to the segment a-b
+inline float SegmentYards(float px, float py, float ax, float ay, float bx, float by)
+{
+    float const dx = bx - ax;
+    float const dy = by - ay;
+    float const length2 = dx * dx + dy * dy;
+    float const t = length2 > 0.0f ? std::clamp(((px - ax) * dx + (py - ay) * dy) / length2, 0.0f, 1.0f) : 0.0f;
+    return std::hypot(ax + t * dx - px, ay + t * dy - py);
+}
+
+inline bool TameThreat(TameSiteUnit const& unit, float beastX, float beastY, float spotX, float spotY,
+                       float assistYards)
+{
+    if (unit.attacking ||
+        (unit.hostile && std::hypot(unit.x - spotX, unit.y - spotY) <= unit.aggroYards + TAME_SITE_MARGIN_YARDS))
+        return true;
+    return unit.assists &&
+           SegmentYards(unit.x, unit.y, beastX, beastY, spotX, spotY) <= assistYards + TAME_SITE_MARGIN_YARDS;
+}
+
+// The stop's pick among the beasts it may tame (WU.23): the fewest threats first (an edge member of a pack, a beast
+// away from hostiles: the hunter goes where nothing joins, and a second hunter at the pack takes another member), then
+// one of the stop's entry (the planned spawn), then the nearest
+struct TamePick
+{
+    std::uint32_t threats{0};
+    bool otherEntry{false};
+    float yards{0.0f};
+};
+
+constexpr bool TameBetter(TamePick const& a, TamePick const& b)
+{
+    if (a.threats != b.threats)
+        return a.threats < b.threats;
+    if (a.otherEntry != b.otherEntry)
+        return !a.otherEntry;
+    return a.yards < b.yards;
+}
+
+// At the cast the site is read again from the hunter's spot: with no threat it casts, else it fights the nearest
+// threat first (an ordinary fight clears it) and looks again, TAME_MAX_CLEARS times at most; a site that stays busy
+// gives the stop up (the need plans a new trip at the errand retry)
+constexpr std::uint8_t TAME_MAX_CLEARS = 4;
+
+enum class TameSite : std::uint8_t
+{
+    Cast,
+    Clear,
+    GiveUp
+};
+
+constexpr TameSite TameSiteNext(std::uint32_t threats, std::uint8_t clears)
+{
+    if (!threats)
+        return TameSite::Cast;
+    return clears < TAME_MAX_CLEARS ? TameSite::Clear : TameSite::GiveUp;
+}
+
+// No beast to tame at the stop (WU.23): the hunter waits for the soonest respawn of a standing spawn of the stop's
+// entry near it, read from the spawn's own respawn time, when the wait fits its budget, counted from the stop's first
+// wait (every wait ends): a hunter that wants one beast (the stable swap's family, an exotic) waits up to
+// TAME_WAIT_WANTED_MS, one that needs any pet TAME_WAIT_ANY_MS (the world's common respawn of 5 min: WU21e run 1, a
+// second hunter at the Hellfire worgs gave up and tamed one at its next trip 6 min later); else it takes another
+// target at the need's next trip
+constexpr std::uint32_t TAME_WAIT_ANY_MS = 5 * 60 * 1000;
+constexpr std::uint32_t TAME_WAIT_WANTED_MS = 15 * 60 * 1000;
+constexpr std::uint32_t TAME_RESPAWN_GRACE_MS = 5 * 1000;  // the beast shows after its grid's next update
+
+// The ms to wait from now (0 = no wait): respawnInMs the soonest respawn, waitedMs since the stop's first wait
+constexpr std::uint32_t TameWaitMs(std::uint32_t respawnInMs, std::uint32_t waitedMs, bool wanted)
+{
+    std::uint32_t const budget = wanted ? TAME_WAIT_WANTED_MS : TAME_WAIT_ANY_MS;
+    if (respawnInMs > budget || waitedMs > budget)
+        return 0;
+    std::uint32_t const wait = respawnInMs + TAME_RESPAWN_GRACE_MS;
+    return waitedMs + wait <= budget + TAME_RESPAWN_GRACE_MS ? wait : 0;
+}
+
 // A weapon skill makes a trip of its own once its funded gold pays its price (WU15a); a bot without the gold keeps
 // playing, the need stays. The visit's reputation price is never above copper
 constexpr bool WeaponErrandDue(Need const& need)

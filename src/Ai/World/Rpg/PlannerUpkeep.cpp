@@ -27,6 +27,7 @@
 #include "ItemWorthRules.h"
 #include "LabCopies.h"
 #include "Log.h"
+#include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
@@ -275,7 +276,8 @@ UpkeepGather GatherUpkeep()
     std::unordered_set<uint32> placedVendors;
     // The same spawns give the tameable beasts (WU21b): templates the core lets a hunter tame, of normal rank (an
     // elite or rare beast outlasts the channel's fight), whose own spells do not break the channel (WU.4), with
-    // several spawns (UpkeepNeeds::TameTargetSpawns)
+    // several standing spawns (UpkeepNeeds::TameTargetSpawns, TameSpawnStands: no patrol, WU.23)
+    static_assert(UpkeepNeeds::MOVEMENT_WAYPOINT == WAYPOINT_MOTION_TYPE, "the core's waypoint movement type");
     std::unordered_map<uint32, bool> tameTargets;   // by entry: a tame target, read once per template
     std::unordered_map<uint32, uint32> tameSpawns;  // by entry: the spawns of a tame target
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
@@ -289,7 +291,7 @@ UpkeepGather GatherUpkeep()
         auto const [target, added] = tameTargets.try_emplace(data.id, false);
         if (added)
             target->second = !BreaksTameChannel(*beast);
-        if (!target->second)
+        if (!target->second || !UpkeepNeeds::TameSpawnStands(data.movementType))
             continue;
         ++tameSpawns[data.id];
         input.tameable.push_back({data.mapid, data.posX, data.posY, data.posZ, data.id,

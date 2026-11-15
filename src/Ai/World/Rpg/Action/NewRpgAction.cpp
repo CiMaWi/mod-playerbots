@@ -33,6 +33,7 @@
 #include "ErrandRules.h"
 #include "G3D/Vector2.h"
 #include "GameObjectModel.h"
+#include "GameTime.h"
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -85,6 +86,7 @@
 #include "UpkeepNeedRules.h"
 #include "UpkeepRules.h"
 #include "WaypointMovementGenerator.h"
+#include "World.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
 #include "WorldPacket.h"
@@ -619,12 +621,14 @@ bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
     {
         // Before a cast: a beast of the stop that fights the bot (it aggroes at its spawn or on the way; WU21c run 2:
         // a hunter killed the Mistwing Rogue it came for) becomes the pick and is tamed in that fight, as a player
-        // tames; the pick's TAME_REACH_MS bounds it, then the bot fights
+        // tames; the pick's TAME_REACH_MS bounds it, then the bot fights. Only as the bot's one attacker: another
+        // would join the channel's fight (the site rule, WU.23)
         Creature* attacker = nullptr;
         for (Unit* unit : bot->getAttackers())
         {
             Creature* each = unit->ToCreature();
-            if (each && each->GetEntry() == stop.tameEntry && TameableNow(bot, each, true))
+            if (each && bot->getAttackers().size() == 1 && each->GetEntry() == stop.tameEntry &&
+                TameableNow(bot, each, true))
             {
                 attacker = each;
                 break;
@@ -657,10 +661,70 @@ bool RecastTameInFight(Player* bot, NewRpgInfo::ErrandStop& stop)
     return true;
 }
 
-// The nearest beast the bot may tame now within TAME_SEARCH_YARDS, one of the stop's entry first (the planned spawn):
-// another hunter may have tamed the planned one. Only an entry the index keeps as a tame target on the map (normal
-// rank, no spell that breaks the channel, several spawns: one lookup, WU21d); familyRule: only a family the hunter
-// wants (the tame after a stable swap, WU21c: never the unwanted kind it just stored)
+// The live units around the bot within yards
+std::list<Unit*> UnitsAround(Player* bot, float yards)
+{
+    std::list<Unit*> found;
+    Acore::AnyUnitInObjectRangeCheck check(bot, yards);
+    Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, found, check);
+    Cell::VisitObjects(bot, searcher, yards);
+    return found;
+}
+
+// The creatures of the tame's site that would join the channel's fight (WU.23, UpkeepNeeds::TameThreat), counted,
+// and the nearest of them to the bot; spot: where the bot stands at the cast
+struct SiteThreats
+{
+    uint32 count{0};
+    Creature* nearest{nullptr};
+};
+
+SiteThreats TameSiteThreats(Player* bot, Creature* beast, Position const& spot, std::list<Unit*> const& units)
+{
+    float const assistYards = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+    SiteThreats threats;
+    float nearestYards = std::numeric_limits<float>::max();
+    for (Unit* unit : units)
+    {
+        Creature* each = unit->ToCreature();
+        bool const attacking = each && each->GetVictim() == bot;
+        if (!each || each == beast || !each->IsAlive() || (each->IsInCombat() && !attacking) || each->IsCivilian() ||
+            !each->GetOwnerGUID().IsEmpty())
+            continue;
+        UpkeepNeeds::TameSiteUnit const site{
+            each->GetPositionX(),          each->GetPositionY(),
+            each->GetAggroRange(bot),      each->HasReactState(REACT_AGGRESSIVE) && each->IsHostileTo(bot),
+            each->CanAssistTo(beast, bot), attacking};
+        if (!UpkeepNeeds::TameThreat(site, beast->GetPositionX(), beast->GetPositionY(), spot.GetPositionX(),
+                                     spot.GetPositionY(), assistYards) ||
+            !bot->IsValidAttackTarget(each))
+            continue;
+        ++threats.count;
+        float const yards = bot->GetExactDist(each);
+        if (yards < nearestYards)
+        {
+            nearestYards = yards;
+            threats.nearest = each;
+        }
+    }
+    return threats;
+}
+
+// Where the bot stands to tame a beast: on its way in, TAME_CAST_YARDS / 2 short of it (the approach's range)
+Position TameSpot(Player* bot, Creature const* beast)
+{
+    float const yards = bot->GetExactDist2d(beast);
+    float const share = yards > UpkeepNeeds::TAME_CAST_YARDS / 2 ? UpkeepNeeds::TAME_CAST_YARDS / 2 / yards : 1.0f;
+    return Position(beast->GetPositionX() + (bot->GetPositionX() - beast->GetPositionX()) * share,
+                    beast->GetPositionY() + (bot->GetPositionY() - beast->GetPositionY()) * share,
+                    beast->GetPositionZ());
+}
+
+// The beast the bot may tame now within TAME_SEARCH_YARDS, by UpkeepNeeds::TameBetter: the fewest threats at its
+// site (WU.23), then one of the stop's entry (the planned spawn: another hunter may have tamed it), then the nearest.
+// Only an entry the index keeps as a tame target on the map (normal rank, no spell that breaks the channel, several
+// standing spawns: one lookup, WU21d) and no patrolling beast; familyRule: only a family the hunter wants (the tame
+// after a stable swap, WU21c: never the unwanted kind it just stored)
 Creature* NearestTameable(Player* bot, uint32 entry, bool familyRule = false)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
@@ -668,28 +732,74 @@ Creature* NearestTameable(Player* bot, uint32 entry, bool familyRule = false)
     if (!index)
         return nullptr;
 
-    float const reach = UpkeepNeeds::TAME_SEARCH_YARDS;
-    std::list<Unit*> found;
-    Acore::AnyUnitInObjectRangeCheck check(bot, reach);
-    Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, found, check);
-    Cell::VisitObjects(bot, searcher, reach);
-    Creature* nearest = nullptr;
-    std::pair<bool, float> best{true, std::numeric_limits<float>::max()};
+    std::list<Unit*> const found = UnitsAround(bot, UpkeepNeeds::TAME_SEARCH_YARDS);
+    Creature* picked = nullptr;
+    UpkeepNeeds::TamePick best;
     for (Unit* unit : found)
     {
         Creature* each = unit->ToCreature();
         if (!each || !index->TameTarget(bot->GetMapId(), each->GetEntry()) || !TameableNow(bot, each) ||
+            !UpkeepNeeds::TameSpawnStands(static_cast<uint8>(each->GetDefaultMovementType())) ||
             (familyRule && !UpkeepNeeds::WantedFamily(static_cast<uint8>(each->GetCreatureTemplate()->family),
                                                       bot->CanTameExoticPets())))
             continue;
-        std::pair<bool, float> const key{each->GetEntry() != entry, bot->GetExactDist(each)};
-        if (key < best)
+        UpkeepNeeds::TamePick const pick{TameSiteThreats(bot, each, TameSpot(bot, each), found).count,
+                                         each->GetEntry() != entry, bot->GetExactDist(each)};
+        if (!picked || UpkeepNeeds::TameBetter(pick, best))
         {
-            best = key;
-            nearest = each;
+            best = pick;
+            picked = each;
         }
     }
-    return nearest;
+    return picked;
+}
+
+// No beast to tame at the stop (WU.23, UpkeepNeeds::TameWaitMs): the soonest respawn of a dead standing spawn of the
+// stop's entry within TAME_SEARCH_YARDS, read from the spawn's own respawn time. A wait that fits the budget is armed
+// on the stop and writes the row tame/wait (value its seconds; alternatives the respawn's seconds, the seconds waited
+// before, wanted 1 for the long budget). True while it waits
+bool ArmTameWait(Player* bot, NewRpgInfo::ErrandStop& stop, uint32 now)
+{
+    std::list<Creature*> spawns;
+    Acore::AllCreaturesOfEntryInRange check(bot, stop.tameEntry, UpkeepNeeds::TAME_SEARCH_YARDS);
+    Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange> searcher(bot, spawns, check);
+    Cell::VisitObjects(bot, searcher, UpkeepNeeds::TAME_SEARCH_YARDS);
+    time_t const gameNow = GameTime::GetGameTime().count();
+    uint32 respawnS = std::numeric_limits<uint32>::max();
+    for (Creature const* each : spawns)
+        if (!each->IsAlive() && each->GetSpawnId() &&
+            UpkeepNeeds::TameSpawnStands(static_cast<uint8>(each->GetDefaultMovementType())))
+            respawnS = std::min<uint32>(
+                respawnS, each->GetRespawnTime() > gameNow ? static_cast<uint32>(each->GetRespawnTime() - gameNow) : 0);
+    if (respawnS == std::numeric_limits<uint32>::max())
+        return false;
+
+    CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(stop.tameEntry);
+    bool const wanted = stop.tameStabled || (info && info->IsExotic());
+    uint32 const waitedMs = stop.tameWaitFirstMs ? getMSTimeDiff(stop.tameWaitFirstMs, now) : 0;
+    uint32 const waitMs = UpkeepNeeds::TameWaitMs(std::min<uint32>(respawnS, HOUR) * IN_MILLISECONDS, waitedMs, wanted);
+    if (!waitMs)
+        return false;
+    if (!stop.tameWaitFirstMs)
+        stop.tameWaitFirstMs = now;
+    stop.tameWaitUntilMs = waitedMs + waitMs;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "wait",
+                       static_cast<float>(waitMs) / IN_MILLISECONDS,
+                       {{"respawn_s", static_cast<float>(respawnS)},
+                        {"waited_s", static_cast<float>(waitedMs) / IN_MILLISECONDS},
+                        {"wanted", wanted ? 1.0f : 0.0f}},
+                       stop.tameEntry);
+    return true;
+}
+
+// The bot fights a threat of the tame's site as AttackAction starts a fight: the combat engine takes over
+void AttackThreat(PlayerbotAI* botAI, Creature* threat)
+{
+    Player* bot = botAI->GetBot();
+    bot->SetSelection(threat->GetGUID());
+    botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(threat);
+    botAI->ChangeEngine(BOT_STATE_COMBAT);
+    bot->Attack(threat, PlayerbotAI::IsMelee(bot));
 }
 
 enum class TameStep : uint8
@@ -706,8 +816,11 @@ enum class TameStep : uint8
 // next tick out of combat: a hunter pet now is the tame (PetTamed, id the beast's entry, amount the pet's level, source
 // the family word, and the upkeep row tame/tamed); else the row tame/channel_broken and another try, after a rest, with
 // the same beast while it may be tamed or the next nearest. Rows: tame/cast per cast; skip/tame_failed (tries used, or
-// no beast left after a broken channel), skip/no_beast (none at the stop), skip/tame_refused (the core refused the
-// cast: value its SpellCastResult), skip/tame_stuck (no cast within TAME_REACH_MS of the pick), all with the tries made
+// no beast left after a broken channel), skip/no_beast (none at the stop, no respawn to wait for or the waits' budget
+// spent), skip/tame_refused (the core refused the cast: value its SpellCastResult), skip/tame_stuck (no cast within
+// TAME_REACH_MS of the pick), skip/tame_site (the site stayed busy after TAME_MAX_CLEARS fights), all with the tries
+// made and the seconds waited for a respawn. The site (WU.23): the pick avoids beasts whose fight others would join,
+// the cast fights such a creature first (tame/clear), and with no beast the stop waits for a respawn (tame/wait)
 TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
 {
     Player* bot = botAI->GetBot();
@@ -717,11 +830,20 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
     uint32 const now = getMSTime();
     if (!stop.tameSinceMs)
         stop.tameSinceMs = now;
-    auto const skip = [bot, &stop](char const* reason)
+    if (stop.tameClearing)
     {
+        // A clear's fight is over: the rest and the reach bound start again
+        stop.tameClearing = false;
+        stop.tameSinceMs = now;
+        stop.tamePickMs = now;
+    }
+    auto const skip = [bot, &stop, now](char const* reason)
+    {
+        float const waitedS =
+            stop.tameWaitFirstMs ? static_cast<float>(getMSTimeDiff(stop.tameWaitFirstMs, now)) / IN_MILLISECONDS : 0;
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", reason,
-                           static_cast<float>(stop.tameTries), {{"tries", static_cast<float>(stop.tameTries)}},
-                           stop.tameEntry);
+                           static_cast<float>(stop.tameTries),
+                           {{"tries", static_cast<float>(stop.tameTries)}, {"waited_s", waitedS}}, stop.tameEntry);
         return TameStep::Done;
     };
 
@@ -747,6 +869,10 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
         NoteBrokenChannel(bot, stop, now);
     }
 
+    // A wait for a respawn runs: other actions (food) may run meanwhile
+    if (stop.tameWaitUntilMs && getMSTimeDiff(stop.tameWaitFirstMs, now) < stop.tameWaitUntilMs)
+        return TameStep::Rest;
+
     switch (UpkeepNeeds::TameNextStep(stop.tameTries, bot->GetHealthPct(), getMSTimeDiff(stop.tameSinceMs, now)))
     {
         case UpkeepNeeds::TameNext::GiveUp:
@@ -762,7 +888,7 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
     {
         beast = NearestTameable(bot, stop.tameEntry, stop.tameStabled != 0);
         if (!beast)
-            return skip(stop.tameTries ? "tame_failed" : "no_beast");
+            return ArmTameWait(bot, stop, now) ? TameStep::Rest : skip(stop.tameTries ? "tame_failed" : "no_beast");
         stop.tameBeast = beast->GetGUID();
         stop.tamePickMs = now;
     }
@@ -788,6 +914,26 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
     {
         bot->StopMoving();
         return TameStep::Busy;
+    }
+
+    // The site from the bot's spot: nothing else may join the channel's fight, else the bot fights it first
+    SiteThreats const threats =
+        TameSiteThreats(bot, beast, bot->GetPosition(), UnitsAround(bot, UpkeepNeeds::TAME_SITE_YARDS));
+    switch (UpkeepNeeds::TameSiteNext(threats.count, stop.tameClears))
+    {
+        case UpkeepNeeds::TameSite::GiveUp:
+            return skip("tame_site");
+        case UpkeepNeeds::TameSite::Clear:
+            ++stop.tameClears;
+            stop.tameClearing = true;
+            WorldLog::Decision(
+                bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "clear", static_cast<float>(threats.count),
+                {{"clears", static_cast<float>(stop.tameClears)}, {"threat_yd", bot->GetExactDist(threats.nearest)}},
+                threats.nearest->GetEntry());
+            AttackThreat(botAI, threats.nearest);
+            return TameStep::Busy;
+        case UpkeepNeeds::TameSite::Cast:
+            break;
     }
 
     SpellCastResult const result = CastTame(bot, stop, beast);

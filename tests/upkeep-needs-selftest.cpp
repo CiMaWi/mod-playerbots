@@ -1366,6 +1366,89 @@ void TameSteps()
           "a single named spawn is no tame target (one tame or kill takes it); a beast with several spawns is");
 }
 
+// The threats of each beast of a pack at the hunter's spot 10 yards short of it on the way in from (hx, hy)
+std::vector<std::uint32_t> PackThreats(std::vector<TameSiteUnit> const& units, float hx, float hy, float assist)
+{
+    std::vector<std::uint32_t> counts;
+    for (std::size_t i = 0; i < units.size(); ++i)
+    {
+        float const yards = std::hypot(hx - units[i].x, hy - units[i].y);
+        float const share = yards > TAME_CAST_YARDS / 2 ? TAME_CAST_YARDS / 2 / yards : 1.0f;
+        float const sx = units[i].x + (hx - units[i].x) * share;
+        float const sy = units[i].y + (hy - units[i].y) * share;
+        std::uint32_t count = 0;
+        for (std::size_t j = 0; j < units.size(); ++j)
+            if (j != i && TameThreat(units[j], units[i].x, units[i].y, sx, sy, assist))
+                ++count;
+        counts.push_back(count);
+    }
+    return counts;
+}
+
+void TameSiteRules()
+{
+    std::cout << "Scenario: the tame's site (WU.23: threats, the pick, clear or give up, the respawn wait, patrols)\n";
+    Check(TameSpawnStands(0) && TameSpawnStands(1) && !TameSpawnStands(MOVEMENT_WAYPOINT),
+          "a standing or wandering spawn is a tame target, a patrolling one (a waypoint path) is not");
+
+    float const assist = 10.0f;  // the core's CreatureFamilyAssistanceRadius default
+    TameSiteUnit const hostile{30.0f, 0.0f, 20.0f, true, false};
+    Check(TameThreat(hostile, 0.0f, 20.0f, 10.0f, 0.0f, assist), "a hostile whose aggro reach covers the spot");
+    Check(!TameThreat({60.0f, 0.0f, 20.0f, true, false}, 0.0f, 20.0f, 10.0f, 0.0f, assist),
+          "a hostile beyond its aggro reach of the spot is none (the bot is no closer)");
+    Check(TameThreat({5.0f, 25.0f, 0.0f, false, true}, 0.0f, 20.0f, 10.0f, 0.0f, assist) &&
+              TameThreat({6.0f, 9.0f, 0.0f, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a pack member near the beast, or near its run to the hunter, answers its call for help");
+    Check(!TameThreat({40.0f, 40.0f, 0.0f, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist) &&
+              !TameThreat({1.0f, 21.0f, 20.0f, false, false}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a far pack member, or a neutral creature of another faction beside the beast, joins nothing");
+    Check(TameThreat({80.0f, 80.0f, 0.0f, false, false, true}, 0.0f, 20.0f, 0.0f, 0.0f, assist),
+          "a creature that fights the hunter already is a threat wherever it stands (no cast amid a fight)");
+
+    // A pack along x: three wolves within the assistance radius of each other, one 40 yards out at its edge; the
+    // hunter comes from the far side of the edge wolf
+    std::vector<TameSiteUnit> pack = {{0.0f, 0.0f, 15.0f, false, true},
+                                      {6.0f, 0.0f, 15.0f, false, true},
+                                      {12.0f, 0.0f, 15.0f, false, true},
+                                      {52.0f, 0.0f, 15.0f, false, true}};
+    std::vector<std::uint32_t> const counts = PackThreats(pack, 90.0f, 0.0f, assist);
+    Check(counts[3] == 0 && counts[0] > 0 && counts[1] > 0 && counts[2] > 0,
+          "of a pack the edge member has no threat, the others one or more");
+    TamePick const edge{counts[3], false, 38.0f};
+    TamePick const inner{counts[2], false, 78.0f};
+    Check(TameBetter(edge, inner) && !TameBetter(inner, edge),
+          "the pick takes the edge member (a site where none joins)");
+    Check(TameBetter({0, true, 80.0f}, {1, false, 20.0f}),
+          "a beast of another entry with a clean site beats the planned entry's beast whose pack would join");
+    Check(TameBetter({0, false, 80.0f}, {0, true, 20.0f}) && TameBetter({1, false, 20.0f}, {1, false, 30.0f}),
+          "at equal threats the planned entry first, then the nearest");
+
+    // Two hunters at one pack: the first tames the edge member (in its fight, so no threat and no pick); the second
+    // takes the nearest of the rest and fights its pack-mates first
+    pack.pop_back();
+    std::vector<std::uint32_t> const rest = PackThreats(pack, 90.0f, 0.0f, assist);
+    Check(rest[2] > 0 && TameSiteNext(rest[2], 0) == TameSite::Clear,
+          "the second hunter at the pack clears the members that would join, then casts");
+    Check(TameSiteNext(0, 0) == TameSite::Cast && TameSiteNext(0, TAME_MAX_CLEARS) == TameSite::Cast,
+          "a clean site casts at once, also after clears");
+    Check(
+        TameSiteNext(2, TAME_MAX_CLEARS - 1) == TameSite::Clear && TameSiteNext(1, TAME_MAX_CLEARS) == TameSite::GiveUp,
+        "a site still busy after TAME_MAX_CLEARS fights gives the stop up (a bot never stalls)");
+
+    // The respawn wait, from the spawn's respawn time: wanted beasts get the long budget, any pet the short one
+    Check(TameWaitMs(60 * 1000, 0, false) == 60 * 1000 + TAME_RESPAWN_GRACE_MS &&
+              TameWaitMs(300 * 1000, 0, false) == 300 * 1000 + TAME_RESPAWN_GRACE_MS,
+          "any pet: a respawn within the short budget (the common 5 min) is waited for, the grace on top");
+    Check(
+        TameWaitMs(400 * 1000, 0, false) == 0 && TameWaitMs(400 * 1000, 0, true) == 400 * 1000 + TAME_RESPAWN_GRACE_MS,
+        "a respawn beyond 5 min: any pet takes another target, the wanted beast is waited for");
+    Check(TameWaitMs(600 * 1000, 400 * 1000, true) == 0 && TameWaitMs(100 * 1000, 400 * 1000, true) > 0,
+          "the budget counts from the first wait: a second wait only while it fits");
+    Check(TameWaitMs(TAME_WAIT_WANTED_MS + 1, 0, true) == 0 && TameWaitMs(0, TAME_WAIT_WANTED_MS + 1, true) == 0,
+          "every wait ends: a respawn beyond the budget, or the budget spent, means no wait");
+    Check(TameWaitMs(0, 0, false) == TAME_RESPAWN_GRACE_MS, "a respawn due now waits the grid's update only");
+}
+
 int main()
 {
     std::cout << "Tuning [E]:\n";
@@ -1389,6 +1472,7 @@ int main()
     PetNeed();
     PetSwap();
     TameSteps();
+    TameSiteRules();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);
