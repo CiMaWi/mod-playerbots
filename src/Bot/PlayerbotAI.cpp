@@ -22,7 +22,7 @@
 #include "Battleground.h"
 #include "BotTactics.h"
 #include "BotTacticsInternal.h"
-#include "BotTravel.h"
+#include "BotTravelInternal.h"
 #include "BridgeAbilities.h"
 #include "BudgetValues.h"
 #include "CcState.h"
