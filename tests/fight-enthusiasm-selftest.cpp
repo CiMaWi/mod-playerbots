@@ -79,11 +79,15 @@ void TestEdges()
     Check(Observe(bot, false, HOUR + MINUTE, v) && Near(bot.state.value, 35.0) && !bot.engaged,
           "edge: leaving settles the drain first");
     Check(Near(ValueAt(bot, 2 * HOUR + MINUTE, v), 50.0), "edge: not engaged, it recovers again");
-    // Becoming engaged ends the pick
+    // WP35: the pick holds through the engaged edge, so the scan of the same update finds it open (NoteEntering
+    // writes no second entering row and charges no second start cost); the disengaged edge ends it
     SetPick(bot, 42, 2 * HOUR);
     Check(IsPick(bot, 42, 2 * HOUR + SECOND), "pick: open");
     Observe(bot, true, 2 * HOUR + SECOND, v);
-    Check(!IsPick(bot, 42, 2 * HOUR + 2 * SECOND) && bot.pickGuid == 0, "pick: ended by the engaged edge");
+    Check(IsPick(bot, 42, 2 * HOUR + SECOND) && IsPick(bot, 42, 2 * HOUR + 2 * SECOND),
+          "pick: held through the engaged edge (no second entering row, no second cost)");
+    Observe(bot, false, 2 * HOUR + 5 * SECOND, v);
+    Check(!IsPick(bot, 42, 2 * HOUR + 5 * SECOND) && bot.pickGuid == 0, "pick: ended by the disengaged edge");
 }
 
 // Review item 2: a new balance settles with the old factor up to now
@@ -171,6 +175,20 @@ void TestEnters()
     Check(Near(EnterFloor(35.0f, v), 35.0 + margin) && !Enters(weak + 0.01, weak, 35.0f, v) &&
               Enters(EnterFloor(35.0f, v), weak, 35.0f, v),
           "enters: at Caution 1 the floor (41.67) decides above the weakened row (40)");
+    // Starting costs enthusiasm (WP34): the AI's state says who pays; a join, an engaged bot and one outside the
+    // share pay nothing
+    BotEnthusiasm starter = At(50.0, 0);
+    starter.inShare = true;
+    JoinFacts const start;
+    JoinFacts joins;
+    joins.targetAttacksFaction = true;
+    bool const paysIdle = PaysStart(starter, start) && !PaysStart(starter, joins);
+    starter.engaged = true;
+    bool const paysEngaged = PaysStart(starter, start);
+    starter.engaged = false;
+    starter.inShare = false;
+    Check(paysIdle && !paysEngaged && !PaysStart(starter, start),
+          "enters: a start pays in the share while not engaged; a join, an engaged bot and a bot outside pay nothing");
 }
 
 void TestSkip()

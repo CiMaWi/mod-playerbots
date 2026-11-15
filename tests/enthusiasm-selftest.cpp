@@ -6,7 +6,8 @@
 
 // Standalone check of the enthusiasm rules (src/Ai/World/Pvp/Enthusiasm.h): every row of the modifier table against
 // the functions, the scale's bounds under random edits, reading against stepping, the trait extremes, the engaged
-// bound and the local balance. Build (Git Bash, module root):
+// bound, the local balance and the start's cost (a simulated starter in and outside the start-cost share, the entering
+// floor after a start at every trait corner). Build (Git Bash, module root; MSYS_NO_PATHCONV=1 keeps /I):
 //   clang-cl /nologo /std:c++20 /EHsc /W4 /WX /Od /I src/Ai/World/Pvp tests/enthusiasm-selftest.cpp
 #include <algorithm>
 #include <array>
@@ -199,6 +200,9 @@ RowCase CaseFor(Modifier row)
         case Modifier::GroupDeath:
             c.with.cause = EditCause::GroupDeath;
             break;
+        case Modifier::Start:
+            c.with.cause = EditCause::Start;
+            break;
         case Modifier::BanRed:
             c.with.ban.colour = Colour::Red;
             c.ban = BanReason::Red;
@@ -338,7 +342,8 @@ void TestScaleBounded()
                 }
                 case 4:  // the extreme edits, many in a row
                 {
-                    EditCause const cause = random.Next() % 2 ? EditCause::Death : EditCause::Kill;
+                    constexpr std::array<EditCause, 3> CAUSES = {EditCause::Death, EditCause::Kill, EditCause::Start};
+                    EditCause const cause = CAUSES[random.Next() % CAUSES.size()];
                     for (int i = 0; i < 50; ++i)
                         state = Apply(state, now, engaged, factor, cause, -1.0f, v);
                     break;
@@ -705,6 +710,206 @@ void TestBalance()
               Near(BalanceDepletionFactor(0.375f, v), 2.0) && Near(BalanceJoinShift(0.625f, v), -15.0),
           "factor 3 -> 1 -> 0.5 and shift +30 -> 0 -> -30 from behind to leading, linear, monotone");
 }
+
+// --- Starting costs enthusiasm (WP34) ---
+
+// A won fight's length in the simulation: the first night's starters won in about 21 s
+constexpr uint32_t WON_FIGHT_MS = 21 * SECOND;
+constexpr std::array<float, 3> TRAIT_CORNERS = {-1.0f, 0.0f, 1.0f};
+
+// What a simulated starter did: its starts by hour and their times, and the lowest value a start left beside the
+// entering floor
+struct StartRun
+{
+    std::vector<int> perHour;
+    std::vector<uint32_t> startsMs;
+    double lowestAfterStart = 0.0;
+    double floor = 0.0;
+};
+
+// A bot that starts whenever the check allows (a yellow target that attacks nobody, even balance), checked every
+// second from a full scale, and wins every fight in WON_FIGHT_MS: the start's cost when it pays, the fight's drain,
+// then the kill edit outside the share
+StartRun SimulateStarter(float aggression, float caution, bool groupHold, bool inShare, uint32_t hours,
+                         EnthusiasmValues const& v)
+{
+    JoinFacts facts;
+    facts.aggression = aggression;
+    float const join = JoinThreshold(facts, v);
+    float const flee = FleeThreshold({caution, groupHold}, v);
+    StartRun run;
+    run.perHour.assign(hours, 0);
+    run.floor = EnterFloor(flee, v);
+    run.lowestAfterStart = v.max;
+    Enthusiasm state{v.max, 0};
+    bool engaged = false;
+    uint32_t engagedMs = 0;
+    for (uint32_t nowMs = 0; nowMs < hours * HOUR; nowMs += SECOND)
+    {
+        if (engaged)
+        {
+            if (nowMs - engagedMs < WON_FIGHT_MS)
+                continue;
+            state = Apply(state, nowMs, true, 1.0f, inShare ? EditCause::None : EditCause::Kill, 0.0f, v);
+            engaged = false;
+            continue;
+        }
+        bool const pays = PaysStart(!FightOngoing(facts), engaged, inShare);
+        if (!Enters(Read(state, nowMs, false, 1.0f, v), join, flee, v, pays))
+            continue;
+        state = Apply(state, nowMs, false, 1.0f, pays ? EditCause::Start : EditCause::None, 0.0f, v);
+        run.lowestAfterStart = std::min(run.lowestAfterStart, state.value);
+        ++run.perHour[nowMs / HOUR];
+        run.startsMs.push_back(nowMs);
+        engaged = true;
+        engagedMs = nowMs;
+    }
+    return run;
+}
+
+// Exit: a starter in the share makes at most RecoveryPerHour / StartCost starts per hour after its first hour (on
+// average over hours 2..49, and no two starts after the first hour closer than StartCost / RecoveryPerHour hours),
+// for every Aggression, Caution and group hold, at the default cost and at 60 (WP.2's one start per 4 h). The same
+// starter outside the share never slows down: a won fight drains 7 and the kill gives 10, so the value refills and it
+// starts again at once (the first night's fault, kept as the counter-case)
+void TestStartRate()
+{
+    EnthusiasmValues const defaults = Defaults();
+    EnthusiasmValues tuned = defaults;
+    tuned.startCost = 60.0f;
+    constexpr uint32_t HOURS = 49;
+    for (EnthusiasmValues const& v : {defaults, tuned})
+    {
+        double const allowed = v.recoveryPerHour / v.startCost;
+        uint32_t const gapMs = static_cast<uint32_t>(HOUR / allowed);
+        std::string rate;
+        std::string slows;
+        std::string floor;
+        int starters = 0;
+        double most = 0.0;
+        int fewestOutside = std::numeric_limits<int>::max();
+        for (float aggression : {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f})
+            for (float caution : TRAIT_CORNERS)
+                for (bool const group : {false, true})
+                {
+                    std::string const corner = " (aggression " + Number(aggression) + " caution " + Number(caution) +
+                                               (group ? " hold" : "") + ")";
+                    StartRun const share = SimulateStarter(aggression, caution, group, true, HOURS, v);
+                    StartRun const outside = SimulateStarter(aggression, caution, group, false, HOURS, v);
+                    int later = 0;
+                    for (uint32_t hour = 1; hour < HOURS; ++hour)
+                        later += share.perHour[hour];
+                    double const average = static_cast<double>(later) / static_cast<double>(HOURS - 1);
+                    most = std::max(most, average);
+                    bool spaced = true;
+                    for (size_t i = 1; i < share.startsMs.size(); ++i)
+                        if (share.startsMs[i - 1] >= HOUR && share.startsMs[i] - share.startsMs[i - 1] < gapMs)
+                            spaced = false;
+                    if (average > allowed || !spaced)
+                        rate +=
+                            corner + " " + Number(average) + " per hour" + (spaced ? "" : ", two starts close") + ";";
+                    if (share.lowestAfterStart < share.floor)
+                        floor += corner + " " + Number(share.lowestAfterStart) + " < " + Number(share.floor) + ";";
+                    if (outside.startsMs.empty())
+                    {
+                        if (!share.startsMs.empty())
+                            slows += corner + " starts only in the share;";
+                        continue;
+                    }
+                    ++starters;
+                    for (uint32_t hour = 1; hour < HOURS; ++hour)
+                    {
+                        fewestOutside = std::min(fewestOutside, outside.perHour[hour]);
+                        if (outside.perHour[hour] + 1 < outside.perHour[0] || outside.perHour[hour] <= allowed)
+                        {
+                            slows += corner + " hour " + std::to_string(hour + 1) + " " +
+                                     std::to_string(outside.perHour[hour]) + " after " +
+                                     std::to_string(outside.perHour[0]) + ";";
+                            break;
+                        }
+                    }
+                }
+        std::string const cost = "start cost " + Number(v.startCost) + ": ";
+        std::printf("  %sshare at most %.3g starts per hour after the first (allowed %.3g); outside at least %d\n",
+                    cost.c_str(), most, allowed, fewestOutside);
+        Check(rate.empty() && most > 0.0, cost + "a starter in the share makes at most " + Number(allowed) +
+                                              " starts per hour after its first hour (most " + Number(most) + ")" +
+                                              rate);
+        Check(floor.empty(), cost + "no simulated start leaves the value below the entering floor" + floor);
+        Check(slows.empty() && starters > 0, cost + "outside the share the same starter never slows (" +
+                                                 std::to_string(starters) + " corners start, fewest " +
+                                                 std::to_string(fewestOutside) + " per hour)" + slows);
+    }
+}
+
+// Exit: no start leaves the value below the entering floor, for every trait corner (Aggression, Caution, Helpfulness
+// and Confidence at -1, 0 and +1, with and without the group hold), every colour a start may have and every balance
+// end, over the whole scale and at the edges; a start the bot does not pay for enters as before; only a start while
+// not engaged in the share pays
+void TestStartFloor()
+{
+    EnthusiasmValues const defaults = Defaults();
+    EnthusiasmValues tuned = defaults;
+    tuned.startCost = 60.0f;
+    std::string problem;
+    int starts = 0;
+    int edges = 0;
+    for (EnthusiasmValues const& v : {defaults, tuned})
+        for (float aggression : TRAIT_CORNERS)
+            for (float caution : TRAIT_CORNERS)
+                for (float helpfulness : TRAIT_CORNERS)
+                    for (float confidence : TRAIT_CORNERS)
+                        for (bool const group : {false, true})
+                            for (Colour colour : {Colour::Green, Colour::Yellow, Colour::Orange})
+                                for (float balance : {v.balanceBehind, EVEN_BALANCE, v.balanceLead})
+                                {
+                                    JoinFacts facts;
+                                    facts.aggression = aggression;
+                                    facts.helpfulness = helpfulness;
+                                    facts.colour = colour;
+                                    facts.balance = balance;
+                                    float const join = JoinThreshold(facts, v);
+                                    float const flee = FleeThreshold({caution, group}, v);
+                                    double const floor = EnterFloor(flee, v);
+                                    std::vector<double> points;
+                                    for (int step = 0; step <= 400; ++step)
+                                        points.push_back(v.max * step / 400.0);
+                                    // The lowest start that pays, a hair above floor plus cost (the sum rounds)
+                                    double const edge = floor + v.startCost + 1e-9;
+                                    points.insert(points.end(), {edge, edge - 1e-6, join + 1e-6});
+                                    for (double const value : points)
+                                    {
+                                        // A value lies within the scale (Read holds it there)
+                                        if (value < 0.0 || value > v.max)
+                                            continue;
+                                        bool const plain = Enters(value, join, flee, v);
+                                        if (plain != (MayJoin(value, join) && value >= floor))
+                                            problem += " a start not paid for changed at " + Number(value) + ";";
+                                        if (!Enters(value, join, flee, v, true))
+                                            continue;
+                                        ++starts;
+                                        double const after =
+                                            Apply({value, 0}, 0, false, 1.0f, EditCause::Start, confidence, v).value;
+                                        if (!plain || after < floor)
+                                            problem += " aggression " + Number(aggression) + " caution " +
+                                                       Number(caution) + " value " + Number(value) + " -> " +
+                                                       Number(after) + " floor " + Number(floor) + ";";
+                                    }
+                                    if (edge < v.max && edge > join + 1e-6)
+                                    {
+                                        ++edges;
+                                        if (!Enters(edge, join, flee, v, true) ||
+                                            Enters(edge - 1e-6, join, flee, v, true))
+                                            problem += " the edge " + Number(edge) + " is not floor plus cost;";
+                                    }
+                                }
+    Check(problem.empty() && starts > 0 && edges > 0, "no start leaves the value below the entering floor (" +
+                                                          std::to_string(starts) + " starts, " + std::to_string(edges) +
+                                                          " edges at floor plus cost, every trait corner)" + problem);
+    Check(PaysStart(true, false, true) && !PaysStart(false, false, true) && !PaysStart(true, true, true) &&
+              !PaysStart(true, false, false),
+          "only a start (not a join) while not engaged by a bot in the share pays");
+}
 }  // namespace
 
 int main()
@@ -734,6 +939,10 @@ int main()
     report("TestEngagedBounded");
     TestBalance();
     report("TestBalance");
+    TestStartRate();
+    report("TestStartRate");
+    TestStartFloor();
+    report("TestStartFloor");
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

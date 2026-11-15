@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../ShareSlot.h"
+
 // Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who keeps every
 // handout (the handout share). Player-free for tests/upkeep-selftest.cpp; Upkeep.h applies it to a bot. Kept out of
 // PlayerbotAIConfig.h so that flipping a kind rebuilds only the handout sites.
@@ -88,19 +90,13 @@ constexpr bool IsHonest(UpkeepKind kind)
     return index < KIND_COUNT && KIND_RULES[index].honest;
 }
 
-// The handout share (Playerbots.Upkeep.HandoutShare): a bot's slot 0..99 is a fixed mix of its guid counter, so it
-// stays in one cohort across builds and restarts and SQL names the same bots:
-// ((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < share
-constexpr uint32_t SHARE_MIX = 2654435761u;
-constexpr uint32_t SHARE_SHIFT = 16;
-constexpr uint32_t SHARE_PERCENT_MAX = 100;
-
-constexpr uint32_t ShareSlot(uint32_t guidCounter)
-{
-    return ((guidCounter * SHARE_MIX) >> SHARE_SHIFT) % SHARE_PERCENT_MAX;
-}
-
-constexpr bool InShare(uint32_t guidCounter, uint32_t sharePercent) { return ShareSlot(guidCounter) < sharePercent; }
+// The handout share (Playerbots.Upkeep.HandoutShare): the guid mix of ShareSlot.h, which world PvP's start-cost
+// share uses too, so SQL names the same bots
+using BotShare::InShare;
+using BotShare::SHARE_MIX;
+using BotShare::SHARE_PERCENT_MAX;
+using BotShare::SHARE_SHIFT;
+using BotShare::ShareSlot;
 
 // A bot gets a handout unless it keeps its possessions, the kind is honest and the bot is outside the share
 constexpr bool Granted(bool keepsPossessions, bool honest, uint32_t guidCounter, uint32_t sharePercent)

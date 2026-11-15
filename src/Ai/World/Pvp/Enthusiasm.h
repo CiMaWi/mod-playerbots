@@ -84,6 +84,8 @@ struct EnthusiasmValues
     float deathEditConfident = 0.0f;
     float deathEditUnconfident = 0.0f;
     float killEdit = 0.0f;
+    float startCost = 0.0f;
+    uint32_t startCostShare = 0;  // percent of the persistent bots (ShareSlot.h)
     float groupDeathShare = 0.0f;
     float groupDeathYards = 0.0f;
     float joinBase = 0.0f;
@@ -120,6 +122,8 @@ inline EnthusiasmValues FromConfig(WorldPvpConfig const& config)
     values.deathEditConfident = zeal.DeathEditConfident;
     values.deathEditUnconfident = zeal.DeathEditUnconfident;
     values.killEdit = zeal.KillEdit;
+    values.startCost = std::max(zeal.StartCost, 0.0f);
+    values.startCostShare = std::min(zeal.StartCostShare, 100u);
     values.groupDeathShare = std::clamp(zeal.GroupDeathShare, 0.0f, 1.0f);
     values.groupDeathYards = static_cast<float>(zeal.GroupDeathYards);
     values.joinBase = zeal.JoinBase;
@@ -210,9 +214,10 @@ enum class EditCause : uint8_t
     Death,       // the bot's own PvP death
     Kill,        // the bot killed an enemy player
     GroupDeath,  // a group member's PvP death within groupDeathYards (the caller measures)
+    Start,       // the bot began a fight it pays for (PaysStart)
 };
 
-constexpr std::array<char const*, 4> EDIT_CAUSE_WORDS = {"none", "death", "kill", "group_death"};
+constexpr std::array<char const*, 5> EDIT_CAUSE_WORDS = {"none", "death", "kill", "group_death", "start"};
 
 constexpr char const* Word(EditCause value) { return EDIT_CAUSE_WORDS[static_cast<size_t>(value)]; }
 
@@ -235,6 +240,8 @@ inline float Edit(EditCause cause, float confidence, EnthusiasmValues const& val
             return values.killEdit;
         case EditCause::GroupDeath:
             return -values.groupDeathShare * DeathEditSize(confidence, values);
+        case EditCause::Start:
+            return -values.startCost;
         default:
             return 0.0f;
     }
@@ -382,6 +389,44 @@ inline float FleeThreshold(FleeFacts const& facts, EnthusiasmValues const& value
 
 inline bool MustLeave(double value, float fleeThreshold) { return value < fleeThreshold; }
 
+// --- The entering check ---
+
+// The target a bot entered on stays its scan's target this long (it closes in and attacks within it)
+constexpr uint32_t PICK_MS = 20 * 1000;
+
+// What an even fight drains while one pick lasts (6.67 points at the defaults): the margin entering keeps above the
+// flee threshold
+inline double EnterMargin(EnthusiasmValues const& values)
+{
+    return DepletionPerMs(BalanceDepletionFactor(EVEN_BALANCE, values), values) * PICK_MS;
+}
+
+// The lowest value that enters beside a flee threshold: the threshold plus EnterMargin, so a bot enters no fight it
+// would leave before its pick ends. A bot that left a hair below its threshold recovers past it within seconds, and
+// where its join threshold lies lower (its side leads) it would enter, drain for a second and leave again (wp-leave
+// run 3: four times in 13 s); now it needs the margin's recovery first (27 min at the defaults). Under a threshold
+// of 0 or below there is no floor: that bot never leaves (the value stops at 0, MustLeave is strict)
+inline double EnterFloor(float fleeThreshold, EnthusiasmValues const& values)
+{
+    return fleeThreshold > 0.0f ? fleeThreshold + EnterMargin(values) : 0.0;
+}
+
+// Starting costs enthusiasm (WP34): a pick that begins a fight (not a join) while the bot is not engaged costs a bot
+// in the start-cost share startCost at once (EditCause::Start). Joining, being attacked and a new pick while engaged
+// cost nothing
+constexpr bool PaysStart(bool starting, bool engaged, bool inShare) { return starting && !engaged && inShare; }
+
+// A bot enters a fight only above its join threshold and at or above its flee threshold's floor (EnterFloor). A start
+// it pays for needs the floor after the cost, so it does not start and leave at once; the join threshold is compared
+// with the value before the cost. The plan says "above the entering floor": read as the floor's own test (at or
+// above), one rule for starts and joins
+inline bool Enters(double value, float joinThreshold, float fleeThreshold, EnthusiasmValues const& values,
+                   bool paysStart = false)
+{
+    double const cost = paysStart ? static_cast<double>(values.startCost) : 0.0;
+    return MayJoin(value, joinThreshold) && value - cost >= EnterFloor(fleeThreshold, values);
+}
+
 // --- Bans ---
 
 enum class BanReason : uint8_t
@@ -486,6 +531,7 @@ enum class Modifier : uint8_t
     DeathUnconfident,
     Kill,
     GroupDeath,
+    Start,
     BanRed,
     BanGrey,
     BanZone,
@@ -536,6 +582,7 @@ inline std::array<ModifierRow, MODIFIER_COUNT> ModifierTable(EnthusiasmValues co
         {"PvP death, least confident bot", C::OneOffEdit, F::Edit, -v.deathEditUnconfident},
         {"kill of an enemy player", C::OneOffEdit, F::Edit, v.killEdit},
         {"group member's PvP death", C::OneOffEdit, F::Edit, -v.groupDeathShare * v.deathEdit},
+        {"starting a fight while not engaged, bot in the start-cost share", C::OneOffEdit, F::Edit, -v.startCost},
         {"red as chosen target", C::Never, F::Ban, 0.0f},
         {"grey unless it attacks a player of the bot's faction", C::Never, F::Ban, 0.0f},
         {"prohibited zone", C::Never, F::Ban, 0.0f},
