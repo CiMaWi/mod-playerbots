@@ -322,7 +322,7 @@ inline bool FakeBaited(uint32 lastCancelMs, uint32 nowMs, uint32 windowMs)
     return lastCancelMs != 0 && nowMs - lastCancelMs <= windowMs;
 }
 
-// The per-bot state (PlayerbotAI::GetFakeState; the bot's own update and, for the kicks seen, the casts on its map)
+// The per-bot state (BotTactics::GetFakeState; the bot's own update and, for the kicks seen, the casts on its map)
 struct FakeBotState
 {
     FakeParams Params;

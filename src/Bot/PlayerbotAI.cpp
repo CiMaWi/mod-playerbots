@@ -7380,7 +7380,7 @@ std::set<uint32> PlayerbotAI::GetCurrentIncompleteQuestIds()
     return result;
 }
 
-// G2g: PlayerbotAI::StepJumpTest (the jump test's step) is in ArenaJump.cpp, beside the commands that arm it
+// G2g: BotTactics::StepJumpTest (the jump test's step) is in ArenaJump.cpp, beside the commands that arm it
 
 void PlayerbotAI::SetTacticMask(uint32 mask, bool forced)
 {

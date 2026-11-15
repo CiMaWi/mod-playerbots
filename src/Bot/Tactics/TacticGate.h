@@ -20,7 +20,7 @@
 // the current window (a chance per window); the tactic's numbers are lerped over skill; effort and three style traits
 // shape the rest. Pure functions: no bots, no config singleton, so .playerbots tactics selftest gate drives them with
 // synthetic guids, skills and times. PlayerbotAI::SetPvpSkill caches a TacticGateState per bot; the tactics ask
-// PlayerbotAI::TacticActive. Skill 0 (the skill system off) is full ability: every tactic known and used, effort 100,
+// BotTactics::TacticActive. Skill 0 (the skill system off) is full ability: every tactic known and used, effort 100,
 // style neutral. Hidden like the skill: only GM commands and measurement records show these values.
 
 // One bot's gate, cached by PlayerbotAI::SetPvpSkill

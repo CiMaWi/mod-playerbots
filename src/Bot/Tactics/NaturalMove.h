@@ -547,7 +547,7 @@ inline uint64 TrackHash(uint64 botGuid, uint32 nowMs, uint32 call)
     return SplitMix64(SplitMix64((botGuid << 32) ^ nowMs ^ 0x5851F42D4C957F2DULL) ^ call);
 }
 
-// The per-bot state (PlayerbotAI::GetTrackState; the bot's own update, tactics show on the world thread)
+// The per-bot state (BotTactics::GetTrackState; the bot's own update, tactics show on the world thread)
 struct TrackBotState
 {
     TrackParams Params;
