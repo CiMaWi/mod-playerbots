@@ -1015,7 +1015,8 @@ constexpr std::uint8_t TAME_MAX_TRIES = 3;
 // A pick that gets no cast within this time (the walk to the beast, the dismount) gives the stop up: every wait ends
 constexpr std::uint32_t TAME_REACH_MS = 60 * 1000;
 // The reach bound's start (0 = not started): the first tick past the stop's rest starts it (the arrival, a channel's
-// end, a clear's fight, a respawn wait reset it to 0), and a new pick of a beast keeps it (WU21e run 2: re-picks of
+// end, any fight at the stop (a clear's, an attacker's), a respawn wait reset it to 0), and a new pick of a beast
+// keeps it (WU21e run 2: re-picks of
 // wandering Frostwing Chimaeras restarted it, the chase on the Isle of Spears cliffs never ended)
 constexpr std::uint32_t TameReachStartMs(std::uint32_t startMs, std::uint32_t nowMs)
 {
@@ -1187,6 +1188,21 @@ constexpr std::uint32_t TameWaitMs(std::uint32_t respawnInMs, std::uint32_t wait
         return 0;
     std::uint32_t const wait = respawnInMs + TAME_RESPAWN_GRACE_MS;
     return waitedMs + wait <= budget + TAME_RESPAWN_GRACE_MS ? wait : 0;
+}
+
+// When the next beast of the stop's entry near the hunter is free to tame, in seconds from now, folded over what the
+// wait reads (WU21f): a beast in another's fight at once (the fight ends in its death, its reset or another hunter's
+// tame, then the wait reads again), a corpse or a spawn the core removed after its corpse at its respawn time (the
+// core's spawn-group respawn mode keeps no creature until the respawn, only the map's record: lab7 at 2000 bots, the
+// Mulgore plainstriders all killed, no wait armed). TAME_FREE_NONE: nothing near will be free
+constexpr std::uint32_t TAME_FREE_NONE = std::numeric_limits<std::uint32_t>::max();
+constexpr std::uint32_t TameFreeInS(std::uint32_t soonestS, bool othersFight, std::int64_t respawnAt, std::int64_t now)
+{
+    std::uint32_t const eachS =
+        othersFight || respawnAt <= now
+            ? 0
+            : static_cast<std::uint32_t>(std::min<std::int64_t>(respawnAt - now, TAME_FREE_NONE - 1));
+    return std::min(soonestS, eachS);
 }
 
 // A weapon skill makes a trip of its own once its funded gold pays its price (WU15a); a bot without the gold keeps

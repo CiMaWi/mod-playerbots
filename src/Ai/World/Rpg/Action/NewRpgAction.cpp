@@ -760,24 +760,36 @@ Creature* NearestTameable(Player* bot, uint32 entry, bool familyRule = false)
     return picked;
 }
 
-// No beast to tame at the stop (WU.23, UpkeepNeeds::TameWaitMs): the soonest respawn of a dead standing spawn of the
-// stop's entry within TAME_SEARCH_YARDS, read from the spawn's own respawn time. A wait that fits the budget is armed
-// on the stop and writes the row tame/wait (value its seconds; alternatives the respawn's seconds, the seconds waited
-// before, wanted 1 for the long budget). True while it waits
+// No beast to tame at the stop (WU.23, UpkeepNeeds::TameWaitMs): the soonest a standing spawn of the stop's entry
+// within TAME_SEARCH_YARDS is free (UpkeepNeeds::TameFreeInS): a beast in another's fight, a corpse at its own respawn
+// time, a spawn the core removed at the map's respawn record (one pass over the map's records per arming; the
+// spawn-group respawn mode keeps no creature for it). A wait that fits the budget is armed on the stop and writes the
+// row tame/wait (value its seconds; alternatives the respawn's seconds, the seconds waited before, wanted 1 for the
+// long budget). True while it waits
 bool ArmTameWait(Player* bot, NewRpgInfo::ErrandStop& stop, uint32 now)
 {
-    std::list<Creature*> spawns;
+    std::list<Creature*> beasts;
     Acore::AllCreaturesOfEntryInRange check(bot, stop.tameEntry, UpkeepNeeds::TAME_SEARCH_YARDS);
-    Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange> searcher(bot, spawns, check);
+    Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange> searcher(bot, beasts, check);
     Cell::VisitObjects(bot, searcher, UpkeepNeeds::TAME_SEARCH_YARDS);
     time_t const gameNow = GameTime::GetGameTime().count();
-    uint32 respawnS = std::numeric_limits<uint32>::max();
-    for (Creature const* each : spawns)
-        if (!each->IsAlive() && each->GetSpawnId() &&
+    uint32 respawnS = UpkeepNeeds::TAME_FREE_NONE;
+    for (Creature const* each : beasts)
+    {
+        bool const othersFight = each->IsAlive() && each->IsInCombat() && each->GetVictim() != bot;
+        if (each->GetSpawnId() && (othersFight || !each->IsAlive()) &&
             UpkeepNeeds::TameSpawnStands(static_cast<uint8>(each->GetDefaultMovementType())))
-            respawnS = std::min<uint32>(
-                respawnS, each->GetRespawnTime() > gameNow ? static_cast<uint32>(each->GetRespawnTime() - gameNow) : 0);
-    if (respawnS == std::numeric_limits<uint32>::max())
+            respawnS = UpkeepNeeds::TameFreeInS(respawnS, othersFight, each->GetRespawnTime(), gameNow);
+    }
+    for (auto const& [spawnId, respawnAt] : bot->GetMap()->GetCreatureRespawnTimes())
+    {
+        CreatureData const* data = sObjectMgr->GetCreatureData(spawnId);
+        if (data && data->id == stop.tameEntry && data->mapid == bot->GetMapId() &&
+            UpkeepNeeds::TameSpawnStands(data->movementType) &&
+            bot->GetExactDist2d(data->posX, data->posY) <= UpkeepNeeds::TAME_SEARCH_YARDS)
+            respawnS = UpkeepNeeds::TameFreeInS(respawnS, false, respawnAt, gameNow);
+    }
+    if (respawnS == UpkeepNeeds::TAME_FREE_NONE)
         return false;
 
     CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(stop.tameEntry);
