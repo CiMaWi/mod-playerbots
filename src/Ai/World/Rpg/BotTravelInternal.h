@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-#ifndef _PLAYERBOT_BOTTRAVEL_H
-#define _PLAYERBOT_BOTTRAVEL_H
+#ifndef _PLAYERBOT_BOTTRAVELINTERNAL_H
+#define _PLAYERBOT_BOTTRAVELINTERNAL_H
 
 #include <optional>
 #include <string_view>

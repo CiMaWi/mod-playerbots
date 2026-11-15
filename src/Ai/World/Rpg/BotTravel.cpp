@@ -4,7 +4,7 @@
  * or (at your option) any later version.
  */
 
-#include "BotTravel.h"
+#include "BotTravelInternal.h"
 
 #include "Log.h"
 #include "LootObjectStack.h"
