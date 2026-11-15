@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "BotAttributes.h"
-#include "Common.h"
+#include "Define.h"
 #include "NaturalPathConfig.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"

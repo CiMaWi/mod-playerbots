@@ -12,7 +12,7 @@
 #include <cmath>
 #include <string>
 
-#include "Common.h"
+#include "Define.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"
 #include "TacticGate.h"

@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_ARENADEFENSIVECONFIG_H
 #define _PLAYERBOT_ARENADEFENSIVECONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 
 // The numbers of the Defensive and Protect tactics (Playerbots.Tactics.Defensive.*, G5d), read once at config load
 // (PlayerbotAIConfig::TacticDefensive); the initial values are the conf.dist defaults (proposals). Percents are of

@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_NATURALTURNCONFIG_H
 #define _PLAYERBOT_NATURALTURNCONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 #include "Tactics.h"
 
 // The numbers of the natural facing (Playerbots.Natural.Facing.*, G2a), read once at config load

@@ -11,7 +11,7 @@
 #include <array>
 #include <cmath>
 
-#include "Common.h"
+#include "Define.h"
 #include "SplitMix64.h"
 #include "TacticGate.h"
 

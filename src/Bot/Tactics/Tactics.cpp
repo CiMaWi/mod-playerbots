@@ -2182,6 +2182,11 @@ struct ServerTacticSuite
 constexpr std::array<ServerTacticSuite, 3> SERVER_TACTIC_SUITES = {
     {{"scope", RunScopeSelftest}, {"cc", RunCcSelftest}, {"interrupt", RunInterruptSelftest}}};
 
+// The gate suite reads BotProfileMgr's percentile math (BotProfileMgr.cpp), which the offline test does not link
+constexpr std::array<TacticSuite, 1> SERVER_PURE_TACTIC_SUITES = {
+    {{"gate",
+      [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const&) { RunGateChecks(check, say); }}}};
+
 }  // namespace
 
 char const* TacticName(TacticId id)
@@ -2849,6 +2854,12 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
         known += std::string(", ") + suite.Name;
     }
 
+    for (TacticSuite const& suite : SERVER_PURE_TACTIC_SUITES)
+    {
+        found = found || name == suite.Name;
+        known += std::string(", ") + suite.Name;
+    }
+
     for (TacticSuite const& suite : TACTIC_SUITES)
     {
         found = found || name == suite.Name;
@@ -2870,10 +2881,17 @@ bool TacticCommands::HandleSelftestCommand(ChatHandler* handler, char const* arg
     TacticSuiteInputs inputs;
     inputs.Reaction = sPlayerbotAIConfig.NaturalReaction;
     inputs.CurveExponent = sPlayerbotAIConfig.SkillGate.CurveExponent;
+    auto const print = [handler](std::string const& line) { handler->PSendSysMessage("{}", line); };
+    for (TacticSuite const& suite : SERVER_PURE_TACTIC_SUITES)
+    {
+        if (all || name == suite.Name)
+            RunTacticSuite(suite, inputs, print);
+    }
+
     for (TacticSuite const& suite : TACTIC_SUITES)
     {
         if (all || name == suite.Name)
-            RunTacticSuite(suite, inputs, [handler](std::string const& line) { handler->PSendSysMessage("{}", line); });
+            RunTacticSuite(suite, inputs, print);
     }
 
     return true;

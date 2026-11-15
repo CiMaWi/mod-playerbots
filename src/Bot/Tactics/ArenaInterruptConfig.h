@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_ARENAINTERRUPTCONFIG_H
 #define _PLAYERBOT_ARENAINTERRUPTCONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 
 // The numbers of the Interrupt tactic (Playerbots.Tactics.Interrupt.*, G5b), read once at config load
 // (PlayerbotAIConfig::TacticInterrupt); the initial values are the conf.dist defaults (proposals, G6a tunes them).

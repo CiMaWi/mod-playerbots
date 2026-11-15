@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_ARENACOVERCONFIG_H
 #define _PLAYERBOT_ARENACOVERCONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 
 // The numbers of the Los tactic (Playerbots.Tactics.Los.*, G2e) and the Pillar tactic (Playerbots.Tactics.Pillar.*,
 // G2f), read once at config load (PlayerbotAIConfig::TacticLos, TacticPillar); the initial values are the conf.dist
