@@ -30,6 +30,7 @@
 #include "Playerbots.h"
 #include "Position.h"
 #include "PositionValue.h"
+#include "PvpTestCounters.h"
 #include "Random.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"

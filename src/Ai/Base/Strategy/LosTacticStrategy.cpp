@@ -24,6 +24,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PvpTestCounters.h"
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "Timer.h"

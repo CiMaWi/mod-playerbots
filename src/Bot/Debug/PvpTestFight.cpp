@@ -1042,9 +1042,10 @@ void PvpTestFightJob::CaptureStats()
         Player* player = ObjectAccessor::FindConnectedPlayer(_members[index]);
         if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
         {
-            bot.Casts = botAI->GetPvpTestExecuted();
-            bot.Cc = botAI->GetPvpTestCc();
-            bot.Tactics = botAI->GetPvpTestTactics();
+            PvpTestCounterBlock const& counters = botAI->GetPvpTestCounters();
+            bot.Casts = counters.Executed;
+            bot.Cc = counters.Cc;
+            bot.Tactics = counters.Tactics;
         }
     }
 }
