@@ -7,6 +7,7 @@
 #include "TravelMgr.h"
 #include "QuestLevelRules.h"
 #include "AreaDefines.h"
+#include "BotKind.h"
 #include "CellImpl.h"
 #include "ChatHelper.h"
 #include "Corpse.h"
@@ -4490,7 +4491,7 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
     uint32 botLevel = bot->GetLevel();
 
     // Persistent bots fly only to nodes they have discovered, through discovered stops
-    bool const discoveredOnly = RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot);
+    bool const discoveredOnly = BotKind::IsPersistentBot(bot);
     auto const known = [bot](uint32 node) { return bot->m_taxi.IsTaximaskNodeKnown(node); };
     auto const nodesInZone = [&](uint32 zoneId)
     {

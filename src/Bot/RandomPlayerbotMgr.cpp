@@ -11,6 +11,7 @@
 #include "ArenaTeamMgr.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
+#include "BotKind.h"
 #include "Cell.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
@@ -1801,7 +1802,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     }
 
     // A persistent bot that died releases and runs back (DeadStrategy); it is never resurrected in place
-    if (bot->isDead() && HonestTravel())
+    if (bot->isDead() && BotKind::IsPersistentBot(bot))
         return false;
 
     // if death revive
@@ -1905,17 +1906,12 @@ void RandomPlayerbotMgr::Revive(Player* player)
     SetEventValue(bot, "revive", 0, 0);
 
     // A persistent bot is never resurrected in place nor moved away from its corpse
-    if (HonestTravel())
+    if (BotKind::LivingWorld())
         return;
 
     EventLog::SourceScope reviveScope("mgr_revive");
     Refresh(player);
     RandomTeleportGrindForLevel(player);
-}
-
-bool RandomPlayerbotMgr::HonestTravel()
-{
-    return WorldTravel::AppliesTo(Population::IsPersistent(), sPlayerbotAIConfig.ArenaOnlyEnable);
 }
 
 bool RandomPlayerbotMgr::IsBusy(Player* bot)
@@ -1930,7 +1926,7 @@ bool RandomPlayerbotMgr::IsBusy(Player* bot)
 
     NewRpgStatus const status = botAI->rpgInfo.GetStatus();
     WorldTravel::BusyInput in;
-    in.Honest = HonestTravel();
+    in.Honest = botAI->IsPersistentBot();
     in.RealMaster = botAI->HasGameClientMaster();
     // An external goal (the bridge's or a group's) keeps the bot; the planner's own goals do not (WT20)
     in.HasGoal = Planner::HasExternalGoal(bot->GetGUID().GetRawValue());
@@ -1945,7 +1941,7 @@ bool RandomPlayerbotMgr::IsBusy(Player* bot)
 
 bool RandomPlayerbotMgr::IsTeleportSeen(Player* bot, WorldPosition const& dest)
 {
-    if (!HonestTravel())
+    if (!BotKind::LivingWorld())
         return false;
 
     auto const pointOf = [](WorldObject const* object)
@@ -2009,7 +2005,7 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
     }
 
     // A busy persistent bot is never teleported (level-up, hub, city)
-    bool const honest = HonestTravel();
+    bool const honest = BotKind::IsPersistentBot(bot);
     if (honest && IsBusy(bot))
         return;
 
@@ -2219,8 +2215,8 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 
     // Persistent bots change zones by travelling (the planner's move_zone goal, WT20): no level-up, periodic or
     // legacy-caller teleports. Only the first placement of a newly made bot stays, counted as "mgr_place".
-    bool const placing = placingNewBot && HonestTravel();
-    if (HonestTravel() && !placing)
+    bool const placing = placingNewBot && BotKind::LivingWorld();
+    if (BotKind::LivingWorld() && !placing)
         return;
     char const* const levelTag = placing ? "mgr_place" : "mgr_level";
     char const* const cityTag = placing ? "mgr_place" : "mgr_city";
@@ -2702,7 +2698,7 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
         return;
 
     // A dead persistent bot runs back to its corpse: no resurrection in place, and no refresh while dead
-    if (bot->isDead() && HonestTravel())
+    if (bot->isDead() && BotKind::LivingWorld())
         return;
 
     bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
@@ -3179,7 +3175,7 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
     // "history [name]": the starting history, once, for the online persistent random bots (WT.3)
     if (cmd == "history" || cmd.rfind("history ", 0) == 0)
     {
-        if (!HonestTravel())
+        if (!BotKind::LivingWorld())
         {
             LOG_ERROR("playerbots",
                       "rndbot history: only for a persistent population (Playerbots.Population.Persistent)");
