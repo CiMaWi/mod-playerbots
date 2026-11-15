@@ -18,6 +18,7 @@
 #include "Map.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgStatusEnd.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -80,18 +81,6 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
-// A GM order ends the bot's trip: the Travel event and the trip decision with the word (stopped, held)
-void EndTripByOrder(Player* bot, NewRpgInfo& info, NewRpgInfo::Travel const& data, char const* word)
-{
-    LOG_INFO("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), word);
-    uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
-    std::string const source = std::string("abort:") + word;
-    EventLog::Emit(bot, "Travel", source.c_str(), data.tripId, seconds);
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", word, static_cast<float>(seconds),
-                       {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
-    info.ChangeToIdle();
-}
-
 // A test's constraint change: the state rows applied or undone, one Constraint row whose amount is the ms from the
 // command to the take (also on an idle bot). A choice row turning on ends the current status unless a trip comes with
 // it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit; the
@@ -111,11 +100,8 @@ void ApplyConstraints(PlayerbotAI* botAI, Player* bot, NewRpgInfo& info, TravelO
     EventLog::Emit(bot, CONSTRAINT_EVENT_TYPE, set.c_str(), 0, latencyMs);
     if (!TestConstraints::EndsStatus(before, after) || tripFollows)
         return;
-    WorldLog::StatusReason const reasonScope("hold");
-    if (auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data))
-        EndTripByOrder(bot, info, *data, "held");
-    else
-        info.ChangeToIdle();
+    // An ordered end: a trip writes its abort rows with the source abort:held (the status core's trip arm)
+    RpgStatus::End(botAI, StatusEnd::Outcome::Ordered, {.word = "hold", .source = "abort:held"});
 }
 
 // A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
@@ -146,7 +132,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
             return applied;
         }
         botAI->CancelLootInteraction("order");
-        EndTripByOrder(bot, info, *data, "stopped");
+        RpgStatus::End(botAI, StatusEnd::Outcome::Ordered, {.source = "abort:stopped"});
         return true;
     }
 

@@ -318,6 +318,22 @@ inline char const* AbortSource(FailReason reason)
     return "abort:?";
 }
 
+// The outcome of a trip a failed leg ends (RpgStatus::End): a timed-out leg TimedOut, a stuck walk or a bot off the
+// mesh Stuck, every other failure Abandoned
+constexpr StatusEnd::Outcome FailOutcome(FailReason reason)
+{
+    switch (reason)
+    {
+        case FailReason::Timeout:
+            return StatusEnd::Outcome::TimedOut;
+        case FailReason::Stuck:
+        case FailReason::OffMesh:
+            return StatusEnd::Outcome::Stuck;
+        default:
+            return StatusEnd::Outcome::Abandoned;
+    }
+}
+
 constexpr char const* TRANSPORT_EVENT_TYPE = "Transport";
 constexpr char const* HOP_HONESTY_KIND = "Teleport";
 constexpr char const* HOP_HONESTY_SOURCE = "transport_hop";
@@ -1165,7 +1181,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
 // for StepOffFirst. Not while one is under way, and not again on a trip after a period passed aboard
 inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t guid, std::uint32_t periodMs,
                           std::uint32_t nowMs, OffFirstEnd end = OffFirstEnd::None, char const* why = nullptr,
-                          char const* source = nullptr)
+                          char const* source = nullptr, StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned)
 {
     OffFirst& off = trip.offFirst;
     if (!guid || off.sinceMs || off.gaveUp)
@@ -1177,6 +1193,7 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t gui
     off.end = end;
     off.why = why;
     off.source = source;
+    off.outcome = outcome;
     // The scans start anew: the first one counts as under way
     trip.sight = {};
     trip.still = false;

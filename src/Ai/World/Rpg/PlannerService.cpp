@@ -29,6 +29,7 @@
 #include "Log.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
@@ -583,7 +584,7 @@ void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
         return;
     goals.switchTo = replan.chosen;
     goalSwitches.fetch_add(1, std::memory_order_relaxed);
-    botAI->rpgInfo.ChangeToIdle();
+    RpgStatus::End(botAI, StatusEnd::Outcome::Interrupted, {.word = "switch"});
 }
 
 // A checked answer of the job the bot waited for: kept as its plan (in scope only)

@@ -77,7 +77,8 @@ void LogMisses(Player* bot, TravelLegs::Trip const& trip);
 float SeeTransport(Player* bot, Transport* transport, TravelLegs::Trip const& trip, TravelLegs::TransportSight& sight);
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip);
 bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
-                    char const* why = nullptr, char const* source = nullptr);
+                    char const* why = nullptr, char const* source = nullptr,
+                    StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned);
 TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data);
 void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, Point deck, uint32 misses);
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);

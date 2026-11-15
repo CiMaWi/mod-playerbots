@@ -118,6 +118,26 @@ int main()
         }
     }
 
+    for (std::uint32_t o = 0; o < StatusEnd::OUTCOME_COUNT; ++o)
+    {
+        Outcome const outcome = static_cast<Outcome>(o);
+        char expected[32];
+        std::snprintf(expected, sizeof(expected), "abort:%s", StatusEnd::Word(outcome));
+        char const* const source = StatusEnd::TripAbortSource(outcome);
+        std::snprintf(detail, sizeof(detail), "%s: %s", StatusEnd::Word(outcome), source);
+        counts.Check(std::strcmp(source, expected) == 0, "trip abort source", detail);
+    }
+
+    for (std::uint32_t o = 0; o < StatusEnd::OUTCOME_COUNT; ++o)
+    {
+        Outcome const outcome = static_cast<Outcome>(o);
+        bool const unnamed = StatusEnd::TripAbortLogsInfo(false, outcome);
+        bool const named = StatusEnd::TripAbortLogsInfo(true, outcome);
+        std::snprintf(detail, sizeof(detail), "%s: unnamed %s, named %s", StatusEnd::Word(outcome),
+                      unnamed ? "info" : "debug", named ? "info" : "debug");
+        counts.Check(named && unnamed == (outcome == Outcome::Ordered), "trip abort log level", detail);
+    }
+
     std::printf("status end selftest: %d passed, %d failed\n", counts.passed, counts.failed);
     return counts.failed ? 1 : 0;
 }

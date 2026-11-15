@@ -43,24 +43,6 @@ using StatusEnd::Outcome;
 // The Travel event sources of an abort ("abort:<reason>"); the trip's abort decision takes the reason
 constexpr std::string_view TRAVEL_ABORT_PREFIX = "abort:";
 
-// A trip end's source when the caller gives none
-constexpr char const* DefaultAbortSource(Outcome outcome)
-{
-    switch (outcome)
-    {
-        case Outcome::Sick:
-            return "abort:sick";
-        case Outcome::Ordered:
-            return "abort:order";
-        case Outcome::TimedOut:
-            return "abort:timeout";
-        case Outcome::Stuck:
-            return "abort:stuck";
-        default:
-            return "abort:abandoned";
-    }
-}
-
 // The errand trip's clean-up: the errand check is stamped; a trip with a visited stop adds its minutes to the slot
 // measure and records errand_run, a sick end records errand_sick, any other errand_abort (WorldTravel::ErrandEnd)
 void EndErrands(PlayerbotAI* botAI, NewRpgInfo::Errands const& data, Outcome outcome)
@@ -93,14 +75,16 @@ void ArriveTrip(Player* bot, NewRpgInfo::Travel const& data)
 }
 
 // The trip's abort arm: the log line, the Travel event (source "abort:<reason>", a literal) and the trip's abort
-// decision; a note without text logs the source's reason
+// decision; a note without source writes the outcome's (StatusEnd::TripAbortSource), one without text logs the reason
 void AbortTrip(Player* bot, NewRpgInfo::Travel const& data, Outcome outcome, StatusEnd::Note const& note)
 {
-    char const* const source = note.source ? note.source : DefaultAbortSource(outcome);
+    char const* const source = note.source ? note.source : StatusEnd::TripAbortSource(outcome);
     std::string_view const reason = WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX);
     std::string_view const why = note.text ? std::string_view(note.text) : reason;
-    if (data.place.empty())
+    if (!StatusEnd::TripAbortLogsInfo(!data.place.empty(), outcome))
         LOG_DEBUG("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
+    else if (data.place.empty())
+        LOG_INFO("playerbots", "[Route] {} gives the trip up: {}", bot->GetName(), why);
     else
         LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
     uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;

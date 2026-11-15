@@ -5,6 +5,8 @@
  */
 
 #include "NewRpgOutdoorPvP.h"
+
+#include "NewRpgStatusEnd.h"
 #include "OutdoorPvP.h"
 #include "OutdoorPvPMgr.h"
 
@@ -12,7 +14,7 @@ bool NewRpgOutdoorPvpAction::Execute(Event)
 {
     if (!bot->IsPvP())
     {
-        botAI->rpgInfo.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned);
         return false;
     }
     if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) || !bot->IsOutdoorPvPActive())
@@ -22,7 +24,7 @@ bool NewRpgOutdoorPvpAction::Execute(Event)
     OutdoorPvP* outdoorPvP = sOutdoorPvPMgr->GetOutdoorPvPToZoneId(zoneId);
     if (!outdoorPvP || zoneId == AREA_NAGRAND)
     {
-        botAI->rpgInfo.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned);
         return false;
     }
 
@@ -61,7 +63,7 @@ bool NewRpgOutdoorPvpAction::Execute(Event)
         objective = SelectNewObjective(capturePointMap);
         if (!objective)
         {
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Finished);
             return true;
         }
         data.capturePointSpawnId = objective->m_capturePointSpawnId;
