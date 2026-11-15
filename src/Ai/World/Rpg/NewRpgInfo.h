@@ -31,9 +31,6 @@ struct NewRpgInfo
     NewRpgInfo() : data(Idle{}) {}
     ~NewRpgInfo() = default;
 
-    // The bot it belongs to (PlayerbotAI sets it): the world log's Status rows; null in a copy of no bot
-    Player* bot{nullptr};
-
     // RPG_GO_GRIND
     struct GoGrind
     {
@@ -220,8 +217,8 @@ struct NewRpgInfo
 
 private:
     friend struct RpgStatusCore;  // the status core (NewRpgStatusEnd.cpp): a status ends and starts only there
-    void DiscardPassengerMove();
-    void ReplaceStatus(RpgData replacement);
+    void DiscardPassengerMove(Player* bot);
+    void ReplaceStatus(Player* bot, RpgData replacement);
 };
 
 #endif

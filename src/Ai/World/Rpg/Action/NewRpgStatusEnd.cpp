@@ -44,9 +44,9 @@ struct RpgStatusCore
 {
     // The replacing step of a change: the status data replaced and its start time set; a trip takes its start and
     // world log id, idle clears the quest giver and the ignored ones
-    static void Replace(NewRpgInfo& info, RpgMemos& memo, NewRpgInfo::RpgData next)
+    static void Replace(Player* bot, NewRpgInfo& info, RpgMemos& memo, NewRpgInfo::RpgData next)
     {
-        info.ReplaceStatus(std::move(next));
+        info.ReplaceStatus(bot, std::move(next));
         info.startT = getMSTime();
         if (auto* trip = std::get_if<NewRpgInfo::Travel>(&info.data))
         {
@@ -58,20 +58,6 @@ struct RpgStatusCore
             memo.questGiver.Clear();
             memo.ignoredQuestGivers.clear();
         }
-    }
-
-    // A reset's state: a fresh one with the bot; a kept status with its start. The route request ids are
-    // BotTravel's and a test's constraints PlayerbotAI's, which a reset keeps
-    static void Renew(NewRpgInfo& info, bool keepsStatus)
-    {
-        NewRpgInfo after;
-        after.bot = info.bot;
-        if (keepsStatus)
-        {
-            after.startT = info.startT;
-            after.data = std::move(info.data);
-        }
-        info = std::move(after);
     }
 };
 
@@ -154,8 +140,8 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     }
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle);
-    RpgStatusCore::Replace(info, botAI->rpgMemos, std::move(next));
-    WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), word);
+    RpgStatusCore::Replace(botAI->GetBot(), info, botAI->rpgMemos, std::move(next));
+    WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), word);
 }
 }  // namespace
 
@@ -175,18 +161,18 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
     NewRpgInfo& info = botAI->rpgInfo;
     NewRpgStatus const oldStatus = info.GetStatus();
     auto* const trip = std::get_if<NewRpgInfo::Travel>(&info.data);
-    if (trip && info.bot)
+    if (trip && botAI->GetBot())
     {
-        TravelTransportGeometry::SplineControl control{*info.bot};
+        TravelTransportGeometry::SplineControl control{*botAI->GetBot()};
         TravelLifecycle::ResetMotion(trip->passengerMotion, farTeleport, control);
         trip->progress.Suspend();
     }
     StatusEnd::ResetList const list = StatusEnd::ResetOf(farTeleport, trip != nullptr);
-    RpgStatusCore::Renew(info, list.status == StatusEnd::ResetEffect::Kept);
+    StatusEnd::ApplyReset(list.status, info);
     StatusEnd::ApplyReset(list.planner, botAI->planner);
     StatusEnd::ApplyReset(list.rpgMemos, botAI->rpgMemos);
     StatusEnd::ApplyReset(list.testConstraints, botAI->testConstraints);
-    WorldLog::NoteStatus(info.bot, oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
+    WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
 }
 
 NewRpgInfo::Travel RpgStatus::TripTo(WorldPosition dest, std::string place)
