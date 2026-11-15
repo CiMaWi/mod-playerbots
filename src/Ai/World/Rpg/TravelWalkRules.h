@@ -33,7 +33,7 @@ constexpr std::uint32_t NO_NODE = std::numeric_limits<std::uint32_t>::max();  //
 constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
 constexpr std::uint32_t NO_POINT = std::numeric_limits<std::uint32_t>::max();  // the order is the link's far node
 
-// PathType bits (core PathGenerator.h; NewRpgBaseAction.cpp and NewRpgAction.cpp check them against the engine's enum)
+// PathType bits (core PathGenerator.h; NewRpgBaseAction.cpp and NewRpgRoute.cpp check them against the engine's enum)
 constexpr std::uint32_t PATH_NORMAL = 0x01;
 constexpr std::uint32_t PATH_INCOMPLETE = 0x04;  // a partial path: it ends closer to the goal
 constexpr std::uint32_t PATH_NOPATH = 0x08;

@@ -15,7 +15,7 @@
 
 // A test's constraints on a bot (`playerbots route constraint|hold|release`, functional tests): named per-bot
 // switches, all rows of one table. A choice row is read where the bot already decides; a state row is applied on the
-// bot's map thread when it is set and undone when it is cleared (TravelOrders, NewRpgAction.cpp). Kept in
+// bot's map thread when it is set and undone when it is cleared (TravelOrders, TestOrders.cpp). Kept in
 // NewRpgInfo::constraints, not saved. Orders are taken before the idle gate, so a held bot runs an order and holds
 // again when it ends. Player-free for the selftest. Adding a constraint: a row, its gate or apply/undo pair, and a
 // selftest line
@@ -161,7 +161,7 @@ inline bool HearthAllowed(std::uint16_t set) { return !(set & HEARTH); }
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
-// flyfail and flyabort, read by the fly leg's follower on a tick in the air (NewRpgAction.cpp; nothing to apply or
+// flyfail and flyabort, read by the fly leg's follower on a tick in the air (NewRpgRoute.cpp; nothing to apply or
 // undo): the leg fails as its timeout would, once the bot has flown half the leg's straight 2D length and is in the
 // air, so the failure lies where a test chose the leg's middle (over land, over water)
 inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, bool inTheAir)
@@ -176,7 +176,7 @@ inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
-// notaxi, read by the trip's route request (NewRpgAction.cpp; nothing to apply or undo): the search knows no flight
+// notaxi, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no flight
 // master, so the route and the bot take no taxi (also after the bot learns a flight node on the way)
 inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
