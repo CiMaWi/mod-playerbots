@@ -35,23 +35,23 @@ struct RandomizeDecision
 
 // RandomPlayerbotMgr::Randomize's choice. Off: upstream's rule unchanged. On: always incremental at the current
 // level, so no bot is rerolled (also not below level 3) and no max-level bot is downgraded.
-inline RandomizeDecision DecideRandomize(bool persistent, uint32_t level, bool deathKnight, uint32_t maxLevel,
+inline RandomizeDecision DecideRandomize(bool livingWorld, uint32_t level, bool deathKnight, uint32_t maxLevel,
                                          bool downgradeMaxLevelBot)
 {
     bool const reroll = level < 3 || (level < 56 && deathKnight);
     bool const downgrade = !reroll && level >= maxLevel && downgradeMaxLevelBot;
 
-    if (!persistent)
+    if (!livingWorld)
         return {reroll || downgrade, KeptReason::None};
 
     return {false, reroll ? KeptReason::Reroll : (downgrade ? KeptReason::Downgrade : KeptReason::None)};
 }
 
-// RandomizeFirst's level: the rolled one, or the bot's current level when persistent (a re-initialisation at the
+// RandomizeFirst's level: the rolled one, or the bot's current level in a living world (a re-initialisation at the
 // same level; a new character so stays at its creation level).
-inline uint32_t FirstLevel(bool persistent, uint32_t currentLevel, uint32_t rolledLevel)
+inline uint32_t FirstLevel(bool livingWorld, uint32_t currentLevel, uint32_t rolledLevel)
 {
-    return persistent ? currentLevel : rolledLevel;
+    return livingWorld ? currentLevel : rolledLevel;
 }
 
 // The level a factory or reset path may set: never below the current one when persistent.
