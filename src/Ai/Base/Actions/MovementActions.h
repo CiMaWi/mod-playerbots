@@ -7,10 +7,12 @@
 #ifndef PLAYERBOTS_MOVEMENTACTIONS_H
 #define PLAYERBOTS_MOVEMENTACTIONS_H
 
+#include <cmath>
+
 #include "Action.h"
 #include "LastMovementValue.h"
+#include "MeshMoveRules.h"
 #include "PlayerbotAIConfig.h"
-#include <cmath>
 
 class Player;
 class PlayerbotAI;
@@ -77,8 +79,13 @@ protected:
 private:
     // float SearchBestGroundZForPath(float x, float y, float z, bool generatePath, float range = 20.0f, bool
     // normal_only = false, float step = 8.0f);
+    // pathType (WT71): the PathType bits of the path returned, for the mesh-move count
     const Movement::PointsArray SearchForBestPath(float x, float y, float z, float& modified_z, int maxSearchCount = 5,
-                                                  bool normal_only = false, float step = 8.0f);
+                                                  bool normal_only = false, float step = 8.0f,
+                                                  uint32* pathType = nullptr);
+    // The kind a move counts as in MoveTo(Unit*) and MoveTo (WT71): MoveToLOS sets Combat around its own move
+    MeshMove::Kind meshKind = MeshMove::Kind::Other;
+    bool meshSkip = false;  // the caller counted this move itself: MoveTo does not count it again
     bool wasMovementRestricted = false;
     void DoMovePoint(Unit* unit, float x, float y, float z, bool generatePath, bool backwards);
 };

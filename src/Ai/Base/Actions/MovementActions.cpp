@@ -14,6 +14,7 @@
 #include "Battleground.h"
 #include "BattlegroundDS.h"
 #include "BotTactics.h"
+#include "BotTravel.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "FleeManager.h"
@@ -142,7 +143,20 @@ bool MovementAction::MoveToLOS(WorldObject* target, bool ranged)
     path.CalculatePath(x, y, z, false);
     PathType type = path.GetPathType();
     if (type != PATHFIND_NORMAL && type != PATHFIND_INCOMPLETE)
+    {
+        // WT71: the order the mesh refused (the moves made are counted where they are ordered, as Combat)
+        botAI->GetTravel().NoteMeshMove(MeshMove::Kind::Combat, type, 0.0f);
         return false;
+    }
+
+    // WT71: the move below counts as Combat
+    struct KindScope
+    {
+        MeshMove::Kind& kind;
+        MeshMove::Kind const saved;
+        explicit KindScope(MeshMove::Kind& k) : kind(k), saved(k) { kind = MeshMove::Kind::Combat; }
+        ~KindScope() { kind = saved; }
+    } const kindScope(meshKind);
 
     if (!ranged)
         return MoveTo((Unit*)target, target->GetCombatReach());
@@ -541,13 +555,16 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     else
     {
         float modifiedZ;
-        Movement::PointsArray path =
-            SearchForBestPath(x, y, z, modifiedZ, sPlayerbotAIConfig.MaxMovementSearchTime, normal_only);
+        uint32 pathType = 0;
+        Movement::PointsArray path = SearchForBestPath(x, y, z, modifiedZ, sPlayerbotAIConfig.MaxMovementSearchTime,
+                                                       normal_only, 8.0f, &pathType);
         if (modifiedZ == INVALID_HEIGHT)
             return false;
         float distance = bot->GetExactDist(x, y, modifiedZ);
         if (distance > 0.01f)
         {
+            if (!meshSkip)
+                botAI->GetTravel().NoteMeshMove(meshKind, pathType, MeshMove::LastStep(path));
             if (bot->IsSitState())
                 bot->SetStandState(UNIT_STAND_STATE_STAND);
 
@@ -1207,6 +1224,9 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     // if (bot->GetExactDist(tx, ty, tz) <= shortenTo)
     //     return false;
 
+    // WT71: the path as the mesh answered it, before it is shortened (a shortcut is a straight line, accepted still)
+    uint32 const meshType = type;
+    float const meshLastStep = MeshMove::LastStep(path.GetPath());
     path.ShortenPathUntilDist(G3D::Vector3(reachX, reachY, reachZ), shortenTo);
     G3D::Vector3 endPos = path.GetPath().back();
     // G2b (13e-decide, Natural.Track.RefreshMs): a tracked chase may set a new point while the bot still waits for its
@@ -1228,8 +1248,14 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         }
     }
 
+    bool const skipWas = meshSkip;
+    meshSkip = true;
     bool const moved = MoveTo(target->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
+    meshSkip = skipWas;
+    if (moved)
+        botAI->GetTravel().NoteMeshMove(meshKind == MeshMove::Kind::Other ? MeshMove::Kind::Follow : meshKind, meshType,
+                                        meshLastStep);
     // The refresh issued nothing: the old tracked move keeps its hold (the last movement is still that move)
     if (refreshed && !moved)
     {
@@ -2108,7 +2134,8 @@ bool MovementAction::MoveInside(uint32 mapId, float x, float y, float z, float d
 // }
 
 const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, float z, float& modified_z,
-                                                              int maxSearchCount, bool normal_only, float step)
+                                                              int maxSearchCount, bool normal_only, float step,
+                                                              uint32* pathType)
 {
     bool found = false;
     modified_z = INVALID_HEIGHT;
@@ -2117,6 +2144,8 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
     gen.CalculatePath(x, y, tempZ);
     Movement::PointsArray result = gen.GetPath();
     float min_length = gen.getPathLength();
+    if (pathType)
+        *pathType = gen.GetPathType();
     int typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE;
     if ((gen.GetPathType() & typeOk) && abs(tempZ - z) < 0.5f)
     {
@@ -2145,6 +2174,8 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
             min_length = gen.getPathLength();
             result = gen.GetPath();
             modified_z = tempZ;
+            if (pathType)
+                *pathType = gen.GetPathType();
         }
     }
     for (float delta = -step; count < maxSearchCount; count++, delta -= step)
@@ -2162,6 +2193,8 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
             min_length = gen.getPathLength();
             result = gen.GetPath();
             modified_z = tempZ;
+            if (pathType)
+                *pathType = gen.GetPathType();
         }
     }
     if (!found && normal_only)
