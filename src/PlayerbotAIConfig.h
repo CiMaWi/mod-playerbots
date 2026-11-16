@@ -417,6 +417,9 @@ public:
     std::string TestPlayerAccount;
     bool PvpTestEnable;
     uint32 PvpTestTimeoutSeconds;
+    // Playerbots.Test.MissLog (test only; CS5 design 6.3, 6.4): log a skipped pre-gate step or check follower whose
+    // own guard passes ("PreGate miss: <step>", "Live miss: <follower>")
+    bool TestMissLog;
     // Where pvptest duel and brawl fight: map id and position
     uint32 PvpTestFightMap;
     float PvpTestFightX;
@@ -535,6 +538,9 @@ public:
     bool TacticsEnable;
     std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
     uint32 TacticsConfigMask;
+    // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
+    // pass, from the switches and scopes at load and reload
+    std::array<uint8, TACTIC_CONTEXT_COUNT> TacticFollowersFor{};
     // Playerbots.Tactics.Hold.* and .Focus.*: the numbers of the target hold and the team plan (ArenaFocus.h)
     FocusConfig TacticFocus;
     CcConfig TacticCc;

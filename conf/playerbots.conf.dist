@@ -1619,6 +1619,11 @@ Playerbots.PvpTest.Enable = 0
 Playerbots.PvpTest.TimeoutSeconds = 900
 Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 
+# Test only (the per-update skips' proof): 1 makes a bot whose update or AI check the skips leave out evaluate the
+# guards of the skipped steps and followers, and log "PreGate miss: <step>" or "Live miss: <follower>" when one would
+# pass (a registration the skips lack). Costs those guard tests per update while on.
+Playerbots.Test.MissLog = 0
+
 # World log (on when Dir is set)
 # The server writes the world log to Dir, the session folder the hub's tools/ac.js sets on every start (empty = off):
 # append-only CSV segments per stream (event, state, meta, decision, recorder), each with a header row, named

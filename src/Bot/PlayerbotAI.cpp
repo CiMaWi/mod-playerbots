@@ -431,7 +431,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (traceTravel)
         LogTravelGate(*bot, *traceTravel, maintenanceMs, "pre_action");
 
-    tactics->RefreshNaturalTiming();
+    // The check's one context probe: the timing refresh, the live test and UpdateAIInternal's store read it
+    TacticContext const probed = ProbeTacticContext(bot);
+    tactics->RefreshNaturalTiming(probed);
 
     // G0h3-b where the natural reaction runs (its contexts, combat in a started match, a skill): the opponent memory,
     // the busy bot and the queue-like follow-up
@@ -439,8 +441,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
     bool const busyModel = tactics->stretchOff && tactics->cadenceCombat && pvpSkill != 0;
     // The tactics' check hook: the opponent memory, the tracking ring and the interrupt, focus and defensive
-    // followers
-    tactics->OnCheck(nowMs, busyModel);
+    // followers, for a bot the live test admits (the meter's count of live AI checks)
+    perf.Count(LightweightPerf::LiveAiChecks, tactics->OnCheck(nowMs, busyModel, probed));
 
     bool stoppedForKick = false;
 
@@ -761,7 +763,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     if (sPlayerbotAIConfig.TacticsEnable)
     {
-        tacticContext.store(static_cast<uint8>(ProbeTacticContext(bot)), std::memory_order_relaxed);
+        tacticContext.store(static_cast<uint8>(tactics->GetCheckProbe()), std::memory_order_relaxed);
         // Harness matches keep the "fight enemies" snapshot of .playerbots tactics show current
         if (pvpTestCounting)
             aiObjectContext->GetValue<GuidVector>("fight enemies")->Get();

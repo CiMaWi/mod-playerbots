@@ -19,6 +19,7 @@
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "TacticFollowers.h"
 #include "Tactics.h"
 #include "Talentspec.h"
 #include "ThreadCheck.h"
@@ -738,6 +739,7 @@ bool PlayerbotAIConfig::Initialize()
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
+    TestMissLog = sConfigMgr->GetOption<bool>("Playerbots.Test.MissLog", false);
     PvpTestTimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpTest.TimeoutSeconds", 900), 60, 3600);
     // "<map> <x> <y> <z> <o>"; the default is the Hillsbrad Foothills spot (a contested zone, duels allowed)
@@ -1616,6 +1618,14 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Interrupt.HoldTrendHorizonMs", TacticInterrupt.HoldTrendHorizonMs, MaxHoldMs);
     focusNumber("Interrupt.HoldTrendPctAtKnowledge1", TacticInterrupt.HoldTrendPctAtKnowledge1, MaxFocusPct);
     focusNumber("Interrupt.HoldTrendPctAtKnowledge99", TacticInterrupt.HoldTrendPctAtKnowledge99, MaxFocusPct);
+    // CS5 design 6.4: which of the check hook's followers can pass their guard in each context
+    TacticFollowerSwitches followerSwitches;
+    followerSwitches.TacticsEnable = TacticsEnable;
+    followerSwitches.TrackEnable = NaturalTrack.Enable;
+    followerSwitches.InterruptFollows = InterruptFollows(TacticInterrupt);
+    for (uint32 index = 0; index < TACTIC_FOLLOWER_COUNT; ++index)
+        followerSwitches.Scopes[index] = TacticConfig[static_cast<uint32>(TACTIC_FOLLOWER_TACTICS[index])].Scope;
+    TacticFollowersFor = BuildTacticFollowerTable(followerSwitches);
     // G4e: the focus target (Playerbots.Tactics.FocusTarget.*)
     focusNumber("FocusTarget.MoonPctAtTeamwork1", TacticFocus.FocusTargetMoonPctAtTeamwork1, MaxFocusPct);
     focusNumber("FocusTarget.MoonPctAtTeamwork99", TacticFocus.FocusTargetMoonPctAtTeamwork99, MaxFocusPct);
