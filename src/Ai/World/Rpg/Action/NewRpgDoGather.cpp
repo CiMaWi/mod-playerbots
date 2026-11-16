@@ -10,6 +10,7 @@
 #include "GatherNodeMgr.h"
 #include "LootObjectStack.h"
 #include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectDefines.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -74,8 +75,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // farming and let the maintenance logic (sell/destroy) catch up.
     if (AI_VALUE(uint8, "bag space") > 80)
     {
-        WorldLog::StatusReason const reasonScope("bags_full");
-        info.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "bags_full"});
         return true;
     }
 
@@ -148,8 +148,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         if (!node)
         {
             // nothing (left) to gather in this zone
-            WorldLog::StatusReason const reasonScope("finished");
-            info.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Finished);
             return true;
         }
         data.nodeSpawnId = node->spawnId;

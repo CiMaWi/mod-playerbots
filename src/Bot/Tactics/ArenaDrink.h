@@ -11,7 +11,7 @@
 #include <string>
 
 #include "ArenaKiteConfig.h"
-#include "Common.h"
+#include "Define.h"
 
 // The Drink tactic's pure parts (G3b, PLAN 3.15; numbers DrinkConfig, DT.9 scope arena and battleground, DT.10 skill
 // and effort). A bot tops up its mana before the gates open (preparation) and drinks in a safe window of a match; below

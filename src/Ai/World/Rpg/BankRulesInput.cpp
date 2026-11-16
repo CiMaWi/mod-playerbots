@@ -11,6 +11,7 @@
 #include <optional>
 
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailRulesInput.h"
@@ -372,7 +373,7 @@ void RefreshBankKnowledge(PlayerbotAI* botAI)
     ItemReader reader(botAI);
     ReadBank(bot, reader, in);
 
-    BankKnowledge& known = botAI->rpgInfo.bankMail.bank;
+    BankKnowledge& known = botAI->bankMail.bank;
     known.kept.clear();
     for (KeptEntry const& entry : KeptInBank(in))
         known.kept.push_back({entry.entry, entry.count, entry.laterWorth, entry.dueLevel});
@@ -386,9 +387,9 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
     if (!bot)
         return;
 
-    CarriedKeeps& carried = botAI->rpgInfo.bankMail.bank.carried;
+    CarriedKeeps& carried = botAI->bankMail.bank.carried;
     carried = CarriedKeeps();
-    if (!PlayerbotFactory::KeepsPossessions(bot))
+    if (!BotKind::KeepsPossessions(bot))
         return;
 
     BankIn in;
@@ -412,6 +413,6 @@ uint32_t CarriedWorthEach(PlayerbotAI* botAI, uint32_t entry)
     Player* bot = botAI ? botAI->GetBot() : nullptr;
     if (!bot)
         return 0;
-    return KeptWorthEach(botAI->rpgInfo.bankMail.bank.carried, entry, bot->GetLevel());
+    return KeptWorthEach(botAI->bankMail.bank.carried, entry, bot->GetLevel());
 }
 }  // namespace BankMail

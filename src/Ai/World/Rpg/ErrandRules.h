@@ -40,9 +40,11 @@ enum class ErrandKind : uint8_t
     Weapon,        // a weapon skill at a weapon master (WU15a)
     Mail,          // the bank-mail plan (WB8)
     BankWithdraw,  // due items from the bank
-    BankDeposit    // kept items into the bank
+    BankDeposit,   // kept items into the bank
+    Tame,          // a hunter without a pet tames a beast at its spawn (upkeep WU21b)
+    Stable         // a hunter stores an unwanted pet at a stable master, then tames a wanted one (upkeep WU21c)
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 13;
+constexpr uint8_t ERRAND_KIND_COUNT = 15;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -74,6 +76,10 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "bank_withdraw";
         case ErrandKind::BankDeposit:
             return "bank_deposit";
+        case ErrandKind::Tame:
+            return "tame";
+        case ErrandKind::Stable:
+            return "stable";
     }
     return "other";
 }
@@ -100,11 +106,12 @@ constexpr uint32_t StockServices(uint8_t stockKinds)
 }
 constexpr uint32_t SERVICE_MAILBOX = 1u << 8;
 constexpr uint32_t SERVICE_BANKER = 1u << 9;
+constexpr uint32_t SERVICE_STABLE_MASTER = 1u << 11;  // keeps a hunter's pets (WU21c)
 // Every service has a bit of its own: two services merged onto one bit fail here
 constexpr uint32_t SERVICE_BITS[] = {SERVICE_QUEST_ENDER,    SERVICE_VENDOR,        SERVICE_REPAIR,
                                      SERVICE_INNKEEPER,      SERVICE_FLIGHT_MASTER, SERVICE_TRAINER,
                                      SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,  SERVICE_WEAPON_MASTER,
-                                     SERVICE_MAILBOX,        SERVICE_BANKER};
+                                     SERVICE_MAILBOX,        SERVICE_BANKER,        SERVICE_STABLE_MASTER};
 constexpr bool ServiceBitsDistinct()
 {
     uint32_t seen = 0;
@@ -221,6 +228,20 @@ struct WeaponAt
     uint32_t Spell = 0;
 };
 
+// The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
+struct PetAt
+{
+    uint32_t Beast = 0;  // the creature entry
+    ErrandPlace Place;
+};
+
+// The pet need's swap form (WU21c): the old pet into the stable, then the tame of the wanted beast; Beast 0 = none
+struct StableAt
+{
+    uint32_t Beast = 0;  // the wanted beast the tame after the stable goes for
+    ErrandPlace Place;   // its spawn
+};
+
 // What the providers read: filled on the bot's map thread, never a Player
 struct ErrandSnapshot
 {
@@ -256,6 +277,8 @@ struct ErrandSnapshot
     TrainingAt Training;
     RidingAt Riding;  // one rank per trip, the lowest
     WeaponAt Weapon;  // one weapon skill per trip
+    PetAt Pet;
+    StableAt Stable;
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -400,6 +423,42 @@ inline void ProvideWeaponMaster(ErrandSnapshot const& snapshot, std::vector<Erra
     offers.push_back(offer);
 }
 
+// A hunter without a pet (§3.11, WU21b): a trip to the beast's spawn, due at once; no service, the place is the beast's
+inline void ProvideTame(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Pet.Beast)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Tame;
+    offer.Placed = true;
+    offer.Place = snapshot.Pet.Place;
+    offer.WorthCopper = DueWorth(snapshot.Rates);
+    offer.Id = snapshot.Pet.Beast;
+    offer.Target = snapshot.Pet.Beast;
+    offer.Due = true;
+    offers.push_back(offer);
+}
+
+// A hunter with an unwanted pet (§3.11, WU21c): a trip to a stable master, due once the slot is paid (the need's
+// rule); the stop's visit stores the pet and puts the tame of the wanted beast after it on the trip. The offer is not
+// placed (any stable master takes it); its Place is the beast's spawn, which PlanTrip holds to the tame's walk limit
+inline void ProvideStable(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Stable.Beast)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Stable;
+    offer.Service = SERVICE_STABLE_MASTER;
+    offer.Place = snapshot.Stable.Place;
+    offer.WorthCopper = DueWorth(snapshot.Rates);
+    offer.Id = snapshot.Stable.Beast;
+    offer.Target = snapshot.Stable.Beast;
+    offer.Due = true;
+    offers.push_back(offer);
+}
+
 // The errand check on a map without a vendor that trades with the bot (WU12 NOTE 4): a trainer need still plans its
 // trip (class training or a riding rank, their trainers are stops of their own); without one it is skipped
 constexpr bool ErrandCheckPlans(bool vendorOnMap, bool trainerWanted) { return vendorOnMap || trainerWanted; }
@@ -535,6 +594,8 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::Train, "train", &ProvideTraining},
         {ErrandKind::Ride, "ride", &ProvideRiding},
         {ErrandKind::Weapon, "weapon", &ProvideWeaponMaster},
+        {ErrandKind::Tame, "tame", &ProvideTame},
+        {ErrandKind::Stable, "stable", &ProvideStable},
     };
     return rows;
 }
@@ -678,6 +739,20 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         stop.OnRoute = true;
 
     std::vector<bool> done(offers.size(), false);
+    // The swap's beast (WU21d): the stable stores the pet only for a beast the tame offer would reach, the same walk
+    // limit from the start as the tame's own trip; else the swap is refused too_far and the hunter keeps its pet
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        if (offers[i].Kind != ErrandKind::Stable)
+            continue;
+
+        float const minutes = WalkMinutes(Yards(request.Start, offers[i].Place), request.YardsPerSecond);
+        if (minutes <= ERRAND_MAX_WALK_MINUTES)
+            continue;
+
+        done[i] = true;
+        plan.Refused.push_back({offers[i], "too_far", 0.0f, minutes});
+    }
     auto const join = [&plan, &offers, &done]()
     {
         for (std::size_t i = 0; i < offers.size(); ++i)
@@ -779,6 +854,40 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
     }
     RankBeforeMount(plan.Stops);
     return plan;
+}
+
+// How an errand trip's end is recorded (the status core's errand clean-up, CS14)
+enum class ErrandEndRow : uint8_t
+{
+    Run,    // errand_run: a stop was visited, the trip's minutes count for t
+    Abort,  // errand_abort: no stop was visited
+    Sick    // errand_sick: resurrection sickness ended the trip; its minutes do not count
+};
+
+// Every end stamps the errand check; only a healthy trip with a visited stop adds its minutes to t
+inline ErrandEndRow ErrandEnd(SlotMeasure& measure, uint32_t nowMs, float minutes, bool visited, bool sick)
+{
+    StampErrandCheck(measure, nowMs);
+    if (sick)
+        return ErrandEndRow::Sick;
+    if (!visited)
+        return ErrandEndRow::Abort;
+    AddTripMinutes(measure, minutes);
+    return ErrandEndRow::Run;
+}
+
+constexpr char const* ErrandEndWord(ErrandEndRow row)
+{
+    switch (row)
+    {
+        case ErrandEndRow::Run:
+            return "errand_run";
+        case ErrandEndRow::Abort:
+            return "errand_abort";
+        case ErrandEndRow::Sick:
+            return "errand_sick";
+    }
+    return "";
 }
 }  // namespace WorldTravel
 

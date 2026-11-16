@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "BotAttributes.h"
-#include "Common.h"
+#include "Define.h"
 #include "NaturalPathConfig.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"
@@ -34,7 +34,7 @@ class PlayerbotAI;
 // (Hops.Enable: a short running jump along the first leg of a run, on flat ground, the arc ray-checked, never within
 // EdgeYards of an edge, never within 3 s of a cast) and walking (Walk.Enable: short legs out of combat). Every draw
 // comes from a hash (no RNG state). The game side is in MovementActions.cpp (MoveTo, FollowNaturalPath) and
-// PlayerbotAI.cpp (NaturalPathHere, the params by SetPvpSkill); the numbers are PathConfig's.
+// NaturalMove.cpp (NaturalPathHere; the params by SetPvpSkill in BotTactics.cpp); the numbers are PathConfig's.
 
 constexpr float PATH_PI = 3.14159265358979323846f;
 constexpr float PATH_GRAVITY = 19.291105f;        // Movement::gravity (MovementUtil.cpp)
@@ -620,7 +620,7 @@ inline bool PathWalkLeg(PathConfig const& config, bool inCombat, float yards)
            yards <= static_cast<float>(config.WalkMaxLegYards);
 }
 
-// The per-bot state (PlayerbotAI::GetPathState; the bot's own update, tactics show on the world thread)
+// The per-bot state (BotTactics::GetPathState; the bot's own update, tactics show on the world thread)
 struct PathBotState
 {
     uint32 InSightCheckedMs = 0;  // NaturalPathHere's real-player-in-sight cache (OutsidePvpInSight)
@@ -1006,7 +1006,7 @@ void RunPathChecks(Check&& check)
     }
 }
 
-// Whether the bot walks natural paths now (PlayerbotAI.cpp; as NaturalTrackHere with the Path options)
+// Whether the bot walks natural paths now (NaturalMove.cpp; as NaturalTrackHere with the Path options)
 bool NaturalPathHere(PlayerbotAI* botAI, uint32 nowMs);
 
 // Per check after the bot's action (PlayerbotAI::UpdateAIInternal; MovementActions.cpp): ends a walked leg's walk

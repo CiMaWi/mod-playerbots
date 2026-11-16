@@ -7,8 +7,8 @@
 #ifndef _PLAYERBOT_NATURALTURNCONFIG_H
 #define _PLAYERBOT_NATURALTURNCONFIG_H
 
-#include "Common.h"
-#include "Tactics.h"
+#include "Define.h"
+#include "TacticIds.h"
 
 // The numbers of the natural facing (Playerbots.Natural.Facing.*, G2a), read once at config load
 // (PlayerbotAIConfig::NaturalFacing); the initial values are the conf.dist defaults (proposals). Angles in degrees,

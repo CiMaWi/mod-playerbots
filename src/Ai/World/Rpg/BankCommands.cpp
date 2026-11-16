@@ -11,17 +11,18 @@
 #include <string>
 #include <vector>
 
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankRulesSelftest.h"
 #include "BankVisit.h"
+#include "BotKind.h"
 #include "Chat.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 
 namespace BankMail
@@ -62,14 +63,13 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args)
     BankIn const bank = BuildBankIn(botAI);
     std::vector<KeptEntry> const kept = KeptInBank(bank);
     DueTotal const due = DueAt(kept, bank.bot.level);
-    BankKnowledge const& known = botAI->rpgInfo.bankMail.bank;
+    BankKnowledge const& known = botAI->bankMail.bank;
     handler->PSendSysMessage(
         "BANK {}: kept {} (due {}, worth {}), free slots {}/{}, level {}, keeps possessions {}; "
         "known: {} kept, {} due, {} free, {} carried{}",
         bot->GetName(), kept.size(), due.count, due.worth, bank.bankSpace.freeSlots, BANK_ITEM_SLOTS, bank.bot.level,
-        PlayerbotFactory::KeepsPossessions(bot) ? "yes" : "no", known.kept.size(),
-        DueAt(known.kept, bank.bot.level).count, known.freeSlots, known.carried.items.size(),
-        known.built ? "" : " (not built)");
+        BotKind::KeepsPossessions(bot) ? "yes" : "no", known.kept.size(), DueAt(known.kept, bank.bot.level).count,
+        known.freeSlots, known.carried.items.size(), known.built ? "" : " (not built)");
     for (size_t i = 0; i < kept.size() && i < LINES_SHOWN; ++i)
         handler->PSendSysMessage("  kept {} {} x{}: later {} at level {} ({})", kept[i].entry, ItemName(kept[i].entry),
                                  kept[i].count, kept[i].laterWorth, kept[i].dueLevel, kept[i].provider);
@@ -107,14 +107,14 @@ bool HandleBankVisitCommand(ChatHandler* handler, char const* args)
     // Lab fixtures, arena bots and bots with a real master keep today's behaviour (the chat command `bank`); a bot
     // runs one visit at a time
     char const* refusal = nullptr;
-    if (!PlayerbotFactory::KeepsPossessions(bot))
+    if (!BotKind::KeepsPossessions(bot))
         refusal = "the bot does not keep its possessions (not a persistent bot)";
     else if (!bot->IsAlive())
         refusal = "the bot is dead";
     else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
         refusal = "the bot has no new rpg strategy";
     else
-        refusal = VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Bank);
+        refusal = VisitStartRefusal(botAI->bankMail, VisitKind::Bank);
     // World thread, between the map updates: the bot's place and its visit state are read and set at rest
     std::optional<BankerSpot> const spot = refusal ? std::nullopt : FindBankerSpot(bot, refusal);
     // A test command (WB.12): the bot stands near a banker; getting to a far one is the travel errand's job

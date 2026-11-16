@@ -7,6 +7,7 @@
 #include "Trigger.h"
 
 #include "AiObjectContext.h"
+#include "BotTactics.h"
 #include "Event.h"
 #include "NaturalReaction.h"
 #include "PlayerbotAI.h"
@@ -45,9 +46,9 @@ bool Trigger::needCheck(uint32 now)
         return true;
 
     // A reaction trigger checks at the natural cadence's faster interval while it runs (the bool first: O(1))
-    uint32 const interval =
-        ReactionCheckIntervalMs(uint32(checkInterval), botAI->IsNaturalCadenceActive() && IsReactionTrigger(),
-                                sPlayerbotAIConfig.NaturalCadenceCheckMs);
+    uint32 const interval = ReactionCheckIntervalMs(uint32(checkInterval),
+                                                    botAI->GetTactics().IsNaturalCadenceActive() && IsReactionTrigger(),
+                                                    sPlayerbotAIConfig.NaturalCadenceCheckMs);
     if (!lastCheckTime || now - lastCheckTime >= interval)
     {
         lastCheckTime = now;

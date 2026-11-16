@@ -16,63 +16,54 @@
 #include <sstream>
 #include <string>
 
-#include "LightweightPerf.h"
 #include "ActivityBudget.h"
 #include "AiFactory.h"
-#include "ArenaCcSpells.h"
-#include "ArenaCover.h"
-#include "ArenaDefensive.h"
-#include "ArenaDrink.h"
-#include "ArenaInterrupt.h"
-#include "ArenaInterruptSpells.h"
-#include "ArenaJump.h"
-#include "ArenaKite.h"
+#include "BankMailService.h"
 #include "Battleground.h"
+#include "BotTactics.h"
+#include "BotTacticsInternal.h"
+#include "BotTravel.h"
+#include "BotTravelInternal.h"
+#include "BridgeAbilities.h"
 #include "BudgetValues.h"
 #include "CcState.h"
-#include "CcTacticStrategy.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
-#include "CheckMountStateAction.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
-#include "DefensiveTacticStrategy.h"
 #include "EmoteAction.h"
 #include "Engine.h"
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
-#include "FightBook.h"
-#include "FightBookRules.h"
+#include "FightEnthusiasm.h"
+#include "FleeRules.h"
 #include "FocusState.h"
 #include "GameObjectData.h"
-#include "GameObjectModel.h"
 #include "GameTime.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
+#include "LightweightPerf.h"
 #include "Log.h"
 #include "LogLevelAction.h"
 #include "LootObjectStack.h"
 #include "Map.h"
 #include "MapMgr.h"
 #include "MatchTrace.h"
-#include "ModelIgnoreFlags.h"
 #include "MotionMaster.h"
-#include "MoveSpline.h"
-#include "MoveSplineInit.h"
-#include "NaturalCast.h"
-#include "NaturalMove.h"
 #include "NaturalPath.h"
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
 #include "NewRpgAction.h"
+#include "NewRpgStatusEnd.h"
 #include "NewRpgStrategy.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -86,8 +77,8 @@
 #include "PlayerbotTextMgr.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
-#include "PointMovementGenerator.h"
 #include "PositionValue.h"
+#include "PvpTestCounters.h"
 #include "QuestStatEvents.h"
 #include "RBAC.h"
 #include "RaceMgr.h"
@@ -97,20 +88,21 @@
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
-#include "SkillStrategy.h"
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "TestConstraints.h"
+#include "TestOrders.h"
 #include "ThreadCheck.h"
-#include "Transport.h"
-#include "TravelTransportGeometry.h"
+#include "TravelLegRules.h"
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
+#include "WorkTally.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 #include "WorldLogStatus.h"
+#include "WorldPvp.h"
 #include "WsgRouteState.h"
 
 namespace
@@ -177,7 +169,9 @@ PlayerbotAI::PlayerbotAI()
       currentState(BOT_STATE_NON_COMBAT),
       chatHelper(this),
       chatFilter(this),
-      security(nullptr)
+      security(nullptr),
+      tactics(std::make_unique<BotTactics>(this, nullptr)),
+      botTravel(std::make_unique<BotTravel>(this, nullptr))
 {
     for (uint8 i = 0; i < BOT_STATE_MAX; i++)
         engines[i] = nullptr;
@@ -196,9 +190,10 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       master(nullptr),
       chatHelper(this),
       chatFilter(this),
-      security(bot)  // reorder args - whipowill
+      security(bot),  // reorder args - whipowill
+      tactics(std::make_unique<BotTactics>(this, bot)),
+      botTravel(std::make_unique<BotTravel>(this, bot))
 {
-    rpgInfo.bot = bot;
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
         bot->SetTaxiCheater(true);
 
@@ -301,925 +296,19 @@ PlayerbotAI::~PlayerbotAI()
         PlayerbotsMgr::instance().RemovePlayerBotData(bot->GetGUID(), true);
 }
 
-namespace
+// The miss switch (Playerbots.Test.MissLog; CS5 design 6.3): a registered pre-gate step whose old guard passes while
+// its bit is clear would be skipped. The owners log their own bits; Order, JumpTest and Dismount keep no other state
+void PlayerbotAI::LogPreGateMisses() const
 {
-constexpr uint64 BusyWatchSalt = 0x510E527FADE682D1ULL;
-
-// The GCD a spell starts (Spell::TriggerGlobalCooldown without the spell mods)
-uint32 NaturalGcdMs(Player* bot, SpellInfo const* info)
-{
-    int32 gcd = static_cast<int32>(info->StartRecoveryTime);
-    if (gcd < 1000 || gcd > 1500)
-        return static_cast<uint32>(std::max(0, gcd));
-
-    if (info->StartRecoveryCategory == 133 && gcd == 1500 && info->DmgClass != SPELL_DAMAGE_CLASS_MELEE &&
-        info->DmgClass != SPELL_DAMAGE_CLASS_RANGED && !info->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT) &&
-        !info->HasAttribute(SPELL_ATTR0_IS_ABILITY))
-        gcd = static_cast<int32>(gcd * bot->GetFloatValue(UNIT_MOD_CAST_SPEED));
-
-    return static_cast<uint32>(std::clamp(gcd, 1000, 1500));
-}
-
-// The bot's own interrupt by class (the interrupt triggers' spells; a warlock's is its pet's and needs no stop)
-char const* OwnInterruptName(uint8 playerClass)
-{
-    switch (playerClass)
-    {
-        case CLASS_MAGE:
-            return "counterspell";
-        case CLASS_SHAMAN:
-            return "wind shear";
-        case CLASS_ROGUE:
-            return "kick";
-        case CLASS_DEATH_KNIGHT:
-            return "mind freeze";
-        case CLASS_HUNTER:
-            return "silencing shot";
-        case CLASS_PALADIN:
-            return "hammer of justice";
-        case CLASS_DRUID:
-            return "bash";
-        default:
-            return nullptr;
-    }
-}
-
-// User note 1 (G0h3-b): a casting bot sees its target's cast bar like any player. Once its reaction is over (its draw
-// and the shortcut's think cost, end to end from the bar's start) it stops its own cast for a ready kick of an
-// important cast that its own cast would end too late for; the engine's kick follows in the same check. One stop
-// per enemy cast (the trigger that picks the kick may not fire: a mage kicks only an enemy healer, a resto shaman's
-// heal outranks its wind shear), and none within REACTION_STOP_BACKOFF_MS after a stop the kick did not follow.
-bool StopOwnCastForKickDue(PlayerbotAI* botAI, Player* bot, uint32 ownLeftMs, uint32 nowMs)
-{
-    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
-    AiObjectContext* const context = botAI->GetAiObjectContext();
-    Unit* const enemy = context->GetValue<Unit*>("current target")->Get();
-    if (!enemy || !enemy->IsInWorld() || !enemy->IsAlive() || !bot->IsHostileTo(enemy))
-        return false;
-
-    Spell* const cast = enemy->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-    if (!cast || cast->getState() != SPELL_STATE_PREPARING || cast->GetCastTime() <= 0 || !cast->GetSpellInfo())
-        return false;
-
-    uint32 const castMs = static_cast<uint32>(cast->GetCastTime());
-    uint32 const enemyLeft = static_cast<uint32>(std::clamp(cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
-    if (!StopOwnCastForKick(params.Reeval, castMs, enemyLeft, ownLeftMs))
-        return false;
-
-    // One decision per enemy cast, due from the bar's start (a pushback moves the end within half the cast)
-    ReactionBusyState& busy = botAI->GetReactionBusy();
-    uint32 const enemyGuid = enemy->GetGUID().GetCounter();
-    uint32 const spellId = cast->GetSpellInfo()->Id;
-    uint32 const endMs = nowMs + enemyLeft;
-    if (!busy.Watches(enemyGuid, spellId, endMs, castMs / 2))
-    {
-        uint64 const guid = bot->GetGUID().GetCounter();
-        uint32 ready = ReactionMs(botAI->GetReactionState(), params.MinMs,
-                                  SplitMix64((guid << 32) ^ enemyGuid ^ endMs ^ BusyWatchSalt));
-        if (params.Think.Enable)
-            ready += botAI->GetReactionTypes().ThinkShortcutMs;
-
-        uint32 const tick =
-            params.ServerTickMs >= 0 ? static_cast<uint32>(params.ServerTickMs) : botAI->GetLastUpdateDiff() / 2;
-        busy.Watch(enemyGuid, spellId, endMs, nowMs - (castMs - enemyLeft) + EndToEndTargetMs(params, ready, tick));
-    }
-
-    if (!busy.StopDue(nowMs))
-        return false;
-
-    char const* const kickName = OwnInterruptName(bot->getClass());
-    uint32 const kickId = kickName ? context->GetValue<uint32>("spell id", kickName)->Get() : 0;
-    if (!kickId || !botAI->IsInterruptableSpellCasting(enemy, kickName) || !botAI->CanCastSpell(kickId, enemy, true))
-        return false;
-
-    LOG_TRACE("playerbots.reaction", "busy stop skill {} spell {} cast {} left {} own {} late {} at {}",
-              botAI->GetPvpSkill(), spellId, castMs, enemyLeft, ownLeftMs, nowMs - busy.WatchDueMs, nowMs);
-    busy.NoteStop(nowMs, enemyGuid, kickId);
-    if (PerfMonitor::IsEnabled())
-        PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::StoppedOwnCast"));
-
-    return true;
-}
-
-// G5b: whether the bot is the one of its group that counts what its side sees once (the lowest guid of the bots alive
-// in its map): every bot of a side watches the same enemy heal, tactics.intHealDone counts it once
-bool CountsForGroup(Player* bot)
-{
-    Group* const group = bot->GetGroup();
-    if (!group)
-        return true;
-
-    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-    {
-        Player* const member = ref->GetSource();
-        if (member && member != bot && member->IsInWorld() && member->IsAlive() && member->IsInMap(bot) &&
-            member->GetGUID().GetCounter() < bot->GetGUID().GetCounter() && GET_PLAYERBOT_AI(member))
-            return false;
-    }
-
-    return true;
-}
-
-// The opponent memory (G0h3-b, DT.12): at the bot's own checks in a started match, the cast bars of its target and
-// of its attackers (as many as the memory holds); a bar gone before its end without a visible interrupt (a school
-// lock, a silence, a stun or fear, death) was cancelled. Cleared when the match changes or ends.
-void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowMs)
-{
-    OpponentMemory& memory = botAI->GetOpponentMemory();
-    Battleground* const battleground = bot->GetBattleground();
-    uint32 const matchId =
-        battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
-    if (matchId != memory.MatchId)
-    {
-        if (memory.MatchId != 0)
-        {
-            uint32 enemies = 0;
-            uint32 casts = 0;
-            uint32 cancels = 0;
-            for (OpponentMemorySlot const& slot : memory.Slots)
-            {
-                if (slot.Guid == 0)
-                    continue;
-
-                ++enemies;
-                casts += slot.CastsSeen;
-                cancels += slot.CancelsSeen;
-            }
-
-            LOG_TRACE("playerbots.reaction", "memory clear match {} skill {} enemies {} casts {} cancels {} at {}",
-                      memory.MatchId, botAI->GetPvpSkill(), enemies, casts, cancels, nowMs);
-        }
-
-        memory.Clear(matchId);
-    }
-
-    if (!observe || matchId == 0)
-        return;
-
-    uint32 const tolerance = sPlayerbotAIConfig.NaturalReaction.Memory.EndToleranceMs;
-    AiObjectContext* const context = botAI->GetAiObjectContext();
-    // G5d: the enemies seen with a defensive up and their health (the Defensive tactic's opponent memory), at most
-    // every DEFENSIVE_OBSERVE_MS
-    bool defensiveScan = false;
-    if (sPlayerbotAIConfig.TacticDefensive.OpponentEnable && botAI->TacticEnabledHere(TacticId::Defensive))
-    {
-        DefensiveBotState& defensive = botAI->GetDefensiveState();
-        defensiveScan = defensive.LastObserveMs == 0 || nowMs - defensive.LastObserveMs >= DEFENSIVE_OBSERVE_MS;
-        if (defensiveScan)
-            defensive.LastObserveMs = std::max(nowMs, 1u);
-    }
-
-    uint32 seen = 0;
-    auto const look = [&](Unit* unit)
-    {
-        if (!unit || !unit->IsInWorld() || !unit->IsPlayer() || !bot->IsHostileTo(unit))
-            return;
-
-        ++seen;
-        uint32 const guid = unit->GetGUID().GetCounter();
-        if (defensiveScan)
-            ObserveEnemyDefensive(botAI, unit, nowMs);
-
-        OpponentMemorySlot const* const slot = memory.Find(guid);
-        Spell* const spell = unit->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-        if (spell && spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0 && spell->GetSpellInfo())
-        {
-            uint32 const left = static_cast<uint32>(std::clamp(spell->GetCastTimeRemaining(), 0, spell->GetCastTime()));
-            uint32 const elapsed = static_cast<uint32>(spell->GetCastTime()) - left;
-            uint32 const spellId = spell->GetSpellInfo()->Id;
-            // The bar seen before (begun before the last look), maybe pushed back: the same cast
-            bool const same =
-                slot && slot->ViewEndMs != 0 && slot->SpellId == spellId && elapsed >= nowMs - slot->LastSeenMs;
-            memory.NoteCast(guid, spellId, same ? slot->ViewEndMs : nowMs + left, nowMs, tolerance);
-            return;
-        }
-
-        if (!slot || slot->ViewEndMs == 0)
-            return;
-
-        Player* const player = unit->ToPlayer();
-        bool const interrupted =
-            !unit->IsAlive() || unit->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING) ||
-            unit->HasUnitFlag(UNIT_FLAG_SILENCED) || (player && player->HasSpellCooldown(slot->SpellId));
-        // G5b: an enemy heal seen to its end (tactics.intHealDone), once per heal for the bot's group
-        if (!interrupted && botAI->IsPvpTestCounting() &&
-            static_cast<int32>(slot->ViewEndMs - nowMs) <= static_cast<int32>(tolerance) &&
-            ArenaInterrupt::Classify(InterruptSpellFactsOf(sSpellMgr->GetSpellInfo(slot->SpellId))) ==
-                ArenaInterrupt::Kind::Heal &&
-            CountsForGroup(bot))
-            botAI->CountTactic(TacticCounter::IntHealDone);
-
-        memory.NoteCastGone(guid, nowMs, tolerance, interrupted);
-    };
-
-    Unit* const target = context->GetValue<Unit*>("current target")->Get();
-    look(target);
-    for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->LazyGet())
-    {
-        if (seen >= OPPONENT_MEMORY_SLOTS)
-            break;
-
-        if (!target || guid != target->GetGUID())
-            look(botAI->GetUnit(guid));
-    }
-}
-
-// G2b: the tracking ring's feed at the bot's own checks while it fights where it tracks naturally (TrackFeed): the
-// current target's true position, as ReachCombatTo's own TrackObserve. Fed only by chase calls, a chase after a pause
-// (an in-range cast, a held move) found the ring stale, started it again and ran to the target's true position. Cost
-// per check in a fight: NaturalTrackHere (cached), one value read and a compare; a ring push at most once per sample
-// gap (50 to 111 ms); nothing out of combat or with Natural.Track.Enable 0.
-void FeedNaturalTrack(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
-{
-    if (!bot->IsInCombat() || !NaturalTrackHere(botAI, nowMs))
-        return;
-
-    Unit* const target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
-    if (!target || target == bot || !target->IsInWorld() || !target->IsInMap(bot) || !target->IsAlive() ||
-        bot->IsFriendlyTo(target))
-        return;
-
-    TrackFeed(botAI->GetTrackState(), sPlayerbotAIConfig.NaturalTrack, target->GetGUID().GetRawValue(), nowMs,
-              target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
-}
-
-// G5c-c: whether the Interrupt tactic follows the bot's kick and the enemies (HoldPolicy 1 or the attention gap); off
-// at the conf.dist defaults, so G5b's path stays as it was
-bool InterruptFollows(InterruptConfig const& config)
-{
-    return config.HoldPolicy != 0 || config.AttentionMsAtSkill1 != 0 || config.AttentionMsAtSkill99 != 0;
-}
-
-uint8 InterruptHpPct(Unit const* unit)
-{
-    return static_cast<uint8>(std::clamp(static_cast<int32>(unit->GetHealthPct() + 0.5f), 0, 100));
-}
-
-// The end of a hold episode: tactics.intHoldPaid and intHoldVain (harness matches only; count false for the match's
-// end, which may come after the harness took the record) and its trace line
-void NoteInterruptHoldEnd(PlayerbotAI* botAI, InterruptHoldEnd end, uint32 heldMs, char const* cause, uint32 nowMs,
-                          bool count = true)
-{
-    if (end == InterruptHoldEnd::None)
-        return;
-
-    if (count && end == InterruptHoldEnd::Paid)
-        botAI->CountTactic(TacticCounter::IntHoldPaid);
-    else if (count && end == InterruptHoldEnd::Vain)
-        botAI->CountTactic(TacticCounter::IntHoldVain);
-
-    LOG_TRACE("playerbots.reaction", "interrupt hold end {} by {} skill {} held {} at {}", InterruptHoldEndName(end),
-              cause, botAI->GetPvpSkill(), heldMs, nowMs);
-}
-
-// The bot's spec for its warrior kicks (InterruptKickFacts)
-InterruptWarriorSpec InterruptWarriorSpecOf(Player* bot)
-{
-    if (bot->getClass() != CLASS_WARRIOR)
-        return InterruptWarriorSpec::None;
-
-    switch (AiFactory::GetPlayerSpecTab(bot))
-    {
-        case WARRIOR_TAB_ARMS:
-            return InterruptWarriorSpec::Arms;
-        case WARRIOR_TAB_FURY:
-            return InterruptWarriorSpec::Fury;
-        default:
-            return InterruptWarriorSpec::Protection;
-    }
-}
-
-// A new match (or the bot's first fight): the open episode ends (not counted), the kick spells come from the bot's
-// spell book (once per match, with the gear worn at the start), ready as their cooldowns say: only kicks the bot casts
-// at an enemy (CastsKickSpell: aimed at one enemy, the item requirement met, the warrior spec's kick)
-void StartInterruptMatch(PlayerbotAI* botAI, Player* bot, InterruptBotState& state, uint32 matchId, uint32 nowMs)
-{
-    uint32 const heldMs = state.Hold.HeldMs(nowMs);
-    NoteInterruptHoldEnd(botAI, state.StartMatch(matchId, nowMs), heldMs, "match", nowMs, false);
-    uint8 const spec = bot->GetActiveSpec();
-    InterruptKickFacts facts;
-    facts.Warrior = InterruptWarriorSpecOf(bot);
-    facts.ArmsSwap = facts.Warrior == InterruptWarriorSpec::Arms &&
-                     sPlayerbotAIConfig.TacticInterrupt.ArmsPummel != 0 &&
-                     botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "berserker stance")->Get() != 0;
-    for (auto const& [spellId, spell] : bot->GetSpellMap())
-    {
-        if (!spell || spell->State == PLAYERSPELL_REMOVED || !spell->Active || !spell->IsInSpec(spec))
-            continue;
-
-        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
-        if (!info || info->IsPassive() || InterruptUseOf(info) != InterruptUse::Kick)
-            continue;
-
-        facts.Aimed = InterruptKickAimed(info);
-        facts.ItemFits = bot->HasItemFitToSpellRequirements(info);
-        facts.NeedsShield = info->EquippedItemClass == ITEM_CLASS_ARMOR &&
-                            (info->EquippedItemSubClassMask & (1 << ITEM_SUBCLASS_ARMOR_SHIELD)) != 0;
-        if (CastsKickSpell(facts))
-            state.AddKickSpell(spellId, nowMs + bot->GetSpellCooldownDelay(spellId));
-    }
-}
-
-// G5c-c: at the bot's checks while the Interrupt tactic follows (InterruptFollows): the match (StartInterruptMatch at
-// a new one) and, under HoldPolicy 1 in a fight, every HOLD_TREND_SAMPLE_MS the enemy players' health bars and their
-// cast heal bars (at most HOLD_TREND_UNITS units, one Classify per cast)
-void FollowInterruptFight(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
-{
-    InterruptConfig const& config = sPlayerbotAIConfig.TacticInterrupt;
-    if (!botAI->TacticEnabledHere(TacticId::Interrupt))
-        return;
-
-    InterruptBotState& state = botAI->GetInterruptState();
-    Battleground* const battleground = bot->GetBattleground();
-    uint32 const matchId =
-        battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
-    if (!state.MatchStarted || matchId != state.MatchId)
-    {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "ArenaInterrupt::StartMatch"));
-            StartInterruptMatch(botAI, bot, state, matchId, nowMs);
-        }
-        else
-            StartInterruptMatch(botAI, bot, state, matchId, nowMs);
-    }
-
-    if (config.HoldPolicy == 0 || !state.HasKickSpell() || !bot->IsInCombat() ||
-        nowMs - state.TrendSampleMs < HOLD_TREND_SAMPLE_MS)
-        return;
-
-    PerfMonitorScope scope(
-        PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "ArenaInterrupt::TrendSample") : nullptr);
-    state.TrendSampleMs = nowMs;
-    uint32 units = 0;
-    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
-    {
-        if (units >= HOLD_TREND_UNITS)
-            break;
-
-        Unit* const unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsInWorld() || !unit->IsAlive() || !unit->IsPlayer())
-            continue;
-
-        ++units;
-        InterruptEnemyTrack& track = state.Track(guid.GetCounter(), nowMs);
-        track.Note(InterruptHpPct(unit), nowMs);
-        InterruptBar bar;
-        if (!ReadInterruptBar(unit, bar))
-            continue;
-
-        uint32 const startMs = nowMs - bar.ElapsedMs;
-        uint32 const gap = startMs > track.BarStartMs ? startMs - track.BarStartMs : track.BarStartMs - startMs;
-        if (bar.Info->Id == track.BarSpellId && gap <= bar.CastMs / 2)
-            continue;
-
-        track.BarSpellId = bar.Info->Id;
-        track.BarStartMs = startMs;
-        if (ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) != ArenaInterrupt::Kind::Heal)
-            continue;
-
-        track.HealSpellId = bar.Info->Id;
-        track.HealCastMs = bar.CastMs;
-        track.HealStartMs = startMs;
-        state.NoteHoldHealBar();
-    }
-}
-
-// G4e: an enemy the bot has seen heal (a heal bar now, or a heal among its last casts in the opponent memory; DT.12)
-bool FocusSeenHealing(PlayerbotAI* botAI, Unit* unit)
-{
-    InterruptBar bar;
-    if (ReadInterruptBar(unit, bar) &&
-        ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) == ArenaInterrupt::Kind::Heal)
-        return true;
-
-    auto const healSpell = [](uint32 spellId)
-    {
-        return spellId != 0 && ArenaInterrupt::Classify(InterruptSpellFactsOf(sSpellMgr->GetSpellInfo(spellId))) ==
-                                   ArenaInterrupt::Kind::Heal;
-    };
-    OpponentMemorySlot const* const slot = botAI->GetOpponentMemory().Find(unit->GetGUID().GetCounter());
-    return slot && (healSpell(slot->SpellId) || healSpell(slot->PrevSpellId));
-}
-
-// A focus candidate (G4e is PvP: players only, no creature): in the bot's map, alive, attackable and not its own target
-bool FocusCandidate(Player* bot, Unit* unit, ObjectGuid own)
-{
-    return unit && unit->IsPlayer() && unit->IsInWorld() && unit->IsInMap(bot) && unit->IsAlive() &&
-           unit->GetGUID() != own && bot->IsValidAttackTarget(unit);
-}
-
-// G4e: the focus target at the bot's checks while the FocusTarget tactic is on here (or a focus is left): cleared at
-// a new match and while the tactic or the Dexterity gate fails; picked again at once when the moon, the own target or
-// the CC target changes or the focus is gone, else every FOCUS_TARGET_PICK_MS (the healer scan: the fight's enemies,
-// at most TACTIC_FIGHT_ENEMIES_MAX units)
-void FollowFocusTarget(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
-{
-    // Every call (the change check too; the picks are tactics show's `picks` and the `focus pick` lines)
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "FocusTarget::Pick")
-                                                    : nullptr);
-    FocusTargetState& focus = botAI->GetFocusState().Target;
-    Battleground* const battleground = bot->GetBattleground();
-    uint32 const matchId =
-        battleground && battleground->GetStatus() == STATUS_IN_PROGRESS ? battleground->GetInstanceID() : 0;
-    if (matchId != focus.Pick.MatchId)
-    {
-        focus.Pick.StartMatch(matchId);
-        focus.NextPickMs = nowMs;
-    }
-
-    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-    uint8 const skill = botAI->GetPvpSkill();
-    if (!botAI->TacticActive(TacticId::FocusTarget) ||
-        !FocusTargetCapable(skill, botAI->GetAttribute(BotAttribute::Dexterity),
-                            config.NaturalReaction.Ease.FocusDexterity))
-    {
-        focus.Pick.Set(0, FocusSource::None, nowMs);
-        return;
-    }
-
-    Group* const group = bot->GetGroup();
-    ObjectGuid const moon = group && botAI->GetTacticContext() == TacticContext::Arena
-                                ? group->GetTargetIcon(FOCUS_ICON_MOON)
-                                : ObjectGuid::Empty;
-    Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
-    ObjectGuid const own = current ? current->GetGUID() : ObjectGuid::Empty;
-    CcBotState const& cc = botAI->GetCcState();
-    ObjectGuid const ccTarget = FocusBefore(nowMs, cc.CcTargetUntilMs) ? cc.CcTarget : ObjectGuid::Empty;
-    Unit* const kept = focus.Pick.Guid ? botAI->GetUnit(ObjectGuid(focus.Pick.Guid)) : nullptr;
-    if (FocusBefore(nowMs, focus.NextPickMs) && moon == focus.SeenMoon && own == focus.SeenOwn &&
-        ccTarget == focus.SeenCc && (!focus.Pick.Guid || FocusCandidate(bot, kept, own)))
-        return;
-
-    focus.NextPickMs = nowMs + FOCUS_TARGET_PICK_MS;
-    focus.SeenMoon = moon;
-    focus.SeenOwn = own;
-    focus.SeenCc = ccTarget;
-
-    // The healer: the kept focus while it still is one, else the first healer-class player of the fight seen healing
-    // (once seen, for the rest of the match)
-    Unit* healer = nullptr;
-    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
-    {
-        Unit* const unit = botAI->GetUnit(guid);
-        if (!FocusCandidate(bot, unit, own) || !InterruptHealerClass(unit->getClass()))
-            continue;
-
-        if (!focus.Pick.Healers.Has(guid.GetRawValue()))
-        {
-            if (!FocusSeenHealing(botAI, unit))
-                continue;
-
-            focus.Pick.Healers.Add(guid.GetRawValue());
-        }
-
-        if (!healer || unit == kept)
-            healer = unit;
-
-        if (unit == kept)
-            break;
-    }
-
-    Unit* const moonUnit = moon.IsEmpty() ? nullptr : botAI->GetUnit(moon);
-    Unit* const ccUnit = ccTarget.IsEmpty() ? nullptr : botAI->GetUnit(ccTarget);
-    FocusPickInput input;
-    input.Moon = FocusCandidate(bot, moonUnit, own);
-    input.Healer = healer != nullptr;
-    input.Cc = FocusCandidate(bot, ccUnit, own);
-    if (input.Moon && input.Healer)
-    {
-        // Teamwork: the plan's moon over the healer, one draw per match and moon (skill 0: Teamwork 99)
-        uint8 const teamwork = skill == 0 ? 99 : botAI->GetAttribute(BotAttribute::Teamwork);
-        uint64 const hash =
-            SplitMix64(bot->GetGUID().GetCounter()) ^ (static_cast<uint64>(matchId) << 32) ^ moon.GetCounter();
-        input.TakesMoon = FocusTakesMoon(FocusMoonShare(teamwork, config.TacticFocus.FocusTargetMoonPctAtTeamwork1,
-                                                        config.TacticFocus.FocusTargetMoonPctAtTeamwork99),
-                                         hash);
-    }
-
-    FocusSource const source = PickFocusSource(input);
-    Unit* pick = nullptr;
-    if (source == FocusSource::Moon)
-        pick = moonUnit;
-    else if (source == FocusSource::Healer)
-        pick = healer;
-    else if (source == FocusSource::Cc)
-        pick = ccUnit;
-
-    if (focus.Pick.Set(pick ? pick->GetGUID().GetRawValue() : 0, source, nowMs))
-        LOG_TRACE("playerbots.reaction", "focus pick skill {} source {} enemy {} own {} moon {} at {}", skill,
-                  FocusSourceName(source), pick ? pick->GetGUID().GetCounter() : 0, own.GetCounter(), moon.GetCounter(),
-                  nowMs);
-}
-
-struct TravelTraceIdentity
-{
-    uint32 Trip;
-    uint32 Leg;
-    uint32 Generation;
-};
-
-std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel)
-{
-    if (!travel || travel->place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
-        return std::nullopt;
-    return TravelTraceIdentity{travel->tripId, travel->trip.legIdx, travel->trip.legStartMs};
-}
-
-void LogTravelGate(Player const& player, TravelTraceIdentity const& trace, uint32 nowMs, char const* gate)
-{
-    LOG_DEBUG("playerbots",
-              "[TravelLifecycle] gate bot={} trip={} leg={} generation={} tick_ms={} outcome={} combat={} control={} "
-              "taxi={}",
-              player.GetGUID().GetCounter(), trace.Trip, trace.Leg, trace.Generation, nowMs, gate, player.IsInCombat(),
-              !player.HasUnitState(UNIT_STATE_LOST_CONTROL), player.IsInFlight());
-}
-
-char const* ContactName(TravelLifecycle::Contact contact)
-{
-    using TravelLifecycle::Contact;
-    switch (contact)
-    {
-        case Contact::Unavailable:
-            return "unavailable";
-        case Contact::OffSurface:
-            return "off_surface";
-        case Contact::AboveDeck:
-            return "above_deck";
-        case Contact::Feet:
-            return "feet";
-    }
-    return "unavailable";
-}
-
-char const* MotionStateName(TravelLifecycle::MotionState state)
-{
-    using TravelLifecycle::MotionState;
-    switch (state)
-    {
-        case MotionState::None:
-            return "none";
-        case MotionState::Moving:
-            return "moving";
-        case MotionState::Reached:
-            return "reached";
-        case MotionState::Cancelled:
-            return "cancelled";
-    }
-    return "none";
-}
-
-char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
-{
-    using TravelLifecycle::Outcome;
-    switch (outcome)
-    {
-        case Outcome::Pending:
-            return "pending";
-        case Outcome::Boarded:
-            return "boarded";
-        case Outcome::Exited:
-            return "exited";
-        case Outcome::Cancelled:
-            return "cancelled";
-        case Outcome::Lost:
-            return "lost";
-    }
-    return "pending";
-}
-
-// A ship or zeppelin between its stops (MotionTransport::IsMoving is private): the core holds it at a stop frame while
-// its path timer lies in that frame's [ArriveTime, DepartureTime)
-bool UnderWay(Transport const& transport)
-{
-    MotionTransport const* const ship = transport.ToMotionTransport();
-    if (!ship || !ship->GetPeriod() || ship->GetKeyFrames().size() <= 1)
-        return false;
-    uint32 const timer = ship->GetPathProgress() % ship->GetPeriod();
-    for (KeyFrame const& frame : ship->GetKeyFrames())
-        if (frame.IsStopFrame() && frame.ArriveTime <= timer && timer < frame.DepartureTime)
-            return false;
-    return true;
-}
-
-class PassengerAdapter
-{
-public:
-    PassengerAdapter(Player& player, std::optional<TravelTraceIdentity> trace) : _player(player), _trace(trace) {}
-
-    TravelLifecycle::Membership ReadMembership() const { return TravelTransportGeometry::ReadMembership(_player); }
-
-    TravelLifecycle::SplineObservation ReadSpline() const
-    {
-        return TravelTransportGeometry::SplineControl{_player}.ReadSpline();
-    }
-
-    TravelLifecycle::Surface Probe(uint64 expected, bool riding)
-    {
-        using TravelLifecycle::Contact;
-        Transport* surface = expected ? Resolve(expected) : LegacyBotProbe();
-        if (!surface)
-            return {expected, 0, expected ? Contact::Unavailable : Contact::OffSurface};
-
-        uint64 const guid = surface->GetGUID().GetRawValue();
-        uint32 const entry = surface->GetEntry();
-        if (!surface->m_model || !surface->isSpawned() || !_player.InSamePhase(surface))
-            return {guid, entry, Contact::Unavailable};
-        if (!riding && _player.IsFlying())
-            return {guid, entry, Contact::OffSurface};
-        // A bot with no boarding of its own (no expected vessel) is not taken aboard by a hull sweeping through its
-        // spot on the pier or in the water (WT54-9, F1): only a vessel at its stop takes a still bot aboard, and not
-        // one that swims under its hull (WT54-10: sea-level starts at a docked ship, then no exit at its far stop)
-        if (!riding && !expected && (UnderWay(*surface) || _player.IsInWater()))
-            return {guid, entry, Contact::OffSurface};
-
-        constexpr float RAY_RISE_YARDS = 0.5f;
-        constexpr float FEET_DROP_YARDS = 0.8f;
-        constexpr float AIRBORNE_DROP_YARDS = 8.0f;
-        G3D::Vector3 const origin(_player.GetPositionX(), _player.GetPositionY(),
-                                  _player.GetPositionZ() + RAY_RISE_YARDS);
-        G3D::Ray const ray(origin, G3D::Vector3(0.0f, 0.0f, -1.0f));
-        bool const airborne = riding && (_player.Unit::IsFalling() || !_player.movespline->Finalized());
-        float distance = RAY_RISE_YARDS + (airborne ? AIRBORNE_DROP_YARDS : FEET_DROP_YARDS);
-        if (!surface->m_model->intersectRay(ray, distance, false, _player.GetPhaseMask(),
-                                            VMAP::ModelIgnoreFlags::Nothing))
-            return {guid, entry, Contact::OffSurface};
-        return {guid, entry, distance <= RAY_RISE_YARDS + FEET_DROP_YARDS ? Contact::Feet : Contact::AboveDeck};
-    }
-
-    TravelLifecycle::DockState ObserveDock(TravelLifecycle::PassengerMotion const& motion) const
-    {
-        using TravelLifecycle::DockState;
-        Transport const* const transport = Resolve(motion.Transport);
-        if (!transport || !TravelTransportGeometry::Available(_player, *transport))
-            return DockState::Unavailable;
-        return TravelLifecycle::SameDock(motion.Dock, TravelTransportGeometry::PoseOf(*transport))
-                   ? DockState::Still
-                   : DockState::Departed;
-    }
-
-    bool ConfirmExit(TravelLifecycle::PassengerMotion const& motion) const
-    {
-        Transport const* const transport = _player.GetTransport();
-        return transport && TravelTransportGeometry::ConfirmExit(_player, *transport, motion);
-    }
-
-    void SettleOldFrame() { _player.StopMoving(); }
-
-    // Ported from mod-playerbots PR #2747 (MovementAction::ClearTransportState, by Keleborn): a stale transport
-    // pointer is cleared by hand before AddPassenger, which deadlocks the map on one (TravelLifecycle::StepAttach)
-    void Attach(uint64 guid)
-    {
-        Transport* const transport = Resolve(guid);
-        if (!transport)
-            return;
-        Transport* const prior = _player.GetTransport();
-        TravelLifecycle::AttachStep const step = TravelLifecycle::StepAttach(
-            prior != nullptr, prior == transport, prior && prior->GetPassengers().count(&_player) > 0);
-        if (step == TravelLifecycle::AttachStep::Keep)
-            return;
-        if (step == TravelLifecycle::AttachStep::ClearThenAttach)
-        {
-            prior->RemovePassenger(&_player, true);
-            if (_player.GetTransport())
-            {
-                _player.SetTransport(nullptr);
-                _player.m_movementInfo.RemoveMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
-                _player.m_movementInfo.transport.guid.Clear();
-            }
-        }
-        transport->AddPassenger(&_player, true);
-    }
-
-    void Detach(uint64 guid)
-    {
-        Transport* transport = _player.GetTransport();
-        if (transport && transport->GetGUID().GetRawValue() == guid)
-            transport->RemovePassenger(&_player, true);
-    }
-
-    void PublishFrame()
-    {
-        if (!_player.IsRooted())
-            _player.SendMovementFlagUpdate();
-    }
-
-    template <class Reconcile>
-    void Observe(uint32 nowMs, uint32 gapMs, TravelLifecycle::PassengerMotion const* motion, Reconcile reconcile)
-    {
-        auto const observe = [&]
-        {
-            PerfMonitorScope scope(
-                PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Maintenance") : nullptr);
-            return reconcile();
-        };
-        if (!_trace)
-        {
-            observe();
-            return;
-        }
-
-        Transport const* legacyNull = nullptr;
-        Transport const* legacyBot = nullptr;
-        if (ReadMembership().Available)
-        {
-            legacyNull = LegacyProbe(nullptr);
-            legacyBot = LegacyBotProbe();
-        }
-
-        auto const spline = ReadSpline();
-        Transport const* transport = _player.GetTransport();
-        if (!transport && motion && ReadMembership().Available)
-            transport = Resolve(motion->Transport);
-        uint32 const period = transport ? TravelTransportGeometry::Period(*transport) : 0;
-        Position const local = _player.m_movementInfo.transport.pos;
-        TravelLifecycle::Sample const sample = observe();
-        TravelLifecycle::Point const endpoint = motion ? motion->Endpoint : TravelLifecycle::Point{};
-        LOG_DEBUG("playerbots",
-                  "[TravelLifecycle] sample bot={} trip={} leg={} generation={} tick_ms={} probe_gap_ms={} map={} "
-                  "world={:.3f},{:.3f},{:.3f} local={:.3f},{:.3f},{:.3f} expected={} entry={} legacy_null={} "
-                  "legacy_bot={} surface={} contact={} motion={} spline={} frame={} endpoint={:.3f},{:.3f},{:.3f} "
-                  "spline_now={} spline_finalized={} motion_result={} before={} after={} result={} available={} "
-                  "period_ms={} dock={}",
-                  _player.GetGUID().GetCounter(), _trace->Trip, _trace->Leg, _trace->Generation, nowMs, gapMs,
-                  spline.Map, spline.Position.X, spline.Position.Y, spline.Position.Z, local.GetPositionX(),
-                  local.GetPositionY(), local.GetPositionZ(), motion ? motion->Transport : 0,
-                  motion ? motion->Entry : sample.Observed.Entry, legacyNull ? legacyNull->GetGUID().GetRawValue() : 0,
-                  legacyBot ? legacyBot->GetGUID().GetRawValue() : 0, sample.Observed.Guid,
-                  ContactName(sample.Observed.Where),
-                  motion ? (motion->Kind == TravelLifecycle::MotionKind::Board ? "board" : "exit") : "none",
-                  motion ? motion->Spline : 0, spline.Local ? "local" : "world", endpoint.X, endpoint.Y, endpoint.Z,
-                  spline.Id, spline.Finalized, MotionStateName(sample.Motion), sample.Before.Guid, sample.After.Guid,
-                  motion ? PassengerOutcomeName(motion->Result) : "none", sample.After.Available, period,
-                  sample.Dock == TravelLifecycle::DockState::Still      ? "still"
-                  : sample.Dock == TravelLifecycle::DockState::Departed ? "departed"
-                                                                        : "unavailable");
-    }
-
-private:
-    Transport* Resolve(uint64 guid) const
-    {
-        Transport* transport = _player.GetTransport();
-        if (!transport || transport->GetGUID().GetRawValue() != guid)
-            transport = _player.GetMap()->GetTransport(ObjectGuid(guid));
-        return transport && transport->IsInWorld() && transport->FindMap() == _player.FindMap() ? transport : nullptr;
-    }
-
-    Transport* LegacyProbe(Player* reference) const
-    {
-        return _player.GetMap()->GetTransportForPos(_player.GetPhaseMask(), _player.GetPositionX(),
-                                                    _player.GetPositionY(), _player.GetPositionZ(), reference);
-    }
-
-    Transport* LegacyBotProbe()
-    {
-        if (!_legacyBot)
-            _legacyBot = LegacyProbe(&_player);
-        return *_legacyBot;
-    }
-
-    Player& _player;
-    std::optional<TravelTraceIdentity> _trace;
-    std::optional<Transport*> _legacyBot;
-};
-}  // namespace
-
-bool PlayerbotAI::ReconcileFollowPassenger(Transport const& expected)
-{
-    if (expected.IsStaticTransport())
-        return false;
-
-    PassengerAdapter adapter(*bot, std::nullopt);
-    TravelLifecycle::Sample const sample = TravelLifecycle::Reconcile(
-        adapter, nullptr, TravelLifecycle::MotionState::None, expected.GetGUID().GetRawValue());
-    return !sample.Before.Guid && sample.After.Available && sample.After.Guid == expected.GetGUID().GetRawValue();
-}
-
-bool PlayerbotAI::LootInteractionExpired() const
-{
-    return activeLootInteraction && activeLootInteraction->InteractionExpired();
-}
-
-bool PlayerbotAI::ConsumeLootExpiry()
-{
-    return activeLootInteraction && bot->IsAlive() && !bot->IsInCombat() && CanMove() &&
-           activeLootInteraction->ConsumeExpiry();
-}
-
-void PlayerbotAI::CancelLootInteraction(std::string_view reason)
-{
-    if (activeLootInteraction)
-        activeLootInteraction->Cancel(reason);
-}
-
-void PlayerbotAI::TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot,
-                                         uint32 interaction, std::string_view path, float yards,
-                                         std::optional<std::pair<uint32, uint32>> leg)
-{
-    if (!NaturalTrace::IsSelected(bot) || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
-        return;
-
-    auto const* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
-    uint32 const trip = travel ? travel->tripId : 0;
-    auto const [index, generation] = leg.value_or(
-        travel && travel->CurrentLeg() ? std::pair{travel->trip.legIdx, travel->trip.legStartMs} : std::pair{0u, 0u});
-    LOG_DEBUG("playerbots",
-              "[TravelInteraction] bot={} tick_ms={} at_ms={} trip={} leg={} event={} loot={} interaction={} path={} "
-              "detail={} mounted={} obligation={} generation={} request={} yards={:.2f}",
-              bot->GetGUID().GetCounter(), getMSTime(), WorldLog::NowMs(), trip, index, event, loot.GetRawValue(),
-              interaction, path, detail, uint32(bot->IsMounted()), trip, generation,
-              travel ? travel->route.requestId : 0, yards);
-}
-
-static std::string_view MountPathWord(PlayerbotAI::MountPath path)
-{
-    return path == PlayerbotAI::MountPath::Packet ? "packet" : "timer";
-}
-
-void PlayerbotAI::TraceTravelMount(MountPath path, bool accepted)
-{
-    if (path == MountPath::None || !NaturalTrace::IsSelected(bot))
-        return;
-
-    ObjectGuid const loot = activeLootInteraction ? activeLootInteraction->InteractionGuid() : bot->GetLootGUID();
-    uint32 const generation = activeLootInteraction ? activeLootInteraction->InteractionGeneration() : 0;
-    TraceTravelInteraction(accepted ? "mount_accept" : "mount_veto", accepted ? "issued" : "loot", loot, generation,
-                           MountPathWord(path));
-    if (accepted)
-    {
-        tracedMount = path;
-        tracedMountAt = getMSTime();
-    }
-}
-
-TravelProgress::Motion PlayerbotAI::ReadTravelWalk(bool checkPosition) const
-{
-    auto const& spline = *bot->movespline;
-    auto* const master = bot->GetMotionMaster();
-    auto const* point =
-        master && !master->empty() ? dynamic_cast<PointMovementGenerator<Player>*>(master->top()) : nullptr;
-    TravelProgress::Motion motion{spline.GetId(), !spline.Finalized(), 0.0f, false, 0};
-    if (!point || !spline.Initialized() || spline.onTransport || spline.isFalling() || spline.isCyclic() ||
-        bot->GetTransport() || bot->GetVehicle() || bot->IsInFlight())
-        return motion;
-    motion.Generator = reinterpret_cast<std::uintptr_t>(point);
-    motion.Destination.mapId = bot->GetMapId();
-    point->GetDestination(motion.Destination.x, motion.Destination.y, motion.Destination.z);
-    motion.PositionMatches = true;
-    if (checkPosition)
-    {
-        auto const position = spline.ComputePosition();
-        float const tolerance = TravelProgress::SPLINE_POSITION_TOLERANCE_YARDS;
-        motion.PositionMatches = bot->GetExactDistSq(position.x, position.y, position.z) <= tolerance * tolerance;
-    }
-    motion.Yards = spline.Velocity() * static_cast<float>(spline.timePassed()) / 1000.0f;
-    return motion;
-}
-
-void PlayerbotAI::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove)
-{
-    using TravelProgress::Owner;
-    auto& progress = travel.progress;
-    if (revalidate)
-        progress.Suspend();
-
-    auto const* leg = travel.CurrentLeg();
-    bool const combat = bot->IsInCombat();
-    bool const passenger =
-        travel.PassengerOwnsProgress() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
-    // The flight down after a failed fly leg (TravelLegs::StartDescent) counts as riding: a trip never ends in the air
-    bool const external =
-        passenger || bot->IsInFlight() || bot->GetVehicle() || travel.route.waiting || travel.trip.descending;
-    Owner owner = Owner::Exempt;
-    if (combat)
-        owner = Owner::Combat;
-    else if (bot->IsAlive() && !external)
-    {
-        if (!canMove)
-            owner = Owner::Control;
-        else if (HasLootInteraction())
-            owner = Owner::Loot;
-        else
-            owner = !leg || leg->type == TravelRoute::LegType::Walk ? Owner::Walk : Owner::Leg;
-    }
-    auto const sample =
-        TravelProgress::Maintain(progress, {nowMs, owner, combat, CompletedLootInteractions()}, travel.trip,
-                                 travel.route, travel.routeSeconds, [&] { return ReadTravelWalk(true); });
-    if (sample.Selected)
-        TraceTravelInteraction("route_selected", travel.bindInn ? "inn" : "order");
-    if (sample.CombatChanged)
-        TraceTravelInteraction(combat ? "combat_begin" : "combat_end", "combat");
-    if (sample.LootCompleted)
-        TraceTravelInteraction("route_progress", "loot");
-    if (sample.Yards > 0.0f)
-        TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
-}
-
-void PlayerbotAI::BeginAboard(uint32 entry)
-{
-    aboardEntry = entry;
-    aboardSinceMs = getMSTime();
-    passengerCadence.Revalidate = true;
+    uint32 const word = WorkTally::Note(GetWork());
+    if ((testConstraints & TestConstraints::STATES) && !(word & BotWork::Constraints))
+        LOG_INFO("playerbots", "PreGate miss: Constraints {}", bot->GetName());
+
+    if (BankMail::VisitRuns(bankMail) && !(word & BotWork::Visit))
+        LOG_INFO("playerbots", "PreGate miss: Visit {}", bot->GetName());
+
+    tactics->LogPreGateMisses(word);
+    botTravel->LogPreGateMisses(word);
 }
 
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
@@ -1235,26 +324,42 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
     {
-        passengerCadence.Revalidate = true;
-        pendingDismount.store(false, std::memory_order_relaxed);
-        tracedMount = MountPath::None;
+        botTravel->RequestRecheck();
+        if (HasPendingDismount())
+            EndWork(BotWork::Dismount);
+        botTravel->ForgetMountTrace();
         return;
     }
 
-    // A test's order (TravelOrders) ahead of the reaction and the AI's delays, the engine then runs in this update; so
-    // does it for a bot placed aboard until its placement is decided (below)
-    if (TravelOrders::TakeAndApply(this, bot) || aboardEntry)
-        nextAICheckDelay = 0;
+    if (sPlayerbotAIConfig.TestMissLog)
+        LogPreGateMisses();
 
-    // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can be a
-    // minute apart for an idle bot, time enough for a new pet to start a fight (one bit test for every other bot)
-    if (rpgInfo.constraints & TestConstraints::STATES)
-        TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
+    // The work mask's first load (CS5 design 6.2): zero skips the order, the constraints and the visit watch; each
+    // step re-tests its bit on a fresh load (an applied order can start constraints, a visit or an aboard placement)
+    uint32 const early = GetWork();
+    if (early)
+    {
+        // A test's order (TravelOrders) ahead of the reaction and the AI's delays, the engine then runs in this
+        // update; so does it for a bot placed aboard until its placement is decided (below)
+        if (((early & BotWork::Order) && TravelOrders::TakeAndApply(this, bot)) || (GetWork() & BotWork::Aboard))
+            nextAICheckDelay = 0;
 
-    // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
-    // does not run (in combat, dead); one test while no visit runs
-    if (BankMail::VisitRuns(rpgInfo.bankMail))
-        BankMail::WatchVisits(this);
+        // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
+        // be a minute apart for an idle bot, time enough for a new pet to start a fight
+        if (GetWork() & BotWork::Constraints)
+            TravelOrders::KeepConstraints(bot, testConstraints);
+
+        // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps
+        // it does not run (in combat, dead); its bit goes when no visit runs
+        if (GetWork() & BotWork::Visit)
+        {
+            if (BankMail::VisitRuns(bankMail))
+                BankMail::WatchVisits(this);
+
+            if (!BankMail::VisitRuns(bankMail))
+                EndWork(BotWork::Visit);
+        }
+    }
 
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
@@ -1265,14 +370,19 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP's records (WP1): the bot's PvP combat for its map's fight book and the fight commands' requests (a
-    // relaxed load and one empty() check while neither is there)
-    if (WorldPvp::RequestsWaiting() || !bot->GetCombatManager().GetPvPCombatRefs().empty())
-        WorldPvp::OnBotTick(this, bot);
+    // World PvP (WP23, WP24): the enthusiasm's engaged edge and leave check while in PvP combat or engaged (one
+    // empty() check and a flag while neither)
+    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
+        WorldPvp::NoteEngaged(this, bot, getMSTime());
+
+    lastUpdateDiff = elapsed;
+    // The work mask's second load: zero skips the timing row and the tactics' pre-gate hook, and travel's registered
+    // steps read their bits on fresh loads; the meter counts the updates with work
+    uint32 const late = GetWork();
+    perf.Count(LightweightPerf::WorkMaskUpdates, (early | late) != 0);
 
     // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
-    lastUpdateDiff = elapsed;
-    if (timingCombat)
+    if (late & BotWork::TimingRow)
     {
         if (PerformanceData* const row = sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Time (combat)"))
             row->Record(static_cast<uint64_t>(elapsed) * 1000);
@@ -1282,69 +392,17 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
 
-    // G5e and G2a: the natural pre-gate stepper (a fake cast's cancel instant, a turn's steps); one bool test idle
-    if (naturalPreGate)
-        StepNaturalPreGate(getMSTime());
-
-    // G2g: the jump test drives a frozen test bot (no engine runs); one bool test idle
-    if (jumpTest)
+    // G5e, G2a and G2g: the tactics' pre-gate hook (the natural stepper, the jump test) while either has work
+    if ((late & (BotWork::PreGateStep | BotWork::JumpTest)) && tactics->PreGate(late))
     {
-        passengerCadence.Revalidate = true;
-        StepJumpTest(getMSTime());
+        botTravel->RequestRecheck();
         return;
     }
 
     uint32 const maintenanceMs = getMSTime();
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
     auto const traceTravel = TravelTraceFor(travel);
-    bool const revalidateProgress = passengerCadence.Revalidate;
-    PassengerAdapter passenger(*bot, traceTravel);
-    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
-                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
-    // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
-    // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence
-    if (aboardEntry)
-    {
-        Transport const* ridden = bot->GetTransport();
-        bool const placed = ridden && ridden->GetEntry() == aboardEntry;
-        uint32 const sinceMs = GetMSTimeDiffToNow(aboardSinceMs);
-        if (placed || sinceMs > ABOARD_DEADLINE_MS)
-        {
-            LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), aboardEntry,
-                     placed ? "placed" : "failed", sinceMs);
-            EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
-            aboardEntry = 0;
-        }
-        else
-            passengerCadence.Revalidate = true;
-    }
-    if (HasPendingDismount())
-    {
-        if (!bot->IsAlive() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport())
-            pendingDismount.store(false, std::memory_order_relaxed);
-        else if (CanMove() && !bot->IsRooted() && pendingDismount.exchange(false, std::memory_order_relaxed))
-            CheckMountStateAction::CompleteDismount(bot);
-    }
-    if (activeLootInteraction || travel)
-    {
-        PerfMonitorScope scope(
-            travel && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Progress") : nullptr);
-        bool const canMove = CanMove();
-        if (activeLootInteraction)
-            activeLootInteraction->Observe(maintenanceMs, canMove);
-        if (travel)
-            ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
-    }
-    if (tracedMount != MountPath::None)
-    {
-        if (bot->IsMounted())
-        {
-            TraceTravelInteraction("mount_state", "mounted", ObjectGuid::Empty, 0, MountPathWord(tracedMount));
-            tracedMount = MountPath::None;
-        }
-        else if (maintenanceMs - tracedMountAt >= LootInteraction::PhaseMs)
-            tracedMount = MountPath::None;
-    }
+    botTravel->PreGate(maintenanceMs, travel, traceTravel);
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
@@ -1365,6 +423,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             bot->SetPower(bot->getPowerType(), bot->GetMaxPower(bot->getPowerType()));
     }
 
+    perf.MarkPregate();
     AllowActivity();
 
     // Wake up if combat state changed (unless casting).
@@ -1409,52 +468,18 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (traceTravel)
         LogTravelGate(*bot, *traceTravel, maintenanceMs, "pre_action");
 
-    RefreshNaturalTiming();
+    // The check's one context probe: the timing refresh, the live test and UpdateAIInternal's store read it
+    TacticContext const probed = ProbeTacticContext(bot);
+    tactics->RefreshNaturalTiming(probed);
 
     // G0h3-b where the natural reaction runs (its contexts, combat in a started match, a skill): the opponent memory,
     // the busy bot and the queue-like follow-up
     uint32 const nowMs = getMSTime();
     ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
-    bool const busyModel = stretchOff && cadenceCombat && pvpSkill != 0;
-    if (reaction.Memory.Enable)
-    {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
-            ObserveOpponents(this, bot, busyModel, nowMs);
-        }
-        else
-            ObserveOpponents(this, bot, busyModel, nowMs);
-    }
-
-    // G2b: the tracking ring follows the bot's target at every check of a fight, not only at its chase calls
-    if (sPlayerbotAIConfig.NaturalTrack.Enable)
-    {
-        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalMove::Feed")
-                                                        : nullptr);
-        FeedNaturalTrack(this, bot, nowMs);
-    }
-
-    // G5c-c: the Interrupt tactic's match and the enemies' health trend, only while it follows the kick
-    if (InterruptFollows(sPlayerbotAIConfig.TacticInterrupt))
-        FollowInterruptFight(this, bot, nowMs);
-
-    // G4e: the focus target, while the FocusTarget tactic is on here or a focus is left to clear
-    if (TacticEnabledHere(TacticId::FocusTarget) || (focusState && focusState->Target.Pick.Guid != 0))
-        FollowFocusTarget(this, bot, nowMs);
-
-    // G5d: the Defensive tactic's health sampler, focus and opener while it is on here; deaths with a self-defensive
-    // ready on both sides of a harness match
-    if (pvpTestCounting || TacticEnabledHere(TacticId::Defensive))
-    {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "Defensive::Follow"));
-            FollowDefensive(this, bot, nowMs);
-        }
-        else
-            FollowDefensive(this, bot, nowMs);
-    }
+    bool const busyModel = tactics->stretchOff && tactics->cadenceCombat && pvpSkill != 0;
+    // The tactics' check hook: the opponent memory, the tracking ring and the interrupt, focus and defensive
+    // followers, for a bot the live test admits (the meter's count of live AI checks)
+    perf.Count(LightweightPerf::LiveAiChecks, tactics->OnCheck(nowMs, busyModel, probed));
 
     bool stoppedForKick = false;
 
@@ -1465,7 +490,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         uint32 const checkMs = GetReactDelay();
         uint64 const guid = bot->GetGUID().GetCounter();
         uint32 const regular = checkMs + CheckStaggerMs(guid, checkStaggerMs);
-        uint32 const draw = QueueDrawMs(reactionTypes, SplitMix64((guid << 32) ^ (nowMs + remainingMs)));
+        uint32 const draw = QueueDrawMs(tactics->reactionTypes, SplitMix64((guid << 32) ^ (nowMs + remainingMs)));
         uint32 const delay = QueueCheckDelayMs(remainingMs, regular, draw);
         if (delay >= regular)
         {
@@ -1475,7 +500,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
         nextAICheckDelay = delay;
         lastCheckDelay = delay;
-        ++reactionBusy.QueuedChecks;
+        ++tactics->reactionBusy.QueuedChecks;
         if (PerfMonitor::IsEnabled())
             PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::QueuedCheck"));
     };
@@ -1485,7 +510,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!currentSpell)
         currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
 
-    if (LootInteractionExpired() && activeLootInteraction->OwnsCast(currentSpell))
+    if (botTravel->LootInteractionExpired() && botTravel->ActiveLootInteraction()->OwnsCast(currentSpell))
     {
         bot->InterruptSpell(currentSpell->GetCurrentContainer());
         currentSpell = nullptr;
@@ -1564,24 +589,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
                 // The own cast as the bot sees it; stopped for a kick (user note 1) the engine runs in this check
                 uint32 const ownLeft = static_cast<uint32>(std::max(0, currentSpell->GetCastTimeRemaining()));
-                reactionBusy.CastStartMs =
-                    nowMs - static_cast<uint32>(std::max(0, currentSpell->GetCastTime() - static_cast<int32>(ownLeft)));
-                reactionBusy.CastEndMs = nowMs + ownLeft;
-                if (busyModel && reaction.Reeval.Enable)
-                {
-                    if (PerfMonitor::IsEnabled())
-                    {
-                        PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::BusyStop"));
-                        stoppedForKick = StopOwnCastForKickDue(this, bot, ownLeft, nowMs);
-                    }
-                    else
-                        stoppedForKick = StopOwnCastForKickDue(this, bot, ownLeft, nowMs);
-                }
+                stoppedForKick = tactics->OnOwnCast(currentSpell, ownLeft, busyModel, nowMs);
 
                 if (stoppedForKick)
                 {
                     bot->InterruptSpell(currentSpell->GetCurrentContainer());
-                    reactionBusy.CastEndMs = nowMs;
+                    tactics->reactionBusy.CastEndMs = nowMs;
                 }
                 else
                 {
@@ -1595,13 +608,32 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 }
             }
         }
+        // Tame Beast's channel (upkeep WU21b-2): the beast fights the hunter through it while the bot stands and
+        // channels; at low health the bot breaks it off and fights on this update (its errand stop tries again)
+        else if (currentSpell->getState() == SPELL_STATE_CASTING)
+        {
+            if (NewRpgErrandsAction::HoldTameChannel(this))
+            {
+                YieldThread(bot, GetReactDelay());
+                return;
+            }
+            currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            if (!currentSpell)
+                currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        }
+    }
+    else if (NewRpgErrandsAction::HoldTameChannel(this))
+    {
+        // Tame Beast cast again in the fight of the beast that broke its channel (its stun or knockback, WU21b-2)
+        YieldThread(bot, GetReactDelay());
+        return;
     }
 
     // An own cast gone before its predicted end (interrupted by the enemy, or for a full-health target) ended by this
     // check at the latest, so its overlap with a later event is not overstated
-    if (busyModel && static_cast<int32>(reactionBusy.CastEndMs - nowMs) > 0 &&
+    if (busyModel && static_cast<int32>(tactics->reactionBusy.CastEndMs - nowMs) > 0 &&
         (!currentSpell || currentSpell->getState() != SPELL_STATE_PREPARING))
-        reactionBusy.CastEndMs = nowMs;
+        tactics->reactionBusy.CastEndMs = nowMs;
 
     if (spellInterruptRequested)
     {
@@ -1622,7 +654,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     UpdateAIGroupMaster();
 
     // Update internal AI
-    if (timingScope && PerfMonitor::IsEnabled())
+    if (tactics->timingScope && PerfMonitor::IsEnabled())
     {
         PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::UpdateAIInternal (scope)"));
         UpdateAIInternal(elapsed, minimal);
@@ -1631,14 +663,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         UpdateAIInternal(elapsed, minimal);
 
     // A stop the engine's kick did not follow (its trigger or target picked another action): no stop for a while
-    if (stoppedForKick && !bot->HasSpellCooldown(reactionBusy.KickSpellId))
-    {
-        reactionBusy.NoteStopUnfollowed(nowMs);
-        LOG_TRACE("playerbots.reaction", "busy stop unfollowed skill {} kick {} at {}", GetPvpSkill(),
-                  reactionBusy.KickSpellId, nowMs);
-        if (PerfMonitor::IsEnabled())
-            PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::UnfollowedStop"));
-    }
+    if (stoppedForKick)
+        tactics->NoteUnfollowedStop(nowMs);
 
     // The GCD of the spell the bot cast last (its end noted once, when it begins): the queue's follow-up
     if (busyModel && reaction.Queue.Enable && nextAICheckDelay == 0)
@@ -1647,10 +673,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         SpellInfo const* const info = last.id ? sSpellMgr->GetSpellInfo(last.id) : nullptr;
         if (info && info->StartRecoveryCategory != 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
         {
-            if (static_cast<int32>(reactionBusy.GcdEndMs - nowMs) <= 0)
-                reactionBusy.GcdEndMs = nowMs + NaturalGcdMs(bot, info);
+            if (static_cast<int32>(tactics->reactionBusy.GcdEndMs - nowMs) <= 0)
+                tactics->reactionBusy.GcdEndMs = nowMs + NaturalGcdMs(bot, info);
 
-            yieldQueued(reactionBusy.GcdEndMs - nowMs);
+            yieldQueued(tactics->reactionBusy.GcdEndMs - nowMs);
             return;
         }
     }
@@ -1672,7 +698,7 @@ bool PlayerbotAI::UpdateAIReaction(uint32 elapsed, bool minimal, bool canControl
         if (reaction)
         {
             if (reaction->ShouldInterruptCast())
-                bot->InterruptNonMeleeSpells(true);
+                bot->CastStop();
 
             if (reaction->ShouldInterruptMovement())
                 bot->StopMoving();
@@ -1775,7 +801,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     if (sPlayerbotAIConfig.TacticsEnable)
     {
-        tacticContext.store(static_cast<uint8>(ProbeTacticContext(bot)), std::memory_order_relaxed);
+        tacticContext.store(static_cast<uint8>(tactics->GetCheckProbe()), std::memory_order_relaxed);
         // Harness matches keep the "fight enemies" snapshot of .playerbots tactics show current
         if (pvpTestCounting)
             aiObjectContext->GetValue<GuidVector>("fight enemies")->Get();
@@ -2173,20 +1199,16 @@ void PlayerbotAI::HandleTeleportAck()
 
 void PlayerbotAI::Reset(bool full, bool farTeleport)
 {
-    CancelLootInteraction("reset");
-    pendingDismount.store(false, std::memory_order_relaxed);
-    tracedMount = MountPath::None;
+    botTravel->CancelLootInteraction("reset");
+    EndWork(BotWork::Dismount);
+    botTravel->ForgetMountTrace();
     // The RPG state starts over; a bank or mail visit ends with its row and the knowledge survives the reset
     // (BankMail::AfterReset). Also on a far teleport during a flight (a taxi path crossing maps), which skips the rest
     auto const resetRpgState = [this, farTeleport]()
     {
-        NewRpgStatus const statusBefore = rpgInfo.GetStatus();
         BankMail::EndVisits(this, farTeleport ? BankMail::VisitEnd::Teleport : BankMail::VisitEnd::Reset);
-        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
-        rpgInfo.ResetState(farTeleport);
-        rpgInfo.bankMail = bankMail;
-        WorldLog::StatusReason const reasonScope(farTeleport ? "teleport" : "reset");
-        WorldLog::NoteStatus(bot, statusBefore, rpgInfo.GetStatus());
+        RpgStatus::Reset(this, farTeleport);
+        bankMail = BankMail::AfterReset(bankMail);  // the knowledge stays
     };
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
@@ -2739,9 +1761,20 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             p >> guid.ReadAsPacked();
             if (guid != bot->GetGUID())
                 return;
-            pendingDismount.store(true, std::memory_order_relaxed);
+            AddWork(BotWork::Dismount);
             return;
         }
+        // LC16d: the bridge's ready row answers the open check; a request names its sender, never the bot's own
+        case MSG_RAID_READY_CHECK:
+            if (packet.size() >= sizeof(uint64) && ObjectGuid(packet.read<uint64>(0)) != bot->GetGUID())
+                PlayerbotBridge::NoteReadyCheck(bot->GetGUID().GetRawValue());
+
+            botOutgoingPacketHandlers.AddPacket(packet);
+            return;
+        case MSG_RAID_READY_CHECK_FINISHED:
+            PlayerbotBridge::EndReadyCheck(bot->GetGUID().GetRawValue());
+            botOutgoingPacketHandlers.AddPacket(packet);
+            return;
         default:
             botOutgoingPacketHandlers.AddPacket(packet);
     }
@@ -2871,6 +1904,8 @@ void PlayerbotAI::DoNextAction(bool min)
         aiObjectContext->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<ObjectGuid>("pull strategy target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<LootObject>("loot target")->Set(LootObject());
+        // A dead bot's flight from enemy players is over; it may flee again in its next PvP combat
+        aiObjectContext->GetValue<FleeRules::Flight&>("flee flight")->Get() = FleeRules::Flight();
 
         // The dead engine has no battleground strategy, so its "dead" trigger cannot reset this route.
         if (Battleground* bg = bot->GetBattleground())
@@ -2935,8 +1970,8 @@ void PlayerbotAI::DoNextAction(bool min)
     }
 
     bool minimal = !this->AllowActivity();
-    if (LootInteractionExpired() && !minimal && !min && currentState == BOT_STATE_NON_COMBAT &&
-        !HasStrategy("new rpg", BOT_STATE_NON_COMBAT) && ConsumeLootExpiry())
+    if (botTravel->LootInteractionExpired() && !minimal && !min && currentState == BOT_STATE_NON_COMBAT &&
+        !HasStrategy("new rpg", BOT_STATE_NON_COMBAT) && botTravel->ConsumeLootExpiry())
         return;
 
     if (auto const trace = TravelTraceFor(std::get_if<NewRpgInfo::Travel>(&rpgInfo.data)))
@@ -4807,9 +3842,10 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         // unless an immunity besides the cyclone's blocks it (the state is read only here, never made)
         if (target->IsImmunedToSpell(spellInfo))
         {
-            bool const chainThroughCyclone = ccState && ccState->ChainImmuneEndMs && ccState->PickRow != CC_NO_ROW &&
-                                             ccState->PickTarget == target->GetGUID() &&
-                                             ccState->KnownSpell[ccState->PickRow] == spellid &&
+            bool const chainThroughCyclone = tactics->ccState && tactics->ccState->ChainImmuneEndMs &&
+                                             tactics->ccState->PickRow != CC_NO_ROW &&
+                                             tactics->ccState->PickTarget == target->GetGUID() &&
+                                             tactics->ccState->KnownSpell[tactics->ccState->PickRow] == spellid &&
                                              !CcImmuneBesidesCyclone(target, spellInfo);
             if (spellid != 44572 && !chainThroughCyclone)  // Deep Freeze
             {
@@ -4999,462 +4035,6 @@ bool PlayerbotAI::CastSpell(std::string const name, Unit* target, Item* itemTarg
     return result;
 }
 
-namespace
-{
-// G5b: what the bot's interrupt (a kick, a silence, a stun) hits, read before the cast: an instant kick ends the bar
-// within the cast itself
-struct InterruptHit
-{
-    InterruptUse Use = InterruptUse::None;
-    bool Bar = false;
-    ArenaInterrupt::Kind CastKind = ArenaInterrupt::Kind::Other;
-    uint32 SpellId = 0;
-    uint32 CastMs = 0;
-    uint32 ElapsedMs = 0;
-};
-
-InterruptHit ReadInterruptHit(Player* bot, SpellInfo const* spellInfo, Unit* target)
-{
-    InterruptHit hit;
-    if (target == bot || !bot->IsHostileTo(target))
-        return hit;
-
-    hit.Use = InterruptUseOf(spellInfo);
-    if (hit.Use == InterruptUse::None)
-        return hit;
-
-    InterruptBar bar;
-    hit.Bar = ReadInterruptBar(target, bar);
-    if (!hit.Bar)
-        return hit;
-
-    hit.CastKind = ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info));
-    hit.SpellId = bar.Info->Id;
-    hit.CastMs = bar.CastMs;
-    hit.ElapsedMs = bar.ElapsedMs;
-    return hit;
-}
-
-// Another enemy of the fight in view (spell range and line of sight) casting a heal (at most TACTIC_FIGHT_ENEMIES_MAX
-// units; at a damage interrupt only)
-bool OtherEnemyHealing(PlayerbotAI* botAI, Unit* target)
-{
-    Player* const bot = botAI->GetBot();
-    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
-    {
-        Unit* const unit = botAI->GetUnit(guid);
-        InterruptBar bar;
-        if (unit && unit != target && unit->IsAlive() && ReadInterruptBar(unit, bar) &&
-            ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) == ArenaInterrupt::Kind::Heal &&
-            bot->IsWithinDistInMap(unit, sPlayerbotAIConfig.SpellDistance) && bot->IsWithinLOSInMap(unit))
-            return true;
-    }
-
-    return false;
-}
-
-// tactics.intHeal/intCc/intDamage/intLate/intWasted (harness matches only): a kick at no bar is wasted (the cast was
-// faked or ended), a stun at none is ordinary CC; a damage interrupt while another enemy heals is wasted too
-void CountInterruptHit(PlayerbotAI* botAI, Unit* target, InterruptHit const& hit, uint32 nowMs)
-{
-    if (hit.Use == InterruptUse::None)
-        return;
-
-    if (!hit.Bar)
-    {
-        if (hit.Use == InterruptUse::Kick)
-            botAI->CountTactic(TacticCounter::IntWasted);
-
-        return;
-    }
-
-    switch (hit.CastKind)
-    {
-        case ArenaInterrupt::Kind::Heal:
-            botAI->CountTactic(TacticCounter::IntHeal);
-            if (hit.ElapsedMs * 100 >= hit.CastMs * ArenaInterrupt::LATE_SHARE_PCT)
-                botAI->CountTactic(TacticCounter::IntLate);
-
-            break;
-        case ArenaInterrupt::Kind::Cc:
-            botAI->CountTactic(TacticCounter::IntCc);
-            break;
-        case ArenaInterrupt::Kind::Damage:
-            botAI->CountTactic(TacticCounter::IntDamage);
-            if (OtherEnemyHealing(botAI, target))
-                botAI->CountTactic(TacticCounter::IntWasted);
-
-            break;
-        default:
-            break;
-    }
-
-    // Which delay set the kick: "commit" (the commit point; the kick went within BOUND_TOLERANCE_MS of the first check
-    // that let it go), "reaction" (the reaction model alone: no commit point, or it ran past the commit), or
-    // "commit+reaction" where the model counts from the first query and not from the bar's start (no
-    // Natural.Reaction.EndToEnd, or a bar older than REACTION_MAX_STAMP_AGE_MS then): the kick then lands at commit
-    // plus reaction; "off" without the tactic's decision
-    char const* bound = "off";
-    if (botAI->TacticEnabledHere(TacticId::Interrupt))
-    {
-        InterruptCastSlot const* slot = botAI->GetInterruptState().Latest(target->GetGUID().GetCounter());
-        if (slot && slot->SpellId == hit.SpellId && slot->ActiveAtMs != 0)
-        {
-            bool const firstQueryStamp = !sPlayerbotAIConfig.NaturalReaction.EndToEnd ||
-                                         slot->ActiveAtMs - slot->StartMs > REACTION_MAX_STAMP_AGE_MS;
-            if (slot->Decision.CommitMs == 0)
-                bound = "reaction";
-            else if (firstQueryStamp)
-                bound = "commit+reaction";
-            else
-                bound = nowMs - slot->ActiveAtMs <= ArenaInterrupt::BOUND_TOLERANCE_MS ? "commit" : "reaction";
-        }
-    }
-
-    LOG_TRACE("playerbots.reaction",
-              "interrupt kick skill {} use {} on {} spell {} kind {} elapsed {} cast {} bound {} at {}",
-              botAI->GetPvpSkill(), hit.Use == InterruptUse::Kick ? "kick" : "stun", target->GetGUID().GetCounter(),
-              hit.SpellId, ArenaInterrupt::KindName(hit.CastKind), hit.ElapsedMs, hit.CastMs, bound, nowMs);
-}
-
-// G5c-c: the bot's kick is used (its cooldown, InterruptBotState::NoteKickSpell); a heal it stops pays the open hold
-// episode
-void NoteInterruptKick(PlayerbotAI* botAI, Player* bot, SpellInfo const* spellInfo, InterruptHit const& hit,
-                       uint32 nowMs)
-{
-    InterruptBotState& state = botAI->GetInterruptState();
-    uint32 cooldownMs = bot->GetSpellCooldownDelay(spellInfo->Id);
-    if (cooldownMs == 0)
-        cooldownMs = std::max(spellInfo->RecoveryTime, spellInfo->CategoryRecoveryTime);
-
-    state.NoteKickSpell(spellInfo->Id, nowMs, cooldownMs);
-    if (hit.Bar && hit.CastKind == ArenaInterrupt::Kind::Heal)
-    {
-        uint32 const heldMs = state.Hold.HeldMs(nowMs);
-        NoteInterruptHoldEnd(botAI, state.NoteHoldHealKick(), heldMs, "kick", nowMs);
-    }
-}
-
-// The DR group a cast counts under. A trap is cast as a summon spell without a group of its own (the spell only puts
-// the trap down); its crowd control is the spell the trap's game object casts when it springs (ArenaCcSpells.h).
-uint32 GetPvpTestCastGroup(SpellInfo const* spellInfo)
-{
-    return GetDiminishingReturnsGroupForSpell(GetCcAuraSpell(spellInfo), false);
-}
-
-// G4e: a kick or a CC on an enemy other than the bot's target: on its focus target (tactics.focusKick, focusCc) or a
-// switch kick (tactics.switchKick; any bot, so the arm without the tactic counts too); counted while the harness
-// counts, kept for tactics show, one trace line each (the own target and the selection before and after the cast; the
-// class by the own target before it)
-void NoteFocusAct(PlayerbotAI* botAI, Player* bot, SpellInfo const* spellInfo, Unit* target, ObjectGuid selectionBefore,
-                  ObjectGuid ownBefore, bool counting, uint32 drGroup)
-{
-    if (!bot->IsHostileTo(target))
-        return;
-
-    bool const kick = InterruptUseOf(spellInfo) == InterruptUse::Kick;
-    bool const cc = !kick && IsPvpTestCcGroup(counting ? drGroup : GetPvpTestCastGroup(spellInfo));
-    if (!kick && !cc)
-        return;
-
-    Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
-    ObjectGuid const ownAfter = current ? current->GetGUID() : ObjectGuid::Empty;
-    FocusTargetState& focus = botAI->GetFocusState().Target;
-    FocusAct const act = ClassifyFocusAct(target->GetGUID().GetRawValue(), ownBefore.GetRawValue(), focus.Pick.Guid);
-    if (act == FocusAct::None || (act == FocusAct::Switch && !kick))
-        return;
-
-    if (act == FocusAct::Focus)
-    {
-        ++(kick ? focus.Kicks : focus.Ccs);
-        if (counting)
-            botAI->CountTactic(kick ? TacticCounter::FocusKick : TacticCounter::FocusCc);
-    }
-    else
-    {
-        ++focus.SwitchKicks;
-        if (counting)
-            botAI->CountTactic(TacticCounter::SwitchKick);
-    }
-
-    LOG_TRACE("playerbots.reaction",
-              "focus act {} kind {} skill {} enemy {} spell {} source {} own before {} after {} sel before {} after {} "
-              "at {}",
-              act == FocusAct::Focus ? "focus" : "switch", kick ? "kick" : "cc", botAI->GetPvpSkill(),
-              target->GetGUID().GetCounter(), spellInfo->Id,
-              act == FocusAct::Focus ? FocusSourceName(focus.Pick.Source) : "-", ownBefore.GetCounter(),
-              ownAfter.GetCounter(), selectionBefore.GetCounter(), bot->GetTarget().GetCounter(), getMSTime());
-}
-
-// G5e: an enemy player in view that could kick the bot's cast now (DT.12, what a player sees: its class, its reach,
-// its facing or its target)
-bool FakeKickerInView(Player* bot, Player* enemy, FakeParams const& params)
-{
-    if (!enemy || !enemy->IsInWorld() || !enemy->IsAlive() || !enemy->IsInMap(bot))
-        return false;
-
-    uint32 const reach = FakeKickerReachYards(enemy->getClass(), params);
-    if (reach == 0 || !bot->IsWithinDistInMap(enemy, static_cast<float>(reach)))
-        return false;
-
-    return FakeKickerSees(enemy->HasInArc(static_cast<float>(M_PI), bot), enemy->GetTarget() == bot->GetGUID(), params);
-}
-
-// 13e-polish: a cast outside the fight (a conjure, an item, a pet summon, an enchant, a trade skill) is no bait
-bool FakeUtilityCast(SpellInfo const* info)
-{
-    for (uint8 i = EFFECT_0; i <= EFFECT_2; ++i)
-    {
-        switch (info->Effects[i].Effect)
-        {
-            case SPELL_EFFECT_CREATE_ITEM:
-            case SPELL_EFFECT_CREATE_ITEM_2:
-            case SPELL_EFFECT_CREATE_RANDOM_ITEM:
-            case SPELL_EFFECT_CREATE_MANA_GEM:
-            case SPELL_EFFECT_TRADE_SKILL:
-            case SPELL_EFFECT_ENCHANT_ITEM:
-            case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY:
-            case SPELL_EFFECT_ENCHANT_HELD_ITEM:
-            case SPELL_EFFECT_SUMMON_PET:
-            case SPELL_EFFECT_SUMMON_OBJECT_WILD:
-            case SPELL_EFFECT_FEED_PET:
-                return true;
-            default:
-                break;
-        }
-    }
-
-    return false;
-}
-
-// G5e: the bot's cast began (CastSpell). A new long generic cast ends any pending fake and may become one: the fight's
-// enemies in view that could kick it, without those whose kick the bot remembers used lately; a fake's cancel instant
-// goes to the pre-gate stepper. Anything else (an instant, a channel) leaves a pending fake alone.
-void DecideFakeCast(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 nowMs)
-{
-    Spell const* const spell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-    SpellInfo const* const info = spell ? spell->GetSpellInfo() : nullptr;
-    if (!info || info->Id != spellId || spell->getState() != SPELL_STATE_PREPARING)
-        return;
-
-    FakeBotState& state = botAI->GetFakeState();
-    state.ClearPending();
-    if (!botAI->TacticEnabledHere(TacticId::Fake))
-        return;
-
-    FakeParams const& params = state.Params;
-    FakeInput input;
-    input.CastMs = static_cast<uint32>(std::max(spell->GetCastTime(), 0));
-    input.Kickable = (info->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT) != 0;
-    input.Fight = bot->IsInCombat() && !FakeUtilityCast(info);
-    if (FakeCastVerdict(params, input.CastMs, input.Kickable, input.Fight) != FakeVerdict::Fake)
-        return;
-
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalCast::Decide")
-                                                    : nullptr);
-    OpponentMemory const& memory = botAI->GetOpponentMemory();
-    uint64 kickerGuid = 0;
-    uint8 kickerClass = 0;
-    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
-    {
-        Unit* const unit = botAI->GetUnit(guid);
-        Player* const enemy = unit ? unit->ToPlayer() : nullptr;
-        if (!FakeKickerInView(bot, enemy, params))
-            continue;
-
-        ++input.KickersSeen;
-        if (!FakeKickerLive(memory.KickSeenWithin(guid.GetCounter(), nowMs, params.KickSeenMs), params.RemembersKicks))
-            continue;
-
-        if (input.KickersLive++ == 0)
-        {
-            kickerGuid = guid.GetRawValue();
-            kickerClass = enemy->getClass();
-        }
-    }
-
-    // 13e-decide (Fake.HealGuardPct): no fake heal while its target, or (the only healer) any friend, is low
-    if (input.KickersLive != 0 && ArenaInterrupt::Classify(InterruptSpellFactsOf(info)) == ArenaInterrupt::Kind::Heal)
-    {
-        auto const pct = [](Unit const* unit) { return static_cast<uint32>(unit->GetHealthPct() + 0.5f); };
-        Unit const* const healed = spell->m_targets.GetUnitTarget();
-        input.Heal = true;
-        input.HealTargetHpPct = pct(healed ? healed : bot);
-        uint32 healers = 0;
-        uint32 lowest = pct(bot);
-        if (Group* const group = bot->GetGroup())
-        {
-            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-            {
-                Player* const member = ref->GetSource();
-                if (!member || !member->IsInMap(bot) || !member->IsAlive())
-                    continue;
-
-                healers += PlayerbotAI::IsHeal(member) ? 1 : 0;
-                lowest = std::min(lowest, pct(member));
-            }
-        }
-
-        input.OnlyHealer = healers <= 1;
-        input.LowestFriendHpPct = lowest;
-    }
-
-    input.NowMs = nowMs;
-    input.NextFakeAtMs = state.NextFakeAtMs;
-    input.MinuteStartMs = state.MinuteStartMs;
-    input.MinuteFakes = state.MinuteFakes;
-    input.Hash = FakeCastHash(bot->GetGUID().GetCounter(), nowMs, spellId);
-    FakeVerdict const verdict = DecideFake(params, input);
-    state.LastVerdict = verdict;
-    if (verdict == FakeVerdict::NoKicker)
-        return;
-
-    ++state.Decisions;
-    if (verdict != FakeVerdict::Fake)
-    {
-        LOG_TRACE("playerbots",
-                  "Fake: {} casts {} ({}) of {} ms for real ({}), kickers {} in view, {} live, skill {}, at {} ms",
-                  bot->GetName(), info->SpellName[0], spellId, input.CastMs, FakeVerdictName(verdict),
-                  input.KickersSeen, input.KickersLive, botAI->GetPvpSkill(), nowMs);
-        return;
-    }
-
-    uint32 const cancelMs = PickCancelMs(params, input.CastMs, input.Hash);
-    state.SpellId = spellId;
-    state.CastStartMs = nowMs;
-    state.CastMs = input.CastMs;
-    state.CancelAtMs = nowMs + cancelMs;
-    state.KickerGuid = kickerGuid;
-    state.KickerClass = kickerClass;
-    state.Hash = input.Hash;
-    botAI->SetNaturalPreGate(true);
-    LOG_TRACE("playerbots",
-              "Fake: {} plans to cancel {} ({}) at {} of {} ms ({} %), kicker {} class {} ({} in view, {} live), "
-              "skill {}, at {} ms",
-              bot->GetName(), info->SpellName[0], spellId, cancelMs, input.CastMs, cancelMs * 100 / input.CastMs,
-              ObjectGuid(kickerGuid).GetCounter(), kickerClass, input.KickersSeen, input.KickersLive,
-              botAI->GetPvpSkill(), nowMs);
-}
-
-enum class FakeStep : uint8
-{
-    Pending,
-    Done,
-    Cancelled
-};
-
-// G5e: the pending fake at the pre-gate point. The cast gone (kicked, interrupted, replaced) ends it; at its instant
-// the cast is cancelled while the kicker still threatens it (in view, its kick not seen used), else it finishes.
-FakeStep StepFakeCast(PlayerbotAI* botAI, Player* bot, FakeBotState& state, uint32 nowMs, uint32 tickMs)
-{
-    Spell const* const spell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-    SpellInfo const* const info = spell ? spell->GetSpellInfo() : nullptr;
-    if (!info || info->Id != state.SpellId || spell->getState() != SPELL_STATE_PREPARING)
-    {
-        ++state.Gone;
-        LOG_TRACE("playerbots", "Fake: {} cast {} ended {} ms in, before its cancel at {} ms, at {} ms", bot->GetName(),
-                  state.SpellId, nowMs - state.CastStartMs, state.CancelAtMs - state.CastStartMs, nowMs);
-        state.ClearPending();
-        return FakeStep::Done;
-    }
-
-    if (!FakeCancelDue(state.CancelAtMs, nowMs, tickMs))
-        return FakeStep::Pending;
-
-    FakeParams const& params = state.Params;
-    ObjectGuid const kickerGuid(state.KickerGuid);
-    Player* const kicker = ObjectAccessor::GetPlayer(*bot, kickerGuid);
-    bool const threat =
-        FakeKickerInView(bot, kicker, params) &&
-        FakeKickerLive(botAI->GetOpponentMemory().KickSeenWithin(kickerGuid.GetCounter(), nowMs, params.KickSeenMs),
-                       params.RemembersKicks);
-    if (!threat)
-    {
-        ++state.Finished;
-        LOG_TRACE("playerbots", "Fake: {} lets {} ({}) finish, the kicker {} no longer threatens it, at {} ms",
-                  bot->GetName(), info->SpellName[0], state.SpellId, kickerGuid.GetCounter(), nowMs);
-        state.ClearPending();
-        return FakeStep::Done;
-    }
-
-    uint32 const spellId = state.SpellId;
-    uint32 const castMs = state.CastMs;
-    uint32 const plannedMs = state.CancelAtMs - state.CastStartMs;
-    bot->InterruptSpell(CURRENT_GENERIC_SPELL, false, false, true);
-    state.NoteCancel(nowMs, NextFakeGapMs(params, state.Hash));
-    botAI->CountTactic(TacticCounter::Fakes);
-    LOG_TRACE("playerbots",
-              "Fake cancel: {} cancelled {} ({}) at {} of {} ms ({} %, planned {} ms, error {} ms), kicker {}, skill "
-              "{}, next fake from {} ms, at {} ms",
-              bot->GetName(), info->SpellName[0], spellId, plannedMs + state.LastErrorMs, castMs, state.LastCancelPct,
-              plannedMs, state.LastErrorMs, kickerGuid.GetCounter(), botAI->GetPvpSkill(), state.NextFakeAtMs, nowMs);
-    return FakeStep::Cancelled;
-}
-}  // namespace
-
-namespace
-{
-// G5e review note 1: set once any bot's tactic mask holds Fake (SetTacticMask: the config mask at login or reload, a
-// forced mask), never cleared; until then a kick needs no search for bots that note it
-std::atomic<bool> fakeTacticSeen{false};
-}  // namespace
-
-// G5e (NaturalCast.h): a kick aimed at one enemy, cast by any player (OnPlayerSpellCast, the caster's map thread). The
-// filter comes first (the tactics on, the Fake tactic in some bot's mask, a kick, a player target on the caster's
-// map); then the players around the target on that map (the same thread) that are hostile to the caster and bots
-// with the Fake tactic on here note it in their own kick memory, and the target counts tactics.kicksBaited when the
-// kick came within BaitedWindowMs of its fake cancel. No unit pointer is kept; nothing of the caster's AI is read but
-// its skill for the trace line.
-void NoteFakeKickCast(Player* caster, Spell* spell)
-{
-    if (!sPlayerbotAIConfig.TacticsEnable || !fakeTacticSeen.load(std::memory_order_relaxed) || !caster || !spell)
-        return;
-
-    SpellInfo const* const info = spell->GetSpellInfo();
-    if (!info || InterruptUseOf(info) != InterruptUse::Kick || !InterruptKickAimed(info))
-        return;
-
-    Unit* const target = spell->m_targets.GetUnitTarget();
-    if (!target || !target->IsPlayer() || !target->IsInWorld() || !target->IsInMap(caster))
-        return;
-
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalCast::KickSeen")
-                                                    : nullptr);
-    uint32 const nowMs = getMSTime();
-    std::vector<Player*> seers;
-    Acore::AnyPlayerInObjectRangeCheck check(target, FAKE_KICK_SEEN_YARDS);
-    Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(target, seers, check);
-    Cell::VisitObjects(target, searcher, FAKE_KICK_SEEN_YARDS);
-    for (Player* const seer : seers)
-    {
-        if (seer == caster || !seer->IsHostileTo(caster))
-            continue;
-
-        PlayerbotAI* const botAI = GET_PLAYERBOT_AI(seer);
-        if (!botAI || !botAI->TacticEnabledHere(TacticId::Fake))
-            continue;
-
-        botAI->GetOpponentMemory().NoteKick(caster->GetGUID().GetCounter(), info->Id, nowMs);
-        botAI->CountTactic(TacticCounter::KickSeen);
-        FakeBotState& state = botAI->GetFakeState();
-        ++state.KicksSeen;
-        if (seer != target || !FakeBaited(state.LastCancelMs, nowMs, state.Params.BaitedWindowMs))
-            continue;
-
-        uint32 const afterMs = nowMs - state.LastCancelMs;
-        state.LastCancelMs = 0;
-        ++state.Baited;
-        botAI->CountTactic(TacticCounter::KicksBaited);
-        PlayerbotAI* const kickerAI = GET_PLAYERBOT_AI(caster);
-        LOG_TRACE(
-            "playerbots",
-            "Fake baited: {} kicked {} with {} ({}) {} ms after its fake cancel, kicker skill {}, skill {}, at {} "
-            "ms",
-            caster->GetName(), seer->GetName(), info->SpellName[0], info->Id, afterMs,
-            kickerAI ? kickerAI->GetPvpSkill() : 0, botAI->GetPvpSkill(), nowMs);
-    }
-}
-
 bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 {
     lastPrepareResult = -1;
@@ -5535,7 +4115,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     // and an action on the focus target (never the own target), which gives the selection back after the cast, a
     // failed one too (FocusSelectionAfterCast)
     bool const notesFocus = target != bot && (pvpTestCounting || TacticEnabledHere(TacticId::FocusTarget));
-    bool const onFocus = focusState && focusState->Target.Is(target->GetGUID());
+    bool const onFocus = tactics->focusState && tactics->focusState->Target.Is(target->GetGUID());
     ObjectGuid ownBefore;
     if (notesFocus || onFocus)
     {
@@ -5544,7 +4124,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     }
 
     bool const focusAct = onFocus && ClassifyFocusAct(target->GetGUID().GetRawValue(), ownBefore.GetRawValue(),
-                                                      focusState->Target.Pick.Guid) == FocusAct::Focus;
+                                                      tactics->focusState->Target.Pick.Guid) == FocusAct::Focus;
     auto const restoreFocusSelection = [this, &oldSel, target, focusAct]()
     {
         if (focusAct)
@@ -5560,7 +4140,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         // 180-degree arc (the engine tries again after CastRetryMs); else the snap, as before
         if (!FaceTarget(faceTo, TurnSnapSite::CastSpell))
         {
-            GetTurnState().NoteCastWait(target->GetGUID().GetRawValue(), getMSTime());
+            tactics->GetTurnState().NoteCastWait(target->GetGUID().GetRawValue(), getMSTime());
 
             SetNextCheckDelay(sPlayerbotAIConfig.NaturalFacing.CastRetryMs);
             restoreFocusSelection();
@@ -5569,18 +4149,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         // failWithDelay = true;
     }
 
-    // G2a: a cast that waited for the bot's turn goes ahead (tactics.turnWaitMs; casts that need the facing only)
-    if (turnState && turnState->CastWaitSinceMs != 0 && (spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT))
-    {
-        // the span ends here whatever it was (a wait at another target, or one the bot gave up, counts nothing)
-        uint32 const waitMs = turnState->TakeCastWait(target->GetGUID().GetRawValue(), getMSTime());
-        if (waitMs != 0)
-        {
-            ++turnState->CastWaits;
-            turnState->CastWaitMs += waitMs;
-            CountTactic(TacticCounter::TurnWaitMs, waitMs);
-        }
-    }
+    tactics->BeforeCast(target, spellInfo);
 
     if (failWithDelay)
     {
@@ -5822,70 +4391,15 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     forceRebuff.NoteCast(spellInfo);
 
-    if (followsKick && interruptHit.Use == InterruptUse::Kick)
-        NoteInterruptKick(this, bot, spellInfo, interruptHit, getMSTime());
-
-    // 13e-decide fix (Interrupt.SeeCancelLag): the bot pressed an interrupt at the enemy's cast; the ended bar it still
-    // sees is then no bait (no second interrupt on it, InterruptSpellTrigger)
-    if (interruptState && target && target != bot && sPlayerbotAIConfig.TacticInterrupt.SeeCancelLag &&
-        InterruptUseOf(spellInfo) != InterruptUse::None)
-    {
-        if (InterruptCastSlot* const slot = interruptState->Latest(target->GetGUID().GetCounter()))
-            slot->PressedMs = std::max(getMSTime(), 1u);
-    }
-
-    if (counting)
-    {
-        CountPvpTestCast(spellId, drGroup, atImmune);
-        // G4d-c: a cast into the core's DR immunity (cc.atImmune), beside the CC cast lines: what the bot's memory
-        // held of the group (none: never seen or its slot went to another group) against the core's level
-        if (atImmune && sLog->ShouldLog("playerbots", LogLevel::LOG_LEVEL_TRACE))
-        {
-            uint32 const nowMs = getMSTime();
-            uint8 memoryLevel = 0;
-            uint32 sinceSeenMs = 0;
-            int32 endsInMs = 0;
-            bool const held =
-                ccState && ccState->Memory.Recall(target->GetGUID().GetRawValue(), static_cast<uint8>(drGroup), nowMs,
-                                                  memoryLevel, sinceSeenMs, endsInMs);
-            LOG_TRACE("playerbots",
-                      "CC immune: {} {} ({}) on {} group {} ({}) by {}, memory {} (seen {} ms ago, aura end {} ms; "
-                      "aware {}, miss {}%), core {}, at {} ms",
-                      bot->GetName(), spellInfo->SpellName[0] ? spellInfo->SpellName[0] : "?", spellId,
-                      target->GetName(), drGroup < PVPTEST_DR_GROUP_COUNT ? PVPTEST_DR_GROUP_NAMES[drGroup] : "?",
-                      drGroup, ccState && ccState->TeamCcCasting ? "team cc" : "other",
-                      held ? std::to_string(memoryLevel) : std::string("none"), held ? sinceSeenMs : 0,
-                      held ? endsInMs : 0, ccState && ccState->Params.DrAware ? 1 : 0,
-                      ccState ? ccState->Params.DrMissPct : 0, static_cast<uint32>(DIMINISHING_LEVEL_IMMUNE), nowMs);
-        }
-
-        CountInterruptHit(this, target, interruptHit, getMSTime());
-        // tactics.ccOnTarget (G4b): the planned CC target is the group's moon in an arena, else the bot's kept one
-        if (IsPvpTestCcGroup(drGroup) && target != bot)
-        {
-            Group* const group = bot->GetGroup();
-            ObjectGuid planned = group && GetTacticContext() == TacticContext::Arena
-                                     ? group->GetTargetIcon(FOCUS_ICON_MOON)
-                                     : ObjectGuid::Empty;
-            if (planned.IsEmpty() && ccState)
-                planned = ccState->CcTarget;
-
-            if (!planned.IsEmpty() && planned == target->GetGUID())
-                CountTactic(TacticCounter::CcOnTarget);
-        }
-    }
-
-    // G4e: focus and switch actions (the harness's counters, tactics show, the trace line)
-    if (notesFocus)
-        NoteFocusAct(this, bot, spellInfo, target, oldSel, ownBefore, counting, drGroup);
-
-    // G5e: a long cast may be a fake (one tactic test; a pending fake ends with a new long cast)
-    if (TacticEnabledHere(TacticId::Fake) || (fakeState && fakeState->Pending()))
-        DecideFakeCast(this, bot, spellId, getMSTime());
-
-    // G0e: a cast with a cast time begins (an instant one was cast inside prepare: its finish row is enough)
-    if (NaturalTrace::Any())
-        NaturalTrace::OnBotCastStart(bot, spell, target);
+    tactics->AfterCast(spellId, spellInfo, spell, target,
+                       {.oldSel = oldSel,
+                        .ownBefore = ownBefore,
+                        .interruptHit = interruptHit,
+                        .drGroup = drGroup,
+                        .counting = counting,
+                        .followsKick = followsKick,
+                        .atImmune = atImmune,
+                        .notesFocus = notesFocus});
 
     return true;
 }
@@ -7352,9 +5866,9 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
         return GetAiObjectContext()->FormatValues();
     }
     else if (command == "constraints")
-        return "constraints " + TestConstraints::Format(rpgInfo.constraints);
+        return "constraints " + TestConstraints::Format(testConstraints);
     else if (command == "hold")
-        return "hold " + TestConstraints::Format(static_cast<uint16>(rpgInfo.constraints & TestConstraints::HOLD));
+        return "hold " + TestConstraints::Format(static_cast<uint16>(testConstraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;
@@ -8749,894 +7263,7 @@ std::set<uint32> PlayerbotAI::GetCurrentIncompleteQuestIds()
     return result;
 }
 
-void PlayerbotAI::SetPvpSkill(uint8 skill, uint8 firstRoll)
-{
-    pvpSkill = skill;
-    pvpSkillFirstRoll = firstRoll ? firstRoll : skill;
-    skillReactFactor = 1.0f;
-    skillNoticeMissPercent = 0;
-    skillNoticeDelayMs = 0;
-    skillNoticeCounters = SkillNoticeCounters();
-    reactionTypes = ReactionTypeState();
-    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-    // Called before the bot's first update (login) or on the world thread (GM commands, the harness, lab pins and
-    // reapply): MapMgr::Update waits for the map threads before the commands and world scripts run, so no map thread
-    // reads these values while they change one after another.
-    // The hashes' guid: the bot's own, or a lab copy's template (G0j-b); they never see the percentile
-    uint64 const guid = attributeTemplate ? attributeTemplate : (bot ? bot->GetGUID().GetCounter() : 0);
-    // The attributes from the skill and the guid (BotAttributes.h; with the defaults every ability is the skill).
-    // DT.14: the learnable ones read the (grown) skill, the fixed ones the first roll (G6b; the skill without growth)
-    SkillDistributionParams const distribution{config.SkillDistributionUniform, config.SkillMean, config.SkillSd,
-                                               config.SkillMin, config.SkillMax};
-    attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, pvpSkillFirstRoll, guid);
-    // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
-    tacticGate = ComputeTacticGate(config.SkillGate, config.TacticConfig,
-                                   AttributeGateInputs(config.SkillAttributes, attributes, skill), guid);
-    // Speed carries the reaction draw, D3's stretch and D4's notice delay; Focus D4's miss share. Cached whatever
-    // Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots.
-    uint8 const speed = attributes.Get(BotAttribute::Speed);
-    reactionState = ComputeReactionState(config.NaturalReaction, speed, config.SkillGate.CurveExponent);
-    // The hold's and the team plan's numbers (G1b), cached whatever Playerbots.Tactics.Hold/Plan.Enable say; skill 0
-    // gives the skill-99 values
-    FocusBotState& focus = GetFocusState();
-    focus.Params = ComputeFocusParams(skill, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
-    focus.AddonKnowledge = FocusAddonKnowledge(skill, attributes.Get(BotAttribute::Knowledge),
-                                               config.TacticFocus.FocusAddonKnowledgeFromSkill);
-    // Crowd control's numbers (G4b, G4a NOTE 8), cached whatever Playerbots.Tactics.Cc/OwnCc.Enable say
-    GetCcState().Params =
-        ComputeCcParams(skill, attributes, tacticGate.Effort, config.SkillGate.CurveExponent, config.TacticCc);
-    // The Defensive and Protect tactics' numbers (G5d), cached whatever their Enable says; skill 0 gives skill 99's
-    GetDefensiveState().Params = ComputeDefensiveParams(skill, attributes, tacticGate.Effort,
-                                                        config.SkillGate.CurveExponent, config.TacticDefensive);
-    // The Fake tactic's numbers (G5e), cached whatever its Enable says; skill 0 gives skill 99's
-    GetFakeState().Params = ComputeFakeParams(skill, attributes, config.TacticFake);
-    // The natural facing's numbers (G2a), cached whatever Natural.Facing.Enable says; skill 0 gives skill 99's
-    GetTurnState().Params = ComputeTurnParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
-    // The natural tracking's numbers (G2b), cached whatever Natural.Track.Enable says; skill 0 gives skill 99's
-    GetTrackState().Params = ComputeTrackParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
-    // The natural paths' numbers (G2c), cached whatever Natural.Path.Enable says; skill 0 gives skill 99's
-    GetPathState().Params = ComputePathParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalPath);
-    if (skill == 0)
-        return;
-
-    // 0 at 1, 1 at 99, bent by Playerbots.Skill.CurveExponent (1.0: the straight line, as before)
-    float const speedPosition = SkillPosition(speed);
-    float const focusPosition = SkillPosition(attributes.Get(BotAttribute::Focus));
-    float const exponent = config.SkillGate.CurveExponent;
-    // G0h3's prices from Speed, Wisdom, Focus, Dexterity, Foresight and Patience, also with the parts off
-    ReactionTypeInputs typeInputs;
-    typeInputs.Speed = speed;
-    typeInputs.Wisdom = attributes.Get(BotAttribute::Wisdom);
-    typeInputs.Focus = attributes.Get(BotAttribute::Focus);
-    typeInputs.Dexterity = attributes.Get(BotAttribute::Dexterity);
-    typeInputs.Foresight = attributes.Get(BotAttribute::Foresight);
-    typeInputs.Patience = attributes.Get(BotAttribute::Patience);
-    reactionTypes = ComputeReactionTypeState(config.NaturalReaction, typeInputs, exponent);
-    if (config.SkillReactActive)
-        skillReactFactor = SkillLerp(config.SkillReactFactorLow, config.SkillReactFactorHigh, speedPosition, exponent);
-
-    if (config.SkillNoticeActive)
-    {
-        skillNoticeMissPercent = SkillLerpRounded(config.SkillNoticeMissPercentLow, config.SkillNoticeMissPercentHigh,
-                                                  focusPosition, exponent);
-        skillNoticeDelayMs =
-            SkillLerpRounded(config.SkillNoticeDelayMsLow, config.SkillNoticeDelayMsHigh, speedPosition, exponent);
-    }
-}
-
-FocusBotState& PlayerbotAI::GetFocusState()
-{
-    if (!focusState)
-    {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones, the skill-99 values
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        focusState = std::make_unique<FocusBotState>();
-        focusState->Params = ComputeFocusParams(0, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
-        focusState->AddonKnowledge = FocusAddonKnowledge(0, attributes.Get(BotAttribute::Knowledge),
-                                                         config.TacticFocus.FocusAddonKnowledgeFromSkill);
-    }
-
-    return *focusState;
-}
-
-CcBotState& PlayerbotAI::GetCcState()
-{
-    if (!ccState)
-    {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones (full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        ccState = std::make_unique<CcBotState>();
-        ccState->Params =
-            ComputeCcParams(0, attributes, SKILL_GATE_FULL, config.SkillGate.CurveExponent, config.TacticCc);
-    }
-
-    return *ccState;
-}
-
-InterruptBotState& PlayerbotAI::GetInterruptState()
-{
-    if (!interruptState)
-        interruptState = std::make_unique<InterruptBotState>();
-
-    return *interruptState;
-}
-
-DefensiveBotState& PlayerbotAI::GetDefensiveState()
-{
-    if (!defensiveState)
-    {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones (full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        defensiveState = std::make_unique<DefensiveBotState>();
-        defensiveState->Params = ComputeDefensiveParams(0, attributes, SKILL_GATE_FULL, config.SkillGate.CurveExponent,
-                                                        config.TacticDefensive);
-    }
-
-    return *defensiveState;
-}
-
-FakeBotState& PlayerbotAI::GetFakeState()
-{
-    if (!fakeState)
-    {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
-        fakeState = std::make_unique<FakeBotState>();
-        fakeState->Params = ComputeFakeParams(pvpSkill, attributes, sPlayerbotAIConfig.TacticFake);
-    }
-
-    return *fakeState;
-}
-
-TurnBotState& PlayerbotAI::GetTurnState()
-{
-    if (!turnState)
-    {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        turnState = std::make_unique<TurnBotState>();
-        turnState->Params =
-            ComputeTurnParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
-    }
-
-    return *turnState;
-}
-
-TrackBotState& PlayerbotAI::GetTrackState()
-{
-    if (!trackState)
-    {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        trackState = std::make_unique<TrackBotState>();
-        trackState->Params =
-            ComputeTrackParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
-    }
-
-    return *trackState;
-}
-
-PathBotState& PlayerbotAI::GetPathState()
-{
-    if (!pathState)
-    {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        pathState = std::make_unique<PathBotState>();
-        pathState->Params = ComputePathParams(pvpSkill, attributes, config.SkillGate.CurveExponent, config.NaturalPath);
-    }
-
-    return *pathState;
-}
-
-CoverBotState& PlayerbotAI::GetCoverState()
-{
-    if (!coverState)
-        coverState = std::make_unique<CoverBotState>();
-
-    return *coverState;
-}
-
-KiteBotState& PlayerbotAI::GetKiteState()
-{
-    if (!kiteState)
-        kiteState = std::make_unique<KiteBotState>();
-
-    return *kiteState;
-}
-
-DrinkBotState& PlayerbotAI::GetDrinkState()
-{
-    if (!drinkState)
-        drinkState = std::make_unique<DrinkBotState>();
-
-    return *drinkState;
-}
-
-JumpBotState& PlayerbotAI::GetJumpState()
-{
-    if (!jumpState)
-        jumpState = std::make_unique<JumpBotState>();
-
-    return *jumpState;
-}
-
-// G2g: PlayerbotAI::StepJumpTest (the jump test's step) is in ArenaJump.cpp, beside the commands that arm it
-
-// G2a: whether the bot turns naturally now (NaturalTurn.h)
-bool NaturalFacingHere(PlayerbotAI* botAI, uint32 nowMs)
-{
-    TurnConfig const& config = sPlayerbotAIConfig.NaturalFacing;
-    if (!config.Enable || !botAI->TacticEnabledHere(TacticId::Natural))
-        return false;
-
-    TacticContext const context = botAI->GetTacticContext();
-    if (config.Contexts & TacticContextBit(context))
-        return true;
-
-    // Out of PvP only in a real player's sight, and never in a dungeon or raid (their scripted facing stays exact)
-    Player* const bot = botAI->GetBot();
-    Map* const map = bot ? bot->GetMap() : nullptr;
-    if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
-        return false;
-
-    TurnBotState& state = botAI->GetTurnState();
-    if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
-    {
-        state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
-        state.InSightCheckedMs = std::max(nowMs, 1u);
-    }
-
-    return state.InSight;
-}
-
-// G2b: whether the bot tracks naturally now (NaturalMove.h); as NaturalFacingHere with the Track options
-bool NaturalTrackHere(PlayerbotAI* botAI, uint32 nowMs)
-{
-    TrackConfig const& config = sPlayerbotAIConfig.NaturalTrack;
-    if (!config.Enable || !botAI->TacticEnabledHere(TacticId::Natural))
-        return false;
-
-    TacticContext const context = botAI->GetTacticContext();
-    if (config.Contexts & TacticContextBit(context))
-        return true;
-
-    // Out of PvP only in a real player's sight, and never in a dungeon or raid (their scripted chases stay exact)
-    Player* const bot = botAI->GetBot();
-    Map* const map = bot ? bot->GetMap() : nullptr;
-    if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
-        return false;
-
-    TrackBotState& state = botAI->GetTrackState();
-    if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
-    {
-        state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
-        state.InSightCheckedMs = std::max(nowMs, 1u);
-    }
-
-    return state.InSight;
-}
-
-// G2c: whether the bot walks natural paths now (NaturalPath.h); as NaturalTrackHere with the Path options
-bool NaturalPathHere(PlayerbotAI* botAI, uint32 nowMs)
-{
-    PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
-    if (!config.Enable || !botAI->TacticEnabledHere(TacticId::Natural))
-        return false;
-
-    TacticContext const context = botAI->GetTacticContext();
-    if (config.Contexts & TacticContextBit(context))
-        return true;
-
-    // Out of PvP only in a real player's sight, and never in a dungeon or raid (their scripted paths stay exact)
-    Player* const bot = botAI->GetBot();
-    Map* const map = bot ? bot->GetMap() : nullptr;
-    if (!config.OutsidePvpInSight || context != TacticContext::Pve || !map || map->Instanceable())
-        return false;
-
-    PathBotState& state = botAI->GetPathState();
-    if (state.InSightCheckedMs == 0 || nowMs - state.InSightCheckedMs >= config.InSightCacheMs)
-    {
-        state.InSight = botAI->HasPlayerNearby(static_cast<float>(config.InSightYards));
-        state.InSightCheckedMs = std::max(nowMs, 1u);
-    }
-
-    return state.InSight;
-}
-
-namespace
-{
-// G2a: one step of the bot's turn at the pre-gate point. A moving, controlled or dead bot ends it (a moving bot faces
-// its path); the correction looks its target up again (same map). True while the turn has work left.
-bool StepNaturalTurn(Player* bot, TurnBotState& state, uint32 nowMs)
-{
-    if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !bot->IsAlive())
-    {
-        state.Stop();
-        return false;
-    }
-
-    bool haveTarget = false;
-    float targetRad = 0.0f;
-    if (TurnNeedsTarget(state, nowMs))
-    {
-        WorldObject* const target = ObjectAccessor::GetWorldObject(*bot, ObjectGuid(state.TargetGuid));
-        if (target && target != bot && target->IsInWorld() && target->GetMapId() == bot->GetMapId())
-        {
-            haveTarget = true;
-            targetRad = bot->GetAngle(target);
-        }
-    }
-
-    TurnStepOut const out = StepTurn(state, nowMs, bot->GetOrientation(), haveTarget, targetRad);
-    if (out.Write)
-        bot->SetOrientation(out.Orientation);
-
-    // As the snap: no packet while rooted
-    if (!bot->IsRooted())
-    {
-        if (out.Spline)
-            bot->SetFacingTo(out.SplineRad);
-
-        if (out.Packet)
-        {
-            PerfMonitorScope scope(
-                PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Packet") : nullptr);
-            bot->SendMovementFlagUpdate(true);
-        }
-    }
-
-    return state.Active();
-}
-}  // namespace
-
-// The pre-gate stepper (G5e's fake cast, G2a's turn): UpdateAI calls it on every Player::Update while naturalPreGate,
-// before the AI check delay and CanUpdateAI, so a fake's cancel lands within half a map tick of its instant whatever
-// nextAICheckDelay is, and a turn moves every update. naturalPreGate stays on while anything is pending.
-void PlayerbotAI::StepNaturalPreGate(uint32 nowMs)
-{
-    bool pending = false;
-    if (fakeState && fakeState->Pending())
-    {
-        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalCast::Step")
-                                                        : nullptr);
-        FakeStep const step = StepFakeCast(this, bot, *fakeState, nowMs, lastUpdateDiff);
-        pending = step == FakeStep::Pending;
-        // After a fake the bot acts at its next ordinary check, not at the end of the bar it waited for
-        if (step == FakeStep::Cancelled)
-            nextAICheckDelay = std::min(nextAICheckDelay, GetReactDelay());
-    }
-
-    // G2a: the turn's step (the server orientation every update, heartbeats by the packet rule)
-    if (turnState && turnState->Active())
-    {
-        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Step")
-                                                        : nullptr);
-        pending = StepNaturalTurn(bot, *turnState, nowMs) || pending;
-    }
-
-    naturalPreGate = pending;
-}
-
-// G2a: face the target the natural way where NaturalFacingHere says so, else the instant snap (as before; also for a
-// moving bot, whose path sets its facing; there the "set facing" action waits for the bot to stand, 13e-polish, so only
-// a cast or a swing on the move snaps). A turn under way to the same object goes on; anything else starts a new
-// one from the bot's orientation now. A bot without control (stunned, feared in place) gets the snap too: the stepper
-// stops a turn there, and a refused cast would only be retried every CastRetryMs. True when the target is inside the
-// core's 180-degree spell arc (Spell.cpp CheckCast), so a cast may go ahead while the turn finishes.
-bool PlayerbotAI::FaceTarget(WorldObject* target, TurnSnapSite site)
-{
-    if (!target)
-        return false;
-
-    uint32 const nowMs = getMSTime();
-    if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !NaturalFacingHere(this, nowMs))
-    {
-        if (turnState)
-        {
-            turnState->Stop();
-            ++turnState->Snaps;
-        }
-
-        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Snap")
-                                                        : nullptr);
-        // G2a measurement (13e-decide): why and from where the bot snapped, so a run can attribute instant 180s. The
-        // why is the branch's cause: natural facing off here snaps whatever else holds, else moving, else no control
-        // (read only for the trace line: LOG_TRACE's arguments are lazy)
-        auto const why = [this, nowMs]()
-        {
-            return !NaturalFacingHere(this, nowMs) ? TurnSnapWhy::NotHere
-                   : bot->isMoving()               ? TurnSnapWhy::Moving
-                                                   : TurnSnapWhy::NoControl;
-        };
-        LOG_TRACE("playerbots", "Turn: {} snaps {} deg to {} ({}, {}), at {} ms", bot->GetName(),
-                  static_cast<int32>(
-                      std::fabs(TurnDelta(bot->GetOrientation(), bot->GetAngle(target))) / TURN_RAD_PER_DEG + 0.5f),
-                  target->GetName(), TurnSnapWhyName(why()), TurnSnapSiteName(site), nowMs);
-        ServerFacade::instance().SetFacingTo(bot, target);
-        return true;
-    }
-
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Face")
-                                                    : nullptr);
-    TurnBotState& state = GetTurnState();
-    uint64 const targetGuid = target->GetGUID().GetRawValue();
-    // A direction turn that holds (blink back's 180 before its cast, TurnDirectionHolds) is not turned back: the
-    // orientation stays, the answer is the arc's
-    if ((!state.Turning() || state.TargetGuid != targetGuid) && !TurnDirectionHolds(state, nowMs))
-    {
-        TurnRefreshRules(state.Params, sPlayerbotAIConfig.NaturalFacing);
-        float const targetRad = bot->GetAngle(target);
-        TurnPlan const plan = PlanTurn(state.Params, bot->GetOrientation(), targetRad, nowMs,
-                                       TurnHash(bot->GetGUID().GetCounter(), nowMs, state.Turns));
-        state.Begin(plan, targetGuid, nowMs);
-        if (plan.Leg.Spline && !bot->IsRooted())
-            bot->SetFacingTo(plan.Leg.Goal());
-
-        naturalPreGate = true;
-        CountTactic(TacticCounter::TurnFlicks);
-        LOG_TRACE("playerbots",
-                  "Turn: {} turns {} deg to {} in {} ms ({}), error {:.1f} deg, correction in {} ms (0: none), "
-                  "skill {}, at {} ms",
-                  bot->GetName(), state.LastTurnDeg, target->GetName(), plan.Leg.DurMs,
-                  plan.Leg.Keyboard ? "keyboard" : (plan.Leg.Spline ? "spline" : "flick"), state.LastErrorDeg,
-                  plan.Correct ? plan.CorrectDelayMs : 0u, GetPvpSkill(), nowMs);
-    }
-
-    return bot->HasInArc(static_cast<float>(M_PI), target);
-}
-
-// G2a: a direction turn before a cast that goes the way the bot faces (NaturalTurn.h TurnDirectionNext). Where
-// NaturalFacingHere says so and the bot stands in control, a natural turn to the target's angle plus offsetRad (no
-// correction: a direction, not an object) and false until its flick is over, so the caller waits; while it holds,
-// FaceTarget and "set facing" turn nothing back (TurnDirectionHolds). An attempt whose turns cannot finish within
-// TURN_DIRECTION_GIVE_UP_MS (someone else turns the bot back) takes the instant write. Else the instant orientation
-// write as before (no packet) and true.
-bool NaturalTurnForCast(PlayerbotAI* botAI, Unit* target, float offsetRad)
-{
-    Player* const bot = botAI->GetBot();
-    uint32 const nowMs = getMSTime();
-    if (bot->isMoving() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || !NaturalFacingHere(botAI, nowMs))
-    {
-        if (sPlayerbotAIConfig.NaturalFacing.Enable)
-            TurnDirectionEnd(botAI->GetTurnState());  // the cast goes now: an earlier attempt holds nothing
-
-        bot->SetOrientation(bot->GetAngle(target) + offsetRad);
-        return true;
-    }
-
-    TurnBotState& state = botAI->GetTurnState();
-    uint64 const key = target->GetGUID().GetRawValue();
-    float const goalRad = TurnWrap(bot->GetAngle(target) + offsetRad);
-    TurnDirectionStep const step = TurnDirectionNext(state, key, bot->GetOrientation(), goalRad, nowMs);
-    if (step == TurnDirectionStep::Wait)
-        return false;
-
-    if (step == TurnDirectionStep::Ready || step == TurnDirectionStep::Snap)
-    {
-        if (step == TurnDirectionStep::Snap)
-        {
-            state.Stop();
-            ++state.Snaps;
-            bot->SetOrientation(goalRad);
-            LOG_TRACE("playerbots", "Turn: {} gives up a turn to {} deg off {} after {} ms, instant, at {} ms",
-                      bot->GetName(), static_cast<int32>(offsetRad / TURN_RAD_PER_DEG + 0.5f), target->GetName(),
-                      nowMs - state.DirectionSinceMs, nowMs);
-        }
-
-        TurnDirectionEnd(state);
-        return true;
-    }
-
-    PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTurn::Direction")
-                                                    : nullptr);
-    TurnRefreshRules(state.Params, sPlayerbotAIConfig.NaturalFacing);
-    TurnPlan const plan = PlanTurn(state.Params, bot->GetOrientation(), goalRad, nowMs,
-                                   TurnHash(bot->GetGUID().GetCounter(), nowMs, state.Turns));
-    TurnDirectionBegin(state, plan, key, nowMs);
-    if (plan.Leg.Spline && !bot->IsRooted())
-        bot->SetFacingTo(plan.Leg.Goal());
-
-    botAI->SetNaturalPreGate(true);
-    botAI->CountTactic(TacticCounter::TurnFlicks);
-    LOG_TRACE(
-        "playerbots",
-        "Turn: {} turns {} deg to {} deg off {} in {} ms ({}), error {:.1f} deg, no correction, skill {}, at {} ms",
-        bot->GetName(), state.LastTurnDeg, static_cast<int32>(offsetRad / TURN_RAD_PER_DEG + 0.5f), target->GetName(),
-        plan.Leg.DurMs, plan.Leg.Keyboard ? "keyboard" : (plan.Leg.Spline ? "spline" : "flick"), state.LastErrorDeg,
-        botAI->GetPvpSkill(), nowMs);
-    return false;
-}
-
-bool NaturalDirectionTurnHolds(PlayerbotAI* botAI)
-{
-    return sPlayerbotAIConfig.NaturalFacing.Enable && TurnDirectionHolds(botAI->GetTurnState(), getMSTime());
-}
-
-namespace
-{
-// G5b: whether another enemy in reach and sight is a healer worth holding the kick for (casting a heal now, or a
-// healer class whose last casts in the opponent memory include a heal; DT.12), and how many enemies cast. At most
-// TACTIC_FIGHT_ENEMIES_MAX units, once per enemy cast; the sight test only for a candidate healer.
-bool InterruptHealerInReach(PlayerbotAI* botAI, Player* bot, Unit* caster, bool wantHealer, uint8& casting)
-{
-    OpponentMemory const& memory = botAI->GetOpponentMemory();
-    auto const healSpell = [](uint32 spellId)
-    {
-        return spellId != 0 && ArenaInterrupt::Classify(InterruptSpellFactsOf(sSpellMgr->GetSpellInfo(spellId))) ==
-                                   ArenaInterrupt::Kind::Heal;
-    };
-
-    bool healer = false;
-    casting = 0;
-    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
-    {
-        Unit* const unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsInWorld() || !unit->IsAlive())
-            continue;
-
-        InterruptBar bar;
-        bool const barShown = ReadInterruptBar(unit, bar);
-        if (barShown)
-            ++casting;
-
-        if (!wantHealer || healer || unit == caster || CcUnitControlled(unit))
-            continue;
-
-        bool healing =
-            barShown && ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) == ArenaInterrupt::Kind::Heal;
-        if (!healing && unit->IsPlayer() && InterruptHealerClass(unit->getClass()))
-        {
-            OpponentMemorySlot const* const slot = memory.Find(guid.GetCounter());
-            healing = slot && (healSpell(slot->SpellId) || healSpell(slot->PrevSpellId));
-        }
-
-        healer =
-            healing && bot->IsWithinDistInMap(unit, sPlayerbotAIConfig.SpellDistance) && bot->IsWithinLOSInMap(unit);
-    }
-
-    return healer;
-}
-
-// G5c-c: an instant heal or absorb of the healer on one of the units (auras with a duration are public, DT.12), put on
-// within seenMs, that the bot recognises (KnowsSpell); a heal over time of a cast heal (Regrowth) is no instant
-bool InterruptInstantCover(std::array<Unit*, TACTIC_FIGHT_ENEMIES_MAX> const& units, uint32 count, ObjectGuid healer,
-                           ArenaInterrupt::InterruptHoldParams const& numbers, uint64 botGuid, uint32 seenMs)
-{
-    constexpr std::array<AuraType, 3> Types = {SPELL_AURA_PERIODIC_HEAL, SPELL_AURA_OBS_MOD_HEALTH,
-                                               SPELL_AURA_SCHOOL_ABSORB};
-    for (uint32 index = 0; index < count; ++index)
-    {
-        for (AuraType const type : Types)
-        {
-            for (AuraEffect const* effect : units[index]->GetAuraEffectsByType(type))
-            {
-                if (effect->GetCasterGUID() != healer)
-                    continue;
-
-                Aura const* const aura = effect->GetBase();
-                SpellInfo const* const info = aura->GetSpellInfo();
-                int32 const maxMs = aura->GetMaxDuration();
-                if (maxMs <= 0 || info->CalcCastTime() > 0 ||
-                    static_cast<uint32>(std::max(0, maxMs - aura->GetDuration())) > seenMs)
-                    continue;
-
-                if (ArenaInterrupt::KnowsSpell(numbers, botGuid, info->Id))
-                    return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-// G5c-c (HoldPolicy 1): what the bot sees for the hold on a damage cast, in one pass over the fight's enemies (at most
-// TACTIC_FIGHT_ENEMIES_MAX units, once per enemy cast; health bars are public): the lowest projected health of the
-// caster's team and its trend (the sampler's tracks), and the first healer other than the caster in reach and sight
-// that the bot has seen healing (a cast heal's bar now or followed, a heal in the opponent memory, or an instant heal
-// of its own the bot recognises), its instant cover and the cast time the bot believes its next cast heal takes. The
-// sight test only for a candidate healer. Returns the enemies casting.
-uint8 FillInterruptHold(PlayerbotAI* botAI, Player* bot, Unit* caster, ArenaInterrupt::Params const& params,
-                        InterruptBotState const& state, uint32 nowMs, ArenaInterrupt::InterruptHoldInput& hold)
-{
-    InterruptConfig const& config = sPlayerbotAIConfig.TacticInterrupt;
-    ArenaInterrupt::InterruptHoldParams const& numbers = params.Hold;
-    uint64 const botGuid = bot->GetGUID().GetCounter();
-    std::array<Unit*, TACTIC_FIGHT_ENEMIES_MAX> units{};
-    uint32 count = 0;
-    uint8 casting = 0;
-    uint32 lowest = 101;
-    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("fight enemies")->Get())
-    {
-        if (count >= TACTIC_FIGHT_ENEMIES_MAX)
-            break;
-
-        Unit* const unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsInWorld() || !unit->IsAlive())
-            continue;
-
-        units[count++] = unit;
-        InterruptBar bar;
-        if (ReadInterruptBar(unit, bar))
-            ++casting;
-
-        if (!unit->IsPlayer())
-            continue;
-
-        uint8 const hpPct = InterruptHpPct(unit);
-        InterruptEnemyTrack const* const track = state.FindTrack(guid.GetCounter());
-        float const loss = track ? track->LossPctPerS(hpPct, nowMs) : 0.0f;
-        uint8 const projected = ArenaInterrupt::HoldProjectedHpPct(numbers, hpPct, loss);
-        if (projected < lowest || (projected == lowest && hpPct < hold.FriendHpPct))
-        {
-            lowest = projected;
-            hold.FriendHpPct = hpPct;
-            hold.FriendLossPctPerS = loss;
-        }
-    }
-
-    OpponentMemory const& memory = botAI->GetOpponentMemory();
-    for (uint32 index = 0; index < count; ++index)
-    {
-        Unit* const unit = units[index];
-        if (unit == caster || !unit->IsPlayer() || !InterruptHealerClass(unit->getClass()) || CcUnitControlled(unit) ||
-            !bot->IsWithinDistInMap(unit, sPlayerbotAIConfig.SpellDistance))
-            continue;
-
-        // The cast heal seen last: its bar now, the sampler's, else the opponent memory's (its start unknown)
-        uint32 const guid = unit->GetGUID().GetCounter();
-        uint32 healSpell = 0;
-        uint32 healCastMs = 0;
-        uint32 healStartMs = 0;
-        bool startKnown = false;
-        InterruptBar bar;
-        InterruptEnemyTrack const* const track = state.FindTrack(guid);
-        if (ReadInterruptBar(unit, bar) &&
-            ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info)) == ArenaInterrupt::Kind::Heal)
-        {
-            healSpell = bar.Info->Id;
-            healCastMs = bar.CastMs;
-            healStartMs = nowMs - bar.ElapsedMs;
-            startKnown = true;
-        }
-        else if (track && track->HealSpellId != 0)
-        {
-            healSpell = track->HealSpellId;
-            healCastMs = track->HealCastMs;
-            healStartMs = track->HealStartMs;
-            startKnown = true;
-        }
-        else if (OpponentMemorySlot const* const slot = memory.Find(guid))
-        {
-            for (uint32 const spellId : {slot->SpellId, slot->PrevSpellId})
-            {
-                SpellInfo const* const info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
-                if (info && ArenaInterrupt::Classify(InterruptSpellFactsOf(info)) == ArenaInterrupt::Kind::Heal)
-                {
-                    healSpell = spellId;
-                    healCastMs = info->CalcCastTime();
-                    break;
-                }
-            }
-        }
-
-        bool const cover =
-            InterruptInstantCover(units, count, unit->GetGUID(), numbers, botGuid, config.HoldInstantSeenMs);
-        if ((healSpell == 0 && !cover) || !bot->IsWithinLOSInMap(unit))
-            continue;
-
-        bool const known = healSpell != 0 && ArenaInterrupt::KnowsSpell(numbers, botGuid, healSpell);
-        hold.HealerSeen = true;
-        hold.InstantCover = cover;
-        hold.RecentCastHeal = startKnown && known && nowMs - healStartMs <= config.HoldRecentCastHealMs;
-        hold.HealCastMs = ArenaInterrupt::BelievedHealCastMs(numbers, known, healCastMs,
-                                                             InterruptHealerCastPriorMs(unit->getClass()));
-        break;
-    }
-
-    return casting;
-}
-}  // namespace
-
-bool PlayerbotAI::DecideInterrupt(Unit* enemy)
-{
-    InterruptBar bar;
-    if (!ReadInterruptBar(enemy, bar))
-        return true;  // no bar to judge (an instant in flight): as without the tactic
-
-    uint32 const nowMs = getMSTime();
-    uint32 const enemyGuid = enemy->GetGUID().GetCounter();
-    uint32 const startMs = nowMs - bar.ElapsedMs;
-    InterruptBotState& state = GetInterruptState();
-    InterruptCastSlot* slot = state.Find(enemyGuid, bar.Info->Id, startMs, bar.CastMs / 2);
-    if (!slot)
-    {
-        // One decision per cast: the draw comes from the event's hash (G0h), so it holds across checks
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-        // G5c-c: while the tactic follows the kick (HoldPolicy 1, the attention gap) a cast is judged only once the
-        // bot's kick is ready, so a cast first seen during the cooldown is judged when the kick returns
-        bool const follows = InterruptFollows(config.TacticInterrupt);
-        if (follows && !state.KickReady(nowMs))
-            return false;
-
-        slot = &state.Take(nowMs);
-        slot->Guid = enemyGuid;
-        slot->SpellId = bar.Info->Id;
-        slot->StartMs = startMs;
-        slot->CastMs = bar.CastMs;
-        // 13e-decide (Interrupt.SeeCancelLag): the bar's end reaches the bot with its reaction delay
-        if (config.TacticInterrupt.SeeCancelLag)
-        {
-            ReactionParams const& reaction = config.NaturalReaction;
-            slot->SeeLagMs = ArenaInterrupt::HoldReactionMs(
-                reactionState, reactionTypes, ReactionEase::Common,
-                reaction.EndToEnd ? reaction.PingMs + reaction.DisplayMs : 0, reaction.MinMs);
-        }
-        uint64 const hash = ReactionEventHash(bot->GetGUID().GetCounter(),
-                                              static_cast<uint8>(SkillNoticeCategory::Interrupt), startMs) ^
-                            enemyGuid;
-        ArenaInterrupt::Params const params = ArenaInterrupt::ComputeParams(
-            pvpSkill, attributes.Get(BotAttribute::Patience), attributes.Get(BotAttribute::Knowledge),
-            config.SkillGate.CurveExponent, config.TacticInterrupt);
-        ArenaInterrupt::Input input;
-        input.CastMs = bar.CastMs;
-        input.Deep = ArenaInterrupt::UsesDeep(TacticActive(TacticId::Interrupt), HasFullSkillAbility(),
-                                              config.NaturalReaction.Think.Enable, reactionTypes, hash);
-        if (follows)
-        {
-            input.ReadyMs = state.KickReadyMs(nowMs);
-            input.ReadyHash = ArenaInterrupt::AttentionHash(bot->GetGUID().GetCounter(), state.KickReadyAtMs);
-        }
-
-        bool const holding = params.Hold.Enable;
-        if (holding)
-        {
-            uint32 const heldMs = state.Hold.HeldMs(nowMs);
-            NoteInterruptHoldEnd(this, state.ResetHold(nowMs, params.Hold.ResetMs), heldMs, "reset", nowMs);
-        }
-
-        bool healer = false;
-        if (input.Deep)
-        {
-            input.CastKind = ArenaInterrupt::Classify(InterruptSpellFactsOf(bar.Info));
-            input.TargetHpPct = InterruptBarTargetHpPct(enemy, bar);
-            input.FakeRate = opponentMemory.FakeRate(enemyGuid, config.TacticInterrupt.CancelMinCasts);
-            uint8 casting = 0;
-            if (holding && input.CastKind == ArenaInterrupt::Kind::Damage)
-            {
-                PerfMonitorScope scope(PerfMonitor::IsEnabled()
-                                           ? sPerfMonitor.acquire(PERF_MON_TOTAL, "ArenaInterrupt::HoldScan")
-                                           : nullptr);
-                ArenaInterrupt::InterruptHoldInput& hold = input.Hold;
-                casting = FillInterruptHold(this, bot, enemy, params, state, nowMs, hold);
-                ReactionParams const& reaction = config.NaturalReaction;
-                hold.ReactionMs = ArenaInterrupt::HoldReactionMs(
-                    reactionState, reactionTypes, ReactionEase::Common,
-                    reaction.EndToEnd ? reaction.PingMs + reaction.DisplayMs : 0, reaction.MinMs);
-                hold.HeldMs = state.Hold.HeldMs(nowMs);
-                hold.Expired = state.Hold.Expired;
-                healer = hold.HealerSeen;
-            }
-            else
-            {
-                bool const wantHealer = !holding && input.CastKind == ArenaInterrupt::Kind::Damage &&
-                                        config.TacticInterrupt.HoldForHealer != 0;
-                healer = InterruptHealerInReach(this, bot, enemy, wantHealer, casting);
-                input.HealerInRange = healer;
-            }
-
-            if (holding && input.CastKind == ArenaInterrupt::Kind::Heal)
-                state.NoteHoldHealBar();
-
-            slot->Casting = std::max<uint8>(1, casting);
-        }
-
-        slot->Deep = input.Deep;
-        slot->CastKind = input.CastKind;
-        slot->Decision = ArenaInterrupt::Decide(input, params, hash);
-        if (input.Deep)
-            ++state.Decided[static_cast<uint32>(input.CastKind)];
-        else
-            ++state.Shortcuts;
-
-        if (!slot->Decision.Kick)
-            ++state.Skips;
-
-        // G5c-c: the hold episode and tactics.intHold, intHoldExpired, intHoldEpisodes
-        if (holding)
-        {
-            uint32 const episodes = state.HoldEpisodes;
-            if (slot->Decision.Why == ArenaInterrupt::Reason::Held)
-            {
-                state.NoteHeld(nowMs);
-                CountTactic(TacticCounter::IntHold);
-            }
-            else if (slot->Decision.Why == ArenaInterrupt::Reason::HoldExpired && state.NoteHoldExpired(nowMs))
-                CountTactic(TacticCounter::IntHoldExpired);
-
-            if (state.HoldEpisodes != episodes)
-                CountTactic(TacticCounter::IntHoldEpisodes);
-        }
-
-        // G5c-c's fields come after G5b's (the analysis joins by position): the use draw, the attention gap and how
-        // long the kick was ready (-1: not followed), then the hold's inputs and parts (their defaults unless judged)
-        ArenaInterrupt::Decision const& decision = slot->Decision;
-        ArenaInterrupt::InterruptHoldInput const& hold = input.Hold;
-        LOG_TRACE("playerbots.reaction",
-                  "interrupt decide skill {} enemy {} spell {} cast {} elapsed {} depth {} kind {} kick {} commit {} "
-                  "share {:.2f} why {} healer {} fake {:.2f} casting {} at {} use {:.2f} gap {} ready {} hp {} loss "
-                  "{:.1f} proj {} high {:.2f} need {:.2f} recent {} cover {} healcast {} react {} reach {} motive "
-                  "{:.2f} held {} expired {} focus {}",
-                  pvpSkill, enemyGuid, slot->SpellId, bar.CastMs, bar.ElapsedMs, input.Deep ? "deep" : "shortcut",
-                  input.Deep ? ArenaInterrupt::KindName(input.CastKind) : "-", decision.Kick ? 1 : 0, decision.CommitMs,
-                  decision.Share, ArenaInterrupt::ReasonName(decision.Why), healer ? 1 : 0, input.FakeRate,
-                  slot->Casting, nowMs, decision.UseDraw, decision.AttentionGapMs,
-                  input.ReadyMs == ArenaInterrupt::ATTENTION_UNKNOWN_MS ? -1 : static_cast<int64>(input.ReadyMs),
-                  hold.FriendHpPct, hold.FriendLossPctPerS, decision.Hold.ProjectedHpPct, decision.Hold.HpHigh,
-                  decision.Hold.Need, hold.RecentCastHeal ? 1 : 0, hold.InstantCover ? 1 : 0, hold.HealCastMs,
-                  hold.ReactionMs, decision.Hold.Reachable ? 1 : 0, decision.Hold.Motivation, hold.HeldMs,
-                  hold.Expired ? 1 : 0, focusState && focusState->Target.Is(enemy->GetGUID()) ? 1 : 0);
-    }
-
-    slot->SeenMs = nowMs;
-    if (!slot->Decision.Kick || bar.ElapsedMs < slot->Decision.CommitMs)
-        return false;
-
-    if (slot->ActiveAtMs == 0)
-    {
-        slot->ActiveAtMs = nowMs;
-        ++state.Kicks;
-        // tactics stats: the tactic acts when the bot judged the cast
-        if (slot->Deep)
-            NoteTacticUse(TacticId::Interrupt);
-    }
-
-    return true;
-}
-
-bool PlayerbotAI::HasFullSkillAbility()
-{
-    if (pvpSkill == 0)
-        return true;
-
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
-        return true;
-
-    return IsSkillExempt();
-}
-
-bool PlayerbotAI::TacticActive(TacticId id)
-{
-    if (!TacticEnabledHere(id))
-        return false;
-
-    return TacticGatePasses(tacticGate, id, HasFullSkillAbility(), bot->GetGUID().GetCounter(),
-                            sPlayerbotAIConfig.SkillNoticeWindowMs, getMSTime());
-}
-
-void PlayerbotAI::SetPvpTestCounting(bool on)
-{
-    // G5c-c: an open hold episode never spans two records (a forced Interrupt mask ends here, so the match end's own
-    // close may never run); not counted
-    if (interruptState)
-    {
-        uint32 const nowMs = getMSTime();
-        uint32 const heldMs = interruptState->Hold.HeldMs(nowMs);
-        NoteInterruptHoldEnd(this, interruptState->EndMatch(), heldMs, "match", nowMs, false);
-    }
-
-    pvpTestCounting = on;
-    if (on)
-    {
-        pvpTestExecuted.fill(0);
-        pvpTestCc = PvpTestCcCounters();
-        pvpTestTactics.fill(0);
-        return;
-    }
-
-    // A tactic mask the harness forced lasts for the match only, Avoid.EnsureTrinket's trinket too (G5a)
-    CcRestoreTrinket(this);
-    ResetTacticMask();
-}
+// G2g: BotTactics::StepJumpTest (the jump test's step) is in ArenaJump.cpp, beside the commands that arm it
 
 void PlayerbotAI::SetTacticMask(uint32 mask, bool forced)
 {
@@ -9650,25 +7277,6 @@ void PlayerbotAI::SetTacticMask(uint32 mask, bool forced)
 TacticContext PlayerbotAI::ProbeTacticContext(Player* player)
 {
     return ClassifyTacticContext(player->InArena(), player->InBattleground(), IsPlayerInPvpFight(player));
-}
-
-void PlayerbotAI::SetFightEnemiesSnapshot(GuidVector const& enemies)
-{
-    uint32 const count = std::min<uint32>(enemies.size(), TACTIC_FIGHT_ENEMIES_MAX);
-    for (uint32 index = 0; index < count; ++index)
-        fightEnemies[index].store(enemies[index].GetRawValue(), std::memory_order_relaxed);
-
-    fightEnemyCount.store(count, std::memory_order_release);
-}
-
-// Debug only: entries of two consecutive results may mix
-uint32 PlayerbotAI::GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const
-{
-    uint32 const count = std::min(fightEnemyCount.load(std::memory_order_acquire), TACTIC_FIGHT_ENEMIES_MAX);
-    for (uint32 index = 0; index < count; ++index)
-        enemies[index] = ObjectGuid(fightEnemies[index].load(std::memory_order_relaxed));
-
-    return count;
 }
 
 void PlayerbotAI::TakeStrategySnapshot()
@@ -9698,163 +7306,12 @@ bool PlayerbotAI::GetStrategySnapshot(std::string& text, uint32& takenMs) const
     return true;
 }
 
-namespace
-{
-constexpr uint32 SPELL_PVP_TRINKET = 42292;
-constexpr uint32 SPELL_EVERY_MAN_FOR_HIMSELF = 59752;
-constexpr uint32 SPELL_WILL_OF_THE_FORSAKEN = 7744;
-constexpr uint32 SPELL_ESCAPE_ARTIST = 20589;
-}  // namespace
-
-void PlayerbotAI::CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune)
-{
-    if (IsPvpTestCcGroup(drGroup))
-    {
-        ++pvpTestCc.Cast[drGroup];
-        if (atImmune)
-            ++pvpTestCc.AtImmune;
-    }
-
-    // The trinket and the racials have no DR group; "pvp trinket" (G5a, an item use) counts its use here too
-    if (spellId == SPELL_PVP_TRINKET)
-        ++pvpTestCc.Trinket;
-    else if (spellId == SPELL_EVERY_MAN_FOR_HIMSELF || spellId == SPELL_WILL_OF_THE_FORSAKEN ||
-             spellId == SPELL_ESCAPE_ARTIST)
-        ++pvpTestCc.RacialBreak;
-    else
-        return;
-
-    // G5a: tactics.breakWasted and breakMs of a break the Trinket tactic answered
-    CcNoteBreakCast(this, spellId);
-}
-
-void PlayerbotAI::CountPvpTestReceivedCc(uint32 drGroup)
-{
-    if (pvpTestCounting && IsPvpTestCcGroup(drGroup))
-        ++pvpTestCc.Received[drGroup];
-}
-
-namespace
-{
-// The cost of the counting (M9 review): the actions that went through BeginExecutedCount and the time of the name
-// lookup, which is timed in one call out of CountSampleEvery per thread (so the other calls pay no atomic and no clock)
-constexpr uint32 CountSampleEvery = 8;
-std::atomic<uint64> countingCalls{0};
-std::atomic<uint64> countingSamples{0};
-std::atomic<uint64> countingSampledNs{0};
-}  // namespace
-
-PlayerbotAI::CountingStats PlayerbotAI::GetCountingStats()
-{
-    return CountingStats{countingCalls.load(), countingSamples.load(), countingSampledNs.load()};
-}
-
-uint8 PlayerbotAI::BeginExecutedCount(Action* action, ObjectGuid& previousTarget)
-{
-    static thread_local uint32 tick = 0;
-    SkillNoticeCategory category;
-    if (++tick % CountSampleEvery == 0)
-    {
-        auto const start = std::chrono::steady_clock::now();
-        category = SkillNoticeCategoryOf(action->getName());
-        auto const elapsed = std::chrono::steady_clock::now() - start;
-        countingCalls.fetch_add(CountSampleEvery, std::memory_order_relaxed);
-        countingSamples.fetch_add(1, std::memory_order_relaxed);
-        countingSampledNs.fetch_add(
-            static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
-            std::memory_order_relaxed);
-    }
-    else
-        category = SkillNoticeCategoryOf(action->getName());
-
-    // A movement (avoid aoe) or a positioning (regain los, break los, pillar step) is a reaction only, with no
-    // executed count
-    if (category == SkillNoticeCategory::None || category == SkillNoticeCategory::Movement ||
-        category == SkillNoticeCategory::Positioning)
-        return 0;
-
-    if (category == SkillNoticeCategory::TargetSwitch)
-    {
-        Unit* const current = aiObjectContext->GetValue<Unit*>("current target")->Get();
-        previousTarget = current ? current->GetGUID() : ObjectGuid::Empty;
-    }
-
-    return static_cast<uint8>(category);
-}
-
-void PlayerbotAI::EndExecutedCount(uint8 category, ObjectGuid previousTarget)
-{
-    ObjectGuid target;
-    if (category == static_cast<uint8>(SkillNoticeCategory::TargetSwitch))
-    {
-        // An assist that keeps the target is not a switch
-        Unit* const current = aiObjectContext->GetValue<Unit*>("current target")->Get();
-        if (!current || current->GetGUID() == previousTarget)
-            return;
-
-        target = current->GetGUID();
-    }
-
-    ++pvpTestExecuted[category - 1];
-    // A traced arena keeps the action (M10; one test while no trace runs)
-    MatchTrace::OnAction(bot, category, target);
-}
-
 bool PlayerbotAI::IsPvpFight() const { return IsPlayerInPvpFight(bot); }
 
 bool PlayerbotAI::IsPlayerInPvpFight(Player* player)
 {
     return player->InBattleground() || player->InArena() || player->duel != nullptr ||
            player->GetCombatManager().HasPvPCombat();
-}
-
-void PlayerbotAI::RefreshNaturalTiming()
-{
-    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-    bool const measured = PerfMonitor::IsEnabled();
-    if (!config.NaturalCadenceEnable && !measured)
-    {
-        // Off: upstream's check interval and stagger, the stretch everywhere
-        timingScope = false;
-        timingCombat = false;
-        cadenceCombat = false;
-        stretchOff = false;
-        checkStaggerMs = UPSTREAM_CHECK_STAGGER_MS;
-        return;
-    }
-
-    TacticContext const context = ProbeTacticContext(bot);
-    timingScope = ScopeAllows(config.NaturalCadenceContexts, context);
-    timingCombat = timingScope && (bot->IsInCombat() || currentState == BOT_STATE_COMBAT);
-    if (timingCombat && (bot->InBattleground() || bot->InArena()))
-    {
-        // A match counts once its gates are open
-        Battleground* const battleground = bot->GetBattleground();
-        timingCombat = battleground && battleground->GetStatus() == STATUS_IN_PROGRESS;
-    }
-
-    cadenceCombat = config.NaturalCadenceEnable && timingCombat;
-    stretchOff = config.NaturalCadenceEnable && timingScope && config.NaturalReactionActive &&
-                 ScopeAllows(config.NaturalReactionContexts, context);
-    checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
-    if (!measured || !timingScope)
-        return;
-
-    PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Checks (scope)"));
-    if (timingCombat)
-        PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Checks (combat)"));
-}
-
-float PlayerbotAI::GetEffectiveSkillReactFactor() const
-{
-    // Where the natural cadence and reaction both run, the reaction model carries the skill, unless
-    // Natural.Cadence.SkillStretch keeps the stretch (G6d-a)
-    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive ||
-        !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadenceSkillStretch))
-        return 1.0f;
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !IsPvpFight())
-        return 1.0f;
-    return skillReactFactor;
 }
 
 void PlayerbotAI::RecordQuestAccepted(uint32 questId)
@@ -9915,8 +7372,9 @@ uint32 PlayerbotAI::GetReactDelay()
     // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
-    float const factor = IsSkillExempt() ? 1.0f : GetEffectiveSkillReactFactor();
-    return StretchedReactDelayMs(ComputeReactDelay(), cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs, factor);
+    float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
+    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs,
+                                 factor);
 }
 
 uint32 PlayerbotAI::ComputeReactDelay()
@@ -9968,11 +7426,13 @@ uint32 PlayerbotAI::ComputeReactDelay()
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
         return base * 5;
 
-    // When not resting, on a mailbox or banker visit or on an errand trip, return 10-30 times the base. A visit or a
-    // trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes in a city (WB7d),
-    // and a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b)
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail) ||
-        std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data))
+    // When not resting, on a mailbox or banker visit, on an errand trip or a route's trip, return 10-30 times the
+    // base. A visit or a trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes
+    // in a city (WB7d), a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b), and a
+    // route's first step at a city's portal came after the portal leg's 20 s had run out (WT55d)
+    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(bankMail) ||
+        std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data) ||
+        std::holds_alternative<NewRpgInfo::Travel>(rpgInfo.data))
         return base * urand(10, 30);
 
     // In other cases, return 20-200 times the base

@@ -21,10 +21,12 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ReactionEngine.h"
+#include "RouteRules.h"
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "TravelLegRules.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 

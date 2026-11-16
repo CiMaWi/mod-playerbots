@@ -1,0 +1,373 @@
+{
+    "tests": [
+        {
+            "file": "bank-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "BANK selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "bot-kind-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "bot-record-readers-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "bot-record-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "PASS: \\d+ passed, 0 failed"
+        },
+        {
+            "file": "bridge-around-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "bridge-bot-facts-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "bridge-bot-topics-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Ai/World/Rpg",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "bridge-intent-effect-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "baseline": "needs the J6b1 game fixture and extracted action bodies; no extraction runner in the repo"
+        },
+        {
+            "file": "bridge-names-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "PASS \\d+ checks"
+        },
+        {
+            "file": "bridge-spell-rule-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "PASS \\d+ checks"
+        },
+        {
+            "file": "chat-command-line-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ checks passed, 0 failed"
+        },
+        {
+            "file": "class-quest-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "enthusiasm-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Pvp"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "errand-trips-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "event-log-selftest.cpp",
+            "includes": [
+                "src/Bot/Debug"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "fight-enthusiasm-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Pvp"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "flee-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Base/Actions"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "flight-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "flags": [
+                "/O2"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "ghost-wait-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Pvp"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "goal-apply-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "goal-model-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-worth-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "mail-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "MAIL selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "planner-indexes-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "planner-need-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "planner-pool-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "population-resize-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ checks, 0 failures \\(PASS\\)"
+        },
+        {
+            "file": "quest-circuit-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "quest-index-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "quest-use-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "route-check-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
+            "file": "route-query-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg"
+            ],
+            "args": [
+                "{repo}",
+                "{dbc}"
+            ],
+            "needs": [
+                "{dbc}"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
+            "file": "route-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}",
+                "{dbc}"
+            ],
+            "needs": [
+                "{dbc}"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
+            "file": "starting-history-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "status-end-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "tactics-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Bot/Tactics",
+                "src/Util",
+                "{core}/src/common"
+            ],
+            "flags": [
+                "/O2"
+            ],
+            "success": "TACTICS standalone: \\d+ suites, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "test-constraints-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "trait-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "travel-graph-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
+            "file": "travel-legs-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "travel-lifecycle-selftest.cpp",
+            "includes": [
+                "src/Mgr/Item",
+                "src/Ai/World/Rpg",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "travel-walk-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
+            "file": "upkeep-index-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "upkeep-needs-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "upkeep-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "visit-lifecycle-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "VISIT lifecycle selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "world-log-selftest.cpp",
+            "includes": [
+                "src/Bot/Debug"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "world-travel-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        }
+    ]
+}

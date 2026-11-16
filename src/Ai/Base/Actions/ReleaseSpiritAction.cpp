@@ -31,7 +31,7 @@ namespace
 // SpiritHealerAction writes the row as the spirit healer revives the bot
 void LogCorpseRun(PlayerbotAI* botAI, Player* bot, uint32 deathCount)
 {
-    if (bot->InBattleground() || !RandomPlayerbotMgr::HonestTravel() || botAI->HasGameClientMaster() ||
+    if (bot->InBattleground() || !botAI->KeepsPossessions() ||
         WorldTravel::CorpseRunsExhausted(deathCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures))
         return;
 

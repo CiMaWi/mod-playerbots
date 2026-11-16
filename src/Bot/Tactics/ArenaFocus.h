@@ -12,7 +12,7 @@
 
 #include "ArenaFocusConfig.h"
 #include "BotAttributes.h"
-#include "Common.h"
+#include "Define.h"
 #include "TacticGate.h"
 #include "Tactics.h"
 
@@ -166,8 +166,8 @@ inline FocusParams ComputeFocusParams(uint8 skill, BotAttributeValues const& att
                                      1.0f + FocusStyle::TeamworkDefer * teamwork),
                          UINT8_MAX));
     team.RemarkDelayMs = lerp(config.FocusRemarkDelayMsAtSkill1, config.FocusRemarkDelayMsAtSkill99, speed);
-    team.MinRemarkMs = config.FocusMinRemarkSeconds * IN_MILLISECONDS;
-    team.HumanMarkRespectMs = config.FocusHumanMarkRespectSeconds * IN_MILLISECONDS;
+    team.MinRemarkMs = config.FocusMinRemarkSeconds * 1000;
+    team.HumanMarkRespectMs = config.FocusHumanMarkRespectSeconds * 1000;
     team.LosLostMs = config.FocusLosLostMs;
     return params;
 }

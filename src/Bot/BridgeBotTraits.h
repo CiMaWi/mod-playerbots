@@ -19,6 +19,7 @@ namespace PlayerbotBridge
 struct BotPersonality
 {
     std::vector<std::string> words;      // Every noticeable trait, strongest first ("very careful", "rather chatty")
+    std::vector<std::string> areas;      // LC15c: one per word, same order: "talk", "others", "work" or "wants"
     std::vector<std::string> interests;  // One to three ("fishing", "inns and ale")
 };
 

@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "Common.h"
+#include "Define.h"
 
 class Battleground;
 class ChatHandler;
@@ -358,7 +358,7 @@ struct CoverPlan
     uint64 SeeGuid = 0;
 };
 
-// The per-bot state (PlayerbotAI::GetCoverState; the bot's own update, tactics show on the world thread): G2e and
+// The per-bot state (BotTactics::GetCoverState; the bot's own update, tactics show on the world thread): G2e and
 // G2f add the partner-LOS-lost start and the ring of the last relocations
 struct CoverBotState
 {

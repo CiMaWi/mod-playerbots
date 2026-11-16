@@ -21,6 +21,7 @@
 #include "ArenaDefensive.h"
 #include "Bag.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "CcState.h"
 #include "DefensiveTacticStrategy.h"
 #include "FocusState.h"
@@ -77,7 +78,8 @@ constexpr std::array<std::string_view, 2> OldCcOtherActions = {"scare beast on c
 // Known at the bot's skill (the gate's KnownFrom; full ability knows every tactic), whatever this window's use roll
 bool CcKnownAtSkill(PlayerbotAI* botAI)
 {
-    return (botAI->GetTacticGate().KnownMask & TacticBit(TacticId::Cc)) != 0 || botAI->HasFullSkillAbility();
+    return (botAI->GetTactics().GetTacticGate().KnownMask & TacticBit(TacticId::Cc)) != 0 ||
+           botAI->GetTactics().HasFullSkillAbility();
 }
 
 // OwnCc's skill model (G4b-b): below the tactic's known skill the bot does not look for its team's CC (it breaks it);
@@ -85,8 +87,8 @@ bool CcKnownAtSkill(PlayerbotAI* botAI)
 // OwnBreakNeverFromSkill)
 bool CcBreaksOwnNow(PlayerbotAI* botAI, CcBotState const& state, uint32 nowMs)
 {
-    bool const known =
-        (botAI->GetTacticGate().KnownMask & TacticBit(TacticId::OwnCc)) != 0 || botAI->HasFullSkillAbility();
+    bool const known = (botAI->GetTactics().GetTacticGate().KnownMask & TacticBit(TacticId::OwnCc)) != 0 ||
+                       botAI->GetTactics().HasFullSkillAbility();
     return !known || CcBreaksOwn(state.Params, botAI->GetBot()->GetGUID().GetCounter(), nowMs);
 }
 
@@ -131,7 +133,7 @@ uint32 CcChainReactMs(PlayerbotAI* botAI, CcBotState const& state)
     if (state.ChainReactLearned)
         return state.ChainReactMs;
 
-    return static_cast<uint32>(std::exp(botAI->GetReactionState().Mu) + 0.5f);
+    return static_cast<uint32>(std::exp(botAI->GetTactics().GetReactionState().Mu) + 0.5f);
 }
 
 // The table again when the level or the talents changed (a learned rank, a talent CC) and every CC_TABLE_REFRESH_MS
@@ -373,7 +375,7 @@ void CcForEachTeamBot(Unit* unit, Player* caster, Fn const& fn)
 
         PlayerbotAI* const memberAI = GET_PLAYERBOT_AI(member);
         if (memberAI && memberAI->TacticEnabledHere(TacticId::Cc))
-            fn(member, memberAI->GetCcState());
+            fn(member, memberAI->GetTactics().GetCcState());
     };
 
     Group* const group = caster->GetGroup();
@@ -414,7 +416,7 @@ void CcNoteChainLanding(Unit* unit, Player* caster, Aura const* aura, uint8 grou
     PlayerbotAI* const casterAI = GET_PLAYERBOT_AI(caster);
     if (casterAI && casterAI->TacticEnabledHere(TacticId::Cc) && !ccForcedCasts.load(std::memory_order_relaxed))
     {
-        CcBotState& state = casterAI->GetCcState();
+        CcBotState& state = casterAI->GetTactics().GetCcState();
         bool const own = state.CastAuraSpell && state.CastAuraSpell == aura->GetId() &&
                          getMSTimeDiff(state.CastAtMs, nowMs) <= CC_CHAIN_LANDING_MS;
         bool const planned = own && state.CastWasChain;
@@ -568,7 +570,7 @@ bool CcConsumeOwnBreak(Unit const* unit, Aura const* aura, AuraRemoveMode mode)
         if (!botAI || !botAI->IsPvpTestCounting())
             return true;
 
-        CcBotState& state = botAI->GetCcState();
+        CcBotState& state = botAI->GetTactics().GetCcState();
         if (state.OwnBreakAura == aura && state.OwnBreakApplyTime == aura->GetApplyTime())
             return true;
 
@@ -646,7 +648,7 @@ void CcNoteDispelRemoval(Unit* unit, Aura const* aura)
         if (!memberAI)
             return false;
 
-        CcBotState& state = memberAI->GetCcState();
+        CcBotState& state = memberAI->GetTactics().GetCcState();
         if (!CcDispelFreed(state.PendingDispel, target, aura->GetId(), true, nowMs, CC_DISPEL_CONFIRM_MS))
             return false;
 
@@ -724,7 +726,7 @@ void CcNoteEnemyTrinket(Unit* unit, Aura const* aura)
         if (!memberAI || !memberAI->TacticEnabledHere(TacticId::Cc))
             continue;
 
-        CcBotState& state = memberAI->GetCcState();
+        CcBotState& state = memberAI->GetTactics().GetCcState();
         if (!state.Params.DrAware || !state.Opponents.Trinketed(matchKey, enemy, nowMs))
             continue;
 
@@ -967,7 +969,7 @@ public:
 
     float GetValue(Action* action) override
     {
-        CcBotState& state = botAI->GetCcState();
+        CcBotState& state = botAI->GetTactics().GetCcState();
         if (!state.ChainGuardUntilMs || action == nullptr)
             return 1.0f;
 
@@ -1175,7 +1177,7 @@ void TacticCcStrategy::AppendTargetExclusions(GuidSet& exclusions, TargetValueEx
 
 std::vector<ObjectGuid> const& CcOwnExclusions(PlayerbotAI* botAI)
 {
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     uint32 const nowMs = getMSTime();
     if (FocusBefore(nowMs, state.ExcludedUntilMs))
         return state.Excluded;
@@ -1285,7 +1287,7 @@ void CcCountOwnBreak(Unit* attacker, Unit* victim)
             slot = &pending;
     }
 
-    std::vector<ObjectGuid> const& excluded = botAI->GetCcState().Excluded;
+    std::vector<ObjectGuid> const& excluded = botAI->GetTactics().GetCcState().Excluded;
     *slot = CcPendingBreak{player->GetGUID(),
                            victim,
                            auras,
@@ -1347,7 +1349,7 @@ bool CcReadyTrigger::IsActive()
     if (!botAI->TacticEnabledHere(TacticId::Cc))
         return false;
 
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     uint32 const nowMs = getMSTime();
     if (FocusBefore(nowMs, state.PickUntilMs))
         return state.PickRow != CC_NO_ROW;
@@ -1357,7 +1359,7 @@ bool CcReadyTrigger::IsActive()
     state.PickIsChain = false;
     Player* const bot = botAI->GetBot();
     bool const guarding = state.ChainGuardUntilMs && FocusBefore(nowMs, state.ChainGuardUntilMs);
-    if (!bot->IsAlive() || bot->IsNonMeleeSpellCast(false) || !botAI->TacticActive(TacticId::Cc))
+    if (!bot->IsAlive() || bot->IsNonMeleeSpellCast(false) || !botAI->GetTactics().TacticActive(TacticId::Cc))
     {
         // G4c-d F4: a cast of the bot's own still running at the chain's moment delays the chain (counted at its
         // landing, tactics.chainBusy); the guard stays while it runs
@@ -1556,15 +1558,15 @@ bool CcReadyTrigger::IsActive()
 
 Unit* TeamCcAction::GetTarget()
 {
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     return state.PickTarget.IsEmpty() ? nullptr : botAI->GetUnit(state.PickTarget);
 }
 
-bool TeamCcAction::isUseful() { return botAI->GetCcState().PickRow != CC_NO_ROW; }
+bool TeamCcAction::isUseful() { return botAI->GetTactics().GetCcState().PickRow != CC_NO_ROW; }
 
 bool TeamCcAction::isPossible()
 {
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     if (state.PickRow == CC_NO_ROW)
         return false;
 
@@ -1583,7 +1585,7 @@ bool TeamCcAction::isPossible()
 
 bool TeamCcAction::Execute(Event /*event*/)
 {
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     int8 const row = state.PickRow;
     bool const pickedChain = state.PickIsChain;
     Unit* const target = GetTarget();
@@ -1640,7 +1642,7 @@ bool TeamCcAction::Execute(Event /*event*/)
     state.ChainHeldImmune = false;
     state.ReadySinceMs = 0;
     ++state.Casts;
-    botAI->NoteTacticUse(TacticId::Cc);
+    botAI->GetTactics().NoteTacticUse(TacticId::Cc);
     return true;
 }
 
@@ -1725,7 +1727,8 @@ void CcForEachCcAura(Unit const* unit, Fn const& fn)
 // Known at the bot's skill (the gate's KnownFrom; full ability knows every tactic), whatever this window's use roll
 bool CcTrinketKnown(PlayerbotAI* botAI)
 {
-    return (botAI->GetTacticGate().KnownMask & TacticBit(TacticId::Trinket)) != 0 || botAI->HasFullSkillAbility();
+    return (botAI->GetTactics().GetTacticGate().KnownMask & TacticBit(TacticId::Trinket)) != 0 ||
+           botAI->GetTactics().HasFullSkillAbility();
 }
 
 // The worn PvP trinket (either trinket slot), or nullptr
@@ -1799,7 +1802,7 @@ void CcRefreshDispelPick(PlayerbotAI* botAI, CcBotState& state, uint32 nowMs)
     state.DispelSpell = nullptr;
     Player* const bot = botAI->GetBot();
     if (!bot->IsAlive() || bot->IsNonMeleeSpellCast(false) || bot->HasUnitState(UNIT_STATE_CONTROLLED) ||
-        !botAI->TacticActive(TacticId::Dispel))
+        !botAI->GetTactics().TacticActive(TacticId::Dispel))
         return;
 
     uint8 const classId = bot->getClass();
@@ -1909,7 +1912,7 @@ CcBreaker CcBreakAnswer(PlayerbotAI* botAI)
     if (!botAI->TacticEnabledHere(TacticId::Trinket))
         return CcBreaker::None;
 
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     uint32 const nowMs = getMSTime();
     if (FocusBefore(nowMs, state.BreakUntilMs))
         return state.BreakWith;
@@ -1922,7 +1925,8 @@ CcBreaker CcBreakAnswer(PlayerbotAI* botAI)
     Player* const bot = botAI->GetBot();
     bool const known = CcTrinketKnown(botAI);
     CcAuraSeen worst;
-    if (!bot->IsAlive() || (known && !botAI->TacticActive(TacticId::Trinket)) || !CcWorstOnSelf(bot, worst))
+    if (!bot->IsAlive() || (known && !botAI->GetTactics().TacticActive(TacticId::Trinket)) ||
+        !CcWorstOnSelf(bot, worst))
         return CcBreaker::None;
 
     CcParams const& params = state.Params;
@@ -1953,7 +1957,7 @@ CcBreaker CcBreakAnswer(PlayerbotAI* botAI)
 void CcNoteBreakCast(PlayerbotAI* botAI, uint32 spellId)
 {
     // A break the tactic answered (a racial of the old triggers outside its scope is not counted)
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     if (!botAI->TacticEnabledHere(TacticId::Trinket) || state.BreakWith == CcBreaker::None || !state.BreakAuraSpell)
         return;
 
@@ -1986,7 +1990,7 @@ Unit* CcDispelPick(PlayerbotAI* botAI)
     if (!botAI->TacticEnabledHere(TacticId::Dispel))
         return nullptr;
 
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     uint32 const nowMs = getMSTime();
     if (!FocusBefore(nowMs, state.DispelUntilMs))
         CcRefreshDispelPick(botAI, state, nowMs);
@@ -2025,7 +2029,7 @@ bool CcEnsuredMark(Player* bot, Item* item)
 bool CcEnsureTrinket(PlayerbotAI* botAI, uint32 mode)
 {
     CcRestoreTrinket(botAI);  // a leftover of an earlier match
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     if (mode == 2)
     {
         state.TrinketWithheld = true;
@@ -2106,7 +2110,7 @@ bool CcEnsureTrinket(PlayerbotAI* botAI, uint32 mode)
 
 void CcRestoreTrinket(PlayerbotAI* botAI)
 {
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     state.TrinketWithheld = false;
     if (state.EnsuredTrinket.IsEmpty() && state.EnsuredReplaced.IsEmpty())
         return;
@@ -2146,7 +2150,7 @@ void CcCleanEnsuredTrinket(PlayerbotAI* botAI)
     }
 
     // Each goes through the restore; a dead bot keeps the first one in its state until it is alive
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     for (Item* const given : marked)
     {
         uint32 const replacedCounter = given->GetGuidValue(ITEM_FIELD_GIFTCREATOR).GetCounter();
@@ -2284,7 +2288,7 @@ bool PvpTrinketAction::isUseful() { return CcBreakAnswer(botAI) == CcBreaker::Tr
 
 bool PvpTrinketAction::Execute(Event /*event*/)
 {
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     Item* const item = state.TrinketWithheld ? nullptr : CcWornPvpTrinket(bot);
     if (!item)
         return false;
@@ -2304,7 +2308,7 @@ bool PvpTrinketAction::Execute(Event /*event*/)
     if (!bot->HasSpellCooldown(SPELL_PVP_TRINKET) && !bot->HasAura(SPELL_PVP_TRINKET))
         return false;
 
-    botAI->NoteTacticUse(TacticId::Trinket);
+    botAI->GetTactics().NoteTacticUse(TacticId::Trinket);
     // cc.trinket (then CcNoteBreakCast) while the harness counts; the item use is no PlayerbotAI::CastSpell
     if (botAI->IsPvpTestCounting())
         botAI->CountPvpTestCast(SPELL_PVP_TRINKET, 0, false);
@@ -2327,7 +2331,7 @@ bool DispelCcOnPartyAction::isUseful() { return CcDispelPick(botAI) != nullptr; 
 
 bool DispelCcOnPartyAction::Execute(Event /*event*/)
 {
-    CcBotState& state = botAI->GetCcState();
+    CcBotState& state = botAI->GetTactics().GetCcState();
     Unit* const target = CcDispelPick(botAI);
     char const* const spell = state.DispelSpell;
     uint32 const auraSpell = state.DispelAuraSpell;
@@ -2350,7 +2354,7 @@ bool DispelCcOnPartyAction::Execute(Event /*event*/)
     }
 
     state.DispelUntilMs = 0;  // asked again after the cast
-    botAI->NoteTacticUse(TacticId::Dispel);
+    botAI->GetTactics().NoteTacticUse(TacticId::Dispel);
     return true;
 }
 
@@ -2442,7 +2446,7 @@ Unit* DefensiveAimedAt(Unit* enemy)
 bool SelfDefensiveHeldForPartner(PlayerbotAI* botAI, Player* bot, uint32 spellId, DefensiveReason reason)
 {
     if (spellId != SpellPainSuppression || reason == DefensiveReason::Critical ||
-        !botAI->TacticActive(TacticId::Protect))
+        !botAI->GetTactics().TacticActive(TacticId::Protect))
         return false;
 
     Group* const group = bot->GetGroup();
@@ -2504,11 +2508,11 @@ uint32 DefensiveEnemyTeam(Player const* bot)
 
 bool BurstTrigger::IsActive()
 {
-    if (!bot->IsAlive() || !botAI->TacticActive(TacticId::Defensive))
+    if (!bot->IsAlive() || !botAI->GetTactics().TacticActive(TacticId::Defensive))
         return false;
 
     uint32 const nowMs = getMSTime();
-    DefensiveBotState& state = botAI->GetDefensiveState();
+    DefensiveBotState& state = botAI->GetTactics().GetDefensiveState();
     DefensiveInput input;
     input.HpPct = DefensiveHealthPct(bot);
     input.LostPct = state.Ring.LostPct(nowMs, input.HpPct, state.Params.WindowMs);
@@ -2531,13 +2535,13 @@ bool BurstTrigger::IsActive()
 bool SelfDefensiveAction::isUseful()
 {
     return bot->IsAlive() && !DefensiveAuraUp(bot) &&
-           SelfDefensiveReady(botAI, bot, botAI->GetDefensiveState().LastReason);
+           SelfDefensiveReady(botAI, bot, botAI->GetTactics().GetDefensiveState().LastReason);
 }
 
 bool SelfDefensiveAction::Execute(Event /*event*/)
 {
     uint32 const nowMs = getMSTime();
-    DefensiveBotState& state = botAI->GetDefensiveState();
+    DefensiveBotState& state = botAI->GetTactics().GetDefensiveState();
     for (char const* name : SelfDefensiveSpells(bot))
     {
         uint32 const spellId = DefensiveSpellId(botAI, name);
@@ -2617,7 +2621,7 @@ bool DefensiveHasStop(Player const* enemy, bool physical, uint32& cooldownMs)
 
 void FollowDefensive(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
-    DefensiveBotState& state = botAI->GetDefensiveState();
+    DefensiveBotState& state = botAI->GetTactics().GetDefensiveState();
     // Both sides of a harness match: a death with a self-defensive ready. DefensiveNoteLethalHit counts it at the
     // lethal hit; this is the fallback for a death no damage hook saw (an instakill), once per death. A priest in
     // spirit of redemption counts as dead (the arena counted the kill).
@@ -2710,7 +2714,7 @@ void DefensiveNoteLethalHit(Unit* victim, uint32 damage)
     if (!botAI || !botAI->IsPvpTestCounting() || bot->duel || bot->GetCommandStatus(CHEAT_GOD))
         return;
 
-    DefensiveBotState& state = botAI->GetDefensiveState();
+    DefensiveBotState& state = botAI->GetTactics().GetDefensiveState();
     if (!state.Death.OnLethalHit() || !SelfDefensiveReady(botAI, bot, DefensiveReason::Critical))
         return;
 
@@ -2726,8 +2730,8 @@ void ObserveEnemyDefensive(PlayerbotAI* botAI, Unit* enemy, uint32 nowMs)
     if (!DefensiveAuraUp(enemy))
         return;
 
-    uint32 const expireMs = botAI->GetDefensiveState().Params.OpponentExpireMs;
-    OpponentMemory& memory = botAI->GetOpponentMemory();
+    uint32 const expireMs = botAI->GetTactics().GetDefensiveState().Params.OpponentExpireMs;
+    OpponentMemory& memory = botAI->GetTactics().GetOpponentMemory();
     uint32 const guid = enemy->GetGUID().GetCounter();
     bool const known = memory.DefensiveHpPct(guid, nowMs, expireMs) != 0;
     uint32 const hpPct = DefensiveHealthPct(enemy);
@@ -2758,7 +2762,7 @@ void NoteDefensiveCast(Player* caster, Spell* spell)
         return;
 
     uint32 const nowMs = getMSTime();
-    DefensiveBotState& state = botAI->GetDefensiveState();
+    DefensiveBotState& state = botAI->GetTactics().GetDefensiveState();
     if (kind == DefensiveCastKind::Self)
     {
         state.LastUseMs = std::max(nowMs, 1u);
@@ -2782,7 +2786,7 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
     if (!target || !botAI->TacticEnabledHere(TacticId::Defensive))
         return false;
 
-    DefensiveBotState& state = botAI->GetDefensiveState();
+    DefensiveBotState& state = botAI->GetTactics().GetDefensiveState();
     if (!state.Params.OpponentKnows)
         return false;
 
@@ -2795,7 +2799,7 @@ bool DefensiveHoldsBurst(PlayerbotAI* botAI, Unit* target)
     input.DefensiveUp = DefensiveStopUp(target, physical, &input.ImmunityUp);
     Player const* const enemy = target->ToPlayer();
     input.HasStop = enemy && DefensiveHasStop(enemy, physical, input.StopCooldownMs);
-    OpponentMemory& memory = botAI->GetOpponentMemory();
+    OpponentMemory& memory = botAI->GetTactics().GetOpponentMemory();
     uint32 const guid = target->GetGUID().GetCounter();
     uint32 const index = memory.IndexOf(guid);
     OpponentMemorySlot* slot = index < OPPONENT_MEMORY_SLOTS ? &memory.Slots[index] : nullptr;
@@ -2842,14 +2846,14 @@ Unit* DefensivePartnerToProtect(PlayerbotAI* botAI)
 {
     // DT.3: in PvP only (the Protect tactic's scope); elsewhere nobody, as before (hand of protection drops a tank's
     // threat)
-    if (!botAI->TacticActive(TacticId::Protect))
+    if (!botAI->GetTactics().TacticActive(TacticId::Protect))
         return nullptr;
 
     Player* const bot = botAI->GetBot();
     if (!bot->GetGroup())
         return nullptr;
 
-    DefensiveParams const& params = botAI->GetDefensiveState().Params;
+    DefensiveParams const& params = botAI->GetTactics().GetDefensiveState().Params;
     float const distance = static_cast<float>(params.ProtectDistanceYards);
     Player* pick = nullptr;
     uint32 pickHpPct = 101;

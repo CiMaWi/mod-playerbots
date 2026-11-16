@@ -13,6 +13,7 @@
 
 #include "Battleground.h"
 #include "BattlegroundDS.h"
+#include "BotTactics.h"
 #include "Chat.h"
 #include "GameObject.h"
 #include "Log.h"
@@ -31,7 +32,7 @@
 
 // The game side of the jump spots (G2g-a): `tactics jump scan` and `tactics jump test` run on the world thread
 // between the map updates (they read a map no map thread updates now, as `tactics cover scan` does); the test arms
-// the bot's JumpBotState and PlayerbotAI::StepJumpTest steps it on the bot's own map thread.
+// the bot's JumpBotState and BotTactics::StepJumpTest steps it on the bot's own map thread.
 
 namespace
 {
@@ -388,7 +389,7 @@ bool RunArenaJumpTest(ChatHandler* handler, char const* args)
         return false;
     }
 
-    JumpBotState& state = botAI->GetJumpState();
+    JumpBotState& state = botAI->GetTactics().GetJumpState();
     if (stop)
     {
         state.Frozen = false;  // the bot's next update ends the test and logs the spot under way
@@ -484,7 +485,7 @@ bool RunArenaJumpTest(ChatHandler* handler, char const* args)
     state.Centre = survey.Centre;
     state.Queue = std::move(queue);
     state.Limits = limits;
-    botAI->SetJumpTest(true);
+    botAI->GetTactics().SetJumpTest(true);
     handler->PSendSysMessage(
         "TACTICS jump test {}: armed {} spots ({}) x {} jumps on {}; skipped:{}; results in the Playerbots log "
         "(TACTICS jump test json)",
@@ -495,7 +496,7 @@ bool RunArenaJumpTest(ChatHandler* handler, char const* args)
 }
 
 // G2g: one step of the jump test on the bot's map thread (UpdateAI runs no engine meanwhile)
-void PlayerbotAI::StepJumpTest(uint32 nowMs)
+void BotTactics::StepJumpTest(uint32 nowMs)
 {
     JumpBotState& state = GetJumpState();
     Map* const map = bot->GetMap();
@@ -517,7 +518,7 @@ void PlayerbotAI::StepJumpTest(uint32 nowMs)
         state.Frozen = false;
         state.Running = false;
         state.Queue.clear();
-        jumpTest = false;
+        botAI->EndWork(BotWork::JumpTest);
         if (bot->IsInWorld())
             bot->GetMotionMaster()->Clear();
 

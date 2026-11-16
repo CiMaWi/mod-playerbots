@@ -7,8 +7,8 @@
 #ifndef _PLAYERBOT_NATURALMOVECONFIG_H
 #define _PLAYERBOT_NATURALMOVECONFIG_H
 
-#include "Common.h"
-#include "Tactics.h"
+#include "Define.h"
+#include "TacticIds.h"
 
 constexpr uint32 MinTrackRingSamples = 4;   // the bounds of TrackConfig::RingSamples
 constexpr uint32 MaxTrackRingSamples = 32;  // (the state array holds the maximum)

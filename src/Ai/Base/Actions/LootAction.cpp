@@ -469,8 +469,7 @@ bool StoreLootAction::Execute(Event event)
     }
 
     // Persistent bots weigh full bags by item worth (WT.5); other setups keep the bag space rule below
-    bool const honestSpace =
-        RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot) && !IsRealPlayer(botAI->GetMaster());
+    bool const honestSpace = botAI->KeepsPossessions();
     for (uint8 i = 0; i < items; ++i)
     {
         uint32 itemid;

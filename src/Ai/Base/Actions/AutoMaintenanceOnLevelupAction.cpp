@@ -7,6 +7,7 @@
 #include "AutoMaintenanceOnLevelupAction.h"
 
 #include "BankRulesInput.h"
+#include "BotKind.h"
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "PlayerbotAIConfig.h"
@@ -39,7 +40,7 @@ void NoteHearthstoneLoss(Player* bot, bool& had, char const* step)
 
 bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
 {
-    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     // The world log's mark that the level-up maintenance ran, also for a bot it hands nothing out to (WU15b)
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "levelup", keepsPossessions ? "keeps" : "granted",
                        static_cast<float>(bot->GetLevel()));
@@ -70,7 +71,7 @@ void AutoMaintenanceOnLevelupAction::AutoTeleportForLevel()
         return;
 
     // Persistent bots change zones by travelling (the planner's move_zone goal, WT20).
-    if (sRandomPlayerbotMgr.HonestTravel())
+    if (botAI->IsPersistentBot())
         return;
 
     sRandomPlayerbotMgr.RandomTeleportForLevel(bot);
@@ -129,7 +130,7 @@ void AutoMaintenanceOnLevelupAction::LearnSpells(std::ostringstream* out)
 void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*out*/)
 {
     PlayerbotFactory factory(bot, bot->GetLevel());
-    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, SOURCE_LEVELUP,
                          [&factory] { factory.InitSkills(); }))
         factory.InitProfessionSkills();
@@ -220,7 +221,7 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
         return;
 
     PlayerbotFactory factory(bot, bot->GetLevel());
-    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     bool had = keepsPossessions && HasHearthstone(bot);
 
     // The cleanup clears the way for the restock below: a bot not granted it keeps what it bought (the five

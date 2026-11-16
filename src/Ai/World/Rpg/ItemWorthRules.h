@@ -13,12 +13,13 @@
 #include <limits>
 #include <vector>
 
+#include "ItemWorthTypes.h"
+
 // The Player-free rules of item worth, slot worth, destroying for space, buying bags and inventory errands for
 // persistent bots. All worth is in copper. Header-only so tests/item-worth-selftest.cpp checks the same code the server
 // runs.
 namespace WorldTravel
 {
-constexpr uint32_t LEVEL_BAND_COUNT = 5;
 // The highest level of each band: 1-19, 20-39, 40-59, 60-69, 70-80
 constexpr std::array<uint32_t, LEVEL_BAND_COUNT> LEVEL_BAND_TOP = {19, 39, 59, 69, 80};
 // The worth of an item that is never destroyed for space
@@ -40,25 +41,6 @@ inline uint32_t LevelBand(uint32_t level)
 
     return LEVEL_BAND_COUNT - 1;
 }
-
-// The defaults of one level band, used until a bot has measured its own numbers
-struct SlotBand
-{
-    uint32_t LootSlotsPerHour = 0;     // r: looted items per hour that need a new slot
-    uint32_t TripMinutes = 0;          // t: minutes per inventory trip
-    uint32_t EarnCopperPerMinute = 0;  // e: what a minute of the bot's time is worth
-    uint32_t BagHorizonHours = 0;      // the hours before the bot would replace a bag it buys now
-};
-
-using SlotBandTable = std::array<SlotBand, LEVEL_BAND_COUNT>;
-
-constexpr SlotBandTable DEFAULT_SLOT_BANDS = {{
-    {15, 10, 30, 20},
-    {20, 10, 100, 30},
-    {25, 8, 250, 40},
-    {25, 8, 500, 40},
-    {30, 6, 1000, 100},
-}};
 
 // How an item counts when space runs short
 enum class SpaceClass : uint8_t

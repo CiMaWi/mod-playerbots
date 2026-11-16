@@ -12,10 +12,9 @@
 #include <memory>
 #include <mutex>
 #include <stack>
-#include <string_view>
 #include <unordered_set>
 
-#include "BotAttributes.h"
+#include "BankMailState.h"
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
@@ -27,45 +26,37 @@
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
 #include "ObjectGuid.h"
+#include "PlannerBotState.h"
 #include "PlayerbotAIBase.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
-#include "PvpTestCounters.h"
+#include "QuestStatTypes.h"
+#include "RpgMemos.h"
 #include "SpellAuras.h"
-#include "TacticGate.h"
-#include "Tactics.h"
+#include "TacticIds.h"
 #include "Util.h"
 #include "WorldPacket.h"
 
 class Action;
 class AiObjectContext;
+class BotTactics;
+class BotTravel;
 class Creature;
 class Engine;
 class ExternalEventHelper;
 class Group;
-struct CcBotState;
-struct CoverBotState;
-struct DefensiveBotState;
-struct DrinkBotState;
-struct FakeBotState;
-struct FocusBotState;
-struct InterruptBotState;
-struct JumpBotState;
-struct KiteBotState;
-struct PathBotState;
-struct TrackBotState;
-struct TurnBotState;
 enum class TurnSnapSite : uint8;  // NaturalTurn.h
+// PvpTestCounters.h
+enum class TacticCounter : uint8;
+struct PvpTestCounterBlock;
 class ReactionEngine;
 class Gameobject;
 class Item;
-class LootObjectStack;
 class Player;
 class PlayerbotMgr;
 class Spell;
 class SpellInfo;
-class Transport;
 class Unit;
 class WorldObject;
 class WorldPosition;
@@ -80,7 +71,8 @@ struct BotLog;
 
 namespace WorldPvp
 {
-class FightMemory;
+struct PvpMemory;
+struct BotEnthusiasm;
 }
 
 enum StrategyType : uint32;
@@ -447,6 +439,25 @@ struct SkillNoticeCounters
     std::array<uint32, Categories> allowed{};
 };
 
+// The work mask's bits (CS5 design 6.3): a subsystem sets its bit while it has work for the bot, and UpdateAI runs
+// that pre-gate step only while the bit is set (two loads; a step that runs re-tests its bit on a fresh load)
+namespace BotWork
+{
+enum : uint32
+{
+    Order = 1u << 0,        // a test's order waits (TravelOrders, under its lock; also on the world thread)
+    Constraints = 1u << 1,  // a test's state constraints are kept (TestConstraints::STATES; ApplyConstraints)
+    Visit = 1u << 2,        // a bank or mail visit runs (its start; UpdateAI clears it when none runs)
+    TimingRow = 1u << 3,    // the bot is in a timed fight (BotTactics::RefreshNaturalTiming)
+    PreGateStep = 1u << 4,  // a fake cast or a turn steps before the gates (BotTactics::StepNaturalPreGate clears it)
+    JumpTest = 1u << 5,     // the jump test drives the bot (BotTactics::SetJumpTest, StepJumpTest)
+    Aboard = 1u << 6,       // a test's aboard placement waits (BotTravel::BeginAboard; its PreGate decides it)
+    Dismount = 1u << 7,     // a server dismount waits for the bot's own (SMSG_DISMOUNT; BotTravel::PreGate)
+    Loot = 1u << 8,         // a loot interaction runs (LootObjectStack)
+    MountTrace = 1u << 9,   // a traced mount waits for its state (BotTravel::TraceTravelMount, ForgetMountTrace)
+};
+}  // namespace BotWork
+
 class PlayerbotAI : public PlayerbotAIBase
 {
     // Consumes queued chat commands from FindReaction(); needs HandleCommands().
@@ -619,6 +630,11 @@ public:
     // Checks if the bot is summoned an altbot of a player
     bool IsAltBot();
     bool HasGameClientMaster();
+    // The bot-kind facts (BotKind.h, BotKindRules.h): a random bot of a living world, and one nobody at a game
+    // client leads. RefreshKind reads B again; it runs after the AI is attached and in SetMaster.
+    bool IsPersistentBot() const;
+    bool KeepsPossessions();
+    void RefreshKind();
     Player* GetGroupLeader();
     uint32 GetFixedBotNumber(uint32 maxNum = 100);
     GrouperType GetGrouperType();
@@ -651,7 +667,11 @@ public:
     BotCheatMask GetCheat() { return cheatMask; }
     void SetCheat(BotCheatMask mask) { cheatMask = mask; }
 
-    void SetMaster(Player* newMaster) { master = newMaster; }
+    void SetMaster(Player* newMaster)
+    {
+        master = newMaster;
+        RefreshKind();
+    }
     AiObjectContext* GetAiObjectContext() { return aiObjectContext; }
     ChatHelper* GetChatHelper() { return &chatHelper; }
     bool IsOpposing(Player* player);
@@ -690,74 +710,47 @@ public:
     void SetPvpSkill(uint8 skill, uint8 firstRoll = 0);
     // The first roll SetPvpSkill was given (the skill when it had none), 0 before the first call
     uint8 GetPvpSkillFirstRoll() const { return pvpSkillFirstRoll; }
+    // The bot's tactics (BotTactics.h): its skill profile, natural timing, opponent memory and tactic states
+    BotTactics& GetTactics() { return *tactics; }
+    BotTactics const& GetTactics() const { return *tactics; }
+    // The bot's travel block (BotTravel.h): passenger check, aboard placement, loot interaction, travel trace
+    BotTravel& GetTravel() { return *botTravel; }
+    BotTravel const& GetTravel() const { return *botTravel; }
     void SetArenaOnlyState(ArenaOnlyState state) { arenaOnlyState = state; }
-    // Reaction-delay factor from the hidden skill (Playerbots.Skill.React*), cached by SetPvpSkill. 1.0 when the
-    // skill system or the factor range is off, and in PvE fights when Playerbots.Skill.FullAbilityInPvE is on.
-    // Also 1.0 where the natural cadence and the natural reaction both run (the model replaces the stretch).
-    float GetEffectiveSkillReactFactor() const;
-    // Natural timing (Playerbots.Natural.Cadence.*), refreshed at each AI check: the bot is in the cadence's contexts
-    // (also tracked while the cadence is off and PerfMon on, for its rows), in combat in a started match there, and
-    // the cadence's faster check applies
-    bool IsInNaturalTimingScope() const { return timingScope; }
-    bool IsInNaturalTimingCombat() const { return timingCombat; }
-    bool IsNaturalCadenceActive() const { return cadenceCombat; }
-    bool IsSkillStretchOff() const { return stretchOff; }
     // The bot's last map update diff (ms): the natural reaction's server ticks are half of it
     uint32 GetLastUpdateDiff() const { return lastUpdateDiff; }
-    // At each AI check, by the bot's own update; O(1): the context probe and the match status
-    void RefreshNaturalTiming();
     // PvP fight: battleground, arena, duel or PvP combat. Everything else counts as PvE for the skill knobs.
     bool IsPvpFight() const;
     // The same test for any player (situation budgets classify the real players with it). World thread or the
     // player's own map thread.
     static bool IsPlayerInPvpFight(Player* player);
-    // Skill knob 2, noticing (Playerbots.Skill.Notice*, SkillStrategy): chance to miss a window and longest notice
-    // delay from the hidden skill, cached by SetPvpSkill; both 0 when the knob is off.
-    uint32 GetSkillNoticeMissPercent() const { return skillNoticeMissPercent; }
-    uint32 GetSkillNoticeDelayMs() const { return skillNoticeDelayMs; }
     SkillNoticeCounters& GetSkillNoticeCounters() { return skillNoticeCounters; }
-    // Natural reaction (Playerbots.Natural.Reaction.*, NaturalReaction.h): ln(median) and spread of the bot's reaction
-    // time, cached by SetPvpSkill for every skilled bot (read only while the option is on)
-    ReactionState const& GetReactionState() const { return reactionState; }
     // The reaction engine, for the world log's case hold line (null before the engines are made)
     ReactionEngine const* GetReactionEngine() const { return reactionEngine; }
-    // G0h3's reaction types: the choice, load, ease, think, anticipation and queue prices from the bot's attributes,
-    // cached by SetPvpSkill (all 0 at skill 0)
-    ReactionTypeState const& GetReactionTypes() const { return reactionTypes; }
-    // What the bot saw its enemies cast and cancel in the current match (DT.12; bounded), and its own cast and GCD
-    // ends for the queue-like follow-up and the busy-bot rules (G0h3-b). The bot's own update only.
-    OpponentMemory& GetOpponentMemory() { return opponentMemory; }
-    ReactionBusyState& GetReactionBusy() { return reactionBusy; }
-    // PvP test harness: while a match runs, the actions of the notice categories that executed (cast successfully),
-    // one slot per category in the order of SkillNoticeCounters. Counting costs nothing outside a match: one flag.
-    // Turning it on zeroes the counts.
+    // PvP test harness (PvpTestCounters.h): while a match runs, the actions of the notice categories that executed
+    // (cast successfully), crowd control by DR group (casts, receipts, trinket and racial breaks) and the tactics'
+    // named counters. Turning counting on makes the block at the first time and zeroes it; outside a match each count
+    // costs one flag test. The block stays until logout; a bot that never counted reads an empty one.
     void SetPvpTestCounting(bool on);
     bool IsPvpTestCounting() const { return pvpTestCounting; }
-    std::array<uint32, SkillNoticeCounters::Categories> const& GetPvpTestExecuted() const { return pvpTestExecuted; }
-    // Crowd control by DR group (casts, receipts, trinket and racial breaks) and the tactics' named counters; counted
-    // only while counting is on, zeroed when it is turned on
-    PvpTestCcCounters const& GetPvpTestCc() const { return pvpTestCc; }
-    std::array<uint32, PVPTEST_TACTIC_COUNT> const& GetPvpTestTactics() const { return pvpTestTactics; }
+    PvpTestCounterBlock const& GetPvpTestCounters() const;
     void CountPvpTestReceivedCc(uint32 drGroup);
     void CountPvpTestCast(uint32 spellId, uint32 drGroup, bool atImmune);
     void CountPvpTestOwnBreak()
     {
         if (pvpTestCounting)
-            ++pvpTestCc.OwnBreaks;
+            AddPvpTestOwnBreak();
     }
     // G5a: the bot dispelled a partner's CC that had been on it ageMs (dispel cc on party)
     void CountPvpTestPartnerDispel(uint32 ageMs)
     {
-        if (!pvpTestCounting)
-            return;
-
-        ++pvpTestCc.PartnerDispel;
-        pvpTestTactics[static_cast<uint32>(TacticCounter::PartnerDispelMs)] += ageMs;
+        if (pvpTestCounting)
+            AddPvpTestPartnerDispel(ageMs);
     }
     void CountTactic(TacticCounter counter, uint32 amount = 1)
     {
         if (pvpTestCounting)
-            pvpTestTactics[static_cast<uint32>(counter)] += amount;
+            AddPvpTestTactic(counter, amount);
     }
     // Tactics (Tactics.h): one bit per TacticId. The mask comes from config at login (ResetTacticMask); the PvP
     // harness overrides it per side for a match, and turning counting off gives the config mask back. Written on the
@@ -781,69 +774,12 @@ public:
     // Playerbots.Skill.ExemptRealMasterBots 1 and a game-client master: the skill knobs and the tactic gate leave the
     // bot at full ability. Asks the master (not free) only while the option is on: call it after the cheap exits.
     bool IsSkillExempt() { return sPlayerbotAIConfig.SkillExemptRealMasterBots && HasGameClientMaster(); }
-    // Full ability for the tactic gate: skill 0, PvE with Playerbots.Skill.FullAbilityInPvE, or exempt
-    bool HasFullSkillAbility();
-    // The tactic gate (TacticGate.h), cached by SetPvpSkill: enabled here (mask and scope), known at the bot's skill
-    // and used in the current window. Later tactics call this, then NoteTacticUse when they act.
-    bool TacticActive(TacticId id);
-    TacticGateState const& GetTacticGate() const { return tacticGate; }
-    // Effort 0-100 (100 = tries everything) and style traits 0-100 (50 = neutral), hidden like the skill
-    uint8 GetSkillEffort() { return HasFullSkillAbility() ? SKILL_GATE_FULL : tacticGate.Effort; }
-    uint8 GetSkillStyle(SkillStyleTrait trait) const { return tacticGate.Style[static_cast<uint32>(trait)]; }
-    // Attributes (Playerbots.Skill.Attributes.*, BotAttributes.h): eight abilities on the skill's 1-99 scale and four
-    // traits (0-100, 50 neutral) drawn from the skill and the guid hash, cached by SetPvpSkill (abilities 0 and traits
-    // 50 at skill 0). With the defaults every ability is the skill. Hidden like the skill: GM commands, records only.
-    BotAttributeValues const& GetAttributes() const { return attributes; }
-    uint8 GetAttribute(BotAttribute attribute) const { return attributes.Get(attribute); }
-    // Lab copies (G0j-b): the guid whose hashes draw the attributes and the tactic gate (0 = the bot's own). Set on the
-    // world thread, then SetPvpSkill with the template's skill.
-    uint32 GetAttributeTemplate() const { return attributeTemplate; }
-    void SetAttributeTemplate(uint32 templateGuid) { attributeTemplate = templateGuid; }
-    // A tactic fired: counted per tactic and context for .playerbots tactics stats
-    void NoteTacticUse(TacticId id) const { NoteTacticActivation(id, GetTacticContext()); }
-    // Target hold and team plan (FocusState.h, G1b): the cached FocusParams and the hold's and the plan's state.
-    // Touched by the bot's own update; the GM commands read and force it on the world thread while the maps wait.
-    FocusBotState& GetFocusState();
-    // Crowd control (CcState.h, G4b): the cached CcParams, the DR memory, the rank-resolved table and the trigger's
-    // answer. The bot's own update and the aura hooks on its map thread; the GM commands on the world thread.
-    CcBotState& GetCcState();
-    // Interrupts (ArenaInterrupt.h, G5b): the bot's decisions on the enemy casts in view. The bot's own update.
-    InterruptBotState& GetInterruptState();
-    // Defensives on burst (ArenaDefensive.h, G5d), fake casts (NaturalCast.h, G5e), natural turning (NaturalTurn.h,
-    // G2a) and tracking (NaturalMove.h, G2b): each bot's state, made at first use. The bot's own update (and the
-    // aura or spell hooks on its map thread); the GM commands on the world thread while the maps wait.
-    DefensiveBotState& GetDefensiveState();
-    FakeBotState& GetFakeState();
-    TurnBotState& GetTurnState();
-    TrackBotState& GetTrackState();
-    // Natural paths (NaturalPath.h, G2c) and the Los and Pillar tactics' cover state (ArenaCover.h, G2e, G2f): the same
-    PathBotState& GetPathState();
-    CoverBotState& GetCoverState();
-    // The Kite, Drink and Jump tactics' state (ArenaKite.h, ArenaDrink.h, ArenaJump.h; G3a, G3b, G2g): the same
-    KiteBotState& GetKiteState();
-    DrinkBotState& GetDrinkState();
-    JumpBotState& GetJumpState();
-    // The jump test (G2g, `tactics jump test`): while set, UpdateAI runs StepJumpTest instead of the engines (a frozen
-    // test bot); one bool test else
-    void StepJumpTest(uint32 nowMs);
-    void SetJumpTest(bool on) { jumpTest = on; }
-    bool IsJumpTest() const { return jumpTest; }
-    // The natural pre-gate stepper (G5e's cancel instant, G2a's turn steps): called from UpdateAI before the AI
-    // gates on every Player::Update while SetNaturalPreGate(true), else one bool test. nowMs = getMSTime().
-    void StepNaturalPreGate(uint32 nowMs);
-    void SetNaturalPreGate(bool on) { naturalPreGate = on; }
-    bool IsNaturalPreGate() const { return naturalPreGate; }
     // Face the target the way the bot's turn state allows (G2a): true when the bot's facing holds towards it. With
     // the natural facing off this is the instant snap (ServerFacade::SetFacingTo) and always true.
     // site: the caller, for the snap's trace line (13e-decide)
     bool FaceTarget(WorldObject* target, TurnSnapSite site = TurnSnapSite(0));
-    // The Interrupt tactic's hook (enabled here): true when the bot's kick may go at the enemy's cast now. One
-    // decision per cast (the shortcut or the judging path), its commit point from the bar's start.
-    bool DecideInterrupt(Unit* enemy);
-    // Debug snapshots for .playerbots tactics show (world thread): the last "fight enemies" result, and the strategy
-    // lists, taken at the bot's next update after a request
-    void SetFightEnemiesSnapshot(GuidVector const& enemies);
-    uint32 GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const;
+    // Debug snapshot for .playerbots tactics show (world thread): the strategy lists, taken at the bot's next
+    // update after a request
     void RequestStrategySnapshot() { strategySnapshotRequested.store(true, std::memory_order_relaxed); }
     bool GetStrategySnapshot(std::string& text, uint32& takenMs) const;
     // Around Action::Execute: Begin returns the category (0 = not counted) and the current target for a target switch,
@@ -865,32 +801,39 @@ public:
     std::set<uint32> GetAllCurrentQuestIds();
     std::set<uint32> GetCurrentIncompleteQuestIds();
     void PetFollow();
-    bool ReconcileFollowPassenger(Transport const& expected);
-    bool HasLootInteraction() const { return activeLootInteraction != nullptr; }
-    uint32 CompletedLootInteractions() const { return completedLootInteractions; }
-    bool LootInteractionExpired() const;
-    bool ConsumeLootExpiry();
-    void CancelLootInteraction(std::string_view reason);
-    void TraceTravelInteraction(std::string_view event, std::string_view detail, ObjectGuid loot = ObjectGuid::Empty,
-                                uint32 interaction = 0, std::string_view path = "none", float yards = 0.0f,
-                                std::optional<std::pair<uint32, uint32>> leg = std::nullopt);
-    TravelProgress::Motion ReadTravelWalk(bool checkPosition = false) const;
-    enum class MountPath : uint8
+    bool HasPendingDismount() const { return (work.load(std::memory_order_relaxed) & BotWork::Dismount) != 0; }
+    // The work mask (BotWork): AddWork from any thread; EndWork returns the word before the clear (a one-shot bit's
+    // test); GetWork is the update's acquire load
+    void AddWork(uint32 bits) { work.fetch_or(bits, std::memory_order_release); }
+    uint32 EndWork(uint32 bits) { return work.fetch_and(~bits, std::memory_order_acq_rel); }
+    void SetWork(uint32 bits, bool on)
     {
-        None,
-        Timer,
-        Packet
-    };
-    void TraceTravelMount(MountPath path, bool accepted);
-    bool HasPendingDismount() const { return pendingDismount.load(std::memory_order_relaxed); }
+        if (on)
+            AddWork(bits);
+        else
+            EndWork(bits);
+    }
+    uint32 GetWork() const { return work.load(std::memory_order_acquire); }
     static float GetItemScoreMultiplier(ItemQualities quality);
     static bool IsHealingSpell(uint32 spellFamilyName, flag96 spellFamilyFlags);
     static SpellFamilyNames Class2SpellFamilyName(uint8 cls);
     NewRpgInfo rpgInfo;
+    // The planner's view of the bot (PlannerBotState.h); a reset starts it fresh
+    Planner::BotState planner;
+    // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
+    // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
+    BankMail::BotBankMail bankMail;
+    // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
+    uint16 testConstraints{0};
+    // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
+    // giver's; a reset starts them fresh
+    RpgMemos rpgMemos;
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
-    // World PvP's fight memory (FightBookRules.h), lazily
-    std::unique_ptr<WorldPvp::FightMemory> fightMemory;
+    // World PvP's persistence cache and the ghost's wait (GhostWait.h), lazily
+    std::unique_ptr<WorldPvp::PvpMemory> pvpMemory;
+    // World PvP's enthusiasm (FightEnthusiasm.h), lazily; not saved
+    std::unique_ptr<WorldPvp::BotEnthusiasm> enthusiasm;
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);
     void RecordQuestCompleted(uint32 questId);
@@ -904,27 +847,22 @@ public:
     // Schedules a callback to run once after <delayMs> milliseconds.
     void AddTimedEvent(std::function<void()> callback, uint32 delayMs);
 
-    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass until it rides
-    // that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
-    void BeginAboard(uint32 entry);
-    static constexpr uint32 ABOARD_DEADLINE_MS = 5000;
-    static constexpr char const* ABOARD_EVENT_TYPE = "Aboard";
-    // Set on the world thread when an order for this bot is posted (TravelOrders::Post), cleared when none is left: the
-    // map thread's one atomic load per update
-    std::atomic<bool> orderPosted{false};
-
 private:
-    friend class LootObjectStack;
-    LootObjectStack* activeLootInteraction = nullptr;
-    uint32 completedLootInteractions = 0;
-    std::atomic<bool> pendingDismount{false};
-    MountPath tracedMount = MountPath::None;
-    uint32 tracedMountAt = 0;
+    // BotTactics steps the AI's own cadence in place: nextAICheckDelay, checkStaggerMs, currentState
+    friend class BotTactics;
+
+    // The miss switch's pre-gate half (Playerbots.Test.MissLog): a step's old guard that passes while its bit is clear
+    void LogPreGateMisses() const;
 
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
     bool IsTellAllowed(PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);
     void UpdateAIGroupMaster();
+    // The counts behind CountPvpTestOwnBreak, CountPvpTestPartnerDispel and CountTactic, once the flag is set
+    // (PvpTestCounters.cpp)
+    void AddPvpTestOwnBreak();
+    void AddPvpTestPartnerDispel(uint32 ageMs);
+    void AddPvpTestTactic(TacticCounter counter, uint32 amount);
     Item* FindItemInInventory(std::function<bool(ItemTemplate const*)> checkItem) const;
     void HandleCommands();
     void HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang = LANG_UNIVERSAL);
@@ -940,6 +878,7 @@ private:
 protected:
     Player* bot;
     Player* master;
+    std::atomic<bool> randomBot{false};  // B, a random bot (RefreshKind); written where master is, read anywhere
     uint32 accountId;
     AiObjectContext* aiObjectContext;
     Engine* currentEngine;
@@ -965,55 +904,25 @@ protected:
     bool inCombat = false;
     BotCheatMask cheatMask = BotCheatMask::none;
     Position jumpDestination = Position();
-    TravelLifecycle::Cadence passengerCadence;
-    void ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove);
-    uint32 aboardEntry = 0;    // BeginAboard's transport; 0 = none pending
-    uint32 aboardSinceMs = 0;  // getMSTime() of the placement
     bool spellInterruptRequested = false;
     uint8 pvpSkill = 0;
     uint8 pvpSkillFirstRoll = 0;
     ArenaOnlyState arenaOnlyState = ArenaOnlyState::Off;
     uint32 arenaOnlyLeftAt = 0;  // getMSTime() when the bot came back from a battleground, 0 once it queued again
-    float skillReactFactor = 1.0f;
-    uint32 skillNoticeMissPercent = 0;
-    uint32 skillNoticeDelayMs = 0;
     SkillNoticeCounters skillNoticeCounters;
-    ReactionState reactionState;
-    ReactionTypeState reactionTypes;
-    OpponentMemory opponentMemory;
-    ReactionBusyState reactionBusy;
-    bool timingScope = false;
-    bool timingCombat = false;
-    bool cadenceCombat = false;
-    bool stretchOff = false;
     uint32 lastUpdateDiff = 0;
-    TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
-    std::unique_ptr<FocusBotState> focusState;  // made at first use (GetFocusState); complete in PlayerbotAI.cpp
-    std::unique_ptr<CcBotState> ccState;        // made at first use (GetCcState); complete in PlayerbotAI.cpp
-    std::unique_ptr<InterruptBotState> interruptState;  // made at first use (GetInterruptState); complete in the .cpp
-    std::unique_ptr<DefensiveBotState> defensiveState;  // the same (GetDefensiveState)
-    std::unique_ptr<FakeBotState> fakeState;            // the same (GetFakeState)
-    std::unique_ptr<TurnBotState> turnState;            // the same (GetTurnState)
-    std::unique_ptr<TrackBotState> trackState;          // the same (GetTrackState)
-    std::unique_ptr<PathBotState> pathState;            // the same (GetPathState)
-    std::unique_ptr<CoverBotState> coverState;          // the same (GetCoverState)
-    std::unique_ptr<KiteBotState> kiteState;            // the same (GetKiteState)
-    std::unique_ptr<DrinkBotState> drinkState;          // the same (GetDrinkState)
-    std::unique_ptr<JumpBotState> jumpState;            // the same (GetJumpState)
-    bool jumpTest = false;        // true while the jump test drives the bot (StepJumpTest); one bool test else
-    bool naturalPreGate = false;  // true while a pre-gate stepper has work (a turn, a fake cast); one bool test else
-    BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
-    uint32 attributeTemplate = 0;
     bool pvpTestCounting = false;
     int32 lastPrepareResult = -1;  // LastPrepareResult
-    std::array<uint32, SkillNoticeCounters::Categories> pvpTestExecuted{};
-    PvpTestCcCounters pvpTestCc;
-    std::array<uint32, PVPTEST_TACTIC_COUNT> pvpTestTactics{};
+    // Made by SetPvpTestCounting(true), kept until logout
+    std::unique_ptr<PvpTestCounterBlock> pvpTestCounters;
     std::atomic<uint32> tacticMask{0};
     std::atomic<bool> tacticMaskForced{false};
     std::atomic<uint8> tacticContext{static_cast<uint8>(TacticContext::Pve)};
-    std::atomic<uint32> fightEnemyCount{0};
-    std::array<std::atomic<uint64>, TACTIC_FIGHT_ENEMIES_MAX> fightEnemies{};
+    // Made by the constructors, never null (CS5 design 4.1)
+    std::unique_ptr<BotTactics> tactics;
+    std::unique_ptr<BotTravel> botTravel;
+    // The work mask (CS5 design 6.2; BotWork's bits)
+    std::atomic<uint32> work{0};
     std::atomic<bool> strategySnapshotRequested{false};
     mutable std::mutex strategySnapshotLock;
     std::string strategySnapshot;

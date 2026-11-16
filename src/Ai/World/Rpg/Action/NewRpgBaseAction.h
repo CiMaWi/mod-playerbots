@@ -18,6 +18,11 @@
 #include "QuestDef.h"
 #include "TravelMgr.h"
 
+namespace WorldTravel
+{
+enum class StuckCause : uint8_t;  // WorldTravelRules.h
+}
+
 struct POIInfo
 {
     G3D::Vector2 pos;

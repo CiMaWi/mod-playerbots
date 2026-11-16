@@ -16,6 +16,7 @@
 #include <unordered_map>
 
 #include "Bag.h"
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
@@ -28,13 +29,14 @@
 #include "Log.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerPoolSelftest.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestCircuitLog.h"
 #include "RouteService.h"
@@ -48,6 +50,7 @@
 #include "UpkeepNeedRules.h"
 #include "World.h"
 #include "WorldLog.h"
+#include "WorldLogStatus.h"
 
 namespace Planner
 {
@@ -60,7 +63,7 @@ constexpr uint32 SELFTEST_FAILURES_SHOWN = 5;
 constexpr uint32 STATE_ZONE_SHIFT = 8;
 constexpr uint32 STATE_ALIVE_BIT = 1u << 24;
 constexpr uint32 STATE_GROUP_BIT = 1u << 25;
-constexpr uint32 STATE_SCOPE_BIT = 1u << 31;  // in PlannerState::stateKey: the bot keeps its possessions
+constexpr uint32 STATE_SCOPE_BIT = 1u << 31;  // in Planner::BotState::stateKey: the bot keeps its possessions
 constexpr double NANOS_PER_MICRO = 1000.0;
 static_assert(SNAPSHOT_SKILLS ==
                   std::array<std::uint16_t, 15>{SKILL_RIDING, SKILL_FIRST_AID, SKILL_COOKING, SKILL_FISHING,
@@ -199,7 +202,7 @@ void FillBankMail(Player* bot, Snapshot& snapshot)
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
         return;
-    BankMail::BotBankMail& known = botAI->rpgInfo.bankMail;
+    BankMail::BotBankMail& known = botAI->bankMail;
     BankMail::RefreshMailKnowledge(bot, known.mail);
     BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     snapshot.mailWaiting = known.mail.waiting;
@@ -289,11 +292,8 @@ private:
 
 bool Weighted(Player* bot) { return GoalApply::InWeightedGroup(bot->GetGUID().GetCounter()); }
 
-// The scope right now: no real master, the bot keeps its possessions (rare: once per job and per applied answer)
-bool InScopeNow(PlayerbotAI* botAI, Player* bot)
-{
-    return !botAI->HasGameClientMaster() && PlayerbotFactory::KeepsPossessions(bot);
-}
+// The scope right now: the bot keeps its possessions (no master at a game client)
+bool InScopeNow(PlayerbotAI* botAI) { return botAI->KeepsPossessions(); }
 
 std::string ChoiceOf(GoalApply::Active const& goal)
 {
@@ -330,7 +330,7 @@ void Publish(Player* bot, GoalApply::BotGoals& goals)
 
 GoalApply::BotGoals& GoalsOf(PlayerbotAI* botAI, Player* bot)
 {
-    std::shared_ptr<GoalApply::BotGoals>& goals = botAI->rpgInfo.planner.goals;
+    std::shared_ptr<GoalApply::BotGoals>& goals = botAI->planner.goals;
     if (!goals)
     {
         goals = std::make_shared<GoalApply::BotGoals>();
@@ -406,15 +406,15 @@ bool StartQuest(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Que
             break;
         if (Quest const* quest = sObjectMgr->GetQuestTemplate(next.quest))
         {
-            botAI->rpgInfo.ChangeToDoQuest(next.quest, quest);
+            RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, next.quest}, WorldLog::STATUS_REASON_OTHER);
             return true;
         }
     }
     if (Placed(bot, circuit.start, true) &&
         bot->GetDistance2d(circuit.start.x, circuit.start.y) > GoalApply::GIVER_YARDS)
-        botAI->rpgInfo.ChangeToGoCamp(PositionOf(circuit.start));
+        RpgStatus::Start(botAI, NewRpgInfo::GoCamp{PositionOf(circuit.start)}, WorldLog::STATUS_REASON_OTHER);
     else
-        botAI->rpgInfo.ChangeToWanderNpc();
+        RpgStatus::Start(botAI, NewRpgInfo::WanderNpc{}, WorldLog::STATUS_REASON_OTHER);
     return true;
 }
 
@@ -430,27 +430,27 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
         case GoalApply::Executor::Deliver:
             if (Quest const* quest = sObjectMgr->GetQuestTemplate(goal.target))
             {
-                info.ChangeToDoQuest(goal.target, quest);
+                RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, goal.target}, WorldLog::STATUS_REASON_OTHER);
                 return true;
             }
             return false;
         case GoalApply::Executor::Grind:
             if (!Placed(bot, goal.place, true))
                 return false;
-            info.ChangeToGoGrind(PositionOf(goal.place));
+            RpgStatus::Start(botAI, NewRpgInfo::GoGrind{PositionOf(goal.place)}, WorldLog::STATUS_REASON_OTHER);
             return true;
         case GoalApply::Executor::Gather:
-            info.ChangeToDoGather();
+            RpgStatus::Start(botAI, NewRpgInfo::DoGather{}, WorldLog::STATUS_REASON_OTHER);
             return true;
         case GoalApply::Executor::Travel:
             // ApplyTravelOrder's refusals: the route follower starts alive, on the ground and in the open world
             if (!Placed(bot, goal.place, false) || !bot->IsAlive() || bot->IsInFlight() ||
                 bot->GetMap()->Instanceable())
                 return false;
-            info.ChangeToTravel(PositionOf(goal.place));
+            RpgStatus::Start(botAI, RpgStatus::TripTo(PositionOf(goal.place)), WorldLog::STATUS_REASON_OTHER);
             return true;
         case GoalApply::Executor::Rest:
-            info.ChangeToRest();
+            RpgStatus::Start(botAI, NewRpgInfo::Rest{}, WorldLog::STATUS_REASON_OTHER);
             bot->SetStandState(UNIT_STAND_STATE_SIT);
             return true;
         default:
@@ -581,7 +581,7 @@ void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
         return;
     goals.switchTo = replan.chosen;
     goalSwitches.fetch_add(1, std::memory_order_relaxed);
-    botAI->rpgInfo.ChangeToIdle();
+    RpgStatus::End(botAI, StatusEnd::Outcome::Interrupted, {.word = "switch"});
 }
 
 // A checked answer of the job the bot waited for: kept as its plan (in scope only)
@@ -595,7 +595,7 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         Publish(bot, goals);
         return;
     }
-    if (!InScopeNow(botAI, bot))
+    if (!InScopeNow(botAI))
     {
         scopeRefused.fetch_add(1, std::memory_order_relaxed);
         goals.lastRejected = true;
@@ -649,8 +649,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoal
                                         : -1.0f;
     situation.external = goals.external;
     // Class quests (upkeep WU20a): a governed bot's facts for the unlock bonus; the job adds the trainer's spells
-    situation.governed = GoalApply::Governed(PlayerbotFactory::KeepsPossessions(bot), bot->GetGUID().GetCounter(),
-                                             botAI->HasGameClientMaster());
+    situation.governed = GoalApply::Governed(botAI->KeepsPossessions(), bot->GetGUID().GetCounter());
     if (situation.governed)
     {
         situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
@@ -660,12 +659,12 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoal
 }
 
 // The goals job: the snapshot with the current goal, the plan's kept quests and the log quests' ages
-void SubmitGoals(PlayerbotAI* botAI, Player* bot, NewRpgInfo::PlannerState& state, uint32 now)
+void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint32 now)
 {
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
     // A test keeping the hearth off: no hearth or inn goal either (GoalModel AddHearth)
-    if (!TestConstraints::HearthAllowed(botAI->rpgInfo.constraints))
+    if (!TestConstraints::HearthAllowed(botAI->testConstraints))
         snapshot.hasHearthstone = false;
     GoalApply::Active const& current = goals.slot.Query();
     snapshot.currentGoal = {static_cast<uint32>(current.kind), current.target, current.startedMs};
@@ -785,16 +784,25 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     return snapshot;
 }
 
+void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle)
+{
+    Planner::BotState& state = botAI->planner;
+    if (toIdle)
+        state.snapshotDue = true;  // a goal ended
+    if (state.goals)
+        GoalApply::NoteStatusEnd(*state.goals, outcome, toIdle);
+}
+
 void PlannerHook(PlayerbotAI* botAI, Player* bot)
 {
     RowTimer const timer("planner hook");
-    // The scope (KeepsPossessions: lookups in the random bot lists) is checked again only when the state key
-    // changes; a real master takes a bot through a group invite, which changes the key. Bit 31 keeps the verdict
-    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
-    uint32 const key = StateKey(bot);
-    if (key != (state.stateKey & ~STATE_SCOPE_BIT))
+    // The scope (KeepsPossessions: two flags and the master) is compared on every update, beside the state key, so a
+    // master that changes nothing in the key still takes the bot out of scope. Bit 31 keeps the verdict
+    Planner::BotState& state = botAI->planner;
+    uint32 const key = StateKey(bot) | (botAI->KeepsPossessions() ? STATE_SCOPE_BIT : 0);
+    if (key != state.stateKey)
     {
-        state.stateKey = key | (PlayerbotFactory::KeepsPossessions(bot) ? STATE_SCOPE_BIT : 0);
+        state.stateKey = key;
         ++state.stateVersion;
         state.snapshotDue = true;
         if (state.goals)
@@ -803,23 +811,11 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     if (!(state.stateKey & STATE_SCOPE_BIT))
         return;
     // A test's hold on the planner (TestConstraints): no jobs, no goals taken
-    if (!TestConstraints::GateOf(botAI->rpgInfo.constraints).planner)
+    if (!TestConstraints::GateOf(botAI->testConstraints).planner)
         return;
 
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
     uint32 const now = getMSTime();
-    bool const idle = botAI->rpgInfo.GetStatus() == RPG_IDLE;
-    if (idle && !state.wasIdle)
-    {
-        state.snapshotDue = true;  // a goal ended
-        // A wait that another action ended (an errand, an inn, a travel order) leaves no stale start behind
-        if (state.goals)
-        {
-            state.goals->idleSinceMs = 0;
-            state.goals->waitCounted = false;
-        }
-    }
-    state.wasIdle = idle;
 
     if (state.pending)
     {
@@ -874,13 +870,6 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     {
         if (!due || (!first && sinceSnapshot < GoalApply::MIN_SNAPSHOT_MS))
             return;
-        // The cached scope misses a real player's invite that changed nothing in the key: checked again here
-        if (!InScopeNow(botAI, bot))
-        {
-            scopeRefused.fetch_add(1, std::memory_order_relaxed);
-            state.stateKey &= ~STATE_SCOPE_BIT;
-            return;
-        }
         SubmitGoals(botAI, bot, state, now);
         return;
     }
@@ -899,7 +888,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
 
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> const& workable)
 {
-    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    Planner::BotState& state = botAI->planner;
     if (!(state.stateKey & STATE_SCOPE_BIT))
         return {};
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
@@ -916,13 +905,15 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         return {false, true, nullptr};
 
     // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
-    // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start. An
+    // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start, unless
+    // its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting again clears that mark. An
     // external goal goes on in the weighted group too: it has no planner goals, but the bridge may set one
     if ((!weighted || goals.slot.HasExternal()) && config.PlannerGoals && goals.slot.Query().Is() && !goals.switchTo)
     {
         GoalApply::Active const current = goals.slot.Query();
         if (GoalApply::RunsCircuit(current) && goals.run.running && StartQuest(botAI, bot, goals, tests))
         {
+            GoalApply::ContinueRun(goals);
             goalsContinued.fetch_add(1, std::memory_order_relaxed);
             Publish(bot, goals);
             return {true, false, nullptr};
@@ -935,6 +926,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             GoalApply::Executor const executor = GoalApply::ExecutorFor(resumed, ReachOf(bot, resumed, tests));
             if (StartGoal(botAI, bot, goals, resumed, executor, tests))
             {
+                GoalApply::ContinueRun(goals);
                 goalsResumed.fetch_add(1, std::memory_order_relaxed);
                 Publish(bot, goals);
                 return {true, false, nullptr};
@@ -994,13 +986,13 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
 
 bool KeepsQuest(PlayerbotAI* botAI, uint32 quest)
 {
-    GoalApply::BotGoals const* goals = botAI->rpgInfo.planner.goals.get();
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     return sPlayerbotAIConfig.WorldTravel.PlannerGoals && goals && goals->plan && GoalApply::Keeps(goals->keep, quest);
 }
 
 int PlannedPoi(PlayerbotAI* botAI, uint32 quest, std::vector<std::pair<float, float>> const& points)
 {
-    GoalApply::BotGoals const* goals = botAI->rpgInfo.planner.goals.get();
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     if (!sPlayerbotAIConfig.WorldTravel.PlannerGoals || !goals || !goals->plan)
         return -1;
     return GoalApply::NearestToTasks(goals->plan->circuit, quest, points);
@@ -1019,11 +1011,11 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
 {
     using GoalApply::BridgeAnswer;
     using GoalApply::BridgeOrder;
-    NewRpgInfo::PlannerState& state = botAI->rpgInfo.planner;
+    Planner::BotState& state = botAI->planner;
     GoalApply::BridgeFacts facts;
     // The planner's scope as OnIdle sees it: only there does the goal go on and end
     facts.inScope =
-        sPlayerbotAIConfig.WorldTravel.PlannerGoals && (state.stateKey & STATE_SCOPE_BIT) && InScopeNow(botAI, bot);
+        sPlayerbotAIConfig.WorldTravel.PlannerGoals && (state.stateKey & STATE_SCOPE_BIT) && InScopeNow(botAI);
     if (facts.inScope && state.goals)
         facts.current = state.goals->slot.Query();
     bool const trip = order == BridgeOrder::GoTo || order == BridgeOrder::MeetAt;
@@ -1052,8 +1044,9 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     if (order == BridgeOrder::Pause || order == BridgeOrder::Resume)
     {
+        // An ordered end: a trip writes its abort rows (abort:order, the status core's trip arm)
         if (GoalApply::BridgePause(goals, order == BridgeOrder::Pause, now))
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Ordered);
         if (order == BridgeOrder::Resume)
             state.snapshotDue = true;
         Publish(bot, goals);
@@ -1092,6 +1085,8 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
         goals.quest = std::move(progress);
         return BridgeAnswer::Failed;
     }
+    // The start's outside mark belongs to the status the order replaced, whose run BeginRun already replaced
+    GoalApply::ContinueRun(goals);
     GoalApply::TakeBridgeGoal(goals, std::move(goal));
     Publish(bot, goals);
     return BridgeAnswer::Done;

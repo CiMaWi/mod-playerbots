@@ -12,7 +12,7 @@
 
 #include "Action.h"
 #include "ArenaDrink.h"
-#include "NonCombatActions.h"
+#include "FoodActions.h"
 #include "Strategy.h"
 #include "Trigger.h"
 #include "Value.h"

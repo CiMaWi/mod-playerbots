@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
@@ -19,27 +20,21 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
-bool MailVisitActiveTrigger::IsActive()
-{
-    return botAI->rpgInfo.bankMail.mailVisit.phase != BankMail::MailVisitPhase::None;
-}
+bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }
 
-bool BankVisitActiveTrigger::IsActive()
-{
-    return botAI->rpgInfo.bankMail.bankVisit.phase != BankMail::BankVisitPhase::None;
-}
+bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
 
 bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
 {
     // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
-    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints) || BankMail::VisitRuns(botAI->rpgInfo.bankMail))
+    if (!TestConstraints::ErrandAllowed(botAI->testConstraints) || BankMail::VisitRuns(botAI->bankMail))
         return false;
     Player* bot = botAI->GetBot();
     if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
         return false;
 
-    return RandomPlayerbotMgr::HonestTravel() && !IsRealPlayer(botAI->GetMaster()) && !bot->IsInCombat() &&
-           bot->IsAlive() && !bot->GetGroup() && !bot->GetMap()->Instanceable();
+    return botAI->KeepsPossessions() && !bot->IsInCombat() && bot->IsAlive() && !bot->GetGroup() &&
+           !bot->GetMap()->Instanceable();
 }
 
 bool WorldTravel::RepairErrandWanted(Player* bot)
@@ -84,13 +79,13 @@ bool InventoryPressureTrigger::IsActive()
 
     // Mail or a bank errand worth a trip of its own (WB8b: the same check, no trigger of its own; as full bags, it
     // does not end questing)
-    return (BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI)) ||
+    return (BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI)) ||
            WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI);
 }
 
 bool InnBindTrigger::IsActive()
 {
-    if (!WorldTravel::ErrandMayStart(botAI) || !WorldTravel::InnCheckDue(botAI->rpgInfo.lastInnMs, getMSTime()) ||
+    if (!WorldTravel::ErrandMayStart(botAI) || !WorldTravel::InnCheckDue(botAI->rpgMemos.lastInnMs, getMSTime()) ||
         !sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 

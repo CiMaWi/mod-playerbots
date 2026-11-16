@@ -18,9 +18,11 @@
 #include "PlannerIndexes.h"
 #include "PlannerPool.h"
 #include "QuestStatEvents.h"
+#include "StatusEndRules.h"
 
 class ChatHandler;
 class Player;
+struct CreatureTemplate;
 struct ItemTemplate;
 class PlayerbotAI;
 
@@ -66,6 +68,9 @@ RepairPrice PriceRepair(Player* bot);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due. O(1) unless a snapshot is built
 void PlannerHook(PlayerbotAI* botAI, Player* bot);
+// The status core (RpgStatus::End) on the bot's map thread, for every status that ends: an end to idle makes a
+// snapshot due and ends a wait for a plan; the goal's run learns the outcome (GoalApply::NoteStatusEnd). O(1)
+void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or
@@ -161,6 +166,13 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
 // `playerbots planner needs <bot>`: an online bot's needs, reserve and shortfall (UpkeepNeedRules.h), from a snapshot
 // taken on the world thread while no map updates
 bool HandleNeedsCommand(ChatHandler* handler, char const* args);
+// The pet fixture of the functional tests (WU21b, a test cheat): playerbots planner pet <bot> [has|none|unpet|give
+// <entry>]
+bool HandlePetCommand(ChatHandler* handler, char const* args);
+// Any thread: the beast's own spells break a tame's channel (UpkeepNeedRules.h BreaksTameChannel over the effects of
+// its creature_template_spell spells and its SmartAI's casts); such a beast is no tame target (WU.4): the index
+// gathers no spawn of it and the search for a beast at the stop passes it over. Reads the core's loaded stores only
+bool BreaksTameChannel(CreatureTemplate const& beast);
 // The questing circuit (WT13b, PlannerQuests.cpp; the planner in QuestCircuit.h)
 struct CircuitWeights;
 struct QuestProgress;

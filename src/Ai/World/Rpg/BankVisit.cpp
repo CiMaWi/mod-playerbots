@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "BankRules.h"
 #include "BankRulesInput.h"
@@ -155,11 +156,11 @@ void WriteBankRows(Player* bot, BankVisitState const& visit)
 
 void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end)
 {
-    BankVisitState& visit = botAI->rpgInfo.bankMail.bankVisit;
+    BankVisitState& visit = botAI->bankMail.bankVisit;
     char const* how = VisitEndWord(VisitKind::Bank, end);
     // Bank read: the bot's own map thread inside its AI update (BankRulesInput.h)
     RefreshBankKnowledge(botAI);
-    uint32 const freeAfter = botAI->rpgInfo.bankMail.bank.freeSlots;
+    uint32 const freeAfter = botAI->bankMail.bank.freeSlots;
     if (WorldLog::Active())
         WriteBankRows(bot, visit);
     EventLog::Emit(bot, WorldLogFormat::EVENT_BANK_VISIT, how,
@@ -212,12 +213,13 @@ std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
 
 bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
 {
-    if (!botAI || VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Bank))
+    if (!botAI || VisitStartRefusal(botAI->bankMail, VisitKind::Bank))
         return false;
 
-    BankVisitState& visit = botAI->rpgInfo.bankMail.bankVisit;
+    BankVisitState& visit = botAI->bankMail.bankVisit;
     visit = BankVisitState{};
     visit.phase = BankVisitPhase::Walk;
+    botAI->AddWork(BotWork::Visit);
     visit.mapId = spot.mapId;
     visit.x = spot.x;
     visit.y = spot.y;
@@ -235,10 +237,10 @@ BankVisitStep StepBankVisit(PlayerbotAI* botAI)
 {
     BankVisitStep step;
     Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot || botAI->rpgInfo.bankMail.bankVisit.phase == BankVisitPhase::None)
+    if (!bot || botAI->bankMail.bankVisit.phase == BankVisitPhase::None)
         return step;
 
-    BankVisitState& visit = botAI->rpgInfo.bankMail.bankVisit;
+    BankVisitState& visit = botAI->bankMail.bankVisit;
     step.result = BankVisitResult::Ended;
     if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
     {
@@ -311,7 +313,7 @@ BankVisitStep StepBankVisit(PlayerbotAI* botAI)
 void EndBankVisit(PlayerbotAI* botAI, VisitEnd end)
 {
     Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (bot && botAI->rpgInfo.bankMail.bankVisit.phase != BankVisitPhase::None)
+    if (bot && botAI->bankMail.bankVisit.phase != BankVisitPhase::None)
         EndVisit(botAI, bot, end);
 }
 

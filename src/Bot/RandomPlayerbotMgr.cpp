@@ -11,6 +11,7 @@
 #include "ArenaTeamMgr.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
+#include "BotKind.h"
 #include "Cell.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
@@ -1801,7 +1802,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     }
 
     // A persistent bot that died releases and runs back (DeadStrategy); it is never resurrected in place
-    if (bot->isDead() && HonestTravel())
+    if (bot->isDead() && BotKind::IsPersistentBot(bot))
         return false;
 
     // if death revive
@@ -1905,17 +1906,12 @@ void RandomPlayerbotMgr::Revive(Player* player)
     SetEventValue(bot, "revive", 0, 0);
 
     // A persistent bot is never resurrected in place nor moved away from its corpse
-    if (HonestTravel())
+    if (BotKind::LivingWorld())
         return;
 
     EventLog::SourceScope reviveScope("mgr_revive");
     Refresh(player);
     RandomTeleportGrindForLevel(player);
-}
-
-bool RandomPlayerbotMgr::HonestTravel()
-{
-    return WorldTravel::AppliesTo(Population::IsPersistent(), sPlayerbotAIConfig.ArenaOnlyEnable);
 }
 
 bool RandomPlayerbotMgr::IsBusy(Player* bot)
@@ -1930,7 +1926,7 @@ bool RandomPlayerbotMgr::IsBusy(Player* bot)
 
     NewRpgStatus const status = botAI->rpgInfo.GetStatus();
     WorldTravel::BusyInput in;
-    in.Honest = HonestTravel();
+    in.Honest = botAI->IsPersistentBot();
     in.RealMaster = botAI->HasGameClientMaster();
     // An external goal (the bridge's or a group's) keeps the bot; the planner's own goals do not (WT20)
     in.HasGoal = Planner::HasExternalGoal(bot->GetGUID().GetRawValue());
@@ -1945,7 +1941,7 @@ bool RandomPlayerbotMgr::IsBusy(Player* bot)
 
 bool RandomPlayerbotMgr::IsTeleportSeen(Player* bot, WorldPosition const& dest)
 {
-    if (!HonestTravel())
+    if (!BotKind::LivingWorld())
         return false;
 
     auto const pointOf = [](WorldObject const* object)
@@ -2009,7 +2005,7 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
     }
 
     // A busy persistent bot is never teleported (level-up, hub, city)
-    bool const honest = HonestTravel();
+    bool const honest = BotKind::IsPersistentBot(bot);
     if (honest && IsBusy(bot))
         return;
 
@@ -2219,8 +2215,8 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 
     // Persistent bots change zones by travelling (the planner's move_zone goal, WT20): no level-up, periodic or
     // legacy-caller teleports. Only the first placement of a newly made bot stays, counted as "mgr_place".
-    bool const placing = placingNewBot && HonestTravel();
-    if (HonestTravel() && !placing)
+    bool const placing = placingNewBot && BotKind::LivingWorld();
+    if (BotKind::LivingWorld() && !placing)
         return;
     char const* const levelTag = placing ? "mgr_place" : "mgr_level";
     char const* const cityTag = placing ? "mgr_place" : "mgr_city";
@@ -2269,9 +2265,9 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 
     std::vector<WorldLocation> locs = sTravelMgr.GetTeleportLocations(bot);
 
-    if (sPlayerbotAIConfig.RandomBotConcentrateInPlayerZone && !locs.empty())
+    if (sPlayerbotAIConfig.RandomBotConcentrateInPlayerZone)
     {
-        std::vector<WorldLocation> playerZoneLocs = GetPlayerZoneTeleportLocations(locs, bot);
+        std::vector<WorldLocation> playerZoneLocs = GetPlayerZoneHubLocations(locs, bot);
         if (!playerZoneLocs.empty())
             locs = std::move(playerZoneLocs);
     }
@@ -2291,12 +2287,51 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 std::vector<WorldLocation> RandomPlayerbotMgr::GetPlayerZoneTeleportLocations(std::vector<WorldLocation> const& locs,
                                                                               Player* bot)
 {
-    std::set<std::pair<uint32, uint32>> playerMapZones;
+    return FilterPlayerZoneTeleportLocations(locs, bot, GetPlayerZones());
+}
+
+// Same filter for the bot's level hubs, falling back to the hubs of nearby levels.
+std::vector<WorldLocation> RandomPlayerbotMgr::GetPlayerZoneHubLocations(std::vector<WorldLocation> const& hubs,
+                                                                         Player* bot)
+{
+    std::set<std::pair<uint32, uint32>> const playerMapZones = GetPlayerZones();
+    std::vector<WorldLocation> filtered = FilterPlayerZoneTeleportLocations(hubs, bot, playerMapZones);
+
+    // Hubs are indexed only for their zone's level range; the legacy cache already includes the margin.
+    if (!filtered.empty() || playerMapZones.empty() || !sPlayerbotAIConfig.EnableNewRpgStrategy)
+        return filtered;
+
+    uint32 botLevel = bot->GetLevel();
+    uint32 maxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    uint32 higher = sPlayerbotAIConfig.RandomBotTeleHigherLevel;
+    uint32 lower = sPlayerbotAIConfig.RandomBotTeleLowerLevel;
+    uint32 maxOffset = std::min(std::max(higher, lower), maxLevel);
+    for (uint32 offset = 1; offset <= maxOffset; ++offset)
     {
-        std::lock_guard<std::mutex> lock(_playerZonesLock);
-        playerMapZones = _playerZones;
+        if (offset <= higher && botLevel > offset)
+            filtered = FilterPlayerZoneTeleportLocations(sTravelMgr.GetTeleportLocations(bot, botLevel - offset), bot,
+                                                         playerMapZones);
+
+        if (filtered.empty() && offset <= lower && botLevel + offset <= maxLevel)
+            filtered = FilterPlayerZoneTeleportLocations(sTravelMgr.GetTeleportLocations(bot, botLevel + offset), bot,
+                                                         playerMapZones);
+
+        if (!filtered.empty())
+            break;
     }
 
+    return filtered;
+}
+
+std::set<std::pair<uint32, uint32>> RandomPlayerbotMgr::GetPlayerZones()
+{
+    std::lock_guard<std::mutex> lock(_playerZonesLock);
+    return _playerZones;
+}
+
+std::vector<WorldLocation> RandomPlayerbotMgr::FilterPlayerZoneTeleportLocations(
+    std::vector<WorldLocation> const& locs, Player* bot, std::set<std::pair<uint32, uint32>> const& playerMapZones)
+{
     std::vector<WorldLocation> filtered;
     if (playerMapZones.empty())
         return filtered;
@@ -2439,9 +2474,9 @@ void RandomPlayerbotMgr::Randomize(Player* bot)
     }
 
     // Upstream: reroll below level 3 (Death Knights below 56), downgrade at max level when DowngradeMaxLevelBot,
-    // else incremental. Persistent population (H1): always incremental at the current level.
+    // else incremental. Living world (H1): always incremental at the current level.
     PopulationPolicy::RandomizeDecision const decision = PopulationPolicy::DecideRandomize(
-        Population::IsPersistent(), bot->GetLevel(), bot->getClass() == CLASS_DEATH_KNIGHT,
+        BotKind::LivingWorld(), bot->GetLevel(), bot->getClass() == CLASS_DEATH_KNIGHT,
         sPlayerbotAIConfig.RandomBotMaxLevel, sPlayerbotAIConfig.DowngradeMaxLevelBot);
 
     if (decision.kept == PopulationPolicy::KeptReason::Downgrade)
@@ -2554,8 +2589,8 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
         level = bot->GetLevel();
         SetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent, 0, 0);
     }
-    // Persistent population (H1): a re-initialisation at the current level, never a new level.
-    else if (Population::IsPersistent() && level != bot->GetLevel())
+    // Living world (H1): a re-initialisation at the current level, never a new level.
+    else if (BotKind::LivingWorld() && level != bot->GetLevel())
     {
         LOG_INFO("playerbots", "[Population] RandomizeFirst: kept {} at level {} instead of {} (persistent)",
                  bot->GetName(), bot->GetLevel(), level);
@@ -2663,10 +2698,10 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
         return;
 
     // A dead persistent bot runs back to its corpse: no resurrection in place, and no refresh while dead
-    if (bot->isDead() && HonestTravel())
+    if (bot->isDead() && BotKind::LivingWorld())
         return;
 
-    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     if (bot->isDead() && Upkeep::Granted(bot, UpkeepKind::Resurrect, keepsPossessions))
     {
         bot->ResurrectPlayer(1.0f);
@@ -3140,7 +3175,7 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
     // "history [name]": the starting history, once, for the online persistent random bots (WT.3)
     if (cmd == "history" || cmd.rfind("history ", 0) == 0)
     {
-        if (!HonestTravel())
+        if (!BotKind::LivingWorld())
         {
             LOG_ERROR("playerbots",
                       "rndbot history: only for a persistent population (Playerbots.Population.Persistent)");
@@ -3155,7 +3190,7 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
         {
             Player* bot = itr->second;
             // A bot with a real master is left to that player (WT.15)
-            if (!bot || !bot->IsInWorld() || !PlayerbotFactory::KeepsPossessions(bot))
+            if (!bot || !bot->IsInWorld() || !BotKind::KeepsPossessions(bot))
                 continue;
 
             if (!name.empty() && bot->GetName() != name)

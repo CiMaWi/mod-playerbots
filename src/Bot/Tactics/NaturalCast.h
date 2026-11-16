@@ -12,7 +12,7 @@
 #include <string>
 
 #include "BotAttributes.h"
-#include "Common.h"
+#include "Define.h"
 #include "NaturalCastConfig.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"
@@ -25,7 +25,7 @@
 // from Patience with a log-normal spread; the pre-gate stepper cancels the cast at that instant if the kicker still
 // sees it, else the cast finishes. Nothing tells a kicker it faces a fake (DT.12): its own memory of seen cancels is
 // all it has. Every draw comes from a hash of the bot, the cast's start and the spell (no RNG state). The game side is
-// in PlayerbotAI.cpp; the numbers are FakeConfig's.
+// in NaturalCast.cpp; the numbers are FakeConfig's.
 
 // The player classes (SharedDefines.h Classes) whose kick is aimed at one enemy
 constexpr uint8 FAKE_CLASS_WARRIOR = 1;       // Pummel, Shield Bash
@@ -322,7 +322,7 @@ inline bool FakeBaited(uint32 lastCancelMs, uint32 nowMs, uint32 windowMs)
     return lastCancelMs != 0 && nowMs - lastCancelMs <= windowMs;
 }
 
-// The per-bot state (PlayerbotAI::GetFakeState; the bot's own update and, for the kicks seen, the casts on its map)
+// The per-bot state (BotTactics::GetFakeState; the bot's own update and, for the kicks seen, the casts on its map)
 struct FakeBotState
 {
     FakeParams Params;
@@ -606,7 +606,7 @@ void RunFakeChecks(Check&& check)
     }
 }
 
-// The game side (PlayerbotAI.cpp), from PlayerbotsPlayerScript::OnPlayerSpellCast on the caster's map thread: a kick
+// The game side (NaturalCast.cpp), from PlayerbotsPlayerScript::OnPlayerSpellCast on the caster's map thread: a kick
 // aimed at one enemy goes into the kick memory of the bots on that map that see it (FAKE_KICK_SEEN_YARDS around its
 // target, the caster's enemies, the Fake tactic on here) and counts tactics.kicksBaited on a target that just faked
 class Player;

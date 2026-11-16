@@ -36,7 +36,7 @@ constexpr std::array<std::pair<uint32, uint32>, 2> CC_SCRIPTED_AURAS = {{
     {5246, 20511},   // intimidating shout: spell_warr_intimidating_shout leaves its target only 20511 (8 s, fear)
 }};
 
-// The DR group a cast counts under (as PlayerbotAI.cpp's GetPvpTestCastGroup). A trap is cast as a summon spell
+// The DR group a cast counts under (as PvpTestCounters.cpp's GetPvpTestCastGroup). A trap is cast as a summon spell
 // without a group of its own; its CC is the spell the trap's game object casts when it springs.
 inline SpellInfo const* GetCcAuraSpell(SpellInfo const* spellInfo)
 {

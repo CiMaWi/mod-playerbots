@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <optional>
 
+#include "BankMailTypes.h"
+
 // How a mailbox or bank visit ends (bank-mail plan): pure rules, std only, so the lifecycle harness
 // (VisitLifecycleSelftest.h) checks the functions the live code calls (BankMailState.cpp, MailVisit.cpp,
 // BankVisit.cpp, PlayerbotAI.cpp). Invariant: whatever happens, a started visit ends within its deadline plus one AI
@@ -18,28 +20,6 @@
 // visit at a time.
 namespace BankMail
 {
-enum class VisitKind : uint8_t
-{
-    Mail,
-    Bank
-};
-
-// How a visit ended: the row's source word (VisitEndWord) and the counter it moves
-enum class VisitEnd : uint8_t
-{
-    Done,       // the plan's every step answered or move made
-    Timeout,    // the deadline passed out of combat
-    NoSpot,     // no mailbox or banker where the index put it, or it went
-    Combat,     // the deadline passed in combat (the stepping engine runs out of combat only)
-    Teleport,   // a teleport, far or near (PlayerbotAI::HandleTeleportAck)
-    Reset,      // PlayerbotAI::Reset(true)
-    Death,      // the bot died
-    MapChange,  // the bot is on another map than the spot's
-    Logout,     // the bot logs out, or its AI is removed
-    Count
-};
-constexpr size_t VISIT_END_COUNT = static_cast<size_t>(VisitEnd::Count);
-
 // The GM visit commands take the nearest mailbox or banker only within this reach (WB.12: getting farther is the
 // travel errand's job)
 constexpr float VISIT_COMMAND_REACH_YARDS = 60.0f;

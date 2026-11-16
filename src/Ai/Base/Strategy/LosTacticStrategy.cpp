@@ -12,6 +12,7 @@
 #include "ArenaCc.h"
 #include "BattleGroundTactics.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "GridTerrainData.h"
 #include "Group.h"
 #include "LastMovementValue.h"
@@ -24,6 +25,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PvpTestCounters.h"
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "Timer.h"
@@ -43,11 +45,11 @@ LosParams BotLosParams(PlayerbotAI* botAI)
 {
     LosGateInputs in;
     in.Skill = botAI->GetPvpSkill();
-    in.FullAbility = in.Skill == 0 || botAI->HasFullSkillAbility();
-    in.Knowledge = botAI->GetAttribute(BotAttribute::Knowledge);
-    in.Speed = botAI->GetAttribute(BotAttribute::Speed);
-    in.Wisdom = botAI->GetAttribute(BotAttribute::Wisdom);
-    in.Effort = botAI->GetSkillEffort();
+    in.FullAbility = in.Skill == 0 || botAI->GetTactics().HasFullSkillAbility();
+    in.Knowledge = botAI->GetTactics().GetAttribute(BotAttribute::Knowledge);
+    in.Speed = botAI->GetTactics().GetAttribute(BotAttribute::Speed);
+    in.Wisdom = botAI->GetTactics().GetAttribute(BotAttribute::Wisdom);
+    in.Effort = botAI->GetTactics().GetSkillEffort();
     in.Exponent = sPlayerbotAIConfig.SkillGate.CurveExponent;
     return ComputeLosParams(sPlayerbotAIConfig.TacticLos, in);
 }
@@ -276,7 +278,8 @@ bool LosTriggerDue(PlayerbotAI* botAI, Player* bot, LosWant want, bool enabled)
         atPoint = plan.Valid && bot->GetExactDist2d(plan.Point.X, plan.Point.Y) < LOS_AT_POINT_YARDS;
     }
 
-    LosDue const due = LosRegainDue(state, atPoint, bot->isMoving(), botAI->GetCoverState().LastSearchMs, nowMs);
+    LosDue const due =
+        LosRegainDue(state, atPoint, bot->isMoving(), botAI->GetTactics().GetCoverState().LastSearchMs, nowMs);
     if (due == LosDue::Guarded)
     {
         if (!state.Guarding)
@@ -290,7 +293,7 @@ bool LosTriggerDue(PlayerbotAI* botAI, Player* bot, LosWant want, bool enabled)
     }
 
     state.Guarding = false;
-    if (due == LosDue::No || !botAI->TacticActive(TacticId::Los))
+    if (due == LosDue::No || !botAI->GetTactics().TacticActive(TacticId::Los))
         return false;
 
     state.Due = static_cast<uint8>(due);
@@ -442,9 +445,9 @@ PillarParams const& BotPillarParams(PlayerbotAI* botAI, PillarBotState& state, u
 
     PillarGateInputs in;
     in.Skill = botAI->GetPvpSkill();
-    in.FullAbility = in.Skill == 0 || botAI->HasFullSkillAbility();
-    in.Knowledge = botAI->GetAttribute(BotAttribute::Knowledge);
-    in.Caution = botAI->GetAttribute(BotAttribute::Caution);
+    in.FullAbility = in.Skill == 0 || botAI->GetTactics().HasFullSkillAbility();
+    in.Knowledge = botAI->GetTactics().GetAttribute(BotAttribute::Knowledge);
+    in.Caution = botAI->GetTactics().GetAttribute(BotAttribute::Caution);
     state.Params = ComputePillarParams(sPlayerbotAIConfig.TacticPillar, in);
     state.ParamsMs = std::max(nowMs, 1u);
     return state.Params;
@@ -789,11 +792,11 @@ bool CastAtMeTrigger::IsActive()
         return false;
     }
 
-    if (when == PillarWhen::Wait || (params.Known && !botAI->TacticActive(TacticId::Pillar)))
+    if (when == PillarWhen::Wait || (params.Known && !botAI->GetTactics().TacticActive(TacticId::Pillar)))
         return false;
 
     LosParams const guards = PillarGuardParams(sPlayerbotAIConfig.TacticLos);
-    uint32 const lastSearchMs = botAI->GetCoverState().LastSearchMs;
+    uint32 const lastSearchMs = botAI->GetTactics().GetCoverState().LastSearchMs;
     if (lastSearchMs && nowMs - lastSearchMs < guards.SearchIntervalMs)
         return false;
 
@@ -843,7 +846,7 @@ bool PillarStepTrigger::IsActive()
         return false;
     }
 
-    if (!botAI->TacticActive(TacticId::Pillar))
+    if (!botAI->GetTactics().TacticActive(TacticId::Pillar))
         return false;
 
     LosGuard const guard =
@@ -897,7 +900,7 @@ bool RegainLosAction::Execute(Event /*event*/)
                       MovementPriority::MOVEMENT_COMBAT, true);
     }
 
-    botAI->GetCoverState().LastSearchMs = std::max(nowMs, 1u);
+    botAI->GetTactics().GetCoverState().LastSearchMs = std::max(nowMs, 1u);
     ++state.Searches;
     uint32 rays = 0;
     bool cover = false;
@@ -946,7 +949,7 @@ bool RegainLosAction::Execute(Event /*event*/)
         state.RegainStartMs = std::max(nowMs, 1u);
         ++state.Regains;
         botAI->CountTactic(TacticCounter::LosRegains);
-        botAI->NoteTacticUse(TacticId::Los);
+        botAI->GetTactics().NoteTacticUse(TacticId::Los);
     }
 
     LOG_TRACE("playerbots",
@@ -980,7 +983,7 @@ bool BreakLosAction::Execute(Event /*event*/)
 
     PillarParams const& params = state.Params;
     uint32 const remainingMs = bar.CastMs - bar.ElapsedMs;
-    botAI->GetCoverState().LastSearchMs = std::max(nowMs, 1u);
+    botAI->GetTactics().GetCoverState().LastSearchMs = std::max(nowMs, 1u);
     uint32 rays = 0;
     CoverVec at;
     int32 pillar = -1;
@@ -1040,7 +1043,7 @@ bool BreakLosAction::Execute(Event /*event*/)
     {
         ++state.Breaks;
         botAI->CountTactic(TacticCounter::LosBreaks);
-        botAI->NoteTacticUse(TacticId::Pillar);
+        botAI->GetTactics().NoteTacticUse(TacticId::Pillar);
     }
     else
         ++state.RandomHides;
@@ -1093,7 +1096,7 @@ bool PillarStepAction::Execute(Event /*event*/)
     state.LastMoveMs = std::max(nowMs, 1u);
     state.LastSinceGatesMs = PillarSinceGatesMs(bg);
     botAI->CountTactic(TacticCounter::PillarSteps);
-    botAI->NoteTacticUse(TacticId::Pillar);
+    botAI->GetTactics().NoteTacticUse(TacticId::Pillar);
     Unit* chaser = ObjectAccessor::GetUnit(*bot, ObjectGuid(state.DueChaser));
     LOG_TRACE(
         "playerbots",
