@@ -653,8 +653,8 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoal
                                         : -1.0f;
     situation.external = goals.external;
     // Class quests (upkeep WU20a): a governed bot's facts for the unlock bonus; the job adds the trainer's spells
-    situation.governed =
-        GoalApply::Governed(BotKind::KeepsPossessions(bot), bot->GetGUID().GetCounter(), botAI->HasGameClientMaster());
+    situation.governed = GoalApply::Governed(BotKind::KeepsPossessions(bot) && !botAI->HasGameClientMaster(),
+                                             bot->GetGUID().GetCounter());
     if (situation.governed)
     {
         situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
