@@ -157,8 +157,6 @@ bool ConsumeClosed(Transaction const& state, uint64_t window, uint32_t& complete
     return true;
 }
 
-inline bool MountAllowed(bool hasInteraction, bool hasOpenWindow) { return !hasInteraction && !hasOpenWindow; }
-
 template <class Adapter>
 bool ConsumeExpiry(Transaction const& state, Adapter& adapter)
 {
