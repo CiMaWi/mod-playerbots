@@ -1048,7 +1048,6 @@ bool PlayerbotAIConfig::Initialize()
 
         ease.FocusDexterity = static_cast<uint8>(count(part + "Ease.FocusDexterity", 40, 1, 99));
         ReactionThinkParams& think = reaction.Think;
-        think.Enable = flag(part + "Think.Enable");
         think.ShortcutMsAt1 = ms(part + "Think.ShortcutMsAtSkill1", 40);
         think.ShortcutMsAt99 = ms(part + "Think.ShortcutMsAtSkill99", 20);
         think.DeepMsAt1 = ms(part + "Think.DeepMsAtSkill1", 400);
@@ -1061,7 +1060,6 @@ bool PlayerbotAIConfig::Initialize()
         anticipate.ShareAt1 = real(part + "Anticipate.ShareAtSkill1", 0.1f, 0.0f, 0.95f);
         anticipate.ShareAt99 = real(part + "Anticipate.ShareAtSkill99", 0.5f, 0.0f, 0.95f);
         ReactionQueueParams& queue = reaction.Queue;
-        queue.Enable = flag(part + "Queue.Enable");
         queue.MinMsAt1 = ms(part + "Queue.MinMsAtSkill1", 60);
         queue.MaxMsAt1 = std::max(queue.MinMsAt1, ms(part + "Queue.MaxMsAtSkill1", 250));
         queue.MinMsAt99 = ms(part + "Queue.MinMsAtSkill99", 10);
@@ -1072,7 +1070,6 @@ bool PlayerbotAIConfig::Initialize()
         reeval.MinOwnRemainingMs = ms(part + "Reeval.MinOwnRemainingMs", 300);
         reeval.BusyMarginMs = ms(part + "Reeval.BusyMarginMs", 100);
         ReactionMemoryParams& memory = reaction.Memory;
-        memory.Enable = flag(part + "Memory.Enable");
         memory.MinCasts = count(part + "Memory.MinCasts", 3, 1, 100);
         memory.EndToleranceMs = ms(part + "Memory.EndToleranceMs", 150);
         reaction.PositioningEnable = flag(part + "Positioning.Enable");

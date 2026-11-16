@@ -523,8 +523,8 @@ bool BotTactics::DecideInterrupt(Unit* enemy)
             config.SkillGate.CurveExponent, config.TacticInterrupt);
         ArenaInterrupt::Input input;
         input.CastMs = bar.CastMs;
-        input.Deep = ArenaInterrupt::UsesDeep(TacticActive(TacticId::Interrupt), HasFullSkillAbility(),
-                                              config.NaturalReaction.Think.Enable, reactionTypes, hash);
+        input.Deep =
+            ArenaInterrupt::UsesDeep(TacticActive(TacticId::Interrupt), HasFullSkillAbility(), reactionTypes, hash);
         if (follows)
         {
             input.ReadyMs = state.KickReadyMs(nowMs);

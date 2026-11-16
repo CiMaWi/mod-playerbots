@@ -321,7 +321,6 @@ void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, f
     // G0h3's reaction types, on a copy of the configured prices
     {
         ReactionParams on = params;
-        on.Think.Enable = true;
         // The load and anticipation checks need prices: fixed ones (the dist's), so a configured 0 cannot void them
         on.Load.MsPerEventAt1 = 200;
         on.Load.MsPerEventAt99 = 80;

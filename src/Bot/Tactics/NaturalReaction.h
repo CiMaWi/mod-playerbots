@@ -383,7 +383,7 @@ inline void StartReactionEvent(ReactionEvent& event, ReactionFocus const& focus,
     bool const choice = !predicted && inputs.Options >= 2;
     uint32 const load = std::min(inputs.Load, params.Load.MaxEvents);
     ReactionEase const ease = inputs.Ease;
-    event.ThinkMs = params.Think.Enable && inputs.Thinks ? ThinkCostMs(types, inputs.Depth) : 0;
+    event.ThinkMs = inputs.Thinks ? ThinkCostMs(types, inputs.Depth) : 0;
     event.CostMs = (choice ? HickCostMs(types, inputs.Options, params.Choice.MaxOptions) : 0) +
                    LoadPenaltyMs(types, load, inputs.LoadTop) + EaseCostMs(types, ease) + event.ThinkMs;
     event.Type = static_cast<uint8>(predicted ? ReactionType::Anticipated

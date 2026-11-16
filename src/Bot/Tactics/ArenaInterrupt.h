@@ -186,14 +186,14 @@ inline Params ComputeParams(uint8 skill, uint8 patience, uint8 knowledge, float 
     return params;
 }
 
-// The deep path: the bot knows the tactic (TacticActive) and, with G0h3's think part on, takes the deep check by its
-// Wisdom (ThinkDeepPercent); full ability (skill 0, PvE with Skill.FullAbilityInPvE, exempt) always judges
-inline bool UsesDeep(bool known, bool fullAbility, bool thinkEnable, ReactionTypeState const& types, uint64 hash)
+// The deep path: the bot knows the tactic (TacticActive) and takes the deep check by its Wisdom (ThinkDeepPercent);
+// full ability (skill 0, PvE with Skill.FullAbilityInPvE, exempt) always judges
+inline bool UsesDeep(bool known, bool fullAbility, ReactionTypeState const& types, uint64 hash)
 {
     if (!known)
         return false;
 
-    if (fullAbility || !thinkEnable)
+    if (fullAbility)
         return true;
 
     return ChooseThinkDepth(types, hash) == ReactionThinkDepth::Deep;

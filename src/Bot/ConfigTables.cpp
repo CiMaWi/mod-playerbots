@@ -79,6 +79,9 @@ struct RetiredSwitches
     bool NaturalAnticipate = false;
     bool NaturalBusySkip = false;
     bool NaturalMovement = false;
+    bool NaturalThink = false;
+    bool NaturalQueue = false;
+    bool NaturalMemory = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -170,6 +173,21 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalMovementRows =
 }};
 ConfigFamily<RetiredSwitches> const RetiredNaturalMovementFamily{"Playerbots.Natural.Reaction.Movement.Enable",
                                                                  RetiredNaturalMovementRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalThinkRows = {{
+    {"", &RetiredSwitches::NaturalThink, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalThinkFamily{"Playerbots.Natural.Reaction.Think.Enable",
+                                                              RetiredNaturalThinkRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalQueueRows = {{
+    {"", &RetiredSwitches::NaturalQueue, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalQueueFamily{"Playerbots.Natural.Reaction.Queue.Enable",
+                                                              RetiredNaturalQueueRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalMemoryRows = {{
+    {"", &RetiredSwitches::NaturalMemory, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalMemoryFamily{"Playerbots.Natural.Reaction.Memory.Enable",
+                                                               RetiredNaturalMemoryRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -194,6 +212,9 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredNaturalAnticipateFamily, RetiredSwitchValues),
         MakeEntry(RetiredNaturalBusySkipFamily, RetiredSwitchValues),
         MakeEntry(RetiredNaturalMovementFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalThinkFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalQueueFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalMemoryFamily, RetiredSwitchValues),
     };
     return entries;
 }
