@@ -542,7 +542,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->addStrategy("tactic defensive", false);
 
     // Line of sight and pillar play (G2e, G2f): "tactic los" and "tactic pillar" (the triggers test the tactic's mask,
-    // scope and gate at run time) with the tactic enabled or the harness on
+    // scope and gate at run time); Pillar with the tactic enabled or the harness on, Los with its own switch only
     if (tactics.TacticStrategyWanted(TacticId::Los))
         engine->addStrategy("tactic los", false);
 

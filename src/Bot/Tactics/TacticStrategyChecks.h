@@ -14,12 +14,14 @@
 
 // CS25a: TacticStrategyWanted (TacticIds.h) for every tactic id, the master, the tactic's own switch and the harness
 // switch. The expected value is written here apart from the predicate: the system on, and the own switch or the
-// harness. check(ok, what) and say(line) as TacticChecks.h's TacticCheck and TacticSay.
+// harness, except that Los and Jump (marked "does not work yet") are not added by the harness. check(ok, what) and
+// say(line) as TacticChecks.h's TacticCheck and TacticSay.
 template <typename Check, typename Say>
 void RunStrategyChecks(Check const& check, Say const& say)
 {
     uint32 cells = 0;
     uint32 wanted = 0;
+    uint32 changed = 0;
     std::string firstWrong;
     std::string firstMasterOff;
     std::string firstOwnOff;
@@ -31,7 +33,16 @@ void RunStrategyChecks(Check const& check, Say const& say)
             bool const master = (bits & 1) != 0;
             bool const own = (bits & 2) != 0;
             bool const harness = (bits & 4) != 0;
-            bool const expected = master && (own || harness);
+            bool const notYet = id == TacticId::Los || id == TacticId::Jump;
+            bool const expected = master && (own || (harness && !notYet));
+            bool const old = master && (own || harness);
+            if (expected != old)
+            {
+                ++changed;
+                say(std::format("change 1 cell: {} master 1 own 0 harness 1: wanted {} -> {}",
+                                TACTIC_DEFINITIONS[index].Name, old, expected));
+            }
+
             bool const got = TacticStrategyWanted(master, id, own, harness);
             ++cells;
             if (got)
@@ -51,7 +62,9 @@ void RunStrategyChecks(Check const& check, Say const& say)
     }
 
     check(cells == TACTIC_COUNT * 8, "every tactic id x master x own x harness cell ran");
-    check(firstWrong.empty(), "every cell is the master and (the own switch or the harness) " + firstWrong);
+    check(firstWrong.empty(),
+          "every cell is the master and (the own switch or, if it works, the harness) " + firstWrong);
+    check(changed == 2, "change 1 alone differs from the old clause: Los and Jump, own off, harness on");
     check(firstMasterOff.empty(), "with the master off no tactic's strategy is wanted " + firstMasterOff);
     check(firstOwnOff.empty(), "with the master and the tactic's own switch on the strategy is wanted " + firstOwnOff);
 
@@ -63,7 +76,7 @@ void RunStrategyChecks(Check const& check, Say const& say)
         bool const first = (bits & 2) != 0;
         bool const second = (bits & 4) != 0;
         bool const harness = (bits & 8) != 0;
-        bool const old = master && (first || second || harness);
+        bool const old = master && (first || second || harness);  // Hold, Plan, Cc and OwnCc are not "not yet"
         bool const holdPlan = TacticStrategyWanted(master, TacticId::Hold, first, harness) ||
                               TacticStrategyWanted(master, TacticId::Plan, second, harness);
         bool const ccOwnCc = TacticStrategyWanted(master, TacticId::Cc, first, harness) ||
@@ -74,8 +87,8 @@ void RunStrategyChecks(Check const& check, Say const& say)
 
     check(firstPairWrong.empty(),
           "the Hold or Plan and Cc or OwnCc sites keep their one-clause meaning " + firstPairWrong);
-    say(std::format("{} cells over {} tactics, {} wanted; every cell equals master and (own or harness)", cells,
-                    static_cast<uint32>(TACTIC_COUNT), wanted));
+    say(std::format("{} cells over {} tactics, {} wanted; every cell equals master and (own or, if it works, harness)",
+                    cells, static_cast<uint32>(TACTIC_COUNT), wanted));
 }
 
 #endif
