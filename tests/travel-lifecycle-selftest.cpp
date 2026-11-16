@@ -153,7 +153,7 @@ void CheckCadence()
     Adapter adapter;
     adapter.ExpectedContact = Contact::OffSurface;
     for (std::uint32_t const time : {0, 400, 999, 1000, 1500, 4300, 4301})
-        Maintain(cadence, time, MAP, nullptr, adapter);
+        Maintain(cadence, time, MAP, nullptr, adapter, CAR);
     Check(adapter.Probes == 3, "the pre-action path samples at the first tick, at one second and once after a gap");
     Check(adapter.LastGapMs == 3300, "the late update reports the elapsed gap rather than issuing catch-up probes");
 
@@ -161,15 +161,15 @@ void CheckCadence()
     cadence = {};
     adapter = {};
     adapter.ExpectedContact = Contact::OffSurface;
-    Maintain(cadence, BEFORE_WRAP, MAP, nullptr, adapter);
-    Maintain(cadence, 499, MAP, nullptr, adapter);
+    Maintain(cadence, BEFORE_WRAP, MAP, nullptr, adapter, CAR);
+    Maintain(cadence, 499, MAP, nullptr, adapter, CAR);
     Check(adapter.Probes == 1, "999 ms over clock wrap is not yet due");
-    Maintain(cadence, 500, MAP, nullptr, adapter);
+    Maintain(cadence, 500, MAP, nullptr, adapter, CAR);
     Check(adapter.Probes == 2 && adapter.LastGapMs == 1000, "1000 ms over clock wrap is due");
-    Maintain(cadence, 501, MAP + 1, nullptr, adapter);
+    Maintain(cadence, 501, MAP + 1, nullptr, adapter, CAR);
     Check(adapter.Probes == 3, "the first destination map tick revalidates before the normal cadence");
     cadence.Revalidate = true;
-    Maintain(cadence, 502, MAP + 1, nullptr, adapter);
+    Maintain(cadence, 502, MAP + 1, nullptr, adapter, CAR);
     Check(adapter.Probes == 4, "a validity interruption revalidates on the next valid tick");
 }
 
@@ -1146,7 +1146,8 @@ void CheckDiscardedOwner()
         adapter.Calls.clear();
         Maintain(cadence, 1010, MAP, nullptr, adapter);
         Check(adapter.Aboard.Guid == (exiting ? CAR : 0) && adapter.Spline.Finalized &&
-                  adapter.Calls == std::vector<std::string_view>{"read", "probe"},
+                  adapter.Calls == (exiting ? std::vector<std::string_view>{"read", "probe"}
+                                            : std::vector<std::string_view>{"read"}),
               "departure after replacing the owner sees no crossing and preserves membership");
     }
 
@@ -1266,16 +1267,54 @@ void CheckFollowAndNoTrip()
 {
     Adapter adapter;
     Sample sample = Reconcile(adapter, nullptr, MotionState::None, CAR);
-    Check(!sample.Before.Guid && sample.After.Guid == CAR, "master attach uses the same exact contact and frame seam");
+    Check(!sample.Before.Guid && sample.After.Guid == CAR, "a follower on its master's transport: attached");
     adapter.ExpectedContact = Contact::OffSurface;
     sample = Reconcile(adapter, nullptr, MotionState::None, NEARER_CAR);
     Check(sample.After.Guid == CAR, "master attach request cannot detach a different current ride");
+}
 
+// WT62 (WT.48): boarding has one owner, the trip. A bot on no transport is probed only for the vessel it means to
+// board (the test adapter's contact is NEARER_CAR for a probe that names none)
+void CheckBoardingByIntent()
+{
     Cadence cadence;
-    adapter = {};
+    Adapter adapter;
     Maintain(cadence, 0, MAP, nullptr, adapter);
-    Check(adapter.Aboard.Guid == NEARER_CAR && adapter.LastExpected == 0,
-          "no trip and no master can attach from observed feet contact");
+    Check(!adapter.Aboard.Guid && adapter.Probes == 0 && adapter.Samples == 0,
+          "a hull sweeps a waiting bot with no leg: not attached");
+
+    TravelRoute::Leg leg;
+    leg.type = TravelRoute::LegType::Transport;
+    leg.object = 17;
+    leg.from = {MAP, DECK.X, DECK.Y, DECK.Z};
+    leg.to = {MAP + 1, 100.0f, 100.0f, 8.0f};
+    TravelLegs::Trip trip;
+    trip.legs.push_back(leg);
+    trip.sight.found = true;
+    trip.sight.guid = CAR;
+    Check(!TravelLegs::BoardingIntent(trip), "no boarding intent on the approach to the wait point");
+    trip.boarding = TravelLegs::Boarding::Wait;
+    cadence = {};
+    adapter = {};
+    Maintain(cadence, 0, MAP, nullptr, adapter, TravelLegs::BoardingIntent(trip));
+    TravelLegs::Observation seen;
+    seen.bot = {MAP, DECK.X, DECK.Y, DECK.Z};
+    seen.nowMs = 10;
+    seen.aboard = adapter.Aboard.Entry;
+    seen.aboardGuid = adapter.Aboard.Guid;
+    TravelLegs::StepLeg(trip, seen);
+    Check(adapter.Aboard.Guid == CAR && adapter.LastExpected == CAR && trip.passengerGuid == CAR &&
+              trip.boarding == TravelLegs::Boarding::Ride && trip.transportNotes.size() == 1 &&
+              trip.transportNotes[0].event == TravelLegs::TransportEvent::Boarded,
+          "the leg's vessel docks under the bot: Boarded");
+    Check(!TravelLegs::BoardingIntent(trip), "the ride owns its vessel: no boarding intent");
+
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {NEARER_CAR, 17, true};
+    Maintain(cadence, 0, MAP, nullptr, adapter, CAR);
+    Check(adapter.LastExpected == NEARER_CAR && adapter.Aboard.Guid == NEARER_CAR,
+          "a rider is probed for the vessel it rides, not for an intent");
 }
 
 struct LootAdapter
@@ -2052,6 +2091,7 @@ int main()
     CheckIneligibleMaintenance();
     CheckUnconsumedBoardTransfer();
     CheckFollowAndNoTrip();
+    CheckBoardingByIntent();
     CheckLootScheduler();
     CheckProgressScheduler();
     CheckSuccessorAndPartialPaths();

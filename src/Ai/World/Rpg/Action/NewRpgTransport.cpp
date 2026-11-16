@@ -538,8 +538,9 @@ void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion m
 
 // `route aboard` (tests): the bot is stood on the deck of the docked ship or zeppelin of that entry nearest it on its
 // map, at the boarding deck point from where it stands (the test puts it on the dock first). No explicit attach:
-// AddPassenger takes the current position as the offset, so PlayerbotAI's passenger check attaches it after the
-// teleport (BeginAboard). Refused: absent (none on the map), not_mo (an elevator), away (not at a stop), no_deck
+// AddPassenger takes the current position as the offset, so PlayerbotAI's passenger check attaches it to that vessel
+// after the teleport (BeginAboard names it as the boarding intent). Refused: absent (none on the map), not_mo (an
+// elevator), away (not at a stop), no_deck
 void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
 {
     Transport* transport = nullptr;
@@ -581,7 +582,7 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
     LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry, deck->X, deck->Y,
              deck->Z);
     bot->NearTeleportTo(deck->X, deck->Y, deck->Z + HOP_LIFT_YARDS, bot->GetOrientation());
-    botAI->GetTravel().BeginAboard(entry);
+    botAI->GetTravel().BeginAboard(entry, transport->GetGUID().GetRawValue());
 }
 
 std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& data)

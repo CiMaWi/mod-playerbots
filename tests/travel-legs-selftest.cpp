@@ -1451,53 +1451,53 @@ bool Close(TravelLifecycle::Point const& a, TravelLifecycle::Point const& b)
 
 // WT43b: a rider without an exit at the end walks its boarding crossing back where it boarded, and the replan leaves
 // the ride out
-// WT54: the leg's vessel docks under the bot waiting beside its stop and the passenger rule attaches it: boarded
-void CheckTakenAboard()
+// WT62: the leg's vessel docks under the bot waiting at the wait point and the passenger check, probing for that vessel
+// (BoardingIntent), attached it: boarded
+void CheckBoardedByIntent()
 {
     using TravelLegs::Boarding;
+    using TravelLegs::BoardingIntent;
     using TravelLegs::StepLeg;
     using TravelLegs::TransportEvent;
+    std::uint64_t const VESSEL = 900;
+    TravelLegs::TransportSight docked = Sight(SHIP_AT_A, false);
+    docked.guid = VESSEL;
+
+    Trip approach = SoughtTrip({ShipLeg()});
+    approach.sight = docked;
+    Check(!BoardingIntent(approach), "boarding intent: none on the approach to the wait point");
 
     Trip waiting = SoughtTrip({ShipLeg()});
     StepLeg(waiting, On(PIER_A, 3000, 0, Gone()));
-    Check(waiting.boarding == Boarding::Wait, "taken aboard: the bot waits at the dock node");
-    Check(TravelLegs::TakenAboard(waiting, DECK, SHIP), "taken aboard: the leg's vessel at its start");
-    Check(!TravelLegs::TakenAboard(waiting, DECK, LIFT), "taken aboard: never by another entry");
-    Check(!TravelLegs::TakenAboard(waiting, SEA_0, SHIP), "taken aboard: never far from the leg's start");
-    Check(StepLeg(waiting, On(DECK, 9000, SHIP, Sight(SHIP_AT_A, true))).act == Act::Wait &&
-              waiting.boarding == Boarding::Ride && waiting.passengerGuid == SHIP &&
-              Noted(waiting, 1, TransportEvent::Boarded, SHIP, 6),
-          "taken aboard while waiting: boarded (6 s waited), rides");
-    Check(!TravelLegs::TakenAboard(waiting, DECK, SHIP), "taken aboard: once boarded, the ride owns it");
+    Check(waiting.boarding == Boarding::Wait && !BoardingIntent(waiting),
+          "boarding intent: none while the leg's vessel is not seen");
+    StepLeg(waiting, On(PIER_A, 4000, 0, docked));
+    Check(BoardingIntent(waiting) == VESSEL, "boarding intent: the leg's sighted vessel at the wait point");
+    Observation docking = On(DECK, 9000, SHIP, docked);
+    docking.aboardGuid = VESSEL;
+    Check(StepLeg(waiting, docking).act == Act::Wait && waiting.boarding == Boarding::Ride &&
+              waiting.passengerGuid == VESSEL && !waiting.transportNotes.empty() &&
+              Noted(waiting, waiting.transportNotes.size() - 1, TransportEvent::Boarded, SHIP, 6),
+          "the leg's vessel docks under the bot: Boarded (6 s waited), rides");
+    Check(!BoardingIntent(waiting), "boarding intent: none once the ride owns the vessel");
 
-    Trip approach = SoughtTrip({ShipLeg()});
-    Observation pending = On(DECK, 4000, SHIP, Sight(SHIP_AT_A, true));
-    pending.boardMotion = true;
-    StepLeg(approach, pending);
-    Check(approach.boarding == Boarding::Approach && !approach.passengerGuid,
-          "taken aboard: not while the bot's own boarding move is pending");
-    StepLeg(approach, On(DECK, 5000, SHIP, Sight(SHIP_AT_A, true)));
-    Check(approach.boarding == Boarding::Ride && Noted(approach, 0, TransportEvent::Boarded, SHIP, 4),
-          "taken aboard before the wait began: boarded (4 s since the leg's start), rides");
+    Trip other = SoughtTrip({ShipLeg()});
+    StepLeg(other, On(PIER_A, 3000, 0, Gone()));
+    Observation another = On(DECK, 9000, SHIP, docked);
+    another.aboardGuid = VESSEL + 1;
+    StepLeg(other, another);
+    Check(!other.passengerGuid, "another vessel of the leg's entry: not a boarding");
 
-    Trip astray = SoughtTrip({ShipLeg()});
-    Check(StepLeg(astray, On(SEA_0, 4000, SHIP, Sight(SEA_0, true))).act == Act::Wait && !astray.passengerGuid,
-          "taken aboard far from the start: not a boarding");
+    Trip pending = SoughtTrip({ShipLeg()});
+    StepLeg(pending, On(PIER_A, 3000, 0, Gone()));
+    docking.boardMotion = true;
+    StepLeg(pending, docking);
+    Check(!pending.passengerGuid, "not by intent while the bot's own boarding move is pending");
 
-    // WT54-6: the vessel docked over the walk's last yards takes the bot aboard before the walk to the dock is done
     Leg const walk = MakeLeg(LegType::Walk, NODES[0], PIER_A, {0, 1}, 30.0f);
     Trip walking = StartedTrip({walk, ShipLeg()});
-    Check(TravelLegs::WalkTakenAboard(walking, DECK, SHIP), "taken aboard on the walk: the next leg's vessel");
-    Check(!TravelLegs::WalkTakenAboard(walking, DECK, LIFT) && !TravelLegs::WalkTakenAboard(walking, SEA_0, SHIP) &&
-              !TravelLegs::WalkTakenAboard(walking, DECK, 0),
-          "taken aboard on the walk: never by another entry, far from the dock or ashore");
-    Trip lastWalk = StartedTrip({ShipLeg(), walk});
-    TravelLegs::StartLeg(lastWalk, 1, 1000, NodeAt);
-    Check(!TravelLegs::WalkTakenAboard(lastWalk, DECK, SHIP), "taken aboard on the walk: only before a transport leg");
-    Decision const ahead = TravelLegs::Advance(walking, On(DECK, 4000, SHIP, Sight(SHIP_AT_A, false)), NodeAt);
-    Check(ahead.act == Act::Wait && walking.legIdx == 1 && walking.boarding == Boarding::Ride &&
-              walking.passengerGuid == SHIP && Noted(walking, 0, TransportEvent::Boarded, SHIP, 0),
-          "taken aboard on the walk: the walk is done, the ship's leg boarded and rides");
+    walking.sight = docked;
+    Check(!BoardingIntent(walking), "boarding intent: none on the walk to the leg");
 }
 
 void CheckBack()
@@ -1890,7 +1890,7 @@ int main()
     CheckBodyZ();
     CheckDescent();
     CheckTransport();
-    CheckTakenAboard();
+    CheckBoardedByIntent();
     CheckBack();
     CheckOffFirst();
     CheckBoarding();

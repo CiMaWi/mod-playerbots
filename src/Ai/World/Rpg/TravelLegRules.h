@@ -762,37 +762,21 @@ inline bool DockedAt(Trip const& trip, Point const& dock)
     return flat <= SHIP_DOCK_YARDS && std::fabs(sight.at.z - dock.z) <= STATIC_DOCK_Z_YARDS;
 }
 
-// The leg's vessel took the bot aboard at the leg's start before it boarded (WT54): its deck docked under the bot
-// waiting beside the stop and the passenger rule attached it. That is the boarding; no crossing was needed. Only on
-// the current transport leg before its ride, the leg's entry, and within a docked hull's reach of the start node
-inline bool TakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+// The vessel the bot means to board (WT62, WT.48): its transport leg's sighted vessel, past the approach and before
+// the ride; 0 none. The passenger check probes a bot on no transport for this vessel only (BotTravel::PreGate)
+inline std::uint64_t BoardingIntent(Trip const& trip)
 {
-    if (trip.legIdx >= trip.legs.size() || trip.passengerGuid || !aboard)
-        return false;
-    Leg const& leg = trip.legs[trip.legIdx];
-    Point const& stop = StopFrom(leg);
-    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != stop.mapId)
-        return false;
-    float const dx = bot.x - stop.x;
-    float const dy = bot.y - stop.y;
-    return std::sqrt(dx * dx + dy * dy) <= (trip.sight.isStatic ? STATIC_DOCK_YARDS : SHIP_DOCK_YARDS);
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Transport || trip.passengerGuid ||
+        trip.boarding == Boarding::Approach)
+        return 0;
+    return trip.sight.guid;
 }
 
-// The walk to a ship's or zeppelin's leg ended aboard (WT54-6, the WT47 class "aboard before boarding"): the leg's
-// vessel, docked over the walk's last yards, took the bot aboard before the walk reached its end. The walk is done and
-// the transport leg's TakenAboard counts the boarding. Only for the walk right before that leg, its entry, and within
-// a docked hull's reach of its start; the caller leaves elevators and the tram out (their stops share x and y)
-inline bool WalkTakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+// The vessel of the bot's boarding intent docked under it at the wait point and the passenger check attached it: that
+// is the boarding, no crossing was needed
+inline bool BoardedByIntent(Trip const& trip, std::uint64_t aboardGuid)
 {
-    if (!aboard || trip.legIdx + 1 >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk)
-        return false;
-    Leg const& leg = trip.legs[trip.legIdx + 1];
-    Point const& stop = StopFrom(leg);
-    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != stop.mapId)
-        return false;
-    float const dx = bot.x - stop.x;
-    float const dy = bot.y - stop.y;
-    return std::sqrt(dx * dx + dy * dy) <= SHIP_DOCK_YARDS;
+    return aboardGuid && aboardGuid == BoardingIntent(trip);
 }
 
 inline std::uint32_t TransportPeriodMs(Trip const& trip, Leg const& leg)
@@ -900,7 +884,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         trip.boardedMs = nowMs;
         enter(Boarding::Ride);
     }
-    else if (seen.aboardGuid && !seen.boardMotion && TakenAboard(trip, seen.bot, seen.aboard))
+    else if (!seen.boardMotion && BoardedByIntent(trip, seen.aboardGuid))
     {
         trip.passengerGuid = seen.aboardGuid;
         note(TransportEvent::Boarded, seconds(trip.waitSinceMs ? trip.waitSinceMs : trip.legStartMs));
@@ -1035,11 +1019,6 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
         {
             if (seen.bot.mapId != leg.to.mapId)
                 return fail(FailReason::WrongMap);
-            if (WalkTakenAboard(trip, seen.bot, seen.aboard))
-            {
-                trip.next = static_cast<std::uint32_t>(trip.waypoints.size());
-                return {Act::Done, leg.to, FailReason::None};
-            }
             bool const leadsToQuay = seen.quayLeg == trip.legIdx + 1;
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
             float const waypointYards = leadsToQuay && trip.hasQuay ? QUAY_REACH_YARDS : WAYPOINT_YARDS;
