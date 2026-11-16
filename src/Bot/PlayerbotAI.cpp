@@ -98,6 +98,7 @@
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
+#include "WorkTally.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 #include "WorldLogStatus.h"
@@ -299,7 +300,7 @@ PlayerbotAI::~PlayerbotAI()
 // its bit is clear would be skipped. The owners log their own bits; Order, JumpTest and Dismount keep no other state
 void PlayerbotAI::LogPreGateMisses() const
 {
-    uint32 const word = GetWork();
+    uint32 const word = WorkTally::Note(GetWork());
     if ((testConstraints & TestConstraints::STATES) && !(word & BotWork::Constraints))
         LOG_INFO("playerbots", "PreGate miss: Constraints {}", bot->GetName());
 
