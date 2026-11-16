@@ -6,11 +6,14 @@
 
 #include "BotTravel.h"
 
+#include "BattlegroundSA.h"
 #include "BotTravelInternal.h"
 #include "CensusMgr.h"
 #include "CheckMountStateAction.h"
+#include "GameObject.h"
 #include "Log.h"
 #include "LootObjectStack.h"
+#include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NaturalTrace.h"
@@ -25,6 +28,34 @@
 #include "TravelLifecycle.h"
 #include "TravelProgress.h"
 #include "WorldLog.h"
+
+namespace
+{
+// A follower's intent (WT62, WT.48): its master's transport, a lift or the tram as well as a ship. Only the master's
+// membership is read, and only on the bot's map; no surface is searched for it
+uint64 MasterTransportGuid(Player const& bot, Player const* master)
+{
+    if (!master || master == &bot || !master->IsInWorld() || master->FindMap() != bot.FindMap())
+        return 0;
+    Transport const* const transport = master->GetTransport();
+    return transport ? transport->GetGUID().GetRawValue() : 0;
+}
+
+// The one narrow rule for bots without a leg (WT62 Do 3): Strand of the Ancients places attackers above its two boats,
+// static transports that a client reports standing on. A bot has no client: it means to board the nearer boat
+uint64 BattlegroundBoatGuid(Player const& bot)
+{
+    BattlegroundMap* const map = bot.FindMap() ? bot.FindMap()->ToBattlegroundMap() : nullptr;
+    Battleground* const bg = map ? map->GetBG() : nullptr;
+    if (!bg || bg->GetBgTypeID() != BATTLEGROUND_SA)
+        return 0;
+    GameObject const* nearer = bg->GetBGObject(BG_SA_BOAT_ONE);
+    GameObject const* const other = bg->GetBGObject(BG_SA_BOAT_TWO);
+    if (!nearer || (other && bot.GetExactDist2dSq(other) < bot.GetExactDist2dSq(nearer)))
+        nearer = other;
+    return nearer ? nearer->GetGUID().GetRawValue() : 0;
+}
+}  // namespace
 
 std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel)
 {
@@ -265,11 +296,10 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
 {
     bool const revalidateProgress = passengerCadence.Revalidate;
     PassengerAdapter passenger(*bot, traceTravel);
-    // Boarding has one owner (WT62, WT.48): a bot on no transport is probed only for the vessel it means to board, a
-    // test's aboard placement, else its transport leg's sighted vessel (a follower: ReconcileFollowPassenger)
-    uint64 const intent = (botAI->GetWork() & BotWork::Aboard) ? aboardGuid
-                          : travel                             ? TravelLegs::BoardingIntent(travel->trip)
-                                                               : 0;
+    // Boarding has one owner (WT62, WT.48): a bot on no transport is probed only for the vessel it means to board
+    uint64 const intent = TravelLifecycle::ChooseIntent(
+        {(botAI->GetWork() & BotWork::Aboard) ? aboardGuid : 0, travel ? TravelLegs::BoardingIntent(travel->trip) : 0,
+         MasterTransportGuid(*bot, botAI->GetMaster()), BattlegroundBoatGuid(*bot)});
     TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
                               travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger,
                               intent);
