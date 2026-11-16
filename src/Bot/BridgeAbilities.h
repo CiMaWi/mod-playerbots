@@ -321,7 +321,8 @@ inline constexpr TopicRow TopicTable[] = {
      .Lines = true},
     {.Topic = BotStateTopic::Needs,
      .Name = "needs",
-     .Sentence = "What you must pay for soon, what you are short of and what you are saving for.",
+     .Sentence = "What you need: what you must pay for soon, what you are short of and what you are saving for. "
+                 "It changes, so look here before you answer what you need, also before you say you need nothing.",
      .Params = {},
      .Limit = 8,
      .Lines = true}};
