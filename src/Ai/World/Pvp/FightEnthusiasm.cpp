@@ -11,7 +11,6 @@
 #include <atomic>
 #include <cmath>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>

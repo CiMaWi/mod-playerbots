@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <string_view>
 
-#include "ObjectGuid.h"
 #include "WorldPvpConfig.h"
 
 class ChatHandler;
@@ -57,7 +56,7 @@ bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit);
 // PlayerbotAI::UpdateAI, every bot tick while in PvP combat or engaged: the engaged edge (a PvpEnthusiasm engaged
 // row on the rising one), while engaged the balance, the group hold and who attacks the bot (at the balance's
 // cadence), then the leave check (WP24, WP38a): an engaged bot below its flee threshold drops its target, sets its pet
-// passive until the disengaged edge and writes its fight_leave row, once per engaged episode
+// passive until the disengaged edge, dismisses its guardians and writes its fight_leave row, once per engaged episode
 void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32_t nowMs);
 // `playerbots fight enthusiasm <bot> [set <0..max>]` (world thread, between map updates): the value, the thresholds
 // and the cached terms, one line each; `set` writes the value
