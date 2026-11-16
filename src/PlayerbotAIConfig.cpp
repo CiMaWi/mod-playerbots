@@ -9,6 +9,7 @@
 #include "BotAttributes.h"
 #include "BotKind.h"
 #include "Config.h"
+#include "ConfigTable.h"
 #include "ItemWorthRules.h"
 #include "LadderMgr.h"
 #include "NewRpgInfo.h"
@@ -85,6 +86,12 @@ static void ParseLevelMgrExcludeNames(std::string const& csv, std::vector<std::s
             out.push_back(s);
     }
 }
+
+// The reader and the warning sink of the config tables (ConfigTable.h)
+static auto const ReadConfigRow = [](std::string const& key, auto fallback, bool warnIfMissing)
+{ return sConfigMgr->GetOption<decltype(fallback)>(key, fallback, warnIfMissing); };
+
+static void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
 
 bool PlayerbotAIConfig::Initialize()
 {
@@ -1414,31 +1421,7 @@ bool PlayerbotAIConfig::Initialize()
             MaxHandoutShare);
     }
 
-    // Mail and bank visits of persistent bots (Playerbots.BankMail.*), optional keys whose defaults (BankMailConfig)
-    // are the conf.dist values
-    {
-        constexpr uint32 MaxMailWorthCopper = 10000;
-        constexpr uint32 MaxKeepLevelHorizon = 20;
-        constexpr uint32 MinVisitDeadlineSeconds = 60;
-        constexpr uint32 MaxVisitDeadlineSeconds = HOUR;
-        constexpr uint32 MaxVisitStepSeconds = 60;
-        constexpr uint32 MaxMailsPerVisit = 100;
-        auto const bankMailNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
-        {
-            value = std::clamp<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.BankMail.") + key, value, false), minimum,
-                maximum);
-        };
-        BankMail = BankMailConfig{};
-        bankMailNumber("Mail.DefaultWorthCopper", BankMail.MailDefaultWorthCopper, 0, MaxMailWorthCopper);
-        bankMailNumber("Bank.KeepLevelHorizon", BankMail.KeepLevelHorizon, 0, MaxKeepLevelHorizon);
-        bankMailNumber("Mail.VisitDeadlineSeconds", BankMail.MailVisitDeadlineSeconds, MinVisitDeadlineSeconds,
-                       MaxVisitDeadlineSeconds);
-        bankMailNumber("Bank.VisitDeadlineSeconds", BankMail.BankVisitDeadlineSeconds, MinVisitDeadlineSeconds,
-                       MaxVisitDeadlineSeconds);
-        bankMailNumber("VisitStepSeconds", BankMail.VisitStepSeconds, 1, MaxVisitStepSeconds);
-        bankMailNumber("Mail.PerVisit", BankMail.MailsPerVisit, 1, MaxMailsPerVisit);
-    }
+    LoadConfigFamily(BankMailFamily, BankMail, ReadConfigRow, WarnConfigRow);
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
