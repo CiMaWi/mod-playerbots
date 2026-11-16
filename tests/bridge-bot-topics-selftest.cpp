@@ -14,6 +14,7 @@
 #include <string>
 
 #include "BridgeBotTopics.h"
+#include "BridgeNeedsTopic.h"
 
 namespace
 {
@@ -474,6 +475,166 @@ int main()
         TopicRow const twice[] = {{next, "item_story", "What you know of an item.", two, 12, true}};
         Check(TopicRowsValid(TopicTable) && TopicRowsValid(lines) && !TopicRowsValid(plain) && !TopicRowsValid(twice),
               "topics: a new topic takes one name and answers lines");
+    }
+
+    // WU23: the needs topic words one NeedList: worn gear and enough gold, short for a riding rank, nothing due, a bot
+    // the rules do not govern, more needs than the cap, and the mutants of the three guards
+    {
+        using UpkeepNeeds::Need;
+        using UpkeepNeeds::NeedList;
+        using UpkeepNeeds::NeedOrder;
+        constexpr std::uint64_t GOLD = UpkeepNeeds::COPPER_PER_GOLD;
+        auto const need = [](NeedOrder order, std::uint64_t copper, std::uint64_t funded, bool due, std::uint32_t item)
+        {
+            Need made;
+            made.order = order;
+            made.copper = copper;
+            made.funded = funded;
+            made.due = due;
+            made.item = item;
+            made.units = 1;
+            made.without = "fights with worn or broken gear";
+            return made;
+        };
+        constexpr std::uint32_t BREAD_ID = 4542;
+        auto const name = [](std::uint32_t id) { return id == BREAD_ID ? std::string("Good Bread") : std::string(); };
+        auto const idAsText = [](std::uint32_t id) { return std::to_string(id); };  // the mutant's lookup
+        auto const make = [&name](NeedList const& list, bool governed = true)
+        {
+            NeedsInput in;
+            in.governed = governed;
+            in.cls = 1;
+            in.list = &list;
+            in.itemName = name;
+            std::vector<BotStateItem> items;
+            NeedsItems(in, items);
+            return items;
+        };
+        auto const has = [](std::vector<BotStateItem> const& items, NeedRow row)
+        {
+            return std::any_of(items.begin(), items.end(),
+                               [row](BotStateItem const& item) { return item.code == static_cast<std::uint8_t>(row); });
+        };
+        auto const lines = [](std::vector<BotStateItem> const& items)
+        {
+            bool every = !items.empty();
+            for (BotStateItem const& item : items)
+                every = every && !item.text.empty() && !item.name.empty();
+            return every;
+        };
+
+        // Worn gear and enough gold: the repair is due and set aside, the reserve is shown, no saving entry
+        NeedList worn;
+        worn.needs.push_back(need(NeedOrder::Repair, 1200, 1200, true, 0));
+        worn.money = 5 * GOLD;
+        worn.reserve = 1200;
+        std::vector<BotStateItem> const wornItems = make(worn);
+        Check(wornItems.size() == 2 && wornItems[0].name == "repair" && Is(wornItems[0], NeedRow::Due) &&
+                  wornItems[0].value == 1200 && wornItems[0].extra == 1200 &&
+                  wornItems[0].text.find("repairs") != std::string::npos &&
+                  wornItems[0].text.find("the gold is set aside") != std::string::npos &&
+                  Is(wornItems[1], NeedRow::Reserve) && wornItems[1].extra == 5 * GOLD &&
+                  !has(wornItems, NeedRow::Saving) && lines(wornItems),
+              "needs: worn gear and enough gold: the repair, the reserve, no saving entry");
+        // Mutant: a shortfall forced onto the same list would add the saving entry the real answer withholds
+        NeedList forced = worn;
+        forced.shortfall = 1;
+        Check(has(make(forced), NeedRow::Saving) && !has(wornItems, NeedRow::Saving),
+              "needs: a saving entry only with a shortfall (mutant: a shortfall of 1 adds one)");
+
+        // Short for a riding rank: the saving entry names the rank and the amount
+        NeedList riding;
+        riding.money = 2 * GOLD;
+        riding.reserve = 40 * GOLD;
+        riding.reserveRiding = 40 * GOLD;
+        riding.shortfall = 38 * GOLD;
+        UpkeepNeeds::RankValue rank;
+        rank.rank = UpkeepNeeds::RIDING_RANKS[1];
+        rank.reserved = true;
+        riding.ranks.push_back(rank);
+        std::vector<BotStateItem> const ridingItems = make(riding);
+        Check(ridingItems.size() == 3 && Is(ridingItems[0], NeedRow::Nothing) && Is(ridingItems[1], NeedRow::Reserve) &&
+                  Is(ridingItems[2], NeedRow::Saving) &&
+                  ridingItems[2].text == "I am saving: 38g 0s 0c short for journeyman riding." &&
+                  ridingItems[2].value == 38 * GOLD && ridingItems[2].extra == 2 * GOLD,
+              "needs: short for a riding rank: nothing due, the saving entry names the rank and the amount");
+        // A need its gold does not cover is what the bot is short for, named in words
+        NeedList training = riding;
+        training.needs.push_back(need(NeedOrder::Training, 6000, 100, true, 0));
+        training.needs.back().units = 3;
+        training.needs.back().without = "spells it could cast";
+        std::vector<BotStateItem> const trainingItems = make(training);
+        Check(trainingItems.size() == 3 && trainingItems[0].name == "training" &&
+                  trainingItems[0].text.find("3 spells at the warrior trainer") != std::string::npos &&
+                  trainingItems[2].text.find("short for 3 spells at the warrior trainer") != std::string::npos &&
+                  trainingItems[0].text.find("only 1s 0c is set aside") != std::string::npos,
+              "needs: the unfunded need is the one the bot is short for, by its trainer");
+
+        // Nothing due says so in one entry
+        NeedList idle;
+        idle.money = GOLD;
+        std::vector<BotStateItem> const idleItems = make(idle);
+        Check(idleItems.size() == 1 && idleItems[0].name == "nothing" && Is(idleItems[0], NeedRow::Nothing) &&
+                  lines(idleItems),
+              "needs: nothing due answers in one entry");
+        // A need at no cost (a pet to tame) names no price
+        NeedList pet;
+        pet.needs.push_back(need(NeedOrder::Pet, 0, 0, true, 0));
+        pet.needs.back().without = "no pet";
+        std::vector<BotStateItem> const petItems = make(pet);
+        Check(
+            petItems.size() == 1 && petItems[0].text == "I must get a new pet, at no cost; going without means no pet.",
+            "needs: a need at no cost names no price");
+
+        // A bot the rules do not govern: one provided entry, claiming no need; mutant: the list formatted anyway
+        std::vector<BotStateItem> const provided = make(worn, false);
+        Check(provided.size() == 1 && provided[0].name == "provided" && Is(provided[0], NeedRow::Provided) &&
+                  !has(provided, NeedRow::Due) && !has(provided, NeedRow::Reserve) &&
+                  has(make(worn, true), NeedRow::Due),
+              "needs: a bot the rules do not govern answers provided (mutant: governed formats the list)");
+
+        // Items by name, never by id (mutant: a lookup that answers the id)
+        NeedList bread;
+        bread.needs.push_back(need(NeedOrder::FoodWater, 800, 800, true, BREAD_ID));
+        bread.needs.back().without = "hunger between fights";
+        bread.reserve = 800;
+        std::vector<BotStateItem> const breadItems = make(bread);
+        NeedsInput mutant;
+        mutant.governed = true;
+        mutant.list = &bread;
+        mutant.itemName = idAsText;
+        std::vector<BotStateItem> mutantItems;
+        NeedsItems(mutant, mutantItems);
+        Check(breadItems[0].text.find("Good Bread") != std::string::npos &&
+                  breadItems[0].text.find("4542") == std::string::npos &&
+                  mutantItems[0].text.find("4542") != std::string::npos,
+              "needs: an item by its name, not its id (mutant: the id as text)");
+
+        // More needs than the cap: cut at eight, the reserve and the saving entry kept at the end
+        NeedList many;
+        for (std::uint32_t index = 0; index < 12; ++index)
+            many.needs.push_back(need(NeedOrder::FoodWater, 100, 100, true, BREAD_ID));
+        many.reserve = 1200;
+        many.money = 100;
+        many.shortfall = 1100;
+        std::vector<BotStateItem> const manyItems = make(many);
+        Check(manyItems.size() == NEEDS_SHOWN && manyItems.size() == Limit(BotStateTopic::Needs) &&
+                  Is(manyItems[NEEDS_SHOWN - 2], NeedRow::Reserve) && Is(manyItems[NEEDS_SHOWN - 1], NeedRow::Saving),
+              "needs: more needs than the cap are cut, the reserve and the saving entry kept");
+
+        // One list: the topic's need entries are the command's needs, in its order
+        NeedList both;
+        both.needs.push_back(need(NeedOrder::Repair, 1200, 1200, true, 0));
+        both.needs.push_back(need(NeedOrder::FoodWater, 800, 300, false, BREAD_ID));
+        both.needs.push_back(need(NeedOrder::Training, 6000, 0, true, 0));
+        std::vector<BotStateItem> const bothItems = make(both);
+        bool same = bothItems.size() == both.needs.size();
+        for (std::size_t index = 0; same && index < both.needs.size(); ++index)
+            same = bothItems[index].name == UpkeepNeeds::OrderWord(both.needs[index].order) &&
+                   bothItems[index].value == both.needs[index].copper &&
+                   bothItems[index].extra == both.needs[index].funded &&
+                   Is(bothItems[index], both.needs[index].due ? NeedRow::Due : NeedRow::Passing);
+        Check(same, "needs: the topic's entries name the same needs as the command's list, in order");
     }
 
     std::printf("bridge-bot-topics selftest: %d passed, %d failed\n", passed, failed);
