@@ -387,7 +387,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
     GetBots();
 
     // Playerbots.Population.Rotation: by schedule, online bots make way for offline ones of their faction
-    if (Population::IsRotation() && !LadderMgr::Instance().IsHostedOnly())
+    if (Population::IsRotation())
     {
         for (PopulationPolicy::RotationSwap const& swap :
              Population::RotationTick(rndBotTypeAccounts, currentBots, maxAllowedBotCount))

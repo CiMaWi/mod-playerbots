@@ -65,6 +65,14 @@ struct RetiredSwitches
     bool SkipIdle = false;
     bool Goals = false;
     bool Persistent = false;
+    bool RotationEnable = false;
+    bool RetireEnable = false;
+    bool RetireDryRun = false;
+    bool RetireTestRange = false;
+    bool RetireMaxScore = false;
+    bool RetireCandidates = false;
+    bool RetireCreateAttempts = false;
+    bool RetireSummaryMinutes = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -86,6 +94,46 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredPersistentRows = {{
     {"", &RetiredSwitches::Persistent, 0, 0, ConfigKind::Retired},
 }};
 ConfigFamily<RetiredSwitches> const RetiredPersistentFamily{"Playerbots.Population.Persistent", RetiredPersistentRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRotationEnableRows = {{
+    {"", &RetiredSwitches::RotationEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRotationEnableFamily{"Playerbots.Population.Rotation.Enable",
+                                                                RetiredRotationEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireEnableRows = {{
+    {"", &RetiredSwitches::RetireEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRetireEnableFamily{"Playerbots.Population.Retire.Enable",
+                                                              RetiredRetireEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireDryRunRows = {{
+    {"", &RetiredSwitches::RetireDryRun, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRetireDryRunFamily{"Playerbots.Population.Retire.DryRun",
+                                                              RetiredRetireDryRunRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireTestRangeRows = {{
+    {"", &RetiredSwitches::RetireTestRange, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRetireTestRangeFamily{"Playerbots.Population.Retire.TestRange",
+                                                                 RetiredRetireTestRangeRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireMaxScoreRows = {{
+    {"", &RetiredSwitches::RetireMaxScore, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRetireMaxScoreFamily{"Playerbots.Population.Retire.MaxScore",
+                                                                RetiredRetireMaxScoreRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireCandidatesRows = {{
+    {"", &RetiredSwitches::RetireCandidates, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRetireCandidatesFamily{"Playerbots.Population.Retire.Candidates",
+                                                                  RetiredRetireCandidatesRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireCreateAttemptsRows = {{
+    {"", &RetiredSwitches::RetireCreateAttempts, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRetireCreateAttemptsFamily{"Playerbots.Population.Retire.CreateAttempts",
+                                                                      RetiredRetireCreateAttemptsRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireSummaryMinutesRows = {{
+    {"", &RetiredSwitches::RetireSummaryMinutes, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredRetireSummaryMinutesFamily{"Playerbots.Population.Retire.SummaryMinutes",
+                                                                      RetiredRetireSummaryMinutesRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -96,6 +144,14 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
         MakeEntry(RetiredPersistentFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRotationEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRetireEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRetireDryRunFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRetireTestRangeFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRetireMaxScoreFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRetireCandidatesFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRetireCreateAttemptsFamily, RetiredSwitchValues),
+        MakeEntry(RetiredRetireSummaryMinutesFamily, RetiredSwitchValues),
     };
     return entries;
 }
