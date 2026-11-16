@@ -151,7 +151,8 @@ inline void NeedsItems(NeedsInput const& in, std::vector<BotStateItem>& items)
     { items.push_back({name, Clamp32(value), Clamp32(extra), static_cast<std::uint8_t>(row), std::move(text)}); };
     if (!in.governed)
     {
-        one("provided", NeedRow::Provided, "My gear and gold are provided for; I have nothing to pay for myself.");
+        one("provided", NeedRow::Provided,
+            "My gear and gold are provided for; I have nothing to pay for and nothing to save up for myself.");
         return;
     }
     if (!in.ready || !in.list)
