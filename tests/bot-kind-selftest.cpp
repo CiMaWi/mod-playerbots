@@ -33,17 +33,17 @@ void Check(bool condition, std::string const& name)
 struct Role
 {
     char const* name;
-    bool persistentKey;
     bool arenaRole;
     bool arenaOnly;
     bool living;  // the expected LivingWorld
 };
 
-// Every role the facts see: a living world, the arena role, an ArenaOnly lab, and a world without the key (until CS23)
+// Every role the facts see: a living world, the arena role and an ArenaOnly lab
 Role const ROLES[] = {
-    {"living world", true, false, false, true},         {"arena role", true, true, false, false},
-    {"ArenaOnly lab", true, false, true, false},        {"arena role and ArenaOnly", true, true, true, false},
-    {"no persistence key", false, false, false, false},
+    {"living world", false, false, true},
+    {"arena role", true, false, false},
+    {"ArenaOnly lab", false, true, false},
+    {"arena role and ArenaOnly", true, true, false},
 };
 
 struct Master
@@ -66,7 +66,7 @@ int main()
 {
     for (Role const& role : ROLES)
     {
-        bool const living = BotKindRules::LivingWorld(role.persistentKey, role.arenaRole, role.arenaOnly);
+        bool const living = BotKindRules::LivingWorld(role.arenaRole, role.arenaOnly);
         Check(living == role.living, std::string(role.name) + ": LivingWorld");
 
         for (bool const randomBot : {true, false})

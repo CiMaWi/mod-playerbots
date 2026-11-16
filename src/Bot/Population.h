@@ -16,21 +16,19 @@
 class ChatHandler;
 class Player;
 
-// Persistent population (living-azeroth phase H). H1: with Playerbots.Population.Persistent = 1 no code
-// path lowers a random bot's level. H2: with Playerbots.Population.Rotation.Enable = 1 the roster of random
+// Persistent population (living-azeroth phase H). H1: no code path lowers a random bot's level (the upstream
+// level-lowering options are ignored). H2: with Playerbots.Population.Rotation.Enable = 1 the roster of random
 // bot characters is larger than the online cap and a schedule rotates who is online. Keys are read here
 // through sConfigMgr (not PlayerbotAIConfig.h) and re-read on ".reload config". The rules themselves are in
 // PopulationPolicy.h.
 namespace Population
 {
-// Any thread (relaxed atomic). Written on the world thread at startup and on ".reload config".
-bool IsPersistent();
-
-// Re-reads the keys and logs the state, plus one warning per refused level-lowering option. World thread.
+// Re-reads the keys and logs the state, plus one warning naming the ignored level-lowering options that are set.
+// World thread.
 void LoadConfig(bool reload);
 
 // The level a level-setting path may give `bot`: `requestedLevel`, or the bot's current level when
-// persistence is on, the bot is a random bot and `requestedLevel` is lower (logged as a refusal with
+// the bot is a random bot and `requestedLevel` is lower (logged as a refusal with
 // `site`). Cheap when nothing is lowered; any thread that may touch the bot.
 uint32 GuardLevel(Player* bot, uint32 requestedLevel, char const* site);
 
@@ -42,9 +40,9 @@ bool IsRotation();
 // Reads the config itself (it runs before LoadConfig).
 uint32 RosterBotCount(uint32 upstreamCount);
 
-// Startup (the factory, before LoadConfig; reads the config itself): Playerbots.Population.Persistent and
-// Rotation.Enable both on. The factory then makes characters only up to the roster's count (RosterBotCount) instead of
-// filling every bot account, and the roster accounts keep spare slots for ".playerbots population resize".
+// Startup (the factory, before LoadConfig; reads the config itself): Rotation.Enable on. The factory then makes
+// characters only up to the roster's count (RosterBotCount) instead of filling every bot account, and the roster
+// accounts keep spare slots for ".playerbots population resize".
 bool CapsStartupRefill();
 
 // Startup: the random bot characters the roster accounts are sized for: RosterBotCount, plus a tenth of it as spare
@@ -89,8 +87,8 @@ std::vector<PopulationPolicy::BalanceRange> BalanceRanges();
 // World thread: the index into BalanceRanges() of a level
 uint32 BalanceRangeOf(uint32 level);
 
-// Any thread (relaxed atomic): Playerbots.Population.Retire.Enable with its prerequisites met (Persistent,
-// Rotation.Enable, and Balance.Enable or Retire.TestRange)
+// Any thread (relaxed atomic): Playerbots.Population.Retire.Enable with its prerequisites met
+// (Rotation.Enable, and Balance.Enable or Retire.TestRange)
 bool IsRetire();
 
 // H4a. World thread (RandomPlayerbotMgr::UpdateAIInternal), every tick; returns at once while the retire is off and no

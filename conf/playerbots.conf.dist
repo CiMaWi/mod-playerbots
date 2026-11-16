@@ -849,7 +849,7 @@ Playerbots.RandomBotMaxLevelChance = 0.1
 Playerbots.RandomBotFixedLevel = 0
 
 # Set RandomBotMaxLevel bots to RandomBotMinLevel
-# Refused while Playerbots.Population.Persistent = 1 (see POPULATION)
+# Ignored by this fork: bot levels never go down (see POPULATION)
 # Default: 0 (disabled)
 Playerbots.DowngradeMaxLevelBot = 0
 
@@ -864,23 +864,21 @@ Playerbots.RandomBotXPRate = 1.0
 ####################################################################################################
 # POPULATION
 #
-# Persistent population: random bots keep their progress like the characters of real players.
-#
-# Persistence mode: with it on, no code path lowers a random bot's level.
+# Persistent population: random bots keep their progress like the characters of real players. No code
+# path lowers a random bot's level.
 #   - The periodic randomize never rerolls a bot (also not one below level 3) and never downgrades a
 #     max-level bot: it refreshes gear and talents at the bot's current level.
 #   - The console commands "playerbots rndbot init" re-initialise a bot at its current level and
 #     "playerbots rndbot clear" keeps it (the level stays, the XP within the level is reset).
 #   - Playerbots.DowngradeMaxLevelBot, Playerbots.ResetBotLevel.Enabled and
-#     Playerbots.LevelBrackets.Enabled are refused: a warning at startup and on ".reload config" for
-#     each one that is set, and the level management below does not run.
+#     Playerbots.LevelBrackets.Enabled are ignored: one warning at startup and on ".reload config"
+#     naming those that are set, and the level brackets and level reset never run.
 #   - Any other path that would give a random bot a lower level (bot "init=" commands at a lower
 #     master level, for example) keeps the bot's current level and logs a warning.
-#   - Characters created from now on stay at their creation level (1, Death Knights 55) and level up
-#     by playing; Playerbots.DisableRandomLevels and Playerbots.RandombotStartingLevel are not applied.
-# Levels still go up (quests, kills). Picked up by ".reload config".
-# Default: 0 (off, upstream behaviour)
-Playerbots.Population.Persistent = 0
+#   - In a living world (not the arena role and not ArenaOnly) characters created from now on stay at
+#     their creation level (1, Death Knights 55) and level up by playing; Playerbots.DisableRandomLevels
+#     and Playerbots.RandombotStartingLevel are not applied.
+# Levels still go up (quests, kills).
 
 # Roster above the online cap, rotated by schedule. More random bot characters exist than are online
 # (the count Playerbots.RandomBotCountMode sets stays the online cap); every IntervalSeconds the rotation
@@ -896,7 +894,7 @@ Playerbots.Population.Rotation.Enable = 0
 
 # Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
 # with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
-# With Playerbots.Population.Persistent = 1 as well, the startup factory makes characters only up
+# With the rotation on, the startup factory makes characters only up
 # to this count (not every account full), so bots ".playerbots population resize" deleted stay
 # deleted, and the accounts get a tenth more slots for a resize's new bots. Set it to the count of a
 # resize's done line before the next start.
@@ -1000,7 +998,7 @@ Playerbots.Population.Balance.LogoutPreferencePct = 25
 #              one given up (Retire.CreateAttempts) pauses the retires until ".reload config"
 #              and the factory refills the account at the next startup. One log line per
 #              retire and per creation.
-#              Needs Population.Persistent = 1, Rotation.Enable = 1 and
+#              Needs Rotation.Enable = 1 and
 #              Balance.Enable = 1 (or Retire.TestRange); else one error line and nothing happens.
 #              Keep it 0 on labs with lab-bots clones.
 # Default:     0 - off
@@ -2135,8 +2133,8 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # Playerbots.Natural.Path.Walk.MaxLegYards = 6
 # (Ranges: skills 0-100, percents 0-100, ms 0-60000, yards 0-500, OffsetYards 0-20.)
 
-# Honest world travel of persistent bots (Playerbots.Population.Persistent = 1; arena instances with
-# Playerbots.ArenaOnly.Enable keep their own cycle). These bots are never resurrected in place, never take the stuck
+# Honest world travel of persistent bots (in a living world; arena instances with Playerbots.ArenaOnly.Enable
+# or the arena role keep their own cycle). These bots are never resurrected in place, never take the stuck
 # teleport (a bot that makes no progress toward its destination records a Stuck event in the world log, gives
 # the destination up for StuckAvoidSeconds and goes IDLE) and are never randomized, refreshed or teleported while their
 # RPG is busy (not IDLE) or a real player is their master. A dead bot runs back to its corpse; after CorpseRunFailures
@@ -3598,7 +3596,7 @@ Playerbots.RandomBotTeleLowerLevel = 1
 Playerbots.RandomBotTeleHigherLevel = 3
 
 # Bots automatically teleport to another place for leveling on levelup
-# No effect with Playerbots.Population.Persistent = 1 (not ArenaOnly): persistent bots change zones by travelling
+# No effect in a living world (not the arena role and not ArenaOnly): persistent bots change zones by travelling
 # (the planner's move_zone goal), and the periodic hub/city refresh teleports are off for them too. Only a newly
 # made bot's first placement (".playerbots population resize") is still a teleport.
 # Default: 1 (enabled)
@@ -3920,7 +3918,7 @@ Playerbots.MinRandomBotReviveTime = 60
 Playerbots.MaxRandomBotReviveTime = 300
 
 # Minimum and maximum seconds between bot teleports to new areas or zones
-# Persistent bots (Playerbots.Population.Persistent = 1, not ArenaOnly) no longer teleport on this timer; the
+# Persistent bots (in a living world: not the arena role and not ArenaOnly) no longer teleport on this timer; the
 # refresh still runs, the teleport is replaced by travelling (move_zone).
 # Defaults: 3600 (min), 18000 (max)
 Playerbots.MinRandomBotTeleportInterval = 3600

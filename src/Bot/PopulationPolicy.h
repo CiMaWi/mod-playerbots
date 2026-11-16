@@ -54,23 +54,16 @@ inline uint32_t FirstLevel(bool livingWorld, uint32_t currentLevel, uint32_t rol
     return livingWorld ? currentLevel : rolledLevel;
 }
 
-// The level a factory or reset path may set: never below the current one when persistent.
-inline uint32_t KeepLevel(bool persistent, uint32_t currentLevel, uint32_t requestedLevel)
+// The level a factory or reset path may set: never below the current one.
+inline uint32_t KeepLevel(uint32_t currentLevel, uint32_t requestedLevel)
 {
-    return (persistent && requestedLevel < currentLevel) ? currentLevel : requestedLevel;
+    return requestedLevel < currentLevel ? currentLevel : requestedLevel;
 }
 
-// RandomBotLevelMgr (level brackets and level reset) runs only without persistence.
-inline bool LevelMgrAllowed(bool persistent) { return !persistent; }
-
-// The level-lowering options persistence refuses, for the startup and reload warning.
-inline std::vector<char const*> RefusedOptions(bool persistent, bool downgradeMaxLevelBot, bool resetBotLevel,
-                                               bool levelBrackets)
+// The upstream level-lowering options our fork ignores, those of them that are set, for the startup and reload warning.
+inline std::vector<char const*> RefusedOptions(bool downgradeMaxLevelBot, bool resetBotLevel, bool levelBrackets)
 {
     std::vector<char const*> refused;
-    if (!persistent)
-        return refused;
-
     if (downgradeMaxLevelBot)
         refused.push_back("Playerbots.DowngradeMaxLevelBot");
     if (resetBotLevel)
@@ -2395,10 +2388,9 @@ inline uint32_t ResizeSelftest(std::vector<std::string>& failures)
 }
 
 // WL19a: the startup factory's refill (RandomPlayerbotFactory::CreateRandomBots). Upstream fills every bot account to
-// a full set of characters at every start. A persistent roster with rotation (Population.Persistent and
-// Rotation.Enable) is filled only up to its count instead, so a resize's deletions stay deleted, and its accounts keep
-// spare slots for a resize's additions.
-inline bool RefillCapped(bool persistent, bool rotation) { return persistent && rotation; }
+// a full set of characters at every start. A roster with rotation (Rotation.Enable) is filled only up to its count
+// instead, so a resize's deletions stay deleted, and its accounts keep spare slots for a resize's additions.
+inline bool RefillCapped(bool rotation) { return rotation; }
 
 // The spare share the roster accounts are sized for beyond the roster while the refill is capped: a tenth of the
 // roster, rounded up (2500 -> 250 bots, 25 empty accounts at 10 characters each)
@@ -2533,9 +2525,7 @@ inline uint32_t RefillSelftest(std::vector<std::string>& failures)
         return list;
     };
 
-    check(RefillCapped(true, true) && !RefillCapped(true, false) && !RefillCapped(false, true) &&
-              !RefillCapped(false, false),
-          "capped only with persistence and rotation");
+    check(RefillCapped(true) && !RefillCapped(false), "capped only with rotation");
     check(RosterSpareBots(2500) == 250 && RosterSpareBots(2001) == 201 && RosterSpareBots(0) == 0,
           "the spare share is a tenth of the roster, rounded up");
     check((2500 + RosterSpareBots(2500) + 9) / 10 == 275, "a roster of 2500 gets 275 accounts at 10 characters");
