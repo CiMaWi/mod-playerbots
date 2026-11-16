@@ -9,7 +9,7 @@
 #include "BotAttributes.h"
 #include "BotKind.h"
 #include "Config.h"
-#include "ConfigTable.h"
+#include "ConfigTables.h"
 #include "ItemWorthRules.h"
 #include "LadderMgr.h"
 #include "NewRpgInfo.h"
@@ -86,12 +86,6 @@ static void ParseLevelMgrExcludeNames(std::string const& csv, std::vector<std::s
             out.push_back(s);
     }
 }
-
-// The reader and the warning sink of the config tables (ConfigTable.h)
-static auto const ReadConfigRow = [](std::string const& key, auto fallback, bool warnIfMissing)
-{ return sConfigMgr->GetOption<decltype(fallback)>(key, fallback, warnIfMissing); };
-
-static void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
 
 bool PlayerbotAIConfig::Initialize()
 {
@@ -1421,7 +1415,7 @@ bool PlayerbotAIConfig::Initialize()
             MaxHandoutShare);
     }
 
-    LoadConfigFamily(BankMailFamily, BankMail, ReadConfigRow, WarnConfigRow);
+    LoadConfigTables();
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
