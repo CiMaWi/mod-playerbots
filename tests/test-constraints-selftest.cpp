@@ -93,6 +93,7 @@ void UndoNoDamage(ModelUnits& units) { units.god = false; }
 void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
 void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
 void ReadByRoute(ModelUnits&) {}     // notaxi: the route request reads the bit (TaxiAllowed)
+void ReadByCast(ModelUnits&) {}      // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
 void ReadByMount(ModelUnits&) {}     // nomount: the check mount state action reads the bit (MountsOnItsOwn)
 void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
 
@@ -100,7 +101,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {
     {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
     {FLYFAIL, ReadByFollower, ReadByFollower}, {FLYABORT, ReadByFollower, ReadByFollower},
     {NODESTROY, ReadByDestroy, ReadByDestroy}, {NOTAXI, ReadByRoute, ReadByRoute},
-    {NOMOUNT, ReadByMount, ReadByMount},       {FLEE, ReadByFlee, ReadByFlee}};
+    {NOMOUNT, ReadByMount, ReadByMount},       {FLEE, ReadByFlee, ReadByFlee},
+    {NOCAST, ReadByCast, ReadByCast}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -255,6 +257,10 @@ bool RowWorks(Row const& row)
                !TaxiAllowed(NOTAXI) && !TaxiAllowed(HOLD | NOTAXI) && TaxiAllowed(0) && TaxiAllowed(STATES & ~NOTAXI) &&
                TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI);
     // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
+    if (name == "nocast")
+        return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
+               !CastsOnItsOwn(NOCAST) && !CastsOnItsOwn(HOLD | NOCAST) && CastsOnItsOwn(0) &&
+               CastsOnItsOwn(HOLD | NOFIGHT | NODAMAGE | NOMOUNT) && (NOCAST & HOLD) == 0 && !EndsStatus(0, NOCAST);
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !MountsOnItsOwn(NOMOUNT) && !MountsOnItsOwn(HOLD | NOMOUNT) && MountsOnItsOwn(0) &&
@@ -282,7 +288,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee",
+              "nomount, flee, nocast",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
