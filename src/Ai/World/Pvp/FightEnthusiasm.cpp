@@ -40,6 +40,7 @@
 #include "ShareSlot.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -70,26 +71,9 @@ constexpr char const* REASON_FLED = "fled";
 constexpr char const* REASON_RESUMED = "resumed";
 // The distinct enemy players counted as attacking the bot (the leaving row's attackers)
 constexpr size_t ATTACKERS_COUNTED = 8;
-// A PvpTest fighter stays forced this long after its last aim unless the job clears it first
-constexpr uint32 FORCED_TTL_MS = 30 * MINUTE * IN_MILLISECONDS;
-
-// PvpTest's forced fighters (any thread): guid to the time of the last aim; the count lets the hot path skip the lock
-std::mutex forcedLock;
-std::unordered_map<ObjectGuid, uint32> forced;
-std::atomic<uint32> forcedCount{0};
-
-bool IsForced(ObjectGuid guid, uint32 nowMs)
-{
-    if (!forcedCount.load(std::memory_order_relaxed))
-        return false;
-
-    std::lock_guard lock(forcedLock);
-    auto const found = forced.find(guid);
-    return found != forced.end() && nowMs - found->second <= FORCED_TTL_MS;
-}
-
-// Where the bot is now; its persistence read uncached (one atomic load), no master term
-BotPlace PlaceOf(PlayerbotAI* botAI, uint32 nowMs)
+// Where the bot is now; its persistence read uncached (one atomic load), no master term; PvpTest's fighters carry
+// the constraint row onsight
+BotPlace PlaceOf(PlayerbotAI* botAI)
 {
     BotPlace place;
     Player* const bot = botAI ? botAI->GetBot() : nullptr;
@@ -101,7 +85,7 @@ BotPlace PlaceOf(PlayerbotAI* botAI, uint32 nowMs)
     if (!place.openWorld || place.battleground)
         return place;
     place.persistent = botAI->IsPersistentBot();
-    place.forced = place.persistent && IsForced(bot->GetGUID(), nowMs);
+    place.forced = place.persistent && TestConstraints::OnSight(botAI->testConstraints);
     return place;
 }
 
@@ -131,7 +115,12 @@ void DropFightTarget(PlayerbotAI* botAI, Player* bot)
     botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
 }
 
-EnthusiasmValues Values() { return FromConfig(sPlayerbotAIConfig.WorldPvp); }
+// The values of the last config load (one pointer load): a published copy is never changed or freed, so a map thread
+// holding a reference across a reload stays valid; a reload leaks the old copy (a few hundred bytes, rare)
+ConfigValues const defaultValues{WorldPvpConfig{}};
+std::atomic<ConfigValues const*> publishedValues{&defaultValues};
+
+EnthusiasmValues const& Values() { return publishedValues.load(std::memory_order_acquire)->enthusiasm; }
 
 // In PvP combat or holding an alive enemy player (or its pet) as its attack target, on an open-world map
 // (battlegrounds and arenas leave the value alone). The target is the victim, or what the AI holds as its current
@@ -275,13 +264,12 @@ void HoldPetBack(PlayerbotAI* botAI, Player* bot)
 }
 
 // The engaged row on the rising edge (world-log.md): the value there, and the pvptest tag
-void RecordEngaged(Player* bot, BotEnthusiasm const& state, uint32 nowMs, EnthusiasmValues const& values)
+void RecordEngaged(Player* bot, bool onSight, BotEnthusiasm const& state, uint32 nowMs, EnthusiasmValues const& values)
 {
     if (!WorldLog::Active())
         return;
     EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_ENGAGED,
-                   static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))),
-                   IsForced(bot->GetGUID(), nowMs) ? 1 : 0);
+                   static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))), onSight ? 1 : 0);
 }
 
 // The engaged edge (its row on the rising one), the context when due, the group hold when due (cheap: most bots have no
@@ -289,10 +277,10 @@ void RecordEngaged(Player* bot, BotEnthusiasm const& state, uint32 nowMs, Enthus
 // engaged or could enter
 // (`force`: all of it now, for the command)
 // The disengaged row on the falling edge: the value there and the whole seconds engaged; no row for a forced fighter
-void RecordDisengaged(Player* bot, BotEnthusiasm const& state, uint32 startMs, uint32 nowMs,
+void RecordDisengaged(Player* bot, bool onSight, BotEnthusiasm const& state, uint32 startMs, uint32 nowMs,
                       EnthusiasmValues const& values)
 {
-    if (!WorldLog::Active() || IsForced(bot->GetGUID(), nowMs))
+    if (!WorldLog::Active() || onSight)
         return;
     EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_DISENGAGED,
                    static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))),
@@ -304,12 +292,13 @@ void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs
 {
     // Observe resets engagedMs on every edge: keep the rising time for the falling edge's row
     uint32 const startMs = state.engagedMs;
+    bool const onSight = TestConstraints::OnSight(botAI->testConstraints);
     if (Observe(state, EngagedNow(botAI, bot), nowMs, values))
     {
         if (state.engaged)
-            RecordEngaged(bot, state, nowMs, values);
+            RecordEngaged(bot, onSight, state, nowMs, values);
         else
-            RecordDisengaged(bot, state, startMs, nowMs, values);
+            RecordDisengaged(bot, onSight, state, startMs, nowMs, values);
     }
     if (force || ContextDue(state, nowMs))
         ReadContext(botAI, bot, state, nowMs, values);
@@ -463,7 +452,7 @@ void NoteEnthusiasmDeath(Player* killer, Player* killed)
     if (!killer || !killed || killer == killed)
         return;
     uint32 const nowMs = getMSTime();
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     EditOne(killed, EditCause::Death, nowMs, values);
     EditOne(killer, EditCause::Kill, nowMs, values);
     // Only members on the victim's map: it is this thread's; a member elsewhere is another map thread's
@@ -513,7 +502,7 @@ public:
 };
 }  // namespace
 
-bool StartsByRules(PlayerbotAI* botAI) { return StartsByRules(PlaceOf(botAI, getMSTime())); }
+bool StartsByRules(PlayerbotAI* botAI) { return StartsByRules(PlaceOf(botAI)); }
 
 bool Reaches(Unit const* bot, Unit const* enemy)
 {
@@ -533,24 +522,10 @@ bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
                         leftSide->GetGUID().GetRawValue());
 }
 
-void MarkForced(ObjectGuid guid)
-{
-    std::lock_guard lock(forcedLock);
-    forced[guid] = getMSTime();
-    forcedCount.store(static_cast<uint32>(forced.size()), std::memory_order_relaxed);
-}
-
-void ClearForced(ObjectGuid guid)
-{
-    std::lock_guard lock(forcedLock);
-    forced.erase(guid);
-    forcedCount.store(static_cast<uint32>(forced.size()), std::memory_order_relaxed);
-}
-
 bool ScanSkipped(PlayerbotAI* botAI)
 {
     uint32 const nowMs = getMSTime();
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     return SkipsScan(Fresh(botAI, nowMs, values), nowMs, values);
 }
 
@@ -561,7 +536,7 @@ bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal)
     if (!enemy || refusal || !enemy->IsAlive() || enemy->GetTeamId() == bot->GetTeamId())
         return false;
     uint32 const nowMs = getMSTime();
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     BotEnthusiasm const& state = Fresh(botAI, nowMs, values);
     return ReadsEnter(state, enemy->GetGUID().GetRawValue(), nowMs,
                       [&]()
@@ -576,7 +551,7 @@ bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal)
 bool NoteEntering(PlayerbotAI* botAI, Player* enemy)
 {
     uint32 const nowMs = getMSTime();
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     BotEnthusiasm& state = Fresh(botAI, nowMs, values);
     Player* const bot = botAI->GetBot();
     PickNote const note = NotePick(state, enemy->GetGUID().GetRawValue(), nowMs, values,
@@ -599,9 +574,9 @@ bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit)
 void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
     // A forced fighter's edges are tracked too (TracksEngaged): its engaged row carries the pvptest tag
-    if (!botAI->enthusiasm && (!EngagedNow(botAI, bot) || !TracksEngaged(PlaceOf(botAI, nowMs))))
+    if (!botAI->enthusiasm && (!EngagedNow(botAI, bot) || !TracksEngaged(PlaceOf(botAI))))
         return;
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     BotEnthusiasm& state = Of(botAI, nowMs, values);
     Refresh(botAI, bot, state, nowMs, values, false);
     CheckLeave(botAI, bot, state, nowMs, values);
@@ -633,7 +608,7 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
         rest.remove_prefix(1);
     while (!rest.empty() && rest.back() == ' ')
         rest.remove_suffix(1);
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     std::optional<double> set;
     if (!rest.empty())
     {
@@ -696,8 +671,40 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
     Player* const master = state.realMaster ? RealMasterOf(botAI).master : nullptr;
     handler->PSendSysMessage("{} realmaster {} master {}", prefix, state.realMaster ? 1 : 0,
                              master ? master->GetGUID().GetCounter() : 0);
+    // The config's base rates as built at the last config load (a test reads the reload through them)
+    handler->PSendSysMessage("{} rate {:.2f} depletion {:.2f}", prefix, values.recoveryPerHour,
+                             values.depletionPerMinute);
     return true;
 }
+
+void PublishConfigValues(WorldPvpConfig const& config)
+{
+    // The previous copy stays (map threads may hold a reference to it): a reload is rare and a copy a few hundred bytes
+    publishedValues.store(new ConfigValues(config), std::memory_order_release);
+}
+
+GhostValues const& GhostConfigValues() { return publishedValues.load(std::memory_order_acquire)->ghost; }
 }  // namespace WorldPvp
 
-void AddWorldPvpScripts() { new WorldPvp::WorldPvpPlayerScript(); }
+namespace
+{
+// `.reload config`: the core reloads the config files into sConfigMgr before this hook; the first call (reload ==
+// false) comes before PlayerbotAIConfig::Initialize, which loads the values itself at startup
+class WorldPvpWorldScript : public WorldScript
+{
+public:
+    WorldPvpWorldScript() : WorldScript("WorldPvpWorldScript", {WORLDHOOK_ON_AFTER_CONFIG_LOAD}) {}
+
+    void OnAfterConfigLoad(bool reload) override
+    {
+        if (reload)
+            sPlayerbotAIConfig.LoadWorldPvpConfig();
+    }
+};
+}  // namespace
+
+void AddWorldPvpScripts()
+{
+    new WorldPvp::WorldPvpPlayerScript();
+    new WorldPvpWorldScript();
+}

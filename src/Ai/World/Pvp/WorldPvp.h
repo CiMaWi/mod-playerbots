@@ -11,11 +11,17 @@
 #include <string_view>
 
 #include "ObjectGuid.h"
+#include "WorldPvpConfig.h"
 
 class ChatHandler;
 class Player;
 class PlayerbotAI;
 class Unit;
+
+namespace WorldPvp
+{
+struct GhostValues;
+}
 
 // World PvP (WP.19, WP23, WP24): persistent bots in the open world enter and leave fights by their enthusiasm
 // (FightEnthusiasm.cpp, its rules in FightEnthusiasm.h and Enthusiasm.h); there is no fight object. Battlegrounds,
@@ -68,10 +74,11 @@ bool CallsPetOff(PlayerbotAI* botAI, Unit* target);
 // it, so it flees (FleeAttackersAction runs from its attackers)
 bool LeavesFlee(PlayerbotAI* botAI);
 
-// PvpTest (world thread or any): a forced fighter keeps today's attack on sight and its rows are tagged pvptest
-// (WP.6) until it is cleared or FORCED_TTL_MS after its last aim
-void MarkForced(ObjectGuid guid);
-void ClearForced(ObjectGuid guid);
+// The enthusiasm and ghost values, built once from the config at each config load (PlayerbotAIConfig::
+// LoadWorldPvpConfig: startup and `.reload config`, the world thread) and swapped in whole; a map thread reads the
+// ones published last. PvpTest's fighters are not here: they carry the constraint row onsight (WP.6)
+void PublishConfigValues(WorldPvpConfig const& config);
+GhostValues const& GhostConfigValues();
 }  // namespace WorldPvp
 
 // The PvP-kill hooks (the killed player's map thread): the death edit of a bot victim, the kill edit of a bot killer

@@ -599,6 +599,15 @@ void TestAggressionWhenJoining()
     Check(Near(FromConfig(config).joinAggressionFactor, 0.25), "the factor's default is 0.25");
     config.Enthusiasm.AggressionJoinFactor = 7.0f;
     Check(Near(FromConfig(config).joinAggressionFactor, 1.0), "the factor is held to 1");
+
+    // The values are built from the config alone (once per load): a changed config gives its rates
+    WorldPvpConfig changed;
+    changed.Enthusiasm.RecoveryPerHour = 33.0f;
+    changed.Enthusiasm.DepletionPerMinute = 7.5f;
+    Check(Near(FromConfig(WorldPvpConfig{}).recoveryPerHour, 15.0) && Near(FromConfig(changed).recoveryPerHour, 33.0) &&
+              Near(FromConfig(changed).depletionPerMinute, 7.5) &&
+              Near(FromConfig(WorldPvpConfig{}).recoveryPerHour, 15.0),
+          "a config's rates reach its values, the default config's stay");
 }
 
 // The scan's floor: no situation gives a lower threshold than LowestJoinThreshold

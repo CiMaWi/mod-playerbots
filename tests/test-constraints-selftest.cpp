@@ -96,6 +96,7 @@ void ReadByRoute(ModelUnits&) {}       // notaxi: the route request reads the bi
 void ReadByMount(ModelUnits&) {}       // nomount: the check mount state action reads the bit (MountsOnItsOwn)
 void ReadByFlee(ModelUnits&) {}        // flee: the world PvP retreat trigger reads the bit (Flees)
 void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
+void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -105,7 +106,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOTAXI, ReadByRoute, ReadByRoute},
                                               {NOMOUNT, ReadByMount, ReadByMount},
                                               {FLEE, ReadByFlee, ReadByFlee},
-                                              {REALMASTER, ReadByRealMaster, ReadByRealMaster}};
+                                              {REALMASTER, ReadByRealMaster, ReadByRealMaster},
+                                              {ONSIGHT, ReadByOnSight, ReadByOnSight}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -254,6 +256,12 @@ bool RowWorks(Row const& row)
         return untouched && HasRealMaster(REALMASTER) && !HasRealMaster(HOLD) &&
                !HasRealMaster(HOLD | (STATES & ~REALMASTER)) && StartsFights(REALMASTER) && !Flees(REALMASTER) &&
                (REALMASTER & HOLD) == 0 && !EndsStatus(0, REALMASTER);
+    // Read by world PvP's place of a bot only: nothing to apply; no other row and not the hold sets it; it ends no
+    // status
+    if (name == "onsight")
+        return untouched && OnSight(ONSIGHT) && !OnSight(HOLD) && !OnSight(HOLD | (STATES & ~ONSIGHT)) &&
+               StartsFights(ONSIGHT) && !Flees(ONSIGHT) && !HasRealMaster(ONSIGHT) && (ONSIGHT & HOLD) == 0 &&
+               !EndsStatus(0, ONSIGHT);
     // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nodestroy")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -292,7 +300,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, realmaster",
+              "nomount, flee, realmaster, onsight",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

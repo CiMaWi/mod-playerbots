@@ -36,6 +36,9 @@ constexpr std::uint16_t NOMOUNT = 1024;
 constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
 // world PvP's rules count its master, in a bot group its leader, as a game client (world-pvp WP37a)
 constexpr std::uint16_t REALMASTER = 4096;
+// a PvpTest fighter: world PvP's rules leave the bot out (today's attack on sight) and its engaged rows carry the
+// pvptest tag (world-pvp WP37b)
+constexpr std::uint16_t ONSIGHT = 8192;
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -66,6 +69,8 @@ constexpr Row ROWS[] = {
     {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
     {"realmaster", Kind::State, REALMASTER, "world PvP rules: its master, in a bot group its leader, is a game client"},
+    {"onsight", Kind::State, ONSIGHT,
+     "world PvP rules: the bot is outside them (attack on sight), its engaged rows tagged"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -179,6 +184,9 @@ inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
 // realmaster, read by world PvP's real master (WorldPvp::RealMasterOf, GhostWait.cpp; nothing to apply or undo): the
 // bot never starts, joins its master's fights, never leaves by enthusiasm and its ghost waits for no enemy
 inline bool HasRealMaster(std::uint16_t set) { return (set & REALMASTER) != 0; }
+// onsight, read by world PvP's place of a bot (FightEnthusiasm.cpp PlaceOf, the engaged rows; nothing to apply or
+// undo): PvpTest's fighters keep today's attack on sight and their engaged rows carry the pvptest tag
+inline bool OnSight(std::uint16_t set) { return (set & ONSIGHT) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }

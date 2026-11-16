@@ -553,6 +553,24 @@ void TestPlaces()
 }
 }  // namespace
 
+// The values built once per config load: both kinds from one config, a second load from a changed one gives its own and
+// leaves the first as it was (the published copy is never edited)
+void TestConfigValues()
+{
+    WorldPvpConfig config;
+    ConfigValues const first(config);
+    config.Enthusiasm.RecoveryPerHour = 40.0f;
+    config.GhostRecheckSeconds = 9;
+    config.GhostEnemyYards = 60;
+    ConfigValues const second(config);
+    Check(Near(first.enthusiasm.recoveryPerHour, 15.0) && first.ghost.recheckMs == 15 * SECOND &&
+              first.ghost.enemyYards == 40.0f,
+          "config values: the first load keeps the defaults");
+    Check(Near(second.enthusiasm.recoveryPerHour, 40.0) && second.ghost.recheckMs == 9 * SECOND &&
+              second.ghost.enemyYards == 60.0f,
+          "config values: a reload with another config gives the new rate and ghost values");
+}
+
 int main()
 {
     TestSeed();
@@ -568,6 +586,7 @@ int main()
     TestLeave();
     TestGroup();
     TestPlaces();
+    TestConfigValues();
     std::printf("fight-enthusiasm-selftest: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

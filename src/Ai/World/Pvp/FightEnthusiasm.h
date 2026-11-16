@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Enthusiasm.h"
+#include "GhostWait.h"
 
 // A bot's enthusiasm as its AI holds it (WP23, PlayerbotAI::enthusiasm) and the steps the glue (FightEnthusiasm.cpp)
 // takes on it: who starts by the rules, the reach test, the seed, the engaged edges, the cached traits, local balance
@@ -35,7 +36,7 @@ struct BotPlace
     // An open-world map (not instanceable)
     bool openWorld = false;
     bool battleground = false;
-    // A PvpTest fighter (WP.6)
+    // A PvpTest fighter (WP.6): the constraint row onsight
     bool forced = false;
 };
 
@@ -47,7 +48,7 @@ constexpr bool StartsByRules(BotPlace const& place)
 }
 
 // Whose engaged edges are tracked (and written as PvpEnthusiasm engaged rows): the bots that start by the rules and
-// PvpTest's forced fighters in the same places, whose rows carry the pvptest tag
+// PvpTest's forced fighters (onsight) in the same places, whose rows carry the pvptest tag
 constexpr bool TracksEngaged(BotPlace const& place)
 {
     return place.persistent && place.openWorld && !place.battleground;
@@ -428,6 +429,15 @@ inline uint32_t JoinTerms(JoinFacts const& facts, EnthusiasmValues const& values
         terms |= TERM_WEAK_AGGRESSION;
     return terms;
 }
+
+// The values built once per config load (WorldPvp.h PublishConfigValues) from one WorldPvpConfig, immutable after
+struct ConfigValues
+{
+    EnthusiasmValues enthusiasm;
+    GhostValues ghost;
+
+    explicit ConfigValues(WorldPvpConfig const& config) : enthusiasm(FromConfig(config)), ghost(config) {}
+};
 }  // namespace WorldPvp
 
 #endif
