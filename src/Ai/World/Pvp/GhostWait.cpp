@@ -20,7 +20,6 @@
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
-#include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ScriptMgr.h"
 #include "TestConstraints.h"
