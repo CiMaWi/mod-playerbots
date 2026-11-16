@@ -67,6 +67,10 @@ void ReadByRoute(Player&) {}
 void ReadByMount(Player&) {}
 // flee changes nothing on the bot: the world PvP retreat trigger reads the bit (TestConstraints::Flees)
 void ReadByFlee(Player&) {}
+// nouse changes nothing on the bot: the item use gates read the bit (TestConstraints::UsesItemsOnItsOwn)
+void ReadByUse(Player&) {}
+// nospend changes nothing on the bot: the spend rule and buff picker read the bit (TestConstraints::SpendsOnItsOwn)
+void ReadBySpend(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -78,6 +82,8 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOTAXI, ReadByRoute, ReadByRoute},
     {TestConstraints::NOMOUNT, ReadByMount, ReadByMount},
     {TestConstraints::FLEE, ReadByFlee, ReadByFlee},
+    {TestConstraints::NOUSE, ReadByUse, ReadByUse},
+    {TestConstraints::NOSPEND, ReadBySpend, ReadBySpend},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
