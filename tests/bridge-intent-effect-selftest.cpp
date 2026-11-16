@@ -3263,9 +3263,9 @@ int main()
         // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
         char const* const wireTopics[] = {"inventory", "quests",  "cooldowns", "strategies", "spells",
                                           "plan",      "options", "route",     "quest_plan", "bags",
-                                          "places",    "history", "lately",    "known"};
+                                          "places",    "history", "lately",    "known",      "needs"};
         std::span<TopicRow const> const topics = PlayerbotBridge::TopicRows();
-        Check(topics.size() == std::size(wireTopics), "fourteen topic rows");
+        Check(topics.size() == std::size(wireTopics), "fifteen topic rows");
         for (std::size_t index = 0; index < topics.size(); ++index)
         {
             TopicRow const& row = topics[index];
@@ -3326,6 +3326,7 @@ int main()
         };
         Check(listedName("attack") && listedName("pull") && listedName("cast") && !listedName("attack_own_target"),
               "the catalogue holds attack and pull and no attack_own_target");
+        Check(listedName("needs"), "the catalogue holds the needs topic");
         auto const sameParams =
             [](std::vector<PlayerbotBridge::ParamData> const& data, std::span<ParamRow const> params)
         {
