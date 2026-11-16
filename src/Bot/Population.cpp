@@ -1612,8 +1612,6 @@ void LoadRetireConfig(bool reload, bool persistent)
     {
         if (!persistent)
             retire.refusal = "Playerbots.Population.Persistent = 0 (the new bots would be re-levelled)";
-        else if (!sConfigMgr->GetOption<bool>("Playerbots.Acquaintance.Enable", false))
-            retire.refusal = "Playerbots.Acquaintance.Enable = 0 (every bot would look never met)";
         else if (!sConfigMgr->GetOption<bool>(RotationEnableKey, false))
             retire.refusal = "Playerbots.Population.Rotation.Enable = 0 (no roster to keep)";
         else if (!retire.testRange && !sConfigMgr->GetOption<bool>(BalanceEnableKey, false))

@@ -57,27 +57,22 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-// flyfail and flyabort change nothing on the bot: the fly leg's follower reads the bit (TestConstraints::FlyLegFails)
-void ReadByFollower(Player&) {}
-// nodestroy changes nothing on the bot: the smart destroy action reads the bit (TestConstraints::DestroysForSpace)
-void ReadByDestroy(Player&) {}
-// notaxi changes nothing on the bot: the route request reads the bit (TestConstraints::TaxiAllowed)
-void ReadByRoute(Player&) {}
-// nomount changes nothing on the bot: the check mount state action reads the bit (TestConstraints::MountsOnItsOwn)
-void ReadByMount(Player&) {}
-// flee changes nothing on the bot: the world PvP retreat trigger reads the bit (TestConstraints::Flees)
-void ReadByFlee(Player&) {}
+// The other state rows change nothing on the bot: the code they constrain reads the bit (TestConstraints::FlyLegFails,
+// DestroysForSpace, TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn)
+void ReadWhereUsed(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
     {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {TestConstraints::FLYFAIL, ReadByFollower, ReadByFollower},
-    {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
-    {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
-    {TestConstraints::NOTAXI, ReadByRoute, ReadByRoute},
-    {TestConstraints::NOMOUNT, ReadByMount, ReadByMount},
-    {TestConstraints::FLEE, ReadByFlee, ReadByFlee},
+    {TestConstraints::FLYFAIL, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::FLYABORT, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NODESTROY, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOTAXI, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOMOUNT, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::FLEE, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOUSE, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOSPEND, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
