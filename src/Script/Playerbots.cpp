@@ -777,7 +777,7 @@ public:
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
         FocusClearArenaMarks(bg);          // Map thread: the team plan's skull and moon go (Playerbots.Tactics.Enable)
-        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record (Playerbots.MatchLog.Enable)
+        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record
         PvpGearMgr::QueueMatchEnd(bg);     // Map thread: a rated arena's players get a buy check on the world thread
         BotProfileMgr::QueueMatchEnd(bg);  // Map thread: the bots' skill growth (Playerbots.Skill.Growth.Enable)
     }
