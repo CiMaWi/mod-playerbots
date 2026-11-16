@@ -360,6 +360,11 @@ public:
 
 protected:
     bool UseTrinket(Item* trinket);
+
+private:
+    // Each trinket's own cooldown and its category's, as a client keeps them (UseTrinket); gone with the action
+    std::unordered_map<uint64, uint32> trinketItemCooldownExpiries;
+    std::unordered_map<uint32, uint32> trinketCategoryCooldownExpiries;
 };
 
 class CastSpellOnEnemyHealerAction : public CastSpellAction
