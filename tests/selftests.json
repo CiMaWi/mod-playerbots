@@ -168,6 +168,28 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "item-offer-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-spend-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "item-use-dump-selftest.cpp",
             "includes": [
                 "src/Ai/Item"
@@ -184,6 +206,19 @@
             "file": "item-use-index-selftest.cpp",
             "includes": [
                 "src/Ai/Item"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-kinds-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -279,7 +314,8 @@
         {
             "file": "route-check-selftest.cpp",
             "includes": [
-                "src/Mgr/Travel"
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg"
             ],
             "success": "(\\d+)/\\1 passed"
         },

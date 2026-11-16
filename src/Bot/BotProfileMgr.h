@@ -36,7 +36,7 @@ struct SkillGrowthEntry
     bool RealPlayerOnTeam = false;
 };
 
-// The hidden per-bot profile (Playerbots.Skill.Enable). All rows are loaded with one query at startup (or at the first
+// The hidden per-bot profile (Playerbots.Skill.*). All rows are loaded with one query at startup (or at the first
 // use), bot logins read only the in-memory map, new and changed rows are written asynchronously. Only the GM command
 // `.playerbots skill` and the PvP harness records show a bot's skill.
 class BotProfileMgr
@@ -51,7 +51,7 @@ public:
     static constexpr uint8 MinSkill = 1;
     static constexpr uint8 MaxSkill = 99;
 
-    // Startup: loads every profile (nothing when Playerbots.Skill.Enable is 0)
+    // Startup: loads every profile
     void Load();
     // Bot login: the bot's skill; rolls and saves a new profile when the bot has none
     uint8 LoadOrCreate(uint32 guid);

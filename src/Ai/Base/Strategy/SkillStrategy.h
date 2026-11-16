@@ -30,7 +30,7 @@ enum class SkillNoticeCategory : uint8
     CrowdControl,
     CrowdControlBreak,
     TargetSwitch,
-    // A reaction only (G0h3-b: avoid aoe, Playerbots.Natural.Reaction.Movement.Enable): no notice counter, no D4 delay
+    // A reaction only (G0h3-b: avoid aoe): no notice counter, no D4 delay
     Movement,
     // A reaction only as well (G2e, G2f: regain los, break los, pillar step; Playerbots.Natural.Reaction.Positioning.
     // Enable): no notice counter (SkillNoticeCounters::Categories stays), no D4 delay, so no match record changes
@@ -43,7 +43,7 @@ SkillNoticeCategory SkillNoticeCategoryOf(std::string const& actionName);
 
 // Returns 0 for an action of a notice category until the bot has noticed it in the current window. The notice time
 // and the missed windows come from a hash of guid, category and window, so the result is stable within a window and
-// costs no roll per tick. With Playerbots.Natural.Reaction.Enable (in its Contexts) the delay is a human reaction time
+// costs no roll per tick. In Playerbots.Natural.Reaction.Contexts the delay is a human reaction time
 // from the event's start instead (NaturalReaction.h): one event per category, the bot's focus, a view-cone penalty.
 class SkillMultiplier : public Multiplier
 {

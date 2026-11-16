@@ -289,7 +289,7 @@ inline bool LeadsCompleteArenaTeamGroup(Player* leader, ArenaTeam const* team, u
     return true;
 }
 
-// Form arena group (world thread): queued by BGJoinAction::gatherArenaTeam with RandomBotArenaGroupOnWorldThread on.
+// Form arena group (world thread): queued by BGJoinAction::gatherArenaTeam, the only path that forms an arena group.
 // forceRepick (Playerbots.ArenaTeam.RepickEachQueue): re-form a standing group with the members given (a new pair)
 class ArenaGroupFormationOperation : public PlayerbotOperation
 {

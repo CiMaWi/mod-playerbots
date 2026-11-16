@@ -210,7 +210,7 @@ PvpTestBotRecord MakeBot(Player* player, bool count)
         // The gear score after the PvP loadout is worn: the wear is queued when the player is added to the arena
         // and has had the preparation time to finish
         bot.GearScore = botAI->GetEquipGearScore(player);
-        if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
+        if (botAI->GetPvpSkill())
             bot.Skill = botAI->GetPvpSkill();
 
         bot.CopyOf = botAI->GetTactics().GetAttributeTemplate();
@@ -443,9 +443,6 @@ void MatchLog::Stamp(PvpTestMatchRecord& record)
 
 void MatchLog::Claim(uint32 instanceId, std::string const& matchId)
 {
-    if (!sPlayerbotAIConfig.MatchLogEnable)
-        return;
-
     std::lock_guard<std::mutex> guard(RegistryLock);
     Prune(Claims, MaxKept - 1);
     HarnessClaim claim;
@@ -468,7 +465,7 @@ bool MatchLog::Merge(uint32 instanceId, PvpTestMatchRecord& record)
 
 void MatchLog::OnArenaStart(Battleground* bg)
 {
-    if (!sPlayerbotAIConfig.MatchLogEnable || !bg || !bg->isArena())
+    if (!bg || !bg->isArena())
         return;
 
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "MatchLogStart");
@@ -497,7 +494,7 @@ void MatchLog::OnArenaStart(Battleground* bg)
 
 void MatchLog::OnMemberUpdate(ArenaTeam* /*team*/, Player* player, bool won, int32 matchmakerChange)
 {
-    if (!sPlayerbotAIConfig.MatchLogEnable || !player)
+    if (!player)
         return;
 
     Battleground* bg = player->GetBattleground();
@@ -512,7 +509,7 @@ void MatchLog::OnMemberUpdate(ArenaTeam* /*team*/, Player* player, bool won, int
 
 void MatchLog::OnLeave(Battleground* bg, Player* player)
 {
-    if (!sPlayerbotAIConfig.MatchLogEnable || !bg || !player || !bg->isArena())
+    if (!bg || !player || !bg->isArena())
         return;
 
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
@@ -539,7 +536,7 @@ void MatchLog::OnLeave(Battleground* bg, Player* player)
 
 void MatchLog::OnEnd(Battleground* bg, TeamId winnerTeam)
 {
-    if (!sPlayerbotAIConfig.MatchLogEnable || !bg || !bg->isArena())
+    if (!bg || !bg->isArena())
         return;
 
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "MatchLogEnd");
@@ -636,8 +633,7 @@ bool MatchLog::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     PvpTestRecordWriter& writer = PvpTestRecordWriter::Instance();
     uint64 const started = Started.load();
     uint64 const ended = Ended.load();
-    handler->PSendSysMessage("MATCHLOG: Playerbots.MatchLog.Enable {}, server {}, next id {}-{}-{}",
-                             sPlayerbotAIConfig.MatchLogEnable ? 1 : 0, ServerId(), ServerId(), ProcessStamp,
+    handler->PSendSysMessage("MATCHLOG: server {}, next id {}-{}-{}", ServerId(), ServerId(), ProcessStamp,
                              Counter.load() + 1);
     handler->PSendSysMessage(
         "MATCHLOG: arena starts {}, ends {} ({} without a seen start), records written by MatchLog {}, handed to the "
