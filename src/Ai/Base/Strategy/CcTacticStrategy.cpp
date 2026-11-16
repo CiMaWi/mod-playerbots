@@ -358,8 +358,7 @@ bool CcTeamBehind(Player* bot, CcParams const& params)
 bool CcFeedOn()
 {
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-    return config.TacticsEnable &&
-           (config.TacticConfig[static_cast<uint32>(TacticId::Cc)].Enable || config.PvpTestEnable);
+    return config.TacticStrategyWanted(TacticId::Cc);
 }
 
 // The bots that see a CC land on or leave the unit (DT.12: the combat log of their own fight): the caster and the
@@ -636,8 +635,7 @@ void CcNoteDispelRemoval(Unit* unit, Aura const* aura)
 {
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     Player* const player = unit->ToPlayer();
-    if (!player || !config.TacticsEnable ||
-        !(config.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || config.PvpTestEnable))
+    if (!player || !config.TacticStrategyWanted(TacticId::Dispel))
         return;
 
     uint32 const nowMs = getMSTime();

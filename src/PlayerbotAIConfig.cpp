@@ -2195,6 +2195,11 @@ bool PlayerbotAIConfig::IsInPvpProhibitedArea(uint32 id)
     return find(PvpProhibitedAreaIds.begin(), PvpProhibitedAreaIds.end(), id) != PvpProhibitedAreaIds.end();
 }
 
+bool PlayerbotAIConfig::TacticStrategyWanted(TacticId id) const
+{
+    return ::TacticStrategyWanted(TacticsEnable, id, TacticConfig[static_cast<uint32>(id)].Enable, PvpTestEnable);
+}
+
 bool PlayerbotAIConfig::IsRestrictedHealerDPSMap(uint32 mapId) const
 {
     return RestrictHealerDPS &&

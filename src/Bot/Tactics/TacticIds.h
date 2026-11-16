@@ -134,4 +134,12 @@ constexpr bool IsTacticAllowed(bool tacticsEnable, uint32 mask, TacticId id, uin
     return tacticsEnable && (mask & TacticBit(id)) != 0 && ScopeAllows(scope, context);
 }
 
+// Does the strategy "tactic <x>" go into an engine (AiFactory.cpp, CcTacticStrategy.cpp): the system on, and the
+// tactic's own Enable or the PvP harness on (PlayerbotAIConfig::TacticStrategyWanted reads the three from the config)
+constexpr bool TacticStrategyWanted(bool tacticsEnable, TacticId id, bool ownEnable, bool harnessOn)
+{
+    (void)id;
+    return tacticsEnable && (ownEnable || harnessOn);
+}
+
 #endif

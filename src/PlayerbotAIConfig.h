@@ -536,6 +536,8 @@ public:
     // the tactics enabled in config (0 while the system is off)
     bool TacticsEnable;
     std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
+    // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
+    bool TacticStrategyWanted(TacticId id) const;
     uint32 TacticsConfigMask;
     // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
     // pass, from the switches and scopes at load and reload
