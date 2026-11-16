@@ -709,23 +709,14 @@ Observation Flying(Point bot, std::uint32_t nowMs, bool mounted, bool flying)
 }
 
 // A fly leg's tries under the one mount owner (WT44): MountToFly's dispatch (MountRules::Policy for Kind::Flying, then
-// FlyTryOf) against StepLeg's takeoff rule. The glue below mirrors MountToFly's count: Refused and Cast are real tries,
-// Refused leaves the verdict's word for the fly_leg_failed row
+// TravelLegs::TakeFlyTry, the same call MountToFly makes) against StepLeg's takeoff rule
 void CheckFlyLegMountOwner()
 {
     using MountRules::FlyTry;
     Leg const leg = FlyLeg();
     Point const takeoff = leg.from;
     auto const tryOnce = [](Trip& trip, MountRules::Facts const& facts, bool settled, std::uint32_t nowMs)
-    {
-        MountRules::Verdict const verdict = MountRules::Policy(facts, MountRules::Kind::Flying);
-        FlyTry const step = MountRules::FlyTryOf(verdict, settled);
-        if (step == FlyTry::Refused || step == FlyTry::Cast)
-            TravelLegs::NoteMountTry(trip, nowMs);
-        if (step == FlyTry::Refused)
-            trip.mountWhy = verdict.why;
-        return step;
-    };
+    { return TravelLegs::TakeFlyTry(trip, MountRules::Policy(facts, MountRules::Kind::Flying), settled, nowMs); };
 
     MountRules::Facts noMount;
     noMount.noMount = true;

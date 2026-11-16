@@ -9,8 +9,9 @@
 
 // The one mount owner (travel WT44, C2-6), Player-free: whether a bot may mount now and on what. Both mount paths
 // ask it: CheckMountStateAction::Execute (a ground mount, or the master's kind) and a travel fly leg's MountToFly
-// (NewRpgRoute.cpp, a flyer). tests/travel-lifecycle-selftest.cpp drives it. Included only by .cpp files (the
-// action's header declares the types forward).
+// (NewRpgRoute.cpp, a flyer, through TravelLegs::TakeFlyTry). tests/travel-lifecycle-selftest.cpp and
+// travel-legs-selftest.cpp drive it. Included by .cpp files and TravelLegRules.h (the action's header declares the
+// types forward).
 
 #include <cstdint>
 

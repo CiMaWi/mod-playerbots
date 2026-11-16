@@ -20,6 +20,7 @@
 #include <variant>
 #include <vector>
 
+#include "MountRules.h"
 #include "RouteRules.h"
 #include "TravelLegTypes.h"
 #include "TravelLifecycle.h"
@@ -649,6 +650,18 @@ inline void NoteMountTry(Trip& trip, std::uint32_t nowMs)
     if (trip.mountTries < 255)
         ++trip.mountTries;
     trip.mountTriedMs = nowMs;
+}
+
+// A fly leg's try at the mount owner's verdict (MountToFly, WT44): MountRules::FlyTryOf, then the count. Refused and
+// Cast are real tries (NoteMountTry); Refused leaves the verdict's word for the fly_leg_failed row (nomount, on_foot)
+inline MountRules::FlyTry TakeFlyTry(Trip& trip, MountRules::Verdict const& verdict, bool settled, std::uint32_t nowMs)
+{
+    MountRules::FlyTry const step = MountRules::FlyTryOf(verdict, settled);
+    if (step == MountRules::FlyTry::Refused || step == MountRules::FlyTry::Cast)
+        NoteMountTry(trip, nowMs);
+    if (step == MountRules::FlyTry::Refused)
+        trip.mountWhy = verdict.why;
+    return step;
 }
 
 // The leg's time in combat until now (a running stretch included)
