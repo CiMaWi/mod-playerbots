@@ -16,7 +16,11 @@ namespace BotKind
 // A, the instance's role; one relaxed atomic, set at config load and ".reload config"
 bool LivingWorld();
 
-// Recomputes A from the role values; world thread
+// Whether the population follows the targets (Playerbots.Population.FollowTargets in a living world): roster rotation
+// and retirement; one relaxed atomic, set with A
+bool FollowsTargets();
+
+// Recomputes A and FollowsTargets from the role values; world thread
 void LoadLivingWorld();
 
 // False without an AI

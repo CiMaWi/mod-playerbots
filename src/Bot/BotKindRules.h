@@ -23,6 +23,11 @@ enum class MasterKind
 // A, the instance's role: a living world is neither the arena role nor an ArenaOnly lab
 inline bool LivingWorld(bool arenaRole, bool arenaOnly) { return !arenaRole && !arenaOnly; }
 
+// Whether the instance's population follows the targets (roster rotation and retirement): the role value
+// Playerbots.Population.FollowTargets, and only in a living world (forced off on the arena role and on an ArenaOnly
+// lab, whatever the key says)
+inline bool FollowsTargets(bool livingWorld, bool followTargetsKey) { return livingWorld && followTargetsKey; }
+
 // A and B: a random bot of a living world, whoever leads it
 inline bool IsPersistentBot(bool livingWorld, bool randomBot) { return livingWorld && randomBot; }
 
