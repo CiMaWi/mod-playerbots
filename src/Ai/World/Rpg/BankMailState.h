@@ -19,7 +19,7 @@
 class PlayerbotAI;
 
 // What a bot knows about its mail and its bank, and the state of a mailbox or bank visit (bank-mail plan). Held per
-// bot in NewRpgInfo::bankMail, outside the RPG status: a visit is stepped from any status and a status reset keeps it.
+// bot in PlayerbotAI::bankMail, outside the RPG status: a visit is stepped from any status and a status reset keeps it.
 // A bot knows that mail waits and what it expects from it, not what is inside (WB.4).
 namespace BankMail
 {
