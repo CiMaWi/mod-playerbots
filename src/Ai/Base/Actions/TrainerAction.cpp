@@ -320,7 +320,7 @@ bool BisGearAction::Execute(Event event)
         return false;
     }
 
-    // Wearing its PvP loadout (Playerbots.PvpGear.Wear): the bags hold the displaced PvE gear, which bis would destroy
+    // Wearing its PvP loadout (PvpGearWear.cpp): the bags hold the displaced PvE gear, which bis would destroy
     if (PvpGearMgr::Instance().IsWorn(bot))
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(

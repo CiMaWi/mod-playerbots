@@ -46,7 +46,7 @@ struct MatchmakerPick
     uint32 Eligible = 0;  // candidates inside the window
 };
 
-// Main (Playerbots.Ladder.Matchmaker.Enable, DM.6): answers each 2v2 arena queue of a real player's group with one
+// Main (Playerbots.Ladder.Role = 1, DM.6): answers each 2v2 arena queue of a real player's group with one
 // resident ladder team of the pool, queued a few seconds later, drawn around the group's MMR. The OnAddGroup hook only
 // records the request; the pick, the group formation, the queue and the leftovers run in Update on the world thread.
 // Nothing is persisted.

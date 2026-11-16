@@ -134,4 +134,15 @@ constexpr bool IsTacticAllowed(bool tacticsEnable, uint32 mask, TacticId id, uin
     return tacticsEnable && (mask & TacticBit(id)) != 0 && ScopeAllows(scope, context);
 }
 
+// The tactics that do not work yet: they go into an engine by their own Enable only, not with the PvP harness
+constexpr bool TacticNotYet(TacticId id) { return id == TacticId::Los || id == TacticId::Jump; }
+
+// Does the strategy "tactic <x>" go into an engine (AiFactory.cpp, CcTacticStrategy.cpp): the system on, and the
+// tactic's own Enable or, for a tactic that works, the PvP harness on (PlayerbotAIConfig::TacticStrategyWanted reads
+// the three from the config)
+constexpr bool TacticStrategyWanted(bool tacticsEnable, TacticId id, bool ownEnable, bool harnessOn)
+{
+    return tacticsEnable && (ownEnable || (harnessOn && !TacticNotYet(id)));
+}
+
 #endif

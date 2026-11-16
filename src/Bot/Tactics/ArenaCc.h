@@ -1267,7 +1267,7 @@ inline char const* CcDispelSpellFor(uint8 classId, uint32 dispelType, CcCleanser
 }
 
 // G5a review: Avoid.EnsureTrinket's slot for the given PvP trinket (0: the first trinket slot, 1: the second). An
-// empty slot first, then one whose item no PvP gear row tracks (Playerbots.PvpGear.Wear's rows must find their items
+// empty slot first, then one whose item no PvP gear row tracks (the playerbots_pvp_worn rows must find their items
 // in their slots), the second slot last (its loadout item goes to the bags for the fight and back after it)
 constexpr uint8 CcEnsureTrinketSlot(bool firstEmpty, bool firstWorn, bool secondEmpty, bool secondWorn)
 {

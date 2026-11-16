@@ -84,8 +84,7 @@ struct TacticCheckInputs
 {
     bool Counting = false;  // the harness counts the bot (pvpTestCounting)
     bool Leftover = false;  // a follower left state a later check must close (an open memory, a focus pick)
-    bool MemoryEnable = false;
-    uint32 Mask = 0;                            // the bot's tactic mask
+    uint32 Mask = 0;        // the bot's tactic mask
     TacticContext Stored = TacticContext::Pve;  // the context the guards read (the last check's store)
     TacticContext Probed = TacticContext::Pve;  // this check's probe
 };
@@ -93,8 +92,7 @@ struct TacticCheckInputs
 // live = counting || leftover || (FollowersFor[stored] & botFollowers) != 0 || MemoryIn[probed]
 constexpr bool TacticCheckLive(TacticFollowerTable const& table, TacticCheckInputs const& inputs)
 {
-    bool const memoryIn =
-        inputs.MemoryEnable && (inputs.Probed == TacticContext::Arena || inputs.Probed == TacticContext::Battleground);
+    bool const memoryIn = inputs.Probed == TacticContext::Arena || inputs.Probed == TacticContext::Battleground;
     return inputs.Counting || inputs.Leftover ||
            (table[static_cast<uint32>(inputs.Stored)] & TacticFollowersOfMask(inputs.Mask)) != 0 || memoryIn;
 }

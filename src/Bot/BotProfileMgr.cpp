@@ -181,9 +181,6 @@ double BotProfileMgr::PercentileFromSkill(uint8 skill)
 
 void BotProfileMgr::Load()
 {
-    if (!sPlayerbotAIConfig.SkillEnable)
-        return;
-
     std::lock_guard<std::mutex> guard(_lock);
     EnsureLoaded();
 }
@@ -354,9 +351,6 @@ BotProfile BotProfileMgr::SetSkill(uint32 guid, uint8 skill)
 
 double BotProfileMgr::Percentile(uint32 guid)
 {
-    if (!sPlayerbotAIConfig.SkillEnable)
-        return LegacyPercentile(guid);
-
     std::lock_guard<std::mutex> guard(_lock);
     EnsureLoaded();
     auto const it = _profiles.find(guid);
@@ -647,12 +641,6 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
 {
     if (args && std::string(args) == "selftest")
         return HandleSelftest(handler);
-
-    if (!sPlayerbotAIConfig.SkillEnable)
-    {
-        handler->PSendSysMessage("Bot skill is off (Playerbots.Skill.Enable = 0).");
-        return true;
-    }
 
     std::istringstream in(args ? args : "");
     std::string target;

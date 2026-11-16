@@ -325,6 +325,13 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+    Check(dist.count("Playerbots.Population.Persistent") == 0,
+          "retired: Playerbots.Population.Persistent has no dist line");
+    for (char const* key : {"Playerbots.RandomBotArenaGroupOnWorldThread", "Playerbots.RandomBotArenaTeamRatingMode",
+                            "Playerbots.RandomBotArenaTeamMinRating", "Playerbots.RandomBotArenaTeamMaxRating",
+                            "Playerbots.Ladder.Enable", "Playerbots.Natural.Cadence.NearRealPlayerYards",
+                            "Playerbots.Ladder.Matchmaker.Enable"})
+        Check(dist.count(key) == 0, std::string("retired: ") + key + " has no dist line");
 
     // The checks themselves, on a fixture
     std::map<std::string, std::string> const fixture = DistKeys(
@@ -361,8 +368,8 @@ void TestRetiredFullKey()
 {
     std::vector<std::string> const keys = {"Playerbots.Fake.Enable", "Playerbots.Fake.EnableX",
                                            "Playerbots.Fake.FlushSeconds"};
-    Check(UnknownConfigKeys(FakeSwitchFamily, keys) == std::vector<std::string>{"Playerbots.Fake.EnableX"},
-          "retired full key: exactly the key is known, a longer key is not, a sibling key is outside the family");
+    Check(UnknownConfigKeys(FakeSwitchFamily, keys).empty(),
+          "retired full key: exactly the key is in the family, a longer key and a sibling key are outside it");
 
     FakeSwitches switches;
     FakeReader reader;
@@ -372,6 +379,20 @@ void TestRetiredFullKey()
                                             [&warnings](std::string const& text) { warnings.push_back(text); });
     Check(count == 0 && warnings.empty() && reader.missingWarnings.empty() && !switches.Gone,
           "retired full key: a set line is ignored without a warning");
+
+    // CS23d: a removed key whose parent prefix still holds live keys
+    ConfigFamily<FakeSwitches> const dryRunFamily{"Playerbots.Population.Retire.DryRun", FakeSwitchRows};
+    std::vector<std::string> const retireKeys = {"Playerbots.Population.Retire.DryRun",
+                                                 "Playerbots.Population.Retire.DryRunX",
+                                                 "Playerbots.Population.Retire.TestTarget"};
+    Check(UnknownConfigKeys(dryRunFamily, retireKeys).empty(),
+          "retired Retire.DryRun: the key is known, DryRunX and the live Retire.TestTarget are outside the family");
+
+    // CS25d review: the live WearBetweenMatches starts with the retired PvpGear.Wear and is not its family's key
+    ConfigFamily<FakeSwitches> const wearFamily{"Playerbots.PvpGear.Wear", FakeSwitchRows};
+    std::vector<std::string> const wearKeys = {"Playerbots.PvpGear.Wear", "Playerbots.PvpGear.WearBetweenMatches"};
+    Check(UnknownConfigKeys(wearFamily, wearKeys).empty(),
+          "retired PvpGear.Wear: the key is known, the live WearBetweenMatches is outside the family");
 }
 
 int main(int argc, char** argv)

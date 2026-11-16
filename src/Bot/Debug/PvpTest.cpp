@@ -709,7 +709,7 @@ void PvpTestArenaJob::CaptureRoster()
             bot.Spec = AiFactory::GetPlayerSpecName(player);
             if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
             {
-                if (forcedSkill && sPlayerbotAIConfig.SkillEnable)
+                if (forcedSkill)
                 {
                     botAI->SetPvpSkill(forcedSkill);
                     _skillsApplied = true;
@@ -719,7 +719,7 @@ void PvpTestArenaJob::CaptureRoster()
                     botAI->SetTacticMask(*forcedMask, true);
 
                 bot.GearScore = botAI->GetEquipGearScore(player);
-                if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
+                if (botAI->GetPvpSkill())
                     bot.Skill = botAI->GetPvpSkill();
 
                 bot.CopyOf = botAI->GetTactics().GetAttributeTemplate();
@@ -1690,12 +1690,6 @@ bool ParseTactics(std::string const& value, std::optional<std::string>& tactics,
 
 bool ParseSkill(std::string const& value, uint8& skill, std::string& error)
 {
-    if (!sPlayerbotAIConfig.SkillEnable)
-    {
-        error = "Forced skills need Playerbots.Skill.Enable = 1";
-        return false;
-    }
-
     Optional<uint32> const number = Acore::StringTo<uint32>(value);
     if (!number || *number < BotProfileMgr::MinSkill || *number > BotProfileMgr::MaxSkill)
     {
