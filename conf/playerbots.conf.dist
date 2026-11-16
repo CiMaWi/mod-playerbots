@@ -1522,7 +1522,10 @@ Playerbots.TestPlayer.Enable = 0
 Playerbots.TestPlayer.Account = "WBTEST"
 
 # PvP test harness (for unattended tests; 1 = on, 0 = off)
-# Enables the GM/console commands
+# Read once at startup: a ".reload config" does not switch it. With 0 the harness hooks are not registered (the log
+# says "PvpTest harness hooks: not registered") and the commands below refuse; an organic match record then carries
+# no own-break and no held-time counter. With 1 the hooks are registered and the server enables the GM/console
+# commands
 #   .playerbots pvptest arena <teamA|name,name> <teamB|name,name> [map=na|be|rl|ds|rv|random] [rated=0|1] [seed=<n>]
 #   .playerbots pvptest status
 #   .playerbots pvptest stop
