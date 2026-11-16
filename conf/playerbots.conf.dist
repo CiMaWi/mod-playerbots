@@ -2363,19 +2363,17 @@ Playerbots.Ladder.Matchmaker.Skirmish = 1
 Playerbots.Ladder.Matchmaker.PoolOnly = 1
 
 # PvP gear for ladder bots (a random bot at the maximum level in an arena team; real players and their bots are never
-# touched). When 1, the server builds a catalogue at startup from the PvP vendors (npc_vendor rows whose ExtendedCost
+# touched). The server builds a catalogue at startup from the PvP vendors (npc_vendor rows whose ExtendedCost
 # asks for honor and/or arena points; token costs and items that need a 3v3 or 5v5 rating are left out), grouped into
 # the tiers of Playerbots.PvpGear.TierOrder, and keeps for every ladder bot a stored PvP loadout: one item entry per
 # equipment slot, chosen for the bot's class and spec, in the playerbots table playerbots_pvp_loadout. A missing
 # loadout is created at the base tier at the bot's login. Playerbots.PvpGear.Buy.Enable lets the bots buy upgrades;
-# Playerbots.PvpGear.Wear decides whether the loadout is worn.
+# the bots wear the loadout in arenas and battlegrounds (see below).
 # All loadouts are loaded with one query at startup; a login reads memory only, writes are asynchronous.
 # Commands: .playerbots pvpgear status | reset [season] [tier] | show <bot> | check [count] [all] | selftest |
 # stats [count] | grant <bot|all> <honor> <arena points>
 # reset starts a season: every online ladder bot gets the given tier (default Playerbots.PvpGear.BaseTier) at once, the
 # other loadouts are deleted and rebuilt at the bot's next login (at the reset's tier until the restart).
-# Default: 0 (off: no catalogue, no rows)
-Playerbots.PvpGear.Enable = 0
 
 # The tiers, lowest first, comma-separated. A tier lists one or more item name prefixes separated by "/": an item named
 # "<prefix> Gladiator's ..." belongs to that tier; an item without such a name (e.g. the faction medallions) belongs to
@@ -2392,8 +2390,8 @@ Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathfu
 # Default: "" (the first tier)
 Playerbots.PvpGear.BaseTier = ""
 
-# Ladder bots buy PvP gear upgrades with their honor and arena points at the vendor prices and rating requirements
-# (needs Playerbots.PvpGear.Enable). After every rated arena match and every
+# Ladder bots buy PvP gear upgrades with their honor and arena points at the vendor prices and rating requirements.
+# After every rated arena match and every
 # Playerbots.PvpGear.Buy.CheckIntervalMinutes, a few bots per world tick: an upgrade is an item of a higher tier or,
 # within a tier, of a higher item level, of the same kind (no switch between a two-hander and one-handers; trinket 1
 # stays the PvP trinket; the rings differ), usable by the bot, whose rating requirement the bot meets (the best of
@@ -2428,20 +2426,18 @@ Playerbots.PvpGear.Buy.CheckIntervalMinutes = 60
 # Default: 5
 Playerbots.PvpGear.Buy.BatchPerTick = 5
 
-# Ladder bots wear their PvP loadout in arenas and battlegrounds (needs Playerbots.PvpGear.Enable). When a ladder bot
+# Ladder bots wear their PvP loadout in arenas and battlegrounds. When a ladder bot
 # enters an arena or a battleground, a world-thread operation creates the loadout's items and equips them; the PvE
 # items they replace go to the bags (a slot whose PvE item does not fit in the bags keeps it, logged). At the leave the
 # PvP items are destroyed and the PvE items equipped again. While the loadout is worn, the upgrade actions, the
 # level-up gear upkeep, selling and destroying leave the worn and the displaced items alone. Each swapped slot is a row
 # in the playerbots table playerbots_pvp_worn, so a crash during a match is repaired at the bot's next login (rows are
-# loaded and repaired at every start, also with this option or Playerbots.PvpGear.Enable off). On an arena server
+# loaded and repaired at every start). On an arena server
 # (Playerbots.Ladder.Role = 2) the hosted ladder bots wear the loadout from login on, also between matches; a depart
 # takes it off before the members log out, so a team never leaves in PvP gear. A changed loadout (a pvpgear reset)
 # swaps the changed slots of the bots that wear it.
-# Default: 0 (off: the bots fight in their PvE gear)
-Playerbots.PvpGear.Wear = 0
 
-# Ladder bots keep their PvP loadout on between matches, as on an arena server (needs Playerbots.PvpGear.Wear). For
+# Ladder bots keep their PvP loadout on between matches, as on an arena server. For
 # servers that host only matches (a lab, Playerbots.ArenaOnly.Enable): the loadout goes on at the bot's login and
 # stays on, so no world-thread swap runs at every arena entry and leave. Inside a match the bot wears the same items
 # as with 0. Ignored on the main server (Playerbots.Ladder.Role = 1), where the bots wear their PvE gear between

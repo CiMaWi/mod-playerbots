@@ -782,7 +782,7 @@ public:
         BotProfileMgr::QueueMatchEnd(bg);  // Map thread: the bots' skill growth (Playerbots.Skill.Growth.Enable)
     }
 
-    // Map thread: a ladder bot puts its PvP loadout on (Playerbots.PvpGear.Wear; queued to the world thread)
+    // Map thread: a ladder bot puts its PvP loadout on (queued to the world thread)
     void OnBattlegroundAddPlayer(Battleground* /*bg*/, Player* player) override { PvpGearMgr::QueueWear(player); }
 
     // Map thread: the loadout comes off and the PvE gear back on (queued to the world thread)

@@ -850,12 +850,10 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MaxPicks", 3), 1, 100);
     LadderMatchmakerSkirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
     LadderMatchmakerPoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
-    PvpGearEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Enable", false);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
     PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
     PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
-    PvpGearWear = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Wear", false);
     PvpGearWearBetweenMatches = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.WearBetweenMatches", false);
     PvpGearBuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)

@@ -325,9 +325,9 @@ bool IsPolearmOrStaff(uint32 entry)
            (proto->SubClass == ITEM_SUBCLASS_WEAPON_POLEARM || proto->SubClass == ITEM_SUBCLASS_WEAPON_STAFF);
 }
 
-bool Off(ChatHandler* handler)
+bool NoCatalogue(ChatHandler* handler)
 {
-    handler->PSendSysMessage("PvP gear is off (Playerbots.PvpGear.Enable = 0).");
+    handler->PSendSysMessage("PvP gear has no catalogue (Playerbots.PvpGear.TierOrder lists no tier, see the log).");
     return true;
 }
 }  // namespace
@@ -431,7 +431,7 @@ void PvpGearMgr::Load()
         _wornLoaded = true;
     }
 
-    if (!sPlayerbotAIConfig.PvpGearEnable || _loaded)
+    if (_loaded)
         return;
 
     uint32 const oldMSTime = getMSTime();
@@ -1072,7 +1072,7 @@ bool PvpGearMgr::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::HandleStatusCommand");
     PvpGearMgr& mgr = Instance();
     if (!mgr._loaded)
-        return Off(handler);
+        return NoCatalogue(handler);
 
     std::string tiers;
     for (size_t tier = 0; tier < mgr._tiers.size(); ++tier)
@@ -1116,7 +1116,7 @@ bool PvpGearMgr::HandleResetCommand(ChatHandler* handler, char const* args)
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::HandleResetCommand");
     PvpGearMgr& mgr = Instance();
     if (!mgr._loaded)
-        return Off(handler);
+        return NoCatalogue(handler);
 
     // [season] [tier]: the season number (default the current + 1) and the tier the loadouts start at (a tier name or
     // its start, default Playerbots.PvpGear.BaseTier)
@@ -1197,7 +1197,7 @@ bool PvpGearMgr::HandleShowCommand(ChatHandler* handler, char const* args)
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::HandleShowCommand");
     PvpGearMgr& mgr = Instance();
     if (!mgr._loaded)
-        return Off(handler);
+        return NoCatalogue(handler);
 
     std::string const target = Trim(args ? args : "");
     ObjectGuid guid = ObjectGuid::Empty;
@@ -1287,7 +1287,7 @@ bool PvpGearMgr::HandleCheckCommand(ChatHandler* handler, char const* args)
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::HandleCheckCommand");
     PvpGearMgr& mgr = Instance();
     if (!mgr._loaded)
-        return Off(handler);
+        return NoCatalogue(handler);
 
     uint32 count = DefaultCheckCount;
     std::istringstream in(args ? args : "");
@@ -1607,8 +1607,7 @@ std::vector<PvpGearMgr::Purchase> PvpGearMgr::DecideBuys(std::vector<BuySlot> co
 
 void PvpGearMgr::QueueMatchEnd(Battleground* bg)
 {
-    if (!sPlayerbotAIConfig.PvpGearEnable || !sPlayerbotAIConfig.PvpGearBuyEnable || !Instance()._loaded || !bg ||
-        !bg->isArena() || !bg->isRated())
+    if (!sPlayerbotAIConfig.PvpGearBuyEnable || !Instance()._loaded || !bg || !bg->isArena() || !bg->isRated())
         return;
 
     // Map thread: GUIDs only; the world thread re-resolves them and keeps the ladder bots
@@ -1934,7 +1933,7 @@ bool PvpGearMgr::HandleStatsCommand(ChatHandler* handler, char const* args)
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::HandleStatsCommand");
     PvpGearMgr& mgr = Instance();
     if (!mgr._loaded)
-        return Off(handler);
+        return NoCatalogue(handler);
 
     uint32 count = DefaultStatsCount;
     std::string const text = Trim(args ? args : "");
@@ -2058,7 +2057,7 @@ bool PvpGearMgr::HandleGrantCommand(ChatHandler* handler, char const* args)
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::HandleGrantCommand");
     PvpGearMgr& mgr = Instance();
     if (!mgr._loaded)
-        return Off(handler);
+        return NoCatalogue(handler);
 
     std::istringstream in(args ? args : "");
     std::string target;

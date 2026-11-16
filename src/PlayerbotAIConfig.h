@@ -470,10 +470,8 @@ public:
     uint32 LadderMatchmakerMaxPicks;
     bool LadderMatchmakerSkirmish;
     bool LadderMatchmakerPoolOnly;
-    bool PvpGearEnable;
     std::string PvpGearTierOrder;
     std::string PvpGearBaseTier;
-    bool PvpGearWear;
     bool PvpGearWearBetweenMatches;
     bool PvpGearBuyEnable;
     std::string PvpGearBuySlotPriority;
