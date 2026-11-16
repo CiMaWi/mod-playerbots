@@ -15,8 +15,8 @@
 #include "DBCStores.h"
 #include "Event.h"
 #include "GridTerrainData.h"
-#include "LootInteraction.h"
 #include "Map.h"
+#include "MountRules.h"
 #include "NewRpgAction.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -114,16 +114,17 @@ bool CheckMountStateAction::Execute(Event event)
             path = BotTravel::MountPath::Packet;
         else if (event.GetSource() == "timer")
             path = BotTravel::MountPath::Timer;
-        if (!LootInteraction::MountAllowed(botAI->GetTravel().HasLootInteraction(), bool(bot->GetLootGUID())))
+        MountRules::Verdict const verdict = AskMountPolicy(bot, botAI, MountRules::Kind::Ground);
+        if (!verdict.allowed)
         {
-            botAI->GetTravel().TraceTravelMount(path, false);
+            botAI->GetTravel().TraceTravelMount(path, verdict.why);
             return false;
         }
 
         bool const wasMounted = bot->IsMounted();
         bool const mounted = Mount();
         if (mounted && !wasMounted)
-            botAI->GetTravel().TraceTravelMount(path, true);
+            botAI->GetTravel().TraceTravelMount(path, nullptr);
         return mounted;
     };
 
@@ -161,7 +162,7 @@ bool CheckMountStateAction::Execute(Event event)
 
     if (shouldDismount && bot->IsMounted())
     {
-        Dismount();
+        Dismount(bot, MountRules::How::Plain);
         return true;
     }
 
@@ -176,7 +177,7 @@ bool CheckMountStateAction::Execute(Event event)
 
         else if (ShouldDismountForMaster(master) && bot->IsMounted())
         {
-            Dismount();
+            Dismount(bot, MountRules::How::Plain);
             return true;
         }
 
@@ -190,7 +191,7 @@ bool CheckMountStateAction::Execute(Event event)
 
     if (!inTheAir && shouldDismount && bot->IsMounted() && (enemy || dps || (!noAttackers && bot->IsInCombat())))
     {
-        Dismount();
+        Dismount(bot, MountRules::How::Plain);
         return true;
     }
 
@@ -224,10 +225,6 @@ bool CheckMountStateAction::isUseful()
     float posZ = bot->GetPositionZ();
     float groundLevel = bot->GetMapWaterOrGroundLevel(bot->GetPositionX(), bot->GetPositionY(), posZ);
     if (!bot->IsMounted() && !bot->HasWaterWalkAura() && posZ < groundLevel)
-        return false;
-
-    // Not useful when a transport leg keeps the bot on foot (waiting at the dock, boarding, aboard)
-    if (!bot->IsMounted() && TravelKeepsOnFoot(botAI))
         return false;
 
     // Not useful when bot does not have mount strat and is not currently mounted
@@ -265,10 +262,6 @@ bool CheckMountStateAction::isUseful()
 
 bool CheckMountStateAction::Mount()
 {
-    // A test's nomount bot stays on foot (TestConstraints::MountsOnItsOwn)
-    if (!TestConstraints::MountsOnItsOwn(botAI->testConstraints))
-        return false;
-
     // Remove current Shapeshift if need be
     if (botInShapeshiftForm != FORM_TRAVEL &&
         botInShapeshiftForm != FORM_FLIGHT &&
@@ -306,7 +299,22 @@ bool CheckMountStateAction::Mount()
     return false;
 }
 
-void CheckMountStateAction::Dismount()
+MountRules::Verdict CheckMountStateAction::AskMountPolicy(Player* bot, PlayerbotAI* botAI, MountRules::Kind wanted)
+{
+    MountRules::Facts facts;
+    facts.lootInteraction = botAI->GetTravel().HasLootInteraction();
+    facts.lootWindow = bool(bot->GetLootGUID());
+    // The bot's own kill enters its loot list at the kill (Playerbots.cpp, OnPlayerCreatureKillCredit), so the
+    // corpse is known before the next mount request carries the bot out of loot reach
+    facts.lootNear = botAI->HasStrategy("loot", BOT_STATE_NON_COMBAT) &&
+                     botAI->GetAiObjectContext()->GetValue<bool>("has available loot")->Get();
+    facts.noMount = !TestConstraints::MountsOnItsOwn(botAI->testConstraints);
+    // A transport leg (waiting at the dock, boarding, aboard) or a tame keeps the bot on foot
+    facts.onFoot = TravelKeepsOnFoot(botAI);
+    return MountRules::Policy(facts, wanted);
+}
+
+void CheckMountStateAction::Dismount(Player* bot, MountRules::How how)
 {
     // A flyer dismounted more than AIRBORNE_YARDS above the terrain (WU11b fix 11: Hudohrgand lost its mount about
     // 45 yd from its takeoff over Honor Hold, not in combat, right after this action ran; the logs could not show
@@ -321,7 +329,7 @@ void CheckMountStateAction::Dismount()
         float const terrainZ = std::max(groundZ, waterZ);
         if (terrainZ > TravelLegs::FLY_NO_GROUND && z - terrainZ > TravelLegs::AIRBORNE_YARDS)
         {
-            Unit* const target = AI_VALUE(Unit*, "current target");
+            Unit* const target = bot->GetVictim();
             LOG_INFO("playerbots",
                      "[Route] {} dismounts {:.0f} yd above the terrain or water in area {} at ({:.0f}, {:.0f}, "
                      "{:.0f}): floor {:.0f}, flying {}, combat {}, target {} at {:.0f} yd",
@@ -332,7 +340,11 @@ void CheckMountStateAction::Dismount()
     }
     if (bot->isMoving())
         bot->StopMoving();
+    if (!bot->IsMounted() || bot->IsInFlight())
+        return;
 
+    if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot))
+        botAI->GetTravel().TraceTravelInteraction("dismount", MountRules::HowWord(how));
     WorldPacket emptyPacket;
     bot->GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
 }
