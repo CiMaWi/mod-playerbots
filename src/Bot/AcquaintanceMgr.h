@@ -71,7 +71,7 @@ struct Acquaintance
     uint32 EventPoints = 0;
 };
 
-// Which random bots each real player has met, and how well (Playerbots.Acquaintance.Enable). Hooks on any thread only
+// Which random bots each real player has met, and how well. Hooks on any thread only
 // queue an event under a mutex; the world thread drains the queue in Update and owns every pair. All rows are loaded
 // with one query at startup; changed rows are written in batches by asynchronous transactions. Only real players'
 // characters count (no PlayerbotAI), and only random bots on the other side.
@@ -116,7 +116,7 @@ public:
     void CollectBots(uint32 minScore, std::unordered_set<uint32>& bots) const;
     // The highest score any real player has with the bot (0: never met); O(real players with acquaintances)
     uint32 MaxScoreOfBot(uint32 bot) const;
-    // The rows are in memory (Load ran with Playerbots.Acquaintance.Enable = 1)
+    // The rows are in memory (Load ran)
     bool IsLoaded() const { return _loaded; }
     // World thread. H4 (a retired bot): drops its pairs from memory, so no flush writes them back after the delete
     void ForgetBot(uint32 bot);
@@ -196,8 +196,6 @@ private:
     uint32 _lastSampleMicroseconds = 0;
     uint32 _lastSamplePlayers = 0;
     bool _loaded = false;
-    // The feature was on at the last tick (a config reload may turn it off)
-    bool _active = false;
 };
 
 #endif

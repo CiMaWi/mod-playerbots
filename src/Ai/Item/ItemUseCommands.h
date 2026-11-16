@@ -1,0 +1,25 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef _PLAYERBOT_ITEMUSECOMMANDS_H
+#define _PLAYERBOT_ITEMUSECOMMANDS_H
+
+class ChatHandler;
+
+// Console commands of the item use plan (playerbots item ...); read only, on the world thread
+namespace ItemUse
+{
+// playerbots item census [unclassified]: the index's counts by item class, shape and kind; with `unclassified`, every
+// record the classifier leaves unclassified, with its reason
+bool HandleCensusCommand(ChatHandler* handler, char const* args);
+// playerbots item info <entry> [enchant]: the dump line of each use effect of the item (or of the enchantment) and
+// its kind
+bool HandleInfoCommand(ChatHandler* handler, char const* args);
+// playerbots item dump [<file>]: writes the whole index as the dump file (the classifier's fixture)
+bool HandleDumpCommand(ChatHandler* handler, char const* args);
+}  // namespace ItemUse
+
+#endif

@@ -58,6 +58,9 @@ bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit);
 // cadence), then the leave check (WP24, WP38a): an engaged bot below its flee threshold drops its target, sets its pet
 // passive until the disengaged edge, dismisses its guardians and writes its fight_leave row, once per engaged episode
 void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32_t nowMs);
+// PlayerbotAI::UpdateAI, every bot tick: NoteEngaged while in PvP combat or engaged, then the fight episode's end
+// (WP38b): the flight's stand is over
+void NoteEpisode(PlayerbotAI* botAI, Player* bot, uint32_t nowMs);
 // `playerbots fight enthusiasm <bot> [set <0..max>]` (world thread, between map updates): the value, the thresholds
 // and the cached terms, one line each; `set` writes the value
 bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);

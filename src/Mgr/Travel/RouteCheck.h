@@ -13,8 +13,9 @@
 // The check runs on the world thread (a map's navmesh query is not thread-safe and loading tiles changes the
 // navmesh) in slices queued through PlayerbotWorldThreadProcessor, so the command returns at once; `status` prints
 // the progress or the last result, the report goes to <LogsDir>/route-check-links-<time>.tsv. The probe is the walk
-// a bot makes over the link, as its movement asks the engine (MoveFarTo, MovePoint; RouteCheckRules.h Walk); every
-// walk link gets a class from both directions (ok, reverse-only, end-off-mesh, dead, shortcut, capped).
+// a bot makes over the link, as its movement asks the engine (MoveFarTo, MovePoint; RouteCheckRules.h Walk; under
+// `mode=follow` the link follower's walk, WalkFollow); every walk link gets a class from both directions (ok,
+// reverse-only, end-off-mesh, dead, shortcut, capped).
 // `playerbots route check pairs <file>` (GM; lines `map x1 y1 z1 x2 y2 z2 [label]`): the same walks for listed
 // pairs of points, the points each walk passed beside the class, to <LogsDir>/route-check-pairs-<time>.tsv.
 // `status` and `stop` serve both; one job at a time.

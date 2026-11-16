@@ -86,8 +86,11 @@ change, confirm:
   (`src/Bot/BridgeAbilities.h`: name, sentence, argument (at most one name of any kind), limit, `Lines` for a topic
   answering in-world sentences, as every new one does), its reader in `Readers` (`src/Bot/BridgeBotState.cpp`), the
   last value `TopicTableInOrder()` checks, the selftest's `wireTopics` list and mod-ollama-chat's `StateTopic`
-  asserts. `Catalogue()` returns both tables as plain values and `CatalogueHash` their FNV-1a 64; a new row changes
-  the hash, which is how the bridge sees the change.
+  asserts. A topic past `Known` is answered in lines and needs no mod-ollama-chat edit (`StateTopicCount` stays 14):
+  `needs` (WU23, the fifteenth) words the upkeep rules' `NeedList`, which `Planner::BotNeedsNow` computes on the world
+  thread for it and for `playerbots planner needs`; its formatter `src/Bot/BridgeNeedsTopic.h` is included only by
+  `BridgeBotState.cpp` and the selftest, never by a central header. `Catalogue()` returns both tables as plain values
+  and `CatalogueHash` their FNV-1a 64; a new row changes the hash, which is how the bridge sees the change.
 - The traits wire (`input.traits`): `ReadBotPersonality` (`src/Bot/BridgeBotTraits.cpp`) gives `words`, `areas` (one
   per word, same order) and `interests`. A trait's area (talk, others, work, wants) is `TRAIT_AREAS` in
   `src/Ai/World/Rpg/TraitRules.h`, in the `Trait` enum's order; a new trait needs its entry (the build checks the

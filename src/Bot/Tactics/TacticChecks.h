@@ -31,6 +31,7 @@
 #include "TacticFollowersChecks.h"
 #include "TacticGate.h"
 #include "TacticGateChecks.h"
+#include "TacticStrategyChecks.h"
 
 // One check of a suite (check(ok, what)) and one line it prints (say(line)); the runner counts and prefixes them
 using TacticCheck = std::function<void(bool, std::string const&)>;
@@ -52,7 +53,7 @@ struct TacticSuite
 
 // The suites the offline test runs; scope, cc and interrupt need the server (the command's parser, the spell store),
 // gate BotProfileMgr.cpp's percentile math: Tactics.cpp runs them
-inline constexpr std::array<TacticSuite, 16> TACTIC_SUITES = {{
+inline constexpr std::array<TacticSuite, 17> TACTIC_SUITES = {{
     {"reaction", [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const& inputs)
      { RunReactionChecks(check, say, inputs.Reaction, inputs.CurveExponent); }},
     {"attributes",
@@ -74,6 +75,8 @@ inline constexpr std::array<TacticSuite, 16> TACTIC_SUITES = {{
      [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunSkillGrowthChecks(check); }},
     {"followers",
      [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunFollowerChecks(check); }},
+    {"strategy",
+     [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const&) { RunStrategyChecks(check, say); }},
 }};
 
 // Runs one suite: every failure and every line of the suite go to print with the prefix "TACTICS selftest <name>",

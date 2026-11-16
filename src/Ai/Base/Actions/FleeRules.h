@@ -124,7 +124,7 @@ inline bool Due(Flight const& flight, bool wants, bool pvpCombat)
     return flight.active || (wants && pvpCombat && !flight.stood);
 }
 
-// The fight episode's one reset edge (PlayerbotAI::UpdateAI): `was` the last update's "in PvP combat or engaged",
+// The fight episode's one reset edge (WorldPvp::NoteEpisode): `was` the last update's "in PvP combat or engaged",
 // `now` this one's; true once, at the falling edge (a death passes it too)
 inline bool EpisodeFell(bool& was, bool now)
 {

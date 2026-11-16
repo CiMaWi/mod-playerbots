@@ -504,9 +504,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     // Target hold and team plan (G1b): only with the tactic system on and the Hold or Plan tactic enabled, or the PvP
     // harness on (it forces tactic masks per side); the multiplier and the triggers test their tactic per match
     PlayerbotAIConfig const& tactics = sPlayerbotAIConfig;
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Hold)].Enable ||
-         tactics.TacticConfig[static_cast<uint32>(TacticId::Plan)].Enable || tactics.PvpTestEnable))
+    if (tactics.TacticStrategyWanted(TacticId::Hold) || tactics.TacticStrategyWanted(TacticId::Plan))
     {
         engine->addStrategy("pvp hold", false);
         if (player->InArena())
@@ -516,9 +514,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     // Crowd control (G4b): "tactic cc" (cc ready -> team cc) and "pvp cc" (mutes the old "cc" actions where the Cc
     // tactic acts; "cc" itself stays in the engine) in every context, with the Cc or OwnCc tactic enabled or the
     // harness on; the trigger and the multiplier test the tactic's mask and scope at run time
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Cc)].Enable ||
-         tactics.TacticConfig[static_cast<uint32>(TacticId::OwnCc)].Enable || tactics.PvpTestEnable))
+    if (tactics.TacticStrategyWanted(TacticId::Cc) || tactics.TacticStrategyWanted(TacticId::OwnCc))
     {
         engine->addStrategy("tactic cc", false);
         engine->addStrategy("pvp cc", false);
@@ -528,8 +524,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     // racials' old triggers where the Trinket tactic acts) with the Trinket tactic enabled or the harness on; "tactic
     // dispel" (dispel cc on party) for the cleansers with the Dispel tactic enabled or the harness on. The trigger and
     // the multiplier test the tactic's mask and scope at run time.
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Trinket)].Enable || tactics.PvpTestEnable))
+    if (tactics.TacticStrategyWanted(TacticId::Trinket))
     {
         engine->addStrategy("tactic trinket", false);
         engine->addStrategy("pvp trinket", false);
@@ -537,41 +532,34 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
 
     // Interrupt gaps (G5c): "tactic interrupt" (the class interrupts the specs' strategies lack) with the Interrupt
     // tactic enabled or the harness on; its triggers test the tactic's mask and scope at run time
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Interrupt)].Enable || tactics.PvpTestEnable))
+    if (tactics.TacticStrategyWanted(TacticId::Interrupt))
         engine->addStrategy("tactic interrupt", false);
 
     // Defensives on burst (G5d): "tactic defensive" (burst -> the class's self-defensives, burst potion -> healthstone
     // and healing potion) with the Defensive tactic enabled or the harness on; its triggers test the tactic's mask,
     // scope and gate at run time. The Protect tactic needs no strategy: "party member to protect" answers only there.
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Defensive)].Enable || tactics.PvpTestEnable))
+    if (tactics.TacticStrategyWanted(TacticId::Defensive))
         engine->addStrategy("tactic defensive", false);
 
     // Line of sight and pillar play (G2e, G2f): "tactic los" and "tactic pillar" (the triggers test the tactic's mask,
-    // scope and gate at run time; 13f-0: stubs that never act) with the tactic enabled or the harness on
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Los)].Enable || tactics.PvpTestEnable))
+    // scope and gate at run time); Pillar with the tactic enabled or the harness on, Los with its own switch only
+    if (tactics.TacticStrategyWanted(TacticId::Los))
         engine->addStrategy("tactic los", false);
 
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Pillar)].Enable || tactics.PvpTestEnable))
+    if (tactics.TacticStrategyWanted(TacticId::Pillar))
         engine->addStrategy("tactic pillar", false);
 
     // Kiting (G3a) and drinking (G3b; the combat engine for the safe-window break, the battleground non-combat engine
-    // below for the drinks): the triggers test the tactic's mask, scope and gate at run time (13g-0: stubs that never
-    // act)
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Kite)].Enable || tactics.PvpTestEnable))
+    // below for the drinks): the triggers test the tactic's mask, scope and gate at run time
+    if (tactics.TacticStrategyWanted(TacticId::Kite))
         engine->addStrategy("tactic kite", false);
 
-    if (tactics.TacticsEnable &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Drink)].Enable || tactics.PvpTestEnable))
+    if (tactics.TacticStrategyWanted(TacticId::Drink))
         engine->addStrategy("tactic drink", false);
 
     uint8 const cleanser = player->getClass();
-    if (tactics.TacticsEnable && (cleanser == CLASS_PRIEST || cleanser == CLASS_PALADIN || cleanser == CLASS_SHAMAN) &&
-        (tactics.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || tactics.PvpTestEnable))
+    if ((cleanser == CLASS_PRIEST || cleanser == CLASS_PALADIN || cleanser == CLASS_SHAMAN) &&
+        tactics.TacticStrategyWanted(TacticId::Dispel))
         engine->addStrategy("tactic dispel", false);
 
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
@@ -765,10 +753,9 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
         nonCombatEngine->removeStrategy("rpg", false);
         nonCombatEngine->removeStrategy("grind", false);
 
-        // G3b: the prep drink and the safe-window drink (13g-0: stub triggers that never fire)
+        // G3b: the prep drink and the safe-window drink
         PlayerbotAIConfig const& tactics = sPlayerbotAIConfig;
-        if (tactics.TacticsEnable &&
-            (tactics.TacticConfig[static_cast<uint32>(TacticId::Drink)].Enable || tactics.PvpTestEnable))
+        if (tactics.TacticStrategyWanted(TacticId::Drink))
             nonCombatEngine->addStrategy("tactic drink", false);
 
         BattlegroundTypeId bgType = player->GetBattlegroundTypeId();
