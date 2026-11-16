@@ -67,6 +67,8 @@ void ReadByRoute(Player&) {}
 void ReadByMount(Player&) {}
 // flee changes nothing on the bot: the world PvP retreat trigger reads the bit (TestConstraints::Flees)
 void ReadByFlee(Player&) {}
+// realmaster changes nothing on the bot: world PvP's real master reads the bit (TestConstraints::HasRealMaster)
+void ReadByRealMaster(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -78,6 +80,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOTAXI, ReadByRoute, ReadByRoute},
     {TestConstraints::NOMOUNT, ReadByMount, ReadByMount},
     {TestConstraints::FLEE, ReadByFlee, ReadByFlee},
+    {TestConstraints::REALMASTER, ReadByRealMaster, ReadByRealMaster},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 

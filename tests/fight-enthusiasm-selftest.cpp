@@ -409,6 +409,19 @@ void TestLeave()
     Check(!Leaves(bot, 10.0, false, true), "leave: not dead");
     Check(!Leaves(bot, 10.0, true, false), "leave: not a bot that does not start by the rules");
     Check(!Leaves(bot, 15.0, true, true), "leave: at the threshold it stays (MustLeave is strict)");
+    // The real master's guard, every way: only a bot with no real master, engaged and below its flee threshold leaves
+    for (int flags = 0; flags < 8; ++flags)
+    {
+        BotEnthusiasm probe = Engaged(10.0, 0.0f, 0, v);
+        probe.realMaster = (flags & 1) != 0;
+        probe.engaged = (flags & 2) != 0;
+        double const value = (flags & 4) != 0 ? 10.0 : 20.0;
+        bool const expected = !probe.realMaster && probe.engaged && value < probe.fleeNow;
+        Check(Leaves(probe, value, true, true) == expected,
+              "leave: real master " + std::to_string(flags & 1) + ", engaged " + std::to_string((flags >> 1) & 1) +
+                  ", below the flee threshold " + std::to_string((flags >> 2) & 1) +
+                  (expected ? ": it leaves" : ": it stays"));
+    }
     bot.realMaster = true;
     Check(!Leaves(bot, 10.0, true, true), "leave: a bot with a real master never leaves");
     bot.realMaster = false;
@@ -490,6 +503,31 @@ void TestPlaces()
     place.openWorld = true;
     place.persistent = false;
     Check(!StartsByRules(place) && !TracksEngaged(place), "a non-persistent bot keeps today's path");
+    place.persistent = true;
+
+    // A bot with a real master is in the rules (the place has no master term): it never starts, it joins its
+    // master's fights only (MastersFight); a lone bot under the realmaster constraint has no master to join
+    constexpr uint64_t MASTER = 5;
+    constexpr uint64_t STRANGER = 9;
+    BanFacts ban;
+    ban.realMaster = true;
+    ban.mastersFight = MastersFight(true, MASTER, MASTER);
+    BanReason const mastersOwn = Banned(ban);
+    ban.mastersFight = MastersFight(true, STRANGER, MASTER);
+    BanReason const stranger = Banned(ban);
+    ban.mastersFight = MastersFight(true, 0, MASTER);
+    BanReason const noFight = Banned(ban);
+    ban.mastersFight = MastersFight(true, STRANGER, 0);
+    BanReason const lone = Banned(ban);
+    ban.realMaster = false;
+    ban.mastersFight = MastersFight(false, MASTER, MASTER);
+    BanReason const noMaster = Banned(ban);
+    Check(StartsByRules(place) && mastersOwn == BanReason::None && stranger == BanReason::RealMaster &&
+              noFight == BanReason::RealMaster && lone == BanReason::RealMaster && noMaster == BanReason::None &&
+              !MastersFight(false, MASTER, MASTER) && !MastersFight(true, 0, 0),
+          std::string("real master: in the rules; its master's fight ") + Word(mastersOwn) + ", a stranger's " +
+              Word(stranger) + ", no fight " + Word(noFight) + ", a lone bot " + Word(lone) + "; no master " +
+              Word(noMaster));
 
     constexpr uint64_t ENEMY = 77;
     Check(PetCalledOff(true, ENEMY, ENEMY) && !PetCalledOff(false, ENEMY, ENEMY) && !PetCalledOff(true, 0, ENEMY) &&

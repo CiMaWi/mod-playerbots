@@ -90,17 +90,22 @@ void ApplyNoDamage(ModelUnits& units)
     ++units.applies;
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
-void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
-void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
-void ReadByRoute(ModelUnits&) {}     // notaxi: the route request reads the bit (TaxiAllowed)
-void ReadByMount(ModelUnits&) {}     // nomount: the check mount state action reads the bit (MountsOnItsOwn)
-void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
+void ReadByFollower(ModelUnits&) {}    // flyfail, flyabort: the follower reads the bit (FlyLegFails)
+void ReadByDestroy(ModelUnits&) {}     // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByRoute(ModelUnits&) {}       // notaxi: the route request reads the bit (TaxiAllowed)
+void ReadByMount(ModelUnits&) {}       // nomount: the check mount state action reads the bit (MountsOnItsOwn)
+void ReadByFlee(ModelUnits&) {}        // flee: the world PvP retreat trigger reads the bit (Flees)
+void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
 
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {
-    {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {FLYFAIL, ReadByFollower, ReadByFollower}, {FLYABORT, ReadByFollower, ReadByFollower},
-    {NODESTROY, ReadByDestroy, ReadByDestroy}, {NOTAXI, ReadByRoute, ReadByRoute},
-    {NOMOUNT, ReadByMount, ReadByMount},       {FLEE, ReadByFlee, ReadByFlee}};
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
+                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+                                              {FLYFAIL, ReadByFollower, ReadByFollower},
+                                              {FLYABORT, ReadByFollower, ReadByFollower},
+                                              {NODESTROY, ReadByDestroy, ReadByDestroy},
+                                              {NOTAXI, ReadByRoute, ReadByRoute},
+                                              {NOMOUNT, ReadByMount, ReadByMount},
+                                              {FLEE, ReadByFlee, ReadByFlee},
+                                              {REALMASTER, ReadByRealMaster, ReadByRealMaster}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -244,6 +249,11 @@ bool RowWorks(Row const& row)
     if (name == "flee")
         return untouched && Flees(FLEE) && !Flees(HOLD | (STATES & ~FLEE)) && StartsFights(FLEE) &&
                !EndsStatus(0, FLEE);
+    // Read by world PvP's real master only: nothing to apply; no other row and not the hold sets it; it ends no status
+    if (name == "realmaster")
+        return untouched && HasRealMaster(REALMASTER) && !HasRealMaster(HOLD) &&
+               !HasRealMaster(HOLD | (STATES & ~REALMASTER)) && StartsFights(REALMASTER) && !Flees(REALMASTER) &&
+               (REALMASTER & HOLD) == 0 && !EndsStatus(0, REALMASTER);
     // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nodestroy")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -282,7 +292,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee",
+              "nomount, flee, realmaster",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

@@ -23,6 +23,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ScriptMgr.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 
 namespace WorldPvp
@@ -70,33 +71,30 @@ public:
 };
 }  // namespace
 
-bool IsPersistent(PlayerbotAI* botAI, uint32 nowMs)
+RealMasterFacts RealMasterOf(PlayerbotAI* botAI)
 {
     if (!botAI)
-        return false;
-    PvpMemory& memory = MemoryOf(botAI);
-    if (PersistenceDue(memory, nowMs))
-    {
-        // The exact old value of KeepsPossessions, inline until WP37 reads IsPersistentBot() uncached and the
-        // master through HasGameClientMaster() itself
-        memory.persistent = botAI->IsPersistentBot() && !IsRealPlayer(botAI->GetMaster());
-        memory.persistentKnown = true;
-        memory.persistentCheckMs = nowMs;
-    }
-    return memory.persistent;
+        return RealMasterFacts();
+    if (botAI->HasGameClientMaster())
+        return {true, botAI->GetMaster()};
+    if (!TestConstraints::HasRealMaster(botAI->testConstraints))
+        return RealMasterFacts();
+    Player* const bot = botAI->GetBot();
+    Player* master = botAI->GetMaster();
+    if (!master || master == bot)
+        master = botAI->GetGroupLeader();
+    return {true, master != bot ? master : nullptr};
 }
 
 GhostPlan PlanGhostFor(PlayerbotAI* botAI, Corpse const* corpse)
 {
     Player* const bot = botAI ? botAI->GetBot() : nullptr;
     Map const* const map = bot ? bot->GetMap() : nullptr;
-    if (!bot || !corpse || !map || map->Instanceable() || bot->InBattleground() || botAI->HasGameClientMaster() ||
-        corpse->GetMapId() != bot->GetMapId())
+    if (!bot || !corpse || !map || map->Instanceable() || bot->InBattleground() || !botAI->IsPersistentBot() ||
+        RealMasterOf(botAI).has || corpse->GetMapId() != bot->GetMapId())
         return GhostPlan();
     uint32 const nowMs = getMSTime();
-    if (!IsPersistent(botAI, nowMs))
-        return GhostPlan();
-    PvpMemory& memory = *botAI->pvpMemory;
+    PvpMemory& memory = MemoryOf(botAI);
     if (!GhostCheckDue(memory, nowMs))
         return GhostHeld(memory, nowMs);
 

@@ -88,7 +88,7 @@ bool IsForced(ObjectGuid guid, uint32 nowMs)
     return found != forced.end() && nowMs - found->second <= FORCED_TTL_MS;
 }
 
-// Where the bot is now (the persistence cached, GhostWait.h)
+// Where the bot is now; its persistence read uncached (one atomic load), no master term
 BotPlace PlaceOf(PlayerbotAI* botAI, uint32 nowMs)
 {
     BotPlace place;
@@ -100,7 +100,7 @@ BotPlace PlaceOf(PlayerbotAI* botAI, uint32 nowMs)
     place.battleground = bot->InBattleground() || bot->InArena();
     if (!place.openWorld || place.battleground)
         return place;
-    place.persistent = IsPersistent(botAI, nowMs);
+    place.persistent = botAI->IsPersistentBot();
     place.forced = place.persistent && IsForced(bot->GetGUID(), nowMs);
     return place;
 }
@@ -231,8 +231,7 @@ void ReadContext(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 n
         confidence = TraitRules::Unit(*traits, TraitRules::Trait::Confidence);
     }
     NewTraits(state, aggression, caution, helpfulness, confidence, nowMs, values);
-    Player* const master = botAI->GetMaster();
-    state.realMaster = master && master != bot && IsRealPlayer(master);
+    state.realMaster = RealMasterOf(botAI).has;
     state.prohibitedZone = sPlayerbotAIConfig.IsPvpProhibited(bot->GetZoneId(), bot->GetAreaId());
     state.inShare = BotShare::InShare(bot->GetGUID().GetCounter(), values.startCostShare);
 }
@@ -360,7 +359,9 @@ Entering Evaluate(PlayerbotAI* botAI, Player* bot, BotEnthusiasm const& state, P
     ban.onTransport = bot->GetTransport() != nullptr;
     ban.inInstance = bot->GetMap()->Instanceable();
     ban.realMaster = state.realMaster;
-    ban.mastersFight = state.realMaster && victimPlayer && victimPlayer == botAI->GetMaster();
+    Player* const master = state.realMaster ? RealMasterOf(botAI).master : nullptr;
+    ban.mastersFight = MastersFight(state.realMaster, victimPlayer ? victimPlayer->GetGUID().GetRawValue() : 0,
+                                    master ? master->GetGUID().GetRawValue() : 0);
     entering.ban = Banned(ban);
     if (entering.ban != BanReason::None)
         return entering;
@@ -691,6 +692,10 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
                              picked ? (PICK_MS - (nowMs - state.pickMs)) / IN_MILLISECONDS : 0);
     handler->PSendSysMessage("{} left {} attacked {} attackers {}", prefix, state.left ? 1 : 0, state.attacked ? 1 : 0,
                              AttackersOf(bot));
+    // The master whose fights a bot with a real master joins, 0 for none (a test can tell a vacuous realmaster case)
+    Player* const master = state.realMaster ? RealMasterOf(botAI).master : nullptr;
+    handler->PSendSysMessage("{} realmaster {} master {}", prefix, state.realMaster ? 1 : 0,
+                             master ? master->GetGUID().GetCounter() : 0);
     return true;
 }
 }  // namespace WorldPvp

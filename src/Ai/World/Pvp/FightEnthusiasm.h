@@ -20,15 +20,17 @@
 // tests/fight-enthusiasm-selftest.cpp checks the same code the server runs
 namespace WorldPvp
 {
-// The traits, the real master and the prohibited zone are read again after this long
+// The traits, the real master (RealMasterOf) and the prohibited zone are read again after this long
 constexpr uint32_t ENTHUSIASM_CONTEXT_MS = 5 * 1000;
 // The local balance and the graveyard's distance are read again after this long: the scan's cadence
 // (EnemyPlayerValue, 1 s)
 constexpr uint32_t BALANCE_REFRESH_MS = 1000;
 
-// Where a bot is, for the choice between the rules and today's attack on sight
+// Where a bot is, for the choice between the rules and today's attack on sight. No master term: a bot with a real
+// master is in the rules too, which ban it every target outside its master's fight (MastersFight)
 struct BotPlace
 {
+    // IsPersistentBot(), read at each call
     bool persistent = false;
     // An open-world map (not instanceable)
     bool openWorld = false;
@@ -49,6 +51,13 @@ constexpr bool StartsByRules(BotPlace const& place)
 constexpr bool TracksEngaged(BotPlace const& place)
 {
     return place.persistent && place.openWorld && !place.battleground;
+}
+
+// The target fights the bot's real master (BanFacts::mastersFight): the player its victim belongs to is that master.
+// Raw guids, 0 for none (a lone bot under the realmaster constraint has a real master but no master to join)
+constexpr bool MastersFight(bool realMaster, uint64_t victimSide, uint64_t master)
+{
+    return realMaster && victimSide != 0 && victimSide == master;
 }
 
 // A player's pets are on its side: the bot calls its pet off a unit of side `petVictimSide` (the player the pet's
