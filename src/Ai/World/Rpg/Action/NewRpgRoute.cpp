@@ -439,7 +439,8 @@ bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 
     if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(true) || CheckMountStateAction::NoTakeoffHere(bot))
         return true;
     MountRules::Verdict const verdict = CheckMountStateAction::AskMountPolicy(bot, botAI, MountRules::Kind::Flying);
-    MountRules::FlyTry const step = MountRules::FlyTryOf(verdict, !bot->isMoving() && bot->IsStandState());
+    MountRules::FlyTry const step =
+        TravelLegs::TakeFlyTry(trip, verdict, !bot->isMoving() && bot->IsStandState(), nowMs);
     if (step == MountRules::FlyTry::Wait)
         return true;
     if (step == MountRules::FlyTry::Settle)
@@ -450,12 +451,8 @@ bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 
             bot->SetStandState(UNIT_STAND_STATE_STAND);
         return true;
     }
-    TravelLegs::NoteMountTry(trip, nowMs);
     if (step == MountRules::FlyTry::Refused)
-    {
-        trip.mountWhy = verdict.why;
         return true;
-    }
     CheckMountStateAction::Dismount(bot, MountRules::How::Fly);
     if (!botAI->HasStrategy("mount", BOT_STATE_NON_COMBAT))
         trip.mountWhy = "no_strategy";
