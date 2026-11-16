@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "LootInteraction.h"
+#include "MountRules.h"
 #include "StatusEndRules.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
@@ -1422,8 +1423,69 @@ struct LootAdapter
         State.Clear();
         CacheValid = false;
     }
-    bool MayMount() const { return LootInteraction::MountAllowed(State.Guid != 0, Window != 0); }
+    bool MayMount() const
+    {
+        MountRules::Facts facts;
+        facts.lootInteraction = State.Guid != 0;
+        facts.lootWindow = Window != 0;
+        return MountRules::Policy(facts, MountRules::Kind::Ground).allowed;
+    }
 };
+
+// The one mount owner (WT44): each rule against both mount paths, the mount action's ground request
+// (CheckMountStateAction::Execute) and a fly leg's request (MountToFly)
+void CheckMountPolicy()
+{
+    using MountRules::Facts;
+    using MountRules::Kind;
+    using MountRules::Policy;
+    for (Kind const path : {Kind::Ground, Kind::Flying})
+    {
+        std::string const name = path == Kind::Ground ? "mount action" : "fly leg";
+        MountRules::Verdict const free = Policy(Facts{}, path);
+        Check(free.allowed && !free.waits && free.kind == path && std::string_view(free.why) == "allowed",
+              name + ": no loot, no constraint, no on-foot trip: allowed, the kind the caller asked for");
+
+        Facts interaction;
+        interaction.lootInteraction = true;
+        Facts window;
+        window.lootWindow = true;
+        Facts near;
+        near.lootNear = true;
+        bool vetoed = true;
+        for (Facts const& facts : {interaction, window, near})
+        {
+            MountRules::Verdict const verdict = Policy(facts, path);
+            vetoed = vetoed && !verdict.allowed && verdict.waits && verdict.kind == Kind::None &&
+                     std::string_view(verdict.why) == "loot";
+        }
+        Check(vetoed, name + ": loot veto (interaction, open window, corpse in reach): waits, uncounted");
+
+        Facts onFoot;
+        onFoot.onFoot = true;
+        MountRules::Verdict const foot = Policy(onFoot, path);
+        Check(!foot.allowed && !foot.waits && std::string_view(foot.why) == "on_foot",
+              name + ": on-foot rule (a transport leg, a tame): refused");
+
+        Facts noMount;
+        noMount.noMount = true;
+        noMount.onFoot = true;
+        MountRules::Verdict const test = Policy(noMount, path);
+        Check(!test.allowed && !test.waits && std::string_view(test.why) == "nomount",
+              name + ": test constraint nomount: refused, ahead of the on-foot rule");
+
+        Facts all = noMount;
+        all.lootNear = true;
+        Check(std::string_view(Policy(all, path).why) == "loot", name + ": loot first: the bot loots, then rides");
+    }
+    Check(!Policy(Facts{}, Kind::None).allowed, "no kind asked: nothing to mount");
+    Check(std::string_view(MountRules::HowWord(MountRules::How::Plain)) == "plain" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Transport)) == "transport" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Loot)) == "loot" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Taxi)) == "taxi" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Fly)) == "fly",
+          "Dismount(how): one word per dismount path for the trace");
+}
 
 void CheckLootScheduler()
 {
@@ -2126,6 +2188,7 @@ int main()
     CheckFollowAndNoTrip();
     CheckBoardingByIntent();
     CheckFollowerByMaster();
+    CheckMountPolicy();
     CheckLootScheduler();
     CheckProgressScheduler();
     CheckSuccessorAndPartialPaths();

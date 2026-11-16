@@ -7,10 +7,12 @@
 #include <vector>
 
 #include "CensusMgr.h"
+#include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "MountRules.h"
 #include "MoveSpline.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
@@ -75,8 +77,7 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, Worl
         return MoveFarTo(flightMaster) ? TaxiStart::Moving : TaxiStart::Stalled;
 
     botAI->RemoveShapeshift();
-    if (bot->IsMounted())
-        bot->Dismount();
+    CheckMountStateAction::Dismount(bot, MountRules::How::Taxi);
 
     // Learning the master's own node is natural: a player learns it here too
     bot->GetSession()->SendLearnNewTaxiNode(flightMaster);
