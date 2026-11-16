@@ -14,19 +14,25 @@
 // RouteCheck.cpp asks the engine.
 //
 // One direction (DirectionOf): ok = the walk arrives on navmesh moves only (stepping stones are navmesh paths too);
-// shortcut = it arrives, but only with a straight move off the mesh (not a natural walk); stuck = it gives up;
-// capped = WALK_MAX_MOVES moves without arrival, a length cap and not a fault.
+// shortcut = it arrives, but only with a straight move off the mesh (not a natural walk; the engine's hop counts as
+// one, NV19); stuck = it gives up; refused = the follower refuses the link (`mode=follow`); capped = WALK_MAX_MOVES
+// moves without arrival, a length cap and not a fault.
+// The walk goes node to node (`mode=nodes`) or over the link's stored points in order (`mode=path`, WalkPath), both
+// MoveFarTo's older walk, or as the travel plan's link follower walks (`mode=follow`, WalkFollow, TravelWalkRules.h).
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "TravelWalkRules.h"
 
 namespace RouteCheck
 {
@@ -38,6 +44,10 @@ constexpr std::uint32_t PATH_NOPATH = 0x08;
 constexpr std::uint32_t PATH_NOT_USING_PATH = 0x10;
 constexpr std::uint32_t PATH_SHORT = 0x20;
 constexpr std::uint32_t PATH_FARFROMPOLY = 0xc0;  // FARFROMPOLY_START | FARFROMPOLY_END
+static_assert(PATH_NORMAL == TravelWalk::PATH_NORMAL && PATH_INCOMPLETE == TravelWalk::PATH_INCOMPLETE &&
+                  PATH_NOPATH == TravelWalk::PATH_NOPATH && PATH_NOT_USING_PATH == TravelWalk::PATH_NOT_USING_PATH &&
+                  PATH_SHORT == TravelWalk::PATH_SHORT && (PATH_FARFROMPOLY & TravelWalk::PATH_FARFROMPOLY_END),
+              "the follower reads the same PathType bits");
 
 constexpr float OFFMESH_LIMIT = 4.0f;   // yd (3D) from a node to the nearest polygon bots may walk on (NV5's measure)
 constexpr float OFFMESH_LISTED = 1.0f;  // yd: the nodes.offmesh rows list nodes over this
@@ -60,7 +70,8 @@ inline float Dist3D(Vec const& a, Vec const& b)
     return std::sqrt(Dist2D(a, b) * Dist2D(a, b) + (a.z - b.z) * (a.z - b.z));
 }
 
-// The walk (NV13b). A route follower orders its waypoint by NewRpgBaseAction::MoveFarTo: within WALK_ORDER_RANGE
+// The walk of `mode=nodes` and `mode=path` (NV13b), the older NewRpgBaseAction::MoveFarTo walk; `mode=follow` uses
+// none of these numbers but WALK_MAX_MOVES. A route follower orders its waypoint by MoveFarTo: within WALK_ORDER_RANGE
 // (3D) the waypoint itself; else the actual end of a path towards it, when the path type stays within WALK_TYPE_OK
 // and that end gains WALK_GAIN on the waypoint; else a stepping stone in the forward cone (two samples). The order is
 // a MotionMaster::MovePoint with a generated path and no forced destination: PointMovementGenerator and
@@ -70,42 +81,136 @@ inline float Dist3D(Vec const& a, Vec const& b)
 // gain less than WALK_GAIN on the end.
 constexpr std::uint32_t WALK_TYPE_OK = PATH_NORMAL | PATH_INCOMPLETE | PATH_FARFROMPOLY;
 constexpr float WALK_ORDER_RANGE = 70.0f;  // yd: NewRpgBaseAction pathFinderDis
-constexpr float WALK_GOAL = 10.0f;
+constexpr float WALK_GOAL = 10.0f;         // yd: TravelLegRules GOAL_YARDS
 constexpr float WALK_GAIN = 5.0f;
 constexpr std::uint32_t WALK_STUCK_MOVES = 5;
 constexpr std::uint32_t WALK_MAX_MOVES = 200;
 constexpr float WALK_CONE = 3.14159265f;  // the cone's width: (rand - 0.5) x this
+// The engine's hop (G33, NV19, NV19d). When the polygon path towards the target is partial and holds only the start
+// polygon (INCOMPLETE), PathGenerator::FindSmoothPath steers to the target unclamped ("the path is on the same
+// poly", v21 PathGenerator.cpp:998-1000, v20 :966-968): its smooth steps go to the polygon's edge, and at the end of
+// the corridor it copies that target in as the last point ("Reached end of path", v21 :1064-1065, v20 :1032-1033),
+// which may lie far off the mesh. Core v20 also appends the target to a smooth path of one point whatever the type
+// (:656, v21 for NORMAL paths only, :659). Both cores share the first; the bot walks the smooth part, then a straight
+// line to the last point. A smooth path has a point at least every SMOOTH_PATH_STEP_SIZE (4 yd) plus
+// SMOOTH_PATH_SLOP (0.3 yd), so an INCOMPLETE answer whose last leg is longer than this (2D) ends with the hop, on
+// either core. (Off-mesh connections also make a long leg; they lie inside a path, not at its end.)
+constexpr float HOP_MIN = 4.3f;
 
 // What a walk's moves were, as bits
 constexpr std::uint32_t WALK_MESH = 0x01;        // along a navmesh path
 constexpr std::uint32_t WALK_INCOMPLETE = 0x02;  // that path, or the one that chose the order, was INCOMPLETE
 constexpr std::uint32_t WALK_FARPOLY = 0x04;     // ... started or ended far from a polygon
-constexpr std::uint32_t WALK_STRAIGHT = 0x08;    // a straight line (NOPATH, NOT_USING_PATH, SHORTCUT or SHORT)
+constexpr std::uint32_t WALK_STRAIGHT = 0x08;    // a straight line (NOPATH, NOT_USING_PATH, SHORTCUT, SHORT or a hop)
 constexpr std::uint32_t WALK_CONE_STONE = 0x10;  // the order was a stepping stone of the cone
+constexpr std::uint32_t WALK_HOP = 0x20;         // the straight line was the engine's hop (IsHop)
+
+// The polygon areas a walk touches (`areas=all` reports them): the bits `AreaBit` makes of the area ids
+constexpr std::uint32_t AREA_LAVA = 0x01;
+constexpr std::uint32_t AREA_SLIME = 0x02;
+constexpr std::uint32_t AREA_FATIGUE = 0x04;  // fatigue water
+constexpr std::uint32_t AREA_OTHER = 0x08;    // an area id other than ground, water, steep ground and the above
+
+// The bit of a polygon's area id (the engine's NavTerrain values: ground 1, lava 2, slime 4, water 8, steep 0x10,
+// fatigue water 0x20); ground, water, steep ground and no area are the plain ones and make no bit
+inline std::uint32_t AreaBit(unsigned area)
+{
+    switch (area)
+    {
+        case 0x00:
+        case 0x01:
+        case 0x08:
+        case 0x10:
+            return 0;
+        case 0x02:
+            return AREA_LAVA;
+        case 0x04:
+            return AREA_SLIME;
+        case 0x20:
+            return AREA_FATIGUE;
+        default:
+            return AREA_OTHER;
+    }
+}
+
+inline std::string AreasWord(std::uint32_t areas)
+{
+    static constexpr std::array<std::pair<std::uint32_t, char const*>, 4> NAMES{
+        {{AREA_FATIGUE, "fatigue"}, {AREA_LAVA, "lava"}, {AREA_SLIME, "slime"}, {AREA_OTHER, "other"}}};
+    std::string text;
+    for (auto const& [bit, name] : NAMES)
+        if (areas & bit)
+            text += (text.empty() ? "" : "+") + std::string(name);
+    return text.empty() ? "-" : text;
+}
 
 // One engine answer as the walk reads it
 struct WalkAnswer
 {
     bool result{false};  // CalculatePath's return
     std::uint32_t type{0};
-    Vec last;                 // the path's last point
-    Vec actualEnd;            // GetActualEndPosition
-    float length{0.0f};       // along the path's points
-    std::vector<Vec> points;  // the path's points; only needed when the walk keeps a trace
+    Vec beforeLast;               // the point before the last one (the first, for two points)
+    Vec last;                     // the path's last point
+    Vec actualEnd;                // GetActualEndPosition
+    float length{0.0f};           // along the path's points
+    std::uint32_t pointCount{0};  // the path's points
+    std::vector<Vec> points;      // the path's points; only needed when the walk keeps a trace
+    std::uint32_t areas{0};       // AREA_* bits of the polygons under the path (set only under `areas=all`)
+};
+
+// The engine's hop (HOP_MIN): the answer's last point was copied in, not reached on the mesh
+inline bool IsHop(WalkAnswer const& answer)
+{
+    return (answer.type & PATH_INCOMPLETE) && answer.pointCount >= 2 &&
+           Dist2D(answer.beforeLast, answer.last) > HOP_MIN;
+}
+
+// Over water (G35, G53): the engine sets the points of a path owner that is no unit on the ground under them, the
+// bed; a swimming unit keeps them at the water level (WorldObject::UpdateAllowedPositionZ). The probe's answer is
+// lifted so: the points the walk reads (the last step, where it lands, the end its gain is measured at; the length's
+// last step with them) and the kept trace. The inner points stay where the engine set them: nothing reads their
+// height. level(point): the water level over a point under water, else no higher than the point; never pulls down
+template <class LevelFn>
+void LiftToWater(WalkAnswer& answer, LevelFn&& level)
+{
+    auto const lift = [&level](Vec& point) { point.z = std::max(point.z, level(point)); };
+    float const lastStep = answer.pointCount >= 2 ? Dist3D(answer.beforeLast, answer.last) : 0.0f;
+    lift(answer.beforeLast);
+    lift(answer.last);
+    lift(answer.actualEnd);
+    for (Vec& point : answer.points)
+        lift(point);
+    if (answer.pointCount >= 2)
+        answer.length += Dist3D(answer.beforeLast, answer.last) - lastStep;
+}
+
+// One move as the walk counts it
+struct WalkStep
+{
+    Vec land;                // where the bot ends
+    float meshYd{0.0f};      // walked along the path
+    float straightYd{0.0f};  // walked in a straight line
+    Vec straightFrom;        // where that line began
+    std::uint32_t areas{0};  // AREA_* bits of the path the bot walked
 };
 
 enum class WalkEnd : std::uint8_t
 {
     Arrived,
     Stuck,
-    Capped  // WALK_MAX_MOVES moves
+    Capped,  // WALK_MAX_MOVES moves
+    Refused  // `mode=follow`: the follower refuses the link (TravelWalk::Verdict::Refuse), nothing walked after it
 };
 
 struct WalkResult
 {
+    bool followed{false};                                 // walked by WalkFollow
+    TravelWalk::Mode followMode{TravelWalk::Mode::None};  // ... its last mode (TravelWalk::RowWord)
+    std::uint32_t hops{0};                                // ... the engine's hops it walked (TravelWalk::Judge)
     WalkEnd end{WalkEnd::Capped};
     std::uint32_t moves{0};
     std::uint32_t kinds{0};  // WALK_* bits of every move
+    std::uint32_t areas{0};  // AREA_* bits of every move's path
     float meshYd{0.0f};      // walked along navmesh paths
     float straightYd{0.0f};  // walked in straight lines
     Vec reached;             // where the walk ended
@@ -118,49 +223,75 @@ inline std::uint32_t WalkTypeKinds(std::uint32_t type)
     return ((type & PATH_INCOMPLETE) ? WALK_INCOMPLETE : 0u) | ((type & PATH_FARFROMPOLY) ? WALK_FARPOLY : 0u);
 }
 
-// One MovePoint order to target: where the bot ends, how it went and how far (PointMovementGenerator's rule); the
-// points it passes go to trace when given
-template <class PathFn>
-std::uint32_t WalkMove(Vec const& at, Vec const& target, PathFn& path, Vec& land, float& length,
-                       std::vector<Vec>* trace)
+// One MovePoint order to target on its answer: where the bot ends, how it went and how far (PointMovementGenerator's
+// rule); the points it passes go to trace when given. A hop's answer is the path to its point before the last, then
+// a straight line. Over water the answer is lifted already (LiftToWater)
+inline std::uint32_t LandMove(Vec const& at, Vec const& target, WalkAnswer const& answer, bool hop, WalkStep& step,
+                              std::vector<Vec>* trace)
 {
-    WalkAnswer const answer = path(at, target);
+    step = WalkStep{};
     if (!answer.result || (answer.type & (PATH_NOPATH | PATH_NOT_USING_PATH | PATH_SHORTCUT | PATH_SHORT)))
     {
-        land = target;
-        length = Dist3D(at, target);
+        step.land = target;
+        step.straightYd = Dist3D(at, target);
+        step.straightFrom = at;
         if (trace)
             trace->push_back(target);
         return WALK_STRAIGHT;
     }
-    land = answer.last;
-    length = answer.length;
+    step.land = answer.last;
+    step.areas = answer.areas;
     if (trace && answer.points.size() > 1)
         trace->insert(trace->end(), answer.points.begin() + 1, answer.points.end());
     else if (trace)
-        trace->push_back(land);
+        trace->push_back(step.land);
+    if (hop)
+    {
+        step.straightYd = Dist3D(answer.beforeLast, answer.last);
+        step.meshYd = std::max(0.0f, answer.length - step.straightYd);
+        step.straightFrom = answer.beforeLast;
+        return WALK_STRAIGHT | WALK_HOP | (answer.pointCount > 2 ? WALK_MESH : 0u) | WalkTypeKinds(answer.type);
+    }
+    step.meshYd = answer.length;
     return WALK_MESH | WalkTypeKinds(answer.type);
 }
 
-// The walk from start to end; path(at, target) returns one engine answer, rand() a number in [0, 1). trace, when
-// given, gets the start and then every point the walk passes
-template <class PathFn, class RandFn>
-WalkResult Walk(Vec const& start, Vec const& end, PathFn&& path, RandFn&& rand, std::vector<Vec>* trace = nullptr)
+// One MovePoint order to target, asked of the engine; the hop is IsHop's
+template <class PathFn>
+std::uint32_t WalkMove(Vec const& at, Vec const& target, PathFn& path, WalkStep& step, std::vector<Vec>* trace)
 {
-    WalkResult result;
-    Vec at = start;
+    WalkAnswer const answer = path(at, target);
+    return LandMove(at, target, answer, IsHop(answer), step, trace);
+}
+
+// A move's kinds, yards and areas added to the walk
+inline void AddStep(WalkResult& result, std::uint32_t kinds, WalkStep const& step)
+{
+    if (kinds & WALK_STRAIGHT)
+    {
+        if (!result.straightSeen)
+            result.firstStraight = step.straightFrom;
+        result.straightSeen = true;
+        result.straightYd += step.straightYd;
+    }
+    result.meshYd += step.meshYd;
+    result.kinds |= kinds;
+    result.areas |= step.areas;
+}
+
+// One leg of a walk, from at towards end; path(at, target) returns one engine answer, rand() a number in [0, 1).
+// Its moves are added to result (moves, kinds, yards, the first straight move) and at becomes where the bot
+// stands; the leg arrives, gets stuck, or is capped after WALK_MAX_MOVES moves of its own
+template <class PathFn, class RandFn>
+WalkEnd WalkLeg(Vec& at, Vec const& end, PathFn& path, RandFn& rand, std::vector<Vec>* trace, WalkResult& result)
+{
     float nearest = Dist3D(at, end);
     std::uint32_t idle = 0;
-    if (trace)
-        trace->push_back(start);
-    while (result.moves < WALK_MAX_MOVES)
+    for (std::uint32_t legMoves = 0; legMoves < WALK_MAX_MOVES;)
     {
         float const distance = Dist3D(at, end);
         if (distance <= WALK_GOAL)
-        {
-            result.end = WalkEnd::Arrived;
-            break;
-        }
+            return WalkEnd::Arrived;
         Vec target = end;
         std::uint32_t kinds = 0;
         bool order = true;
@@ -194,23 +325,14 @@ WalkResult Walk(Vec const& start, Vec const& end, PathFn&& path, RandFn&& rand, 
                 }
             }
         }
+        ++legMoves;
         ++result.moves;
         if (order)
         {
-            Vec land;
-            float length = 0.0f;
-            kinds |= WalkMove(at, target, path, land, length, trace);
-            if (kinds & WALK_STRAIGHT)
-            {
-                if (!result.straightSeen)
-                    result.firstStraight = at;
-                result.straightSeen = true;
-                result.straightYd += length;
-            }
-            else
-                result.meshYd += length;
-            result.kinds |= kinds;
-            at = land;
+            WalkStep step;
+            kinds |= WalkMove(at, target, path, step, trace);
+            AddStep(result, kinds, step);
+            at = step.land;
         }
         float const now = Dist3D(at, end);
         if (now + WALK_GAIN < nearest)
@@ -219,12 +341,112 @@ WalkResult Walk(Vec const& start, Vec const& end, PathFn&& path, RandFn&& rand, 
             idle = 0;
         }
         else if (++idle >= WALK_STUCK_MOVES)
+            return WalkEnd::Stuck;
+    }
+    return WalkEnd::Capped;
+}
+
+// A walk over waypoints (`mode=path`: the link's stored points between its nodes): from way[0] towards each next
+// one in turn, each leg by the same orders, moves, arrival and stuck rules (WalkLeg); it ends with the first leg
+// that does not arrive. trace, when given, gets the start and then every point the walk passes
+template <class PathFn, class RandFn>
+WalkResult WalkPath(std::vector<Vec> const& way, PathFn&& path, RandFn&& rand, std::vector<Vec>* trace = nullptr)
+{
+    WalkResult result;
+    result.end = WalkEnd::Arrived;
+    Vec at = way.empty() ? Vec{} : way.front();
+    if (trace)
+        trace->push_back(at);
+    for (std::size_t i = 1; i < way.size() && result.end == WalkEnd::Arrived; ++i)
+        result.end = WalkLeg(at, way[i], path, rand, trace, result);
+    result.reached = at;
+    return result;
+}
+
+// The walk from start to end (`mode=nodes`): one leg
+template <class PathFn, class RandFn>
+WalkResult Walk(Vec const& start, Vec const& end, PathFn&& path, RandFn&& rand, std::vector<Vec>* trace = nullptr)
+{
+    return WalkPath(std::vector<Vec>{start, end}, path, rand, trace);
+}
+
+// The follower's reading of an answer (NewRpgBaseAction.cpp ReadWalkAnswer): its type, its last step and what its end
+// gains on the order from where the bot stands
+inline TravelWalk::EngineAnswer FollowAnswer(WalkAnswer const& answer, Vec const& at, Vec const& order)
+{
+    TravelWalk::EngineAnswer engine;
+    engine.result = answer.result;
+    engine.type = answer.type;
+    if (answer.pointCount >= 2)
+        engine.lastStep = Dist3D(answer.beforeLast, answer.last);
+    engine.gain = Dist3D(at, order) - Dist3D(order, answer.actualEnd);
+    return engine;
+}
+
+// `mode=follow` (NV22a, NV.20): the link walked as the travel plan's follower walks it, by its own calls and numbers
+// (TravelWalkRules.h). points: the stored points it walks (TravelWalk::PickRows; none: node to node), reversed: from
+// the last. Each order is Target's, asked once and judged by Judge before the move: Fallback sends the rest of the
+// link to the far node, Refuse ends the walk where it stands, a Hop is walked and counted. The walk arrives within
+// REACH_YARDS of the far node and gets stuck after NO_PROGRESS_STRIKES far-node orders in a row that gain under
+// PROGRESS_YARDS on it. Every order counts as direct: MoveFarToImpl's direct range and cone of stepping stones are the
+// engine side's (NewRpgBaseAction.cpp) and not modelled, so a far "no path" refuses where the follower would try a
+// stone first; no move goes unjudged, so NoteMove has nothing to count
+template <class Points, class PathFn>
+WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bool reversed, PathFn&& path,
+                      std::vector<Vec>* trace = nullptr)
+{
+    WalkResult result;
+    result.followed = true;
+    result.end = WalkEnd::Capped;
+    TravelWalk::LinkWalk walk;
+    TravelWalk::Begin(walk, 0, 1, 0, points, reversed, start, end);
+    Vec at = start;
+    if (trace)
+        trace->push_back(at);
+    std::uint32_t idle = 0;
+    while (result.moves < WALK_MAX_MOVES)
+    {
+        std::uint32_t const point = TravelWalk::Target(walk, points, at, end);
+        if (point == TravelWalk::NO_POINT && Dist3D(at, end) <= TravelWalk::REACH_YARDS)
+        {
+            result.end = WalkEnd::Arrived;
+            break;
+        }
+        Vec order = end;
+        if (point != TravelWalk::NO_POINT)
+        {
+            auto const& stored = TravelWalk::PointAt(points, walk.reversed, point);
+            order = {stored.x, stored.y, stored.z};
+        }
+        WalkAnswer const answer = path(at, order);
+        TravelWalk::Verdict const verdict = TravelWalk::Judge(walk, FollowAnswer(answer, at, order), true);
+        if (verdict == TravelWalk::Verdict::Fallback)
+            continue;
+        if (verdict == TravelWalk::Verdict::Refuse)
+        {
+            result.end = WalkEnd::Refused;
+            break;
+        }
+        float const before = Dist3D(at, end);
+        WalkStep step;
+        AddStep(result, LandMove(at, order, answer, verdict == TravelWalk::Verdict::Hop, step, trace), step);
+        ++result.moves;
+        at = step.land;
+        if (point != TravelWalk::NO_POINT)
+            continue;  // a stored point: Judge counts its strikes
+        if (before - Dist3D(at, end) >= TravelWalk::PROGRESS_YARDS)
+            idle = 0;
+        else if (++idle >= TravelWalk::NO_PROGRESS_STRIKES)
         {
             result.end = WalkEnd::Stuck;
             break;
         }
     }
+    if (result.end == WalkEnd::Capped && Dist3D(at, end) <= TravelWalk::REACH_YARDS)
+        result.end = WalkEnd::Arrived;
     result.reached = at;
+    result.followMode = walk.mode;
+    result.hops = walk.hops;
     return result;
 }
 
@@ -234,7 +456,8 @@ enum class Direction : std::uint8_t
     Ok,        // arrives on navmesh moves only
     Shortcut,  // arrives, but only with a straight move
     Stuck,     // gives up
-    Capped     // WALK_MAX_MOVES moves without arrival
+    Capped,    // WALK_MAX_MOVES moves without arrival
+    Refused    // the follower refuses the link (`mode=follow`); classed as a walk that gives up
 };
 
 inline Direction DirectionOf(WalkResult const& walk)
@@ -243,6 +466,8 @@ inline Direction DirectionOf(WalkResult const& walk)
         return Direction::Capped;
     if (walk.end == WalkEnd::Stuck)
         return Direction::Stuck;
+    if (walk.end == WalkEnd::Refused)
+        return Direction::Refused;
     return (walk.kinds & WALK_STRAIGHT) ? Direction::Shortcut : Direction::Ok;
 }
 
@@ -258,17 +483,20 @@ inline char const* DirectionWord(Direction direction)
             return "stuck";
         case Direction::Capped:
             return "capped";
+        case Direction::Refused:
+            return "refused";
     }
     return "?";
 }
 
 inline std::string WalkKindsWord(std::uint32_t kinds)
 {
-    static constexpr std::array<std::pair<std::uint32_t, char const*>, 5> NAMES{{{WALK_MESH, "mesh"},
+    static constexpr std::array<std::pair<std::uint32_t, char const*>, 6> NAMES{{{WALK_MESH, "mesh"},
                                                                                  {WALK_INCOMPLETE, "incomplete"},
                                                                                  {WALK_FARPOLY, "farpoly"},
                                                                                  {WALK_STRAIGHT, "straight"},
-                                                                                 {WALK_CONE_STONE, "cone"}}};
+                                                                                 {WALK_CONE_STONE, "cone"},
+                                                                                 {WALK_HOP, "hop"}}};
     std::string text;
     for (auto const& [bit, name] : NAMES)
         if (kinds & bit)
@@ -303,10 +531,11 @@ enum class Verdict : std::uint8_t
     EndOffMesh,   // neither walk arrives and an end node off the mesh is the cause: the node is moved
     Dead,         // neither walk arrives, no end node is the cause: the link is left out
     Shortcut,     // neither arrives on the mesh, one only with a straight move: left out like dead
-    Capped        // a length cap, not a fault: listed apart
+    Capped,       // a length cap, not a fault: listed apart
+    NoPath        // `mode=path` and the link has no stored points: not walked, listed apart (NV.15)
 };
 
-constexpr int VERDICTS = 6;
+constexpr int VERDICTS = 7;
 
 inline char const* VerdictWord(Verdict verdict)
 {
@@ -324,6 +553,8 @@ inline char const* VerdictWord(Verdict verdict)
             return "shortcut";
         case Verdict::Capped:
             return "capped";
+        case Verdict::NoPath:
+            return "no-path";
     }
     return "?";
 }
@@ -407,8 +638,10 @@ inline LinkVerdict ClassifyLink(WalkResult const& fwd, WalkResult const* rev, Ve
     return out;
 }
 
-// One direction in a row: `<name>=<ok|shortcut|stuck|capped> moves=N kinds=a+b mesh=Y straight=Y at=x,y,z
-// [from=x,y,z]` (at: where the walk ended; from: where its first straight move began)
+// One direction in a row: `<name>=<ok|shortcut|stuck|capped|refused> moves=N kinds=a+b mesh=Y straight=Y at=x,y,z
+// [from=x,y,z] [areas=a+b] [walk=<mode> hops=N]` (at: where the walk ended; from: where its first straight move
+// began; areas: the hazard areas its paths touched, only when there are some; walk: `mode=follow`'s last mode, the
+// follower's walk_link word, and its hops)
 inline std::string DirectionValue(char const* name, WalkResult const& walk)
 {
     char text[256];
@@ -421,6 +654,14 @@ inline std::string DirectionValue(char const* name, WalkResult const& walk)
         std::snprintf(text, sizeof(text), " from=%.0f,%.0f,%.0f", walk.firstStraight.x, walk.firstStraight.y,
                       walk.firstStraight.z);
         value += text;
+    }
+    if (walk.areas)
+        value += " areas=" + AreasWord(walk.areas);
+    if (walk.followed)
+    {
+        TravelWalk::LinkWalk state;
+        state.mode = walk.followMode;
+        value += std::string(" walk=") + TravelWalk::RowWord(state) + " hops=" + std::to_string(walk.hops);
     }
     return value;
 }
@@ -437,8 +678,8 @@ inline std::string LinkValue(LinkVerdict const& verdict, WalkResult const& fwd, 
     return text;
 }
 
-// distance < 0: no polygon within the search box. steep: a polygon bots may not walk on (NAV_GROUND_STEEP) lies
-// within OFFMESH_LIMIT
+// distance < 0: no polygon within the search box. steep: the nearest polygon of any kind is steep (NAV_GROUND_STEEP)
+// and lies within OFFMESH_LIMIT
 inline std::string OffMeshValue(float distance, bool steep)
 {
     char text[64];
@@ -460,9 +701,11 @@ struct MapCounts
     std::uint32_t offMesh4{0};  // nodes over OFFMESH_LIMIT yd from the mesh (or none)
     std::uint32_t offMeshSteep{0};
 
+    // capped and no-path links are listed apart, not faults
     std::uint32_t Broken() const
     {
-        return links - byClass[static_cast<int>(Verdict::Ok)] - byClass[static_cast<int>(Verdict::Capped)];
+        return links - byClass[static_cast<int>(Verdict::Ok)] - byClass[static_cast<int>(Verdict::Capped)] -
+               byClass[static_cast<int>(Verdict::NoPath)];
     }
 
     void Add(MapCounts const& other)
@@ -514,6 +757,97 @@ inline void AddNodeLinkLines(std::vector<std::string>& lines, NodeLinkCounts con
         lines.push_back(Line("nodes.links", key,
                              "reverse-only=" + std::to_string(n[0]) + " end-off-mesh=" + std::to_string(n[1]) +
                                  " dead=" + std::to_string(n[2]) + " shortcut=" + std::to_string(n[3])));
+}
+
+// The walk model's command words (NV19), beside the map words: `model=v20|v21` (v20: the v20 bots' polygons,
+// fatigue water allowed and steep ground excluded unless steep= says otherwise), `mode=nodes|path|follow` (node to
+// node, over the link's stored points, or as the follower walks), `steep=excluded|<cost>` (steep ground left out, or
+// allowed at that area cost over 0; the v21 default STEEP_COST)
+constexpr float STEEP_COST = 40.0f;  // core v21's headless player filter (PathGenerator::CreateFilter)
+
+enum class WalkMode : std::uint8_t
+{
+    Nodes,
+    Path,
+    Follow
+};
+
+struct CheckOptions
+{
+    bool v20Model{false};
+    WalkMode mode{WalkMode::Nodes};
+    bool steepGiven{false};
+    bool steepExcluded{false};
+    float steepCost{STEEP_COST};
+    bool areasAll{false};  // `areas=all`: lava and fatigue water allowed, and the walks' areas reported
+
+    bool SteepExcluded() const { return steepGiven ? steepExcluded : v20Model; }
+    std::string ModelWord() const { return v20Model ? "v20" : "v21"; }
+    std::string ModeWord() const
+    {
+        return mode == WalkMode::Path ? "path" : mode == WalkMode::Follow ? "follow" : "nodes";
+    }
+
+    std::string SteepWord() const
+    {
+        if (SteepExcluded())
+            return "excluded";
+        char text[32];
+        std::snprintf(text, sizeof(text), "%g", steepCost);
+        return text;
+    }
+
+    // The report's name part: `v21-nodes-40`, `v20-path-excluded`
+    std::string AreasOption() const { return areasAll ? "all" : "default"; }
+
+    std::string Name() const { return ModelWord() + "-" + ModeWord() + "-" + SteepWord() + (areasAll ? "-areas" : ""); }
+};
+
+inline bool IsCheckWord(std::string const& word)
+{
+    return word.rfind("model=", 0) == 0 || word.rfind("mode=", 0) == 0 || word.rfind("steep=", 0) == 0 ||
+           word.rfind("areas=", 0) == 0;
+}
+
+// Applies one IsCheckWord word; false when its value is none of the above
+inline bool TakeCheckWord(std::string const& word, CheckOptions& options)
+{
+    std::string const value = word.substr(word.find('=') + 1);
+    if (word.rfind("model=", 0) == 0)
+    {
+        if (value != "v20" && value != "v21")
+            return false;
+        options.v20Model = value == "v20";
+        return true;
+    }
+    if (word.rfind("mode=", 0) == 0)
+    {
+        if (value != "nodes" && value != "path" && value != "follow")
+            return false;
+        options.mode = value == "path" ? WalkMode::Path : value == "follow" ? WalkMode::Follow : WalkMode::Nodes;
+        return true;
+    }
+    if (word.rfind("areas=", 0) == 0)
+    {
+        if (value != "all" && value != "default")
+            return false;
+        options.areasAll = value == "all";
+        return true;
+    }
+    if (value == "excluded")
+    {
+        options.steepGiven = true;
+        options.steepExcluded = true;
+        return true;
+    }
+    char* end = nullptr;
+    float const cost = std::strtof(value.c_str(), &end);
+    if (value.empty() || !end || *end || !std::isfinite(cost) || cost <= 0.0f)
+        return false;
+    options.steepGiven = true;
+    options.steepExcluded = false;
+    options.steepCost = cost;
+    return true;
 }
 
 // A pair of points checked like a link without a stored link (`route check pairs`)
@@ -593,13 +927,14 @@ inline std::string SummaryLine(std::string const& name, MapCounts const& counts)
     char text[400];
     std::snprintf(text, sizeof(text),
                   "%s: %u links: %u ok (%u chained), %u reverse-only, %u end-off-mesh, %u dead, %u shortcut, %u "
-                  "capped; %u nodes, %u over %.0f yd from the mesh, %u over %.0f yd (%u by a steep polygon)",
+                  "capped, %u no-path; %u nodes, %u over %.0f yd from the mesh, %u over %.0f yd (%u by a steep "
+                  "polygon)",
                   name.c_str(), counts.links, counts.byClass[static_cast<int>(Verdict::Ok)], counts.chained,
                   counts.byClass[static_cast<int>(Verdict::ReverseOnly)],
                   counts.byClass[static_cast<int>(Verdict::EndOffMesh)],
                   counts.byClass[static_cast<int>(Verdict::Dead)], counts.byClass[static_cast<int>(Verdict::Shortcut)],
-                  counts.byClass[static_cast<int>(Verdict::Capped)], counts.nodes, counts.offMesh, OFFMESH_LISTED,
-                  counts.offMesh4, OFFMESH_LIMIT, counts.offMeshSteep);
+                  counts.byClass[static_cast<int>(Verdict::Capped)], counts.byClass[static_cast<int>(Verdict::NoPath)],
+                  counts.nodes, counts.offMesh, OFFMESH_LISTED, counts.offMesh4, OFFMESH_LIMIT, counts.offMeshSteep);
     return text;
 }
 }  // namespace RouteCheck
