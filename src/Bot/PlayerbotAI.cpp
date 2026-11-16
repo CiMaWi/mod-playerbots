@@ -6575,6 +6575,9 @@ void PlayerbotAI::ImbueItem(Item* item, uint8 targetInventorySlot)
 // generic item use method
 void PlayerbotAI::ImbueItem(Item* item, uint32 targetFlag, ObjectGuid targetGUID)
 {
+    if (!TestConstraints::UsesItemsOnItsOwn(testConstraints))  // nouse (item-use WI2): goes with WI5's builder
+        return;
+
     if (!item)
         return;
 
