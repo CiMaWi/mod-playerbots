@@ -318,20 +318,10 @@ void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, f
     check(ReactionCheckIntervalMs(1000, false, 100) == 1000 && ReactionCheckIntervalMs(1, false, 20) == 1,
           "a reaction trigger without the cadence does not keep its own interval");
 
-    // G0h3's reaction types, on copies of the configured prices with every part off (G0h2's event) and on
+    // G0h3's reaction types, on a copy of the configured prices
     {
-        ReactionParams off = params;
-        off.Choice.Enable = false;
-        off.Load.Enable = false;
-        off.Ease.Enable = false;
-        off.Think.Enable = false;
-        off.Anticipate.Enable = false;
-        ReactionParams on = off;
-        on.Choice.Enable = true;
-        on.Load.Enable = true;
-        on.Ease.Enable = true;
+        ReactionParams on = params;
         on.Think.Enable = true;
-        on.Anticipate.Enable = true;
         // The load and anticipation checks need prices: fixed ones (the dist's), so a configured 0 cannot void them
         on.Load.MsPerEventAt1 = 200;
         on.Load.MsPerEventAt99 = 80;
@@ -367,28 +357,20 @@ void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, f
         };
         uint32 const commonMs = EaseCostMs(mid, ReactionEase::Common);
 
-        // The parts off ignore every input, and the default inputs add nothing but the common button's price
-        ReactionEventInputs heavy;
-        heavy.Options = 8;
-        heavy.Load = 2;
-        heavy.Ease = ReactionEase::NewTarget;
-        heavy.Thinks = true;
-        heavy.Predicted = true;
+        // The default inputs and prices add nothing, the default inputs at the bot's prices the common button's price
         bool unchanged = true;
         for (uint32 draw = 0; draw < Draws; ++draw)
         {
             uint64 const hash = eventHash(draw);
-            ReactionEvent const before = startAt(off, ReactionTypeState(), ReactionEventInputs(), draw, 20);
-            ReactionEvent const ignored = startAt(off, mid, heavy, draw, 20);
+            ReactionEvent const before = startAt(on, ReactionTypeState(), ReactionEventInputs(), draw, 20);
             ReactionEvent const plainOn = startAt(on, mid, ReactionEventInputs(), draw, 20);
-            unchanged = unchanged && before.ReadyAfterMs == EventReactionMs(middle, off, hash, false, false) &&
+            unchanged = unchanged && before.ReadyAfterMs == EventReactionMs(middle, on, hash, false, false) &&
                         before.Missed == (SplitMix64(hash ^ ReactionSalt::Miss) % 100 < 20) && before.CostMs == 0 &&
-                        ignored.ReadyAfterMs == before.ReadyAfterMs && ignored.Missed == before.Missed &&
-                        ignored.CostMs == 0 && plainOn.ReadyAfterMs == before.ReadyAfterMs + commonMs &&
+                        plainOn.ReadyAfterMs == before.ReadyAfterMs + commonMs &&
                         plainOn.Type == static_cast<uint8>(ReactionType::Simple);
         }
 
-        check(unchanged, "with the parts off, or the default inputs, the event is not G0h2's");
+        check(unchanged, "with the default inputs the event is not G0h2's");
 
         // Choice: every doubling of the options adds the price (+-5 %, at least 1 ms of rounding), less at high Wisdom
         uint32 const maxOptions = on.Choice.MaxOptions;
@@ -642,16 +624,14 @@ void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, f
                                     rate, cancels, casts, static_cast<float>(cancels) / casts));
 
         // The busy bot: its own cast stops for a kick of an important cast only when it would end too late; no kick a
-        // busy bot reaches only within the margin of the cast's end; both off by their flags
+        // busy bot reaches only within the margin of the cast's end; the stop off by its flag
         ReactionReevalParams rules = params.Reeval;
         rules.Enable = true;
-        rules.BusySkip = true;
         uint32 const important = rules.ImportantCastMs;
         uint32 const margin = rules.BusyMarginMs;
         uint32 const ownLeft = std::max(rules.MinOwnRemainingMs, 1000u);
         ReactionReevalParams rulesOff = rules;
         rulesOff.Enable = false;
-        rulesOff.BusySkip = false;
         check(StopOwnCastForKick(rules, important, ownLeft, ownLeft) &&
                   !StopOwnCastForKick(rules, important, ownLeft + margin + 1, ownLeft) &&
                   (important == 0 || !StopOwnCastForKick(rules, important - 1, ownLeft, ownLeft)) &&
@@ -662,8 +642,7 @@ void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, f
         check(InterruptOutOfReach(rules, 2000, 1000, 2000 + margin) &&
                   InterruptOutOfReach(rules, 2000, -500, 2000 + margin) &&
                   !InterruptOutOfReach(rules, 1999, 1000, 2000 + margin) &&
-                  !InterruptOutOfReach(rules, 2000, 2000, 2000 + margin) &&
-                  !InterruptOutOfReach(rulesOff, 2000, 1000, 2000 + margin),
+                  !InterruptOutOfReach(rules, 2000, 2000, 2000 + margin),
               "a kick made late by being busy is not dropped, or one in reach or late from its reaction alone is");
 
         // Without the busy time: stamped, the unclipped due no earlier than the own cast's start; unstamped, the due

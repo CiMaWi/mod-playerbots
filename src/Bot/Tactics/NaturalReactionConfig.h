@@ -42,11 +42,9 @@ enum class ReactionThinkDepth : uint8
     Deep
 };
 
-// G0h3's parts, each with its Enable (0: G0h2's reaction) and its prices at attribute 1 and 99 (lerped along
-// Playerbots.Skill.CurveExponent)
+// G0h3's parts with their prices at attribute 1 and 99 (lerped along Playerbots.Skill.CurveExponent)
 struct ReactionChoiceParams  // Wisdom
 {
-    bool Enable = false;
     float MsPerDoublingAt1 = 120.0f;
     float MsPerDoublingAt99 = 50.0f;
     uint32 MaxOptions = 8;
@@ -54,7 +52,6 @@ struct ReactionChoiceParams  // Wisdom
 
 struct ReactionLoadParams  // Focus
 {
-    bool Enable = false;
     uint32 MsPerEventAt1 = 200;
     uint32 MsPerEventAt99 = 80;
     uint32 MissPercentPerEventAt1 = 10;
@@ -67,7 +64,6 @@ struct ReactionLoadParams  // Focus
 
 struct ReactionEaseParams  // Dexterity
 {
-    bool Enable = false;
     // By ReactionEase, strictly rising at both ends (so at every Dexterity)
     std::array<uint32, REACTION_EASE_COUNT> MsAt1 = {0, 250, 350, 450};
     std::array<uint32, REACTION_EASE_COUNT> MsAt99 = {0, 80, 120, 180};
@@ -91,7 +87,6 @@ struct ReactionThinkParams  // Wisdom (depth and cost), Patience (waiting)
 
 struct ReactionAnticipateParams  // Foresight
 {
-    bool Enable = false;
     // The share of the draw a predicted event saves (never below MinMs)
     float ShareAt1 = 0.1f;
     float ShareAt99 = 0.5f;
@@ -116,7 +111,6 @@ struct ReactionReevalParams
     uint32 MinOwnRemainingMs = 300;
     // No kick that a bot busy with its own cast or GCD could land only within BusyMarginMs of the enemy cast's end,
     // when being busy is what makes it late
-    bool BusySkip = false;
     uint32 BusyMarginMs = 100;
 };
 
@@ -149,7 +143,7 @@ struct ReactionParams
     uint32 PingMs = 60;
     uint32 DisplayMs = 30;
     int32 ServerTickMs = -1;
-    // G0h3's parts; MovementEnable: avoid aoe as a reaction (G0h3-b)
+    // G0h3's parts
     ReactionChoiceParams Choice;
     ReactionLoadParams Load;
     ReactionEaseParams Ease;
@@ -158,7 +152,6 @@ struct ReactionParams
     ReactionQueueParams Queue;
     ReactionReevalParams Reeval;
     ReactionMemoryParams Memory;
-    bool MovementEnable = false;
     // The Positioning category (G2e, G2f): regain los, break los and pillar step as reactions (a reaction only, like
     // Movement: no notice counter, no D4 delay)
     bool PositioningEnable = false;

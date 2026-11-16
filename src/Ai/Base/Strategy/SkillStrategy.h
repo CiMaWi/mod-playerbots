@@ -30,7 +30,7 @@ enum class SkillNoticeCategory : uint8
     CrowdControl,
     CrowdControlBreak,
     TargetSwitch,
-    // A reaction only (G0h3-b: avoid aoe, Playerbots.Natural.Reaction.Movement.Enable): no notice counter, no D4 delay
+    // A reaction only (G0h3-b: avoid aoe): no notice counter, no D4 delay
     Movement,
     // A reaction only as well (G2e, G2f: regain los, break los, pillar step; Playerbots.Natural.Reaction.Positioning.
     // Enable): no notice counter (SkillNoticeCounters::Categories stays), no D4 delay, so no match record changes

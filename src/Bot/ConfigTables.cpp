@@ -73,6 +73,12 @@ struct RetiredSwitches
     bool RetireCandidates = false;
     bool RetireCreateAttempts = false;
     bool RetireSummaryMinutes = false;
+    bool NaturalChoice = false;
+    bool NaturalLoad = false;
+    bool NaturalEase = false;
+    bool NaturalAnticipate = false;
+    bool NaturalBusySkip = false;
+    bool NaturalMovement = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -134,6 +140,36 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireSummaryMinutesR
 }};
 ConfigFamily<RetiredSwitches> const RetiredRetireSummaryMinutesFamily{"Playerbots.Population.Retire.SummaryMinutes",
                                                                       RetiredRetireSummaryMinutesRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalChoiceRows = {{
+    {"", &RetiredSwitches::NaturalChoice, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalChoiceFamily{"Playerbots.Natural.Reaction.Choice.Enable",
+                                                               RetiredNaturalChoiceRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalLoadRows = {{
+    {"", &RetiredSwitches::NaturalLoad, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalLoadFamily{"Playerbots.Natural.Reaction.Load.Enable",
+                                                             RetiredNaturalLoadRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalEaseRows = {{
+    {"", &RetiredSwitches::NaturalEase, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalEaseFamily{"Playerbots.Natural.Reaction.Ease.Enable",
+                                                             RetiredNaturalEaseRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalAnticipateRows = {{
+    {"", &RetiredSwitches::NaturalAnticipate, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalAnticipateFamily{"Playerbots.Natural.Reaction.Anticipate.Enable",
+                                                                   RetiredNaturalAnticipateRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalBusySkipRows = {{
+    {"", &RetiredSwitches::NaturalBusySkip, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalBusySkipFamily{"Playerbots.Natural.Reaction.Reeval.BusySkip",
+                                                                 RetiredNaturalBusySkipRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalMovementRows = {{
+    {"", &RetiredSwitches::NaturalMovement, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalMovementFamily{"Playerbots.Natural.Reaction.Movement.Enable",
+                                                                 RetiredNaturalMovementRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -152,6 +188,12 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredRetireCandidatesFamily, RetiredSwitchValues),
         MakeEntry(RetiredRetireCreateAttemptsFamily, RetiredSwitchValues),
         MakeEntry(RetiredRetireSummaryMinutesFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalChoiceFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalLoadFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalEaseFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalAnticipateFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalBusySkipFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalMovementFamily, RetiredSwitchValues),
     };
     return entries;
 }
