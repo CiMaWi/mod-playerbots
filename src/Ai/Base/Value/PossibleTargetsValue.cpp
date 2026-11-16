@@ -75,7 +75,8 @@ bool PossibleTargetsValue::AcceptUnit(Unit* unit)
 
         // World PvP (WP4, WP23): a bot that starts fights by the rules attacks another player only in a fight it is in
         // or as the enemy it entered on by enthusiasm (its colours replace the level filter below); after it left its
-        // fight, not one it leaves alone (WP38a: the one place a left target is refused; an attacker passed above)
+        // fight, not one it leaves alone (WP38a: the target list's refusal; the enemy player value's combat references
+        // refuse it too; an attacker passed above)
         if (WorldPvp::StartsByRules(botAI))
             return !WorldPvp::LeftAlone(botAI, unit) &&
                    (bot->IsInCombatWith(unit) || WorldPvp::IsEnteredTarget(botAI, unit));
