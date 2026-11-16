@@ -297,6 +297,19 @@ void TestRowsIsolated()
           std::string("ban exceptions: a grey target that attacks the bot's faction (") + Word(Banned(greyAttacker)) +
               ") and a real master's fight (" + Word(Banned(mastersFoe)) + ") are allowed, a red one never (" +
               Word(Banned(redAttacker)) + ")");
+
+    // The join side: the master is in the bot's group, so its fight takes the group term off the faction's threshold
+    EnthusiasmValues const v = Defaults();
+    JoinFacts mastersFaction;
+    mastersFaction.targetAttacksFaction = true;
+    JoinFacts mastersGroup = mastersFaction;
+    mastersGroup.targetAttacksGroup = true;
+    float const factionJoin = JoinThreshold(mastersFaction, v);
+    float const groupJoin = JoinThreshold(mastersGroup, v);
+    Check(Banned(mastersFoe) == BanReason::None && Near(v.joinGroupAttacked, 50.0) &&
+              Near(factionJoin - groupJoin, v.joinGroupAttacked),
+          "a real master's fight: joined at " + Number(groupJoin) + ", the faction's " + Number(factionJoin) +
+              " less the group term " + Number(v.joinGroupAttacked));
 }
 
 // Exit 2: the value stays within the scale under any sequence of edits, reads and time jumps

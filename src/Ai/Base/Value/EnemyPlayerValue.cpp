@@ -49,8 +49,9 @@ char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit, bool const
     if (enemy->HasSpiritOfRedemptionAura())
         return REFUSAL_NOT_TARGET;
 
-    // If with master, only attack if master is PvP flagged
-    Player* master = botAI->GetMaster();
+    // If with master, only attack if master is PvP flagged; a bot by the rules has its ban instead (the real master's
+    // fight, WorldPvp::MastersFight)
+    Player* master = byRules ? nullptr : botAI->GetMaster();
     if (master && !master->IsPvP() && !master->IsFFAPvP())
         return REFUSAL_MASTER;
 

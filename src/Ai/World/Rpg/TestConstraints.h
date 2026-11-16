@@ -34,6 +34,8 @@ constexpr std::uint16_t NOTAXI = 512;     // plans no flight leg (travel WT55a: 
 // mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
 constexpr std::uint16_t NOMOUNT = 1024;
 constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
+// world PvP's rules count its master, in a bot group its leader, as a game client (world-pvp WP37a)
+constexpr std::uint16_t REALMASTER = 4096;
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -63,6 +65,7 @@ constexpr Row ROWS[] = {
     {"notaxi", Kind::State, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
     {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
+    {"realmaster", Kind::State, REALMASTER, "world PvP rules: its master, in a bot group its leader, is a game client"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -173,6 +176,9 @@ inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, boo
 inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
 // flee, read by the world PvP retreat trigger (WorldPvpStrategy.cpp); its apply and undo do nothing
 inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
+// realmaster, read by world PvP's real master (WorldPvp::RealMasterOf, GhostWait.cpp; nothing to apply or undo): the
+// bot never starts, joins its master's fights, never leaves by enthusiasm and its ghost waits for no enemy
+inline bool HasRealMaster(std::uint16_t set) { return (set & REALMASTER) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
