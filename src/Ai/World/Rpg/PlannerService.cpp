@@ -18,6 +18,7 @@
 #include "Bag.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
 #include "Chat.h"
@@ -37,7 +38,6 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestCircuitLog.h"
 #include "RouteService.h"
@@ -296,7 +296,7 @@ bool Weighted(Player* bot) { return GoalApply::InWeightedGroup(bot->GetGUID().Ge
 // The scope right now: no real master, the bot keeps its possessions (rare: once per job and per applied answer)
 bool InScopeNow(PlayerbotAI* botAI, Player* bot)
 {
-    return !botAI->HasGameClientMaster() && PlayerbotFactory::KeepsPossessions(bot);
+    return !botAI->HasGameClientMaster() && BotKind::KeepsPossessions(bot);
 }
 
 std::string ChoiceOf(GoalApply::Active const& goal)
@@ -653,8 +653,8 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoal
                                         : -1.0f;
     situation.external = goals.external;
     // Class quests (upkeep WU20a): a governed bot's facts for the unlock bonus; the job adds the trainer's spells
-    situation.governed = GoalApply::Governed(PlayerbotFactory::KeepsPossessions(bot), bot->GetGUID().GetCounter(),
-                                             botAI->HasGameClientMaster());
+    situation.governed =
+        GoalApply::Governed(BotKind::KeepsPossessions(bot), bot->GetGUID().GetCounter(), botAI->HasGameClientMaster());
     if (situation.governed)
     {
         situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
@@ -807,7 +807,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     uint32 const key = StateKey(bot);
     if (key != (state.stateKey & ~STATE_SCOPE_BIT))
     {
-        state.stateKey = key | (PlayerbotFactory::KeepsPossessions(bot) ? STATE_SCOPE_BIT : 0);
+        state.stateKey = key | (BotKind::KeepsPossessions(bot) ? STATE_SCOPE_BIT : 0);
         ++state.stateVersion;
         state.snapshotDue = true;
         if (state.goals)

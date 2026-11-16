@@ -21,7 +21,6 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "ScriptMgr.h"
 #include "Timer.h"
@@ -78,7 +77,9 @@ bool IsPersistent(PlayerbotAI* botAI, uint32 nowMs)
     PvpMemory& memory = MemoryOf(botAI);
     if (PersistenceDue(memory, nowMs))
     {
-        memory.persistent = PlayerbotFactory::KeepsPossessions(botAI->GetBot());
+        // The exact old value of KeepsPossessions, inline until WP37 reads IsPersistentBot() uncached and the
+        // master through HasGameClientMaster() itself
+        memory.persistent = botAI->IsPersistentBot() && !IsRealPlayer(botAI->GetMaster());
         memory.persistentKnown = true;
         memory.persistentCheckMs = nowMs;
     }

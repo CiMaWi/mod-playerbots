@@ -11,6 +11,7 @@
 #include <optional>
 
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailRulesInput.h"
@@ -388,7 +389,7 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
 
     CarriedKeeps& carried = botAI->rpgInfo.bankMail.bank.carried;
     carried = CarriedKeeps();
-    if (!PlayerbotFactory::KeepsPossessions(bot))
+    if (!BotKind::KeepsPossessions(bot))
         return;
 
     BankIn in;

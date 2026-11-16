@@ -2701,7 +2701,7 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (bot->isDead() && BotKind::LivingWorld())
         return;
 
-    bool const keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     if (bot->isDead() && Upkeep::Granted(bot, UpkeepKind::Resurrect, keepsPossessions))
     {
         bot->ResurrectPlayer(1.0f);
@@ -3190,7 +3190,7 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
         {
             Player* bot = itr->second;
             // A bot with a real master is left to that player (WT.15)
-            if (!bot || !bot->IsInWorld() || !PlayerbotFactory::KeepsPossessions(bot))
+            if (!bot || !bot->IsInWorld() || !BotKind::KeepsPossessions(bot))
                 continue;
 
             if (!name.empty() && bot->GetName() != name)

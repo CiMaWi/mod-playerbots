@@ -18,6 +18,7 @@
 #include "BankCommands.h"
 #include "BankMailCommands.h"
 #include "BattleGroundTactics.h"
+#include "BotKind.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
@@ -33,9 +34,11 @@
 #include "GuildTaskMgr.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
+#include "LightweightPerf.h"
 #include "MatchLog.h"
 #include "MatchTrace.h"
 #include "Matchmaker.h"
+#include "Metric.h"
 #include "NaturalTrace.h"
 #include "NewRpgAction.h"
 #include "ObjectAccessor.h"
@@ -67,8 +70,6 @@
 #include "WorldLog.h"
 #include "WorldPvp.h"
 #include "WorldSession.h"
-#include "LightweightPerf.h"
-#include "Metric.h"
 
 using namespace Acore::ChatCommands;
 
@@ -411,7 +412,7 @@ public:
         MapEntry const* destMap = sMapStore.LookupEntry(dest->mapId);
         if (!TravelGraph::Instance().IsReady())
             refusal = "the travel graph is not ready";
-        else if (!PlayerbotFactory::KeepsPossessions(bot))
+        else if (!BotKind::KeepsPossessions(bot))
             refusal = "not a persistent bot (honest travel, random bot, no real master)";
         else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
             refusal = "the bot does not run the new rpg strategy";
@@ -470,7 +471,7 @@ public:
         char const* refusal = nullptr;
         if (!graph.IsReady())
             refusal = "the travel graph is not ready";
-        else if (!PlayerbotFactory::KeepsPossessions(bot))
+        else if (!BotKind::KeepsPossessions(bot))
             refusal = "not a persistent bot (honest travel, random bot, no real master)";
         else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
             refusal = "the bot does not run the new rpg strategy";

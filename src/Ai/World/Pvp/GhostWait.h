@@ -22,7 +22,7 @@ class PlayerbotAI;
 // player-free, so tests/ghost-wait-selftest.cpp checks the same code the server runs; GhostWait.cpp is the glue
 namespace WorldPvp
 {
-// A bot's persistence (PlayerbotFactory::KeepsPossessions) is checked again after this long (a master can change)
+// A bot's persistence (the old KeepsPossessions value) is checked again after this long (a master can change)
 constexpr uint32_t PERSISTENT_RECHECK_MS = 60 * 1000;
 
 // What world PvP keeps of a bot besides its enthusiasm (PlayerbotAI::pvpMemory, lazily; not saved): its persistence

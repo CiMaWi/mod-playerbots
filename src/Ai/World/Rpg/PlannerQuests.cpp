@@ -21,6 +21,7 @@
 #include <unordered_set>
 #include <variant>
 
+#include "BotKind.h"
 #include "Chat.h"
 #include "ConditionMgr.h"
 #include "DBCStores.h"
@@ -37,7 +38,6 @@
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "QuestCircuit.h"
@@ -126,7 +126,7 @@ template <typename Event>
 void TimedEvent(Player* bot, Event const& event)
 {
     auto const started = std::chrono::steady_clock::now();
-    if (PlayerbotFactory::KeepsPossessions(bot))
+    if (BotKind::KeepsPossessions(bot))
         event(bot->GetGUID().GetCounter(), static_cast<uint32>(bot->GetLevel()));
     auto const us =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();

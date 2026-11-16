@@ -33,9 +33,6 @@ constexpr uint32_t GHOST_HEALER_RETRY_MS = 30 * 1000;
 // A ghost that cannot walk to its grave is teleported there at most this often
 constexpr uint32_t GHOST_TELEPORT_RETRY_MS = 5 * 60 * 1000;
 
-// The rules apply to persistent bots; arena instances (ArenaOnly) keep their own cycle
-inline bool AppliesTo(bool persistent, bool arenaOnly) { return persistent && !arenaOnly; }
-
 // A real player counts as a viewer unless it is an invisible game master
 inline bool IsViewer(bool gameMaster, bool gmVisible) { return !gameMaster || gmVisible; }
 
@@ -59,7 +56,7 @@ inline bool SeesTeleport(SightPoint const& viewer, SightPoint const& from, Sight
 
 struct BusyInput
 {
-    bool Honest = false;      // the rules apply (AppliesTo)
+    bool Honest = false;      // the rules apply: a persistent bot
     bool RealMaster = false;  // a real player's party bot, left to the master
     bool HasGoal = false;     // the bot pursues a goal (WT16)
     bool InCombat = false;

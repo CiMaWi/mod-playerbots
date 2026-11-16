@@ -105,10 +105,6 @@ void CheckBusy()
     legacy = BusyInput{};
     legacy.LegacyIdle = false;
     Check(WorldTravel::IsBusy(legacy), "other setups: legacy travel is busy");
-
-    Check(WorldTravel::AppliesTo(true, false), "persistent applies");
-    Check(!WorldTravel::AppliesTo(true, true), "arena instance keeps its cycle");
-    Check(!WorldTravel::AppliesTo(false, false), "non-persistent keeps its cycle");
 }
 
 void CheckCorpseRuns()
