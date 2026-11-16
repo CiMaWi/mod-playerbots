@@ -91,6 +91,7 @@ struct HeightMap
     std::uint32_t openCells{0};
     std::uint32_t closedCells{0};    // inside the box
     std::uint32_t floatingCells{0};  // closed under a floating model (FloatsOver), before the crop
+    std::uint32_t darkCells{0};      // closed over dark water (the sea's fatigue), before the crop
     std::int32_t minGround{0};
     std::int32_t maxGround{0};
 
