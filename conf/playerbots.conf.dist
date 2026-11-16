@@ -1686,11 +1686,12 @@ Playerbots.Acquaintance.NearbyRadius = 30
 # playerbots_ladder_roster, written only by depart and arrive and loaded at startup.
 # 1 (main): a member of a team that departed is away: it never logs in, also after a restart, and its team is dropped
 # from memory at startup (no DB writes). Bots never auto-queue for rated arenas (the
-# RandomBotAutoJoinBGRatedArena*Count options count as 0): main's arena matches come from the ladder only.
+# RandomBotAutoJoinBGRatedArena*Count options count as 0): main's arena matches come from the ladder only, and the
+# ladder's matchmaker (Playerbots.Ladder.Matchmaker.*) runs at this role only.
 # 2 (arena instance): only the bots the roster hosts log in (the online cap is their count at most) and every other
 # arena team is dropped from memory at startup (no DB writes; an empty roster hosts nothing). Bot arena teams are
 # never created, deleted, formed or recruited for (RandomBotArenaTeam*Count count as 0; DeleteRandomBotArenaTeams,
-# ArenaTeam.Formation.Enable and ArenaRecruit.Enable as 0).
+# ArenaTeam.Formation.Enable and ArenaRecruit.Enable as 0), and the bots buy PvP gear (PvpGear.Buy.Enable as 1).
 Playerbots.Ladder.Role = 0
 
 # Name of this server in .playerbots ladder status (e.g. main, arena1). Default: empty
