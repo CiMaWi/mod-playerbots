@@ -83,6 +83,11 @@ constexpr int32_t RPG_STATUS_HUMAN = -1;
 
 constexpr char const* EVENT_LEVEL = "Level";
 
+// Item use (WI2): a use effect's row, and its honesty site (EventLog::Honesty(bot, "ItemUse", site, entry); the
+// recorder prefixes "Honesty")
+constexpr char const* EVENT_ITEM_USE = "ItemUse";
+constexpr char const* HONESTY_ITEM_USE = "ItemUse";
+
 // Bank and mail visits (one row at a visit's end; src = how it ended). MailVisit: id packs mails opened, items taken
 // and items left for lack of space, amount = copper taken. BankVisit: id packs items deposited and withdrawn, amount =
 // free bank slots after. PackVisitCounts puts each count, capped at VISIT_COUNT_MAX, into VISIT_COUNT_BITS bits.
@@ -418,14 +423,16 @@ enum class DecisionKind : uint8_t
     FightJoin,   // world PvP (WP5): one row per bystander and fight
     Mail,
     Bank,
-    QuestUse,   // upkeep batch G (WU20b-WU20c): a quest item or spell used where its objective needs it
-    FightLeave  // world PvP (WP24): one row per engaged episode a bot leaves by its enthusiasm
+    QuestUse,    // upkeep batch G (WU20b-WU20c): a quest item or spell used where its objective needs it
+    FightLeave,  // world PvP (WP24): one row per engaged episode a bot leaves by its enthusiasm
+    ItemSpend,   // item use (WI2): the spend rule's verdict on one item
+    ItemBuff     // item use (WI2): the buff picker's choice
 };
 
-constexpr size_t DECISION_KIND_COUNT = 15;
+constexpr size_t DECISION_KIND_COUNT = 17;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status", "route",       "trip",       "errand", "inn",  "upkeep",    "death",      "circuit",
-    "goal",       "fight_start", "fight_join", "mail",   "bank", "quest_use", "fight_leave"};
+    "rpg_status",  "route",      "trip", "errand", "inn",       "upkeep",      "death",      "circuit",  "goal",
+    "fight_start", "fight_join", "mail", "bank",   "quest_use", "fight_leave", "item_spend", "item_buff"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

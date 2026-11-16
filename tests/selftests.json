@@ -87,6 +87,21 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "config-table-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Ai/World/Rpg",
+                "{core}/src/common"
+            ],
+            "sources": [
+                "src/Ai/World/Rpg/BankMailConfig.cpp"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "config-table: \\d+ passed, 0 failed"
+        },
+        {
             "file": "enthusiasm-selftest.cpp",
             "includes": [
                 "src/Ai/World/Pvp"
@@ -149,6 +164,26 @@
             "file": "goal-model-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-dump-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-index-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
             ],
             "success": "\\d+ passed, 0 failed"
         },
