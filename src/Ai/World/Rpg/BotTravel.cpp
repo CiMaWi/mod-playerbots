@@ -47,7 +47,8 @@ uint64 BattlegroundBoatGuid(Player const& bot)
 {
     BattlegroundMap* const map = bot.FindMap() ? bot.FindMap()->ToBattlegroundMap() : nullptr;
     Battleground* const bg = map ? map->GetBG() : nullptr;
-    if (!bg || bg->GetBgTypeID() != BATTLEGROUND_SA)
+    // The rolled type: a game from the random queue carries BATTLEGROUND_RB as its own
+    if (!bg || bg->GetBgTypeID(true) != BATTLEGROUND_SA)
         return 0;
     GameObject const* nearer = bg->GetBGObject(BG_SA_BOAT_ONE);
     GameObject const* const other = bg->GetBGObject(BG_SA_BOAT_TWO);
