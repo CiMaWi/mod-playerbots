@@ -382,9 +382,13 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     // far node (fallback) or fails the leg (refused). A refusal where the bot stands off the mesh goes to the off-mesh
     // recovery instead, as MoveFarTo's own probe does
     TravelWalk::LinkWalk* const walk = travel && travel->trip.walk.Active() ? &travel->trip.walk : nullptr;
+    // WT71: the moves ordered below are counted on their path's answer; a walk's hop is counted in the link's hops
+    bool hopCounted = false;
+    MeshMove::Kind const meshKind = walk ? MeshMove::Kind::TravelWalk : MeshMove::Kind::Other;
     auto const taken = [&](PathGenerator const& path, bool result, bool direct)
     {
         TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest), direct);
+        hopCounted = verdict == TravelWalk::Verdict::Hop;
         if (verdict == TravelWalk::Verdict::Refuse && BotOffMesh())
         {
             walk->mode = TravelWalk::Mode::Fallback;
@@ -402,6 +406,12 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
             bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
             if (!taken(path, result, true))
                 return true;
+            bool const moved = MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
+                                      false, false, false, true);
+            if (moved)
+                botAI->GetTravel().NoteMeshMove(meshKind, path.GetPathType(), MeshMove::LastStep(path.GetPath()),
+                                                hopCounted);
+            return moved;
         }
         return MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false, false,
                       false, true);
@@ -437,7 +447,10 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
             float endDistToDest = dest.GetExactDist(endPos.x, endPos.y, endPos.z);
             if (endDistToDest + 5.0f < disToDest)
             {
-                return MoveTo(bot->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, true);
+                bool const moved = MoveTo(bot->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, true);
+                if (moved)
+                    botAI->GetTravel().NoteMeshMove(meshKind, type, MeshMove::LastStep(path.GetPath()), hopCounted);
+                return moved;
             }
         }
     }
@@ -454,6 +467,8 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     const float baseAngle = bot->GetAngle(&dest);
     float rx, ry, rz;
     bool found = false;
+    uint32 foundType = 0;
+    float foundLastStep = 0.0f;
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         float delta = (rand_norm() - 0.5f) * static_cast<float>(M_PI);  // ±π/2, forward cone
@@ -474,6 +489,8 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
             rx = endPos.x;
             ry = endPos.y;
             rz = endPos.z;
+            foundType = type;
+            foundLastStep = MeshMove::LastStep(path.GetPath());
             minDelta = fabs(delta);
         }
     }
@@ -481,7 +498,10 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     {
         if (walk)
             TravelWalk::NoteMove(*walk);
-        return MoveTo(bot->GetMapId(), rx, ry, rz, false, false, false, true);
+        bool const moved = MoveTo(bot->GetMapId(), rx, ry, rz, false, false, false, true);
+        if (moved)
+            botAI->GetTravel().NoteMeshMove(meshKind, foundType, foundLastStep);
+        return moved;
     }
     return false;
 }
@@ -560,7 +580,10 @@ bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority,
 
         bool moved = MoveTo(bot->GetMapId(), dx, dy, dz, false, false, false, true, priority);
         if (moved)
+        {
+            botAI->GetTravel().NoteMeshMove(MeshMove::Kind::Other, type, MeshMove::LastStep(path.GetPath()));
             return true;
+        }
     }
 
     return false;

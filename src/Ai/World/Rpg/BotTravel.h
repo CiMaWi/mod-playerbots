@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "Define.h"
+#include "MeshMoveRules.h"
 #include "NewRpgInfo.h"
 #include "ObjectGuid.h"
 #include "TravelLifecycleTypes.h"
@@ -72,6 +73,11 @@ public:
     // The miss switch's travel bits (Aboard, Loot, MountTrace; PlayerbotAI::LogPreGateMisses)
     void LogPreGateMisses(uint32 work) const;
 
+    // One move the bot ordered (WT71; MeshMoveRules.h): its kind, the path's PathType bits and last step. counted: the
+    // class is already counted elsewhere (a walk link's hop). The flush is PreGate's, once per
+    // MeshMove::MISS_INTERVAL_MS
+    void NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted = false);
+
     // The next route request id (TravelRoute::Snapshot::requestId). The ids run on across trips and resets (a reset
     // renews NewRpgInfo, not this block): ids restarting at 0 would let an older answer pass Judge as current
     uint32 NextRouteRequest() { return ++routeRequests; }
@@ -89,10 +95,11 @@ private:
     MountPath tracedMount = MountPath::None;
     uint32 tracedMountAt = 0;
     TravelLifecycle::Cadence passengerCadence;
-    uint32 aboardEntry = 0;    // BeginAboard's transport; 0 = none pending
-    uint64 aboardGuid = 0;     // that transport's guid (the passenger check's boarding intent)
-    uint32 aboardSinceMs = 0;  // getMSTime() of the placement
-    uint32 routeRequests = 0;  // the bot's route request ids, across trips
+    uint32 aboardEntry = 0;        // BeginAboard's transport; 0 = none pending
+    uint64 aboardGuid = 0;         // that transport's guid (the passenger check's boarding intent)
+    uint32 aboardSinceMs = 0;      // getMSTime() of the placement
+    uint32 routeRequests = 0;      // the bot's route request ids, across trips
+    MeshMove::Counters meshMoves;  // the moves ordered and not carried by the navmesh since the last flush
 };
 
 #endif
