@@ -6,7 +6,6 @@
 
 #include "BankMailService.h"
 #include "BankMailState.h"
-#include "BotKind.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
 #include "PlannerService.h"
@@ -34,8 +33,8 @@ bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
     if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
         return false;
 
-    return BotKind::LivingWorld() && !IsRealPlayer(botAI->GetMaster()) && !bot->IsInCombat() && bot->IsAlive() &&
-           !bot->GetGroup() && !bot->GetMap()->Instanceable();
+    return botAI->KeepsPossessions() && !bot->IsInCombat() && bot->IsAlive() && !bot->GetGroup() &&
+           !bot->GetMap()->Instanceable();
 }
 
 bool WorldTravel::RepairErrandWanted(Player* bot)

@@ -18,7 +18,6 @@
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
-#include "BotKind.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
 #include "DBCStores.h"
@@ -84,12 +83,12 @@ std::vector<TravelMgr::TrainerInfo const*> StableMasterSpawns(Player* bot, float
 // Mailboxes and bankers (each kind's nearest few) that join the trip's stops by position
 constexpr std::size_t BANK_MAIL_STOPS = 4;
 
-// The bank and mail part of the trip planner's view (WB8): only a bot the bank rule governs (no real master, keeps its
-// possessions). With an errand to offer, the nearest mailboxes and bankers serving the bot within the walk limit go
-// onto the vendor stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
+// The bank and mail part of the trip planner's view (WB8): only a bot the bank rule governs (keeps its possessions).
+// With an errand to offer, the nearest mailboxes and bankers serving the bot within the walk limit go onto the vendor
+// stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
 void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel::ErrandSnapshot& snapshot)
 {
-    snapshot.Governed = !botAI->HasGameClientMaster() && BotKind::KeepsPossessions(bot);
+    snapshot.Governed = botAI->KeepsPossessions();
     if (!snapshot.Governed)
         return;
 

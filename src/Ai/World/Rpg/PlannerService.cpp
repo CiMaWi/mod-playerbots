@@ -18,7 +18,6 @@
 #include "Bag.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
-#include "BotKind.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
 #include "Chat.h"
@@ -293,11 +292,8 @@ private:
 
 bool Weighted(Player* bot) { return GoalApply::InWeightedGroup(bot->GetGUID().GetCounter()); }
 
-// The scope right now: no real master, the bot keeps its possessions (rare: once per job and per applied answer)
-bool InScopeNow(PlayerbotAI* botAI, Player* bot)
-{
-    return !botAI->HasGameClientMaster() && BotKind::KeepsPossessions(bot);
-}
+// The scope right now: the bot keeps its possessions (no master at a game client)
+bool InScopeNow(PlayerbotAI* botAI) { return botAI->KeepsPossessions(); }
 
 std::string ChoiceOf(GoalApply::Active const& goal)
 {
@@ -599,7 +595,7 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         Publish(bot, goals);
         return;
     }
-    if (!InScopeNow(botAI, bot))
+    if (!InScopeNow(botAI))
     {
         scopeRefused.fetch_add(1, std::memory_order_relaxed);
         goals.lastRejected = true;
@@ -653,8 +649,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoal
                                         : -1.0f;
     situation.external = goals.external;
     // Class quests (upkeep WU20a): a governed bot's facts for the unlock bonus; the job adds the trainer's spells
-    situation.governed = GoalApply::Governed(BotKind::KeepsPossessions(bot) && !botAI->HasGameClientMaster(),
-                                             bot->GetGUID().GetCounter());
+    situation.governed = GoalApply::Governed(botAI->KeepsPossessions(), bot->GetGUID().GetCounter());
     if (situation.governed)
     {
         situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
@@ -801,13 +796,13 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle)
 void PlannerHook(PlayerbotAI* botAI, Player* bot)
 {
     RowTimer const timer("planner hook");
-    // The scope (KeepsPossessions: lookups in the random bot lists) is checked again only when the state key
-    // changes; a real master takes a bot through a group invite, which changes the key. Bit 31 keeps the verdict
+    // The scope (KeepsPossessions: two flags and the master) is compared on every update, beside the state key, so a
+    // master that changes nothing in the key still takes the bot out of scope. Bit 31 keeps the verdict
     Planner::BotState& state = botAI->planner;
-    uint32 const key = StateKey(bot);
-    if (key != (state.stateKey & ~STATE_SCOPE_BIT))
+    uint32 const key = StateKey(bot) | (botAI->KeepsPossessions() ? STATE_SCOPE_BIT : 0);
+    if (key != state.stateKey)
     {
-        state.stateKey = key | (BotKind::KeepsPossessions(bot) ? STATE_SCOPE_BIT : 0);
+        state.stateKey = key;
         ++state.stateVersion;
         state.snapshotDue = true;
         if (state.goals)
@@ -875,13 +870,6 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     {
         if (!due || (!first && sinceSnapshot < GoalApply::MIN_SNAPSHOT_MS))
             return;
-        // The cached scope misses a real player's invite that changed nothing in the key: checked again here
-        if (!InScopeNow(botAI, bot))
-        {
-            scopeRefused.fetch_add(1, std::memory_order_relaxed);
-            state.stateKey &= ~STATE_SCOPE_BIT;
-            return;
-        }
         SubmitGoals(botAI, bot, state, now);
         return;
     }
@@ -1027,7 +1015,7 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::BridgeFacts facts;
     // The planner's scope as OnIdle sees it: only there does the goal go on and end
     facts.inScope =
-        sPlayerbotAIConfig.WorldTravel.PlannerGoals && (state.stateKey & STATE_SCOPE_BIT) && InScopeNow(botAI, bot);
+        sPlayerbotAIConfig.WorldTravel.PlannerGoals && (state.stateKey & STATE_SCOPE_BIT) && InScopeNow(botAI);
     if (facts.inScope && state.goals)
         facts.current = state.goals->slot.Query();
     bool const trip = order == BridgeOrder::GoTo || order == BridgeOrder::MeetAt;

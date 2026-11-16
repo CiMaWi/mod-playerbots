@@ -161,13 +161,12 @@ void ReadSpells(Player* bot, std::vector<BotStateItem>& items)
         items.push_back(std::move(spell.second));
 }
 
-// The planner topics read the view the bot's map thread published; out of the planner's scope (a real master, not
-// persistent, Planner.Goals off) the planner sets no goal, so they show none
+// The planner topics read the view the bot's map thread published; out of the planner's scope (a master at a game
+// client, not persistent, Planner.Goals off) the planner sets no goal, so they show none
 Topics::PlanInput PlanInputOf(Player* bot, PlayerbotAI* ai)
 {
     Topics::PlanInput in;
-    in.inScope =
-        sPlayerbotAIConfig.WorldTravel.PlannerGoals && !ai->HasGameClientMaster() && BotKind::KeepsPossessions(bot);
+    in.inScope = sPlayerbotAIConfig.WorldTravel.PlannerGoals && ai->KeepsPossessions();
     in.seen = in.inScope && Planner::PublishedPlan(bot->GetGUID().GetRawValue(), in.view);
     in.nowMs = getMSTime();
     in.x = bot->GetPositionX();

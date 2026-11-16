@@ -77,7 +77,7 @@ bool DestroyItemAction::DestroyOne(Item* item)
 // A test's nodestroy bot destroys nothing on its own (TestConstraints::DestroysForSpace)
 bool SmartDestroyItemAction::isUseful()
 {
-    return !IsRealPlayer(botAI->GetMaster()) && TestConstraints::DestroysForSpace(botAI->testConstraints);
+    return !botAI->HasGameClientMaster() && TestConstraints::DestroysForSpace(botAI->testConstraints);
 }
 
 bool SmartDestroyItemAction::Execute(Event /*event*/)

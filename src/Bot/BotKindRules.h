@@ -30,8 +30,12 @@ inline bool LivingWorld(bool persistentKey, bool arenaRole, bool arenaOnly)
 // A and B: a random bot of a living world, whoever leads it
 inline bool IsPersistentBot(bool livingWorld, bool randomBot) { return livingWorld && randomBot; }
 
-// Whether a master takes the bot's possessions and plans out of its own hands: a person playing by hand
-inline bool MasterCounts(MasterKind master) { return master == MasterKind::RealPlayer; }
+// Whether a master takes the bot's possessions and plans out of its own hands: a person at a game client, playing
+// by hand or as a selfbot (PlayerbotAI::HasGameClientMaster)
+inline bool MasterCounts(MasterKind master)
+{
+    return master == MasterKind::RealPlayer || master == MasterKind::SelfBot;
+}
 
 // A and B and not C: a persistent bot nobody at a game client leads keeps what it owns (upkeep, bank, mail, planner)
 inline bool KeepsPossessions(bool persistentBot, MasterKind master) { return persistentBot && !MasterCounts(master); }
