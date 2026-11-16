@@ -434,7 +434,6 @@ public:
     uint32 AcquaintanceGuildSampleSeconds;
     uint32 AcquaintanceNearbyIntervalSeconds;
     float AcquaintanceNearbyRadius;
-    bool LadderEnable;
     uint32 LadderRole;
     std::string LadderServerId;
     uint32 MatchLogTraceEvery;
@@ -504,11 +503,10 @@ public:
     uint8 NaturalReactionContexts;
     ReactionParams NaturalReaction;
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
-    // started match (NaturalReaction.h). NearRealPlayerYards is read but inert: no cached proximity flag exists yet.
+    // started match (NaturalReaction.h)
     uint32 NaturalCadenceCheckMs;
     uint32 NaturalCadenceStaggerMs;
     uint8 NaturalCadenceContexts;
-    float NaturalCadenceNearRealPlayerYards;
     // Playerbots.Natural.Cadence.SkillStretch (G6d-a): the skill's stretch (Skill.React*) stays where the cadence and
     // the reaction model both run, so it scales the cadence's check interval (0: factor 1 there, the reaction model
     // carries the skill)

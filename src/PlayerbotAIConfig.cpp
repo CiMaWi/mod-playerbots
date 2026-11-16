@@ -796,7 +796,6 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
     AcquaintanceNearbyRadius =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
-    LadderEnable = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Enable", false);
     LadderRole = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
                                     LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
     LadderServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
@@ -1082,8 +1081,6 @@ bool PlayerbotAIConfig::Initialize()
             std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);
         NaturalCadenceStaggerMs = std::clamp<uint32>(
             sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.StaggerMs", 20), 0, UPSTREAM_CHECK_STAGGER_MS);
-        NaturalCadenceNearRealPlayerYards = std::clamp(
-            sConfigMgr->GetOption<float>("Playerbots.Natural.Cadence.NearRealPlayerYards", 0.0f), 0.0f, 500.0f);
         uint8 const matches =
             static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
         std::string const cadenceContexts =

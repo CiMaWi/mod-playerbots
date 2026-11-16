@@ -349,7 +349,7 @@ bool BGJoinAction::isUseful()
     if (bot->InBattlegroundQueue())
         return false;
 
-    // Playerbots.Ladder.Enable: a member of a departing arena team does not queue
+    // Ladder moves (Playerbots.Ladder.Role): a member of a departing arena team does not queue
     if (LadderMgr::Instance().IsQueueBlocked(bot))
         return false;
 

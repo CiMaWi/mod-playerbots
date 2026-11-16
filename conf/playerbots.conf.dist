@@ -1669,8 +1669,8 @@ Playerbots.Acquaintance.GuildSampleSeconds = 60
 Playerbots.Acquaintance.NearbyIntervalSeconds = 10
 Playerbots.Acquaintance.NearbyRadius = 30
 
-# Runtime arena team moves (1 = on, 0 = off)
-# When 1, the GM/console commands .playerbots ladder depart <arenaTeamId> | arrive <arenaTeamId> | status [<id>] move
+# Runtime arena team moves (with Playerbots.Ladder.Role = 1 or 2, below)
+# The GM/console commands .playerbots ladder depart <arenaTeamId> | arrive <arenaTeamId> | status [<id>] move
 # one random bot arena team out of and back into the running server. depart stops the members queueing, waits until
 # none of them is queued or in a battleground (refused while the team is pinned, see Playerbots.Ladder.ContactMinutes),
 # logs them out, saves the team and drops it from memory (no DB row is deleted); arrive loads the team again from its
@@ -1678,12 +1678,11 @@ Playerbots.Acquaintance.NearbyRadius = 30
 # Also: .playerbots ladder teams [pinned|busy] (the teams in memory with rating, MMR, members online, time hosted,
 # busy and pinned), pin <arenaTeamId> [minutes] (a GM pin, test aid; 0 unpins), drain (no arena team member queues;
 # queued members and running matches carry on; not kept over a restart) and undrain. Meant for the hub's ladder
-# tooling. With 0 (default) the commands refuse unless Playerbots.Ladder.Role is set.
-Playerbots.Ladder.Enable = 0
-
+# tooling. With Playerbots.Ladder.Role = 0 the commands refuse.
+#
 # Ladder role of this server (0 = off, 1 = main, 2 = arena instance). Read at startup.
-# 0 (default): as without the option; the moves follow Playerbots.Ladder.Enable and keep who is away in memory only.
-# 1 and 2 turn the moves on (whatever Playerbots.Ladder.Enable says) and keep a roster in the playerbots table
+# 0 (default): as without the option; the moves are off.
+# 1 and 2 turn the moves on and keep a roster in the playerbots table
 # playerbots_ladder_roster, written only by depart and arrive and loaded at startup.
 # 1 (main): a member of a team that departed is away: it never logs in, also after a restart, and its team is dropped
 # from memory at startup (no DB writes). Bots never auto-queue for rated arenas (the
@@ -1933,8 +1932,7 @@ Playerbots.Natural.Reaction.Positioning.Enable = 0
 # contexts), the skill's stretch of the check interval (Playerbots.Skill.React*) is off (factor 1) and the reaction
 # model carries the skill; elsewhere the stretch stays as the cheap fallback. No check is woken for a reaction that
 # comes due. While it runs, the cure and dispel triggers and the party dispel value look at least every CheckMs
-# (else once a second). NearRealPlayerYards (0 = off) is reserved for open-world bots near a real player: the bots
-# cache no proximity flag yet, so it has no effect. Contexts as in Playerbots.Natural.Reaction.Contexts. With
+# (else once a second). Contexts as in Playerbots.Natural.Reaction.Contexts. With
 # Playerbots.PerfMonEnabled the rows NaturalTiming::Checks (scope) and NaturalTiming::Checks (combat) (counts in the
 # blocks column), NaturalTiming::Time (combat) (the bot time in combat in scope, not a cost: checks per second per
 # bot = Checks (combat) / its total in seconds), NaturalTiming::UpdateAIInternal (scope), NaturalReaction::HasReacted
@@ -1944,11 +1942,10 @@ Playerbots.Natural.Reaction.Positioning.Enable = 0
 # CheckMs is then multiplied by the bot's factor (Playerbots.Skill.ReactFactorAtSkill1 .. AtSkill99, e.g. 3.0 .. 0.5:
 # 300 ms at skill 1, 50 ms at skill 99 with CheckMs 100), as is the reaction engine's reset delay, on top of the
 # reaction model; 0 leaves the factor 1 there.
-# Default: CheckMs 100, StaggerMs 20, Contexts "Arena,Battleground", NearRealPlayerYards 0, SkillStretch 0
+# Default: CheckMs 100, StaggerMs 20, Contexts "Arena,Battleground", SkillStretch 0
 Playerbots.Natural.Cadence.CheckMs = 100
 Playerbots.Natural.Cadence.StaggerMs = 20
 Playerbots.Natural.Cadence.Contexts = "Arena,Battleground"
-Playerbots.Natural.Cadence.NearRealPlayerYards = 0
 Playerbots.Natural.Cadence.SkillStretch = 0
 
 # Natural facing and turning (G2a): in Contexts (a tactic scope; PvP fights only unless OutsidePvpInSight) a bot that
