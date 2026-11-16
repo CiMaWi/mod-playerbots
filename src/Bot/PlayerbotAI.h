@@ -29,6 +29,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
+#include "QuestStatTypes.h"
 #include "SpellAuras.h"
 #include "TacticIds.h"
 #include "Util.h"
