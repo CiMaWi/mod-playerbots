@@ -770,6 +770,23 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     return rates;
 }
 
+bool BotNeedsNow(Player* bot, PlayerbotAI* botAI, Snapshot& snapshot, UpkeepNeeds::NeedRates& rates,
+                 UpkeepNeeds::NeedList& list)
+{
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    if (!index)
+        return false;
+
+    // Commands and the bridge's topic reads run on the world thread inside World::Update, outside MapMgr::Update (which
+    // waits for its map threads), so no map thread touches the bot while the snapshot reads it, as for every GM
+    // command on a player
+    PLAYERBOT_CHECK_WORLD_THREAD("planner needs");
+    snapshot = FillSnapshot(bot, 0);
+    rates = BotNeedRates(botAI, snapshot);
+    list = UpkeepNeeds::ComputeNeeds(snapshot, *index, rates);
+    return true;
+}
+
 bool HandleNeedsCommand(ChatHandler* handler, char const* args)
 {
     std::istringstream in(args ? args : "");
@@ -787,19 +804,15 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage("PLANNER: {} is not an online bot", name);
         return false;
     }
-    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
-    if (!index)
+    Snapshot snapshot;
+    UpkeepNeeds::NeedRates rates;
+    UpkeepNeeds::NeedList list;
+    if (!BotNeedsNow(bot, botAI, snapshot, rates, list))
     {
         handler->SendErrorMessage("PLANNER: the upkeep index is not ready");
         return false;
     }
-
-    // Commands run on the world thread inside World::Update, outside MapMgr::Update (which waits for its map
-    // threads), so no map thread touches the bot while the snapshot reads it, as for every GM command on a player
-    PLAYERBOT_CHECK_WORLD_THREAD("planner needs");
-    Snapshot const snapshot = FillSnapshot(bot, 0);
-    UpkeepNeeds::NeedRates const rates = BotNeedRates(botAI, snapshot);
-    UpkeepNeeds::NeedList const list = UpkeepNeeds::ComputeNeeds(snapshot, *index, rates);
+    std::shared_ptr<UpkeepIndex const> const index = CurrentUpkeepIndex();
     bool const measured =
         botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().HasTravel;
     handler->PSendSysMessage(

@@ -31,6 +31,7 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "ItemUseIndex.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
 #include "LootObjectStack.h"
@@ -49,6 +50,7 @@
 #include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
+#include "PvpTestUtil.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "ServerScript.h"
@@ -668,6 +670,7 @@ public:
             Planner::StartQuestIndex();      // the same for the quest index
             Planner::StartUpkeepIndex();     // and for the upkeep index
             Planner::StartFlightMap();       // the flying height maps, read on their own thread
+            ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
@@ -790,12 +793,12 @@ public:
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
         FocusClearArenaMarks(bg);          // Map thread: the team plan's skull and moon go (Playerbots.Tactics.Enable)
-        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record (Playerbots.MatchLog.Enable)
+        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record
         PvpGearMgr::QueueMatchEnd(bg);     // Map thread: a rated arena's players get a buy check on the world thread
         BotProfileMgr::QueueMatchEnd(bg);  // Map thread: the bots' skill growth (Playerbots.Skill.Growth.Enable)
     }
 
-    // Map thread: a ladder bot puts its PvP loadout on (Playerbots.PvpGear.Wear; queued to the world thread)
+    // Map thread: a ladder bot puts its PvP loadout on (queued to the world thread)
     void OnBattlegroundAddPlayer(Battleground* /*bg*/, Player* player) override { PvpGearMgr::QueueWear(player); }
 
     // Map thread: the loadout comes off and the PvE gear back on (queued to the world thread)
@@ -822,7 +825,7 @@ void AddPlayerbotsSelfBotAfkScripts();
 void AddPvpTestFightScripts();
 void AddGhostWaitScripts();
 void AddWorldPvpScripts();
-void AddCcTacticScripts();
+void AddCcTacticScripts(bool harness);
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -838,6 +841,7 @@ void AddSC_match_trace();
 void AddSC_matchmaker();
 void AddSC_natural_trace();
 void AddSC_population();
+void AddSC_config_tables();
 
 void AddPlayerbotsScripts()
 {
@@ -852,10 +856,17 @@ void AddPlayerbotsScripts()
     new PlayerBotsBGScript();
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
-    AddPvpTestFightScripts();
+    // CS25b: the PvP harness's hooks only where Playerbots.PvpTest.Enable is on at startup. The config files are
+    // loaded by now, PlayerbotAIConfig only later (OnBeforeWorldInitialized): read the option itself.
+    bool const pvpTestHooks = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
+    SetPvpTestHooks(pvpTestHooks);
+    LOG_INFO("server.loading", "PvpTest harness hooks: {} (Playerbots.PvpTest.Enable = {})",
+             pvpTestHooks ? "registered" : "not registered", pvpTestHooks ? 1 : 0);
+    if (pvpTestHooks)
+        AddPvpTestFightScripts();
     AddWorldPvpScripts();
     AddGhostWaitScripts();
-    AddCcTacticScripts();
+    AddCcTacticScripts(pvpTestHooks);
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();
     AddSC_MagtheridonBotScripts();
@@ -873,4 +884,5 @@ void AddPlayerbotsScripts()
     AddSC_matchmaker();
     AddSC_natural_trace();
     AddSC_population();
+    AddSC_config_tables();
 }

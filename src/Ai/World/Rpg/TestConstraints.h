@@ -33,7 +33,9 @@ constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (ban
 constexpr std::uint16_t NOTAXI = 512;     // plans no flight leg (travel WT55a: walk-only trips)
 // mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
 constexpr std::uint16_t NOMOUNT = 1024;
-constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
+constexpr std::uint16_t FLEE = 2048;     // in PvP combat it flees from the enemy players attacking it (world PvP)
+constexpr std::uint16_t NOUSE = 4096;    // uses no item on its own; only the console's requests pass (item use WI2)
+constexpr std::uint16_t NOSPEND = 8192;  // counts as a member of the item use control cohort (item use WI10)
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -63,6 +65,8 @@ constexpr Row ROWS[] = {
     {"notaxi", Kind::State, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
     {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
+    {"nouse", Kind::State, NOUSE, "use path: the bot uses no item on its own; only the console's requests pass"},
+    {"nospend", Kind::State, NOSPEND, "spend rule and buff picker: the bot counts as a member of the control cohort"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -182,6 +186,12 @@ inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
+// nouse, read by the item use gates (UseItemAction, UseTrinketAction, PlayerbotAI::ImbueItem; nothing to apply or
+// undo): the bot uses no item on its own, so a test's console request is the only use
+inline bool UsesItemsOnItsOwn(std::uint16_t set) { return !(set & NOUSE); }
+// nospend, read by the item spend rule and the buff picker (nothing to apply or undo): true when the bot spends
+// normally; the control cohort reads !SpendsOnItsOwn
+inline bool SpendsOnItsOwn(std::uint16_t set) { return !(set & NOSPEND); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

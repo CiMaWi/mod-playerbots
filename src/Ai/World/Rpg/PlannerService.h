@@ -29,7 +29,8 @@ class PlayerbotAI;
 namespace UpkeepNeeds
 {
 struct NeedRates;
-}
+struct NeedList;
+}  // namespace UpkeepNeeds
 
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
@@ -163,6 +164,11 @@ bool WeaponToLearn(Player* bot, ItemTemplate const* proto);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
+// World thread (PLAYERBOT_CHECK_WORLD_THREAD, no map updates): the bot's snapshot, rates and needs list, as `planner
+// needs` and the bridge's `needs` topic read them (one source); false while the upkeep index is not ready. The caller
+// includes UpkeepNeedRules.h.
+bool BotNeedsNow(Player* bot, PlayerbotAI* botAI, Snapshot& snapshot, UpkeepNeeds::NeedRates& rates,
+                 UpkeepNeeds::NeedList& list);
 // `playerbots planner needs <bot>`: an online bot's needs, reserve and shortfall (UpkeepNeedRules.h), from a snapshot
 // taken on the world thread while no map updates
 bool HandleNeedsCommand(ChatHandler* handler, char const* args);

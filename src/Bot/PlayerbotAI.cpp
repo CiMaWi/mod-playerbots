@@ -475,7 +475,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G0h3-b where the natural reaction runs (its contexts, combat in a started match, a skill): the opponent memory,
     // the busy bot and the queue-like follow-up
     uint32 const nowMs = getMSTime();
-    ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
     bool const busyModel = tactics->stretchOff && tactics->cadenceCombat && pvpSkill != 0;
     // The tactics' check hook: the opponent memory, the tracking ring and the interrupt, focus and defensive
     // followers, for a bot the live test admits (the meter's count of live AI checks)
@@ -599,7 +598,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 else
                 {
                     // Wait for spell cast
-                    if (busyModel && reaction.Queue.Enable)
+                    if (busyModel)
                         yieldQueued(ownLeft);
                     else
                         YieldThread(bot, GetReactDelay());
@@ -667,7 +666,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         tactics->NoteUnfollowedStop(nowMs);
 
     // The GCD of the spell the bot cast last (its end noted once, when it begins): the queue's follow-up
-    if (busyModel && reaction.Queue.Enable && nextAICheckDelay == 0)
+    if (busyModel && nextAICheckDelay == 0)
     {
         LastSpellCast const& last = aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get();
         SpellInfo const* const info = last.id ? sSpellMgr->GetSpellInfo(last.id) : nullptr;
@@ -6575,7 +6574,7 @@ void PlayerbotAI::ImbueItem(Item* item, uint8 targetInventorySlot)
 // generic item use method
 void PlayerbotAI::ImbueItem(Item* item, uint32 targetFlag, ObjectGuid targetGUID)
 {
-    if (!item)
+    if (!item || !TestConstraints::UsesItemsOnItsOwn(testConstraints))  // nouse (item-use WI2): WI5 removes it
         return;
 
     uint32 glyphIndex = 0;

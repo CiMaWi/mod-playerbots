@@ -166,7 +166,7 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"attack enemy player", C::TargetSwitch},
         {"cc retarget", C::TargetSwitch},  // OwnCc drops a target its team holds in CC (G4b)
         {"attack enemy flag carrier", C::TargetSwitch},
-        // Out of a ground effect (G0h3-b; a reaction only, Playerbots.Natural.Reaction.Movement.Enable)
+        // Out of a ground effect (G0h3-b; a reaction only)
         {"avoid aoe", C::Movement},
         // Cover and line of sight (G2e, G2f; reactions only, Playerbots.Natural.Reaction.Positioning.Enable)
         {"regain los", C::Positioning},
@@ -282,13 +282,11 @@ float SkillMultiplier::GetValue(Action* action)
     if (category == SkillNoticeCategory::None)
         return 1.0f;
 
-    // avoid aoe is a reaction only (G0h3-b): through the natural model with its Movement part, else at once
-    // (regain los, break los and pillar step the same with their Positioning part: G2e, G2f)
+    // avoid aoe is a reaction only (G0h3-b): through the natural model, else at once (regain los, break los and
+    // pillar step the same with their Positioning part: G2e, G2f)
     bool const positioning = category == SkillNoticeCategory::Positioning;
     bool const movement = category == SkillNoticeCategory::Movement || positioning;
-    if (movement && (!sPlayerbotAIConfig.NaturalReactionActive ||
-                     !(positioning ? sPlayerbotAIConfig.NaturalReaction.PositioningEnable
-                                   : sPlayerbotAIConfig.NaturalReaction.MovementEnable)))
+    if (movement && positioning && !sPlayerbotAIConfig.NaturalReaction.PositioningEnable)
         return 1.0f;
 
     if (botAI->IsSkillExempt())
@@ -307,9 +305,7 @@ float SkillMultiplier::GetValue(Action* action)
 
     SkillNoticeCounters& counters = botAI->GetSkillNoticeCounters();
     size_t const index = static_cast<size_t>(category) - 1;
-    bool const noticed = sPlayerbotAIConfig.NaturalReactionActive
-                             ? HasReacted(category, actionClass.Ease, action, switchTarget)
-                             : HasNoticed(category);
+    bool const noticed = HasReacted(category, actionClass.Ease, action, switchTarget);
     if (noticed)
     {
         ++counters.allowed[index];
@@ -482,35 +478,28 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
     ReactionEventInputs inputs;
     // Choice: a switch and crowd control weigh the attackers the bot has already listed (no new scan); casts worth a
     // kick and party members to dispel have no count without one, so they are one option
-    if (params.Choice.Enable &&
-        (category == SkillNoticeCategory::TargetSwitch || category == SkillNoticeCategory::CrowdControl))
+    if (category == SkillNoticeCategory::TargetSwitch || category == SkillNoticeCategory::CrowdControl)
         inputs.Options = std::max<uint32>(1, static_cast<uint32>(AI_VALUE_LAZY(GuidVector, "attackers").size()));
 
-    if (params.Load.Enable)
+    size_t const index = static_cast<size_t>(category) - 1;
+    uint8 const rank = ReactionImportance(category);
+    inputs.LoadTop = true;
+    for (size_t other = 0; other < ReactionCategories; ++other)
     {
-        size_t const index = static_cast<size_t>(category) - 1;
-        uint8 const rank = ReactionImportance(category);
-        inputs.LoadTop = true;
-        for (size_t other = 0; other < ReactionCategories; ++other)
-        {
-            if (other == index || !reactionNatural[other] || !ReactionEventPending(reactionEvents[other], nowMs))
-                continue;
+        if (other == index || !reactionNatural[other] || !ReactionEventPending(reactionEvents[other], nowMs))
+            continue;
 
-            ++inputs.Load;
-            if (ReactionImportance(static_cast<SkillNoticeCategory>(other + 1)) >= rank)
-                inputs.LoadTop = false;
-        }
+        ++inputs.Load;
+        if (ReactionImportance(static_cast<SkillNoticeCategory>(other + 1)) >= rank)
+            inputs.LoadTop = false;
     }
 
-    if (params.Ease.Enable)
-    {
-        inputs.Ease = ease;
-        // An action on an enemy that is not the bot's target acts on a new target, on its focus target (G4e) at the
-        // focus ease; on a friend the button's ease stays
-        if (ease != ReactionEase::NewTarget && target && target != bot && bot->IsHostileTo(target) &&
-            AI_VALUE(Unit*, "current target") != target)
-            inputs.Ease = FocusActionEase(ease, true, botAI->GetTactics().GetFocusState().Target.Is(target->GetGUID()));
-    }
+    inputs.Ease = ease;
+    // An action on an enemy that is not the bot's target acts on a new target, on its focus target (G4e) at the focus
+    // ease; on a friend the button's ease stays
+    if (ease != ReactionEase::NewTarget && target && target != bot && bot->IsHostileTo(target) &&
+        AI_VALUE(Unit*, "current target") != target)
+        inputs.Ease = FocusActionEase(ease, true, botAI->GetTactics().GetFocusState().Target.Is(target->GetGUID()));
 
     if (category != SkillNoticeCategory::Interrupt)
         return inputs;
@@ -526,12 +515,11 @@ ReactionEventInputs SkillMultiplier::EventInputs(SkillNoticeCategory category, R
         if (decided && decided->Deep)
         {
             inputs.Depth = ReactionThinkDepth::Deep;
-            if (params.Choice.Enable)
-                inputs.Options = std::max<uint32>(1, decided->Casting);
+            inputs.Options = std::max<uint32>(1, decided->Casting);
         }
     }
 
-    if (params.Anticipate.Enable && target)
+    if (target)
     {
         Spell* spell = target->GetCurrentSpell(CURRENT_GENERIC_SPELL);
         if (!spell)
@@ -587,7 +575,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
         // End to end only where the faster check runs: at upstream's combat interval (250 ms in battlegrounds and
         // arenas, 500 ms elsewhere, x the skill's stretch, plus up to 200 ms of stagger) the learnt latency would eat
         // most of the draw
-        if (reactionNatural[index] && params.EndToEnd && botAI->GetTactics().IsNaturalCadenceActive())
+        if (reactionNatural[index] && botAI->GetTactics().IsNaturalCadenceActive())
         {
             ReactionStampSource source = ReactionStampSource::FirstQuery;
             uint32 const age = VisibleEventAgeMs(bot, category, target, source);
@@ -683,7 +671,7 @@ void SkillMultiplier::MeetBusy(ReactionEvent& event, SkillNoticeCategory categor
     }
 
     ReactionReevalParams const& rules = sPlayerbotAIConfig.NaturalReaction.Reeval;
-    if (!starting || !rules.BusySkip || event.Missed || !target)
+    if (!starting || event.Missed || !target)
         return;
 
     // User note 2 (a channel is worth cutting late): no kick a busy bot reaches only at the cast's end
@@ -708,8 +696,7 @@ void SkillMultiplier::MeetBusy(ReactionEvent& event, SkillNoticeCategory categor
     }
 
     uint32 const enemyLeft = static_cast<uint32>(std::clamp(cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
-    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
-    bool const stamped = params.EndToEnd && botAI->GetTactics().IsNaturalCadenceActive();
+    bool const stamped = botAI->GetTactics().IsNaturalCadenceActive();
     int32 const freeMs = BusyFreeDueMs(event, static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), stamped);
     if (!InterruptOutOfReach(rules, std::max(event.DueAfterMs, waitMs), freeMs, enemyLeft))
         return;

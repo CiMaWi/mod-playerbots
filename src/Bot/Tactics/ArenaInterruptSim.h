@@ -212,7 +212,7 @@ inline Result Simulate(Setup const& setup)
             bar.Decided = true;
             uint64 const hash = SplitMix64((botGuid << 32) ^ bar.StartMs ^ (isHeal ? 0x11ULL : 0x22ULL));
             Input input;
-            input.Deep = UsesDeep(known, false, true, types, hash);
+            input.Deep = UsesDeep(known, false, types, hash);
             input.CastKind = isHeal ? Kind::Heal : Kind::Damage;
             input.CastMs = bar.EndMs - bar.StartMs;
             input.TargetHpPct = hpPct();

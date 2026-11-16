@@ -4,7 +4,7 @@
  * or (at your option) any later version.
  */
 
-// Wearing the PvP loadout (Playerbots.PvpGear.Wear): the materialised swap. At the entry into an arena or a
+// Wearing the PvP loadout: the materialised swap. At the entry into an arena or a
 // battleground the loadout's items are created and equipped and the PvE items they replace go to the bags; at the leave
 // the PvP items are destroyed and the PvE items equipped again. Every worn slot is a row in playerbots_pvp_worn (per
 // server, never copied), so a crash during a match is repaired at the bot's next login. The PvE items are only moved,
@@ -235,8 +235,7 @@ bool PvpGearMgr::IsWornItem(Player const* bot, Item const* item) const
 
 void PvpGearMgr::QueueWear(Player* bot)
 {
-    if (!sPlayerbotAIConfig.PvpGearEnable || !sPlayerbotAIConfig.PvpGearWear || !Instance()._loaded ||
-        !IsLadderBot(bot))
+    if (!Instance()._loaded || !IsLadderBot(bot))
         return;
 
     PlayerbotWorldThreadProcessor::instance().QueueOperation(
@@ -259,7 +258,7 @@ void PvpGearMgr::QueueUnwear(Player* bot)
 bool PvpGearMgr::WearsAlways() const
 {
     // Playerbots.PvpGear.WearBetweenMatches: the same on any server but main (a lab)
-    return _loaded && sPlayerbotAIConfig.PvpGearEnable && sPlayerbotAIConfig.PvpGearWear &&
+    return _loaded &&
            (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_ARENA ||
             (sPlayerbotAIConfig.PvpGearWearBetweenMatches && sPlayerbotAIConfig.LadderRole != LADDER_ROLE_MAIN));
 }
@@ -316,7 +315,7 @@ uint32 PvpGearMgr::RefreshWorn(Player* bot, Worn& worn, Loadout const& loadout) 
 bool PvpGearMgr::Wear(Player* bot, char const* reason)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::Wear");
-    if (!_loaded || !sPlayerbotAIConfig.PvpGearWear || !bot->IsInWorld() || bot->IsBeingTeleported() || !bot->IsAlive())
+    if (!_loaded || !bot->IsInWorld() || bot->IsBeingTeleported() || !bot->IsAlive())
         return false;
 
     // On main only while the bot is still in the arena or battleground (a short match may be over before this runs);

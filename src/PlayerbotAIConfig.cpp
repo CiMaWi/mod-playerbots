@@ -8,7 +8,9 @@
 #include "BisListMgr.h"
 #include "BotAttributes.h"
 #include "BotKind.h"
+#include "BotKindRules.h"
 #include "Config.h"
+#include "ConfigTables.h"
 #include "ItemWorthRules.h"
 #include "LadderMgr.h"
 #include "NewRpgInfo.h"
@@ -440,8 +442,6 @@ bool PlayerbotAIConfig::Initialize()
         std::max(1, sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", 1));
     RandomBotAutoJoinRatedArenaUncapped =
         sConfigMgr->GetOption<bool>("Playerbots.RandomBotAutoJoinRatedArenaUncapped", false);
-    RandomBotArenaGroupOnWorldThread =
-        sConfigMgr->GetOption<bool>("Playerbots.RandomBotArenaGroupOnWorldThread", false);
     LogInGroupOnly = sConfigMgr->GetOption<bool>("Playerbots.LogInGroupOnly", true);
     LogValuesPerTick = sConfigMgr->GetOption<bool>("Playerbots.LogValuesPerTick", false);
     SummonAtInnkeepersEnabled = sConfigMgr->GetOption<bool>("Playerbots.SummonAtInnkeepersEnabled", true);
@@ -509,7 +509,6 @@ bool PlayerbotAIConfig::Initialize()
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
     DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
     PlayerbotThreadCheck::enabled = DebugThreadChecks;
-    SkipIdleTriggerChecks = sConfigMgr->GetOption<bool>("Playerbots.SkipIdleTriggerChecks", false);
 
     UseGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseGroundMountAtMinLevel", 20);
     UseFastGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseFastGroundMountAtMinLevel", 40);
@@ -768,7 +767,6 @@ bool PlayerbotAIConfig::Initialize()
             LOG_ERROR("playerbots",
                       "Playerbots.PvpTest.FightLocation must be \"<map> <x> <y> <z> <o>\"; using the default spot");
     }
-    AcquaintanceEnable = sConfigMgr->GetOption<bool>("Playerbots.Acquaintance.Enable", false);
     AcquaintanceFlushSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.FlushSeconds", 30), 5, 3600);
     AcquaintanceDirectCooldownSeconds = std::clamp<uint32>(
@@ -799,11 +797,9 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
     AcquaintanceNearbyRadius =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
-    LadderEnable = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Enable", false);
     LadderRole = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
                                     LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
     LadderServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
-    MatchLogEnable = sConfigMgr->GetOption<bool>("Playerbots.MatchLog.Enable", false);
     MatchLogTraceEvery = sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceEvery", 0);
     MatchLogTraceMaxEvents =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxEvents", 20000), 16, 1000000);
@@ -832,7 +828,6 @@ bool PlayerbotAIConfig::Initialize()
     LadderContactMinutes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
     LadderPoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
-    LadderMatchmakerEnable = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Enable", false);
     LadderMatchmakerDelayMinSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMinSeconds", 3), 0, 600);
     LadderMatchmakerDelayMaxSeconds =
@@ -852,12 +847,10 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MaxPicks", 3), 1, 100);
     LadderMatchmakerSkirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
     LadderMatchmakerPoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
-    PvpGearEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Enable", false);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
     PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
     PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
-    PvpGearWear = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Wear", false);
     PvpGearWearBetweenMatches = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.WearBetweenMatches", false);
     PvpGearBuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
@@ -869,13 +862,12 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
     PvpGearBuyBatchPerTick =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
-    SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);
     SkillReactFactorHigh =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill99", 1.0f), 0.1f, 10.0f);
     SkillFullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
-    SkillReactActive = SkillEnable && (SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f);
+    SkillReactActive = SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f;
     SkillNoticeMissPercentLow =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill1", 0), 0, 95);
     SkillNoticeMissPercentHigh =
@@ -886,8 +878,8 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill99", 0), 0, 10000);
     SkillNoticeWindowMs =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
-    SkillNoticeActive = SkillEnable && (SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
-                                        SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0);
+    SkillNoticeActive = SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
+                        SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0;
     {
         std::string distribution = sConfigMgr->GetOption<std::string>("Playerbots.Skill.Distribution", "normal");
         std::transform(distribution.begin(), distribution.end(), distribution.begin(),
@@ -906,7 +898,7 @@ bool PlayerbotAIConfig::Initialize()
         // G6b: never on a lab (DT.7); the hub's config apply forces a lab's server id to its instance id (labN)
         bool const growth = sConfigMgr->GetOption<bool>("Playerbots.Skill.Growth.Enable", false);
         bool const lab = LadderServerId.rfind("lab", 0) == 0;
-        SkillGrowthEnable = SkillEnable && growth && !lab;
+        SkillGrowthEnable = growth && !lab;
         if (growth && lab)
             LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
                      LadderServerId);
@@ -990,8 +982,6 @@ bool PlayerbotAIConfig::Initialize()
         }
     }
     {
-        NaturalReactionEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Reaction.Enable", false);
-        NaturalReactionActive = SkillEnable && NaturalReactionEnable;
         auto const ms = [](std::string const& key, uint32 fallback)
         { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, 10000); };
         auto const real = [](std::string const& key, float fallback, float low, float high)
@@ -1009,23 +999,20 @@ bool PlayerbotAIConfig::Initialize()
         reaction.SwitchMaxMs = std::max(reaction.SwitchMinMs, ms("Playerbots.Natural.Reaction.SwitchCostMaxMs", 300));
         reaction.ConeDegrees = real("Playerbots.Natural.Reaction.ConeDegrees", 200.0f, 10.0f, 360.0f);
         reaction.FocusTimeoutMs = ms("Playerbots.Natural.Reaction.FocusTimeoutMs", 2000);
-        reaction.EndToEnd = sConfigMgr->GetOption<bool>("Playerbots.Natural.Reaction.EndToEnd", false);
         reaction.PingMs = ms("Playerbots.Natural.Reaction.PingMs", 60);
         reaction.DisplayMs = ms("Playerbots.Natural.Reaction.DisplayMs", 30);
         reaction.ServerTickMs =
             std::clamp(sConfigMgr->GetOption<int32>("Playerbots.Natural.Reaction.ServerTickMs", -1), -1, 1000);
-        // G0h3's parts (NaturalReaction.h), each off by default
+        // G0h3's parts (NaturalReaction.h)
         auto const flag = [](std::string const& key) { return sConfigMgr->GetOption<bool>(key, false); };
         auto const count = [](std::string const& key, uint32 fallback, uint32 low, uint32 high)
         { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), low, high); };
         std::string const part = "Playerbots.Natural.Reaction.";
         ReactionChoiceParams& choice = reaction.Choice;
-        choice.Enable = flag(part + "Choice.Enable");
         choice.MsPerDoublingAt1 = real(part + "Choice.MsPerDoublingAtSkill1", 120.0f, 0.0f, 2000.0f);
         choice.MsPerDoublingAt99 = real(part + "Choice.MsPerDoublingAtSkill99", 50.0f, 0.0f, 2000.0f);
         choice.MaxOptions = count(part + "Choice.MaxOptions", 8, 1, 64);
         ReactionLoadParams& load = reaction.Load;
-        load.Enable = flag(part + "Load.Enable");
         load.MsPerEventAt1 = ms(part + "Load.MsPerEventAtSkill1", 200);
         load.MsPerEventAt99 = ms(part + "Load.MsPerEventAtSkill99", 80);
         load.MissPercentPerEventAt1 = count(part + "Load.MissPercentPerEventAtSkill1", 10, 0, 100);
@@ -1034,7 +1021,6 @@ bool PlayerbotAIConfig::Initialize()
         load.TopProtectAt99 = real(part + "Load.TopProtectAtSkill99", 0.8f, 0.0f, 1.0f);
         load.MaxEvents = count(part + "Load.MaxEvents", 3, 1, 5);
         ReactionEaseParams& ease = reaction.Ease;
-        ease.Enable = flag(part + "Ease.Enable");
         static char const* const easeNames[REACTION_EASE_COUNT] = {"Common", "Rare", "Focus", "NewTarget"};
         ReactionEaseParams const easeDefaults;
         for (uint32 index = 0; index < REACTION_EASE_COUNT; ++index)
@@ -1052,7 +1038,6 @@ bool PlayerbotAIConfig::Initialize()
 
         ease.FocusDexterity = static_cast<uint8>(count(part + "Ease.FocusDexterity", 40, 1, 99));
         ReactionThinkParams& think = reaction.Think;
-        think.Enable = flag(part + "Think.Enable");
         think.ShortcutMsAt1 = ms(part + "Think.ShortcutMsAtSkill1", 40);
         think.ShortcutMsAt99 = ms(part + "Think.ShortcutMsAtSkill99", 20);
         think.DeepMsAt1 = ms(part + "Think.DeepMsAtSkill1", 400);
@@ -1062,11 +1047,9 @@ bool PlayerbotAIConfig::Initialize()
         think.PatienceWaitMsAt0 = ms(part + "Think.PatienceWaitMsAt0", 0);
         think.PatienceWaitMsAt100 = ms(part + "Think.PatienceWaitMsAt100", 1500);
         ReactionAnticipateParams& anticipate = reaction.Anticipate;
-        anticipate.Enable = flag(part + "Anticipate.Enable");
         anticipate.ShareAt1 = real(part + "Anticipate.ShareAtSkill1", 0.1f, 0.0f, 0.95f);
         anticipate.ShareAt99 = real(part + "Anticipate.ShareAtSkill99", 0.5f, 0.0f, 0.95f);
         ReactionQueueParams& queue = reaction.Queue;
-        queue.Enable = flag(part + "Queue.Enable");
         queue.MinMsAt1 = ms(part + "Queue.MinMsAtSkill1", 60);
         queue.MaxMsAt1 = std::max(queue.MinMsAt1, ms(part + "Queue.MaxMsAtSkill1", 250));
         queue.MinMsAt99 = ms(part + "Queue.MinMsAtSkill99", 10);
@@ -1075,13 +1058,10 @@ bool PlayerbotAIConfig::Initialize()
         reeval.Enable = flag(part + "Reeval.Enable");
         reeval.ImportantCastMs = ms(part + "Reeval.ImportantCastMs", 1500);
         reeval.MinOwnRemainingMs = ms(part + "Reeval.MinOwnRemainingMs", 300);
-        reeval.BusySkip = flag(part + "Reeval.BusySkip");
         reeval.BusyMarginMs = ms(part + "Reeval.BusyMarginMs", 100);
         ReactionMemoryParams& memory = reaction.Memory;
-        memory.Enable = flag(part + "Memory.Enable");
         memory.MinCasts = count(part + "Memory.MinCasts", 3, 1, 100);
         memory.EndToleranceMs = ms(part + "Memory.EndToleranceMs", 150);
-        reaction.MovementEnable = flag(part + "Movement.Enable");
         reaction.PositioningEnable = flag(part + "Positioning.Enable");
         // Arena and battleground only by default: the model's arm cost measurably more per tick (G0h2-b)
         uint8 const reactionMatches =
@@ -1096,14 +1076,11 @@ bool PlayerbotAIConfig::Initialize()
             NaturalReactionContexts = reactionMatches;
         }
 
-        NaturalCadenceEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.Enable", false);
         NaturalCadenceSkillStretch = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.SkillStretch", false);
         NaturalCadenceCheckMs =
             std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);
         NaturalCadenceStaggerMs = std::clamp<uint32>(
             sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.StaggerMs", 20), 0, UPSTREAM_CHECK_STAGGER_MS);
-        NaturalCadenceNearRealPlayerYards = std::clamp(
-            sConfigMgr->GetOption<float>("Playerbots.Natural.Cadence.NearRealPlayerYards", 0.0f), 0.0f, 500.0f);
         uint8 const matches =
             static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
         std::string const cadenceContexts =
@@ -1400,8 +1377,6 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Planner.RecheckYards", WorldTravel.PlannerRecheckYards, MaxTravelYards);
         WorldTravel.PlannerRecheckYards = std::max<uint32>(WorldTravel.PlannerRecheckYards, MinRecheckYards);
         travelNumber("Planner.NoopSeconds", WorldTravel.PlannerNoopSeconds, MaxNoopSeconds);
-        WorldTravel.PlannerGoals =
-            sConfigMgr->GetOption<bool>("Playerbots.WorldTravel.Planner.Goals", WorldTravel.PlannerGoals, false);
         travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
         WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }
@@ -1414,31 +1389,14 @@ bool PlayerbotAIConfig::Initialize()
             MaxHandoutShare);
     }
 
-    // Mail and bank visits of persistent bots (Playerbots.BankMail.*), optional keys whose defaults (BankMailConfig)
-    // are the conf.dist values
-    {
-        constexpr uint32 MaxMailWorthCopper = 10000;
-        constexpr uint32 MaxKeepLevelHorizon = 20;
-        constexpr uint32 MinVisitDeadlineSeconds = 60;
-        constexpr uint32 MaxVisitDeadlineSeconds = HOUR;
-        constexpr uint32 MaxVisitStepSeconds = 60;
-        constexpr uint32 MaxMailsPerVisit = 100;
-        auto const bankMailNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
-        {
-            value = std::clamp<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.BankMail.") + key, value, false), minimum,
-                maximum);
-        };
-        BankMail = BankMailConfig{};
-        bankMailNumber("Mail.DefaultWorthCopper", BankMail.MailDefaultWorthCopper, 0, MaxMailWorthCopper);
-        bankMailNumber("Bank.KeepLevelHorizon", BankMail.KeepLevelHorizon, 0, MaxKeepLevelHorizon);
-        bankMailNumber("Mail.VisitDeadlineSeconds", BankMail.MailVisitDeadlineSeconds, MinVisitDeadlineSeconds,
-                       MaxVisitDeadlineSeconds);
-        bankMailNumber("Bank.VisitDeadlineSeconds", BankMail.BankVisitDeadlineSeconds, MinVisitDeadlineSeconds,
-                       MaxVisitDeadlineSeconds);
-        bankMailNumber("VisitStepSeconds", BankMail.VisitStepSeconds, 1, MaxVisitStepSeconds);
-        bankMailNumber("Mail.PerVisit", BankMail.MailsPerVisit, 1, MaxMailsPerVisit);
-    }
+    LoadConfigTables();
+
+    // Item use (Playerbots.ItemUse.*): read by hand with a clamp until CS22's config table takes the family
+    ItemUse = ItemUseConfig{};
+    ItemUse.ControlShare = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.ControlShare", ItemUse.ControlShare, false), 0, 100);
+    ItemUse.UseEndGraceMs = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.UseEndGraceMs", ItemUse.UseEndGraceMs, false), 0, 10000);
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
@@ -1884,13 +1842,7 @@ bool PlayerbotAIConfig::Initialize()
             RandomBotTestNamePrefix[0] = static_cast<char>(std::toupper(RandomBotTestNamePrefix[0]));
         }
     }
-    RandomBotArenaTeamMaxRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMaxRating", 2000);
-    RandomBotArenaTeamMinRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMinRating", 1000);
-    RandomBotArenaTeamRatingMode =
-        sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamRatingMode", 0) == ARENA_RATING_MODE_EARNED
-            ? ARENA_RATING_MODE_EARNED
-            : ARENA_RATING_MODE_RANDOM;
-    ArenaTeamFormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", false);
+    ArenaTeamFormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", true);
     ArenaTeamUpdateSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.UpdateSeconds", 60), 5, 3600);
     ArenaTeamMaxRoster2v2 =
@@ -1935,7 +1887,7 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureBottom", 0.25f), 0.01f, 10.0f);
     ArenaTeamCompLearningTemperatureTop = std::clamp(
         sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureTop", 0.05f), 0.01f, 10.0f);
-    ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", false);
+    ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", true);
     ArenaRecruitRatingAtSkill1 =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill1", 0), 0, 10000);
     ArenaRecruitRatingAtSkill99 =
@@ -1963,12 +1915,6 @@ bool PlayerbotAIConfig::Initialize()
         RandomBotArenaTeam3v3Count = 0;
         RandomBotArenaTeam5v5Count = 0;
         DeleteRandomBotArenaTeams = false;
-        ArenaTeamFormationEnable = false;
-        ArenaRecruitEnable = false;
-        if (LadderMatchmakerEnable)
-            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 2: the matchmaker is off");
-
-        LadderMatchmakerEnable = false;
     }
     else if (LadderRole == LADDER_ROLE_MAIN)
     {
@@ -1989,12 +1935,17 @@ bool PlayerbotAIConfig::Initialize()
         RandomBotAutoJoinRatedArenaUncapped = false;
     }
 
-    BotKind::LoadLivingWorld();
+    // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear
+    // buying on at role 2
+    BotKindRules::ArenaRoleValues const arenaRole =
+        BotKindRules::ArenaRole(LadderRole == LADDER_ROLE_MAIN, LadderRole == LADDER_ROLE_ARENA,
+                                ArenaTeamFormationEnable, ArenaRecruitEnable, PvpGearBuyEnable);
+    ArenaTeamFormationEnable = arenaRole.Formation;
+    ArenaRecruitEnable = arenaRole.Recruit;
+    LadderMatchmakerEnable = arenaRole.Matchmaker;
+    PvpGearBuyEnable = arenaRole.Buy;
 
-    if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
-        LOG_INFO("server.loading",
-                 "Playerbots.ArenaTeam.Formation.Enable is ignored: it needs "
-                 "Playerbots.RandomBotArenaTeamRatingMode = 1");
+    BotKind::LoadLivingWorld();
 
     SelfBotLevel = sConfigMgr->GetOption<int32>("Playerbots.SelfBotLevel", 1);
 
@@ -2213,6 +2164,11 @@ bool PlayerbotAIConfig::IsInPvpProhibitedZone(uint32 id)
 bool PlayerbotAIConfig::IsInPvpProhibitedArea(uint32 id)
 {
     return find(PvpProhibitedAreaIds.begin(), PvpProhibitedAreaIds.end(), id) != PvpProhibitedAreaIds.end();
+}
+
+bool PlayerbotAIConfig::TacticStrategyWanted(TacticId id) const
+{
+    return ::TacticStrategyWanted(TacticsEnable, id, TacticConfig[static_cast<uint32>(id)].Enable, PvpTestEnable);
 }
 
 bool PlayerbotAIConfig::IsRestrictedHealerDPSMap(uint32 mapId) const
