@@ -17,9 +17,7 @@ bool CombatStartTrigger::IsActive()
     // Edge-triggered: fire once when attackers first appear, not on every tick they persist,
     // or the reaction would keep clearing the main AI delay for a bot that is idling on purpose.
     bool hasAttackers = false;
-    if (!sPlayerbotAIConfig.SkipIdleTriggerChecks)
-        hasAttackers = !AI_VALUE(GuidVector, "attackers").empty();
-    else if (!CannotHaveAttackers())
+    if (!CannotHaveAttackers())
     {
         if (!_attackers)
             _attackers = context->GetValue<GuidVector>("attackers");

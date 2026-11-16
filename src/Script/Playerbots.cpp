@@ -824,6 +824,7 @@ void AddSC_match_trace();
 void AddSC_matchmaker();
 void AddSC_natural_trace();
 void AddSC_population();
+void AddSC_config_tables();
 
 void AddPlayerbotsScripts()
 {
@@ -859,4 +860,5 @@ void AddPlayerbotsScripts()
     AddSC_matchmaker();
     AddSC_natural_trace();
     AddSC_population();
+    AddSC_config_tables();
 }

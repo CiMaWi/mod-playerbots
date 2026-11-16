@@ -467,8 +467,7 @@ void Engine::ProcessTriggers(bool minimal)
     std::unordered_map<Trigger*, Event> fires;
     uint32 now = getMSTime();
     // With no chat command pending every chat command trigger is unset: checking or resetting it is a no-op.
-    bool const skipChatCommands =
-        sPlayerbotAIConfig.SkipIdleTriggerChecks && !aiObjectContext->HasPendingChatCommands();
+    bool const skipChatCommands = !aiObjectContext->HasPendingChatCommands();
     for (std::vector<TriggerNode*>::iterator i = triggers.begin(); i != triggers.end(); i++)
     {
         TriggerNode* node = *i;

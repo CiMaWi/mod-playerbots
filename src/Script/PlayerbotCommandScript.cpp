@@ -28,6 +28,7 @@
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
+#include "ConfigTables.h"
 #include "DBCStores.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -305,6 +306,7 @@ public:
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
             {"inspect", HandleInspectCommand, SEC_GAMEMASTER, Console::Yes},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
+            {"config", HandleConfigCommand, SEC_GAMEMASTER, Console::Yes},
             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
             {"tickperf", HandleTickPerfCommand, SEC_PLAYER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
@@ -346,6 +348,16 @@ public:
         };
 
         return commandTable;
+    }
+
+    // playerbots config [prefix]: the config table rows under the prefix with their values (CS22b)
+    static bool HandleConfigCommand(ChatHandler* handler, char const* args)
+    {
+        std::string prefix = args ? args : "";
+        prefix.erase(0, prefix.find_first_not_of(" 	"));
+        prefix.erase(prefix.find_last_not_of(" 	") + 1);
+        PrintConfigTables(handler, prefix);
+        return true;
     }
 
     static bool HandleTickPerfCommand(ChatHandler* handler, char const* args)

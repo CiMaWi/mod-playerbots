@@ -124,9 +124,6 @@ int main()
         in.weighted = true;
         Check(DecideIdle(in).action == IdleAction::Weights, "a weighted bot keeps the weighted pick");
         in.weighted = false;
-        in.switchOn = false;
-        Check(DecideIdle(in).reason == Fallback::Off, "the switch off: fallback_off");
-        in.switchOn = true;
         in.ready = false;
         in.freshPlan = true;
         Check(DecideIdle(in).reason == Fallback::NotReady, "indexes not ready: fallback_not_ready");

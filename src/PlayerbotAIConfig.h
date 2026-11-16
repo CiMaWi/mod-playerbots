@@ -396,7 +396,6 @@ public:
     uint32 CommandServerPort;
     bool PerfMonEnabled;
     bool DebugThreadChecks;
-    bool SkipIdleTriggerChecks;
     bool SummonWhenGroup;
     ShowHideCosmetic RandomBotShowHelmet;
     ShowHideCosmetic RandomBotShowCloak;
@@ -427,7 +426,6 @@ public:
     float PvpTestFightY;
     float PvpTestFightZ;
     float PvpTestFightO;
-    bool AcquaintanceEnable;
     uint32 AcquaintanceFlushSeconds;
     uint32 AcquaintanceDirectCooldownSeconds;
     uint32 AcquaintanceGroupJoinCooldownSeconds;
