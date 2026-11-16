@@ -31,7 +31,8 @@ enum class How : std::uint8_t
     Transport,  // a boarding or a disembark onto a transport (PrepareTransportMove)
     Loot,       // a loot interaction's motion (LootAction PrepareMotion)
     Taxi,       // at the flight master, before the flight
-    Fly         // a fly leg's takeoff: off the ground mount, then the flyer
+    Fly,        // a fly leg's takeoff: off the ground mount, then the flyer
+    Hearth      // a hearth leg's cast (NewRpgBaseAction::CastHearth): the stone is not cast mounted
 };
 
 struct Facts
@@ -68,6 +69,27 @@ inline Verdict Policy(Facts const& facts, Kind wanted)
     return {true, false, wanted, "allowed"};
 }
 
+// A fly leg's try at the policy's verdict (MountToFly): Wait (the loot ends soon: uncounted, asked again; the leg's
+// timeout bounds it), Settle (the bot moves or sits: it stops or stands up now, uncounted), Refused (a counted try that
+// leaves the verdict's word for the fly_leg_failed row: nomount, on_foot), Cast (a counted try: off the ground mount,
+// then the flyer)
+enum class FlyTry : std::uint8_t
+{
+    Wait,
+    Settle,
+    Refused,
+    Cast
+};
+
+inline FlyTry FlyTryOf(Verdict const& verdict, bool settled)
+{
+    if (verdict.waits)
+        return FlyTry::Wait;
+    if (!settled)
+        return FlyTry::Settle;
+    return verdict.allowed ? FlyTry::Cast : FlyTry::Refused;
+}
+
 inline char const* HowWord(How how)
 {
     switch (how)
@@ -80,6 +102,8 @@ inline char const* HowWord(How how)
             return "taxi";
         case How::Fly:
             return "fly";
+        case How::Hearth:
+            return "hearth";
         default:
             return "plain";
     }

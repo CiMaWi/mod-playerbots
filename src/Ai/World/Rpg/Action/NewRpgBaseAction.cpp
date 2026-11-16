@@ -9,6 +9,7 @@
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "ChatHelper.h"
+#include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
@@ -16,6 +17,7 @@
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
+#include "MountRules.h"
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
@@ -88,7 +90,7 @@ bool NewRpgBaseAction::CastHearth(char const*& refusal, float& castResult)
     if (!flying && !bot->IsInCombat())
     {
         if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
         if (flightForm)
             bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
     }

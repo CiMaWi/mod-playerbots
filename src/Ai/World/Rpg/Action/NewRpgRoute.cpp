@@ -439,9 +439,10 @@ bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 
     if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(true) || CheckMountStateAction::NoTakeoffHere(bot))
         return true;
     MountRules::Verdict const verdict = CheckMountStateAction::AskMountPolicy(bot, botAI, MountRules::Kind::Flying);
-    if (verdict.waits)
+    MountRules::FlyTry const step = MountRules::FlyTryOf(verdict, !bot->isMoving() && bot->IsStandState());
+    if (step == MountRules::FlyTry::Wait)
         return true;
-    if (bot->isMoving() || !bot->IsStandState())
+    if (step == MountRules::FlyTry::Settle)
     {
         if (bot->isMoving())
             bot->StopMoving();
@@ -450,7 +451,7 @@ bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 
         return true;
     }
     TravelLegs::NoteMountTry(trip, nowMs);
-    if (!verdict.allowed)
+    if (step == MountRules::FlyTry::Refused)
     {
         trip.mountWhy = verdict.why;
         return true;

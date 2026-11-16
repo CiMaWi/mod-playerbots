@@ -1483,7 +1483,8 @@ void CheckMountPolicy()
               std::string_view(MountRules::HowWord(MountRules::How::Transport)) == "transport" &&
               std::string_view(MountRules::HowWord(MountRules::How::Loot)) == "loot" &&
               std::string_view(MountRules::HowWord(MountRules::How::Taxi)) == "taxi" &&
-              std::string_view(MountRules::HowWord(MountRules::How::Fly)) == "fly",
+              std::string_view(MountRules::HowWord(MountRules::How::Fly)) == "fly" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Hearth)) == "hearth",
           "Dismount(how): one word per dismount path for the trace");
 }
 
