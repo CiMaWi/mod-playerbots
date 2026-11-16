@@ -2474,9 +2474,9 @@ void RandomPlayerbotMgr::Randomize(Player* bot)
     }
 
     // Upstream: reroll below level 3 (Death Knights below 56), downgrade at max level when DowngradeMaxLevelBot,
-    // else incremental. Persistent population (H1): always incremental at the current level.
+    // else incremental. Living world (H1): always incremental at the current level.
     PopulationPolicy::RandomizeDecision const decision = PopulationPolicy::DecideRandomize(
-        Population::IsPersistent(), bot->GetLevel(), bot->getClass() == CLASS_DEATH_KNIGHT,
+        BotKind::LivingWorld(), bot->GetLevel(), bot->getClass() == CLASS_DEATH_KNIGHT,
         sPlayerbotAIConfig.RandomBotMaxLevel, sPlayerbotAIConfig.DowngradeMaxLevelBot);
 
     if (decision.kept == PopulationPolicy::KeptReason::Downgrade)
@@ -2589,8 +2589,8 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
         level = bot->GetLevel();
         SetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent, 0, 0);
     }
-    // Persistent population (H1): a re-initialisation at the current level, never a new level.
-    else if (Population::IsPersistent() && level != bot->GetLevel())
+    // Living world (H1): a re-initialisation at the current level, never a new level.
+    else if (BotKind::LivingWorld() && level != bot->GetLevel())
     {
         LOG_INFO("playerbots", "[Population] RandomizeFirst: kept {} at level {} instead of {} (persistent)",
                  bot->GetName(), bot->GetLevel(), level);

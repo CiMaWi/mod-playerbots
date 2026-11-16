@@ -2054,8 +2054,8 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     PopulationPolicy::RotationTickResult const& last = rotation.last;
     uint32 const now = Now();
 
-    handler->PSendSysMessage("Population: persistent {}, rotation {}; roster {} characters (RosterSize {}), cap {}",
-                             IsPersistent() ? "on" : "off", IsRotation() ? "on" : "off", rotation.roster.size(),
+    handler->PSendSysMessage("Population: living world {}, rotation {}; roster {} characters (RosterSize {}), cap {}",
+                             BotKind::LivingWorld() ? "on" : "off", IsRotation() ? "on" : "off", rotation.roster.size(),
                              rotation.rosterSize, settings.cap);
     handler->PSendSysMessage(
         "Settings: interval {} s, mean session {} min, min session {} min, acquainted share {} % (score >= {})",
