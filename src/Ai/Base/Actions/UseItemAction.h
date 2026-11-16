@@ -8,6 +8,7 @@
 #define PLAYERBOTS_USEITEMACTION_H
 
 #include "Action.h"
+#include "ItemUseTypes.h"
 
 class Item;
 class ObjectGuid;
@@ -17,9 +18,10 @@ class Unit;
 class UseItemAction : public Action
 {
 public:
+    // caller: the word of the use's row (item-use INTERFACE 6.2); the chat command `use` keeps chat
     UseItemAction(PlayerbotAI* botAI, std::string const name = "use", bool selfOnly = false,
-                  std::string const itemName = "")
-        : Action(botAI, name), itemName(itemName.empty() ? name : itemName), selfOnly(selfOnly)
+                  std::string const itemName = "", ItemUse::Caller caller = ItemUse::Caller::Chat)
+        : Action(botAI, name), itemName(itemName.empty() ? name : itemName), caller(caller), selfOnly(selfOnly)
     {
     }
 
@@ -29,11 +31,13 @@ public:
 
 protected:
     std::string itemName;
+    ItemUse::Caller caller;
     bool UseItemAuto(Item* item);
     bool UseItemOnItem(Item* item, Item* itemTarget);
     bool UseItem(Item* item, ObjectGuid go, Item* itemTarget, Unit* unitTarget = nullptr);
     bool UseGameObject(ObjectGuid guid);
-    void TellConsumableUse(Item* item, std::string const action, float percent);
+    bool UseOnTradeSlot(Item* item, uint32 spellId, std::string const& itemText);
+    std::string ConsumableLine(Item* item, std::string const action, float percent);
     bool SocketItem(Item* item, Item* gem, bool replace = false);
 
 private:
@@ -43,8 +47,9 @@ private:
 class UseSpellItemAction : public UseItemAction
 {
 public:
-    UseSpellItemAction(PlayerbotAI* botAI, std::string const name, bool selfOnly = false)
-        : UseItemAction(botAI, name, selfOnly)
+    UseSpellItemAction(PlayerbotAI* botAI, std::string const name, bool selfOnly = false,
+                       ItemUse::Caller caller = ItemUse::Caller::Fight)
+        : UseItemAction(botAI, name, selfOnly, "", caller)
     {
     }
 
@@ -54,7 +59,7 @@ public:
 class UseHealingPotion : public UseItemAction
 {
 public:
-    UseHealingPotion(PlayerbotAI* botAI) : UseItemAction(botAI, "healing potion") {}
+    UseHealingPotion(PlayerbotAI* botAI) : UseItemAction(botAI, "healing potion", false, "", ItemUse::Caller::Fight) {}
 
     bool isUseful() override;
 };
@@ -62,7 +67,7 @@ public:
 class UseManaPotion : public UseItemAction
 {
 public:
-    UseManaPotion(PlayerbotAI* botAI) : UseItemAction(botAI, "mana potion") {}
+    UseManaPotion(PlayerbotAI* botAI) : UseItemAction(botAI, "mana potion", false, "", ItemUse::Caller::Fight) {}
 
     bool isUseful() override;
 };
@@ -70,7 +75,7 @@ public:
 class UseHearthStone : public UseItemAction
 {
 public:
-    UseHearthStone(PlayerbotAI* botAI) : UseItemAction(botAI, "hearthstone", true) {}
+    UseHearthStone(PlayerbotAI* botAI) : UseItemAction(botAI, "hearthstone", true, "", ItemUse::Caller::Errand) {}
 
     bool Execute(Event event) override;
     bool isUseful() override;
@@ -79,7 +84,7 @@ public:
 class UseRandomRecipe : public UseItemAction
 {
 public:
-    UseRandomRecipe(PlayerbotAI* botAI) : UseItemAction(botAI, "random recipe", true) {}
+    UseRandomRecipe(PlayerbotAI* botAI) : UseItemAction(botAI, "random recipe", true, "", ItemUse::Caller::Upkeep) {}
 
     bool Execute(Event event) override;
     bool isUseful() override;
@@ -89,7 +94,9 @@ public:
 class UseStartQuestItem : public UseItemAction
 {
 public:
-    UseStartQuestItem(PlayerbotAI* botAI) : UseItemAction(botAI, "start quest item", true) {}
+    UseStartQuestItem(PlayerbotAI* botAI) : UseItemAction(botAI, "start quest item", true, "", ItemUse::Caller::Quest)
+    {
+    }
 
     bool Execute(Event event) override;
     bool isUseful() override;

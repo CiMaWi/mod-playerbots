@@ -146,6 +146,7 @@ ItemUse::SpellData SpellDataOf(SpellInfo const* spell)
     data.areaGroup = spell->AreaGroupId > 0 ? static_cast<std::uint32_t>(spell->AreaGroupId) : 0;
     data.baseLevel = Clamped<std::uint16_t>(spell->BaseLevel);
     data.maxLevel = Clamped<std::uint16_t>(spell->MaxLevel);
+    data.allowLowLevelBuff = spell->HasAttribute(SPELL_ATTR2_ALLOW_LOW_LEVEL_BUFF);
     data.equippedItemClass = spell->EquippedItemClass;
     data.equippedItemSubClassMask = static_cast<std::uint32_t>(std::max(spell->EquippedItemSubClassMask, 0));
     data.equippedItemInvTypeMask = static_cast<std::uint32_t>(std::max(spell->EquippedItemInventoryTypeMask, 0));

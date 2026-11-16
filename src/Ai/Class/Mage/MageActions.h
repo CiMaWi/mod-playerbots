@@ -189,41 +189,47 @@ public:
 class UseManaSapphireAction : public UseItemAction
 {
 public:
-    UseManaSapphireAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana sapphire") {}
+    UseManaSapphireAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana sapphire", false, "", ItemUse::Caller::Fight)
+    {
+    }
     bool isUseful() override;
 };
 class UseManaEmeraldAction : public UseItemAction
 {
 public:
-    UseManaEmeraldAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana emerald") {}
+    UseManaEmeraldAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana emerald", false, "", ItemUse::Caller::Fight)
+    {
+    }
     bool isUseful() override;
 };
 
 class UseManaRubyAction : public UseItemAction
 {
 public:
-    UseManaRubyAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana ruby") {}
+    UseManaRubyAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana ruby", false, "", ItemUse::Caller::Fight) {}
     bool isUseful() override;
 };
 
 class UseManaCitrineAction : public UseItemAction
 {
 public:
-    UseManaCitrineAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana citrine") {}
+    UseManaCitrineAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana citrine", false, "", ItemUse::Caller::Fight)
+    {
+    }
     bool isUseful() override;
 };
 
 class UseManaJadeAction : public UseItemAction
 {
 public:
-    UseManaJadeAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana jade") {}
+    UseManaJadeAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana jade", false, "", ItemUse::Caller::Fight) {}
     bool isUseful() override;
 };
 
 class UseManaAgateAction : public UseItemAction
 {
 public:
-    UseManaAgateAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana agate") {}
+    UseManaAgateAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mana agate", false, "", ItemUse::Caller::Fight) {}
     bool isUseful() override;
 };
 

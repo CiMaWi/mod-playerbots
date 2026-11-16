@@ -8,7 +8,10 @@
 // tests/fixtures/item-use-old-packets.txt holds the CMSG_USE_ITEM bytes that UseItemAction::UseItem,
 // UseTrinketAction::UseTrinket and PlayerbotAI::ImbueItem sent on lab9 (module a37f89f5 with a temporary trace),
 // plus synthetic lines for the branches the block C scenarios do not reach. Each old writer is transcribed below in
-// its field order; the test rebuilds every line's bytes from its inputs. Run: item-use-parity-selftest <module root>
+// its field order; the test rebuilds every line's bytes from its inputs (WI5b-1). Then the framework's writer
+// (ItemUsePacket.h, which ItemUse::BuildPacket sends) gets the same inputs, with the spell the item use index picks
+// (tests/fixtures/item-use-dump.txt), and must give the bytes the game's handler read from the old packet (WI5b-2).
+// Run: item-use-parity-selftest <module root>
 
 #include <cstdint>
 #include <fstream>
@@ -16,6 +19,11 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#include "ItemUseFacts.h"
+#include "ItemUsePacket.h"
+
+using namespace ItemUse;
 
 namespace
 {
@@ -264,6 +272,119 @@ bool ShapeFits(Line const& line)
         return line.castCount == 0 && line.segments.size() == 1 && line.tailKind == "none";
     return false;
 }
+// The handler reads the header (20 bytes), the mask and the mask's own fields (SpellCastTargets::Read): the old
+// builders' tails after them were never read. Known and accepted differences, each counted:
+// tail      the old UseItem and UseTrinket appended a guid after the target (the bot's packed guid or a unit's raw
+//           guid); the framework writes nothing the handler does not read
+// castCount ImbueItem sent cast_count 0, the others 1; the handler only echoes it to the client; the framework 1
+// spell     the old UseItem took the last spell slot, the framework the index's record (the engine checks only that
+//           the spell exists); printed per entry
+// unit      a consumable on a unit (a soulstone on a friend) went as NONE with the unit's guid in the unread tail;
+//           the framework names the unit (UNIT) when the record's shape takes one
+struct Differences
+{
+    int compared{0};
+    int equal{0};
+    int tail{0};
+    int castCount{0};
+    int spell{0};
+    int unit{0};
+    int outside{0};   // the trade slot: stays outside the framework
+    int noRecord{0};  // the index has no record of the entry
+};
+
+using Records = std::map<std::uint32_t, std::vector<Record>>;
+
+Records LoadDump(std::string const& root)
+{
+    Records records;
+    std::ifstream in(root + "/tests/fixtures/item-use-dump.txt", std::ios::binary);
+    std::string text;
+    while (std::getline(in, text))
+    {
+        if (text.empty() || text[0] == '#')
+            continue;
+        if (std::optional<DumpRow> row = ParseDumpLine(text))
+            if (row->record.source == Source::ItemSpell)
+                records[row->record.itemEntry].push_back(row->record);
+    }
+    return records;
+}
+
+bool NamesUnit(Shape shape) { return shape != Shape::None && shape != Shape::Self; }
+
+// The framework's fields for the old line's use: the same item, its record's spell (the trinket: the spell the old
+// action picked, Request::spellId), the target the handler read
+PacketFields FrameworkFields(Line const& line, Record const* record, bool& unitNamed)
+{
+    PacketFields fields;
+    fields.bag = static_cast<std::uint8_t>(line.bag);
+    fields.slot = static_cast<std::uint8_t>(line.slot);
+    fields.itemGuid = line.item;
+    fields.spellId = line.site == "UseTrinket" || !record ? line.spell : record->spellId;
+    Segment const& first = line.segments.front();
+    unitNamed = false;
+    if (first.flag == FLAG_NONE)
+    {
+        if (line.tailKind == "raw" && record && NamesUnit(record->shape))
+        {
+            fields.targetMask = PACKET_TARGET_UNIT;
+            fields.targetGuid = line.tailGuid;
+            unitNamed = true;
+        }
+    }
+    else if (first.flag != FLAG_UNIT || !record || NamesUnit(record->shape))
+    {
+        fields.targetMask = first.flag;
+        fields.targetGuid = first.guid;
+    }
+    return fields;
+}
+
+bool Compare(Line const& line, std::vector<std::uint8_t> const& old, std::vector<std::uint8_t> const& framework,
+             bool unitNamed, Differences& counts, bool count)
+{
+    if (framework.size() > old.size() && !unitNamed)
+        return false;
+    bool spellDiffers = false;
+    std::size_t const compared = unitNamed ? 20 : framework.size();
+    for (std::size_t i = 0; i < compared; ++i)
+    {
+        if (framework[i] == old[i])
+            continue;
+        if (i == 2 && line.site == "ImbueItem" && old[i] == 0 && framework[i] == PACKET_CAST_COUNT)
+            continue;
+        if (i >= 3 && i < 7)
+        {
+            spellDiffers = true;
+            continue;
+        }
+        return false;
+    }
+    if (unitNamed)
+    {
+        // NONE and the unit's raw guid became UNIT and its packed guid
+        std::vector<std::uint8_t> named(framework.begin(), framework.begin() + 20);
+        Packet::PutU32(named, PACKET_TARGET_UNIT);
+        Packet::PutPacked(named, line.tailGuid);
+        if (named != framework)
+            return false;
+    }
+    if (!count)
+        return true;
+    ++counts.compared;
+    bool const equal = !unitNamed && !spellDiffers && old.size() == framework.size() && old[2] == framework[2];
+    counts.equal += equal ? 1 : 0;
+    counts.tail += !unitNamed && old.size() > framework.size() ? 1 : 0;
+    counts.castCount += old[2] != framework[2] ? 1 : 0;
+    counts.unit += unitNamed ? 1 : 0;
+    if (spellDiffers)
+    {
+        ++counts.spell;
+        std::cout << "spell differs: " << line.site << " " << line.entry << " old " << line.spell << "\n";
+    }
+    return true;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -278,6 +399,10 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    Records const records = LoadDump(root);
+    Check(!records.empty(), "the item use dump gives records");
+    Differences counts;
+    bool mutationChecked = false;
     std::map<std::string, int> recorded;
     std::map<std::string, int> synthetic;
     std::string text;
@@ -299,6 +424,30 @@ int main(int argc, char** argv)
             std::cout << "EMIT " << line.site << " " << line.entry << " hex=" << bytes << "\n";
         Check(bytes == line.hex, "the transcription gives the line's bytes: " + text + "\n  got " + bytes);
         ++(line.origin == "recorded" ? recorded : synthetic)[line.site];
+
+        // the framework, for the same use
+        if (line.segments.front().trade)
+        {
+            ++counts.outside;
+            continue;
+        }
+        auto const found = records.find(line.entry);
+        Record const* record = found == records.end() ? nullptr : &found->second.front();
+        counts.noRecord += record ? 0 : 1;
+        bool unitNamed = false;
+        std::vector<std::uint8_t> const old = OldBytes(line);
+        std::vector<std::uint8_t> const framework = UsePacketBytes(FrameworkFields(line, record, unitNamed));
+        Check(Compare(line, old, framework, unitNamed, counts, true),
+              "the framework sends what the handler read: " + text + "\n  framework " + Hex(framework));
+        if (!mutationChecked)
+        {
+            // a flipped byte of the framework's output must be found
+            std::vector<std::uint8_t> mutated = framework;
+            mutated[10] ^= 0x01;
+            Check(!Compare(line, old, mutated, unitNamed, counts, false), "a flipped byte fails the comparison");
+            std::cout << "mutation: byte 10 flipped, the comparison fails\n";
+            mutationChecked = true;
+        }
     }
 
     int recordedLines = 0;
@@ -312,6 +461,19 @@ int main(int argc, char** argv)
     Check(recorded.count("UseItem") && recorded.count("UseTrinket") && recorded.count("ImbueItem"),
           "every old writer has a recorded line");
     Check(recordedLines >= 5, "at least five recorded lines");
+    std::cout << "framework vs old: " << counts.compared << " compared, " << counts.equal << " byte for byte, "
+              << counts.tail << " without the unread tail, " << counts.castCount << " cast count 1 for 0, "
+              << counts.spell << " the record's spell, " << counts.unit << " the unit named, " << counts.outside
+              << " trade slot outside, " << counts.noRecord << " entries without a record\n";
+    Check(counts.compared > 0 && counts.outside >= 1, "every line compared but the trade slot's");
+
+    // a spot, which no old builder sent: the destination with an empty transport guid, then x, y, z
+    PacketFields spot;
+    spot.targetMask = PACKET_TARGET_DEST;
+    spot.x = 1.0f;
+    std::vector<std::uint8_t> const spotBytes = UsePacketBytes(spot);
+    Check(spotBytes.size() == 20 + 4 + 1 + 12 && spotBytes[24] == 0 && spotBytes[28] == 0x3f,
+          "a spot: mask, empty packed guid, three floats");
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
