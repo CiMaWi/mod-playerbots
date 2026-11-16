@@ -32,7 +32,7 @@ namespace PlayerbotBridge
 //   MeetAt (meet_at), PlaceName: GoTo with the meeting as its reason.
 //   PausePlan (pause_plan): the bot's plan stops, the bot stands idle until ResumePlan (resume_plan) or ten minutes;
 //     ResumePlan also ends a bridge goal.
-//   Every goal verb: NotPlanner when the planner does not run the bot (Planner.Goals off, a real master such as a
+//   Every goal verb: NotPlanner when the planner does not run the bot (a real master such as a
 //   player's group, not persistent), GoalHeld when a group's goal holds the slot.
 // The social verbs (LC16d) are done at once: Emote (emote) a gesture, Roll (roll) a roll of 1-100, Ready (ready) the
 // answer to the group's open ready check, LeaveGroup (leave_group) the bot leaves its group. With a counterpart

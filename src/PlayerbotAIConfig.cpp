@@ -9,6 +9,7 @@
 #include "BotAttributes.h"
 #include "BotKind.h"
 #include "Config.h"
+#include "ConfigTables.h"
 #include "ItemWorthRules.h"
 #include "LadderMgr.h"
 #include "NewRpgInfo.h"
@@ -509,7 +510,6 @@ bool PlayerbotAIConfig::Initialize()
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
     DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
     PlayerbotThreadCheck::enabled = DebugThreadChecks;
-    SkipIdleTriggerChecks = sConfigMgr->GetOption<bool>("Playerbots.SkipIdleTriggerChecks", false);
 
     UseGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseGroundMountAtMinLevel", 20);
     UseFastGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseFastGroundMountAtMinLevel", 40);
@@ -768,7 +768,6 @@ bool PlayerbotAIConfig::Initialize()
             LOG_ERROR("playerbots",
                       "Playerbots.PvpTest.FightLocation must be \"<map> <x> <y> <z> <o>\"; using the default spot");
     }
-    AcquaintanceEnable = sConfigMgr->GetOption<bool>("Playerbots.Acquaintance.Enable", false);
     AcquaintanceFlushSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.FlushSeconds", 30), 5, 3600);
     AcquaintanceDirectCooldownSeconds = std::clamp<uint32>(
@@ -1400,8 +1399,6 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("Planner.RecheckYards", WorldTravel.PlannerRecheckYards, MaxTravelYards);
         WorldTravel.PlannerRecheckYards = std::max<uint32>(WorldTravel.PlannerRecheckYards, MinRecheckYards);
         travelNumber("Planner.NoopSeconds", WorldTravel.PlannerNoopSeconds, MaxNoopSeconds);
-        WorldTravel.PlannerGoals =
-            sConfigMgr->GetOption<bool>("Playerbots.WorldTravel.Planner.Goals", WorldTravel.PlannerGoals, false);
         travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
         WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
     }
@@ -1414,31 +1411,14 @@ bool PlayerbotAIConfig::Initialize()
             MaxHandoutShare);
     }
 
-    // Mail and bank visits of persistent bots (Playerbots.BankMail.*), optional keys whose defaults (BankMailConfig)
-    // are the conf.dist values
-    {
-        constexpr uint32 MaxMailWorthCopper = 10000;
-        constexpr uint32 MaxKeepLevelHorizon = 20;
-        constexpr uint32 MinVisitDeadlineSeconds = 60;
-        constexpr uint32 MaxVisitDeadlineSeconds = HOUR;
-        constexpr uint32 MaxVisitStepSeconds = 60;
-        constexpr uint32 MaxMailsPerVisit = 100;
-        auto const bankMailNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
-        {
-            value = std::clamp<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.BankMail.") + key, value, false), minimum,
-                maximum);
-        };
-        BankMail = BankMailConfig{};
-        bankMailNumber("Mail.DefaultWorthCopper", BankMail.MailDefaultWorthCopper, 0, MaxMailWorthCopper);
-        bankMailNumber("Bank.KeepLevelHorizon", BankMail.KeepLevelHorizon, 0, MaxKeepLevelHorizon);
-        bankMailNumber("Mail.VisitDeadlineSeconds", BankMail.MailVisitDeadlineSeconds, MinVisitDeadlineSeconds,
-                       MaxVisitDeadlineSeconds);
-        bankMailNumber("Bank.VisitDeadlineSeconds", BankMail.BankVisitDeadlineSeconds, MinVisitDeadlineSeconds,
-                       MaxVisitDeadlineSeconds);
-        bankMailNumber("VisitStepSeconds", BankMail.VisitStepSeconds, 1, MaxVisitStepSeconds);
-        bankMailNumber("Mail.PerVisit", BankMail.MailsPerVisit, 1, MaxMailsPerVisit);
-    }
+    LoadConfigTables();
+
+    // Item use (Playerbots.ItemUse.*): read by hand with a clamp until CS22's config table takes the family
+    ItemUse = ItemUseConfig{};
+    ItemUse.ControlShare = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.ControlShare", ItemUse.ControlShare, false), 0, 100);
+    ItemUse.UseEndGraceMs = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.UseEndGraceMs", ItemUse.UseEndGraceMs, false), 0, 10000);
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)

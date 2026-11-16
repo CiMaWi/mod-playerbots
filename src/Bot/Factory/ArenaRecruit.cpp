@@ -78,9 +78,7 @@ uint32 BestTeamRating(ObjectGuid player)
 
 uint32 ScoreOf(ObjectGuid player, ObjectGuid bot)
 {
-    return sPlayerbotAIConfig.AcquaintanceEnable
-               ? AcquaintanceMgr::Instance().GetScore(player.GetCounter(), bot.GetCounter())
-               : 0;
+    return AcquaintanceMgr::Instance().GetScore(player.GetCounter(), bot.GetCounter());
 }
 
 // Name or guid of any character; empty when there is none
