@@ -66,7 +66,6 @@ inline bool IsExternal(Source source) { return source != Source::Planner; }
 enum class Fallback : std::uint8_t
 {
     None,
-    Off,       // the test switch Planner.Goals is off
     NotReady,  // the indexes or the quest index are not built yet
     Failed,    // the planner answered without a ranking, or its job failed or was lost
     NoPlan,    // no plan came, or none of its options could start
@@ -75,8 +74,7 @@ enum class Fallback : std::uint8_t
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(Fallback::Count)> FALLBACK_WORDS = {
-    "weights",          "fallback_off",  "fallback_not_ready", "fallback_failed",
-    "fallback_no_plan", "fallback_late", "fallback_rejected"};
+    "weights", "fallback_not_ready", "fallback_failed", "fallback_no_plan", "fallback_late", "fallback_rejected"};
 
 inline char const* FallbackWord(Fallback reason)
 {
@@ -281,7 +279,6 @@ enum class IdleAction : std::uint8_t
 struct IdleInput
 {
     bool weighted{false};
-    bool switchOn{true};
     bool ready{false};           // the indexes and the quest index
     bool freshPlan{false};       // an unused plan within the stale limit
     bool jobComing{false};       // a job is out or due
@@ -300,8 +297,6 @@ inline IdleDecision DecideIdle(IdleInput const& in)
 {
     if (in.weighted)
         return {IdleAction::Weights, Fallback::None};
-    if (!in.switchOn)
-        return {IdleAction::Fallback, Fallback::Off};
     if (!in.ready)
         return {IdleAction::Fallback, Fallback::NotReady};
     if (in.freshPlan)
@@ -727,7 +722,7 @@ inline char const* BridgeReason(BridgeOrder order)
 // a trip every other check let through
 struct BridgeFacts
 {
-    bool inScope{false};          // Planner.Goals on, the planner saw the bot in scope, no real master, persistent
+    bool inScope{false};          // the planner saw the bot in scope, no real master, persistent
     Active current;               // the goal in the slot
     bool placeKnown{false};       // a trip's place resolved
     bool there{false};            // the place is on the bot's map within GIVER_YARDS
