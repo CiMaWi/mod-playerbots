@@ -326,6 +326,12 @@ inline void SavePetReact(BotEnthusiasm& bot, uint8_t react)
         bot.petReact = react;
 }
 
+// The units the leave dismisses (WP38a-5): the bot's guardians (unit-type mask) other than its pet, which goes passive
+// instead. Totems and companions are no guardians and stay. A guardian is not called off by the pet step and its
+// script may fight on without a victim (a fire elemental's nova), and its hits keep its owner in PvP combat with the
+// foe: wp-leave stalemate-b70, a shaman's elemental on a death knight until its two minutes ran out
+inline bool DismissedAtLeave(bool guardian, bool pet) { return guardian && !pet; }
+
 // The pet's react state to restore, once, after the disengaged edge (not engaged, not left); NO_PET_REACT while the
 // leave holds or when none was saved
 inline uint8_t RestoredPetReact(BotEnthusiasm& bot)

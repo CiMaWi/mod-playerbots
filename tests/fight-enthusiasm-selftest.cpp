@@ -488,6 +488,10 @@ void TestPetReact()
     MarkLeft(lone, false, SECOND);
     Observe(lone, false, 2 * SECOND, v);
     Check(RestoredPetReact(lone) == NO_PET_REACT, "pet: no pet at the leave, nothing given back");
+    // The leave dismisses guardians only: the pet (a guardian too) goes passive, a totem or companion stays
+    Check(DismissedAtLeave(true, false), "pet: the leave dismisses a guardian");
+    Check(!DismissedAtLeave(true, true), "pet: the leave keeps the pet");
+    Check(!DismissedAtLeave(false, false), "pet: the leave keeps a totem or a companion");
 }
 
 void TestGroup()

@@ -273,6 +273,21 @@ void SetPetPassive(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state)
     botAI->PetFollow();
 }
 
+// The leave's guardian step (WP38a-5, DismissedAtLeave): the bot's guardians are unsummoned (gathered first: the
+// unsummon takes them out of m_Controlled)
+void DismissGuardians(Player* bot)
+{
+    std::vector<Creature*> guardians;
+    for (Unit* const controlled : bot->m_Controlled)
+    {
+        Creature* const creature = controlled ? controlled->ToCreature() : nullptr;
+        if (creature && DismissedAtLeave(creature->IsGuardian(), creature->IsPet()))
+            guardians.push_back(creature);
+    }
+    for (Creature* const guardian : guardians)
+        guardian->DespawnOrUnsummon();
+}
+
 // On the disengaged edge: the bot's pet gets its react state back if it is still passive. Not by guid: a pet that was
 // unsummoned and summoned again meanwhile comes back passive under a new guid (Pet saves its react state); a pet the
 // stance action set on its summon is not passive and stays as it is
@@ -417,8 +432,9 @@ void RecordLeave(Player* bot, BotEnthusiasm const& state, double value, uint32 a
 }
 
 // The leave check (PLAN 3.5, 3.11), after the refresh: once per engaged episode an engaged bot below its flee threshold
-// leaves in one act (it stops its attack, clears its selection and current target, ends its pick and sets its pet
-// passive until the disengaged edge) and writes its row; the flight follows by the trigger when it is attacked
+// leaves in one act (it stops its attack, clears its selection and current target, ends its pick, sets its pet
+// passive until the disengaged edge and dismisses its guardians) and writes its row; the flight follows by the
+// trigger when it is attacked
 void CheckLeave(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs, EnthusiasmValues const& values)
 {
     // Cheap first: the flags, then the value, then the rules
@@ -431,6 +447,7 @@ void CheckLeave(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 no
     MarkLeft(state, attackers != 0, nowMs);
     DropFightTarget(botAI, bot);
     SetPetPassive(botAI, bot, state);
+    DismissGuardians(bot);
     RecordLeave(bot, state, value, attackers);
 }
 
