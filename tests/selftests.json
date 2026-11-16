@@ -188,6 +188,19 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "item-use-kinds-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "item-worth-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg"
