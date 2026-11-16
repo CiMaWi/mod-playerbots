@@ -63,6 +63,7 @@ struct RetiredSwitches
 {
     bool Acquaintance = false;
     bool SkipIdle = false;
+    bool Goals = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -76,6 +77,10 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredSkipIdleRows = {{
     {"", &RetiredSwitches::SkipIdle, 0, 0, ConfigKind::Retired},
 }};
 ConfigFamily<RetiredSwitches> const RetiredSkipIdleFamily{"Playerbots.SkipIdleTriggerChecks", RetiredSkipIdleRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredGoalsRows = {{
+    {"", &RetiredSwitches::Goals, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredGoalsFamily{"Playerbots.WorldTravel.Planner.Goals", RetiredGoalsRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -84,6 +89,7 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(BankMailFamily, sPlayerbotAIConfig.BankMail),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
+        MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
     };
     return entries;
 }
