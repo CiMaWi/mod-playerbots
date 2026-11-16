@@ -63,8 +63,10 @@ public:
     bool IsInNaturalTimingCombat() const { return timingCombat; }
     bool IsNaturalCadenceActive() const { return cadenceCombat; }
     bool IsSkillStretchOff() const { return stretchOff; }
-    // At each AI check, by the bot's own update; O(1): the context probe and the match status
-    void RefreshNaturalTiming();
+    // At each AI check, by the bot's own update, with the check's one context probe (kept for UpdateAIInternal's
+    // store of the tactic context, GetCheckProbe); O(1): the match status
+    void RefreshNaturalTiming(TacticContext context);
+    TacticContext GetCheckProbe() const { return checkProbe; }
     // Skill knob 2, noticing (Playerbots.Skill.Notice*, SkillStrategy): chance to miss a window and longest notice
     // delay from the hidden skill, cached by SetPvpSkill; both 0 when the knob is off.
     uint32 GetSkillNoticeMissPercent() const { return skillNoticeMissPercent; }
@@ -99,6 +101,8 @@ public:
     void SetAttributeTemplate(uint32 templateGuid) { attributeTemplate = templateGuid; }
     // A tactic fired: counted per tactic and context for .playerbots tactics stats
     void NoteTacticUse(TacticId id) const;
+    // The tactic states below are made at first use, their numbers from the bot's skill (SetSkill recomputes the
+    // numbers of the states that exist).
     // Target hold and team plan (FocusState.h, G1b): the cached FocusParams and the hold's and the plan's state.
     // Touched by the bot's own update; the GM commands read and force it on the world thread while the maps wait.
     FocusBotState& GetFocusState();
@@ -123,9 +127,10 @@ public:
     JumpBotState& GetJumpState();
     // The hooks (CS5 design 4.1), on the bot's own update. PreGate: on every Player::Update before the AI check delay
     // (the natural pre-gate stepper, the jump test); true when the jump test took the update. OnCheck: at each AI
-    // check after RefreshNaturalTiming (the opponent memory, the tracking ring, the followers).
+    // check after RefreshNaturalTiming (the opponent memory, the tracking ring, the followers), only for a bot the
+    // live test admits (TacticFollowers.h; true when it ran). probed: the check's context probe
     bool PreGate();
-    void OnCheck(uint32 nowMs, bool busyModel);
+    bool OnCheck(uint32 nowMs, bool busyModel, TacticContext probed);
     // The cast hooks, in PlayerbotAI::CastSpell: BeforeCast before the stand check (a turn wait's end), AfterCast
     // after prepare() (the kick note, the cancel lag stamp, the harness counts, the focus act, the fake cast, the
     // trace). note: what CastSpell read for the tactics before prepare() changed the target (BotTacticsInternal.h)
@@ -158,8 +163,11 @@ private:
     // cyclone chain (ccState), CastSpell's focus selection (focusState) and GetReactDelay (cadenceCombat)
     friend class PlayerbotAI;
 
+    void LogLiveMiss() const;
+
     PlayerbotAI* const botAI;
     Player* const bot;
+    TacticContext checkProbe = TacticContext::Pve;  // the context probe of the bot's last AI check
     float skillReactFactor = 1.0f;
     uint32 skillNoticeMissPercent = 0;
     uint32 skillNoticeDelayMs = 0;

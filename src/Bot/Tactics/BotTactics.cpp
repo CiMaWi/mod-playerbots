@@ -35,6 +35,56 @@
 #include "ReactionEngine.h"
 #include "Spell.h"
 #include "SpellInfo.h"
+#include "TacticFollowers.h"
+
+namespace
+{
+// A tactic state's numbers from the skill, the attributes and the gate's effort (G1b, G4b, G5d, G5e, G2a, G2b, G2c):
+// SetSkill for the states that exist, an accessor for a state it makes (CS16f: the states are made at first use)
+void FillParams(FocusBotState& state, uint8 skill, BotAttributeValues const& attributes, uint8 /*effort*/)
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    state.Params = ComputeFocusParams(skill, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
+    state.AddonKnowledge = FocusAddonKnowledge(skill, attributes.Get(BotAttribute::Knowledge),
+                                               config.TacticFocus.FocusAddonKnowledgeFromSkill);
+}
+
+void FillParams(CcBotState& state, uint8 skill, BotAttributeValues const& attributes, uint8 effort)
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    state.Params = ComputeCcParams(skill, attributes, effort, config.SkillGate.CurveExponent, config.TacticCc);
+}
+
+void FillParams(DefensiveBotState& state, uint8 skill, BotAttributeValues const& attributes, uint8 effort)
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    state.Params =
+        ComputeDefensiveParams(skill, attributes, effort, config.SkillGate.CurveExponent, config.TacticDefensive);
+}
+
+void FillParams(FakeBotState& state, uint8 skill, BotAttributeValues const& attributes, uint8 /*effort*/)
+{
+    state.Params = ComputeFakeParams(skill, attributes, sPlayerbotAIConfig.TacticFake);
+}
+
+void FillParams(TurnBotState& state, uint8 skill, BotAttributeValues const& attributes, uint8 /*effort*/)
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    state.Params = ComputeTurnParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
+}
+
+void FillParams(TrackBotState& state, uint8 skill, BotAttributeValues const& attributes, uint8 /*effort*/)
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    state.Params = ComputeTrackParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
+}
+
+void FillParams(PathBotState& state, uint8 skill, BotAttributeValues const& attributes, uint8 /*effort*/)
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    state.Params = ComputePathParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalPath);
+}
+}  // namespace
 
 BotTactics::BotTactics(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
@@ -74,26 +124,23 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
     // Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots.
     uint8 const speed = attributes.Get(BotAttribute::Speed);
     reactionState = ComputeReactionState(config.NaturalReaction, speed, config.SkillGate.CurveExponent);
-    // The hold's and the team plan's numbers (G1b), cached whatever Playerbots.Tactics.Hold/Plan.Enable say; skill 0
-    // gives the skill-99 values
-    FocusBotState& focus = GetFocusState();
-    focus.Params = ComputeFocusParams(skill, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
-    focus.AddonKnowledge = FocusAddonKnowledge(skill, attributes.Get(BotAttribute::Knowledge),
-                                               config.TacticFocus.FocusAddonKnowledgeFromSkill);
-    // Crowd control's numbers (G4b, G4a NOTE 8), cached whatever Playerbots.Tactics.Cc/OwnCc.Enable say
-    GetCcState().Params =
-        ComputeCcParams(skill, attributes, tacticGate.Effort, config.SkillGate.CurveExponent, config.TacticCc);
-    // The Defensive and Protect tactics' numbers (G5d), cached whatever their Enable says; skill 0 gives skill 99's
-    GetDefensiveState().Params = ComputeDefensiveParams(skill, attributes, tacticGate.Effort,
-                                                        config.SkillGate.CurveExponent, config.TacticDefensive);
-    // The Fake tactic's numbers (G5e), cached whatever its Enable says; skill 0 gives skill 99's
-    GetFakeState().Params = ComputeFakeParams(skill, attributes, config.TacticFake);
-    // The natural facing's numbers (G2a), cached whatever Natural.Facing.Enable says; skill 0 gives skill 99's
-    GetTurnState().Params = ComputeTurnParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
-    // The natural tracking's numbers (G2b), cached whatever Natural.Track.Enable says; skill 0 gives skill 99's
-    GetTrackState().Params = ComputeTrackParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
-    // The natural paths' numbers (G2c), cached whatever Natural.Path.Enable says; skill 0 gives skill 99's
-    GetPathState().Params = ComputePathParams(skill, attributes, config.SkillGate.CurveExponent, config.NaturalPath);
+    // The tactic states' numbers (hold and plan, crowd control, defensive, fake, facing, tracking, paths), whatever
+    // their Enable says; skill 0 gives the skill-99 values. Only the states that exist: an accessor that makes one
+    // later computes them from the same skill (FillParams)
+    if (focusState)
+        FillParams(*focusState, skill, attributes, tacticGate.Effort);
+    if (ccState)
+        FillParams(*ccState, skill, attributes, tacticGate.Effort);
+    if (defensiveState)
+        FillParams(*defensiveState, skill, attributes, tacticGate.Effort);
+    if (fakeState)
+        FillParams(*fakeState, skill, attributes, tacticGate.Effort);
+    if (turnState)
+        FillParams(*turnState, skill, attributes, tacticGate.Effort);
+    if (trackState)
+        FillParams(*trackState, skill, attributes, tacticGate.Effort);
+    if (pathState)
+        FillParams(*pathState, skill, attributes, tacticGate.Effort);
     if (skill == 0)
         return;
 
@@ -124,14 +171,11 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
 
 FocusBotState& BotTactics::GetFocusState()
 {
+    // Made at first use with the numbers of the bot's skill (SetSkill recomputes them when the skill changes)
     if (!focusState)
     {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones, the skill-99 values
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         focusState = std::make_unique<FocusBotState>();
-        focusState->Params = ComputeFocusParams(0, attributes, config.SkillGate.CurveExponent, config.TacticFocus);
-        focusState->AddonKnowledge = FocusAddonKnowledge(0, attributes.Get(BotAttribute::Knowledge),
-                                                         config.TacticFocus.FocusAddonKnowledgeFromSkill);
+        FillParams(*focusState, botAI->GetPvpSkill(), attributes, tacticGate.Effort);
     }
 
     return *focusState;
@@ -141,11 +185,8 @@ CcBotState& BotTactics::GetCcState()
 {
     if (!ccState)
     {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones (full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         ccState = std::make_unique<CcBotState>();
-        ccState->Params =
-            ComputeCcParams(0, attributes, SKILL_GATE_FULL, config.SkillGate.CurveExponent, config.TacticCc);
+        FillParams(*ccState, botAI->GetPvpSkill(), attributes, tacticGate.Effort);
     }
 
     return *ccState;
@@ -163,11 +204,8 @@ DefensiveBotState& BotTactics::GetDefensiveState()
 {
     if (!defensiveState)
     {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the skill-0 ones (full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         defensiveState = std::make_unique<DefensiveBotState>();
-        defensiveState->Params = ComputeDefensiveParams(0, attributes, SKILL_GATE_FULL, config.SkillGate.CurveExponent,
-                                                        config.TacticDefensive);
+        FillParams(*defensiveState, botAI->GetPvpSkill(), attributes, tacticGate.Effort);
     }
 
     return *defensiveState;
@@ -177,9 +215,8 @@ FakeBotState& BotTactics::GetFakeState()
 {
     if (!fakeState)
     {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
         fakeState = std::make_unique<FakeBotState>();
-        fakeState->Params = ComputeFakeParams(botAI->GetPvpSkill(), attributes, sPlayerbotAIConfig.TacticFake);
+        FillParams(*fakeState, botAI->GetPvpSkill(), attributes, tacticGate.Effort);
     }
 
     return *fakeState;
@@ -189,11 +226,8 @@ TurnBotState& BotTactics::GetTurnState()
 {
     if (!turnState)
     {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         turnState = std::make_unique<TurnBotState>();
-        turnState->Params =
-            ComputeTurnParams(botAI->GetPvpSkill(), attributes, config.SkillGate.CurveExponent, config.NaturalFacing);
+        FillParams(*turnState, botAI->GetPvpSkill(), attributes, tacticGate.Effort);
     }
 
     return *turnState;
@@ -203,11 +237,8 @@ TrackBotState& BotTactics::GetTrackState()
 {
     if (!trackState)
     {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         trackState = std::make_unique<TrackBotState>();
-        trackState->Params =
-            ComputeTrackParams(botAI->GetPvpSkill(), attributes, config.SkillGate.CurveExponent, config.NaturalTrack);
+        FillParams(*trackState, botAI->GetPvpSkill(), attributes, tacticGate.Effort);
     }
 
     return *trackState;
@@ -217,11 +248,8 @@ PathBotState& BotTactics::GetPathState()
 {
     if (!pathState)
     {
-        // SetPvpSkill fills the numbers; until it runs (Skill off) they are the current skill's (0: full ability)
-        PlayerbotAIConfig const& config = sPlayerbotAIConfig;
         pathState = std::make_unique<PathBotState>();
-        pathState->Params =
-            ComputePathParams(botAI->GetPvpSkill(), attributes, config.SkillGate.CurveExponent, config.NaturalPath);
+        FillParams(*pathState, botAI->GetPvpSkill(), attributes, tacticGate.Effort);
     }
 
     return *pathState;
@@ -305,10 +333,28 @@ bool BotTactics::PreGate()
 }
 
 // The check hook (CS5 design 4.1): UpdateAI calls it at each AI check after RefreshNaturalTiming. busyModel: the
-// natural reaction's busy bot runs here (UpdateAI's own-cast rules read it too)
-void BotTactics::OnCheck(uint32 nowMs, bool busyModel)
+// natural reaction's busy bot runs here (UpdateAI's own-cast rules read it too). The followers run only for a bot
+// the live test admits (design 6.4, TacticFollowers.h): the harness counts it, a follower left state to close, one
+// of the followers' tactics is on in the stored context, or the opponent memory runs in a match. True when live.
+bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
 {
-    ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    TacticCheckInputs inputs;
+    inputs.Counting = botAI->IsPvpTestCounting();
+    inputs.Leftover = opponentMemory.MatchId != 0 || (focusState && focusState->Target.Pick.Guid != 0);
+    inputs.MemoryEnable = config.NaturalReaction.Memory.Enable;
+    inputs.Mask = botAI->GetTacticMask();
+    inputs.Stored = botAI->GetTacticContext();
+    inputs.Probed = probed;
+    if (!TacticCheckLive(config.TacticFollowersFor, inputs))
+    {
+        if (config.TestMissLog)
+            LogLiveMiss();
+
+        return false;
+    }
+
+    ReactionParams const& reaction = config.NaturalReaction;
     if (reaction.Memory.Enable)
     {
         if (PerfMonitor::IsEnabled())
@@ -347,6 +393,30 @@ void BotTactics::OnCheck(uint32 nowMs, bool busyModel)
         }
         else
             FollowDefensive(botAI, bot, nowMs);
+    }
+
+    return true;
+}
+
+// The miss switch (Playerbots.Test.MissLog; design 6.3, 6.4): a check the live test skipped while a follower's own
+// guard passes, which would mean a term the live test lacks. The followers' guards as they read them at their entry
+void BotTactics::LogLiveMiss() const
+{
+    PlayerbotAIConfig const& config = sPlayerbotAIConfig;
+    Battleground* const battleground = bot->GetBattleground();
+    bool const match = battleground && battleground->GetStatus() == STATUS_IN_PROGRESS;
+    if (config.NaturalReaction.Memory.Enable && (match || opponentMemory.MatchId != 0))
+        LOG_INFO("playerbots", "Live miss: ObserveOpponents {}", bot->GetName());
+
+    std::array<bool, TACTIC_FOLLOWER_COUNT> const passes = {
+        config.NaturalTrack.Enable && botAI->TacticEnabledHere(TacticId::Natural),
+        InterruptFollows(config.TacticInterrupt) && botAI->TacticEnabledHere(TacticId::Interrupt),
+        botAI->TacticEnabledHere(TacticId::FocusTarget) || (focusState && focusState->Target.Pick.Guid != 0),
+        botAI->IsPvpTestCounting() || botAI->TacticEnabledHere(TacticId::Defensive)};
+    for (uint32 index = 0; index < TACTIC_FOLLOWER_COUNT; ++index)
+    {
+        if (passes[index])
+            LOG_INFO("playerbots", "Live miss: {} {}", TACTIC_FOLLOWER_NAMES[index], bot->GetName());
     }
 }
 
@@ -512,8 +582,9 @@ uint32 BotTactics::GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_E
     return count;
 }
 
-void BotTactics::RefreshNaturalTiming()
+void BotTactics::RefreshNaturalTiming(TacticContext context)
 {
+    checkProbe = context;
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     bool const measured = PerfMonitor::IsEnabled();
     if (!config.NaturalCadenceEnable && !measured)
@@ -527,7 +598,6 @@ void BotTactics::RefreshNaturalTiming()
         return;
     }
 
-    TacticContext const context = PlayerbotAI::ProbeTacticContext(bot);
     timingScope = ScopeAllows(config.NaturalCadenceContexts, context);
     timingCombat = timingScope && (bot->IsInCombat() || botAI->currentState == BOT_STATE_COMBAT);
     if (timingCombat && (bot->InBattleground() || bot->InArena()))

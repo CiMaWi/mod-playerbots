@@ -28,6 +28,7 @@
 #include "NaturalTurn.h"
 #include "PillarTactic.h"
 #include "SkillGrowthChecks.h"
+#include "TacticFollowersChecks.h"
 #include "TacticGate.h"
 #include "TacticGateChecks.h"
 
@@ -50,9 +51,8 @@ struct TacticSuite
 };
 
 // The suites the offline test runs; scope, cc and interrupt need the server (the command's parser, the spell store),
-// gate BotProfileMgr.cpp's percentile math: Tactics.cpp runs them. The follower-table builder's suite (design 6.4)
-// joins in CS16f.
-inline constexpr std::array<TacticSuite, 15> TACTIC_SUITES = {{
+// gate BotProfileMgr.cpp's percentile math: Tactics.cpp runs them
+inline constexpr std::array<TacticSuite, 16> TACTIC_SUITES = {{
     {"reaction", [](TacticCheck const& check, TacticSay const& say, TacticSuiteInputs const& inputs)
      { RunReactionChecks(check, say, inputs.Reaction, inputs.CurveExponent); }},
     {"attributes",
@@ -72,6 +72,8 @@ inline constexpr std::array<TacticSuite, 15> TACTIC_SUITES = {{
     {"kite", [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunKiteChecks(check); }},
     {"growth",
      [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunSkillGrowthChecks(check); }},
+    {"followers",
+     [](TacticCheck const& check, TacticSay const&, TacticSuiteInputs const&) { RunFollowerChecks(check); }},
 }};
 
 // Runs one suite: every failure and every line of the suite go to print with the prefix "TACTICS selftest <name>",
