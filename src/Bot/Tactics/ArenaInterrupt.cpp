@@ -30,13 +30,6 @@
 #include "SpellMgr.h"
 #include "TacticIds.h"
 
-// G5c-c: whether the Interrupt tactic follows the bot's kick and the enemies (HoldPolicy 1 or the attention gap); off
-// at the conf.dist defaults, so G5b's path stays as it was
-bool InterruptFollows(InterruptConfig const& config)
-{
-    return config.HoldPolicy != 0 || config.AttentionMsAtSkill1 != 0 || config.AttentionMsAtSkill99 != 0;
-}
-
 namespace
 {
 uint8 InterruptHpPct(Unit const* unit)

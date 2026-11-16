@@ -64,7 +64,6 @@ uint32 NaturalGcdMs(Player* bot, SpellInfo const* info);
 bool StopOwnCastForKickDue(PlayerbotAI* botAI, Player* bot, uint32 ownLeftMs, uint32 nowMs);
 void ObserveOpponents(PlayerbotAI* botAI, Player* bot, bool observe, uint32 nowMs);
 void FeedNaturalTrack(PlayerbotAI* botAI, Player* bot, uint32 nowMs);
-bool InterruptFollows(InterruptConfig const& config);
 // The definition gives count its default (true); callers in other files pass it.
 void NoteInterruptHoldEnd(PlayerbotAI* botAI, InterruptHoldEnd end, uint32 heldMs, char const* cause, uint32 nowMs,
                           bool count);
