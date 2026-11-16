@@ -37,11 +37,12 @@ constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start
 // The weighted group: the character guid's low part, as dim_bots' guid
 inline bool InWeightedGroup(std::uint64_t guidLow) { return guidLow % AB_MODULUS == 0; }
 
-// A governed bot (upkeep 3.11): a persistent planner bot, outside the weighted group and without a real master,
-// whatever the handout share. Its class quests get the unlock bonus (ClassQuestRules.h)
-inline bool Governed(bool keepsPossessions, std::uint64_t guidLow, bool realMaster)
+// A governed bot (upkeep 3.11): a planner bot that keeps its possessions (the master term is the caller's,
+// PlayerbotAI::KeepsPossessions), outside the weighted group, whatever the handout share. Its class quests get the
+// unlock bonus (ClassQuestRules.h)
+inline bool Governed(bool keepsPossessions, std::uint64_t guidLow)
 {
-    return keepsPossessions && !InWeightedGroup(guidLow) && !realMaster;
+    return keepsPossessions && !InWeightedGroup(guidLow);
 }
 
 enum class Source : std::uint8_t
