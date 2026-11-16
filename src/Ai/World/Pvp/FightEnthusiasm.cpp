@@ -325,15 +325,14 @@ void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs
     }
 }
 
-struct Entering
+// The rules' reads (ScanSkipped, MayEnter, NoteEntering; WP39) refresh the state they read: made and seeded on first
+// use, then Refresh (cheap when nothing is due; PerfMonitor "WorldPvp balance" when the balance is)
+BotEnthusiasm& Fresh(PlayerbotAI* botAI, uint32 nowMs, EnthusiasmValues const& values)
 {
-    bool enters = false;
-    bool pays = false;  // a start the bot pays for (PaysStart)
-    BanReason ban = BanReason::None;
-    JoinFacts facts;
-    float join = 0.0f;
-    double value = 0.0;
-};
+    BotEnthusiasm& state = Of(botAI, nowMs, values);
+    Refresh(botAI, botAI->GetBot(), state, nowMs, values, false);
+    return state;
+}
 
 // The bans, the join threshold and the check for one enemy, from what the bot sees of it now: whether its victim is
 // a player of the bot's faction, of its group or its real master
@@ -547,58 +546,47 @@ void ClearForced(ObjectGuid guid)
     forcedCount.store(static_cast<uint32>(forced.size()), std::memory_order_relaxed);
 }
 
-void RefreshEnthusiasm(PlayerbotAI* botAI)
+bool ScanSkipped(PlayerbotAI* botAI)
 {
     uint32 const nowMs = getMSTime();
     EnthusiasmValues const values = Values();
-    Refresh(botAI, botAI->GetBot(), Of(botAI, nowMs, values), nowMs, values, false);
-}
-
-bool ScanSkipped(PlayerbotAI* botAI)
-{
-    BotEnthusiasm const* const state = botAI->enthusiasm.get();
-    return state && SkipsScan(*state, getMSTime(), Values());
+    return SkipsScan(Fresh(botAI, nowMs, values), nowMs, values);
 }
 
 bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal)
 {
     Player* const bot = botAI->GetBot();
     Player* const enemy = unit->ToPlayer();
-    BotEnthusiasm const* const state = botAI->enthusiasm.get();
-    if (!enemy || !state || refusal || !enemy->IsAlive() || enemy->GetTeamId() == bot->GetTeamId())
+    if (!enemy || refusal || !enemy->IsAlive() || enemy->GetTeamId() == bot->GetTeamId())
         return false;
     uint32 const nowMs = getMSTime();
-    if (IsPick(*state, enemy->GetGUID().GetRawValue(), nowMs))
-        return true;
-    if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)) || LeftAlone(botAI, enemy))
-        return false;
-    return Evaluate(botAI, bot, *state, enemy, nowMs, Values()).enters;
+    EnthusiasmValues const values = Values();
+    BotEnthusiasm const& state = Fresh(botAI, nowMs, values);
+    return ReadsEnter(state, enemy->GetGUID().GetRawValue(), nowMs,
+                      [&]()
+                      {
+                          if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)) ||
+                              LeftAlone(botAI, enemy))
+                              return Entering();
+                          return Evaluate(botAI, bot, state, enemy, nowMs, values);
+                      });
 }
 
 bool NoteEntering(PlayerbotAI* botAI, Player* enemy)
 {
-    BotEnthusiasm* const state = botAI->enthusiasm.get();
-    if (!state)
-        return false;
     uint32 const nowMs = getMSTime();
-    uint64 const guid = enemy->GetGUID().GetRawValue();
-    if (IsPick(*state, guid, nowMs))
-        return true;
-    Player* const bot = botAI->GetBot();
     EnthusiasmValues const values = Values();
-    Entering const entering = Evaluate(botAI, bot, *state, enemy, nowMs, values);
-    if (!entering.enters)
-        return false;
-    SetPick(*state, guid, nowMs);
-    RecordEntering(bot, entering, values, enemy->GetGUID().GetCounter());
-    if (entering.pays)
-    {
-        // The start's cost (WP34), with its row: the value before and after
-        double const before = EditBy(*state, EditCause::Start, nowMs, values);
-        EventLog::Emit(bot, EVENT_ENTHUSIASM, Word(EditCause::Start), static_cast<uint32>(std::lround(before)),
-                       static_cast<int64>(std::lround(ValueAt(*state, nowMs, values))));
-    }
-    return true;
+    BotEnthusiasm& state = Fresh(botAI, nowMs, values);
+    Player* const bot = botAI->GetBot();
+    PickNote const note = NotePick(state, enemy->GetGUID().GetRawValue(), nowMs, values,
+                                   [&]() { return Evaluate(botAI, bot, state, enemy, nowMs, values); });
+    if (note.opened)
+        RecordEntering(bot, note.entering, values, enemy->GetGUID().GetCounter());
+    // The start's cost (WP34), with its row: the value before and after
+    if (note.charged)
+        EventLog::Emit(bot, EVENT_ENTHUSIASM, Word(EditCause::Start), static_cast<uint32>(std::lround(note.before)),
+                       static_cast<int64>(std::lround(ValueAt(state, nowMs, values))));
+    return note.enters;
 }
 
 bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit)
