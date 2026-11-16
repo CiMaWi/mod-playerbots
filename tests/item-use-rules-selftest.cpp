@@ -7,17 +7,21 @@
 // Offline proof of the use path's pure rules (src/Ai/Item/ItemUseRules.h, item-use plan WI3): a hand case per cause
 // of CheapCheck in its order, a line per engine result with a cause of its own, Advance per event, and a search over
 // seeded random event orders (requests, refusals, timed uses, a stun, a death, a move, a logout) that counts the
-// lifecycle invariants L1 to L6 of INTERFACE.md 1.8. Build (Git Bash, module root):
-// clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/Item tests/item-use-rules-selftest.cpp
+// lifecycle invariants L1 to L6 of INTERFACE.md 1.8. WI4 adds spots, objects, worn pieces (a tinker read from the
+// committed dump), the one potion per fight, the bound of a timed use and the event its signs give (EventOf); the
+// search then also asks spot, object and worn requests and derives events from random signs. Build (Git Bash, module
+// root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/Item tests/item-use-rules-selftest.cpp; run: <exe> <module root>
 
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "ItemUseFacts.h"
 #include "ItemUseRules.h"
 
 using namespace ItemUse;
@@ -110,6 +114,52 @@ Record Trinket()
     return record;
 }
 
+// Ez-Thro Dynamite: a ground spot within 30 yd, a 1 s cast (the dump)
+Record Dynamite()
+{
+    Record record;
+    record.itemEntry = 6714;
+    record.spellId = 8331;
+    record.itemClass = RULE_CLASS_CONSUMABLE;
+    record.shape = Shape::Ground;
+    record.rangeYards = 30.0f;
+    record.rangeFriendYards = 30.0f;
+    record.radiusYards = 11.0f;
+    record.castMs = 1000;
+    record.charges = -1;
+    record.consumed = true;
+    return record;
+}
+
+// Kolkar Booty Key: a game object within 5 yd, a 5 s cast (the dump)
+Record Key()
+{
+    Record record;
+    record.itemEntry = 5020;
+    record.spellId = 5107;
+    record.shape = Shape::Object;
+    record.rangeYards = 5.0f;
+    record.rangeFriendYards = 5.0f;
+    record.castMs = 5000;
+    record.moveInterrupts = true;
+    record.charges = -1;
+    record.consumed = true;
+    return record;
+}
+
+// Goblin Rocket Boots: worn only, on the bot, instant
+Record Boots()
+{
+    Record record;
+    record.itemEntry = 7189;
+    record.spellId = 8892;
+    record.itemClass = 4;
+    record.inventoryType = 8;
+    record.shape = Shape::Self;
+    record.cooldownMs = 300000;
+    return record;
+}
+
 BotView ReadyBot()
 {
     BotView bot;
@@ -169,6 +219,26 @@ TargetView Blade(std::uint32_t subClass)
     target.itemSubClass = subClass;
     target.itemInvType = 13;
     target.itemLevel = 2;
+    return target;
+}
+
+TargetView Spot(float yards, bool inSight = true)
+{
+    TargetView target;
+    target.kind = TargetKind::Spot;
+    target.found = true;
+    target.yards = yards;
+    target.inSight = inSight;
+    return target;
+}
+
+TargetView Chest(float yards, bool inSight = true)
+{
+    TargetView target;
+    target.kind = TargetKind::Object;
+    target.found = true;
+    target.yards = yards;
+    target.inSight = inSight;
     return target;
 }
 
@@ -403,6 +473,159 @@ void HandCases()
           "the row's words of 20 and 3");
 }
 
+// WI4: spots, objects, the one potion per fight, worn pieces and their tinkers
+void SpotObjectPotionCases()
+{
+    BotView const bot = ReadyBot();
+    Record const dynamite = Dynamite();
+    Expect(CheapCheck(dynamite, Ask(dynamite, TargetKind::Spot), bot, Spot(20.0f)), Cause::None, "spot: in range");
+    Expect(CheapCheck(dynamite, Ask(dynamite, TargetKind::Spot), bot, Spot(80.0f)), Cause::Range, "spot: 80 yd of 30");
+    Expect(CheapCheck(dynamite, Ask(dynamite, TargetKind::Spot), bot, Spot(7.0f, false)), Cause::Sight,
+           "spot: behind a wall");
+    Expect(CheapCheck(dynamite, Ask(dynamite, TargetKind::Unit), bot, Foe(10.0f)), Cause::NoTarget,
+           "spot: a unit does not fit a ground spell");
+    TargetView missing = Spot(10.0f);
+    missing.found = false;
+    Expect(CheapCheck(dynamite, Ask(dynamite, TargetKind::Spot), bot, missing), Cause::NoTarget,
+           "spot: no creature stood there (at creature)");
+    Record close = dynamite;
+    close.minRangeYards = 8.0f;
+    Expect(CheapCheck(close, Ask(close, TargetKind::Spot), bot, Spot(5.0f)), Cause::TooClose, "spot: too close");
+
+    Record const key = Key();
+    Expect(CheapCheck(key, Ask(key, TargetKind::Object), bot, Chest(3.0f)), Cause::None, "object: at 3 yd");
+    Expect(CheapCheck(key, Ask(key, TargetKind::Object), bot, Chest(9.0f)), Cause::Range, "object: 9 yd of 5");
+    Expect(CheapCheck(key, Ask(key, TargetKind::Object), bot, Chest(3.0f, false)), Cause::Sight,
+           "object: out of sight");
+    Expect(CheapCheck(key, Ask(key, TargetKind::Spot), bot, Spot(3.0f)), Cause::NoTarget,
+           "object: a spot does not fit an object spell");
+    Record nearKey = key;
+    nearKey.minRangeYards = 2.0f;
+    Expect(CheapCheck(nearKey, Ask(nearKey, TargetKind::Object), bot, Chest(1.0f)), Cause::TooClose,
+           "object: too close");
+
+    Record const potion = Potion();
+    BotView drunk = ReadyBot();
+    drunk.potionDrunk = true;
+    drunk.inFight = true;
+    Expect(CheapCheck(potion, Ask(potion, TargetKind::Self), drunk, Self()), Cause::Potion,
+           "potion: a second one in the fight");
+    Record mana = potion;
+    mana.itemEntry = 2455;
+    mana.spellId = 437;
+    mana.effects[0].effect = RULE_EFFECT_ENERGIZE;
+    Expect(CheapCheck(mana, Ask(mana, TargetKind::Self), drunk, Self()), Cause::Potion,
+           "potion: a mana potion after a healing one");
+    Record const stone = Stone();
+    Expect(CheapCheck(stone, Ask(stone, TargetKind::OwnItem), drunk, Blade(7)), Cause::None,
+           "potion: the mark does not refuse a stone");
+    BotView fresh = drunk;
+    fresh.potionDrunk = false;
+    Expect(CheapCheck(potion, Ask(potion, TargetKind::Self), fresh, Self()), Cause::None,
+           "potion: the mark cleared (the fight ended) allows one");
+
+    Record const boots = Boots();
+    BotView worn = ReadyBot();
+    worn.skillValue = 225;
+    worn.held = 1;
+    Expect(CheapCheck(boots, Ask(boots, TargetKind::None), worn, Self()), Cause::NotEquipped,
+           "worn: boots in the bags");
+    worn.equipped = true;
+    Expect(CheapCheck(boots, Ask(boots, TargetKind::None), worn, Self()), Cause::None, "worn: boots worn");
+}
+
+// A worn piece's tinker from the committed dump: the enchantment's record as the piece's (PieceRecord)
+void WornCases(std::string const& root)
+{
+    std::ifstream in(root + "/tests/fixtures/item-use-dump.txt", std::ios::binary);
+    Check(static_cast<bool>(in), "worn: the dump opens (" + root + ")");
+    std::optional<Record> accelerators;
+    std::optional<Record> rocket;
+    std::string line;
+    while (std::getline(in, line))
+        if (std::optional<DumpRow> const row = ParseDumpLine(line))
+            if (row->record.source == Source::EnchantSpell)
+            {
+                if (row->record.enchantId == 3604)
+                    accelerators = row->record;
+                else if (row->record.enchantId == 3603)
+                    rocket = row->record;
+            }
+    Check(accelerators && accelerators->spellId == 54758 && accelerators->itemEntry == 0,
+          "worn: enchant 3604 is spell 54758, no item");
+    Check(rocket && rocket->spellId == 54757, "worn: enchant 3603 is spell 54757");
+    if (!accelerators || !rocket)
+        return;
+
+    constexpr std::uint32_t GLOVES = 3308;
+    constexpr std::uint8_t HANDS = 10;  // INVTYPE_HANDS
+    Record const piece = PieceRecord(*accelerators, GLOVES, HANDS);
+    Check(piece.itemEntry == GLOVES && piece.inventoryType == HANDS && piece.spellId == 54758 &&
+              piece.source == Source::EnchantSpell && piece.enchantId == 3604,
+          "worn: the tinker's record names the gloves, keeps its spell");
+    std::array<Record, 2> const set = {PieceRecord(*accelerators, GLOVES, HANDS), PieceRecord(*rocket, GLOVES, HANDS)};
+    Record const* first = SelectRecord(set, 0);
+    Record const* meant = SelectRecord(set, 54757);
+    Check(first && first->spellId == 54758 && meant && meant->spellId == 54757,
+          "worn: the set's first use, else the spell meant");
+    BotView bot = ReadyBot();
+    bot.level = 80;
+    bot.held = 1;
+    bot.skillValue = 450;
+    Request ask = Ask(piece, TargetKind::None);
+    Expect(CheapCheck(piece, ask, bot, Self()), Cause::NotEquipped, "worn: tinkered gloves in the bags");
+    bot.equipped = true;
+    Expect(CheapCheck(piece, ask, bot, Self()), Cause::None, "worn: tinkered gloves worn");
+    bot.skillValue = 350;
+    Expect(CheapCheck(piece, ask, bot, Self()), Cause::Skill, "worn: engineering 350 of 400");
+}
+
+// The bound of a timed use and the event its signs give at an update
+void SignCases()
+{
+    Check(BoundOf(Dynamite(), 1500) == 2500, "bound: a cast time plus the grace");
+    Check(BoundOf(Bandage(), 1500) == 7500, "bound: a channel's duration plus the grace");
+    Check(BoundOf(Boots(), 1500) == 1500, "bound: an aura's duration does not count");
+
+    PendingSigns cast;
+    cast.runs = true;
+    Check(EventOf(cast) == UseEvent::Tick, "signs: a cast that runs is a tick");
+    cast.castSeen = true;
+    Check(EventOf(cast) == UseEvent::CastDone, "signs: the engine cast it at the cast time's end");
+    cast.alive = false;
+    Check(EventOf(cast) == UseEvent::CastDone, "signs: a death after the cast keeps the use");
+    PendingSigns moved;
+    moved.runs = true;
+    moved.cancelSeen = true;
+    moved.movedAtCancel = true;
+    Check(EventOf(moved) == UseEvent::Moved, "signs: cancelled while moving");
+    moved.movedAtCancel = false;
+    moved.controlLostAtCancel = true;
+    Check(EventOf(moved) == UseEvent::LostControl, "signs: cancelled while stunned");
+    moved.controlLostAtCancel = false;
+    Check(EventOf(moved) == UseEvent::CastFailed, "signs: cancelled otherwise (damage, a reset)");
+    PendingSigns dead;
+    dead.alive = false;
+    dead.cancelSeen = true;
+    Check(EventOf(dead) == UseEvent::Died, "signs: a death");
+    PendingSigns gone;
+    Check(EventOf(gone) == UseEvent::CastFailed, "signs: a cast gone without its cast failed");
+    PendingSigns channel;
+    channel.channeled = true;
+    channel.castSeen = true;
+    channel.runs = true;
+    Check(EventOf(channel) == UseEvent::Tick, "signs: a channel that runs is a tick");
+    channel.runs = false;
+    Check(EventOf(channel) == UseEvent::CastDone, "signs: a channel that ran out is used");
+    channel.castSeen = false;
+    Check(EventOf(channel) == UseEvent::CastFailed, "signs: a channel that never started failed");
+    channel.castSeen = true;
+    channel.runs = true;
+    channel.cancelSeen = true;
+    channel.movedAtCancel = true;
+    Check(EventOf(channel) == UseEvent::Moved, "signs: a channel cancelled by a move");
+}
+
 void AdvanceCases()
 {
     PendingUse pending;
@@ -452,6 +675,8 @@ struct Counters
     std::uint32_t refused{0};
     std::uint32_t instants{0};
     std::uint32_t timed{0};
+    std::uint32_t fromSigns{0};
+    std::array<std::uint32_t, 6> kinds{};  // requests per TargetKind
     std::array<std::uint32_t, EVENT_KINDS> events{};
     std::uint32_t noRow{0};
     std::uint32_t twoRows{0};
@@ -495,8 +720,22 @@ Run Simulate(std::uint64_t seed, Counters& counters)
             BotView bot = ReadyBot();
             bot.busy = pending.has_value();
             bot.cooldownLeftMs = random.Below(4) == 0 ? 500 : 0;
-            Record record = random.Below(2) ? Potion() : Bandage();
-            TargetView target = record.shape == Shape::Self ? Self() : Mate(static_cast<float>(random.Below(30)));
+            bot.equipped = random.Below(2) == 0;
+            bot.skillValue = 225;
+            std::array<Record, 5> const records = {Potion(), Bandage(), Dynamite(), Key(), Boots()};
+            Record const record = records[random.Below(static_cast<std::uint32_t>(records.size()))];
+            float const yards = static_cast<float>(random.Below(40));
+            bool const inSight = random.Below(5) != 0;
+            TargetView target;
+            if (record.shape == Shape::Self)
+                target = Self();
+            else if (record.shape == Shape::Ground)
+                target = Spot(yards, inSight);
+            else if (record.shape == Shape::Object)
+                target = Chest(yards / 4.0f, inSight);
+            else
+                target = Mate(yards);
+            ++counters.kinds[static_cast<std::size_t>(target.kind)];
             Cause const cause = CheapCheck(record, Ask(record, target.kind), bot, target);
             if (cause != Cause::None)
             {
@@ -515,14 +754,27 @@ Run Simulate(std::uint64_t seed, Counters& counters)
             ++counters.timed;
             if (pending)
                 ++counters.twoPending;
-            pending = PendingUse{record.itemEntry, record.spellId, Caller::Test, now,
-                                 record.castMs + record.durationMs + GRACE_MS};
+            pending = PendingUse{record.itemEntry, record.spellId, Caller::Test, now, BoundOf(record, GRACE_MS)};
             pendingId = id;
             ++pendingCount;
             continue;
         }
 
-        UseEvent const event = static_cast<UseEvent>(random.Below(EVENT_KINDS));
+        // an event drawn, or the one random signs give (the engine's hooks and the bot's state)
+        UseEvent event = static_cast<UseEvent>(random.Below(EVENT_KINDS));
+        if (random.Below(2) == 0)
+        {
+            PendingSigns signs;
+            signs.channeled = random.Below(2) == 0;
+            signs.castSeen = random.Below(2) == 0;
+            signs.cancelSeen = random.Below(4) == 0;
+            signs.movedAtCancel = random.Below(2) == 0;
+            signs.controlLostAtCancel = random.Below(2) == 0;
+            signs.alive = random.Below(8) != 0;
+            signs.runs = random.Below(3) != 0;
+            event = EventOf(signs);
+            ++counters.fromSigns;
+        }
         ++counters.events[static_cast<std::size_t>(event)];
         if (event == UseEvent::Tick)
         {
@@ -603,6 +855,9 @@ void Search()
               << " refused, " << counters.instants << " instant, " << counters.timed << " timed); events";
     for (std::uint32_t count : counters.events)
         std::cout << " " << count;
+    std::cout << " (" << counters.fromSigns << " from signs); kinds";
+    for (std::uint32_t count : counters.kinds)
+        std::cout << " " << count;
     std::cout << "\n";
     std::cout << "L1 no_row " << counters.noRow << ", L2 two_rows " << counters.twoRows << ", L3 late_end "
               << counters.lateEnd << ", L4 packet_on_refusal " << counters.packetOnRefusal << ", L5 two_pending "
@@ -613,6 +868,10 @@ void Search()
     Check(counters.requests > 0 && counters.refused > 0 && counters.instants > 0 && counters.timed > 0,
           "search: requests of every end were made");
     Check(everyEvent, "search: every kind of event happened (stun, death, move, logout, ...)");
+    Check(counters.fromSigns > 0 && counters.kinds[static_cast<std::size_t>(TargetKind::Spot)] > 0 &&
+              counters.kinds[static_cast<std::size_t>(TargetKind::Object)] > 0 &&
+              counters.kinds[static_cast<std::size_t>(TargetKind::Self)] > 0,
+          "search: spot, object and self requests, events from signs");
     Check(counters.noRow == 0, "L1 no_row is 0");
     Check(counters.twoRows == 0, "L2 two_rows is 0");
     Check(counters.lateEnd == 0, "L3 late_end is 0");
@@ -622,9 +881,13 @@ void Search()
 }
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    std::string const root = argc > 1 ? argv[1] : ".";
     HandCases();
+    SpotObjectPotionCases();
+    WornCases(root);
+    SignCases();
     AdvanceCases();
     Search();
     std::cout << passed << " passed, " << failed << " failed\n";

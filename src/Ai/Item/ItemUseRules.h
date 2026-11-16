@@ -340,6 +340,53 @@ inline std::optional<UseResult> Advance(PendingUse const& pending, UseEvent even
     }
     return std::nullopt;
 }
+
+// What the bot's map thread saw of its pending use since the start (ItemUse::Update and the engine's spell hooks)
+struct PendingSigns
+{
+    bool channeled{false};
+    bool castSeen{false};    // the engine cast the spell (Spell::_cast: a cast time's end, a channel's start)
+    bool cancelSeen{false};  // the engine cancelled it (Spell::cancel: a move, a stun, a damage interrupt, a death)
+    bool movedAtCancel{false};
+    bool controlLostAtCancel{false};
+    bool alive{true};
+    bool runs{false};  // the item's spell is the bot's current generic or channelled spell
+};
+
+// The event the signs give at one AI update: a cast time that ended in the cast is used; a death, then a cancel
+// (moved, stunned, else other); while the spell runs a tick (the bound); a spell gone without a cancel is used for a
+// channel that had started (it ran out) and failed otherwise (the engine refused it at the cast's end)
+constexpr UseEvent EventOf(PendingSigns const& signs)
+{
+    if (signs.castSeen && !signs.channeled)
+        return UseEvent::CastDone;
+    if (!signs.alive)
+        return UseEvent::Died;
+    if (signs.cancelSeen)
+    {
+        if (signs.movedAtCancel)
+            return UseEvent::Moved;
+        return signs.controlLostAtCancel ? UseEvent::LostControl : UseEvent::CastFailed;
+    }
+    if (signs.runs)
+        return UseEvent::Tick;
+    return signs.channeled && signs.castSeen ? UseEvent::CastDone : UseEvent::CastFailed;
+}
+
+// The bound of a timed use: its cast time, its channel's duration, plus the grace (PLAN 3.3)
+constexpr std::uint32_t BoundOf(Record const& record, std::uint32_t graceMs)
+{
+    return record.castMs + (record.channeled ? record.durationMs : 0) + graceMs;
+}
+
+// A worn piece's enchantment record (a tinker) as the piece's own use: Player::CastItemUseSpell casts an
+// enchantment's use spell with the piece, so the row names the piece and the piece must be worn
+inline Record PieceRecord(Record record, std::uint32_t pieceEntry, std::uint8_t inventoryType)
+{
+    record.itemEntry = pieceEntry;
+    record.inventoryType = inventoryType;
+    return record;
+}
 }  // namespace ItemUse
 
 #endif

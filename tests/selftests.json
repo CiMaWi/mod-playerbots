@@ -192,6 +192,12 @@
             "includes": [
                 "src/Ai/Item"
             ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
             "success": "\\d+ passed, 0 failed"
         },
         {

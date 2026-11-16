@@ -293,6 +293,10 @@ PlayerbotAI::~PlayerbotAI()
     if (aiObjectContext)
         delete aiObjectContext;
 
+    // a timed item use still waiting ends with its row (logout)
+    if (bot)
+        ItemUse::EndPending(this, bot, ItemUse::UseEvent::LoggedOut);
+
     if (bot)
         PlayerbotsMgr::instance().RemovePlayerBotData(bot->GetGUID(), true);
 }
@@ -344,6 +348,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // update; so does it for a bot placed aboard until its placement is decided (below)
         if (((early & BotWork::Order) && TravelOrders::TakeAndApply(this, bot)) || (GetWork() & BotWork::Aboard))
             nextAICheckDelay = 0;
+
+        // A timed item use is followed to its end (its row), before a new order may meet the bot busy
+        if (GetWork() & BotWork::ItemTimed)
+            ItemUse::Update(this, bot, getMSTime());
 
         // A test's item use order (playerbots item use): used on this map thread, the outcome is its ItemUse row
         if (GetWork() & BotWork::ItemOrder)
