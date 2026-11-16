@@ -134,18 +134,14 @@ char const* RoleName(uint32 role)
     }
 }
 
-constexpr char const* MovesOffText =
-    "Ladder moves are off (Playerbots.Ladder.Enable = 0 and Playerbots.Ladder.Role = 0)";
+constexpr char const* MovesOffText = "Ladder moves are off (needs Playerbots.Ladder.Role = 1 or 2)";
 constexpr char const* PoolOffText =
     "Ladder pool is off (needs Playerbots.Ladder.Role = 1 and Playerbots.Ladder.PoolTeams)";
 
 uint8 MaxLevel() { return static_cast<uint8>(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL)); }
 }  // namespace
 
-bool LadderMgr::MovesOn()
-{
-    return sPlayerbotAIConfig.LadderEnable || sPlayerbotAIConfig.LadderRole != LADDER_ROLE_OFF;
-}
+bool LadderMgr::MovesOn() { return sPlayerbotAIConfig.LadderRole != LADDER_ROLE_OFF; }
 
 void LadderMgr::LoadRoster()
 {
