@@ -286,8 +286,7 @@ float SkillMultiplier::GetValue(Action* action)
     // pillar step the same with their Positioning part: G2e, G2f)
     bool const positioning = category == SkillNoticeCategory::Positioning;
     bool const movement = category == SkillNoticeCategory::Movement || positioning;
-    if (movement && (!sPlayerbotAIConfig.NaturalReactionActive ||
-                     (positioning && !sPlayerbotAIConfig.NaturalReaction.PositioningEnable)))
+    if (movement && positioning && !sPlayerbotAIConfig.NaturalReaction.PositioningEnable)
         return 1.0f;
 
     if (botAI->IsSkillExempt())
@@ -306,9 +305,7 @@ float SkillMultiplier::GetValue(Action* action)
 
     SkillNoticeCounters& counters = botAI->GetSkillNoticeCounters();
     size_t const index = static_cast<size_t>(category) - 1;
-    bool const noticed = sPlayerbotAIConfig.NaturalReactionActive
-                             ? HasReacted(category, actionClass.Ease, action, switchTarget)
-                             : HasNoticed(category);
+    bool const noticed = HasReacted(category, actionClass.Ease, action, switchTarget);
     if (noticed)
     {
         ++counters.allowed[index];

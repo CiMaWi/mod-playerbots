@@ -497,9 +497,8 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->addStrategy("boost", false);
     }
 
-    // Skill knob 2, noticing, and natural reaction: only when configured, so the default engine has no extra multiplier
-    if (sPlayerbotAIConfig.SkillNoticeActive || sPlayerbotAIConfig.NaturalReactionActive)
-        engine->addStrategy("skill", false);
+    // Skill knob 2, noticing, and natural reaction: the skill multiplier is always present; its numbers decide
+    engine->addStrategy("skill", false);
 
     // Target hold and team plan (G1b): only with the tactic system on and the Hold or Plan tactic enabled, or the PvP
     // harness on (it forces tactic masks per side); the multiplier and the triggers test their tactic per match

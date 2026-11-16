@@ -2384,8 +2384,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         exempt ? 0u : botAI->GetTactics().GetSkillNoticeMissPercent(),
         exempt ? 0u : botAI->GetTactics().GetSkillNoticeDelayMs());
     ReactionState const& reaction = botAI->GetTactics().GetReactionState();
-    handler->PSendSysMessage("  natural reaction: {} (contexts {}); median {:.0f} ms, sigma {:.3f}",
-                             config.NaturalReactionActive ? "on" : "off",
+    handler->PSendSysMessage("  natural reaction: contexts {}; median {:.0f} ms, sigma {:.3f}",
                              FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
     ReactionParams const& timing = config.NaturalReaction;
     handler->PSendSysMessage(
