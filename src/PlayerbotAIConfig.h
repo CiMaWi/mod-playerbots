@@ -512,13 +512,11 @@ public:
     BotAttributeParams SkillAttributes;
     // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Active needs
     // Playerbots.Skill.Enable; Contexts is a tactic scope mask (default the PvP contexts)
-    bool NaturalReactionEnable;
     bool NaturalReactionActive;
     uint8 NaturalReactionContexts;
     ReactionParams NaturalReaction;
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
     // started match (NaturalReaction.h). NearRealPlayerYards is read but inert: no cached proximity flag exists yet.
-    bool NaturalCadenceEnable;
     uint32 NaturalCadenceCheckMs;
     uint32 NaturalCadenceStaggerMs;
     uint8 NaturalCadenceContexts;

@@ -578,7 +578,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
         // End to end only where the faster check runs: at upstream's combat interval (250 ms in battlegrounds and
         // arenas, 500 ms elsewhere, x the skill's stretch, plus up to 200 ms of stagger) the learnt latency would eat
         // most of the draw
-        if (reactionNatural[index] && params.EndToEnd && botAI->GetTactics().IsNaturalCadenceActive())
+        if (reactionNatural[index] && botAI->GetTactics().IsNaturalCadenceActive())
         {
             ReactionStampSource source = ReactionStampSource::FirstQuery;
             uint32 const age = VisibleEventAgeMs(bot, category, target, source);
@@ -700,7 +700,7 @@ void SkillMultiplier::MeetBusy(ReactionEvent& event, SkillNoticeCategory categor
 
     uint32 const enemyLeft = static_cast<uint32>(std::clamp(cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
     ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
-    bool const stamped = params.EndToEnd && botAI->GetTactics().IsNaturalCadenceActive();
+    bool const stamped = botAI->GetTactics().IsNaturalCadenceActive();
     int32 const freeMs = BusyFreeDueMs(event, static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), stamped);
     if (!InterruptOutOfReach(rules, std::max(event.DueAfterMs, waitMs), freeMs, enemyLeft))
         return;
