@@ -880,17 +880,27 @@ Playerbots.RandomBotXPRate = 1.0
 #     and Playerbots.RandombotStartingLevel are not applied.
 # Levels still go up (quests, kills).
 
-# Roster above the online cap, rotated by schedule. More random bot characters exist than are online
-# (the count Playerbots.RandomBotCountMode sets stays the online cap); every IntervalSeconds the rotation
-# swaps online bots for offline ones of the same faction. Each bot is owed a share of online time
-# (cap / eligible roster); a bot a real player knows (acquaintance score >=
+#
+# Playerbots.Population.FollowTargets
+# Description: A role value: this server's population follows the targets. Its roster of random
+#              bot characters is larger than the online cap and rotates by schedule (Rotation.*),
+#              and never-met bots above a target are retired and replaced, rate limited
+#              (Retire.*). Set 0 where the population is fixed: the rotating arena server and
+#              test servers. Forced off on the arena role (Playerbots.Ladder.Role = 2) and outside
+#              a living world (ArenaOnly), whatever this says.
+# Default:     1 - on
+#              0 - off: every random bot character may be online, nothing rotates or is retired
+Playerbots.Population.FollowTargets = 1
+
+# The roster above the online cap, rotated by schedule. More random bot characters exist than are
+# online (the count Playerbots.RandomBotCountMode sets stays the online cap); every IntervalSeconds
+# the rotation swaps online bots for offline ones of the same faction. Each bot is owed a share of
+# online time (cap / eligible roster); a bot a real player knows (acquaintance score >=
 # AcquaintedMinScore) is owed AcquaintedSharePct, as far as the cap allows. The most over-served
 # online bots make way for the most owed offline ones; a bot in a group, battleground, arena queue,
 # instance, combat or flight is not logged out. Bots away on an arena server (ladder) never log in
 # and do not count toward the cap. The schedule lives in memory (a restart starts it afresh).
 # GM commands: ".playerbots population status" and ".playerbots population selftest".
-# Default: 0 (off, upstream behaviour)
-Playerbots.Population.Rotation.Enable = 0
 
 # Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
 # with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
@@ -928,7 +938,7 @@ Playerbots.Population.Rotation.AcquaintedMinScore = 1
 # Level-range balance by levelling speed. The levels below the max level form ranges of RangeSize
 # levels (1-9, 10-19, ..., 70-79), the max level a range of its own. Each range's target is an equal
 # share of the population, the max level range MaxLevelWeightPct of one share. Every IntervalMinutes
-# the ranges are counted (the rotation roster when Rotation.Enable = 1, else the online random bots;
+# the ranges are counted (the rotation roster when FollowTargets = 1, else the online random bots;
 # no DB query) and each range gets an XP multiplier (times Playerbots.RandomBotXPRate): over its
 # target the range's bots level faster, under it slower; not for bots grouped with a real player.
 # With the rotation on, bots of an over-target range are also owed less online time and those of an
@@ -977,41 +987,27 @@ Playerbots.Population.Balance.SmoothingHours = 6
 # Default: 384 (16 days)
 Playerbots.Population.Balance.ResponseHours = 384
 
-# With Rotation.Enable = 1: the online share of a range twice (half) its target is weighted
+# With FollowTargets = 1: the online share of a range twice (half) its target is weighted
 # 1 - (1 +) this percent (maximum 90; 0 = no logout preference)
 # Default: 25
 Playerbots.Population.Balance.LogoutPreferencePct = 25
 
-#
-# Playerbots.Population.Retire.Enable (H4)
-# Description: In a level range persistently over its Balance target, deletes offline roster
-#              bots no real player knows, so new level-1 bots can take their place. A bot is
-#              kept when a real player has an acquaintance score above Retire.MaxScore with it,
-#              it is in a guild with a real player's character, on a real player's friend list,
-#              in any arena team or group, leads a guild, is named in a ladder roster, is away on
-#              an arena server, is online, or sits on a lab-bots clone account. A range never
-#              falls below its target; the range of level 1 is never retired from. Only random
-#              bot characters are deleted (completely: also their playerbots and mod-ollama-chat
-#              rows), never another character; the account stays, and a new bot of the same
-#              class (level 1; a death knight at its start level) is created on it right after,
-#              so the character count stays constant. No pass runs while a replacement is owed;
-#              one given up (Retire.CreateAttempts) pauses the retires until ".reload config"
-#              and the factory refills the account at the next startup. One log line per
-#              retire and per creation.
-#              Needs Rotation.Enable = 1 and
-#              Balance.Enable = 1 (or Retire.TestRange); else one error line and nothing happens.
-#              Keep it 0 on labs with lab-bots clones.
-# Default:     0 - off
-#              1 - on (see Retire.DryRun)
-Playerbots.Population.Retire.Enable = 0
-
-# Playerbots.Population.Retire.DryRun
-# Description: Logs "would retire" and "would create" lines; deletes and creates nothing.
-#              Switching to 0 (".reload config")
-#              waits one interval before the first delete, as does switching Retire.Enable on.
-# Default:     1 - logs only
-#              0 - deletes
-Playerbots.Population.Retire.DryRun = 1
+# Retirement (H4), on where Playerbots.Population.FollowTargets is: deletes offline roster bots no
+# real player knows, so new level-1 bots can take their place: from the max-level range above
+# Retire.TestTarget, else from a level range persistently over its Balance target. A bot is kept
+# when a real player has met it (any acquaintance score), it is in a guild with a real player's
+# character, on a real player's friend list, in any arena team or group, leads a guild, is named in
+# a ladder roster, is away on an arena server, is online, or sits on a lab-bots clone account. A
+# range never falls below its target; the Balance range of level 1 is never retired from. Only
+# random bot characters are deleted (completely: also their playerbots and mod-ollama-chat rows),
+# never another character; the account stays, and a new bot of the same class (level 1; a death
+# knight at its start level) is created on it right after, so the character count stays constant.
+# No pass runs while a replacement is owed: a failed creation is tried again one interval later, a
+# saved row not found a few seconds later; after 3 tries it is given up (one error line), the
+# retires pause until ".reload config" and the factory refills the account at the next startup.
+# One log line per retire and per creation, one summary line per hour. The first pass after a
+# start, or after FollowTargets is switched on, waits one interval. With TestTarget 0 and the
+# balance off nothing is retired.
 
 # Playerbots.Population.Retire.IntervalSeconds
 # Description: Seconds between two passes (minimum 10)
@@ -1020,18 +1016,11 @@ Playerbots.Population.Retire.IntervalSeconds = 600
 
 # Playerbots.Population.Retire.MaxPerPass
 # Playerbots.Population.Retire.MaxPerHour
-# Description: Bots retired at most per pass and per sliding hour (dry-run picks count too).
+# Description: Bots retired at most per pass and per sliding hour.
 #              Each retire runs a few synchronous queries on the world thread (the core's delete).
 # Default: 1, 10
 Playerbots.Population.Retire.MaxPerPass = 1
 Playerbots.Population.Retire.MaxPerHour = 10
-
-# Playerbots.Population.Retire.MaxScore
-# Description: The highest acquaintance score a retired bot may have with any real player.
-#              0 = never-met bots only. Higher values allow barely-met bots; they go only after
-#              every never-met candidate of the range.
-# Default: 0
-Playerbots.Population.Retire.MaxScore = 0
 
 # Playerbots.Population.Retire.PersistMinutes
 # Description: A range is retired from once it has been over its target (beyond the Balance
@@ -1039,34 +1028,11 @@ Playerbots.Population.Retire.MaxScore = 0
 # Default: 60
 Playerbots.Population.Retire.PersistMinutes = 60
 
-# Playerbots.Population.Retire.Candidates
-# Description: Bots a pass checks against the database (guild, friends, arena teams, groups,
-#              ladder roster), 1-500
-# Default: 50
-Playerbots.Population.Retire.Candidates = 50
-
-# Playerbots.Population.Retire.TestRange
 # Playerbots.Population.Retire.TestTarget
-# Description: Test only: retire from this range ("first-last", e.g. "1-9") down to this
-#              target instead of the Balance ranges. Empty = off.
-# Default: "", 0
-Playerbots.Population.Retire.TestRange = ""
+# Description: Test toggle: retire the max-level range down to this many bots (then the Balance
+#              ranges are not retired from). 0 = off: it retires nothing.
+# Default: 0
 Playerbots.Population.Retire.TestTarget = 0
-
-# Playerbots.Population.Retire.CreateAttempts
-# Description: Tries per replacement, 1-10: a failed creation is tried again one interval later,
-#              a saved row not found a few seconds later. Then it is given up: one error line,
-#              the retires pause until ".reload config", and the roster is short by one until
-#              the next restart.
-# Default: 3
-Playerbots.Population.Retire.CreateAttempts = 3
-
-# Playerbots.Population.Retire.SummaryMinutes
-# Description: Minutes between two summary lines (retires, creations, failures, owed
-#              replacements, roster size and the random bot accounts' character count).
-#              0 = no summary.
-# Default: 60
-Playerbots.Population.Retire.SummaryMinutes = 60
 
 #
 #

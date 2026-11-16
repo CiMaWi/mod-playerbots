@@ -17,10 +17,10 @@ class ChatHandler;
 class Player;
 
 // Persistent population (living-azeroth phase H). H1: no code path lowers a random bot's level (the upstream
-// level-lowering options are ignored). H2: with Playerbots.Population.Rotation.Enable = 1 the roster of random
-// bot characters is larger than the online cap and a schedule rotates who is online. Keys are read here
-// through sConfigMgr (not PlayerbotAIConfig.h) and re-read on ".reload config". The rules themselves are in
-// PopulationPolicy.h.
+// level-lowering options are ignored). H2: where the population follows the targets (BotKind::FollowsTargets, the
+// role value Playerbots.Population.FollowTargets) the roster of random bot characters is larger than the online cap
+// and a schedule rotates who is online. Keys are read here through sConfigMgr (not PlayerbotAIConfig.h) and re-read
+// on ".reload config". The rules themselves are in PopulationPolicy.h.
 namespace Population
 {
 // Re-reads the keys and logs the state, plus one warning naming the ignored level-lowering options that are set.
@@ -32,17 +32,18 @@ void LoadConfig(bool reload);
 // `site`). Cheap when nothing is lowered; any thread that may touch the bot.
 uint32 GuardLevel(Player* bot, uint32 requestedLevel, char const* site);
 
-// Any thread (relaxed atomic): Playerbots.Population.Rotation.Enable
+// Any thread (relaxed atomic): the population follows the targets (BotKind::FollowsTargets as LoadConfig last saw
+// it), so the roster rotates
 bool IsRotation();
 
 // Startup (account creation and account types): how many random bot characters the accounts are sized for:
 // `upstreamCount`, or Playerbots.Population.Rotation.RosterSize when the rotation is on and the roster is larger.
-// Reads the config itself (it runs before LoadConfig).
+// Reads BotKind::FollowsTargets (it runs before LoadConfig, after PlayerbotAIConfig::Initialize set the role).
 uint32 RosterBotCount(uint32 upstreamCount);
 
-// Startup (the factory, before LoadConfig; reads the config itself): Rotation.Enable on. The factory then makes
-// characters only up to the roster's count (RosterBotCount) instead of filling every bot account, and the roster
-// accounts keep spare slots for ".playerbots population resize".
+// Startup (the factory, before LoadConfig): the population follows the targets (BotKind::FollowsTargets). The
+// factory then makes characters only up to the roster's count (RosterBotCount) instead of filling every bot account,
+// and the roster accounts keep spare slots for ".playerbots population resize".
 bool CapsStartupRefill();
 
 // Startup: the random bot characters the roster accounts are sized for: RosterBotCount, plus a tenth of it as spare
@@ -87,14 +88,14 @@ std::vector<PopulationPolicy::BalanceRange> BalanceRanges();
 // World thread: the index into BalanceRanges() of a level
 uint32 BalanceRangeOf(uint32 level);
 
-// Any thread (relaxed atomic): Playerbots.Population.Retire.Enable with its prerequisites met
-// (Rotation.Enable, and Balance.Enable or Retire.TestRange)
+// Any thread (relaxed atomic): the retirement is on, which it is exactly where the roster rotates (IsRotation)
 bool IsRetire();
 
 // H4a. World thread (RandomPlayerbotMgr::UpdateAIInternal), every tick; returns at once while the retire is off and no
-// query is in flight. Every Retire.IntervalSeconds, in the level ranges persistently over target: offline roster bots
-// no real player knows (DH.2) are deleted, or with Retire.DryRun only logged, at most Retire.MaxPerPass per pass and
-// Retire.MaxPerHour per hour, never below a range's target (DH.3). `online` is the manager's online set.
+// query is in flight. Every Retire.IntervalSeconds, in the top level above Retire.TestTarget (0: not there), else in
+// the level ranges persistently over target: offline roster bots no real player knows (DH.2) are deleted, at most
+// Retire.MaxPerPass per pass and Retire.MaxPerHour per hour, never below a range's target (DH.3). `online` is the
+// manager's online set.
 void RetireTick(std::unordered_set<uint32> const& online);
 
 // .playerbots population status | selftest
