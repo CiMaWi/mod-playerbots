@@ -7,6 +7,9 @@
 #include "ItemUse.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -15,6 +18,8 @@
 
 #include "CensusMgr.h"
 #include "Creature.h"
+#include "DBCStores.h"
+#include "GameObject.h"
 #include "Item.h"
 #include "ItemUseIndex.h"
 #include "ItemUseKinds.h"
@@ -24,6 +29,7 @@
 #include "Opcodes.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "Spell.h"
@@ -44,8 +50,12 @@ constexpr float ORDER_CREATURE_YARDS = 100.0f;  // `creature <entry>`: the neare
 constexpr std::uint8_t CAST_COUNT = 1;          // the client's cast counter; the handler only echoes it
 constexpr std::int64_t KIND_FACTOR = 1000000;   // the row's amount: spell + KIND_FACTOR * kind
 
+constexpr float ORDER_OBJECT_YARDS = 100.0f;  // `object <entry>`: the nearest of the template this far
+constexpr float MOVED_YD = 0.25f;             // a timed use cancelled this far off its start: the bot moved
+
 std::mutex ordersLock;
 std::unordered_map<std::uint64_t, std::vector<Order>> orders;  // bot guid -> its waiting orders, in order
+std::atomic<std::uint32_t> pendingUses{0};                     // timed uses between start and row, every map
 
 // What Check found on the bot's map for one request
 struct Found
@@ -55,7 +65,17 @@ struct Found
     Item* item{nullptr};
     Unit* unit{nullptr};
     Item* itemTarget{nullptr};
+    GameObject* object{nullptr};
+    bool spot{false};
+    Record worn;  // a worn piece's enchantment record as the piece's (PieceRecord)
 };
+
+BotItems* ItemsOf(PlayerbotAI* botAI) { return botAI ? botAI->botItems.get() : nullptr; }
+
+bool SpotFound(Target const& target)
+{
+    return std::isfinite(target.x) && std::isfinite(target.y) && std::isfinite(target.z);
+}
 
 Cause CauseOfInventory(InventoryResult result)
 {
@@ -112,7 +132,7 @@ Powers PowerOf(Record const& record)
     return MAX_POWERS;
 }
 
-BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo, Item* item)
+BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo, Item* item, bool pending)
 {
     Needs const& needs = record.needs;
     BotView view;
@@ -134,14 +154,17 @@ BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo,
     view.cooldownLeftMs = std::max(view.cooldownLeftMs, bot->GetSpellCooldownDelay(record.spellId));
     view.potionDrunk = bot->GetLastPotionId() != 0;
     // the handler queues a packet it cannot cast now (the spell queue), so a cast, a waiting request or the global
-    // cooldown is busy
-    view.busy = bot->IsNonMeleeSpellCast(false, false, true) || !bot->SpellQueue.empty() ||
+    // cooldown is busy; so is a timed use until its row
+    view.busy = pending || bot->IsNonMeleeSpellCast(false, false, true) || !bot->SpellQueue.empty() ||
                 (spellInfo && bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo));
     view.alive = bot->IsAlive();
     view.inControl = !bot->HasUnitState(UNIT_STATE_LOST_CONTROL);
     view.inFight = bot->IsInCombat();
     view.inArena = bot->InArena();
-    view.shapeshifted = bot->GetShapeshiftForm() != FORM_NONE;
+    // a stance is no shapeshift for spells (SpellInfo::CheckShapeshift)
+    ShapeshiftForm const form = bot->GetShapeshiftForm();
+    SpellShapeshiftFormEntry const* shape = form != FORM_NONE ? sSpellShapeshiftFormStore.LookupEntry(form) : nullptr;
+    view.shapeshifted = form != FORM_NONE && !(shape && (shape->flags1 & SHAPESHIFT_FLAG_STANCE));
     if (needs.outdoors || needs.indoors)
         view.outdoors = bot->IsOutdoors();
     view.placeFits = (!needs.map || needs.map == bot->GetMapId()) &&
@@ -174,6 +197,32 @@ TargetView ViewOfUnit(Player* bot, Record const& record, Unit* unit, TargetKind 
     return view;
 }
 
+// A spot: yards to it and the engine's line of sight to a destination (Spell::CheckCast)
+TargetView ViewOfSpot(Player* bot, Target const& spot)
+{
+    TargetView view;
+    view.kind = TargetKind::Spot;
+    view.found = SpotFound(spot);
+    if (!view.found)
+        return view;
+    view.yards = bot->GetExactDist(spot.x, spot.y, spot.z);
+    view.inSight = bot->IsWithinLOS(spot.x, spot.y, spot.z, VMAP::ModelIgnoreFlags::M2, LINEOFSIGHT_ALL_CHECKS);
+    return view;
+}
+
+TargetView ViewOfObject(Player* bot, GameObject* object)
+{
+    TargetView view;
+    view.kind = TargetKind::Object;
+    view.found = object != nullptr;
+    if (!object)
+        return view;
+    view.yards = bot->GetDistance(object);
+    // the static world only: the object's own model would hide its centre (a chest's lid)
+    view.inSight = bot->IsWithinLOSInMap(object, VMAP::ModelIgnoreFlags::M2, LINEOFSIGHT_CHECK_VMAP);
+    return view;
+}
+
 TargetView ViewOfItem(Item* target)
 {
     TargetView view;
@@ -193,7 +242,7 @@ TargetView ViewOfItem(Item* target)
 
 // The engine's own CheckCast with the cast item and the target, as PlayerbotAI::CanCastSpell sets it up, without its
 // leniency (range and sight refuse here)
-std::uint32_t EngineCheck(Player* bot, Found const& found)
+std::uint32_t EngineCheck(Player* bot, Found const& found, Target const& target)
 {
     Unit* oldSelection = bot->GetSelectedUnit();
     Spell* spell = new Spell(bot, found.spellInfo, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
@@ -202,6 +251,10 @@ std::uint32_t EngineCheck(Player* bot, Found const& found)
         spell->m_targets.SetUnitTarget(found.unit);
     if (found.itemTarget)
         spell->m_targets.SetItemTarget(found.itemTarget);
+    if (found.object)
+        spell->m_targets.SetGOTarget(found.object);
+    if (found.spot)
+        spell->m_targets.SetDst(target.x, target.y, target.z, bot->GetOrientation());
     SpellCastResult const result = spell->CheckCast(true);
     delete spell;
     if (oldSelection)
@@ -209,9 +262,30 @@ std::uint32_t EngineCheck(Player* bot, Found const& found)
     return static_cast<std::uint32_t>(result);
 }
 
+// A worn piece without a use of its own: a use spell of one of its enchantments (a tinker), as the piece's record
+Record const* WornRecord(Player* bot, Request const& request, Found& found)
+{
+    if (!request.item.guid && request.item.slot == SLOT_BAGS)
+        return nullptr;
+    Item* piece = FindItem(bot, request.item, Record{});
+    ItemTemplate const* proto = piece ? piece->GetTemplate() : nullptr;
+    if (!proto)
+        return nullptr;
+    for (std::uint32_t slot = PERM_ENCHANTMENT_SLOT; slot < MAX_ENCHANTMENT_SLOT; ++slot)
+        if (std::uint32_t const enchantId = piece->GetEnchantmentId(EnchantmentSlot(slot)))
+            if (Record const* record = SelectRecord(ItemUseIndex::Get().OfEnchant(enchantId), request.spellId))
+            {
+                found.worn = PieceRecord(*record, piece->GetEntry(), static_cast<std::uint8_t>(proto->InventoryType));
+                return &found.worn;
+            }
+    return nullptr;
+}
+
 Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t* engine)
 {
     found.record = SelectRecord(ItemUseIndex::Get().OfItem(request.item.entry), request.spellId);
+    if (!found.record)
+        found.record = WornRecord(bot, request, found);
     if (!found.record)
         return Cause::NoEffect;
 
@@ -221,7 +295,8 @@ Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t*
         return Cause::NoEffect;
 
     found.item = FindItem(bot, request.item, record);
-    BotView const botView = ViewOfBot(bot, record, found.spellInfo, found.item);
+    BotItems const* items = ItemsOf(PlayerbotsMgr::instance().GetPlayerbotAI(bot));
+    BotView const botView = ViewOfBot(bot, record, found.spellInfo, found.item, items && items->active);
 
     TargetView targetView;
     switch (request.target.kind)
@@ -248,8 +323,16 @@ Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t*
             found.itemTarget = request.target.guid ? bot->GetItemByGuid(ObjectGuid(request.target.guid)) : nullptr;
             targetView = ViewOfItem(found.itemTarget);
             break;
-        default:
-            targetView.kind = request.target.kind;  // a spot and an object: WI4
+        case TargetKind::Spot:
+            found.spot = SpotFound(request.target);
+            targetView = ViewOfSpot(bot, request.target);
+            break;
+        case TargetKind::Object:
+            found.object =
+                request.target.guid ? ObjectAccessor::GetGameObject(*bot, ObjectGuid(request.target.guid)) : nullptr;
+            if (found.object && (!found.object->IsInWorld() || !found.object->isSpawned()))
+                found.object = nullptr;
+            targetView = ViewOfObject(bot, found.object);
             break;
     }
 
@@ -257,7 +340,7 @@ Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t*
     if (cause != Cause::None)
         return cause;
 
-    std::uint32_t const result = EngineCheck(bot, found);
+    std::uint32_t const result = EngineCheck(bot, found, request.target);
     Cause const mapped = CauseOfEngine(result);
     if (mapped == Cause::Engine && engine)
         *engine = result;
@@ -265,13 +348,21 @@ Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t*
 }
 
 // The one builder of CMSG_USE_ITEM: the fields in the handler's order, then the target flag and its packed guid
-WorldPacket BuildPacket(Item const* item, std::uint32_t spellId, Record const& record, Unit const* unit,
-                        Item const* itemTarget)
+// (SpellCastTargets::Read): a spot is the destination with no transport (an empty packed guid), then x, y, z
+WorldPacket BuildPacket(Item const* item, std::uint32_t spellId, Record const& record, Found const& found,
+                        Target const& target)
 {
-    WorldPacket packet(CMSG_USE_ITEM, 1 + 1 + 1 + 4 + 8 + 4 + 1 + 4 + 9);
+    Unit const* unit = found.unit;
+    Item const* itemTarget = found.itemTarget;
+    WorldPacket packet(CMSG_USE_ITEM, 1 + 1 + 1 + 4 + 8 + 4 + 1 + 4 + 9 + 12);
     packet << item->GetBagSlot() << item->GetSlot() << CAST_COUNT << spellId << item->GetGUID() << std::uint32_t(0)
            << std::uint8_t(0);
-    if (itemTarget)
+    if (found.spot)
+        packet << std::uint32_t(TARGET_FLAG_DEST_LOCATION) << ObjectGuid::Empty.WriteAsPacked() << target.x << target.y
+               << target.z;
+    else if (found.object)
+        packet << std::uint32_t(TARGET_FLAG_GAMEOBJECT) << found.object->GetGUID().WriteAsPacked();
+    else if (itemTarget)
         packet << std::uint32_t(TARGET_FLAG_ITEM) << itemTarget->GetGUID().WriteAsPacked();
     else if (unit && record.shape != Shape::None && record.shape != Shape::Self)
         packet << std::uint32_t(TARGET_FLAG_UNIT) << unit->GetGUID().WriteAsPacked();
@@ -303,6 +394,14 @@ Signs SignsOf(Player* bot, Found const& found, ObjectGuid itemGuid)
     return signs;
 }
 
+// The pending spell runs: the engine clears the spell's item guid when it takes a consumed item at the cast
+// (Spell::TakeCastItem, before the cast hook and a channel's run), so an empty guid matches too
+bool PendingRuns(Spell const* spell, std::uint32_t spellId, std::uint64_t itemGuid)
+{
+    return spell && spell->m_spellInfo->Id == spellId &&
+           (spell->m_castItemGUID.GetRawValue() == itemGuid || spell->m_castItemGUID.IsEmpty());
+}
+
 bool CastRuns(Player* bot, std::uint32_t spellId, ObjectGuid itemGuid)
 {
     for (CurrentSpellTypes type : {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL})
@@ -312,14 +411,45 @@ bool CastRuns(Player* bot, std::uint32_t spellId, ObjectGuid itemGuid)
     return false;
 }
 
-void WriteRow(Player* bot, Request const& request, std::string const& result, std::uint32_t entry,
-              std::uint32_t spellId, std::uint32_t kind)
+// A channel of the item's spell that the engine cast (past its cast time): the channel runs
+bool ChannelCasting(Player* bot, std::uint32_t spellId, ObjectGuid itemGuid)
 {
-    std::string const source = std::string(CallerWord(request.caller)) + ":" + result;
+    Spell const* spell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    return spell && spell->m_spellInfo->Id == spellId && spell->m_castItemGUID == itemGuid &&
+           spell->getState() == SPELL_STATE_CASTING;
+}
+
+void WriteRow(Player* bot, Caller caller, std::string const& result, std::uint32_t entry, std::uint32_t spellId,
+              std::uint32_t kind)
+{
+    std::string const source = std::string(CallerWord(caller)) + ":" + result;
     EventLog::Emit(bot, WorldLogFormat::EVENT_ITEM_USE, source.c_str(), entry,
                    static_cast<std::int64_t>(spellId) + KIND_FACTOR * kind);
-    if (request.caller == Caller::Test)
+    if (caller == Caller::Test)
         LOG_INFO("playerbots", "ITEM use: {} {} spell {} -> {}", bot->GetName(), entry, spellId, source);
+}
+
+// The pending use's row and its end
+void Finish(PlayerbotAI* botAI, Player* bot, BotItems& items, UseResult const& end)
+{
+    std::string const word =
+        end.outcome == Outcome::Used ? std::string("used") : "interrupted:" + std::string(InterruptWord(end.interrupt));
+    items.active = false;
+    pendingUses.fetch_sub(1, std::memory_order_relaxed);
+    botAI->EndWork(BotWork::ItemTimed);
+    WriteRow(bot, items.pending.caller, word, items.pending.itemEntry, items.pending.spellId, items.kind);
+}
+
+// The pending use the spell belongs to (the same spell from the same item), null while none is
+BotItems* PendingOf(Spell const* spell, Unit* caster)
+{
+    if (!pendingUses.load(std::memory_order_relaxed) || !caster || !spell)
+        return nullptr;
+    Player* player = caster->ToPlayer();
+    BotItems* items = player ? ItemsOf(PlayerbotsMgr::instance().GetPlayerbotAI(player)) : nullptr;
+    if (!items || !items->active || !PendingRuns(spell, items->pending.spellId, items->itemGuid))
+        return nullptr;
+    return items;
 }
 
 std::string RefusalWord(Cause cause, std::uint32_t engine)
@@ -343,6 +473,7 @@ Request RequestOf(Player* bot, Order const& order)
         }
 
     request.target.dead = order.dead;
+    float const nowhere = std::nanf("");
     switch (order.target)
     {
         case OrderTarget::Shape:
@@ -367,6 +498,26 @@ Request RequestOf(Player* bot, Order const& order)
             request.target.kind = TargetKind::OwnItem;
             if (Item* target = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, order.itemSlot))
                 request.target.guid = target->GetGUID().GetRawValue();
+            break;
+        case OrderTarget::Spot:
+            request.target.kind = TargetKind::Spot;
+            request.target.x = order.x;
+            request.target.y = order.y;
+            request.target.z = order.z;
+            break;
+        case OrderTarget::SpotCreature:
+        {
+            request.target.kind = TargetKind::Spot;
+            Creature* creature = bot->FindNearestCreature(order.creatureEntry, ORDER_CREATURE_YARDS, true);
+            request.target.x = creature ? creature->GetPositionX() : nowhere;
+            request.target.y = creature ? creature->GetPositionY() : nowhere;
+            request.target.z = creature ? creature->GetPositionZ() : nowhere;
+            break;
+        }
+        case OrderTarget::Object:
+            request.target.kind = TargetKind::Object;
+            if (GameObject* object = bot->FindNearestGameObject(order.objectEntry, ORDER_OBJECT_YARDS))
+                request.target.guid = object->GetGUID().GetRawValue();
             break;
     }
     return request;
@@ -404,7 +555,7 @@ UseResult Use(Player* bot, Request const& request)
     {
         result.cause = cause;
         result.engine = engine;
-        WriteRow(bot, request, RefusalWord(cause, engine), request.item.entry, spellId, kind);
+        WriteRow(bot, request.caller, RefusalWord(cause, engine), request.item.entry, spellId, kind);
         return result;
     }
 
@@ -417,7 +568,7 @@ UseResult Use(Player* bot, Request const& request)
 
     ObjectGuid const itemGuid = found.item->GetGUID();
     Signs const before = SignsOf(bot, found, itemGuid);
-    WorldPacket packet = BuildPacket(found.item, spellId, record, found.unit, found.itemTarget);
+    WorldPacket packet = BuildPacket(found.item, spellId, record, found, request.target);
     bot->GetSession()->HandleUseItemOpcode(packet);
     found.item = nullptr;  // a consumed item is gone now
     found.itemTarget = nullptr;
@@ -437,13 +588,97 @@ UseResult Use(Player* bot, Request const& request)
     if (!cast)
     {
         result.cause = Cause::Handler;
-        WriteRow(bot, request, RefusalWord(Cause::Handler, 0), request.item.entry, spellId, kind);
+        WriteRow(bot, request.caller, RefusalWord(Cause::Handler, 0), request.item.entry, spellId, kind);
+        return result;
+    }
+
+    // a cast time or a channel that runs: followed to its end (Update), the row comes then
+    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
+    if ((record.castMs || record.channeled) && runs && botAI)
+    {
+        if (!botAI->botItems)
+            botAI->botItems = std::make_unique<BotItems>();
+        BotItems& items = *botAI->botItems;
+        items.pending = PendingUse{request.item.entry, spellId, request.caller, getMSTime(),
+                                   BoundOf(record, sPlayerbotAIConfig.ItemUse.UseEndGraceMs)};
+        items.signs = PendingSigns{};
+        items.signs.channeled = record.channeled;
+        // a channel without a cast time was cast inside the handler, before its hook could see a pending use
+        items.signs.castSeen = record.channeled && ChannelCasting(bot, spellId, itemGuid);
+        items.itemGuid = itemGuid.GetRawValue();
+        items.kind = kind;
+        items.startX = bot->GetPositionX();
+        items.startY = bot->GetPositionY();
+        items.cancelLooked = false;
+        items.active = true;
+        pendingUses.fetch_add(1, std::memory_order_relaxed);
+        botAI->AddWork(BotWork::ItemTimed);
+        result.outcome = Outcome::Pending;
         return result;
     }
 
     result.outcome = Outcome::Used;
-    WriteRow(bot, request, "used", request.item.entry, spellId, kind);
+    WriteRow(bot, request.caller, "used", request.item.entry, spellId, kind);
     return result;
+}
+
+bool Pending(Player* bot)
+{
+    BotItems const* items = bot ? ItemsOf(PlayerbotsMgr::instance().GetPlayerbotAI(bot)) : nullptr;
+    return items && items->active;
+}
+
+void Update(PlayerbotAI* botAI, Player* bot, std::uint32_t nowMs)
+{
+    BotItems* items = ItemsOf(botAI);
+    if (!items || !items->active)
+    {
+        botAI->EndWork(BotWork::ItemTimed);
+        return;
+    }
+    items->signs.alive = bot->IsAlive();
+    items->signs.runs =
+        PendingRuns(bot->GetCurrentSpell(CURRENT_GENERIC_SPELL), items->pending.spellId, items->itemGuid) ||
+        PendingRuns(bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL), items->pending.spellId, items->itemGuid);
+    // a cancel with the bot off its place is a move: the engine moves no casting bot by a walk order, and a throw (a
+    // knockback, a jump) or a teleport stops the spell before the bot's first step, so the place is read one update on
+    if (items->signs.cancelSeen && !items->signs.movedAtCancel && !bot->GetTransport())
+    {
+        if (bot->GetExactDist2d(items->startX, items->startY) > MOVED_YD)
+            items->signs.movedAtCancel = true;
+        else if (!items->cancelLooked)
+        {
+            items->cancelLooked = true;
+            return;
+        }
+    }
+    if (std::optional<UseResult> const end = Advance(items->pending, EventOf(items->signs), nowMs))
+        Finish(botAI, bot, *items, *end);
+}
+
+void EndPending(PlayerbotAI* botAI, Player* bot, UseEvent event)
+{
+    BotItems* items = ItemsOf(botAI);
+    if (!bot || !items || !items->active)
+        return;
+    if (std::optional<UseResult> const end = Advance(items->pending, event, getMSTime()))
+        Finish(botAI, bot, *items, *end);
+}
+
+void OnSpellCast(Spell const* spell, Unit* caster)
+{
+    if (BotItems* items = PendingOf(spell, caster))
+        items->signs.castSeen = true;
+}
+
+void OnSpellCastCancel(Spell const* spell, Unit* caster)
+{
+    if (BotItems* items = PendingOf(spell, caster))
+    {
+        items->signs.cancelSeen = true;
+        items->signs.movedAtCancel = caster->isMoving();
+        items->signs.controlLostAtCancel = caster->HasUnitState(UNIT_STATE_LOST_CONTROL);
+    }
 }
 
 Request OnSelf(Item* item, Caller caller)
@@ -472,6 +707,33 @@ Request OnItem(Item* item, Item* target, Caller caller)
     Request request = OnSelf(item, caller);
     request.target.kind = TargetKind::OwnItem;
     request.target.guid = target ? target->GetGUID().GetRawValue() : 0;
+    return request;
+}
+
+Request AtSpot(Item* item, Position const& spot, Caller caller)
+{
+    Request request = OnSelf(item, caller);
+    request.target.kind = TargetKind::Spot;
+    request.target.x = spot.GetPositionX();
+    request.target.y = spot.GetPositionY();
+    request.target.z = spot.GetPositionZ();
+    return request;
+}
+
+Request OnObject(Item* item, GameObject* target, Caller caller)
+{
+    Request request = OnSelf(item, caller);
+    request.target.kind = TargetKind::Object;
+    request.target.guid = target ? target->GetGUID().GetRawValue() : 0;
+    return request;
+}
+
+Request Worn(Player* bot, std::uint8_t slot, Caller caller)
+{
+    Item* piece = bot && slot < EQUIPMENT_SLOT_END ? bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) : nullptr;
+    Request request = OnSelf(piece, caller);
+    request.target.kind = TargetKind::None;
+    request.item.slot = slot;
     return request;
 }
 

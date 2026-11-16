@@ -7,7 +7,9 @@
 #include "ItemUseCommands.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -86,6 +88,17 @@ std::optional<std::uint8_t> SlotOfWord(std::string const& word)
     return std::nullopt;
 }
 
+// A coordinate word: a finite number and nothing else
+bool ReadCoordinate(std::istringstream& in, float& value)
+{
+    std::string word;
+    if (!(in >> word))
+        return false;
+    char* end = nullptr;
+    value = std::strtof(word.c_str(), &end);
+    return end && *end == 0 && end != word.c_str() && std::isfinite(value);
+}
+
 // The words of `item use` after the bot's name into an order; false on a word it does not take
 bool ParseOrder(std::istringstream& in, Order& order)
 {
@@ -120,6 +133,25 @@ bool ParseOrder(std::istringstream& in, Order& order)
             order.target = OrderTarget::Unit;
         else if (word == "creature" && (in >> order.creatureEntry) && order.creatureEntry)
             order.target = OrderTarget::Creature;
+        else if (word == "at")
+        {
+            std::istringstream::pos_type const mark = in.tellg();
+            std::string next;
+            if (in >> next && next == "creature")
+            {
+                if (!(in >> order.creatureEntry) || !order.creatureEntry)
+                    return false;
+                order.target = OrderTarget::SpotCreature;
+                continue;
+            }
+            in.clear();
+            in.seekg(mark);
+            if (!ReadCoordinate(in, order.x) || !ReadCoordinate(in, order.y) || !ReadCoordinate(in, order.z))
+                return false;
+            order.target = OrderTarget::Spot;
+        }
+        else if (word == "object" && (in >> order.objectEntry) && order.objectEntry)
+            order.target = OrderTarget::Object;
         else if (word == "item")
         {
             std::string slotWord;
@@ -264,7 +296,7 @@ bool HandleUseCommand(ChatHandler* handler, char const* args)
     {
         handler->SendErrorMessage(
             "Usage: playerbots item use <bot> <entry>|slot <slot> [self | unit <name> | creature "
-            "<entry> | item <slot>] [dead]");
+            "<entry> | item <slot> | at <x> <y> <z> | at creature <entry> | object <entry>] [dead]");
         return false;
     }
 
