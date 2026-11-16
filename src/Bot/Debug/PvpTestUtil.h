@@ -16,6 +16,12 @@
 class ChatHandler;
 class Player;
 
+// The PvP harness's hooks (CS25b): Playerbots.PvpTest.Enable as read at startup. AddPlayerbotsScripts sets it once,
+// before it registers the scripts and before any map thread runs; a .reload config does not change it. The damage
+// hooks, the harness's fight scripts, the login clean-up and the harness commands follow it.
+void SetPvpTestHooks(bool on);
+bool PvpTestHooksOn();
+
 // One side of a match: an arena team or an explicit roster of bot names
 struct PvpTestSide
 {
