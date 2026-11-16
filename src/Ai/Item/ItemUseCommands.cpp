@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <string>
@@ -19,9 +20,14 @@
 #include "Chat.h"
 #include "Config.h"
 #include "GitRevision.h"
+#include "ItemUse.h"
 #include "ItemUseFacts.h"
 #include "ItemUseIndex.h"
 #include "ItemUseKinds.h"
+#include "ObjectAccessor.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
+#include "Playerbots.h"
 
 namespace ItemUse
 {
@@ -49,6 +55,85 @@ std::string DumpPath(std::string const& argument)
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
         dir += '/';
     return dir + name;
+}
+
+// The worn slots' words of `item use` (INTERFACE.md 3.2), or the game's slot number
+std::optional<std::uint8_t> SlotOfWord(std::string const& word)
+{
+    static std::array<std::pair<char const*, std::uint8_t>, 17> const words = {{{"head", 0},
+                                                                                {"neck", 1},
+                                                                                {"shoulders", 2},
+                                                                                {"chest", 4},
+                                                                                {"waist", 5},
+                                                                                {"legs", 6},
+                                                                                {"feet", 7},
+                                                                                {"wrists", 8},
+                                                                                {"hands", 9},
+                                                                                {"finger1", 10},
+                                                                                {"finger2", 11},
+                                                                                {"trinket1", 12},
+                                                                                {"trinket2", 13},
+                                                                                {"back", 14},
+                                                                                {"mainhand", 15},
+                                                                                {"offhand", 16},
+                                                                                {"ranged", 17}}};
+    for (auto const& [name, slot] : words)
+        if (word == name)
+            return slot;
+    if (!word.empty() && word.find_first_not_of("0123456789") == std::string::npos && word.size() <= 2 &&
+        std::stoul(word) <= words.back().second)
+        return static_cast<std::uint8_t>(std::stoul(word));
+    return std::nullopt;
+}
+
+// The words of `item use` after the bot's name into an order; false on a word it does not take
+bool ParseOrder(std::istringstream& in, Order& order)
+{
+    std::string word;
+    if (!(in >> word))
+        return false;
+    if (word == "slot")
+    {
+        std::string slotWord;
+        in >> slotWord;
+        std::optional<std::uint8_t> const slot = SlotOfWord(slotWord);
+        if (!slot)
+            return false;
+        order.slot = *slot;
+    }
+    else
+    {
+        if (word.find_first_not_of("0123456789") != std::string::npos || word.size() > 9)
+            return false;
+        order.entry = static_cast<std::uint32_t>(std::stoul(word));
+        if (!order.entry)
+            return false;
+    }
+
+    while (in >> word)
+    {
+        if (word == "dead")
+            order.dead = true;
+        else if (word == "self")
+            order.target = OrderTarget::Self;
+        else if (word == "unit" && (in >> order.unitName))
+            order.target = OrderTarget::Unit;
+        else if (word == "creature" && (in >> order.creatureEntry) && order.creatureEntry)
+            order.target = OrderTarget::Creature;
+        else if (word == "item")
+        {
+            std::string slotWord;
+            in >> slotWord;
+            std::optional<std::uint8_t> const slot = SlotOfWord(slotWord);
+            if (!slot)
+                return false;
+            order.target = OrderTarget::Item;
+            order.itemSlot = *slot;
+        }
+        else
+            return false;
+    }
+    return true;
 }
 }  // namespace
 
@@ -166,6 +251,38 @@ bool HandleDumpCommand(ChatHandler* handler, char const* args)
         return false;
     }
     handler->PSendSysMessage("ITEM dump: {} records to {}", index.All().size(), path);
+    return true;
+}
+
+bool HandleUseCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    in >> name;
+    Order order;
+    if (name.empty() || !ParseOrder(in, order))
+    {
+        handler->SendErrorMessage(
+            "Usage: playerbots item use <bot> <entry>|slot <slot> [self | unit <name> | creature "
+            "<entry> | item <slot>] [dead]");
+        return false;
+    }
+
+    Player* bot = ObjectAccessor::FindPlayerByName(name, true);
+    PlayerbotAI* botAI = bot ? PlayerbotsMgr::instance().GetPlayerbotAI(bot) : nullptr;
+    if (!botAI)
+    {
+        handler->SendErrorMessage("ITEM use: {} is not an online bot", name);
+        return false;
+    }
+
+    std::uint32_t const entry = order.entry;
+    std::uint8_t const slot = order.slot;
+    PostOrder(botAI, bot->GetGUID().GetRawValue(), std::move(order));
+    if (slot != SLOT_BAGS)
+        handler->PSendSysMessage("ITEM use: {} slot {} ordered", bot->GetName(), slot);
+    else
+        handler->PSendSysMessage("ITEM use: {} {} ordered", bot->GetName(), entry);
     return true;
 }
 }  // namespace ItemUse
