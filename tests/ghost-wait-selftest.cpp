@@ -52,6 +52,13 @@ void TestPlan()
     WorldPvpConfig config;
     config.GhostRecheckSeconds = 0;
     Check(GhostValues(config).recheckMs == SECOND, "a recheck of 0 s is one second");
+    config.GhostRecheckSeconds = 7;
+    config.GhostEnemyYards = 55;
+    config.GhostSpiritHealerSeconds = 90;
+    GhostValues const changed(config);
+    Check(changed.recheckMs == 7 * SECOND && changed.spiritHealerMs == 90 * SECOND && changed.enemyYards == 55.0f &&
+              GhostValues().recheckMs == 15 * SECOND,
+          "a changed config gives its ghost values, the default config's stay");
 }
 
 // Rows on a wait's start and end only, the recheck by timer, the wait counted from the release

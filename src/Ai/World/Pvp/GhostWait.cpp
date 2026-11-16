@@ -25,6 +25,7 @@
 #include "ScriptMgr.h"
 #include "TestConstraints.h"
 #include "Timer.h"
+#include "WorldPvp.h"
 
 namespace WorldPvp
 {
@@ -99,7 +100,7 @@ GhostPlan PlanGhostFor(PlayerbotAI* botAI, Corpse const* corpse)
         return GhostHeld(memory, nowMs);
 
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp ghost") : nullptr);
-    GhostValues const values(sPlayerbotAIConfig.WorldPvp);
+    GhostValues const& values = GhostConfigValues();
     time_t const now = time(nullptr);
     time_t const released = corpse->GetGhostTime();
     uint32 const ghostMs =
