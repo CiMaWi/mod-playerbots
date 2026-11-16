@@ -1405,20 +1405,6 @@ uint32 LadderMgr::RepairPoolTeams(std::array<std::vector<PoolBot>, 2>& freeBots)
         if (!team->AddMember(partner))
             continue;
 
-        if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
-        {
-            // As in a new pool team: the personal rating and the MMR follow the artificial team rating
-            for (ArenaTeamMember& member : team->GetMembers())
-            {
-                if (member.Guid != partner)
-                    continue;
-
-                member.PersonalRating = static_cast<uint16>(team->GetRating());
-                member.MatchMakerRating = member.PersonalRating;
-                member.MaxMMR = std::max(member.MaxMMR, member.PersonalRating);
-            }
-        }
-
         team->SaveToDB(true);
         ++repaired;
         LOG_INFO("playerbots", "Ladder pool: arena team {} <{}> refilled with {}", team->GetId(), team->GetName(),

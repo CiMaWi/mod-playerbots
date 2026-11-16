@@ -164,9 +164,7 @@ size_t PickBest(std::vector<float> const& weights)
 
 bool ArenaTeamFormation::IsActive()
 {
-    return sPlayerbotAIConfig.ArenaTeamFormationEnable &&
-           sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_EARNED &&
-           !sPlayerbotAIConfig.DeleteRandomBotArenaTeams;
+    return sPlayerbotAIConfig.ArenaTeamFormationEnable && !sPlayerbotAIConfig.DeleteRandomBotArenaTeams;
 }
 
 uint32 ArenaTeamFormation::MaxRoster(uint32 type)

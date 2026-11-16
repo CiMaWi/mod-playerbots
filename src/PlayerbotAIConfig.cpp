@@ -441,8 +441,6 @@ bool PlayerbotAIConfig::Initialize()
         std::max(1, sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", 1));
     RandomBotAutoJoinRatedArenaUncapped =
         sConfigMgr->GetOption<bool>("Playerbots.RandomBotAutoJoinRatedArenaUncapped", false);
-    RandomBotArenaGroupOnWorldThread =
-        sConfigMgr->GetOption<bool>("Playerbots.RandomBotArenaGroupOnWorldThread", false);
     LogInGroupOnly = sConfigMgr->GetOption<bool>("Playerbots.LogInGroupOnly", true);
     LogValuesPerTick = sConfigMgr->GetOption<bool>("Playerbots.LogValuesPerTick", false);
     SummonAtInnkeepersEnabled = sConfigMgr->GetOption<bool>("Playerbots.SummonAtInnkeepersEnabled", true);
@@ -1847,12 +1845,6 @@ bool PlayerbotAIConfig::Initialize()
             RandomBotTestNamePrefix[0] = static_cast<char>(std::toupper(RandomBotTestNamePrefix[0]));
         }
     }
-    RandomBotArenaTeamMaxRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMaxRating", 2000);
-    RandomBotArenaTeamMinRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMinRating", 1000);
-    RandomBotArenaTeamRatingMode =
-        sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamRatingMode", 0) == ARENA_RATING_MODE_EARNED
-            ? ARENA_RATING_MODE_EARNED
-            : ARENA_RATING_MODE_RANDOM;
     ArenaTeamFormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", false);
     ArenaTeamUpdateSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.UpdateSeconds", 60), 5, 3600);
@@ -1953,11 +1945,6 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     BotKind::LoadLivingWorld();
-
-    if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
-        LOG_INFO("server.loading",
-                 "Playerbots.ArenaTeam.Formation.Enable is ignored: it needs "
-                 "Playerbots.RandomBotArenaTeamRatingMode = 1");
 
     SelfBotLevel = sConfigMgr->GetOption<int32>("Playerbots.SelfBotLevel", 1);
 
