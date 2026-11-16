@@ -33,6 +33,9 @@ Cause Check(Player* bot, Request const& request, std::uint32_t* engine = nullptr
 // cast time or a channel returns Pending and writes its row at its end, used or interrupted (Update). A bot under the
 // test constraint nouse makes no request but the test's: Refused with Cause::None, no row
 UseResult Use(Player* bot, Request const& request);
+// The test's nouse: false when the bot makes no request of its own (every caller but test). No row; the old builders
+// ask it first, so a nouse bot reaches none of their side effects (a stop, the eating time, a line to a master)
+bool Allowed(Player* bot, Caller caller);
 
 Request OnSelf(Item* item, Caller caller);
 Request OnUnit(Item* item, Unit* target, Caller caller);

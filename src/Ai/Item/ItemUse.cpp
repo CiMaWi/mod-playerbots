@@ -23,6 +23,7 @@
 #include "Item.h"
 #include "ItemUseIndex.h"
 #include "ItemUseKinds.h"
+#include "ItemUsePacket.h"
 #include "ItemUseRules.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
@@ -47,7 +48,6 @@ namespace
 {
 constexpr std::uint32_t ORDER_TTL_MS = 60 * IN_MILLISECONDS;
 constexpr float ORDER_CREATURE_YARDS = 100.0f;  // `creature <entry>`: the nearest of the template this far
-constexpr std::uint8_t CAST_COUNT = 1;          // the client's cast counter; the handler only echoes it
 constexpr std::int64_t KIND_FACTOR = 1000000;   // the row's amount: spell + KIND_FACTOR * kind
 
 constexpr float ORDER_OBJECT_YARDS = 100.0f;  // `object <entry>`: the nearest of the template this far
@@ -347,27 +347,47 @@ Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t*
     return mapped;
 }
 
-// The one builder of CMSG_USE_ITEM: the fields in the handler's order, then the target flag and its packed guid
-// (SpellCastTargets::Read): a spot is the destination with no transport (an empty packed guid), then x, y, z
+static_assert(PACKET_TARGET_NONE == TARGET_FLAG_NONE && PACKET_TARGET_UNIT == TARGET_FLAG_UNIT &&
+                  PACKET_TARGET_ITEM == TARGET_FLAG_ITEM && PACKET_TARGET_DEST == TARGET_FLAG_DEST_LOCATION &&
+                  PACKET_TARGET_GAMEOBJECT == TARGET_FLAG_GAMEOBJECT,
+              "ItemUsePacket.h's masks are the core's TARGET_FLAG_* values");
+
+// The one builder of CMSG_USE_ITEM (its bytes: ItemUsePacket.h, which the parity selftest checks against the old
+// builders): a spot is the destination with no transport, then x, y, z; a unit only for a record that names one
 WorldPacket BuildPacket(Item const* item, std::uint32_t spellId, Record const& record, Found const& found,
                         Target const& target)
 {
-    Unit const* unit = found.unit;
-    Item const* itemTarget = found.itemTarget;
-    WorldPacket packet(CMSG_USE_ITEM, 1 + 1 + 1 + 4 + 8 + 4 + 1 + 4 + 9 + 12);
-    packet << item->GetBagSlot() << item->GetSlot() << CAST_COUNT << spellId << item->GetGUID() << std::uint32_t(0)
-           << std::uint8_t(0);
+    PacketFields fields;
+    fields.bag = item->GetBagSlot();
+    fields.slot = item->GetSlot();
+    fields.spellId = spellId;
+    fields.itemGuid = item->GetGUID().GetRawValue();
     if (found.spot)
-        packet << std::uint32_t(TARGET_FLAG_DEST_LOCATION) << ObjectGuid::Empty.WriteAsPacked() << target.x << target.y
-               << target.z;
+    {
+        fields.targetMask = PACKET_TARGET_DEST;
+        fields.x = target.x;
+        fields.y = target.y;
+        fields.z = target.z;
+    }
     else if (found.object)
-        packet << std::uint32_t(TARGET_FLAG_GAMEOBJECT) << found.object->GetGUID().WriteAsPacked();
-    else if (itemTarget)
-        packet << std::uint32_t(TARGET_FLAG_ITEM) << itemTarget->GetGUID().WriteAsPacked();
-    else if (unit && record.shape != Shape::None && record.shape != Shape::Self)
-        packet << std::uint32_t(TARGET_FLAG_UNIT) << unit->GetGUID().WriteAsPacked();
-    else
-        packet << std::uint32_t(TARGET_FLAG_NONE);  // the spell's own targets take the caster
+    {
+        fields.targetMask = PACKET_TARGET_GAMEOBJECT;
+        fields.targetGuid = found.object->GetGUID().GetRawValue();
+    }
+    else if (found.itemTarget)
+    {
+        fields.targetMask = PACKET_TARGET_ITEM;
+        fields.targetGuid = found.itemTarget->GetGUID().GetRawValue();
+    }
+    else if (found.unit && record.shape != Shape::None && record.shape != Shape::Self)
+    {
+        fields.targetMask = PACKET_TARGET_UNIT;
+        fields.targetGuid = found.unit->GetGUID().GetRawValue();
+    }
+    // else NONE: the spell's own targets take the caster
+    std::vector<std::uint8_t> const bytes = UsePacketBytes(fields);
+    WorldPacket packet(CMSG_USE_ITEM, bytes.size());
+    packet.append(bytes.data(), bytes.size());
     return packet;
 }
 
@@ -540,10 +560,8 @@ UseResult Use(Player* bot, Request const& request)
         return result;
 
     // the test's nouse: the bot makes no request of its own (not a cause, no row)
-    if (request.caller != Caller::Test)
-        if (PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot))
-            if (!TestConstraints::UsesItemsOnItsOwn(botAI->testConstraints))
-                return result;
+    if (!Allowed(bot, request.caller))
+        return result;
 
     Found found;
     std::uint32_t engine = 0;
@@ -620,6 +638,16 @@ UseResult Use(Player* bot, Request const& request)
     result.outcome = Outcome::Used;
     WriteRow(bot, request.caller, "used", request.item.entry, spellId, kind);
     return result;
+}
+
+bool Allowed(Player* bot, Caller caller)
+{
+    if (!bot)
+        return false;
+    if (caller == Caller::Test)
+        return true;
+    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
+    return !botAI || TestConstraints::UsesItemsOnItsOwn(botAI->testConstraints);
 }
 
 bool Pending(Player* bot)

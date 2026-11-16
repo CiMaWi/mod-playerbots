@@ -5,23 +5,25 @@
  */
 
 #include "GenericSpellActions.h"
+
+#include <ctime>
+#include <unordered_set>
+
 #include "ArenaCcSpells.h"
-#include "Chat.h"
 #include "CcTacticStrategy.h"
+#include "Chat.h"
 #include "Event.h"
 #include "GenericBuffUtils.h"
 #include "Group.h"
 #include "ItemTemplate.h"
+#include "ItemUse.h"
 #include "ObjectDefines.h"
 #include "Opcodes.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
-#include "TestConstraints.h"
 #include "WorldPacket.h"
-#include <ctime>
-#include <unordered_set>
 
 using ai::buff::BuffBelowRefreshTarget;
 using ai::buff::MakeAuraQualifierForBuff;
@@ -522,7 +524,6 @@ bool CastWillOfTheForsakenAction::isPossible()
 bool UseTrinketAction::Execute(Event /*event*/)
 {
     Item* trinket1 = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_TRINKET1);
-
     if (trinket1 && UseTrinket(trinket1))
         return true;
 
@@ -535,7 +536,8 @@ bool UseTrinketAction::Execute(Event /*event*/)
 
 bool UseTrinketAction::UseTrinket(Item* item)
 {
-    if (!TestConstraints::UsesItemsOnItsOwn(botAI->testConstraints))  // nouse (item-use WI2): goes with WI5's builder
+    // the test's nouse: no request of the bot's own (item-use WI5)
+    if (!ItemUse::Allowed(bot, ItemUse::Caller::Fight))
         return false;
 
     if (bot->CanUseItem(item) != EQUIP_ERR_OK || bot->IsNonMeleeSpellCast(true))
@@ -545,53 +547,13 @@ bool UseTrinketAction::UseTrinket(Item* item)
     if (botAI->TacticEnabledHere(TacticId::Trinket) && CcIsPvpTrinket(item->GetTemplate()))
         return false;
 
-    uint8 bagIndex = item->GetBagSlot();
-    uint8 slot = item->GetSlot();
-    uint8 cast_count = 1;
-    ObjectGuid item_guid = item->GetGUID();
-    uint32 glyphIndex = 0;
-    uint8 castFlags = 0;
-    uint32 targetFlag = TARGET_FLAG_NONE;
     uint32 spellId = 0;
-    int32 itemSpellCooldown = 0;
-    uint32 itemSpellCategory = 0;
-    int32 itemSpellCategoryCooldown = 0;
-
     for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
     {
         if (item->GetTemplate()->Spells[i].SpellId > 0 &&
             item->GetTemplate()->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
         {
             spellId = item->GetTemplate()->Spells[i].SpellId;
-            itemSpellCooldown = item->GetTemplate()->Spells[i].SpellCooldown;
-            itemSpellCategory = item->GetTemplate()->Spells[i].SpellCategory;
-            itemSpellCategoryCooldown = item->GetTemplate()->Spells[i].SpellCategoryCooldown;
-            uint64 const itemCooldownKey = (static_cast<uint64>(item->GetEntry()) << 32) | spellId;
-            uint32 const now = getMSTime();
-
-            if (itemSpellCooldown > 0)
-            {
-                auto const itemCooldownItr = trinketItemCooldownExpiries.find(itemCooldownKey);
-                if (itemCooldownItr != trinketItemCooldownExpiries.end())
-                {
-                    if (itemCooldownItr->second > now)
-                        return false;
-
-                    trinketItemCooldownExpiries.erase(itemCooldownItr);
-                }
-            }
-
-            if (itemSpellCategory && itemSpellCategoryCooldown > 0)
-            {
-                auto const categoryCooldownItr = trinketCategoryCooldownExpiries.find(itemSpellCategory);
-                if (categoryCooldownItr != trinketCategoryCooldownExpiries.end())
-                {
-                    if (categoryCooldownItr->second > now)
-                        return false;
-
-                    trinketCategoryCooldownExpiries.erase(categoryCooldownItr);
-                }
-            }
 
             SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
             if (!spellInfo || !spellInfo->IsPositive())
@@ -643,9 +605,6 @@ bool UseTrinketAction::UseTrinket(Item* item)
             if (mixedTriggerTrinketSpellIds.find(spellId) != mixedTriggerTrinketSpellIds.end())
                 return false;
 
-            if (!botAI->CanCastSpell(spellId, bot, false, nullptr, item))
-                return false;
-
             break;
         }
     }
@@ -653,36 +612,17 @@ bool UseTrinketAction::UseTrinket(Item* item)
     if (!spellId)
         return false;
 
-    WorldPacket packet(CMSG_USE_ITEM);
-    packet << bagIndex << slot << cast_count << spellId << item_guid << glyphIndex << castFlags;
+    // The use is a request to the item use path (item-use WI5): the engine's cooldown decides readiness. Check
+    // first: the trigger holds while the trinket cools down, and a refusal then writes no row
+    ItemUse::Request request = ItemUse::Worn(bot, item->GetSlot(), ItemUse::Caller::Fight);
+    request.spellId = spellId;
+    if (ItemUse::Check(bot, request) != ItemUse::Cause::None)
+        return false;
 
-    targetFlag = TARGET_FLAG_NONE;
-    packet << targetFlag << bot->GetPackGUID();
-
-    // HandleUseItemOpcode can destroy the trinket on its last charge.
-    uint32 const itemId = item->GetEntry();
     // G5a: the PvP trinket's proof reads these lines (Logger.playerbots=6)
     LOG_TRACE("playerbots", "Use trinket: {} uses {} ({}), spell {}", bot->GetName(), item->GetTemplate()->Name1,
-              itemId, spellId);
-    bot->GetSession()->HandleUseItemOpcode(packet);
-
-    uint32 const now = getMSTime();
-    uint32 const cooldownDelay = bot->GetSpellCooldownDelay(spellId);
-    if (cooldownDelay > 0)
-    {
-        if (itemSpellCooldown > 0)
-        {
-            uint64 const itemCooldownKey = (static_cast<uint64>(itemId) << 32) | spellId;
-            trinketItemCooldownExpiries[itemCooldownKey] = now + static_cast<uint32>(itemSpellCooldown);
-        }
-
-        if (itemSpellCategory && itemSpellCategoryCooldown > 0)
-        {
-            trinketCategoryCooldownExpiries[itemSpellCategory] = now + static_cast<uint32>(itemSpellCategoryCooldown);
-        }
-    }
-
-    return true;
+              item->GetEntry(), spellId);
+    return ItemUse::Use(bot, request).outcome != ItemUse::Outcome::Refused;
 }
 
 Value<Unit*>* BuffOnMainTankAction::GetTargetValue() { return context->GetValue<Unit*>("main tank", spell); }

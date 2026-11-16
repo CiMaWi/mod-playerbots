@@ -36,7 +36,10 @@ class PlayerbotAI;
 class CheckMountStateAction : public UseItemAction
 {
 public:
-    CheckMountStateAction(PlayerbotAI* botAI) : UseItemAction(botAI, "check mount state", true) {}
+    CheckMountStateAction(PlayerbotAI* botAI)
+        : UseItemAction(botAI, "check mount state", true, "", ItemUse::Caller::Errand)
+    {
+    }
 
     bool Execute(Event event) override;
     bool isUseful() override;
