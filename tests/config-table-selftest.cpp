@@ -329,7 +329,8 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
           "retired: Playerbots.Population.Persistent has no dist line");
     for (char const* key : {"Playerbots.RandomBotArenaGroupOnWorldThread", "Playerbots.RandomBotArenaTeamRatingMode",
                             "Playerbots.RandomBotArenaTeamMinRating", "Playerbots.RandomBotArenaTeamMaxRating",
-                            "Playerbots.Ladder.Enable", "Playerbots.Natural.Cadence.NearRealPlayerYards"})
+                            "Playerbots.Ladder.Enable", "Playerbots.Natural.Cadence.NearRealPlayerYards",
+                            "Playerbots.Ladder.Matchmaker.Enable"})
         Check(dist.count(key) == 0, std::string("retired: ") + key + " has no dist line");
 
     // The checks themselves, on a fixture

@@ -34,7 +34,8 @@ class StatsWeightCalculator;
 // PvE items wait in the bags, and no PvE item is ever destroyed. All loadouts and worn slots are loaded with one query
 // each at startup; bot logins read memory only and writes are asynchronous. World thread only (startup, the login
 // hook, the GM commands, the swap, the buying), except the queue calls of the battleground hooks and the upkeep
-// guards. Buying (Playerbots.PvpGear.Buy.Enable) changes loadout rows and the bot's honor and arena points only.
+// guards. Buying (Playerbots.PvpGear.Buy.Enable, always on with Playerbots.Ladder.Role = 2) changes loadout rows and
+// the bot's honor and arena points only.
 class PvpGearMgr
 {
 public:

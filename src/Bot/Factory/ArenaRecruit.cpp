@@ -233,7 +233,8 @@ bool ArenaRecruit::HandleRecruitCommand(ChatHandler* handler, char const* args)
 {
     if (!sPlayerbotAIConfig.ArenaRecruitEnable)
     {
-        handler->PSendSysMessage("Arena recruiting rule is off (Playerbots.ArenaRecruit.Enable = 0).");
+        handler->PSendSysMessage(
+            "Arena recruiting rule is off (Playerbots.ArenaRecruit.Enable = 0 or Playerbots.Ladder.Role = 2).");
         return true;
     }
 

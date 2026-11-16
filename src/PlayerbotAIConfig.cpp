@@ -8,6 +8,7 @@
 #include "BisListMgr.h"
 #include "BotAttributes.h"
 #include "BotKind.h"
+#include "BotKindRules.h"
 #include "Config.h"
 #include "ConfigTables.h"
 #include "ItemWorthRules.h"
@@ -827,7 +828,6 @@ bool PlayerbotAIConfig::Initialize()
     LadderContactMinutes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
     LadderPoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
-    LadderMatchmakerEnable = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Enable", false);
     LadderMatchmakerDelayMinSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMinSeconds", 3), 0, 600);
     LadderMatchmakerDelayMaxSeconds =
@@ -1842,7 +1842,7 @@ bool PlayerbotAIConfig::Initialize()
             RandomBotTestNamePrefix[0] = static_cast<char>(std::toupper(RandomBotTestNamePrefix[0]));
         }
     }
-    ArenaTeamFormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", false);
+    ArenaTeamFormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", true);
     ArenaTeamUpdateSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.UpdateSeconds", 60), 5, 3600);
     ArenaTeamMaxRoster2v2 =
@@ -1887,7 +1887,7 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureBottom", 0.25f), 0.01f, 10.0f);
     ArenaTeamCompLearningTemperatureTop = std::clamp(
         sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureTop", 0.05f), 0.01f, 10.0f);
-    ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", false);
+    ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", true);
     ArenaRecruitRatingAtSkill1 =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill1", 0), 0, 10000);
     ArenaRecruitRatingAtSkill99 =
@@ -1915,12 +1915,6 @@ bool PlayerbotAIConfig::Initialize()
         RandomBotArenaTeam3v3Count = 0;
         RandomBotArenaTeam5v5Count = 0;
         DeleteRandomBotArenaTeams = false;
-        ArenaTeamFormationEnable = false;
-        ArenaRecruitEnable = false;
-        if (LadderMatchmakerEnable)
-            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 2: the matchmaker is off");
-
-        LadderMatchmakerEnable = false;
     }
     else if (LadderRole == LADDER_ROLE_MAIN)
     {
@@ -1940,6 +1934,16 @@ bool PlayerbotAIConfig::Initialize()
         ArenaOnlyEnable = false;
         RandomBotAutoJoinRatedArenaUncapped = false;
     }
+
+    // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear
+    // buying on at role 2
+    BotKindRules::ArenaRoleValues const arenaRole =
+        BotKindRules::ArenaRole(LadderRole == LADDER_ROLE_MAIN, LadderRole == LADDER_ROLE_ARENA,
+                                ArenaTeamFormationEnable, ArenaRecruitEnable, PvpGearBuyEnable);
+    ArenaTeamFormationEnable = arenaRole.Formation;
+    ArenaRecruitEnable = arenaRole.Recruit;
+    LadderMatchmakerEnable = arenaRole.Matchmaker;
+    PvpGearBuyEnable = arenaRole.Buy;
 
     BotKind::LoadLivingWorld();
 
