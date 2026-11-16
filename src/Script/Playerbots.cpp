@@ -48,6 +48,7 @@
 #include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
+#include "PvpTestUtil.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "ServerScript.h"
@@ -808,7 +809,7 @@ void AddPlayerbotsSelfBotAfkScripts();
 void AddPvpTestFightScripts();
 void AddGhostWaitScripts();
 void AddWorldPvpScripts();
-void AddCcTacticScripts();
+void AddCcTacticScripts(bool harness);
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -839,10 +840,17 @@ void AddPlayerbotsScripts()
     new PlayerBotsBGScript();
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
-    AddPvpTestFightScripts();
+    // CS25b: the PvP harness's hooks only where Playerbots.PvpTest.Enable is on at startup. The config files are
+    // loaded by now, PlayerbotAIConfig only later (OnBeforeWorldInitialized): read the option itself.
+    bool const pvpTestHooks = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
+    SetPvpTestHooks(pvpTestHooks);
+    LOG_INFO("server.loading", "PvpTest harness hooks: {} (Playerbots.PvpTest.Enable = {})",
+             pvpTestHooks ? "registered" : "not registered", pvpTestHooks ? 1 : 0);
+    if (pvpTestHooks)
+        AddPvpTestFightScripts();
     AddWorldPvpScripts();
     AddGhostWaitScripts();
-    AddCcTacticScripts();
+    AddCcTacticScripts(pvpTestHooks);
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();
     AddSC_MagtheridonBotScripts();

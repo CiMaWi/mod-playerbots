@@ -281,7 +281,7 @@ void CcCountOwnBreak(Unit* attacker, Unit* victim);
 void CcSetForcedCasts(bool on);
 
 // The DR memory's feed (unit hooks: a CC aura landing on and leaving a player or a player's pet), registered by
-// Playerbots.cpp
-void AddCcTacticScripts();
+// Playerbots.cpp; with harness (PvpTestHooksOn) also the damage hooks of the own-break count
+void AddCcTacticScripts(bool harness);
 
 #endif
