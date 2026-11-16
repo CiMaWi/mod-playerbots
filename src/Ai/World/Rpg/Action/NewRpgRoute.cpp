@@ -427,21 +427,19 @@ bool CheckLanding(Player* bot, TravelLegs::Trip& trip)
 }
 
 // A fly leg's mount (WU10): off a ground mount, then the bot's fastest flying mount (CheckMountStateAction::
-// CastFlyingMount; the engine's "check mount state" refused a bot standing still on open ground, WU11b). The mount
-// owner's policy decides first (CheckMountStateAction::AskMountPolicy, WT44). A try in combat, while casting, while
-// the bot loots or where it cannot take off is skipped and does not count (the follower asks again; the last fails
-// the leg at once); so is a try while the bot moves or sits: the cast checks refuse it in the tick of the stop
-// (WU11b: Edhoon's "cast result 255, moving true"), so it stops or stands up now and casts on a later tick. A
-// counted try that starts no cast leaves its word for the fly_leg_failed row (the policy's nomount or on_foot;
-// no_strategy: no mount strategy; no_mount: no flying mount known; refused: the cast check refused every one)
+// CastFlyingMount; the engine's "check mount state" refused a bot standing still on open ground, WU11b), as the mount
+// owner's policy allows (AskMountPolicy, WT44). A try in combat, while casting, while the bot loots or where it cannot
+// take off is skipped and does not count (the follower asks again; the last fails the leg at once); so is a try while
+// the bot moves or sits: the cast checks refuse it in the tick of the stop (WU11b: Edhoon's "cast result 255, moving
+// true"), so it stops or stands up now and casts later. A counted try that starts no cast leaves its word for the
+// fly_leg_failed row (the policy's nomount or on_foot; no_strategy; no_mount: no flying mount; refused: every cast)
 bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 nowMs)
 {
     if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(true) || CheckMountStateAction::NoTakeoffHere(bot))
         return true;
     MountRules::Verdict const verdict = CheckMountStateAction::AskMountPolicy(bot, botAI, MountRules::Kind::Flying);
-    MountRules::FlyTry const step =
-        TravelLegs::TakeFlyTry(trip, verdict, !bot->isMoving() && bot->IsStandState(), nowMs);
-    if (step == MountRules::FlyTry::Wait)
+    auto const step = TravelLegs::TakeFlyTry(trip, verdict, !bot->isMoving() && bot->IsStandState(), nowMs);
+    if (step == MountRules::FlyTry::Wait || step == MountRules::FlyTry::Refused)
         return true;
     if (step == MountRules::FlyTry::Settle)
     {
@@ -451,8 +449,6 @@ bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 
             bot->SetStandState(UNIT_STAND_STATE_STAND);
         return true;
     }
-    if (step == MountRules::FlyTry::Refused)
-        return true;
     CheckMountStateAction::Dismount(bot, MountRules::How::Fly);
     if (!botAI->HasStrategy("mount", BOT_STATE_NON_COMBAT))
         trip.mountWhy = "no_strategy";
@@ -614,11 +610,10 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     }
     Transport* const ridden = bot->GetTransport();
     TravelLegs::Trip const& trip = data->trip;
-    // A route may have been superseded aboard. Only the route with this ride or its own boarding result may use it.
-    // ownsBoard and boardedByIntent say whose boarding the ride is, not who moves the bot (TravelLegs::OwnerOf)
+    // A route may have been superseded aboard. Only the route whose boarding the ride is may use it: its own boarding
+    // result, or the leg's vessel docked under the bot at the wait point and attached by the passenger check (WT62)
     bool const ownsBoard = data->passengerMotion && data->passengerMotion->Kind == MotionKind::Board &&
                            data->passengerMotion->Transport == membership.Guid;
-    // The leg's vessel docked under the bot waiting at the wait point and the passenger check attached it (WT62)
     bool const boardedByIntent = ridden && TravelLegs::BoardedByIntent(trip, membership.Guid);
     if (ridden && !boardedByIntent && (!AtTransportLeg(trip) || (!trip.passengerGuid && !ownsBoard)))
     {

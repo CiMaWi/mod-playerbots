@@ -81,7 +81,6 @@ bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstE
                     StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned);
 TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data);
 void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, Point deck, uint32 misses);
-// TravelLegs::OwnerOf on the bot's own facts: the passenger code, a taxi or a vehicle moves it
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
 
 // The route follower, called by the transport legs (a trip's onward waypoints)

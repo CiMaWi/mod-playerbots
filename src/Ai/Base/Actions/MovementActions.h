@@ -14,6 +14,7 @@
 #include "MeshMoveRules.h"
 #include "PlayerbotAIConfig.h"
 
+class PathGenerator;
 class Player;
 class PlayerbotAI;
 class Unit;
@@ -39,6 +40,12 @@ protected:
                 bool normal_only = false, bool exact_waypoint = false,
                 MovementPriority priority = MovementPriority::MOVEMENT_NORMAL, bool lessDelay = false,
                 bool backwards = false);
+    // MoveTo of a point the caller's own path found (exact_waypoint, no search of its own), the move counted on that
+    // path's answer when it is ordered (WT71, BotTravel::NoteMeshMove; counted: its class is counted elsewhere)
+    bool MoveCounted(uint32 mapId, float x, float y, float z, MeshMove::Kind kind, uint32 pathType, float lastStep,
+                     bool counted = false, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
+    bool MoveCounted(uint32 mapId, float x, float y, float z, MeshMove::Kind kind, PathGenerator const& path,
+                     bool counted = false, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
     bool MoveTo(WorldObject* target, float distance = 0.0f,
                 MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
     bool MoveNear(WorldObject* target, float distance = sPlayerbotAIConfig.ContactDistance,

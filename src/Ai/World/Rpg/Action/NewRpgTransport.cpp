@@ -387,11 +387,10 @@ void LogExitGate(Player const& bot, NewRpgInfo::Travel const& data, Transport co
               exit ? exit->Walk.size() : 0);
 }
 
-// WT55b, data for the navigation plan's NV18 (it goes with the searches, WT.47 and WT70): at a stop with a wait
-// point the old searches decide nothing. Once per vessel, stop and role in a server run they still run for a traced
-// bot, and a dock_foot line says where they would have put the crossing's foot. A bounded set (vessels x stops x 2
-// roles) the map threads share; the board role runs in the rate-limited transport scan, the exit role at the exit
-// search
+// WT55b, data for the navigation plan's NV18 (it goes with the searches, WT.47 and WT70): at a stop with a wait point
+// the old searches decide nothing. Once per vessel, stop and role in a server run they still run for a traced bot, and
+// a dock_foot line says where they would have put the crossing's foot. A bounded set (vessels x stops x 2 roles) the
+// map threads share; the board role runs in the rate-limited transport scan, the exit role at the exit search
 std::mutex dockFootLock;
 std::unordered_set<uint64> dockFeet;
 
@@ -507,9 +506,8 @@ PassengerMotion Intent(Player const& bot, Transport const& transport, MotionKind
     return motion;
 }
 
-// A boarding walks straight onto the deck; an exit walks across the deck by its deck walk's corners to the deck's edge
-// (via) and on to the quay. Via points within 0.2 yd of the point before are left out (a spline refuses a segment
-// shorter than 0.1 yd)
+// A boarding walks straight onto the deck; an exit crosses the deck by its deck walk's corners to the deck's edge (via)
+// then to the quay. A via point within 0.2 yd of the one before is left out (a spline refuses a segment under 0.1 yd)
 void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion, std::vector<Point> const& via)
 {
     if (bot.IsSitState())
@@ -540,8 +538,7 @@ void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion m
 // `route aboard` (tests): the bot is stood on the deck of the docked ship or zeppelin of that entry nearest it on its
 // map, at the boarding deck point from where it stands (the test puts it on the dock first). No explicit attach:
 // AddPassenger takes the current position as the offset, so PlayerbotAI's passenger check attaches it to that vessel
-// after the teleport (BeginAboard names it as the boarding intent). Refused: absent (none on the map), not_mo (an
-// elevator), away (not at a stop), no_deck
+// after the teleport (BeginAboard's intent). Refused: absent, not_mo (an elevator), away (not at a stop), no_deck
 void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
 {
     Transport* transport = nullptr;
@@ -1133,9 +1130,8 @@ void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, 
 
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data)
 {
-    TravelLegs::Aboard const aboard{bot.GetTransport() || bot.HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT),
-                                    bot.IsInFlight(), bot.GetVehicle() != nullptr};
-    return TravelLegs::OwnerOf(data.trip, data.passengerMotion.has_value(), aboard) ==
-           TravelLegs::TravelOwner::Passenger;
+    TravelLegs::Aboard const ride{bot.GetTransport() || bot.HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT),
+                                  bot.IsInFlight(), bot.GetVehicle() != nullptr};
+    return TravelLegs::OwnerOf(data.trip, data.passengerMotion.has_value(), ride) == TravelLegs::TravelOwner::Passenger;
 }
 }  // namespace NewRpgInternal
