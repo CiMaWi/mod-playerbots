@@ -218,7 +218,8 @@
         {
             "file": "route-check-selftest.cpp",
             "includes": [
-                "src/Mgr/Travel"
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg"
             ],
             "success": "(\\d+)/\\1 passed"
         },

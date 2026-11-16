@@ -116,6 +116,10 @@ std::uint16_t BotIncludeFlags()
                                       (job.options.areasAll ? (NAV_MAGMA | NAV_FATIGUE_WATER) : 0));
 }
 
+// The default (no words) is the bots' own: their path calls are PathGenerator(bot), the core's filter for a headless
+// player (exclude lava, slime, steep ground), and the module's own polygon queries write the same flags out three
+// times (RpgNavMeshSnap.h, NewRpgRoute.cpp, TravelTransportGeometry.h; one named constant is the travel plan's
+// register row). The probe is no player, so the flags are set here; model=, steep= and areas= change them
 std::uint16_t BotExcludeFlags()
 {
     std::uint16_t const steep = job.options.SteepExcluded() ? NAV_GROUND_STEEP : 0;
@@ -395,18 +399,52 @@ WalkAnswer Ask(Probe const* probe, Vec const& at, Vec const& target, bool keepPo
     answer.actualEnd = {actual.x, actual.y, actual.z};
     if (job.options.areasAll)
         answer.areas = AreasUnder(probe->GetMap(), points, IsHop(answer));
+    // The water level over the last point (G35), as a swimming unit's UpdateAllowedPositionZ finds it
+    float ground = 0.0f;
+    float const level = probe->GetMap()->GetWaterOrGroundLevel(probe->GetPhaseMask(), answer.last.x, answer.last.y,
+                                                               answer.last.z, &ground, true);
+    if (level > ground && level > answer.last.z)
+    {
+        answer.overWater = true;
+        answer.waterLevel = level;
+    }
     return answer;
 }
 
-// The walk a bot makes over the waypoints (RouteCheckRules.h WalkPath; node to node: two), as its movement asks the
-// engine; the points it passes go to trace when given
-WalkResult WalkDirection(Probe const* probe, std::vector<Vec> const& way, std::mt19937& generator,
-                         std::vector<Vec>* trace)
+// `mode=follow`: the stored points the follower walks from -> to (TravelWalk::PickRows): the traversed link's own,
+// else the opposite link's reversed, of the links a walk leg walks (NewRpgRoute.cpp WalkableLink)
+struct FollowWay
 {
+    std::vector<Vec> points;
+    bool reversed{false};
+};
+
+FollowWay FollowRows(TravelGraph const& graph, std::uint32_t from, std::uint32_t to)
+{
+    TravelWalk::Rows<TravelGraphLink> const rows = TravelWalk::PickRows<TravelGraphLink>(
+        [&graph](std::uint32_t node) { return graph.LinksOf(node); }, from, to, [](TravelGraphLink const& link)
+        { return link.type == TravelLinkType::Walk || (link.type == TravelLinkType::Transport && !link.object); });
+    FollowWay way;
+    if (!rows.link)
+        return way;
+    way.reversed = rows.reversed;
+    for (TravelGraphPoint const& point : graph.PathOf(*rows.link))
+        way.points.push_back({point.x, point.y, point.z});
+    return way;
+}
+
+// The walk a bot makes over the waypoints (RouteCheckRules.h WalkPath; node to node: two), as its movement asks the
+// engine; under `mode=follow` (rows given) the follower's walk between the way's ends. The points it passes go to
+// trace when given
+WalkResult WalkDirection(Probe const* probe, std::vector<Vec> const& way, FollowWay const* rows,
+                         std::mt19937& generator, std::vector<Vec>* trace)
+{
+    auto const ask = [probe, trace](Vec const& at, Vec const& target)
+    { return Ask(probe, at, target, trace != nullptr); };
+    if (rows)
+        return WalkFollow(way.front(), way.back(), rows->points, rows->reversed, ask, trace);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
-    return WalkPath(
-        way, [probe, trace](Vec const& at, Vec const& target) { return Ask(probe, at, target, trace != nullptr); },
-        [&generator, &unit]() { return unit(generator); }, trace);
+    return WalkPath(way, ask, [&generator, &unit]() { return unit(generator); }, trace);
 }
 
 struct Both
@@ -420,19 +458,20 @@ struct Both
 };
 
 // The way's first and last points are the link's ends; the reverse walks it backwards and is walked only when the
-// forward walk is neither ok nor capped. The cone's samples come from a generator seeded by the key, so a run repeats
-Both ProbeBoth(Probe const* probe, std::vector<Vec> const& way, bool fromOff, bool toOff, std::string const& key,
-               bool wantPaths)
+// forward walk is neither ok nor capped. The cone's samples come from a generator seeded by the key, so a run repeats.
+// fwdRows, revRows: `mode=follow`'s stored points each way, else null
+Both ProbeBoth(Probe const* probe, std::vector<Vec> const& way, FollowWay const* fwdRows, FollowWay const* revRows,
+               bool fromOff, bool toOff, std::string const& key, bool wantPaths)
 {
     Both both;
     std::mt19937 generator(static_cast<std::uint32_t>(std::hash<std::string>{}(key)));
-    both.fwd = WalkDirection(probe, way, generator, wantPaths ? &both.fwdPath : nullptr);
+    both.fwd = WalkDirection(probe, way, fwdRows, generator, wantPaths ? &both.fwdPath : nullptr);
     Direction const forward = DirectionOf(both.fwd);
     both.revAsked = forward != Direction::Ok && forward != Direction::Capped;
     if (both.revAsked)
     {
         std::vector<Vec> const back(way.rbegin(), way.rend());
-        both.rev = WalkDirection(probe, back, generator, wantPaths ? &both.revPath : nullptr);
+        both.rev = WalkDirection(probe, back, revRows, generator, wantPaths ? &both.revPath : nullptr);
     }
     both.verdict = ClassifyLink(both.fwd, both.revAsked ? &both.rev : nullptr, way.front(), way.back(), fromOff, toOff);
     return both;
@@ -447,7 +486,7 @@ void CheckLink(TravelGraph const& graph, std::uint32_t index)
     std::string const toKey = NodeKey(to.mapId, to.x, to.y, to.z);
     std::string const key = LinkKey(fromKey, toKey);
     ++job.current.links;
-    if (job.options.pathMode && !link.pathCount)
+    if (job.options.mode == WalkMode::Path && !link.pathCount)
     {
         // Nothing stored to walk (NV.15): a class of its own, listed apart
         ++job.current.byClass[static_cast<int>(Verdict::NoPath)];
@@ -468,17 +507,30 @@ void CheckLink(TravelGraph const& graph, std::uint32_t index)
         maxX = std::max(maxX, point.x);
         minY = std::min(minY, point.y);
         maxY = std::max(maxY, point.y);
-        if (job.options.pathMode)
+        if (job.options.mode == WalkMode::Path)
             way.push_back({point.x, point.y, point.z});
     }
     way.push_back(At(to));
+    bool const follow = job.options.mode == WalkMode::Follow;
+    FollowWay const fwdRows = follow ? FollowRows(graph, link.from, link.to) : FollowWay{};
+    FollowWay const revRows = follow ? FollowRows(graph, link.to, link.from) : FollowWay{};
+    for (FollowWay const* rows : {&fwdRows, &revRows})
+    {
+        for (Vec const& point : rows->points)
+        {
+            minX = std::min(minX, point.x);
+            maxX = std::max(maxX, point.x);
+            minY = std::min(minY, point.y);
+            maxY = std::max(maxY, point.y);
+        }
+    }
     // One grid around the stored path: Detour finds no path through a tile that is not loaded
     EnsureGrids(map, minX, maxX, minY, maxY, 1);
     dtNavMesh const* navMesh = map->GetMapCollisionData().GetMMapData().GetNavMesh();
     bool const startTile = TileLoaded(navMesh, At(from));
     bool const endTile = TileLoaded(navMesh, At(to));
-    Both const both = ProbeBoth(job.probe.get(), way, job.offNodes.count(link.from) != 0,
-                                job.offNodes.count(link.to) != 0, key, false);
+    Both const both = ProbeBoth(job.probe.get(), way, follow ? &fwdRows : nullptr, follow ? &revRows : nullptr,
+                                job.offNodes.count(link.from) != 0, job.offNodes.count(link.to) != 0, key, false);
     ++job.current.byClass[static_cast<int>(both.verdict.verdict)];
     if (both.verdict.verdict == Verdict::Ok)
     {
@@ -505,7 +557,11 @@ void CheckPair(PairSpec const& pair)
     bool const notile = !TileLoaded(navMesh, pair.from) || !TileLoaded(navMesh, pair.to);
     std::string const key = PairKey(NodeKey(pair.mapId, pair.from.x, pair.from.y, pair.from.z),
                                     NodeKey(pair.mapId, pair.to.x, pair.to.y, pair.to.z), pair.label);
-    Both const both = ProbeBoth(job.probe.get(), {pair.from, pair.to}, IsOffMesh(MeshDistance(map, pair.from).distance),
+    // `mode=follow`: a pair has no stored points, so the follower walks it node to node
+    FollowWay const nodes;
+    bool const follow = job.options.mode == WalkMode::Follow;
+    Both const both = ProbeBoth(job.probe.get(), {pair.from, pair.to}, follow ? &nodes : nullptr,
+                                follow ? &nodes : nullptr, IsOffMesh(MeshDistance(map, pair.from).distance),
                                 IsOffMesh(MeshDistance(map, pair.to).distance), key, true);
     ++job.current.links;
     ++job.current.byClass[static_cast<int>(both.verdict.verdict)];
@@ -590,12 +646,23 @@ void Finish(TravelGraph const& graph)
         out << "# off the mesh: over " << OFFMESH_LIMIT
             << " yd from the bots' mesh or none; cause: a walk stopped within " << CAUSE_RADIUS
             << " yd (2D) of the end node\n";
-        out << "# walk: the bot's, modelled (orders within " << WALK_ORDER_RANGE << " yd, arrival within " << WALK_GOAL
-            << " yd 3D, stuck after " << WALK_STUCK_MOVES << " moves without " << WALK_GAIN << " yd gain, at most "
-            << WALK_MAX_MOVES << " moves); ok: on the mesh only, shortcut: with a straight move (also the hop: an "
-            << "INCOMPLETE path whose last leg is over " << HOP_MIN << " yd, every core; MMAP_VERSION " << MMAP_VERSION
-            << "); mode path: over the stored points, "
-            << "no-path: none stored\n";
+        if (job.options.mode == WalkMode::Follow)
+            out << "# walk: the follower's (TravelWalkRules.h): stored points " << TravelWalk::SPACING_YARDS
+                << " yd apart, the order the furthest within " << TravelWalk::LOOKAHEAD_YARDS << " yd, a point reached "
+                << "within " << TravelWalk::REACH_YARDS << " yd, the far node too; a point off the mesh or "
+                << +TravelWalk::NO_PROGRESS_STRIKES << " orders gaining under " << TravelWalk::PROGRESS_YARDS
+                << " yd: the far node; no path at the far node: refused; the hop: a last step over "
+                << TravelWalk::HOP_STEP_YARDS << " yd, walked and counted (hops=); stuck after "
+                << +TravelWalk::NO_PROGRESS_STRIKES << " far-node orders gaining under " << TravelWalk::PROGRESS_YARDS
+                << " yd, at most " << WALK_MAX_MOVES << " moves; ok: on the mesh only, shortcut: with a straight move "
+                << "or a hop; over water the walk keeps the water level; MMAP_VERSION " << MMAP_VERSION << "\n";
+        else
+            out << "# walk: MoveFarTo's, modelled (orders within " << WALK_ORDER_RANGE << " yd, arrival within "
+                << WALK_GOAL << " yd 3D, stuck after " << WALK_STUCK_MOVES << " moves without " << WALK_GAIN
+                << " yd gain, at most " << WALK_MAX_MOVES << " moves); ok: on the mesh only, shortcut: with a straight "
+                << "move (also the hop: an INCOMPLETE path whose last leg is over " << HOP_MIN << " yd, every core; "
+                << "MMAP_VERSION " << MMAP_VERSION << "); over water the walk keeps the water level; mode path: over "
+                << "the stored points, no-path: none stored\n";
         out << "# navmesh: " << sWorld->GetDataPath() << "mmaps\n";
         out << "# " << (job.stop ? "stopped" : "complete") << (job.limit ? ", first links only" : "") << ", "
             << Acore::StringFormat("{:.1f}", elapsed) << " s\n";
@@ -735,8 +802,8 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
     std::string bad;
     if (!TakeOptions(argText, words, options, bad))
     {
-        handler->SendErrorMessage("ROUTE check links: {}: use model=v20|v21, mode=nodes|path, steep=excluded|<cost>",
-                                  bad);
+        handler->SendErrorMessage(
+            "ROUTE check links: {}: use model=v20|v21, mode=nodes|path|follow, steep=excluded|<cost>", bad);
         return false;
     }
     if (HandleStatusStop(handler, words))
@@ -763,7 +830,7 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
         {
             handler->SendErrorMessage(
                 "ROUTE check links: usage: [map [count]] | all | status | stop (+ model=v20|v21 "
-                "mode=nodes|path steep=excluded|<cost>)");
+                "mode=nodes|path|follow steep=excluded|<cost>)");
             return false;
         }
         // CreateBaseMap asserts on a map id the DBC does not know: refuse it here
@@ -794,14 +861,15 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
     std::string bad;
     if (!TakeOptions(path, words, options, bad))
     {
-        handler->SendErrorMessage("ROUTE check pairs: {}: use model=v20|v21, steep=excluded|<cost>", bad);
+        handler->SendErrorMessage("ROUTE check pairs: {}: use model=v20|v21, mode=nodes|follow, steep=excluded|<cost>",
+                                  bad);
         return false;
     }
     while (!path.empty() && path.back() == ' ')
         path.pop_back();
     if (HandleStatusStop(handler, words))
         return true;
-    if (options.pathMode)
+    if (options.mode == WalkMode::Path)
     {
         handler->SendErrorMessage("ROUTE check pairs: a pair has no stored points, so mode=path does not apply");
         return false;
