@@ -38,12 +38,13 @@ std::string Trim(std::string text)
     return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
 }
 
-// A bare file name goes into the server's logs folder; a path with a drive or a leading slash stays as given
+// The dump goes into the server's logs folder under a bare file name: players may run the command, so the argument
+// never names a path elsewhere (an empty result: refused)
 std::string DumpPath(std::string const& argument)
 {
     std::string const name = argument.empty() ? "item-use-dump.txt" : argument;
-    if (name.find(':') != std::string::npos || name[0] == '/' || name[0] == '\\')
-        return name;
+    if (name.find_first_of("/\\:") != std::string::npos || name.find("..") != std::string::npos)
+        return {};
     std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
         dir += '/';
@@ -141,6 +142,11 @@ bool HandleDumpCommand(ChatHandler* handler, char const* args)
 {
     ItemUseIndex const& index = ItemUseIndex::Get();
     std::string const path = DumpPath(Trim(args ? args : ""));
+    if (path.empty())
+    {
+        handler->SendErrorMessage("ITEM dump: give a bare file name; the dump goes into the logs folder");
+        return false;
+    }
 
     std::string text = DumpHeader("unknown", GitRevision::GetHash(), index.All().size());
     text += '\n';
