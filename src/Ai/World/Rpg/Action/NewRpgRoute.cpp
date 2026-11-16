@@ -610,13 +610,9 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     // A route may have been superseded aboard. Only the route with this ride or its own boarding result may use it.
     bool const ownsBoard = data->passengerMotion && data->passengerMotion->Kind == MotionKind::Board &&
                            data->passengerMotion->Transport == membership.Guid;
-    // Taken aboard by the leg's vessel at the leg's start (its deck docked under the waiting bot) is the boarding
-    TravelRoute::Point const standing{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-    // or on the walk to that leg's start (the walk is done, WT54-6); not by an elevator or the tram
-    bool const takenAboard =
-        ridden && (TravelLegs::TakenAboard(trip, standing, membership.Entry) ||
-                   (!ridden->IsStaticTransport() && TravelLegs::WalkTakenAboard(trip, standing, membership.Entry)));
-    if (ridden && !takenAboard && (!AtTransportLeg(trip) || (!trip.passengerGuid && !ownsBoard)))
+    // The leg's vessel docked under the bot waiting at the wait point and the passenger check attached it (WT62)
+    bool const boardedByIntent = ridden && TravelLegs::BoardedByIntent(trip, membership.Guid);
+    if (ridden && !boardedByIntent && (!AtTransportLeg(trip) || (!trip.passengerGuid && !ownsBoard)))
     {
         OffFirstBegins(bot, *data);
         return true;

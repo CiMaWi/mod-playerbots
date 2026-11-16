@@ -95,20 +95,6 @@ char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
     return "pending";
 }
 
-// A ship or zeppelin between its stops (MotionTransport::IsMoving is private): the core holds it at a stop frame while
-// its path timer lies in that frame's [ArriveTime, DepartureTime)
-bool UnderWay(Transport const& transport)
-{
-    MotionTransport const* const ship = transport.ToMotionTransport();
-    if (!ship || !ship->GetPeriod() || ship->GetKeyFrames().size() <= 1)
-        return false;
-    uint32 const timer = ship->GetPathProgress() % ship->GetPeriod();
-    for (KeyFrame const& frame : ship->GetKeyFrames())
-        if (frame.IsStopFrame() && frame.ArriveTime <= timer && timer < frame.DepartureTime)
-            return false;
-    return true;
-}
-
 BotTravel::BotTravel(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
 bool BotTravel::ReconcileFollowPassenger(Transport const& expected)
@@ -243,9 +229,10 @@ void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, 
         TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
 }
 
-void BotTravel::BeginAboard(uint32 entry)
+void BotTravel::BeginAboard(uint32 entry, uint64 guid)
 {
     aboardEntry = entry;
+    aboardGuid = guid;
     aboardSinceMs = getMSTime();
     passengerCadence.Revalidate = true;
     if (entry)
@@ -278,8 +265,14 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
 {
     bool const revalidateProgress = passengerCadence.Revalidate;
     PassengerAdapter passenger(*bot, traceTravel);
+    // Boarding has one owner (WT62, WT.48): a bot on no transport is probed only for the vessel it means to board, a
+    // test's aboard placement, else its transport leg's sighted vessel (a follower: ReconcileFollowPassenger)
+    uint64 const intent = (botAI->GetWork() & BotWork::Aboard) ? aboardGuid
+                          : travel                             ? TravelLegs::BoardingIntent(travel->trip)
+                                                               : 0;
     TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
-                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
+                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger,
+                              intent);
     // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
     // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence. Travel's
     // registered steps read their bits on fresh loads: the passenger check or the loot watch can set a later one
@@ -294,6 +287,7 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
                      placed ? "placed" : "failed", sinceMs);
             EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
             aboardEntry = 0;
+            aboardGuid = 0;
             botAI->EndWork(BotWork::Aboard);
         }
         else

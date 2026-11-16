@@ -693,13 +693,14 @@ struct Sample
     DockState Dock = DockState::Unavailable;
 };
 
-// The adapter resolves transport identities and applies the frame change on the bot's map thread.
+// The adapter resolves transport identities and applies the frame change on the bot's map thread. `before` is the
+// membership the caller has just read (Reconcile reads it itself).
 template <class Adapter>
-Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, std::uint64_t preferred = 0,
-                 std::uint8_t* offSurfaceSamples = nullptr)
+Sample ReconcileFrom(Membership const& before, Adapter& adapter, PassengerMotion* motion, MotionState state,
+                     std::uint64_t preferred, std::uint8_t* offSurfaceSamples)
 {
     Sample sample;
-    sample.Before = sample.After = adapter.ReadMembership();
+    sample.Before = sample.After = before;
     sample.Motion = state;
     if (!sample.Before.Available)
         return sample;
@@ -733,8 +734,13 @@ Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, s
     if (state == MotionState::Moving)
         return sample;
 
+    // Boarding by intent (WT62, WT.48): a bot on no transport is probed only for the vessel it means to board (its
+    // move's, its leg's or its master's); a bot with none is never taken aboard
     std::uint64_t const expected = motion ? motion->Transport : preferred;
-    sample.Observed = adapter.Probe(sample.Before.Guid ? sample.Before.Guid : expected, sample.Before.Guid != 0);
+    std::uint64_t const probed = sample.Before.Guid ? sample.Before.Guid : expected;
+    if (!probed)
+        return sample;
+    sample.Observed = adapter.Probe(probed, sample.Before.Guid != 0);
 
     bool const offSurface = sample.Before.Guid && sample.Observed.Guid == sample.Before.Guid &&
                             sample.Observed.Where == Contact::OffSurface && !preferred;
@@ -755,8 +761,8 @@ Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, s
                 motion->Result = safeExit ? Outcome::Exited : Outcome::Lost;
         }
     }
-    else if (!sample.Before.Guid && sample.Observed.Guid && (!expected || sample.Observed.Guid == expected) &&
-             (!motion || state == MotionState::Reached) && sample.Observed.Where == Contact::Feet)
+    else if (!sample.Before.Guid && sample.Observed.Guid == expected && (!motion || state == MotionState::Reached) &&
+             sample.Observed.Where == Contact::Feet)
     {
         adapter.SettleOldFrame();
         adapter.Attach(sample.Observed.Guid);
@@ -777,7 +783,17 @@ Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, s
 }
 
 template <class Adapter>
-void Maintain(Cadence& cadence, std::uint32_t nowMs, std::uint32_t map, PassengerMotion* motion, Adapter& adapter)
+Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, std::uint64_t preferred = 0,
+                 std::uint8_t* offSurfaceSamples = nullptr)
+{
+    return ReconcileFrom(adapter.ReadMembership(), adapter, motion, state, preferred, offSurfaceSamples);
+}
+
+// The passenger check, once a PASSENGER_INTERVAL_MS per bot. `intent` is the vessel the bot means to board (a test's
+// aboard placement, its transport leg's sighted vessel; 0 none); it counts only while the bot rides nothing
+template <class Adapter>
+void Maintain(Cadence& cadence, std::uint32_t nowMs, std::uint32_t map, PassengerMotion* motion, Adapter& adapter,
+              std::uint64_t intent = 0)
 {
     if (motion && motion->Result != Outcome::Pending)
         motion = nullptr;
@@ -793,7 +809,16 @@ void Maintain(Cadence& cadence, std::uint32_t nowMs, std::uint32_t map, Passenge
     if (completed)
         motion->CompletionSampled = true;
 
-    adapter.Observe(nowMs, gapMs, motion, [&] { return Reconcile(adapter, motion, state, 0, &cadence.OffSurface); });
+    // A bot on no transport with no move of its own and no vessel to board has nothing to observe (WT62)
+    Membership const before = adapter.ReadMembership();
+    if (!before.Guid && !motion && !intent)
+    {
+        cadence.OffSurface = 0;
+        return;
+    }
+    std::uint64_t const boarding = before.Guid ? 0 : intent;
+    adapter.Observe(nowMs, gapMs, motion,
+                    [&] { return ReconcileFrom(before, adapter, motion, state, boarding, &cadence.OffSurface); });
 }
 }  // namespace TravelLifecycle
 

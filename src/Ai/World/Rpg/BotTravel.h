@@ -59,9 +59,9 @@ public:
     void PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
                  std::optional<TravelTraceIdentity> const& traceTravel);
 
-    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass until it rides
-    // that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
-    void BeginAboard(uint32 entry);
+    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass, probing that
+    // vessel (guid), until it rides that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
+    void BeginAboard(uint32 entry, uint64 guid);
 
     // UpdateAI's asks: a passenger recheck at the next pass (Revalidate), the mount trace's end (a reset, an invalid
     // state) and the loot cast check's interaction
@@ -89,6 +89,7 @@ private:
     uint32 tracedMountAt = 0;
     TravelLifecycle::Cadence passengerCadence;
     uint32 aboardEntry = 0;    // BeginAboard's transport; 0 = none pending
+    uint64 aboardGuid = 0;     // that transport's guid (the passenger check's boarding intent)
     uint32 aboardSinceMs = 0;  // getMSTime() of the placement
     uint32 routeRequests = 0;  // the bot's route request ids, across trips
 };
