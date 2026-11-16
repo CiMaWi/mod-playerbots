@@ -1077,6 +1077,21 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     // return true;
 }
 
+bool MovementAction::MoveCounted(uint32 mapId, float x, float y, float z, MeshMove::Kind kind, uint32 pathType,
+                                 float lastStep, bool counted, MovementPriority priority)
+{
+    bool const moved = MoveTo(mapId, x, y, z, false, false, false, true, priority);
+    if (moved)
+        botAI->GetTravel().NoteMeshMove(kind, pathType, lastStep, counted);
+    return moved;
+}
+
+bool MovementAction::MoveCounted(uint32 mapId, float x, float y, float z, MeshMove::Kind kind,
+                                 PathGenerator const& path, bool counted, MovementPriority priority)
+{
+    return MoveCounted(mapId, x, y, z, kind, path.GetPathType(), MeshMove::LastStep(path.GetPath()), counted, priority);
+}
+
 bool MovementAction::MoveTo(WorldObject* target, float distance, MovementPriority priority)
 {
     if (!IsMovingAllowed(target))

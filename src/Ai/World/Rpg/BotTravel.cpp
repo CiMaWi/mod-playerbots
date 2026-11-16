@@ -17,11 +17,13 @@
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NaturalTrace.h"
+#include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 #include "PointMovementGenerator.h"
 #include "Transport.h"
 #include "TransportMgr.h"
@@ -290,6 +292,24 @@ void BotTravel::LogPreGateMisses(uint32 work) const
 
     if (tracedMount != MountPath::None && !(work & BotWork::MountTrace))
         LOG_INFO("playerbots", "PreGate miss: MountTrace {}", bot->GetName());
+}
+
+// A bot on a ship's, zeppelin's or lift's leg checks as often as its follower scans the transport (WT54-11): a stop
+// lasts seconds, and at a rest area's 2-20 s, or a slow skill's stretch, bots waiting on Thunder Bluff's tower slept
+// through the zeppelin's stop, riders through their far stop, and a scan pair never saw Kamagua's ship still. A bot's
+// own short steps check at the loot's pace, one step a check: a loot interaction's (stop, dismount, request, the
+// window, its close) inside LootInteraction::PhaseMs, and a trip's until its route is taken (the request, the
+// answer). At a trip's 1-3 s times a slow skill's stretch a step took up to 10 s: the loot budget ran out before the
+// window opened, and a walk began 36 s after its loot (WT44)
+std::optional<uint32> BotTravel::PaceMs() const
+{
+    if (TravelKeepsOnFoot(botAI))
+        return TravelLegs::TRANSPORT_SCAN_MS;
+    auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
+    if ((botAI->GetWork() & BotWork::Loot) || awaitsRoute)
+        return sPlayerbotAIConfig.LootDelay;
+    return std::nullopt;
 }
 
 void BotTravel::NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted)

@@ -78,6 +78,10 @@ public:
     // MeshMove::MISS_INTERVAL_MS
     void NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted = false);
 
+    // The check interval travel sets out of combat (PlayerbotAI::GetReactDelay), none when it sets none: a transport
+    // leg's scan, or the loot's pace for a loot interaction and for a trip until its route is taken
+    std::optional<uint32> PaceMs() const;
+
     // The next route request id (TravelRoute::Snapshot::requestId). The ids run on across trips and resets (a reset
     // renews NewRpgInfo, not this block): ids restarting at 0 would let an older answer pass Judge as current
     uint32 NextRouteRequest() { return ++routeRequests; }
