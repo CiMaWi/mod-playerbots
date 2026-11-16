@@ -156,10 +156,6 @@ struct WalkAnswer
     std::uint32_t pointCount{0};  // the path's points
     std::vector<Vec> points;      // the path's points; only needed when the walk keeps a trace
     std::uint32_t areas{0};       // AREA_* bits of the polygons under the path (set only under `areas=all`)
-    // The last point lies under water (G35): the engine sets a path owner that is no unit on the bed; a swimming
-    // unit keeps the water level (WorldObject::UpdateAllowedPositionZ), so the walk lands there
-    bool overWater{false};
-    float waterLevel{0.0f};
 };
 
 // The engine's hop (HOP_MIN): the answer's last point was copied in, not reached on the mesh
@@ -167,6 +163,25 @@ inline bool IsHop(WalkAnswer const& answer)
 {
     return (answer.type & PATH_INCOMPLETE) && answer.pointCount >= 2 &&
            Dist2D(answer.beforeLast, answer.last) > HOP_MIN;
+}
+
+// Over water (G35, G53): the engine sets the points of a path owner that is no unit on the ground under them, the
+// bed; a swimming unit keeps them at the water level (WorldObject::UpdateAllowedPositionZ). The probe's answer is
+// lifted so: the points the walk reads (the last step, where it lands, the end its gain is measured at; the length's
+// last step with them) and the kept trace. The inner points stay where the engine set them: nothing reads their
+// height. level(point): the water level over a point under water, else no higher than the point; never pulls down
+template <class LevelFn>
+void LiftToWater(WalkAnswer& answer, LevelFn&& level)
+{
+    auto const lift = [&level](Vec& point) { point.z = std::max(point.z, level(point)); };
+    float const lastStep = answer.pointCount >= 2 ? Dist3D(answer.beforeLast, answer.last) : 0.0f;
+    lift(answer.beforeLast);
+    lift(answer.last);
+    lift(answer.actualEnd);
+    for (Vec& point : answer.points)
+        lift(point);
+    if (answer.pointCount >= 2)
+        answer.length += Dist3D(answer.beforeLast, answer.last) - lastStep;
 }
 
 // One move as the walk counts it
@@ -210,7 +225,7 @@ inline std::uint32_t WalkTypeKinds(std::uint32_t type)
 
 // One MovePoint order to target on its answer: where the bot ends, how it went and how far (PointMovementGenerator's
 // rule); the points it passes go to trace when given. A hop's answer is the path to its point before the last, then
-// a straight line. Over water the bot lands at the water level (G35)
+// a straight line. Over water the answer is lifted already (LiftToWater)
 inline std::uint32_t LandMove(Vec const& at, Vec const& target, WalkAnswer const& answer, bool hop, WalkStep& step,
                               std::vector<Vec>* trace)
 {
@@ -225,8 +240,6 @@ inline std::uint32_t LandMove(Vec const& at, Vec const& target, WalkAnswer const
         return WALK_STRAIGHT;
     }
     step.land = answer.last;
-    if (answer.overWater)
-        step.land.z = std::max(step.land.z, answer.waterLevel);
     step.areas = answer.areas;
     if (trace && answer.points.size() > 1)
         trace->insert(trace->end(), answer.points.begin() + 1, answer.points.end());

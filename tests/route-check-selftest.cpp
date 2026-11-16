@@ -528,11 +528,11 @@ int main()
           "follow: stuck after NO_PROGRESS_STRIKES orders without progress");
     // The water level (G35): the engine sets the probe on the bed; the walk lands at the surface, in every mode
     float const surface = 10.0f;
+    auto const water = [&](Vec const&) { return surface; };
     auto const swim = [&](Vec const& at, Vec const& target)
     {
         WalkAnswer one = answer(PATH_NORMAL, at, {target.x, target.y, surface - 30.0f});
-        one.overWater = true;
-        one.waterLevel = surface;
+        LiftToWater(one, water);
         return one;
     };
     WalkResult const swumNodes = Walk(start, end, swim, half);
@@ -540,12 +540,29 @@ int main()
     check(swumNodes.end == WalkEnd::Arrived && swumNodes.reached.z == surface && swumFollow.end == WalkEnd::Arrived &&
               swumFollow.reached.z == surface,
           "the water level: a move over water lands at the surface, not the bed");
-    WalkStep dry;
     WalkAnswer high = answer(PATH_NORMAL, start, end);
-    high.overWater = true;
-    high.waterLevel = end.z - 5.0f;
-    LandMove(start, end, high, false, dry, nullptr);
-    check(dry.land.z == end.z, "the water level never pulls a landing down");
+    LiftToWater(high, [&](Vec const&) { return end.z - 5.0f; });
+    check(high.last.z == end.z && high.beforeLast.z == end.z, "the water level never pulls a point down");
+    // G53: over water the engine sets the probe's points on the bed, deeper than HOP_STEP_YARDS under the stored
+    // points at the surface; the step from a bed point up to a surface point is no hop once the answer is lifted
+    float const bed = surface - TravelWalk::HOP_STEP_YARDS * 3.0f;
+    auto const bedAnswer = [&](Vec const& at, Vec const& target)
+    {
+        WalkAnswer one = answer(PATH_NORMAL, at, target);
+        one.beforeLast.z = bed;  // the engine's point before the order's: on the bed
+        return one;
+    };
+    WalkResult const unlifted = WalkFollow(start, linkEnd, along, false, bedAnswer);
+    WalkResult const lifted = WalkFollow(start, linkEnd, along, false,
+                                         [&](Vec const& at, Vec const& target)
+                                         {
+                                             WalkAnswer one = bedAnswer(at, target);
+                                             LiftToWater(one, water);
+                                             return one;
+                                         });
+    check(unlifted.hops > 0 && lifted.end == WalkEnd::Arrived && lifted.hops == 0 && !(lifted.kinds & WALK_HOP) &&
+              DirectionOf(lifted) == Direction::Ok,
+          "the water level (G53): a bed point before a stored point at the surface is no hop");
 
     // The walk model's words
     CheckOptions options;

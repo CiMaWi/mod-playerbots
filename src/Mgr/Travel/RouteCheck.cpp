@@ -399,15 +399,15 @@ WalkAnswer Ask(Probe const* probe, Vec const& at, Vec const& target, bool keepPo
     answer.actualEnd = {actual.x, actual.y, actual.z};
     if (job.options.areasAll)
         answer.areas = AreasUnder(probe->GetMap(), points, IsHop(answer));
-    // The water level over the last point (G35), as a swimming unit's UpdateAllowedPositionZ finds it
-    float ground = 0.0f;
-    float const level = probe->GetMap()->GetWaterOrGroundLevel(probe->GetPhaseMask(), answer.last.x, answer.last.y,
-                                                               answer.last.z, &ground, true);
-    if (level > ground && level > answer.last.z)
-    {
-        answer.overWater = true;
-        answer.waterLevel = level;
-    }
+    // The water level (G35, G53), as a swimming unit's UpdateAllowedPositionZ finds it
+    LiftToWater(answer,
+                [probe](Vec const& point)
+                {
+                    float ground = 0.0f;
+                    float const level = probe->GetMap()->GetWaterOrGroundLevel(probe->GetPhaseMask(), point.x, point.y,
+                                                                               point.z, &ground, true);
+                    return level > ground ? level : point.z;
+                });
     return answer;
 }
 
