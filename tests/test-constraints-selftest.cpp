@@ -95,12 +95,19 @@ void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action read
 void ReadByRoute(ModelUnits&) {}     // notaxi: the route request reads the bit (TaxiAllowed)
 void ReadByMount(ModelUnits&) {}     // nomount: the check mount state action reads the bit (MountsOnItsOwn)
 void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
+void ReadByUse(ModelUnits&) {}       // nouse: the item use gates read the bit (UsesItemsOnItsOwn)
+void ReadBySpend(ModelUnits&) {}     // nospend: the spend rule and buff picker read the bit (SpendsOnItsOwn)
 
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {
-    {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {FLYFAIL, ReadByFollower, ReadByFollower}, {FLYABORT, ReadByFollower, ReadByFollower},
-    {NODESTROY, ReadByDestroy, ReadByDestroy}, {NOTAXI, ReadByRoute, ReadByRoute},
-    {NOMOUNT, ReadByMount, ReadByMount},       {FLEE, ReadByFlee, ReadByFlee}};
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
+                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+                                              {FLYFAIL, ReadByFollower, ReadByFollower},
+                                              {FLYABORT, ReadByFollower, ReadByFollower},
+                                              {NODESTROY, ReadByDestroy, ReadByDestroy},
+                                              {NOTAXI, ReadByRoute, ReadByRoute},
+                                              {NOMOUNT, ReadByMount, ReadByMount},
+                                              {FLEE, ReadByFlee, ReadByFlee},
+                                              {NOUSE, ReadByUse, ReadByUse},
+                                              {NOSPEND, ReadBySpend, ReadBySpend}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -244,6 +251,16 @@ bool RowWorks(Row const& row)
     if (name == "flee")
         return untouched && Flees(FLEE) && !Flees(HOLD | (STATES & ~FLEE)) && StartsFights(FLEE) &&
                !EndsStatus(0, FLEE);
+    // Only nouse stops the bot's own item use, only nospend puts it in the control cohort; nothing on the bot changes,
+    // the hold never sets them, they end no status
+    if (name == "nouse")
+        return untouched && !UsesItemsOnItsOwn(NOUSE) && !UsesItemsOnItsOwn(HOLD | NOUSE) && UsesItemsOnItsOwn(0) &&
+               UsesItemsOnItsOwn(STATES & ~NOUSE) && SpendsOnItsOwn(NOUSE) && (NOUSE & HOLD) == 0 &&
+               !EndsStatus(0, NOUSE);
+    if (name == "nospend")
+        return untouched && !SpendsOnItsOwn(NOSPEND) && !SpendsOnItsOwn(HOLD | NOSPEND) && SpendsOnItsOwn(0) &&
+               SpendsOnItsOwn(STATES & ~NOSPEND) && UsesItemsOnItsOwn(NOSPEND) && (NOSPEND & HOLD) == 0 &&
+               !EndsStatus(0, NOSPEND);
     // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nodestroy")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -282,7 +299,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee",
+              "nomount, flee, nouse, nospend",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -294,6 +311,10 @@ void TestTable()
           "nodestroy: a state row, parsed and formatted");
     Check(Parse("notaxi").set == NOTAXI && Format(NOTAXI | NOFIGHT) == "nofight,notaxi",
           "notaxi: a state row, parsed and formatted");
+    Check(Parse("nouse,nospend").set == (NOUSE | NOSPEND) &&
+              Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
+              ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,
+          "item use rows: nouse and nospend are state rows, parsed and formatted");
 }
 
 void TestHeldIdle()

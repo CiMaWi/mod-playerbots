@@ -16,6 +16,7 @@
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "DBCEnums.h"
+#include "ItemUseConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -570,6 +571,8 @@ public:
     uint32 FleeBoundSeconds = 30;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
+    // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)
+    ItemUseConfig ItemUse;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
     LosConfig TacticLos;
     PillarConfig TacticPillar;
