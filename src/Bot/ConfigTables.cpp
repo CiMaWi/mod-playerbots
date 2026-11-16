@@ -89,6 +89,10 @@ struct RetiredSwitches
     bool PvpGearEnable = false;
     bool PvpGearWear = false;
     bool SkillEnable = false;
+    bool ArenaGroupOnWorldThread = false;
+    bool ArenaRatingMode = false;
+    bool ArenaTeamMinRating = false;
+    bool ArenaTeamMaxRating = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -227,6 +231,26 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredSkillEnableRows = {{
     {"", &RetiredSwitches::SkillEnable, 0, 0, ConfigKind::Retired},
 }};
 ConfigFamily<RetiredSwitches> const RetiredSkillEnableFamily{"Playerbots.Skill.Enable", RetiredSkillEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaGroupOnWorldThreadRows = {{
+    {"", &RetiredSwitches::ArenaGroupOnWorldThread, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaGroupOnWorldThreadFamily{"Playerbots.RandomBotArenaGroupOnWorldThread",
+                                                                         RetiredArenaGroupOnWorldThreadRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaRatingModeRows = {{
+    {"", &RetiredSwitches::ArenaRatingMode, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaRatingModeFamily{"Playerbots.RandomBotArenaTeamRatingMode",
+                                                                 RetiredArenaRatingModeRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaTeamMinRatingRows = {{
+    {"", &RetiredSwitches::ArenaTeamMinRating, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaTeamMinRatingFamily{"Playerbots.RandomBotArenaTeamMinRating",
+                                                                    RetiredArenaTeamMinRatingRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaTeamMaxRatingRows = {{
+    {"", &RetiredSwitches::ArenaTeamMaxRating, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaTeamMaxRatingFamily{"Playerbots.RandomBotArenaTeamMaxRating",
+                                                                    RetiredArenaTeamMaxRatingRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -261,6 +285,10 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredPvpGearEnableFamily, RetiredSwitchValues),
         MakeEntry(RetiredPvpGearWearFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkillEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaGroupOnWorldThreadFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaRatingModeFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaTeamMinRatingFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaTeamMaxRatingFamily, RetiredSwitchValues),
     };
     return entries;
 }

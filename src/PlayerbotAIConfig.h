@@ -74,12 +74,6 @@ enum class AutoPartyBuffMode : uint8
     GROUP_OR_RAID = 2
 };
 
-enum ArenaRatingMode : uint32
-{
-    ARENA_RATING_MODE_RANDOM = 0,
-    ARENA_RATING_MODE_EARNED = 1,
-};
-
 // Playerbots.Ladder.Role
 enum LadderRole : uint32
 {
@@ -316,7 +310,6 @@ public:
     uint32 RandomBotAutoJoinRatedArenaQueueSlots;
     // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free bot team queues, no slot or count limit
     bool RandomBotAutoJoinRatedArenaUncapped;
-    bool RandomBotArenaGroupOnWorldThread;
 
     uint32 RandomBotTeleLowerLevel, RandomBotTeleHigherLevel;
     std::map<uint32, std::pair<uint32, uint32>> ZoneBrackets;
@@ -621,9 +614,6 @@ public:
     int32 EnableRandomBotTrading;
     uint32 TweakValue;  // Debugging config
 
-    uint32 RandomBotArenaTeamMaxRating;
-    uint32 RandomBotArenaTeamMinRating;
-    uint32 RandomBotArenaTeamRatingMode;
     uint32 RandomBotArenaTeam2v2Count;
     uint32 RandomBotArenaTeam3v3Count;
     uint32 RandomBotArenaTeam5v5Count;
@@ -632,7 +622,7 @@ public:
     bool ArenaTeamSeedEnable;
     float ArenaTeamSeedSpread;
     float ArenaTeamSeedNoiseSd;
-    // Playerbots.ArenaTeam.*: team formation by partner score (earned rating mode only)
+    // Playerbots.ArenaTeam.*: team formation by partner score
     bool ArenaTeamFormationEnable;
     uint32 ArenaTeamUpdateSeconds;
     uint32 ArenaTeamMaxRoster2v2;

@@ -3653,12 +3653,6 @@ Playerbots.RandomBotAutoJoinRatedArenaUncapped = 0
 Playerbots.ArenaOnly.Enable = 0
 Playerbots.ArenaOnly.SpreadContinents = 1
 
-# Form a bot arena captain's group and teleport its team members on the world thread (a queued operation) instead of
-# inline on the captain's map thread; the captain joins the rated queue on a later pass, once its group stands.
-# Recommended with MapUpdate.Threads > 1, where two map threads may otherwise change the same groups.
-# Default: 0 (disabled, the group is formed inline)
-Playerbots.RandomBotArenaGroupOnWorldThread = 0
-
 # Randombot arena team count
 # Teams are created when bots are initialized on server restart.
 # You may need to first delete all arena teams, then reinitialize bots.
@@ -3669,32 +3663,21 @@ Playerbots.RandomBotArenaTeam2v2Count = 10
 Playerbots.RandomBotArenaTeam3v3Count = 10
 Playerbots.RandomBotArenaTeam5v5Count = 5
 
-# Arena rating is randomized on team creation.
-# Default: Max: 2000, Min: 1000
-Playerbots.RandomBotArenaTeamMaxRating = 2000
-Playerbots.RandomBotArenaTeamMinRating = 1000
-
-# How the rating of randombot arena teams is set.
-#    0 = random: a new team gets a random rating between Min and Max above, and its members' matchmaking rating (MMR)
-#        follows it once the team is full (default)
-#    1 = earned: a new team keeps the core's start values (Arena.ArenaStartRating, Arena.ArenaStartMatchmakerRating)
-#        and climbs by winning rated matches. Min and Max are ignored.
-# Teams that already exist keep their ratings when the mode changes. To set all of them to the start values once, run
-# the GM command: .playerbots arena resetratings (works from the console)
-# Default: 0
-Playerbots.RandomBotArenaTeamRatingMode = 0
-
+# A new randombot arena team keeps the core's start values (Arena.ArenaStartRating, Arena.ArenaStartMatchmakerRating)
+# and climbs by winning rated matches. To set every bot team to the start values once, run the GM command:
+# .playerbots arena resetratings (works from the console)
+#
 # Seeded bot team ratings, for test servers (forced off with Playerbots.Ladder.Role = 1). When 1, a bot arena team that
 # has just been completed and has never played gets rating = 1500 + Spread * (mean skill percentile of its members
 # - 0.5) + a normal noise term with standard deviation NoiseSd, clamped to 0-4000; its members' personal and
 # matchmaking ratings follow. The ladder then starts near settled (close matches dominate) while the noise still gives
-# a range of skill differences. Works in both rating modes and replaces mode 0's random rating for these teams.
+# a range of skill differences.
 # Default: 0 (off), Spread 800, NoiseSd 100
 Playerbots.ArenaTeam.Seed.Enable = 0
 Playerbots.ArenaTeam.Seed.Spread = 800
 Playerbots.ArenaTeam.Seed.NoiseSd = 100
 
-# Arena team formation (1 = on, 0 = off; only with RandomBotArenaTeamRatingMode = 1, ignored in mode 0)
+# Arena team formation (1 = on, 0 = off)
 # When 1, randombot arena teams are formed by partner score instead of at random, and their rosters change over time.
 # A score from skill closeness (the hidden skill; unknown skill counts as neutral) and class
 # synergy (a healer beside damage dealers, tank and healer, no class twice) decides which team a bot joins. A roster may
@@ -3714,7 +3697,7 @@ Playerbots.ArenaTeam.Seed.NoiseSd = 100
 #   MinMembers (2..10, never below the team size): fewer members recruit; a team at this size loses no member.
 #   RandomPair (1/0): the queuing members are a random set of the roster, else the roster order (as before).
 #   RepickEachQueue (1/0): with RandomPair, a roster larger than the team size re-forms its group with a fresh random
-#     set after every match (with RandomBotArenaGroupOnWorldThread = 1), else the standing group stays.
+#     set after every match, else the standing group stays.
 #   LossStreakToConsider (1..50): the loss streak from which a member may leave.
 #   LeaveChanceBottom, LeaveChanceTop (0..100 percent): the chance per lost match at the bottom and the top.
 #   MinTeamStaySeconds (0..86400): no member leaves a team within this time after its last join or leave.

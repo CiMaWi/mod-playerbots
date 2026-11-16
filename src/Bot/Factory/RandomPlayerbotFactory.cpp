@@ -1157,24 +1157,7 @@ void RandomPlayerbotFactory::AssignBotToArenaTeamInternal(Player* bot, uint32 ex
             continue;
         }
 
-        if (SeedTeamRating(team))
-            return;
-
-        if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM &&
-            team->GetMembersSize() >= static_cast<uint32>(team->GetType()))
-        {
-            uint32 teamRating = team->GetRating();
-            team->SetRatingForAll(teamRating);
-
-            // Keep MMR synchronized with team rating so matchmaking reflects artificial bot strength
-            // (1000-2000 range) instead of the global CONFIG_ARENA_START_MATCHMAKER_RATING default.
-            for (auto& member : team->GetMembers())
-            {
-                member.MatchMakerRating = member.PersonalRating;
-                member.MaxMMR = std::max(member.MaxMMR, member.PersonalRating);
-            }
-            team->SaveToDB(true);
-        }
+        SeedTeamRating(team);
         return;
     }
 
@@ -1219,10 +1202,7 @@ void RandomPlayerbotFactory::CreateBotArenaTeam(Player* bot, ArenaType type)
 
 void RandomPlayerbotFactory::SetRandomRatingAndEmblem(ArenaTeam* team)
 {
-    if (sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
-        team->SetRatingForAll(
-            urand(sPlayerbotAIConfig.RandomBotArenaTeamMinRating, sPlayerbotAIConfig.RandomBotArenaTeamMaxRating));
-
+    // The rating stays the core's start value: a bot team earns its rating (or ArenaTeam.Seed sets it)
     uint32 const backgroundColor = urand(0xFF000000, 0xFFFFFFFF);
     uint8 const emblemStyle = urand(0, 101);
     uint32 const emblemColor = urand(0xFF000000, 0xFFFFFFFF);
@@ -1271,15 +1251,7 @@ uint32 RandomPlayerbotFactory::CreatePairArenaTeam(Player* founder, ObjectGuid c
     }
 
     SetRandomRatingAndEmblem(team);
-    if (!SeedTeamRating(team) && sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_RANDOM)
-    {
-        // As a team filled by the joins: the MMR follows the artificial rating
-        for (ArenaTeamMember& member : team->GetMembers())
-        {
-            member.MatchMakerRating = member.PersonalRating;
-            member.MaxMMR = std::max(member.MaxMMR, member.PersonalRating);
-        }
-    }
+    SeedTeamRating(team);
 
     team->SaveToDB(true);
     std::string captainName;
