@@ -10,7 +10,6 @@
 
 #include "RandomBotLevelMgr.h"
 #include "ArenaTeamMgr.h"
-#include "Config.h"
 #include "DatabaseEnv.h"
 #include "LFGMgr.h"
 #include "Log.h"
@@ -18,8 +17,6 @@
 #include "Player.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
-#include "Population.h"
-#include "PopulationPolicy.h"
 #include "QueryResult.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
@@ -140,15 +137,6 @@ void RandomBotLevelMgr::LoadConfig()
 
 void RandomBotLevelMgr::LogStartupSummary() const
 {
-    // Read from the config, not Population::IsPersistent(): this runs on the startup hook, possibly before
-    // Population::LoadConfig has.
-    if (sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false))
-    {
-        LOG_INFO("playerbots",
-            "[RandomBotLevelMgr] Level brackets and level reset suppressed by Playerbots.Population.Persistent.");
-        return;
-    }
-
     if (!sPlayerbotAIConfig.LevelBracketsEnabled)
         LOG_INFO("playerbots", "[RandomBotLevelMgr] Level brackets sub-feature disabled via configuration.");
     else
@@ -943,11 +931,6 @@ void RandomBotLevelMgr::RunResetPlayedTimeCheck()
 
 void RandomBotLevelMgr::Update(uint32 diff)
 {
-    // Persistent population (H1): both sub-features move bots between levels, so neither runs (refused with a
-    // warning by Population::LoadConfig). Their timers and the pending queue wait until persistence is off.
-    if (!PopulationPolicy::LevelMgrAllowed(Population::IsPersistent()))
-        return;
-
     if (sPlayerbotAIConfig.LevelBracketsEnabled)
     {
         _bracketsTimer += diff;
@@ -1163,14 +1146,14 @@ public:
 
     void OnPlayerLogin(Player* player) override
     {
-        if (!sPlayerbotAIConfig.ResetBotLevelEnabled || !PopulationPolicy::LevelMgrAllowed(Population::IsPersistent()))
+        if (!sPlayerbotAIConfig.ResetBotLevelEnabled)
             return;
         RandomBotLevelMgr::instance().OnBotLogin(player);
     }
 
     void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
     {
-        if (!sPlayerbotAIConfig.ResetBotLevelEnabled || !PopulationPolicy::LevelMgrAllowed(Population::IsPersistent()))
+        if (!sPlayerbotAIConfig.ResetBotLevelEnabled)
             return;
         RandomBotLevelMgr::instance().OnBotLevelChanged(player, oldLevel);
     }
@@ -1184,8 +1167,6 @@ public:
 // -----------------------------------------------------------------------------
 // ENTRY POINT
 // -----------------------------------------------------------------------------
-void AddSC_randombot_level_mgr()
-{
-    new RandomBotLevelWorldScript();
-    new RandomBotLevelPlayerScript();
-}
+// Our fork registers neither script: bot levels never go down, so the level brackets and the level reset never run
+// (CS23c; Population::LoadConfig warns when one of their options is set)
+void AddSC_randombot_level_mgr() {}

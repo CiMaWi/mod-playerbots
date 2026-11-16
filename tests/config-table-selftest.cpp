@@ -325,6 +325,8 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+    Check(dist.count("Playerbots.Population.Persistent") == 0,
+          "retired: Playerbots.Population.Persistent has no dist line");
 
     // The checks themselves, on a fixture
     std::map<std::string, std::string> const fixture = DistKeys(

@@ -50,7 +50,6 @@
 
 namespace
 {
-std::atomic<bool> s_persistent{false};
 std::atomic<bool> s_rotation{false};
 
 constexpr char const* RotationEnableKey = "Playerbots.Population.Rotation.Enable";
@@ -316,11 +315,6 @@ void LoadBalanceConfig(bool reload)
              PopulationPolicy::BalanceRangeSize(settings), settings.maxLevel, settings.maxLevelWeightPct,
              balance.intervalSeconds / 60, settings.minMultiplierPct, settings.maxMultiplierPct, settings.deadbandPct,
              settings.gainPct, settings.responseSeconds / 3600, settings.smoothingSeconds, settings.preferencePct);
-    if (!sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false) &&
-        sConfigMgr->GetOption<bool>("Playerbots.LevelBrackets.Enabled", false))
-        LOG_WARN("playerbots",
-                 "[Population] Playerbots.LevelBrackets.Enabled = 1 also moves bots between level ranges (by setting "
-                 "their levels); the two work against each other. Set one of them to 0.");
     if (!sConfigMgr->GetOption<bool>("Playerbots.Population.Rotation.Enable", false))
         LOG_INFO("playerbots",
                  "[Population] balance: the rotation is off, so ranges count the online random bots and "
@@ -1581,7 +1575,7 @@ void StartRetireSummary(Retire& retire, uint32 now)
                 }));
 }
 
-void LoadRetireConfig(bool reload, bool persistent)
+void LoadRetireConfig(bool reload)
 {
     Retire& retire = GetRetire();
     bool const wasOn = s_retire.load(std::memory_order_relaxed);
@@ -1610,9 +1604,7 @@ void LoadRetireConfig(bool reload, bool persistent)
     retire.refusal.clear();
     if (retire.enable)
     {
-        if (!persistent)
-            retire.refusal = "Playerbots.Population.Persistent = 0 (the new bots would be re-levelled)";
-        else if (!sConfigMgr->GetOption<bool>(RotationEnableKey, false))
+        if (!sConfigMgr->GetOption<bool>(RotationEnableKey, false))
             retire.refusal = "Playerbots.Population.Rotation.Enable = 0 (no roster to keep)";
         else if (!retire.testRange && !sConfigMgr->GetOption<bool>(BalanceEnableKey, false))
             retire.refusal = "Playerbots.Population.Balance.Enable = 0 (no range targets)";
@@ -1711,33 +1703,34 @@ void PrintRetire(ChatHandler* handler, uint32 now)
 }
 }  // namespace
 
-bool Population::IsPersistent() { return s_persistent.load(std::memory_order_relaxed); }
-
 bool Population::IsRotation() { return s_rotation.load(std::memory_order_relaxed); }
 
 void Population::LoadConfig(bool reload)
 {
-    bool const persistent = sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false);
-    s_persistent.store(persistent, std::memory_order_relaxed);
     BotKind::LoadLivingWorld();
 
-    LOG_INFO("playerbots", "[Population] {}Playerbots.Population.Persistent = {}{}", reload ? "reload: " : "",
-             persistent ? 1 : 0, persistent ? " (bot levels never go down)" : "");
+    LOG_INFO("playerbots", "[Population] {}living world {}; random bot levels never go down", reload ? "reload: " : "",
+             BotKind::LivingWorld() ? "on" : "off");
 
     // Read from sConfigMgr, not PlayerbotAIConfig: on ".reload config" the level-management values there are
     // reloaded by another script whose order against this one is not fixed.
-    std::vector<char const*> const refused = PopulationPolicy::RefusedOptions(
-        persistent, sConfigMgr->GetOption<bool>("Playerbots.DowngradeMaxLevelBot", false),
-        sConfigMgr->GetOption<bool>("Playerbots.ResetBotLevel.Enabled", false),
-        sConfigMgr->GetOption<bool>("Playerbots.LevelBrackets.Enabled", false));
-    for (char const* option : refused)
+    std::vector<char const*> const refused =
+        PopulationPolicy::RefusedOptions(sConfigMgr->GetOption<bool>("Playerbots.DowngradeMaxLevelBot", false),
+                                         sConfigMgr->GetOption<bool>("Playerbots.ResetBotLevel.Enabled", false),
+                                         sConfigMgr->GetOption<bool>("Playerbots.LevelBrackets.Enabled", false));
+    if (!refused.empty())
+    {
+        std::string names;
+        for (char const* option : refused)
+            names.append(names.empty() ? "" : ", ").append(option);
         LOG_WARN("playerbots",
-                 "[Population] {} = 1 is refused while Playerbots.Population.Persistent = 1: "
-                 "it would lower bot levels; set it to 0",
-                 option);
+                 "[Population] {} = 1 ignored: bot levels never go down, so the level brackets and the level reset "
+                 "never run; set it to 0",
+                 names);
+    }
 
     LoadBalanceConfig(reload);
-    LoadRetireConfig(reload, persistent);
+    LoadRetireConfig(reload);
 
     Rotation& rotation = GetRotation();
     PopulationPolicy::RotationSettings& settings = rotation.settings;
@@ -1777,11 +1770,11 @@ void Population::LoadConfig(bool reload)
 
 uint32 Population::GuardLevel(Player* bot, uint32 requestedLevel, char const* site)
 {
-    if (!bot || !IsPersistent())
+    if (!bot)
         return requestedLevel;
 
     uint32 const currentLevel = bot->GetLevel();
-    if (PopulationPolicy::KeepLevel(true, currentLevel, requestedLevel) == requestedLevel)
+    if (PopulationPolicy::KeepLevel(currentLevel, requestedLevel) == requestedLevel)
         return requestedLevel;
 
     if (!sRandomPlayerbotMgr.IsRandomBot(bot))
@@ -1803,8 +1796,7 @@ uint32 Population::RosterBotCount(uint32 upstreamCount)
 
 bool Population::CapsStartupRefill()
 {
-    return PopulationPolicy::RefillCapped(sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false),
-                                          sConfigMgr->GetOption<bool>(RotationEnableKey, false));
+    return PopulationPolicy::RefillCapped(sConfigMgr->GetOption<bool>(RotationEnableKey, false));
 }
 
 uint32 Population::RosterAccountBotCount(uint32 upstreamCount)
@@ -2133,9 +2125,9 @@ bool Population::HandleResizeCommand(ChatHandler* handler, char const* args)
         return false;
     }
 
-    if (!IsPersistent() || !IsRotation())
+    if (!IsRotation())
     {
-        handler->SendSysMessage("Resize: needs Playerbots.Population.Persistent = 1 and Rotation.Enable = 1");
+        handler->SendSysMessage("Resize: needs Rotation.Enable = 1");
         return false;
     }
 

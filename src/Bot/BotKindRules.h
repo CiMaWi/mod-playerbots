@@ -20,12 +20,8 @@ enum class MasterKind
     SelfBot      // a person's own character with the AI on: a person sits at that client too
 };
 
-// A, the instance's role: a living world is neither the arena role nor an ArenaOnly lab. Until the population's
-// role becomes the instance's (CS23), it also needs the key Playerbots.Population.Persistent.
-inline bool LivingWorld(bool persistentKey, bool arenaRole, bool arenaOnly)
-{
-    return persistentKey && !arenaRole && !arenaOnly;
-}
+// A, the instance's role: a living world is neither the arena role nor an ArenaOnly lab
+inline bool LivingWorld(bool arenaRole, bool arenaOnly) { return !arenaRole && !arenaOnly; }
 
 // A and B: a random bot of a living world, whoever leads it
 inline bool IsPersistentBot(bool livingWorld, bool randomBot) { return livingWorld && randomBot; }
