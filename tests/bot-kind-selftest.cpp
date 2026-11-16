@@ -53,12 +53,12 @@ struct Master
     bool keeps;  // the expected KeepsPossessions of a random bot of a living world
 };
 
-// The selfbot row is the one CS17d flips: a person sits at a selfbot's client, so it will count as a master
+// The selfbot row is the one CS17d flipped: a person sits at a selfbot's client, so it counts as a master
 Master const MASTERS[] = {
     {"no master", MasterKind::None, true},
     {"a bot", MasterKind::Bot, true},
     {"a real player", MasterKind::RealPlayer, false},
-    {"a selfbot", MasterKind::SelfBot, true},
+    {"a selfbot", MasterKind::SelfBot, false},
 };
 }  // namespace
 
@@ -88,7 +88,7 @@ int main()
     Check(!BotKindRules::MasterCounts(MasterKind::None), "no master does not count");
     Check(!BotKindRules::MasterCounts(MasterKind::Bot), "a bot master does not count");
     Check(BotKindRules::MasterCounts(MasterKind::RealPlayer), "a real player counts");
-    Check(!BotKindRules::MasterCounts(MasterKind::SelfBot), "a selfbot master does not count yet (CS17d)");
+    Check(BotKindRules::MasterCounts(MasterKind::SelfBot), "a selfbot master counts (CS17d)");
 
     std::cout << "bot-kind selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

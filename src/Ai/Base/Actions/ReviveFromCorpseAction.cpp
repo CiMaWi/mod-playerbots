@@ -6,7 +6,6 @@
 
 #include "ReviveFromCorpseAction.h"
 
-#include "BotKind.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
 #include "Corpse.h"
@@ -100,9 +99,9 @@ bool ReviveFromCorpseAction::Execute(Event event)
     if (!botAI->HasGameClientMaster())
     {
         uint32 dCount = AI_VALUE(uint32, "death count");
-        bool const exhausted = BotKind::LivingWorld() ? WorldTravel::CorpseRunsExhausted(
-                                                            dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures)
-                                                      : dCount >= 5;
+        bool const exhausted = botAI->KeepsPossessions() ? WorldTravel::CorpseRunsExhausted(
+                                                               dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures)
+                                                         : dCount >= 5;
 
         if (exhausted)
             return botAI->DoSpecificAction("spirit healer");
@@ -142,7 +141,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // }
 
     uint32 dCount = AI_VALUE(uint32, "death count");
-    bool const honest = BotKind::LivingWorld();
+    bool const honest = botAI->KeepsPossessions();
 
     if (!botAI->HasGameClientMaster())
     {
@@ -438,7 +437,7 @@ bool SpiritHealerAction::Execute(Event event)
                                    sickness->GetDuration());
             }
             // The death decision row (upkeep §3.14) of a persistent bot: why the spirit healer, not the corpse run
-            if (BotKind::LivingWorld() && !botAI->HasGameClientMaster())
+            if (botAI->KeepsPossessions())
             {
                 bool const exhausted =
                     WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
