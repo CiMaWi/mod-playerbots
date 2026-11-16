@@ -20,6 +20,7 @@
 #include "BridgeAround.h"
 #include "BridgeBotTopics.h"
 #include "BridgeNames.h"
+#include "BridgeNeedsTopic.h"
 #include "CharacterCache.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -162,11 +163,11 @@ void ReadSpells(Player* bot, std::vector<BotStateItem>& items)
 }
 
 // The planner topics read the view the bot's map thread published; out of the planner's scope (a master at a game
-// client, not persistent, Planner.Goals off) the planner sets no goal, so they show none
+// client, not persistent) the planner sets no goal, so they show none
 Topics::PlanInput PlanInputOf(Player* bot, PlayerbotAI* ai)
 {
     Topics::PlanInput in;
-    in.inScope = sPlayerbotAIConfig.WorldTravel.PlannerGoals && ai->KeepsPossessions();
+    in.inScope = ai->KeepsPossessions();
     in.seen = in.inScope && Planner::PublishedPlan(bot->GetGUID().GetRawValue(), in.view);
     in.nowMs = getMSTime();
     in.x = bot->GetPositionX();
@@ -354,6 +355,33 @@ std::vector<RecordWords::Entry> LatelyEntries(std::vector<RecordRules::Row> cons
     return RecordWords::Lately(rows, self, now, lookup);
 }
 
+// WU23: the needs list `playerbots planner needs` shows (Planner::BotNeedsNow, on this world thread), worded by name
+void ReadNeeds(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
+{
+    Topics::NeedsInput in;
+    in.governed = BotKind::KeepsPossessions(bot);
+    UpkeepNeeds::NeedList list;
+    if (in.governed)
+    {
+        Planner::Snapshot snapshot;
+        UpkeepNeeds::NeedRates rates;
+        in.ready = Planner::BotNeedsNow(bot, ai, snapshot, rates, list);
+        in.cls = snapshot.cls;
+    }
+    in.list = &list;
+    in.itemName = [](uint32 entry)
+    {
+        ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(entry);
+        return itemTemplate ? itemTemplate->Name1 : std::string();
+    };
+    in.spellName = [](uint32 spellId)
+    {
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+        return spell && spell->SpellName[0] ? std::string(spell->SpellName[0]) : std::string();
+    };
+    Topics::NeedsItems(in, items);
+}
+
 // What a topic's reader gets
 struct TopicSource
 {
@@ -390,7 +418,8 @@ constexpr TopicReader Readers[] = {
      [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::History, items); }},
     {BotStateTopic::Lately, [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &LatelyEntries, items); }},
     {BotStateTopic::Known,
-     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::KnownBots, items); }}};
+     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::KnownBots, items); }},
+    {BotStateTopic::Needs, [](TopicSource const& in, Items& items) { ReadNeeds(in.Bot, in.Ai, items); }}};
 
 constexpr bool ReadersInOrder()
 {

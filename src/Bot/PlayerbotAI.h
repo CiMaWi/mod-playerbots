@@ -835,7 +835,7 @@ public:
     // World PvP's enthusiasm (FightEnthusiasm.h), lazily; not saved
     std::unique_ptr<WorldPvp::BotEnthusiasm> enthusiasm;
     // The fight episode (in PvP combat or engaged) at the last update: its falling edge ends the flight's stand
-    // (FleeRules::EpisodeFell, UpdateAI)
+    // (FleeRules::EpisodeFell, WorldPvp::NoteEpisode)
     bool pvpEpisode{false};
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);

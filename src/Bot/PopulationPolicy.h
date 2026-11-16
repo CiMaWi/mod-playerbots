@@ -54,23 +54,16 @@ inline uint32_t FirstLevel(bool livingWorld, uint32_t currentLevel, uint32_t rol
     return livingWorld ? currentLevel : rolledLevel;
 }
 
-// The level a factory or reset path may set: never below the current one when persistent.
-inline uint32_t KeepLevel(bool persistent, uint32_t currentLevel, uint32_t requestedLevel)
+// The level a factory or reset path may set: never below the current one.
+inline uint32_t KeepLevel(uint32_t currentLevel, uint32_t requestedLevel)
 {
-    return (persistent && requestedLevel < currentLevel) ? currentLevel : requestedLevel;
+    return requestedLevel < currentLevel ? currentLevel : requestedLevel;
 }
 
-// RandomBotLevelMgr (level brackets and level reset) runs only without persistence.
-inline bool LevelMgrAllowed(bool persistent) { return !persistent; }
-
-// The level-lowering options persistence refuses, for the startup and reload warning.
-inline std::vector<char const*> RefusedOptions(bool persistent, bool downgradeMaxLevelBot, bool resetBotLevel,
-                                               bool levelBrackets)
+// The upstream level-lowering options our fork ignores, those of them that are set, for the startup and reload warning.
+inline std::vector<char const*> RefusedOptions(bool downgradeMaxLevelBot, bool resetBotLevel, bool levelBrackets)
 {
     std::vector<char const*> refused;
-    if (!persistent)
-        return refused;
-
     if (downgradeMaxLevelBot)
         refused.push_back("Playerbots.DowngradeMaxLevelBot");
     if (resetBotLevel)
@@ -1389,8 +1382,8 @@ inline uint32_t BalanceSelftest(std::vector<std::string>& failures, bool full)
 }
 
 // H4a: retiring never-met random bots (Playerbots.Population.Retire.*). In a level range persistently over its target
-// (H3), offline roster bots no real player knows are deleted: acquaintance score at most maxScore (0 by default, a
-// manual knob; DH.2), in no guild with a real player, on no real player's friend list, in no arena team, in no group,
+// (H3), offline roster bots no real player knows are deleted: acquaintance score at most maxScore (0: never met;
+// DH.2), in no guild with a real player, on no real player's friend list, in no arena team, in no group,
 // no guild leader, not in a ladder roster, not away on an arena server and not on a lab clone account. At most a few
 // per pass and per hour, never so many that a range falls below its target (DH.3).
 
@@ -1442,10 +1435,20 @@ inline bool RetireRangeDue(uint32_t overSince, uint32_t now, uint32_t persistSec
 }
 
 // The range a new bot starts in (level 1) is never retired from by the balance: a new level-1 bot would replace the
-// retired one in the same range (the test range of the overlay may still name it)
+// retired one in the same range
 inline bool RetireRangeAllowed(uint32_t firstLevel, uint32_t lastLevel, uint32_t createLevel = 1)
 {
     return createLevel < firstLevel || createLevel > lastLevel;
+}
+
+// Playerbots.Population.Retire.TestTarget (a test toggle): the one range it names is the top level, retired from down
+// to `testTarget` bots. 0 names no range, so it retires nothing.
+inline std::vector<RetireRange> TopLevelRetireRanges(uint32_t maxLevel, uint32_t testTarget)
+{
+    if (!testTarget)
+        return {};
+
+    return {{maxLevel, maxLevel, 0, static_cast<double>(testTarget)}};
 }
 
 // The retires this sliding hour may still take: drops the times an hour old or more from `times`
@@ -1525,27 +1528,6 @@ inline std::vector<uint32_t> SelectRetirees(std::vector<RetireCandidate> const& 
     }
 
     return chosen;
-}
-
-// Playerbots.Population.Retire.TestRange: "first-last" (1 <= first <= last), else false
-inline bool ParseRetireTestRange(std::string const& text, uint32_t& firstLevel, uint32_t& lastLevel)
-{
-    size_t const dash = text.find('-');
-    if (dash == std::string::npos || !dash || dash + 1 >= text.size() || dash > 3 || text.size() - dash - 1 > 3)
-        return false;
-
-    for (size_t i = 0; i < text.size(); ++i)
-        if (i != dash && (text[i] < '0' || text[i] > '9'))
-            return false;
-
-    uint32_t const first = static_cast<uint32_t>(std::stoul(text.substr(0, dash)));
-    uint32_t const last = static_cast<uint32_t>(std::stoul(text.substr(dash + 1)));
-    if (!first || last < first)
-        return false;
-
-    firstLevel = first;
-    lastLevel = last;
-    return true;
 }
 
 // The protections as text (log lines): "guild|friend|...", "score" when only the score protects
@@ -1944,15 +1926,6 @@ inline uint32_t RetireSelftest(std::vector<std::string>& failures, bool full)
     std::vector<uint32_t> times = {100, 200, 3700, 3750};
     check(RetireHourLeft(times, 3800, 3) == 1 && times.size() == 2, "the sliding hour drops old retires");
     check(RetireHourLeft(times, 3800, 2) == 0, "the hour cap reached leaves none");
-    uint32_t first = 0;
-    uint32_t last = 0;
-    check(ParseRetireTestRange("1-9", first, last) && first == 1 && last == 9 &&
-              ParseRetireTestRange("70-79", first, last) && first == 70 && last == 79,
-          "TestRange parses first-last");
-    check(!ParseRetireTestRange("", first, last) && !ParseRetireTestRange("9-1", first, last) &&
-              !ParseRetireTestRange("0-9", first, last) && !ParseRetireTestRange("a-9", first, last) &&
-              !ParseRetireTestRange("10", first, last) && !ParseRetireTestRange("-9", first, last),
-          "TestRange refuses malformed text");
     check(RetireReasons(RetireGuildWithReal | RetireFriendOfReal, 3, 0) == "guild|friend|score", "RetireReasons text");
 
     // H4b: the replacement of a live retire (create, confirm the row, retry, give up)
@@ -2395,10 +2368,10 @@ inline uint32_t ResizeSelftest(std::vector<std::string>& failures)
 }
 
 // WL19a: the startup factory's refill (RandomPlayerbotFactory::CreateRandomBots). Upstream fills every bot account to
-// a full set of characters at every start. A persistent roster with rotation (Population.Persistent and
-// Rotation.Enable) is filled only up to its count instead, so a resize's deletions stay deleted, and its accounts keep
-// spare slots for a resize's additions.
-inline bool RefillCapped(bool persistent, bool rotation) { return persistent && rotation; }
+// a full set of characters at every start. Where the population follows the targets (BotKind::FollowsTargets) the
+// roster is filled only up to its count instead, so a resize's deletions stay deleted, and its accounts keep spare
+// slots for a resize's additions.
+inline bool RefillCapped(bool followsTargets) { return followsTargets; }
 
 // The spare share the roster accounts are sized for beyond the roster while the refill is capped: a tenth of the
 // roster, rounded up (2500 -> 250 bots, 25 empty accounts at 10 characters each)
@@ -2533,9 +2506,17 @@ inline uint32_t RefillSelftest(std::vector<std::string>& failures)
         return list;
     };
 
-    check(RefillCapped(true, true) && !RefillCapped(true, false) && !RefillCapped(false, true) &&
-              !RefillCapped(false, false),
-          "capped only with persistence and rotation");
+    check(RefillCapped(true) && !RefillCapped(false), "capped only where the population follows the targets");
+
+    // CS23d: the retire's top-level range (Retire.TestTarget); 0 retires nothing
+    check(TopLevelRetireRanges(80, 0).empty() && TopLevelRetireRanges(70, 0).empty(),
+          "a top-level target of 0 names no range: nothing retires");
+    std::vector<RetireRange> const top = TopLevelRetireRanges(80, 250);
+    check(top.size() == 1 && top[0].firstLevel == 80 && top[0].lastLevel == 80 && top[0].count == 0 &&
+              top[0].target == 250.0,
+          "a top-level target names the one range max-max with that target");
+    check(RetireSurplus(300, top[0].target) == 50 && RetireSurplus(250, top[0].target) == 0,
+          "the top level is retired from down to the target, never below");
     check(RosterSpareBots(2500) == 250 && RosterSpareBots(2001) == 201 && RosterSpareBots(0) == 0,
           "the spare share is a tenth of the roster, rounded up");
     check((2500 + RosterSpareBots(2500) + 9) / 10 == 275, "a roster of 2500 gets 275 accounts at 10 characters");

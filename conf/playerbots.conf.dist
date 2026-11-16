@@ -849,7 +849,7 @@ Playerbots.RandomBotMaxLevelChance = 0.1
 Playerbots.RandomBotFixedLevel = 0
 
 # Set RandomBotMaxLevel bots to RandomBotMinLevel
-# Refused while Playerbots.Population.Persistent = 1 (see POPULATION)
+# Ignored by this fork: bot levels never go down (see POPULATION)
 # Default: 0 (disabled)
 Playerbots.DowngradeMaxLevelBot = 0
 
@@ -864,39 +864,47 @@ Playerbots.RandomBotXPRate = 1.0
 ####################################################################################################
 # POPULATION
 #
-# Persistent population: random bots keep their progress like the characters of real players.
-#
-# Persistence mode: with it on, no code path lowers a random bot's level.
+# Persistent population: random bots keep their progress like the characters of real players. No code
+# path lowers a random bot's level.
 #   - The periodic randomize never rerolls a bot (also not one below level 3) and never downgrades a
 #     max-level bot: it refreshes gear and talents at the bot's current level.
 #   - The console commands "playerbots rndbot init" re-initialise a bot at its current level and
 #     "playerbots rndbot clear" keeps it (the level stays, the XP within the level is reset).
 #   - Playerbots.DowngradeMaxLevelBot, Playerbots.ResetBotLevel.Enabled and
-#     Playerbots.LevelBrackets.Enabled are refused: a warning at startup and on ".reload config" for
-#     each one that is set, and the level management below does not run.
+#     Playerbots.LevelBrackets.Enabled are ignored: one warning at startup and on ".reload config"
+#     naming those that are set, and the level brackets and level reset never run.
 #   - Any other path that would give a random bot a lower level (bot "init=" commands at a lower
 #     master level, for example) keeps the bot's current level and logs a warning.
-#   - Characters created from now on stay at their creation level (1, Death Knights 55) and level up
-#     by playing; Playerbots.DisableRandomLevels and Playerbots.RandombotStartingLevel are not applied.
-# Levels still go up (quests, kills). Picked up by ".reload config".
-# Default: 0 (off, upstream behaviour)
-Playerbots.Population.Persistent = 0
+#   - In a living world (not the arena role and not ArenaOnly) characters created from now on stay at
+#     their creation level (1, Death Knights 55) and level up by playing; Playerbots.DisableRandomLevels
+#     and Playerbots.RandombotStartingLevel are not applied.
+# Levels still go up (quests, kills).
 
-# Roster above the online cap, rotated by schedule. More random bot characters exist than are online
-# (the count Playerbots.RandomBotCountMode sets stays the online cap); every IntervalSeconds the rotation
-# swaps online bots for offline ones of the same faction. Each bot is owed a share of online time
-# (cap / eligible roster); a bot a real player knows (Playerbots.Acquaintance.Enable, score >=
+#
+# Playerbots.Population.FollowTargets
+# Description: A role value: this server's population follows the targets. Its roster of random
+#              bot characters is larger than the online cap and rotates by schedule (Rotation.*),
+#              and never-met bots above a target are retired and replaced, rate limited
+#              (Retire.*). Set 0 where the population is fixed: the rotating arena server and
+#              test servers. Forced off on the arena role (Playerbots.Ladder.Role = 2) and outside
+#              a living world (ArenaOnly), whatever this says.
+# Default:     1 - on
+#              0 - off: every random bot character may be online, nothing rotates or is retired
+Playerbots.Population.FollowTargets = 1
+
+# The roster above the online cap, rotated by schedule. More random bot characters exist than are
+# online (the count Playerbots.RandomBotCountMode sets stays the online cap); every IntervalSeconds
+# the rotation swaps online bots for offline ones of the same faction. Each bot is owed a share of
+# online time (cap / eligible roster); a bot a real player knows (acquaintance score >=
 # AcquaintedMinScore) is owed AcquaintedSharePct, as far as the cap allows. The most over-served
 # online bots make way for the most owed offline ones; a bot in a group, battleground, arena queue,
 # instance, combat or flight is not logged out. Bots away on an arena server (ladder) never log in
 # and do not count toward the cap. The schedule lives in memory (a restart starts it afresh).
 # GM commands: ".playerbots population status" and ".playerbots population selftest".
-# Default: 0 (off, upstream behaviour)
-Playerbots.Population.Rotation.Enable = 0
 
 # Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
 # with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
-# With Playerbots.Population.Persistent = 1 as well, the startup factory makes characters only up
+# With the rotation on, the startup factory makes characters only up
 # to this count (not every account full), so bots ".playerbots population resize" deleted stay
 # deleted, and the accounts get a tenth more slots for a resize's new bots. Set it to the count of a
 # resize's done line before the next start.
@@ -930,7 +938,7 @@ Playerbots.Population.Rotation.AcquaintedMinScore = 1
 # Level-range balance by levelling speed. The levels below the max level form ranges of RangeSize
 # levels (1-9, 10-19, ..., 70-79), the max level a range of its own. Each range's target is an equal
 # share of the population, the max level range MaxLevelWeightPct of one share. Every IntervalMinutes
-# the ranges are counted (the rotation roster when Rotation.Enable = 1, else the online random bots;
+# the ranges are counted (the rotation roster when FollowTargets = 1, else the online random bots;
 # no DB query) and each range gets an XP multiplier (times Playerbots.RandomBotXPRate): over its
 # target the range's bots level faster, under it slower; not for bots grouped with a real player.
 # With the rotation on, bots of an over-target range are also owed less online time and those of an
@@ -979,41 +987,27 @@ Playerbots.Population.Balance.SmoothingHours = 6
 # Default: 384 (16 days)
 Playerbots.Population.Balance.ResponseHours = 384
 
-# With Rotation.Enable = 1: the online share of a range twice (half) its target is weighted
+# With FollowTargets = 1: the online share of a range twice (half) its target is weighted
 # 1 - (1 +) this percent (maximum 90; 0 = no logout preference)
 # Default: 25
 Playerbots.Population.Balance.LogoutPreferencePct = 25
 
-#
-# Playerbots.Population.Retire.Enable (H4)
-# Description: In a level range persistently over its Balance target, deletes offline roster
-#              bots no real player knows, so new level-1 bots can take their place. A bot is
-#              kept when a real player has an acquaintance score above Retire.MaxScore with it,
-#              it is in a guild with a real player's character, on a real player's friend list,
-#              in any arena team or group, leads a guild, is named in a ladder roster, is away on
-#              an arena server, is online, or sits on a lab-bots clone account. A range never
-#              falls below its target; the range of level 1 is never retired from. Only random
-#              bot characters are deleted (completely: also their playerbots and mod-ollama-chat
-#              rows), never another character; the account stays, and a new bot of the same
-#              class (level 1; a death knight at its start level) is created on it right after,
-#              so the character count stays constant. No pass runs while a replacement is owed;
-#              one given up (Retire.CreateAttempts) pauses the retires until ".reload config"
-#              and the factory refills the account at the next startup. One log line per
-#              retire and per creation.
-#              Needs Population.Persistent = 1, Acquaintance.Enable = 1, Rotation.Enable = 1 and
-#              Balance.Enable = 1 (or Retire.TestRange); else one error line and nothing happens.
-#              Keep it 0 on labs with lab-bots clones.
-# Default:     0 - off
-#              1 - on (see Retire.DryRun)
-Playerbots.Population.Retire.Enable = 0
-
-# Playerbots.Population.Retire.DryRun
-# Description: Logs "would retire" and "would create" lines; deletes and creates nothing.
-#              Switching to 0 (".reload config")
-#              waits one interval before the first delete, as does switching Retire.Enable on.
-# Default:     1 - logs only
-#              0 - deletes
-Playerbots.Population.Retire.DryRun = 1
+# Retirement (H4), on where Playerbots.Population.FollowTargets is: deletes offline roster bots no
+# real player knows, so new level-1 bots can take their place: from the max-level range above
+# Retire.TestTarget, else from a level range persistently over its Balance target. A bot is kept
+# when a real player has met it (any acquaintance score), it is in a guild with a real player's
+# character, on a real player's friend list, in any arena team or group, leads a guild, is named in
+# a ladder roster, is away on an arena server, is online, or sits on a lab-bots clone account. A
+# range never falls below its target; the Balance range of level 1 is never retired from. Only
+# random bot characters are deleted (completely: also their playerbots and mod-ollama-chat rows),
+# never another character; the account stays, and a new bot of the same class (level 1; a death
+# knight at its start level) is created on it right after, so the character count stays constant.
+# No pass runs while a replacement is owed: a failed creation is tried again one interval later, a
+# saved row not found a few seconds later; after 3 tries it is given up (one error line), the
+# retires pause until ".reload config" and the factory refills the account at the next startup.
+# One log line per retire and per creation, one summary line per hour. The first pass after a
+# start, or after FollowTargets is switched on, waits one interval. With TestTarget 0 and the
+# balance off nothing is retired.
 
 # Playerbots.Population.Retire.IntervalSeconds
 # Description: Seconds between two passes (minimum 10)
@@ -1022,18 +1016,11 @@ Playerbots.Population.Retire.IntervalSeconds = 600
 
 # Playerbots.Population.Retire.MaxPerPass
 # Playerbots.Population.Retire.MaxPerHour
-# Description: Bots retired at most per pass and per sliding hour (dry-run picks count too).
+# Description: Bots retired at most per pass and per sliding hour.
 #              Each retire runs a few synchronous queries on the world thread (the core's delete).
 # Default: 1, 10
 Playerbots.Population.Retire.MaxPerPass = 1
 Playerbots.Population.Retire.MaxPerHour = 10
-
-# Playerbots.Population.Retire.MaxScore
-# Description: The highest acquaintance score a retired bot may have with any real player.
-#              0 = never-met bots only. Higher values allow barely-met bots; they go only after
-#              every never-met candidate of the range.
-# Default: 0
-Playerbots.Population.Retire.MaxScore = 0
 
 # Playerbots.Population.Retire.PersistMinutes
 # Description: A range is retired from once it has been over its target (beyond the Balance
@@ -1041,34 +1028,11 @@ Playerbots.Population.Retire.MaxScore = 0
 # Default: 60
 Playerbots.Population.Retire.PersistMinutes = 60
 
-# Playerbots.Population.Retire.Candidates
-# Description: Bots a pass checks against the database (guild, friends, arena teams, groups,
-#              ladder roster), 1-500
-# Default: 50
-Playerbots.Population.Retire.Candidates = 50
-
-# Playerbots.Population.Retire.TestRange
 # Playerbots.Population.Retire.TestTarget
-# Description: Test only: retire from this range ("first-last", e.g. "1-9") down to this
-#              target instead of the Balance ranges. Empty = off.
-# Default: "", 0
-Playerbots.Population.Retire.TestRange = ""
+# Description: Test toggle: retire the max-level range down to this many bots (then the Balance
+#              ranges are not retired from). 0 = off: it retires nothing.
+# Default: 0
 Playerbots.Population.Retire.TestTarget = 0
-
-# Playerbots.Population.Retire.CreateAttempts
-# Description: Tries per replacement, 1-10: a failed creation is tried again one interval later,
-#              a saved row not found a few seconds later. Then it is given up: one error line,
-#              the retires pause until ".reload config", and the roster is short by one until
-#              the next restart.
-# Default: 3
-Playerbots.Population.Retire.CreateAttempts = 3
-
-# Playerbots.Population.Retire.SummaryMinutes
-# Description: Minutes between two summary lines (retires, creations, failures, owed
-#              replacements, roster size and the random bot accounts' character count).
-#              0 = no summary.
-# Default: 60
-Playerbots.Population.Retire.SummaryMinutes = 60
 
 #
 #
@@ -1660,16 +1624,15 @@ Playerbots.WorldLog.RecorderActions = 128
 Playerbots.WorldLog.RecorderEvents = 64
 Playerbots.WorldLog.RecorderCooldownSeconds = 600
 
-# Acquaintances (1 = on, 0 = off)
-# When 1, the server records which random bots each real player has met and how well: one row per (player, bot)
+# Acquaintances
+# The server records which random bots each real player has met and how well: one row per (player, bot)
 # pair in the playerbots table playerbots_acquaintance with a score, flags (group, whisper, partychat, trade, duel,
 # guild, pvpkill, battleground, nearby) and the raw tallies the score comes from. Only real players' characters count
 # (no bot AI attached, so the owner's own alt bots do not), and only random bots on the other side. The hooks only
 # queue an event; the world thread counts it. All rows are loaded with one query at startup; changed rows are written
 # every FlushSeconds (5..3600) by one asynchronous transaction, and after a real player's logout and at shutdown.
-# Turning it on with a config reload loads the rows at the next tick; turning it off writes the changed rows once.
 # GM command: .playerbots acquaintances [<player>] | stats | record <player> <bot> <kind> (record is a test aid that
-# counts an event as the hooks do). With 0 (default) nothing is tracked, loaded or written.
+# counts an event as the hooks do).
 #
 # Score weights (points). The strongest are direct interactions and an explicitly invited group, then the guild;
 # the weakest is plain closeness:
@@ -1690,7 +1653,6 @@ Playerbots.WorldLog.RecorderCooldownSeconds = 600
 #   NearbyIntervalSeconds (0..3600, 0 = off): the random bots within NearbyRadius yards (1..100; same map and phase,
 #     not in a battleground, not in the player's group) get nearby time. The weakest kind; turn it off on its own.
 #
-Playerbots.Acquaintance.Enable = 0
 Playerbots.Acquaintance.FlushSeconds = 30
 Playerbots.Acquaintance.DirectCooldownSeconds = 60
 Playerbots.Acquaintance.GroupJoinCooldownSeconds = 600
@@ -2137,8 +2099,8 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # Playerbots.Natural.Path.Walk.MaxLegYards = 6
 # (Ranges: skills 0-100, percents 0-100, ms 0-60000, yards 0-500, OffsetYards 0-20.)
 
-# Honest world travel of persistent bots (Playerbots.Population.Persistent = 1; arena instances with
-# Playerbots.ArenaOnly.Enable keep their own cycle). These bots are never resurrected in place, never take the stuck
+# Honest world travel of persistent bots (in a living world; arena instances with Playerbots.ArenaOnly.Enable
+# or the arena role keep their own cycle). These bots are never resurrected in place, never take the stuck
 # teleport (a bot that makes no progress toward its destination records a Stuck event in the world log, gives
 # the destination up for StuckAvoidSeconds and goes IDLE) and are never randomized, refreshed or teleported while their
 # RPG is busy (not IDLE) or a real player is their master. A dead bot runs back to its corpse; after CorpseRunFailures
@@ -2207,14 +2169,13 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # live crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
 # 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000; NoopSeconds 0-3600, 0 = off;
 # Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
-# Goals: persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next
-# activity from the planner's ranked goals; 0 = every bot picks as before (a test switch). Default: 1
+# Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
+# from the planner's ranked goals.
 Playerbots.WorldTravel.Planner.Threads = 2
 Playerbots.WorldTravel.Planner.SnapshotMinutes = 5
 Playerbots.WorldTravel.Planner.ResultStaleSeconds = 30
 Playerbots.WorldTravel.Planner.RecheckYards = 100
 Playerbots.WorldTravel.Planner.NoopSeconds = 0
-Playerbots.WorldTravel.Planner.Goals = 1
 Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
@@ -2337,19 +2298,9 @@ Playerbots.WorldPvp.Enthusiasm.DepletionFactorBehind = 3
 Playerbots.WorldPvp.Enthusiasm.BalanceLead = 0.75
 Playerbots.WorldPvp.Enthusiasm.BalanceBehind = 0.25
 
-# Mail and bank visits of persistent bots. A bot knows that mail waits and what it expects from it, not what is
-# inside; an unread mail whose content it does not know counts Mail.DefaultWorthCopper. A bank item counts as kept for
-# later while the level it is due at is at most Bank.KeepLevelHorizon levels above the bot's. A visit (the walk
-# included) is given up after Mail.VisitDeadlineSeconds or Bank.VisitDeadlineSeconds; one step of it (a take from a
-# mail, a deposit) waits at most VisitStepSeconds for the server's answer; one mailbox visit opens at most
-# Mail.PerVisit mails. (Ranges: DefaultWorthCopper 0-10000; KeepLevelHorizon 0-20; VisitDeadlineSeconds 60-3600;
-# VisitStepSeconds 1-60; PerVisit 1-100.) Defaults: 100, 5, 900, 900, 10, 50
-Playerbots.BankMail.Mail.DefaultWorthCopper = 100
-Playerbots.BankMail.Bank.KeepLevelHorizon = 5
-Playerbots.BankMail.Mail.VisitDeadlineSeconds = 900
-Playerbots.BankMail.Bank.VisitDeadlineSeconds = 900
-Playerbots.BankMail.VisitStepSeconds = 10
-Playerbots.BankMail.Mail.PerVisit = 50
+# Item use. Percent of persistent bots chosen by guid that make up the control cohort of the item use comparison:
+# they spend and buff by the old rules, the rest by the new ones (0-100). 0: no control cohort. Default: 0
+Playerbots.ItemUse.ControlShare = 0
 
 # Seconds a depart may wait (members queued, in a battleground or not yet logged out) before it is cancelled: the
 # members log in again and the move ends as failed (5-86400). Default: 600
@@ -2357,8 +2308,8 @@ Playerbots.Ladder.DepartTimeoutSeconds = 600
 
 # Minutes a real player's direct contact with a random bot (whisper, party chat, trade, duel, a group the player
 # invited it to) pins the bot's arena team (0-1440; 0 = no contact pins): depart refuses the team and a depart in
-# progress is cancelled. The contacts come from the acquaintance event hooks, so they need
-# Playerbots.Acquaintance.Enable = 1. A team is also pinned while a member is in a group, battleground or arena with a
+# progress is cancelled. The contacts come from the acquaintance event hooks.
+# A team is also pinned while a member is in a group, battleground or arena with a
 # real player, or duels or trades with one (whatever this option says). Ignored while the moves are off.
 # Default: 15
 Playerbots.Ladder.ContactMinutes = 15
@@ -3611,7 +3562,7 @@ Playerbots.RandomBotTeleLowerLevel = 1
 Playerbots.RandomBotTeleHigherLevel = 3
 
 # Bots automatically teleport to another place for leveling on levelup
-# No effect with Playerbots.Population.Persistent = 1 (not ArenaOnly): persistent bots change zones by travelling
+# No effect in a living world (not the arena role and not ArenaOnly): persistent bots change zones by travelling
 # (the planner's move_zone goal), and the periodic hub/city refresh teleports are off for them too. Only a newly
 # made bot's first placement (".playerbots population resize") is still a teleport.
 # Default: 1 (enabled)
@@ -3852,7 +3803,7 @@ Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 # always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
 # considers its own level, which comes from its hidden skill (a bot without a skill, e.g. with Playerbots.Skill.Enable
 # = 0, counts as the population mean 50, so the rule still applies). The acquaintance score
-# (Playerbots.Acquaintance.Enable) widens the allowed rating gap but never replaces the test: a big gap always refuses.
+# widens the allowed rating gap but never replaces the test: a big gap always refuses.
 # Otherwise the bot refuses in character (texts arena_team_recruit_*, translatable; never a number, never the skill).
 # Invites from other bots keep today's behaviour. 0 = every invite is accepted as before.
 # The starting values below are not tuned yet (E4).
@@ -3933,7 +3884,7 @@ Playerbots.MinRandomBotReviveTime = 60
 Playerbots.MaxRandomBotReviveTime = 300
 
 # Minimum and maximum seconds between bot teleports to new areas or zones
-# Persistent bots (Playerbots.Population.Persistent = 1, not ArenaOnly) no longer teleport on this timer; the
+# Persistent bots (in a living world: not the arena role and not ArenaOnly) no longer teleport on this timer; the
 # refresh still runs, the teleport is replaced by travelling (move_zone).
 # Defaults: 3600 (min), 18000 (max)
 Playerbots.MinRandomBotTeleportInterval = 3600
@@ -4733,14 +4684,6 @@ Playerbots.PerfMonEnabled = 0
 # with MapUpdate.Threads > 1, and log each event cache load that runs off the world thread
 # Default: 0 (disabled)
 Playerbots.DebugThreadChecks = 0
-
-# Skip trigger checks that cannot fire: the chat command triggers while the bot has no chat command pending, and
-# the "combat start" trigger's attackers lookup while the bot is out of combat with no group, duel, battleground
-# or prioritized target. Saves CPU with many bots; commands are answered as before and combat starts are never
-# missed, but "combat start" can fire once more within 1 second after the bot leaves combat or feigns death
-# (the attackers value is cached for 1 second).
-# Default: 0 (disabled)
-Playerbots.SkipIdleTriggerChecks = 0
 
 #
 #

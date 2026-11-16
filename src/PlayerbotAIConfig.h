@@ -16,6 +16,7 @@
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "DBCEnums.h"
+#include "ItemUseConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -396,7 +397,6 @@ public:
     uint32 CommandServerPort;
     bool PerfMonEnabled;
     bool DebugThreadChecks;
-    bool SkipIdleTriggerChecks;
     bool SummonWhenGroup;
     ShowHideCosmetic RandomBotShowHelmet;
     ShowHideCosmetic RandomBotShowCloak;
@@ -427,7 +427,6 @@ public:
     float PvpTestFightY;
     float PvpTestFightZ;
     float PvpTestFightO;
-    bool AcquaintanceEnable;
     uint32 AcquaintanceFlushSeconds;
     uint32 AcquaintanceDirectCooldownSeconds;
     uint32 AcquaintanceGroupJoinCooldownSeconds;
@@ -538,6 +537,8 @@ public:
     // the tactics enabled in config (0 while the system is off)
     bool TacticsEnable;
     std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
+    // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
+    bool TacticStrategyWanted(TacticId id) const;
     uint32 TacticsConfigMask;
     // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
     // pass, from the switches and scopes at load and reload
@@ -571,6 +572,8 @@ public:
     uint32 FleeBoundSeconds = 30;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
+    // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)
+    ItemUseConfig ItemUse;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
     LosConfig TacticLos;
     PillarConfig TacticPillar;

@@ -22,6 +22,7 @@
 #include "CensusMgr.h"
 #include "Chat.h"
 #include "Creature.h"
+#include "FleeRules.h"
 #include "GameGraveyard.h"
 #include "GhostWait.h"
 #include "GridNotifiers.h"
@@ -605,6 +606,17 @@ void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
     BotEnthusiasm& state = Of(botAI, nowMs, values);
     Refresh(botAI, bot, state, nowMs, values, false);
     CheckLeave(botAI, bot, state, nowMs, values);
+}
+
+void NoteEpisode(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
+{
+    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (botAI->enthusiasm && botAI->enthusiasm->engaged))
+        NoteEngaged(botAI, bot, nowMs);
+    // After the engaged edge (a death passes it too; no enthusiasm needed); the value lookup only at the edge
+    bool const episode =
+        !bot->GetCombatManager().GetPvPCombatRefs().empty() || (botAI->enthusiasm && botAI->enthusiasm->engaged);
+    if (FleeRules::EpisodeFell(botAI->pvpEpisode, episode))
+        FleeRules::EpisodeEnd(botAI->GetAiObjectContext()->GetValue<FleeRules::Flight&>("flee flight")->Get());
 }
 
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit)

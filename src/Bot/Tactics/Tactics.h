@@ -50,11 +50,9 @@ public:
     // HoldForHealer, UsePctAtSkill1/99 and AttentionMsAtSkill1/99 on the running server (G5c-c-run's policy A/B on one
     // server; the next interrupt decision takes them; a restart or rndbot reload restores the conf values)
     static bool HandleInterruptCommand(ChatHandler* handler, char const* args);
-    // .playerbots tactics cover scan: scans the arena the GM or the harness bot stands in for its pillars (G2d; 13f-0:
-    // prints that it is not implemented yet)
+    // .playerbots tactics cover scan: scans the arena the GM or the harness bot stands in for its pillars (G2d)
     static bool HandleCoverCommand(ChatHandler* handler, char const* args);
-    // .playerbots tactics jump scan [bot] and .playerbots tactics jump test <map> <id|all> [n] [bot] (G2g; 13g-0:
-    // print that they are not implemented yet)
+    // .playerbots tactics jump scan [bot] and .playerbots tactics jump test <map> <id|all> [n] [bot] (G2g)
     static bool HandleJumpScanCommand(ChatHandler* handler, char const* args);
     static bool HandleJumpTestCommand(ChatHandler* handler, char const* args);
 };
