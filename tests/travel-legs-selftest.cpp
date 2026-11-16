@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "MountRules.h"
 #include "TravelLegRules.h"
 #include "TravelPlaces.h"
 
@@ -705,6 +706,62 @@ Observation Flying(Point bot, std::uint32_t nowMs, bool mounted, bool flying)
     seen.flyingMount = mounted;
     seen.flying = flying;
     return seen;
+}
+
+// A fly leg's tries under the one mount owner (WT44): MountToFly's dispatch (MountRules::Policy for Kind::Flying, then
+// FlyTryOf) against StepLeg's takeoff rule. The glue below mirrors MountToFly's count: Refused and Cast are real tries,
+// Refused leaves the verdict's word for the fly_leg_failed row
+void CheckFlyLegMountOwner()
+{
+    using MountRules::FlyTry;
+    Leg const leg = FlyLeg();
+    Point const takeoff = leg.from;
+    auto const tryOnce = [](Trip& trip, MountRules::Facts const& facts, bool settled, std::uint32_t nowMs)
+    {
+        MountRules::Verdict const verdict = MountRules::Policy(facts, MountRules::Kind::Flying);
+        FlyTry const step = MountRules::FlyTryOf(verdict, settled);
+        if (step == FlyTry::Refused || step == FlyTry::Cast)
+            TravelLegs::NoteMountTry(trip, nowMs);
+        if (step == FlyTry::Refused)
+            trip.mountWhy = verdict.why;
+        return step;
+    };
+
+    MountRules::Facts noMount;
+    noMount.noMount = true;
+    Trip test = StartedTrip({leg}, 0);
+    bool refused = true;
+    for (std::uint32_t const at : {1000u, 6000u, 11000u})
+        refused = refused && TravelLegs::StepLeg(test, Flying(takeoff, at, false, false)).act == Act::Mount &&
+                  tryOnce(test, noMount, true, at) == FlyTry::Refused;
+    Decision const stopped = TravelLegs::StepLeg(test, Flying(takeoff, 16000, false, false));
+    Check(refused && test.mountTries == 3 && stopped.act == Act::Fail && stopped.reason == FailReason::Takeoff &&
+              std::string(test.mountWhy) == "nomount",
+          "fly owner: nomount refuses every try: the leg fails as takeoff with the word nomount");
+
+    MountRules::Facts onFoot;
+    onFoot.onFoot = true;
+    Trip foot = StartedTrip({leg}, 0);
+    Check(tryOnce(foot, onFoot, true, 1000) == FlyTry::Refused && foot.mountTries == 1 &&
+              std::string(foot.mountWhy) == "on_foot",
+          "fly owner: the on-foot rule refuses a counted try with its word");
+
+    MountRules::Facts lootNear;
+    lootNear.lootNear = true;
+    Trip loot = StartedTrip({leg}, 0);
+    bool held = true;
+    for (std::uint32_t at = 1000; at <= 140000; at += 1000)
+        held = held && TravelLegs::StepLeg(loot, Flying(takeoff, at, false, false)).act == Act::Mount &&
+               tryOnce(loot, lootNear, true, at) == FlyTry::Wait;
+    Decision const late = TravelLegs::StepLeg(loot, Flying(takeoff, 141000, false, false));
+    Check(held && loot.mountTries == 0 && late.act == Act::Fail && late.reason == FailReason::Timeout,
+          "fly owner: a corpse in reach holds the try uncounted; the leg's timeout (140 s) ends the hold");
+
+    Trip settle = StartedTrip({leg}, 0);
+    Check(tryOnce(settle, MountRules::Facts{}, false, 1000) == FlyTry::Settle && settle.mountTries == 0 &&
+              tryOnce(settle, MountRules::Facts{}, true, 2000) == FlyTry::Cast && settle.mountTries == 1 &&
+              *settle.mountWhy == 0,
+          "fly owner: a moving or sitting bot settles first (uncounted), then a free bot casts (a real try)");
 }
 
 // An indoor landing (WU11b, Golyn at Garadar's inn): checked once near the end, the landing moves to the outdoor
@@ -1883,6 +1940,7 @@ int main()
     CheckStaticPortal();
     CheckDeathsAndRecord();
     CheckFlyLeg();
+    CheckFlyLegMountOwner();
     CheckLanding();
     CheckPlaces();
     CheckInTheAir();
