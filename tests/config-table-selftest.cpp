@@ -345,6 +345,35 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
 }
 }  // namespace
 
+// A removed switch whose parent prefix holds live keys: the family's prefix is the full key, its one row's key empty
+struct FakeSwitches
+{
+    bool Gone = false;
+};
+
+constexpr std::array<ConfigRow<FakeSwitches>, 1> FakeSwitchRows = {{
+    {"", &FakeSwitches::Gone, 0, 0, ConfigKind::Retired},
+}};
+
+ConfigFamily<FakeSwitches> const FakeSwitchFamily{"Playerbots.Fake.Enable", FakeSwitchRows};
+
+void TestRetiredFullKey()
+{
+    std::vector<std::string> const keys = {"Playerbots.Fake.Enable", "Playerbots.Fake.EnableX",
+                                           "Playerbots.Fake.FlushSeconds"};
+    Check(UnknownConfigKeys(FakeSwitchFamily, keys) == std::vector<std::string>{"Playerbots.Fake.EnableX"},
+          "retired full key: exactly the key is known, a longer key is not, a sibling key is outside the family");
+
+    FakeSwitches switches;
+    FakeReader reader;
+    reader.values = {{"Playerbots.Fake.Enable", "0"}};
+    std::vector<std::string> warnings;
+    uint32_t const count = LoadConfigFamily(FakeSwitchFamily, switches, reader,
+                                            [&warnings](std::string const& text) { warnings.push_back(text); });
+    Check(count == 0 && warnings.empty() && reader.missingWarnings.empty() && !switches.Gone,
+          "retired full key: a set line is ignored without a warning");
+}
+
 int main(int argc, char** argv)
 {
     std::filesystem::path const root = argc > 1 ? argv[1] : ".";
@@ -362,6 +391,7 @@ int main(int argc, char** argv)
     TestBankMailWalk();
     TestTypesWalk();
     TestUnknownRetiredPrint();
+    TestRetiredFullKey();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

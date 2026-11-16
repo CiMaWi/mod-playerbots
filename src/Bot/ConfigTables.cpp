@@ -6,6 +6,7 @@
 
 #include "ConfigTables.h"
 
+#include <array>
 #include <functional>
 #include <vector>
 
@@ -56,11 +57,27 @@ ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target)
     return entry;
 }
 
+// Removed switches: one family per full key with one empty-key row, so exactly that key is known and a line that
+// still sets it is ignored without a warning (the parent prefixes hold live keys read elsewhere)
+struct RetiredSwitches
+{
+    bool Acquaintance = false;
+};
+
+RetiredSwitches RetiredSwitchValues;
+
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredAcquaintanceRows = {{
+    {"", &RetiredSwitches::Acquaintance, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredAcquaintanceFamily{"Playerbots.Acquaintance.Enable",
+                                                              RetiredAcquaintanceRows};
+
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
 {
     static std::vector<ConfigTableEntry> const entries = {
         MakeEntry(BankMailFamily, sPlayerbotAIConfig.BankMail),
+        MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
     };
     return entries;
 }

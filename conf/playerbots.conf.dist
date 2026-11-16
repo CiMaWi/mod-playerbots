@@ -885,7 +885,7 @@ Playerbots.Population.Persistent = 0
 # Roster above the online cap, rotated by schedule. More random bot characters exist than are online
 # (the count Playerbots.RandomBotCountMode sets stays the online cap); every IntervalSeconds the rotation
 # swaps online bots for offline ones of the same faction. Each bot is owed a share of online time
-# (cap / eligible roster); a bot a real player knows (Playerbots.Acquaintance.Enable, score >=
+# (cap / eligible roster); a bot a real player knows (acquaintance score >=
 # AcquaintedMinScore) is owed AcquaintedSharePct, as far as the cap allows. The most over-served
 # online bots make way for the most owed offline ones; a bot in a group, battleground, arena queue,
 # instance, combat or flight is not logged out. Bots away on an arena server (ladder) never log in
@@ -1000,7 +1000,7 @@ Playerbots.Population.Balance.LogoutPreferencePct = 25
 #              one given up (Retire.CreateAttempts) pauses the retires until ".reload config"
 #              and the factory refills the account at the next startup. One log line per
 #              retire and per creation.
-#              Needs Population.Persistent = 1, Acquaintance.Enable = 1, Rotation.Enable = 1 and
+#              Needs Population.Persistent = 1, Rotation.Enable = 1 and
 #              Balance.Enable = 1 (or Retire.TestRange); else one error line and nothing happens.
 #              Keep it 0 on labs with lab-bots clones.
 # Default:     0 - off
@@ -1660,16 +1660,15 @@ Playerbots.WorldLog.RecorderActions = 128
 Playerbots.WorldLog.RecorderEvents = 64
 Playerbots.WorldLog.RecorderCooldownSeconds = 600
 
-# Acquaintances (1 = on, 0 = off)
-# When 1, the server records which random bots each real player has met and how well: one row per (player, bot)
+# Acquaintances
+# The server records which random bots each real player has met and how well: one row per (player, bot)
 # pair in the playerbots table playerbots_acquaintance with a score, flags (group, whisper, partychat, trade, duel,
 # guild, pvpkill, battleground, nearby) and the raw tallies the score comes from. Only real players' characters count
 # (no bot AI attached, so the owner's own alt bots do not), and only random bots on the other side. The hooks only
 # queue an event; the world thread counts it. All rows are loaded with one query at startup; changed rows are written
 # every FlushSeconds (5..3600) by one asynchronous transaction, and after a real player's logout and at shutdown.
-# Turning it on with a config reload loads the rows at the next tick; turning it off writes the changed rows once.
 # GM command: .playerbots acquaintances [<player>] | stats | record <player> <bot> <kind> (record is a test aid that
-# counts an event as the hooks do). With 0 (default) nothing is tracked, loaded or written.
+# counts an event as the hooks do).
 #
 # Score weights (points). The strongest are direct interactions and an explicitly invited group, then the guild;
 # the weakest is plain closeness:
@@ -1690,7 +1689,6 @@ Playerbots.WorldLog.RecorderCooldownSeconds = 600
 #   NearbyIntervalSeconds (0..3600, 0 = off): the random bots within NearbyRadius yards (1..100; same map and phase,
 #     not in a battleground, not in the player's group) get nearby time. The weakest kind; turn it off on its own.
 #
-Playerbots.Acquaintance.Enable = 0
 Playerbots.Acquaintance.FlushSeconds = 30
 Playerbots.Acquaintance.DirectCooldownSeconds = 60
 Playerbots.Acquaintance.GroupJoinCooldownSeconds = 600
@@ -2343,8 +2341,8 @@ Playerbots.Ladder.DepartTimeoutSeconds = 600
 
 # Minutes a real player's direct contact with a random bot (whisper, party chat, trade, duel, a group the player
 # invited it to) pins the bot's arena team (0-1440; 0 = no contact pins): depart refuses the team and a depart in
-# progress is cancelled. The contacts come from the acquaintance event hooks, so they need
-# Playerbots.Acquaintance.Enable = 1. A team is also pinned while a member is in a group, battleground or arena with a
+# progress is cancelled. The contacts come from the acquaintance event hooks.
+# A team is also pinned while a member is in a group, battleground or arena with a
 # real player, or duels or trades with one (whatever this option says). Ignored while the moves are off.
 # Default: 15
 Playerbots.Ladder.ContactMinutes = 15
@@ -3838,7 +3836,7 @@ Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 # always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
 # considers its own level, which comes from its hidden skill (a bot without a skill, e.g. with Playerbots.Skill.Enable
 # = 0, counts as the population mean 50, so the rule still applies). The acquaintance score
-# (Playerbots.Acquaintance.Enable) widens the allowed rating gap but never replaces the test: a big gap always refuses.
+# widens the allowed rating gap but never replaces the test: a big gap always refuses.
 # Otherwise the bot refuses in character (texts arena_team_recruit_*, translatable; never a number, never the skill).
 # Invites from other bots keep today's behaviour. 0 = every invite is accepted as before.
 # The starting values below are not tuned yet (E4).
