@@ -3703,10 +3703,10 @@ Playerbots.ArenaTeam.Seed.NoiseSd = 100
 # streak (then the most losses since joining; skill plays no part) may leave; a leaving captain hands the team over
 # first. A bot never joins the team it left last again (remembered in memory until it leaves another team; a restart
 # forgets it). Teams short of members recruit online randombots without a team (same faction and arena bracket), the
-# teams below MinMembers first.
-# Teams low on the bot ladder are forgiving (rare leaves, a wide skill tolerance, weighted-random picks: more varied pairings),
-# teams at the top strict (frequent leaves, a narrow tolerance, the best-scoring recruit). The values in between follow
-# the team's rating rank among the bot teams of its type. Every membership change runs on the world thread every
+# teams below MinMembers first. Teams low on the bot ladder are forgiving (rare leaves, a wide skill tolerance,
+# weighted-random picks: more varied pairings), teams at the top strict (frequent leaves, a narrow tolerance, the
+# best-scoring recruit). The values in between follow the team's rating rank among the bot teams of its type. Every
+# membership change runs on the world thread every
 # UpdateSeconds; loss streaks are kept in memory only (a restart starts them at 0). The starting values below are not
 # tuned yet. GM command: .playerbots arena teams (works from the console) lists every bot team and its roster.
 #   UpdateSeconds (5..3600): the pass interval.

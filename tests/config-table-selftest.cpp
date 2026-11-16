@@ -363,8 +363,8 @@ void TestRetiredFullKey()
 {
     std::vector<std::string> const keys = {"Playerbots.Fake.Enable", "Playerbots.Fake.EnableX",
                                            "Playerbots.Fake.FlushSeconds"};
-    Check(UnknownConfigKeys(FakeSwitchFamily, keys) == std::vector<std::string>{"Playerbots.Fake.EnableX"},
-          "retired full key: exactly the key is known, a longer key is not, a sibling key is outside the family");
+    Check(UnknownConfigKeys(FakeSwitchFamily, keys).empty(),
+          "retired full key: exactly the key is in the family, a longer key and a sibling key are outside it");
 
     FakeSwitches switches;
     FakeReader reader;
@@ -380,9 +380,14 @@ void TestRetiredFullKey()
     std::vector<std::string> const retireKeys = {"Playerbots.Population.Retire.DryRun",
                                                  "Playerbots.Population.Retire.DryRunX",
                                                  "Playerbots.Population.Retire.TestTarget"};
-    Check(
-        UnknownConfigKeys(dryRunFamily, retireKeys) == std::vector<std::string>{"Playerbots.Population.Retire.DryRunX"},
-        "retired Retire.DryRun: the key is known, a longer key is not, the live Retire.TestTarget is not its row");
+    Check(UnknownConfigKeys(dryRunFamily, retireKeys).empty(),
+          "retired Retire.DryRun: the key is known, DryRunX and the live Retire.TestTarget are outside the family");
+
+    // CS25d review: the live WearBetweenMatches starts with the retired PvpGear.Wear and is not its family's key
+    ConfigFamily<FakeSwitches> const wearFamily{"Playerbots.PvpGear.Wear", FakeSwitchRows};
+    std::vector<std::string> const wearKeys = {"Playerbots.PvpGear.Wear", "Playerbots.PvpGear.WearBetweenMatches"};
+    Check(UnknownConfigKeys(wearFamily, wearKeys).empty(),
+          "retired PvpGear.Wear: the key is known, the live WearBetweenMatches is outside the family");
 }
 
 int main(int argc, char** argv)
