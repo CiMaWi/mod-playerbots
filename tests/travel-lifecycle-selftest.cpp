@@ -1317,6 +1317,39 @@ void CheckBoardingByIntent()
           "a rider is probed for the vessel it rides, not for an intent");
 }
 
+// WT62 review finding 1: a follower means to board its master's transport, a lift or the tram as well as a ship. It is
+// attached by feet contact and leaves by the off-surface rule, as any rider; no other bot is probed
+void CheckFollowerByMaster()
+{
+    constexpr std::uint64_t LIFT = 44;
+    constexpr std::uint64_t BOAT = 45;
+    Check(ChooseIntent({CAR, NEARER_CAR, LIFT, BOAT}) == CAR &&
+              ChooseIntent({0, NEARER_CAR, LIFT, BOAT}) == NEARER_CAR && ChooseIntent({0, 0, LIFT, BOAT}) == LIFT &&
+              ChooseIntent({0, 0, 0, BOAT}) == BOAT && !ChooseIntent({}),
+          "intent order: aboard placement, leg, master's transport, the battleground boat");
+
+    Cadence cadence;
+    Adapter adapter;
+    Maintain(cadence, 0, MAP, nullptr, adapter, ChooseIntent({0, 0, LIFT, 0}));
+    Check(adapter.Aboard.Guid == LIFT && adapter.LastExpected == LIFT && adapter.Probes == 1,
+          "a follower whose master rides a lift or the tram: attached");
+
+    cadence = {};
+    adapter = {};
+    Maintain(cadence, 0, MAP, nullptr, adapter, ChooseIntent({}));
+    Check(!adapter.Aboard.Guid && adapter.Probes == 0 && adapter.Samples == 0,
+          "a follower whose master is not aboard: not attached");
+
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {LIFT, 17, true};
+    adapter.ExpectedContact = Contact::OffSurface;
+    for (std::uint32_t now = 0; now <= 4 * PASSENGER_INTERVAL_MS && adapter.Aboard.Guid; now += PASSENGER_INTERVAL_MS)
+        Maintain(cadence, now, MAP, nullptr, adapter, ChooseIntent({}));
+    Check(!adapter.Aboard.Guid && adapter.Probes == OFF_SURFACE_SAMPLES,
+          "a follower that steps off the lift after its master: detached by the off-surface rule");
+}
+
 struct LootAdapter
 {
     LootInteraction::Transaction State;
@@ -2092,6 +2125,7 @@ int main()
     CheckUnconsumedBoardTransfer();
     CheckFollowAndNoTrip();
     CheckBoardingByIntent();
+    CheckFollowerByMaster();
     CheckLootScheduler();
     CheckProgressScheduler();
     CheckSuccessorAndPartialPaths();

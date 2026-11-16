@@ -789,8 +789,28 @@ Sample Reconcile(Adapter& adapter, PassengerMotion* motion, MotionState state, s
     return ReconcileFrom(adapter.ReadMembership(), adapter, motion, state, preferred, offSurfaceSamples);
 }
 
-// The passenger check, once a PASSENGER_INTERVAL_MS per bot. `intent` is the vessel the bot means to board (a test's
-// aboard placement, its transport leg's sighted vessel; 0 none); it counts only while the bot rides nothing
+// The vessel a bot on no transport means to board (WT62, WT.48), the first one named: a test's aboard placement, its
+// transport leg's sighted vessel, its master's transport (a follower; a lift or the tram as well as a ship), and the
+// one narrow rule for a bot with neither leg nor master: Strand of the Ancients' nearer boat. 0: none, no probe
+struct IntentSources
+{
+    std::uint64_t Aboard = 0;
+    std::uint64_t Leg = 0;
+    std::uint64_t Master = 0;
+    std::uint64_t Battleground = 0;
+};
+
+constexpr std::uint64_t ChooseIntent(IntentSources const& sources)
+{
+    if (sources.Aboard)
+        return sources.Aboard;
+    if (sources.Leg)
+        return sources.Leg;
+    return sources.Master ? sources.Master : sources.Battleground;
+}
+
+// The passenger check, once a PASSENGER_INTERVAL_MS per bot. `intent` is the vessel the bot means to board
+// (ChooseIntent; 0 none); it counts only while the bot rides nothing
 template <class Adapter>
 void Maintain(Cadence& cadence, std::uint32_t nowMs, std::uint32_t map, PassengerMotion* motion, Adapter& adapter,
               std::uint64_t intent = 0)
