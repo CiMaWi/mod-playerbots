@@ -12,6 +12,7 @@
 
 #include "BankMailService.h"
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "Chat.h"
 #include "Log.h"
 #include "MailRulesInput.h"
@@ -22,7 +23,6 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "Timer.h"
 
@@ -66,7 +66,7 @@ bool HandleMailStatusCommand(ChatHandler* handler, char const* args)
         errand, bot->GetMails().size(),
         known.refreshedMs ? std::to_string(getMSTimeDiff(known.refreshedMs, getMSTime()) / IN_MILLISECONDS) + " s ago"
                           : std::string("never"),
-        PlayerbotFactory::KeepsPossessions(bot) ? "yes" : "no");
+        BotKind::KeepsPossessions(bot) ? "yes" : "no");
 
     BagSpace const space = BuildBagSpace(bot);
     VisitPlan const plan = PlanMailVisit(BuildMailIn(botAI), space, BuildMailOptions());
@@ -100,7 +100,7 @@ bool HandleMailVisitCommand(ChatHandler* handler, char const* args)
 
     // Lab fixtures, arena bots and bots with a real master keep today's behaviour (the chat command `mail`)
     char const* refusal = nullptr;
-    if (!PlayerbotFactory::KeepsPossessions(bot))
+    if (!BotKind::KeepsPossessions(bot))
         refusal = "the bot does not keep its possessions (not a persistent bot)";
     else if (!bot->IsAlive())
         refusal = "the bot is dead";

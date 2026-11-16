@@ -845,7 +845,7 @@ void PlayerbotFactory::Randomize(bool incremental)
              bot->GetName().c_str(), level, bot->getClass());
     // LOG_DEBUG("playerbots", "Preparing to {} randomize...", (incremental ? "incremental" : "full"));
     uint32 oldLevel = bot->GetLevel();
-    bool const keepsPossessions = KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     bool const wipe = StartingHistory::RandomizeWipes(!incremental, keepsPossessions, bot->GetTotalPlayedTime());
     Prepare();
     LOG_DEBUG("playerbots", "Resetting player...");
@@ -1144,7 +1144,7 @@ void PlayerbotFactory::Refresh()
     //     InitEquipment(true);
     // }
     // Refresh never creates: a bot that keeps its possessions is only restocked, with the kinds Upkeep grants it
-    bool const keepsPossessions = KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     constexpr char const* source = "factory_refresh";
     Upkeep::HandOut(bot, UpkeepKind::Attunement, keepsPossessions, source, [this] { InitAttunementQuests(); });
     if (!keepsPossessions)
@@ -4277,8 +4277,6 @@ void PlayerbotFactory::InitInstanceQuests()
     ClearInventory();
     bot->SetUInt32Value(PLAYER_XP, currentXP);
 }
-
-bool PlayerbotFactory::KeepsPossessions(Player* bot) { return BotKind::KeepsPossessions(bot); }
 
 void PlayerbotFactory::ClearInventory()
 {

@@ -18,6 +18,7 @@
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
+#include "BotKind.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
 #include "DBCStores.h"
@@ -37,7 +38,6 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "QuestIndex.h"
@@ -89,7 +89,7 @@ constexpr std::size_t BANK_MAIL_STOPS = 4;
 // onto the vendor stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
 void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel::ErrandSnapshot& snapshot)
 {
-    snapshot.Governed = !botAI->HasGameClientMaster() && PlayerbotFactory::KeepsPossessions(bot);
+    snapshot.Governed = !botAI->HasGameClientMaster() && BotKind::KeepsPossessions(bot);
     if (!snapshot.Governed)
         return;
 

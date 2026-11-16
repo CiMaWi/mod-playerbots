@@ -14,6 +14,7 @@
 #include "Bag.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "BotRecordMgr.h"
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
@@ -35,7 +36,6 @@
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "RecordWords.h"
@@ -166,8 +166,8 @@ void ReadSpells(Player* bot, std::vector<BotStateItem>& items)
 Topics::PlanInput PlanInputOf(Player* bot, PlayerbotAI* ai)
 {
     Topics::PlanInput in;
-    in.inScope = sPlayerbotAIConfig.WorldTravel.PlannerGoals && !ai->HasGameClientMaster() &&
-                 PlayerbotFactory::KeepsPossessions(bot);
+    in.inScope =
+        sPlayerbotAIConfig.WorldTravel.PlannerGoals && !ai->HasGameClientMaster() && BotKind::KeepsPossessions(bot);
     in.seen = in.inScope && Planner::PublishedPlan(bot->GetGUID().GetRawValue(), in.view);
     in.nowMs = getMSTime();
     in.x = bot->GetPositionX();
@@ -197,7 +197,7 @@ void ReadBags(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
     in.mailWaiting = BankMail::CountWaitingMail(bot);
     in.mailSeenCopper = known.mail.seenCopper;
     in.mailExpectedCopper = known.mail.expectedCopper;
-    in.keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    in.keepsPossessions = BotKind::KeepsPossessions(bot);
     if (in.keepsPossessions)
     {
         auto const addKept = [&](uint32 entry, uint8 dueLevel, bool inBank)
