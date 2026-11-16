@@ -42,6 +42,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StayActions.h"
+#include "TestConstraints.h"
 #include "TestPlayer.h"
 #include "TravelPlaces.h"
 #include "WorldPacket.h"
@@ -491,7 +492,12 @@ Result CastOnce(ActFacts const& act, Refusal& why)
         bot->StopMoving();
 
     bool const checked = act.Ai->CanCastSpell(spell->Id, target, true);
-    if (checked && act.Ai->CastSpell(spell->Id, target))
+    // The ordered cast is no cast of the bot's own AI: a test's nocast bit is off for this call
+    uint16 const heldConstraints = act.Ai->testConstraints;
+    act.Ai->testConstraints = heldConstraints & ~TestConstraints::NOCAST;
+    bool const cast = checked && act.Ai->CastSpell(spell->Id, target);
+    act.Ai->testConstraints = heldConstraints;
+    if (cast)
         return Result::Applied;
 
     LOG_DEBUG("playerbots", "Bridge cast {} by {} on {}: {} (prepare {}, seated {}, casting {}, gcd {})", spell->Id,

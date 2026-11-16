@@ -34,6 +34,8 @@ constexpr std::uint16_t NOTAXI = 512;     // plans no flight leg (travel WT55a: 
 // mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
 constexpr std::uint16_t NOMOUNT = 1024;
 constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
+// the bot's own AI starts no spell (living-conversation LC17c; the bridge's ordered cast is exempt)
+constexpr std::uint16_t NOCAST = 4096;
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -63,6 +65,8 @@ constexpr Row ROWS[] = {
     {"notaxi", Kind::State, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
     {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
+    {"nocast", Kind::State, NOCAST,
+     "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -182,6 +186,9 @@ inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
+// nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
+// global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
+inline bool CastsOnItsOwn(std::uint16_t set) { return !(set & NOCAST); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
