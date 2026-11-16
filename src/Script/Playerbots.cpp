@@ -30,6 +30,7 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "ItemUseIndex.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
 #include "MatchLog.h"
@@ -652,6 +653,7 @@ public:
             Planner::StartQuestIndex();      // the same for the quest index
             Planner::StartUpkeepIndex();     // and for the upkeep index
             Planner::StartFlightMap();       // the flying height maps, read on their own thread
+            ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");

@@ -1412,6 +1412,13 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     LoadConfigTables();
+
+    // Item use (Playerbots.ItemUse.*): read by hand with a clamp until CS22's config table takes the family
+    ItemUse = ItemUseConfig{};
+    ItemUse.ControlShare = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.ControlShare", ItemUse.ControlShare, false), 0, 100);
+    ItemUse.UseEndGraceMs = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.UseEndGraceMs", ItemUse.UseEndGraceMs, false), 0, 10000);
     TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     TacticsConfigMask = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
