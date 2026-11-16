@@ -6575,10 +6575,7 @@ void PlayerbotAI::ImbueItem(Item* item, uint8 targetInventorySlot)
 // generic item use method
 void PlayerbotAI::ImbueItem(Item* item, uint32 targetFlag, ObjectGuid targetGUID)
 {
-    if (!TestConstraints::UsesItemsOnItsOwn(testConstraints))  // nouse (item-use WI2): goes with WI5's builder
-        return;
-
-    if (!item)
+    if (!item || !TestConstraints::UsesItemsOnItsOwn(testConstraints))  // nouse (item-use WI2): WI5 removes it
         return;
 
     uint32 glyphIndex = 0;
