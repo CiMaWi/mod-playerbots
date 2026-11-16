@@ -32,6 +32,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
+#include "ItemUseCommands.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
 #include "LightweightPerf.h"
@@ -292,6 +293,13 @@ public:
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Item use WI2c: the index census, one record and the dump (read only)
+        static ChatCommandTable playerbotsItemCommandTable = {
+            {"census", ItemUse::HandleCensusCommand, SEC_PLAYER, Console::Yes},
+            {"info", ItemUse::HandleInfoCommand, SEC_PLAYER, Console::Yes},
+            {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -325,6 +333,7 @@ public:
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
             {"bridge", playerbotsBridgeCommandTable},
+            {"item", playerbotsItemCommandTable},
         };
 
         static ChatCommandTable wlogCommandTable = {
