@@ -31,6 +31,13 @@ struct UsableEntry  // one use effect of something the bot carries or wears
     bool potion{false};
     std::uint32_t replaceCopper{0};
     bool ready{false};  // CheapCheck's ready part, refreshed when the situation is sampled
+    // WI14: the Record's target facts the offer reads (filled from the Record when the list is built)
+    Shape shape{Shape::None};
+    float radiusYards{0.0f};  // 0: no area
+    float rangeYards{0.0f};   // against an enemy or a spot
+    float minRangeYards{0.0f};
+    float rangeFriendYards{0.0f};
+    bool pvpTrinket{false};  // spell 42292 or 65547: the PvP trinket, its tactic's (CcTacticStrategy), never offered
 };
 
 enum class Rank : std::uint8_t
