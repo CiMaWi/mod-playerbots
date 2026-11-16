@@ -455,6 +455,7 @@ enum : uint32
     Dismount = 1u << 7,     // a server dismount waits for the bot's own (SMSG_DISMOUNT; BotTravel::PreGate)
     Loot = 1u << 8,         // a loot interaction runs (LootObjectStack)
     MountTrace = 1u << 9,   // a traced mount waits for its state (BotTravel::TraceTravelMount, ForgetMountTrace)
+    ItemOrder = 1u << 10,   // a test's item use order waits (ItemUse::PostOrder, under its lock; TakeOrders)
 };
 }  // namespace BotWork
 

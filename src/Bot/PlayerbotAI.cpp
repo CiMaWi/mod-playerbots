@@ -48,6 +48,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "ItemUse.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
@@ -343,6 +344,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // update; so does it for a bot placed aboard until its placement is decided (below)
         if (((early & BotWork::Order) && TravelOrders::TakeAndApply(this, bot)) || (GetWork() & BotWork::Aboard))
             nextAICheckDelay = 0;
+
+        // A test's item use order (playerbots item use): used on this map thread, the outcome is its ItemUse row
+        if (GetWork() & BotWork::ItemOrder)
+            ItemUse::TakeOrders(this, bot);
 
         // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
         // be a minute apart for an idle bot, time enough for a new pet to start a fight
