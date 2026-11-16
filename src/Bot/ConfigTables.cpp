@@ -95,6 +95,7 @@ struct RetiredSwitches
     bool ArenaTeamMaxRating = false;
     bool LadderEnable = false;
     bool NearRealPlayerYards = false;
+    bool MatchmakerEnable = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -262,6 +263,11 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNearRealPlayerYardsRo
 }};
 ConfigFamily<RetiredSwitches> const RetiredNearRealPlayerYardsFamily{"Playerbots.Natural.Cadence.NearRealPlayerYards",
                                                                      RetiredNearRealPlayerYardsRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredMatchmakerEnableRows = {{
+    {"", &RetiredSwitches::MatchmakerEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredMatchmakerEnableFamily{"Playerbots.Ladder.Matchmaker.Enable",
+                                                                  RetiredMatchmakerEnableRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -302,6 +308,7 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredArenaTeamMaxRatingFamily, RetiredSwitchValues),
         MakeEntry(RetiredLadderEnableFamily, RetiredSwitchValues),
         MakeEntry(RetiredNearRealPlayerYardsFamily, RetiredSwitchValues),
+        MakeEntry(RetiredMatchmakerEnableFamily, RetiredSwitchValues),
     };
     return entries;
 }

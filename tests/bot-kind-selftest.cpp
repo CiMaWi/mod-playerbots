@@ -6,7 +6,8 @@
 
 // Standalone check of the bot-kind facts (src/Bot/BotKindRules.h): the truth table of IsPersistentBot and
 // KeepsPossessions over the instance's role, whether the bot is a random bot, and who its master is; and
-// FollowsTargets for every kind of instance we run.
+// FollowsTargets for every kind of instance we run; ArenaRole over the three ladder roles and every key setting, and
+// for the instances we run (config.md section 4: the values each had before CS25e).
 #include <iostream>
 #include <string>
 
@@ -86,6 +87,52 @@ Master const MASTERS[] = {
     {"a real player", MasterKind::RealPlayer, false},
     {"a selfbot", MasterKind::SelfBot, false},
 };
+// Playerbots.Ladder.Role: 0 = world and labs, 1 = main, 2 = the arena server
+struct ArenaInstance
+{
+    char const* name;
+    int role;
+    bool formationKey, recruitKey, buyKey;  // as the hub's overlays set them
+    bool formation, recruit, matchmaker, buy;
+};
+
+ArenaInstance const ARENA_INSTANCES[] = {
+    {"main", 1, true, true, false, true, true, true, false},
+    {"lab5", 0, true, true, false, true, true, false, false},
+    {"lab", 0, true, true, false, true, true, false, false},
+    {"arena1", 2, false, false, true, false, false, false, true},
+    {"arena1, keys inherited from main", 2, true, true, false, false, false, false, true},
+};
+
+void CheckArenaRole()
+{
+    for (int const role : {0, 1, 2})
+        for (bool const formationKey : {false, true})
+            for (bool const recruitKey : {false, true})
+                for (bool const buyKey : {false, true})
+                {
+                    BotKindRules::ArenaRoleValues const v =
+                        BotKindRules::ArenaRole(role == 1, role == 2, formationKey, recruitKey, buyKey);
+                    std::string const cell = "role " + std::to_string(role) + ", keys F" +
+                                             std::to_string(formationKey) + " R" + std::to_string(recruitKey) + " B" +
+                                             std::to_string(buyKey);
+                    Check(v.Formation == (role == 2 ? false : formationKey), cell + ": Formation");
+                    Check(v.Recruit == (role == 2 ? false : recruitKey), cell + ": Recruit");
+                    Check(v.Matchmaker == (role == 1), cell + ": Matchmaker");
+                    Check(v.Buy == (role == 2 ? true : buyKey), cell + ": Buy");
+                }
+
+    for (ArenaInstance const& instance : ARENA_INSTANCES)
+    {
+        BotKindRules::ArenaRoleValues const v = BotKindRules::ArenaRole(
+            instance.role == 1, instance.role == 2, instance.formationKey, instance.recruitKey, instance.buyKey);
+        std::string const name = instance.name;
+        Check(v.Formation == instance.formation, name + ": Formation");
+        Check(v.Recruit == instance.recruit, name + ": Recruit");
+        Check(v.Matchmaker == instance.matchmaker, name + ": Matchmaker");
+        Check(v.Buy == instance.buy, name + ": Buy");
+    }
+}
 }  // namespace
 
 int main()
@@ -123,6 +170,7 @@ int main()
     Check(!BotKindRules::MasterCounts(MasterKind::Bot), "a bot master does not count");
     Check(BotKindRules::MasterCounts(MasterKind::RealPlayer), "a real player counts");
     Check(BotKindRules::MasterCounts(MasterKind::SelfBot), "a selfbot master counts (CS17d)");
+    CheckArenaRole();
 
     std::cout << "bot-kind selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

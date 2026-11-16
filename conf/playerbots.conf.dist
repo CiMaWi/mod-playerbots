@@ -2318,8 +2318,7 @@ Playerbots.Ladder.PoolTeams = 0
 # When the player leaves the queue the team leaves it too; its group is dissolved then and after the match. A group
 # with fewer players than the arena type is not answered. The recent opponents are kept in memory only. Never on
 # an arena server (Role = 2). Commands: .playerbots ladder matchmaker status|candidates [mmr]|selftest
-# Default: 0 (off)
-Playerbots.Ladder.Matchmaker.Enable = 0
+# On exactly at Playerbots.Ladder.Role = 1.
 
 # Seconds from the player's queue to the pick: a random value in this range (0-600)
 # Default: 3, 8
@@ -2395,7 +2394,7 @@ Playerbots.PvpGear.BaseTier = ""
 # bot that wears its loadout (in a match, or on an arena server) swaps the slot at once. One log line per purchase;
 # the PvE gear is never touched. Bots earn currency only from battleground honor and the arena point distribution
 # (worldserver Arena.AutoDistributePoints).
-# Default: 0 (off: nothing is bought)
+# Default: 0 (off: nothing is bought); always on with Playerbots.Ladder.Role = 2
 Playerbots.PvpGear.Buy.Enable = 0
 
 # The slots in the order the bots buy for them, comma-separated: weapon (main and off hand; a hunter's ranged slot
@@ -3704,8 +3703,8 @@ Playerbots.ArenaTeam.Seed.NoiseSd = 100
 #   RecruitAboveMinChance (0..100 percent): the chance per pass that a team between MinMembers and its max roster takes
 #     one more member (not within MinTeamStaySeconds of its last change). 0 = only teams below MinMembers recruit, so
 #     after the login fill the rosters only shrink; above 0 members keep leaving and joining.
-#
-Playerbots.ArenaTeam.Formation.Enable = 0
+# Default: 1 (on; forced off with Playerbots.Ladder.Role = 2; a test sets 0 for fixed teams)
+Playerbots.ArenaTeam.Formation.Enable = 1
 Playerbots.ArenaTeam.UpdateSeconds = 60
 Playerbots.ArenaTeam.MaxRoster2v2 = 4
 Playerbots.ArenaTeam.MaxRoster3v3 = 6
@@ -3772,7 +3771,8 @@ Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 #     season and won at least this share of them is loyal and refuses, whatever the acquaintance.
 # GM command (console works): .playerbots arena recruit <bot> <player> [rating <n>] [score <n>] [skill <n>] [loyal 0|1]
 # evaluates the rule without an invite (and shows the skill; decisions are logged at debug level, Logger.playerbots=5).
-Playerbots.ArenaRecruit.Enable = 0
+# Default: 1 (on; forced off with Playerbots.Ladder.Role = 2; a test sets 0 for fixed teams)
+Playerbots.ArenaRecruit.Enable = 1
 Playerbots.ArenaRecruit.RatingAtSkill1 = 0
 Playerbots.ArenaRecruit.RatingAtSkill99 = 2000
 Playerbots.ArenaRecruit.DeltaBase = 300
