@@ -17,10 +17,12 @@
 #include "BotTravel.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
+#include "CheckMountStateAction.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "MountRules.h"
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "NewRpgInfo.h"
@@ -489,8 +491,7 @@ bool PrepareTransportMove(Player& bot)
         return false;
     if (!bot.IsMounted())
         return true;
-    WorldPacket emptyPacket;
-    bot.GetSession()->HandleCancelMountAuraOpcode(emptyPacket);
+    CheckMountStateAction::Dismount(&bot, MountRules::How::Transport);
     return false;
 }
 

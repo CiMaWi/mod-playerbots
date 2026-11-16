@@ -52,7 +52,8 @@ public:
                                 uint32 interaction = 0, std::string_view path = "none", float yards = 0.0f,
                                 std::optional<std::pair<uint32, uint32>> leg = std::nullopt);
     TravelProgress::Motion ReadTravelWalk(bool checkPosition = false) const;
-    void TraceTravelMount(MountPath path, bool accepted);
+    // A traced bot's mount request: accepted (veto nullptr) or refused by the mount policy (its why word)
+    void TraceTravelMount(MountPath path, char const* veto);
 
     // UpdateAI's travel hook ahead of the AI's delays: the passenger check, a test's aboard placement, a
     // pending dismount, the loot interaction's and the trip's progress, the mount trace

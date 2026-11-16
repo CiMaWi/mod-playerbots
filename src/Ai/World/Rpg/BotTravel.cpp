@@ -181,14 +181,15 @@ std::string_view MountPathWord(BotTravel::MountPath path)
     return path == BotTravel::MountPath::Packet ? "packet" : "timer";
 }
 
-void BotTravel::TraceTravelMount(MountPath path, bool accepted)
+void BotTravel::TraceTravelMount(MountPath path, char const* veto)
 {
+    bool const accepted = !veto;
     if (path == MountPath::None || !NaturalTrace::IsSelected(bot))
         return;
 
     ObjectGuid const loot = activeLootInteraction ? activeLootInteraction->InteractionGuid() : bot->GetLootGUID();
     uint32 const generation = activeLootInteraction ? activeLootInteraction->InteractionGeneration() : 0;
-    TraceTravelInteraction(accepted ? "mount_accept" : "mount_veto", accepted ? "issued" : "loot", loot, generation,
+    TraceTravelInteraction(accepted ? "mount_accept" : "mount_veto", accepted ? "issued" : veto, loot, generation,
                            MountPathWord(path));
     if (accepted)
     {

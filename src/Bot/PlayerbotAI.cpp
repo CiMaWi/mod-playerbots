@@ -7369,6 +7369,14 @@ uint32 PlayerbotAI::GetReactDelay()
     // slept through the zeppelin's stop, riders through their far stop, and a scan pair never saw Kamagua's ship still
     if (!bot->IsInCombat() && TravelKeepsOnFoot(this))
         return TravelLegs::TRANSPORT_SCAN_MS;
+    // A bot's own short steps check at the loot's pace, one step a check: a loot interaction's (stop, dismount,
+    // request, the window, its close) inside LootInteraction::PhaseMs, and a trip's until its route is taken (the
+    // request, the answer). At a trip's 1-3 s times a slow skill's stretch a step took up to 10 s: the loot budget
+    // ran out before the window opened, and a walk began 36 s after its loot (WT44)
+    auto const* const trip = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
+    bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
+    if (!bot->IsInCombat() && ((GetWork() & BotWork::Loot) || awaitsRoute))
+        return sPlayerbotAIConfig.LootDelay;
     // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
