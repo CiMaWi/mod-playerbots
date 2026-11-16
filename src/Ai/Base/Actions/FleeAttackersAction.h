@@ -13,7 +13,9 @@
 
 class PlayerbotAI;
 
-// The bot's flight from attacking enemy players ("flee flight"), reset when the bot dies
+// The bot's flight from attacking enemy players ("flee flight"), reset when the bot dies; its stand ends with the
+// fight episode (FleeRules::EpisodeEnd). The value holds the flight for the context's life (the trigger keeps a
+// pointer)
 class FleeFlightValue : public ManualSetValue<FleeRules::Flight&>
 {
 public:
@@ -35,8 +37,8 @@ public:
     bool isUseful() override;
     bool Execute(Event event) override;
 
-    // For that trigger (O(1)); `wants`: the strategy's own reason to flee now (FleeRules::Due)
-    static bool Due(PlayerbotAI* botAI, bool wants);
+    // For that trigger (O(1), the flight it holds); `wants`: the strategy's own reason to flee now (FleeRules::Due)
+    static bool Due(PlayerbotAI* botAI, FleeRules::Flight const& flight, bool wants);
 
 private:
     // What a step in one direction came to: taken; a wall (no path, or something hit right in front); an edge (the

@@ -53,7 +53,8 @@ struct Limits
 struct Flight
 {
     bool active = false;
-    // It ended cornered or by its bound: the bot stands and fights and does not flee again in this PvP combat
+    // It ended cornered or by its bound: the bot stands and fights and does not flee again in this fight episode (in
+    // PvP combat or engaged; EpisodeEnd)
     bool stood = false;
     std::uint32_t startMs = 0;
     std::uint32_t lastMs = 0;
@@ -116,19 +117,26 @@ inline void End(Flight& flight, Outcome outcome)
 }
 
 // Whether the trigger of a strategy that wants the bot to flee is on (`wants`: its own reason, now). A flight under
-// way runs to its outcome whatever the strategy wants by then; a bot that stood flees again only in a new PvP combat;
-// no flight begins out of PvP combat
-inline bool Due(Flight& flight, bool wants, bool pvpCombat)
+// way runs to its outcome whatever the strategy wants by then; a bot that stood flees again only after its fight
+// episode ended (EpisodeEnd); no flight begins out of PvP combat
+inline bool Due(Flight const& flight, bool wants, bool pvpCombat)
 {
-    if (flight.active)
-        return true;
-    if (!pvpCombat)
-    {
-        flight.stood = false;
-        return false;
-    }
-    return wants && !flight.stood;
+    return flight.active || (wants && pvpCombat && !flight.stood);
 }
+
+// The fight episode's one reset edge (PlayerbotAI::UpdateAI): `was` the last update's "in PvP combat or engaged",
+// `now` this one's; true once, at the falling edge (a death passes it too)
+inline bool EpisodeFell(bool& was, bool now)
+{
+    if (now == was)
+        return false;
+    was = now;
+    return !now;
+}
+
+// At that edge the stand is over: the next PvP combat may be fled. A flight under way runs on to its outcome (its
+// Flee row); a death resets the whole flight (PlayerbotAI::DoNextAction)
+inline void EpisodeEnd(Flight& flight) { flight.stood = false; }
 }  // namespace FleeRules
 
 #endif
