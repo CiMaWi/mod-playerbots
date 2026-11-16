@@ -258,9 +258,61 @@ void TestTypesWalk()
     probe.values["Test.Types.Names"] = "x,y";
     LoadConfigFamily(TypesFamily, config, probe, warn);
     Check(config.Range == 60.0f && config.Names == "x,y", "types: in-range float and parsed string kept");
-    Check(ConfigRowValueText(TypesRows[1], config) == std::to_string(1.0f) &&
-              ConfigRowValueText(TypesRows[3], config) == "0",
-          "types: the value as text");
+    Check(
+        ConfigRowValueText(TypesRows[1], config) == std::string("1") && ConfigRowValueText(TypesRows[3], config) == "0",
+        "types: the value as text");
+}
+
+struct FakeConfig
+{
+    uint32_t A = 15;
+    float Ratio = 0.5f;
+    uint32_t Old = 3;
+    bool Flag = false;
+};
+
+constexpr std::array<ConfigRow<FakeConfig>, 4> FakeRows = {{
+    {"A", &FakeConfig::A, 0, 100},
+    {"Ratio", &FakeConfig::Ratio},
+    {"Old", &FakeConfig::Old, 0, 10, ConfigKind::Retired},
+    {"Flag", &FakeConfig::Flag, 0, 0, ConfigKind::Test},
+}};
+
+ConfigFamily<FakeConfig> const FakeFamily{"Playerbots.Fake.", FakeRows};
+
+void TestUnknownRetiredPrint()
+{
+    std::vector<std::string> const keys = {"Playerbots.Fake.A", "Playerbots.Fake.NoSuchKey", "Playerbots.Fake.Old",
+                                           "Playerbots.Other.NoSuchKey", "Playerbots.Fake."};
+    std::vector<std::string> const unknown = UnknownConfigKeys(FakeFamily, keys);
+    Check(unknown == std::vector<std::string>{"Playerbots.Fake.NoSuchKey", "Playerbots.Fake."},
+          "unknown: only the key under the prefix with no row is reported, a key outside the prefix is not");
+    Check(UnknownConfigKeys(FakeFamily, {"Playerbots.Fake.Old"}).empty(), "retired: a retired row knows its key");
+
+    FakeConfig config;
+    FakeReader reader;
+    reader.values = {{"Playerbots.Fake.Old", "9"}, {"Playerbots.Fake.A", "20"}};
+    std::vector<std::string> warnings;
+    uint32_t const count = LoadConfigFamily(FakeFamily, config, reader,
+                                            [&warnings](std::string const& text) { warnings.push_back(text); });
+    Check(count == 0 && warnings.empty(), "retired: a retired key set in the config gives no warning");
+    Check(config.Old == 3 && config.A == 20, "retired: the member keeps its initializer, other rows are read");
+    Check(reader.missingWarnings == std::vector<std::string>{"Playerbots.Fake.Flag"},
+          "retired: the walk never reads the retired key");
+
+    FakeConfig const defaults;
+    Check(ConfigRowLine(FakeFamily, FakeRows[0], defaults) ==
+              "Playerbots.Fake.A = 15 (default 15, bounds 0 to 100, tuning)",
+          "print: a default value has no mark");
+    Check(ConfigRowLine(FakeFamily, FakeRows[0], config) ==
+              "Playerbots.Fake.A = 20 * (default 15, bounds 0 to 100, tuning)",
+          "print: a changed value is marked");
+    Check(ConfigRowLine(FakeFamily, FakeRows[1], defaults) ==
+              "Playerbots.Fake.Ratio = 0.5 (default 0.5, bounds -inf to inf, tuning)",
+          "print: a float prints as 0.5, an open bound as inf");
+    Check(ConfigRowLine(FakeFamily, FakeRows[3], defaults) == "Playerbots.Fake.Flag = 0 (default 0, test)",
+          "print: a bool has no bounds");
+    Check(ConfigBoundText(0.25) == "0.25" && ConfigValueText(1.5f) == "1.5", "print: fractional text is the shortest");
 }
 
 void TestDistChecks(std::map<std::string, std::string> const& dist)
@@ -309,6 +361,7 @@ int main(int argc, char** argv)
 
     TestBankMailWalk();
     TestTypesWalk();
+    TestUnknownRetiredPrint();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

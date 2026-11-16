@@ -7,12 +7,15 @@
 #ifndef _PLAYERBOT_CONFIGTABLE_H
 #define _PLAYERBOT_CONFIGTABLE_H
 
+#include <charconv>
 #include <cstdint>
 #include <limits>
 #include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <variant>
+#include <vector>
 
 // One row per config value: the key under its family's prefix, the member it fills, its bounds and its kind. The
 // default is the member's initializer in the family struct. Game-free: the walk takes its reader and its warning sink
@@ -88,6 +91,13 @@ std::string ConfigValueText(T const& value)
         return value;
     else if constexpr (std::is_same_v<T, bool>)
         return value ? "1" : "0";
+    else if constexpr (std::is_floating_point_v<T>)
+    {
+        // the shortest text that reads back as the same number (0.5, not 0.500000)
+        char buffer[64];
+        auto const result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+        return std::string(buffer, result.ptr);
+    }
     else
         return std::to_string(value);
 }
@@ -98,7 +108,7 @@ inline std::string ConfigBoundText(double bound)
         return bound < 0 ? "-inf" : "inf";
     if (bound == static_cast<double>(static_cast<int64_t>(bound)))
         return std::to_string(static_cast<int64_t>(bound));
-    return std::to_string(bound);
+    return ConfigValueText(bound);
 }
 
 // The row's current value in out, as text (for a print command)
@@ -106,6 +116,54 @@ template <typename Struct>
 std::string ConfigRowValueText(ConfigRow<Struct> const& row, Struct const& out)
 {
     return std::visit([&out](auto member) { return ConfigValueText(out.*member); }, row.Target);
+}
+
+// One line of a print command: "key = value (default D, bounds L to U, kind K)", with " *" after the value where it
+// differs from the default (the struct's initializer). A retired row has no value and prints nothing.
+template <typename Struct>
+std::string ConfigRowLine(ConfigFamily<Struct> const& family, ConfigRow<Struct> const& row, Struct const& out)
+{
+    Struct const defaults{};
+    std::string const value = ConfigRowValueText(row, out);
+    std::string const defaultValue = ConfigRowValueText(row, defaults);
+    bool const numeric = std::visit(
+        [](auto member)
+        {
+            using T = std::remove_reference_t<decltype(std::declval<Struct>().*member)>;
+            return !std::is_same_v<T, std::string> && !std::is_same_v<T, bool>;
+        },
+        row.Target);
+    std::string line = std::string(family.Prefix) + row.Key + " = " + value;
+    if (value != defaultValue)
+        line += " *";
+    line += " (default " + defaultValue;
+    if (numeric)
+        line += ", bounds " + ConfigBoundText(row.Lower) + " to " + ConfigBoundText(row.Upper);
+    return line + ", " + ConfigKindName(row.Kind) + ")";
+}
+
+// The keys of the list that start with the family's prefix and that no row of the family knows. A retired row knows its
+// key: old configs may still set it.
+template <typename Struct>
+std::vector<std::string> UnknownConfigKeys(ConfigFamily<Struct> const& family, std::vector<std::string> const& keys)
+{
+    std::vector<std::string> unknown;
+    std::string const prefix = family.Prefix;
+    for (std::string const& key : keys)
+    {
+        if (key.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        bool known = false;
+        for (ConfigRow<Struct> const& row : family.Rows)
+            if (key.compare(prefix.size(), std::string::npos, row.Key) == 0)
+            {
+                known = true;
+                break;
+            }
+        if (!known)
+            unknown.push_back(key);
+    }
+    return unknown;
 }
 
 // Resets out to the struct's initializers, then reads every row: read(key, defaultValue, warnIfMissing) returns the
