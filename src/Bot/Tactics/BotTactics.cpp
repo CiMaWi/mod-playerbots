@@ -358,7 +358,6 @@ bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
     TacticCheckInputs inputs;
     inputs.Counting = botAI->IsPvpTestCounting();
     inputs.Leftover = opponentMemory.MatchId != 0 || (focusState && focusState->Target.Pick.Guid != 0);
-    inputs.MemoryEnable = config.NaturalReaction.Memory.Enable;
     inputs.Mask = botAI->GetTacticMask();
     inputs.Stored = botAI->GetTacticContext();
     inputs.Probed = probed;
@@ -370,17 +369,13 @@ bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
         return false;
     }
 
-    ReactionParams const& reaction = config.NaturalReaction;
-    if (reaction.Memory.Enable)
+    if (PerfMonitor::IsEnabled())
     {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
-            ObserveOpponents(botAI, bot, busyModel, nowMs);
-        }
-        else
-            ObserveOpponents(botAI, bot, busyModel, nowMs);
+        PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
+        ObserveOpponents(botAI, bot, busyModel, nowMs);
     }
+    else
+        ObserveOpponents(botAI, bot, busyModel, nowMs);
 
     // G2b: the tracking ring follows the bot's target at every check of a fight, not only at its chase calls
     if (sPlayerbotAIConfig.NaturalTrack.Enable)
@@ -421,7 +416,7 @@ void BotTactics::LogLiveMiss() const
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     Battleground* const battleground = bot->GetBattleground();
     bool const match = battleground && battleground->GetStatus() == STATUS_IN_PROGRESS;
-    if (config.NaturalReaction.Memory.Enable && (match || opponentMemory.MatchId != 0))
+    if (match || opponentMemory.MatchId != 0)
         LOG_INFO("playerbots", "Live miss: ObserveOpponents {}", bot->GetName());
 
     std::array<bool, TACTIC_FOLLOWER_COUNT> const passes = {

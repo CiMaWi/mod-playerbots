@@ -73,7 +73,6 @@ struct ReactionEaseParams  // Dexterity
 
 struct ReactionThinkParams  // Wisdom (depth and cost), Patience (waiting)
 {
-    bool Enable = false;
     uint32 ShortcutMsAt1 = 40;
     uint32 ShortcutMsAt99 = 20;
     uint32 DeepMsAt1 = 400;
@@ -94,7 +93,6 @@ struct ReactionAnticipateParams  // Foresight
 
 struct ReactionQueueParams  // Speed (G0h3-b)
 {
-    bool Enable = false;
     uint32 MinMsAt1 = 60;
     uint32 MaxMsAt1 = 250;
     uint32 MinMsAt99 = 10;
@@ -116,7 +114,6 @@ struct ReactionReevalParams
 
 struct ReactionMemoryParams  // G0h3-b
 {
-    bool Enable = false;
     // The fake-cast rate counts from MinCasts casts seen; a cast gone within EndToleranceMs of its bar's end finished
     uint32 MinCasts = 3;
     uint32 EndToleranceMs = 150;

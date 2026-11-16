@@ -591,15 +591,14 @@ void RunInterruptSelftest(ChatHandler* handler)
     check(Int::Score(Int::Kind::Damage, 100, Urgent) > 0 && Int::Score(Int::Kind::Other, 100, Urgent) == 0,
           "damage scores, other does not");
 
-    // The deep path: known, then full ability or the think part off, else Wisdom's deep percent
+    // The deep path: known, then full ability, else Wisdom's deep percent
     ReactionTypeState types;
     types.ThinkDeepPercent = 0;
-    check(!Int::UsesDeep(false, true, true, types, 1), "a bot that does not know the tactic takes the shortcut");
-    check(Int::UsesDeep(true, true, true, types, 1), "full ability judges");
-    check(Int::UsesDeep(true, false, false, types, 1), "with the think part off a knowing bot judges");
-    check(!Int::UsesDeep(true, false, true, types, 1), "deep percent 0 takes the shortcut");
+    check(!Int::UsesDeep(false, true, types, 1), "a bot that does not know the tactic takes the shortcut");
+    check(Int::UsesDeep(true, true, types, 1), "full ability judges");
+    check(!Int::UsesDeep(true, false, types, 1), "deep percent 0 takes the shortcut");
     types.ThinkDeepPercent = 100;
-    check(Int::UsesDeep(true, false, true, types, 1), "deep percent 100 judges");
+    check(Int::UsesDeep(true, false, types, 1), "deep percent 100 judges");
 
     // The numbers at the conf.dist defaults; skill 0 has the skill-99 ones
     InterruptConfig const config{};
@@ -2405,12 +2404,11 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     auto const onOff = [](bool on) { return on ? "on" : "off"; };
     handler->PSendSysMessage(
         "  reaction types: choice {:.0f} ms per doubling, load {} ms / {} % per event (top {:.2f}), ease {}/{}/{}/{} "
-        "ms, think {} ({}/{} ms, deep {} %, wait {} ms), anticipate {:.2f}, queue {} ({}-{} ms), reeval {}, memory {}",
+        "ms, think {}/{} ms (deep {} %, wait {} ms), anticipate {:.2f}, queue {}-{} ms, reeval {}",
         prices.HickMsPerDoubling, prices.LoadMsPerEvent, prices.LoadMissPercentPerEvent, prices.LoadTopProtect,
-        prices.EaseMs[0], prices.EaseMs[1], prices.EaseMs[2], prices.EaseMs[3], onOff(timing.Think.Enable),
-        prices.ThinkShortcutMs, prices.ThinkDeepMs, prices.ThinkDeepPercent, prices.PatienceWaitMs,
-        prices.AnticipateShare, onOff(timing.Queue.Enable), prices.QueueMinMs, prices.QueueMaxMs,
-        onOff(timing.Reeval.Enable), onOff(timing.Memory.Enable));
+        prices.EaseMs[0], prices.EaseMs[1], prices.EaseMs[2], prices.EaseMs[3], prices.ThinkShortcutMs,
+        prices.ThinkDeepMs, prices.ThinkDeepPercent, prices.PatienceWaitMs, prices.AnticipateShare, prices.QueueMinMs,
+        prices.QueueMaxMs, onOff(timing.Reeval.Enable));
     handler->PSendSysMessage("  cached: effort {}, style aggression {} / caution {} / patience {}", gate.Effort,
                              botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Aggression),
                              botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Caution),

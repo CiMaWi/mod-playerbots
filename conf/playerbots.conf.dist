@@ -1849,10 +1849,10 @@ Playerbots.Natural.Reaction.ServerTickMs = -1
 
 # Reaction types (G0h3, with Playerbots.Natural.Reaction.Enable in its Contexts): each part has prices at attribute 1
 # and 99 (Playerbots.Skill.Attributes.*; with their defaults every ability is the skill), lerped along
-# Playerbots.Skill.CurveExponent; Think, Queue and Memory have their own Enable (default 0: the reaction as above). Every cost lies inside the
-# reaction (the trace's ready), so the end-to-end target keeps its sum. The playerbots.reaction trace lines add type
-# (0 simple, 1 choice, 2 anticipated), options, load (other events pending), ease (0 common, 1 rare, 2 focus target,
-# 3 new target), think (ms), cost (choice + load + ease + think, ms), busy and own (see Reeval).
+# Playerbots.Skill.CurveExponent. Every cost lies inside the reaction (the trace's ready), so the end-to-end target
+# keeps its sum. The playerbots.reaction trace lines add type (0 simple, 1 choice, 2 anticipated), options, load
+# (other events pending), ease (0 common, 1 rare, 2 focus target, 3 new target), think (ms), cost (choice + load +
+# ease + think, ms), busy and own (see Reeval).
 # Choice (Wisdom): Hick's law, MsPerDoubling per doubling of the real options (one option: none; at most MaxOptions,
 #   1-64). Counted from what the bot has already built: a target switch and crowd control from its attackers list;
 #   an interrupt and a dispel are one option (no count without a new scan). 0-2000 ms.
@@ -1867,7 +1867,7 @@ Playerbots.Natural.Reaction.ServerTickMs = -1
 #   check (charged by later tactics, which take it DeepPercent, 0-100, of the time); PatienceWaitMs (Patience trait 0
 #   and 100, straight line) is how long a bot waits for a better moment (read by later tactics).
 # Anticipate (Foresight): an interrupt the opponent memory predicts (the enemy cast the same spell the time before)
-#   saves Share (0-0.95) of the draw, never below MinMs; it is no choice. Needs Memory.Enable for the memory to fill.
+#   saves Share (0-0.95) of the draw, never below MinMs; it is no choice.
 # Queue (Speed): a bot whose own cast or GCD ends before its next check checks MinMs-MaxMs after the end instead
 #   (never later; its own timer, no wake-up), as a human mashing the button.
 # Reeval (the user's notes of 2026-10-30): Enable stops the bot's own cast (MinOwnRemainingMs or more left) for a kick
@@ -1885,9 +1885,9 @@ Playerbots.Natural.Reaction.ServerTickMs = -1
 #   EndToleranceMs of its end finished. Anticipate reads it.
 # Movement: avoid aoe as a reaction, stamped with the ground effect's start (a trap or trigger NPC: the first look);
 #   only bots with the avoid aoe strategy have it (Playerbots.AutoAvoidAoe, bots with a real master).
-# Times 0-10000 ms. On a running server .reload config then .playerbots rndbot reload switch the parts; changed
-# prices reach a logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's prices.
-# Default: Think, Queue and Memory 0; the prices below
+# Times 0-10000 ms. On a running server .reload config then .playerbots rndbot reload: changed prices reach a
+# logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's prices.
+# Default: the prices below
 Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill1 = 120
 Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill99 = 50
 Playerbots.Natural.Reaction.Choice.MaxOptions = 8
@@ -1907,7 +1907,6 @@ Playerbots.Natural.Reaction.Ease.FocusMsAtSkill99 = 120
 Playerbots.Natural.Reaction.Ease.NewTargetMsAtSkill1 = 450
 Playerbots.Natural.Reaction.Ease.NewTargetMsAtSkill99 = 180
 Playerbots.Natural.Reaction.Ease.FocusDexterity = 40
-Playerbots.Natural.Reaction.Think.Enable = 0
 Playerbots.Natural.Reaction.Think.ShortcutMsAtSkill1 = 40
 Playerbots.Natural.Reaction.Think.ShortcutMsAtSkill99 = 20
 Playerbots.Natural.Reaction.Think.DeepMsAtSkill1 = 400
@@ -1918,7 +1917,6 @@ Playerbots.Natural.Reaction.Think.PatienceWaitMsAt0 = 0
 Playerbots.Natural.Reaction.Think.PatienceWaitMsAt100 = 1500
 Playerbots.Natural.Reaction.Anticipate.ShareAtSkill1 = 0.1
 Playerbots.Natural.Reaction.Anticipate.ShareAtSkill99 = 0.5
-Playerbots.Natural.Reaction.Queue.Enable = 0
 Playerbots.Natural.Reaction.Queue.MinMsAtSkill1 = 60
 Playerbots.Natural.Reaction.Queue.MaxMsAtSkill1 = 250
 Playerbots.Natural.Reaction.Queue.MinMsAtSkill99 = 10
@@ -1927,7 +1925,6 @@ Playerbots.Natural.Reaction.Reeval.Enable = 0
 Playerbots.Natural.Reaction.Reeval.ImportantCastMs = 1500
 Playerbots.Natural.Reaction.Reeval.MinOwnRemainingMs = 300
 Playerbots.Natural.Reaction.Reeval.BusyMarginMs = 100
-Playerbots.Natural.Reaction.Memory.Enable = 0
 Playerbots.Natural.Reaction.Memory.MinCasts = 3
 Playerbots.Natural.Reaction.Memory.EndToleranceMs = 150
 # Positioning: regain los, break los and pillar step (G2e, G2f) as reactions, stamped by the first query; a reaction only
