@@ -548,12 +548,47 @@ bool UseTrinketAction::UseTrinket(Item* item)
         return false;
 
     uint32 spellId = 0;
+    int32 itemSpellCooldown = 0;
+    uint32 itemSpellCategory = 0;
+    int32 itemSpellCategoryCooldown = 0;
     for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
     {
         if (item->GetTemplate()->Spells[i].SpellId > 0 &&
             item->GetTemplate()->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
         {
             spellId = item->GetTemplate()->Spells[i].SpellId;
+            itemSpellCooldown = item->GetTemplate()->Spells[i].SpellCooldown;
+            itemSpellCategory = item->GetTemplate()->Spells[i].SpellCategory;
+            itemSpellCategoryCooldown = item->GetTemplate()->Spells[i].SpellCategoryCooldown;
+
+            // The trinket's own cooldown and its category's, kept here as a client keeps them: the engine writes
+            // the shorter category cooldown over the longer one of every other trinket of the category
+            // (Player::AddSpellAndCategoryCooldowns), so by its answer alone two trinkets would take turns
+            uint64 const itemCooldownKey = (static_cast<uint64>(item->GetEntry()) << 32) | spellId;
+            uint32 const now = getMSTime();
+            if (itemSpellCooldown > 0)
+            {
+                auto const itemCooldownItr = trinketItemCooldownExpiries.find(itemCooldownKey);
+                if (itemCooldownItr != trinketItemCooldownExpiries.end())
+                {
+                    if (itemCooldownItr->second > now)
+                        return false;
+
+                    trinketItemCooldownExpiries.erase(itemCooldownItr);
+                }
+            }
+
+            if (itemSpellCategory && itemSpellCategoryCooldown > 0)
+            {
+                auto const categoryCooldownItr = trinketCategoryCooldownExpiries.find(itemSpellCategory);
+                if (categoryCooldownItr != trinketCategoryCooldownExpiries.end())
+                {
+                    if (categoryCooldownItr->second > now)
+                        return false;
+
+                    trinketCategoryCooldownExpiries.erase(categoryCooldownItr);
+                }
+            }
 
             SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
             if (!spellInfo || !spellInfo->IsPositive())
@@ -612,17 +647,34 @@ bool UseTrinketAction::UseTrinket(Item* item)
     if (!spellId)
         return false;
 
-    // The use is a request to the item use path (item-use WI5): the engine's cooldown decides readiness. Check
-    // first: the trigger holds while the trinket cools down, and a refusal then writes no row
+    // The use is a request to the item use path (item-use WI5), on the bot as the old packet was: a trinket for a
+    // friend (a recombobulator) takes the bot. Check first: the trigger holds while the trinket cools down, and a
+    // refusal then writes no row
     ItemUse::Request request = ItemUse::Worn(bot, item->GetSlot(), ItemUse::Caller::Fight);
     request.spellId = spellId;
+    request.target.kind = ItemUse::TargetKind::Self;
     if (ItemUse::Check(bot, request) != ItemUse::Cause::None)
         return false;
 
+    // The use can destroy the trinket on its last charge.
+    uint32 const itemId = item->GetEntry();
     // G5a: the PvP trinket's proof reads these lines (Logger.playerbots=6)
     LOG_TRACE("playerbots", "Use trinket: {} uses {} ({}), spell {}", bot->GetName(), item->GetTemplate()->Name1,
-              item->GetEntry(), spellId);
-    return ItemUse::Use(bot, request).outcome != ItemUse::Outcome::Refused;
+              itemId, spellId);
+    if (ItemUse::Use(bot, request).outcome == ItemUse::Outcome::Refused)
+        return false;
+
+    uint32 const now = getMSTime();
+    if (itemSpellCooldown > 0)
+    {
+        uint64 const itemCooldownKey = (static_cast<uint64>(itemId) << 32) | spellId;
+        trinketItemCooldownExpiries[itemCooldownKey] = now + static_cast<uint32>(itemSpellCooldown);
+    }
+
+    if (itemSpellCategory && itemSpellCategoryCooldown > 0)
+        trinketCategoryCooldownExpiries[itemSpellCategory] = now + static_cast<uint32>(itemSpellCategoryCooldown);
+
+    return true;
 }
 
 Value<Unit*>* BuffOnMainTankAction::GetTargetValue() { return context->GetValue<Unit*>("main tank", spell); }

@@ -580,6 +580,58 @@ void WornCases(std::string const& root)
     Expect(CheapCheck(piece, ask, bot, Self()), Cause::Skill, "worn: engineering 350 of 400");
 }
 
+// Two requests of WI5's old callers on records of the committed dump: a trinket whose spell takes a friend, which
+// the trinket action uses on the bot, and an item with several use spells, whose request names the spell its target
+// takes (the first one is checked otherwise)
+void OldCallerCases(std::string const& root)
+{
+    constexpr std::uint32_t RECOMBOBULATOR = 4381;  // a trinket, spell 18805 on a friend
+    constexpr std::uint32_t CORE = 31088;           // spells 38134 (a friend), 3366 (an object), 38132 (the bot)
+    constexpr std::uint32_t OPENING = 3366;
+    std::ifstream in(root + "/tests/fixtures/item-use-dump.txt", std::ios::binary);
+    std::optional<Record> trinket;
+    std::vector<Record> core;
+    std::string line;
+    while (std::getline(in, line))
+        if (std::optional<DumpRow> const row = ParseDumpLine(line))
+            if (row->record.source == Source::ItemSpell)
+            {
+                if (row->record.itemEntry == RECOMBOBULATOR)
+                    trinket = row->record;
+                else if (row->record.itemEntry == CORE)
+                    core.push_back(row->record);
+            }
+    Check(trinket && trinket->shape == Shape::Friend && trinket->inventoryType,
+          "old callers: trinket 4381 takes a friend");
+    Check(core.size() == 3 && core[0].shape == Shape::Friend && core[1].shape == Shape::Object &&
+              core[1].spellId == OPENING,
+          "old callers: item 31088 has a friend's spell first, then the object's");
+    if (!trinket || core.size() != 3)
+        return;
+
+    BotView bot = ReadyBot();
+    bot.level = 80;
+    bot.skillValue = 450;
+    bot.equipped = true;
+    Expect(CheapCheck(*trinket, Ask(*trinket, TargetKind::None), bot, TargetView{}), Cause::NoTarget,
+           "old callers: a friend's trinket with no target named");
+    Expect(CheapCheck(*trinket, Ask(*trinket, TargetKind::Self), bot, Self()), Cause::None,
+           "old callers: a friend's trinket on the bot, as the trinket action asks");
+
+    Record const* first = SelectRecord(core, 0);
+    Record const* opening = SelectRecord(core, OPENING);
+    Check(first && first->spellId == core[0].spellId && opening && opening->spellId == OPENING,
+          "old callers: no spell named means the first use spell");
+    if (!first || !opening)
+        return;
+    Request onObject = Ask(*first, TargetKind::Object);
+    Expect(CheapCheck(*first, onObject, bot, Chest(3.0f)), Cause::NoTarget,
+           "old callers: the first use spell (a friend's) against an object");
+    onObject.spellId = OPENING;
+    Expect(CheapCheck(*opening, onObject, bot, Chest(3.0f)), Cause::None,
+           "old callers: the object's own use spell named");
+}
+
 // The bound of a timed use and the event its signs give at an update
 void SignCases()
 {
@@ -887,6 +939,7 @@ int main(int argc, char** argv)
     HandCases();
     SpotObjectPotionCases();
     WornCases(root);
+    OldCallerCases(root);
     SignCases();
     AdvanceCases();
     Search();
