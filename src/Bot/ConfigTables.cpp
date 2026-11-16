@@ -85,6 +85,7 @@ struct RetiredSwitches
     bool NaturalReaction = false;
     bool NaturalEndToEnd = false;
     bool NaturalCadence = false;
+    bool MatchLogEnable = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -206,6 +207,11 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalCadenceRows = 
 }};
 ConfigFamily<RetiredSwitches> const RetiredNaturalCadenceFamily{"Playerbots.Natural.Cadence.Enable",
                                                                 RetiredNaturalCadenceRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredMatchLogEnableRows = {{
+    {"", &RetiredSwitches::MatchLogEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredMatchLogEnableFamily{"Playerbots.MatchLog.Enable",
+                                                                RetiredMatchLogEnableRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -236,6 +242,7 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredNaturalReactionFamily, RetiredSwitchValues),
         MakeEntry(RetiredNaturalEndToEndFamily, RetiredSwitchValues),
         MakeEntry(RetiredNaturalCadenceFamily, RetiredSwitchValues),
+        MakeEntry(RetiredMatchLogEnableFamily, RetiredSwitchValues),
     };
     return entries;
 }

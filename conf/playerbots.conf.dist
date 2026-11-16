@@ -1562,7 +1562,7 @@ Playerbots.TestPlayer.Account = "WBTEST"
 # map, outcome, winner, fightMs, totalMs and per side the bots with class, spec, gear score, damage, healing,
 # killing blows, deaths; skill is null until the bots have one) to <LogsDir>/pvptest/matches-<YYYYMMDD>.jsonl. The
 # line is built in memory; a writer thread owns the file. The line also carries the server and a match id (always);
-# with Playerbots.MatchLog.Enable it also carries the ratings, honor and the real flag (see there).
+# it also carries the ratings, honor and the real flag (see the match log, Playerbots.MatchLog.*).
 # "duel" and "brawl" force an unrated fight in the open world (not in a battleground): the bots (maximum-level random
 # bots, at most 5 per side) are logged in, taken out of groups, queues and combat, and teleported to FightLocation
 # below, side A and side B facing each other. A duel is one bot against one bot (any factions): the first bot casts
@@ -1705,11 +1705,9 @@ Playerbots.Ladder.ServerId = ""
 # bot real, honor, personalBefore/After, mmrChange and the cast counts (casts), which are counted for every bot of an
 # arena from the moment its gates open. A harness match keeps its own record and id (m-...) and gets the same fields.
 # One "MATCHLOG:" line per record in the log; .playerbots matchlog status shows the counts and the writer queue.
-# The hooks run on the arena maps' threads and cost one capture per match; with 0 they return at once and no bot counts.
-# Default: 0 (off: only harness matches write records)
-Playerbots.MatchLog.Enable = 0
+# The hooks run on the arena maps' threads and cost one capture per match.
 
-# Match traces (needs Playerbots.MatchLog.Enable = 1): one arena match in N (chosen by the FNV-1a hash of its match id)
+# Match traces: one arena match in N (chosen by the FNV-1a hash of its match id)
 # keeps a trace, written at its end as one JSON line to <LogsDir>/pvptest/traces-<YYYYMMDD>.jsonl with the match id of
 # its record: units (guid, name, side A/B, class) and events with the time in ms since the gates opened: casts of the
 # participants (cast_start for spells with a cast time, cast_finish, cancel; triggered spells and auto-repeat shots
@@ -1730,7 +1728,7 @@ Playerbots.MatchLog.TraceMaxBytes = 4194304
 # Natural tracer (G0e; 1 = on, 0 = off): a traced unit leaves a row every 100 ms (IntervalMs) and event rows, so the
 # naturalness of bots (turns, reaction times, paths, cast timing) is measured from data. Traced are: the bots of a
 # harness match started with trace=1 (.playerbots pvptest arena ... trace=1, or plan start ... trace=1), the players
-# of organic arena matches (with Organic = 1; needs Playerbots.MatchLog.Enable = 1), and players switched on by a GM
+# of organic arena matches (with Organic = 1), and players switched on by a GM
 # (.playerbots natural trace <player> on|off). Rows are buffered per unit and written by a writer thread to
 # <Dir>/trace-<YYYYMMDD>.jsonl, one JSON object per line: "t" ms since the unit's trace start, "k" kind, "u" player
 # guid counter, "m" match id (joins the match record of matches-<date>.jsonl; skill is never written; "" for a GM
