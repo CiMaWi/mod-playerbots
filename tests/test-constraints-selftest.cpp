@@ -256,11 +256,12 @@ bool RowWorks(Row const& row)
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !TaxiAllowed(NOTAXI) && !TaxiAllowed(HOLD | NOTAXI) && TaxiAllowed(0) && TaxiAllowed(STATES & ~NOTAXI) &&
                TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI);
-    // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
+    // Only nocast stops the bot's own casts; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nocast")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !CastsOnItsOwn(NOCAST) && !CastsOnItsOwn(HOLD | NOCAST) && CastsOnItsOwn(0) &&
                CastsOnItsOwn(HOLD | NOFIGHT | NODAMAGE | NOMOUNT) && (NOCAST & HOLD) == 0 && !EndsStatus(0, NOCAST);
+    // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !MountsOnItsOwn(NOMOUNT) && !MountsOnItsOwn(HOLD | NOMOUNT) && MountsOnItsOwn(0) &&
