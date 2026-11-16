@@ -339,6 +339,61 @@ inline bool PaysStart(BotEnthusiasm const& bot, JoinFacts const& facts)
     return PaysStart(!FightOngoing(facts), bot.engaged, bot.inShare);
 }
 
+// The entering check of one enemy (the glue's Evaluate): the bans, the join threshold and whether the bot enters
+struct Entering
+{
+    bool enters = false;
+    bool pays = false;  // a start the bot pays for (PaysStart)
+    BanReason ban = BanReason::None;
+    JoinFacts facts;
+    float join = 0.0f;
+    double value = 0.0;
+};
+
+// Reading the enemy-player target (MayEnter, WP39): an open pick on `guid`, else what the entering check `evaluate`
+// says (run only then). The state is const: a read makes no pick, writes no row and charges nothing
+template <typename Evaluate>
+bool ReadsEnter(BotEnthusiasm const& bot, uint64_t guid, uint32_t nowMs, Evaluate&& evaluate)
+{
+    return IsPick(bot, guid, nowMs) || evaluate().enters;
+}
+
+// What the attack's note did (NotePick)
+struct PickNote
+{
+    bool enters = false;   // the bot attacks
+    bool opened = false;   // a new pick: its fight_start or fight_join row follows (of `entering`)
+    bool charged = false;  // the start cost was paid; `before`: the value before it
+    double before = 0.0;
+    Entering entering;
+};
+
+// The attack's note (AttackEnemyPlayerAction, WP39): an open pick on `guid` holds (no row, no cost, no check); a new
+// one the entering check `evaluate` allows opens for PICK_MS, and a start the bot pays for charges the start cost
+template <typename Evaluate>
+PickNote NotePick(BotEnthusiasm& bot, uint64_t guid, uint32_t nowMs, EnthusiasmValues const& values,
+                  Evaluate&& evaluate)
+{
+    PickNote note;
+    if (IsPick(bot, guid, nowMs))
+    {
+        note.enters = true;
+        return note;
+    }
+    note.entering = evaluate();
+    if (!note.entering.enters)
+        return note;
+    note.enters = true;
+    note.opened = true;
+    SetPick(bot, guid, nowMs);
+    if (note.entering.pays)
+    {
+        note.charged = true;
+        note.before = EditBy(bot, EditCause::Start, nowMs, values);
+    }
+    return note;
+}
+
 // The rows JoinThreshold applied to these facts (JoinTerm bits); none when Aggression alone puts a start at the top
 inline uint32_t JoinTerms(JoinFacts const& facts, EnthusiasmValues const& values)
 {

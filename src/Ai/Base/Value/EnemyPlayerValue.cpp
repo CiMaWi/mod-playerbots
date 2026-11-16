@@ -82,10 +82,9 @@ Unit* EnemyPlayerValue::Calculate()
 {
     // The enemy scan (with the nearest enemy players' refresh when due); WorldPvp balance counts the local balance
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp scan") : nullptr);
-    // World PvP (WP23): the enthusiasm's engaged edge, traits and local balance before any step reads them
+    // World PvP (WP23, WP39): a rule bot's reads refresh its enthusiasm; this value only answers whom it would enter
+    // on, the attack makes the pick
     bool const byRules = WorldPvp::StartsByRules(botAI);
-    if (byRules)
-        WorldPvp::RefreshEnthusiasm(botAI);
     bool controllingCannon = false;
     bool controllingVehicle = false;
     bool passenger = false;
@@ -186,10 +185,9 @@ Unit* EnemyPlayerValue::Calculate()
         if (!bot->IsWithinDist(pTarget, aggroDistance))
             continue;
 
-        // A bot entering by enthusiasm writes its entering row once the enemy is in reach (and a new pick)
+        // A rule bot's candidates passed MayEnter (nearest enemy players): the first in reach
         if (controllingCannon ? bot->IsWithinLOSInMap(pTarget) : WorldPvp::Reaches(bot, pTarget))
-            if (!byRules || WorldPvp::NoteEntering(botAI, pTarget))
-                return pTarget;
+            return pTarget;
     }
 
     // 3. Check party attackers. A bot entering by enthusiasm joins its group's fight by step 2 (the group row of its

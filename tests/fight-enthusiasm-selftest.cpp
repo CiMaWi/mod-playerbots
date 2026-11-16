@@ -7,10 +7,10 @@
 // Standalone check of a bot's enthusiasm as its AI holds it (src/Ai/World/Pvp/FightEnthusiasm.h, WP23): the seed, the
 // engaged edges and a new balance settle with the old state first, a bot enters only above its join threshold and its
 // flee floor (the flee threshold plus an even fight's drain in one pick; a bot at its flee threshold never re-enters),
-// the scan skip, the pick, the one-off edits, the entering row's terms and the leaving (WP24: engaged by a held target,
-// the group hold, the leave check once per episode, the chase, the stalemate, who is left alone, no re-entry), who
-// starts by the rules, the pet's call-off, the reach test and the nearest graveyard. Build
-// (Git Bash, module root):
+// the scan skip, the pick (WP39: a read makes none; the attack's note does, once), the one-off edits, the entering
+// row's terms and the leaving (WP24: engaged by a held target, the group hold, the leave check once per episode, the
+// chase, the stalemate, who is left alone, no re-entry), who starts by the rules, the pet's call-off, the reach test
+// and the nearest graveyard. Build (Git Bash, module root):
 //   clang-cl /nologo /std:c++20 /EHsc /W4 /WX /Od /I src/Ai/World/Pvp tests/fight-enthusiasm-selftest.cpp
 #include <cmath>
 #include <cstdint>
@@ -225,6 +225,52 @@ void TestSkip()
     Check(!SkipsScan(bot, SECOND, v) && SkipsScan(bot, PICK_MS, v), "skip: not while a pick is open");
     Check(!ContextDue(bot, ENTHUSIASM_CONTEXT_MS - 1) && ContextDue(bot, ENTHUSIASM_CONTEXT_MS),
           "context: read again after its interval");
+}
+
+// WP39: reading the enemy-player target makes no pick, writes no row and charges nothing; the attack's note opens
+// the pick, writes its row and charges the start cost once; a second note on the open pick does neither
+void TestPickNote()
+{
+    EnthusiasmValues const v = Defaults();
+    BotEnthusiasm bot = At(50.0, 0);
+    bot.inShare = true;
+    int checks = 0;
+    Entering start;
+    start.enters = true;
+    start.pays = PaysStart(bot, JoinFacts());
+    auto const evaluate = [&]()
+    {
+        ++checks;
+        return start;
+    };
+    uint32_t const t = MINUTE;
+    double const value = ValueAt(bot, t, v);
+    bool const read = ReadsEnter(bot, 42, t, evaluate) && ReadsEnter(bot, 42, t, evaluate);
+    Check(read && checks == 2 && bot.pickGuid == 0 && !IsPick(bot, 42, t) && Near(ValueAt(bot, t, v), value),
+          "pick: a read may enter, yet makes no pick, writes no row and charges nothing");
+    BotEnthusiasm paid = bot;
+    EditBy(paid, EditCause::Start, t, v);
+    PickNote const note = NotePick(bot, 42, t, v, evaluate);
+    Check(start.pays && note.enters && note.opened && note.charged && Near(note.before, value) &&
+              Near(ValueAt(bot, t, v), ValueAt(paid, t, v)) && ValueAt(bot, t, v) < value && IsPick(bot, 42, t) &&
+              checks == 3,
+          "pick: the note opens it, writes its row and charges the start cost");
+    double const after = ValueAt(bot, t + SECOND, v);  // the value a second on, with no further edit
+    PickNote const again = NotePick(bot, 42, t + SECOND, v, evaluate);
+    Check(again.enters && !again.opened && !again.charged && Near(ValueAt(bot, t + SECOND, v), after) && checks == 3,
+          "pick: a second note on the open pick writes no row and charges nothing, without a new check");
+    Check(ReadsEnter(bot, 42, t + SECOND, evaluate) && checks == 3, "pick: a read of the open pick needs no check");
+    start.enters = false;
+    PickNote const refused = NotePick(bot, 7, t + SECOND, v, evaluate);
+    Check(!refused.enters && !refused.opened && !refused.charged && IsPick(bot, 42, t + SECOND) &&
+              Near(ValueAt(bot, t + SECOND, v), after),
+          "pick: a refused note is no attack: no pick, no row, no cost");
+    start.enters = true;
+    start.pays = false;
+    PickNote const join = NotePick(bot, 9, t + SECOND, v, evaluate);
+    Check(join.enters && join.opened && !join.charged && IsPick(bot, 9, t + SECOND) &&
+              Near(ValueAt(bot, t + SECOND, v), after),
+          "pick: a join opens its pick and row and costs nothing");
 }
 
 void TestEdits()
@@ -476,6 +522,7 @@ int main()
     TestBalanceSettle();
     TestEnters();
     TestSkip();
+    TestPickNote();
     TestEdits();
     TestTerms();
     TestChase();

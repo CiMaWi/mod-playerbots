@@ -31,20 +31,20 @@ bool StartsByRules(PlayerbotAI* botAI);
 // line of sight)
 bool Reaches(Unit const* bot, Unit const* enemy);
 
-// EnemyPlayerValue::Calculate first, for a bot that starts by the rules: its enthusiasm (seeded at random on first
-// use), the engaged edge, the traits and, at the scan's cadence while the bot could enter or is engaged, the local
-// balance (PerfMonitor "WorldPvp balance")
-void RefreshEnthusiasm(PlayerbotAI* botAI);
+// ScanSkipped, MayEnter and NoteEntering are a rule bot's reads of its enthusiasm and refresh it first: made and
+// seeded at random on first use, the engaged edge, the traits and, at the scan's cadence while the bot could enter or
+// is engaged, the local balance (PerfMonitor "WorldPvp balance")
 // EnemyPlayerValue::Calculate: true while the value can enter nothing (SkipsScan), so the bot skips the enemy-player
 // scan; attackers still reach it by its combat references
 bool ScanSkipped(PlayerbotAI* botAI);
 // NearestEnemyPlayersValue::AcceptUnit for a bot that starts by the rules: its pick, or an alive enemy player within
 // ScanYards it does not leave alone, not banned (Banned), whose join threshold and flee floor the value passes
 // (Enters). `refusal`: today's target check that failed on the enemy, nullptr when it is attackable, PvP-flagged and
-// seen
+// seen. A read: no pick, no row, no cost (WP39)
 bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal);
-// EnemyPlayerValue::Calculate on the enemy it returns: a new pick writes its fight_start or fight_join row and holds
-// for PICK_MS; false when the bot may not enter on it (any more)
+// AttackEnemyPlayerAction, after every refusal of the attack, on an enemy the bot is not in combat with: a new pick
+// writes its fight_start or fight_join row, in the start-cost share a start charges its cost, and the pick holds for
+// PICK_MS; false when the bot may not enter on it (any more): no attack
 bool NoteEntering(PlayerbotAI* botAI, Player* enemy);
 // PossibleTargetsValue::AcceptUnit: whether `unit` is the enemy this bot entered on (its pick)
 bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit);
