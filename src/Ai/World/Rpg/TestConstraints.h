@@ -15,8 +15,8 @@
 
 // A test's constraints on a bot (`playerbots route constraint|hold|release`, functional tests): named per-bot
 // switches, all rows of one table. A choice row is read where the bot already decides; a state row is applied on the
-// bot's map thread when it is set and undone when it is cleared (TravelOrders, NewRpgAction.cpp). Kept in
-// NewRpgInfo::constraints, not saved. Orders are taken before the idle gate, so a held bot runs an order and holds
+// bot's map thread when it is set and undone when it is cleared (TravelOrders, TestOrders.cpp). Kept in
+// PlayerbotAI::testConstraints, not saved. Orders are taken before the idle gate, so a held bot runs an order and holds
 // again when it ends. Player-free for the selftest. Adding a constraint: a row, its gate or apply/undo pair, and a
 // selftest line
 namespace TestConstraints
@@ -30,6 +30,10 @@ constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
 constexpr std::uint16_t FLYFAIL = 64;     // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
 constexpr std::uint16_t FLYABORT = 128;   // as flyfail, as the trip's last failure: the trip ends once the bot is down
 constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
+constexpr std::uint16_t NOTAXI = 512;     // plans no flight leg (travel WT55a: walk-only trips)
+// mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
+constexpr std::uint16_t NOMOUNT = 1024;
+constexpr std::uint16_t FLEE = 2048;  // in PvP combat it flees from the enemy players attacking it (world PvP)
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -56,6 +60,9 @@ constexpr Row ROWS[] = {
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
     {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
     {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
+    {"notaxi", Kind::State, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
+    {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
+    {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -154,7 +161,7 @@ inline bool HearthAllowed(std::uint16_t set) { return !(set & HEARTH); }
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
-// flyfail and flyabort, read by the fly leg's follower on a tick in the air (NewRpgAction.cpp; nothing to apply or
+// flyfail and flyabort, read by the fly leg's follower on a tick in the air (NewRpgRoute.cpp; nothing to apply or
 // undo): the leg fails as its timeout would, once the bot has flown half the leg's straight 2D length and is in the
 // air, so the failure lies where a test chose the leg's middle (over land, over water)
 inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, bool inTheAir)
@@ -164,9 +171,17 @@ inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, boo
 // flyabort: the failure finds the trip's replans spent (TravelLegs::AfterFailure, MAX_REPLANS), so the trip aborts and
 // comes down first (AbortDescent)
 inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
+// flee, read by the world PvP retreat trigger (WorldPvpStrategy.cpp); its apply and undo do nothing
+inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
 inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
+// notaxi, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no flight
+// master, so the route and the bot take no taxi (also after the bot learns a flight node on the way)
+inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
+// nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
+// random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
+inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

@@ -14,7 +14,7 @@
 
 #include "ArenaDefensiveConfig.h"
 #include "BotAttributes.h"
-#include "Common.h"
+#include "Define.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"
 #include "TacticGate.h"
@@ -513,7 +513,7 @@ struct DefensiveDeathLatch
     }
 };
 
-// The per-bot state (PlayerbotAI::GetDefensiveState; the bot's own update and its own casts only)
+// The per-bot state (BotTactics::GetDefensiveState; the bot's own update and its own casts only)
 struct DefensiveBotState
 {
     DefensiveParams Params;

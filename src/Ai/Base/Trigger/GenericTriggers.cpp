@@ -5,7 +5,11 @@
  */
 
 #include "GenericTriggers.h"
+
+#include <string>
+
 #include "ArenaInterrupt.h"
+#include "BotTactics.h"
 #include "Corpse.h"
 #include "CreatureAI.h"
 #include "DefensiveTacticStrategy.h"
@@ -24,7 +28,6 @@
 #include "ThreatManager.h"
 #include "Timer.h"
 #include "Upkeep.h"
-#include <string>
 
 bool LowManaTrigger::IsActive()
 {
@@ -427,7 +430,7 @@ bool InterruptSeesEndedBar(PlayerbotAI* botAI, Unit* target, std::string const& 
         target->IsNonMeleeSpellCast(true))
         return false;
 
-    InterruptBotState& state = botAI->GetInterruptState();
+    InterruptBotState& state = botAI->GetTactics().GetInterruptState();
     InterruptCastSlot* const slot = state.Latest(target->GetGUID().GetCounter());
     uint32 const nowMs = getMSTime();
     if (!slot ||
@@ -461,7 +464,7 @@ bool InterruptSpellTrigger::IsActive()
         return botAI->TacticEnabledHere(TacticId::Interrupt) && InterruptSeesEndedBar(botAI, target, getName());
 
     // G5b: with the Interrupt tactic on here, the kick waits for the bot's decision on the cast (ArenaInterrupt.h)
-    return !botAI->TacticEnabledHere(TacticId::Interrupt) || botAI->DecideInterrupt(target);
+    return !botAI->TacticEnabledHere(TacticId::Interrupt) || botAI->GetTactics().DecideInterrupt(target);
 }
 
 bool DeflectSpellTrigger::IsActive()

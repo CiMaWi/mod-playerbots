@@ -15,7 +15,7 @@
 #include "ObjectGuid.h"
 
 // One bot's state of the target hold and the team plan (G1b, PLAN 3.15), owned by its PlayerbotAI
-// (PlayerbotAI::GetFocusState). Touched by the bot's own update on its map thread; the GM commands (tactics show,
+// (BotTactics::GetFocusState). Touched by the bot's own update on its map thread; the GM commands (tactics show,
 // tactics force) read or write it on the world thread while the map threads wait, as SetPvpSkill does. There is no
 // team object: the team's only shared channel is its group's target icons (DT.1), skull = kill, moon = control.
 
@@ -126,8 +126,9 @@ struct FocusMatchState
     uint32 MoonReleases = 0;
 };
 
-// G4e: the focus target (ArenaFocusTarget.h), picked at the bot's checks (PlayerbotAI.cpp's FollowFocusTarget) while
-// the FocusTarget tactic is active and its Dexterity reaches the threshold; none otherwise, so a reader compares guids
+// G4e: the focus target (ArenaFocusTarget.h), picked at the bot's checks (ArenaFocusTarget.cpp's FollowFocusTarget)
+// while the FocusTarget tactic is active and its Dexterity reaches the threshold; none otherwise, so a reader compares
+// guids
 struct FocusTargetState
 {
     FocusTargetPick Pick;

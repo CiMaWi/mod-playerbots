@@ -14,6 +14,7 @@
 #include "ArenaCcSpells.h"
 #include "ArenaFocus.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "CcTacticStrategy.h"
 #include "FocusState.h"
 #include "Group.h"
@@ -214,7 +215,7 @@ uint8 FocusMatchMoonMode(Player* bot, FocusMatchState const& match)
 // FOCUS_REACH_SAMPLE_MAX_MS)
 void SampleSkullReach(PlayerbotAI* botAI)
 {
-    FocusHoldState& hold = botAI->GetFocusState().Hold;
+    FocusHoldState& hold = botAI->GetTactics().GetFocusState().Hold;
     uint32 const nowMs = getMSTime();
     if (!botAI->TacticEnabledHere(TacticId::Hold) || FocusBefore(nowMs, hold.ReachSampleMs + FOCUS_SIGHT_CHECK_MS))
         return;
@@ -224,7 +225,7 @@ void SampleSkullReach(PlayerbotAI* botAI)
     ObjectGuid const skull = group ? group->GetTargetIcon(FOCUS_ICON_SKULL) : ObjectGuid::Empty;
     Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
     if (skull.IsEmpty() || !current || current->GetGUID() != skull || !current->IsAlive() || !current->IsInWorld() ||
-        !botAI->TacticActive(TacticId::Hold))
+        !botAI->GetTactics().TacticActive(TacticId::Hold))
         return;
 
     uint32 const gap =
@@ -255,11 +256,11 @@ float TacticHoldMultiplier::GetValue(Action* action)
         return 1.0f;
 
     Unit* const candidate = action->GetTarget();
-    if (!candidate || candidate == current || !botAI->TacticActive(TacticId::Hold))
+    if (!candidate || candidate == current || !botAI->GetTactics().TacticActive(TacticId::Hold))
         return 1.0f;
 
     Player* const bot = botAI->GetBot();
-    FocusBotState& state = botAI->GetFocusState();
+    FocusBotState& state = botAI->GetTactics().GetFocusState();
     FocusHoldState& hold = state.Hold;
     uint32 const nowMs = getMSTime();
     ObjectGuid const currentGuid = current->GetGUID();
@@ -319,7 +320,7 @@ float TacticHoldMultiplier::GetValue(Action* action)
     // Health only (G1a review NOTE 6): skill 1's tunnel vision rests on a health advantage never reaching its
     // hysteresis of 100; no healer or trinket terms here
     input.Advantage = static_cast<int32>(input.TargetHpPct) - static_cast<int32>(input.CandidateHpPct);
-    input.SwitchCostMs = EaseCostMs(botAI->GetReactionTypes(), ReactionEase::NewTarget);
+    input.SwitchCostMs = EaseCostMs(botAI->GetTactics().GetReactionTypes(), ReactionEase::NewTarget);
     HoldResult const result = HoldDecision(input, nowMs, params, bot->GetGUID().GetCounter());
 
     // Off the skull only for a hard reason; in moon mode 2 also to a moon nobody controls (G1b-c)
@@ -357,7 +358,7 @@ float TacticHoldMultiplier::GetValue(Action* action)
 
 float TacticHoldMultiplier::Answer(ObjectGuid candidate, uint8 verdict, bool allow, uint32 nowMs)
 {
-    FocusHoldState& hold = botAI->GetFocusState().Hold;
+    FocusHoldState& hold = botAI->GetTactics().GetFocusState().Hold;
     if (candidate != hold.LastCandidate || verdict != hold.LastVerdict)
     {
         hold.LastCandidate = candidate;
@@ -368,7 +369,7 @@ float TacticHoldMultiplier::Answer(ObjectGuid candidate, uint8 verdict, bool all
         // tactics stats: the hold acts when it keeps the target; a switch it lets pass would happen without it
         if (!allow)
         {
-            botAI->NoteTacticUse(TacticId::Hold);
+            botAI->GetTactics().NoteTacticUse(TacticId::Hold);
             // G1b-d: the refusal's reason, once per refused candidate and answer (trace level: no cost below it)
             Player* const bot = botAI->GetBot();
             Unit* const current = AI_VALUE(Unit*, "current target");
@@ -430,7 +431,7 @@ bool PlanDueTrigger::IsActive()
     if (!FocusArenaInProgress(bg) || !group)
         return false;
 
-    FocusBotState& state = botAI->GetFocusState();
+    FocusBotState& state = botAI->GetTactics().GetFocusState();
     FocusMatchState& match = state.Match;
     uint32 const nowMs = getMSTime();
     if (match.MatchId != bg->GetInstanceID())
@@ -444,7 +445,7 @@ bool PlanDueTrigger::IsActive()
         SampleFocus(skullUnit, !skull.IsEmpty());
     }
 
-    if (!botAI->TacticActive(TacticId::Plan))
+    if (!botAI->GetTactics().TacticActive(TacticId::Plan))
         return false;
 
     // At once (once per event) when the marked kill target dies, leaves or turns immune
@@ -533,7 +534,7 @@ bool ArenaPlanAction::Execute(Event /*event*/)
     if (!bg || !group)
         return false;
 
-    FocusBotState& state = botAI->GetFocusState();
+    FocusBotState& state = botAI->GetTactics().GetFocusState();
     FocusMatchState& match = state.Match;
     uint32 const nowMs = getMSTime();
     match.NextPlanMs = nowMs + PlanIntervalMs(state);
@@ -705,7 +706,7 @@ bool ArenaPlanAction::Execute(Event /*event*/)
         match.ImmuneSinceMs = FocusForcedImmune(state, skull, nowMs) ? state.ForcedImmuneAtMs : nowMs;
     }
 
-    uint32 const switchCostMs = EaseCostMs(botAI->GetReactionTypes(), ReactionEase::NewTarget);
+    uint32 const switchCostMs = EaseCostMs(botAI->GetTactics().GetReactionTypes(), ReactionEase::NewTarget);
     PlanState const next =
         Decide(enemies.data(), count, prev, nowMs, match.Team, bot->GetGUID().GetCounter(), switchCostMs);
     bool const killChange = next.Kill != prev.Kill;
@@ -816,7 +817,7 @@ bool ArenaPlanAction::Execute(Event /*event*/)
     match.PlanKillGuid = killGuid;
     match.PendingEvent = RemarkEvent::None;
     match.PendingKill = FOCUS_NONE;
-    botAI->NoteTacticUse(TacticId::Plan);
+    botAI->GetTactics().NoteTacticUse(TacticId::Plan);
     return false;
 }
 

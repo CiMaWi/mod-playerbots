@@ -20,6 +20,7 @@
 #include "ArenaTeamMgr.h"
 #include "Battleground.h"
 #include "BattlegroundScore.h"
+#include "BotTactics.h"
 #include "Chat.h"
 #include "Log.h"
 #include "MatchTrace.h"
@@ -212,7 +213,7 @@ PvpTestBotRecord MakeBot(Player* player, bool count)
         if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
             bot.Skill = botAI->GetPvpSkill();
 
-        bot.CopyOf = botAI->GetAttributeTemplate();
+        bot.CopyOf = botAI->GetTactics().GetAttributeTemplate();
         if (count)
             botAI->SetPvpTestCounting(true);
     }
@@ -383,7 +384,7 @@ void FinishRecord(Battleground* bg, TeamId winnerTeam, bool counted, Capture& ca
             // A member that came late never counted: his counts are an older match's
             if (botAI && botAI->IsPvpTestCounting())
             {
-                bot.Casts = botAI->GetPvpTestExecuted();
+                bot.Casts = botAI->GetPvpTestCounters().Executed;
                 botAI->SetPvpTestCounting(false);
             }
         }
@@ -532,7 +533,7 @@ void MatchLog::OnLeave(Battleground* bg, Player* player)
     if (!capture->second.Counted)
         return;
 
-    capture->second.Leavers[player->GetGUID().GetCounter()] = botAI->GetPvpTestExecuted();
+    capture->second.Leavers[player->GetGUID().GetCounter()] = botAI->GetPvpTestCounters().Executed;
     botAI->SetPvpTestCounting(false);
 }
 

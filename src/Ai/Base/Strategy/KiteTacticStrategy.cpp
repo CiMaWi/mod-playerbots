@@ -12,6 +12,7 @@
 
 #include "ArenaCover.h"
 #include "Battleground.h"
+#include "BotTactics.h"
 #include "Event.h"
 #include "GridTerrainData.h"
 #include "Group.h"
@@ -61,12 +62,12 @@ KiteParams const& BotKiteParams(PlayerbotAI* botAI, Player* bot, KiteBotState& s
 
     KiteGateInputs in;
     in.Skill = botAI->GetPvpSkill();
-    in.FullAbility = in.Skill == 0 || botAI->HasFullSkillAbility();
-    in.Knowledge = botAI->GetAttribute(BotAttribute::Knowledge);
-    in.Foresight = botAI->GetAttribute(BotAttribute::Foresight);
-    in.Effort = botAI->GetSkillEffort();
-    in.Caution = botAI->GetAttribute(BotAttribute::Caution);
-    in.Patience = botAI->GetAttribute(BotAttribute::Patience);
+    in.FullAbility = in.Skill == 0 || botAI->GetTactics().HasFullSkillAbility();
+    in.Knowledge = botAI->GetTactics().GetAttribute(BotAttribute::Knowledge);
+    in.Foresight = botAI->GetTactics().GetAttribute(BotAttribute::Foresight);
+    in.Effort = botAI->GetTactics().GetSkillEffort();
+    in.Caution = botAI->GetTactics().GetAttribute(BotAttribute::Caution);
+    in.Patience = botAI->GetTactics().GetAttribute(BotAttribute::Patience);
     state.Params = ComputeKiteParams(sPlayerbotAIConfig.TacticKite, in);
     state.Ranged = PlayerbotAI::IsRanged(bot);
     state.ParamsMs = std::max(nowMs, 1u);
@@ -141,7 +142,8 @@ void WatchLosBreaks(PlayerbotAI* botAI, Player* bot, Battleground* bg, KiteBotSt
             int32 const pillar = table ? KiteNearestPillar(*table, gates, at) : -1;
             int32 const side = pillar >= 0 ? KiteSide(self, table->Pillars[pillar], at) : 0;
             uint32 const afterCcMs = KiteAfterCcMs(state.EnemyCcMs, nowMs);
-            botAI->GetOpponentMemory().NoteLosBreak(unit->GetGUID().GetCounter(), pillar, side, afterCcMs, nowMs);
+            botAI->GetTactics().GetOpponentMemory().NoteLosBreak(unit->GetGUID().GetCounter(), pillar, side, afterCcMs,
+                                                                 nowMs);
             ++state.LosBreaksSeen;
             LOG_TRACE("playerbots",
                       "Kite: {} saw {} break line of sight at pillar {} (side {}), {} ms after a crowd control, map "
@@ -373,7 +375,7 @@ float TacticKiteMultiplier::GetValue(Action* action)
     if (!target || !target->ToPlayer())
         return 1.0f;
 
-    KiteBotState& state = botAI->GetKiteState();
+    KiteBotState& state = botAI->GetTactics().GetKiteState();
     KiteBattleground(bot, state);
     return BotKiteParams(botAI, bot, state, getMSTime()).Known ? 0.0f : 1.0f;
 }
@@ -386,7 +388,7 @@ bool MeleeOnMeTrigger::IsActive()
         return false;
 
     uint32 const nowMs = getMSTime();
-    KiteBotState& state = botAI->GetKiteState();
+    KiteBotState& state = botAI->GetTactics().GetKiteState();
     Battleground* bg = KiteBattleground(bot, state);
     KiteParams const& params = BotKiteParams(botAI, bot, state, nowMs);
     if (!state.Ranged || !bot->IsAlive() || KiteIdle(bg))
@@ -402,7 +404,7 @@ bool MeleeOnMeTrigger::IsActive()
                   bot->GetName(), params.GiveUpMs, state.Episodes, state.Steps, botAI->GetPvpSkill(), nowMs);
 
     state.LastWhy = KiteTriggerVerdict(params, state, meleeOn, bot->HasUnitState(UNIT_STATE_LOST_CONTROL), nowMs);
-    if (state.LastWhy != KiteWhy::Go || !botAI->TacticActive(TacticId::Kite))
+    if (state.LastWhy != KiteWhy::Go || !botAI->GetTactics().TacticActive(TacticId::Kite))
         return false;
 
     state.LastTryMs = std::max(nowMs, 1u);
@@ -413,7 +415,7 @@ bool MeleeOnMeTrigger::IsActive()
 
 bool KiteStepAction::isUseful()
 {
-    KiteBotState const& state = botAI->GetKiteState();
+    KiteBotState const& state = botAI->GetTactics().GetKiteState();
     return state.Due && getMSTime() - state.DueMs < LOS_DUE_MS && bot->IsAlive();
 }
 
@@ -422,7 +424,7 @@ bool KiteStepAction::isUseful()
 bool KiteStepAction::Execute(Event /*event*/)
 {
     uint32 const nowMs = getMSTime();
-    KiteBotState& state = botAI->GetKiteState();
+    KiteBotState& state = botAI->GetTactics().GetKiteState();
     state.Due = false;
     Unit* chaser = ObjectAccessor::GetUnit(*bot, ObjectGuid(state.ChaserGuid));
     if (!chaser || !chaser->IsAlive() || !chaser->IsInWorld() || chaser->GetMap() != bot->GetMap())
@@ -480,8 +482,8 @@ bool KiteStepAction::Execute(Event /*event*/)
 
                 std::array<KiteHide, KITE_MAX_HIDES> hides{};
                 uint32 const hideCount = state.Params.Memory
-                                             ? KiteHidesFrom(botAI->GetOpponentMemory(), nowMs, config.MemoryWindowMs,
-                                                             hides.data(), KITE_MAX_HIDES)
+                                             ? KiteHidesFrom(botAI->GetTactics().GetOpponentMemory(), nowMs,
+                                                             config.MemoryWindowMs, hides.data(), KITE_MAX_HIDES)
                                              : 0;
                 pillarPick = PickKitePillar(*table, ArenaCoverActiveGates(bg), self, chaserAt, stepYards,
                                             static_cast<float>(config.PillarMaxYards),
@@ -546,7 +548,7 @@ bool KiteStepAction::Execute(Event /*event*/)
         ++state.Snares;
         botAI->CountTactic(TacticCounter::KiteSteps);
         botAI->CountTactic(TacticCounter::KiteSnares);
-        botAI->NoteTacticUse(TacticId::Kite);
+        botAI->GetTactics().NoteTacticUse(TacticId::Kite);
         LOG_TRACE("playerbots", "Kite: {} snares {} with {} at {:.1f} yd (episode {}), skill {}, at {} ms",
                   bot->GetName(), chaser->GetName(), row.Spell, state.ChaserYards, state.Episodes, botAI->GetPvpSkill(),
                   nowMs);
@@ -565,7 +567,7 @@ bool KiteStepAction::Execute(Event /*event*/)
     state.LastStepMs = std::max(nowMs, 1u);
     ++state.Steps;
     botAI->CountTactic(TacticCounter::KiteSteps);
-    botAI->NoteTacticUse(TacticId::Kite);
+    botAI->GetTactics().NoteTacticUse(TacticId::Kite);
     float bendDeg = stepPoint.BendDeg;
     int32 pillar = -1;
     if (move == KiteMove::Pillar)

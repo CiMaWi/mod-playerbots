@@ -18,6 +18,7 @@
 
 #include "AcquaintanceMgr.h"
 #include "AsyncCallbackProcessor.h"
+#include "BotKind.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
@@ -1720,6 +1721,7 @@ void Population::LoadConfig(bool reload)
 {
     bool const persistent = sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false);
     s_persistent.store(persistent, std::memory_order_relaxed);
+    BotKind::LoadLivingWorld();
 
     LOG_INFO("playerbots", "[Population] {}Playerbots.Population.Persistent = {}{}", reload ? "reload: " : "",
              persistent ? 1 : 0, persistent ? " (bot levels never go down)" : "");
@@ -2052,8 +2054,8 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     PopulationPolicy::RotationTickResult const& last = rotation.last;
     uint32 const now = Now();
 
-    handler->PSendSysMessage("Population: persistent {}, rotation {}; roster {} characters (RosterSize {}), cap {}",
-                             IsPersistent() ? "on" : "off", IsRotation() ? "on" : "off", rotation.roster.size(),
+    handler->PSendSysMessage("Population: living world {}, rotation {}; roster {} characters (RosterSize {}), cap {}",
+                             BotKind::LivingWorld() ? "on" : "off", IsRotation() ? "on" : "off", rotation.roster.size(),
                              rotation.rosterSize, settings.cap);
     handler->PSendSysMessage(
         "Settings: interval {} s, mean session {} min, min session {} min, acquainted share {} % (score >= {})",

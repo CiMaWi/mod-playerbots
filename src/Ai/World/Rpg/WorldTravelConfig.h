@@ -8,7 +8,7 @@
 #define _PLAYERBOT_WORLDTRAVELCONFIG_H
 
 #include "Define.h"
-#include "ItemWorthRules.h"
+#include "ItemWorthTypes.h"
 
 // The numbers of honest world travel for persistent bots (Playerbots.WorldTravel.*), read once at config load
 // (PlayerbotAIConfig::WorldTravel); the initial values are the conf.dist defaults. Kept apart from PlayerbotAIConfig.h

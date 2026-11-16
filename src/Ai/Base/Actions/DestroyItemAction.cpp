@@ -77,7 +77,7 @@ bool DestroyItemAction::DestroyOne(Item* item)
 // A test's nodestroy bot destroys nothing on its own (TestConstraints::DestroysForSpace)
 bool SmartDestroyItemAction::isUseful()
 {
-    return !IsRealPlayer(botAI->GetMaster()) && TestConstraints::DestroysForSpace(botAI->rpgInfo.constraints);
+    return !botAI->HasGameClientMaster() && TestConstraints::DestroysForSpace(botAI->testConstraints);
 }
 
 bool SmartDestroyItemAction::Execute(Event /*event*/)
@@ -128,7 +128,7 @@ bool SmartDestroyItemAction::Execute(Event /*event*/)
 
 bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
 {
-    if (!TestConstraints::DestroysForSpace(botAI->rpgInfo.constraints))
+    if (!TestConstraints::DestroysForSpace(botAI->testConstraints))
         return false;
 
     // Gear kept for a later level counts at its later worth, from what the bags hold now

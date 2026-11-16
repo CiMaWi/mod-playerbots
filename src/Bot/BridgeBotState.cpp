@@ -12,7 +12,9 @@
 #include <thread>
 
 #include "Bag.h"
+#include "BankMailService.h"
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "BotRecordMgr.h"
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
@@ -34,7 +36,6 @@
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "RecordWords.h"
@@ -160,13 +161,12 @@ void ReadSpells(Player* bot, std::vector<BotStateItem>& items)
         items.push_back(std::move(spell.second));
 }
 
-// The planner topics read the view the bot's map thread published; out of the planner's scope (a real master, not
-// persistent, Planner.Goals off) the planner sets no goal, so they show none
+// The planner topics read the view the bot's map thread published; out of the planner's scope (a master at a game
+// client, not persistent, Planner.Goals off) the planner sets no goal, so they show none
 Topics::PlanInput PlanInputOf(Player* bot, PlayerbotAI* ai)
 {
     Topics::PlanInput in;
-    in.inScope = sPlayerbotAIConfig.WorldTravel.PlannerGoals && !ai->HasGameClientMaster() &&
-                 PlayerbotFactory::KeepsPossessions(bot);
+    in.inScope = sPlayerbotAIConfig.WorldTravel.PlannerGoals && ai->KeepsPossessions();
     in.seen = in.inScope && Planner::PublishedPlan(bot->GetGUID().GetRawValue(), in.view);
     in.nowMs = getMSTime();
     in.x = bot->GetPositionX();
@@ -192,11 +192,11 @@ void ReadBags(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
             in.slots += bag->GetBagSize();
     in.plan = &plan;
     // Stored knowledge only (WB.4: how much mail waits, never what is inside), as the WB2 and WB5 commands read it
-    BankMail::BotBankMail const& known = ai->rpgInfo.bankMail;
+    BankMail::BotBankMail const& known = ai->bankMail;
     in.mailWaiting = BankMail::CountWaitingMail(bot);
     in.mailSeenCopper = known.mail.seenCopper;
     in.mailExpectedCopper = known.mail.expectedCopper;
-    in.keepsPossessions = PlayerbotFactory::KeepsPossessions(bot);
+    in.keepsPossessions = BotKind::KeepsPossessions(bot);
     if (in.keepsPossessions)
     {
         auto const addKept = [&](uint32 entry, uint8 dueLevel, bool inBank)

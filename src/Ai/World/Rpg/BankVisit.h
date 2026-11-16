@@ -20,7 +20,7 @@ class PlayerbotAI;
 // A persistent bot's banker visit (bank-mail plan, PLAN §3.5): walk into reach of a banker, withdraw what is due or
 // no longer kept, deposit what is kept (BankRules.h), equip, finish. Items move in place on the bot's map thread
 // through the core's own checks (CanStoreItem, CanBankItem), as the core's bank handlers do; no packet is queued, so
-// the plan is recomputed from the live bags and bank before every move. The state is NewRpgInfo::bankMail.bankVisit
+// the plan is recomputed from the live bags and bank before every move. The state is PlayerbotAI::bankMail.bankVisit
 // (BankMailState.h); every end writes its row (VisitLifecycle.h).
 //
 // Used by the GM command and, later, the trips (signatures kept stable):

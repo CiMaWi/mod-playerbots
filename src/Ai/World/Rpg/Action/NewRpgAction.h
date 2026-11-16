@@ -22,6 +22,11 @@
 
 class Player;
 
+namespace TravelLegs
+{
+struct Decision;  // TravelLegRules.h
+}
+
 class TellRpgStatusAction : public NewRpgBaseAction
 {
 public:
@@ -132,6 +137,12 @@ public:
 
     // A vendor that walks along its route stays within this distance of its spawn point
     static constexpr float VENDOR_SEARCH_YARDS = 30.0f;
+
+    // Tame Beast's channel on the bot's AI update (WU21b-2): the bot is in combat through it, so the errand action
+    // does not run. True while the channel holds: the bot stands and channels, its AI waits (no attack of the beast
+    // it tames); below the break-off health the channel is broken off and the bot fights (false). Without the channel,
+    // in the fight of a beast that broke it (stun, knockback): true while it is cast again (TameRecastsInFight)
+    static bool HoldTameChannel(PlayerbotAI* botAI);
 };
 
 // Follows the trip's route leg by leg (RPG_TRAVEL): asks the route service, walks the waypoints, takes portals; a
@@ -148,6 +159,7 @@ private:
     bool RequestRoute(NewRpgInfo::Travel& data);
     bool TakeRoute(NewRpgInfo::Travel& data);
     bool UsePortal(NewRpgInfo::Travel& data);
+    bool UseStaticPortal(NewRpgInfo::Travel& data);
     bool TalkFlightMaster(NewRpgInfo::Travel& data);
     bool UseHearth(NewRpgInfo::Travel& data);
     bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
@@ -156,7 +168,7 @@ private:
     bool Arrive(NewRpgInfo::Travel& data, bool stuck = false);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
-    void EndTrip(NewRpgInfo::Travel& data, char const* why, char const* source);
+    void EndTrip(NewRpgInfo::Travel& data, StatusEnd::Outcome outcome, char const* why, char const* source);
 };
 
 // Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its
@@ -168,34 +180,9 @@ public:
     bool Execute(Event event) override;
 };
 
-// GM orders for tests (`playerbots route go|stop|transport|constraint|hold|release|aboard`): the command posts on the
-// world thread, the bot's map thread takes its order at its next AI update, ahead of the AI's delays (TakeAndApply
-// from PlayerbotAI::UpdateAI: one atomic load per update while no order waits for the bot; an order that moves the
-// bot waits until it is out of combat, a constraint change never). A bot outside the new rpg strategy refuses its
-// order; an order not taken within a minute (the bot logged out or kept fighting) is dropped
-struct TravelOrder
-{
-    WorldPosition dest{};
-    std::string place;  // the name in the log lines
-    bool stop{false};   // end the bot's trip instead
-    uint32 postedMs{0};
-    uint16 on{0};  // TestConstraints bits set, then those cleared (`off`), before anything else of the order
-    uint16 off{0};
-    uint32 aboard{0};  // `route aboard`: the transport entry to stand the bot on; 0 = none
-};
-
 // A trip at a transport leg past its approach (waiting at the dock, boarding, aboard, walking off) keeps the bot on
 // foot: the boarding and exit moves dismount it, and the mount check would mount it again before the next one (WT54)
 bool TravelKeepsOnFoot(PlayerbotAI* botAI);
-
-namespace TravelOrders
-{
-void Post(PlayerbotAI* botAI, TravelOrder order);
-bool TakeAndApply(PlayerbotAI* botAI, Player* bot);  // on the bot's map thread: the order taken and applied
-// The bot's state constraints applied again (a pet summoned since gets nofight); map thread, at every AI update of a
-// bot with a state row set
-void KeepConstraints(Player* bot, uint16 constraints);
-}  // namespace TravelOrders
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction
 {

@@ -10,7 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "BankMailService.h"
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "Chat.h"
 #include "Log.h"
 #include "MailRulesInput.h"
@@ -21,7 +23,6 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 #include "Playerbots.h"
 #include "Timer.h"
 
@@ -54,7 +55,7 @@ bool HandleMailStatusCommand(ChatHandler* handler, char const* args)
 
     // Read only, on the world thread (BankMailState.h's rule for the mail list): the knowledge is printed as stored,
     // the waiting count is also counted again now
-    MailKnowledge const& known = botAI->rpgInfo.bankMail.mail;
+    MailKnowledge const& known = botAI->bankMail.mail;
     BankMailConfig const& config = sPlayerbotAIConfig.BankMail;
     uint32 const errand = MailErrandWorth(known.waiting, config.MailDefaultWorthCopper, known.seenCopper,
                                           known.expectedCopper, DEFAULT_ORDERLINESS_WEIGHT);
@@ -65,7 +66,7 @@ bool HandleMailStatusCommand(ChatHandler* handler, char const* args)
         errand, bot->GetMails().size(),
         known.refreshedMs ? std::to_string(getMSTimeDiff(known.refreshedMs, getMSTime()) / IN_MILLISECONDS) + " s ago"
                           : std::string("never"),
-        PlayerbotFactory::KeepsPossessions(bot) ? "yes" : "no");
+        BotKind::KeepsPossessions(bot) ? "yes" : "no");
 
     BagSpace const space = BuildBagSpace(bot);
     VisitPlan const plan = PlanMailVisit(BuildMailIn(botAI), space, BuildMailOptions());
@@ -99,14 +100,14 @@ bool HandleMailVisitCommand(ChatHandler* handler, char const* args)
 
     // Lab fixtures, arena bots and bots with a real master keep today's behaviour (the chat command `mail`)
     char const* refusal = nullptr;
-    if (!PlayerbotFactory::KeepsPossessions(bot))
+    if (!BotKind::KeepsPossessions(bot))
         refusal = "the bot does not keep its possessions (not a persistent bot)";
     else if (!bot->IsAlive())
         refusal = "the bot is dead";
     else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
         refusal = "the bot has no new rpg strategy";
     else
-        refusal = VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Mail);
+        refusal = VisitStartRefusal(botAI->bankMail, VisitKind::Mail);
     // World thread, between the map updates: the bot's place and its visit state are read and set at rest
     std::optional<MailboxSpot> const spot = refusal ? std::nullopt : FindMailboxSpot(bot, refusal);
     // A test command (WB.12): the bot stands near a mailbox; getting to a far one is the travel errand's job

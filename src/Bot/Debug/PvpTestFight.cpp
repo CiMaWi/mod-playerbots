@@ -15,7 +15,6 @@
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DBCStores.h"
-#include "FightBook.h"
 #include "Group.h"
 #include "Log.h"
 #include "MatchLog.h"
@@ -31,6 +30,7 @@
 #include "StringFormat.h"
 #include "World.h"
 #include "WorldPacket.h"
+#include "WorldPvp.h"
 #include "WorldSession.h"
 
 using namespace PvpTestUtil;
@@ -132,7 +132,8 @@ void Aim(Player* player, Player* target)
     if (!botAI)
         return;
 
-    // World PvP (WP.6): the fight book tags fights of forced fighters pvptest, so the checks leave them out
+    // World PvP (WP.6): forced fighters keep today's attack on sight and their engaged rows are tagged pvptest, so
+    // the rules and the checks leave them out
     WorldPvp::MarkForced(player->GetGUID());
     WorldPvp::MarkForced(target->GetGUID());
     player->SetSelection(target->GetGUID());
@@ -1041,9 +1042,10 @@ void PvpTestFightJob::CaptureStats()
         Player* player = ObjectAccessor::FindConnectedPlayer(_members[index]);
         if (PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr)
         {
-            bot.Casts = botAI->GetPvpTestExecuted();
-            bot.Cc = botAI->GetPvpTestCc();
-            bot.Tactics = botAI->GetPvpTestTactics();
+            PvpTestCounterBlock const& counters = botAI->GetPvpTestCounters();
+            bot.Casts = counters.Executed;
+            bot.Cc = counters.Cc;
+            bot.Tactics = counters.Tactics;
         }
     }
 }

@@ -7,42 +7,29 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
-#include <array>
-#include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 
-#include "BankMailState.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
 #include "Strategy.h"
 #include "Timer.h"
-#include "TravelLegRules.h"
-#include "TravelLifecycle.h"
+#include "TravelLegTypes.h"
+#include "TravelLifecycleTypes.h"
 #include "TravelMgr.h"
-#include "TravelProgress.h"
-#include "WorldTravelRules.h"
+#include "TravelProgressState.h"
 
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
 class Player;
 
-namespace Planner::GoalApply
-{
-struct BotGoals;  // GoalInterface.h
-}
-
 struct NewRpgInfo
 {
     NewRpgInfo() : data(Idle{}) {}
     ~NewRpgInfo() = default;
-
-    // The bot it belongs to (PlayerbotAI sets it): the world log's Status rows; null in a copy of no bot
-    Player* bot{nullptr};
 
     // RPG_GO_GRIND
     struct GoGrind
@@ -126,18 +113,6 @@ struct NewRpgInfo
         {
             return trip.legIdx < trip.legs.size() ? &trip.legs[trip.legIdx] : nullptr;
         }
-
-        bool HasWalkTarget() const
-        {
-            auto const* leg = CurrentLeg();
-            return leg ? leg->type == TravelRoute::LegType::Walk : bindInn;
-        }
-
-        bool PassengerOwnsProgress() const
-        {
-            auto const* leg = CurrentLeg();
-            return passengerMotion || trip.offFirst.sinceMs || (leg && leg->type == TravelRoute::LegType::Transport);
-        }
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
     // every errand assigned there: sell, buy (a bag by worth, the shopping list) and repair at its vendor, turn in
@@ -155,6 +130,31 @@ struct NewRpgInfo
         uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
         bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
         bool trainerWeapon{false};  // a weapon master (WU15a)
+        uint32 tameEntry{0};        // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
+        // The tame at the stop (WU21b-2): the beast picked, the casts made, a cast whose channel's end is still to be
+        // read, when the bot arrived or its last channel ended (the rest before a new try), the last cast and the
+        // last AI update that saw its channel run (the channel's length in the channel_broken row)
+        ObjectGuid tameBeast;
+        uint8 tameTries{0};
+        bool tameCast{false};
+        uint32 tameSinceMs{0};
+        uint32 tameCastMs{0};
+        uint32 tameSeenMs{0};
+        uint32 tamePickMs{0};  // the reach bound's start past the rest, kept by a new pick (TameReachStartMs)
+        // The site and the respawn (WU.23): the threats fought at the cast (TAME_MAX_CLEARS), a fight to clear one
+        // whose end starts the rest and reach bounds again; the first wait for a respawn, the wait's end after it
+        uint8 tameClears{0};
+        bool tameClearing{false};
+        uint32 tameWaitFirstMs{0};
+        uint32 tameWaitUntilMs{0};
+        // The stable at this stop (WU21c): the stable master's entry, the wanted beast and its spawn for the tame stop
+        // the visit puts after this one, the wait for the pet to come back after a dismount; tameStabled on that
+        // tame stop: the old pet's entry (its PetTamed src stabled; only wanted families are tamed there)
+        uint32 stableEntry{0};
+        uint32 stableBeast{0};
+        WorldPosition stableBeastAt{};
+        uint32 stableSinceMs{0};
+        uint32 tameStabled{0};
         std::vector<ErrandTurnIn> turnIns;
         // The bank and mail errands of the stop (WB8b), each cleared when its visit starts: a banker visit before
         // the vendor part when it withdraws (it deposits in the same visit), after it when it only deposits; the
@@ -179,51 +179,7 @@ struct NewRpgInfo
     {
     };
 
-    uint32 startT{0};     // start timestamp of the current status
-    uint32 lastInnMs{0};  // the last inn errand check (WorldTravel::InnCheckDue); 0 = never
-    uint16 constraints{0};  // a test's constraints (TestConstraints bits, `playerbots route constraint`); not saved
-    std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
-    uint32 routeRequests{0};  // the bot's route request ids (TravelRoute::Snapshot::requestId), across trips
-    // The planner's view of the bot (Planner::PlannerHook, PlannerService.cpp); a reset only costs a new snapshot
-    struct PlannerState
-    {
-        uint32 stateVersion{0};    // counts the bot's situation changes; a result of an older version is not used
-        uint32 stateKey{0};        // level, zone, life and group as last seen
-        uint32 lastSnapshotMs{0};  // 0 = none yet
-        bool snapshotDue{true};    // the situation changed or a goal ended since the last snapshot
-        bool wasIdle{false};
-        bool pending{false};  // a job is out; its result is taken before the next one is submitted
-        std::shared_ptr<Planner::GoalApply::BotGoals> goals;  // the goal and plan of a planner bot (WT16)
-    };
-    PlannerState planner;
-    // Mail and bank knowledge and visits (BankMailState.h); Reset() keeps it, so a visit survives a status change;
-    // a far teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
-    BankMail::BotBankMail bankMail;
-
-    // MOVE_FAR
-    float nearestMoveFarDis{FLT_MAX};
-    uint32 stuckTs{0};
-    uint32 stuckAttempts{0};
-    WorldPosition moveFarPos;
-    // The destination given up after the last Stuck event, avoided for WorldTravel.StuckAvoidSeconds
-    WorldPosition stuckAvoidPos;
-    uint32 stuckAvoidTs{0};
-    WorldPosition stuckBotPos;  // where the bot stood at that Stuck event
-    uint32 stuckRepeats{0};     // give-ups in a row at the same obstacle (WorldTravel::NextStuckRepeats)
-    WorldPosition offMeshPos;   // where the last off-mesh recovery left the bot (seen, no_poly): it backs off there
-    uint32 offMeshTs{0};        // its time; 0 = none (WorldTravel::OffMeshBackoff)
-    // END MOVE_FAR
-
-    // GHOST (SpiritHealerAction): the last spirit healer search and the last fallback teleport
-    uint32 ghostHealerTs{0};
-    uint32 ghostTeleportTs{0};
-
-    // QUEST GIVER
-    ObjectGuid questGiver;  // giver the bot is walking to or talking with
-    uint32 questGiverSince{0};
-    uint32 questGiverLastTry{0};
-    GuidSet ignoredQuestGivers;  // skipped until the next IDLE
-    // END QUEST GIVER
+    uint32 startT{0};  // start timestamp of the current status
 
     using RpgData = std::variant<
         Idle,
@@ -244,124 +200,13 @@ struct NewRpgInfo
     NewRpgStatus GetStatus();
     static NewRpgStatus StatusFromString(std::string const& name);
     bool HasStatusPersisted(uint32 maxDuration) { return GetMSTimeDiffToNow(startT) > maxDuration; }
-    void ChangeToGoGrind(WorldPosition pos);
-    void ChangeToGoCamp(WorldPosition pos);
-    void ChangeToWanderNpc();
-    void ChangeToWanderRandom();
-    void ChangeToDoQuest(uint32 questId, Quest const* quest);
-    void ChangeToTravelFlight(uint32 flightMasterEntry, WorldPosition flightMasterPos, std::vector<uint32> path);
-    void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
-    void ChangeToDoGather();
-    void ChangeToRest();
-    void ChangeToTravel(WorldPosition dest, std::string place = {});
-    void ChangeToErrands(std::vector<ErrandStop> stops, uint32 money);
-    void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);
-    void Reset();
-    void ResetState(bool farTeleport);
-    void SetMoveFarTo(WorldPosition pos);
     std::string ToString();
 
 private:
-    void DiscardPassengerMove();
-    void ReplaceStatus(RpgData replacement);
-};
-
-enum class QuestDropReason : uint8
-{
-    Trivial,
-    NotWorth,
-    NotCapable,
-    Failed,
-    OtherZone,
-    ClassOrHoliday,
-    LogFull,
-    Count
-};
-
-enum class QuestAbandonReason : uint8
-{
-    NoProgress,
-    CannotTurnIn,
-    Count
-};
-
-inline char const* QuestDropReasonName(QuestDropReason reason)
-{
-    switch (reason)
-    {
-        case QuestDropReason::Trivial:
-            return "trivial";
-        case QuestDropReason::NotWorth:
-            return "not_worth";
-        case QuestDropReason::NotCapable:
-            return "not_capable";
-        case QuestDropReason::Failed:
-            return "failed";
-        case QuestDropReason::OtherZone:
-            return "other_zone";
-        case QuestDropReason::ClassOrHoliday:
-            return "class_or_holiday";
-        case QuestDropReason::LogFull:
-            return "log_full";
-        default:
-            return "unknown";
-    }
-}
-
-inline char const* QuestAbandonReasonName(QuestAbandonReason reason)
-{
-    switch (reason)
-    {
-        case QuestAbandonReason::NoProgress:
-            return "no_progress";
-        case QuestAbandonReason::CannotTurnIn:
-            return "cannot_turn_in";
-        default:
-            return "unknown";
-    }
-}
-
-struct QuestCounters
-{
-    uint32 accepted{0};
-    uint32 completed{0};
-    uint32 rewarded{0};
-    std::array<uint32, static_cast<size_t>(QuestDropReason::Count)> dropped{};
-    std::array<uint32, static_cast<size_t>(QuestAbandonReason::Count)> abandoned{};
-};
-
-struct NewRpgStatistic
-{
-    uint32 questAccepted{0};
-    uint32 questCompleted{0};
-    uint32 questAbandoned{0};
-    uint32 questRewarded{0};
-    uint32 questDropped{0};
-    // Filled only while CollectDetailedQuestStats is enabled.
-    std::unordered_map<uint32, QuestCounters> byQuest;
-
-    NewRpgStatistic& operator+=(NewRpgStatistic const& other)
-    {
-        questAccepted += other.questAccepted;
-        questCompleted += other.questCompleted;
-        questAbandoned += other.questAbandoned;
-        questRewarded += other.questRewarded;
-        questDropped += other.questDropped;
-
-        for (auto const& [questId, counters] : other.byQuest)
-        {
-            QuestCounters& target = byQuest[questId];
-            target.accepted += counters.accepted;
-            target.completed += counters.completed;
-            target.rewarded += counters.rewarded;
-            for (size_t i = 0; i < target.dropped.size(); ++i)
-                target.dropped[i] += counters.dropped[i];
-            for (size_t i = 0; i < target.abandoned.size(); ++i)
-                target.abandoned[i] += counters.abandoned[i];
-        }
-        return *this;
-    }
+    friend struct RpgStatusCore;  // the status core (NewRpgStatusEnd.cpp): a status ends and starts only there
+    void DiscardPassengerMove(Player* bot);
+    void ReplaceStatus(Player* bot, RpgData replacement);
 };
 
 #endif

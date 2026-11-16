@@ -5,6 +5,7 @@
  */
 
 #include "FollowActions.h"
+#include "BotTravel.h"
 #include "Event.h"
 #include "Formations.h"
 #include "LastMovementValue.h"
@@ -128,7 +129,7 @@ bool FollowAction::Execute(Event /*event*/)
 
         if (transport && map && bot->GetTransport() != transport)
         {
-            if (botAI->ReconcileFollowPassenger(*transport))
+            if (botAI->GetTravel().ReconcileFollowPassenger(*transport))
                 return true;
 
             float const boardingAssistDistance = 60.0f;

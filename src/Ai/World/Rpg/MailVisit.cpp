@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "BankMailService.h"
 #include "BankMailState.h"
 #include "CensusMgr.h"
 #include "GameObject.h"
@@ -138,7 +139,7 @@ void WriteMailRows(Player* bot, MailVisitState const& visit, VisitPlan const& la
 
 void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end, VisitPlan const* last)
 {
-    MailVisitState& visit = botAI->rpgInfo.bankMail.mailVisit;
+    MailVisitState& visit = botAI->bankMail.mailVisit;
     char const* how = VisitEndWord(VisitKind::Mail, end);
     VisitPlan computed;
     if (!last && visit.planned)
@@ -158,7 +159,7 @@ void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end, VisitPlan const* la
               bot->GetName(), how, visit.mailsOpened, visit.moneyTaken, visit.itemsTaken, itemsLeft,
               getMSTimeDiff(visit.startedMs, getMSTime()) / IN_MILLISECONDS);
 
-    MailKnowledge& known = botAI->rpgInfo.bankMail.mail;
+    MailKnowledge& known = botAI->bankMail.mail;
     if (last)
         known.seenCopper = last->seenAfter;
     RefreshMailKnowledge(bot, known);
@@ -232,12 +233,13 @@ std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal)
 
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
 {
-    if (!botAI || VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Mail))
+    if (!botAI || VisitStartRefusal(botAI->bankMail, VisitKind::Mail))
         return false;
 
-    MailVisitState& visit = botAI->rpgInfo.bankMail.mailVisit;
+    MailVisitState& visit = botAI->bankMail.mailVisit;
     visit = MailVisitState{};
     visit.phase = MailVisitPhase::Walk;
+    botAI->AddWork(BotWork::Visit);
     visit.mapId = spot.mapId;
     visit.x = spot.x;
     visit.y = spot.y;
@@ -255,10 +257,10 @@ MailVisitStep StepMailVisit(PlayerbotAI* botAI)
 {
     MailVisitStep step;
     Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot || botAI->rpgInfo.bankMail.mailVisit.phase == MailVisitPhase::None)
+    if (!bot || botAI->bankMail.mailVisit.phase == MailVisitPhase::None)
         return step;
 
-    MailVisitState& visit = botAI->rpgInfo.bankMail.mailVisit;
+    MailVisitState& visit = botAI->bankMail.mailVisit;
     step.result = MailVisitResult::Ended;
     if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
     {
@@ -356,7 +358,7 @@ MailVisitStep StepMailVisit(PlayerbotAI* botAI)
 void EndMailVisit(PlayerbotAI* botAI, VisitEnd end)
 {
     Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (bot && botAI->rpgInfo.bankMail.mailVisit.phase != MailVisitPhase::None)
+    if (bot && botAI->bankMail.mailVisit.phase != MailVisitPhase::None)
         EndVisit(botAI, bot, end, nullptr);
 }
 

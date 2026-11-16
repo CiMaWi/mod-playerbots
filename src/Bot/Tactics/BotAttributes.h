@@ -12,7 +12,8 @@
 #include <cmath>
 #include <string>
 
-#include "Common.h"
+#include "BotAttributeTypes.h"
+#include "Define.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"
 #include "TacticGate.h"
@@ -29,113 +30,6 @@
 // attributes drives them with synthetic guids and skills. PlayerbotAI::SetPvpSkill caches the values once per skill
 // load: no per-tick cost, no generator state. Hidden like the skill: only GM commands and measurement records
 // show them.
-
-// The abilities (Speed to Grit, on the skill's 1-99 scale), then the personality traits (0-100, 50 neutral)
-enum class BotAttribute : uint8
-{
-    Speed,       // reaction time: the natural reaction's draw, D3's stretch, D4's notice delay
-    Wisdom,      // judgement, how deeply a bot thinks (G0h3, the tactics)
-    Focus,       // attention and load: D4's miss share
-    Dexterity,   // mechanics: rare buttons, target switches, focus targets
-    Foresight,   // anticipation, in-match learning, prediction
-    Knowledge,   // which tactics the bot knows (G0g's threshold test)
-    Discipline,  // how often it uses what it knows (G0g's use chance)
-    Grit,        // how hard it tries (G0g's effort)
-    Aggression,
-    Caution,
-    Patience,
-    Teamwork,  // peel, follow the team target, share crowd control vs play its own game
-    Count
-};
-
-constexpr uint32 BOT_ATTRIBUTE_COUNT = static_cast<uint32>(BotAttribute::Count);
-constexpr uint32 BOT_ABILITY_COUNT = static_cast<uint32>(BotAttribute::Aggression);
-
-// DT.14 (the user, 2026-10-30): practice (G6b) grows the stored skill; the learnable attributes read the grown skill
-// (Half: halfway between the first roll and it), the fixed ones the first roll, which the guid hash reproduces. G0j has
-// no growth: SetPvpSkill passes the stored skill as both, so the flag changes nothing yet.
-enum class AttributeLearnable : uint8
-{
-    Full,
-    Half,
-    Fixed
-};
-
-struct BotAttributeDefinition
-{
-    char const* Name;   // the config key part (Playerbots.Skill.Attributes.Loading.<Name>)
-    char const* Label;  // GM output
-    AttributeLearnable Learnable;
-};
-
-constexpr std::array<BotAttributeDefinition, BOT_ATTRIBUTE_COUNT> BOT_ATTRIBUTE_DEFINITIONS = {{
-    {"Speed", "speed", AttributeLearnable::Fixed},
-    {"Wisdom", "wisdom", AttributeLearnable::Full},
-    {"Focus", "focus", AttributeLearnable::Fixed},
-    {"Dexterity", "dexterity", AttributeLearnable::Half},
-    {"Foresight", "foresight", AttributeLearnable::Full},
-    {"Knowledge", "knowledge", AttributeLearnable::Full},
-    {"Discipline", "discipline", AttributeLearnable::Fixed},
-    {"Grit", "grit", AttributeLearnable::Fixed},
-    {"Aggression", "aggression", AttributeLearnable::Fixed},
-    {"Caution", "caution", AttributeLearnable::Fixed},
-    {"Patience", "patience", AttributeLearnable::Fixed},
-    {"Teamwork", "teamwork", AttributeLearnable::Full},
-}};
-
-constexpr uint64 BOT_ATTRIBUTE_SALT = 0xC2B2AE3D27D4EB4FULL;
-// The skill's score is clamped where Playerbots.Skill.Distribution's percentiles are (1e-6 from either end)
-constexpr double BOT_ATTRIBUTE_MAX_SCORE = 4.753424308822899;
-
-using AttributeMatrix = std::array<std::array<double, BOT_ATTRIBUTE_COUNT>, BOT_ATTRIBUTE_COUNT>;
-
-inline bool IsBotPersonality(uint32 index) { return index >= BOT_ABILITY_COUNT; }
-
-inline AttributeMatrix IdentityAttributeMatrix()
-{
-    AttributeMatrix matrix{};
-    for (uint32 index = 0; index < BOT_ATTRIBUTE_COUNT; ++index)
-        matrix[index][index] = 1.0;
-
-    return matrix;
-}
-
-// Playerbots.Skill.Distribution and its parameters (PlayerbotAIConfig::SkillDistributionUniform, SkillMean, ...)
-struct SkillDistributionParams
-{
-    bool Uniform = false;
-    double Mean = 50.0;
-    double Sd = 15.0;
-    double Min = 1.0;
-    double Max = 99.0;
-};
-
-// The defaults: loading 1 for the abilities and 0 for the traits, spreads 0, no correlations
-inline std::array<float, BOT_ATTRIBUTE_COUNT> DefaultAttributeLoadings()
-{
-    std::array<float, BOT_ATTRIBUTE_COUNT> loadings{};
-    for (uint32 index = 0; index < BOT_ABILITY_COUNT; ++index)
-        loadings[index] = 1.0f;
-
-    return loadings;
-}
-
-// Read once at config load (PlayerbotAIConfig::SkillAttributes)
-struct BotAttributeParams
-{
-    std::array<float, BOT_ATTRIBUTE_COUNT> Loading = DefaultAttributeLoadings();  // Loading.<Name>, 0-1
-    std::array<float, BOT_ATTRIBUTE_COUNT> Spread{};                              // Spread.<Name>, 0-3
-    AttributeMatrix Correlation = IdentityAttributeMatrix();                      // Corr.<A>-<B>
-    AttributeMatrix Factor = IdentityAttributeMatrix();                           // its Cholesky factor L
-};
-
-// One bot's attributes, cached by PlayerbotAI::SetPvpSkill: abilities 1-99 (0 when the skill is 0), traits 0-100
-struct BotAttributeValues
-{
-    std::array<uint8, BOT_ATTRIBUTE_COUNT> Value{};
-
-    uint8 Get(BotAttribute attribute) const { return Value[static_cast<uint32>(attribute)]; }
-};
 
 // An ability is the skill itself at loading 1 (its own part has weight 0, so the matrix has no effect on it); a trait
 // is neutral at spread 0

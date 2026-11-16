@@ -6,11 +6,13 @@
 
 #include <iostream>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
 
 #include "LootInteraction.h"
+#include "StatusEndRules.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
 #include "TravelProgress.h"
@@ -98,7 +100,7 @@ struct Adapter
     bool ConfirmExit(PassengerMotion const& motion)
     {
         Calls.push_back("confirm_exit");
-        return AcceptExit(Geometry, motion.ExitFrom, Spline.Position, motion.Onward);
+        return ExitHolds(Geometry, motion, Spline.Position);
     }
 
     void SettleOldFrame()
@@ -812,6 +814,260 @@ void CheckTirisfalGondola()
 // WT43: a round gondola (synthetic: deck at 98.46 within 7 yd of the origin's XY), its platform 10 yd out.
 // Boarding's 4-yd inset after a 2-yd edge step puts the deck point 2 yd from the centre, behind the rail; an exit's
 // 1-yd inset keeps it 1 to 2 yd inside the edge.
+// WT60: leaving is boarding in reverse. A zeppelin's gondola (deck |x|, |y| <= 5 at z 6, the bot's reach 1 yd) docks
+// beside its tower's platform (y <= -5.5, z 7.4); the stop's wait point stands on the platform 0.8 yd off the deck's
+// edge, within the hull's reach, as at Thunder Bluff (190549, WT55b-2: `crossing_search ... onward=none`)
+void CheckWaitExit()
+{
+    struct TowerGeometry
+    {
+        Footprint Deck{{-5.0f, -5.0f, 0.0f}, {5.0f, 5.0f, 10.0f}, 1.0f};
+        bool Blocked = false;
+        float Rail = 10.0f;  // a rail on deck: a crossing with an end further in than this y is blocked
+        bool DeckWalk = true;
+        mutable float Inset = 0.0f;
+
+        static bool OnPlatform(Point const& point) { return point.Y <= -5.5f && std::fabs(point.X) <= 10.0f; }
+        std::optional<Point> ShoreAt(Point const& seed, float vertical) const
+        {
+            return OnPlatform(seed) && std::fabs(seed.Z - 7.4f) <= vertical
+                       ? std::optional<Point>(Point{seed.X, seed.Y, 7.4f})
+                       : std::nullopt;
+        }
+        std::optional<Point> SnapGround(Point point, float, float) const
+        {
+            return OnPlatform(point) ? std::optional<Point>(point) : std::nullopt;
+        }
+        // The deck's edge lies at y = -5 on the line toward the centre; the deck point lies inset inside it
+        std::optional<Point> DeckFrom(Point const& shore, float inset, Point const& toward) const
+        {
+            Inset = inset;
+            if (std::hypot(shore.X - toward.X, shore.Y - toward.Y) > 20.0f)
+                return std::nullopt;
+            return Point{shore.X, -5.0f + inset, 6.0f};
+        }
+        bool OffHull(Point const& point) const { return Deck.Outside(point); }
+        bool OnGround(Point const& point) const { return OnPlatform(point) && std::fabs(point.Z - 7.4f) < 0.7f; }
+        bool GroundLeadsOn(Point const& start, Point const& end) const { return OnPlatform(start) && OnPlatform(end); }
+        bool CrossingClear(Point const& a, Point const& b) const { return !Blocked && std::max(a.Y, b.Y) <= Rail; }
+        std::optional<std::vector<Point>> DeckPath(Point const&, Point const& to, std::uint32_t,
+                                                   std::uint32_t& expanded) const
+        {
+            expanded = 0;
+            return DeckWalk ? std::optional<std::vector<Point>>(std::vector<Point>{to}) : std::nullopt;
+        }
+    } geometry;
+
+    Point const origin{0.0f, 0.0f, 6.0f};
+    Point const rider{2.0f, 2.0f, 6.0f};
+    Point const wait{0.0f, -5.8f, 7.4f};
+    // The cause, reproduced: the old search takes the wait point as its onward point only off the hull's reach
+    CrossingTally old;
+    Check(!FindExit(geometry, rider, origin, origin, {wait}, &old) && !old.Onward &&
+              old.Counts[static_cast<std::size_t>(CrossingCheck::Onward)] == 1,
+          "wait exit: the old search finds no onward point at a wait point within the hull's reach (onward=none)");
+
+    // A far stop with a wait point: the boarding's deck point beside it, the boarding's checks, the walk there
+    CrossingCheck gate = CrossingCheck::NoShore;
+    auto const exit = FindWaitExit(geometry, rider, wait, origin, gate);
+    Check(exit && gate == CrossingCheck::Accepted && exit->Ground.Y == wait.Y && exit->Ground.Z == wait.Z,
+          "wait exit: the exit crosses to the stop's wait point");
+    Check(exit && geometry.Inset == BOARD_DECK_INSET_YARDS && exit->Deck.Y == -1.0f && exit->Deck.Z == 6.0f,
+          "wait exit: its deck point is the boarding's, 4 yd inside the deck's edge toward the hull's centre");
+    Check(exit && !exit->Walk.empty() && exit->Walk.back().Y == exit->Deck.Y &&
+              CheckBoard(geometry, wait, exit->Deck) == CrossingCheck::Accepted,
+          "wait exit: the rider walks across the deck to the deck point, the crossing is the boarding's reversed");
+    Check(exit && exit->Onward.Y == wait.Y, "wait exit: the walk on starts at the wait point (the next leg's)");
+    PassengerMotion motion;
+    motion.Kind = MotionKind::Exit;
+    motion.Endpoint = wait;
+    motion.ExitFrom = exit ? exit->Deck : Point{};
+    motion.Onward = wait;
+    motion.ToWaitPoint = true;
+    Check(ExitHolds(geometry, motion, wait), "wait exit: standing at the wait point the exit holds (CheckBoard)");
+    motion.ToWaitPoint = false;
+    Check(!ExitHolds(geometry, motion, wait),
+          "wait exit: the found crossing's confirmation would refuse it there (the wait point is within reach)");
+
+    // A wait point the deck cannot reach: the exit fails with its gate named
+    auto const gateOf = [&](Point const& at)
+    {
+        CrossingCheck reached = CrossingCheck::Accepted;
+        bool const found = FindWaitExit(geometry, rider, at, origin, reached).has_value();
+        return found ? CrossingCheck::Accepted : reached;
+    };
+    Check(gateOf({0.0f, -5.8f, 9.5f}) == CrossingCheck::Height,
+          "wait exit: a wait point 3.5 yd above the deck: height");
+    Check(gateOf({0.0f, -5.2f, 7.4f}) == CrossingCheck::Ground, "wait exit: a wait point off the ground mesh: ground");
+    Check(gateOf({0.0f, -30.0f, 7.4f}) == CrossingCheck::NoDeck, "wait exit: no deck toward the hull: no_deck");
+    geometry.Blocked = true;
+    Check(gateOf(wait) == CrossingCheck::Crossing, "wait exit: the model between deck point and wait point: crossing");
+    geometry.Blocked = false;
+    geometry.DeckWalk = false;
+    Check(gateOf(wait) == CrossingCheck::DeckWalk, "wait exit: no walk across the deck to the deck point: deck_walk");
+    geometry.DeckWalk = true;
+
+    // A wait point off the hull's reach whose crossing toward the hull's centre the model blocks (a rail between it
+    // and the deck point 4 yd in; Ratchet and Auberdine's pier, WT60 round 1): the wait exit names its gate and the
+    // old search toward the wait point finds the crossing beside it, confirmed by its own checks (WalkOff's fallback)
+    geometry.Rail = -3.0f;
+    Point const pier{0.0f, -7.0f, 7.4f};
+    Check(gateOf(pier) == CrossingCheck::Crossing, "wait exit: the rail between wait point and deck point: crossing");
+    auto const fallback = FindExit(geometry, rider, origin, origin, {pier});
+    Check(fallback && fallback->Ground.Y == pier.Y && fallback->Deck.Y == -4.0f && fallback->Onward.Y == pier.Y,
+          "wait exit refused: the old search toward the wait point crosses 1 yd inside the deck's edge, onto it");
+    if (fallback)
+    {
+        motion.ExitFrom = fallback->Deck;
+        motion.Onward = fallback->Onward;
+    }
+    Check(fallback && ExitHolds(geometry, motion, fallback->Ground),
+          "wait exit refused: the searched exit is confirmed by its own checks (not the boarding's)");
+    geometry.Rail = 10.0f;
+
+    // A stop without a wait point: the old search finds ground off the hull toward the route, confirmed as before
+    Point const beyond{0.0f, -12.0f, 7.4f};
+    auto const searched = FindExit(geometry, rider, origin, origin, {beyond});
+    Check(searched && geometry.OffHull(searched->Ground) && searched->Ground.Y == -7.0f &&
+              geometry.Inset == EXIT_DECK_INSET_YARDS,
+          "no wait point: the search steps off the hull's reach toward the route, 1 yd inside the deck's edge");
+    if (searched)
+    {
+        motion.ExitFrom = searched->Deck;
+        motion.Onward = searched->Onward;
+    }
+    Check(searched && ExitHolds(geometry, motion, searched->Ground),
+          "no wait point: the searched exit is confirmed by its own checks");
+}
+
+// WT55e (WT.42): at a stop's wait point the bot crosses from there where the crossing check accepts it, and no search
+// runs; refused (no deck point, the deck's height, the crossing), the old quay search runs from the wait point once
+// per docking and its place is the boarding's start; a search that finds nothing leaves the start at the wait point
+void CheckBoardFallback()
+{
+    enum class Refuse
+    {
+        None,
+        NoDeck,
+        Height,
+        Crossing
+    };
+    struct WaitGeometry
+    {
+        Point Wait{0.0f, 0.0f, 5.0f};
+        Point Quay{3.0f, 0.0f, 5.0f};  // on the ring round the origin, 3 yd beside the wait point
+        Refuse Refused = Refuse::None;
+        bool QuayFound = true;
+        mutable int Searches = 0;  // ShoreAt calls: only the quay search asks for ground
+
+        bool AtWait(Point const& point) const { return std::hypot(point.X - Wait.X, point.Y - Wait.Y) < 0.01f; }
+        std::optional<Point> ShoreAt(Point const& seed, float) const
+        {
+            ++Searches;
+            if (QuayFound && std::hypot(seed.X - Quay.X, seed.Y - Quay.Y) <= 0.5f)
+                return Quay;
+            return std::nullopt;
+        }
+        std::optional<Point> DeckFrom(Point const& shore, float inset, Point const&) const
+        {
+            if (Refused == Refuse::NoDeck && AtWait(shore))
+                return std::nullopt;
+            float const z = Refused == Refuse::Height && AtWait(shore) ? shore.Z + DOCK_FLOOR_YARDS + 1.0f : shore.Z;
+            return Point{shore.X + inset, shore.Y, z};
+        }
+        bool OnGround(Point const&) const { return true; }
+        bool ConnectedGround(Point const&, Point const&) const { return true; }
+        bool CrossingClear(Point const& shore, Point const&) const
+        {
+            return Refused != Refuse::Crossing || !AtWait(shore);
+        }
+    };
+    auto const same = [](Point const& a, Point const& b)
+    { return std::fabs(a.X - b.X) < 0.01f && std::fabs(a.Y - b.Y) < 0.01f && std::fabs(a.Z - b.Z) < 0.01f; };
+    Point const origin{10.0f, 0.0f, 5.0f};
+    Point const centre{14.0f, 0.0f, 5.0f};
+
+    WaitGeometry accepting;
+    BoardChoice const accepted = BoardFrom(accepting, accepting.Wait, origin, centre);
+    Check(accepted.Gate == CrossingCheck::Accepted && !accepted.Searched && !accepted.Found &&
+              same(accepted.Start, accepting.Wait) && accepting.Searches == 0,
+          "board fallback: accepted at the wait point: no search, the boarding starts there");
+    struct Case
+    {
+        Refuse Refused;
+        CrossingCheck Gate;
+        char const* Name;
+    };
+    for (Case const& refusal : {Case{Refuse::NoDeck, CrossingCheck::NoDeck, "no deck point"},
+                                Case{Refuse::Height, CrossingCheck::Height, "the deck's height"},
+                                Case{Refuse::Crossing, CrossingCheck::Crossing, "the crossing check"}})
+    {
+        WaitGeometry geometry;
+        geometry.Refused = refusal.Refused;
+        BoardChoice const choice = BoardFrom(geometry, geometry.Wait, origin, centre);
+        Check(choice.Gate == refusal.Gate && choice.Searched && choice.Found && same(choice.Start, geometry.Quay) &&
+                  geometry.Searches > 0,
+              std::string("board fallback: refused by ") + refusal.Name +
+                  ": one search from the wait point, its quay is the boarding's start");
+    }
+    WaitGeometry empty;
+    empty.Refused = Refuse::Crossing;
+    empty.QuayFound = false;
+    BoardChoice const none = BoardFrom(empty, empty.Wait, origin, centre);
+    Check(none.Gate == CrossingCheck::Crossing && none.Searched && !none.Found && same(none.Start, empty.Wait),
+          "board fallback: refused and the search finds nothing: the start stays the wait point");
+
+    // Once per docking, as the follower's scan runs it (SeekBoardQuay): a checked docking searches no more, the
+    // docking's end (EndBoardCheck) puts the wait point back and the next docking checks it again
+    TravelLegs::Trip trip;
+    TravelRoute::Leg leg;
+    leg.type = TravelRoute::LegType::Transport;
+    leg.waitFrom = true;
+    leg.from = {MAP, 0.0f, 0.0f, 5.0f};
+    trip.legs = {leg};
+    TravelLegs::SetQuay(trip, &leg.from);  // as Advance does at a wait point
+    trip.boarding = TravelLegs::Boarding::Board;
+    auto const scan = [&](WaitGeometry const& geometry)
+    {
+        if (trip.boardChecked)
+            return;
+        BoardChoice const choice = BoardFrom(geometry, geometry.Wait, origin, centre);
+        TravelRoute::Point const quay{MAP, choice.Start.X, choice.Start.Y, choice.Start.Z};
+        TravelLegs::NoteBoardCheck(trip, choice.Found ? &quay : nullptr);
+    };
+    auto const atQuay = [&trip](Point const& point)
+    { return std::fabs(trip.quay.x - point.X) < 0.01f && std::fabs(trip.quay.y - point.Y) < 0.01f; };
+    WaitGeometry refused;
+    refused.Refused = Refuse::Crossing;
+    scan(refused);
+    int const once = refused.Searches;
+    Check(trip.boardChecked && trip.searchedQuay && trip.hasQuay && atQuay(refused.Quay) &&
+              trip.boarding == TravelLegs::Boarding::Wait,
+          "board fallback: the searched quay is the wait, walked to under the wait's guard before the boarding");
+    scan(refused);
+    Check(refused.Searches == once, "board fallback: a second scan of the same docking does not search again");
+    TravelLegs::EndBoardCheck(trip, leg);
+    Check(!trip.boardChecked && !trip.searchedQuay && trip.hasQuay && atQuay(refused.Wait),
+          "board fallback: the docking's end: the wait point is the wait again");
+    trip.boarding = TravelLegs::Boarding::Board;
+    scan(refused);
+    Check(refused.Searches == 2 * once && trip.searchedQuay && atQuay(refused.Quay),
+          "board fallback: a new docking searches again");
+    TravelLegs::EndBoardCheck(trip, leg);
+    trip.boarding = TravelLegs::Boarding::Board;
+    scan(empty);
+    int const emptyOnce = empty.Searches;
+    scan(empty);
+    Check(trip.boardChecked && !trip.searchedQuay && atQuay(empty.Wait) &&
+              trip.boarding == TravelLegs::Boarding::Board && empty.Searches == emptyOnce,
+          "board fallback: nothing found: boards from the wait point as before, no repeated search that docking");
+    TravelLegs::EndBoardCheck(trip, leg);
+    scan(accepting);
+    Check(trip.boardChecked && !trip.searchedQuay && atQuay(accepting.Wait) &&
+              trip.boarding == TravelLegs::Boarding::Board && accepting.Searches == 0,
+          "board fallback: accepted: the docking is checked once, no search, the boarding stays at the wait point");
+}
+
 void CheckDeckPoint()
 {
     Point const origin{0.0f, 0.0f, 114.97f};
@@ -950,7 +1206,6 @@ void CheckUnconsumedBoardTransfer()
             std::optional<PassengerMotion> passengerMotion;
         };
         std::variant<std::monostate, Travel> data;
-        std::uint32_t routeRequests = 19;
         std::uint32_t startT = 10;
         std::uint16_t constraints = 0;
     } info;
@@ -972,10 +1227,11 @@ void CheckUnconsumedBoardTransfer()
     Check(before.passengerMotion->Result == Outcome::Boarded && !before.trip.passengerGuid,
           "maintenance attaches while the scheduled follower has not consumed boarding");
     ResetMotion(before.passengerMotion, true, adapter);
-    info = TravelLegs::AfterReset<Info::Travel>(info, true);
+    // A far teleport keeps the trip as it is (StatusEnd::KeepsStatus: RpgStatus::Reset leaves the status alone)
+    Check(StatusEnd::KeepsStatus(true, std::holds_alternative<Info::Travel>(info.data)), "a far reset keeps the trip");
     auto& after = std::get<Info::Travel>(info.data);
-    Check(after.passengerMotion && after.passengerMotion->Result == Outcome::Boarded && info.routeRequests == 19,
-          "the production far reset policy preserves the unconsumed boarding result with the continuing trip");
+    Check(after.passengerMotion && after.passengerMotion->Result == Outcome::Boarded,
+          "the far reset policy preserves the unconsumed boarding result with the continuing trip");
     adapter.Aboard.Available = false;
     Check(!PassengerOutcome(*after.passengerMotion, adapter.ReadMembership()),
           "unavailable cross-map membership defers boarding consumption");
@@ -1790,6 +2046,8 @@ int main()
     CheckDeckPath();
     CheckGondolaExit();
     CheckTirisfalGondola();
+    CheckWaitExit();
+    CheckBoardFallback();
     CheckDiscardedOwner();
     CheckIneligibleMaintenance();
     CheckUnconsumedBoardTransfer();

@@ -14,17 +14,17 @@
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
 #include "BankMailConfig.h"
-#include "BotAttributes.h"
+#include "BotAttributeTypes.h"
 #include "DBCEnums.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
-#include "NaturalReaction.h"
+#include "NaturalReactionConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
-#include "SkillGrowth.h"
-#include "TacticGate.h"
-#include "Tactics.h"
+#include "SkillGrowthConfig.h"
+#include "TacticGateConfig.h"
+#include "TacticIds.h"
 #include "UpkeepConfig.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
@@ -394,7 +394,6 @@ public:
 
     uint32 CommandServerPort;
     bool PerfMonEnabled;
-    bool PerfMonWorldThread;
     bool DebugThreadChecks;
     bool SkipIdleTriggerChecks;
     bool SummonWhenGroup;
@@ -418,6 +417,9 @@ public:
     std::string TestPlayerAccount;
     bool PvpTestEnable;
     uint32 PvpTestTimeoutSeconds;
+    // Playerbots.Test.MissLog (test only; CS5 design 6.3, 6.4): log a skipped pre-gate step or check follower whose
+    // own guard passes ("PreGate miss: <step>", "Live miss: <follower>")
+    bool TestMissLog;
     // Where pvptest duel and brawl fight: map id and position
     uint32 PvpTestFightMap;
     float PvpTestFightX;
@@ -536,6 +538,9 @@ public:
     bool TacticsEnable;
     std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
     uint32 TacticsConfigMask;
+    // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
+    // pass, from the switches and scopes at load and reload
+    std::array<uint8, TACTIC_CONTEXT_COUNT> TacticFollowersFor{};
     // Playerbots.Tactics.Hold.* and .Focus.*: the numbers of the target hold and the team plan (ArenaFocus.h)
     FocusConfig TacticFocus;
     CcConfig TacticCc;
@@ -555,9 +560,14 @@ public:
     WorldTravelConfig WorldTravel;
     // Playerbots.Upkeep.*: honest upkeep of persistent bots (the handout share)
     UpkeepConfig Upkeep;
-    // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h declares every option
-    // of the world PvP plan; WP1 reads the fight book's and the memory's bounds and the lab switch)
+    // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h: enthusiasm, the scan,
+    // the graveyard term and the ghost's wait)
     WorldPvpConfig WorldPvp;
+    // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction): the yards from every attacker
+    // that count as escaped, the seconds without a gain that corner the bot, the flight's bound in seconds
+    uint32 FleeEscapeYards = 40;
+    uint32 FleeCorneredSeconds = 6;
+    uint32 FleeBoundSeconds = 30;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)

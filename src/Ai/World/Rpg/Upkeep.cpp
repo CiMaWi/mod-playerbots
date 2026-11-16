@@ -6,16 +6,13 @@
 
 #include "Upkeep.h"
 
+#include "BotKind.h"
 #include "CensusMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
-#include "PlayerbotFactory.h"
 
-bool Upkeep::Granted(Player* bot, UpkeepKind kind)
-{
-    return Granted(bot, kind, PlayerbotFactory::KeepsPossessions(bot));
-}
+bool Upkeep::Granted(Player* bot, UpkeepKind kind) { return Granted(bot, kind, BotKind::KeepsPossessions(bot)); }
 
 bool Upkeep::Granted(Player* bot, UpkeepKind kind, bool keepsPossessions)
 {

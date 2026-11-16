@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "PlannerPool.h"
+#include "PlannerPoolSelftest.h"
 
 int main()
 {

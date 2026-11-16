@@ -12,7 +12,7 @@
 #include <cmath>
 
 #include "ArenaInterruptConfig.h"
-#include "Common.h"
+#include "Define.h"
 #include "NaturalReaction.h"
 #include "SplitMix64.h"
 #include "TacticGate.h"
@@ -534,7 +534,7 @@ constexpr uint32 LATE_SHARE_PCT = 50;
 constexpr uint32 BOUND_TOLERANCE_MS = 150;
 }  // namespace ArenaInterrupt
 
-// One bot's decisions on the enemy casts in view (PlayerbotAI::GetInterruptState): one slot per cast, the oldest gives
+// One bot's decisions on the enemy casts in view (BotTactics::GetInterruptState): one slot per cast, the oldest gives
 // its slot up. Guid counters only, never a unit. The bot's own update; tactics show reads it on the world thread
 // while the maps wait.
 constexpr uint32 INTERRUPT_SLOTS = 4;

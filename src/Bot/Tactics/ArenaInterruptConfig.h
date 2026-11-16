@@ -7,7 +7,7 @@
 #ifndef _PLAYERBOT_ARENAINTERRUPTCONFIG_H
 #define _PLAYERBOT_ARENAINTERRUPTCONFIG_H
 
-#include "Common.h"
+#include "Define.h"
 
 // The numbers of the Interrupt tactic (Playerbots.Tactics.Interrupt.*, G5b), read once at config load
 // (PlayerbotAIConfig::TacticInterrupt); the initial values are the conf.dist defaults (proposals, G6a tunes them).
@@ -59,5 +59,12 @@ struct InterruptConfig
     uint32 HoldTrendPctAtKnowledge1 = 50;  // the share of the horizon a bot projects, lerped by Knowledge
     uint32 HoldTrendPctAtKnowledge99 = 100;
 };
+
+// G5c-c: whether the Interrupt tactic follows the bot's kick and the enemies (HoldPolicy 1 or the attention gap); off
+// at the conf.dist defaults, so G5b's path stays as it was
+inline bool InterruptFollows(InterruptConfig const& config)
+{
+    return config.HoldPolicy != 0 || config.AttentionMsAtSkill1 != 0 || config.AttentionMsAtSkill99 != 0;
+}
 
 #endif

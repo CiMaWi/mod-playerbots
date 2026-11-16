@@ -15,7 +15,7 @@
 
 #include "ArenaCover.h"
 #include "ArenaKiteConfig.h"
-#include "Common.h"
+#include "Define.h"
 #include "PillarTactic.h"
 #include "SplitMix64.h"
 #include "TacticGate.h"
@@ -278,7 +278,7 @@ struct KiteWatch
     bool Seen = false;
 };
 
-// The Kite tactic's per-bot state (PlayerbotAI::GetKiteState); GUIDs, never units
+// The Kite tactic's per-bot state (BotTactics::GetKiteState); GUIDs, never units
 struct KiteBotState
 {
     KiteParams Params;

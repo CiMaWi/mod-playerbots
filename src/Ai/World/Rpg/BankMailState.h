@@ -12,17 +12,14 @@
 #include <string>
 #include <vector>
 
-#include "BankRules.h"
+#include "BankMailTypes.h"
 #include "Define.h"
-#include "MailRules.h"
 #include "ObjectGuid.h"
-#include "VisitLifecycle.h"
 
-class Player;
 class PlayerbotAI;
 
 // What a bot knows about its mail and its bank, and the state of a mailbox or bank visit (bank-mail plan). Held per
-// bot in NewRpgInfo::bankMail, outside the RPG status: a visit is stepped from any status and a status reset keeps it.
+// bot in PlayerbotAI::bankMail, outside the RPG status: a visit is stepped from any status and a status reset keeps it.
 // A bot knows that mail waits and what it expects from it, not what is inside (WB.4).
 namespace BankMail
 {
@@ -127,36 +124,6 @@ inline bool VisitRuns(BotBankMail const& state)
     return state.mailVisit.phase != MailVisitPhase::None || state.bankVisit.phase != BankVisitPhase::None;
 }
 
-// One visit at a time per bot: why a visit of the kind may not start now, or nullptr
-inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
-{
-    return VisitStartRefusal(kind, state.mailVisit.phase != MailVisitPhase::None,
-                             state.bankVisit.phase != BankVisitPhase::None);
-}
-
-// What can start a trip without full bags (WB8b, the errand trigger): worth the bot saw or expects in its mail, or a
-// kept item come due at the level. Unopened mail alone never pays a detour (WB.4), so it only joins trips
-inline bool ErrandWaits(BotBankMail const& state, uint8 level)
-{
-    return state.mail.seenCopper || state.mail.expectedCopper || DueAt(state.bank.kept, level).count;
-}
-
-// A far teleport or a PlayerbotAI::Reset(true) rebuilds NewRpgInfo (TravelLegs::AfterReset keeps only the route
-// requests). The bot's knowledge (waiting mail, seen worth, bank slots, kept items) survives it; a running visit
-// was ended with its row just before (EndVisits), so nothing of it is left to keep.
-inline BotBankMail AfterReset(BotBankMail const& before)
-{
-    BotBankMail after;
-    after.mail = before.mail;
-    after.bank = before.bank;
-    return after;
-}
-
-// Mail list reads (Player::GetMails) happen only on the bot's own map thread inside its AI update or on the world
-// thread; never on a planner worker, never for another bot from a map thread, and no Mail* is kept past the call.
-uint16 CountWaitingMail(Player const* bot);
-void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail);
-
 // At login, on the world thread: the bank's kept items and free slots and the waiting mail, from what the character
 // load brought (no query)
 void BuildBankKnowledge(PlayerbotAI* botAI);
@@ -165,8 +132,6 @@ void BuildBankKnowledge(PlayerbotAI* botAI);
 using VisitEndCounters = std::array<std::atomic<uint32>, VISIT_END_COUNT>;
 std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounters const& ended);
 
-// The watch's facts about a visit to a spot on mapId that started at startedMs
-VisitWatchIn WatchInOf(Player const* bot, uint32 mapId, uint32 startedMs, uint32 limitMs);
 // The bot's map thread, in every AI update while a visit runs, whatever engine runs (the stepping engine does not run
 // in combat or dead): ends a visit at its deadline, at death or on another map, with its row
 void WatchVisits(PlayerbotAI* botAI);

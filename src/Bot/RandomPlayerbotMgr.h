@@ -8,10 +8,11 @@
 #define PLAYERBOTS_RANDOMPLAYERBOTMGR_H
 
 #include "GameTime.h"
-#include "NewRpgInfo.h"
 #include "ObjectGuid.h"
 #include "PlayerbotCommandServer.h"
 #include "PlayerbotMgr.h"
+#include "QuestStatTypes.h"
+#include "TravelMgr.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -180,12 +181,10 @@ public:
     uint32 GetMaxAllowedBotCount();
     bool ProcessBot(Player* player);
     void Revive(Player* player);
-    // Honest world travel (WorldTravelRules.h): on for persistent bots outside arena instances
-    static bool HonestTravel();
     // No randomize, refresh or teleport for a busy bot (WorldTravel::IsBusy); bot's map thread or the world thread
     bool IsBusy(Player* bot);
-    // The sight rule: with HonestTravel, a real player within Playerbots.WorldTravel.SightYards of the bot or of dest
-    // sees a teleport, which is then skipped; always false without HonestTravel
+    // The sight rule: on a living world, a real player within Playerbots.WorldTravel.SightYards of the bot or of dest
+    // sees a teleport, which is then skipped; always false elsewhere
     bool IsTeleportSeen(Player* bot, WorldPosition const& dest);
     // Playerbots.ArenaOnly.SpreadContinents, world thread: moves a waiting bot (not in a battleground or its queue,
     // alive, out of combat) to its home spot when it stands on another map; true when it teleported
@@ -342,6 +341,10 @@ private:
     uint32 GetZoneLevel(uint16 mapId, float teleX, float teleY, float teleZ);
     void UpdatePlayerZones();
     std::vector<WorldLocation> GetPlayerZoneTeleportLocations(std::vector<WorldLocation> const& locs, Player* bot);
+    std::vector<WorldLocation> GetPlayerZoneHubLocations(std::vector<WorldLocation> const& hubs, Player* bot);
+    std::set<std::pair<uint32, uint32>> GetPlayerZones();
+    std::vector<WorldLocation> FilterPlayerZoneTeleportLocations(
+        std::vector<WorldLocation> const& locs, Player* bot, std::set<std::pair<uint32, uint32>> const& playerMapZones);
     typedef void (RandomPlayerbotMgr::*ConsoleCommandHandler)(Player*);
     std::vector<Player*> players;
 

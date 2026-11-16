@@ -140,10 +140,9 @@ void Scenarios()
     Check(JudgeId(1498, Bot(PALADIN, ORC, 10, {1505})).verdict == Verdict::NotForBot, "another class: no bonus");
 
     using Planner::GoalApply::Governed;
-    Check(Governed(true, 21, false), "a persistent planner bot (guid 21) is governed");
-    Check(!Governed(true, 20, false), "a weighted-group bot (guid 20) is not governed");
-    Check(!Governed(true, 21, true), "a bot with a real master is not governed");
-    Check(!Governed(false, 21, false), "a bot that keeps no possessions is not governed");
+    Check(Governed(true, 21), "a persistent planner bot (guid 21) is governed");
+    Check(!Governed(true, 20), "a weighted-group bot (guid 20) is not governed");
+    Check(!Governed(false, 21), "a bot that keeps no possessions (or has a master at a client) is not governed");
     BotFacts ungoverned = warrior;
     ungoverned.governed = false;
     Check(JudgeId(1498, ungoverned).verdict == Verdict::NotGoverned && Bonuses(ungoverned, noTrainer, anyRoute).empty(),
@@ -461,9 +460,9 @@ void Wiring()
     Check(ungoverned.classBonus.empty() && !TakesClass(ungoverned, CLASS_QUEST) && knows.classBonus.empty() &&
               !HasClassOption(knows.ranked) && gaveUp.classBonus.empty() && !HasClassOption(gaveUp.ranked),
           "wiring: an ungoverned bot, a known spell and a given-up quest get no bonus and no trip");
-    Check(!Planner::GoalApply::Governed(true, 20, false) && !Planner::GoalApply::Governed(true, 21, true) &&
-              !Planner::GoalApply::Governed(false, 21, false) && Planner::GoalApply::Governed(true, 21, false),
-          "wiring: a weighted-group bot and a bot with a real master are not governed");
+    Check(!Planner::GoalApply::Governed(true, 20) && !Planner::GoalApply::Governed(false, 21) &&
+              Planner::GoalApply::Governed(true, 21),
+          "wiring: a weighted-group bot and a bot that keeps no possessions are not governed");
 
     // The 1795 gap: a quest opened only by another's NextQuestId waits for that one
     Planner::Snapshot opened = bot;

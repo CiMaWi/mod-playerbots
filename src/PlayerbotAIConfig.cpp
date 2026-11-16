@@ -6,7 +6,10 @@
 
 #include "PlayerbotAIConfig.h"
 #include "BisListMgr.h"
+#include "BotAttributes.h"
+#include "BotKind.h"
 #include "Config.h"
+#include "ItemWorthRules.h"
 #include "LadderMgr.h"
 #include "NewRpgInfo.h"
 #include "PlayerbotDungeonRepository.h"
@@ -16,6 +19,8 @@
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "TacticFollowers.h"
+#include "Tactics.h"
 #include "Talentspec.h"
 #include "ThreadCheck.h"
 #include "TravelMgr.h"
@@ -502,7 +507,6 @@ bool PlayerbotAIConfig::Initialize()
 
     CommandServerPort = sConfigMgr->GetOption<int32>("Playerbots.CommandServerPort", 8888);
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
-    PerfMonWorldThread = sConfigMgr->GetOption<bool>("Playerbots.PerfMonWorldThread", false);
     DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
     PlayerbotThreadCheck::enabled = DebugThreadChecks;
     SkipIdleTriggerChecks = sConfigMgr->GetOption<bool>("Playerbots.SkipIdleTriggerChecks", false);
@@ -735,6 +739,7 @@ bool PlayerbotAIConfig::Initialize()
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
+    TestMissLog = sConfigMgr->GetOption<bool>("Playerbots.Test.MissLog", false);
     PvpTestTimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpTest.TimeoutSeconds", 900), 60, 3600);
     // "<map> <x> <y> <z> <o>"; the default is the Hillsbrad Foothills spot (a contested zone, duels allowed)
@@ -1234,7 +1239,7 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     // World PvP of persistent bots (Playerbots.WorldPvp.*), optional keys whose defaults (WorldPvpConfig) are the
-    // conf.dist values; the options the code does not read yet keep their declared defaults
+    // conf.dist values
     {
         auto const pvpNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
         {
@@ -1242,35 +1247,74 @@ bool PlayerbotAIConfig::Initialize()
                 sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldPvp.") + key, value, false), minimum,
                 maximum);
         };
-        constexpr uint32 MaxBookCount = 1000;
         constexpr uint32 MaxRadiusYards = 2000;
-        constexpr uint32 MaxPvpMinutes = 24 * 60;
         constexpr uint32 MaxGraceSeconds = 600;
+        constexpr uint32 MaxScanYards = 200;
         WorldPvp = WorldPvpConfig{};
-        pvpNumber("MeetingMemorySeconds", WorldPvp.MeetingMemorySeconds, 0, DAY);
-        pvpNumber("RecentEnemies", WorldPvp.RecentEnemies, 1, WorldPvp::MAX_RECENT_ENEMIES);
-        pvpNumber("Book.MaxActiveFights", WorldPvp.MaxActiveFights, 1, MaxBookCount);
-        pvpNumber("Book.MaxParticipants", WorldPvp.MaxParticipants, 2, MaxBookCount);
-        pvpNumber("Book.FightRadiusYards", WorldPvp.FightRadiusYards, 1, MaxRadiusYards);
-        pvpNumber("Book.FightRadiusMaxYards", WorldPvp.FightRadiusMaxYards, 1, MaxRadiusYards);
-        pvpNumber("Book.MaxFightMinutes", WorldPvp.MaxFightMinutes, 1, MaxPvpMinutes);
-        pvpNumber("Book.EndGraceSeconds", WorldPvp.EndGraceSeconds, 0, MaxGraceSeconds);
-        pvpNumber("CalmMinutes", WorldPvp.CalmMinutes, 0, MaxPvpMinutes);
-        WorldPvp.TestCommands =
-            sConfigMgr->GetOption<bool>("Playerbots.WorldPvp.TestCommands", WorldPvp.TestCommands, false);
-        // The shape weights of the fight rules the nights tune (FightRules.h clamps them again)
-        auto const pvpWeight = [](char const* key, float& value, float maximum)
+        // A value out of range keeps the default
+        auto const pvpRange = [](char const* key, float& value, float minimum, float maximum)
         {
             float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
-            value = read >= 0.0f && read <= maximum ? read : std::clamp(value, 0.0f, maximum);
+            value = read >= minimum && read <= maximum ? read : value;
         };
-        pvpWeight("OddsCaution", WorldPvp.OddsCaution, 0.5f);
-        pvpWeight("Join.Base", WorldPvp.JoinBase, 1.0f);
-        pvpWeight("Join.Aggression", WorldPvp.JoinAggression, 1.0f);
-        pvpWeight("Join.Helpfulness", WorldPvp.JoinHelpfulness, 1.0f);
-        pvpWeight("Join.Goal", WorldPvp.JoinGoal, 1.0f);
-        pvpWeight("Retreat.CautionHealth", WorldPvp.RetreatCautionHealth, 1.0f);
-        pvpWeight("Retreat.CautionOdds", WorldPvp.RetreatCautionOdds, 0.5f);
+        pvpNumber("ScanYards", WorldPvp.ScanYards, 1, MaxScanYards);
+        pvpNumber("GraveyardYards", WorldPvp.GraveyardYards, 0, MaxRadiusYards);
+        pvpNumber("GhostEnemyYards", WorldPvp.GhostEnemyYards, 0, MaxRadiusYards);
+        pvpNumber("GhostRecheckSeconds", WorldPvp.GhostRecheckSeconds, 1, MaxGraceSeconds);
+        pvpNumber("GhostSpiritHealerSeconds", WorldPvp.GhostSpiritHealerSeconds, 0, DAY);
+        // Enthusiasm (WP22): starting values the nights tune
+        WorldPvpEnthusiasmConfig& zeal = WorldPvp.Enthusiasm;
+        constexpr float MaxPoints = 1000.0f;
+        constexpr float MaxWeight = 100.0f;
+        pvpRange("Enthusiasm.Max", zeal.Max, 1.0f, MaxPoints);
+        pvpRange("Enthusiasm.RecoveryPerHour", zeal.RecoveryPerHour, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.DepletionPerMinute", zeal.DepletionPerMinute, 0.1f, MaxPoints);
+        pvpRange("Enthusiasm.DeathEdit", zeal.DeathEdit, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.DeathEditConfident", zeal.DeathEditConfident, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.DeathEditUnconfident", zeal.DeathEditUnconfident, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.KillEdit", zeal.KillEdit, 0.0f, MaxPoints);
+        pvpNumber("Enthusiasm.GroupDeathYards", zeal.GroupDeathYards, 0, MaxRadiusYards);
+        pvpRange("Enthusiasm.GroupDeathShare", zeal.GroupDeathShare, 0.0f, 1.0f);
+        pvpRange("Enthusiasm.StartCost", zeal.StartCost, 0.0f, MaxPoints);
+        pvpNumber("Enthusiasm.StartCostShare", zeal.StartCostShare, 0, 100);
+        pvpRange("Enthusiasm.JoinBase", zeal.JoinBase, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinAggression", zeal.JoinAggression, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.AggressionJoinFactor", zeal.AggressionJoinFactor, 0.0f, 1.0f);
+        pvpRange("Enthusiasm.JoinGreen", zeal.JoinGreen, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinFactionAttacked", zeal.JoinFactionAttacked, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinFactionHelpfulness", zeal.JoinFactionHelpfulness, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinGroupAttacked", zeal.JoinGroupAttacked, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinGraveyard", zeal.JoinGraveyard, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.JoinBalanceMax", zeal.JoinBalanceMax, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.FleeBase", zeal.FleeBase, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.FleeCaution", zeal.FleeCaution, 0.0f, MaxPoints);
+        pvpRange("Enthusiasm.FleeGroupHold", zeal.FleeGroupHold, 0.0f, MaxPoints);
+        pvpNumber("Enthusiasm.GroupHoldYards", zeal.GroupHoldYards, 0, MaxRadiusYards);
+        pvpNumber("Enthusiasm.BalanceYards", zeal.BalanceYards, 1, MaxRadiusYards);
+        pvpRange("Enthusiasm.Weight.Grey", zeal.WeightGrey, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Green", zeal.WeightGreen, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Yellow", zeal.WeightYellow, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Orange", zeal.WeightOrange, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.Weight.Red", zeal.WeightRed, 0.0f, MaxWeight);
+        pvpRange("Enthusiasm.DepletionFactorLead", zeal.DepletionFactorLead, 0.01f, 1.0f);
+        pvpRange("Enthusiasm.DepletionFactorBehind", zeal.DepletionFactorBehind, 1.0f, MaxWeight);
+        pvpRange("Enthusiasm.BalanceLead", zeal.BalanceLead, 0.51f, 1.0f);
+        pvpRange("Enthusiasm.BalanceBehind", zeal.BalanceBehind, 0.0f, 0.49f);
+    }
+
+    // The flight from attacking enemy players (Playerbots.Flee.*), optional keys whose defaults are the conf.dist
+    // values
+    {
+        constexpr uint32 MaxFleeYards = 2000;
+        constexpr uint32 MaxFleeSeconds = 600;
+        auto const fleeNumber = [](char const* key, uint32& value, uint32 maximum)
+        {
+            value = std::clamp<uint32>(
+                sConfigMgr->GetOption<uint32>(std::string("Playerbots.Flee.") + key, value, false), 1, maximum);
+        };
+        fleeNumber("EscapeYards", FleeEscapeYards, MaxFleeYards);
+        fleeNumber("CorneredSeconds", FleeCorneredSeconds, MaxFleeSeconds);
+        fleeNumber("BoundSeconds", FleeBoundSeconds, MaxFleeSeconds);
     }
 
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults
@@ -1574,6 +1618,14 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Interrupt.HoldTrendHorizonMs", TacticInterrupt.HoldTrendHorizonMs, MaxHoldMs);
     focusNumber("Interrupt.HoldTrendPctAtKnowledge1", TacticInterrupt.HoldTrendPctAtKnowledge1, MaxFocusPct);
     focusNumber("Interrupt.HoldTrendPctAtKnowledge99", TacticInterrupt.HoldTrendPctAtKnowledge99, MaxFocusPct);
+    // CS5 design 6.4: which of the check hook's followers can pass their guard in each context
+    TacticFollowerSwitches followerSwitches;
+    followerSwitches.TacticsEnable = TacticsEnable;
+    followerSwitches.TrackEnable = NaturalTrack.Enable;
+    followerSwitches.InterruptFollows = InterruptFollows(TacticInterrupt);
+    for (uint32 index = 0; index < TACTIC_FOLLOWER_COUNT; ++index)
+        followerSwitches.Scopes[index] = TacticConfig[static_cast<uint32>(TACTIC_FOLLOWER_TACTICS[index])].Scope;
+    TacticFollowersFor = BuildTacticFollowerTable(followerSwitches);
     // G4e: the focus target (Playerbots.Tactics.FocusTarget.*)
     focusNumber("FocusTarget.MoonPctAtTeamwork1", TacticFocus.FocusTargetMoonPctAtTeamwork1, MaxFocusPct);
     focusNumber("FocusTarget.MoonPctAtTeamwork99", TacticFocus.FocusTargetMoonPctAtTeamwork99, MaxFocusPct);
@@ -1936,6 +1988,8 @@ bool PlayerbotAIConfig::Initialize()
         ArenaOnlyEnable = false;
         RandomBotAutoJoinRatedArenaUncapped = false;
     }
+
+    BotKind::LoadLivingWorld();
 
     if (ArenaTeamFormationEnable && RandomBotArenaTeamRatingMode != ARENA_RATING_MODE_EARNED)
         LOG_INFO("server.loading",

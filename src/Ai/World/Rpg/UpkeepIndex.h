@@ -243,6 +243,22 @@ struct ReagentSpell
     }
 };
 
+// A spawn of a tameable beast (WU21b, §3.11): a creature template the core lets a hunter tame
+// (CreatureTemplate::IsTameable(true)), of normal rank, whose own spells do not break the channel
+// (Planner::BreaksTameChannel), spawned on a random-bot map outside a game event; the pet
+// need names the nearest one of a wanted family at or below the hunter's level
+struct TameableSpawn
+{
+    std::uint32_t map{0};
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+    std::uint32_t entry{0};
+    std::uint8_t family{0};
+    std::uint8_t maxLevel{0};
+    bool exotic{false};  // Beast Mastery's aura tames it (CREATURE_TYPE_FLAG_TAMEABLE_EXOTIC)
+};
+
 // Plain copies of the core's stores, taken on the world thread; the worker reads only these
 struct UpkeepGather
 {
@@ -253,6 +269,7 @@ struct UpkeepGather
     std::vector<ReagentUse> reagents;
     std::vector<SpellFit> fits;                  // the class and riding trainers' spells
     std::vector<WeaponSkillFacts> weaponSkills;  // the tradeskill trainers' weapon skill spells
+    std::vector<TameableSpawn> tameable;
     std::uint32_t emptyVendors{0};
     std::uint32_t missingItems{0};  // vendor rows whose item has no template
 };
@@ -372,7 +389,9 @@ struct UpkeepStats
     std::uint32_t reagentItems{0};
     std::uint32_t weaponSkills{0};
     std::uint32_t weaponMasters{0};  // tradeskill trainers that teach a weapon skill
-    std::uint32_t currencyOnly{0};   // vendor rows sold for currency only: skipped
+    std::uint32_t tameableSpawns{0};
+    std::uint32_t tameableEntries{0};
+    std::uint32_t currencyOnly{0};  // vendor rows sold for currency only: skipped
     std::uint32_t unknownItems{0};
     std::uint32_t emptyVendors{0};
     std::uint32_t missingItems{0};
@@ -391,6 +410,7 @@ public:
     std::vector<std::pair<std::uint32_t, std::uint32_t>> reagentClasses;  // item, class mask; by item
     std::vector<ReagentSpell> reagentSpells;                              // by class, item and position
     std::vector<WeaponSkill> weaponSkills;                                // by skill line
+    std::vector<TameableSpawn> tameable;                                  // by map, entry and place
     UpkeepStats stats;
 
     static UpkeepIndex Build(UpkeepGather&& input)
@@ -403,6 +423,7 @@ public:
         index.BuildFits(input);
         index.BuildReagents(input);
         index.BuildOffers(input);
+        index.BuildTameable(input);
         index.stats.estimatedBytes = index.ApproxBytes();
         return index;
     }
@@ -422,6 +443,28 @@ public:
     {
         TrainerList const* list = List(TrainerKind::Mount, race);
         return list ? list : List(TrainerKind::Mount, 0);
+    }
+
+    // The tameable spawns on a map, as a range of tameable
+    std::pair<std::vector<TameableSpawn>::const_iterator, std::vector<TameableSpawn>::const_iterator> TameableOn(
+        std::uint32_t map) const
+    {
+        auto const first =
+            std::lower_bound(tameable.begin(), tameable.end(), map,
+                             [](TameableSpawn const& spawn, std::uint32_t id) { return spawn.map < id; });
+        auto const last = std::upper_bound(first, tameable.end(), map,
+                                           [](std::uint32_t id, TameableSpawn const& spawn) { return id < spawn.map; });
+        return {first, last};
+    }
+
+    // A tame target (WU21d): an entry the index keeps on that map (normal rank, no spell that breaks the channel,
+    // several spawns), as the tame stop picks a live beast
+    bool TameTarget(std::uint32_t map, std::uint32_t entry) const
+    {
+        auto const [first, last] = TameableOn(map);
+        auto const it = std::lower_bound(first, last, entry,
+                                         [](TameableSpawn const& spawn, std::uint32_t id) { return spawn.entry < id; });
+        return it != last && it->entry == entry;
     }
 
     WeaponSkill const* Weapon(std::uint32_t skill) const
@@ -489,6 +532,7 @@ public:
         bytes += weaponSkills.capacity() * sizeof(WeaponSkill);
         for (WeaponSkill const& weapon : weaponSkills)
             bytes += weapon.trainers.capacity() * sizeof(std::uint32_t);
+        bytes += tameable.capacity() * sizeof(TameableSpawn);
         return bytes;
     }
 
@@ -631,6 +675,27 @@ private:
         masters.erase(std::unique(masters.begin(), masters.end()), masters.end());
         stats.weaponSkills = static_cast<std::uint32_t>(weaponSkills.size());
         stats.weaponMasters = static_cast<std::uint32_t>(masters.size());
+    }
+
+    // The tameable spawns by map, entry and place (TameableOn), each spawn once
+    void BuildTameable(UpkeepGather& input)
+    {
+        auto const key = [](TameableSpawn const& s) { return std::tie(s.map, s.entry, s.x, s.y, s.z); };
+        std::sort(input.tameable.begin(), input.tameable.end(),
+                  [&key](TameableSpawn const& a, TameableSpawn const& b) { return key(a) < key(b); });
+        input.tameable.erase(
+            std::unique(input.tameable.begin(), input.tameable.end(),
+                        [&key](TameableSpawn const& a, TameableSpawn const& b) { return key(a) == key(b); }),
+            input.tameable.end());
+        tameable = std::move(input.tameable);
+        std::vector<std::uint32_t> entries;
+        entries.reserve(tameable.size());
+        for (TameableSpawn const& spawn : tameable)
+            entries.push_back(spawn.entry);
+        std::sort(entries.begin(), entries.end());
+        stats.tameableSpawns = static_cast<std::uint32_t>(tameable.size());
+        stats.tameableEntries =
+            static_cast<std::uint32_t>(std::unique(entries.begin(), entries.end()) - entries.begin());
     }
 
     // Each list spell's fit from the gather; a list without fits (tradeskill, pet) keeps none

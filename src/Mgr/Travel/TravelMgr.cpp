@@ -7,6 +7,7 @@
 #include "TravelMgr.h"
 #include "QuestLevelRules.h"
 #include "AreaDefines.h"
+#include "BotKind.h"
 #include "CellImpl.h"
 #include "ChatHelper.h"
 #include "Corpse.h"
@@ -1241,7 +1242,10 @@ bool QuestObjectiveTravelDestination::isActive(Player* bot)
     if (getEntry() > 0)
     {
         CreatureTemplate const* cInfo = sObjectMgr->GetCreatureTemplate(getEntry());
-        if (cInfo && (int)cInfo->maxlevel - (int)bot->GetLevel() > 4)
+        if (!cInfo)
+            return false;
+
+        if ((int)cInfo->maxlevel - (int)bot->GetLevel() > 4)
             return false;
 
         // Do not try to hand-in dungeon/elite quests in instances without a group.
@@ -4450,6 +4454,13 @@ std::vector<TravelMgr::TrainerInfo> const& TravelMgr::GetTrainers(uint32 mapId) 
     return it == trainersByMap.end() ? none : it->second;
 }
 
+std::vector<TravelMgr::TrainerInfo> const& TravelMgr::GetStableMasters(uint32 mapId) const
+{
+    static std::vector<TrainerInfo> const none;
+    auto const it = stableMastersByMap.find(mapId);
+    return it == stableMastersByMap.end() ? none : it->second;
+}
+
 bool TravelMgr::GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const
 {
     auto const itr = zone2LevelBracket.find(zoneId);
@@ -4480,7 +4491,7 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
     uint32 botLevel = bot->GetLevel();
 
     // Persistent bots fly only to nodes they have discovered, through discovered stops
-    bool const discoveredOnly = RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot);
+    bool const discoveredOnly = BotKind::IsPersistentBot(bot);
     auto const known = [bot](uint32 node) { return bot->m_taxi.IsTaximaskNodeKnown(node); };
     auto const nodesInZone = [&](uint32 zoneId)
     {
@@ -4547,7 +4558,11 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
 
 const std::vector<WorldLocation> TravelMgr::GetTeleportLocations(Player* bot)
 {
-    uint32 level = bot->GetLevel();
+    return GetTeleportLocations(bot, bot->GetLevel());
+}
+
+const std::vector<WorldLocation> TravelMgr::GetTeleportLocations(Player* bot, uint32 level)
+{
     std::map<uint8, std::vector<WorldLocation>> const& cache =
         !sPlayerbotAIConfig.EnableNewRpgStrategy ? locsPerLevelCache
         : bot->GetTeamId() == TEAM_ALLIANCE      ? allianceHubsPerLevelCache
@@ -4781,6 +4796,7 @@ void TravelMgr::PrepareDestinationCache()
         eventSpawns.insert(eventCreatureGuids[i].begin(), eventCreatureGuids[i].end());
     vendorsByMap.clear();
     trainersByMap.clear();
+    stableMastersByMap.clear();
 
     LOG_INFO("playerbots", "Preparing destination caches for {} levels...", maxLevel);
     // Temporary map to group creatures by entry and area
@@ -4828,6 +4844,11 @@ void TravelMgr::PrepareDestinationCache()
                 {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
             ++trainerCount;
         }
+
+        // ERRAND STABLE MASTERS (upkeep WU21c: a hunter's swap of an unwanted pet; the errand judges the faction)
+        if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_STABLEMASTER) && !eventSpawns.count(guid))
+            stableMastersByMap[mapId].push_back(
+                {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
 
         // CREATURES
         if (creatureTemplate->npcflag == 0 &&
@@ -5002,23 +5023,30 @@ void TravelMgr::PrepareDestinationCache()
     LOG_INFO("playerbots", ">> Inn cache: {} spots, {} filtered ({} phased out, {} hostile to players)", innSpots,
              innsPhased + innsHostile, innsPhased, innsHostile);
 
-    // Process temporary caches. A cell's spot is its first spawn's own position: the cell corner (rounded to 50 yd in
-    // x, y and z) put bots inside rocks, under the world or on unmeshed objects (WT10e-1)
+    // Process temporary caches. A cell's spot is a real spawn, the one nearest the middle of the cell's spawns
+    // (upstream #3012; WT10e-1 had taken the first spawn): the cell corner (rounded to 50 yd in x, y and z) put bots
+    // inside rocks, under the world or on unmeshed objects
     for (auto const& [gridTuple, creatureDataList] : tempLocsCache)
     {
         if (creatureDataList.size() >= 2)
         {
-            CreatureData const& first = creatureDataList[0];
             CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(creatureDataList[0].id);
             uint32 level = (creatureTemplate->minlevel + creatureTemplate->maxlevel + 1) / 2;
+
+            std::vector<WorldPosition> spawns;
+            spawns.reserve(creatureDataList.size());
+            for (CreatureData const& creatureData : creatureDataList)
+                spawns.emplace_back(std::get<0>(gridTuple), creatureData.posX, creatureData.posY, creatureData.posZ);
+
+            // A real spawn, not the grid key * 50, which can be up to 25 yd in the air or underground.
+            WorldLocation const loc = WorldPosition(spawns, WP_MEAN_CENTROID);
             for (int32 l = (int32)level - (int32)sPlayerbotAIConfig.RandomBotTeleLowerLevel;
                  l <= (int32)level + (int32)sPlayerbotAIConfig.RandomBotTeleHigherLevel; l++)
             {
                 if (l < 1 || l > int32(maxLevel))
                     continue;
 
-                locsPerLevelCache[(uint8)l].push_back(
-                    WorldLocation(std::get<0>(gridTuple), first.posX, first.posY, first.posZ));
+                locsPerLevelCache[(uint8)l].push_back(loc);
             }
         }
     }

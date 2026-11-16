@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgBaseAction.h"
+#include "BotTravel.h"
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "ChatHelper.h"
@@ -18,6 +19,7 @@
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
+#include "NewRpgStatusEnd.h"
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
 #include "Object.h"
@@ -43,7 +45,10 @@
 #include "StatsWeightCalculator.h"
 #include "TestConstraints.h"
 #include "Timer.h"
+#include "TravelLegRules.h"
 #include "TravelMgr.h"
+#include "TravelProgress.h"
+#include "TravelWalkRules.h"
 #include "Upkeep.h"
 #include "UpkeepRules.h"
 #include "WorldLog.h"
@@ -56,22 +61,7 @@
 
 namespace
 {
-uint32 constexpr GRIND_PICK_TRIES = 3;
-uint32 constexpr HEARTHSTONE_CAST_SPELL = 8690;  // the stone's spell (NewRpgAction.cpp's HEARTHSTONE_SPELL)
-
-// A grind spot is a 50 yd cell centre (TravelMgr rounds x, y and z), so it can sit off the ground or inside a rock.
-// It is kept when the nav mesh has a poly a bot may walk (the bots' path filter) within 3 yd across and 50 yd up or
-// down, and moves onto that poly; on a tile not loaded yet nothing can be judged and the spot stays as it is.
-bool SnapToNavMesh(Player* bot, WorldPosition& spot)
-{
-    float x = spot.GetPositionX();
-    float y = spot.GetPositionY();
-    float z = spot.GetPositionZ();
-    NavMeshSnap::Result const result = NavMeshSnap::Nearest(bot->GetMap(), x, y, z, 3.0f, 50.0f);
-    if (result == NavMeshSnap::Result::Found)
-        spot.Relocate(x, y, z);
-    return result != NavMeshSnap::Result::None;
-}
+uint32 constexpr HEARTHSTONE_CAST_SPELL = 8690;  // the stone's spell (NewRpgRoute.cpp's HEARTHSTONE_SPELL)
 }  // namespace
 
 bool NewRpgBaseAction::BotOffMesh()
@@ -136,7 +126,7 @@ void NewRpgBaseAction::RecoverOffMesh()
     // The hearthstone when it is ready: the stone's own spell, no bot teleport and no sight check
     char const* refusal = nullptr;
     float castResult = 0.0f;
-    bool const hearthReady = TestConstraints::HearthAllowed(botAI->rpgInfo.constraints) &&
+    bool const hearthReady = TestConstraints::HearthAllowed(botAI->testConstraints) &&
                              bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) &&
                              !bot->HasSpellCooldown(HEARTHSTONE_CAST_SPELL) && !bot->IsInCombat() &&
                              !bot->IsNonMeleeSpellCast(false);
@@ -162,8 +152,8 @@ void NewRpgBaseAction::RecoverOffMesh()
     if (WorldTravel::OffMeshStays(recovery))
     {
         // Nothing moved the bot: its next give-ups here are quiet for a while (WorldTravel::OffMeshBackoff)
-        botAI->rpgInfo.offMeshPos = WorldPosition(bot);
-        botAI->rpgInfo.offMeshTs = std::max<uint32>(getMSTime(), 1);
+        botAI->rpgMemos.offMeshPos = WorldPosition(bot);
+        botAI->rpgMemos.offMeshTs = std::max<uint32>(getMSTime(), 1);
     }
     if (recovery != WorldTravel::OffMeshRecovery::Snap)
         return;
@@ -221,12 +211,12 @@ WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
 
 bool NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
 {
-    NewRpgInfo& info = botAI->rpgInfo;
+    RpgMemos& memo = botAI->rpgMemos;
     WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-    WorldTravel::SightPoint const offMeshAt{info.offMeshPos.GetMapId(), info.offMeshPos.GetPositionX(),
-                                            info.offMeshPos.GetPositionY(), info.offMeshPos.GetPositionZ()};
+    WorldTravel::SightPoint const offMeshAt{memo.offMeshPos.GetMapId(), memo.offMeshPos.GetPositionX(),
+                                            memo.offMeshPos.GetPositionY(), memo.offMeshPos.GetPositionZ()};
     bool const backingOff =
-        WorldTravel::OffMeshBackoff(info.offMeshTs != 0, GetMSTimeDiffToNow(info.offMeshTs), offMeshAt, here);
+        WorldTravel::OffMeshBackoff(memo.offMeshTs != 0, GetMSTimeDiffToNow(memo.offMeshTs), offMeshAt, here);
     WorldTravel::StuckCause const cause = backingOff ? WorldTravel::StuckCause::OffMesh : RecordStuck(dest);
     bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
     if (offMesh)
@@ -238,27 +228,50 @@ bool NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
     {
         // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h);
         // off the mesh the destination is not to blame
-        WorldTravel::SightPoint const lastBot{info.stuckBotPos.GetMapId(), info.stuckBotPos.GetPositionX(),
-                                              info.stuckBotPos.GetPositionY(), info.stuckBotPos.GetPositionZ()};
-        info.stuckRepeats = WorldTravel::NextStuckRepeats(
-            info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
-            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, info.stuckRepeats, lastBot, here);
-        info.stuckAvoidPos = dest;
-        info.stuckBotPos = WorldPosition(bot);
-        info.stuckAvoidTs = getMSTime();
+        WorldTravel::SightPoint const lastBot{memo.stuckBotPos.GetMapId(), memo.stuckBotPos.GetPositionX(),
+                                              memo.stuckBotPos.GetPositionY(), memo.stuckBotPos.GetPositionZ()};
+        memo.stuckRepeats = WorldTravel::NextStuckRepeats(
+            memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
+            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, memo.stuckRepeats, lastBot, here);
+        memo.stuckAvoidPos = dest;
+        memo.stuckBotPos = WorldPosition(bot);
+        memo.stuckAvoidTs = getMSTime();
     }
-    info.SetMoveFarTo(WorldPosition());
+    memo.SetMoveFarTo(WorldPosition());
     return offMesh;
 }
+
+namespace
+{
+static_assert(TravelWalk::PATH_NOPATH == PATHFIND_NOPATH &&
+                  TravelWalk::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH &&
+                  TravelWalk::PATH_FARFROMPOLY_END == PATHFIND_FARFROMPOLY_END,
+              "TravelWalk reads the engine's PathType bits");
+
+// An order's engine answer as TravelWalk judges it: the type, the path's last step (a shortcut's whole line) and what
+// its end gains on dest
+TravelWalk::EngineAnswer ReadWalkAnswer(Player* bot, PathGenerator const& path, bool result, WorldPosition const& dest)
+{
+    TravelWalk::EngineAnswer answer;
+    answer.result = result;
+    answer.type = path.GetPathType();
+    Movement::PointsArray const& points = path.GetPath();
+    if (points.size() >= 2)
+        answer.lastStep = (points[points.size() - 1] - points[points.size() - 2]).length();
+    G3D::Vector3 const& end = path.GetActualEndPosition();
+    answer.gain = bot->GetExactDist(dest) - dest.GetExactDist(end.x, end.y, end.z);
+    return answer;
+}
+}  // namespace
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 {
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
-    if (!travel || !travel->HasWalkTarget())
+    if (!travel || !TravelLegs::HasWalkTarget(travel->trip, travel->bindInn))
         return MoveFarToImpl(dest);
     return TravelProgress::ContinueWalk(
-        travel->progress, [&] { return botAI->ReadTravelWalk(); }, [&] { return MoveFarToImpl(dest); },
-        [&](char const* reason) { botAI->TraceTravelInteraction("route_resume", reason); });
+        travel->progress, [&] { return botAI->GetTravel().ReadTravelWalk(); }, [&] { return MoveFarToImpl(dest); },
+        [&](char const* reason) { botAI->GetTravel().TraceTravelInteraction("route_resume", reason); });
 }
 
 bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
@@ -271,29 +284,28 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     if (bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT))
         return true;
 
-    bool newDest = dest != botAI->rpgInfo.moveFarPos;
+    bool newDest = dest != botAI->rpgMemos.moveFarPos;
     // A route follower's waypoints are graph nodes: the route search avoids stuck edges itself (StuckBook), so the
     // avoided-spot memo below would only end the trip early
     auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     if (newDest)
     {
         // A destination given up after a Stuck event is not walked to again for a while
-        NewRpgInfo const& info = botAI->rpgInfo;
-        WorldTravel::SightPoint const given{info.stuckAvoidPos.GetMapId(), info.stuckAvoidPos.GetPositionX(),
-                                            info.stuckAvoidPos.GetPositionY(), info.stuckAvoidPos.GetPositionZ()};
+        RpgMemos const& memo = botAI->rpgMemos;
+        WorldTravel::SightPoint const given{memo.stuckAvoidPos.GetMapId(), memo.stuckAvoidPos.GetPositionX(),
+                                            memo.stuckAvoidPos.GetPositionY(), memo.stuckAvoidPos.GetPositionZ()};
         WorldTravel::SightPoint const wanted{dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(),
                                              dest.GetPositionZ()};
-        if (!travel && WorldTravel::IsAvoidedSpot(info.stuckAvoidTs != 0, GetMSTimeDiffToNow(info.stuckAvoidTs),
+        if (!travel && WorldTravel::IsAvoidedSpot(memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
                                                   sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS,
-                                                  given, wanted, info.stuckRepeats))
+                                                  given, wanted, memo.stuckRepeats))
         {
-            WorldLog::StatusReason const reasonScope("stuck");
-            botAI->rpgInfo.ChangeToIdle();
+            RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);
             return true;
         }
 
         // clear stuck information if it's a new dest
-        botAI->rpgInfo.SetMoveFarTo(dest);
+        botAI->rpgMemos.SetMoveFarTo(dest);
     }
 
     // performance optimization
@@ -349,24 +361,46 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
             return true;
         }
     }
-    else if (disToDest + TravelProgress::ADVANCE_YARDS < botAI->rpgInfo.nearestMoveFarDis)
+    else if (disToDest + TravelProgress::ADVANCE_YARDS < botAI->rpgMemos.nearestMoveFarDis)
     {
-        botAI->rpgInfo.nearestMoveFarDis = disToDest;
-        botAI->rpgInfo.stuckTs = getMSTime();
-        botAI->rpgInfo.stuckAttempts = 0;
+        botAI->rpgMemos.nearestMoveFarDis = disToDest;
+        botAI->rpgMemos.stuckTs = getMSTime();
+        botAI->rpgMemos.stuckAttempts = 0;
     }
-    else if ((++botAI->rpgInfo.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgInfo.stuckTs) >= stuckTime) ||
-             (botAI->rpgInfo.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
+    else if ((++botAI->rpgMemos.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgMemos.stuckTs) >= stuckTime) ||
+             (botAI->rpgMemos.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
     {
         GiveUpMove(dest);
-        WorldLog::StatusReason const reasonScope("stuck");
-        botAI->rpgInfo.ChangeToIdle();
+        RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);
         return true;
     }
+
+    // WT58: along a graph link each order is judged on the engine's answer before the move (TravelWalkRules.h); near
+    // dest MovePoint would walk a "no path" answer as a straight line. Not taken: the follower's next tick orders the
+    // far node (fallback) or fails the leg (refused). A refusal where the bot stands off the mesh goes to the off-mesh
+    // recovery instead, as MoveFarTo's own probe does
+    TravelWalk::LinkWalk* const walk = travel && travel->trip.walk.Active() ? &travel->trip.walk : nullptr;
+    auto const taken = [&](PathGenerator const& path, bool result, bool direct)
+    {
+        TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest), direct);
+        if (verdict == TravelWalk::Verdict::Refuse && BotOffMesh())
+        {
+            walk->mode = TravelWalk::Mode::Fallback;
+            travel->progress.Latch(TravelProgress::Overdue::OffMesh);
+        }
+        return verdict == TravelWalk::Verdict::Walk || verdict == TravelWalk::Verdict::Hop;
+    };
 
     float dis = bot->GetExactDist(dest);
     if (dis < pathFinderDis)
     {
+        if (walk)
+        {
+            PathGenerator path(bot);
+            bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+            if (!taken(path, result, true))
+                return true;
+        }
         return MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false, false,
                       false, true);
     }
@@ -385,7 +419,9 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     // further PathGenerator calls fire until the bot arrives.
     {
         PathGenerator path(bot);
-        path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        if (walk && !taken(path, result, false))
+            return true;
         PathType type = path.GetPathType();
         bool canReach = !(type & (~typeOk));
         if (canReach)
@@ -441,6 +477,8 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     }
     if (found)
     {
+        if (walk)
+            TravelWalk::NoteMove(*walk);
         return MoveTo(bot->GetMapId(), rx, ry, rz, false, false, false, true);
     }
     return false;
@@ -532,893 +570,4 @@ bool NewRpgBaseAction::ForceToWait(uint32 duration, MovementPriority priority)
         .Set(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetOrientation(),
              duration, priority);
     return true;
-}
-
-/// @TODO: Fix redundant code
-/// Quest related method refer to TalkToQuestGiverAction.h
-bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
-{
-    WorldObject* object = ObjectAccessor::GetWorldObject(*bot, guid);
-    if (!object || !bot->CanInteractWithQuestGiver(object))
-        return false;
-
-    // Creature* creature = bot->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_NONE);
-    // if (creature)
-    // {
-    //     WorldPacket packet(CMSG_GOSSIP_HELLO);
-    //     packet << guid;
-    //     bot->GetSession()->HandleGossipHelloOpcode(packet);
-    // }
-
-    bot->PrepareQuestMenu(guid);
-    QuestMenu const& menu = bot->PlayerTalkClass->GetQuestMenu();
-    if (menu.Empty())
-        return true;
-
-    for (uint8 idx = 0; idx < menu.GetMenuItemCount(); idx++)
-    {
-        QuestMenuItem const& item = menu.GetItem(idx);
-        Quest const* quest = sObjectMgr->GetQuestTemplate(item.QuestId);
-        if (!quest)
-            continue;
-
-        QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
-        if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            NewRpgHelpers::IsQuestWorthDoing(bot, quest) && NewRpgHelpers::IsQuestCapableDoing(bot, quest))
-        {
-            AcceptQuest(quest, guid);
-            if (botAI->GetMaster())
-                botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "new_rpg_quest_accepted",
-                    "Quest accepted %quest",
-                    {{"%quest", ChatHelper::FormatQuest(quest)}}));
-            BroadcastHelper::BroadcastQuestAccepted(botAI, bot, quest);
-            botAI->RecordQuestAccepted(quest->GetQuestId());
-            LOG_DEBUG("playerbots", "[New RPG] {} accept quest {}", bot->GetName(), quest->GetQuestId());
-        }
-        if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, 0, false))
-        {
-            TurnInQuest(quest, guid);
-            if (botAI->GetMaster())
-                botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "new_rpg_quest_rewarded",
-                    "Quest rewarded %quest",
-                    {{"%quest", ChatHelper::FormatQuest(quest)}}));
-            BroadcastHelper::BroadcastQuestTurnedIn(botAI, bot, quest);
-            botAI->RecordQuestRewarded(quest->GetQuestId());
-            LOG_DEBUG("playerbots", "[New RPG] {} turned in quest {}", bot->GetName(), quest->GetQuestId());
-        }
-    }
-    return true;
-}
-
-bool NewRpgBaseAction::IsWithinInteractionDist(Object* questGiver)
-{
-    // This is a variant of Player::CanInteractWithQuestGiver
-    // that only keep the distance check
-    switch (questGiver->GetTypeId())
-    {
-        case TYPEID_UNIT:
-        {
-            ObjectGuid guid = questGiver->GetGUID();
-            // unit checks
-            if (!guid)
-                return false;
-
-            // exist (we need look pets also for some interaction (quest/etc)
-            Creature* creature = ObjectAccessor::GetCreatureOrPetOrVehicle(*bot, guid);
-            if (!creature)
-                return false;
-
-            if (!creature->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
-                return false;
-
-            return true;
-        }
-        case TYPEID_GAMEOBJECT:
-        {
-            ObjectGuid guid = questGiver->GetGUID();
-            if (GameObject* go = bot->GetMap()->GetGameObject(guid))
-            {
-                if (go->IsWithinDistInMap(bot))
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-        // case TYPEID_PLAYER:
-        //     return bot->IsAlive() && questGiver->ToPlayer()->IsAlive();
-        // case TYPEID_ITEM:
-        //     return bot->IsAlive();
-        default:
-            break;
-    }
-    return false;
-}
-
-bool NewRpgBaseAction::AcceptQuest(Quest const* quest, ObjectGuid guid)
-{
-    WorldPacket p(CMSG_QUESTGIVER_ACCEPT_QUEST);
-    uint32 unk1 = 0;
-    p << guid << quest->GetQuestId() << unk1;
-    p.rpos(0);
-    bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(p);
-
-    return true;
-}
-
-bool NewRpgBaseAction::TurnInQuest(Quest const* quest, ObjectGuid guid)
-{
-    uint32 questID = quest->GetQuestId();
-
-    if (bot->GetQuestRewardStatus(questID))
-    {
-        return false;
-    }
-
-    if (!bot->CanRewardQuest(quest, false))
-    {
-        return false;
-    }
-
-    bot->PlayDistanceSound(621);
-
-    WorldPacket p(CMSG_QUESTGIVER_CHOOSE_REWARD);
-    p << guid << quest->GetQuestId();
-    if (quest->GetRewChoiceItemsCount() <= 1)
-    {
-        p << 0;
-        bot->GetSession()->HandleQuestgiverChooseRewardOpcode(p);
-    }
-    else
-    {
-        uint32 bestId = BestRewardIndex(quest);
-        p << bestId;
-        bot->GetSession()->HandleQuestgiverChooseRewardOpcode(p);
-    }
-
-    return true;
-}
-
-uint32 NewRpgBaseAction::BestRewardIndex(Quest const* quest)
-{
-    ItemIds returnIds;
-    ItemUsage bestUsage = ITEM_USAGE_NONE;
-    if (quest->GetRewChoiceItemsCount() <= 1)
-        return 0;
-    else
-    {
-        for (uint8 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
-        {
-            ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", quest->RewardChoiceItemId[i]);
-            if (usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE)
-                bestUsage = ITEM_USAGE_EQUIP;
-            else if (usage == ITEM_USAGE_BAD_EQUIP && bestUsage != ITEM_USAGE_EQUIP)
-                bestUsage = usage;
-            else if (usage != ITEM_USAGE_NONE && bestUsage == ITEM_USAGE_NONE)
-                bestUsage = usage;
-        }
-        StatsWeightCalculator calc(bot);
-        uint32 best = 0;
-        float bestScore = 0;
-        for (uint8 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
-        {
-            ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", quest->RewardChoiceItemId[i]);
-            if (usage == bestUsage || usage == ITEM_USAGE_REPLACE)
-            {
-                uint32 const itemId = quest->RewardChoiceItemId[i];
-                ItemTemplate const* rewardProto = sObjectMgr->GetItemTemplate(itemId);
-                uint8 rewardSlot = NULL_SLOT;
-                if (rewardProto)
-                    rewardSlot = botAI->FindEquipSlot(rewardProto, NULL_SLOT, true);
-                float score = calc.CalculateItem(itemId, 0, rewardSlot);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    best = i;
-                }
-            }
-        }
-        return best;
-    }
-}
-
-bool NewRpgBaseAction::OrganizeQuestLog()
-{
-    int32 freeSlotNum = 0;
-
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
-    {
-        uint32 questId = bot->GetQuestSlotQuestId(i);
-        if (!questId)
-            freeSlotNum++;
-    }
-
-    // it's ok if we have two more free slots
-    if (freeSlotNum >= 2)
-        return false;
-
-    int32 dropped = 0;
-    // remove quests that not worth doing or not capable of doing
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
-    {
-        uint32 questId = bot->GetQuestSlotQuestId(i);
-        if (!questId)
-            continue;
-
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        bool const worthDoing = NewRpgHelpers::IsQuestWorthDoing(bot, quest);
-        bool const capableDoing = NewRpgHelpers::IsQuestCapableDoing(bot, quest);
-        bool const failed = bot->GetQuestStatus(questId) == QUEST_STATUS_FAILED;
-        if (!worthDoing || !capableDoing || failed)
-        {
-            QuestDropReason const reason = !worthDoing    ? QuestDropReason::NotWorth
-                                           : !capableDoing ? QuestDropReason::NotCapable
-                                                           : QuestDropReason::Failed;
-            LOG_DEBUG("playerbots", "[New RPG] {} drop quest {}", bot->GetName(), questId);
-            WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
-            packet << (uint8)i;
-            WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
-            removeQuest.Read();
-            bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
-            if (botAI->GetMaster())
-                botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "new_rpg_quest_dropped",
-                    "Quest dropped %quest",
-                    {{"%quest", ChatHelper::FormatQuest(quest)}}));
-            botAI->RecordQuestDropped(questId, reason);
-            dropped++;
-        }
-    }
-
-    // drop more than 8 quests at once to avoid repeated accept and drop
-    if (dropped >= 8)
-        return true;
-
-    // remove festival/class quests and quests in different zone
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
-    {
-        uint32 questId = bot->GetQuestSlotQuestId(i);
-        if (!questId)
-            continue;
-
-        // A planner bot keeps its plan's quests: a carried quest is delivered in another zone (WT16)
-        if (Planner::KeepsQuest(botAI, questId))
-            continue;
-
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        const int64_t botZoneId = this->bot->GetZoneId();
-
-        int32 const zoneOrSort = quest->GetZoneOrSort();
-        if (zoneOrSort < 0 || (zoneOrSort > 0 && zoneOrSort != botZoneId))
-        {
-            QuestDropReason const reason = zoneOrSort < 0 ? QuestDropReason::ClassOrHoliday
-                                                          : QuestDropReason::OtherZone;
-            LOG_DEBUG("playerbots", "[New RPG] {} drop quest {}", bot->GetName(), questId);
-            WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
-            packet << (uint8)i;
-            WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
-            removeQuest.Read();
-            bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
-            if (botAI->GetMaster())
-                botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "new_rpg_quest_dropped",
-                    "Quest dropped %quest",
-                    {{"%quest", ChatHelper::FormatQuest(quest)}}));
-            botAI->RecordQuestDropped(questId, reason);
-            dropped++;
-        }
-    }
-
-    if (dropped >= 8)
-        return true;
-
-    // clear quests log (but a planner bot's planned quests)
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
-    {
-        uint32 questId = bot->GetQuestSlotQuestId(i);
-        if (!questId || Planner::KeepsQuest(botAI, questId))
-            continue;
-
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        LOG_DEBUG("playerbots", "[New RPG] {} drop quest {}", bot->GetName(), questId);
-        WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
-        packet << (uint8)i;
-        WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
-        removeQuest.Read();
-        bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
-        if (botAI->GetMaster())
-            botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "new_rpg_quest_dropped",
-                "Quest dropped %quest",
-                {{"%quest", ChatHelper::FormatQuest(quest)}}));
-        botAI->RecordQuestDropped(questId, QuestDropReason::LogFull);
-    }
-
-    return true;
-}
-
-bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
-{
-    OrganizeQuestLog();
-    ObjectGuid npcOrGo = AI_VALUE(ObjectGuid, "new rpg quest giver");
-    if (!npcOrGo)
-        return false;
-
-    WorldObject* object = ObjectAccessor::GetWorldObject(*bot, npcOrGo);
-    if (!object)
-        return false;
-
-    NewRpgInfo& info = botAI->rpgInfo;
-    if (info.questGiver != npcOrGo || GetMSTimeDiffToNow(info.questGiverLastTry) > questGiverRetryGap)
-    {
-        info.questGiver = npcOrGo;
-        info.questGiverSince = getMSTime();
-    }
-    info.questGiverLastTry = getMSTime();
-
-    // Unreachable, or an offer the interaction never clears: let the status action and grinding resume.
-    if (GetMSTimeDiffToNow(info.questGiverSince) > questGiverGiveUpTime)
-    {
-        LOG_DEBUG("playerbots", "[New RPG] {} gives up on quest giver {}", bot->GetName(), npcOrGo.ToString());
-        info.ignoredQuestGivers.insert(npcOrGo);
-        info.questGiver.Clear();
-        return false;
-    }
-
-    if (bot->CanInteractWithQuestGiver(object))
-    {
-        InteractWithNpcOrGameObjectForQuest(npcOrGo);
-        ForceToWait(5000);
-        return true;
-    }
-    return MoveWorldObjectTo(npcOrGo);
-}
-
-static std::vector<float> GenerateRandomWeights(int n)
-{
-    std::vector<float> weights(n);
-    float sum = 0.0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        weights[i] = rand_norm();
-        sum += weights[i];
-    }
-    for (int i = 0; i < n; ++i)
-    {
-        weights[i] /= sum;
-    }
-    return weights;
-}
-
-bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector<POIInfo>& poiInfo, bool toComplete)
-{
-    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-    if (!quest)
-        return false;
-
-    QuestPOIVector const* poiVector = sObjectMgr->GetQuestPOIVector(questId);
-    if (!poiVector)
-    {
-        return false;
-    }
-
-    QuestStatusData const& q_status = bot->getQuestStatusMap().at(questId);
-
-    if (toComplete && q_status.Status == QUEST_STATUS_COMPLETE)
-    {
-        for (QuestPOI const& qPoi : *poiVector)
-        {
-            if (qPoi.MapId != bot->GetMapId())
-                continue;
-
-            // not the poi pos to reward quest
-            if (qPoi.ObjectiveIndex != -1)
-                continue;
-
-            if (qPoi.points.size() == 0)
-                continue;
-
-            float dx = 0, dy = 0;
-            std::vector<float> weights = GenerateRandomWeights(qPoi.points.size());
-            for (size_t i = 0; i < qPoi.points.size(); i++)
-            {
-                QuestPOIPoint const& point = qPoi.points[i];
-                dx += point.x * weights[i];
-                dy += point.y * weights[i];
-            }
-
-            if (bot->GetDistance2d(dx, dy) >= 1500.0f)
-                continue;
-
-            float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-            if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-                continue;
-
-            if (bot->GetZoneId() != bot->GetMap()->GetZoneId(bot->GetPhaseMask(), dx, dy, dz))
-                continue;
-
-            poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
-        }
-
-        if (poiInfo.empty())
-            return false;
-
-        return true;
-    }
-
-    if (q_status.Status != QUEST_STATUS_INCOMPLETE)
-        return false;
-
-    // Get incomplete quest objective index
-    std::vector<int32> incompleteObjectiveIdx;
-    for (int i = 0; i < QUEST_OBJECTIVES_COUNT; i++)
-    {
-        int32 npcOrGo = quest->RequiredNpcOrGo[i];
-        if (!npcOrGo)
-            continue;
-
-        if (q_status.CreatureOrGOCount[i] < quest->RequiredNpcOrGoCount[i])
-            incompleteObjectiveIdx.push_back(i);
-    }
-    for (int i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; i++)
-    {
-        uint32 itemId = quest->RequiredItemId[i];
-        if (!itemId)
-            continue;
-
-        if (q_status.ItemCount[i] < quest->RequiredItemCount[i])
-            incompleteObjectiveIdx.push_back(QUEST_OBJECTIVES_COUNT + i);
-    }
-
-    // Get POIs to go
-    for (QuestPOI const& qPoi : *poiVector)
-    {
-        if (qPoi.MapId != bot->GetMapId())
-            continue;
-
-        bool inComplete = false;
-        for (uint32 objective : incompleteObjectiveIdx)
-        {
-            if (qPoi.ObjectiveIndex == static_cast<int32>(objective))
-            {
-                inComplete = true;
-                break;
-            }
-        }
-        if (!inComplete)
-            continue;
-        if (qPoi.points.size() == 0)
-            continue;
-        float dx = 0, dy = 0;
-        std::vector<float> weights = GenerateRandomWeights(qPoi.points.size());
-        for (size_t i = 0; i < qPoi.points.size(); i++)
-        {
-            QuestPOIPoint const& point = qPoi.points[i];
-            dx += point.x * weights[i];
-            dy += point.y * weights[i];
-        }
-
-        if (bot->GetDistance2d(dx, dy) >= 1500.0f)
-            continue;
-
-        float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-        if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-            continue;
-
-        if (bot->GetZoneId() != bot->GetMap()->GetZoneId(bot->GetPhaseMask(), dx, dy, dz))
-            continue;
-
-        poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
-    }
-
-    if (poiInfo.size() == 0)
-    {
-        // LOG_DEBUG("playerbots", "[New rpg] {}: No available poi can be found for quest {}", bot->GetName(), questId);
-        return false;
-    }
-
-    return true;
-}
-
-WorldPosition NewRpgBaseAction::SelectRandomGrindPos(Player* bot)
-{
-    std::vector<WorldLocation> const& locs = sTravelMgr.GetLocsPerLevelCache(bot->GetLevel());
-    float hiRange = 500.0f;
-    float loRange = 2500.0f;
-    if (bot->GetLevel() < 5)
-    {
-        hiRange /= 3;
-        loRange /= 3;
-    }
-    std::vector<WorldLocation> lo_prepared_locs, hi_prepared_locs;
-
-    bool inCity = false;
-    if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot->GetZoneId()))
-    {
-        if (zone->flags & AREA_FLAG_CAPITAL)
-            inCity = true;
-    }
-
-    for (auto& loc : locs)
-    {
-        if (bot->GetMapId() != loc.GetMapId())
-            continue;
-
-        if (bot->GetExactDist(loc) > 2500.0f)
-            continue;
-
-        if (!inCity && bot->GetMap()->GetZoneId(bot->GetPhaseMask(), loc.GetPositionX(), loc.GetPositionY(),
-                                                loc.GetPositionZ()) != bot->GetZoneId())
-            continue;
-
-        if (bot->GetExactDist(loc) < hiRange)
-        {
-            hi_prepared_locs.push_back(loc);
-        }
-
-        if (bot->GetExactDist(loc) < loRange)
-        {
-            lo_prepared_locs.push_back(loc);
-        }
-    }
-    // At most GRIND_PICK_TRIES draws: a spot off the nav mesh is dropped and another drawn, else no spot
-    WorldPosition dest{};
-    uint32 rejected = 0;
-    for (uint32 attempt = 0; attempt < GRIND_PICK_TRIES; ++attempt)
-    {
-        std::vector<WorldLocation>* pool = nullptr;
-        if (urand(1, 100) <= 50 && !hi_prepared_locs.empty())
-            pool = &hi_prepared_locs;
-        else if (!lo_prepared_locs.empty())
-            pool = &lo_prepared_locs;
-        if (!pool)
-            break;
-
-        uint32 const idx = urand(0, pool->size() - 1);
-        WorldPosition candidate = (*pool)[idx];
-        if (SnapToNavMesh(bot, candidate))
-        {
-            dest = candidate;
-            break;
-        }
-
-        ++rejected;
-        (*pool)[idx] = pool->back();
-        pool->pop_back();
-    }
-    if (rejected)
-        LOG_DEBUG("playerbots", "[New RPG] Bot {} grind pos: {} spots off the nav mesh dropped", bot->GetName(),
-                  rejected);
-    LOG_DEBUG("playerbots",
-              "[New RPG] Bot {} select random grind pos Map:{} X:{} Y:{} Z:{} ({} near, {} in range of {})",
-              bot->GetName(), dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
-              hi_prepared_locs.size(), lo_prepared_locs.size(), locs.size());
-    return dest;
-}
-
-WorldPosition NewRpgBaseAction::SelectRandomCampPos(Player* bot)
-{
-    const std::vector<WorldLocation> locs = sTravelMgr.GetTravelHubs(bot);
-
-    bool inCity = false;
-
-    if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot->GetZoneId()))
-    {
-        if (zone->flags & AREA_FLAG_CAPITAL)
-            inCity = true;
-    }
-
-    std::vector<WorldLocation> prepared_locs;
-    for (auto& loc : locs)
-    {
-        if (bot->GetMapId() != loc.GetMapId())
-            continue;
-
-        float range = bot->GetLevel() <= 5 ? 500.0f : 2500.0f;
-        if (bot->GetExactDist(loc) > range)
-            continue;
-
-        if (bot->GetExactDist(loc) < 50.0f)
-            continue;
-
-        if (!inCity && bot->GetMap()->GetZoneId(bot->GetPhaseMask(), loc.GetPositionX(), loc.GetPositionY(),
-                                                loc.GetPositionZ()) != bot->GetZoneId())
-            continue;
-
-        prepared_locs.push_back(loc);
-    }
-    WorldPosition dest{};
-    if (!prepared_locs.empty())
-    {
-        uint32 idx = urand(0, prepared_locs.size() - 1);
-        dest = prepared_locs[idx];
-    }
-    LOG_DEBUG("playerbots", "[New RPG] Bot {} select random inn keeper pos Map:{} X:{} Y:{} Z:{} ({} available in {})",
-              bot->GetName(), dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
-              prepared_locs.size(), locs.size());
-    return dest;
-}
-
-bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path)
-{
-    TravelMgr::FlightMasterInfo const* info = sTravelMgr.GetNearestFlightMasterInfo(bot);
-    if (!info)
-        return false;
-
-    std::vector<std::vector<uint32>> availablePaths = sTravelMgr.GetOptimalFlightDestinations(bot);
-    if (availablePaths.empty())
-        return false;
-
-    flightMasterEntry = info->templateEntry;
-    flightMasterPos = info->pos;
-    path = availablePaths[urand(0, availablePaths.size() - 1)];
-    LOG_DEBUG("playerbots", "[New RPG] Bot {} select random flight taxi node from:{} (node {}) to:{} ({} available)",
-              bot->GetName(), flightMasterEntry, path[0], path[path.size() - 1], availablePaths.size());
-    return true;
-}
-
-static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_ERRANDS == 11 && RPG_TRAVEL == 10 &&
-                  RPG_DO_GATHER == 9 && RPG_REST == 7,
-              "WorldLog::RPG_STATUS_WORDS follows NewRpgStatus");
-static_assert(uint32(RPG_GO_GRIND) == Upkeep::RPG_STATUS_GO_GRIND &&
-                  uint32(RPG_WANDER_RANDOM) == Upkeep::RPG_STATUS_WANDER_RANDOM &&
-                  uint32(RPG_DO_QUEST) == Upkeep::RPG_STATUS_DO_QUEST &&
-                  uint32(RPG_OUTDOOR_PVP) == Upkeep::RPG_STATUS_OUTDOOR_PVP &&
-                  uint32(RPG_DO_GATHER) == Upkeep::RPG_STATUS_DO_GATHER && RPG_STATUS_END <= 32,
-              "UpkeepRules.h's fighting statuses follow NewRpgStatus");
-static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP) == Upkeep::RPG_STATUS_GO_CAMP &&
-                  uint32(RPG_WANDER_NPC) == Upkeep::RPG_STATUS_WANDER_NPC &&
-                  uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS,
-              "UpkeepRules.h's errand statuses follow NewRpgStatus");
-
-bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason)
-{
-    WorldLog::StatusReason const reasonScope("pick");
-    std::vector<NewRpgStatus> availableStatus;
-    uint32 probSum = 0;
-    // A bot with resurrection sickness rests (upkeep §3.5). A bot low on health or mana with nothing to eat or drink
-    // (no food cheat) picks no status that fights; with none left it rests without eating (§3.6)
-    bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
-    bool const hungry = AI_VALUE2(uint8, "health", "self target") < sPlayerbotAIConfig.LowHealth &&
-                        !AI_VALUE2(uint32, "item count", "food");
-    bool const thirsty = AI_VALUE2(bool, "has mana", "self target") &&
-                         AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana &&
-                         !AI_VALUE2(uint32, "item count", "drink");
-    bool const needsRest = (hungry || thirsty) && !bot->IsInCombat() && !Upkeep::FoodCheat(botAI);
-    for (NewRpgStatus status : candidateStatus)
-    {
-        if (sPlayerbotAIConfig.RpgStatusProbWeight[status] == 0 || !Upkeep::StatusPickable(status, sick, needsRest))
-            continue;
-
-        if (CheckRpgStatusAvailable(status))
-        {
-            availableStatus.push_back(status);
-            probSum += sPlayerbotAIConfig.RpgStatusProbWeight[status];
-        }
-    }
-    // Safety check. Default to "rest" if all RPG weights = 0
-    if (availableStatus.empty() || probSum == 0)
-    {
-        botAI->rpgInfo.ChangeToRest();
-        bot->SetStandState(UNIT_STAND_STATE_SIT);
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(RPG_REST),
-                           "none_available", 0.0f);
-        return true;
-    }
-    uint32 rand = urand(1, probSum);
-    uint32 accumulate = 0;
-    NewRpgStatus chosenStatus = RPG_STATUS_END;
-    uint32 chosenWeight = 0;
-    for (NewRpgStatus status : availableStatus)
-    {
-        accumulate += sPlayerbotAIConfig.RpgStatusProbWeight[status];
-        if (accumulate >= rand)
-        {
-            chosenStatus = status;
-            chosenWeight = sPlayerbotAIConfig.RpgStatusProbWeight[status];
-            break;
-        }
-    }
-    // The world log's decision row weighs the chosen status against the three heaviest other available ones
-    WorldLogFormat::Alternatives alternatives;
-    if (WorldLog::Active())
-        for (NewRpgStatus status : availableStatus)
-            if (status != chosenStatus)
-                alternatives.Offer({WorldLog::NewRpgStatusWord(status),
-                                    static_cast<float>(sPlayerbotAIConfig.RpgStatusProbWeight[status])},
-                                   false);
-
-    auto const startStatus = [this](NewRpgStatus status) -> bool
-    {
-        switch (status)
-        {
-            case RPG_WANDER_RANDOM:
-            {
-                botAI->rpgInfo.ChangeToWanderRandom();
-                return true;
-            }
-            case RPG_WANDER_NPC:
-            {
-                botAI->rpgInfo.ChangeToWanderNpc();
-                return true;
-            }
-            case RPG_GO_GRIND:
-            {
-                WorldPosition pos = SelectRandomGrindPos(bot);
-                if (pos != WorldPosition())
-                {
-                    botAI->rpgInfo.ChangeToGoGrind(pos);
-                    return true;
-                }
-                return false;
-            }
-            case RPG_GO_CAMP:
-            {
-                WorldPosition pos = SelectRandomCampPos(bot);
-                if (pos != WorldPosition())
-                {
-                    botAI->rpgInfo.ChangeToGoCamp(pos);
-                    return true;
-                }
-                return false;
-            }
-            case RPG_DO_QUEST:
-            {
-                std::vector<uint32> availableQuests;
-                for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-                {
-                    uint32 questId = bot->GetQuestSlotQuestId(slot);
-                    if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
-                        continue;
-
-                    std::vector<POIInfo> poiInfo;
-                    if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
-                    {
-                        availableQuests.push_back(questId);
-                    }
-                }
-                if (availableQuests.size())
-                {
-                    uint32 questId = availableQuests[urand(0, availableQuests.size() - 1)];
-                    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-                    if (quest)
-                    {
-                        botAI->rpgInfo.ChangeToDoQuest(questId, quest);
-                        return true;
-                    }
-                }
-                return false;
-            }
-            case RPG_TRAVEL_FLIGHT:
-            {
-                uint32 flightMasterEntry = 0;
-                WorldPosition flightMasterPos;
-                std::vector<uint32> path;
-                if (SelectRandomFlightTaxiNode(flightMasterEntry, flightMasterPos, path))
-                {
-                    botAI->rpgInfo.ChangeToTravelFlight(flightMasterEntry, flightMasterPos, path);
-                    return true;
-                }
-                return false;
-            }
-            case RPG_DO_GATHER:
-            {
-                botAI->rpgInfo.ChangeToDoGather();
-                return true;
-            }
-            case RPG_IDLE:
-            {
-                botAI->rpgInfo.ChangeToIdle();
-                return true;
-            }
-            case RPG_REST:
-            {
-                botAI->rpgInfo.ChangeToRest();
-                bot->SetStandState(UNIT_STAND_STATE_SIT);
-                return true;
-            }
-            case RPG_OUTDOOR_PVP:
-            {
-                botAI->rpgInfo.ChangeToOutdoorPvp();
-                return true;
-            }
-            default:
-            {
-                botAI->rpgInfo.ChangeToRest();
-                bot->SetStandState(UNIT_STAND_STATE_SIT);
-                return true;
-            }
-        }
-        return false;
-    };
-    bool const started = startStatus(chosenStatus);
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(chosenStatus),
-                       started ? (reason ? reason : "weights") : "no_target", static_cast<float>(chosenWeight),
-                       alternatives);
-    return started;
-}
-
-bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
-{
-    switch (status)
-    {
-        case RPG_IDLE:
-        case RPG_REST:
-            return true;
-        case RPG_WANDER_RANDOM:
-        {
-            Unit* target = AI_VALUE(Unit*, "grind target");
-            return target != nullptr;
-        }
-        case RPG_GO_GRIND:
-        {
-            WorldPosition pos = SelectRandomGrindPos(bot);
-            return pos != WorldPosition();
-        }
-        case RPG_GO_CAMP:
-        {
-            WorldPosition pos = SelectRandomCampPos(bot);
-            return pos != WorldPosition();
-        }
-        case RPG_WANDER_NPC:
-        {
-            GuidVector possibleTargets = AI_VALUE(GuidVector, "possible new rpg targets");
-            return possibleTargets.size() >= 3;
-        }
-        case RPG_DO_QUEST:
-        {
-            std::vector<uint32> availableQuests;
-            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-            {
-                uint32 questId = bot->GetQuestSlotQuestId(slot);
-                if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
-                    continue;
-
-                std::vector<POIInfo> poiInfo;
-                if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-        case RPG_DO_GATHER:
-        {
-            if (!botAI->HasSkill(SKILL_HERBALISM) && !botAI->HasSkill(SKILL_MINING))
-                return false;
-
-            // No point farming with (nearly) full bags - the loot pipeline
-            // can't store the harvest (see StoreLootAction).
-            if (AI_VALUE(uint8, "bag space") > 80)
-                return false;
-
-            return sGatherNodeMgr.HasUsableNodes(bot);
-        }
-        case RPG_TRAVEL_FLIGHT:
-        {
-            uint32 flightMasterEntry = 0;
-            WorldPosition flightMasterPos;
-            std::vector<uint32> path;
-            return SelectRandomFlightTaxiNode(flightMasterEntry, flightMasterPos, path);
-        }
-        case RPG_OUTDOOR_PVP:
-        {
-            if (!bot->IsPvP())
-                return false;
-            uint32 zoneId = bot->GetZoneId();
-            if (zoneId == AREA_NAGRAND)
-                return false;
-
-            OutdoorPvP* outdoorPvP = sOutdoorPvPMgr->GetOutdoorPvPToZoneId(zoneId);
-            return outdoorPvP != nullptr;
-        }
-        default:
-            return false;
-    }
-    return false;
 }

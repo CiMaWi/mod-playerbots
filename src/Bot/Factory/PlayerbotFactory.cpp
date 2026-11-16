@@ -11,6 +11,7 @@
 #include "AiObjectContext.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
+#include "BotKind.h"
 #include "CensusMgr.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
@@ -844,7 +845,7 @@ void PlayerbotFactory::Randomize(bool incremental)
              bot->GetName().c_str(), level, bot->getClass());
     // LOG_DEBUG("playerbots", "Preparing to {} randomize...", (incremental ? "incremental" : "full"));
     uint32 oldLevel = bot->GetLevel();
-    bool const keepsPossessions = KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     bool const wipe = StartingHistory::RandomizeWipes(!incremental, keepsPossessions, bot->GetTotalPlayedTime());
     Prepare();
     LOG_DEBUG("playerbots", "Resetting player...");
@@ -1104,8 +1105,9 @@ void PlayerbotFactory::Randomize(bool incremental)
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Pet");
         LOG_DEBUG("playerbots", "Initializing pet...");
-        InitPet();
-        // bot->SaveToDB(false, false);
+        // A creation's pet (a wipe); a keeper's re-randomize keeps the pet it tamed, or none, unless granted the kind
+        // (WU21b). Pet talents are free points: spent at every randomize
+        consumableKit(UpkeepKind::Pet, [this] { InitPet(); });
         InitPetTalents();
         if (pmo)
             pmo->finish();
@@ -1142,7 +1144,7 @@ void PlayerbotFactory::Refresh()
     //     InitEquipment(true);
     // }
     // Refresh never creates: a bot that keeps its possessions is only restocked, with the kinds Upkeep grants it
-    bool const keepsPossessions = KeepsPossessions(bot);
+    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     constexpr char const* source = "factory_refresh";
     Upkeep::HandOut(bot, UpkeepKind::Attunement, keepsPossessions, source, [this] { InitAttunementQuests(); });
     if (!keepsPossessions)
@@ -1161,8 +1163,8 @@ void PlayerbotFactory::Refresh()
     }
     else
         Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, consumables, potions);
-    Upkeep::HandOut(
-        bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); }, [this] { InitPetTalents(); });
+    Upkeep::HandOut(bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); });
+    InitPetTalents();  // free points, outside the switch (WU21b)
     if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, source, [this] { InitSkills(); }))
         InitProfessionSkills();
     Upkeep::HandOut(
@@ -1843,7 +1845,7 @@ uint32 PlayerbotFactory::InitTalentsTree(bool increment /*false*/, bool use_temp
     if (bot->GetFreeTalentPoints())
         InitTalents((specTab + 2) % 3);
 
-    if (bot->getClass() == CLASS_SHAMAN && bot->HasSpell(SPELL_SHAMAN_DUAL_WIELD))
+    if (bot->getClass() == CLASS_SHAMAN && bot->HasTalent(SPELL_SHAMAN_DUAL_WIELD, bot->GetActiveSpec()))
     {
         bot->SetSkill(SKILL_DUAL_WIELD, 0, 1, 1);
         bot->SetCanDualWield(true);
@@ -1948,7 +1950,7 @@ void PlayerbotFactory::InitTalentsBySpecNo(Player* bot, int specNo, bool reset)
         }
     }
 
-    if (bot->getClass() == CLASS_SHAMAN && bot->HasSpell(SPELL_SHAMAN_DUAL_WIELD))
+    if (bot->getClass() == CLASS_SHAMAN && bot->HasTalent(SPELL_SHAMAN_DUAL_WIELD, bot->GetActiveSpec()))
     {
         bot->SetSkill(SKILL_DUAL_WIELD, 0, 1, 1);
         bot->SetCanDualWield(true);
@@ -2987,7 +2989,7 @@ void PlayerbotFactory::InitBags(bool destroyOld)
         return;
 
     // Persistent bots loot or buy their bags (WT.5); randomize and maintenance keep the bags they have
-    if (RandomPlayerbotMgr::HonestTravel() && sRandomPlayerbotMgr.IsRandomBot(bot))
+    if (BotKind::IsPersistentBot(bot))
         return;
 
     for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
@@ -4274,15 +4276,6 @@ void PlayerbotFactory::InitInstanceQuests()
 
     ClearInventory();
     bot->SetUInt32Value(PLAYER_XP, currentXP);
-}
-
-bool PlayerbotFactory::KeepsPossessions(Player* bot)
-{
-    if (!RandomPlayerbotMgr::HonestTravel() || !sRandomPlayerbotMgr.IsRandomBot(bot))
-        return false;
-
-    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-    return botAI && !IsRealPlayer(botAI->GetMaster());
 }
 
 void PlayerbotFactory::ClearInventory()

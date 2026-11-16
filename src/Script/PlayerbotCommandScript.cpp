@@ -18,24 +18,27 @@
 #include "BankCommands.h"
 #include "BankMailCommands.h"
 #include "BattleGroundTactics.h"
+#include "BotKind.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
 #include "BridgeBotFacts.h"
 #include "BridgeBotState.h"
+#include "BridgeBotTraits.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "DBCStores.h"
-#include "FightBook.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
+#include "LightweightPerf.h"
 #include "MatchLog.h"
 #include "MatchTrace.h"
 #include "Matchmaker.h"
+#include "Metric.h"
 #include "NaturalTrace.h"
 #include "NewRpgAction.h"
 #include "ObjectAccessor.h"
@@ -57,6 +60,7 @@
 #include "StringConvert.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
+#include "TestOrders.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
 #include "Tokenize.h"
@@ -64,10 +68,8 @@
 #include "TravelGraph.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
+#include "WorldPvp.h"
 #include "WorldSession.h"
-#include "WorldThreadMonitor.h"
-#include "LightweightPerf.h"
-#include "Metric.h"
 
 using namespace Acore::ChatCommands;
 
@@ -97,7 +99,10 @@ public:
             {"whisper", TestPlayerMgr::HandleWhisperCommand, SEC_GAMEMASTER, Console::Yes},
             {"party", TestPlayerMgr::HandlePartyCommand, SEC_GAMEMASTER, Console::Yes},
             {"group", TestPlayerMgr::HandleGroupCommand, SEC_GAMEMASTER, Console::Yes},
+            {"invite", TestPlayerMgr::HandleInviteCommand, SEC_GAMEMASTER, Console::Yes},
             {"arenaqueue", TestPlayerMgr::HandleArenaQueueCommand, SEC_GAMEMASTER, Console::Yes},
+            {"readycheck", TestPlayerMgr::HandleReadyCheckCommand, SEC_GAMEMASTER, Console::Yes},
+            {"readyanswer", TestPlayerMgr::HandleReadyAnswerCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsPvpTestPlanCommandTable = {
@@ -249,6 +254,7 @@ public:
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"pet", Planner::HandlePetCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
             {"goals", Planner::HandleGoalsCommand, SEC_GAMEMASTER, Console::Yes},
             {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},
@@ -272,12 +278,9 @@ public:
             {"status", WorldLog::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // World PvP (WP1): list and bot read; ready and meet are lab fixtures (Playerbots.WorldPvp.TestCommands)
+        // World PvP (WP23): enthusiasm shows a bot's value and thresholds and sets the value
         static ChatCommandTable playerbotsFightCommandTable = {
-            {"list", HandleFightListCommand, SEC_PLAYER, Console::Yes},
-            {"bot", HandleFightBotCommand, SEC_PLAYER, Console::Yes},
-            {"ready", HandleFightReadyCommand, SEC_GAMEMASTER, Console::Yes},
-            {"meet", HandleFightMeetCommand, SEC_GAMEMASTER, Console::Yes},
+            {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
@@ -285,6 +288,7 @@ public:
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
             {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"traits", HandleBridgeTraitsCommand, SEC_GAMEMASTER, Console::Yes},
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
@@ -294,7 +298,6 @@ public:
             {"inspect", HandleInspectCommand, SEC_GAMEMASTER, Console::Yes},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
-            {"worldthread", WorldThreadMonitor::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"tickperf", HandleTickPerfCommand, SEC_PLAYER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
@@ -409,7 +412,7 @@ public:
         MapEntry const* destMap = sMapStore.LookupEntry(dest->mapId);
         if (!TravelGraph::Instance().IsReady())
             refusal = "the travel graph is not ready";
-        else if (!PlayerbotFactory::KeepsPossessions(bot))
+        else if (!BotKind::KeepsPossessions(bot))
             refusal = "not a persistent bot (honest travel, random bot, no real master)";
         else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
             refusal = "the bot does not run the new rpg strategy";
@@ -468,7 +471,7 @@ public:
         char const* refusal = nullptr;
         if (!graph.IsReady())
             refusal = "the travel graph is not ready";
-        else if (!PlayerbotFactory::KeepsPossessions(bot))
+        else if (!BotKind::KeepsPossessions(bot))
             refusal = "not a persistent bot (honest travel, random bot, no real master)";
         else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
             refusal = "the bot does not run the new rpg strategy";
@@ -494,7 +497,7 @@ public:
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
         {
             TravelGraphLink const& link = graph.GetLink(i);
-            if (link.type != TravelLinkType::Transport)
+            if (link.type != TravelLinkType::Transport || !link.object)  // a wait point's link: no transport
                 continue;
             if (std::find(entries.begin(), entries.end(), link.object) == entries.end())
                 entries.push_back(link.object);
@@ -536,29 +539,13 @@ public:
         return true;
     }
 
-    // `playerbots fight list`: the active fights on the GM's map (every open-world map from the console)
-    static bool HandleFightListCommand(ChatHandler* handler) { return WorldPvp::HandleListCommand(handler); }
-
-    // `playerbots fight bot <bot>`: the bot's fight memory, answered by the bot's next update
-    static bool HandleFightBotCommand(ChatHandler* handler, PlayerIdentifier target)
+    // `playerbots fight enthusiasm <bot> [set <0..100>]`: the bot's enthusiasm, its thresholds and the cached terms;
+    // `set` writes the value (a cheat). The world thread runs commands between map updates, so the bot's AI is read
+    // and written here directly
+    static bool HandleFightEnthusiasmCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && WorldPvp::HandleBotCommand(handler, botAI);
-    }
-
-    // `playerbots fight ready <bot>` (labs): the bot's next chance starts a fight when the hard rules pass (WP4)
-    static bool HandleFightReadyCommand(ChatHandler* handler, PlayerIdentifier target)
-    {
-        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && WorldPvp::HandleReadyCommand(handler, botAI);
-    }
-
-    // `playerbots fight meet <bot> <enemy bot>` (labs): places the enemy bot beside the bot, PvP flagged, no attack
-    static bool HandleFightMeetCommand(ChatHandler* handler, PlayerIdentifier target, PlayerIdentifier enemy)
-    {
-        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        PlayerbotAI* enemyAI = botAI ? GetOnlineBotAI(handler, enemy) : nullptr;
-        return enemyAI && WorldPvp::HandleMeetCommand(handler, botAI, enemyAI);
+        return botAI && WorldPvp::HandleEnthusiasmCommand(handler, botAI, std::string_view(rest));
     }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update
@@ -682,15 +669,16 @@ public:
         return true;
     }
 
-    // `playerbots route links transport|flight`: the loaded travel graph's links of that kind, a line each (the test
-    // runner's case generators read them). World thread: the graph is immutable once ready
+    // `playerbots route links transport|flight|staticportal`: the loaded travel graph's links of that kind, a line each
+    // (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
     {
         std::string_view const type(kind);
         bool const flights = type == "flight";
-        if (!flights && type != "transport")
+        bool const portals = type == "staticportal";
+        if (!flights && !portals && type != "transport")
         {
-            handler->SendErrorMessage("Usage: .playerbots route links transport|flight");
+            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal");
             return false;
         }
         TravelGraph const& graph = TravelGraph::Instance();
@@ -699,7 +687,9 @@ public:
             handler->SendErrorMessage("ROUTE links: the travel graph is not ready");
             return false;
         }
-        TravelLinkType const wanted = flights ? TravelLinkType::Flight : TravelLinkType::Transport;
+        TravelLinkType const wanted = flights   ? TravelLinkType::Flight
+                                      : portals ? TravelLinkType::StaticPortal
+                                                : TravelLinkType::Transport;
         uint32 count = 0;
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
         {
@@ -720,6 +710,19 @@ public:
                     "ROUTE link flight {} {} {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
                     path->from, path->to, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x,
                     to.y, to.z);
+            }
+            else if (portals)
+            {
+                // The side that may use the portal: the object's faction (the runner's case side, not the search's)
+                GameObjectTemplateAddon const* addon = sObjectMgr->GetGameObjectTemplateAddon(link.object);
+                FactionTemplateEntry const* faction =
+                    addon ? sFactionTemplateStore.LookupEntry(addon->faction) : nullptr;
+                bool const alliance = !faction || !faction->IsHostileToAlliancePlayers();
+                bool const horde = !faction || !faction->IsHostileToHordePlayers();
+                char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
+                handler->PSendSysMessage(
+                    "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
+                    side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z);
             }
             else
             {
@@ -820,6 +823,33 @@ public:
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        return true;
+    }
+
+    // LC15c: what the bridge gets of a bot's nature, as ReadBotPersonality gives it: one "TRAIT <bot> <area> <word>"
+    // per word in the module's order, then "INTEREST <bot> <name>" per interest. Console: any thread, cache read only.
+    static bool HandleBridgeTraitsCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+
+        PlayerbotBridge::BotPersonality personality;
+        if (!PlayerbotBridge::ReadBotPersonality(target.GetGUID(), personality))
+        {
+            handler->SendErrorMessage("{}: no traits", target.GetName());
+            return false;
+        }
+
+        std::string const& name = target.GetName();
+        handler->PSendSysMessage("Bridge traits of {}", name);
+        for (std::size_t i = 0; i < personality.words.size(); ++i)
+        {
+            std::string const area = i < personality.areas.size() ? personality.areas[i] : "none";
+            handler->PSendSysMessage("TRAIT {} {} {}", name, area, personality.words[i]);
+        }
+        for (std::string const& interest : personality.interests)
+            handler->PSendSysMessage("INTEREST {} {}", name, interest);
         return true;
     }
 

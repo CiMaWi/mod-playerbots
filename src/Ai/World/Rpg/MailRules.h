@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "BankMailTypes.h"
+
 // The Player-free rules of a persistent bot's mailbox visit (bank-mail plan, WB.4 and WB.5): what it takes from its
 // mail and in which order, and what a mail errand is worth. Header-only so tests/mail-rules-selftest.cpp checks the
 // same code the server runs. All worth is in copper.
@@ -33,8 +35,6 @@ constexpr float DEFAULT_ORDERLINESS_WEIGHT = 1.0f;
 // A messy bot (unit -1) still fetches its mail at half the worth, a tidy one (unit +1) at one and a half times: a
 // weight of 0 would make MailErrandWorth 0 and a messy bot would never fetch anything (WB8)
 constexpr float ORDERLINESS_SPREAD = 0.5f;
-// The client's inbox shows this many mails
-constexpr uint32_t DEFAULT_MAILS_PER_VISIT = 50;
 
 struct MailItemIn
 {
@@ -69,58 +69,6 @@ struct BagSpace
 {
     uint32_t freeSlots = 0;  // empty slots of the backpack and the plain bags
     std::vector<StackRoom> stackRoom;
-};
-
-struct MailOptions
-{
-    uint32_t mailsPerVisit = DEFAULT_MAILS_PER_VISIT;
-    std::vector<uint32_t> refusedItems;  // item guids whose take the server refused on this visit
-    std::vector<uint32_t> refusedMoney;  // mail ids whose money the server refused (the gold cap)
-};
-
-enum class StepKind : uint8_t
-{
-    MarkRead,
-    TakeMoney,
-    TakeItem,
-    Delete
-};
-
-struct Step
-{
-    StepKind kind = StepKind::MarkRead;
-    uint32_t mailId = 0;
-    uint32_t itemGuid = 0;  // TakeItem only
-};
-
-// The mail decision row's choice and reason (world log kind `mail`)
-enum class MailChoice : uint8_t
-{
-    Take,   // opened, nothing stays: the mail is deleted
-    Leave,  // opened, something stays in it
-    Skip    // not opened
-};
-
-enum class MailReason : uint8_t
-{
-    Emptied,
-    NoSpace,
-    Refused,
-    Cod,
-    NotDelivered,
-    Later,  // beyond the mails one visit opens
-    Deleted
-};
-
-struct MailVerdict
-{
-    uint32_t mailId = 0;
-    MailChoice choice = MailChoice::Skip;
-    MailReason reason = MailReason::Later;
-    uint32_t moneyTaken = 0;
-    uint32_t itemsTaken = 0;
-    uint32_t itemsLeft = 0;
-    uint32_t worthLeft = 0;  // copper left in the mail that the bot has now seen
 };
 
 struct VisitPlan

@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_BRIDGEABILITIES_H
 #define PLAYERBOTS_BRIDGEABILITIES_H
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -22,7 +23,18 @@
 // The abilities a conversation partner can ask a bot for, one row each: the acts Execute runs and the topics
 // ReadBotStateTopic reads. A new verb is one Intent value and one row (with its check and effect) in
 // BridgeAbilities.cpp; a new topic is one BotStateTopic value, one row below and its reader in BridgeBotState.cpp.
-// Plain data and no game type, so a selftest or a module wire can read the table.
+// A parameter has a kind and the Order field that carries it, at most one per field (OneParamPerField): a unit
+// (Target or TargetName; its Filter says whom a name may mean), a place (PlaceName or Position), a quest (QuestId or
+// QuestName; its Quests say among which quests: the bot's log, or the one a group member shared), an item or a spell
+// (ItemName, SpellName: RunRow looks the name up among what the bot carries or knows and hands the row ActFacts::ItemId
+// or SpellId), a choice (Choice, the index into its Choices; Icon and Shape are the older rows' own), a flag (Enabled)
+// or a count (Count). A row taking a unit, quest, item or spell name lists UnknownName. A topic takes at most one
+// parameter, of a name kind: its text is ReadBotStateTopic's argument and the topic's reader looks it up. A topic
+// marked Lines answers in-world sentences, each item's text one (the record topics' form); every topic beyond the first
+// fourteen does (TopicRowsValid). A row marked OldFormOnly keeps an old wire verb working (FindRow, IntentWord) but is
+// not in the catalogue: such rows close the table, and AbilityRows lists the others, the catalogue's acts in order
+// (mod-ollama-chat pairs them by position). Plain data and no game type, so a selftest or a module wire can read the
+// table.
 namespace PlayerbotBridge
 {
 enum class ParamKind : uint8_t
@@ -45,8 +57,23 @@ enum class OrderField : uint8_t
     PlaceName,  // A known place's name or "x,y,z,map"
     Position,   // MapId, X, Y, Z
     QuestId,
-    Shape,    // FormationShape: the index of the choice plus one
-    Enabled,  // SaveMana's yes or no
+    Shape,      // FormationShape: the index of the choice plus one
+    Enabled,    // SaveMana's yes or no
+    ItemName,   // An item the bot carries, by name
+    SpellName,  // A spell the bot knows, by name
+    Choice,     // The index of the choice, for a row other than Mark and Formation
+    Count,      // At least 1
+};
+
+// Whom a unit parameter's name may mean, among the units the bot perceives and its group. An enemy is a creature no
+// player controls that is not friendly to the bot (hostile or neutral); a friend is a unit friendly to the bot, its
+// group's members or the bot itself; a group member is one of the group's members; anyone is all of these.
+enum class UnitFilter : uint8_t
+{
+    Anyone,
+    Enemy,
+    Friend,
+    GroupMember
 };
 
 // Who must share a group before the row's own check: nobody, the bot (any group), or the partner (the bot's group).
@@ -67,6 +94,14 @@ enum class Completion : uint8_t
     GoalEnds     // A planner goal: done when the goal ends
 };
 
+// Which quests a quest parameter's title or id may mean: the bot's log, or the quests of the group member that shared
+// one with the bot (the core keeps only who shared: Player::GetDivider).
+enum class QuestFrom : uint8_t
+{
+    Log,
+    Shared
+};
+
 struct ParamRow
 {
     char const* Name;
@@ -74,7 +109,20 @@ struct ParamRow
     OrderField Field;
     char const* Sentence;
     std::span<char const* const> Choices;
+    UnitFilter Filter = UnitFilter::Anyone;  // A unit's; not in the catalogue
+    QuestFrom Quests = QuestFrom::Log;       // A quest's; not in the catalogue
 };
+
+// At most one parameter per Order field, so a field never carries two parameters' values.
+constexpr bool OneParamPerField(std::span<ParamRow const> params)
+{
+    for (std::size_t index = 0; index < params.size(); ++index)
+        for (std::size_t other = index + 1; other < params.size(); ++other)
+            if (params[index].Field == params[other].Field)
+                return false;
+
+    return true;
+}
 
 // A refusal's stable word (snake_case, for the wire and the world log) and the bot's in-world sentence.
 struct RefusalText
@@ -113,25 +161,39 @@ struct AbilityRow
     // 7. The selftest proves each row applies and gives each listed refusal. Each applied, failed or refused order
     //    writes one ActEventType event to the world log: source word Name, id the Refusal (0 when none), amount the
     //    Result.
+    // 8. A verb of the old wire form only (LC17a: attack_own_target, replaced by attack): out of the catalogue and of
+    //    AbilityRows, not part of the hash.
+    bool OldFormOnly = false;
 };
 
 // The world log's event type for an order (CensusMgr.h EventLog).
 constexpr char const* ActEventType = "BridgeAct";
 
-// Null for a verb without a row: the four without an effect (IsUnavailable) and any value outside the enum.
+// Null for a verb without a row: the three without an effect (IsUnavailable) and any value outside the enum. Both
+// find an OldFormOnly row too.
 AbilityRow const* FindRow(Intent operation);
 AbilityRow const* FindRow(std::string_view name);
+// The rows the catalogue lists, in its order: every row but the OldFormOnly ones.
 std::span<AbilityRow const> AbilityRows();
 
-// Regroup, Pull, AssignRole and DungeonClear: wire verbs with no safe playerbots effect; Execute answers Unavailable.
+// Regroup, AssignRole and DungeonClear: wire verbs with no safe playerbots effect; Execute answers Unavailable.
 bool IsUnavailable(Intent operation);
 
-// The number of Intent values: the rows' verbs and the four without one (BridgeAbilities.cpp checks it against the
+// The number of Intent values: the rows' verbs and the three without one (BridgeAbilities.cpp checks it against the
 // table). A new verb is appended to Intent, given its row and counted here; mod-ollama-chat asserts its own count.
-constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::ResumePlan) + 1;
+constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::Cast) + 1;
 
-// The wire's verb of an operation: its row's name, else the word the four without a row have on the wire; empty for
-// a value outside the enum. FindIntent is the inverse: a row by name, then the four; none for any other word.
+// The ready checks a bot was sent and has not answered, for the ready row: the core keeps no open check
+// (WorldSession::HandleRaidReadyCheckOpcode only broadcasts), so the bot's packet handler notes each request it gets
+// (another member's), and a finished check or the row's answer ends it. A check is open for ReadyCheckOpenFor after
+// its request. Any thread.
+constexpr std::chrono::seconds ReadyCheckOpenFor{35};
+void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now());
+void EndReadyCheck(uint64_t bot);
+bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now());
+
+// The wire's verb of an operation: its row's name, else the word the three without a row have on the wire; empty for
+// a value outside the enum. FindIntent is the inverse: a row by name, then the three; none for any other word.
 char const* IntentWord(Intent operation);
 std::optional<Intent> FindIntent(std::string_view word);
 
@@ -142,6 +204,8 @@ std::span<Refusal const> CommonRefusals();
 RefusalText const& RefusalWords(Refusal reason);
 
 bool Takes(AbilityRow const& row, OrderField field);
+// The row's parameter carried in the field; null for none.
+ParamRow const* ParamOf(AbilityRow const& row, OrderField field);
 
 // A topic is a read: beyond an online bot (else ReadBotStateTopic answers false) it has no check and no refusal,
 // changes nothing, is done at once, has no state phrase and writes no world-log event. BridgeBotState.h describes
@@ -156,7 +220,26 @@ struct TopicRow
     std::span<ParamRow const> Params;
     // The most items the topic returns.
     std::size_t Limit;
+    // Its items carry an in-world sentence in text; not in the catalogue.
+    bool Lines = false;
 };
+
+constexpr bool IsNameKind(ParamKind kind)
+{
+    return kind == ParamKind::Unit || kind == ParamKind::Place || kind == ParamKind::Item || kind == ParamKind::Spell ||
+           kind == ParamKind::Quest;
+}
+
+// A topic takes at most one parameter, a name, and one beyond the first fourteen (Known's) answers in lines.
+constexpr bool TopicRowsValid(std::span<TopicRow const> rows)
+{
+    for (TopicRow const& row : rows)
+        if (row.Params.size() > 1 || (row.Params.size() == 1 && !IsNameKind(row.Params[0].Kind)) ||
+            (row.Topic > BotStateTopic::Known && !row.Lines))
+            return false;
+
+    return true;
+}
 
 inline constexpr ParamRow RouteParams[] = {
     {"place", ParamKind::Place, OrderField::PlaceName, "A known place's name, or x,y,z,map.", {}}};
@@ -222,17 +305,20 @@ inline constexpr TopicRow TopicTable[] = {
      .Name = "history",
      .Sentence = "What you did that mattered, in order, and the lands, dungeons and foes you know.",
      .Params = {},
-     .Limit = 24},
+     .Limit = 24,
+     .Lines = true},
     {.Topic = BotStateTopic::Lately,
      .Name = "lately",
      .Sentence = "What you did of note lately, newest first.",
      .Params = {},
-     .Limit = 12},
+     .Limit = 12,
+     .Lines = true},
     {.Topic = BotStateTopic::Known,
      .Name = "known",
      .Sentence = "The others you have shared deeds with, and what you shared.",
      .Params = {},
-     .Limit = 12}};
+     .Limit = 12,
+     .Lines = true}};
 
 constexpr bool TopicTableInOrder()
 {
@@ -243,6 +329,7 @@ constexpr bool TopicTableInOrder()
     return static_cast<std::size_t>(BotStateTopic::Known) + 1 == std::size(TopicTable);
 }
 static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
+static_assert(TopicRowsValid(TopicTable), "a topic takes at most one parameter, a name; a new one answers lines");
 
 // Null for a value outside the enum.
 constexpr TopicRow const* FindTopic(BotStateTopic topic)

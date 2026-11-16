@@ -9,6 +9,7 @@
 #include "ReactionEngine.h"
 
 #include "Action.h"
+#include "BotTactics.h"
 #include "Event.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -213,7 +214,7 @@ bool ReactionEngine::Update(uint32 elapsed, bool minimal, bool canControlSelf, b
 
         if (!HasIncomingReaction() && !IsReacting())
         {
-            float const skillFactor = botAI->GetEffectiveSkillReactFactor();
+            float const skillFactor = botAI->GetTactics().GetEffectiveSkillReactFactor();
             uint32 const reset =
                 skillFactor == 1.0f
                     ? sPlayerbotAIConfig.ReactDelay

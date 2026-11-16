@@ -61,8 +61,6 @@ public:
 
     static ObjectGuid GetRandomBot();
     static void Init();
-    // A persistent random bot without a real master keeps its bags, gold and gear (family rule 2, WT.15)
-    static bool KeepsPossessions(Player* bot);
     void Refresh();
     void Randomize(bool incremental);
     static std::list<uint32> classQuestIds;

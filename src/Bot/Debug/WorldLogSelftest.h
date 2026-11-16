@@ -373,18 +373,6 @@ inline void CheckEventWords(Checker& checker)
     checker.Equal(EventLog::ResurrectWord("accept resurrect", false, 0.0f), "spell", "nothing restored: a spell");
     checker.Equal(EventLog::ResurrectWord("other", false, 1.0f), "other", "a full restore: other");
 
-    std::string reasons = WorldLog::CurrentStatusReason();
-    {
-        WorldLog::StatusReason const outer("pick");
-        reasons.append(" ").append(WorldLog::CurrentStatusReason());
-        {
-            WorldLog::StatusReason const inner("arrived");
-            reasons.append(" ").append(WorldLog::CurrentStatusReason());
-        }
-        reasons.append(" ").append(WorldLog::CurrentStatusReason());
-    }
-    reasons.append(" ").append(WorldLog::CurrentStatusReason());
-    checker.Equal(reasons, "other pick arrived pick other", "the status reason nests and restores");
 }
 
 // (g) WL7: decision rows have the header's 13 fields with 0, 1 and 3 alternatives, clean their words and keep two
@@ -432,11 +420,10 @@ inline void CheckDecisions(Checker& checker)
     std::string kinds;
     for (size_t kind = 0; kind <= DECISION_KIND_COUNT; ++kind)
         kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');
-    checker.Equal(
-        kinds,
-        "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank quest_use "
-        "other ",
-        "a word per decision kind");
+    checker.Equal(kinds,
+                  "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank "
+                  "quest_use fight_leave other ",
+                  "a word per decision kind");
 
     uint32_t const visit = PackVisitCounts(3, 12, VISIT_COUNT_MAX + 5);
     checker.Check(VisitCount(visit, 0) == 3 && VisitCount(visit, 1) == 12 && VisitCount(visit, 2) == VISIT_COUNT_MAX,

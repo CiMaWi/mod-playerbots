@@ -18,7 +18,7 @@ namespace Upkeep
 // Whether the bot gets the free handout of this kind (UpkeepRules.h: it does not keep its possessions, the kind is not
 // honest yet, or it is in the handout share)
 bool Granted(Player* bot, UpkeepKind kind);
-// The same with PlayerbotFactory::KeepsPossessions(bot) already known, for a site that hands out several kinds
+// The same with BotKind::KeepsPossessions(bot) already known, for a site that hands out several kinds
 bool Granted(Player* bot, UpkeepKind kind, bool keepsPossessions);
 // The kind's honesty row (Honesty<word>) for a handout that ran
 void Note(Player* bot, UpkeepKind kind, char const* source, uint32 id = 0, int64 amount = 0);

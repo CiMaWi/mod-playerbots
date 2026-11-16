@@ -1,0 +1,203 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef _PLAYERBOT_BOTTACTICS_H
+#define _PLAYERBOT_BOTTACTICS_H
+
+#include <array>
+#include <atomic>
+#include <memory>
+
+#include "BotAttributes.h"
+#include "Define.h"
+#include "NaturalReaction.h"
+#include "ObjectGuid.h"
+#include "TacticGate.h"
+#include "Tactics.h"
+
+class Player;
+class PlayerbotAI;
+class Spell;
+class SpellInfo;
+class Unit;
+struct CastNote;
+struct CcBotState;
+struct CoverBotState;
+struct DefensiveBotState;
+struct DrinkBotState;
+struct FakeBotState;
+struct FocusBotState;
+struct InterruptBotState;
+struct JumpBotState;
+struct KiteBotState;
+struct PathBotState;
+struct TrackBotState;
+struct TurnBotState;
+
+// The bot's tactics (CS5 design 4.1): its skill profile, natural timing, opponent memory and the tactic states.
+// PlayerbotAI makes it in its constructor and keeps it until logout, so the pointer is never null and the world
+// thread's writers (SetPvpSkill, the GM commands) need no lock. The tactic gate itself (mask, context, counting flag)
+// stays on PlayerbotAI. Reached through PlayerbotAI::GetTactics().
+class BotTactics
+{
+public:
+    BotTactics(PlayerbotAI* botAI, Player* bot);
+    ~BotTactics();
+    BotTactics(BotTactics const&) = delete;
+    BotTactics& operator=(BotTactics const&) = delete;
+
+    // The skill profile from the bot's (new) skill: PlayerbotAI::SetPvpSkill, after it stored the skill and the first
+    // roll
+    void SetSkill(uint8 skill, uint8 firstRoll);
+    // Reaction-delay factor from the hidden skill (Playerbots.Skill.React*), cached by SetPvpSkill. 1.0 when the
+    // skill system or the factor range is off, and in PvE fights when Playerbots.Skill.FullAbilityInPvE is on.
+    // Also 1.0 where the natural cadence and the natural reaction both run (the model replaces the stretch).
+    float GetEffectiveSkillReactFactor() const;
+    // Natural timing (Playerbots.Natural.Cadence.*), refreshed at each AI check: the bot is in the cadence's contexts
+    // (also tracked while the cadence is off and PerfMon on, for its rows), in combat in a started match there, and
+    // the cadence's faster check applies
+    bool IsInNaturalTimingScope() const { return timingScope; }
+    bool IsInNaturalTimingCombat() const { return timingCombat; }
+    bool IsNaturalCadenceActive() const { return cadenceCombat; }
+    bool IsSkillStretchOff() const { return stretchOff; }
+    // At each AI check, by the bot's own update, with the check's one context probe (kept for UpdateAIInternal's
+    // store of the tactic context, GetCheckProbe); O(1): the match status
+    void RefreshNaturalTiming(TacticContext context);
+    TacticContext GetCheckProbe() const { return checkProbe; }
+    // Skill knob 2, noticing (Playerbots.Skill.Notice*, SkillStrategy): chance to miss a window and longest notice
+    // delay from the hidden skill, cached by SetPvpSkill; both 0 when the knob is off.
+    uint32 GetSkillNoticeMissPercent() const { return skillNoticeMissPercent; }
+    uint32 GetSkillNoticeDelayMs() const { return skillNoticeDelayMs; }
+    // Natural reaction (Playerbots.Natural.Reaction.*, NaturalReaction.h): ln(median) and spread of the bot's reaction
+    // time, cached by SetPvpSkill for every skilled bot (read only while the option is on)
+    ReactionState const& GetReactionState() const { return reactionState; }
+    // G0h3's reaction types: the choice, load, ease, think, anticipation and queue prices from the bot's attributes,
+    // cached by SetPvpSkill (all 0 at skill 0)
+    ReactionTypeState const& GetReactionTypes() const { return reactionTypes; }
+    // What the bot saw its enemies cast and cancel in the current match (DT.12; bounded), and its own cast and GCD
+    // ends for the queue-like follow-up and the busy-bot rules (G0h3-b). The bot's own update only.
+    OpponentMemory& GetOpponentMemory() { return opponentMemory; }
+    ReactionBusyState& GetReactionBusy() { return reactionBusy; }
+    // Full ability for the tactic gate: skill 0, PvE with Playerbots.Skill.FullAbilityInPvE, or exempt
+    bool HasFullSkillAbility();
+    // The tactic gate (TacticGate.h), cached by SetPvpSkill: enabled here (mask and scope), known at the bot's skill
+    // and used in the current window. Later tactics call this, then NoteTacticUse when they act.
+    bool TacticActive(TacticId id);
+    TacticGateState const& GetTacticGate() const { return tacticGate; }
+    // Effort 0-100 (100 = tries everything) and style traits 0-100 (50 = neutral), hidden like the skill
+    uint8 GetSkillEffort() { return HasFullSkillAbility() ? SKILL_GATE_FULL : tacticGate.Effort; }
+    uint8 GetSkillStyle(SkillStyleTrait trait) const { return tacticGate.Style[static_cast<uint32>(trait)]; }
+    // Attributes (Playerbots.Skill.Attributes.*, BotAttributes.h): eight abilities on the skill's 1-99 scale and four
+    // traits (0-100, 50 neutral) drawn from the skill and the guid hash, cached by SetPvpSkill (abilities 0 and traits
+    // 50 at skill 0). With the defaults every ability is the skill. Hidden like the skill: GM commands, records only.
+    BotAttributeValues const& GetAttributes() const { return attributes; }
+    uint8 GetAttribute(BotAttribute attribute) const { return attributes.Get(attribute); }
+    // Lab copies (G0j-b): the guid whose hashes draw the attributes and the tactic gate (0 = the bot's own). Set on the
+    // world thread, then SetPvpSkill with the template's skill.
+    uint32 GetAttributeTemplate() const { return attributeTemplate; }
+    void SetAttributeTemplate(uint32 templateGuid) { attributeTemplate = templateGuid; }
+    // A tactic fired: counted per tactic and context for .playerbots tactics stats
+    void NoteTacticUse(TacticId id) const;
+    // The tactic states below are made at first use, their numbers from the bot's skill (SetSkill recomputes the
+    // numbers of the states that exist).
+    // Target hold and team plan (FocusState.h, G1b): the cached FocusParams and the hold's and the plan's state.
+    // Touched by the bot's own update; the GM commands read and force it on the world thread while the maps wait.
+    FocusBotState& GetFocusState();
+    // Crowd control (CcState.h, G4b): the cached CcParams, the DR memory, the rank-resolved table and the trigger's
+    // answer. The bot's own update and the aura hooks on its map thread; the GM commands on the world thread.
+    CcBotState& GetCcState();
+    // Interrupts (ArenaInterrupt.h, G5b): the bot's decisions on the enemy casts in view. The bot's own update.
+    InterruptBotState& GetInterruptState();
+    // Defensives on burst (ArenaDefensive.h, G5d), fake casts (NaturalCast.h, G5e), natural turning (NaturalTurn.h,
+    // G2a) and tracking (NaturalMove.h, G2b): each bot's state, made at first use. The bot's own update (and the
+    // aura or spell hooks on its map thread); the GM commands on the world thread while the maps wait.
+    DefensiveBotState& GetDefensiveState();
+    FakeBotState& GetFakeState();
+    TurnBotState& GetTurnState();
+    TrackBotState& GetTrackState();
+    // Natural paths (NaturalPath.h, G2c) and the Los and Pillar tactics' cover state (ArenaCover.h, G2e, G2f): the same
+    PathBotState& GetPathState();
+    CoverBotState& GetCoverState();
+    // The Kite, Drink and Jump tactics' state (ArenaKite.h, ArenaDrink.h, ArenaJump.h; G3a, G3b, G2g): the same
+    KiteBotState& GetKiteState();
+    DrinkBotState& GetDrinkState();
+    JumpBotState& GetJumpState();
+    // The hooks (CS5 design 4.1), on the bot's own update. PreGate: on a Player::Update before the AI check delay
+    // while work has BotWork::PreGateStep or JumpTest (the natural pre-gate stepper, the jump test); true when the
+    // jump test took the update. OnCheck: at each AI
+    // check after RefreshNaturalTiming (the opponent memory, the tracking ring, the followers), only for a bot the
+    // live test admits (TacticFollowers.h; true when it ran). probed: the check's context probe
+    bool PreGate(uint32 work);
+    bool OnCheck(uint32 nowMs, bool busyModel, TacticContext probed);
+    // The cast hooks, in PlayerbotAI::CastSpell: BeforeCast before the stand check (a turn wait's end), AfterCast
+    // after prepare() (the kick note, the cancel lag stamp, the harness counts, the focus act, the fake cast, the
+    // trace). note: what CastSpell read for the tactics before prepare() changed the target (BotTacticsInternal.h)
+    void BeforeCast(Unit* target, SpellInfo const* spellInfo);
+    void AfterCast(uint32 spellId, SpellInfo const* spellInfo, Spell* spell, Unit* target, CastNote const& note);
+    // The own cast, in UpdateAI while a spell prepares: OnOwnCast stamps its window and decides the busy stop for a
+    // kick (true: the bot stops it); NoteUnfollowedStop, after the engines ran for a bot OnOwnCast stopped, notes a
+    // stop the kick did not follow
+    bool OnOwnCast(Spell* currentSpell, uint32 ownLeft, bool busyModel, uint32 nowMs);
+    void NoteUnfollowedStop(uint32 nowMs);
+    // The jump test (G2g, `tactics jump test`): while set, UpdateAI runs StepJumpTest instead of the engines (a frozen
+    // test bot); its work bit (BotWork::JumpTest) else
+    void StepJumpTest(uint32 nowMs);
+    void SetJumpTest(bool on);
+    // The natural pre-gate stepper (G5e's cancel instant, G2a's turn steps): called from UpdateAI before the AI
+    // gates on every Player::Update while its work bit is set (SetNaturalPreGate(true)). nowMs = getMSTime().
+    void StepNaturalPreGate(uint32 nowMs);
+    void SetNaturalPreGate(bool on);
+    // The Interrupt tactic's hook (enabled here): true when the bot's kick may go at the enemy's cast now. One
+    // decision per cast (the shortcut or the judging path), its commit point from the bar's start.
+    bool DecideInterrupt(Unit* enemy);
+    // Debug snapshot for .playerbots tactics show (world thread): the last "fight enemies" result
+    void SetFightEnemiesSnapshot(GuidVector const& enemies);
+    uint32 GetFightEnemiesSnapshot(std::array<ObjectGuid, TACTIC_FIGHT_ENEMIES_MAX>& enemies) const;
+
+private:
+    // PlayerbotAI reads and writes the state in place where its own control flow decides (CS16e kept these):
+    // UpdateAI's timing flags, queued check (reactionTypes, reactionBusy) and an own cast's end, CanCastSpell's
+    // cyclone chain (ccState), CastSpell's focus selection (focusState) and GetReactDelay (cadenceCombat)
+    friend class PlayerbotAI;
+
+    void LogLiveMiss() const;
+    // The miss switch's tactics bits (TimingRow, PreGateStep; PlayerbotAI::LogPreGateMisses)
+    void LogPreGateMisses(uint32 work) const;
+
+    PlayerbotAI* const botAI;
+    Player* const bot;
+    TacticContext checkProbe = TacticContext::Pve;  // the context probe of the bot's last AI check
+    float skillReactFactor = 1.0f;
+    uint32 skillNoticeMissPercent = 0;
+    uint32 skillNoticeDelayMs = 0;
+    ReactionState reactionState;
+    ReactionTypeState reactionTypes;
+    OpponentMemory opponentMemory;
+    ReactionBusyState reactionBusy;
+    bool timingScope = false;
+    bool timingCombat = false;
+    bool cadenceCombat = false;
+    bool stretchOff = false;
+    TacticGateState tacticGate = ComputeTacticGate(TacticGateParams(), {}, 0, 0);
+    std::unique_ptr<FocusBotState> focusState;          // made at first use (GetFocusState); complete in BotTactics.cpp
+    std::unique_ptr<CcBotState> ccState;                // made at first use (GetCcState); complete in BotTactics.cpp
+    std::unique_ptr<InterruptBotState> interruptState;  // made at first use (GetInterruptState); the same
+    std::unique_ptr<DefensiveBotState> defensiveState;  // the same (GetDefensiveState)
+    std::unique_ptr<FakeBotState> fakeState;            // the same (GetFakeState)
+    std::unique_ptr<TurnBotState> turnState;            // the same (GetTurnState)
+    std::unique_ptr<TrackBotState> trackState;          // the same (GetTrackState)
+    std::unique_ptr<PathBotState> pathState;            // the same (GetPathState)
+    std::unique_ptr<CoverBotState> coverState;          // the same (GetCoverState)
+    std::unique_ptr<KiteBotState> kiteState;            // the same (GetKiteState)
+    std::unique_ptr<DrinkBotState> drinkState;          // the same (GetDrinkState)
+    std::unique_ptr<JumpBotState> jumpState;            // the same (GetJumpState)
+    BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
+    uint32 attributeTemplate = 0;
+    std::atomic<uint32> fightEnemyCount{0};
+    std::array<std::atomic<uint64>, TACTIC_FIGHT_ENEMIES_MAX> fightEnemies{};
+};
+
+#endif

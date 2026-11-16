@@ -5,11 +5,19 @@
  */
 
 #include "MovementActions.h"
+
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <string>
+
 #include "Battleground.h"
 #include "BattlegroundDS.h"
+#include "BotTactics.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "FleeManager.h"
+#include "G3D/Vector3.h"
 #include "GameObject.h"
 #include "LastMovementValue.h"
 #include "LootObjectStack.h"
@@ -30,6 +38,7 @@
 #include "Playerbots.h"
 #include "Position.h"
 #include "PositionValue.h"
+#include "PvpTestCounters.h"
 #include "Random.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
@@ -40,11 +49,6 @@
 #include "Unit.h"
 #include "Vehicle.h"
 #include "WaypointMovementGenerator.h"
-#include "G3D/Vector3.h"
-#include <cmath>
-#include <cstdlib>
-#include <iomanip>
-#include <string>
 
 MovementAction::MovementAction(PlayerbotAI* botAI, std::string const name) : Action(botAI, name)
 {
@@ -257,7 +261,7 @@ bool NaturalHopArenaOk(Player* bot, PathBotState& state, uint32 nowMs)
 // The walk flag a walked leg left (the next spline would keep it)
 void EndNaturalWalk(PlayerbotAI* botAI, Player* bot)
 {
-    PathBotState& state = botAI->GetPathState();
+    PathBotState& state = botAI->GetTactics().GetPathState();
     if (!state.Walking)
         return;
 
@@ -276,7 +280,7 @@ bool NaturalPathMove(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, 
         return false;
 
     PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
-    PathBotState& state = botAI->GetPathState();
+    PathBotState& state = botAI->GetTactics().GetPathState();
     MotionMaster& mm = *bot->GetMotionMaster();
     LastMovement& lastMove = context->GetValue<LastMovement&>("last movement")->Get();
     uint64 const guid = bot->GetGUID().GetCounter();
@@ -395,7 +399,7 @@ bool NaturalPathMove(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, 
 void FollowNaturalPath(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
     PathConfig const& config = sPlayerbotAIConfig.NaturalPath;
-    PathBotState& state = botAI->GetPathState();
+    PathBotState& state = botAI->GetTactics().GetPathState();
     // The walk flag goes when the walked leg is over, or when another action took the bot over (a follow or a chase
     // replaces the point move) before MoveTo could clear it
     if (state.Walking &&
@@ -1105,7 +1109,7 @@ bool TrackChasePoint(PlayerbotAI* botAI, Player* bot, Unit* target, float reach,
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalMove::Track")
                                                     : nullptr);
     TrackConfig const& config = sPlayerbotAIConfig.NaturalTrack;
-    TrackBotState& state = botAI->GetTrackState();
+    TrackBotState& state = botAI->GetTactics().GetTrackState();
     TrackObserve(state, config, target->GetGUID().GetRawValue(), nowMs, x, y, z);
     if (TrackAimTrue(state, bot->GetExactDist(target), reach, bot->GetPositionX(), bot->GetPositionY(), nowMs,
                      config.StuckMs))
@@ -1213,7 +1217,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     if (tracked && IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
-        if (lastMove.msTime == botAI->GetTrackState().IssueMs &&
+        if (lastMove.msTime == botAI->GetTactics().GetTrackState().IssueMs &&
             lastMove.priority == MovementPriority::MOVEMENT_COMBAT &&
             TrackRefreshDue(nowMs, lastMove.msTime, lastMove.lastMoveShort.GetExactDist(endPos.x, endPos.y, endPos.z),
                             sPlayerbotAIConfig.NaturalTrack.RefreshMs))
@@ -1230,13 +1234,13 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     if (refreshed && !moved)
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
-        if (lastMove.msTime == botAI->GetTrackState().IssueMs)
+        if (lastMove.msTime == botAI->GetTactics().GetTrackState().IssueMs)
             lastMove.lastdelayTime = heldDelay;
     }
 
     if (moved && tracked)
     {
-        TrackBotState& track = botAI->GetTrackState();
+        TrackBotState& track = botAI->GetTactics().GetTrackState();
         track.IssueMs = AI_VALUE(LastMovement&, "last movement").msTime;
         if (refreshed)
         {
@@ -1246,7 +1250,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         }
 
         float const offYards = std::hypot(tx - target->GetPositionX(), ty - target->GetPositionY());
-        botAI->GetTrackState().NoteChase(prediction, offYards, nowMs);
+        botAI->GetTactics().GetTrackState().NoteChase(prediction, offYards, nowMs);
         botAI->CountTactic(TacticCounter::TrackChases);
         botAI->CountTactic(TacticCounter::TrackLagMs, prediction.SeenAgeMs);
         LOG_TRACE("playerbots",

@@ -156,11 +156,12 @@ constexpr std::size_t BotStateTopicMaxItems = 64;  // The reader never returns m
 // record; nothing here scans the world. Route runs one route search over the travel graph (a fraction of a
 // millisecond).
 bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vector<BotStateItem>& items);
-// The same with the topic's argument: Route's place; the other topics ignore it.
+// The same with the topic's argument: the text of its row's one parameter (Route's place), which the topic's reader
+// looks up; a topic without one ignores it.
 bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::string const& argument,
                        std::vector<BotStateItem>& items);
 
-// LC2: what an order's item or spell name may mean, for ResolveName, when a row takes one (none does yet). World
+// LC2: what an order's or a topic's item or spell name may mean, for ResolveName, when its row takes one. World
 // thread, an online bot: the items it wears and carries as the inventory topic lists them (Id the item entry), and
 // the spells it can cast as the spells topic lists them (Id the spell id, the highest known rank).
 std::vector<NameCandidate> CarriedItemNames(Player* bot);

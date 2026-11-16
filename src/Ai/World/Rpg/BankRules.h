@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "BankMailTypes.h"
 #include "MailRules.h"
 
 // The Player-free rules of a persistent bot's bank (bank-mail plan, WB.2): an item goes to the bank when it is worth
@@ -140,25 +141,6 @@ struct BankIn
     BagSpace bankSpace;            // free bank item slots and room on partial stacks there
 };
 
-// The bank decision row's choice and reason (world log kind `bank`)
-enum class BankChoice : uint8_t
-{
-    Withdraw,  // taken out of the bank
-    Deposit,   // put into the bank
-    Keep,      // a kept item that stays in the bags
-    Leave      // a bank item that stays in the bank
-};
-
-enum class BankReason : uint8_t
-{
-    Due,           // kept and due at the bot's level
-    Released,      // in the bank but no longer worth more later: withdrawn to be sold or used as an ordinary item
-    KeptForLevel,  // kept for a level the bot has not reached
-    BankFull,      // kept, but the bank has no room left for it
-    NoSpace,       // to be withdrawn, but the bags have no room for it
-    Refused        // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit
-};
-
 inline char const* ChoiceWord(BankChoice choice)
 {
     switch (choice)
@@ -205,22 +187,6 @@ struct BankStep
     uint32_t count = 0;
 };
 
-struct BankVerdict
-{
-    BankChoice choice = BankChoice::Leave;
-    BankReason reason = BankReason::KeptForLevel;
-    bool inBank = false;  // where the item lies before the visit
-    uint8_t bag = 0;
-    uint8_t slot = 0;
-    uint32_t itemGuid = 0;
-    uint32_t entry = 0;
-    uint32_t count = 0;
-    uint32_t laterWorth = 0;  // 0 for a released item
-    uint32_t sellNow = 0;
-    uint8_t dueLevel = 0;
-    char const* provider = "";
-};
-
 struct BankPlan
 {
     std::vector<BankStep> steps;        // every withdrawal, then every deposit
@@ -231,16 +197,6 @@ struct BankPlan
     uint32_t keptInBags = 0;     // kept items that stay in the bags (due, or the bank is full)
     uint32_t leftInBank = 0;     // bank items that stay (kept for a level, or no bag room)
     uint32_t bankFreeAfter = 0;  // free bank item slots after the visit
-};
-
-// A bank item that is kept now, as BankKnowledge stores it
-struct KeptEntry
-{
-    uint32_t entry = 0;
-    uint32_t count = 0;
-    uint32_t laterWorth = 0;
-    uint8_t dueLevel = 0;
-    char const* provider = "";
 };
 
 struct DueTotal
@@ -493,15 +449,6 @@ inline std::vector<KeptEntry> KeptInBank(BankIn const& in)
                            decided.answer.dueLevel, decided.answer.provider});
     return entries;
 }
-
-// The bag items the rule keeps for a later level, as the bot remembers them for its item usage (ITEM_USAGE_BANK):
-// such an item is not sold, and when space runs short it counts at its later worth. Decided at one level and read
-// only at that level, so a level change never leaves an item kept by an old answer.
-struct CarriedKeeps
-{
-    std::vector<KeptEntry> items;  // by later worth
-    uint8_t level = 0;             // the bot's level when they were decided; 0 = never
-};
 
 // Kept and not due yet: a due item is gear the bot may wear now, which the item usage labels as an upgrade first
 inline CarriedKeeps KeptInBags(BankIn const& in)
