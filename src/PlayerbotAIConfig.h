@@ -426,7 +426,6 @@ public:
     float PvpTestFightY;
     float PvpTestFightZ;
     float PvpTestFightO;
-    bool AcquaintanceEnable;
     uint32 AcquaintanceFlushSeconds;
     uint32 AcquaintanceDirectCooldownSeconds;
     uint32 AcquaintanceGroupJoinCooldownSeconds;
