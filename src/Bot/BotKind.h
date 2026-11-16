@@ -16,7 +16,7 @@ namespace BotKind
 // A, the instance's role; one relaxed atomic, set at config load and ".reload config"
 bool LivingWorld();
 
-// Recomputes A from the role values and the persistence key; world thread
+// Recomputes A from the role values; world thread
 void LoadLivingWorld();
 
 // False without an AI

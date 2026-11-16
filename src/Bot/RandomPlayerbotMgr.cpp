@@ -3177,8 +3177,7 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
     {
         if (!BotKind::LivingWorld())
         {
-            LOG_ERROR("playerbots",
-                      "rndbot history: only for a persistent population (Playerbots.Population.Persistent)");
+            LOG_ERROR("playerbots", "rndbot history: only in a living world (not the arena role, not ArenaOnly)");
             return false;
         }
 

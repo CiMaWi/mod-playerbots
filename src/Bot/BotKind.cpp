@@ -9,7 +9,6 @@
 #include <atomic>
 
 #include "BotKindRules.h"
-#include "Config.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
@@ -36,11 +35,10 @@ bool BotKind::LivingWorld() { return s_livingWorld.load(std::memory_order_relaxe
 
 void BotKind::LoadLivingWorld()
 {
-    // The key is read from sConfigMgr: Population::LoadConfig and PlayerbotAIConfig::Initialize both call this, in
-    // either order, and on ".reload config" only the first of them runs again
-    bool const living = BotKindRules::LivingWorld(
-        sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false),
-        sPlayerbotAIConfig.LadderRole == LADDER_ROLE_ARENA, sPlayerbotAIConfig.ArenaOnlyEnable);
+    // Population::LoadConfig and PlayerbotAIConfig::Initialize both call this, in either order, and on ".reload config"
+    // only the first of them runs again
+    bool const living = BotKindRules::LivingWorld(sPlayerbotAIConfig.LadderRole == LADDER_ROLE_ARENA,
+                                                  sPlayerbotAIConfig.ArenaOnlyEnable);
     s_livingWorld.store(living, std::memory_order_relaxed);
 }
 
