@@ -8,10 +8,11 @@
 #define PLAYERBOTS_RANDOMPLAYERBOTMGR_H
 
 #include "GameTime.h"
-#include "NewRpgInfo.h"
 #include "ObjectGuid.h"
 #include "PlayerbotCommandServer.h"
 #include "PlayerbotMgr.h"
+#include "QuestStatTypes.h"
+#include "TravelMgr.h"
 #include <algorithm>
 #include <array>
 #include <atomic>

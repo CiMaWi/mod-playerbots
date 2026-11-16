@@ -55,7 +55,7 @@ bool HandleMailStatusCommand(ChatHandler* handler, char const* args)
 
     // Read only, on the world thread (BankMailState.h's rule for the mail list): the knowledge is printed as stored,
     // the waiting count is also counted again now
-    MailKnowledge const& known = botAI->rpgInfo.bankMail.mail;
+    MailKnowledge const& known = botAI->bankMail.mail;
     BankMailConfig const& config = sPlayerbotAIConfig.BankMail;
     uint32 const errand = MailErrandWorth(known.waiting, config.MailDefaultWorthCopper, known.seenCopper,
                                           known.expectedCopper, DEFAULT_ORDERLINESS_WEIGHT);
@@ -107,7 +107,7 @@ bool HandleMailVisitCommand(ChatHandler* handler, char const* args)
     else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
         refusal = "the bot has no new rpg strategy";
     else
-        refusal = VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Mail);
+        refusal = VisitStartRefusal(botAI->bankMail, VisitKind::Mail);
     // World thread, between the map updates: the bot's place and its visit state are read and set at rest
     std::optional<MailboxSpot> const spot = refusal ? std::nullopt : FindMailboxSpot(bot, refusal);
     // A test command (WB.12): the bot stands near a mailbox; getting to a far one is the travel errand's job

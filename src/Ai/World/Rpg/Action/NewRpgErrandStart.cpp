@@ -93,7 +93,7 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     if (!snapshot.Governed)
         return;
 
-    BankMail::BotBankMail& known = botAI->rpgInfo.bankMail;
+    BankMail::BotBankMail& known = botAI->bankMail;
     BankMail::RefreshMailKnowledge(bot, known.mail);
     BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     uint32 carried = 0;
@@ -198,7 +198,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 {
     // A held errand row refuses the trip also when the trigger fired before the hold was taken (WU15a's wm57 bot
     // started a vendor trip 1.5 s after its hold and kept walking it through the case)
-    if (!TestConstraints::ErrandAllowed(botAI->rpgInfo.constraints))
+    if (!TestConstraints::ErrandAllowed(botAI->testConstraints))
         return false;
 
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
@@ -324,7 +324,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         index && ((trainingDue && training->trainer) || (riding && riding->trainer) || (weapon && weapon->trainer));
     // A trip for the mail or the bank needs no vendor either (WB8b)
     bool const bankMailWanted =
-        !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->rpgInfo.bankMail, bot->GetLevel());
+        !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel());
     if (!WorldTravel::ErrandCheckPlans(nearest != nullptr, trainerWanted || bankMailWanted || pet))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} errands: no vendor on map {} ({} vendors, {} refused by faction)",
@@ -645,8 +645,8 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
         return false;
 
     // Checked at most every INN_RETRY_MS, whatever comes of it
-    NewRpgInfo& info = botAI->rpgInfo;
-    info.lastInnMs = std::max<uint32>(getMSTime(), 1);
+    RpgMemos& memo = botAI->rpgMemos;
+    memo.lastInnMs = std::max<uint32>(getMSTime(), 1);
 
     // The bot's team's inns on its map (startup cache): the nearest one whose zone fits its level, within 10 minutes of
     // walking (straight line at run speed)
@@ -660,7 +660,7 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
         if (inn.loc.GetMapId() != bot->GetMapId())
             continue;
         // A spot whose bind found no usable innkeeper lately (Arrive)
-        if (!info.innAvoid.empty() && WorldTravel::InnAvoided(info.innAvoid, getMSTime(),
+        if (!memo.innAvoid.empty() && WorldTravel::InnAvoided(memo.innAvoid, getMSTime(),
                                                               {inn.loc.GetMapId(), inn.loc.GetPositionX(),
                                                                inn.loc.GetPositionY(), inn.loc.GetPositionZ()}))
             continue;
@@ -696,7 +696,7 @@ bool NewRpgStartInnAction::Execute(Event /*event*/)
               inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.zoneId);
     RpgStatus::Start(botAI, RpgStatus::TripTo(WorldPosition(inn.loc)), "inn");
     uint32 tripId = 0;
-    if (auto* travel = std::get_if<NewRpgInfo::Travel>(&info.data))
+    if (auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
     {
         travel->bindInn = true;
         tripId = travel->tripId;

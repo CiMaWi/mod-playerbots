@@ -22,7 +22,7 @@ class PlayerbotAI;
 // rules (MailRules.h) say one step at a time, wait for each answer, finish. Every step is a client packet queued on
 // the bot's session; the world thread runs its handler when it drains the session (PlayerbotHolder::HandleBotPackets,
 // after the map updates), so the answer shows in the mail list from the bot's next tick on. The state is
-// NewRpgInfo::bankMail.mailVisit (BankMailState.h); every end writes its row (VisitLifecycle.h).
+// PlayerbotAI::bankMail.mailVisit (BankMailState.h); every end writes its row (VisitLifecycle.h).
 //
 // Used unchanged by the chat command (MailAction) and the trips (signatures kept stable):
 //   bool QueueMarkRead(Player* bot, ObjectGuid const& mailbox, uint32 mailId);
