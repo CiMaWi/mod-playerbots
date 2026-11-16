@@ -16,7 +16,7 @@
 // A test's constraints on a bot (`playerbots route constraint|hold|release`, functional tests): named per-bot
 // switches, all rows of one table. A choice row is read where the bot already decides; a state row is applied on the
 // bot's map thread when it is set and undone when it is cleared (TravelOrders, TestOrders.cpp). Kept in
-// NewRpgInfo::constraints, not saved. Orders are taken before the idle gate, so a held bot runs an order and holds
+// PlayerbotAI::testConstraints, not saved. Orders are taken before the idle gate, so a held bot runs an order and holds
 // again when it ends. Player-free for the selftest. Adding a constraint: a row, its gate or apply/undo pair, and a
 // selftest line
 namespace TestConstraints

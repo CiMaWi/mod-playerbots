@@ -193,7 +193,6 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       tactics(std::make_unique<BotTactics>(this, bot)),
       botTravel(std::make_unique<BotTravel>(this, bot))
 {
-    rpgInfo.bot = bot;
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
         bot->SetTaxiCheater(true);
 
@@ -322,12 +321,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can be a
     // minute apart for an idle bot, time enough for a new pet to start a fight (one bit test for every other bot)
-    if (rpgInfo.constraints & TestConstraints::STATES)
-        TravelOrders::KeepConstraints(bot, rpgInfo.constraints);
+    if (testConstraints & TestConstraints::STATES)
+        TravelOrders::KeepConstraints(bot, testConstraints);
 
     // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
     // does not run (in combat, dead); one test while no visit runs
-    if (BankMail::VisitRuns(rpgInfo.bankMail))
+    if (BankMail::VisitRuns(bankMail))
         BankMail::WatchVisits(this);
 
     // The world log's Flight rows: one compare while the flight state stays
@@ -1168,9 +1167,8 @@ void PlayerbotAI::Reset(bool full, bool farTeleport)
     auto const resetRpgState = [this, farTeleport]()
     {
         BankMail::EndVisits(this, farTeleport ? BankMail::VisitEnd::Teleport : BankMail::VisitEnd::Reset);
-        BankMail::BotBankMail const bankMail = BankMail::AfterReset(rpgInfo.bankMail);  // the knowledge stays
         RpgStatus::Reset(this, farTeleport);
-        rpgInfo.bankMail = bankMail;
+        bankMail = BankMail::AfterReset(bankMail);  // the knowledge stays
     };
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
@@ -5828,9 +5826,9 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
         return GetAiObjectContext()->FormatValues();
     }
     else if (command == "constraints")
-        return "constraints " + TestConstraints::Format(rpgInfo.constraints);
+        return "constraints " + TestConstraints::Format(testConstraints);
     else if (command == "hold")
-        return "hold " + TestConstraints::Format(static_cast<uint16>(rpgInfo.constraints & TestConstraints::HOLD));
+        return "hold " + TestConstraints::Format(static_cast<uint16>(testConstraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;
@@ -7392,7 +7390,7 @@ uint32 PlayerbotAI::ComputeReactDelay()
     // base. A visit or a trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes
     // in a city (WB7d), a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b), and a
     // route's first step at a city's portal came after the portal leg's 20 s had run out (WT55d)
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(rpgInfo.bankMail) ||
+    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(bankMail) ||
         std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data) ||
         std::holds_alternative<NewRpgInfo::Travel>(rpgInfo.data))
         return base * urand(10, 30);

@@ -14,6 +14,7 @@
 #include <stack>
 #include <unordered_set>
 
+#include "BankMailState.h"
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
@@ -25,10 +26,13 @@
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
 #include "ObjectGuid.h"
+#include "PlannerBotState.h"
 #include "PlayerbotAIBase.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
+#include "QuestStatTypes.h"
+#include "RpgMemos.h"
 #include "SpellAuras.h"
 #include "TacticIds.h"
 #include "Util.h"
@@ -783,6 +787,16 @@ public:
     static bool IsHealingSpell(uint32 spellFamilyName, flag96 spellFamilyFlags);
     static SpellFamilyNames Class2SpellFamilyName(uint8 cls);
     NewRpgInfo rpgInfo;
+    // The planner's view of the bot (PlannerBotState.h); a reset starts it fresh
+    Planner::BotState planner;
+    // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
+    // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
+    BankMail::BotBankMail bankMail;
+    // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
+    uint16 testConstraints{0};
+    // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
+    // giver's; a reset starts them fresh
+    RpgMemos rpgMemos;
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
     // World PvP's persistence cache and the ghost's wait (GhostWait.h), lazily

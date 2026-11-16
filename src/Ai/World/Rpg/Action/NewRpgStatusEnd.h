@@ -26,8 +26,8 @@ void End(PlayerbotAI* botAI, StatusEnd::Outcome outcome, StatusEnd::Note note = 
 // Starts `next`; a running status ends as `why` first (its clean-up, the planner's note); one Status row with `word`
 void Start(PlayerbotAI* botAI, NewRpgInfo::RpgData next, char const* word,
            StatusEnd::Outcome why = StatusEnd::Outcome::Interrupted, StatusEnd::Note note = {});
-// PlayerbotAI::Reset: the RPG state starts over (a far teleport keeps a trip, StatusEnd::KeepsStatus); the bot, its
-// route request ids and a test's constraints stay. One Status row, teleport or reset
+// PlayerbotAI::Reset: the RPG state starts over (a far teleport keeps a trip, StatusEnd::ResetOf); its route request
+// ids and a test's constraints stay. One Status row, teleport or reset
 void Reset(PlayerbotAI* botAI, bool farTeleport);
 
 // The data of the two statuses with a rule of their own; the core gives a trip its start and world log id

@@ -63,7 +63,7 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args)
     BankIn const bank = BuildBankIn(botAI);
     std::vector<KeptEntry> const kept = KeptInBank(bank);
     DueTotal const due = DueAt(kept, bank.bot.level);
-    BankKnowledge const& known = botAI->rpgInfo.bankMail.bank;
+    BankKnowledge const& known = botAI->bankMail.bank;
     handler->PSendSysMessage(
         "BANK {}: kept {} (due {}, worth {}), free slots {}/{}, level {}, keeps possessions {}; "
         "known: {} kept, {} due, {} free, {} carried{}",
@@ -114,7 +114,7 @@ bool HandleBankVisitCommand(ChatHandler* handler, char const* args)
     else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
         refusal = "the bot has no new rpg strategy";
     else
-        refusal = VisitStartRefusal(botAI->rpgInfo.bankMail, VisitKind::Bank);
+        refusal = VisitStartRefusal(botAI->bankMail, VisitKind::Bank);
     // World thread, between the map updates: the bot's place and its visit state are read and set at rest
     std::optional<BankerSpot> const spot = refusal ? std::nullopt : FindBankerSpot(bot, refusal);
     // A test command (WB.12): the bot stands near a banker; getting to a far one is the travel errand's job

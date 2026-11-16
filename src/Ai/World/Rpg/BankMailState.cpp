@@ -53,7 +53,7 @@ void BuildBankKnowledge(PlayerbotAI* botAI)
     if (!bot)
         return;
 
-    BotBankMail& known = botAI->rpgInfo.bankMail;
+    BotBankMail& known = botAI->bankMail;
     RefreshBankKnowledge(botAI);
     known.bank.built = true;
     RefreshMailKnowledge(bot, known.mail);
@@ -90,7 +90,7 @@ void WatchVisits(PlayerbotAI* botAI)
     if (!bot)
         return;
 
-    BotBankMail const& state = botAI->rpgInfo.bankMail;
+    BotBankMail const& state = botAI->bankMail;
     if (state.mailVisit.phase != MailVisitPhase::None)
     {
         MailVisitState const& visit = state.mailVisit;

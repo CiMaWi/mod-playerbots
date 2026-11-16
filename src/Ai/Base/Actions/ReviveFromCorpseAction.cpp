@@ -415,11 +415,11 @@ bool SpiritHealerAction::Execute(Event event)
     WorldPosition const gravePos(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z);
     bool const atGrave = ClosestGrave->Map == bot->GetMapId() &&
                          bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig.SightDistance;
-    NewRpgInfo& info = botAI->rpgInfo;
-    if (atGrave && WorldTravel::RetryDue(info.ghostHealerTs != 0, GetMSTimeDiffToNow(info.ghostHealerTs),
+    RpgMemos& memo = botAI->rpgMemos;
+    if (atGrave && WorldTravel::RetryDue(memo.ghostHealerTs != 0, GetMSTimeDiffToNow(memo.ghostHealerTs),
                                          WorldTravel::GHOST_HEALER_RETRY_MS))
     {
-        info.ghostHealerTs = getMSTime();
+        memo.ghostHealerTs = getMSTime();
         if (FindSpiritHealer(bot, sPlayerbotAIConfig.SightDistance))
         {
             LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
@@ -482,15 +482,15 @@ bool SpiritHealerAction::Execute(Event event)
         // A persistent ghost at its grave waits for the healer; a far one is teleported unseen and rate-limited
         WorldTravel::GhostInput ghost;
         ghost.AtGrave = atGrave;
-        ghost.TeleportedBefore = info.ghostTeleportTs != 0;
-        ghost.SinceTeleportMs = ghost.TeleportedBefore ? GetMSTimeDiffToNow(info.ghostTeleportTs) : 0;
+        ghost.TeleportedBefore = memo.ghostTeleportTs != 0;
+        ghost.SinceTeleportMs = ghost.TeleportedBefore ? GetMSTimeDiffToNow(memo.ghostTeleportTs) : 0;
         if (WorldTravel::GhostFallback(ghost) == WorldTravel::GhostStep::Teleport)
             ghost.Seen = sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos);
 
         if (WorldTravel::GhostFallback(ghost) != WorldTravel::GhostStep::Teleport)
             return false;
 
-        info.ghostTeleportTs = getMSTime();
+        memo.ghostTeleportTs = getMSTime();
     }
     else if (sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos))
         return false;

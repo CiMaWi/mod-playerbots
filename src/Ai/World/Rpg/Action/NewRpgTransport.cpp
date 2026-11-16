@@ -1131,7 +1131,7 @@ void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, 
 
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data)
 {
-    return data.PassengerOwnsProgress() || bot.GetTransport() || bot.HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) ||
-           bot.IsInFlight() || bot.GetVehicle();
+    return TravelLegs::PassengerOwnsProgress(data.trip, data.passengerMotion.has_value()) || bot.GetTransport() ||
+           bot.HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) || bot.IsInFlight() || bot.GetVehicle();
 }
 }  // namespace NewRpgInternal

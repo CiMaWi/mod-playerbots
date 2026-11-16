@@ -84,7 +84,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         case RPG_IDLE:
         {
             // A test's hold (TestConstraints): a held choice is not made; an order was taken all the same
-            TestConstraints::IdleGate const gate = TestConstraints::GateOf(info.constraints);
+            TestConstraints::IdleGate const gate = TestConstraints::GateOf(botAI->testConstraints);
             if (!gate.planner && !gate.status)
                 return false;
             // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback. A sick

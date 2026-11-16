@@ -193,7 +193,7 @@ void ReadBags(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
             in.slots += bag->GetBagSize();
     in.plan = &plan;
     // Stored knowledge only (WB.4: how much mail waits, never what is inside), as the WB2 and WB5 commands read it
-    BankMail::BotBankMail const& known = ai->rpgInfo.bankMail;
+    BankMail::BotBankMail const& known = ai->bankMail;
     in.mailWaiting = BankMail::CountWaitingMail(bot);
     in.mailSeenCopper = known.mail.seenCopper;
     in.mailExpectedCopper = known.mail.expectedCopper;

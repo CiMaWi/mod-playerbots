@@ -139,6 +139,39 @@ constexpr bool DurationIsNormalEnd(std::uint32_t status)
 // The reset rule: a reset ends the status as Interrupted, except that a trip keeps its status across a far teleport.
 constexpr bool KeepsStatus(bool farTeleport, bool isTravel) { return farTeleport && isTravel; }
 
+// A reset's effect on one member group of the bot's RPG state: the group starts fresh or stays as it is
+enum class ResetEffect : std::uint8_t
+{
+    Fresh,
+    Kept
+};
+
+// The one list of what a reset (RpgStatus::Reset) does to the bot's RPG member groups: the status starts over unless
+// KeepsStatus keeps it (a kept trip keeps its start); the planner's view and the RPG memos start fresh; a test's
+// constraints stay. The bank and mail state has its own rule (BankMail::AfterReset: the visits end, the knowledge
+// stays); the route request ids are BotTravel's, which a reset does not touch
+struct ResetList
+{
+    ResetEffect status;
+    ResetEffect planner;
+    ResetEffect rpgMemos;
+    ResetEffect testConstraints;
+};
+
+constexpr ResetList ResetOf(bool farTeleport, bool isTravel)
+{
+    return {KeepsStatus(farTeleport, isTravel) ? ResetEffect::Kept : ResetEffect::Fresh, ResetEffect::Fresh,
+            ResetEffect::Fresh, ResetEffect::Kept};
+}
+
+// Applies one entry of the reset list to its group
+template <class Group>
+void ApplyReset(ResetEffect effect, Group& group)
+{
+    if (effect == ResetEffect::Fresh)
+        group = Group{};
+}
+
 // A trip's abort source when its end names none: "abort:" and the outcome's word (the Travel event's source; after the
 // prefix, the reason of the trip's abort decision and of the server-log line)
 constexpr char const* TripAbortSource(Outcome outcome)

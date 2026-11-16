@@ -1616,6 +1616,21 @@ inline std::uint32_t TripDeadlineMs(float estimateSeconds)
 }
 
 inline bool PastDeadline(std::uint32_t activeMs, float routeSeconds) { return activeMs > TripDeadlineMs(routeSeconds); }
+
+// The trip walks now: its current leg is a walk; past the last leg, an inn errand's steps to the innkeeper
+inline bool HasWalkTarget(Trip const& trip, bool bindInn)
+{
+    return trip.legIdx < trip.legs.size() ? trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk : bindInn;
+}
+
+// The passenger code owns the trip's progress: a passenger move runs, the bot is off a ship's first stop, or the
+// current leg is a transport ride
+inline bool PassengerOwnsProgress(Trip const& trip, bool passengerMoves)
+{
+    bool const transportLeg =
+        trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
+    return passengerMoves || trip.offFirst.sinceMs || transportLeg;
+}
 }  // namespace TravelLegs
 
 #endif
