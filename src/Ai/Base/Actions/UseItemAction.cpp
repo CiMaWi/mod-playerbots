@@ -16,6 +16,7 @@
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "TestConstraints.h"
 
 static constexpr uint32 SPELL_LEARNING_1 = 483;
 static constexpr uint32 SPELL_LEARNING_2 = 55884;
@@ -157,6 +158,9 @@ bool UseItemAction::UseItemOnItem(Item* item, Item* itemTarget) { return UseItem
 
 bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Unit* unitTarget)
 {
+    if (!TestConstraints::UsesItemsOnItsOwn(botAI->testConstraints))  // nouse (item-use WI2): goes with WI5's builder
+        return false;
+
     if (bot->CanUseItem(item) != EQUIP_ERR_OK)
         return false;
 

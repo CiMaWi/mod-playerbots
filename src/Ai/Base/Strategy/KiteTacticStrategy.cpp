@@ -384,7 +384,8 @@ bool MeleeOnMeTrigger::IsActive()
 {
     bool const enabled = botAI->TacticEnabledHere(TacticId::Kite);
     Battleground* bgHere = bot->GetBattleground();
-    if (!enabled && !bgHere)
+    // With the tactic off the sense only counts (the harness's baseline arm): only while the bot counts (CS25b)
+    if (!enabled && !(bgHere && botAI->IsPvpTestCounting()))
         return false;
 
     uint32 const nowMs = getMSTime();

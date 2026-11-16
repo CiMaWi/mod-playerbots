@@ -23,12 +23,11 @@ void RunFollowerChecks(Check const& check)
     std::string firstUnsound;
     std::string firstInexact;
     uint32 cases = 0;
-    for (uint32 switchBits = 0; switchBits < 16; ++switchBits)
+    for (uint32 switchBits = 0; switchBits < 8; ++switchBits)
     {
         bool const tacticsEnable = (switchBits & 1) != 0;
         bool const trackEnable = (switchBits & 2) != 0;
         bool const interruptFollows = (switchBits & 4) != 0;
-        bool const memoryEnable = (switchBits & 8) != 0;
         for (uint32 scopeSeed = 0; scopeSeed <= scopeAll; ++scopeSeed)
         {
             TacticFollowerSwitches switches;
@@ -80,8 +79,8 @@ void RunFollowerChecks(Check const& check)
                     };
                     // ObserveOpponents opens or closes the memory against the running match: an open memory or a
                     // probe of a match
-                    bool const observe = memoryEnable && (memoryOpen || probed == TacticContext::Arena ||
-                                                          probed == TacticContext::Battleground);
+                    bool const observe =
+                        memoryOpen || probed == TacticContext::Arena || probed == TacticContext::Battleground;
                     bool const natural = trackEnable && here(TacticFollower::Natural);
                     bool const interrupt = interruptFollows && here(TacticFollower::Interrupt);
                     bool const focus = here(TacticFollower::FocusTarget) || focusPick;
@@ -89,7 +88,6 @@ void RunFollowerChecks(Check const& check)
                     TacticCheckInputs inputs;
                     inputs.Counting = counting;
                     inputs.Leftover = memoryOpen || focusPick;
-                    inputs.MemoryEnable = memoryEnable;
                     inputs.Mask = mask;
                     inputs.Stored = stored;
                     inputs.Probed = probed;
@@ -105,12 +103,11 @@ void RunFollowerChecks(Check const& check)
 
     check(firstInexact.empty(), "the follower table is the followers' guards per context " + firstInexact);
     check(firstUnsound.empty(), "the live test admits every follower whose guard passes " + firstUnsound);
-    check(cases == 16 * (scopeAll + 1) * 32 * 8 * contexts * contexts, "the follower cases ran in full");
+    check(cases == 8 * (scopeAll + 1) * 32 * 8 * contexts * contexts, "the follower cases ran in full");
 
     // Main's switches (tactics off, memory on): a bot outside a match is not live, one in a battleground is
     TacticFollowerTable const offTable = BuildTacticFollowerTable(TacticFollowerSwitches());
     TacticCheckInputs plain;
-    plain.MemoryEnable = true;
     plain.Mask = TACTIC_ALL_MASK;
     check(!TacticCheckLive(offTable, plain), "tactics off, memory on: a bot in PvE is not live");
     plain.Probed = TacticContext::Battleground;

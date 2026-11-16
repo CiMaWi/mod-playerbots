@@ -102,7 +102,8 @@ enum class BotStateTopic : uint8_t
     Places,
     History,  // LC7: the record's readers (RecordWords.h builds the entries)
     Lately,
-    Known
+    Known,
+    Needs  // WU23: what the bot must pay for (BridgeNeedsTopic.h words the upkeep rules' list)
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.
@@ -139,6 +140,11 @@ enum class BotStateTopic : uint8_t
 //   Lately (12): the recent deeds, newest first: name = kind word, text = sentence, value = seconds ago
 //   Known (12):  the bots of shared events: name = the bot's name, text = its people, calling and what was shared,
 //               value = days since the last, extra = events shared
+//   Needs (8):   text = one sentence; code 0 provided (a bot the upkeep rules do not govern: the only entry), 1 nothing
+//               to pay for, 2 pending (the upkeep index is not ready); code 3 a need due, 4 a need paid when passing:
+//               name = kind word, value = its price in copper, extra = the copper the bot's gold pays now; code 5 the
+//               reserve: value = copper kept back, extra = copper held; code 6 saving, only with a shortfall: value =
+//               the shortfall in copper. The text names items and spells and gives the money as gold, silver, copper.
 // No topic carries a trait value or the hidden PvP skill: traits appear only as words. No text holds a number.
 struct BotStateItem
 {

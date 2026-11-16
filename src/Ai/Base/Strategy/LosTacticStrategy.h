@@ -26,7 +26,8 @@ class PlayerbotAI;
 // everything), so that G2e and G2f edit LosTacticStrategy.cpp only.
 
 // "tactic los": "target out of los" and "partner out of los" -> "regain los", in every context with the Los tactic
-// enabled or the harness on (AiFactory); the triggers test the tactic (mask, scope, gate) at run time
+// enabled (its own switch only, not the harness; AiFactory); the triggers test the tactic (mask, scope, gate) at run
+// time
 class TacticLosStrategy : public Strategy
 {
 public:

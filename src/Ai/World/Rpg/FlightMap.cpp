@@ -174,9 +174,10 @@ uint32 CloseUnderFloatingModels(FlyingMap const& flying, LoaderInput const& inpu
 }
 
 // One map's height map: the highest valid terrain or liquid sample per cell, closed where any of the cell's area
-// samples is not a flying area or has the no-fly flag, where a model floats over it (CloseUnderFloatingModels), or
-// the cell has no terrain above the map floor (MIN_HEIGHT: the void around Outland's islands); cropped to the open
-// cells' box.
+// samples is not a flying area or has the no-fly flag, where a model floats over it (CloseUnderFloatingModels), where
+// any liquid sample is dark water (the open sea: the core's fatigue timer runs for a player above it at any height,
+// and kills about 65 s after it starts; upkeep WU32, Funmat dead in flight over the Frozen Sea), or the cell has no
+// terrain above the map floor (MIN_HEIGHT: the void around Outland's islands); cropped to the open cells' box.
 // False when the shutdown stopped it
 bool BuildMap(FlyingMap const& flying, LoaderInput const& input, FlightRules::HeightMap& out, uint32& unreadable)
 {
@@ -228,6 +229,12 @@ bool BuildMap(FlyingMap const& flying, LoaderInput const& input, FlightRules::He
                         LiquidData const liquid = terrain.GetLiquidData(x, y, centre, COLLISION_HEIGHT, {});
                         if (liquid.Status != LIQUID_MAP_NO_WATER)
                             ground = std::max(ground, liquid.Level);
+                        uint8& shut = closed[cellOf(x, y)];
+                        if ((liquid.Flags & MAP_LIQUID_TYPE_DARK_WATER) && !shut)
+                        {
+                            shut = 1;
+                            ++out.darkCells;
+                        }
                     }
                     if (valid(corner))
                         ground = std::max(ground, corner);
@@ -353,10 +360,10 @@ char const* MapName(uint32 mapId)
 std::string MapLine(FlightRules::HeightMap const& map)
 {
     return Acore::StringFormat(
-        "{} (map {}): {}x{} cells of {:.1f} yd, {} open, {} closed ({} under floating models), ground {}..{} yd, "
-        "{} terrain files, {} takeoff spots on platforms, built in {} ms, {:.1f} KB",
+        "{} (map {}): {}x{} cells of {:.1f} yd, {} open, {} closed ({} under floating models, {} over dark water), "
+        "ground {}..{} yd, {} terrain files, {} takeoff spots on platforms, built in {} ms, {:.1f} KB",
         MapName(map.mapId), map.mapId, map.width, map.height, map.cellYards, map.openCells, map.closedCells,
-        map.floatingCells, map.minGround, map.maxGround, map.files, map.takeoffs.size(), map.buildMs,
+        map.floatingCells, map.darkCells, map.minGround, map.maxGround, map.files, map.takeoffs.size(), map.buildMs,
         static_cast<double>(map.Bytes()) / BYTES_PER_KB);
 }
 
