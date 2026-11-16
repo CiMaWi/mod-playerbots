@@ -166,7 +166,7 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"attack enemy player", C::TargetSwitch},
         {"cc retarget", C::TargetSwitch},  // OwnCc drops a target its team holds in CC (G4b)
         {"attack enemy flag carrier", C::TargetSwitch},
-        // Out of a ground effect (G0h3-b; a reaction only, Playerbots.Natural.Reaction.Movement.Enable)
+        // Out of a ground effect (G0h3-b; a reaction only)
         {"avoid aoe", C::Movement},
         // Cover and line of sight (G2e, G2f; reactions only, Playerbots.Natural.Reaction.Positioning.Enable)
         {"regain los", C::Positioning},
@@ -699,7 +699,6 @@ void SkillMultiplier::MeetBusy(ReactionEvent& event, SkillNoticeCategory categor
     }
 
     uint32 const enemyLeft = static_cast<uint32>(std::clamp(cast->GetCastTimeRemaining(), 0, cast->GetCastTime()));
-    ReactionParams const& params = sPlayerbotAIConfig.NaturalReaction;
     bool const stamped = botAI->GetTactics().IsNaturalCadenceActive();
     int32 const freeMs = BusyFreeDueMs(event, static_cast<uint32>(reactionFocus.LatencyMs + 0.5f), stamped);
     if (!InterruptOutOfReach(rules, std::max(event.DueAfterMs, waitMs), freeMs, enemyLeft))
