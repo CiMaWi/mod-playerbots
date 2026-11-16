@@ -325,6 +325,8 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+    Check(dist.count("Playerbots.Population.Persistent") == 0,
+          "retired: Playerbots.Population.Persistent has no dist line");
 
     // The checks themselves, on a fixture
     std::map<std::string, std::string> const fixture = DistKeys(
@@ -372,6 +374,15 @@ void TestRetiredFullKey()
                                             [&warnings](std::string const& text) { warnings.push_back(text); });
     Check(count == 0 && warnings.empty() && reader.missingWarnings.empty() && !switches.Gone,
           "retired full key: a set line is ignored without a warning");
+
+    // CS23d: a removed key whose parent prefix still holds live keys
+    ConfigFamily<FakeSwitches> const dryRunFamily{"Playerbots.Population.Retire.DryRun", FakeSwitchRows};
+    std::vector<std::string> const retireKeys = {"Playerbots.Population.Retire.DryRun",
+                                                 "Playerbots.Population.Retire.DryRunX",
+                                                 "Playerbots.Population.Retire.TestTarget"};
+    Check(
+        UnknownConfigKeys(dryRunFamily, retireKeys) == std::vector<std::string>{"Playerbots.Population.Retire.DryRunX"},
+        "retired Retire.DryRun: the key is known, a longer key is not, the live Retire.TestTarget is not its row");
 }
 
 int main(int argc, char** argv)

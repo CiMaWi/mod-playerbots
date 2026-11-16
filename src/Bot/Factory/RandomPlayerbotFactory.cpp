@@ -106,7 +106,7 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
 
     uint32 const slots = rosterAccounts * FactoryCharactersPerAccount;
     LOG_INFO("playerbots",
-             "[Population] startup refill capped at the roster (Persistent and Rotation on): {} characters on {} "
+             "[Population] startup refill capped at the roster (Rotation on): {} characters on {} "
              "roster accounts, roster {}, making {}, {} slots spare for a resize",
              held, rosterAccounts, target, making, slots > held + making ? slots - held - making : 0);
     return plan;

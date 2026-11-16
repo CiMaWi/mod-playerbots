@@ -19,6 +19,7 @@ namespace
 {
 // Written on the world thread at config load, read on every map thread: relaxed, as nothing else is published with it
 std::atomic<bool> s_livingWorld{false};
+std::atomic<bool> s_followsTargets{false};
 
 BotKindRules::MasterKind MasterKindOf(Player* master)
 {
@@ -34,14 +35,19 @@ BotKindRules::MasterKind MasterKindOf(Player* master)
 
 bool BotKind::LivingWorld() { return s_livingWorld.load(std::memory_order_relaxed); }
 
+bool BotKind::FollowsTargets() { return s_followsTargets.load(std::memory_order_relaxed); }
+
 void BotKind::LoadLivingWorld()
 {
-    // The key is read from sConfigMgr: Population::LoadConfig and PlayerbotAIConfig::Initialize both call this, in
-    // either order, and on ".reload config" only the first of them runs again
-    bool const living = BotKindRules::LivingWorld(
-        sConfigMgr->GetOption<bool>("Playerbots.Population.Persistent", false),
-        sPlayerbotAIConfig.LadderRole == LADDER_ROLE_ARENA, sPlayerbotAIConfig.ArenaOnlyEnable);
+    // Population::LoadConfig and PlayerbotAIConfig::Initialize both call this, in either order, and on ".reload config"
+    // only the first of them runs again
+    bool const living = BotKindRules::LivingWorld(sPlayerbotAIConfig.LadderRole == LADDER_ROLE_ARENA,
+                                                  sPlayerbotAIConfig.ArenaOnlyEnable);
     s_livingWorld.store(living, std::memory_order_relaxed);
+
+    // Read from sConfigMgr, so ".reload config" switches it (Population::LoadConfig runs again)
+    bool const followKey = sConfigMgr->GetOption<bool>("Playerbots.Population.FollowTargets", true);
+    s_followsTargets.store(BotKindRules::FollowsTargets(living, followKey), std::memory_order_relaxed);
 }
 
 bool BotKind::IsPersistentBot(Player* bot)
