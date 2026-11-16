@@ -18,6 +18,7 @@
 #include "MoveSpline.h"
 #include "NaturalTrace.h"
 #include "NewRpgInfo.h"
+#include "NewRpgInternal.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -232,11 +233,9 @@ void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, 
 
     auto const* leg = travel.CurrentLeg();
     bool const combat = bot->IsInCombat();
-    bool const passenger = TravelLegs::PassengerOwnsProgress(travel.trip, travel.passengerMotion.has_value()) ||
-                           bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
     // The flight down after a failed fly leg (TravelLegs::StartDescent) counts as riding: a trip never ends in the air
     bool const external =
-        passenger || bot->IsInFlight() || bot->GetVehicle() || travel.route.waiting || travel.trip.descending;
+        NewRpgInternal::PassengerOwnsTravel(*bot, travel) || travel.route.waiting || travel.trip.descending;
     Owner owner = Owner::Exempt;
     if (combat)
         owner = Owner::Combat;

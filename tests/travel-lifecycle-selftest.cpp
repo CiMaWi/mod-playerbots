@@ -1661,7 +1661,7 @@ void CheckProgressScheduler()
             Check(SubmitRoute(wait, request, submit) && wait.waiting && wait.requestId == 17,
                   "scheduled first request after loot calls the submitter and publishes its actual pending ID");
             maintain(loot.Now + 100'000, Owner::Exempt);
-            Check(state.Reason() == Overdue::RouteAnswer &&
+            Check(state.Reason() == Overdue::Due &&
                       TravelLegs::Judge(wait, 16, start, loot.Now + 2) == TravelLegs::Verdict::Drop &&
                       TravelLegs::Judge(wait, 17, goal, loot.Now + 2) == TravelLegs::Verdict::Refresh &&
                       TravelLegs::Judge(wait, 17, start, loot.Now + 100'000) == TravelLegs::Verdict::Refresh,
@@ -1761,7 +1761,7 @@ void CheckProgressScheduler()
     maintain(100 + bound, Owner::Exempt);
     Check(state.Reason() == Overdue::None && state.RouteMs() == 0, "valid transport wait is exempt from walk budgets");
     maintain(1100 + bound, Owner::Exempt);
-    Check(state.Reason() == Overdue::Transport && ScheduledWork(true, state.Reason(), true, true) == Work::Recover,
+    Check(state.Reason() == Overdue::Due && ScheduledWork(true, state.Reason(), true, true) == Work::Recover,
           "overdue transport remains independently bounded and takes precedence over loot");
 
     state = {};
@@ -1771,7 +1771,7 @@ void CheckProgressScheduler()
     maintain(120'100, Owner::Exempt);
     Check(state.Reason() == Overdue::None, "off-first cannot be prematurely recovered as a stalled walk");
     maintain(121'100, Owner::Exempt);
-    Check(state.Reason() == Overdue::Transport, "overdue off-first is available to the scheduled follower");
+    Check(state.Reason() == Overdue::Due, "overdue off-first is available to the scheduled follower");
 }
 void CheckSuccessorAndPartialPaths()
 {
@@ -2115,7 +2115,7 @@ void CheckGeometricDetoursAndBounds()
             if (now - started <= bound)
                 Check(state.Reason() == Overdue::None, "oscillation remains eligible through the exact active bound");
         }
-        Overdue const expected = routeFirst ? Overdue::RouteDeadline : Overdue::LegDeadline;
+        Overdue const expected = routeFirst ? Overdue::RouteDeadline : Overdue::Due;
         Check(state.Reason() == expected && state.RouteMs() == now - started && state.LegMs() == now - started &&
                   ScheduledWork(true, state.Reason(), false, false) == Work::Recover && state.TakeReason() == expected,
               "actual leg or route expiry ends repeated-ground motion through scheduled recovery");
@@ -2164,6 +2164,110 @@ void CheckResponseWorkProgress()
     }
 }
 
+// The exit cases of WT44b, through Maintain and the follower's StepLeg: one expiry (NextDeadlineMs), one leg clock
+void CheckOneExpiry()
+{
+    using namespace TravelProgress;
+    using TravelLegs::LegType;
+    auto const nodes = [](uint32_t) { return TravelRoute::Point{}; };
+    TravelRoute::Point const start{MAP, 0.0f, 0.0f, 0.0f};
+    TravelRoute::Point const goal{MAP, 1000.0f, 0.0f, 0.0f};
+    TravelRoute::Leg leg;
+    leg.from = start;
+    leg.to = goal;
+    leg.seconds = 100.0f;
+
+    State state;
+    TravelLegs::Trip trip;
+    TravelLegs::RouteWait wait;
+    auto const maintain = [&](uint32_t now, Owner owner)
+    {
+        Maintain(state, {now, owner, owner == Owner::Combat, 0}, trip, wait, 100.0f,
+                 [] { return TravelProgress::Motion{}; });
+    };
+    auto const step = [&](uint32_t now, TravelRoute::Point const& at, uint64_t aboard = 0)
+    {
+        TravelLegs::Observation seen;
+        seen.bot = at;
+        seen.nowMs = now;
+        seen.aboard = static_cast<uint32_t>(aboard);
+        seen.aboardGuid = aboard;
+        seen.legMs = state.LegMs();
+        return TravelLegs::StepLeg(trip, seen);
+    };
+
+    // A fight on a walk does not expire the leg: the walk budget, the leg and the route clock pause and resume at the
+    // same balance; the first sample after the fight adds nothing for the span it ends
+    leg.type = LegType::Walk;
+    trip.legs = {leg};
+    TravelLegs::StartLeg(trip, 0, 100, nodes);
+    maintain(100, Owner::Walk);
+    maintain(30'100, Owner::Walk);
+    maintain(30'101, Owner::Combat);
+    uint32_t const fight = TravelLegs::LegTimeoutMs(leg) + WALK_BUDGET_MS;
+    maintain(30'101 + fight, Owner::Combat);
+    maintain(30'102 + fight, Owner::Walk);
+    Check(state.Reason() == Overdue::None && state.LegMs() == 30'000 && state.WalkMs() == 30'000 &&
+              state.RouteMs() == 30'000 && step(30'102 + fight, start).act != TravelLegs::Act::Fail,
+          "a fight on a walk does not expire the leg: no reason, the clocks unchanged by the fight");
+    maintain(30'102 + fight + 59'000, Owner::Walk);
+    Check(state.Reason() == Overdue::None, "after the fight the walk budget resumes below its bound");
+    maintain(30'102 + fight + 60'000, Owner::Walk);
+    Check(state.Reason() == Overdue::Walk && state.WalkMs() == WALK_BUDGET_MS,
+          "the walk budget expires at the balance it had before the fight plus the walk after it");
+
+    // A ride is bounded by the vessel's deadline: RIDE_PERIODS of the read period from the boarding, not the leg's
+    // fallback timeout; the guard is due and the follower fails the leg at the same tick, neither before
+    state = {};
+    leg.type = LegType::Transport;
+    trip = {};
+    trip.legs = {leg};
+    TravelLegs::StartLeg(trip, 0, 100, nodes);
+    trip.boarding = TravelLegs::Boarding::Ride;
+    trip.passengerGuid = CAR;
+    trip.boardedMs = 10'000;
+    trip.periodMs = 300'000;
+    uint32_t const ride = TravelLegs::TransportRideMs(trip, trip.legs[0]);
+    Check(ride == 660'000 && ride != TravelLegs::LegTimeoutMs(trip.legs[0]),
+          "the ride's bound is the read period's, not the leg's fallback");
+    TravelRoute::Point const sea{MAP, 500.0f, 0.0f, 0.0f};
+    maintain(10'000, Owner::Exempt);
+    maintain(10'000 + ride - 999, Owner::Exempt);
+    Check(state.Reason() == Overdue::None && step(10'000 + ride, sea, CAR).act != TravelLegs::Act::Fail,
+          "a ride within its bound: nothing due, the follower rides on");
+    maintain(10'001 + ride, Owner::Exempt);
+    TravelLegs::Decision const late = step(10'001 + ride, sea, CAR);
+    Check(state.Reason() == Overdue::Due && late.act == TravelLegs::Act::Fail &&
+              late.reason == TravelLegs::FailReason::Timeout,
+          "a ride is bounded by the vessel's deadline: the guard and the follower agree at one ms past it");
+
+    // A late route answer is bounded once per request: the guard wakes the follower once, the follower asks again
+    // (a new request, its own keep), MAX_RESUBMITS times; a pending answer adds nothing to the route clock
+    state = {};
+    trip = {};
+    uint32_t now = 1'000;
+    wait = {17, MAP, now, true, start};
+    maintain(now, Owner::Exempt);
+    unsigned wakes = 0;
+    bool refused = false;
+    while (!refused && now < 1'000 + 10 * TravelRoute::ANSWER_KEEP_MS)
+    {
+        now += 1'000;
+        maintain(now, Owner::Exempt);
+        if (state.Reason() == Overdue::None)
+            continue;
+        ++wakes;
+        Check(state.TakeReason() == Overdue::Due && now - wait.requestedMs == TravelRoute::ANSWER_KEEP_MS + 1'000,
+              "a late route answer wakes the follower at its first sample past the answer's keep");
+        if (TravelLegs::Resubmit(trip))
+            wait = {wait.requestId + 1, MAP, now, true, start};
+        else
+            refused = true;
+    }
+    Check(wakes == TravelLegs::MAX_RESUBMITS + 1u && refused && state.RouteMs() == 0,
+          "a late route answer is bounded once: one wake per request, MAX_RESUBMITS asked again, then NoAnswer");
+}
+
 }  // namespace
 
 int main()
@@ -2195,6 +2299,7 @@ int main()
     CheckSuccessorAndPartialPaths();
     CheckGeometricDetoursAndBounds();
     CheckResponseWorkProgress();
+    CheckOneExpiry();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

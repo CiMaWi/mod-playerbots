@@ -1133,7 +1133,9 @@ void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, 
 
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data)
 {
-    return TravelLegs::PassengerOwnsProgress(data.trip, data.passengerMotion.has_value()) || bot.GetTransport() ||
-           bot.HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) || bot.IsInFlight() || bot.GetVehicle();
+    TravelLegs::Aboard const aboard{bot.GetTransport() || bot.HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT),
+                                    bot.IsInFlight(), bot.GetVehicle() != nullptr};
+    return TravelLegs::OwnerOf(data.trip, data.passengerMotion.has_value(), aboard) ==
+           TravelLegs::TravelOwner::Passenger;
 }
 }  // namespace NewRpgInternal

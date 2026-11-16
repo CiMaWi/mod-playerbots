@@ -35,15 +35,15 @@ enum class Owner : std::uint8_t
     Exempt
 };
 
+// Walk, OffMesh and RouteDeadline need their own recovery; Due only wakes the follower, whose step decides the expiry
+// it reads from the same TravelLegs::NextDeadlineMs
 enum class Overdue : std::uint8_t
 {
     None,
     Walk,
     OffMesh,
-    RouteAnswer,
-    Transport,
-    LegDeadline,
-    RouteDeadline
+    RouteDeadline,
+    Due
 };
 
 enum class Work : std::uint8_t
@@ -100,25 +100,29 @@ struct Sample
 class State
 {
 public:
+    // The clocks count the time the bot could act on its leg (owner Walk or Leg), and only between two samples of the
+    // same owner: the sample that ends a fight, control, loot or a wait adds nothing for its span, and none of them
+    // resets a clock. The walk budget counts walking; the leg clock every leg the follower moves itself; the route
+    // clock the leg clocks summed over the route. Transport legs and route answers are bounded on the wall clock
     Sample Observe(std::uint32_t now, Owner owner, bool combat, std::uint32_t lootCompleted)
     {
         Sample sample{!_observed, combat != _combat, _observed && lootCompleted != _lootCompleted};
-        if (_observed && _timeValid && owner == _owner)
+        bool const acting = owner == Owner::Walk || owner == Owner::Leg;
+        if (_observed && _timeValid && owner == _owner && acting)
         {
             std::uint32_t const elapsed = now - _lastMs;
+            AddTime(_legMs, elapsed);
+            AddTime(_routeMs, elapsed);
             if (owner == Owner::Walk)
-            {
                 AddTime(_walkMs, elapsed);
-                AddTime(_routeMs, elapsed);
-            }
-            if (owner == Owner::Walk || owner == Owner::Leg)
-                AddTime(_legMs, elapsed);
         }
-        if (owner == Owner::Combat || (ResumeWord(owner) && _resume != Owner::Combat))
+        // A fight, control or loot pauses the walk (its resume word): the balance stays, its ground is not credited
+        bool const paused = ResumeWord(owner) != nullptr;
+        if (owner == Owner::Combat || (paused && _resume != Owner::Combat))
             _resume = owner;
         if (owner != Owner::Walk || !_timeValid)
             _rebase = true;
-        if (owner == Owner::Combat || owner == Owner::Control || owner == Owner::Loot)
+        if (paused)
             _interruptedWalk = true;
         _observed = true;
         _timeValid = true;
@@ -256,6 +260,7 @@ public:
 
     std::uint32_t RouteMs() const { return _routeMs; }
     std::uint32_t LegMs() const { return _legMs; }
+    std::uint32_t WalkMs() const { return _walkMs; }
     Overdue Reason() const { return _overdue; }
     void Latch(Overdue reason)
     {

@@ -615,6 +615,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     Transport* const ridden = bot->GetTransport();
     TravelLegs::Trip const& trip = data->trip;
     // A route may have been superseded aboard. Only the route with this ride or its own boarding result may use it.
+    // ownsBoard and boardedByIntent say whose boarding the ride is, not who moves the bot (TravelLegs::OwnerOf)
     bool const ownsBoard = data->passengerMotion && data->passengerMotion->Kind == MotionKind::Board &&
                            data->passengerMotion->Transport == membership.Guid;
     // The leg's vessel docked under the bot waiting at the wait point and the passenger check attached it (WT62)
@@ -680,7 +681,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         seen.takeoffHere = !CheckMountStateAction::NoTakeoffHere(bot);
     seen.money = bot->GetMoney();
     seen.nowMs = getMSTime();
-    seen.activeLegMs = data->progress.LegMs();
+    seen.legMs = data->progress.LegMs();
     seen.aboard = membership.Entry;
     seen.aboardGuid = membership.Guid;
     seen.membershipAvailable = membership.Available;
@@ -972,13 +973,14 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
                   now - data.route.requestedMs);
         return RequestRoute(data);
     };
+    auto const answerLate = [&] { return TravelLegs::NextDeadlineMs(data.trip, now, 0, &data.route) < 0; };
     if (!answer)
-        return TravelLegs::WaitExpired(data.route, now) ? askAgain("got no answer") : true;
+        return answerLate() ? askAgain("got no answer") : true;
     TravelRoute::Point const current{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     switch (TravelLegs::Judge(data.route, answer->requestId, current, now))
     {
         case TravelLegs::Verdict::Drop:
-            return TravelLegs::WaitExpired(data.route, now) ? askAgain("got only a stale answer") : true;
+            return answerLate() ? askAgain("got only a stale answer") : true;
         case TravelLegs::Verdict::Refresh:
             return askAgain(bot->GetMapId() != data.route.mapId ? "changed maps" : "moved or took the answer too late");
         case TravelLegs::Verdict::Apply:
