@@ -112,8 +112,7 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& [guid, combatRef] : bot->GetCombatManager().GetPvPCombatRefs())
     {
         Unit* pTarget = combatRef->GetOther(bot);
-        // World PvP (WP24): not an enemy a bot that left its fight leaves alone (one that does not attack it)
-        if (IsUnavailableCombatTarget(bot, pTarget) || WorldPvp::LeftAlone(botAI, pTarget))
+        if (IsUnavailableCombatTarget(bot, pTarget))
             continue;
         if (pTarget == pVictim || !pTarget->IsPlayer() ||
             !(bot->InBattleground() ? bot->CanSeeOrDetect(pTarget) : pTarget->CanSeeOrDetect(bot)) ||

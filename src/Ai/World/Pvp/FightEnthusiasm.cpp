@@ -252,15 +252,35 @@ float BalanceAround(Player* bot, EnthusiasmValues const& values)
     return LocalBalance(entries, values);
 }
 
-// A bot that left keeps its pet off whoever it leaves alone itself. The call-off at the leaving does not last: a
-// defensive pet answers a hit that lands afterwards, fights on once that attacker has left too, and its hits keep
-// both in PvP combat (wp-leave run 3: a hunter's pet on a mage 30 s after both had left)
-void HoldPetBack(PlayerbotAI* botAI, Player* bot)
+// The pet's react state, as the pet command sets it (SetPetStanceAction): the creature's and the one its bar shows
+void SetPetReact(Pet* pet, ReactStates react)
 {
-    Pet* const pet = bot->GetPet();
-    Unit* const victim = pet ? pet->GetVictim() : nullptr;
-    if (victim && LeftAlone(botAI, victim))
-        botAI->PetFollow();
+    pet->SetReactState(react);
+    if (CharmInfo* const charmInfo = pet->GetCharmInfo())
+        charmInfo->SetPlayerReactState(react);
+}
+
+// The leave's pet step (WP38a): the pet stops and follows, passive until the disengaged edge, so a defensive pet does
+// not answer a later hit and fight on after both sides have left (wp-leave run 3: a hunter's pet on a mage 30 s after
+// both had left). A passive pet defends nobody: an attacked bot flees (FleesNow)
+void SetPetPassive(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state)
+{
+    if (Pet* const pet = bot->GetPet())
+    {
+        SavePetReact(state, static_cast<uint8_t>(pet->GetReactState()));
+        SetPetReact(pet, REACT_PASSIVE);
+    }
+    botAI->PetFollow();
+}
+
+// On the disengaged edge: the bot's pet gets its react state back if it is still passive. Not by guid: a pet that was
+// unsummoned and summoned again meanwhile comes back passive under a new guid (Pet saves its react state); a pet the
+// stance action set on its summon is not passive and stays as it is
+void RestorePet(Player* bot, uint8_t react)
+{
+    Pet* const pet = react != NO_PET_REACT ? bot->GetPet() : nullptr;
+    if (pet && pet->HasReactState(REACT_PASSIVE))
+        SetPetReact(pet, static_cast<ReactStates>(react));
 }
 
 // The engaged row on the rising edge (world-log.md): the value there, and the pvptest tag
@@ -298,7 +318,10 @@ void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs
         if (state.engaged)
             RecordEngaged(bot, onSight, state, nowMs, values);
         else
+        {
             RecordDisengaged(bot, onSight, state, startMs, nowMs, values);
+            RestorePet(bot, RestoredPetReact(state));
+        }
     }
     if (force || ContextDue(state, nowMs))
         ReadContext(botAI, bot, state, nowMs, values);
@@ -308,8 +331,6 @@ void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs
     {
         NewBalance(state, BalanceAround(bot, values), GraveyardYards(bot) <= values.graveyardYards, nowMs, values);
         state.attacked = state.engaged && AttackersOf(bot) != 0;
-        if (state.left)
-            HoldPetBack(botAI, bot);
     }
 }
 
@@ -395,8 +416,9 @@ void RecordLeave(Player* bot, BotEnthusiasm const& state, double value, uint32 a
                        attackers ? REASON_FLED : REASON_RESUMED, static_cast<float>(value), alternatives, 0);
 }
 
-// The leave check (PLAN 3.5), after the refresh: once per engaged episode an engaged bot below its flee threshold
-// drops its target, calls its pet off and writes its row; the flight follows by the trigger when it is attacked
+// The leave check (PLAN 3.5, 3.11), after the refresh: once per engaged episode an engaged bot below its flee threshold
+// leaves in one act (it stops its attack, clears its selection and current target, ends its pick and sets its pet
+// passive until the disengaged edge) and writes its row; the flight follows by the trigger when it is attacked
 void CheckLeave(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs, EnthusiasmValues const& values)
 {
     // Cheap first: the flags, then the value, then the rules
@@ -408,7 +430,7 @@ void CheckLeave(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 no
     uint32 const attackers = AttackersOf(bot);
     MarkLeft(state, attackers != 0, nowMs);
     DropFightTarget(botAI, bot);
-    botAI->PetFollow();
+    SetPetPassive(botAI, bot, state);
     RecordLeave(bot, state, value, attackers);
 }
 
@@ -510,18 +532,6 @@ bool Reaches(Unit const* bot, Unit const* enemy)
                    [bot, enemy]() { return bot->IsWithinLOSInMap(enemy); });
 }
 
-bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
-{
-    Pet* const pet = botAI && target ? botAI->GetBot()->GetPet() : nullptr;
-    Unit* const victim = pet ? pet->GetVictim() : nullptr;
-    Player* const victimSide = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
-    Player* const leftSide = target ? target->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
-    if (!victimSide || !leftSide)
-        return false;
-    return PetCalledOff(LeftAlone(botAI, target), victimSide->GetGUID().GetRawValue(),
-                        leftSide->GetGUID().GetRawValue());
-}
-
 bool ScanSkipped(PlayerbotAI* botAI)
 {
     uint32 const nowMs = getMSTime();
@@ -541,8 +551,7 @@ bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal)
     return ReadsEnter(state, enemy->GetGUID().GetRawValue(), nowMs,
                       [&]()
                       {
-                          if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)) ||
-                              LeftAlone(botAI, enemy))
+                          if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)))
                               return Entering();
                           return Evaluate(botAI, bot, state, enemy, nowMs, values);
                       });

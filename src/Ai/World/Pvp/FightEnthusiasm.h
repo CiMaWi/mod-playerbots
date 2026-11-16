@@ -61,14 +61,6 @@ constexpr bool MastersFight(bool realMaster, uint64_t victimSide, uint64_t maste
     return realMaster && victimSide != 0 && victimSide == master;
 }
 
-// A player's pets are on its side: the bot calls its pet off a unit of side `petVictimSide` (the player the pet's
-// victim belongs to, 0 for none) when it leaves side `leftSide` alone (`leavesAlone`). Kept on, a hunter's pet went on
-// attacking the enemy its owner had left alone, and both sides stayed in PvP combat (WP6 chase-b15)
-constexpr bool PetCalledOff(bool leavesAlone, uint64_t petVictimSide, uint64_t leftSide)
-{
-    return leavesAlone && petVictimSide != 0 && petVictimSide == leftSide;
-}
-
 // The most height between a bot and an enemy player it attacks (EnemyPlayerValue; a cannon has no limit)
 constexpr float REACH_HEIGHT_YARDS = 30.0f;
 
@@ -107,6 +99,9 @@ enum JoinTerm : uint32_t
     TERM_BALANCE = 32,
     TERM_WEAK_AGGRESSION = 64,
 };
+
+// No saved pet react state (the ReactStates values are 0 to 2)
+constexpr uint8_t NO_PET_REACT = 0xFF;
 
 struct BotEnthusiasm
 {
@@ -154,6 +149,9 @@ struct BotEnthusiasm
     // An enemy player in PvP combat with the bot has it or its pet as its victim or selected target; read with the
     // balance while engaged and at the leave edge
     bool attacked = false;
+    // The pet's react state before the leave edge set it passive (SavePetReact), NO_PET_REACT for none; restored on
+    // the disengaged edge (RestoredPetReact)
+    uint8_t petReact = NO_PET_REACT;
 };
 
 // Engaged (PLAN 3.2): on an open-world map, in PvP combat or holding an enemy player (or its pet) as its victim; a
@@ -318,6 +316,25 @@ inline void MarkLeft(BotEnthusiasm& bot, bool attacked, uint32_t nowMs)
     bot.leftMs = nowMs;
     bot.attacked = attacked;
     bot.pickGuid = 0;
+}
+
+// The leave edge sets the pet passive (WP38a): its react state before (a ReactStates value) is kept until the
+// disengaged edge; a second save before the restore keeps the first (the pet is passive by then)
+inline void SavePetReact(BotEnthusiasm& bot, uint8_t react)
+{
+    if (bot.petReact == NO_PET_REACT)
+        bot.petReact = react;
+}
+
+// The pet's react state to restore, once, after the disengaged edge (not engaged, not left); NO_PET_REACT while the
+// leave holds or when none was saved
+inline uint8_t RestoredPetReact(BotEnthusiasm& bot)
+{
+    if (bot.engaged || bot.left)
+        return NO_PET_REACT;
+    uint8_t const react = bot.petReact;
+    bot.petReact = NO_PET_REACT;
+    return react;
 }
 
 // A bot that left leaves alone every enemy player (and its pets) that does not attack it; it answers whoever does

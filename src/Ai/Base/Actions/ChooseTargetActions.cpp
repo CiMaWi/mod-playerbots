@@ -67,10 +67,6 @@ bool AggressiveTargetAction::isUseful()
 bool DropTargetAction::Execute(Event /*event*/)
 {
     Unit* target = context->GetValue<Unit*>("current target")->Get();
-    // World PvP (WP24): a bot that left its fight and leaves an enemy alone calls its pet off that enemy too
-    if (target && WorldPvp::CallsPetOff(botAI, target))
-        botAI->PetFollow();
-
     if (target && target->isDead())
     {
         ObjectGuid guid = target->GetGUID();

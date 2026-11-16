@@ -56,20 +56,17 @@ bool NoteEntering(PlayerbotAI* botAI, Player* enemy);
 bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit);
 // PlayerbotAI::UpdateAI, every bot tick while in PvP combat or engaged: the engaged edge (a PvpEnthusiasm engaged
 // row on the rising one), while engaged the balance, the group hold and who attacks the bot (at the balance's
-// cadence), then the leave check (WP24): an engaged bot below its flee threshold drops its target, calls its pet off
-// and writes its fight_leave row, once per engaged episode
+// cadence), then the leave check (WP24, WP38a): an engaged bot below its flee threshold drops its target, sets its pet
+// passive until the disengaged edge and writes its fight_leave row, once per engaged episode
 void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32_t nowMs);
 // `playerbots fight enthusiasm <bot> [set <0..max>]` (world thread, between map updates): the value, the thresholds
 // and the cached terms, one line each; `set` writes the value
 bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
-// EnemyPlayerValue::Calculate, MayEnter and InvalidTargetValue ("current target"): whether this bot, starting by the
-// rules, leaves `unit` alone (neither picks nor keeps it as its target): it left its fight by its enthusiasm (WP24)
-// and neither `unit` nor `unit`'s owner player attacks it (victim or selected target: the bot or its pet); it answers
-// whoever does. O(1) for a bot that has not left
+// PossibleTargetsValue::AcceptUnit (the one place a left target is refused, WP38a) and InvalidTargetValue ("current
+// target"): whether this bot, starting by the rules, leaves `unit` alone (neither picks nor keeps it as its target):
+// it left its fight by its enthusiasm (WP24) and neither `unit` nor `unit`'s owner player attacks it (victim or
+// selected target: the bot or its pet); it answers whoever does. O(1) for a bot that has not left
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
-// DropTargetAction: whether this bot, dropping `target` because it leaves it alone, calls its pet off too (the pet
-// attacks `target`'s side). O(1)
-bool CallsPetOff(PlayerbotAI* botAI, Unit* target);
 // The "world pvp retreat" trigger (O(1), cached): the bot left its fight by its enthusiasm and an enemy player attacks
 // it, so it flees (FleeAttackersAction runs from its attackers)
 bool LeavesFlee(PlayerbotAI* botAI);
