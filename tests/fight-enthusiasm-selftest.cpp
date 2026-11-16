@@ -9,8 +9,9 @@
 // flee floor (the flee threshold plus an even fight's drain in one pick; a bot at its flee threshold never re-enters),
 // the scan skip, the pick (WP39: a read makes none; the attack's note does, once), the one-off edits, the entering
 // row's terms and the leaving (WP24: engaged by a held target, the group hold, the leave check once per episode, the
-// chase, the stalemate, who is left alone, no re-entry), who starts by the rules, the pet's call-off, the reach test
-// and the nearest graveyard. Build (Git Bash, module root):
+// chase, the stalemate, who is left alone, no re-entry; WP38a: the pet's react state saved at the leave edge and given
+// back once on the disengaged edge), who starts by the rules, the reach test and the nearest graveyard. Build (Git
+// Bash, module root):
 //   clang-cl /nologo /std:c++20 /EHsc /W4 /WX /Od /I src/Ai/World/Pvp tests/fight-enthusiasm-selftest.cpp
 #include <cmath>
 #include <cstdint>
@@ -451,6 +452,44 @@ void TestLeave()
           "leave: Caution 0 with the group hold (threshold 0) never leaves");
 }
 
+// WP38a: the leave edge (CheckLeave: MarkLeft, then the pet set passive) keeps the pet's react state, and Refresh
+// gives it back once after the disengaged edge, never while the leave holds or on the engaged edge
+void TestPetReact()
+{
+    EnthusiasmValues const v = Defaults();
+    constexpr uint8_t PASSIVE = 0;  // ReactStates
+    constexpr uint8_t DEFENSIVE = 1;
+    constexpr uint8_t AGGRESSIVE = 2;
+    BotEnthusiasm bot = Engaged(10.0, 0.0f, 0, v);
+    Check(bot.petReact == NO_PET_REACT && RestoredPetReact(bot) == NO_PET_REACT, "pet: nothing saved before a leave");
+    SetPick(bot, 42, 0);
+    MarkLeft(bot, false, SECOND);
+    SavePetReact(bot, DEFENSIVE);
+    Check(bot.left && bot.pickGuid == 0 && bot.petReact == DEFENSIVE,
+          "pet: the leave edge ends the pick and keeps the pet's react state");
+    SavePetReact(bot, PASSIVE);  // the pet is passive by then
+    Check(bot.petReact == DEFENSIVE, "pet: a second save before the restore keeps the first state");
+    Check(RestoredPetReact(bot) == NO_PET_REACT && bot.petReact == DEFENSIVE, "pet: nothing given back while left");
+    Check(!Observe(bot, true, 2 * SECOND, v) && RestoredPetReact(bot) == NO_PET_REACT && bot.petReact == DEFENSIVE,
+          "pet: no edge, the pet stays passive");
+    Check(Observe(bot, false, 3 * SECOND, v) && RestoredPetReact(bot) == DEFENSIVE,
+          "pet: the disengaged edge gives the state back");
+    Check(RestoredPetReact(bot) == NO_PET_REACT && bot.petReact == NO_PET_REACT, "pet: the state is given back once");
+    // A new episode: its engaged edge gives nothing back, its leave saves the state it finds
+    Check(Observe(bot, true, 4 * SECOND, v) && RestoredPetReact(bot) == NO_PET_REACT,
+          "pet: the engaged edge gives nothing back");
+    MarkLeft(bot, true, 5 * SECOND);
+    SavePetReact(bot, AGGRESSIVE);
+    Check(RestoredPetReact(bot) == NO_PET_REACT, "pet: a fleeing bot's pet stays passive");
+    Observe(bot, false, 6 * SECOND, v);
+    Check(RestoredPetReact(bot) == AGGRESSIVE, "pet: the next leave keeps the state it found");
+    // A bot without a pet at its leave saves nothing: nothing to give back
+    BotEnthusiasm lone = Engaged(10.0, 0.0f, 0, v);
+    MarkLeft(lone, false, SECOND);
+    Observe(lone, false, 2 * SECOND, v);
+    Check(RestoredPetReact(lone) == NO_PET_REACT, "pet: no pet at the leave, nothing given back");
+}
+
 void TestGroup()
 {
     EnthusiasmValues const v = Defaults();
@@ -529,11 +568,6 @@ void TestPlaces()
               Word(stranger) + ", no fight " + Word(noFight) + ", a lone bot " + Word(lone) + "; no master " +
               Word(noMaster));
 
-    constexpr uint64_t ENEMY = 77;
-    Check(PetCalledOff(true, ENEMY, ENEMY) && !PetCalledOff(false, ENEMY, ENEMY) && !PetCalledOff(true, 0, ENEMY) &&
-              !PetCalledOff(true, ENEMY + 1, ENEMY),
-          "a bot leaving an enemy alone calls its pet off that enemy's side, and only off that one");
-
     int sightAsked = 0;
     auto const seen = [&sightAsked]()
     {
@@ -584,6 +618,7 @@ int main()
     TestChase();
     TestStalemate();
     TestLeave();
+    TestPetReact();
     TestGroup();
     TestPlaces();
     TestConfigValues();
