@@ -82,6 +82,9 @@ struct RetiredSwitches
     bool NaturalThink = false;
     bool NaturalQueue = false;
     bool NaturalMemory = false;
+    bool NaturalReaction = false;
+    bool NaturalEndToEnd = false;
+    bool NaturalCadence = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -188,6 +191,21 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalMemoryRows = {
 }};
 ConfigFamily<RetiredSwitches> const RetiredNaturalMemoryFamily{"Playerbots.Natural.Reaction.Memory.Enable",
                                                                RetiredNaturalMemoryRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalReactionRows = {{
+    {"", &RetiredSwitches::NaturalReaction, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalReactionFamily{"Playerbots.Natural.Reaction.Enable",
+                                                                 RetiredNaturalReactionRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalEndToEndRows = {{
+    {"", &RetiredSwitches::NaturalEndToEnd, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalEndToEndFamily{"Playerbots.Natural.Reaction.EndToEnd",
+                                                                 RetiredNaturalEndToEndRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalCadenceRows = {{
+    {"", &RetiredSwitches::NaturalCadence, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalCadenceFamily{"Playerbots.Natural.Cadence.Enable",
+                                                                RetiredNaturalCadenceRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -215,6 +233,9 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredNaturalThinkFamily, RetiredSwitchValues),
         MakeEntry(RetiredNaturalQueueFamily, RetiredSwitchValues),
         MakeEntry(RetiredNaturalMemoryFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalReactionFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalEndToEndFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalCadenceFamily, RetiredSwitchValues),
     };
     return entries;
 }

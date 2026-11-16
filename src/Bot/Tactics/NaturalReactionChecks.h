@@ -182,10 +182,7 @@ void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, f
           "a missed event passes, or does not start again after its window");
 
     // End to end: the target sum, never a pass before the event's server time, the latency correction on check streams
-    ReactionParams endToEnd = params;
-    endToEnd.EndToEnd = true;
-    ReactionParams firstQuery = params;
-    firstQuery.EndToEnd = false;
+    ReactionParams const& endToEnd = params;
     constexpr uint32 TickMs = 25;
     ReactionFocus timing;
     ReactionEvent timed;
@@ -200,11 +197,6 @@ void RunReactionChecks(Check&& check, Say&& say, ReactionParams const& params, f
     check((timed.DueAfterMs == 0 || !ReactionEventPasses(timed, timing, 1, 70000 + timed.DueAfterMs - 1)) &&
               ReactionEventPasses(timed, timing, 1, 70000 + timed.DueAfterMs),
           "an end-to-end event does not pass at its due time");
-    ReactionEvent plain;
-    StartReactionEvent(plain, timing, middle, firstQuery, Guid, 2, 0, false, 70000);
-    StampReactionEvent(plain, timing, firstQuery, 120, ReactionStampSource::CastBar, TickMs);
-    check(plain.TargetMs == plain.ReadyAfterMs && plain.DueAfterMs == plain.ReadyAfterMs && plain.StampAgeMs == 0,
-          "without EndToEnd the event does not count from its first query");
     ReactionEvent stale;
     StartReactionEvent(stale, timing, middle, endToEnd, Guid, 2, 0, false, 70000);
     StampReactionEvent(stale, timing, endToEnd, REACTION_MAX_STAMP_AGE_MS + 1, ReactionStampSource::Aura, TickMs);

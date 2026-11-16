@@ -2389,15 +2389,14 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
                              FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
     ReactionParams const& timing = config.NaturalReaction;
     handler->PSendSysMessage(
-        "  natural timing: cadence {} (contexts {}), check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
-        "check {}, stretch {}; end to end {} (with the faster check; ping {} ms, display {} ms, ticks {})",
-        config.NaturalCadenceEnable ? "on" : "off", FormatTacticScope(config.NaturalCadenceContexts),
-        config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs,
+        "  natural timing: cadence contexts {}, check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
+        "check {}, stretch {}; end to end with the faster check (ping {} ms, display {} ms, ticks {})",
+        FormatTacticScope(config.NaturalCadenceContexts), config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs,
         botAI->GetTactics().IsInNaturalTimingScope() ? "yes" : "no",
         botAI->GetTactics().IsInNaturalTimingCombat() ? "yes" : "no",
         botAI->GetTactics().IsNaturalCadenceActive() ? "yes" : "no",
         SkillStretchApplies(botAI->GetTactics().IsSkillStretchOff(), config.NaturalCadenceSkillStretch) ? "on" : "off",
-        timing.EndToEnd ? "on" : "off", timing.PingMs, timing.DisplayMs,
+        timing.PingMs, timing.DisplayMs,
         timing.ServerTickMs < 0 ? std::string("half the map update")
                                 : Acore::StringFormat("{} ms", timing.ServerTickMs));
     ReactionTypeState const& prices = botAI->GetTactics().GetReactionTypes();
@@ -2473,7 +2472,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         // G5c-c: the hold policy's numbers at the bot's Knowledge and Patience, the window's reaction, the episodes
         uint32 const windowMs =
             ArenaInterrupt::HoldReactionMs(reaction, botAI->GetTactics().GetReactionTypes(), ReactionEase::Common,
-                                           timing.EndToEnd ? timing.PingMs + timing.DisplayMs : 0, timing.MinMs);
+                                           timing.PingMs + timing.DisplayMs, timing.MinMs);
         bool const kickReady = decisions.KickReady(nowMs);
         handler->PSendSysMessage(
             "  interrupt hold: policy {}; use {:.2f}, attention {:.0f} ms; know {:.2f}, dilution {:.2f}, trend {:.0f} "

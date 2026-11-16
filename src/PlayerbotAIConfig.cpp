@@ -989,8 +989,7 @@ bool PlayerbotAIConfig::Initialize()
         }
     }
     {
-        NaturalReactionEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Reaction.Enable", false);
-        NaturalReactionActive = SkillEnable && NaturalReactionEnable;
+        NaturalReactionActive = SkillEnable;
         auto const ms = [](std::string const& key, uint32 fallback)
         { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, 10000); };
         auto const real = [](std::string const& key, float fallback, float low, float high)
@@ -1008,7 +1007,6 @@ bool PlayerbotAIConfig::Initialize()
         reaction.SwitchMaxMs = std::max(reaction.SwitchMinMs, ms("Playerbots.Natural.Reaction.SwitchCostMaxMs", 300));
         reaction.ConeDegrees = real("Playerbots.Natural.Reaction.ConeDegrees", 200.0f, 10.0f, 360.0f);
         reaction.FocusTimeoutMs = ms("Playerbots.Natural.Reaction.FocusTimeoutMs", 2000);
-        reaction.EndToEnd = sConfigMgr->GetOption<bool>("Playerbots.Natural.Reaction.EndToEnd", false);
         reaction.PingMs = ms("Playerbots.Natural.Reaction.PingMs", 60);
         reaction.DisplayMs = ms("Playerbots.Natural.Reaction.DisplayMs", 30);
         reaction.ServerTickMs =
@@ -1086,7 +1084,6 @@ bool PlayerbotAIConfig::Initialize()
             NaturalReactionContexts = reactionMatches;
         }
 
-        NaturalCadenceEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.Enable", false);
         NaturalCadenceSkillStretch = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.SkillStretch", false);
         NaturalCadenceCheckMs =
             std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);

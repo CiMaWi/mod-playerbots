@@ -136,7 +136,6 @@ struct ReactionParams
     uint32 FocusTimeoutMs = 2000;
     // End to end: PingMs is the modelled round trip (half to see the event, half for the answer to reach the server),
     // DisplayMs the client's frame and display delay, ServerTickMs the server ticks (-1: half the bot's map update)
-    bool EndToEnd = false;
     uint32 PingMs = 60;
     uint32 DisplayMs = 30;
     int32 ServerTickMs = -1;

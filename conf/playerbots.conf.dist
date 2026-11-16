@@ -1788,7 +1788,7 @@ Playerbots.Natural.Trace.MaxRowsPerUnit = 200000
 # .reload config switches new traces only. An unknown value is logged and jsonl is used. Default: jsonl
 Playerbots.Natural.Trace.Format = "jsonl"
 
-# Natural reaction times and attention. Needs Playerbots.Skill.Enable = 1. With 1, the skill multiplier of the notice
+# Natural reaction times and attention. Needs Playerbots.Skill.Enable = 1. Then the skill multiplier of the notice
 # categories (interrupts, defensive cooldowns, dispels, crowd control, crowd-control breaks, target switches; see
 # Playerbots.Skill.Notice*) waits a human reaction time instead of the uniform notice delay, counted from the event's
 # start (the first time the bot considers the action after a quiet gap): log-normal with the median and log-space
@@ -1804,13 +1804,12 @@ Playerbots.Natural.Trace.Format = "jsonl"
 # spread of a simple visual reaction (about 6 % of the draws at skill 99 are raised to the minimum), 0.45 that of a
 # choice under load. On a running server the options change after .reload config (re-reads the file) followed by
 # .playerbots rndbot reload (re-reads the playerbots options; .reload config alone does not); changed medians and
-# sigmas reach a logged-in bot at its next skill load. A bot whose engine was built while neither this option nor
-# D4's noticing (Playerbots.Skill.Notice*) was on has no "skill" strategy: Enable takes effect for it only when its
-# engine is rebuilt (its next login). .playerbots tactics show <bot> lists the bot's values (GM only),
-# .playerbots tactics selftest reaction checks the maths. Medians 50-10000 ms, sigmas 0-2, penalties and times
-# 0-10000 ms, cone 10-360 degrees.
-# Default: 0 (off: the uniform notice delay, as before), Contexts "Arena,Battleground"
-Playerbots.Natural.Reaction.Enable = 0
+# sigmas reach a logged-in bot at its next skill load. A bot whose engine was built while neither
+# Playerbots.Skill.Enable nor D4's noticing (Playerbots.Skill.Notice*) was on has no "skill" strategy: the model takes
+# effect for it only when its engine is rebuilt (its next login). .playerbots tactics show <bot> lists the bot's
+# values (GM only), .playerbots tactics selftest reaction checks the maths. Medians 50-10000 ms, sigmas 0-2, penalties
+# and times 0-10000 ms, cone 10-360 degrees.
+# Default: Contexts "Arena,Battleground"
 Playerbots.Natural.Reaction.MedianMsAtSkill1 = 690
 Playerbots.Natural.Reaction.MedianMsAtSkill99 = 220
 Playerbots.Natural.Reaction.SigmaAtSkill1 = 0.45
@@ -1824,7 +1823,7 @@ Playerbots.Natural.Reaction.ConeDegrees = 200
 Playerbots.Natural.Reaction.FocusTimeoutMs = 2000
 Playerbots.Natural.Reaction.Contexts = "Arena,Battleground"
 
-# End to end (with Playerbots.Natural.Reaction.Enable): the reaction counts from the event's server time instead of the
+# End to end: the reaction counts from the event's server time instead of the
 # bot's first look at it, taken from what a player in its seat sees: an enemy cast from its cast bar (a channel from its
 # base duration, so a hasted channel looks a little older), a debuff to dispel and a crowd control to break from the
 # aura's duration and time left (the newest such aura: a wrong pick is late, never early). Defensive cooldowns, crowd
@@ -1834,20 +1833,19 @@ Playerbots.Natural.Reaction.Contexts = "Arena,Battleground"
 # bot's last map update). The bot passes at its first AI check at or after the target minus its own check latency
 # (learnt from how far its passes miss their targets; at a steady interval its mean overshoot), so its action lands on
 # the target on average; a bot that first looks after that (busy, or a cast seen late) acts at once. No check is woken
-# for it. It acts only where Playerbots.Natural.Cadence's faster check runs (Cadence.Enable, its Contexts, in combat in
+# for it. It acts only where Playerbots.Natural.Cadence's faster check runs (its Contexts, in combat in
 # a started match), and the latency is capped at Cadence.CheckMs: at upstream's slower interval the latency would eat
-# most of the draw, so elsewhere the reaction counts from the first look as without it. The engine's pass stands for the
+# most of the draw, so elsewhere the reaction counts from the first look. The engine's pass stands for the
 # server's action (the bot's spell is handled in the same update). The playerbots.reaction trace lines add stamp (ms
 # from the server time to the first look), src (0 first look, 1 cast bar, 2 aura, 3 a cast bar or aura older than
 # 3 s: first look), target, e2e (server time to the pass; -1 missed), lat (the latency mean) and at (the pass's server
 # ms). Ping and display 0-10000 ms, ServerTickMs -1 to 1000.
-# Default: 0 (off: from the first look, as before), PingMs 60, DisplayMs 30, ServerTickMs -1
-Playerbots.Natural.Reaction.EndToEnd = 0
+# Default: PingMs 60, DisplayMs 30, ServerTickMs -1
 Playerbots.Natural.Reaction.PingMs = 60
 Playerbots.Natural.Reaction.DisplayMs = 30
 Playerbots.Natural.Reaction.ServerTickMs = -1
 
-# Reaction types (G0h3, with Playerbots.Natural.Reaction.Enable in its Contexts): each part has prices at attribute 1
+# Reaction types (G0h3, in Playerbots.Natural.Reaction.Contexts): each part has prices at attribute 1
 # and 99 (Playerbots.Skill.Attributes.*; with their defaults every ability is the skill), lerped along
 # Playerbots.Skill.CurveExponent. Every cost lies inside the reaction (the trace's ready), so the end-to-end target
 # keeps its sum. The playerbots.reaction trace lines add type (0 simple, 1 choice, 2 anticipated), options, load
@@ -1944,15 +1942,13 @@ Playerbots.Natural.Reaction.Positioning.Enable = 0
 # Playerbots.PerfMonEnabled the rows NaturalTiming::Checks (scope) and NaturalTiming::Checks (combat) (counts in the
 # blocks column), NaturalTiming::Time (combat) (the bot time in combat in scope, not a cost: checks per second per
 # bot = Checks (combat) / its total in seconds), NaturalTiming::UpdateAIInternal (scope), NaturalReaction::HasReacted
-# and NaturalReaction::EventStart show the cost; the NaturalTiming rows also while Enable is 0. On a running server
+# and NaturalReaction::EventStart show the cost. On a running server
 # .reload config then .playerbots rndbot reload change it.
 # SkillStretch (G6d-a) 1 keeps the skill's stretch where the cadence and the reaction model both run: the cadence's
 # CheckMs is then multiplied by the bot's factor (Playerbots.Skill.ReactFactorAtSkill1 .. AtSkill99, e.g. 3.0 .. 0.5:
 # 300 ms at skill 1, 50 ms at skill 99 with CheckMs 100), as is the reaction engine's reset delay, on top of the
 # reaction model; 0 leaves the factor 1 there.
-# Default: 0 (off: upstream's interval and stagger, the stretch everywhere), CheckMs 100, StaggerMs 20,
-# Contexts "Arena,Battleground", NearRealPlayerYards 0, SkillStretch 0
-Playerbots.Natural.Cadence.Enable = 0
+# Default: CheckMs 100, StaggerMs 20, Contexts "Arena,Battleground", NearRealPlayerYards 0, SkillStretch 0
 Playerbots.Natural.Cadence.CheckMs = 100
 Playerbots.Natural.Cadence.StaggerMs = 20
 Playerbots.Natural.Cadence.Contexts = "Arena,Battleground"
@@ -2861,11 +2857,12 @@ Playerbots.Tactics.Enable = 0
 # reach and sight (HoldForHealer 1), and nothing else. The commit share gets a log-normal noise (SigmaPct, per cent of
 # sigma, lerped by skill), CancelSharePct times the caster's fake rate (cancels seen per cast, from CancelMinCasts
 # casts seen; the opponent memory, Playerbots.Natural.Reaction.Memory*) and, for heals and damage, PatienceSharePct
-# by the Patience trait (100: +, 0: -, 50: none); never above MaxSharePct. With Playerbots.Natural.Reaction.EndToEnd 1
-# the kick lands at the later of the commit point and the reaction model's due time, both from the bar's start (a bar
-# older than 3 s counts from the first query); without it the model counts from the first query, which is the commit
-# point, and the kick lands at the commit point plus the reaction time. "X on enemy healer" takes the best cast of the
-# fight's enemies other than the target (a heal on a low friend, a CC, a heal, damage), kept HealerCacheMs ms.
+# by the Patience trait (100: +, 0: -, 50: none); never above MaxSharePct. Where Playerbots.Natural.Cadence's faster
+# check runs, the kick lands at the later of the commit point and the reaction model's due time, both from the bar's
+# start (a bar older than 3 s counts from the first query); elsewhere the model counts from the first query, which is
+# the commit point, and the kick lands at the commit point plus the reaction time. "X on enemy healer" takes the
+# best cast of the fight's enemies other than the target (a heal on a low friend, a CC, a heal, damage), kept
+# HealerCacheMs ms.
 # Playerbots.Tactics.Interrupt.Enable = 0
 # Playerbots.Tactics.Interrupt.KnownFromSkill = 0
 # Playerbots.Tactics.Interrupt.HealSharePctAtSkill1 = 30
