@@ -112,7 +112,10 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& [guid, combatRef] : bot->GetCombatManager().GetPvPCombatRefs())
     {
         Unit* pTarget = combatRef->GetOther(bot);
-        if (IsUnavailableCombatTarget(bot, pTarget))
+        // World PvP (WP24, WP38a): the combat references are the other way to an enemy besides the target list, and a
+        // reference outlives the leave by the combat timer: a bot that left its fight leaves an enemy alone here too
+        // (one that does not attack it), or both sides of a stalemate take each other up again and flee
+        if (IsUnavailableCombatTarget(bot, pTarget) || WorldPvp::LeftAlone(botAI, pTarget))
             continue;
         if (pTarget == pVictim || !pTarget->IsPlayer() ||
             !(bot->InBattleground() ? bot->CanSeeOrDetect(pTarget) : pTarget->CanSeeOrDetect(bot)) ||

@@ -62,10 +62,11 @@ void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32_t nowMs);
 // `playerbots fight enthusiasm <bot> [set <0..max>]` (world thread, between map updates): the value, the thresholds
 // and the cached terms, one line each; `set` writes the value
 bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
-// PossibleTargetsValue::AcceptUnit (the one place a left target is refused, WP38a) and InvalidTargetValue ("current
-// target"): whether this bot, starting by the rules, leaves `unit` alone (neither picks nor keeps it as its target):
-// it left its fight by its enthusiasm (WP24) and neither `unit` nor `unit`'s owner player attacks it (victim or
-// selected target: the bot or its pet); it answers whoever does. O(1) for a bot that has not left
+// Where a player target comes from, PossibleTargetsValue::AcceptUnit (the target list) and EnemyPlayerValue (the PvP
+// combat references), and where it is kept, InvalidTargetValue ("current target"): whether this bot, starting by the
+// rules, leaves `unit` alone (neither picks nor keeps it as its target): it left its fight by its enthusiasm (WP24) and
+// neither `unit` nor `unit`'s owner player attacks it (victim or selected target: the bot or its pet); it answers
+// whoever does. O(1) for a bot that has not left
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
 // The "world pvp retreat" trigger (O(1), cached): the bot left its fight by its enthusiasm and an enemy player attacks
 // it, so it flees (FleeAttackersAction runs from its attackers)
