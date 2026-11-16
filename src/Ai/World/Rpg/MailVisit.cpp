@@ -239,6 +239,7 @@ bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
     MailVisitState& visit = botAI->bankMail.mailVisit;
     visit = MailVisitState{};
     visit.phase = MailVisitPhase::Walk;
+    botAI->AddWork(BotWork::Visit);
     visit.mapId = spot.mapId;
     visit.x = spot.x;
     visit.y = spot.y;

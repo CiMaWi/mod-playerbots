@@ -90,6 +90,7 @@ void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order,
     uint16 const before = botAI->testConstraints;
     uint16 const after = TestConstraints::Next(before, order.on, order.off);
     botAI->testConstraints = after;
+    botAI->SetWork(BotWork::Constraints, (after & TestConstraints::STATES) != 0);
     botAI->planner.snapshotDue = true;
     if (TestConstraints::FreesErrands(before, after))
         botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
@@ -180,7 +181,7 @@ bool TakeOrder(PlayerbotAI* botAI, ObjectGuid bot, bool inCombat, TravelOrder& o
         order = std::move(found->second);
         travelOrders.erase(found);
     }
-    botAI->orderPosted.store(waiting, std::memory_order_release);
+    botAI->SetWork(BotWork::Order, waiting);
     return taken;
 }
 }  // namespace
@@ -192,12 +193,12 @@ void TravelOrders::Post(PlayerbotAI* botAI, TravelOrder order)
     auto const [it, added] = travelOrders.try_emplace(botAI->GetBot()->GetGUID(), order);
     if (!added)
         TestConstraints::Merge(it->second, std::move(order));
-    botAI->orderPosted.store(true, std::memory_order_release);
+    botAI->AddWork(BotWork::Order);
 }
 
 bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
 {
-    if (!botAI->orderPosted.load(std::memory_order_acquire))
+    if (!(botAI->GetWork() & BotWork::Order))
         return false;
     TravelOrder order;
     if (!TakeOrder(botAI, bot->GetGUID(), bot->IsInCombat(), order))

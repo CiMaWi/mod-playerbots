@@ -219,6 +219,7 @@ bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
     BankVisitState& visit = botAI->bankMail.bankVisit;
     visit = BankVisitState{};
     visit.phase = BankVisitPhase::Walk;
+    botAI->AddWork(BotWork::Visit);
     visit.mapId = spot.mapId;
     visit.x = spot.x;
     visit.y = spot.y;

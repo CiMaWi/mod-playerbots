@@ -147,7 +147,7 @@ bool PlayerbotAI::FaceTarget(WorldObject* target, TurnSnapSite site)
         if (plan.Leg.Spline && !bot->IsRooted())
             bot->SetFacingTo(plan.Leg.Goal());
 
-        tactics->naturalPreGate = true;
+        tactics->SetNaturalPreGate(true);
         CountTactic(TacticCounter::TurnFlicks);
         LOG_TRACE("playerbots",
                   "Turn: {} turns {} deg to {} in {} ms ({}), error {:.1f} deg, correction in {} ms (0: none), "

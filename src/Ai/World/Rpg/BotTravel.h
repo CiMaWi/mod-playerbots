@@ -63,6 +63,14 @@ public:
     // that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
     void BeginAboard(uint32 entry);
 
+    // UpdateAI's asks: a passenger recheck at the next pass (Revalidate), the mount trace's end (a reset, an invalid
+    // state) and the loot cast check's interaction
+    void RequestRecheck() { passengerCadence.Revalidate = true; }
+    void ForgetMountTrace();
+    LootObjectStack* ActiveLootInteraction() const { return activeLootInteraction; }
+    // The miss switch's travel bits (Aboard, Loot, MountTrace; PlayerbotAI::LogPreGateMisses)
+    void LogPreGateMisses(uint32 work) const;
+
     // The next route request id (TravelRoute::Snapshot::requestId). The ids run on across trips and resets (a reset
     // renews NewRpgInfo, not this block): ids restarting at 0 would let an older answer pass Judge as current
     uint32 NextRouteRequest() { return ++routeRequests; }
@@ -70,8 +78,6 @@ public:
 private:
     // LootObjectStack is the one writer of activeLootInteraction and completedLootInteractions
     friend class LootObjectStack;
-    // UpdateAI, Reset and the loot cast check read the block in place
-    friend class PlayerbotAI;
 
     void ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove);
 

@@ -176,6 +176,7 @@ void BotTravel::TraceTravelMount(MountPath path, bool accepted)
     {
         tracedMount = path;
         tracedMountAt = getMSTime();
+        botAI->AddWork(BotWork::MountTrace);
     }
 }
 
@@ -247,6 +248,29 @@ void BotTravel::BeginAboard(uint32 entry)
     aboardEntry = entry;
     aboardSinceMs = getMSTime();
     passengerCadence.Revalidate = true;
+    if (entry)
+        botAI->AddWork(BotWork::Aboard);
+}
+
+void BotTravel::ForgetMountTrace()
+{
+    if (tracedMount == MountPath::None)
+        return;
+
+    tracedMount = MountPath::None;
+    botAI->EndWork(BotWork::MountTrace);
+}
+
+void BotTravel::LogPreGateMisses(uint32 work) const
+{
+    if (aboardEntry && !(work & BotWork::Aboard))
+        LOG_INFO("playerbots", "PreGate miss: Aboard {}", bot->GetName());
+
+    if (activeLootInteraction && !(work & BotWork::Loot))
+        LOG_INFO("playerbots", "PreGate miss: Loot {}", bot->GetName());
+
+    if (tracedMount != MountPath::None && !(work & BotWork::MountTrace))
+        LOG_INFO("playerbots", "PreGate miss: MountTrace {}", bot->GetName());
 }
 
 void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
@@ -257,8 +281,9 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
     TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
                               travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
     // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
-    // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence
-    if (aboardEntry)
+    // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence. Travel's
+    // registered steps read their bits on fresh loads: the passenger check or the loot watch can set a later one
+    if (botAI->GetWork() & BotWork::Aboard)
     {
         Transport const* ridden = bot->GetTransport();
         bool const placed = ridden && ridden->GetEntry() == aboardEntry;
@@ -269,36 +294,37 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
                      placed ? "placed" : "failed", sinceMs);
             EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
             aboardEntry = 0;
+            botAI->EndWork(BotWork::Aboard);
         }
         else
             passengerCadence.Revalidate = true;
     }
-    if (botAI->HasPendingDismount())
+    if (botAI->GetWork() & BotWork::Dismount)
     {
         if (!bot->IsAlive() || bot->IsInFlight() || bot->GetVehicle() || bot->GetTransport())
-            botAI->pendingDismount.store(false, std::memory_order_relaxed);
-        else if (botAI->CanMove() && !bot->IsRooted() &&
-                 botAI->pendingDismount.exchange(false, std::memory_order_relaxed))
+            botAI->EndWork(BotWork::Dismount);
+        else if (botAI->CanMove() && !bot->IsRooted() && (botAI->EndWork(BotWork::Dismount) & BotWork::Dismount))
             CheckMountStateAction::CompleteDismount(bot);
     }
-    if (activeLootInteraction || travel)
+    bool const loot = (botAI->GetWork() & BotWork::Loot) && activeLootInteraction;
+    if (loot || travel)
     {
         PerfMonitorScope scope(
             travel && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::Progress") : nullptr);
         bool const canMove = botAI->CanMove();
-        if (activeLootInteraction)
+        if (loot)
             activeLootInteraction->Observe(maintenanceMs, canMove);
         if (travel)
             ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
     }
-    if (tracedMount != MountPath::None)
+    if (botAI->GetWork() & BotWork::MountTrace)
     {
         if (bot->IsMounted())
         {
             TraceTravelInteraction("mount_state", "mounted", ObjectGuid::Empty, 0, MountPathWord(tracedMount));
-            tracedMount = MountPath::None;
+            ForgetMountTrace();
         }
         else if (maintenanceMs - tracedMountAt >= LootInteraction::PhaseMs)
-            tracedMount = MountPath::None;
+            ForgetMountTrace();
     }
 }

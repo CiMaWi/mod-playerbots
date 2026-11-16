@@ -125,11 +125,12 @@ public:
     KiteBotState& GetKiteState();
     DrinkBotState& GetDrinkState();
     JumpBotState& GetJumpState();
-    // The hooks (CS5 design 4.1), on the bot's own update. PreGate: on every Player::Update before the AI check delay
-    // (the natural pre-gate stepper, the jump test); true when the jump test took the update. OnCheck: at each AI
+    // The hooks (CS5 design 4.1), on the bot's own update. PreGate: on a Player::Update before the AI check delay
+    // while work has BotWork::PreGateStep or JumpTest (the natural pre-gate stepper, the jump test); true when the
+    // jump test took the update. OnCheck: at each AI
     // check after RefreshNaturalTiming (the opponent memory, the tracking ring, the followers), only for a bot the
     // live test admits (TacticFollowers.h; true when it ran). probed: the check's context probe
-    bool PreGate();
+    bool PreGate(uint32 work);
     bool OnCheck(uint32 nowMs, bool busyModel, TacticContext probed);
     // The cast hooks, in PlayerbotAI::CastSpell: BeforeCast before the stand check (a turn wait's end), AfterCast
     // after prepare() (the kick note, the cancel lag stamp, the harness counts, the focus act, the fake cast, the
@@ -137,19 +138,18 @@ public:
     void BeforeCast(Unit* target, SpellInfo const* spellInfo);
     void AfterCast(uint32 spellId, SpellInfo const* spellInfo, Spell* spell, Unit* target, CastNote const& note);
     // The own cast, in UpdateAI while a spell prepares: OnOwnCast stamps its window and decides the busy stop for a
-    // kick (true: the bot stops it); NoteUnfollowedStop, after the engines ran, notes a stop the kick did not follow
+    // kick (true: the bot stops it); NoteUnfollowedStop, after the engines ran for a bot OnOwnCast stopped, notes a
+    // stop the kick did not follow
     bool OnOwnCast(Spell* currentSpell, uint32 ownLeft, bool busyModel, uint32 nowMs);
-    void NoteUnfollowedStop(bool stoppedForKick, uint32 nowMs);
+    void NoteUnfollowedStop(uint32 nowMs);
     // The jump test (G2g, `tactics jump test`): while set, UpdateAI runs StepJumpTest instead of the engines (a frozen
-    // test bot); one bool test else
+    // test bot); its work bit (BotWork::JumpTest) else
     void StepJumpTest(uint32 nowMs);
-    void SetJumpTest(bool on) { jumpTest = on; }
-    bool IsJumpTest() const { return jumpTest; }
+    void SetJumpTest(bool on);
     // The natural pre-gate stepper (G5e's cancel instant, G2a's turn steps): called from UpdateAI before the AI
-    // gates on every Player::Update while SetNaturalPreGate(true), else one bool test. nowMs = getMSTime().
+    // gates on every Player::Update while its work bit is set (SetNaturalPreGate(true)). nowMs = getMSTime().
     void StepNaturalPreGate(uint32 nowMs);
-    void SetNaturalPreGate(bool on) { naturalPreGate = on; }
-    bool IsNaturalPreGate() const { return naturalPreGate; }
+    void SetNaturalPreGate(bool on);
     // The Interrupt tactic's hook (enabled here): true when the bot's kick may go at the enemy's cast now. One
     // decision per cast (the shortcut or the judging path), its commit point from the bar's start.
     bool DecideInterrupt(Unit* enemy);
@@ -164,6 +164,8 @@ private:
     friend class PlayerbotAI;
 
     void LogLiveMiss() const;
+    // The miss switch's tactics bits (TimingRow, PreGateStep; PlayerbotAI::LogPreGateMisses)
+    void LogPreGateMisses(uint32 work) const;
 
     PlayerbotAI* const botAI;
     Player* const bot;
@@ -192,8 +194,6 @@ private:
     std::unique_ptr<KiteBotState> kiteState;            // the same (GetKiteState)
     std::unique_ptr<DrinkBotState> drinkState;          // the same (GetDrinkState)
     std::unique_ptr<JumpBotState> jumpState;            // the same (GetJumpState)
-    bool jumpTest = false;        // true while the jump test drives the bot (StepJumpTest); one bool test else
-    bool naturalPreGate = false;  // true while a pre-gate stepper has work (a turn, a fake cast); one bool test else
     BotAttributeValues attributes = ComputeBotAttributes(BotAttributeParams(), SkillDistributionParams(), 0, 0, 0);
     uint32 attributeTemplate = 0;
     std::atomic<uint32> fightEnemyCount{0};
