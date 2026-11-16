@@ -27,10 +27,10 @@ class Item;
 class Player;
 class StatsWeightCalculator;
 
-// PvP gear of the ladder bots (Playerbots.PvpGear.Enable): a catalogue of the PvP vendor items grouped into tiers,
+// PvP gear of the ladder bots (Playerbots.PvpGear.*): a catalogue of the PvP vendor items grouped into tiers,
 // built at startup, and a stored loadout per ladder bot (one item entry per equipment slot, playerbots table
 // playerbots_pvp_loadout). A ladder bot is a random bot at the maximum level in an arena team. The loadout is plain
-// data; wearing it (Playerbots.PvpGear.Wear, PvpGearWear.cpp) creates its items in arenas and battlegrounds while the
+// data; wearing it (PvpGearWear.cpp) creates its items in arenas and battlegrounds while the
 // PvE items wait in the bags, and no PvE item is ever destroyed. All loadouts and worn slots are loaded with one query
 // each at startup; bot logins read memory only and writes are asynchronous. World thread only (startup, the login
 // hook, the GM commands, the swap, the buying), except the queue calls of the battleground hooks and the upkeep

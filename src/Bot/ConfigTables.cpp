@@ -86,6 +86,8 @@ struct RetiredSwitches
     bool NaturalEndToEnd = false;
     bool NaturalCadence = false;
     bool MatchLogEnable = false;
+    bool PvpGearEnable = false;
+    bool PvpGearWear = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -212,6 +214,14 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredMatchLogEnableRows = 
 }};
 ConfigFamily<RetiredSwitches> const RetiredMatchLogEnableFamily{"Playerbots.MatchLog.Enable",
                                                                 RetiredMatchLogEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredPvpGearEnableRows = {{
+    {"", &RetiredSwitches::PvpGearEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredPvpGearEnableFamily{"Playerbots.PvpGear.Enable", RetiredPvpGearEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredPvpGearWearRows = {{
+    {"", &RetiredSwitches::PvpGearWear, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredPvpGearWearFamily{"Playerbots.PvpGear.Wear", RetiredPvpGearWearRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -243,6 +253,8 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredNaturalEndToEndFamily, RetiredSwitchValues),
         MakeEntry(RetiredNaturalCadenceFamily, RetiredSwitchValues),
         MakeEntry(RetiredMatchLogEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredPvpGearEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredPvpGearWearFamily, RetiredSwitchValues),
     };
     return entries;
 }
