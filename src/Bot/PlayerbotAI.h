@@ -703,7 +703,7 @@ public:
     std::vector<std::pair<Quest const*, uint32>> GetCurrentQuestsRequiringItemId(uint32 itemId);
     uint32 GetReactDelay();
     uint32 ComputeReactDelay();
-    // Hidden PvP skill 1-99 (BotProfileMgr), set at login; 0 when Playerbots.Skill.Enable is 0. Only GM commands and
+    // Hidden PvP skill 1-99 (BotProfileMgr), set at login; 0 until then. Only GM commands and
     // the PvP harness records may show it.
     uint8 GetPvpSkill() const { return pvpSkill; }
     // firstRoll (G6b, DT.14): the skill the fixed attributes read; 0 = the skill itself (no growth)

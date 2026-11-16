@@ -478,7 +478,6 @@ public:
     bool PvpGearBuySaveTowardBetter;
     uint32 PvpGearBuyCheckIntervalMinutes;
     uint32 PvpGearBuyBatchPerTick;
-    bool SkillEnable;
     float SkillReactFactorLow;
     float SkillReactFactorHigh;
     bool SkillFullAbilityInPvE;
@@ -499,7 +498,7 @@ public:
     // their skill (0, DT.2)
     bool SkillExemptRealMasterBots;
     // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
-    // off without Playerbots.Skill.Enable and on a lab (Playerbots.Ladder.ServerId labN)
+    // off on a lab (Playerbots.Ladder.ServerId labN)
     bool SkillGrowthEnable;
     SkillGrowthParams SkillGrowth;
     // Playerbots.Skill.CurveExponent, KnowledgeSpread, Effort*, StyleSpread: the tactic gate's skill parameters
@@ -507,9 +506,8 @@ public:
     // Playerbots.Skill.Attributes.*: loadings, spreads and the correlation matrix (factorised at load) of the attribute
     // model (BotAttributes.h); the defaults make every ability the skill and every trait neutral
     BotAttributeParams SkillAttributes;
-    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Active needs
-    // Playerbots.Skill.Enable; Contexts is a tactic scope mask (default the PvP contexts)
-    bool NaturalReactionActive;
+    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Contexts is a
+    // tactic scope mask (default the PvP contexts)
     uint8 NaturalReactionContexts;
     ReactionParams NaturalReaction;
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a

@@ -865,13 +865,12 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
     PvpGearBuyBatchPerTick =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
-    SkillEnable = sConfigMgr->GetOption<bool>("Playerbots.Skill.Enable", false);
     SkillReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);
     SkillReactFactorHigh =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill99", 1.0f), 0.1f, 10.0f);
     SkillFullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
-    SkillReactActive = SkillEnable && (SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f);
+    SkillReactActive = SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f;
     SkillNoticeMissPercentLow =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill1", 0), 0, 95);
     SkillNoticeMissPercentHigh =
@@ -882,8 +881,8 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill99", 0), 0, 10000);
     SkillNoticeWindowMs =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
-    SkillNoticeActive = SkillEnable && (SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
-                                        SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0);
+    SkillNoticeActive = SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
+                        SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0;
     {
         std::string distribution = sConfigMgr->GetOption<std::string>("Playerbots.Skill.Distribution", "normal");
         std::transform(distribution.begin(), distribution.end(), distribution.begin(),
@@ -902,7 +901,7 @@ bool PlayerbotAIConfig::Initialize()
         // G6b: never on a lab (DT.7); the hub's config apply forces a lab's server id to its instance id (labN)
         bool const growth = sConfigMgr->GetOption<bool>("Playerbots.Skill.Growth.Enable", false);
         bool const lab = LadderServerId.rfind("lab", 0) == 0;
-        SkillGrowthEnable = SkillEnable && growth && !lab;
+        SkillGrowthEnable = growth && !lab;
         if (growth && lab)
             LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
                      LadderServerId);
@@ -986,7 +985,6 @@ bool PlayerbotAIConfig::Initialize()
         }
     }
     {
-        NaturalReactionActive = SkillEnable;
         auto const ms = [](std::string const& key, uint32 fallback)
         { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, 10000); };
         auto const real = [](std::string const& key, float fallback, float low, float high)

@@ -112,7 +112,7 @@ char const* ClassName(uint8 cls)
     }
 }
 
-// The bot's hidden skill (Playerbots.Skill.Enable); false when it has none
+// The bot's hidden skill (BotProfileMgr); false when it has none
 bool BotSkill(ObjectGuid guid, float& skill)
 {
     std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(guid.GetCounter());

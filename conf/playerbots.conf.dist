@@ -1552,7 +1552,7 @@ Playerbots.TestPlayer.Account = "WBTEST"
 #                          comps (separated by ;) take turns. The candidates and their specs (from the talents of the
 #                          active spec) are read from the database once, when the plan starts. A comp short of bots
 #                          makes the plan wait ("plan status" says which slot); "plan stop" ends it.
-# plan start also takes skill=<hi>:<lo> (needs Playerbots.Skill.Enable = 1): A plays at skill <hi> on odd matches and <lo>
+# plan start also takes skill=<hi>:<lo>: A plays at skill <hi> on odd matches and <lo>
 # on even ones, B the other way round. arena takes skillA=<n> and skillB=<n>. The skill is set in memory when the
 # match counts and restored from the bot's stored profile at tear-down (also after "stop"); the profile is never
 # written. Each side of the record has forced {comp, skill} (null when nothing was forced).
@@ -1786,7 +1786,7 @@ Playerbots.Natural.Trace.MaxRowsPerUnit = 200000
 # .reload config switches new traces only. An unknown value is logged and jsonl is used. Default: jsonl
 Playerbots.Natural.Trace.Format = "jsonl"
 
-# Natural reaction times and attention. Needs Playerbots.Skill.Enable = 1. Then the skill multiplier of the notice
+# Natural reaction times and attention. The skill multiplier of the notice
 # categories (interrupts, defensive cooldowns, dispels, crowd control, crowd-control breaks, target switches; see
 # Playerbots.Skill.Notice*) waits a human reaction time instead of the uniform notice delay, counted from the event's
 # start (the first time the bot considers the action after a quiet gap): log-normal with the median and log-space
@@ -1802,9 +1802,7 @@ Playerbots.Natural.Trace.Format = "jsonl"
 # spread of a simple visual reaction (about 6 % of the draws at skill 99 are raised to the minimum), 0.45 that of a
 # choice under load. On a running server the options change after .reload config (re-reads the file) followed by
 # .playerbots rndbot reload (re-reads the playerbots options; .reload config alone does not); changed medians and
-# sigmas reach a logged-in bot at its next skill load. A bot whose engine was built while neither
-# Playerbots.Skill.Enable nor D4's noticing (Playerbots.Skill.Notice*) was on has no "skill" strategy: the model takes
-# effect for it only when its engine is rebuilt (its next login). .playerbots tactics show <bot> lists the bot's
+# sigmas reach a logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's
 # values (GM only), .playerbots tactics selftest reaction checks the maths. Medians 50-10000 ms, sigmas 0-2, penalties
 # and times 0-10000 ms, cone 10-360 degrees.
 # Default: Contexts "Arena,Battleground"
@@ -2446,15 +2444,13 @@ Playerbots.PvpGear.Buy.BatchPerTick = 5
 # Default: 0 (the loadout comes off at every leave)
 Playerbots.PvpGear.WearBetweenMatches = 0
 
-# Hidden bot skill. When 1, every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
+# Hidden bot skill. Every bot gets a persistent skill 1-99 at its first login (normal distribution, mean 50,
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table
 # playerbots_bot_profile. All profiles are loaded with one query at startup; a bot login reads memory only, new rows
 # are written asynchronously. The skill is hidden: only the GM command
 # .playerbots skill [<bot> [set <1-99> | reroll]] and the PvP test harness records show it.
-# With 0 (default) nothing is rolled, stored or used, and the harness records carry "skill":null.
-Playerbots.Skill.Enable = 0
 
-# Skill knob 1, reaction delay. Needs Playerbots.Skill.Enable = 1. A bot's reaction delay (GetReactDelay and the
+# Skill knob 1, reaction delay. A bot's reaction delay (GetReactDelay and the
 # reaction engine's reset delay) is multiplied by a factor that falls linearly from ReactFactorAtSkill1 (skill 1) to
 # ReactFactorAtSkill99 (skill 99). For example 2.5 and 0.7: the weakest bots react 2.5 times later, the best 0.7 times
 # as late. Each is clamped to 0.1-10. Default 1.0 and 1.0 = no change. Bots with a game-client master are not scaled
@@ -2466,7 +2462,7 @@ Playerbots.Skill.ReactFactorAtSkill99 = 1.0
 # are in a battleground, an arena, a duel or PvP combat; the skill then only shows in PvP.
 Playerbots.Skill.FullAbilityInPvE = 0
 
-# Skill knob 2, noticing. Needs Playerbots.Skill.Enable = 1. Interrupts, defensive cooldowns, dispels, crowd control,
+# Skill knob 2, noticing. Interrupts, defensive cooldowns, dispels, crowd control,
 # crowd-control breaks (Every Man for Himself, Will of the Forsaken, Escape Artist) and target switches wait until the
 # bot has noticed them. Time runs in windows of NoticeWindowMs plus the bot's delay. In each window and category the bot
 # notices after a delay of 0 to its NoticeDelayMs, or misses the whole window with its NoticeMissPercent chance; both
@@ -2474,7 +2470,7 @@ Playerbots.Skill.FullAbilityInPvE = 0
 # (skill 1) to AtSkill99 (skill 99). A target switch is only delayed when the bot already has a live target. Bots with
 # a game-client master are not affected while Playerbots.Skill.ExemptRealMasterBots is 1. Miss chance 0-95, delays
 # 0-10000 ms, window 100-60000 ms.
-# Default 0 everywhere = no change (the "skill" strategy is not added).
+# Default 0 everywhere = no change.
 Playerbots.Skill.NoticeMissPercentAtSkill1 = 0
 Playerbots.Skill.NoticeMissPercentAtSkill99 = 0
 Playerbots.Skill.NoticeDelayMsAtSkill1 = 0
@@ -2499,7 +2495,7 @@ Playerbots.Skill.Max = 99
 # and used, full effort. With 0 the bots in a real player's group keep their skill like every other bot.
 Playerbots.Skill.ExemptRealMasterBots = 1
 
-# Skill growth (needs Playerbots.Skill.Enable = 1). With 1 every bot that plays an arena or battleground to its end
+# Skill growth. With 1 every bot that plays an arena or battleground to its end
 # (draws count, a leaver does not) grows its hidden skill: GainPerMatch points per match, RealPlayerFactor times that
 # with a real player (or the headless test player) on its team, shrinking linearly to 0 at the bot's potential: its
 # first roll (its percentile through the distribution above; growth never changes the percentile) plus a gap of
@@ -2525,7 +2521,7 @@ Playerbots.Skill.Growth.PotentialMax = 40
 Playerbots.Skill.CurveExponent = 1.0
 
 # Tactic knowledge, effort and style: the skill gate of Playerbots.Tactics.* (hidden: only .playerbots tactics show
-# lists them). Needs Playerbots.Skill.Enable = 1; a bot without a skill plays at full ability.
+# lists them). A bot without a skill plays at full ability.
 #   KnowledgeSpread: a tactic's KnownFromSkill (see Playerbots.Tactics) moves per bot and tactic by a fixed amount
 #     from -KnowledgeSpread to +KnowledgeSpread (a hash of the guid and the tactic), so knowledge is patchy: a skill-45
 #     bot may know one tactic of threshold 50 and miss another of threshold 40. 0-50, default 15.
@@ -2635,7 +2631,7 @@ Playerbots.Tactics.Enable = 0
 #   Natural     All                        natural reaction, facing, tracking, paths (PvE: in sight of a real player)
 #   Jump        Arena                      tactical jumps
 #   FocusTarget Arena,Battleground,World   kicks and crowd control on a focus target, the own target kept (G4e)
-# The skill gate (needs Playerbots.Skill.Enable = 1): Playerbots.Tactics.<Name>.KnownFromSkill, 0-100 (default 0 =
+# The skill gate: Playerbots.Tactics.<Name>.KnownFromSkill, 0-100 (default 0 =
 # every bot knows it; 100 = no bot), the skill from which a bot knows the tactic, moved per bot by
 # Playerbots.Skill.KnowledgeSpread; below it the bot never uses the tactic. Playerbots.Tactics.<Name>.UseChanceAtSkill1
 # and .UseChanceAtSkill99, 0-100 % (default 100 and 100): the chance that a bot that knows the tactic uses it in a
@@ -3700,15 +3696,15 @@ Playerbots.ArenaTeam.Seed.NoiseSd = 100
 
 # Arena team formation (1 = on, 0 = off; only with RandomBotArenaTeamRatingMode = 1, ignored in mode 0)
 # When 1, randombot arena teams are formed by partner score instead of at random, and their rosters change over time.
-# A score from skill closeness (the hidden skill, Playerbots.Skill.Enable; unknown skill counts as neutral) and class
+# A score from skill closeness (the hidden skill; unknown skill counts as neutral) and class
 # synergy (a healer beside damage dealers, tank and healer, no class twice) decides which team a bot joins. A roster may
 # hold more members than the team size (up to MaxRoster); every queue takes a random set of the available members
 # (the captain is always in: only the captain queues). After a lost match the member with the longest current loss
 # streak (then the most losses since joining; skill plays no part) may leave; a leaving captain hands the team over
 # first. A bot never joins the team it left last again (remembered in memory until it leaves another team; a restart
 # forgets it). Teams short of members recruit online randombots without a team (same faction and arena bracket), the
-# teams below MinMembers first. Without Playerbots.Skill.Enable every skill is unknown: no skill closeness and no skill
-# tolerance, the score is class synergy only. Teams low on the bot ladder are forgiving (rare leaves, a wide skill tolerance, weighted-random picks: more varied pairings),
+# teams below MinMembers first.
+# Teams low on the bot ladder are forgiving (rare leaves, a wide skill tolerance, weighted-random picks: more varied pairings),
 # teams at the top strict (frequent leaves, a narrow tolerance, the best-scoring recruit). The values in between follow
 # the team's rating rank among the bot teams of its type. Every membership change runs on the world thread every
 # UpdateSeconds; loss streaks are kept in memory only (a restart starts them at 0). The starting values below are not
@@ -3783,8 +3779,8 @@ Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 
 # Scouting: a real player's arena team invite to a randombot goes through a hidden rule instead of being accepted
 # always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
-# considers its own level, which comes from its hidden skill (a bot without a skill, e.g. with Playerbots.Skill.Enable
-# = 0, counts as the population mean 50, so the rule still applies). The acquaintance score
+# considers its own level, which comes from its hidden skill (a bot without a skill
+# counts as the population mean 50, so the rule still applies). The acquaintance score
 # widens the allowed rating gap but never replaces the test: a big gap always refuses.
 # Otherwise the bot refuses in character (texts arena_team_recruit_*, translatable; never a number, never the skill).
 # Invites from other bots keep today's behaviour. 0 = every invite is accepted as before.

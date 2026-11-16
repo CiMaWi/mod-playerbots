@@ -210,7 +210,7 @@ PvpTestBotRecord MakeBot(Player* player, bool count)
         // The gear score after the PvP loadout is worn: the wear is queued when the player is added to the arena
         // and has had the preparation time to finish
         bot.GearScore = botAI->GetEquipGearScore(player);
-        if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
+        if (botAI->GetPvpSkill())
             bot.Skill = botAI->GetPvpSkill();
 
         bot.CopyOf = botAI->GetTactics().GetAttributeTemplate();

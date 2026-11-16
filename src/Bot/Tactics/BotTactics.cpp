@@ -613,7 +613,7 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
         botAI->SetWork(BotWork::TimingRow, timingCombat);
 
     cadenceCombat = timingCombat;
-    stretchOff = timingScope && config.NaturalReactionActive && ScopeAllows(config.NaturalReactionContexts, context);
+    stretchOff = timingScope && ScopeAllows(config.NaturalReactionContexts, context);
     botAI->checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
     if (!measured || !timingScope)
         return;
