@@ -99,8 +99,4 @@ constexpr bool TacticCheckLive(TacticFollowerTable const& table, TacticCheckInpu
            (table[static_cast<uint32>(inputs.Stored)] & TacticFollowersOfMask(inputs.Mask)) != 0 || memoryIn;
 }
 
-// The cast hooks' test (design 6.4): the tactics whose state AfterCast feeds
-constexpr uint32 TACTIC_CAST_HOOK_MASK =
-    TacticBit(TacticId::Interrupt) | TacticBit(TacticId::FocusTarget) | TacticBit(TacticId::Fake);
-
 #endif

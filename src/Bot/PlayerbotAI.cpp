@@ -295,6 +295,21 @@ PlayerbotAI::~PlayerbotAI()
         PlayerbotsMgr::instance().RemovePlayerBotData(bot->GetGUID(), true);
 }
 
+// The miss switch (Playerbots.Test.MissLog; CS5 design 6.3): a registered pre-gate step whose old guard passes while
+// its bit is clear would be skipped. The owners log their own bits; Order, JumpTest and Dismount keep no other state
+void PlayerbotAI::LogPreGateMisses() const
+{
+    uint32 const word = GetWork();
+    if ((testConstraints & TestConstraints::STATES) && !(word & BotWork::Constraints))
+        LOG_INFO("playerbots", "PreGate miss: Constraints {}", bot->GetName());
+
+    if (BankMail::VisitRuns(bankMail) && !(word & BotWork::Visit))
+        LOG_INFO("playerbots", "PreGate miss: Visit {}", bot->GetName());
+
+    tactics->LogPreGateMisses(word);
+    botTravel->LogPreGateMisses(word);
+}
+
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
     LightweightPerf::AiScope perf;
@@ -308,26 +323,42 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
     {
-        botTravel->passengerCadence.Revalidate = true;
-        pendingDismount.store(false, std::memory_order_relaxed);
-        botTravel->tracedMount = BotTravel::MountPath::None;
+        botTravel->RequestRecheck();
+        if (HasPendingDismount())
+            EndWork(BotWork::Dismount);
+        botTravel->ForgetMountTrace();
         return;
     }
 
-    // A test's order (TravelOrders) ahead of the reaction and the AI's delays, the engine then runs in this update; so
-    // does it for a bot placed aboard until its placement is decided (below)
-    if (TravelOrders::TakeAndApply(this, bot) || botTravel->aboardEntry)
-        nextAICheckDelay = 0;
+    if (sPlayerbotAIConfig.TestMissLog)
+        LogPreGateMisses();
 
-    // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can be a
-    // minute apart for an idle bot, time enough for a new pet to start a fight (one bit test for every other bot)
-    if (testConstraints & TestConstraints::STATES)
-        TravelOrders::KeepConstraints(bot, testConstraints);
+    // The work mask's first load (CS5 design 6.2): zero skips the order, the constraints and the visit watch; each
+    // step re-tests its bit on a fresh load (an applied order can start constraints, a visit or an aboard placement)
+    uint32 const early = GetWork();
+    if (early)
+    {
+        // A test's order (TravelOrders) ahead of the reaction and the AI's delays, the engine then runs in this
+        // update; so does it for a bot placed aboard until its placement is decided (below)
+        if (((early & BotWork::Order) && TravelOrders::TakeAndApply(this, bot)) || (GetWork() & BotWork::Aboard))
+            nextAICheckDelay = 0;
 
-    // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps it
-    // does not run (in combat, dead); one test while no visit runs
-    if (BankMail::VisitRuns(bankMail))
-        BankMail::WatchVisits(this);
+        // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
+        // be a minute apart for an idle bot, time enough for a new pet to start a fight
+        if (GetWork() & BotWork::Constraints)
+            TravelOrders::KeepConstraints(bot, testConstraints);
+
+        // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps
+        // it does not run (in combat, dead); its bit goes when no visit runs
+        if (GetWork() & BotWork::Visit)
+        {
+            if (BankMail::VisitRuns(bankMail))
+                BankMail::WatchVisits(this);
+
+            if (!BankMail::VisitRuns(bankMail))
+                EndWork(BotWork::Visit);
+        }
+    }
 
     // The world log's Flight rows: one compare while the flight state stays
     bool const flying = bot->IsInFlight();
@@ -343,9 +374,14 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
         WorldPvp::NoteEngaged(this, bot, getMSTime());
 
-    // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
     lastUpdateDiff = elapsed;
-    if (tactics->timingCombat)
+    // The work mask's second load: zero skips the timing row and the tactics' pre-gate hook, and travel's registered
+    // steps read their bits on fresh loads; the meter counts the updates with work
+    uint32 const late = GetWork();
+    perf.Count(LightweightPerf::WorkMaskUpdates, (early | late) != 0);
+
+    // The bot time in combat in a started match within the natural cadence's contexts (a PerfMon row only)
+    if (late & BotWork::TimingRow)
     {
         if (PerformanceData* const row = sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalTiming::Time (combat)"))
             row->Record(static_cast<uint64_t>(elapsed) * 1000);
@@ -355,10 +391,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
 
-    // G5e, G2a and G2g: the tactics' pre-gate hook (the natural stepper, the jump test); two bool tests idle
-    if (tactics->PreGate())
+    // G5e, G2a and G2g: the tactics' pre-gate hook (the natural stepper, the jump test) while either has work
+    if ((late & (BotWork::PreGateStep | BotWork::JumpTest)) && tactics->PreGate(late))
     {
-        botTravel->passengerCadence.Revalidate = true;
+        botTravel->RequestRecheck();
         return;
     }
 
@@ -473,7 +509,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!currentSpell)
         currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
 
-    if (botTravel->LootInteractionExpired() && botTravel->activeLootInteraction->OwnsCast(currentSpell))
+    if (botTravel->LootInteractionExpired() && botTravel->ActiveLootInteraction()->OwnsCast(currentSpell))
     {
         bot->InterruptSpell(currentSpell->GetCurrentContainer());
         currentSpell = nullptr;
@@ -626,7 +662,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         UpdateAIInternal(elapsed, minimal);
 
     // A stop the engine's kick did not follow (its trigger or target picked another action): no stop for a while
-    tactics->NoteUnfollowedStop(stoppedForKick, nowMs);
+    if (stoppedForKick)
+        tactics->NoteUnfollowedStop(nowMs);
 
     // The GCD of the spell the bot cast last (its end noted once, when it begins): the queue's follow-up
     if (busyModel && reaction.Queue.Enable && nextAICheckDelay == 0)
@@ -1162,8 +1199,8 @@ void PlayerbotAI::HandleTeleportAck()
 void PlayerbotAI::Reset(bool full, bool farTeleport)
 {
     botTravel->CancelLootInteraction("reset");
-    pendingDismount.store(false, std::memory_order_relaxed);
-    botTravel->tracedMount = BotTravel::MountPath::None;
+    EndWork(BotWork::Dismount);
+    botTravel->ForgetMountTrace();
     // The RPG state starts over; a bank or mail visit ends with its row and the knowledge survives the reset
     // (BankMail::AfterReset). Also on a far teleport during a flight (a taxi path crossing maps), which skips the rest
     auto const resetRpgState = [this, farTeleport]()
@@ -1723,7 +1760,7 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             p >> guid.ReadAsPacked();
             if (guid != bot->GetGUID())
                 return;
-            pendingDismount.store(true, std::memory_order_relaxed);
+            AddWork(BotWork::Dismount);
             return;
         }
         // LC16d: the bridge's ready row answers the open check; a request names its sender, never the bot's own

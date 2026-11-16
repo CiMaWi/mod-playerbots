@@ -978,7 +978,7 @@ private:
 
 // Per bot (BotTactics::GetJumpState): the test's queue of spots, armed by `tactics jump test` on the world thread
 // (while no map updates) and stepped by BotTactics::StepJumpTest on the bot's map thread. Frozen: the jump test
-// drives the bot, so UpdateAI runs no engine (PlayerbotAI::jumpTest).
+// drives the bot, so UpdateAI runs no engine (its work bit, BotWork::JumpTest).
 struct JumpBotState
 {
     bool Frozen = false;

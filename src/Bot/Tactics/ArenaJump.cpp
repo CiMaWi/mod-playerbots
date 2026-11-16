@@ -518,7 +518,7 @@ void BotTactics::StepJumpTest(uint32 nowMs)
         state.Frozen = false;
         state.Running = false;
         state.Queue.clear();
-        jumpTest = false;
+        botAI->EndWork(BotWork::JumpTest);
         if (bot->IsInWorld())
             bot->GetMotionMaster()->Clear();
 

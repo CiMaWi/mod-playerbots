@@ -471,6 +471,7 @@ bool LootObjectStack::PrepareLoot(ObjectGuid guid, bool encounter, uint32 now)
     _interactionInstance = bot->GetInstanceId();
     _encounterInteraction = encounter;
     ai->GetTravel().activeLootInteraction = this;
+    ai->AddWork(BotWork::Loot);
     return true;
 }
 
@@ -546,7 +547,9 @@ void LootObjectStack::Finish()
     ClearSelection(InteractionGuid());
     _interaction.Clear();
     _castSpellId = 0;
-    GET_PLAYERBOT_AI(bot)->GetTravel().activeLootInteraction = nullptr;
+    PlayerbotAI* const owner = GET_PLAYERBOT_AI(bot);
+    owner->GetTravel().activeLootInteraction = nullptr;
+    owner->EndWork(BotWork::Loot);
 }
 
 void LootObjectStack::Cancel(std::string_view reason)

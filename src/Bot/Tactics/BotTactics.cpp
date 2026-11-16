@@ -287,9 +287,9 @@ JumpBotState& BotTactics::GetJumpState()
     return *jumpState;
 }
 
-// The pre-gate stepper (G5e's fake cast, G2a's turn): UpdateAI calls it on every Player::Update while naturalPreGate,
+// The pre-gate stepper (G5e's fake cast, G2a's turn): UpdateAI calls it on every Player::Update while its work bit,
 // before the AI check delay and CanUpdateAI, so a fake's cancel lands within half a map tick of its instant whatever
-// nextAICheckDelay is, and a turn moves every update. naturalPreGate stays on while anything is pending.
+// nextAICheckDelay is, and a turn moves every update. The bit stays on while anything is pending.
 void BotTactics::StepNaturalPreGate(uint32 nowMs)
 {
     bool pending = false;
@@ -312,24 +312,40 @@ void BotTactics::StepNaturalPreGate(uint32 nowMs)
         pending = StepNaturalTurn(bot, *turnState, nowMs) || pending;
     }
 
-    naturalPreGate = pending;
+    if (!pending)
+        botAI->EndWork(BotWork::PreGateStep);
 }
 
-// The pre-gate hook (CS5 design 4.1): UpdateAI calls it on every Player::Update before the AI check delay. G5e and
-// G2a: the natural pre-gate stepper (a fake cast's cancel instant, a turn's steps); G2g: the jump test drives a frozen
-// test bot (no engine runs). One bool test each idle; true when the jump test took the update.
-bool BotTactics::PreGate()
+// The pre-gate hook (CS5 design 4.1): UpdateAI calls it on a Player::Update before the AI check delay while work
+// (its load of the work mask) has either bit. G5e and G2a: the natural pre-gate stepper (a fake cast's cancel instant,
+// a turn's steps); G2g: the jump test drives a frozen test bot (no engine runs). True when the jump test took the
+// update.
+bool BotTactics::PreGate(uint32 work)
 {
-    if (naturalPreGate)
+    if (work & BotWork::PreGateStep)
         StepNaturalPreGate(getMSTime());
 
-    if (jumpTest)
+    if (work & BotWork::JumpTest)
     {
         StepJumpTest(getMSTime());
         return true;
     }
 
     return false;
+}
+
+void BotTactics::SetJumpTest(bool on) { botAI->SetWork(BotWork::JumpTest, on); }
+
+void BotTactics::SetNaturalPreGate(bool on) { botAI->SetWork(BotWork::PreGateStep, on); }
+
+void BotTactics::LogPreGateMisses(uint32 work) const
+{
+    if (timingCombat && !(work & BotWork::TimingRow))
+        LOG_INFO("playerbots", "PreGate miss: TimingRow {}", bot->GetName());
+
+    bool const pending = (fakeState && fakeState->Pending()) || (turnState && turnState->Active());
+    if (pending && !(work & BotWork::PreGateStep))
+        LOG_INFO("playerbots", "PreGate miss: PreGateStep {}", bot->GetName());
 }
 
 // The check hook (CS5 design 4.1): UpdateAI calls it at each AI check after RefreshNaturalTiming. busyModel: the
@@ -531,9 +547,9 @@ bool BotTactics::OnOwnCast(Spell* currentSpell, uint32 ownLeft, bool busyModel, 
 }
 
 // After the engines ran (UpdateAI): a busy stop the bot's kick did not follow
-void BotTactics::NoteUnfollowedStop(bool stoppedForKick, uint32 nowMs)
+void BotTactics::NoteUnfollowedStop(uint32 nowMs)
 {
-    if (stoppedForKick && !bot->HasSpellCooldown(reactionBusy.KickSpellId))
+    if (!bot->HasSpellCooldown(reactionBusy.KickSpellId))
     {
         reactionBusy.NoteStopUnfollowed(nowMs);
         LOG_TRACE("playerbots.reaction", "busy stop unfollowed skill {} kick {} at {}", botAI->GetPvpSkill(),
@@ -587,9 +603,14 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
     checkProbe = context;
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     bool const measured = PerfMonitor::IsEnabled();
+    // The timing row's work bit follows timingCombat (one atomic write at its change)
+    bool const timedBefore = timingCombat;
     if (!config.NaturalCadenceEnable && !measured)
     {
         // Off: upstream's check interval and stagger, the stretch everywhere
+        if (timedBefore)
+            botAI->EndWork(BotWork::TimingRow);
+
         timingScope = false;
         timingCombat = false;
         cadenceCombat = false;
@@ -606,6 +627,9 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
         Battleground* const battleground = bot->GetBattleground();
         timingCombat = battleground && battleground->GetStatus() == STATUS_IN_PROGRESS;
     }
+
+    if (timingCombat != timedBefore)
+        botAI->SetWork(BotWork::TimingRow, timingCombat);
 
     cadenceCombat = config.NaturalCadenceEnable && timingCombat;
     stretchOff = config.NaturalCadenceEnable && timingScope && config.NaturalReactionActive &&

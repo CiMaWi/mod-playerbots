@@ -439,6 +439,25 @@ struct SkillNoticeCounters
     std::array<uint32, Categories> allowed{};
 };
 
+// The work mask's bits (CS5 design 6.3): a subsystem sets its bit while it has work for the bot, and UpdateAI runs
+// that pre-gate step only while the bit is set (two loads; a step that runs re-tests its bit on a fresh load)
+namespace BotWork
+{
+enum : uint32
+{
+    Order = 1u << 0,        // a test's order waits (TravelOrders, under its lock; also on the world thread)
+    Constraints = 1u << 1,  // a test's state constraints are kept (TestConstraints::STATES; ApplyConstraints)
+    Visit = 1u << 2,        // a bank or mail visit runs (its start; UpdateAI clears it when none runs)
+    TimingRow = 1u << 3,    // the bot is in a timed fight (BotTactics::RefreshNaturalTiming)
+    PreGateStep = 1u << 4,  // a fake cast or a turn steps before the gates (BotTactics::StepNaturalPreGate clears it)
+    JumpTest = 1u << 5,     // the jump test drives the bot (BotTactics::SetJumpTest, StepJumpTest)
+    Aboard = 1u << 6,       // a test's aboard placement waits (BotTravel::BeginAboard; its PreGate decides it)
+    Dismount = 1u << 7,     // a server dismount waits for the bot's own (SMSG_DISMOUNT; BotTravel::PreGate)
+    Loot = 1u << 8,         // a loot interaction runs (LootObjectStack)
+    MountTrace = 1u << 9,   // a traced mount waits for its state (BotTravel::TraceTravelMount, ForgetMountTrace)
+};
+}  // namespace BotWork
+
 class PlayerbotAI : public PlayerbotAIBase
 {
     // Consumes queued chat commands from FindReaction(); needs HandleCommands().
@@ -782,7 +801,19 @@ public:
     std::set<uint32> GetAllCurrentQuestIds();
     std::set<uint32> GetCurrentIncompleteQuestIds();
     void PetFollow();
-    bool HasPendingDismount() const { return pendingDismount.load(std::memory_order_relaxed); }
+    bool HasPendingDismount() const { return (work.load(std::memory_order_relaxed) & BotWork::Dismount) != 0; }
+    // The work mask (BotWork): AddWork from any thread; EndWork returns the word before the clear (a one-shot bit's
+    // test); GetWork is the update's acquire load
+    void AddWork(uint32 bits) { work.fetch_or(bits, std::memory_order_release); }
+    uint32 EndWork(uint32 bits) { return work.fetch_and(~bits, std::memory_order_acq_rel); }
+    void SetWork(uint32 bits, bool on)
+    {
+        if (on)
+            AddWork(bits);
+        else
+            EndWork(bits);
+    }
+    uint32 GetWork() const { return work.load(std::memory_order_acquire); }
     static float GetItemScoreMultiplier(ItemQualities quality);
     static bool IsHealingSpell(uint32 spellFamilyName, flag96 spellFamilyFlags);
     static SpellFamilyNames Class2SpellFamilyName(uint8 cls);
@@ -816,14 +847,12 @@ public:
     // Schedules a callback to run once after <delayMs> milliseconds.
     void AddTimedEvent(std::function<void()> callback, uint32 delayMs);
 
-    // Set on the world thread when an order for this bot is posted (TravelOrders::Post), cleared when none is left: the
-    // map thread's one atomic load per update
-    std::atomic<bool> orderPosted{false};
-
 private:
+    // BotTactics steps the AI's own cadence in place: nextAICheckDelay, checkStaggerMs, currentState
     friend class BotTactics;
-    friend class BotTravel;
-    std::atomic<bool> pendingDismount{false};
+
+    // The miss switch's pre-gate half (Playerbots.Test.MissLog): a step's old guard that passes while its bit is clear
+    void LogPreGateMisses() const;
 
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
@@ -892,7 +921,7 @@ protected:
     // Made by the constructors, never null (CS5 design 4.1)
     std::unique_ptr<BotTactics> tactics;
     std::unique_ptr<BotTravel> botTravel;
-    // The work mask (CS5 design 6.2): unused until CS16f
+    // The work mask (CS5 design 6.2; BotWork's bits)
     std::atomic<uint32> work{0};
     std::atomic<bool> strategySnapshotRequested{false};
     mutable std::mutex strategySnapshotLock;
