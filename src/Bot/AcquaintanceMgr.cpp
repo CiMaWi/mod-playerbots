@@ -186,8 +186,8 @@ public:
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& /*msg*/, Player* receiver) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable && type == CHAT_MSG_WHISPER && lang != LANG_ADDON &&
-            IsRealPlayer(player) && receiver && !IsRealPlayer(receiver))
+        if (type == CHAT_MSG_WHISPER && lang != LANG_ADDON && IsRealPlayer(player) && receiver &&
+            !IsRealPlayer(receiver))
             AcquaintanceMgr::Instance().Record(AcquaintanceEvent::Whisper, player->GetGUID().GetCounter(),
                                                receiver->GetGUID().GetCounter());
 
@@ -196,7 +196,7 @@ public:
 
     bool OnPlayerCanUseChat(Player* player, uint32 /*type*/, uint32 lang, std::string& /*msg*/, Group* group) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable && lang != LANG_ADDON && group && IsRealPlayer(player))
+        if (lang != LANG_ADDON && group && IsRealPlayer(player))
             AcquaintanceMgr::Instance().RecordPartyChat(player->GetGUID().GetCounter(), group->GetGUID().GetCounter());
 
         return true;
@@ -204,33 +204,29 @@ public:
 
     bool OnPlayerCanInitTrade(Player* player, Player* target) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable)
-            RecordPair(AcquaintanceEvent::Trade, player, target);
+        RecordPair(AcquaintanceEvent::Trade, player, target);
 
         return true;
     }
 
     void OnPlayerDuelRequest(Player* target, Player* challenger) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable)
-            RecordPair(AcquaintanceEvent::Duel, target, challenger);
+        RecordPair(AcquaintanceEvent::Duel, target, challenger);
     }
 
     void OnPlayerDuelStart(Player* player1, Player* player2) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable)
-            RecordPair(AcquaintanceEvent::Duel, player1, player2);
+        RecordPair(AcquaintanceEvent::Duel, player1, player2);
     }
 
     void OnPlayerPVPKill(Player* killer, Player* killed) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable)
-            RecordPair(AcquaintanceEvent::PvpKill, killer, killed);
+        RecordPair(AcquaintanceEvent::PvpKill, killer, killed);
     }
 
     void OnPlayerLogout(Player* player) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable && IsRealPlayer(player))
+        if (IsRealPlayer(player))
             AcquaintanceMgr::Instance().RequestFlush();
     }
 
@@ -258,7 +254,7 @@ public:
 
     void OnAddMember(Group* group, ObjectGuid guid) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable && group)
+        if (group)
             AcquaintanceMgr::Instance().RecordGroupJoin(group->GetGUID().GetCounter(), guid.GetCounter());
     }
 };
@@ -270,7 +266,7 @@ public:
 
     void OnAddMember(Guild* guild, Player* player, uint8& /*plRank*/) override
     {
-        if (sPlayerbotAIConfig.AcquaintanceEnable && guild && player)
+        if (guild && player)
             AcquaintanceMgr::Instance().RecordGuildJoin(guild->GetId(), player->GetGUID().GetCounter());
     }
 };
@@ -278,9 +274,9 @@ public:
 
 void AcquaintanceMgr::Load()
 {
-    // Runs in OnBeforeWorldInitialized, before the world thread is known to the thread checks, or in Update after a
-    // config reload turned the feature on
-    if (!sPlayerbotAIConfig.AcquaintanceEnable || _loaded)
+    // Runs in OnBeforeWorldInitialized, before the world thread is known to the thread checks, or in Update if that
+    // load has not run
+    if (_loaded)
         return;
 
     _loaded = true;
@@ -322,23 +318,9 @@ void AcquaintanceMgr::Load()
 
 void AcquaintanceMgr::Update(uint32 diff)
 {
-    bool const enabled = sPlayerbotAIConfig.AcquaintanceEnable;
-    if (!enabled && !_active)
-        return;
-
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::Update");
-    if (!enabled)
-    {
-        // A config reload turned the feature off: write what was counted once; the pairs stay in memory
-        _active = false;
-        Drain();
-        Flush();
-        return;
-    }
-
     // Nothing is counted or written before the stored rows are in memory: an empty pair would overwrite its row
     Load();
-    _active = true;
     Drain();
     Sample(diff);
 
@@ -525,7 +507,7 @@ void AcquaintanceMgr::Apply(AcquaintanceEvent kind, uint32 player, uint32 bot, u
 
 void AcquaintanceMgr::AddTime(AcquaintanceTally tally, uint32 player, uint32 bot, uint32 seconds)
 {
-    if (!sPlayerbotAIConfig.AcquaintanceEnable || !_loaded || !seconds)
+    if (!_loaded || !seconds)
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::AddTime");
@@ -826,12 +808,6 @@ std::vector<std::pair<uint32, Acquaintance>> AcquaintanceMgr::GetAcquaintances(u
 
 bool AcquaintanceMgr::HandleCommand(ChatHandler* handler, char const* args)
 {
-    if (!sPlayerbotAIConfig.AcquaintanceEnable)
-    {
-        handler->PSendSysMessage("Acquaintances are off (Playerbots.Acquaintance.Enable = 0).");
-        return true;
-    }
-
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::HandleCommand");
     AcquaintanceMgr& mgr = Instance();
     std::istringstream in(args ? args : "");

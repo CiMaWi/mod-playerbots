@@ -90,7 +90,7 @@ std::vector<PopulationPolicy::BalanceRange> BalanceRanges();
 uint32 BalanceRangeOf(uint32 level);
 
 // Any thread (relaxed atomic): Playerbots.Population.Retire.Enable with its prerequisites met (Persistent,
-// Acquaintance.Enable, Rotation.Enable, and Balance.Enable or Retire.TestRange)
+// Rotation.Enable, and Balance.Enable or Retire.TestRange)
 bool IsRetire();
 
 // H4a. World thread (RandomPlayerbotMgr::UpdateAIInternal), every tick; returns at once while the retire is off and no

@@ -885,7 +885,7 @@ Playerbots.Population.Persistent = 0
 # Roster above the online cap, rotated by schedule. More random bot characters exist than are online
 # (the count Playerbots.RandomBotCountMode sets stays the online cap); every IntervalSeconds the rotation
 # swaps online bots for offline ones of the same faction. Each bot is owed a share of online time
-# (cap / eligible roster); a bot a real player knows (Playerbots.Acquaintance.Enable, score >=
+# (cap / eligible roster); a bot a real player knows (acquaintance score >=
 # AcquaintedMinScore) is owed AcquaintedSharePct, as far as the cap allows. The most over-served
 # online bots make way for the most owed offline ones; a bot in a group, battleground, arena queue,
 # instance, combat or flight is not logged out. Bots away on an arena server (ladder) never log in
@@ -1000,7 +1000,7 @@ Playerbots.Population.Balance.LogoutPreferencePct = 25
 #              one given up (Retire.CreateAttempts) pauses the retires until ".reload config"
 #              and the factory refills the account at the next startup. One log line per
 #              retire and per creation.
-#              Needs Population.Persistent = 1, Acquaintance.Enable = 1, Rotation.Enable = 1 and
+#              Needs Population.Persistent = 1, Rotation.Enable = 1 and
 #              Balance.Enable = 1 (or Retire.TestRange); else one error line and nothing happens.
 #              Keep it 0 on labs with lab-bots clones.
 # Default:     0 - off
@@ -1660,16 +1660,15 @@ Playerbots.WorldLog.RecorderActions = 128
 Playerbots.WorldLog.RecorderEvents = 64
 Playerbots.WorldLog.RecorderCooldownSeconds = 600
 
-# Acquaintances (1 = on, 0 = off)
-# When 1, the server records which random bots each real player has met and how well: one row per (player, bot)
+# Acquaintances
+# The server records which random bots each real player has met and how well: one row per (player, bot)
 # pair in the playerbots table playerbots_acquaintance with a score, flags (group, whisper, partychat, trade, duel,
 # guild, pvpkill, battleground, nearby) and the raw tallies the score comes from. Only real players' characters count
 # (no bot AI attached, so the owner's own alt bots do not), and only random bots on the other side. The hooks only
 # queue an event; the world thread counts it. All rows are loaded with one query at startup; changed rows are written
 # every FlushSeconds (5..3600) by one asynchronous transaction, and after a real player's logout and at shutdown.
-# Turning it on with a config reload loads the rows at the next tick; turning it off writes the changed rows once.
 # GM command: .playerbots acquaintances [<player>] | stats | record <player> <bot> <kind> (record is a test aid that
-# counts an event as the hooks do). With 0 (default) nothing is tracked, loaded or written.
+# counts an event as the hooks do).
 #
 # Score weights (points). The strongest are direct interactions and an explicitly invited group, then the guild;
 # the weakest is plain closeness:
@@ -1690,7 +1689,6 @@ Playerbots.WorldLog.RecorderCooldownSeconds = 600
 #   NearbyIntervalSeconds (0..3600, 0 = off): the random bots within NearbyRadius yards (1..100; same map and phase,
 #     not in a battleground, not in the player's group) get nearby time. The weakest kind; turn it off on its own.
 #
-Playerbots.Acquaintance.Enable = 0
 Playerbots.Acquaintance.FlushSeconds = 30
 Playerbots.Acquaintance.DirectCooldownSeconds = 60
 Playerbots.Acquaintance.GroupJoinCooldownSeconds = 600
@@ -2207,14 +2205,13 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # live crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
 # 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000; NoopSeconds 0-3600, 0 = off;
 # Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
-# Goals: persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next
-# activity from the planner's ranked goals; 0 = every bot picks as before (a test switch). Default: 1
+# Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
+# from the planner's ranked goals.
 Playerbots.WorldTravel.Planner.Threads = 2
 Playerbots.WorldTravel.Planner.SnapshotMinutes = 5
 Playerbots.WorldTravel.Planner.ResultStaleSeconds = 30
 Playerbots.WorldTravel.Planner.RecheckYards = 100
 Playerbots.WorldTravel.Planner.NoopSeconds = 0
-Playerbots.WorldTravel.Planner.Goals = 1
 Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
@@ -2337,20 +2334,6 @@ Playerbots.WorldPvp.Enthusiasm.DepletionFactorBehind = 3
 Playerbots.WorldPvp.Enthusiasm.BalanceLead = 0.75
 Playerbots.WorldPvp.Enthusiasm.BalanceBehind = 0.25
 
-# Mail and bank visits of persistent bots. A bot knows that mail waits and what it expects from it, not what is
-# inside; an unread mail whose content it does not know counts Mail.DefaultWorthCopper. A bank item counts as kept for
-# later while the level it is due at is at most Bank.KeepLevelHorizon levels above the bot's. A visit (the walk
-# included) is given up after Mail.VisitDeadlineSeconds or Bank.VisitDeadlineSeconds; one step of it (a take from a
-# mail, a deposit) waits at most VisitStepSeconds for the server's answer; one mailbox visit opens at most
-# Mail.PerVisit mails. (Ranges: DefaultWorthCopper 0-10000; KeepLevelHorizon 0-20; VisitDeadlineSeconds 60-3600;
-# VisitStepSeconds 1-60; PerVisit 1-100.) Defaults: 100, 5, 900, 900, 10, 50
-Playerbots.BankMail.Mail.DefaultWorthCopper = 100
-Playerbots.BankMail.Bank.KeepLevelHorizon = 5
-Playerbots.BankMail.Mail.VisitDeadlineSeconds = 900
-Playerbots.BankMail.Bank.VisitDeadlineSeconds = 900
-Playerbots.BankMail.VisitStepSeconds = 10
-Playerbots.BankMail.Mail.PerVisit = 50
-
 # Item use. Percent of persistent bots chosen by guid that make up the control cohort of the item use comparison:
 # they spend and buff by the old rules, the rest by the new ones (0-100). 0: no control cohort. Default: 0
 Playerbots.ItemUse.ControlShare = 0
@@ -2361,8 +2344,8 @@ Playerbots.Ladder.DepartTimeoutSeconds = 600
 
 # Minutes a real player's direct contact with a random bot (whisper, party chat, trade, duel, a group the player
 # invited it to) pins the bot's arena team (0-1440; 0 = no contact pins): depart refuses the team and a depart in
-# progress is cancelled. The contacts come from the acquaintance event hooks, so they need
-# Playerbots.Acquaintance.Enable = 1. A team is also pinned while a member is in a group, battleground or arena with a
+# progress is cancelled. The contacts come from the acquaintance event hooks.
+# A team is also pinned while a member is in a group, battleground or arena with a
 # real player, or duels or trades with one (whatever this option says). Ignored while the moves are off.
 # Default: 15
 Playerbots.Ladder.ContactMinutes = 15
@@ -3856,7 +3839,7 @@ Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 # always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
 # considers its own level, which comes from its hidden skill (a bot without a skill, e.g. with Playerbots.Skill.Enable
 # = 0, counts as the population mean 50, so the rule still applies). The acquaintance score
-# (Playerbots.Acquaintance.Enable) widens the allowed rating gap but never replaces the test: a big gap always refuses.
+# widens the allowed rating gap but never replaces the test: a big gap always refuses.
 # Otherwise the bot refuses in character (texts arena_team_recruit_*, translatable; never a number, never the skill).
 # Invites from other bots keep today's behaviour. 0 = every invite is accepted as before.
 # The starting values below are not tuned yet (E4).
@@ -4737,14 +4720,6 @@ Playerbots.PerfMonEnabled = 0
 # with MapUpdate.Threads > 1, and log each event cache load that runs off the world thread
 # Default: 0 (disabled)
 Playerbots.DebugThreadChecks = 0
-
-# Skip trigger checks that cannot fire: the chat command triggers while the bot has no chat command pending, and
-# the "combat start" trigger's attackers lookup while the bot is out of combat with no group, duel, battleground
-# or prioritized target. Saves CPU with many bots; commands are answered as before and combat starts are never
-# missed, but "combat start" can fire once more within 1 second after the bot leaves combat or feigns death
-# (the attackers value is cached for 1 second).
-# Default: 0 (disabled)
-Playerbots.SkipIdleTriggerChecks = 0
 
 #
 #
