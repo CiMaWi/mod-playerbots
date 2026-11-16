@@ -2404,16 +2404,13 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     ReactionTypeState const& prices = botAI->GetTactics().GetReactionTypes();
     auto const onOff = [](bool on) { return on ? "on" : "off"; };
     handler->PSendSysMessage(
-        "  reaction types: choice {} ({:.0f} ms per doubling), load {} ({} ms, {} % per event, top {:.2f}), ease {} "
-        "({}/{}/{}/{} ms), think {} ({}/{} ms, deep {} %, wait {} ms), anticipate {} ({:.2f}), queue {} ({}-{} ms), "
-        "reeval {}, busy skip {}, memory {}, movement {}",
-        onOff(timing.Choice.Enable), prices.HickMsPerDoubling, onOff(timing.Load.Enable), prices.LoadMsPerEvent,
-        prices.LoadMissPercentPerEvent, prices.LoadTopProtect, onOff(timing.Ease.Enable), prices.EaseMs[0],
-        prices.EaseMs[1], prices.EaseMs[2], prices.EaseMs[3], onOff(timing.Think.Enable), prices.ThinkShortcutMs,
-        prices.ThinkDeepMs, prices.ThinkDeepPercent, prices.PatienceWaitMs, onOff(timing.Anticipate.Enable),
+        "  reaction types: choice {:.0f} ms per doubling, load {} ms / {} % per event (top {:.2f}), ease {}/{}/{}/{} "
+        "ms, think {} ({}/{} ms, deep {} %, wait {} ms), anticipate {:.2f}, queue {} ({}-{} ms), reeval {}, memory {}",
+        prices.HickMsPerDoubling, prices.LoadMsPerEvent, prices.LoadMissPercentPerEvent, prices.LoadTopProtect,
+        prices.EaseMs[0], prices.EaseMs[1], prices.EaseMs[2], prices.EaseMs[3], onOff(timing.Think.Enable),
+        prices.ThinkShortcutMs, prices.ThinkDeepMs, prices.ThinkDeepPercent, prices.PatienceWaitMs,
         prices.AnticipateShare, onOff(timing.Queue.Enable), prices.QueueMinMs, prices.QueueMaxMs,
-        onOff(timing.Reeval.Enable), onOff(timing.Reeval.BusySkip), onOff(timing.Memory.Enable),
-        onOff(timing.MovementEnable));
+        onOff(timing.Reeval.Enable), onOff(timing.Memory.Enable));
     handler->PSendSysMessage("  cached: effort {}, style aggression {} / caution {} / patience {}", gate.Effort,
                              botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Aggression),
                              botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Caution),

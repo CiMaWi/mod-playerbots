@@ -1847,9 +1847,9 @@ Playerbots.Natural.Reaction.PingMs = 60
 Playerbots.Natural.Reaction.DisplayMs = 30
 Playerbots.Natural.Reaction.ServerTickMs = -1
 
-# Reaction types (G0h3, with Playerbots.Natural.Reaction.Enable in its Contexts): each part has its own Enable
-# (default 0: the reaction as above) and prices at attribute 1 and 99 (Playerbots.Skill.Attributes.*; with their
-# defaults every ability is the skill), lerped along Playerbots.Skill.CurveExponent. Every cost lies inside the
+# Reaction types (G0h3, with Playerbots.Natural.Reaction.Enable in its Contexts): each part has prices at attribute 1
+# and 99 (Playerbots.Skill.Attributes.*; with their defaults every ability is the skill), lerped along
+# Playerbots.Skill.CurveExponent; Think, Queue and Memory have their own Enable (default 0: the reaction as above). Every cost lies inside the
 # reaction (the trace's ready), so the end-to-end target keeps its sum. The playerbots.reaction trace lines add type
 # (0 simple, 1 choice, 2 anticipated), options, load (other events pending), ease (0 common, 1 rare, 2 focus target,
 # 3 new target), think (ms), cost (choice + load + ease + think, ms), busy and own (see Reeval).
@@ -1875,9 +1875,9 @@ Playerbots.Natural.Reaction.ServerTickMs = -1
 #   too late for, once its reaction to the cast bar is over (draw and shortcut think cost, end to end from the bar's
 #   start) and its interrupt is ready; the kick follows in the same check. Once per enemy cast; after a stop the kick
 #   did not follow (its trigger or a higher action picked something else) none for 30 s. An opt-in stand-in until
-#   G5b's judgement: it never weighs the own cast (a heal on a dying partner is stopped too). BusySkip drops a kick
-#   that a bot busy with its own cast, the kick's cooldown or the GCD would land only within BusyMarginMs of the
-#   cast's end or after it, when being busy is what makes it late (one late from its reaction alone is tried).
+#   G5b's judgement: it never weighs the own cast (a heal on a dying partner is stopped too). A kick that a bot busy
+#   with its own cast, the kick's cooldown or the GCD would land only within BusyMarginMs of the cast's end or after
+#   it is dropped, when being busy is what makes it late (one late from its reaction alone is tried).
 #   The trace's busy field: 1 stopped its own cast for the kick, 2 skipped; own: ms of own cast within the event.
 # Memory (DT.12): per bot and match (cleared when it ends), the cast bars the bot sees on its target and attackers
 #   (at most 8 enemies) at its own checks; a bar gone before its end without a visible interrupt (school lock,
@@ -1887,12 +1887,10 @@ Playerbots.Natural.Reaction.ServerTickMs = -1
 #   only bots with the avoid aoe strategy have it (Playerbots.AutoAvoidAoe, bots with a real master).
 # Times 0-10000 ms. On a running server .reload config then .playerbots rndbot reload switch the parts; changed
 # prices reach a logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's prices.
-# Default: every part 0; the prices below
-Playerbots.Natural.Reaction.Choice.Enable = 0
+# Default: Think, Queue and Memory 0; the prices below
 Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill1 = 120
 Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill99 = 50
 Playerbots.Natural.Reaction.Choice.MaxOptions = 8
-Playerbots.Natural.Reaction.Load.Enable = 0
 Playerbots.Natural.Reaction.Load.MsPerEventAtSkill1 = 200
 Playerbots.Natural.Reaction.Load.MsPerEventAtSkill99 = 80
 Playerbots.Natural.Reaction.Load.MissPercentPerEventAtSkill1 = 10
@@ -1900,7 +1898,6 @@ Playerbots.Natural.Reaction.Load.MissPercentPerEventAtSkill99 = 2
 Playerbots.Natural.Reaction.Load.TopProtectAtSkill1 = 0
 Playerbots.Natural.Reaction.Load.TopProtectAtSkill99 = 0.8
 Playerbots.Natural.Reaction.Load.MaxEvents = 3
-Playerbots.Natural.Reaction.Ease.Enable = 0
 Playerbots.Natural.Reaction.Ease.CommonMsAtSkill1 = 0
 Playerbots.Natural.Reaction.Ease.CommonMsAtSkill99 = 0
 Playerbots.Natural.Reaction.Ease.RareMsAtSkill1 = 250
@@ -1919,7 +1916,6 @@ Playerbots.Natural.Reaction.Think.DeepPercentAtSkill1 = 0
 Playerbots.Natural.Reaction.Think.DeepPercentAtSkill99 = 100
 Playerbots.Natural.Reaction.Think.PatienceWaitMsAt0 = 0
 Playerbots.Natural.Reaction.Think.PatienceWaitMsAt100 = 1500
-Playerbots.Natural.Reaction.Anticipate.Enable = 0
 Playerbots.Natural.Reaction.Anticipate.ShareAtSkill1 = 0.1
 Playerbots.Natural.Reaction.Anticipate.ShareAtSkill99 = 0.5
 Playerbots.Natural.Reaction.Queue.Enable = 0
@@ -1930,12 +1926,10 @@ Playerbots.Natural.Reaction.Queue.MaxMsAtSkill99 = 80
 Playerbots.Natural.Reaction.Reeval.Enable = 0
 Playerbots.Natural.Reaction.Reeval.ImportantCastMs = 1500
 Playerbots.Natural.Reaction.Reeval.MinOwnRemainingMs = 300
-Playerbots.Natural.Reaction.Reeval.BusySkip = 0
 Playerbots.Natural.Reaction.Reeval.BusyMarginMs = 100
 Playerbots.Natural.Reaction.Memory.Enable = 0
 Playerbots.Natural.Reaction.Memory.MinCasts = 3
 Playerbots.Natural.Reaction.Memory.EndToleranceMs = 150
-Playerbots.Natural.Reaction.Movement.Enable = 0
 # Positioning: regain los, break los and pillar step (G2e, G2f) as reactions, stamped by the first query; a reaction only
 # like Movement (no notice counter, no D4 delay). Default: 0 (they go at once)
 Playerbots.Natural.Reaction.Positioning.Enable = 0
