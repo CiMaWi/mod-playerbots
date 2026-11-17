@@ -38,6 +38,12 @@
 // strongest weighed candidate and its keep verdict (the item_spend row's keep:<kind>, SpendDecision), else consumed ==
 // false.
 //
+// WI16 (PLAN 3.8, the chain): among the consumed answers of one need a non-potion is weighed before a potion (a
+// healthstone or a rune before the fight's one potion), each class strongest first. Two rules of usable (EntryUsable):
+// in an arena a consumed heal is the PvP tactics' (CcTacticStrategy's potion gate holds the healthstone and the
+// healing potion), never the offer's; a channelled use (a bandage) only while no enemy hits the bot and it stands, and
+// a channelled heal not while the engine's Recently Bandaged is on the bot.
+//
 // ready (UsableEntry) is CheapCheck's target-independent part, folded by the caller when the situation is sampled:
 // cooldown, charges, potion, busy, dead, no control, the in-fight need, arena, form, place, level and class. The
 // target-dependent part (shape against the target's kind, range, too close) is what Offer::target satisfies by
@@ -341,6 +347,14 @@ inline bool StrongerThan(UsableEntry const& a, std::size_t ia, UsableEntry const
     return ia < ib;
 }
 
+// The order consumed answers of one need are weighed in (WI16, the chain): a non-potion first, then the stronger
+inline bool ConsumedBefore(UsableEntry const& a, std::size_t ia, UsableEntry const& b, std::size_t ib)
+{
+    if (a.potion != b.potion)
+        return !a.potion;
+    return StrongerThan(a, ia, b, ib);
+}
+
 inline Target SelfTarget(Situation const& situation, Shape shape)
 {
     Target target;
@@ -472,10 +486,27 @@ inline bool EntryAnswers(UsableEntry const& entry, Need need)
     }
 }
 
-// Usable now: ready, uses left, not the PvP trinket, not a potion after this fight's potion
+// WI16: a consumed heal in an arena is the PvP tactics' (the potion gate), never the offer's
+inline bool ArenaHeld(Situation const& situation, UsableEntry const& entry)
+{
+    return situation.inArena && entry.consumed && entry.kind == Kind::Heal;
+}
+
+// WI16: a channel (a bandage) breaks on a hit or a step: none while an enemy hits the bot or it moves, and a
+// channelled heal not while Recently Bandaged is on the bot
+inline bool ChannelHeld(Situation const& situation, UsableEntry const& entry)
+{
+    if (!entry.channeled)
+        return false;
+    return situation.moving || OfferDetail::Attackers(situation) > 0 ||
+           (entry.kind == Kind::Heal && situation.recentlyBandaged);
+}
+
+// Usable now: ready, uses left, not the PvP trinket, not a potion after this fight's potion, not held (WI16)
 inline bool EntryUsable(Situation const& situation, UsableEntry const& entry)
 {
-    return entry.ready && entry.count > 0 && !entry.pvpTrinket && !(entry.potion && situation.potionDrunk);
+    return entry.ready && entry.count > 0 && !entry.pvpTrinket && !(entry.potion && situation.potionDrunk) &&
+           !ArenaHeld(situation, entry) && !ChannelHeld(situation, entry);
 }
 
 inline AimItem AimItemOf(Shape shape, float radius, float range, float minRange)
@@ -788,7 +819,7 @@ inline Offer MakeOffer(Situation const& situation, std::span<UsableEntry const> 
             return offer;
         }
 
-        // consumed, strongest first: the first the spend rule spends
+        // consumed, a non-potion first, each strongest first: the first the spend rule spends
         std::size_t previous = size;
         while (true)
         {
@@ -798,9 +829,9 @@ inline Offer MakeOffer(Situation const& situation, std::span<UsableEntry const> 
                 UsableEntry const& entry = list[i];
                 if (!entry.consumed || !EntryUsable(situation, entry) || !EntryAnswers(entry, need))
                     continue;
-                if (previous < size && !StrongerThan(list[previous], previous, entry, i))
-                    continue;  // already weighed, or stronger than the one weighed last
-                if (next < size && !StrongerThan(entry, i, list[next], next))
+                if (previous < size && !ConsumedBefore(list[previous], previous, entry, i))
+                    continue;  // already weighed, or before the one weighed last
+                if (next < size && !ConsumedBefore(entry, i, list[next], next))
                     continue;
                 next = i;
             }

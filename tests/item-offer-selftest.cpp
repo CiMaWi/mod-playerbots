@@ -243,6 +243,7 @@ Item FromRecord(Record const& r, std::string const& name, std::uint32_t id)
     e.minRangeYards = r.minRangeYards;
     e.rangeFriendYards = r.rangeFriendYards;
     e.pvpTrinket = IsPvpTrinket(r);
+    e.channeled = r.channeled;
     item.fight = r.needs.fight;
     item.notInArena = r.needs.notInArena;
     item.name = name;
@@ -471,6 +472,7 @@ struct Counters
     std::uint64_t potionOffers{0};
     std::uint64_t keeps{0};
     std::uint64_t o1{0}, o2{0}, o3{0}, o4{0}, o5{0}, o6{0}, o7{0}, o8{0}, a1{0}, a2{0}, coversWrong{0}, forbidWrong{0};
+    std::uint64_t o9{0}, o10{0}, o11{0}, channelOffers{0}, arenaSituations{0};
 };
 
 void CheckAim(Situation const& s, UsableEntry const& e, AimSpots spots, std::mt19937_64& rng, Counters& c)
@@ -555,6 +557,22 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
         ++c.o7;
     if (o.need == Need::Boost && s.holdsBurst)
         ++c.o8;
+    // O9 (WI16): no consumed heal in an arena (the PvP tactics' potion gate)
+    if (s.inArena && e.consumed && e.kind == Kind::Heal)
+        ++c.o9;
+    // O10 (WI16): a channel only while nothing hits the bot and it stands; a channelled heal not while bandaged
+    if (e.channeled)
+    {
+        ++c.channelOffers;
+        bool hit = false;
+        for (std::size_t i = 0; i < s.unitCount; ++i)
+        {
+            NearUnit const& u = s.units[i];
+            hit = hit || (u.onBot && !u.friendly && u.inFight && u.healthPct > 0.0f && !u.controlled);
+        }
+        if (hit || s.moving || (e.kind == Kind::Heal && s.recentlyBandaged))
+            ++c.o10;
+    }
     if (o.consumed)
     {
         ++c.consumedOffers;
@@ -579,10 +597,14 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
         // O2: a free ready answer of the same need beats every consumed one
         if (o.consumed && !other.consumed)
             ++c.o2;
-        // O4: a stronger ready one of the same class that would be allowed
-        if (other.consumed == e.consumed && other.rank > e.rank &&
+        // O4: a stronger ready one of the same class that would be allowed (WI16: a consumed class is potion or not)
+        if (other.consumed == e.consumed && (!e.consumed || other.potion == e.potion) && other.rank > e.rank &&
             (!other.consumed || Spend(SpendCaseFor(s, other, danger, hits, false)).spend))
             ++c.o4;
+        // O11 (WI16, the chain): a potion while a non-potion consumed answer of the need would be spent
+        if (o.consumed && e.potion && other.consumed && !other.potion &&
+            Spend(SpendCaseFor(s, other, danger, hits, false)).spend)
+            ++c.o11;
     }
 }
 
@@ -626,6 +648,8 @@ Situation GenSituation(std::mt19937_64& rng)
     s.earnCopperPerMinute = Chance(rng, 0.2) ? 1 : static_cast<std::uint32_t>(rng() % 3000);
     s.repairCopper = static_cast<std::uint32_t>(rng() % 6000);
     s.control = Chance(rng, 0.05);
+    s.moving = Chance(rng, 0.2);
+    s.recentlyBandaged = Chance(rng, 0.15);
 
     std::size_t const units = rng() % (MAX_NEAR + 1);
     std::size_t const clusters = 1 + rng() % 3;
@@ -708,6 +732,8 @@ std::vector<Item> GenList(std::mt19937_64& rng, Situation const& s)
                          consumed, static_cast<std::uint32_t>(rng() % 30000), range, radius);
             item.entry.minRangeYards = Chance(rng, 0.1) ? Uniform(rng, 0.0f, 8.0f) : 0.0f;
             item.entry.potion = consumed && (kind == Kind::Heal || kind == Kind::Mana) && Chance(rng, 0.6);
+            item.entry.channeled = !item.entry.potion && Chance(rng, kind == Kind::Heal ? 0.4 : 0.05);
+            item.record.channeled = item.entry.channeled;
             item.entry.record = static_cast<std::uint32_t>(100000 + i);
             item.fight = static_cast<FightNeed>(rng() % 3);
             item.notInArena = Chance(rng, 0.2);
@@ -1101,6 +1127,72 @@ void HandCases()
             Check(!o.any, "arena: a ready==false notInArena entry is not offered");
         }
     }
+    // 9. WI16: the chain, the arena, the channel
+    {
+        std::optional<Item> const stoneReal = Real("Healthstone");
+        std::optional<Item> const greater = Real("Greater Healing Potion");
+        std::optional<Item> const lesserMana = Real("Lesser Mana Potion");
+        Check(stoneReal && greater && lesserMana, "the WI16 hand cases' real records exist");
+        if (stoneReal && greater && lesserMana)
+        {
+            Check(stoneReal->entry.consumed && !stoneReal->entry.potion && stoneReal->entry.kind == Kind::Heal,
+                  "Healthstone is a consumed heal, not a potion");
+            Situation s = Base();
+            s.healthPct = 25.0f;
+            s.healthLossPerSecond = 150.0f;
+            for (int i = 0; i < 2; ++i)
+                Add(s, Enemy(1 + i, 103.0f, 100.0f + i, true, 63));
+            s.target = 0;
+            std::vector<Item> items = {*greater, *stoneReal};
+            Offer o = Run(s, items);
+            Check(o.any && o.consumed && o.usable == 1,
+                  "chain: the healthstone before the stronger potion (the potion is the fight's one)");
+            Print("chain: 25% against two, a Greater Healing Potion and a Healthstone", s, items);
+            items[1].entry.ready = false;  // the stone's cooldown
+            o = Run(s, items);
+            Check(o.any && o.consumed && o.usable == 0, "chain: the potion once the stone is cooling");
+            s.potionDrunk = true;
+            o = Run(s, items);
+            Check(!o.any, "chain: no second potion in the fight");
+            s.potionDrunk = false;
+            items[1].entry.ready = true;
+
+            Situation arena = s;
+            arena.inArena = true;
+            arena.stake = Stake::Player;
+            arena.usesMana = true;
+            arena.manaPct = 10.0f;
+            o = Run(arena, items);
+            Check(!o.any || o.need != Need::Heal, "arena: no consumed heal (the tactics' potion gate)");
+            std::vector<Item> withMana = {*greater, *stoneReal, *lesserMana};
+            o = Run(arena, withMana);
+            Check(o.any && o.need == Need::Mana && o.usable == 2, "arena: the mana potion stays the offer's");
+        }
+        if (bandage)
+        {
+            Check(bandage->entry.channeled && bandage->entry.consumed && bandage->entry.kind == Kind::Heal,
+                  "a bandage is a channelled consumed heal");
+            Situation hit = Base();
+            hit.healthPct = 40.0f;
+            Add(hit, Enemy(1, 103.0f, 100.0f, true));
+            hit.target = 0;
+            std::vector<Item> items = {*bandage};
+            Check(!Run(hit, items).any, "bandage: none while an enemy hits the bot");
+            // the enemy is held; the bot lost health to it before (the spend rule needs a danger: WI16b's live case)
+            Situation held = hit;
+            held.units[0].controlled = true;
+            held.healthPct = 25.0f;
+            held.healthLossPerSecond = 300.0f;  // a bandage at 1.2 gold is worth it near death
+            Offer o = Run(held, items);
+            Check(o.any && o.need == Need::Heal && o.usable == 0 && o.target.kind == TargetKind::Self,
+                  "bandage: the bot bandages itself while its enemy is held");
+            held.moving = true;
+            Check(!Run(held, items).any, "bandage: none while the bot moves");
+            held.moving = false;
+            held.recentlyBandaged = true;
+            Check(!Run(held, items).any, "bandage: none while Recently Bandaged is on the bot");
+        }
+    }
     // 8. Empty list, unofferable kinds
     {
         Situation s = Base();
@@ -1198,6 +1290,8 @@ int main(int argc, char** argv)
     {
         Situation const s = GenSituation(rng);
         ++c.situations;
+        if (s.inArena)
+            ++c.arenaSituations;
         std::vector<Item> const items = GenList(rng, s);
         ++c.lists;
         CheckOffer(s, items, c);
@@ -1238,7 +1332,8 @@ int main(int argc, char** argv)
               << " O4 weaker=" << c.o4 << " O5 pvp_trinket=" << c.o5 << " O6 not_same=" << c.o6
               << " O7 potion_twice=" << c.o7 << " O8 held_burst=" << c.o8 << " A1 forbidden_spot=" << c.a1
               << " A2 fewer=" << c.a2 << " covers_wrong=" << c.coversWrong << " forbidden_wrong=" << c.forbidWrong
-              << "\n";
+              << " O9 arena_heal=" << c.o9 << " O10 channel_held=" << c.o10 << " O11 potion_before_stone=" << c.o11
+              << " (channel offers " << c.channelOffers << ")\n";
     Check(c.situations > 0 && c.offers > 0 && c.spotsPicked > 0 && c.consumedOffers > 0 && c.potionOffers > 0 &&
               c.keeps > 0,
           "the search is not empty");
@@ -1256,6 +1351,10 @@ int main(int argc, char** argv)
     Check(c.a2 == 0, "A2 fewer");
     Check(c.coversWrong == 0, "covers equal an independent count");
     Check(c.forbidWrong == 0, "forbidden equals an independent check");
+    Check(c.channelOffers > 0 && c.arenaSituations > 0, "the search offers channels and draws arenas");
+    Check(c.o9 == 0, "O9 arena_heal");
+    Check(c.o10 == 0, "O10 channel_held");
+    Check(c.o11 == 0, "O11 potion_before_stone");
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

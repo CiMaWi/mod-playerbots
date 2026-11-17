@@ -15,6 +15,9 @@ namespace ItemUse
 // playerbots item usable <bot>: the bot prints its usable list, its situation and the offer at its next AI update
 // (its map thread) to the server log, lines `ITEM usable:`; the reply is "ordered"
 bool HandleUsableCommand(ChatHandler* handler, char const* args);
+// playerbots item spend <bot> (WI16): the same print, whose `ITEM spend:` lines hold each weighed consumed candidate's
+// spend case (danger, death cost, price, traits, control) and verdict, and the offer's pick; the reply is "ordered"
+bool HandleSpendCommand(ChatHandler* handler, char const* args);
 }  // namespace ItemUse
 
 #endif

@@ -78,6 +78,7 @@ inline UsableEntry EntryOf(Record const& record, Classified const& classified, s
     entry.minRangeYards = record.minRangeYards;
     entry.rangeFriendYards = record.rangeFriendYards;
     entry.pvpTrinket = pvpTrinket || PvpTrinketSpell(record.spellId);
+    entry.channeled = record.channeled;
     return entry;
 }
 
@@ -95,6 +96,34 @@ inline std::vector<UsableEntry> KeepFree(std::span<UsableEntry const> list)
         if (!entry.consumed)
             free.push_back(entry);
     return free;
+}
+
+// WI16: the consumed kinds the fight offer reads; the others' consumed entries (grenades, nets, decoys) arrive with
+// WI17
+constexpr KindMask CONSUMED_FIGHT_KINDS =
+    KindBit(Kind::Heal) | KindBit(Kind::Mana) | KindBit(Kind::Protect) | KindBit(Kind::Dispel) | KindBit(Kind::Move);
+
+// The fight offer's list (WI16): every free entry, and the consumed ones of the kinds above
+constexpr bool FightListed(UsableEntry const& entry)
+{
+    return !entry.consumed || (CONSUMED_FIGHT_KINDS & KindBit(entry.kind)) != 0;
+}
+
+inline std::vector<UsableEntry> KeepFight(std::span<UsableEntry const> list)
+{
+    std::vector<UsableEntry> fight;
+    for (UsableEntry const& entry : list)
+        if (FightListed(entry))
+            fight.push_back(entry);
+    return fight;
+}
+
+// The sampler's flight facts (WI16), from world PvP's flight (FleeRules::Flight): a flight under way, or the bot
+// stood at its end (cornered or bound) in this PvP combat
+inline void SetFlight(Situation& situation, bool active, bool cornered)
+{
+    situation.flees = active;
+    situation.cornered = cornered;
 }
 
 // CheapCheck's ready part over a self target with busy left out (the action's Check asks busy): the record's holds,

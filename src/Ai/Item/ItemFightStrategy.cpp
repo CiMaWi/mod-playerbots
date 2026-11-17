@@ -13,7 +13,10 @@ namespace
 // The old trinket's boost kept its relevance (ACTION_NORMAL + 4, RacialsStrategy); damage below it. A free instant
 // heal comes before a class's cast heals (a healer between two casts uses it first: lab12 wi-gear, a priest that kept
 // casting its own heals on the hurt mate never reached the item at ACTION_LIGHT_HEAL + 5); a protection before the
-// medium heals
+// medium heals. WI16: in a flight (FleeAttackersAction at ACTION_EMERGENCY + 1, every tick) the speed or protection
+// item comes first, once: an instant use, the flight goes on at the next tick
+constexpr float FLIGHT_RELEVANCE = ACTION_EMERGENCY + 2;
+
 float RelevanceOf(ItemUse::Need need)
 {
     switch (need)
@@ -40,4 +43,5 @@ void ItemFightStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     for (ItemUse::Need const need : ItemUse::FIGHT_NEEDS)
         triggers.push_back(
             new TriggerNode(ItemUse::FightTriggerName(need), {NextAction("use item fight", RelevanceOf(need))}));
+    triggers.push_back(new TriggerNode("item flight", {NextAction("use item fight", FLIGHT_RELEVANCE)}));
 }
