@@ -35,7 +35,14 @@ bool UseItemFightAction::Execute(Event /*event*/)
 
     LOG_TRACE("playerbots", "Use item fight: {} uses {} spell {} for {} (target kind {})", bot->GetName(),
               entry->item.entry, request.spellId, ItemUse::NeedWord(offer.need), static_cast<int>(offer.target.kind));
+    // the entry's keys before the use: the list is not touched by it, but nothing after it reads the list
+    ItemUse::UsableEntry const used = *entry;
     ItemUse::UseResult const result = ItemUse::Use(bot, request);
+    // a refusal after Check said yes (the game's handler: Cause::Handler) blocks the entry as Check's would, so the
+    // offer does not name it again at the next tick with a rebuild and a refused row each time
+    if (result.outcome == ItemUse::Outcome::Refused && result.cause != ItemUse::Cause::None &&
+        result.cause != ItemUse::Cause::Busy)
+        ItemUse::BlockOffered(botAI, used, result.cause);
     // the count, the cooldown and the offer change with the use: the list and the offer are made again
     ItemUse::MarkUsableDirty(botAI);
     return result.outcome != ItemUse::Outcome::Refused;
