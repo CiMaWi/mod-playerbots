@@ -124,92 +124,129 @@ inline constexpr char const* CLASS_WORDS[] = {
 // ---------------------------------------------------------------------------------------------
 namespace Nature
 {
-// The words of each trait, in the Trait enum's order: Low and High are the two poles. Each pole has four words, one
-// for each strength of the trait: [0] slight, [1] noticeable, [2] strong, [3] very strong. A bot's nature tells the
-// model the word of the strength its value has (TraitRules.h Word); every word is its own, none is another word with a
-// qualifier in front. In-world words only: no numbers, nothing about mechanics, no comma (the words are joined into a
-// comma list), no "your".
+// The words of each trait, in the Trait enum's order: Low and High are the two poles. Each pole has three words, one
+// for each strength of the trait: [0] slight, [1] noticeable, [2] strong. A bot's nature tells the model the word of
+// the strength its value has (TraitRules.h Word); every word is its own, none is another word with a qualifier in
+// front. In-world words only: no numbers, nothing about mechanics, no comma (the words are joined into a comma list),
+// no "your".
 struct TraitWords
 {
     std::string_view Name;  // the GM command's name for the trait
-    std::array<std::string_view, 4> Low;
-    std::array<std::string_view, 4> High;
+    std::array<std::string_view, 3> Low;
+    std::array<std::string_view, 3> High;
 };
 
-inline constexpr std::array<TraitWords, 30> WORDS = {{
-    {"drive", {"unhurried", "relaxed", "laid-back", "idle"}, {"purposeful", "driven", "ambitious", "relentless"}},
-    {"curiosity",
-     {"settled", "unadventurous", "incurious", "set in old habits"},
-     {"interested", "curious", "inquisitive", "endlessly curious"}},
-    {"caution", {"bold", "daring", "rash", "reckless"}, {"prudent", "careful", "wary", "overcautious"}},
-    {"aggression",
-     {"mild", "peaceable", "gentle", "a pacifist"},
-     {"scrappy", "combative", "belligerent", "bloodthirsty"}},
-    {"sociability",
-     {"private", "solitary", "a loner", "a recluse"},
-     {"outgoing", "sociable", "gregarious", "hungry for company"}},
-    {"helpfulness",
-     {"independent", "self-reliant", "self-sufficient", "beholden to no one"},
-     {"obliging", "helpful", "eager to help", "selfless"}},
-    {"leadership",
-     {"unassuming", "deferential", "submissive", "a born follower"},
-     {"assertive", "commanding", "a born leader", "domineering"}},
+// Loyalty is about the bonds a character chose (friends, a guild, a group); zeal about those it was born into (its
+// people, its faction). Generosity runs from greedy to generous; thrift is how freely a character spends on itself.
+inline constexpr std::array<TraitWords, 21> WORDS = {{
+    {"drive", {"unhurried", "relaxed", "laid-back"}, {"purposeful", "driven", "ambitious"}},
+    {"curiosity", {"down-to-earth", "hard to impress", "incurious"}, {"interested", "curious", "inquisitive"}},
+    {"caution", {"bold", "daring", "reckless"}, {"prudent", "careful", "overcautious"}},
+    {"aggression", {"peaceable", "conciliatory", "a pacifist"}, {"combative", "belligerent", "bloodthirsty"}},
+    {"sociability", {"private", "solitary", "a loner"}, {"outgoing", "sociable", "gregarious"}},
     {"loyalty",
-     {"changeable", "fickle", "unreliable", "faithless"},
-     {"faithful", "loyal", "steadfast", "fiercely loyal"}},
-    {"generosity", {"grudging", "stingy", "tight-fisted", "miserly"}, {"giving", "generous", "open-handed", "lavish"}},
-    {"thrift",
-     {"easy with coin", "free-spending", "extravagant", "a spendthrift"},
-     {"thrifty", "frugal", "penny-pinching", "counting every copper"}},
-    {"greed",
-     {"undemanding", "content", "easily satisfied", "wanting for nothing"},
-     {"acquisitive", "greedy", "grasping", "insatiable"}},
-    {"orderliness", {"untidy", "messy", "slovenly", "chaotic"}, {"neat", "tidy", "orderly", "fastidious"}},
-    {"thoroughness", {"quick", "brisk", "hasty", "slapdash"}, {"attentive", "thorough", "meticulous", "painstaking"}},
-    {"competitiveness",
-     {"untroubled by rivals", "easygoing", "happy to let others win", "indifferent to winning"},
-     {"keen to win", "competitive", "fiercely competitive", "unable to bear losing"}},
-    {"patience",
-     {"impatient", "short-tempered", "hot-tempered", "quick to rage"},
-     {"even-tempered", "patient", "forbearing", "unflappable"}},
-    {"courtesy",
-     {"thoughtless", "inconsiderate", "selfish", "utterly self-serving"},
-     {"considerate", "courteous", "gracious", "chivalrous"}},
-    {"rootedness",
-     {"restless", "footloose", "a wanderer", "a vagabond"},
-     {"fond of home", "home-loving", "a homebody", "rooted to hearth and home"}},
-    {"talkativeness",
-     {"quiet", "taciturn", "tight-lipped", "nearly silent"},
-     {"talkative", "chatty", "garrulous", "a chatterbox"}},
-    {"warmth", {"cool", "guarded", "distant", "cold"}, {"friendly", "warm", "affectionate", "tender-hearted"}},
-    {"humour", {"serious", "earnest", "solemn", "humourless"}, {"light-hearted", "jokey", "a joker", "a clown"}},
-    {"register",
-     {"casual", "plain-spoken", "blunt", "rough-spoken"},
-     {"well-spoken", "formal", "stiffly formal", "ceremonious"}},
-    {"confidence", {"modest", "humble", "self-effacing", "meek"}, {"self-assured", "proud", "boastful", "a braggart"}},
-    {"outlook", {"downcast", "gloomy", "bleak", "despairing"}, {"hopeful", "cheerful", "sunny", "irrepressible"}},
-    {"piety",
-     {"lax in faith", "worldly", "irreverent", "godless"},
-     {"reverent", "devout", "deeply devout", "consumed by faith"}},
+     {"independent", "self-reliant", "bound to no one"},
+     {"a loyal friend", "a devoted friend", "fiercely loyal to friends"}},
+    {"generosity", {"acquisitive", "greedy", "insatiable"}, {"giving", "generous", "open-handed"}},
+    {"thrift", {"free-spending", "extravagant", "a spendthrift"}, {"thrifty", "frugal", "austere"}},
+    {"orderliness", {"untidy", "scatterbrained", "chaotic"}, {"tidy", "methodical", "meticulous"}},
+    {"patience", {"impatient", "short-tempered", "hot-tempered"}, {"even-tempered", "patient", "unflappable"}},
+    {"courtesy", {"awkward", "tactless", "oblivious"}, {"considerate", "courteous", "chivalrous"}},
+    {"talkativeness", {"quiet", "taciturn", "tight-lipped"}, {"talkative", "garrulous", "a chatterbox"}},
+    {"warmth", {"cool", "aloof", "cold"}, {"friendly", "warm", "affectionate"}},
+    {"humour", {"serious", "earnest", "humourless"}, {"playful", "a joker", "a clown"}},
+    {"register", {"casual", "plain-spoken", "blunt"}, {"well-spoken", "formal", "ceremonious"}},
+    {"confidence", {"modest", "humble", "meek"}, {"assertive", "proud", "commanding"}},
+    {"outlook", {"downcast", "gloomy", "bleak"}, {"hopeful", "cheerful", "irrepressible"}},
+    {"piety", {"lax in faith", "worldly", "irreverent"}, {"reverent", "devout", "deeply devout"}},
     {"zeal",
-     {"even-handed", "pragmatic", "unmoved by banners", "loyal to no banner"},
-     {"proud of homeland", "patriotic", "fiercely patriotic", "a zealot"}},
-    {"lore",
-     {"down-to-earth", "practical", "impatient with books", "scornful of books"},
-     {"well-read", "bookish", "scholarly", "steeped in old lore"}},
-    {"suspicion",
-     {"open", "trusting", "unsuspecting", "gullible"},
-     {"watchful", "suspicious", "distrustful", "paranoid"}},
+     {"even-handed", "unmoved by banners", "bound to no banner"},
+     {"proud of homeland", "patriotic", "fiercely patriotic"}},
+    {"suspicion", {"unsuspecting", "trusting", "gullible"}, {"watchful", "suspicious", "distrustful"}},
     {"theatricality",
-     {"restrained", "reserved", "stoic", "stone-faced"},
-     {"expressive", "dramatic", "flamboyant", "melodramatic"}},
-    {"mischief",
-     {"honest", "upright", "strait-laced", "incorruptible"},
-     {"cheeky", "mischievous", "a trickster", "a scoundrel"}},
-    {"worldliness",
-     {"untried", "green", "naive", "a wide-eyed greenhorn"},
-     {"well-travelled", "seasoned", "a veteran", "an old campaigner"}},
+     {"not one for fancy words", "matter-of-fact", "deadpan"},
+     {"expressive", "dramatic", "flamboyant"}},
 }};
+
+// Pairs of trait words that contradict each other. A nature never tells both: the word of the lower-ranking trait is
+// left out (TraitRules.h ToldOrder). The ranks: a trait that also steers what the bot does before one that only
+// colours its talk, then the stronger trait, then the trait in fewer pairs here, then a coin the bot's own values
+// flip. Each word must be a word of WORDS, the two of different traits; the build fails otherwise.
+struct WordConflict
+{
+    std::string_view First;
+    std::string_view Second;
+};
+
+inline constexpr WordConflict CONFLICTS[] = {
+    // Easy-going against a temper and against a taste for fights
+    {"unhurried", "impatient"},
+    {"relaxed", "impatient"},
+    {"relaxed", "short-tempered"},
+    {"relaxed", "hot-tempered"},
+    {"relaxed", "belligerent"},
+    {"laid-back", "impatient"},
+    {"laid-back", "short-tempered"},
+    {"laid-back", "hot-tempered"},
+    {"laid-back", "belligerent"},
+    // Peaceful against a temper, hostile against calm and kind
+    {"peaceable", "short-tempered"},
+    {"peaceable", "hot-tempered"},
+    {"conciliatory", "short-tempered"},
+    {"conciliatory", "hot-tempered"},
+    {"belligerent", "even-tempered"},
+    {"belligerent", "friendly"},
+    {"belligerent", "warm"},
+    {"belligerent", "considerate"},
+    {"belligerent", "courteous"},
+    // Careful against careless
+    {"reckless", "methodical"},
+    {"reckless", "meticulous"},
+    {"careful", "scatterbrained"},
+    {"overcautious", "belligerent"},
+    {"overcautious", "bloodthirsty"},
+    {"prudent", "extravagant"},
+    {"prudent", "a spendthrift"},
+    // Meek against bold, fierce, hot and loud
+    {"meek", "bold"},
+    {"meek", "daring"},
+    {"meek", "reckless"},
+    {"meek", "combative"},
+    {"meek", "belligerent"},
+    {"meek", "bloodthirsty"},
+    {"meek", "short-tempered"},
+    {"meek", "hot-tempered"},
+    {"meek", "blunt"},
+    {"meek", "flamboyant"},
+    {"modest", "flamboyant"},
+    // Distant against fond of company
+    {"aloof", "outgoing"},
+    {"aloof", "sociable"},
+    {"aloof", "gregarious"},
+    {"aloof", "garrulous"},
+    {"aloof", "a chatterbox"},
+    {"cold", "sociable"},
+    {"cold", "gregarious"},
+    {"cold", "considerate"},
+    // Plain against showy
+    {"austere", "flamboyant"},
+    {"down-to-earth", "flamboyant"},
+    {"down-to-earth", "extravagant"},
+    {"worldly", "austere"},
+    {"not one for fancy words", "ceremonious"},
+    {"matter-of-fact", "ceremonious"},
+    {"blunt", "courteous"},
+    // Calm against stirred, still against lively
+    {"unflappable", "dramatic"},
+    {"deadpan", "hot-tempered"},
+    {"deadpan", "irrepressible"},
+    {"expressive", "taciturn"},
+    {"expressive", "tight-lipped"},
+    // Aware against unaware
+    {"oblivious", "watchful"},
+    {"hard to impress", "gullible"},
+    {"awkward", "commanding"},
+};
 
 // The interests, in the Interest enum's order, as the model reads them in a bot's nature; no commas, the names are
 // joined into comma lists.
@@ -218,6 +255,13 @@ inline constexpr std::array<std::string_view, 10> INTEREST_NAMES = {
     "crafting",     "trading", "duelling",
     "exploring",    "lore",    "inns and ale",
     "fine clothes",
+};
+
+// An interest and a trait word that contradict each other: a bot whose nature holds the word is never given the
+// interest (TraitRules.h Roll draws another). First is a name of INTEREST_NAMES, Second a word of WORDS.
+inline constexpr WordConflict INTEREST_CONFLICTS[] = {
+    {"duelling", "peaceable"}, {"duelling", "conciliatory"}, {"duelling", "a pacifist"}, {"exploring", "incurious"},
+    {"lore", "incurious"},     {"fine clothes", "thrifty"},  {"fine clothes", "frugal"}, {"fine clothes", "austere"},
 };
 }  // namespace Nature
 

@@ -1289,7 +1289,7 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
 {
     NeedList list;
     list.money = snapshot.money;
-    list.trainingSpan = TrainingSpan(TraitUnit(snapshot, TraitRules::Trait::Thoroughness));
+    list.trainingSpan = TrainingSpan(TraitUnit(snapshot, TraitRules::Trait::Orderliness));
     list.horizonHours = rates.ridingHorizonHours > 0.0f ? rates.ridingHorizonHours : RidingHorizonHours(snapshot.level);
     list.reserveScale = std::max(0.0f, 1.0f + THRIFT_RESERVE_SCALE * TraitUnit(snapshot, TraitRules::Trait::Thrift));
 
