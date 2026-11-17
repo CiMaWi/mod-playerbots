@@ -331,6 +331,8 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         W3
     };
     constexpr std::uint32_t SHIP = 20808;
+    constexpr std::uint32_t SHIP_PERIOD_MS = 240000;  // an explicit test period: the wait is half of it
+    constexpr float SHIP_RIDE_S = 90.0f;
     // near, far: the wait points of S1, S2; a stop with one is reached only through it (no tie with a direct walk)
     auto const build = [](TravelGraph& graph, bool near, bool far)
     {
@@ -354,6 +356,8 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
                 row.object = object;
                 row.distance = distance;
                 row.extraCost = type == 3 && object ? 0.0033f : 0.0f;
+                row.periodMs = type == 3 && object ? SHIP_PERIOD_MS : 0;
+                row.rideSeconds = type == 3 && object ? SHIP_RIDE_S : 0.0f;
                 builder.AddLink(row);
             }
         };
@@ -413,9 +417,10 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
                   crossed.legs.back().type == TravelRoute::LegType::Walk,
               "a walk to the wait point, the crossing, a walk on");
         float const walks = (20.0f + 20.0f) / request.snapshot.runSpeed;
-        check(std::fabs(ride->seconds -
-                        (walks + TravelRoute::Params{}.transportWaitSeconds + TravelRoute::SHIP_RIDE_SECONDS)) < 0.01f,
-              "the wait points' links cost their walk, the ride its wait and crossing");
+        check(std::fabs(ride->seconds - (walks + SHIP_PERIOD_MS / 2000.0f + SHIP_RIDE_S)) < 0.01f &&
+                  ride->periodMs == SHIP_PERIOD_MS,
+              "the wait points' links cost their walk, the ride half its period plus the crossing; the leg has the "
+              "period");
 
         TravelLegs::Trip trip;
         trip.legs = crossed.legs;

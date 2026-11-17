@@ -99,7 +99,6 @@ Params ConfiguredParams()
 {
     Params params;
     params.stuckPenalty = static_cast<float>(sPlayerbotAIConfig.WorldTravel.StuckPenalty);
-    params.transportWaitSeconds = static_cast<float>(sPlayerbotAIConfig.WorldTravel.TransportWaitSeconds);
     float const flightSpeed = sWorld->getFloatConfig(CONFIG_TAXI_FLIGHT_SPEED);
     params.flightSpeed = flightSpeed > 0.0f ? flightSpeed : TravelGraph::FLIGHT_SPEED;
     // Null until the flight maps are built: no fly legs meanwhile
