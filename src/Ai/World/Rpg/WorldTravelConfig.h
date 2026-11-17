@@ -7,6 +7,8 @@
 #ifndef _PLAYERBOT_WORLDTRAVELCONFIG_H
 #define _PLAYERBOT_WORLDTRAVELCONFIG_H
 
+#include <string>
+
 #include "Define.h"
 #include "ItemWorthTypes.h"
 
@@ -27,7 +29,13 @@ struct WorldTravelConfig
     uint32 StuckPenalty = 5;
     uint32 TransportWaitSeconds = 120;
     // Slot and bag worth by level band (ItemWorthRules.h) until a bot has measured its own loot rate
+    // Each key holds one comma-separated value per level band (5 values; another count keeps the defaults), parsed into
+    // SlotBands by the table's parser (WorldTravelConfig.cpp); the texts are the defaults of DEFAULT_SLOT_BANDS
     WorldTravel::SlotBandTable SlotBands = WorldTravel::DEFAULT_SLOT_BANDS;
+    std::string SlotsLootPerHour = "15,20,25,25,30";
+    std::string SlotsTripMinutes = "10,10,8,8,6";
+    std::string SlotsEarnCopperPerMinute = "30,100,250,500,1000";
+    std::string BagsHorizonHours = "20,30,40,40,100";
     // Percent of the money reserve (repairs, training, travel, ammo, guild) kept before buying a bag
     uint32 BagThriftPercent = 100;
     // Percent of the money above the reserve that one bag may cost
@@ -49,5 +57,11 @@ struct WorldTravelConfig
     // WT12b: how often the live crowding data for the planner is rebuilt
     uint32 CrowdingRefreshSeconds = 5;
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (WorldTravelConfig.cpp)
+extern ConfigFamily<WorldTravelConfig> const WorldTravelFamily;
 
 #endif

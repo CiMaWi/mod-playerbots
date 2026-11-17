@@ -1916,18 +1916,12 @@ Playerbots.Natural.Path.Walk.Enable = 0
 # graveyard) is skipped while a real player is within SightYards of the bot or of the destination, and tried again
 # later; other setups keep the old 150 yd check around the bot. (Ranges: SightYards 0-2000, 0 = no sight check;
 # CorpseRunFailures 0-100; StuckAvoidSeconds 0-86400.) Defaults: 300, 2, 600
-Playerbots.WorldTravel.SightYards = 300
-Playerbots.WorldTravel.CorpseRunFailures = 2
-Playerbots.WorldTravel.StuckAvoidSeconds = 600
 
 # Route planning over the shipped travel graph, costed in seconds (walk, portal, flight with its fare, ship or
 # zeppelin, hearthstone). RouteThreads workers (read at startup) search off the map threads; an edge on which a bot
 # recorded a Stuck event costs StuckPenalty times more for StuckAvoidSeconds (after 3 such events it is skipped); a ship
 # or zeppelin costs TransportWaitSeconds of waiting (half its period) plus the crossing. (Ranges: RouteThreads 1-8;
 # StuckPenalty 1-100; TransportWaitSeconds 0-3600.) Defaults: 1, 5, 120
-Playerbots.WorldTravel.RouteThreads = 1
-Playerbots.WorldTravel.StuckPenalty = 5
-Playerbots.WorldTravel.TransportWaitSeconds = 120
 
 # Items, slots and bags of persistent bots. Every item has a worth in copper: what a vendor pays for what the bot
 # would sell, the buy price of what it uses (upgrades, consumables, reagents, ammo); quest items, kept items, upgrades
@@ -1945,13 +1939,6 @@ Playerbots.WorldTravel.TransportWaitSeconds = 120
 # hours were chosen so that a bot buys the small vendor bags while levelling and the 2 g 10-slot bag only when it
 # is short of room. (Ranges: list values 0-1000000, ThriftPercent 0-1000, BudgetPercent 0-100, MarginPercent
 # 0-1000.)
-Playerbots.WorldTravel.Slots.LootPerHour = 15,20,25,25,30
-Playerbots.WorldTravel.Slots.TripMinutes = 10,10,8,8,6
-Playerbots.WorldTravel.Slots.EarnCopperPerMinute = 30,100,250,500,1000
-Playerbots.WorldTravel.Bags.HorizonHours = 20,30,40,40,100
-Playerbots.WorldTravel.Bags.ThriftPercent = 100
-Playerbots.WorldTravel.Bags.BudgetPercent = 50
-Playerbots.WorldTravel.Destroy.MarginPercent = 50
 
 # Inventory errands of persistent bots. A bot whose general bags are at least 80% full checks, at most every 5
 # minutes, whether a trip to the nearest friendly vendor on its map (at most a 10-minute walk) is worth it: the slots
@@ -1961,7 +1948,6 @@ Playerbots.WorldTravel.Destroy.MarginPercent = 50
 # and records an Inventory event errand_run; a trip given up after 20 minutes records errand_abort. The same rule
 # tells a full bot looting in the world not to destroy items when a trip is worth it. (Range: 0-1440; 0 = no trip
 # just for selling.) Default: 30
-Playerbots.WorldTravel.Errands.NextStopMinutes = 30
 
 # Every bot has a personality (30 traits and one to three interests, rolled once per bot and stored in
 # playerbots_bot_traits); the GM command `.playerbots traits <bot>` shows it. AllowEdit lets the same command set or
@@ -1979,12 +1965,7 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
 # Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
 # from the planner's ranked goals.
-Playerbots.WorldTravel.Planner.Threads = 2
-Playerbots.WorldTravel.Planner.SnapshotMinutes = 5
-Playerbots.WorldTravel.Planner.ResultStaleSeconds = 30
-Playerbots.WorldTravel.Planner.RecheckYards = 100
 Playerbots.WorldTravel.Planner.NoopSeconds = 0
-Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
