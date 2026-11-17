@@ -11,7 +11,6 @@
 #include <atomic>
 #include <cmath>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,6 +22,7 @@
 #include "CensusMgr.h"
 #include "Chat.h"
 #include "Creature.h"
+#include "FleeRules.h"
 #include "GameGraveyard.h"
 #include "GhostWait.h"
 #include "GridNotifiers.h"
@@ -40,6 +40,7 @@
 #include "ShareSlot.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -70,26 +71,9 @@ constexpr char const* REASON_FLED = "fled";
 constexpr char const* REASON_RESUMED = "resumed";
 // The distinct enemy players counted as attacking the bot (the leaving row's attackers)
 constexpr size_t ATTACKERS_COUNTED = 8;
-// A PvpTest fighter stays forced this long after its last aim unless the job clears it first
-constexpr uint32 FORCED_TTL_MS = 30 * MINUTE * IN_MILLISECONDS;
-
-// PvpTest's forced fighters (any thread): guid to the time of the last aim; the count lets the hot path skip the lock
-std::mutex forcedLock;
-std::unordered_map<ObjectGuid, uint32> forced;
-std::atomic<uint32> forcedCount{0};
-
-bool IsForced(ObjectGuid guid, uint32 nowMs)
-{
-    if (!forcedCount.load(std::memory_order_relaxed))
-        return false;
-
-    std::lock_guard lock(forcedLock);
-    auto const found = forced.find(guid);
-    return found != forced.end() && nowMs - found->second <= FORCED_TTL_MS;
-}
-
-// Where the bot is now (the persistence cached, GhostWait.h)
-BotPlace PlaceOf(PlayerbotAI* botAI, uint32 nowMs)
+// Where the bot is now; its persistence read uncached (one atomic load), no master term; PvpTest's fighters carry
+// the constraint row onsight
+BotPlace PlaceOf(PlayerbotAI* botAI)
 {
     BotPlace place;
     Player* const bot = botAI ? botAI->GetBot() : nullptr;
@@ -100,8 +84,8 @@ BotPlace PlaceOf(PlayerbotAI* botAI, uint32 nowMs)
     place.battleground = bot->InBattleground() || bot->InArena();
     if (!place.openWorld || place.battleground)
         return place;
-    place.persistent = IsPersistent(botAI, nowMs);
-    place.forced = place.persistent && IsForced(bot->GetGUID(), nowMs);
+    place.persistent = botAI->IsPersistentBot();
+    place.forced = place.persistent && TestConstraints::OnSight(botAI->testConstraints);
     return place;
 }
 
@@ -131,7 +115,12 @@ void DropFightTarget(PlayerbotAI* botAI, Player* bot)
     botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
 }
 
-EnthusiasmValues Values() { return FromConfig(sPlayerbotAIConfig.WorldPvp); }
+// The values of the last config load (one pointer load): a published copy is never changed or freed, so a map thread
+// holding a reference across a reload stays valid; a reload leaks the old copy (a few hundred bytes, rare)
+ConfigValues const defaultValues{WorldPvpConfig{}};
+std::atomic<ConfigValues const*> publishedValues{&defaultValues};
+
+EnthusiasmValues const& Values() { return publishedValues.load(std::memory_order_acquire)->enthusiasm; }
 
 // In PvP combat or holding an alive enemy player (or its pet) as its attack target, on an open-world map
 // (battlegrounds and arenas leave the value alone). The target is the victim, or what the AI holds as its current
@@ -231,8 +220,7 @@ void ReadContext(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 n
         confidence = TraitRules::Unit(*traits, TraitRules::Trait::Confidence);
     }
     NewTraits(state, aggression, caution, helpfulness, confidence, nowMs, values);
-    Player* const master = botAI->GetMaster();
-    state.realMaster = master && master != bot && IsRealPlayer(master);
+    state.realMaster = RealMasterOf(botAI).has;
     state.prohibitedZone = sPlayerbotAIConfig.IsPvpProhibited(bot->GetZoneId(), bot->GetAreaId());
     state.inShare = BotShare::InShare(bot->GetGUID().GetCounter(), values.startCostShare);
 }
@@ -264,25 +252,59 @@ float BalanceAround(Player* bot, EnthusiasmValues const& values)
     return LocalBalance(entries, values);
 }
 
-// A bot that left keeps its pet off whoever it leaves alone itself. The call-off at the leaving does not last: a
-// defensive pet answers a hit that lands afterwards, fights on once that attacker has left too, and its hits keep
-// both in PvP combat (wp-leave run 3: a hunter's pet on a mage 30 s after both had left)
-void HoldPetBack(PlayerbotAI* botAI, Player* bot)
+// The pet's react state, as the pet command sets it (SetPetStanceAction): the creature's and the one its bar shows
+void SetPetReact(Pet* pet, ReactStates react)
 {
-    Pet* const pet = bot->GetPet();
-    Unit* const victim = pet ? pet->GetVictim() : nullptr;
-    if (victim && LeftAlone(botAI, victim))
-        botAI->PetFollow();
+    pet->SetReactState(react);
+    if (CharmInfo* const charmInfo = pet->GetCharmInfo())
+        charmInfo->SetPlayerReactState(react);
+}
+
+// The leave's pet step (WP38a): the pet stops and follows, passive until the disengaged edge, so a defensive pet does
+// not answer a later hit and fight on after both sides have left (wp-leave run 3: a hunter's pet on a mage 30 s after
+// both had left). A passive pet defends nobody: an attacked bot flees (FleesNow)
+void SetPetPassive(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state)
+{
+    if (Pet* const pet = bot->GetPet())
+    {
+        SavePetReact(state, static_cast<uint8_t>(pet->GetReactState()));
+        SetPetReact(pet, REACT_PASSIVE);
+    }
+    botAI->PetFollow();
+}
+
+// The leave's guardian step (WP38a-5, DismissedAtLeave): the bot's guardians are unsummoned (gathered first: the
+// unsummon takes them out of m_Controlled)
+void DismissGuardians(Player* bot)
+{
+    std::vector<Creature*> guardians;
+    for (Unit* const controlled : bot->m_Controlled)
+    {
+        Creature* const creature = controlled ? controlled->ToCreature() : nullptr;
+        if (creature && DismissedAtLeave(creature->IsGuardian(), creature->IsPet()))
+            guardians.push_back(creature);
+    }
+    for (Creature* const guardian : guardians)
+        guardian->DespawnOrUnsummon();
+}
+
+// On the disengaged edge: the bot's pet gets its react state back if it is still passive. Not by guid: a pet that was
+// unsummoned and summoned again meanwhile comes back passive under a new guid (Pet saves its react state); a pet the
+// stance action set on its summon is not passive and stays as it is
+void RestorePet(Player* bot, uint8_t react)
+{
+    Pet* const pet = react != NO_PET_REACT ? bot->GetPet() : nullptr;
+    if (pet && pet->HasReactState(REACT_PASSIVE))
+        SetPetReact(pet, static_cast<ReactStates>(react));
 }
 
 // The engaged row on the rising edge (world-log.md): the value there, and the pvptest tag
-void RecordEngaged(Player* bot, BotEnthusiasm const& state, uint32 nowMs, EnthusiasmValues const& values)
+void RecordEngaged(Player* bot, bool onSight, BotEnthusiasm const& state, uint32 nowMs, EnthusiasmValues const& values)
 {
     if (!WorldLog::Active())
         return;
     EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_ENGAGED,
-                   static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))),
-                   IsForced(bot->GetGUID(), nowMs) ? 1 : 0);
+                   static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))), onSight ? 1 : 0);
 }
 
 // The engaged edge (its row on the rising one), the context when due, the group hold when due (cheap: most bots have no
@@ -290,10 +312,10 @@ void RecordEngaged(Player* bot, BotEnthusiasm const& state, uint32 nowMs, Enthus
 // engaged or could enter
 // (`force`: all of it now, for the command)
 // The disengaged row on the falling edge: the value there and the whole seconds engaged; no row for a forced fighter
-void RecordDisengaged(Player* bot, BotEnthusiasm const& state, uint32 startMs, uint32 nowMs,
+void RecordDisengaged(Player* bot, bool onSight, BotEnthusiasm const& state, uint32 startMs, uint32 nowMs,
                       EnthusiasmValues const& values)
 {
-    if (!WorldLog::Active() || IsForced(bot->GetGUID(), nowMs))
+    if (!WorldLog::Active() || onSight)
         return;
     EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_DISENGAGED,
                    static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))),
@@ -305,12 +327,16 @@ void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs
 {
     // Observe resets engagedMs on every edge: keep the rising time for the falling edge's row
     uint32 const startMs = state.engagedMs;
+    bool const onSight = TestConstraints::OnSight(botAI->testConstraints);
     if (Observe(state, EngagedNow(botAI, bot), nowMs, values))
     {
         if (state.engaged)
-            RecordEngaged(bot, state, nowMs, values);
+            RecordEngaged(bot, onSight, state, nowMs, values);
         else
-            RecordDisengaged(bot, state, startMs, nowMs, values);
+        {
+            RecordDisengaged(bot, onSight, state, startMs, nowMs, values);
+            RestorePet(bot, RestoredPetReact(state));
+        }
     }
     if (force || ContextDue(state, nowMs))
         ReadContext(botAI, bot, state, nowMs, values);
@@ -320,20 +346,17 @@ void Refresh(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs
     {
         NewBalance(state, BalanceAround(bot, values), GraveyardYards(bot) <= values.graveyardYards, nowMs, values);
         state.attacked = state.engaged && AttackersOf(bot) != 0;
-        if (state.left)
-            HoldPetBack(botAI, bot);
     }
 }
 
-struct Entering
+// The rules' reads (ScanSkipped, MayEnter, NoteEntering; WP39) refresh the state they read: made and seeded on first
+// use, then Refresh (cheap when nothing is due; PerfMonitor "WorldPvp balance" when the balance is)
+BotEnthusiasm& Fresh(PlayerbotAI* botAI, uint32 nowMs, EnthusiasmValues const& values)
 {
-    bool enters = false;
-    bool pays = false;  // a start the bot pays for (PaysStart)
-    BanReason ban = BanReason::None;
-    JoinFacts facts;
-    float join = 0.0f;
-    double value = 0.0;
-};
+    BotEnthusiasm& state = Of(botAI, nowMs, values);
+    Refresh(botAI, botAI->GetBot(), state, nowMs, values, false);
+    return state;
+}
 
 // The bans, the join threshold and the check for one enemy, from what the bot sees of it now: whether its victim is
 // a player of the bot's faction, of its group or its real master
@@ -361,7 +384,9 @@ Entering Evaluate(PlayerbotAI* botAI, Player* bot, BotEnthusiasm const& state, P
     ban.onTransport = bot->GetTransport() != nullptr;
     ban.inInstance = bot->GetMap()->Instanceable();
     ban.realMaster = state.realMaster;
-    ban.mastersFight = state.realMaster && victimPlayer && victimPlayer == botAI->GetMaster();
+    Player* const master = state.realMaster ? RealMasterOf(botAI).master : nullptr;
+    ban.mastersFight = MastersFight(state.realMaster, victimPlayer ? victimPlayer->GetGUID().GetRawValue() : 0,
+                                    master ? master->GetGUID().GetRawValue() : 0);
     entering.ban = Banned(ban);
     if (entering.ban != BanReason::None)
         return entering;
@@ -406,8 +431,10 @@ void RecordLeave(Player* bot, BotEnthusiasm const& state, double value, uint32 a
                        attackers ? REASON_FLED : REASON_RESUMED, static_cast<float>(value), alternatives, 0);
 }
 
-// The leave check (PLAN 3.5), after the refresh: once per engaged episode an engaged bot below its flee threshold
-// drops its target, calls its pet off and writes its row; the flight follows by the trigger when it is attacked
+// The leave check (PLAN 3.5, 3.11), after the refresh: once per engaged episode an engaged bot below its flee threshold
+// leaves in one act (it stops its attack, clears its selection and current target, ends its pick, sets its pet
+// passive until the disengaged edge and dismisses its guardians) and writes its row; the flight follows by the
+// trigger when it is attacked
 void CheckLeave(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 nowMs, EnthusiasmValues const& values)
 {
     // Cheap first: the flags, then the value, then the rules
@@ -419,7 +446,8 @@ void CheckLeave(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 no
     uint32 const attackers = AttackersOf(bot);
     MarkLeft(state, attackers != 0, nowMs);
     DropFightTarget(botAI, bot);
-    botAI->PetFollow();
+    SetPetPassive(botAI, bot, state);
+    DismissGuardians(bot);
     RecordLeave(bot, state, value, attackers);
 }
 
@@ -463,7 +491,7 @@ void NoteEnthusiasmDeath(Player* killer, Player* killed)
     if (!killer || !killed || killer == killed)
         return;
     uint32 const nowMs = getMSTime();
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     EditOne(killed, EditCause::Death, nowMs, values);
     EditOne(killer, EditCause::Kill, nowMs, values);
     // Only members on the victim's map: it is this thread's; a member elsewhere is another map thread's
@@ -513,7 +541,7 @@ public:
 };
 }  // namespace
 
-bool StartsByRules(PlayerbotAI* botAI) { return StartsByRules(PlaceOf(botAI, getMSTime())); }
+bool StartsByRules(PlayerbotAI* botAI) { return StartsByRules(PlaceOf(botAI)); }
 
 bool Reaches(Unit const* bot, Unit const* enemy)
 {
@@ -521,84 +549,46 @@ bool Reaches(Unit const* bot, Unit const* enemy)
                    [bot, enemy]() { return bot->IsWithinLOSInMap(enemy); });
 }
 
-bool CallsPetOff(PlayerbotAI* botAI, Unit* target)
-{
-    Pet* const pet = botAI && target ? botAI->GetBot()->GetPet() : nullptr;
-    Unit* const victim = pet ? pet->GetVictim() : nullptr;
-    Player* const victimSide = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
-    Player* const leftSide = target ? target->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
-    if (!victimSide || !leftSide)
-        return false;
-    return PetCalledOff(LeftAlone(botAI, target), victimSide->GetGUID().GetRawValue(),
-                        leftSide->GetGUID().GetRawValue());
-}
-
-void MarkForced(ObjectGuid guid)
-{
-    std::lock_guard lock(forcedLock);
-    forced[guid] = getMSTime();
-    forcedCount.store(static_cast<uint32>(forced.size()), std::memory_order_relaxed);
-}
-
-void ClearForced(ObjectGuid guid)
-{
-    std::lock_guard lock(forcedLock);
-    forced.erase(guid);
-    forcedCount.store(static_cast<uint32>(forced.size()), std::memory_order_relaxed);
-}
-
-void RefreshEnthusiasm(PlayerbotAI* botAI)
-{
-    uint32 const nowMs = getMSTime();
-    EnthusiasmValues const values = Values();
-    Refresh(botAI, botAI->GetBot(), Of(botAI, nowMs, values), nowMs, values, false);
-}
-
 bool ScanSkipped(PlayerbotAI* botAI)
 {
-    BotEnthusiasm const* const state = botAI->enthusiasm.get();
-    return state && SkipsScan(*state, getMSTime(), Values());
+    uint32 const nowMs = getMSTime();
+    EnthusiasmValues const& values = Values();
+    return SkipsScan(Fresh(botAI, nowMs, values), nowMs, values);
 }
 
 bool MayEnter(PlayerbotAI* botAI, Unit* unit, char const* refusal)
 {
     Player* const bot = botAI->GetBot();
     Player* const enemy = unit->ToPlayer();
-    BotEnthusiasm const* const state = botAI->enthusiasm.get();
-    if (!enemy || !state || refusal || !enemy->IsAlive() || enemy->GetTeamId() == bot->GetTeamId())
+    if (!enemy || refusal || !enemy->IsAlive() || enemy->GetTeamId() == bot->GetTeamId())
         return false;
     uint32 const nowMs = getMSTime();
-    if (IsPick(*state, enemy->GetGUID().GetRawValue(), nowMs))
-        return true;
-    if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)) || LeftAlone(botAI, enemy))
-        return false;
-    return Evaluate(botAI, bot, *state, enemy, nowMs, Values()).enters;
+    EnthusiasmValues const& values = Values();
+    BotEnthusiasm const& state = Fresh(botAI, nowMs, values);
+    return ReadsEnter(state, enemy->GetGUID().GetRawValue(), nowMs,
+                      [&]()
+                      {
+                          if (!bot->IsWithinDist(enemy, static_cast<float>(sPlayerbotAIConfig.WorldPvp.ScanYards)))
+                              return Entering();
+                          return Evaluate(botAI, bot, state, enemy, nowMs, values);
+                      });
 }
 
 bool NoteEntering(PlayerbotAI* botAI, Player* enemy)
 {
-    BotEnthusiasm* const state = botAI->enthusiasm.get();
-    if (!state)
-        return false;
     uint32 const nowMs = getMSTime();
-    uint64 const guid = enemy->GetGUID().GetRawValue();
-    if (IsPick(*state, guid, nowMs))
-        return true;
+    EnthusiasmValues const& values = Values();
+    BotEnthusiasm& state = Fresh(botAI, nowMs, values);
     Player* const bot = botAI->GetBot();
-    EnthusiasmValues const values = Values();
-    Entering const entering = Evaluate(botAI, bot, *state, enemy, nowMs, values);
-    if (!entering.enters)
-        return false;
-    SetPick(*state, guid, nowMs);
-    RecordEntering(bot, entering, values, enemy->GetGUID().GetCounter());
-    if (entering.pays)
-    {
-        // The start's cost (WP34), with its row: the value before and after
-        double const before = EditBy(*state, EditCause::Start, nowMs, values);
-        EventLog::Emit(bot, EVENT_ENTHUSIASM, Word(EditCause::Start), static_cast<uint32>(std::lround(before)),
-                       static_cast<int64>(std::lround(ValueAt(*state, nowMs, values))));
-    }
-    return true;
+    PickNote const note = NotePick(state, enemy->GetGUID().GetRawValue(), nowMs, values,
+                                   [&]() { return Evaluate(botAI, bot, state, enemy, nowMs, values); });
+    if (note.opened)
+        RecordEntering(bot, note.entering, values, enemy->GetGUID().GetCounter());
+    // The start's cost (WP34), with its row: the value before and after
+    if (note.charged)
+        EventLog::Emit(bot, EVENT_ENTHUSIASM, Word(EditCause::Start), static_cast<uint32>(std::lround(note.before)),
+                       static_cast<int64>(std::lround(ValueAt(state, nowMs, values))));
+    return note.enters;
 }
 
 bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit)
@@ -610,12 +600,23 @@ bool IsEnteredTarget(PlayerbotAI* botAI, Unit* unit)
 void NoteEngaged(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
 {
     // A forced fighter's edges are tracked too (TracksEngaged): its engaged row carries the pvptest tag
-    if (!botAI->enthusiasm && (!EngagedNow(botAI, bot) || !TracksEngaged(PlaceOf(botAI, nowMs))))
+    if (!botAI->enthusiasm && (!EngagedNow(botAI, bot) || !TracksEngaged(PlaceOf(botAI))))
         return;
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     BotEnthusiasm& state = Of(botAI, nowMs, values);
     Refresh(botAI, bot, state, nowMs, values, false);
     CheckLeave(botAI, bot, state, nowMs, values);
+}
+
+void NoteEpisode(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
+{
+    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (botAI->enthusiasm && botAI->enthusiasm->engaged))
+        NoteEngaged(botAI, bot, nowMs);
+    // After the engaged edge (a death passes it too; no enthusiasm needed); the value lookup only at the edge
+    bool const episode =
+        !bot->GetCombatManager().GetPvPCombatRefs().empty() || (botAI->enthusiasm && botAI->enthusiasm->engaged);
+    if (FleeRules::EpisodeFell(botAI->pvpEpisode, episode))
+        FleeRules::EpisodeEnd(botAI->GetAiObjectContext()->GetValue<FleeRules::Flight&>("flee flight")->Get());
 }
 
 bool LeftAlone(PlayerbotAI* botAI, Unit* unit)
@@ -644,7 +645,7 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
         rest.remove_prefix(1);
     while (!rest.empty() && rest.back() == ' ')
         rest.remove_suffix(1);
-    EnthusiasmValues const values = Values();
+    EnthusiasmValues const& values = Values();
     std::optional<double> set;
     if (!rest.empty())
     {
@@ -703,8 +704,44 @@ bool HandleEnthusiasmCommand(ChatHandler* handler, PlayerbotAI* botAI, std::stri
                              picked ? (PICK_MS - (nowMs - state.pickMs)) / IN_MILLISECONDS : 0);
     handler->PSendSysMessage("{} left {} attacked {} attackers {}", prefix, state.left ? 1 : 0, state.attacked ? 1 : 0,
                              AttackersOf(bot));
+    // The master whose fights a bot with a real master joins, 0 for none (a test can tell a vacuous realmaster case)
+    Player* const master = state.realMaster ? RealMasterOf(botAI).master : nullptr;
+    handler->PSendSysMessage("{} realmaster {} master {}", prefix, state.realMaster ? 1 : 0,
+                             master ? master->GetGUID().GetCounter() : 0);
+    // The config's base rates as built at the last config load (a test reads the reload through them)
+    handler->PSendSysMessage("{} rate {:.2f} depletion {:.2f}", prefix, values.recoveryPerHour,
+                             values.depletionPerMinute);
     return true;
 }
+
+void PublishConfigValues(WorldPvpConfig const& config)
+{
+    // The previous copy stays (map threads may hold a reference to it): a reload is rare and a copy a few hundred bytes
+    publishedValues.store(new ConfigValues(config), std::memory_order_release);
+}
+
+GhostValues const& GhostConfigValues() { return publishedValues.load(std::memory_order_acquire)->ghost; }
 }  // namespace WorldPvp
 
-void AddWorldPvpScripts() { new WorldPvp::WorldPvpPlayerScript(); }
+namespace
+{
+// `.reload config`: the core reloads the config files into sConfigMgr before this hook; the first call (reload ==
+// false) comes before PlayerbotAIConfig::Initialize, which loads the values itself at startup
+class WorldPvpWorldScript : public WorldScript
+{
+public:
+    WorldPvpWorldScript() : WorldScript("WorldPvpWorldScript", {WORLDHOOK_ON_AFTER_CONFIG_LOAD}) {}
+
+    void OnAfterConfigLoad(bool reload) override
+    {
+        if (reload)
+            sPlayerbotAIConfig.LoadWorldPvpConfig();
+    }
+};
+}  // namespace
+
+void AddWorldPvpScripts()
+{
+    new WorldPvp::WorldPvpPlayerScript();
+    new WorldPvpWorldScript();
+}

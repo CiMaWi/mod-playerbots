@@ -6,6 +6,7 @@
 
 #include "SSCActions.h"
 #include "EncounterHelpers.h"
+#include "ItemUse.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "ObjectAccessor.h"
@@ -2328,7 +2329,12 @@ bool LadyVashjPassTheTaintedCoreAction::UseCoreOnGenerator(Item* core, GameObjec
 
     // Opening on the generator, as a player using the core on it; GameObject::Use() does nothing.
     // The bot's next tick skips while Opening is cast, and a second use would restart it.
-    botAI->ImbueItem(core, TARGET_FLAG_GAMEOBJECT, generator->GetGUID());
+    // The request names Opening (item-use WI5): the core's first use spell is the throw to a friend, and the item
+    // use path would check that one against the generator and refuse.
+    constexpr uint32 SPELL_OPENING = 3366;
+    ItemUse::Request request = ItemUse::OnObject(core, generator, ItemUse::Caller::Script);
+    request.spellId = SPELL_OPENING;
+    ItemUse::Use(bot, request);
     return true;
 }
 

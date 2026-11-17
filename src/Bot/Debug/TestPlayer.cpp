@@ -925,7 +925,7 @@ void TestPlayerMgr::Status(ChatHandler* handler)
     }
 
     // A console command, so a pass over the random bots is fine here
-    float const radius = static_cast<float>(sPlayerbotAIConfig.BotActiveAloneForceWhenInRadius);
+    float const radius = sPlayerbotAIConfig.ReactDistance;
     uint32 inZone = 0;
     uint32 inRadius = 0;
     uint32 active = 0;

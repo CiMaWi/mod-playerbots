@@ -9,7 +9,7 @@
 
 class ChatHandler;
 
-// Console commands of the item use plan (playerbots item ...); read only, on the world thread
+// Console commands of the item use plan (playerbots item ...), on the world thread; only `use` acts, by an order
 namespace ItemUse
 {
 // playerbots item census [unclassified]: the index's counts by item class, shape and kind; with `unclassified`, every
@@ -20,6 +20,9 @@ bool HandleCensusCommand(ChatHandler* handler, char const* args);
 bool HandleInfoCommand(ChatHandler* handler, char const* args);
 // playerbots item dump [<file>]: writes the whole index as the dump file (the classifier's fixture)
 bool HandleDumpCommand(ChatHandler* handler, char const* args);
+// playerbots item use <bot> <entry>|slot <slot> [self | unit <name> | creature <entry> | item <slot>] [dead]: a test's
+// request (caller test) the bot takes on its map thread; the reply is "ordered", the outcome its ItemUse row
+bool HandleUseCommand(ChatHandler* handler, char const* args);
 }  // namespace ItemUse
 
 #endif

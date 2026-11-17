@@ -27,6 +27,16 @@ bool AttackEnemyPlayerAction::isUseful()
     return !sPlayerbotAIConfig.IsPvpProhibited(bot->GetZoneId(), bot->GetAreaId());
 }
 
+bool AttackEnemyPlayerAction::NoteStart(Unit* target)
+{
+    // World PvP (WP39): a rule bot makes its pick here, after every refusal, on an enemy it is not in combat with
+    // (being attacked costs nothing): the entering row and, in the start-cost share, the cost. A refused note is no
+    // attack
+    Player* const enemy = target->ToPlayer();
+    return !enemy || bot->IsInCombatWith(enemy) || !WorldPvp::StartsByRules(botAI) ||
+           WorldPvp::NoteEntering(botAI, enemy);
+}
+
 bool AttackEnemyFlagCarrierAction::isUseful()
 {
     Unit* target = context->GetValue<Unit*>("enemy flag carrier")->Get();
@@ -57,10 +67,6 @@ bool AggressiveTargetAction::isUseful()
 bool DropTargetAction::Execute(Event /*event*/)
 {
     Unit* target = context->GetValue<Unit*>("current target")->Get();
-    // World PvP (WP24): a bot that left its fight and leaves an enemy alone calls its pet off that enemy too
-    if (target && WorldPvp::CallsPetOff(botAI, target))
-        botAI->PetFollow();
-
     if (target && target->isDead())
     {
         ObjectGuid guid = target->GetGUID();

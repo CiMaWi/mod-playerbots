@@ -133,7 +133,7 @@ int main()
             StatusModel status{4000, 7};
             int planner = 3;
             int memos = 2;
-            std::uint16_t constraints = 0x21;
+            std::uint32_t constraints = 0x21;
             StatusEnd::ApplyReset(list.status, status);
             StatusEnd::ApplyReset(list.planner, planner);
             StatusEnd::ApplyReset(list.rpgMemos, memos);

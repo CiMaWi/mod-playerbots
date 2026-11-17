@@ -12,7 +12,6 @@
 #include <sstream>
 
 #include "AcquaintanceMgr.h"
-#include "ActivityBudget.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
@@ -127,11 +126,6 @@ public:
             {"teams", ArenaTeamFormation::HandleTeamsCommand, SEC_GAMEMASTER, Console::Yes},
             {"comps", ArenaTeamFormation::HandleCompsCommand, SEC_GAMEMASTER, Console::Yes},
             {"recruit", ArenaRecruit::HandleRecruitCommand, SEC_GAMEMASTER, Console::Yes},
-        };
-
-        static ChatCommandTable playerbotsSituationCommandTable = {
-            {"status", ActivityBudget::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
-            {"force", ActivityBudget::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsLadderPoolCommandTable = {
@@ -294,11 +288,12 @@ public:
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // Item use WI2c: the index census, one record and the dump (read only)
+        // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order
         static ChatCommandTable playerbotsItemCommandTable = {
             {"census", ItemUse::HandleCensusCommand, SEC_PLAYER, Console::Yes},
             {"info", ItemUse::HandleInfoCommand, SEC_PLAYER, Console::Yes},
             {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
+            {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -319,7 +314,6 @@ public:
             {"testplayer", playerbotsTestPlayerCommandTable},
             {"pvptest", playerbotsPvpTestCommandTable},
             {"arena", playerbotsArenaCommandTable},
-            {"situation", playerbotsSituationCommandTable},
             {"ladder", playerbotsLadderCommandTable},
             {"pvpgear", playerbotsPvpGearCommandTable},
             {"matchlog", playerbotsMatchLogCommandTable},
@@ -586,7 +580,7 @@ public:
 
     // A test's constraint change (TestConstraints, functional tests): posted like a travel order, so the bot's map
     // thread applies it ahead of the AI's delays and writes a Constraint row
-    static void PostConstraints(PlayerbotAI* botAI, uint16 on, uint16 off)
+    static void PostConstraints(PlayerbotAI* botAI, uint32 on, uint32 off)
     {
         TravelOrder order;
         order.on = on;
@@ -656,7 +650,7 @@ public:
         if (!botAI)
             return false;
         TestConstraints::Parsed const parsed = TestConstraints::Parse(std::string_view(choices));
-        uint16 const states = parsed.set & TestConstraints::STATES;
+        uint32 const states = parsed.set & TestConstraints::STATES;
         if (!parsed.bad.empty() || states)
         {
             handler->SendErrorMessage("ROUTE release: unknown choice '{}' ({})",
@@ -664,7 +658,7 @@ public:
                                       TestConstraints::Format(TestConstraints::CHOICES));
             return false;
         }
-        PostConstraints(botAI, parsed.set, static_cast<uint16>(TestConstraints::HOLD & ~parsed.set));
+        PostConstraints(botAI, parsed.set, static_cast<uint32>(TestConstraints::HOLD & ~parsed.set));
         handler->PSendSysMessage("ROUTE release: {} ordered (kept off: {})", target.GetName(),
                                  TestConstraints::Format(parsed.set));
         return true;
