@@ -89,6 +89,13 @@ struct WorldPvpConfig
     WorldPvpEnthusiasmConfig Enthusiasm;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table families (WorldPvpConfig.cpp): the top keys, then Enthusiasm.*
+extern ConfigFamily<WorldPvpConfig> const WorldPvpFamily;
+extern ConfigFamily<WorldPvpEnthusiasmConfig> const WorldPvpEnthusiasmFamily;
+
 namespace WorldPvp
 {
 // The yards of "nothing there" (no enemy at a corpse, no graveyard on a map)

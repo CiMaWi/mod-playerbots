@@ -887,11 +887,11 @@ void PvpTestArenaJob::UpdateMonitor(bool slowTick)
     if (!_acceptFallbackSent && _stageMs >= AcceptFallbackMs)
         SendAcceptFallback();
 
-    if (_stageMs >= sPlayerbotAIConfig.PvpTestTimeoutSeconds * MsPerSecond)
+    if (_stageMs >= sPlayerbotAIConfig.PvpTest.TimeoutSeconds * MsPerSecond)
     {
         _result.Outcome = "timeout";
         _result.Reason =
-            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTestTimeoutSeconds);
+            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTest.TimeoutSeconds);
         _result.FightMs = _fightStarted ? _totalMs - _fightStartMs : 0;
         arena->EndBattleground(PVP_TEAM_NEUTRAL);
         CaptureScores(arena);
@@ -1934,7 +1934,7 @@ bool PvpTestMgr::HandleArenaCommand(ChatHandler* handler, char const* args)
         }
         else if (key == "trace" && (value == "0" || value == "1"))
         {
-            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceConfig.Enable)
                 return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
 
             params.Trace = value == "1";
@@ -2109,7 +2109,7 @@ bool PvpTestMgr::HandlePlanStartCommand(ChatHandler* handler, char const* args)
         }
         else if (key == "trace" && (value == "0" || value == "1"))
         {
-            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceConfig.Enable)
                 return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
 
             plan->Trace = value == "1";

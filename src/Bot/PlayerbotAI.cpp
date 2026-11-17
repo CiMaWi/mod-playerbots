@@ -323,7 +323,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         return;
     }
 
-    if (sPlayerbotAIConfig.TestMissLog)
+    if (sPlayerbotAIConfig.Lone.TestMissLog)
         LogPreGateMisses();
 
     // The work mask's first load (CS5 design 6.2): zero skips the order, the constraints and the visit watch; each

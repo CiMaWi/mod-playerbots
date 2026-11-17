@@ -21,4 +21,10 @@ struct ItemUseConfig
     uint32 UseEndGraceMs = 1500;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (ItemUseConfig.cpp)
+extern ConfigFamily<ItemUseConfig> const ItemUseFamily;
+
 #endif

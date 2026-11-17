@@ -127,15 +127,15 @@ float Lerp(float bottom, float top, float percentile) { return bottom + (top - b
 
 float Tolerance(float percentile)
 {
-    return std::max(1.0f, Lerp(static_cast<float>(sPlayerbotAIConfig.ArenaTeamToleranceBottom),
-                               static_cast<float>(sPlayerbotAIConfig.ArenaTeamToleranceTop), percentile));
+    return std::max(1.0f, Lerp(static_cast<float>(sPlayerbotAIConfig.ArenaTeamOptions.ToleranceBottom),
+                               static_cast<float>(sPlayerbotAIConfig.ArenaTeamOptions.ToleranceTop), percentile));
 }
 
 uint32 LeaveChance(float percentile)
 {
     return static_cast<uint32>(
-        std::lround(Lerp(static_cast<float>(sPlayerbotAIConfig.ArenaTeamLeaveChanceBottom),
-                         static_cast<float>(sPlayerbotAIConfig.ArenaTeamLeaveChanceTop), percentile)));
+        std::lround(Lerp(static_cast<float>(sPlayerbotAIConfig.ArenaTeamOptions.LeaveChanceBottom),
+                         static_cast<float>(sPlayerbotAIConfig.ArenaTeamOptions.LeaveChanceTop), percentile)));
 }
 
 // Weighted random index (weights >= 0; every one gets MinPickWeight on top)
@@ -164,7 +164,7 @@ size_t PickBest(std::vector<float> const& weights)
 
 bool ArenaTeamFormation::IsActive()
 {
-    return sPlayerbotAIConfig.ArenaTeamFormationEnable && !sPlayerbotAIConfig.DeleteRandomBotArenaTeams;
+    return sPlayerbotAIConfig.ArenaTeamOptions.FormationEnable && !sPlayerbotAIConfig.DeleteRandomBotArenaTeams;
 }
 
 uint32 ArenaTeamFormation::MaxRoster(uint32 type)
@@ -172,17 +172,17 @@ uint32 ArenaTeamFormation::MaxRoster(uint32 type)
     switch (type)
     {
         case ARENA_TYPE_2v2:
-            return sPlayerbotAIConfig.ArenaTeamMaxRoster2v2;
+            return sPlayerbotAIConfig.ArenaTeamOptions.MaxRoster2v2;
         case ARENA_TYPE_3v3:
-            return sPlayerbotAIConfig.ArenaTeamMaxRoster3v3;
+            return sPlayerbotAIConfig.ArenaTeamOptions.MaxRoster3v3;
         default:
-            return sPlayerbotAIConfig.ArenaTeamMaxRoster5v5;
+            return sPlayerbotAIConfig.ArenaTeamOptions.MaxRoster5v5;
     }
 }
 
 uint32 ArenaTeamFormation::MinRoster(uint32 type)
 {
-    return std::clamp<uint32>(sPlayerbotAIConfig.ArenaTeamMinMembers, type, MaxRoster(type));
+    return std::clamp<uint32>(sPlayerbotAIConfig.ArenaTeamOptions.MinMembers, type, MaxRoster(type));
 }
 
 float ArenaTeamFormation::ClassSynergy(std::vector<uint8> const& teamClasses, uint8 candidateClass)
@@ -234,7 +234,7 @@ void ArenaTeamFormation::Update(uint32 diff)
 
     // The comp table is read once the option is on (startup, or the first tick after a config reload turned it on),
     // then again when the file changes (checked every CompsCheckSeconds; the farm refreshes it daily)
-    if (sPlayerbotAIConfig.ArenaTeamCompLearningEnable)
+    if (sPlayerbotAIConfig.ArenaTeamOptions.CompLearningEnable)
     {
         if (!_compsTried)
         {
@@ -257,7 +257,7 @@ void ArenaTeamFormation::Update(uint32 diff)
     }
 
     _timer += diff;
-    if (_timer < sPlayerbotAIConfig.ArenaTeamUpdateSeconds * IN_MILLISECONDS)
+    if (_timer < sPlayerbotAIConfig.ArenaTeamOptions.UpdateSeconds * IN_MILLISECONDS)
         return;
 
     _timer = 0;
@@ -269,7 +269,7 @@ void ArenaTeamFormation::RunPass()
 {
     ++_pass;
     time_t const now = time(nullptr);
-    uint32 joinsLeft = sPlayerbotAIConfig.ArenaTeamRecruitsPerPass;
+    uint32 joinsLeft = sPlayerbotAIConfig.ArenaTeamOptions.RecruitsPerPass;
     std::vector<Candidate> pool;
     bool poolBuilt = false;
     bool const logSummary = _pass % SummaryEveryPasses == 0;
@@ -422,7 +422,8 @@ void ArenaTeamFormation::TryLeave(ArenaTeam* team, time_t now)
         return;
 
     auto const changed = _teamChangedAt.find(teamId);
-    if (changed != _teamChangedAt.end() && now < changed->second + sPlayerbotAIConfig.ArenaTeamMinTeamStaySeconds)
+    if (changed != _teamChangedAt.end() &&
+        now < changed->second + sPlayerbotAIConfig.ArenaTeamOptions.MinTeamStaySeconds)
         return;
 
     // The leaver: the longest loss streak, then the most losses since joining, then random (skill plays no part)
@@ -453,7 +454,7 @@ void ArenaTeamFormation::TryLeave(ArenaTeam* team, time_t now)
         }
     }
 
-    if (!leaverMember || leaverTrack->LossStreak < sPlayerbotAIConfig.ArenaTeamLossStreakToConsider)
+    if (!leaverMember || leaverTrack->LossStreak < sPlayerbotAIConfig.ArenaTeamOptions.LossStreakToConsider)
         return;
 
     // Never while the team plays or queues
@@ -561,13 +562,14 @@ void ArenaTeamFormation::BuildPool(std::vector<Candidate>& pool) const
 
 bool ArenaTeamFormation::WantsRecruitAboveMin(ArenaTeam const* team, time_t now) const
 {
-    uint32 const chance = sPlayerbotAIConfig.ArenaTeamRecruitAboveMinChance;
+    uint32 const chance = sPlayerbotAIConfig.ArenaTeamOptions.RecruitAboveMinChance;
     if (!chance)
         return false;
 
     // Not within MinTeamStaySeconds of the team's last join or leave
     auto const changed = _teamChangedAt.find(team->GetId());
-    if (changed != _teamChangedAt.end() && now < changed->second + sPlayerbotAIConfig.ArenaTeamMinTeamStaySeconds)
+    if (changed != _teamChangedAt.end() &&
+        now < changed->second + sPlayerbotAIConfig.ArenaTeamOptions.MinTeamStaySeconds)
         return false;
 
     return urand(1, PercentMax) <= chance;
@@ -729,8 +731,8 @@ float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate, bool* used
     if (known && std::fabs(diff) > tolerance)
         return -1.0f;
 
-    float const fit =
-        FitScore(known, diff, tolerance, classes, candidate->getClass(), sPlayerbotAIConfig.ArenaTeamSynergyWeight);
+    float const fit = FitScore(known, diff, tolerance, classes, candidate->getClass(),
+                               sPlayerbotAIConfig.ArenaTeamOptions.SynergyWeight);
     float learned = 0.0f;
     if (!CompLearningOn() || !LearnedTerm(team, candidate, learned, nullptr))
         return fit;
@@ -743,23 +745,24 @@ float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate, bool* used
 
 bool ArenaTeamFormation::CompLearningOn() const
 {
-    return sPlayerbotAIConfig.ArenaTeamCompLearningEnable && _comps.Loaded && IsActive();
+    return sPlayerbotAIConfig.ArenaTeamOptions.CompLearningEnable && _comps.Loaded && IsActive();
 }
 
 std::string ArenaTeamFormation::CompsPath()
 {
-    std::string const& file = sPlayerbotAIConfig.ArenaTeamCompLearningFile;
+    std::string const& file = sPlayerbotAIConfig.ArenaTeamOptions.CompLearningFile;
     std::string const name = file.empty() ? std::string(DefaultCompsFile) : file;
     return std::filesystem::path(name).is_absolute() ? name : sConfigMgr->GetConfigPath() + name;
 }
 
 CompLearning::Params ArenaTeamFormation::CompParams(float percentile)
 {
-    return CompLearning::ParamsAt(
-        percentile, sPlayerbotAIConfig.ArenaTeamCompLearningWeightBottom,
-        sPlayerbotAIConfig.ArenaTeamCompLearningWeightTop, sPlayerbotAIConfig.ArenaTeamCompLearningExploreBottom,
-        sPlayerbotAIConfig.ArenaTeamCompLearningExploreTop, sPlayerbotAIConfig.ArenaTeamCompLearningTemperatureBottom,
-        sPlayerbotAIConfig.ArenaTeamCompLearningTemperatureTop);
+    return CompLearning::ParamsAt(percentile, sPlayerbotAIConfig.ArenaTeamOptions.CompLearningWeightBottom,
+                                  sPlayerbotAIConfig.ArenaTeamOptions.CompLearningWeightTop,
+                                  sPlayerbotAIConfig.ArenaTeamOptions.CompLearningExploreBottom,
+                                  sPlayerbotAIConfig.ArenaTeamOptions.CompLearningExploreTop,
+                                  sPlayerbotAIConfig.ArenaTeamOptions.CompLearningTemperatureBottom,
+                                  sPlayerbotAIConfig.ArenaTeamOptions.CompLearningTemperatureTop);
 }
 
 void ArenaTeamFormation::ReloadChangedComps()
@@ -948,7 +951,8 @@ uint32 ArenaTeamFormation::LeftTeamOf(ObjectGuid guid) const
 
 bool ArenaTeamFormation::ShouldRepick(Player* captain, ArenaTeam const* team) const
 {
-    if (!IsActive() || !sPlayerbotAIConfig.ArenaTeamRandomPair || !sPlayerbotAIConfig.ArenaTeamRepickEachQueue)
+    if (!IsActive() || !sPlayerbotAIConfig.ArenaTeamOptions.RandomPair ||
+        !sPlayerbotAIConfig.ArenaTeamOptions.RepickEachQueue)
         return false;
 
     if (team->GetMembersSize() <= team->GetType() || captain->InBattleground() || captain->InBattlegroundQueue())
@@ -1089,7 +1093,7 @@ bool ArenaTeamFormation::HandleCompsCommand(ChatHandler* handler, char const* ar
 
     handler->PSendSysMessage(
         "Comp learning {} (option {}, formation {}); table {}", formation.CompLearningOn() ? "on" : "off",
-        sPlayerbotAIConfig.ArenaTeamCompLearningEnable ? "on" : "off", IsActive() ? "on" : "off",
+        sPlayerbotAIConfig.ArenaTeamOptions.CompLearningEnable ? "on" : "off", IsActive() ? "on" : "off",
         table.Loaded ? Acore::StringFormat("{}: {} rows, prior {}, generated {}", formation._compsSource, table.Rows,
                                            table.Prior, table.GeneratedAt)
                      : "not loaded (" + CompsPath() + "; .playerbots arena comps reload)");
