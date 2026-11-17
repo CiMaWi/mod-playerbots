@@ -46,8 +46,7 @@ void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature)
     UpkeepNeeds::Need need;
     if (index && trainer && list && UpkeepNeeds::BitsAlign(*index, snapshot) && trainer->IsTrainerValidForPlayer(bot))
     {
-        UpkeepNeeds::NeedList const needs =
-            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
         for (UpkeepNeeds::Need const& each : needs.needs)
             if (each.kind == UpkeepKind::TrainerSpell)
                 need = each;
@@ -137,8 +136,7 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
         trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
     {
         Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        UpkeepNeeds::NeedList const needs =
-            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
         for (UpkeepNeeds::Need const& each : needs.needs)
             if (UpkeepNeeds::RidingErrandDue(each) && each.trainer)
             {
@@ -205,8 +203,7 @@ void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
         trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
     {
         Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        UpkeepNeeds::NeedList const needs =
-            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
         float const discount = bot->GetReputationPriceDiscount(creature);
         for (UpkeepNeeds::Need const& need : needs.needs)
         {

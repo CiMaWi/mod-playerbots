@@ -755,6 +755,17 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
 }
 
+UpkeepNeeds::NeedList ComputeErrandNeeds(PlayerbotAI* botAI, Snapshot const& snapshot, UpkeepIndex const& index)
+{
+    auto const started = std::chrono::steady_clock::now();
+    UpkeepNeeds::NeedList list = UpkeepNeeds::ComputeNeeds(snapshot, index, BotNeedRates(botAI, snapshot));
+    auto const us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "errand needs computed"))
+        row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
+    return list;
+}
+
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot)
 {
     UpkeepNeeds::NeedRates rates;
