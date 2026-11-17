@@ -260,7 +260,7 @@ bool PvpGearMgr::WearsAlways() const
     // Playerbots.PvpGear.WearBetweenMatches: the same on any server but main (a lab)
     return _loaded &&
            (sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_ARENA ||
-            (sPlayerbotAIConfig.PvpGearWearBetweenMatches && sPlayerbotAIConfig.Ladder.Role != LADDER_ROLE_MAIN));
+            (sPlayerbotAIConfig.PvpGear.WearBetweenMatches && sPlayerbotAIConfig.Ladder.Role != LADDER_ROLE_MAIN));
 }
 
 bool PvpGearMgr::OnLoadoutChanged(Player* bot)

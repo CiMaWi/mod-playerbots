@@ -35,6 +35,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
+#include "PvpGearConfig.h"
 #include "SharedDefines.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
@@ -441,14 +442,8 @@ public:
     uint32 MatchLogTraceMaxBytes;
     // Playerbots.Natural.Trace.*: the trace of the natural timing (NaturalTraceConfig.h)
     TraceConfig NaturalTraceConfig;
-    std::string PvpGearTierOrder;
-    std::string PvpGearBaseTier;
-    bool PvpGearWearBetweenMatches;
-    bool PvpGearBuyEnable;
-    std::string PvpGearBuySlotPriority;
-    bool PvpGearBuySaveTowardBetter;
-    uint32 PvpGearBuyCheckIntervalMinutes;
-    uint32 PvpGearBuyBatchPerTick;
+    // Playerbots.PvpGear.*: PvP gear for ladder bots (PvpGearConfig.h)
+    PvpGearConfig PvpGear;
     // Playerbots.Skill.*: reaction stretch, notice model, distribution, real-master exemption (SkillConfig.h)
     SkillConfig Skill;
     // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
