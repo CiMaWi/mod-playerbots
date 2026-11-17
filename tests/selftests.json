@@ -91,10 +91,12 @@
             "includes": [
                 "src/Bot",
                 "src/Ai/World/Rpg",
+                "src/Bot/Tactics",
                 "{core}/src/common"
             ],
             "sources": [
-                "src/Ai/World/Rpg/BankMailConfig.cpp"
+                "src/Ai/World/Rpg/BankMailConfig.cpp",
+                "src/Bot/Tactics/ArenaFocusConfig.cpp"
             ],
             "args": [
                 "{repo}"

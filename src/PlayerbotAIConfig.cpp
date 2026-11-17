@@ -1427,12 +1427,10 @@ bool PlayerbotAIConfig::Initialize()
             TacticsConfigMask |= TacticBit(static_cast<TacticId>(index));
     }
 
-    // Playerbots.Tactics.Hold.* and .Focus.* (optional): the target hold's and the team plan's numbers, the defaults in
-    // FocusConfig; read by the pvp hold and arena focus strategies (FocusStrategy.cpp)
-    TacticFocus = FocusConfig{};
+    // The tactics' numbers (Playerbots.Tactics.<Family>.*, optional: no missing-key warning), capped at their maximum;
+    // read here until CS22d moves the last families into config tables
     constexpr uint32 MaxFocusMs = 120000;
     constexpr uint32 MaxFocusPct = 100;
-    constexpr uint32 MaxFocusMargin = 255;
     constexpr uint32 MaxFocusSeconds = 600;
     constexpr uint32 MaxFocusSkill = 99;
     auto const focusNumber = [](char const* key, uint32& value, uint32 maximum)
@@ -1440,43 +1438,6 @@ bool PlayerbotAIConfig::Initialize()
         value = std::min<uint32>(sConfigMgr->GetOption<uint32>(std::string("Playerbots.Tactics.") + key, value, false),
                                  maximum);
     };
-    focusNumber("Hold.HoldMsAtSkill1", TacticFocus.HoldMsAtSkill1, MaxFocusMs);
-    focusNumber("Hold.HoldMsAtSkill99", TacticFocus.HoldMsAtSkill99, MaxFocusMs);
-    focusNumber("Hold.HysteresisPctAtSkill1", TacticFocus.HoldHysteresisPctAtSkill1, MaxFocusPct);
-    focusNumber("Hold.HysteresisPctAtSkill99", TacticFocus.HoldHysteresisPctAtSkill99, MaxFocusPct);
-    focusNumber("Hold.ExecPctAtSkill1", TacticFocus.HoldExecPctAtSkill1, MaxFocusPct);
-    focusNumber("Hold.ExecPctAtSkill99", TacticFocus.HoldExecPctAtSkill99, MaxFocusPct);
-    focusNumber("Hold.ExecChanceAtSkill1", TacticFocus.HoldExecChanceAtSkill1, MaxFocusPct);
-    focusNumber("Hold.ExecChanceAtSkill99", TacticFocus.HoldExecChanceAtSkill99, MaxFocusPct);
-    focusNumber("Hold.FollowChanceAtSkill1", TacticFocus.HoldFollowChanceAtSkill1, MaxFocusPct);
-    focusNumber("Hold.FollowChanceAtSkill99", TacticFocus.HoldFollowChanceAtSkill99, MaxFocusPct);
-    focusNumber("Hold.FollowDelayMsAtSkill1", TacticFocus.HoldFollowDelayMsAtSkill1, MaxFocusMs);
-    focusNumber("Hold.FollowDelayMsAtSkill99", TacticFocus.HoldFollowDelayMsAtSkill99, MaxFocusMs);
-    focusNumber("Hold.LosLostMs", TacticFocus.HoldLosLostMs, MaxFocusMs);
-    focusNumber("Focus.PlanIntervalMsAtSkill1", TacticFocus.FocusPlanIntervalMsAtSkill1, MaxFocusMs);
-    focusNumber("Focus.PlanIntervalMsAtSkill99", TacticFocus.FocusPlanIntervalMsAtSkill99, MaxFocusMs);
-    focusNumber("Focus.HoldMsAtSkill1", TacticFocus.FocusHoldMsAtSkill1, MaxFocusMs);
-    focusNumber("Focus.HoldMsAtSkill99", TacticFocus.FocusHoldMsAtSkill99, MaxFocusMs);
-    focusNumber("Focus.HysteresisPctAtSkill1", TacticFocus.FocusHysteresisPctAtSkill1, MaxFocusPct);
-    focusNumber("Focus.HysteresisPctAtSkill99", TacticFocus.FocusHysteresisPctAtSkill99, MaxFocusPct);
-    focusNumber("Focus.ExecPctAtSkill1", TacticFocus.FocusExecPctAtSkill1, MaxFocusPct);
-    focusNumber("Focus.ExecPctAtSkill99", TacticFocus.FocusExecPctAtSkill99, MaxFocusPct);
-    focusNumber("Focus.ExecChanceAtSkill1", TacticFocus.FocusExecChanceAtSkill1, MaxFocusPct);
-    focusNumber("Focus.ExecChanceAtSkill99", TacticFocus.FocusExecChanceAtSkill99, MaxFocusPct);
-    focusNumber("Focus.RemarkDelayMsAtSkill1", TacticFocus.FocusRemarkDelayMsAtSkill1, MaxFocusMs);
-    focusNumber("Focus.RemarkDelayMsAtSkill99", TacticFocus.FocusRemarkDelayMsAtSkill99, MaxFocusMs);
-    focusNumber("Focus.StrongMarginAtSkill1", TacticFocus.FocusStrongMarginAtSkill1, MaxFocusMargin);
-    focusNumber("Focus.StrongMarginAtSkill99", TacticFocus.FocusStrongMarginAtSkill99, MaxFocusMargin);
-    focusNumber("Focus.MinRemarkSeconds", TacticFocus.FocusMinRemarkSeconds, MaxFocusSeconds);
-    focusNumber("Focus.HumanMarkRespectSeconds", TacticFocus.FocusHumanMarkRespectSeconds, MaxFocusSeconds);
-    focusNumber("Focus.LosLostMs", TacticFocus.FocusLosLostMs, MaxFocusMs);
-    focusNumber("Focus.DefensiveSwapPct", TacticFocus.FocusDefensiveSwapPct, MaxFocusPct);
-    focusNumber("Focus.AddonKnowledgeFromSkill", TacticFocus.FocusAddonKnowledgeFromSkill, MaxFocusSkill);
-    // G1b-c: 0 no moon, 1 G1b's moon, 2 the moon only while the team's CC lands (ArenaFocus.h FOCUS_MOON_*)
-    constexpr uint32 MaxMoonMode = 2;
-    focusNumber("Focus.MoonMode", TacticFocus.FocusMoonMode, MaxMoonMode);
-    focusNumber("Focus.MoonGraceMs", TacticFocus.FocusMoonGraceMs, MaxFocusMs);
-    focusNumber("Focus.MoonRetryMs", TacticFocus.FocusMoonRetryMs, MaxFocusMs);
 
     // Playerbots.Tactics.Cc.* and .Avoid.* (optional): crowd control's and its avoidance's numbers, the defaults in
     // CcConfig; read by the Cc, OwnCc and Trinket tactics (G4b, G5a; inert until then)
@@ -1583,10 +1544,6 @@ bool PlayerbotAIConfig::Initialize()
     for (uint32 index = 0; index < TACTIC_FOLLOWER_COUNT; ++index)
         followerSwitches.Scopes[index] = TacticConfig[static_cast<uint32>(TACTIC_FOLLOWER_TACTICS[index])].Scope;
     TacticFollowersFor = BuildTacticFollowerTable(followerSwitches);
-    // G4e: the focus target (Playerbots.Tactics.FocusTarget.*)
-    focusNumber("FocusTarget.MoonPctAtTeamwork1", TacticFocus.FocusTargetMoonPctAtTeamwork1, MaxFocusPct);
-    focusNumber("FocusTarget.MoonPctAtTeamwork99", TacticFocus.FocusTargetMoonPctAtTeamwork99, MaxFocusPct);
-    focusNumber("FocusTarget.KickBonus", TacticFocus.FocusTargetKickBonus, MaxFocusMargin);
 
     // G5d: the Defensive and Protect tactics (Playerbots.Tactics.Defensive.*), the defaults in DefensiveConfig
     TacticDefensive = DefensiveConfig{};

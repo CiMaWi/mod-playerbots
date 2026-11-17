@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "ArenaFocusConfig.h"
 #include "BankMailConfig.h"
 #include "ConfigTable.h"
 
@@ -325,6 +326,20 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+
+    // CS22c-f: the tactic families; rows unique, defaults in bounds, conf.dist agrees with the rows
+    auto const checkFamily = [&dist, &seen](auto const& family, std::size_t rows, char const* name)
+    {
+        std::vector<std::string> found = RowProblems(family, seen);
+        std::vector<std::string> const distFound = DistProblems(family, dist);
+        found.insert(found.end(), distFound.begin(), distFound.end());
+        for (std::string const& problem : found)
+            std::cout << "  " << problem << "\n";
+        Check(found.empty() && family.Rows.size() == rows, std::string(name) + ": rows, defaults and conf.dist agree");
+    };
+    checkFamily(HoldFamily, 13, "Hold");
+    checkFamily(FocusFamily, 22, "Focus");
+    checkFamily(FocusTargetFamily, 3, "FocusTarget");
     Check(dist.count("Playerbots.Population.Persistent") == 0,
           "retired: Playerbots.Population.Persistent has no dist line");
     for (char const* key : {"Playerbots.RandomBotArenaGroupOnWorldThread", "Playerbots.RandomBotArenaTeamRatingMode",
