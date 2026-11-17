@@ -550,8 +550,9 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     TravelGraph without;
     TravelGraph bridged;
     TravelGraph threeAir;
-    std::string const error =
-        build(withAir, 1, false) + build(without, 0, false) + build(bridged, 1, true) + build(threeAir, 3, true);
+    TravelGraph walkBridge;
+    std::string const error = build(withAir, 1, false) + build(without, 0, false) + build(bridged, 1, true) +
+                              build(threeAir, 3, true) + build(walkBridge, 0, true);
     if (!check(error.empty() && withAir.IsReady() && withAir.Stats().linksByType[7] == 2 &&
                    without.Stats().linksByType[7] == 0 && withAir.Stats().skippedLinks == 0,
                "the loader keeps the air links (2 and 0): " + error + " air " +
@@ -647,7 +648,7 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     // WT61b: more failed flights than the search's tries never hide the ground way (the last search flies no edge)
     TravelRoute::Result const afterThree = search(threeAir, flyer, island, closedIsland);
     check(afterThree.ok && airLegs(afterThree) == 0 && afterThree.flightSearches >= 1,
-          "three failed air flights: the bot does not take the bridge");
+          "after three failed air flights the bot takes the bridge");
     TravelRoute::Snapshot fromB = flyer;
     fromB.position = at[B];
     fromB.takeoffHere = false;
@@ -664,6 +665,47 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         TravelRoute::Result const walked = TravelRoute::Search(bridged, avoided, TravelRoute::StuckEdges{}, open);
         check(walked.ok && airLegs(walked) == 0, "a trip that avoids the air link takes the bridge");
     }
+    // WT61b review: a trip that could not take off at a spot starts no air link there either
+    TravelRoute::Request spotB{flyer, island};
+    spotB.noTakeoffs.push_back(at[B]);
+    TravelRoute::Result const notFromB = TravelRoute::Search(bridged, spotB, TravelRoute::StuckEdges{}, open);
+    check(notFromB.ok && airLegs(notFromB) == 0, "no air leg starts at a spot the trip could not take off at");
+    // Takeoffs refused spot after spot (lab10: a cave, indoors at every node; the bot went to and fro between two of
+    // them). The bot stands at the coast's second node, the goal lies on open ground far north; each refused takeoff
+    // replans from the refused spot (TravelLegs::AfterFailure, NextRequest). Every replan takes off at a new node,
+    // and with every node of the coast refused the route walks
+    TravelRoute::Point const north{MAP, 200.0f, 1400.0f, 100.0f};
+    TravelLegs::Trip cave;
+    TravelRoute::Snapshot inCave = flyer;
+    inCave.position = at[A + 1];
+    inCave.takeoffHere = false;
+    std::vector<TravelRoute::Point> spots{inCave.position};
+    bool fresh = true;
+    TravelRoute::Result last;
+    for (std::uint32_t round = 0; round < 2 * SIDE_NODES; ++round)
+    {
+        last = TravelRoute::Search(walkBridge, TravelLegs::NextRequest(cave, inCave, north), TravelRoute::StuckEdges{},
+                                   open);
+        auto const takeoff = std::find_if(last.legs.begin(), last.legs.end(), [](TravelRoute::Leg const& leg)
+                                          { return leg.type == TravelRoute::LegType::Fly; });
+        if (!last.ok || takeoff == last.legs.end())
+            break;
+        fresh = fresh && std::none_of(spots.begin(), spots.end(), [&](TravelRoute::Point const& spot)
+                                      { return TravelRoute::Distance(spot, takeoff->from) <= 10.0f; });
+        spots.push_back(takeoff->from);
+        cave.legs = last.legs;
+        cave.legIdx = static_cast<std::uint32_t>(takeoff - last.legs.begin());
+        if (TravelLegs::AfterFailure(cave, TravelLegs::FailReason::Takeoff, true) != TravelLegs::Recovery::Replan)
+            break;
+        inCave.position = takeoff->from;
+    }
+    check(fresh && spots.size() == SIDE_NODES, "refused takeoffs: each replan takes off at a new spot (" +
+                                                   std::to_string(spots.size() - 1) + " takeoffs, " +
+                                                   (fresh ? "none" : "one") + " at a spot refused before)");
+    check(last.ok && !cave.noFly &&
+              std::none_of(last.legs.begin(), last.legs.end(),
+                           [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Fly; }),
+          "with a takeoff refused at every node of the coast the route walks");
     return checks;
 }
 }  // namespace

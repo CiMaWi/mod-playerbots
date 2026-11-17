@@ -214,6 +214,7 @@ struct Trip
     bool noFly{false};  // after a failed fly leg: later routes of the trip fly no more (Request::noFly)
     std::uint8_t replans{0};
     std::uint8_t spotFails{0};         // takeoffs refused where the bot stood that replanned flying (AfterFailure)
+    std::vector<Point> noTakeoffs;     // where the bot could not take off when a route was asked (NextRequest)
     std::uint8_t resubmits{0};         // route requests asked again after a late or lost answer (Resubmit)
     std::vector<std::uint32_t> avoid;  // after stuck walks: nodes later routes neither start nor end at (NoteStuck)
     bool noDirect{false};              // after a stuck walk towards the goal: no straight walk from the bot to it

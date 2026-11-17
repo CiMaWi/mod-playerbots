@@ -932,19 +932,10 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     snapshot.allowTransport = true;
     if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
         snapshot.knownTaxi.fill(0);
-    TravelRoute::Request request;
-    request.snapshot = snapshot;
-    request.goal = {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()};
-    // The trip's stuck walks: their start or goal hops are left out (TravelLegs::NoteStuck)
-    request.avoidNodes = data.trip.avoid;
-    request.noDirect = data.trip.noDirect;
-    // The walks this bot died on twice (TravelLegs::NoteDeath) and the air links whose fly leg failed
-    // (TravelLegs::NoteAirFailed): their graph edges are left out, for its trip only
-    request.avoidEdges = data.trip.avoidEdges;
-    // The walks off the graph the navmesh refused (TravelLegs::NoteWalkRefused): not walked again in this trip
-    request.avoidWalks = data.trip.avoidWalks;
-    // After a failed fly leg the trip's later routes walk (TravelLegs::AfterFailure)
-    request.noFly = data.trip.noFly;
+    // With what the trip's failed legs left out and the spots it could not take off at (TravelLegs::NextRequest)
+    TravelRoute::Request const request = TravelLegs::NextRequest(
+        data.trip, snapshot,
+        {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()});
     TravelLegs::RouteWait const waiting{snapshot.requestId, snapshot.position.mapId, snapshot.takenMs, true,
                                         snapshot.position};
     auto const submit = [&]
@@ -1238,7 +1229,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         LogWalkLink(bot, data, trip.walk, false);
         trip.walk = {};
     }
-    // A takeoff refused where the bot stands keeps flying: the replan takes off elsewhere (Snapshot::takeoffHere)
+    // A takeoff refused where the bot stands keeps flying: the replan takes off elsewhere (TravelLegs::NextRequest)
     bool const spotClosed =
         reason == TravelLegs::FailReason::Takeoff && CheckMountStateAction::NoTakeoffHere(bot) != nullptr;
     bool const aborts = TravelLegs::AfterFailure(trip, reason, spotClosed) == TravelLegs::Recovery::Abort;

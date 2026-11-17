@@ -37,9 +37,10 @@
 //   every vertex there that may take off to the goal and to the nodes nearest it that may land (FLY_EDGES_PER_NODE at
 //   most), their straight yards at the bot's air speed plus FLY_OVERHEAD_SECONDS. With flight maps a takeoff or a
 //   landing is a fly end (FlyEnd) or a platform's takeoff spot a straight walk off (PlatformSpot); the bot's own spot
-//   takes off only with Snapshot::takeoffHere; a hop under the ground hop is no edge
+//   takes off only with Snapshot::takeoffHere, and no spot the trip could not take off at does
+//   (Request::noTakeoffs); a hop under the ground hop is no edge
 // - air (graph link type 7, WT61): only for a bot that may fly on its map and no noFly request, its straight yards at
-//   the bot's air speed plus FLY_OVERHEAD_SECONDS; never from the bot's own spot when it cannot take off there
+//   the bot's air speed plus FLY_OVERHEAD_SECONDS; never from a spot that takes off no fly edge
 // The fly legs the search chose are then flown (Search, one FlightRules::Search each); a failed flight closes its air
 // link or its fly edge's ends and the search runs again, at most FLY_TRIES times, then once with flying closed
 
@@ -174,6 +175,10 @@ struct Request
     std::vector<std::pair<Point, Point>> avoidWalks;
     // After a failed fly leg of the trip (TravelLegs::AfterFailure): no fly edges and no air links
     bool noFly{false};
+    // The spots where the trip's bot could not take off (TravelLegs::NextRequest): no fly edge and no air link starts
+    // within FLY_OWN_SPOT_YARDS of one. The snapshot closes only the spot the bot stands on now: without these the
+    // replan after the next refusal took off at the spot before again (lab10: a cave's two nodes in turn, WT61b)
+    std::vector<Point> noTakeoffs;
 
     bool AvoidsEdge(std::uint32_t from, std::uint32_t to) const
     {
@@ -186,6 +191,13 @@ struct Request
     {
         for (auto const& [a, b] : avoidWalks)
             if (a.mapId == from.mapId && Distance(a, from) <= SAME_WALK_YARDS && Distance(b, to) <= SAME_WALK_YARDS)
+                return true;
+        return false;
+    }
+    bool NoTakeoffAt(Point const& point) const
+    {
+        for (Point const& spot : noTakeoffs)
+            if (spot.mapId == point.mapId && Distance(spot, point) <= FLY_OWN_SPOT_YARDS)
                 return true;
         return false;
     }
@@ -456,8 +468,12 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     FlightRules::HeightMap const* flyMap = maps ? maps->Find(goal.mapId) : nullptr;
     bool const flying = !request.noFly && bot.MayFlyOn(goal.mapId) && (!maps || flyMap);
     FlightRules::FlightParams const hop = maps ? maps->params : FlightRules::FlightParams{};
-    auto const nearBot = [&start](Point const& point)
-    { return point.mapId == start.mapId && Distance(point, start) <= FLY_OWN_SPOT_YARDS; };
+    // No takeoff at the point: the bot's own spot when it may not take off there, or a spot of the trip's before
+    auto const noTakeoffAt = [&](Point const& point)
+    {
+        return (!bot.takeoffHere && point.mapId == start.mapId && Distance(point, start) <= FLY_OWN_SPOT_YARDS) ||
+               request.NoTakeoffAt(point);
+    };
 
     std::uint32_t const nodeCount = static_cast<std::uint32_t>(graph.NodeCount());
     std::uint32_t const source = nodeCount;
@@ -572,7 +588,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         std::vector<Point> const& shut = takeoff ? closed.takeoffs : closed.landings;
         if (std::any_of(shut.begin(), shut.end(), [&end](Point const& at) { return Distance(at, end.at) < 0.5f; }))
             return std::nullopt;
-        if (takeoff && !bot.takeoffHere && nearBot(end.at))
+        if (takeoff && noTakeoffAt(end.at))
             return std::nullopt;
         return end;
     };
@@ -650,7 +666,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
             if (seconds < 0.0f || graph.OffWaitStop(link))
                 continue;
-            if (link.type == TravelLinkType::Air && (request.noFly || (!bot.takeoffHere && nearBot(pointOf(vertex)))))
+            if (link.type == TravelLinkType::Air && (request.noFly || noTakeoffAt(pointOf(vertex))))
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
                 continue;
