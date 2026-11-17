@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "BridgeBotState.h"
 #include "Chat.h"
 #include "Config.h"
 #include "GitRevision.h"
@@ -457,6 +458,40 @@ bool HandleDemandCommand(ChatHandler* handler, char const* args)
                                  verdict == DemandVerdict::None ? "" : " ",
                                  verdict == DemandVerdict::None ? "" : DemandSlotWord(slot), keep, UsageWord(usage));
     }
+    return true;
+}
+
+// WI10b: the `items` topic the bridge answers a player's question with, as the console shows it
+bool HandleItemsCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    in >> name;
+    if (name.empty())
+    {
+        handler->SendErrorMessage("Usage: playerbots item items <bot>");
+        return false;
+    }
+
+    Player* bot = ObjectAccessor::FindPlayerByName(name, true);
+    if (!bot || !PlayerbotsMgr::instance().GetPlayerbotAI(bot))
+    {
+        handler->SendErrorMessage("ITEM items: {} is not an online bot", name);
+        return false;
+    }
+
+    PLAYERBOT_CHECK_WORLD_THREAD("item items");
+    std::vector<PlayerbotBridge::BotStateItem> items;
+    if (!PlayerbotBridge::ReadBotStateTopic(bot->GetGUID(), PlayerbotBridge::BotStateTopic::Items, items))
+    {
+        handler->SendErrorMessage("ITEM items: {} cannot be read now", name);
+        return false;
+    }
+
+    handler->PSendSysMessage("ITEM items {}: {} entries", bot->GetName(), items.size());
+    for (PlayerbotBridge::BotStateItem const& item : items)
+        handler->PSendSysMessage("ITEM items {} code {} value {} extra {}: {}", item.name, static_cast<int>(item.code),
+                                 item.value, item.extra, item.text);
     return true;
 }
 }  // namespace ItemUse

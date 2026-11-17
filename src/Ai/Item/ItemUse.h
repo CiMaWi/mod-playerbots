@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_ITEMUSE_H
 #define _PLAYERBOT_ITEMUSE_H
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -73,6 +74,16 @@ struct BuffState
 
 struct DemandCache;  // WI9a: ItemDemand.h
 
+// WI10b: one of a bot's last uses, for the `items` topic (BridgeBotState.h); every use's row also writes one
+constexpr std::size_t LAST_USES = 6;
+struct LastUse
+{
+    std::uint32_t entry{0};
+    std::uint32_t spellId{0};
+    std::uint32_t atMs{0};  // getMSTime() when the row was written
+    std::string result;     // the row's result word ("used", "refused:<cause>", ...)
+};
+
 // A timed use between its start and its row (at most one per bot; PlayerbotAI::botItems); WI8a: the buff strategy's
 // state and the console's Ahead, both written on the bot's map thread; WI9a: the demand answer (ItemDemand.h)
 struct BotItems
@@ -88,8 +99,24 @@ struct BotItems
     std::uint8_t aheadTest{AHEAD_AUTO};  // an Ahead (ItemBuffRules.h) the console set, AHEAD_AUTO: none
     std::uint32_t aheadSerial{0};        // counts the console's ahead orders: each makes the picker run again
     BuffState buffs;
-    std::shared_ptr<DemandCache> demand;  // made on first ask
+    std::shared_ptr<DemandCache> demand;      // made on first ask
+    std::array<LastUse, LAST_USES> lastUses;  // a ring: lastHead is the next slot to write; not persisted
+    std::uint8_t lastHead{0};
+    std::uint8_t lastCount{0};
 };
+
+// WI10b: what the bot carries (bags and worn) that has a use effect of a known kind, one entry per item; one read walks
+// the bags once, for a topic's answer and never for a tick. The bot's map thread, or the world thread while the map
+// threads wait. cooldownMs: the use spell's cooldown left
+struct UsableItem
+{
+    std::uint32_t entry{0};
+    std::uint32_t count{0};
+    std::uint32_t spellId{0};
+    std::uint8_t kind{0};  // a Kind (ItemUseKinds.h)
+    std::uint32_t cooldownMs{0};
+};
+std::vector<UsableItem> ListUsable(Player* bot);
 
 bool Pending(Player* bot);
 // The bot's map thread, from its AI update while BotWork::ItemTimed is set: ends a pending use with its row when

@@ -325,6 +325,13 @@ inline constexpr TopicRow TopicTable[] = {
                  "It changes, so look here before you answer what you need, also before you say you need nothing.",
      .Params = {},
      .Limit = 8,
+     .Lines = true},
+    {.Topic = BotStateTopic::Items,
+     .Name = "items",
+     .Sentence = "Your items that can be used: what you carry by kind, what is not ready again yet, what you used last "
+                 "and what you lack of it for your role. Look here before you say what you could use or have used.",
+     .Params = {},
+     .Limit = 12,
      .Lines = true}};
 
 constexpr bool TopicTableInOrder()
@@ -333,7 +340,7 @@ constexpr bool TopicTableInOrder()
         if (static_cast<std::size_t>(TopicTable[index].Topic) != index)
             return false;
 
-    return static_cast<std::size_t>(BotStateTopic::Needs) + 1 == std::size(TopicTable);
+    return static_cast<std::size_t>(BotStateTopic::Items) + 1 == std::size(TopicTable);
 }
 static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
 static_assert(TopicRowsValid(TopicTable), "a topic takes at most one parameter, a name; a new one answers lines");
