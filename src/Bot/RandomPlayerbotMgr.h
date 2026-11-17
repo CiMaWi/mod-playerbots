@@ -176,6 +176,8 @@ public:
     void LadderLogout(uint32 bot);
     void LadderLogin(uint32 bot, bool overCap = false);
     void RandomTeleportForLevel(Player* bot);
+    // The first placement of a bot the factory just made at its level (a persistent bot's only teleport)
+    void PlaceNewBot(Player* bot);
     void RandomTeleportGrindForLevel(Player* bot);
     void RandomTeleportForRpg(Player* bot);
     uint32 GetMaxAllowedBotCount();
@@ -335,9 +337,13 @@ private:
     uint32 GetScheduledBotCount();
     bool IsRemovableBot(Player* bot);
     bool ProcessBot(uint32 bot);
+    // ProcessBot's short path for a persistent bot (LifecycleRules.h): its creation when due, the cohort's refresh
+    bool ProcessPersistentBot(Player* bot);
     void ScheduleRandomize(uint32 bot, uint32 time);
     void RandomTeleport(Player* bot);
     void RandomTeleport(Player* bot, std::vector<WorldLocation>& locs, bool hearth = false);
+    // RandomTeleportForLevel's destination roll; placing tags it "mgr_place"
+    void TeleportForLevel(Player* bot, bool placing);
     uint32 GetZoneLevel(uint16 mapId, float teleX, float teleY, float teleZ);
     void UpdatePlayerZones();
     std::vector<WorldLocation> GetPlayerZoneTeleportLocations(std::vector<WorldLocation> const& locs, Player* bot);
