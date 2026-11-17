@@ -7,6 +7,8 @@
 #ifndef _PLAYERBOT_NATURALMOVECONFIG_H
 #define _PLAYERBOT_NATURALMOVECONFIG_H
 
+#include <string>
+
 #include "Define.h"
 #include "TacticIds.h"
 
@@ -19,7 +21,9 @@ constexpr uint32 MaxTrackRingSamples = 32;  // (the state array holds the maximu
 struct TrackConfig
 {
     bool Enable = false;
-    // The contexts it acts in (Arena,Battleground,World); out of PvP only with OutsidePvpInSight
+    // The contexts it acts in (Arena,Battleground,World); out of PvP only with OutsidePvpInSight. ContextsText is the
+    // key's text, Contexts its mask
+    std::string ContextsText = "Arena,Battleground,World";
     uint8 Contexts =
         static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground) |
                            TacticContextBit(TacticContext::OpenWorldPvp));

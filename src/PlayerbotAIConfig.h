@@ -21,6 +21,7 @@
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
+#include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
 #include "SkillConfig.h"
@@ -434,15 +435,8 @@ public:
     uint32 MatchLogTraceEvery;
     uint32 MatchLogTraceMaxEvents;
     uint32 MatchLogTraceMaxBytes;
-    bool NaturalTraceEnable;
-    uint32 NaturalTraceMaxUnits;
-    uint32 NaturalTraceSampleEvery;
-    bool NaturalTraceOrganic;
-    std::string NaturalTraceDir;
-    uint32 NaturalTraceIntervalMs;
-    uint32 NaturalTraceMaxRowsPerUnit;
-    // Playerbots.Natural.Trace.Format (G0i): false = jsonl (one file per day), true = binary (one file per match)
-    bool NaturalTraceBinary;
+    // Playerbots.Natural.Trace.*: the trace of the natural timing (NaturalTraceConfig.h)
+    TraceConfig NaturalTraceConfig;
     uint32 LadderDepartTimeoutSeconds;
     uint32 LadderContactMinutes;
     uint32 LadderPoolTeams;

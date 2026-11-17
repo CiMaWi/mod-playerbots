@@ -805,22 +805,22 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxEvents", 20000), 16, 1000000);
     MatchLogTraceMaxBytes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxBytes", 4194304), 4096, 67108864);
-    NaturalTraceEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Trace.Enable", false);
-    NaturalTraceMaxUnits =
+    NaturalTraceConfig.Enable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Trace.Enable", false);
+    NaturalTraceConfig.MaxUnits =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.MaxUnits", 8), 1, 1000);
-    NaturalTraceSampleEvery =
+    NaturalTraceConfig.SampleEvery =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.SampleEvery", 1), 0, 1000000);
-    NaturalTraceOrganic = sConfigMgr->GetOption<bool>("Playerbots.Natural.Trace.Organic", false);
-    NaturalTraceDir = sConfigMgr->GetOption<std::string>("Playerbots.Natural.Trace.Dir", "");
-    NaturalTraceIntervalMs =
+    NaturalTraceConfig.Organic = sConfigMgr->GetOption<bool>("Playerbots.Natural.Trace.Organic", false);
+    NaturalTraceConfig.Dir = sConfigMgr->GetOption<std::string>("Playerbots.Natural.Trace.Dir", "");
+    NaturalTraceConfig.IntervalMs =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.IntervalMs", 100), 50, 1000);
-    NaturalTraceMaxRowsPerUnit = std::clamp<uint32>(
+    NaturalTraceConfig.MaxRowsPerUnit = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.MaxRowsPerUnit", 200000), 100, 10000000);
     {
         std::string format = sConfigMgr->GetOption<std::string>("Playerbots.Natural.Trace.Format", "jsonl");
         std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return std::tolower(c); });
-        NaturalTraceBinary = format == "binary";
-        if (!NaturalTraceBinary && format != "jsonl")
+        NaturalTraceConfig.Binary = format == "binary";
+        if (!NaturalTraceConfig.Binary && format != "jsonl")
             LOG_ERROR("server.loading", "Playerbots.Natural.Trace.Format = {}: unknown, jsonl is used", format);
     }
     LadderDepartTimeoutSeconds =
