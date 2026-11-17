@@ -41,22 +41,21 @@ void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature)
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
     Trainer::Trainer* trainer = sObjectMgr->GetTrainer(creature->GetEntry());
-    Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-    Planner::TrainerList const* list = index ? index->ClassList(snapshot.cls) : nullptr;
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit =
+        index && trainer && trainer->IsTrainerValidForPlayer(bot) ? ErrandNeeds(botAI, index) : nullptr;
+    Planner::TrainerList const* list = visit ? index->ClassList(visit->snapshot.cls) : nullptr;
     UpkeepNeeds::Need need;
-    if (index && trainer && list && UpkeepNeeds::BitsAlign(*index, snapshot) && trainer->IsTrainerValidForPlayer(bot))
-    {
-        UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
-        for (UpkeepNeeds::Need const& each : needs.needs)
+    if (list && UpkeepNeeds::BitsAlign(*index, visit->snapshot))
+        for (UpkeepNeeds::Need const& each : visit->needs.needs)
             if (each.kind == UpkeepKind::TrainerSpell)
                 need = each;
-    }
 
     uint32 const moneyBefore = bot->GetMoney();
     uint32 learned = 0;
     UpkeepNeeds::TrainingBuy buy;
     if (need.units)
     {
+        Planner::Snapshot const& snapshot = visit->snapshot;
         std::vector<std::size_t> const learnable =
             UpkeepNeeds::Learnable(*list, index->RidingList(snapshot.race), snapshot, snapshot.knownClassSpells,
                                    snapshot.canLearnClassSpells, snapshot.level);
@@ -135,8 +134,7 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
     if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Mount &&
         trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
     {
-        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
+        UpkeepNeeds::NeedList const& needs = ErrandNeeds(botAI, index)->needs;
         for (UpkeepNeeds::Need const& each : needs.needs)
             if (UpkeepNeeds::RidingErrandDue(each) && each.trainer)
             {
@@ -202,8 +200,8 @@ void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
     if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Tradeskill &&
         trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
     {
-        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
+        std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = ErrandNeeds(botAI, index);
+        UpkeepNeeds::NeedList const& needs = visit->needs;
         float const discount = bot->GetReputationPriceDiscount(creature);
         for (UpkeepNeeds::Need const& need : needs.needs)
         {

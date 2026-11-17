@@ -68,7 +68,7 @@ bool InventoryPressureTrigger::IsActive()
 
     // Full bags, or the needs (upkeep §3.3, the errand check's providers) after the retry time: the repair first,
     // then a due stock, training or riding rank (one snapshot)
-    WorldTravel::SlotMeasure const& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     uint32 const nowMs = getMSTime();
     if (WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs) && WorldTravel::ErrandMayStart(botAI))
         return true;
@@ -78,8 +78,13 @@ bool InventoryPressureTrigger::IsActive()
 
     // Mail or a bank errand worth a trip of its own (WB8b: the same check, no trigger of its own; as full bags, it
     // does not end questing)
-    return (BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI)) ||
-           WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI);
+    if (BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel()) && WorldTravel::ErrandMayStart(botAI))
+        return true;
+
+    // The needs once per retry time while nothing is due (WU27: a full snapshot and the needs per check otherwise)
+    return WorldTravel::NeedsCheckDue(
+        measure, nowMs,
+        [this] { return WorldTravel::RepairErrandWanted(bot) || WorldTravel::NeedErrandWanted(botAI); });
 }
 
 bool InnBindTrigger::IsActive()

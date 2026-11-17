@@ -8,6 +8,7 @@
 #define PLAYERBOTS_NEWRPGINTERNAL_H
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -88,6 +89,10 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index);
 
 // Errands and trainers: the errand trip's helpers, called by the errand start, the errand visit and the trainer visits
 bool BuysAtVendors(PlayerbotAI* botAI);
+// The errand trip's needs (WU27, the visit list): the trip's kept list while the state is the one it was computed on,
+// else one computed now (counted, kept with the trip); map thread only
+std::shared_ptr<UpkeepNeeds::VisitNeeds const> ErrandNeeds(PlayerbotAI* botAI,
+                                                           std::shared_ptr<Planner::UpkeepIndex const> const& index);
 WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc);
 
 // Trainers, called by the errand start (the trip's stops) and the errand visit (the trainer visits)

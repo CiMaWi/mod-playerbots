@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1697,6 +1698,67 @@ inline void FillTravel(NeedRates& rates, WorldTravel::SlotMeasure const& measure
     rates.walkMinutesPerHour = measure.TravelMinutesPerHour[WorldTravel::TRAVEL_WALK];
     rates.flightMinutesPerHour = measure.TravelMinutesPerHour[WorldTravel::TRAVEL_FLIGHT];
     rates.northrendFlightMinutesPerHour = measure.TravelMinutesPerHour[WorldTravel::TRAVEL_NORTHREND];
+}
+
+// An errand trip's needs (upkeep WU27): computed once and read by the trip's steps while the state they depend on is
+// the same. The key is what a step changes: the gold (every purchase, sale and repair), the level, the known spells
+// (a rank, a class spell, a weapon skill, a mount learned from the bags for free), the pet and the stable (a pet
+// stored or tamed), the measured rates (SampleUse at a vendor) and the index. A walk to the next stop changes what the
+// key does not hold (stock used, gear worn): the trip forgets the list when it walks
+struct VisitKey
+{
+    std::uint32_t money{0};
+    std::uint8_t level{0};
+    std::uint32_t spells{0};  // the known spell count
+    std::uint32_t pet{0};     // the current pet's number; 0 = none
+    std::uint8_t stableSlots{0};
+    std::array<float, Planner::UPKEEP_STOCK_COUNT> usePerHour{};
+    float walkMinutesPerHour{0.0f};
+    float flightMinutesPerHour{0.0f};
+    float northrendFlightMinutesPerHour{0.0f};
+    UpkeepIndex const* index{nullptr};
+
+    bool operator==(VisitKey const&) const = default;
+};
+
+// The key's measured rates, as BotNeedRates reads them
+inline void KeyRates(VisitKey& key, WorldTravel::SlotMeasure const& measure)
+{
+    NeedRates rates;
+    FillTravel(rates, measure);
+    FillUse(rates, measure);
+    key.usePerHour = rates.usePerHour;
+    key.walkMinutesPerHour = rates.walkMinutesPerHour;
+    key.flightMinutesPerHour = rates.flightMinutesPerHour;
+    key.northrendFlightMinutesPerHour = rates.northrendFlightMinutesPerHour;
+}
+
+struct VisitNeeds
+{
+    VisitKey key;
+    std::shared_ptr<UpkeepIndex const> index;  // held, so that the key's index cannot be a new one at the same address
+    Snapshot snapshot;
+    NeedList needs;
+};
+
+// The cached list when its key is the state's, else nullptr
+inline VisitNeeds const* VisitNeedsKept(std::shared_ptr<VisitNeeds const> const& cache, VisitKey const& key)
+{
+    return cache && cache->key == key ? cache.get() : nullptr;
+}
+
+// The cached list, or one computed by fill (the snapshot and the needs) and kept when the key changed
+template <class Fill>
+std::shared_ptr<VisitNeeds const> VisitNeedsFor(std::shared_ptr<VisitNeeds const>& cache, VisitKey const& key,
+                                                Fill&& fill)
+{
+    if (VisitNeedsKept(cache, key))
+        return cache;
+    std::shared_ptr<VisitNeeds> fresh = std::make_shared<VisitNeeds>();
+    fresh->key = key;
+    fill(*fresh);
+    cache = fresh;
+    return cache;
 }
 
 inline std::vector<std::string> DescribeAll(NeedList const& list)
