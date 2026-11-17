@@ -1833,10 +1833,6 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     if (botAI->IsPersistentBot())
         return ProcessPersistentBot(bot);
 
-    // A persistent bot that died releases and runs back (DeadStrategy); it is never resurrected in place
-    if (bot->isDead() && BotKind::IsPersistentBot(bot))
-        return false;
-
     // if death revive
     if (bot->isDead())
     {
@@ -2242,10 +2238,6 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
     if (bot->InBattleground())
         return;
 
-    // Persistent bots change zones by travelling (the planner's move_zone goal, WT20): no level-up, periodic or
-    // legacy-caller teleports. Only the first placement of a newly made bot stays (PlaceNewBot).
-    if (BotKind::LivingWorld())
-        return;
     TeleportForLevel(bot, false);
 }
 
