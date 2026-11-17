@@ -62,9 +62,9 @@ bool FleeAttackersAction::Execute(Event /*event*/)
     float y = 0.0f;
     float nearestYards = 0.0f;
     uint32 const foes = Foes(x, y, nearestYards);
-    FleeRules::Limits const limits{static_cast<float>(sPlayerbotAIConfig.FleeEscapeYards),
-                                   sPlayerbotAIConfig.FleeCorneredSeconds * IN_MILLISECONDS,
-                                   sPlayerbotAIConfig.FleeBoundSeconds * IN_MILLISECONDS};
+    FleeRules::Limits const limits{static_cast<float>(sPlayerbotAIConfig.Flee.EscapeYards),
+                                   sPlayerbotAIConfig.Flee.CorneredSeconds * IN_MILLISECONDS,
+                                   sPlayerbotAIConfig.Flee.BoundSeconds * IN_MILLISECONDS};
     if (!flight.active)
     {
         if (!FleeRules::Begins(flight, foes, nearestYards, limits))

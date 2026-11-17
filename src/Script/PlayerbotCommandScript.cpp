@@ -959,7 +959,7 @@ public:
     // Refused unless Playerbots.ArenaOnly.Enable is on (lab diagnostics only). Console, world thread.
     static bool HandleArenaOnlyKillCommand(ChatHandler* handler, char const* args)
     {
-        if (!sPlayerbotAIConfig.ArenaOnlyEnable)
+        if (!sPlayerbotAIConfig.ArenaOnly.Enable)
         {
             handler->PSendSysMessage("ARENAONLY kill: refused, Playerbots.ArenaOnly.Enable is off");
             return true;

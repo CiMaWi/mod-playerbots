@@ -88,7 +88,7 @@ bool Fail(ChatHandler* handler, std::string const& text)
 
 bool CheckEnabled(ChatHandler* handler)
 {
-    if (sPlayerbotAIConfig.TestPlayerEnable)
+    if (sPlayerbotAIConfig.TestPlayer.Enable)
         return true;
 
     return Fail(handler, "The test player is disabled (Playerbots.TestPlayer.Enable = 0)");
@@ -547,7 +547,7 @@ bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string co
             return Fail(handler, "Unknown route '" + route + "' (routes: " + RouteNames() + ")");
     }
 
-    std::string const& accountName = sPlayerbotAIConfig.TestPlayerAccount;
+    std::string const& accountName = sPlayerbotAIConfig.TestPlayer.Account;
     uint32 const accountId = AccountMgr::GetId(accountName);
     if (!accountId)
         return Fail(handler, "Account '" + accountName + "' (Playerbots.TestPlayer.Account) does not exist");
