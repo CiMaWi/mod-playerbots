@@ -797,7 +797,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();
 
-    if (sPlayerbotAIConfig.TacticsEnable)
+    if (sPlayerbotAIConfig.Tactics.Enable)
     {
         tacticContext.store(static_cast<uint8>(tactics->GetCheckProbe()), std::memory_order_relaxed);
         // Harness matches keep the "fight enemies" snapshot of .playerbots tactics show current

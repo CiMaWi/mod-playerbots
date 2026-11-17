@@ -1396,13 +1396,13 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.ControlShare", ItemUse.ControlShare, false), 0, 100);
     ItemUse.UseEndGraceMs = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.UseEndGraceMs", ItemUse.UseEndGraceMs, false), 0, 10000);
-    TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
-    TacticsConfigMask = 0;
+    Tactics = TacticsConfig{};
+    Tactics.Enable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
     {
         TacticDefinition const& definition = TACTIC_DEFINITIONS[index];
         std::string const prefix = std::string("Playerbots.Tactics.") + definition.ConfigName;
-        TacticSettings& settings = TacticConfig[index];
+        TacticSettings& settings = Tactics.Settings[index];
         // The per-tactic keys are optional (commented in playerbots.conf.dist): no missing-key warnings
         settings.Enable = sConfigMgr->GetOption<bool>(prefix + ".Enable", false, false);
         settings.Scope = definition.DefaultScope;
@@ -1423,17 +1423,17 @@ bool PlayerbotAIConfig::Initialize()
         settings.UseChanceAtSkill1 = percent(".UseChanceAtSkill1", 100);
         settings.UseChanceAtSkill99 = percent(".UseChanceAtSkill99", 100);
 
-        if (TacticsEnable && settings.Enable)
-            TacticsConfigMask |= TacticBit(static_cast<TacticId>(index));
+        if (Tactics.Enable && settings.Enable)
+            Tactics.ConfigMask |= TacticBit(static_cast<TacticId>(index));
     }
 
     // CS5 design 6.4: which of the check hook's followers can pass their guard in each context
     TacticFollowerSwitches followerSwitches;
-    followerSwitches.TacticsEnable = TacticsEnable;
+    followerSwitches.TacticsEnable = Tactics.Enable;
     followerSwitches.TrackEnable = NaturalTrack.Enable;
     followerSwitches.InterruptFollows = InterruptFollows(TacticInterrupt);
     for (uint32 index = 0; index < TACTIC_FOLLOWER_COUNT; ++index)
-        followerSwitches.Scopes[index] = TacticConfig[static_cast<uint32>(TACTIC_FOLLOWER_TACTICS[index])].Scope;
+        followerSwitches.Scopes[index] = Tactics.Settings[static_cast<uint32>(TACTIC_FOLLOWER_TACTICS[index])].Scope;
     TacticFollowersFor = BuildTacticFollowerTable(followerSwitches);
 
     RandomBotsWalkingRPG = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG", false);
@@ -1848,7 +1848,7 @@ bool PlayerbotAIConfig::IsInPvpProhibitedArea(uint32 id)
 
 bool PlayerbotAIConfig::TacticStrategyWanted(TacticId id) const
 {
-    return ::TacticStrategyWanted(TacticsEnable, id, TacticConfig[static_cast<uint32>(id)].Enable, PvpTestEnable);
+    return ::TacticStrategyWanted(Tactics.Enable, id, Tactics.Settings[static_cast<uint32>(id)].Enable, PvpTestEnable);
 }
 
 bool PlayerbotAIConfig::IsRestrictedHealerDPSMap(uint32 mapId) const

@@ -509,13 +509,10 @@ public:
     bool ArenaOnlySpreadContinents;
     // Playerbots.RandomBotTestNamePrefix: new random bots are named prefix + a letters-only counter (empty = pool)
     std::string RandomBotTestNamePrefix;
-    // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope (indexed by TacticId), and the mask of
-    // the tactics enabled in config (0 while the system is off)
-    bool TacticsEnable;
-    std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
+    // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope, the mask of the enabled tactics
+    TacticsConfig Tactics;
     // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
     bool TacticStrategyWanted(TacticId id) const;
-    uint32 TacticsConfigMask;
     // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
     // pass, from the switches and scopes at load and reload
     std::array<uint8, TACTIC_CONTEXT_COUNT> TacticFollowersFor{};

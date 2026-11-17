@@ -2345,17 +2345,17 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     uint32 const mask = botAI->GetTacticMask();
     TacticGateState const& gate = botAI->GetTactics().GetTacticGate();
     handler->PSendSysMessage("TACTICS {}: Playerbots.Tactics.Enable {}, context {}{}, skill {}", name,
-                             config.TacticsEnable ? 1 : 0, TacticContextName(botAI->GetTacticContext()),
-                             config.TacticsEnable ? "" : " (not probed while off)", botAI->GetPvpSkill());
+                             config.Tactics.Enable ? 1 : 0, TacticContextName(botAI->GetTacticContext()),
+                             config.Tactics.Enable ? "" : " (not probed while off)", botAI->GetPvpSkill());
     handler->PSendSysMessage("  mask: {} ({}); config mask: {}", FormatTacticMask(mask),
                              botAI->IsTacticMaskForced() ? "forced by the harness" : "from config",
-                             FormatTacticMask(config.TacticsConfigMask));
+                             FormatTacticMask(config.Tactics.ConfigMask));
 
     uint32 here = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
     {
         TacticId const id = static_cast<TacticId>(index);
-        TacticSettings const& settings = config.TacticConfig[index];
+        TacticSettings const& settings = config.Tactics.Settings[index];
         bool const enabledHere = botAI->TacticEnabledHere(id);
         if (enabledHere)
             here |= TacticBit(id);
@@ -2822,7 +2822,7 @@ bool TacticCommands::HandleStatsCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "TACTICS stats: Playerbots.Tactics.Enable {}, config mask {}; activations per context "
         "(Arena / Battleground / World / Pve)",
-        config.TacticsEnable ? 1 : 0, FormatTacticMask(config.TacticsConfigMask));
+        config.Tactics.Enable ? 1 : 0, FormatTacticMask(config.Tactics.ConfigMask));
     uint64 total = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
     {
@@ -2834,7 +2834,8 @@ bool TacticCommands::HandleStatsCommand(ChatHandler* handler, char const* args)
         }
 
         handler->PSendSysMessage("  {}: {} / {} / {} / {} (scope {})", TACTIC_DEFINITIONS[index].Name, counts[0],
-                                 counts[1], counts[2], counts[3], FormatTacticScope(config.TacticConfig[index].Scope));
+                                 counts[1], counts[2], counts[3],
+                                 FormatTacticScope(config.Tactics.Settings[index].Scope));
     }
 
     handler->PSendSysMessage("  total {}", total);
