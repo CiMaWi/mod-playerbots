@@ -327,8 +327,36 @@ void HandCases()
     bot.alive = false;
     Expect(CheapCheck(potion, selfAsk, bot, hurt), Cause::Dead, "12 the bot is dead");
     bot = ready;
-    bot.inControl = false;
+    bot.lostControl = LostControl::Stunned;
     Expect(CheapCheck(potion, selfAsk, bot, hurt), Cause::NoControl, "13 stunned");
+    bot.lostControl = LostControl::Fleeing;
+    Expect(CheapCheck(potion, selfAsk, bot, hurt), Cause::NoControl, "13 feared");
+    bot.lostControl = LostControl::Confused;
+    Expect(CheapCheck(potion, selfAsk, bot, hurt), Cause::NoControl, "13 confused");
+    bot.lostControl = LostControl::Other;
+    Expect(CheapCheck(potion, selfAsk, bot, hurt), Cause::NoControl, "13 jumping or charging");
+    // a spell allowed while controlled (the PvP trinket's attributes): each state needs its own allowance
+    Record breaker = potion;
+    breaker.attributes[5] =
+        RULE_ATTR5_ALLOW_WHILE_STUNNED | RULE_ATTR5_ALLOW_WHILE_FLEEING | RULE_ATTR5_ALLOW_WHILE_CONFUSED;
+    bot.lostControl = LostControl::Stunned;
+    Expect(CheapCheck(breaker, selfAsk, bot, hurt), Cause::None, "13 allowed while stunned");
+    bot.lostControl = LostControl::Fleeing;
+    Expect(CheapCheck(breaker, selfAsk, bot, hurt), Cause::None, "13 allowed while feared");
+    bot.lostControl = LostControl::Confused;
+    Expect(CheapCheck(breaker, selfAsk, bot, hurt), Cause::None, "13 allowed while confused");
+    bot.lostControl = LostControl::Stunned | LostControl::Fleeing | LostControl::Confused;
+    Expect(CheapCheck(breaker, selfAsk, bot, hurt), Cause::None, "13 allowed under all three");
+    bot.lostControl = LostControl::Stunned | LostControl::Other;
+    Expect(CheapCheck(breaker, selfAsk, bot, hurt), Cause::NoControl, "13 allowed while stunned, not while charging");
+    Record stunOnly = potion;
+    stunOnly.attributes[5] = RULE_ATTR5_ALLOW_WHILE_STUNNED;
+    bot.lostControl = LostControl::Stunned;
+    Expect(CheapCheck(stunOnly, selfAsk, bot, hurt), Cause::None, "13 stun allowance, stunned");
+    bot.lostControl = LostControl::Fleeing;
+    Expect(CheapCheck(stunOnly, selfAsk, bot, hurt), Cause::NoControl, "13 stun allowance, feared");
+    bot.lostControl = LostControl::Stunned | LostControl::Confused;
+    Expect(CheapCheck(stunOnly, selfAsk, bot, hurt), Cause::NoControl, "13 stun allowance, stunned and confused");
     Record peace = potion;
     peace.needs.fight = FightNeed::Peace;
     bot = ready;
@@ -442,7 +470,7 @@ void HandCases()
     Expect(CheapCheck(potion, selfAsk, bot, full), Cause::NoItem, "order: no_item before not_ready and dead");
     bot = ready;
     bot.busy = true;
-    bot.inControl = false;
+    bot.lostControl = LostControl::Stunned;
     Expect(CheapCheck(bandage, mateAsk, bot, Mate(60.0f)), Cause::Busy, "order: busy before no_control and range");
     Expect(CheapCheck(bandage, mateAsk, ready,
                       []
@@ -535,6 +563,37 @@ void SpotObjectPotionCases()
 }
 
 // A worn piece's tinker from the committed dump: the enchantment's record as the piece's (PieceRecord)
+// The PvP trinket of the dump (Insignia of the Horde 18834, spell 42292) is used under the states it breaks
+void ControlCases(std::string const& root)
+{
+    std::ifstream in(root + "/tests/fixtures/item-use-dump.txt", std::ios::binary);
+    std::optional<Record> insignia;
+    std::string line;
+    while (!insignia && std::getline(in, line))
+        if (std::optional<DumpRow> const row = ParseDumpLine(line))
+            if (row->record.itemEntry == 18834 && row->record.spellId == 42292)
+                insignia = row->record;
+    Check(insignia.has_value(), "control: the dump has Insignia of the Horde 18834, spell 42292");
+    if (!insignia)
+        return;
+
+    BotView bot = ReadyBot();
+    bot.level = 80;
+    bot.held = 1;
+    bot.equipped = true;
+    bot.inFight = true;
+    Request const ask = Ask(*insignia, TargetKind::None);
+    Expect(CheapCheck(*insignia, ask, bot, Self()), Cause::None, "control: the insignia worn, in control");
+    bot.lostControl = LostControl::Stunned;
+    Expect(CheapCheck(*insignia, ask, bot, Self()), Cause::None, "control: the insignia while stunned");
+    bot.lostControl = LostControl::Fleeing;
+    Expect(CheapCheck(*insignia, ask, bot, Self()), Cause::None, "control: the insignia while feared");
+    bot.lostControl = LostControl::Confused;
+    Expect(CheapCheck(*insignia, ask, bot, Self()), Cause::None, "control: the insignia while confused");
+    bot.lostControl = LostControl::Other;
+    Expect(CheapCheck(*insignia, ask, bot, Self()), Cause::NoControl, "control: the insignia while charging");
+}
+
 void WornCases(std::string const& root)
 {
     std::ifstream in(root + "/tests/fixtures/item-use-dump.txt", std::ios::binary);
@@ -554,6 +613,7 @@ void WornCases(std::string const& root)
     Check(accelerators && accelerators->spellId == 54758 && accelerators->itemEntry == 0,
           "worn: enchant 3604 is spell 54758, no item");
     Check(rocket && rocket->spellId == 54757, "worn: enchant 3603 is spell 54757");
+    ControlCases(root);
     if (!accelerators || !rocket)
         return;
 

@@ -158,7 +158,11 @@ BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo,
     view.busy = pending || bot->IsNonMeleeSpellCast(false, false, true) || !bot->SpellQueue.empty() ||
                 (spellInfo && bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo));
     view.alive = bot->IsAlive();
-    view.inControl = !bot->HasUnitState(UNIT_STATE_LOST_CONTROL);
+    view.lostControl = static_cast<std::uint8_t>(
+        (bot->HasUnitState(UNIT_STATE_STUNNED) ? LostControl::Stunned : 0) |
+        (bot->HasUnitState(UNIT_STATE_FLEEING) ? LostControl::Fleeing : 0) |
+        (bot->HasUnitState(UNIT_STATE_CONFUSED) ? LostControl::Confused : 0) |
+        (bot->HasUnitState(UNIT_STATE_LOST_CONTROL & ~UNIT_STATE_CONTROLLED) ? LostControl::Other : 0));
     view.inFight = bot->IsInCombat();
     view.inArena = bot->InArena();
     // a stance is no shapeshift for spells (SpellInfo::CheckShapeshift)
