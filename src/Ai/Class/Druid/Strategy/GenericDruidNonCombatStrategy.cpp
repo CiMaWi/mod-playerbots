@@ -115,8 +115,6 @@ void GenericDruidNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& trig
     triggers.push_back(new TriggerNode("party member cure poison", { NextAction("abolish poison on party", 20.0f) }));
     triggers.push_back(new TriggerNode("party member dead", { NextAction("revive", ACTION_CRITICAL_HEAL + 10) }));
 
-    triggers.push_back(new TriggerNode("often", { NextAction("apply oil", 1.0f) }));
-
     triggers.push_back(
         new TriggerNode("party member critical health",
                         {
@@ -174,12 +172,6 @@ void GenericDruidNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& trig
                        }));
 
     triggers.push_back(new TriggerNode("aquatic form", { NextAction("aquatic form", 10.0f) }));
-
-    int specTab = AiFactory::GetPlayerSpecTab(botAI->GetBot());
-    if (specTab == DRUID_TAB_BALANCE || specTab == DRUID_TAB_RESTORATION)
-        triggers.push_back(new TriggerNode("often", { NextAction("apply oil", 1.0f) }));
-    if (specTab == DRUID_TAB_FERAL)
-        triggers.push_back(new TriggerNode("often", { NextAction("apply stone", 1.0f) }));
 
 }
 

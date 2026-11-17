@@ -11,30 +11,6 @@
 
 class PlayerbotAI;
 
-class ImbueWithPoisonAction : public Action
-{
-public:
-    ImbueWithPoisonAction(PlayerbotAI* botAI);
-
-    bool Execute(Event event) override;
-};
-
-class ImbueWithStoneAction : public Action
-{
-public:
-    ImbueWithStoneAction(PlayerbotAI* botAI);
-
-    bool Execute(Event event) override;
-};
-
-class ImbueWithOilAction : public Action
-{
-public:
-    ImbueWithOilAction(PlayerbotAI* botAI);
-
-    bool Execute(Event event) override;
-};
-
 class TryEmergencyAction : public Action
 {
 public:

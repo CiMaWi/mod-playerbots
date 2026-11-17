@@ -54,6 +54,7 @@ struct BuffUse
 {
     std::uint64_t itemGuid{0};
     std::uint32_t entry{0};
+    std::uint8_t slot{0};  // WI8b: 0, the bot itself; else the equipment slot of the weapon a coating goes on
 };
 
 // WI8a: the buff strategy's state (UseBuffsStrategy.cpp; the bot's map thread only)

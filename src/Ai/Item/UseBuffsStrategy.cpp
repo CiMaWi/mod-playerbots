@@ -19,6 +19,7 @@
 #include "Bag.h"
 #include "BotKind.h"
 #include "BotTraitMgr.h"
+#include "DBCStores.h"
 #include "Group.h"
 #include "Item.h"
 #include "ItemBuffRules.h"
@@ -129,7 +130,11 @@ struct Holdings
     std::vector<ItemUse::Record> records;
     std::vector<std::uint32_t> auraGroups;
     std::vector<std::int32_t> auraAmounts;
+    std::array<std::uint32_t, 2> coat{};  // WI8b: the temporary enchantment on the main and the off hand, 0: none
 };
+
+// The weapon slots a coating goes on, in order (the ranged slot's weapon is no melee weapon)
+constexpr std::array<std::uint8_t, 2> COAT_SLOTS = {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND};
 
 void AddItem(Player* bot, Item* item, ItemUseIndex const& index, Holdings& held)
 {
@@ -139,7 +144,7 @@ void AddItem(Player* bot, Item* item, ItemUseIndex const& index, Holdings& held)
 
     for (ItemUse::Record const& record : index.OfItem(proto->ItemId))
     {
-        if (!ItemUse::IsBuffSlot(record.exclude))
+        if (!ItemUse::IsBuffSlot(record.exclude) && record.exclude != ItemUse::Exclude::Coating)
             continue;
 
         auto const same = std::find_if(held.list.begin(), held.list.end(), [&](ItemUse::UsableEntry const& entry)
@@ -206,9 +211,85 @@ void ReadAuras(Player* bot, Holdings& held)
     }
 }
 
+void ReadCoats(Player* bot, Holdings& held)
+{
+    for (std::size_t i = 0; i < COAT_SLOTS.size(); ++i)
+    {
+        Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, COAT_SLOTS[i]);
+        held.coat[i] = weapon ? weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0;
+    }
+}
+
+// WI8b: the stats of a coating's enchantment (its use spell's temporary enchantment effect names it): damage a hit
+// counts as attack power, a stat entry by its item mod type, an equip spell by its auras
+ItemUse::BuffWeights CoatingStats(ItemUse::Record const& record)
+{
+    ItemUse::BuffWeights stats{};
+    std::uint32_t enchantId = 0;
+    for (std::size_t i = 0; i < record.effectCount && i < ItemUse::MAX_EFFECTS; ++i)
+        if (record.effects[i].effect == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY)
+            enchantId = static_cast<std::uint32_t>(record.effects[i].misc);
+    SpellItemEnchantmentEntry const* enchant = enchantId ? sSpellItemEnchantmentStore.LookupEntry(enchantId) : nullptr;
+    if (!enchant)
+        return stats;
+
+    for (std::uint8_t i = 0; i < MAX_SPELL_ITEM_ENCHANTMENT_EFFECTS; ++i)
+    {
+        float const amount = static_cast<float>(enchant->amount[i]);
+        switch (enchant->type[i])
+        {
+            case ITEM_ENCHANTMENT_TYPE_DAMAGE:
+                ItemUse::BuffDetail::Add(stats, ItemUse::BuffStat::AttackPower, amount);
+                break;
+            case ITEM_ENCHANTMENT_TYPE_STAT:
+                ItemUse::AddModTypeStat(stats, enchant->spellid[i], amount);
+                break;
+            case ITEM_ENCHANTMENT_TYPE_EQUIP_SPELL:
+                if (SpellInfo const* spell = sSpellMgr->GetSpellInfo(enchant->spellid[i]))
+                {
+                    ItemUse::Record aura;
+                    for (std::uint8_t e = 0; e < MAX_SPELL_EFFECTS && aura.effectCount < ItemUse::MAX_EFFECTS; ++e)
+                        if (spell->Effects[e].ApplyAuraName)
+                        {
+                            ItemUse::EffectFact& fact = aura.effects[aura.effectCount++];
+                            fact.aura = static_cast<std::uint16_t>(spell->Effects[e].ApplyAuraName);
+                            fact.amount = spell->Effects[e].CalcValue();
+                            fact.misc = spell->Effects[e].MiscValue;
+                        }
+                    ItemUse::BuffWeights const extra = ItemUse::BuffStats(aura);
+                    for (std::size_t s = 0; s < stats.size(); ++s)
+                        stats[s] += extra[s];
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return stats;
+}
+
+ItemUse::TargetView ViewOfWeapon(Item* weapon)
+{
+    ItemUse::TargetView view;
+    view.kind = ItemUse::TargetKind::OwnItem;
+    ItemTemplate const* proto = weapon ? weapon->GetTemplate() : nullptr;
+    view.found = proto != nullptr;
+    if (!proto)
+        return view;
+    view.itemClass = static_cast<std::int32_t>(proto->Class);
+    view.itemSubClass = proto->SubClass;
+    view.itemInvType = proto->InventoryType;
+    view.itemLevel = static_cast<std::uint16_t>(proto->ItemLevel);
+    view.requiredLevel = static_cast<std::uint16_t>(proto->RequiredLevel);
+    view.itemHasCoating = weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) != 0;
+    return view;
+}
+
 std::uint64_t SignatureOf(Holdings const& held)
 {
     std::uint64_t hash = FNV_OFFSET;
+    Mix(hash, held.coat[0]);
+    Mix(hash, held.coat[1]);
     for (ItemUse::UsableEntry const& entry : held.list)
     {
         Mix(hash, entry.record);
@@ -242,13 +323,15 @@ bool UseNext(Player* bot, ItemUse::BuffState& state, std::uint32_t nowMs)
         Item* item = bot->GetItemByGuid(ObjectGuid(next.itemGuid));
         if (!item)
             item = bot->GetItemByEntry(next.entry);
-        if (!item || getMSTimeDiff(state.queuedMs, nowMs) > ItemUse::BUFF_QUEUE_MS)
+        Item* weapon = next.slot ? bot->GetItemByPos(INVENTORY_SLOT_BAG_0, next.slot) : nullptr;
+        if (!item || (next.slot && !weapon) || getMSTimeDiff(state.queuedMs, nowMs) > ItemUse::BUFF_QUEUE_MS)
         {
             state.queue.erase(state.queue.begin());
             continue;
         }
 
-        ItemUse::Request const request = ItemUse::OnSelf(item, ItemUse::Caller::Buff);
+        ItemUse::Request const request = weapon ? ItemUse::OnItem(item, weapon, ItemUse::Caller::Buff)
+                                                : ItemUse::OnSelf(item, ItemUse::Caller::Buff);
         ItemUse::Cause const cause = ItemUse::Check(bot, request);
         state.triedMs = nowMs;
         if (cause == ItemUse::Cause::None)
@@ -313,6 +396,7 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
     state.checkedMs = now;
     Holdings held;
     ReadBags(bot, held);
+    ReadCoats(bot, held);
     if (!held.list.empty())
         ReadAuras(bot, held);
     std::uint64_t const signature = SignatureOf(held);
@@ -346,11 +430,47 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
     buffBot.earnCopperPerMinute = static_cast<std::uint32_t>(earn);
     buffBot.deathCopper = ItemUse::DeathCopper(buffBot.earnCopperPerMinute, 0);
     buffBot.control = InControl(botAI, bot);
+    buffBot.classMask = 1u << (bot->getClass() - 1);
 
     std::vector<ItemUse::BuffPick> const picks = ItemUse::PickBuffs(buffBot, held.list, held.records);
+
+    // WI8b: a coating for each worn melee weapon (the hunter and the shaman have none: the hunter's weights carry no
+    // weapon damage, the shaman's imbues are spells). A use takes one from the stack, so the second hand reads the rest
+    struct HandPick
+    {
+        ItemUse::CoatPick pick;
+        std::uint8_t slot{0};
+    };
+    std::vector<HandPick> coats;
+    if (bot->getClass() != CLASS_HUNTER && bot->getClass() != CLASS_SHAMAN &&
+        std::any_of(held.records.begin(), held.records.end(),
+                    [](ItemUse::Record const& record) { return record.exclude == ItemUse::Exclude::Coating; }))
+    {
+        std::vector<ItemUse::UsableEntry> coatList = held.list;
+        std::vector<ItemUse::BuffWeights> coatStats;
+        coatStats.reserve(held.records.size());
+        for (ItemUse::Record const& record : held.records)
+            coatStats.push_back(record.exclude == ItemUse::Exclude::Coating ? CoatingStats(record)
+                                                                            : ItemUse::BuffWeights{});
+        for (std::size_t hand = 0; hand < COAT_SLOTS.size(); ++hand)
+        {
+            Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, COAT_SLOTS[hand]);
+            if (!weapon)
+                continue;
+            ItemUse::CoatPick const pick =
+                ItemUse::PickCoating(buffBot, coatList, held.records, coatStats, ViewOfWeapon(weapon), hand == 1);
+            if (pick.index < 0)
+                continue;
+            coats.push_back({pick, COAT_SLOTS[hand]});
+            if (pick.use)
+                --coatList[static_cast<std::size_t>(pick.index)].count;
+        }
+    }
+
     // A read that found the bags or auras changed (the bot's own uses among them) writes its rows only when it uses
     // something; a change of what is ahead (or the console's order) writes them always
-    if (!changed && std::none_of(picks.begin(), picks.end(), [](ItemUse::BuffPick const& pick) { return pick.use; }))
+    if (!changed && std::none_of(picks.begin(), picks.end(), [](ItemUse::BuffPick const& pick) { return pick.use; }) &&
+        std::none_of(coats.begin(), coats.end(), [](HandPick const& hand) { return hand.pick.use; }))
         return false;
 
     ItemUse::BuffUse food;
@@ -363,11 +483,19 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
         if (!pick.use)
             continue;
         // a buff food is eaten sitting: any later use would stand the bot up, so it comes last
-        ItemUse::BuffUse const use{entry.item.guid, entry.item.entry};
+        ItemUse::BuffUse const use{entry.item.guid, entry.item.entry, 0};
         if (pick.slot == ItemUse::Exclude::WellFed)
             food = use;
         else
             state.queue.push_back(use);
+    }
+    for (HandPick const& hand : coats)
+    {
+        ItemUse::UsableEntry const& entry = held.list[static_cast<std::size_t>(hand.pick.index)];
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::ItemBuff, ItemUse::CoatChoice(hand.pick),
+                           ItemUse::BuffReasonWord(hand.pick.reason), hand.pick.score, {}, entry.item.entry);
+        if (hand.pick.use)
+            state.queue.push_back(ItemUse::BuffUse{entry.item.guid, entry.item.entry, hand.slot});
     }
     if (food.entry)
         state.queue.push_back(food);
