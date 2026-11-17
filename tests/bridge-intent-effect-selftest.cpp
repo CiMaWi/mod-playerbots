@@ -210,7 +210,7 @@ struct Fixture
     PlayerbotAI HumanAI;
     WorldSession HumanSession;
     WorldSession BotSession;
-    Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
+    Order Command{Intent::Mark, 1, 2, 3, 4, 6};
     int Authorizations = 0;
     Refusal Why = Refusal::None;
     // LC2: a stepped order's outcomes and its BridgeAct events.
@@ -506,18 +506,15 @@ int main()
         deny(f);
         f.Refused(reason);
     }
-    // LCB1b: one perception rule. A unit at 45 yards, inside the bot's sight range, is acted on although the order's
-    // own distance (the old visibility value) is 30; the order's distance is not read.
+    // LCB1b: one perception rule. A unit at 45 yards, inside the bot's sight range, is acted on (the order carried a
+    // 30-yard visibility value until LCB1e removed it).
     for (Intent operation : {Intent::Mark, Intent::AttackOwnTarget})
-        for (float const distance : {30.0f, 5.0f, 0.0f})
-        {
-            Fixture f;
-            f.Command.Operation = operation;
-            f.Command.VisibilityDistance = distance;
-            f.Target.Yards = 45.0f;
-            Check(f.Run() == Result::Applied,
-                  "a target the bot perceives at 45 yards is acted on, whatever the order's distance");
-        }
+    {
+        Fixture f;
+        f.Command.Operation = operation;
+        f.Target.Yards = 45.0f;
+        Check(f.Run() == Result::Applied, "a target the bot perceives at 45 yards is acted on");
+    }
     // An attack or a mark is the bot's own act on what it sees; the partner may be elsewhere or in another group.
     for (Intent operation : {Intent::Mark, Intent::AttackOwnTarget})
     {
@@ -2854,7 +2851,7 @@ int main()
                     Check(pulls == 0, "a refused attack or pull pulls nothing");
                 }
             }
-        // The attack's bound is what the bot sees (the order's visibility distance), not the pull's (AttackAction
+        // The attack's bound is what the bot sees (Perceives, its sight range), not the pull's (AttackAction
         // itself needs the unit in sight: Failed above).
         {
             Fixture f;
