@@ -644,6 +644,17 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     fromB.takeoffHere = false;
     TravelRoute::Result const spot = search(bridged, fromB, island, open);
     check(spot.ok && airLegs(spot) == 0, "no air leg starts where the bot stands and cannot take off");
+    // A trip whose fly leg over the link failed (TravelLegs::NoteAirFailed) asks with the link among its avoided edges
+    if (flies)
+    {
+        TravelRoute::Request avoided{flyer, island};
+        avoided.avoidEdges.push_back({fly->nodes.front(), fly->nodes.back()});
+        check(TravelRoute::Search(withAir, avoided, TravelRoute::StuckEdges{}, open).failure ==
+                  TravelRoute::Failure::NoRoute,
+              "a trip that avoids the air link gets no route onto the island");
+        TravelRoute::Result const walked = TravelRoute::Search(bridged, avoided, TravelRoute::StuckEdges{}, open);
+        check(walked.ok && airLegs(walked) == 0, "a trip that avoids the air link takes the bridge");
+    }
     return checks;
 }
 }  // namespace

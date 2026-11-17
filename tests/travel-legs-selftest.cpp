@@ -926,6 +926,27 @@ void CheckFlyLeg()
     spent.spotFails = TravelLegs::MAX_SPOT_FAILS;
     Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Abort,
           "fly: with both bounds spent the trip ends");
+    // A failed fly leg over an air link (WT61): the trip's later routes leave the link out, a refused takeoff too
+    Leg airLeg = leg;
+    airLeg.air = true;
+    airLeg.nodes = {7, 9};
+    std::pair<std::uint32_t, std::uint32_t> const airEdge{7, 9};
+    Trip airSpot = StartedTrip({airLeg}, 0);
+    Check(TravelLegs::AfterFailure(airSpot, FailReason::Takeoff, true) == Recovery::Replan && !airSpot.noFly &&
+              airSpot.avoidEdges.size() == 1 && airSpot.avoidEdges.front() == airEdge,
+          "fly: a takeoff refused at an air link's node keeps flying and leaves the link out of the trip");
+    Check(TravelLegs::AfterFailure(airSpot, FailReason::Takeoff, true) == Recovery::Replan &&
+              airSpot.avoidEdges.size() == 1,
+          "fly: the same air link is left out once");
+    Trip airLost = StartedTrip({airLeg}, 0);
+    Check(TravelLegs::AfterFailure(airLost, FailReason::Landing) == Recovery::Replan && airLost.noFly &&
+              airLost.avoidEdges.size() == 1 && airLost.avoidEdges.front() == airEdge,
+          "fly: an air leg failed in the air replans without flying and without its link");
+    Trip airWait = StartedTrip({airLeg}, 0);
+    TravelLegs::AfterFailure(airWait, FailReason::NoAnswer);
+    Check(airWait.avoidEdges.empty(), "fly: a route without an answer leaves no air link out");
+    Check(inside.avoidEdges.empty() && city.avoidEdges.empty() && fell.avoidEdges.empty(),
+          "fly: a failed fly leg of the bot's own leaves no edge out");
     Trip overCity = StartedTrip({leg}, 0);
     Step(overCity, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
     Observation aloft = Flying({1, 150.0f, 0.0f, 80.0f}, 9000, true, true);

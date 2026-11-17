@@ -938,7 +938,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     // The trip's stuck walks: their start or goal hops are left out (TravelLegs::NoteStuck)
     request.avoidNodes = data.trip.avoid;
     request.noDirect = data.trip.noDirect;
-    // The walks this bot died on twice (TravelLegs::NoteDeath): their graph edges are left out, for its trip only
+    // The walks this bot died on twice (TravelLegs::NoteDeath) and the air links whose fly leg failed
+    // (TravelLegs::NoteAirFailed): their graph edges are left out, for its trip only
     request.avoidEdges = data.trip.avoidEdges;
     // The walks off the graph the navmesh refused (TravelLegs::NoteWalkRefused): not walked again in this trip
     request.avoidWalks = data.trip.avoidWalks;
