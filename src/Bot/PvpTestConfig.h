@@ -30,4 +30,10 @@ struct PvpTestConfig
     float FightO = 1.25917f;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (PvpTestConfig.cpp)
+extern ConfigFamily<PvpTestConfig> const PvpTestFamily;
+
 #endif

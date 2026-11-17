@@ -1615,22 +1615,10 @@ Playerbots.WorldLog.QueueRows = 200000
 #   GuildSampleSeconds (5..3600): the online random bots of the player's guild get guild time.
 #   NearbyIntervalSeconds (0..3600, 0 = off): the random bots within NearbyRadius yards (1..100; same map and phase,
 #     not in a battleground, not in the player's group) get nearby time. The weakest kind; turn it off on its own.
+# Only GuildSampleSeconds is listed below; every other key above keeps its default until a line sets it (the defaults
+# and bounds are in src/Bot/AcquaintanceConfig.h; "playerbots config Playerbots.Acquaintance." prints them).
 #
-Playerbots.Acquaintance.FlushSeconds = 30
-Playerbots.Acquaintance.DirectCooldownSeconds = 60
-Playerbots.Acquaintance.GroupJoinCooldownSeconds = 600
-Playerbots.Acquaintance.PointsDirect = 10
-Playerbots.Acquaintance.PointsGroupJoin = 20
-Playerbots.Acquaintance.PointsGuildJoin = 15
-Playerbots.Acquaintance.PointsPvpKill = 5
-Playerbots.Acquaintance.PointsPerGroupMinute = 5
-Playerbots.Acquaintance.PointsPerGuildHour = 6
-Playerbots.Acquaintance.PointsPerNearbyMinute = 1
-Playerbots.Acquaintance.MaxScore = 1000000
-Playerbots.Acquaintance.GroupSampleSeconds = 10
 Playerbots.Acquaintance.GuildSampleSeconds = 60
-Playerbots.Acquaintance.NearbyIntervalSeconds = 10
-Playerbots.Acquaintance.NearbyRadius = 30
 
 # Runtime arena team moves (with Playerbots.Ladder.Role = 1 or 2, below)
 # The GM/console commands .playerbots ladder depart <arenaTeamId> | arrive <arenaTeamId> | status [<id>] move

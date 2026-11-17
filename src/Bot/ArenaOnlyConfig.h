@@ -22,4 +22,10 @@ struct ArenaOnlyConfig
     bool SpreadContinents = true;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (ArenaOnlyConfig.cpp)
+extern ConfigFamily<ArenaOnlyConfig> const ArenaOnlyFamily;
+
 #endif

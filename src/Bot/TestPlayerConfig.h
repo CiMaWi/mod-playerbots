@@ -22,4 +22,10 @@ struct TestPlayerConfig
     std::string Account = "WBTEST";
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (TestPlayerConfig.cpp)
+extern ConfigFamily<TestPlayerConfig> const TestPlayerFamily;
+
 #endif

@@ -23,4 +23,10 @@ struct MatchLogConfig
     uint32 TraceMaxBytes = 4194304;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (MatchLogConfig.cpp)
+extern ConfigFamily<MatchLogConfig> const MatchLogFamily;
+
 #endif
