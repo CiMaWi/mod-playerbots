@@ -484,8 +484,9 @@ inline bool IsNoOp(Leg const& leg)
            Distance(leg.from, leg.to) <= WAYPOINT_YARDS;
 }
 
-// A transport's period before a scan read it (MIN_PERIOD_MS at least)
-inline std::uint32_t FallbackPeriodMs(Leg const& leg)
+// An elevator's period, which the graph does not know (a vessel's comes with the leg, from the core): twice the leg's
+// seconds, MIN_PERIOD_MS at least
+inline std::uint32_t LiftPeriodMs(Leg const& leg)
 {
     return std::max(static_cast<std::uint32_t>(leg.seconds * PERIOD_FACTOR * 1000.0f), MIN_PERIOD_MS);
 }
@@ -786,7 +787,9 @@ inline bool BoardedByIntent(Trip const& trip, std::uint64_t aboardGuid)
 
 inline std::uint32_t TransportPeriodMs(Trip const& trip, Leg const& leg)
 {
-    return trip.periodMs ? trip.periodMs : FallbackPeriodMs(leg);
+    if (trip.periodMs)
+        return trip.periodMs;
+    return leg.periodMs ? leg.periodMs : LiftPeriodMs(leg);
 }
 
 // Off the transport (approach, wait, board) the leg fails WAIT_PERIODS periods after its start

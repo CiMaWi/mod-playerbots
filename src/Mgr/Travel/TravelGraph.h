@@ -70,9 +70,22 @@ struct TravelGraphLink
     // As stored: seconds for portals (3) and elevators (5, 8.6, 15); NOT seconds for flights (path length / 3600) and
     // ships or zeppelins (0.0033, 0.005)
     float extraCost{0.0f};
+    // Ships and zeppelins (a transport link with an object whose extraCost is no seconds), read from the core's
+    // transport template when the graph loads: the vessel's whole period, and the stop-to-stop ride from its key
+    // frames (0: the loader matched no stop frames). Elevators: both 0, their stored seconds are the cost
+    std::uint32_t periodMs{0};
+    float rideSeconds{0.0f};
     float pathLength{0.0f};      // yards along the stored points, summed over segments on one map
     std::uint32_t pathFirst{0};  // points[pathFirst, pathFirst + pathCount), in nr order
     std::uint32_t pathCount{0};
+
+    // A vessel's cost in seconds: the expected wait at the dock (half the period) plus the ride; half a period
+    // where no key frames matched (exact for a two-stop shuttle, whose period is there and back)
+    float VesselSeconds() const
+    {
+        float const half = static_cast<float>(periodMs) / 2000.0f;
+        return half + (rideSeconds > 0.0f ? rideSeconds : half);
+    }
 };
 
 struct TravelGraphPoint
@@ -120,13 +133,6 @@ struct TravelGraphStats
     std::uint32_t flightsWithoutTaxi{0};  // flight links whose TaxiPath is unknown: the search never uses them
 };
 
-struct TravelGraphRoute
-{
-    bool found{false};
-    float seconds{0.0f};
-    std::vector<std::uint32_t> links;  // link indices in travel order
-};
-
 class TravelGraphBuilder;
 
 class TravelGraph
@@ -138,11 +144,7 @@ public:
     static constexpr std::uint8_t TAXI_ALLIANCE = 1;
     static constexpr std::uint8_t TAXI_HORDE = 2;
 
-    // The simple cost of SimpleRoute, in seconds (WT6's reachability check; WT7's search has the real costs)
-    static constexpr float RUN_SPEED = 7.0f;      // yd/s, a player running
     static constexpr float FLIGHT_SPEED = 32.0f;  // yd/s, worldserver.conf TaxiFlightSpeed (default, Blizzlike)
-    // A ship or zeppelin, whose stored cost is no time: half a typical 4-6 min period of waiting plus a 2-3 min ride
-    static constexpr float SHIP_SECONDS = 180.0f;
 
     TravelGraph() = default;
     TravelGraph(TravelGraph const&) = delete;
@@ -326,76 +328,6 @@ public:
         return link.type != TravelLinkType::Transport && (_nodes[link.from].waitStop || _nodes[link.to].waitStop);
     }
 
-    // Negative for a link the simple search does not use
-    static float SimpleCost(TravelGraphLink const& link)
-    {
-        switch (link.type)
-        {
-            case TravelLinkType::Walk:
-                return link.distance / RUN_SPEED;
-            case TravelLinkType::Portal:
-            case TravelLinkType::StaticPortal:
-                return link.extraCost;
-            case TravelLinkType::Transport:
-                if (!link.object)
-                    return link.distance / RUN_SPEED;
-                return link.extraCost >= 1.0f ? link.extraCost : SHIP_SECONDS;  // elevators store seconds
-            case TravelLinkType::Flight:
-                return link.pathLength / FLIGHT_SPEED;
-        }
-        return link.extraCost;
-    }
-
-    // Dijkstra over SimpleCost, no bot state (flight nodes, faction, money): reachability, leg types and a plausible
-    // total for the selftest. WT7 replaces it with the real search
-    TravelGraphRoute SimpleRoute(std::uint32_t from, std::uint32_t to) const
-    {
-        TravelGraphRoute route;
-        if (from >= _nodes.size() || to >= _nodes.size())
-            return route;
-
-        float const unreached = std::numeric_limits<float>::max();
-        std::vector<float> best(_nodes.size(), unreached);
-        std::vector<std::uint32_t> via(_nodes.size(), NO_NODE);
-        using Entry = std::pair<float, std::uint32_t>;
-        std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
-        best[from] = 0.0f;
-        open.emplace(0.0f, from);
-        while (!open.empty())
-        {
-            auto const [cost, node] = open.top();
-            open.pop();
-            if (cost > best[node])
-                continue;
-            if (node == to)
-                break;
-
-            for (TravelGraphLink const& link : LinksOf(node))
-            {
-                float const seconds = SimpleCost(link);
-                if (seconds < 0.0f || OffWaitStop(link))
-                    continue;
-                float const next = cost + seconds;
-                if (next < best[link.to])
-                {
-                    best[link.to] = next;
-                    via[link.to] = IndexOfLink(link);
-                    open.emplace(next, link.to);
-                }
-            }
-        }
-
-        if (best[to] == unreached)
-            return route;
-
-        for (std::uint32_t node = to; node != from; node = _links[via[node]].from)
-            route.links.push_back(via[node]);
-        std::reverse(route.links.begin(), route.links.end());
-        route.found = true;
-        route.seconds = best[to];
-        return route;
-    }
-
     // The checks shared by tests/travel-graph-selftest.cpp and `playerbots route selftest` on any graph: counts that
     // agree with each other, CSR consistency, the grid against a brute-force scan and three routes. Returns the number
     // of checks; failures get one line each, notes the route summaries
@@ -565,6 +497,8 @@ public:
         float distance{0.0f};
         float swim{0.0f};
         float extraCost{0.0f};
+        std::uint32_t periodMs{0};  // a vessel's period and ride (TravelGraphLink)
+        float rideSeconds{0.0f};
         std::uint32_t maxCreature[3]{};
     };
 
@@ -637,6 +571,8 @@ public:
             link.distance = row.distance;
             link.swim = row.swim;
             link.extraCost = row.extraCost;
+            link.periodMs = row.periodMs;
+            link.rideSeconds = row.rideSeconds;
             _links.push_back(link);
             ++_stats.linksByType[row.type];
             if (TravelGraph::IsWaitPointLink(link))

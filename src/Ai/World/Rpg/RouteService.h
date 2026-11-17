@@ -304,7 +304,7 @@ private:
 };
 
 // Server side (RouteService.cpp), map thread: the bot as the search sees it, and the tuning values from the config
-// (WorldTravel.StuckPenalty, TransportWaitSeconds; worldserver TaxiFlightSpeed)
+// (WorldTravel.StuckPenalty; worldserver TaxiFlightSpeed)
 Snapshot FillSnapshot(Player const* bot, std::uint32_t requestId);
 Params ConfiguredParams();
 // World thread: starts RouteService::Instance() with WorldTravel.RouteThreads workers and its PerfMonitor rows

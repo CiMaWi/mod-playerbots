@@ -21,7 +21,8 @@
 //   node need not be known: a bot reaching a flight master learns its node there (NewRpgTravelFlightAction does), and
 //   a flight chain's later origins are earlier destinations, known already
 // - transport (only with allowTransport; WT19): elevators their stored seconds, ships and zeppelins the expected wait
-//   (Params::transportWaitSeconds, half a period) plus SHIP_RIDE_SECONDS; a wait point's link to its stop (no object)
+//   (half the vessel's period, read from the core when the graph loads) plus its ride
+//   (TravelGraphLink::VesselSeconds); a wait point's link to its stop (no object)
 //   its walk. A stop with a wait point is reached and left only through the wait point and its rides
 //   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point
 // - static portal (a portal object a player clicks, WT55d): its stored 3 s, as an area trigger
@@ -66,7 +67,6 @@ constexpr float SAME_WALK_YARDS = 10.0f;      // a walk off the graph with both 
 constexpr float HEARTH_CAST_SECONDS = 10.0f;  // the hearthstone's cast
 constexpr std::uint32_t HEARTH_WAIT_CAP_MS = 3 * 60 * 1000;  // a cooldown longer than this is no hearth edge
 constexpr float FLIGHT_BOARDING_SECONDS = 5.0f;              // talking to the flight master, mounting and landing
-constexpr float SHIP_RIDE_SECONDS = 120.0f;    // a ship or zeppelin crossing until WT19 knows the real periods
 constexpr float FULL_PURSE_SECONDS = 3600.0f;  // at thrift 100, a fare of all one's money weighs an hour of travel
 // A route answer's life from its request: the service keeps it, the follower waits for it and applies it this long
 constexpr std::uint32_t ANSWER_KEEP_MS = 60 * 1000;
@@ -185,8 +185,7 @@ struct Request
 // Tuning values (WorldTravelConfig) and the selftest's switch
 struct Params
 {
-    float stuckPenalty{5.0f};            // Playerbots.WorldTravel.StuckPenalty
-    float transportWaitSeconds{120.0f};  // Playerbots.WorldTravel.TransportWaitSeconds
+    float stuckPenalty{5.0f};  // Playerbots.WorldTravel.StuckPenalty
     float flightSpeed{TravelGraph::FLIGHT_SPEED};
     bool heuristic{true};  // false: plain Dijkstra over the same costs (the selftest's reference)
     // The published height maps (FlightMap.h's Planner::FlightMaps()); null: no fly legs
@@ -323,7 +322,7 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
                 return -1.0f;
             if (TravelGraph::IsWaitPointLink(link))
                 return link.distance / runSpeed;
-            return link.extraCost >= 1.0f ? link.extraCost : params.transportWaitSeconds + SHIP_RIDE_SECONDS;
+            return link.extraCost >= 1.0f ? link.extraCost : link.VesselSeconds();
         case TravelLinkType::Flight:
         {
             TravelTaxiPath const* path = graph.TaxiPathOf(link);
@@ -576,7 +575,10 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         if (!result.legs.empty() && result.legs.back().type == LegType::Transport && type == LegType::Transport)
             merge = waitLink ? !legLanded : !legRides;
         if (merge && type == LegType::Transport && !waitLink)
+        {
             result.legs.back().object = link->object;
+            result.legs.back().periodMs = link->periodMs;
+        }
         if (type == LegType::Transport)
         {
             legLanded = merge && waitLink && legRides;
@@ -588,6 +590,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             leg.type = type;
             leg.from = pointOf(step.vertex);
             leg.object = link ? link->object : 0;
+            leg.periodMs = link ? link->periodMs : 0;
             if (step.vertex < nodeCount)
                 leg.nodes.push_back(step.vertex);
             if (path)

@@ -54,6 +54,8 @@ struct Leg
     std::vector<std::uint32_t> taxiNodes;  // flight legs: the taxi node chain for Player::ActivateTaxiPathTo
     float seconds{0.0f};
     std::uint32_t fareCopper{0};
+    // Transport legs: the vessel's period in ms from the graph (0: an elevator, TravelLegs::LiftPeriodMs)
+    std::uint32_t periodMs{0};
     // Fly legs: the planned flight from the takeoff on the ground to the landing on the ground
     // (FlightRoute::waypoints), its yards (climbs included), its held heights and the bot's clearance it was planned
     // with

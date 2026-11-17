@@ -1163,6 +1163,7 @@ Leg ShipLeg()
 {
     Leg leg = MakeLeg(LegType::Transport, PIER_A, PIER_B, {1, 3}, 240.0f);
     leg.object = SHIP;
+    leg.periodMs = 480000;  // the vessel's period from the graph
     return leg;
 }
 
@@ -1386,12 +1387,11 @@ void CheckTransport()
         landed.act == Act::Done && Noted(stop, 2, TransportEvent::Arrived, SHIP, 5) && stop.transportNotes.size() == 3,
         "transport: acknowledged exit 30 yd from the stop node: done, arrived (5 s aboard)");
 
-    // Timeouts: off the transport WAIT_PERIODS periods (fallback: twice the leg's seconds, at least 30 s), aboard none
-    // but RIDE_PERIODS from the boarding, ashore short of the end LEG_SLACK_MS
+    // Timeouts: off the transport WAIT_PERIODS periods (an elevator: twice the leg's seconds, at least 30 s), aboard
+    // none but RIDE_PERIODS from the boarding, ashore short of the end LEG_SLACK_MS
     Check(TravelLegs::TransportWaitMs({}, ShipLeg()) == 2460000,
-          "transport timeout: 60 s + 5 x 480 s before the period is read");
-    Check(TravelLegs::TransportWaitMs({}, LiftLeg()) == 210000,
-          "elevator timeout: the fallback period is at least 30 s");
+          "transport timeout: 60 s + 5 x 480 s, the period the leg carries");
+    Check(TravelLegs::TransportWaitMs({}, LiftLeg()) == 210000, "elevator timeout: the lift period is at least 30 s");
     Trip idle = SoughtTrip({ShipLeg()}, 0);
     Check(Step(idle, On(PIER_A, 2460000, 0, Gone())).act == Act::Wait, "transport: waits 2460 s for its transport");
     Check(Step(idle, On(PIER_A, 2460001, 0)).reason == FailReason::Timeout, "transport: Fail(timeout) after that");
