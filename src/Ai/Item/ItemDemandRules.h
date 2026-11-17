@@ -143,6 +143,8 @@ struct DemandLine
     bool measured{false};              // the rate is a measured one
     std::uint32_t worthCopperEach{0};  // of the best entry
     std::uint32_t bestEntry{0};        // the strongest usable held entry, 0: none
+    std::uint32_t buyEntry{0};         // the strongest usable offered entry (item use WI9b), 0: no buy ...
+    std::uint32_t buyUnits{0};         // ... and the units up to the wanted stock; none for the control cohort
 };
 
 struct DemandKeep
@@ -155,9 +157,18 @@ struct DemandKeep
     std::uint32_t worthCopperEach{0};  // one unit; 0 for an unusable entry
 };
 
+// A slot's usable offered entries, the strongest first: what the vendors may sell it (upkeep buys the first a vendor
+// on the trip sells)
+struct DemandBuy
+{
+    DemandSlot slot{DemandSlot::Heal};
+    std::uint32_t entry{0};
+};
+
 struct DemandAnswer
 {
     std::array<DemandLine, DEMAND_SLOT_COUNT> lines{};
+    std::vector<DemandBuy> buys;  // the slots with buy units, by slot
     bool persistent{false};
     bool control{false};
     std::vector<DemandKeep> keeps;  // by entry, then slot
@@ -191,7 +202,8 @@ struct DemandInput
     std::array<float, DEMAND_SLOT_COUNT> slotUsePerHour{};              // a measured slot rate; 0: none
     std::span<UsableEntry const> list;
     std::span<Record const> records;
-    std::span<std::uint8_t const> canUse;  // Player::CanUseItem == EQUIP_ERR_OK
+    std::span<std::uint8_t const> canUse;   // Player::CanUseItem == EQUIP_ERR_OK
+    std::span<std::uint8_t const> offered;  // 1: a vendor sells it to the bot (WI9b); count 0: offered, not held
     std::span<std::uint32_t const> buyCopper;
     std::span<BuffWeights const> coatStats;
     std::span<PoisonKind const> poisonKinds;
@@ -372,6 +384,7 @@ struct Item  // one (entry, record) of the list, in the canonical order
     bool usable{false};
     bool candidate{false};  // the picker's pick for the slot
     float strength{0.0f};
+    bool offered{false};  // a vendor sells it (a count of 0: offered only, never kept or sold)
 };
 
 inline bool NeedsMet(DemandInput const& input, Needs const& needs)
@@ -492,8 +505,9 @@ inline DemandAnswer Demand(DemandInput const& input)
     std::size_t const count = std::min({input.list.size(), input.records.size(), input.canUse.size()});
     std::vector<std::size_t> order;
     order.reserve(count);
+    auto const offered = [&](std::size_t i) { return i < input.offered.size() && input.offered[i] != 0; };
     for (std::size_t i = 0; i < count; ++i)
-        if (input.list[i].count > 0)
+        if (input.list[i].count > 0 || offered(i))
             order.push_back(i);
     auto const key = [&](std::size_t i)
     {
@@ -504,14 +518,20 @@ inline DemandAnswer Demand(DemandInput const& input)
 
     std::vector<Item> items;
     items.reserve(std::min(order.size(), DEMAND_MAX_ENTRIES));
+    std::size_t heldItems = 0;  // the cap counts held and offered entries apart: an offer never pushes a held one out
+    std::size_t offeredItems = 0;
     for (std::size_t const i : order)
     {
         UsableEntry const& entry = input.list[i];
         if (!items.empty() && items.back().entry.item.entry == entry.item.entry &&
             items.back().entry.record == entry.record)
+        {
+            items.back().offered = items.back().offered || offered(i);
             continue;
-        if (items.size() >= DEMAND_MAX_ENTRIES)
-            break;
+        }
+        std::size_t& capped = entry.count > 0 ? heldItems : offeredItems;
+        if (capped >= DEMAND_MAX_ENTRIES)
+            continue;
 
         Item item;
         item.entry = entry;
@@ -521,8 +541,10 @@ inline DemandAnswer Demand(DemandInput const& input)
         item.buy = i < input.buyCopper.size() ? input.buyCopper[i] : 0;
         item.stats = i < input.coatStats.size() ? input.coatStats[i] : BuffWeights{};
         item.poison = i < input.poisonKinds.size() ? input.poisonKinds[i] : PoisonKind::None;
+        item.offered = offered(i);
         if (!DemandSlotOf(item.entry, *item.record, input.usesMana, item.slot))
             continue;
+        ++capped;
         items.push_back(item);
     }
 
@@ -624,6 +646,7 @@ inline DemandAnswer Demand(DemandInput const& input)
         float strength{0.0f};
         std::uint16_t itemLevel{0};
         std::uint32_t worth{0};
+        bool offered{false};
     };
     std::vector<Pending> pending;
     for (Item const& item : items)
@@ -642,10 +665,12 @@ inline DemandAnswer Demand(DemandInput const& input)
             next.strength = item.usable ? item.strength : 0.0f;
             next.itemLevel = item.record->itemLevel;
             next.worth = worth;
+            next.offered = item.offered;
             pending.push_back(next);
             continue;
         }
         found->keep.held = std::max(found->keep.held, item.entry.count);
+        found->offered = found->offered || item.offered;
         found->usable = found->usable || item.usable;
         found->candidate = found->candidate || item.candidate;
         if (item.usable)
@@ -656,9 +681,14 @@ inline DemandAnswer Demand(DemandInput const& input)
     // The hands' share of a rogue's poison stock: settled once both hands' holdings are known
     bool const rogue = input.cls == UpkeepNeeds::CLASS_ROGUE;
     std::array<std::uint32_t, DEMAND_SLOT_COUNT> held{};
+    std::array<bool, DEMAND_SLOT_COUNT> offeredSlot{};  // a usable entry a vendor sells: a stock is wanted
     for (Pending const& p : pending)
         if (p.usable)
+        {
             held[static_cast<std::size_t>(p.keep.slot)] += p.keep.held;
+            offeredSlot[static_cast<std::size_t>(p.keep.slot)] =
+                offeredSlot[static_cast<std::size_t>(p.keep.slot)] || p.offered;
+        }
 
     std::size_t const mainSlot = static_cast<std::size_t>(DemandSlot::CoatMain);
     std::size_t const offSlot = static_cast<std::size_t>(DemandSlot::CoatOff);
@@ -698,7 +728,8 @@ inline DemandAnswer Demand(DemandInput const& input)
             line.usePerHour = DEMAND_USE_PER_HOUR[s];
         if (!rogueHand || slotMeasured)
             stock = DemandDetail::Stock(line.usePerHour, input.thrift);
-        line.wantedStock = line.held > 0 ? static_cast<std::uint32_t>(std::min(stock, 1000000.0f)) : 0;
+        line.wantedStock =
+            line.held > 0 || offeredSlot[s] ? static_cast<std::uint32_t>(std::min(stock, 1000000.0f)) : 0;
 
         // The slot's usable keeps, strongest first
         std::vector<std::size_t> members;
@@ -728,16 +759,34 @@ inline DemandAnswer Demand(DemandInput const& input)
                 keep.worthCopperEach = std::max<std::uint32_t>(keep.worthCopperEach, 1);
             }
         }
-        if (!members.empty())
-        {
-            line.bestEntry = pending[members.front()].keep.entry;
-            line.worthCopperEach = pending[members.front()].keep.worthCopperEach;
-        }
+        for (std::size_t const i : members)
+            if (pending[i].keep.held > 0)
+            {
+                line.bestEntry = pending[i].keep.entry;
+                line.worthCopperEach = pending[i].keep.worthCopperEach;
+                break;
+            }
+
+        // The buy (WI9b): up to the wanted stock, the usable offered entries strongest first; none for the control
+        // cohort (WI.10)
+        if (input.control || line.held >= line.wantedStock)
+            continue;
+        for (std::size_t const i : members)
+            if (pending[i].offered)
+            {
+                if (!line.buyEntry)
+                    line.buyEntry = pending[i].keep.entry;
+                answer.buys.push_back({slot, pending[i].keep.entry});
+            }
+        if (line.buyEntry)
+            line.buyUnits = line.wantedStock - line.held;
     }
 
     answer.keeps.reserve(pending.size());
     for (Pending const& p : pending)
     {
+        if (p.keep.held == 0)
+            continue;  // offered only
         DemandKeep keep = p.keep;
         if (!p.usable)
         {

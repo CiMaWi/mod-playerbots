@@ -437,6 +437,9 @@ bool HandleDemandCommand(ChatHandler* handler, char const* args)
                                  DemandSlotWord(line.slot), KindWord(line.kind), SubWord(line.sub), line.wantedStock,
                                  line.held, line.usePerHour, line.measured ? "measured" : "default",
                                  line.worthCopperEach, line.bestEntry, NameOfItem(line.bestEntry));
+        if (line.buyUnits)
+            handler->PSendSysMessage("ITEM demand {}: buy {} {} x{}", DemandSlotWord(line.slot), line.buyEntry,
+                                     NameOfItem(line.buyEntry), line.buyUnits);
     }
 
     AiObjectContext* context = botAI->GetAiObjectContext();

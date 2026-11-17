@@ -22,6 +22,7 @@
 #include "ItemWorthRules.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -39,6 +40,7 @@ struct DemandList
     std::vector<Record> records;
     std::vector<std::uint8_t> canUse;
     std::vector<std::uint32_t> buy;
+    std::vector<std::uint8_t> offered;  // WI9b: a vendor sells it to the bot; offered only: count 0
     std::vector<DemandHeld> held;
 };
 
@@ -52,13 +54,9 @@ void AddHeld(std::vector<DemandHeld>& held, std::uint32_t entry, std::uint32_t c
         held.push_back({entry, count});
 }
 
-void AddItem(Player* bot, Item* item, ItemUseIndex const& index, DemandList& out)
+void AddRecords(Player* bot, ItemTemplate const* proto, std::uint32_t count, std::uint64_t guid,
+                ItemUseIndex const& index, DemandList& out, bool offered)
 {
-    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
-    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE)
-        return;
-    AddHeld(out.held, proto->ItemId, item->GetCount());
-
     std::uint8_t canUse = 2;  // asked once per item: 2 not yet asked
     for (Record const& record : index.OfItem(proto->ItemId))
     {
@@ -67,7 +65,7 @@ void AddItem(Player* bot, Item* item, ItemUseIndex const& index, DemandList& out
                                        [id](UsableEntry const& entry) { return entry.record == id; });
         if (same != out.list.end())
         {
-            same->count += item->GetCount();
+            same->count += count;
             continue;
         }
         if (canUse == 2)
@@ -76,11 +74,11 @@ void AddItem(Player* bot, Item* item, ItemUseIndex const& index, DemandList& out
         Classified const classified = Classify(record);
         UsableEntry entry;
         entry.record = id;
-        entry.item = ItemRef{proto->ItemId, item->GetGUID().GetRawValue(), SLOT_BAGS};
+        entry.item = ItemRef{proto->ItemId, guid, SLOT_BAGS};
         entry.kind = classified.kind;
         entry.sub = classified.sub;
         entry.rank = classified.rank;
-        entry.count = item->GetCount();
+        entry.count = count;
         entry.consumed = record.consumed;
         entry.potion = record.potion;
         entry.replaceCopper = record.replaceCopper;
@@ -94,6 +92,77 @@ void AddItem(Player* bot, Item* item, ItemUseIndex const& index, DemandList& out
         out.records.push_back(record);
         out.canUse.push_back(canUse);
         out.buy.push_back(static_cast<std::uint32_t>(std::max<std::int32_t>(proto->BuyPrice, 0)));
+        out.offered.push_back(offered ? 1 : 0);
+    }
+}
+
+void AddItem(Player* bot, Item* item, ItemUseIndex const& index, DemandList& out)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE)
+        return;
+    AddHeld(out.held, proto->ItemId, item->GetCount());
+    AddRecords(bot, proto, item->GetCount(), item->GetGUID().GetRawValue(), index, out, false);
+}
+
+// One use item vendors sell for gold with no reputation (UpkeepStock::Use offers), its fit facts
+struct OfferedItem
+{
+    std::uint32_t item{0};
+    std::uint32_t requiredLevel{0};
+    std::uint32_t classMask{0};
+    std::uint32_t raceMask{0};
+    std::uint32_t requiredSkill{0};
+    std::uint32_t requiredSkillRank{0};
+};
+
+// The distinct offered use items, by required level: once per index version and map thread (not per build)
+std::vector<OfferedItem> const& OfferedItems(Planner::UpkeepIndex const& upkeep)
+{
+    thread_local std::uint32_t version = 0;
+    thread_local bool built = false;
+    thread_local std::vector<OfferedItem> items;
+    if (built && version == upkeep.version)
+        return items;
+    items.clear();
+    // The offers are sorted by required level, item, vendor: one item's offers are neighbours
+    for (Planner::VendorOffer const& offer : upkeep.Offers(Planner::UpkeepStock::Use))
+        if (offer.GoldOnly() && !offer.requiredFaction && (items.empty() || items.back().item != offer.item))
+            items.push_back({offer.item, offer.requiredLevel, offer.classMask, offer.raceMask, offer.requiredSkill,
+                             offer.requiredSkillRank});
+    version = upkeep.version;
+    built = true;
+    return items;
+}
+
+// The use items a vendor would sell the bot (upkeep's OfferFits tests: gold only, level, class, race, skill, no
+// reputation): a held one is flagged offered, the others join the list with a count of 0
+void AddOffers(Player* bot, DemandList& out)
+{
+    std::shared_ptr<Planner::UpkeepIndex const> const upkeep =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    if (!upkeep)
+        return;
+    ItemUseIndex const& index = ItemUseIndex::Get();
+    std::uint32_t const level = bot->GetLevel();
+    for (OfferedItem const& offer : OfferedItems(*upkeep))
+    {
+        if (offer.requiredLevel > level)
+            break;
+        if ((offer.classMask && !(offer.classMask & bot->getClassMask())) ||
+            (offer.raceMask && !(offer.raceMask & bot->getRaceMask())) ||
+            (offer.requiredSkill && bot->GetSkillValue(offer.requiredSkill) < offer.requiredSkillRank))
+            continue;
+        bool held = false;
+        for (std::size_t i = 0; i < out.list.size(); ++i)
+            if (out.list[i].item.entry == offer.item)
+            {
+                out.offered[i] = 1;
+                held = true;
+            }
+        ItemTemplate const* proto = held ? nullptr : sObjectMgr->GetItemTemplate(offer.item);
+        if (proto)
+            AddRecords(bot, proto, 0, 0, index, out, true);
     }
 }
 
@@ -153,6 +222,7 @@ DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot)
     built.earnCopperPerMinute = static_cast<std::uint32_t>(std::clamp(rates.EarnCopperPerMinute, 0.0f, 4294967295.0f));
 
     BuffWeights const weights = WeightsOf(bot, built.role, bags.list.empty() ? 0 : bags.list.front().item.entry);
+    AddOffers(bot, bags);
     std::vector<BuffWeights> coatStats;
     std::vector<PoisonKind> poisonKinds;
     std::vector<DemandSkill> skills;
@@ -188,6 +258,7 @@ DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot)
     input.list = bags.list;
     input.records = bags.records;
     input.canUse = bags.canUse;
+    input.offered = bags.offered;
     input.buyCopper = bags.buy;
     input.coatStats = coatStats;
     input.poisonKinds = poisonKinds;
