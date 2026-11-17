@@ -453,6 +453,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "vessel-turn-selftest.cpp",
+            "includes": [
+                "{core}/src/server/game/Movement/MovementGenerators"
+            ],
+            "success": "vessel-turn: \\d+ passed, 0 failed"
+        },
+        {
             "file": "visit-lifecycle-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg"
