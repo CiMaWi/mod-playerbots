@@ -1934,7 +1934,7 @@ bool PvpTestMgr::HandleArenaCommand(ChatHandler* handler, char const* args)
         }
         else if (key == "trace" && (value == "0" || value == "1"))
         {
-            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceConfig.Enable)
                 return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
 
             params.Trace = value == "1";
@@ -2109,7 +2109,7 @@ bool PvpTestMgr::HandlePlanStartCommand(ChatHandler* handler, char const* args)
         }
         else if (key == "trace" && (value == "0" || value == "1"))
         {
-            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceConfig.Enable)
                 return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
 
             plan->Trace = value == "1";
