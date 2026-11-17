@@ -350,6 +350,54 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     RowProblems(TypesFamily, twice);
     Check(RowProblems(TypesFamily, twice).size() == 7, "fixture: a key read twice is a duplicate");
 }
+
+// Two families fill one struct (Hold and Focus fill FocusConfig); a Finish rule masks a value after the walk
+struct SharedConfig
+{
+    uint32_t HoldMs = 100;
+    uint32_t FocusMs = 200;
+    uint32_t Classes = 0;
+};
+
+void MaskSharedClasses(SharedConfig& out) { out.Classes &= 0x7FFu; }
+
+constexpr std::array<ConfigRow<SharedConfig>, 1> SharedHoldRows = {{
+    {"HoldMs", &SharedConfig::HoldMs, 0, 1000},
+}};
+constexpr std::array<ConfigRow<SharedConfig>, 2> SharedFocusRows = {{
+    {"FocusMs", &SharedConfig::FocusMs, 0, 1000},
+    {"Classes", &SharedConfig::Classes, 0, 4294967295.0},
+}};
+
+ConfigFamily<SharedConfig> const SharedHoldFamily{"Test.Hold.", SharedHoldRows};
+ConfigFamily<SharedConfig> const SharedFocusFamily{"Test.Focus.", SharedFocusRows, &MaskSharedClasses};
+
+void TestSharedStruct()
+{
+    SharedConfig config;
+    auto const silent = [](std::string const&) {};
+    FakeReader reader;
+    reader.values = {{"Test.Hold.HoldMs", "300"}, {"Test.Focus.FocusMs", "400"}, {"Test.Focus.Classes", "4095"}};
+    LoadConfigFamily(SharedHoldFamily, config, reader, silent);
+    LoadConfigFamily(SharedFocusFamily, config, reader, silent);
+    Check(config.HoldMs == 300 && config.FocusMs == 400, "shared: the second family keeps the first one's value");
+    Check(config.Classes == 0x7FFu, "shared: Finish masks the value after the walk");
+
+    FakeReader empty;
+    config.Classes = 4095;
+    LoadConfigFamily(SharedHoldFamily, config, empty, silent);
+    Check(config.HoldMs == 100 && config.FocusMs == 400 && config.Classes == 4095,
+          "shared: a walk resets its own rows to their initializers and leaves the other family's members");
+
+    std::array<char const*, 2> const tails = {"Enable", "Scope"};
+    std::vector<std::string> const keys = {"Test.Hold.HoldMs", "Test.Hold.Enable", "Test.Hold.Scope",
+                                           "Test.Hold.EnableX", "Test.Hold.Typo"};
+    Check(UnknownConfigKeys(SharedHoldFamily, keys, tails) ==
+              std::vector<std::string>{"Test.Hold.EnableX", "Test.Hold.Typo"},
+          "unknown: a code-owned tail is known, a longer key with the same start is not");
+    Check(UnknownConfigKeys(SharedHoldFamily, keys).size() == 4,
+          "unknown: without code tails every rowless key is unknown");
+}
 }  // namespace
 
 // A removed switch whose parent prefix holds live keys: the family's prefix is the full key, its one row's key empty
@@ -413,6 +461,7 @@ int main(int argc, char** argv)
     TestTypesWalk();
     TestUnknownRetiredPrint();
     TestRetiredFullKey();
+    TestSharedStruct();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

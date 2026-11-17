@@ -82,6 +82,8 @@ struct ConfigFamily
 {
     char const* Prefix;  // "Playerbots.BankMail."
     std::span<ConfigRow<Struct> const> Rows;
+    // A rule over the family's values, run after each walk (a class mask that drops unknown bits)
+    void (*Finish)(Struct& out) = nullptr;
 };
 
 template <typename T>
@@ -144,9 +146,11 @@ std::string ConfigRowLine(ConfigFamily<Struct> const& family, ConfigRow<Struct> 
 
 // The keys of the list that start with the family's prefix and that no row of the family knows. A retired row knows its
 // key: old configs may still set it. A family named by a full key (no trailing dot) holds that key only: a longer key
-// with the same start is a live sibling (Playerbots.PvpGear.Wear, Playerbots.PvpGear.WearBetweenMatches).
+// with the same start is a live sibling (Playerbots.PvpGear.Wear, Playerbots.PvpGear.WearBetweenMatches). A key whose
+// tail after the prefix is one of codeTails is known too: code outside the table still reads it.
 template <typename Struct>
-std::vector<std::string> UnknownConfigKeys(ConfigFamily<Struct> const& family, std::vector<std::string> const& keys)
+std::vector<std::string> UnknownConfigKeys(ConfigFamily<Struct> const& family, std::vector<std::string> const& keys,
+                                           std::span<char const* const> codeTails = {})
 {
     std::vector<std::string> unknown;
     std::string const prefix = family.Prefix;
@@ -162,19 +166,23 @@ std::vector<std::string> UnknownConfigKeys(ConfigFamily<Struct> const& family, s
                 known = true;
                 break;
             }
+        for (char const* tail : codeTails)
+            if (key.compare(prefix.size(), std::string::npos, tail) == 0)
+                known = true;
         if (!known)
             unknown.push_back(key);
     }
     return unknown;
 }
 
-// Resets out to the struct's initializers, then reads every row: read(key, defaultValue, warnIfMissing) returns the
-// value of defaultValue's type (uint32_t, int32_t, float, bool or std::string), warn(text) takes one warning.
-// Returns the number of warnings.
+// Reads every row into out, the member's initializer as the default: read(key, defaultValue, warnIfMissing) returns the
+// value of defaultValue's type (uint32_t, int32_t, float, bool or std::string), warn(text) takes one warning. Only the
+// family's own members are set, so several families (Hold, Focus, FocusTarget) may fill one struct; then the
+// family's Finish runs. Returns the number of warnings.
 template <typename Struct, typename Reader, typename Warn>
 uint32_t LoadConfigFamily(ConfigFamily<Struct> const& family, Struct& out, Reader&& read, Warn&& warn)
 {
-    out = Struct{};
+    Struct const defaults{};
     uint32_t warnings = 0;
     for (ConfigRow<Struct> const& row : family.Rows)
     {
@@ -187,7 +195,7 @@ uint32_t LoadConfigFamily(ConfigFamily<Struct> const& family, Struct& out, Reade
             [&](auto member)
             {
                 using T = std::remove_reference_t<decltype(out.*member)>;
-                T const fallback = out.*member;
+                T const fallback = defaults.*member;
                 T value = read(key, fallback, warnIfMissing);
                 if constexpr (std::is_same_v<T, std::string>)
                 {
@@ -216,6 +224,8 @@ uint32_t LoadConfigFamily(ConfigFamily<Struct> const& family, Struct& out, Reade
             },
             row.Target);
     }
+    if (family.Finish)
+        family.Finish(out);
     return warnings;
 }
 
