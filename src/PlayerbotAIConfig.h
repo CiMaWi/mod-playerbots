@@ -7,6 +7,14 @@
 #ifndef PLAYERBOTS_PLAYERBOTAICONFIG_H
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
+#include <algorithm>
+#include <map>
+#include <mutex>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include "ArenaCcConfig.h"
 #include "ArenaCoverConfig.h"
 #include "ArenaDefensiveConfig.h"
@@ -18,6 +26,7 @@
 #include "DBCEnums.h"
 #include "FleeConfig.h"
 #include "ItemUseConfig.h"
+#include "LadderConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -32,13 +41,6 @@
 #include "UpkeepConfig.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
-#include <algorithm>
-#include <map>
-#include <mutex>
-#include <set>
-#include <string>
-#include <unordered_map>
-#include <vector>
 
 enum class BotCheatMask : uint32
 {
@@ -430,27 +432,13 @@ public:
     uint32 AcquaintanceGuildSampleSeconds;
     uint32 AcquaintanceNearbyIntervalSeconds;
     float AcquaintanceNearbyRadius;
-    uint32 LadderRole;
-    std::string LadderServerId;
+    // Playerbots.Ladder.*: the role, the pool and the matchmaker (LadderConfig.h)
+    LadderConfig Ladder;
     uint32 MatchLogTraceEvery;
     uint32 MatchLogTraceMaxEvents;
     uint32 MatchLogTraceMaxBytes;
     // Playerbots.Natural.Trace.*: the trace of the natural timing (NaturalTraceConfig.h)
     TraceConfig NaturalTraceConfig;
-    uint32 LadderDepartTimeoutSeconds;
-    uint32 LadderContactMinutes;
-    uint32 LadderPoolTeams;
-    bool LadderMatchmakerEnable;
-    uint32 LadderMatchmakerDelayMinSeconds;
-    uint32 LadderMatchmakerDelayMaxSeconds;
-    uint32 LadderMatchmakerMmrWidth;
-    uint32 LadderMatchmakerWindow;
-    uint32 LadderMatchmakerWindowGrowth;
-    uint32 LadderMatchmakerRecentOpponents;
-    uint32 LadderMatchmakerTimeoutSeconds;
-    uint32 LadderMatchmakerMaxPicks;
-    bool LadderMatchmakerSkirmish;
-    bool LadderMatchmakerPoolOnly;
     std::string PvpGearTierOrder;
     std::string PvpGearBaseTier;
     bool PvpGearWearBetweenMatches;

@@ -797,38 +797,38 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
     AcquaintanceNearbyRadius =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
-    LadderRole = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
-                                    LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
-    LadderServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
+    Ladder.Role = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
+                                     LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
+    Ladder.ServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
     MatchLogTraceEvery = sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceEvery", 0);
     MatchLogTraceMaxEvents =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxEvents", 20000), 16, 1000000);
     MatchLogTraceMaxBytes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxBytes", 4194304), 4096, 67108864);
-    LadderDepartTimeoutSeconds =
+    Ladder.DepartTimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.DepartTimeoutSeconds", 600), 5, 86400);
-    LadderContactMinutes =
+    Ladder.ContactMinutes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
-    LadderPoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
-    LadderMatchmakerDelayMinSeconds =
+    Ladder.PoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
+    Ladder.Matchmaker.DelayMinSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMinSeconds", 3), 0, 600);
-    LadderMatchmakerDelayMaxSeconds =
+    Ladder.Matchmaker.DelayMaxSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMaxSeconds", 8),
-                           LadderMatchmakerDelayMinSeconds, 600);
-    LadderMatchmakerMmrWidth =
+                           Ladder.Matchmaker.DelayMinSeconds, 600);
+    Ladder.Matchmaker.MmrWidth =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MmrWidth", 150), 1, 5000);
-    LadderMatchmakerWindow =
+    Ladder.Matchmaker.Window =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.Window", 200), 1, 5000);
-    LadderMatchmakerWindowGrowth =
+    Ladder.Matchmaker.WindowGrowth =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.WindowGrowth", 5), 0, 1000);
-    LadderMatchmakerRecentOpponents =
+    Ladder.Matchmaker.RecentOpponents =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.RecentOpponents", 3), 0, 20);
-    LadderMatchmakerTimeoutSeconds =
+    Ladder.Matchmaker.TimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.TimeoutSeconds", 60), 5, 3600);
-    LadderMatchmakerMaxPicks =
+    Ladder.Matchmaker.MaxPicks =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MaxPicks", 3), 1, 100);
-    LadderMatchmakerSkirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
-    LadderMatchmakerPoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
+    Ladder.Matchmaker.Skirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
+    Ladder.Matchmaker.PoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
     PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
@@ -901,11 +901,11 @@ bool PlayerbotAIConfig::Initialize()
     {
         // G6b: skill growth (Playerbots.Skill.Growth.Enable, a config table row) is never on a lab (DT.7); the hub's
         // config apply forces a lab's server id to its instance id (labN)
-        bool const lab = LadderServerId.rfind("lab", 0) == 0;
+        bool const lab = Ladder.ServerId.rfind("lab", 0) == 0;
         SkillGrowthEnable = SkillGrowth.Enable && !lab;
         if (SkillGrowth.Enable && lab)
             LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
-                     LadderServerId);
+                     Ladder.ServerId);
     }
 
     // Item use (Playerbots.ItemUse.*): read by hand with a clamp until CS22's config table takes the family
@@ -1071,7 +1071,7 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinWinPercent", 55), 0, 100);
     // Ladder roles: an arena instance runs only the teams its roster hosts; main gets arena matches only from the
     // ladder's matchmaker
-    if (LadderRole == LADDER_ROLE_ARENA)
+    if (Ladder.Role == LADDER_ROLE_ARENA)
     {
         if (RandomBotArenaTeam2v2Count || RandomBotArenaTeam3v3Count || RandomBotArenaTeam5v5Count ||
             DeleteRandomBotArenaTeams || ArenaTeamFormationEnable || ArenaRecruitEnable)
@@ -1083,7 +1083,7 @@ bool PlayerbotAIConfig::Initialize()
         RandomBotArenaTeam5v5Count = 0;
         DeleteRandomBotArenaTeams = false;
     }
-    else if (LadderRole == LADDER_ROLE_MAIN)
+    else if (Ladder.Role == LADDER_ROLE_MAIN)
     {
         if (RandomBotAutoJoinBGRatedArena2v2Count || RandomBotAutoJoinBGRatedArena3v3Count ||
             RandomBotAutoJoinBGRatedArena5v5Count)
@@ -1105,11 +1105,11 @@ bool PlayerbotAIConfig::Initialize()
     // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear
     // buying on at role 2
     BotKindRules::ArenaRoleValues const arenaRole =
-        BotKindRules::ArenaRole(LadderRole == LADDER_ROLE_MAIN, LadderRole == LADDER_ROLE_ARENA,
+        BotKindRules::ArenaRole(Ladder.Role == LADDER_ROLE_MAIN, Ladder.Role == LADDER_ROLE_ARENA,
                                 ArenaTeamFormationEnable, ArenaRecruitEnable, PvpGearBuyEnable);
     ArenaTeamFormationEnable = arenaRole.Formation;
     ArenaRecruitEnable = arenaRole.Recruit;
-    LadderMatchmakerEnable = arenaRole.Matchmaker;
+    Ladder.Matchmaker.Enable = arenaRole.Matchmaker;
     PvpGearBuyEnable = arenaRole.Buy;
 
     BotKind::LoadLivingWorld();

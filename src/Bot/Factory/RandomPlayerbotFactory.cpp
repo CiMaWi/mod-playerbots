@@ -82,8 +82,8 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
 
     // The roster's count, plus main's ladder pool as CalculateTotalAccountCount has it
     uint32 target = Population::RosterBotCount(sPlayerbotAIConfig.MaxRandomBots);
-    if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)
-        target += 2 * sPlayerbotAIConfig.LadderPoolTeams;
+    if (sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_MAIN)
+        target += 2 * sPlayerbotAIConfig.Ladder.PoolTeams;
 
     std::vector<PopulationPolicy::RefillAccount> list;
     uint32 held = 0;
@@ -543,8 +543,8 @@ uint32 RandomPlayerbotFactory::CalculateTotalAccountCount()
     maxBots = static_cast<int>(Population::RosterAccountBotCount(static_cast<uint32>(maxBots)));
 
     // Main's ladder pool may be away on arena servers, outside the online count
-    if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)
-        maxBots += 2 * sPlayerbotAIConfig.LadderPoolTeams;
+    if (sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_MAIN)
+        maxBots += 2 * sPlayerbotAIConfig.Ladder.PoolTeams;
 
     // Calculate number of accounts needed for RNDbots
     // Result is rounded up for maxBots not cleanly divisible by the divisor
