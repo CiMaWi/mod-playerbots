@@ -29,6 +29,7 @@
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
+#include "FleeConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -399,6 +400,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalTrackFamily, 24, "Natural track");
         visit(NaturalPathFamily, 25, "Natural path");
         visit(NaturalTraceFamily, 8, "Natural trace");
+        visit(FleeFamily, 3, "Flee");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -860,6 +862,27 @@ void TestNaturalMoveFamilies()
           "trace: an unknown format warns and keeps jsonl");
 }
 
+// CS22h: the flee, upkeep, world travel, world PvP and world log families
+void TestWorldFamilies()
+{
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FleeConfig flee;
+    FakeReader fleeEmpty;
+    LoadConfigFamily(FleeFamily, flee, fleeEmpty, warn);
+    Check(flee.EscapeYards == 40 && flee.CorneredSeconds == 6 && flee.BoundSeconds == 30 &&
+              fleeEmpty.missingWarnings.empty(),
+          "flee: the defaults, unlisted rows (a missing key is silent)");
+    FakeReader fleeReader;
+    fleeReader.values = {{"Playerbots.Flee.EscapeYards", "0"},
+                         {"Playerbots.Flee.CorneredSeconds", "5000"},
+                         {"Playerbots.Flee.BoundSeconds", "45"}};
+    Check(LoadConfigFamily(FleeFamily, flee, fleeReader, warn) == 2 && flee.EscapeYards == 1 &&
+              flee.CorneredSeconds == 600 && flee.BoundSeconds == 45,
+          "flee: 1 to 2000 and 1 to 600 clamp with a warning (the old read clamped silently)");
+}
+
 // CS22e: the attribute loadings and spreads, one element row per attribute
 void TestAttributeFamilies()
 {
@@ -984,6 +1007,7 @@ int main(int argc, char** argv)
     TestGrowthFamily();
     TestReactionFamilies();
     TestNaturalMoveFamilies();
+    TestWorldFamilies();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

@@ -2011,9 +2011,6 @@ Playerbots.WorldPvp.GraveyardYards = 80
 # the bound it stands and fights and does not flee again in that PvP combat. A persistent bot in the open world flees
 # when it left its fight by its enthusiasm and an enemy player attacks it (Enthusiasm's thresholds, below).
 # (Ranges: EscapeYards 1-2000; CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
-Playerbots.Flee.EscapeYards = 40
-Playerbots.Flee.CorneredSeconds = 6
-Playerbots.Flee.BoundSeconds = 30
 
 # No camping (persistent bots in the open world). The ghost of a bot whose corpse has an enemy player (alive, of the
 # other team, flagged or not) within GhostEnemyYards waits as a ghost and checks again every GhostRecheckSeconds; once

@@ -10,9 +10,9 @@
 #include "Define.h"
 
 // The flight from attacking enemy players (Playerbots.Flee.*, FleeAttackersAction; PlayerbotAIConfig::Flee), read once
-// at config load. A bot that flees runs from the enemy players in PvP combat with it. Its flight ends as escaped when it
-// is out of PvP combat or EscapeYards from every one of them; as cornered when its nearest attacker got no farther from
-// it for CorneredSeconds (the best distance so far, in steps of 1 yd: a bot that cannot shake a pursuer turns and
+// at config load. A bot that flees runs from the enemy players in PvP combat with it. Its flight ends as escaped when
+// it is out of PvP combat or EscapeYards from every one of them; as cornered when its nearest attacker got no farther
+// from it for CorneredSeconds (the best distance so far, in steps of 1 yd: a bot that cannot shake a pursuer turns and
 // fights; the time it cannot move, rooted or stunned, does not count, and the measure starts again when it can move);
 // or by its bound after BoundSeconds. After cornered or the bound it stands and fights and does not flee again in that
 // PvP combat. A persistent bot in the open world flees when it left its fight by its enthusiasm and an enemy player
@@ -23,5 +23,11 @@ struct FleeConfig
     uint32 CorneredSeconds = 6;  // 1-600
     uint32 BoundSeconds = 30;    // 1-600
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (FleeConfig.cpp)
+extern ConfigFamily<FleeConfig> const FleeFamily;
 
 #endif
