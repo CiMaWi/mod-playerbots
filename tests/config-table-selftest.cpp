@@ -32,6 +32,7 @@
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
+#include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
@@ -383,6 +384,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalFacingFamily, 24, "Natural facing");
         visit(NaturalTrackFamily, 24, "Natural track");
         visit(NaturalPathFamily, 25, "Natural path");
+        visit(NaturalTraceFamily, 8, "Natural trace");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -821,6 +823,27 @@ void TestNaturalMoveFamilies()
               path.StrafeLegMinYards == 9 && path.StrafeLegMaxYards == 9 && path.HopsEdgeYards == 500 &&
               path.WalkEnable,
           "path: an offset and a distance clamp with a warning, the strafe leg's Max raised to Min");
+
+    TraceConfig trace;
+    FakeReader traceEmpty;
+    LoadConfigFamily(NaturalTraceFamily, trace, traceEmpty, warn);
+    Check(!trace.Enable && trace.MaxUnits == 8 && trace.IntervalMs == 100 && trace.MaxRowsPerUnit == 200000 &&
+              trace.Dir.empty() && trace.FormatText == "jsonl" && !trace.Binary &&
+              traceEmpty.missingWarnings.size() == 8,
+          "trace: the defaults, all eight keys listed (a missing one warns)");
+    FakeReader traceReader;
+    traceReader.values = {{"Playerbots.Natural.Trace.MaxUnits", "5000"},
+                          {"Playerbots.Natural.Trace.IntervalMs", "10"},
+                          {"Playerbots.Natural.Trace.MaxRowsPerUnit", "50"},
+                          {"Playerbots.Natural.Trace.Format", "BINARY"}};
+    Check(LoadConfigFamily(NaturalTraceFamily, trace, traceReader, warn) == 3 && trace.MaxUnits == 1000 &&
+              trace.IntervalMs == 50 && trace.MaxRowsPerUnit == 100 && trace.Binary,
+          "trace: three values clamped with a warning, the format in any case");
+    FakeReader traceBad;
+    traceBad.values = {{"Playerbots.Natural.Trace.Format", "csv"}};
+    Check(LoadConfigFamily(NaturalTraceFamily, trace, traceBad, warn) == 1 && !trace.Binary &&
+              trace.FormatText == "jsonl",
+          "trace: an unknown format warns and keeps jsonl");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute
