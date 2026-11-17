@@ -370,10 +370,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP (WP23, WP24): the enthusiasm's engaged edge and leave check while in PvP combat or engaged (one
-    // empty() check and a flag while neither)
-    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
-        WorldPvp::NoteEngaged(this, bot, getMSTime());
+    // World PvP (WP23, WP24, WP38b): the engaged edge and leave check while in PvP combat or engaged, then the fight
+    // episode's end (one empty() check and two flags while neither)
+    WorldPvp::NoteEpisode(this, bot, getMSTime());
 
     lastUpdateDiff = elapsed;
     // The work mask's second load: zero skips the timing row and the tactics' pre-gate hook, and travel's registered
@@ -1902,7 +1901,7 @@ void PlayerbotAI::DoNextAction(bool min)
         aiObjectContext->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<ObjectGuid>("pull strategy target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<LootObject>("loot target")->Set(LootObject());
-        // A dead bot's flight from enemy players is over; it may flee again in its next PvP combat
+        // A dead bot's flight from enemy players is over, one under way too; it may flee again in its next PvP combat
         aiObjectContext->GetValue<FleeRules::Flight&>("flee flight")->Get() = FleeRules::Flight();
 
         // The dead engine has no battleground strategy, so its "dead" trigger cannot reset this route.
