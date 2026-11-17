@@ -5,7 +5,9 @@
  */
 
 #include "BudgetValues.h"
+
 #include "Playerbots.h"
+#include "Upkeep.h"
 
 uint32 MaxGearRepairCostValue::Calculate()
 {
@@ -153,10 +155,10 @@ uint32 MoneyNeededForValue::Calculate()
             moneyWanted = AI_VALUE(uint32, "max repair cost");
             break;
         case NeedMoneyFor::ammo:
-            moneyWanted = (bot->getClass() == CLASS_HUNTER)
+            // Level^3 / 10 (1s @ lvl10, 2g @ lvl60) for a hunter handed its ammo; one buying it saves through its needs
+            moneyWanted = bot->getClass() == CLASS_HUNTER && Upkeep::Granted(bot, UpkeepKind::Ammo)
                               ? (level * level * level) / 10
-                              : 0;  // Or level^3 (1s @ lvl10, 30s @ lvl30, 2g @ lvl60, 5g @ lvl80): Todo replace
-                                    // (should be best ammo buyable x 8 stacks cost)
+                              : 0;
             break;
         case NeedMoneyFor::spells:
             moneyWanted = AI_VALUE(uint32, "train cost");

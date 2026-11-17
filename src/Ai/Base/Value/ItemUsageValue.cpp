@@ -21,6 +21,7 @@
 #include "ServerFacade.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
+#include "UpkeepIndex.h"
 
 #include <unordered_set>
 
@@ -91,7 +92,15 @@ ItemUsage ItemUsageValue::Calculate()
 
     const uint32_t maxCount = proto->MaxCount;
 
-    if (proto->Class == ITEM_CLASS_CONSUMABLE &&
+    // A persistent bot's food, water, pet food and poison (WU28): the stock rule its shopping list buys by keeps up to
+    // the stock target; the surplus falls through to be sold, SellAction keeping the rule's share
+    Planner::StockDecision const stock = !realMaster && proto->Class == ITEM_CLASS_CONSUMABLE
+                                             ? Planner::StockFor(bot, botAI, proto)
+                                             : Planner::StockDecision{};
+    if (stock.decided && stock.kept)
+        return stock.buy ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
+
+    if (!stock.decided && proto->Class == ITEM_CLASS_CONSUMABLE &&
         (maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount))
     {
         std::string const foodType = GetConsumableType(proto, bot->GetPower(POWER_MANA));
@@ -205,7 +214,7 @@ ItemUsage ItemUsageValue::Calculate()
 
     // Keep only the best stone/oil per weapon and the best poison per family; obsolete or
     // mismatched enhancements fall through to VENDOR/AH.
-    if (proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
+    if (!stock.decided && proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
         bot->CanUseItem(proto) == EQUIP_ERR_OK)
     {
         // Rogue poisons only: stones/oils share consumable subclass 8 but use family-less spells,
@@ -501,8 +510,6 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
     // Ensure the item is the correct ammo type for the equipped ranged weapon
     if (proto->SubClass == requiredSubClass)
     {
-        float ammoCount = BetterStacks(proto, "ammo");
-        float requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2; // Hunters get 8 stacks, others 2
         uint32 currentAmmoId = Upkeep::EquippedAmmoId(bot);
 
         // Check if the bot has an ammo type assigned (and some of it left)
@@ -512,8 +519,9 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
         ItemTemplate const* currentAmmoProto = sObjectMgr->GetItemTemplate(currentAmmoId);
         if (currentAmmoProto)
         {
-            uint32 currentAmmoDPS = (currentAmmoProto->Damage[0].DamageMin + currentAmmoProto->Damage[0].DamageMax) * 1000 / 2;
-            uint32 newAmmoDPS = (proto->Damage[0].DamageMin + proto->Damage[0].DamageMax) * 1000 / 2;
+            uint32 const currentAmmoDPS =
+                Planner::AmmoDamageOf(currentAmmoProto->Damage[0].DamageMin, currentAmmoProto->Damage[0].DamageMax);
+            uint32 const newAmmoDPS = Planner::AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax);
 
             if (newAmmoDPS > currentAmmoDPS) // New ammo meets upgrade condition
                 return ITEM_USAGE_EQUIP;
@@ -521,6 +529,12 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
             if (newAmmoDPS < currentAmmoDPS) // New ammo is worse
                 return ITEM_USAGE_NONE;
         }
+        // A persistent bot's ammo (WU28): the stock rule its shopping list buys by
+        Planner::StockDecision const stock = Planner::StockFor(bot, botAI, proto);
+        if (stock.decided)
+            return stock.buy ? ITEM_USAGE_AMMO : stock.kept ? ITEM_USAGE_KEEP : ITEM_USAGE_NONE;
+        float ammoCount = BetterStacks(proto, "ammo");
+        float const requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2;  // Hunters get 8 stacks, others 2
         // Ensure we have enough ammo in the inventory
         if (ammoCount < requiredAmmo)
         {
@@ -1074,7 +1088,7 @@ std::vector<uint32> ItemUsageValue::SpellsUsingItem(uint32 itemId, Player* bot)
 
         // Skip only spells the server itself will not charge reagents for (Glyph of Renewed Life);
         // SPELL_ATTR_PASSIVE alone does not mean the reagent is unused.
-        if (bot->CanNoReagentCast(spellInfo))
+        if (Planner::CastsWithoutReagent(bot, spellInfo))
             continue;
 
         // Profession spells are generic-family; only their crafting spells (CREATE_ITEM) count.

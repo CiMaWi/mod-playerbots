@@ -41,7 +41,6 @@ void Check(bool condition, std::string const& what)
     std::cout << "  FAIL: " << what << "\n";
 }
 
-constexpr std::uint8_t CLASS_WARRIOR = 1;
 constexpr std::uint8_t RACE_HUMAN = 1;
 constexpr std::uint8_t RACE_ORC = 2;
 

@@ -25,6 +25,7 @@ class Player;
 struct CreatureTemplate;
 struct ItemTemplate;
 class PlayerbotAI;
+class SpellInfo;
 
 namespace UpkeepNeeds
 {
@@ -161,6 +162,20 @@ void FillUpkeep(Player* bot, Snapshot& snapshot);
 // class may wield it, and the index's weapon skill fits its class, race and level. Item usage keeps such a weapon
 // instead of selling it; one binary search in the index
 bool WeaponToLearn(Player* bot, ItemTemplate const* proto);
+// The stock rule (WU28, UpkeepNeeds::KeepOf) on a persistent bot's bags, for an item of a stock kind it is not granted
+// (no real master): buy below the target, else how many of it to keep; the rest is surplus and sold. One bag walk
+struct StockDecision
+{
+    bool decided{false};    // false: no stock kind of the bot's decides the item, the generic rules do
+    bool buy{false};        // below the target: keep all, buy more
+    bool kept{false};       // every one the bot carries is kept
+    std::uint32_t keep{0};  // how many of it the bot keeps; the rest is surplus
+};
+StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto);
+// A class spell's reagent: the shopping list buys it for a bot not granted reagents
+bool ClassReagent(std::uint32_t item);
+// A spell the server charges no reagents for (Glyph of Renewed Life): its reagents are neither kept nor bought
+bool CastsWithoutReagent(Player* bot, SpellInfo const* info);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);

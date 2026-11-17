@@ -205,10 +205,10 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, std::shared_ptr<Planner
 
 // The shopping list at the errand's vendor (upkeep WU6, §3.6): the needs from a fresh snapshot (the sell and the
 // repair changed the gold), each stock in Fund's order bought in whole lots within its funded share (PlanShopping),
-// the vendor's own rows rechecked (gold only, a limited row's live count). An item the bot's item usage would sell
-// (VENDOR, AH or NONE: the generic sell of the next visit) is never bought. A repair paid at this stop already spent
-// what the gold pays; the gear left worn costs more than the rest, so it holds no gold back here. A failed purchase
-// skips the item; the bot goes on. At most one row per stock kind
+// the vendor's own rows rechecked (gold only, a limited row's live count). What it buys, the sell keeps: one stock rule
+// (UpkeepNeeds::KeepOf, WU28). A repair paid at this stop already spent what the gold pays; the gear left worn costs
+// more than the rest, so it holds no gold back here. A failed purchase skips the item; the bot goes on. At most one
+// row per stock kind
 void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
@@ -244,18 +244,6 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
                                 {"gold", static_cast<float>(bot->GetMoney())}},
                                line.item);
             continue;
-        }
-
-        if (line.outcome == UpkeepNeeds::ShopOutcome::Buy)
-        {
-            ItemUsage const usage = botAI->GetAiObjectContext()->GetValue<ItemUsage>("item usage", line.item)->Get();
-            if (usage == ITEM_USAGE_NONE || usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH)
-            {
-                WorldLog::Decision(
-                    bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "would_sell", static_cast<float>(line.copper),
-                    {{word, static_cast<float>(line.units)}, {"usage", static_cast<float>(usage)}}, line.item);
-                continue;
-            }
         }
 
         uint32 lots = line.lots;
