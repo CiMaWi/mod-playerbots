@@ -166,7 +166,7 @@ void AddOffers(Player* bot, DemandList& out)
     }
 }
 
-void ReadBags(Player* bot, DemandList& out)
+void ReadBags(Player* bot, DemandList& out, bool withBank)
 {
     ItemUseIndex const& index = ItemUseIndex::Get();
     for (std::uint8_t slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
@@ -175,6 +175,10 @@ void ReadBags(Player* bot, DemandList& out)
         if (Bag* pack = bot->GetBagByPos(bag))
             for (std::uint32_t slot = 0; slot < pack->GetBagSize(); ++slot)
                 AddItem(bot, pack->GetItemByPos(static_cast<std::uint8_t>(slot)), index, out);
+    // The bank's 28 item slots, as the bank rules read them (bank bags are not theirs)
+    if (withBank)
+        for (std::uint8_t slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+            AddItem(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, out);
 }
 
 // Demand asks what the bot would use, not whether to coat now: the views carry no coating
@@ -205,12 +209,12 @@ bool DemandAnswers(PlayerbotAI* botAI)
     return botAI && botAI->GetBot() && botAI->KeepsPossessions() && !ItemUseIndex::Get().All().empty();
 }
 
-DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot)
+DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot, bool withBank)
 {
     auto const started = std::chrono::steady_clock::now();
     DemandBuilt built;
     DemandList bags;
-    ReadBags(bot, bags);
+    ReadBags(bot, bags, withBank);
     built.held = bags.held;
     built.role = RoleOf(bot);
 
