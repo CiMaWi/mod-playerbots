@@ -186,7 +186,7 @@ inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
-// nouse, read by the item use gates (UseItemAction, UseTrinketAction, PlayerbotAI::ImbueItem; nothing to apply or
+// nouse, read by the item use gates (UseItemAction, UseItemFightAction, PlayerbotAI::ImbueItem; nothing to apply or
 // undo): the bot uses no item on its own, so a test's console request is the only use
 inline bool UsesItemsOnItsOwn(std::uint16_t set) { return !(set & NOUSE); }
 // nospend, read by the item spend rule and the buff picker (nothing to apply or undo): true when the bot spends
