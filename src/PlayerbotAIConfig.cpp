@@ -880,19 +880,12 @@ bool PlayerbotAIConfig::Initialize()
             sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMax", 40), SkillGrowth.PotentialMin, 98);
     }
     {
-        // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload
+        // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload. Loading and
+        // Spread are config table rows (SkillConfig.cpp); the correlations stay code.
         std::string const prefix = "Playerbots.Skill.Attributes.";
         BotAttributeParams& attributes = SkillAttributes;
-        attributes = BotAttributeParams();
-        for (uint32 index = 0; index < BOT_ATTRIBUTE_COUNT; ++index)
-        {
-            std::string const name = BOT_ATTRIBUTE_DEFINITIONS[index].Name;
-            float const loading = IsBotPersonality(index) ? 0.0f : 1.0f;
-            attributes.Loading[index] =
-                std::clamp(sConfigMgr->GetOption<float>(prefix + "Loading." + name, loading, false), 0.0f, 1.0f);
-            attributes.Spread[index] =
-                std::clamp(sConfigMgr->GetOption<float>(prefix + "Spread." + name, 0.0f, false), 0.0f, 3.0f);
-        }
+        attributes.Correlation = IdentityAttributeMatrix();
+        attributes.Factor = IdentityAttributeMatrix();
 
         // Correlations of the own parts as named pairs, either order: Playerbots.Skill.Attributes.Corr.Wisdom-Teamwork
         auto const lower = [](std::string text)

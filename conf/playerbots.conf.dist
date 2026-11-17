@@ -2536,30 +2536,8 @@ Playerbots.Skill.StyleSpread = 0
 # stored PvP loadout (unpin <bot>[,...]|all, the copy's logout and the server shutdown put its own back; show [<bot>];
 # logout <bot> logs a random bot out); pvptest arena copyA=<template> / copyB=<template> does it for a match, and the
 # match records carry copyOf (the template's guid). A crash while pinned leaves the template's talents on the copy.
-Playerbots.Skill.Attributes.Loading.Speed = 1.0
-Playerbots.Skill.Attributes.Loading.Wisdom = 1.0
-Playerbots.Skill.Attributes.Loading.Focus = 1.0
-Playerbots.Skill.Attributes.Loading.Dexterity = 1.0
-Playerbots.Skill.Attributes.Loading.Foresight = 1.0
-Playerbots.Skill.Attributes.Loading.Knowledge = 1.0
-Playerbots.Skill.Attributes.Loading.Discipline = 1.0
-Playerbots.Skill.Attributes.Loading.Grit = 1.0
-Playerbots.Skill.Attributes.Loading.Aggression = 0.0
-Playerbots.Skill.Attributes.Loading.Caution = 0.0
-Playerbots.Skill.Attributes.Loading.Patience = 0.0
-Playerbots.Skill.Attributes.Loading.Teamwork = 0.0
-Playerbots.Skill.Attributes.Spread.Speed = 0.0
-Playerbots.Skill.Attributes.Spread.Wisdom = 0.0
-Playerbots.Skill.Attributes.Spread.Focus = 0.0
-Playerbots.Skill.Attributes.Spread.Dexterity = 0.0
-Playerbots.Skill.Attributes.Spread.Foresight = 0.0
-Playerbots.Skill.Attributes.Spread.Knowledge = 0.0
-Playerbots.Skill.Attributes.Spread.Discipline = 0.0
-Playerbots.Skill.Attributes.Spread.Grit = 0.0
-Playerbots.Skill.Attributes.Spread.Aggression = 0.0
-Playerbots.Skill.Attributes.Spread.Caution = 0.0
-Playerbots.Skill.Attributes.Spread.Patience = 0.0
-Playerbots.Skill.Attributes.Spread.Teamwork = 0.0
+# Loading.<Name> and Spread.<Name> are config table rows, documented at BotAttributeParams
+# (src/Bot/Tactics/BotAttributeTypes.h); ".playerbots config Playerbots.Skill.Attributes." prints them.
 Playerbots.Skill.Attributes.Corr.Wisdom-Teamwork = 0.3
 Playerbots.Skill.Attributes.Corr.Wisdom-Patience = 0.3
 Playerbots.Skill.Attributes.Corr.Speed-Dexterity = 0.3
