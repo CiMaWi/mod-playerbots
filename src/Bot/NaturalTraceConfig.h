@@ -27,4 +27,10 @@ struct TraceConfig
     bool Binary = false;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (NaturalTraceConfig.cpp)
+extern ConfigFamily<TraceConfig> const NaturalTraceFamily;
+
 #endif
