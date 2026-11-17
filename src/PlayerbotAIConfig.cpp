@@ -737,16 +737,16 @@ bool PlayerbotAIConfig::Initialize()
             "Playerbots.BotActiveAlone / Playerbots.botActiveAloneSmartScale: ignored: every bot is always active");
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
-    PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
+    PvpTest.Enable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
     TestMissLog = sConfigMgr->GetOption<bool>("Playerbots.Test.MissLog", false);
-    PvpTestTimeoutSeconds =
+    PvpTest.TimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpTest.TimeoutSeconds", 900), 60, 3600);
     // "<map> <x> <y> <z> <o>"; the default is the Hillsbrad Foothills spot (a contested zone, duels allowed)
-    PvpTestFightMap = 0;
-    PvpTestFightX = -436.657f;
-    PvpTestFightY = -581.254f;
-    PvpTestFightZ = 53.5944f;
-    PvpTestFightO = 1.25917f;
+    PvpTest.FightMap = 0;
+    PvpTest.FightX = -436.657f;
+    PvpTest.FightY = -581.254f;
+    PvpTest.FightZ = 53.5944f;
+    PvpTest.FightO = 1.25917f;
     std::string const fightLocation = sConfigMgr->GetOption<std::string>("Playerbots.PvpTest.FightLocation", "");
     if (!fightLocation.empty())
     {
@@ -757,11 +757,11 @@ bool PlayerbotAIConfig::Initialize()
         float o = 0.0f;
         if (std::sscanf(fightLocation.c_str(), "%u %f %f %f %f", &map, &x, &y, &z, &o) == 5)
         {
-            PvpTestFightMap = map;
-            PvpTestFightX = x;
-            PvpTestFightY = y;
-            PvpTestFightZ = z;
-            PvpTestFightO = o;
+            PvpTest.FightMap = map;
+            PvpTest.FightX = x;
+            PvpTest.FightY = y;
+            PvpTest.FightZ = z;
+            PvpTest.FightO = o;
         }
         else
             LOG_ERROR("playerbots",
@@ -1235,7 +1235,7 @@ bool PlayerbotAIConfig::IsInPvpProhibitedArea(uint32 id)
 
 bool PlayerbotAIConfig::TacticStrategyWanted(TacticId id) const
 {
-    return ::TacticStrategyWanted(Tactics.Enable, id, Tactics.Settings[static_cast<uint32>(id)].Enable, PvpTestEnable);
+    return ::TacticStrategyWanted(Tactics.Enable, id, Tactics.Settings[static_cast<uint32>(id)].Enable, PvpTest.Enable);
 }
 
 bool PlayerbotAIConfig::IsRestrictedHealerDPSMap(uint32 mapId) const
