@@ -16,7 +16,6 @@
 #include "NewRpgInfo.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
-#include "TravelMgr.h"
 #include "TravelTransportGeometry.h"
 
 class Creature;
@@ -24,7 +23,6 @@ class Map;
 class Player;
 class PlayerbotAI;
 class Transport;
-class WorldLocation;
 
 namespace WorldTravel
 {
@@ -34,7 +32,9 @@ struct ServiceStop;
 
 namespace Planner
 {
+class PlannerIndexes;
 class UpkeepIndex;
+struct Service;
 }  // namespace Planner
 
 // The RPG action layer's shared helpers: each is defined in one file of the layer and called from another (design
@@ -93,15 +93,15 @@ bool BuysAtVendors(PlayerbotAI* botAI);
 // else one computed now (counted, kept with the trip); map thread only
 std::shared_ptr<UpkeepNeeds::VisitNeeds const> ErrandNeeds(PlayerbotAI* botAI,
                                                            std::shared_ptr<Planner::UpkeepIndex const> const& index);
-WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc);
+WorldTravel::ErrandPlace ErrandPlaceOf(Planner::Service const& spawn);
 
 // Trainers, called by the errand start (the trip's stops) and the errand visit (the trainer visits)
 void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature);
 void RideAtTrainer(PlayerbotAI* botAI, Creature* creature);
 void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature);
-std::vector<TravelMgr::TrainerInfo const*> TrainerSpawns(Player* bot, Planner::UpkeepIndex const& index, uint32 key,
-                                                         float reachYards);
-void AddTrainerStops(std::vector<TravelMgr::TrainerInfo const*> const& spawns, uint32 service,
+std::vector<Planner::Service const*> TrainerSpawns(Player* bot, Planner::PlannerIndexes const& indexes,
+                                                   Planner::UpkeepIndex const& index, uint32 key, float reachYards);
+void AddTrainerStops(std::vector<Planner::Service const*> const& spawns, uint32 service,
                      std::vector<WorldTravel::ServiceStop>& stops);
 
 // Stable, called by the errand visit: the tame and the stable parts of an errand stop
