@@ -262,6 +262,10 @@ inline void AddLootSlots(SlotMeasure& measure, uint32_t nowMs, float slots)
     measure.WindowSlots += slots;
 }
 
+// The slots a stored loot stack adds to the loot rate: a grey is sold and destroyed at once (mod-junk-to-gold), so it
+// fills none
+inline float LootSlotsFilled(bool grey, float newSlots) { return grey ? 0.0f : newSlots; }
+
 inline void AddLostWorth(SlotMeasure& measure, uint32_t nowMs, uint32_t copper)
 {
     RollWindow(measure, nowMs);
@@ -454,6 +458,10 @@ inline float WalkMinutes(float yards, float yardsPerSecond)
 
     return yards / yardsPerSecond / SECONDS_PER_MINUTE;
 }
+
+// Whether a stack counts as stock a selling trip would sell: a vendor or auction-house usage, and no grey (greys are
+// no stock: the module sells them at the loot)
+inline bool CountsAsSellable(bool grey, bool vendorOrAuction) { return vendorOrAuction && !grey; }
 
 struct TripInput
 {

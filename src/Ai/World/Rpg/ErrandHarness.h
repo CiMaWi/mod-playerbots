@@ -238,6 +238,51 @@ inline void SaleRuleKept(std::vector<Check>& checks)
             " mismatches");
 }
 
+// Greys are no stock (upkeep WU31): a bag whose sellable stacks are all grey counts no sellable stack, so no trip opens
+// for it at any distance, while the same bag with one white stack opens one exactly where TripWorthIt says so
+inline void GreyOnlyNoTrip(std::vector<Check>& checks)
+{
+    constexpr uint32_t STACKS = 12;
+    uint32_t greyOnly = 0;
+    uint32_t oneWhite = 0;
+    for (uint32_t stack = 0; stack < STACKS; ++stack)
+    {
+        greyOnly += CountsAsSellable(true, true) ? 1 : 0;
+        oneWhite += CountsAsSellable(stack == 0 ? false : true, true) ? 1 : 0;
+    }
+
+    uint32_t greyTrips = 0;
+    uint32_t whiteTrips = 0;
+    uint32_t whiteMismatches = 0;
+    for (uint32_t const level : {10u, 25u, 45u})
+        for (uint32_t const free : {0u, 2u})
+            for (float const yards : {50.0f, 400.0f, 1500.0f})
+            {
+                ErrandSnapshot grey = Bot(free, greyOnly);
+                grey.Level = level;
+                grey.Rates = CurrentRates(SlotMeasure{}, DEFAULT_SLOT_BANDS[LevelBand(level)]);
+                grey.Stops = {{PLAIN_VENDOR, At(yards, 0.0f), SERVICE_VENDOR}};
+                greyTrips += Plan(grey, Request(grey)).Stops.empty() ? 0 : 1;
+
+                ErrandSnapshot white = grey;
+                white.SellableSlots = oneWhite;
+                TripInput in;
+                in.Rates = white.Rates;
+                in.FreeSlots = free;
+                in.SellableSlots = oneWhite;
+                in.WalkMinutes = WalkMinutes(yards, RUN_YARDS_PER_SECOND);
+                in.MinutesToNextStop = white.MinutesToNextStop;
+                bool const opened = !Plan(white, Request(white)).Stops.empty();
+                whiteTrips += opened ? 1 : 0;
+                whiteMismatches += opened != TripWorthIt(in) ? 1 : 0;
+            }
+    Add(checks, "grey: a bag of greys alone opens no trip at any distance, one white stack follows TripWorthIt",
+        greyOnly == 0 && oneWhite == 1 && !greyTrips && !whiteMismatches,
+        std::to_string(greyOnly) + " grey-only sellable, " + std::to_string(greyTrips) + " trips; white " +
+            std::to_string(oneWhite) + " sellable, " + std::to_string(whiteTrips) + " trips, " +
+            std::to_string(whiteMismatches) + " mismatches");
+}
+
 // An errand trip's end (the status core's errand clean-up): every end stamps the check, only a healthy trip with a
 // visited stop adds its minutes
 inline void ErrandEnds(std::vector<Check>& checks)
@@ -1267,6 +1312,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     DetourRefused(checks);
     TwoAtOneStop(checks);
     SaleRuleKept(checks);
+    GreyOnlyNoTrip(checks);
     NoStop(checks);
     ErrandEnds(checks);
     NeedsCheckOnce(checks);

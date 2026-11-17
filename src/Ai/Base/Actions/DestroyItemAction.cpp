@@ -149,7 +149,8 @@ bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
             ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());
             candidate.Worth = ItemUsageValue::ItemWorth(item->GetTemplate(), usage, item->GetCount(), sellMultiplier,
                                                         BankMail::CarriedWorthEach(botAI, item->GetEntry()));
-            if (usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH)
+            if (WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR,
+                                              usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH))
                 ++sellableSlots;
         }
 

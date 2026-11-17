@@ -47,7 +47,9 @@ bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* 
     InventoryResult const result = bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, proto->ItemId, count);
     if (result == EQUIP_ERR_OK)
     {
-        WorldTravel::AddLootSlots(measure, getMSTime(), NewSlotsFor(bot, dest));
+        WorldTravel::AddLootSlots(
+            measure, getMSTime(),
+            WorldTravel::LootSlotsFilled(proto->Quality == ITEM_QUALITY_POOR, NewSlotsFor(bot, dest)));
         return true;
     }
 
@@ -65,7 +67,9 @@ bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* 
         dest.clear();
         if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, proto->ItemId, count) == EQUIP_ERR_OK)
         {
-            WorldTravel::AddLootSlots(measure, getMSTime(), NewSlotsFor(bot, dest));
+            WorldTravel::AddLootSlots(
+                measure, getMSTime(),
+                WorldTravel::LootSlotsFilled(proto->Quality == ITEM_QUALITY_POOR, NewSlotsFor(bot, dest)));
             return true;
         }
     }
