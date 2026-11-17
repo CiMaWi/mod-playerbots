@@ -207,6 +207,83 @@ std::vector<std::string> RunDump()
     return lines;
 }
 
+struct LiveStaticCounts
+{
+    std::uint32_t spawns = 0;
+    std::uint32_t loaded = 0;
+    std::uint32_t standing = 0;
+};
+
+// one STOPLIVE11 row per loaded static transport (lift, tram car): the stop its progress stands at by the dump's span
+// rule, the distance to the dump's pose of that stop and the heading delta, or moving. Static transports are not in
+// Map::GetAllTransports (only motion transports are); a loaded one is found by its spawn id. Instance maps are not
+// searched (FindBaseMap), and a map with no loaded grid around the car has none to find.
+void LiveStaticTransports(std::vector<std::string>& lines, LiveStaticCounts& counts)
+{
+    GameObjectDataContainer const& store = sObjectMgr->GetAllGOData();
+    std::vector<ObjectGuid::LowType> spawnIds;
+    for (auto const& [spawnId, data] : store)
+    {
+        GameObjectTemplate const* goInfo = sObjectMgr->GetGameObjectTemplate(data.id);
+        if (goInfo && goInfo->type == GAMEOBJECT_TYPE_TRANSPORT)
+            spawnIds.push_back(spawnId);
+    }
+    std::sort(spawnIds.begin(), spawnIds.end());
+
+    lines.push_back("STOPLIVE11\tentry\tdisplay\tspawn\tmap\tx\ty\tz\to\tprogress\tperiod\tstop\tdpos\tda");
+    for (ObjectGuid::LowType spawnId : spawnIds)
+    {
+        GameObjectData const& data = store.at(spawnId);
+        TransportAnimation const* anim = sTransportMgr->GetTransportAnimInfo(data.id);
+        if (!anim || !anim->TotalTime)
+            continue;
+        ++counts.spawns;
+        Map* map = sMapMgr->FindBaseMap(data.mapid);
+        if (!map)
+            continue;
+        auto const range = map->GetGameObjectBySpawnIdStore().equal_range(spawnId);
+        for (auto it = range.first; it != range.second; ++it)
+        {
+            StaticTransport const* car = it->second ? it->second->ToStaticTransport() : nullptr;
+            if (!car || !car->IsInWorld())
+                continue;
+            ++counts.loaded;
+            GameObjectTemplate const* goInfo = car->GetGOInfo();
+            std::uint32_t const period = anim->TotalTime;
+            std::uint32_t const pause = goInfo->transport.pauseAtTime;
+            std::uint32_t const progress = car->GetPathProgress() % period;
+            RouteCheckStopsRules::Spawn spawn{data.posX,        data.posY,       data.posZ,
+                                              data.orientation, data.rotation.z, data.rotation.w};
+            if (GameObjectAddon const* addon = sObjectMgr->GetGameObjectAddon(spawnId))
+            {
+                spawn.pathRotationZ = addon->ParentRotation.z;
+                spawn.pathRotationW = addon->ParentRotation.w;
+            }
+            std::vector<RouteCheckStopsRules::Span> const spans =
+                RouteCheckStopsRules::StopSpans(anim->Path, period, pause);
+            std::string where = "moving\t-\t-";
+            for (std::size_t stop = 0; stop < spans.size(); ++stop)
+            {
+                RouteCheckStopsRules::Span const& span = spans[stop];
+                bool const inside = span.wrap ? (progress >= span.start || progress <= span.end)
+                                              : (progress >= span.start && progress <= span.end);
+                RouteCheckStopsRules::Pose pose{};
+                if (!inside || !RouteCheckStopsRules::PoseAtProgress(anim->Path, anim->Rotations, period, spawn,
+                                                                     span.start % period, pose))
+                    continue;
+                ++counts.standing;
+                where = Acore::StringFormat("{}\t{:.4f}\t{:.6f}", stop, car->GetExactDist(pose.x, pose.y, pose.z),
+                                            RouteCheckStopsRules::AngleDelta(car->GetOrientation(), pose.o));
+                break;
+            }
+            lines.push_back(Acore::StringFormat(
+                "STOPLIVE11\t{}\t{}\t{}\t{}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.6f}\t{}\t{}\t{}", data.id, car->GetDisplayId(),
+                spawnId, car->GetMapId(), car->GetPositionX(), car->GetPositionY(), car->GetPositionZ(),
+                car->GetOrientation(), progress, period, where));
+        }
+    }
+}
+
 std::vector<std::string> RunLive()
 {
     std::set<std::uint32_t> mapIds;
@@ -265,6 +342,11 @@ std::vector<std::string> RunLive()
     }
     lines.push_back(Acore::StringFormat("ROUTE check stops live: {} transports on {} maps, {} standing at a stop",
                                         transports, mapIds.size(), standing));
+    LiveStaticCounts statics;
+    LiveStaticTransports(lines, statics);
+    lines.push_back(
+        Acore::StringFormat("ROUTE check stops live static: {} of {} type-11 spawns loaded, {} standing at a stop",
+                            statics.loaded, statics.spawns, statics.standing));
     return lines;
 }
 
