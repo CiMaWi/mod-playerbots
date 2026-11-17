@@ -169,6 +169,17 @@ void CheckCreation()
     Check(!LifecycleRules::CreationDue(false, 500000), "no creation: an established bot");
 }
 
+void CheckRandomizeAllowed()
+{
+    uint32_t const played = StartingHistory::NEW_CHARACTER_PLAYED_SECONDS;
+    Check(!LifecycleRules::RandomizeAllowed(false, true, played), "randomize: not for an established keeper");
+    Check(!LifecycleRules::RandomizeAllowed(false, true, played * 100), "randomize: also not after a long life");
+    Check(LifecycleRules::RandomizeAllowed(false, true, 0), "randomize: a keeper's creation");
+    Check(LifecycleRules::RandomizeAllowed(false, true, played - 1), "randomize: the first hour counts as creation");
+    Check(LifecycleRules::RandomizeAllowed(true, true, played), "randomize: a full init (operator command)");
+    Check(LifecycleRules::RandomizeAllowed(false, false, played), "randomize: a bot that keeps nothing");
+}
+
 void CheckCohortAndKind()
 {
     uint32_t in = 0;
@@ -200,6 +211,7 @@ int main()
     CheckTable();
     CheckConsole();
     CheckCreation();
+    CheckRandomizeAllowed();
     CheckCohortAndKind();
 
     std::cout << "lifecycle selftest: " << passed << " passed, " << failed << " failed\n";

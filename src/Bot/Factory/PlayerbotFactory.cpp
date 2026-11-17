@@ -21,6 +21,7 @@
 #include "ItemPackets.h"
 #include "ItemTemplate.h"
 #include "ItemVisitors.h"
+#include "LifecycleRules.h"
 #include "Log.h"
 #include "LootMgr.h"
 #include "ObjectMgr.h"
@@ -846,7 +847,12 @@ void PlayerbotFactory::Randomize(bool incremental)
     // LOG_DEBUG("playerbots", "Preparing to {} randomize...", (incremental ? "incremental" : "full"));
     uint32 oldLevel = bot->GetLevel();
     bool const keepsPossessions = BotKind::KeepsPossessions(bot);
-    bool const wipe = StartingHistory::RandomizeWipes(!incremental, keepsPossessions, bot->GetTotalPlayedTime());
+    // An established persistent bot without a game-client master is never re-randomized (CS20 refuses every caller)
+    if (!LifecycleRules::RandomizeAllowed(!incremental, keepsPossessions, bot->GetTotalPlayedTime()))
+    {
+        LOG_WARN("playerbots", "Randomize: not run for {}, an established persistent bot", bot->GetName());
+        return;
+    }
     Prepare();
     LOG_DEBUG("playerbots", "Resetting player...");
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reset");
@@ -869,8 +875,7 @@ void PlayerbotFactory::Randomize(bool incremental)
             ClearAllItems();
         }
     }
-    if (wipe)
-        ClearInventory();
+    ClearInventory();
     bot->RemoveAllSpellCooldown();
     UnbindInstance();
 
@@ -887,31 +892,18 @@ void PlayerbotFactory::Randomize(bool incremental)
     // if (pmo)
     //     pmo->finish();
 
-    // The consumables, spells, skills and mounts are a fresh kit's at a wipe (a creation); a keeper's re-randomize
-    // leaves what it bought, looted, made or trained, and only a bot granted the kind (outside the keepers, or in the
-    // handout share) gets it again, as that kind's handout. True when the kind ran
-    auto const consumableKit = [this, wipe, keepsPossessions](UpkeepKind kind, auto&&... inits)
-    {
-        if (!wipe)
-            return Upkeep::HandOut(bot, kind, keepsPossessions, "factory_randomize", inits...);
-        (inits(), ...);
-        return true;
-    };
-
     if (sPlayerbotAIConfig.RandomBotPreQuests)
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Quests");
-        // Rewards every quest again (money too) and then clears the bags: creation only for a bot that keeps them
-        if (wipe)
-            InitInstanceQuests();
-        consumableKit(UpkeepKind::Attunement, [this] { InitAttunementQuests(); });
+        InitInstanceQuests();
+        InitAttunementQuests();
         if (pmo)
             pmo->finish();
     }
     else
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Quests");
-        consumableKit(UpkeepKind::Attunement, [this] { InitAttunementQuests(); });
+        InitAttunementQuests();
         if (pmo)
             pmo->finish();
     }
@@ -919,16 +911,14 @@ void PlayerbotFactory::Randomize(bool incremental)
     LOG_DEBUG("playerbots", "Initializing skills (step 1)...");
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Skills1");
     bot->LearnDefaultSkills();
-    // A keeper's professions stay as they are (another plan's, WR): maxed also when the skills are not handed out
-    if (!consumableKit(UpkeepKind::WeaponSkill, [this] { InitSkills(); }))
-        InitProfessionSkills();
+    InitSkills();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Spells1");
     LOG_DEBUG("playerbots", "Initializing spells (step 1)...");
-    bool const trainerSpells =
-        consumableKit(UpkeepKind::TrainerSpell, [this] { InitClassSpells(); }, [this] { InitAvailableSpells(); });
+    InitClassSpells();
+    InitAvailableSpells();
     if (pmo)
         pmo->finish();
 
@@ -951,28 +941,25 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Spells2");
     LOG_DEBUG("playerbots", "Initializing spells (step 2)...");
-    if (trainerSpells)
-        InitAvailableSpells();
+    InitAvailableSpells();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reputation");
     LOG_DEBUG("playerbots", "Initializing reputation...");
-    consumableKit(UpkeepKind::Reputation, [this] { InitReputation(); });
+    InitReputation();
     if (pmo)
         pmo->finish();
 
     LOG_DEBUG("playerbots", "Initializing special spells...");
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Spells3");
-    consumableKit(UpkeepKind::SpecialSpell, [this] { InitSpecialSpells(); });
+    InitSpecialSpells();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Mounts");
     LOG_DEBUG("playerbots", "Initializing mounts...");
-    // InitMounts writes the Mount row itself when it learns one
-    if (wipe || Upkeep::Granted(bot, UpkeepKind::Mount, keepsPossessions))
-        InitMounts();
+    InitMounts();
     // bot->SaveToDB(false, false);
     if (pmo)
         pmo->finish();
@@ -1012,31 +999,31 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Ammo");
     LOG_DEBUG("playerbots", "Initializing ammo...");
-    consumableKit(UpkeepKind::Ammo, [this] { InitAmmo(); });
+    InitAmmo();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Food");
     LOG_DEBUG("playerbots", "Initializing food...");
-    consumableKit(UpkeepKind::Food, [this] { InitFood(); });
+    InitFood();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Potions");
     LOG_DEBUG("playerbots", "Initializing potions...");
-    consumableKit(UpkeepKind::Consumable, [this] { InitPotions(); });
+    InitPotions();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Reagents");
     LOG_DEBUG("playerbots", "Initializing reagents...");
-    consumableKit(UpkeepKind::Reagent, [this] { InitReagents(); });
+    InitReagents();
     if (pmo)
         pmo->finish();
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Keys");
     LOG_DEBUG("playerbots", "Initializing keys...");
-    consumableKit(UpkeepKind::Key, [this] { InitKeyring(); });
+    InitKeyring();
     if (pmo)
         pmo->finish();
 
@@ -1066,14 +1053,12 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Consumable");
     LOG_DEBUG("playerbots", "Initializing consumables...");
-    // A rogue's consumables are its poisons
-    consumableKit(bot->getClass() == CLASS_ROGUE ? UpkeepKind::Poison : UpkeepKind::Consumable,
-                  [this] { InitConsumables(); });
+    InitConsumables();
     if (pmo)
         pmo->finish();
 
     LOG_DEBUG("playerbots", "Initializing glyphs...");
-    consumableKit(UpkeepKind::Glyph, [this] { InitGlyphs(); });
+    InitGlyphs();
     // bot->SaveToDB(false, false);
 
     pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Guilds");
@@ -1105,9 +1090,8 @@ void PlayerbotFactory::Randomize(bool incremental)
     {
         pmo = sPerfMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Pet");
         LOG_DEBUG("playerbots", "Initializing pet...");
-        // A creation's pet (a wipe); a keeper's re-randomize keeps the pet it tamed, or none, unless granted the kind
-        // (WU21b). Pet talents are free points: spent at every randomize
-        consumableKit(UpkeepKind::Pet, [this] { InitPet(); });
+        InitPet();
+        // bot->SaveToDB(false, false);
         InitPetTalents();
         if (pmo)
             pmo->finish();
@@ -1121,12 +1105,9 @@ void PlayerbotFactory::Randomize(bool incremental)
     else if (keepsPossessions && !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
         bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
 
-    if (wipe)
-    {
-        uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
-        bot->SetMoney(randomizeMoney);
-        EventLog::Honesty(bot, "Gold", "factory_randomize", 0, randomizeMoney);
-    }
+    uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
+    bot->SetMoney(randomizeMoney);
+    EventLog::Honesty(bot, "Gold", "factory_randomize", 0, randomizeMoney);
     bot->SetHealth(bot->GetMaxHealth());
     bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
     bot->SaveToDB(false, false);
@@ -1143,57 +1124,39 @@ void PlayerbotFactory::Refresh()
     // {
     //     InitEquipment(true);
     // }
-    // Refresh never creates: a bot that keeps its possessions is only restocked, with the kinds Upkeep grants it
-    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
-    constexpr char const* source = "factory_refresh";
-    Upkeep::HandOut(bot, UpkeepKind::Attunement, keepsPossessions, source, [this] { InitAttunementQuests(); });
-    if (!keepsPossessions)
+    InitAttunementQuests();
+    // A bot that keeps its possessions (the handout cohort's) keeps its bags, and its hearthstone
+    if (!BotKind::KeepsPossessions(bot))
         ClearInventory();
     else if (!bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
         bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
-    Upkeep::HandOut(bot, UpkeepKind::Ammo, keepsPossessions, source, [this] { InitAmmo(); });
-    Upkeep::HandOut(bot, UpkeepKind::Food, keepsPossessions, source, [this] { InitFood(); });
-    Upkeep::HandOut(bot, UpkeepKind::Reagent, keepsPossessions, source, [this] { InitReagents(); });
-    auto const consumables = [this] { InitConsumables(); };
-    auto const potions = [this] { InitPotions(); };
-    if (bot->getClass() == CLASS_ROGUE)  // a rogue's consumables are its poisons
-    {
-        Upkeep::HandOut(bot, UpkeepKind::Poison, keepsPossessions, source, consumables);
-        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, potions);
-    }
-    else
-        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, consumables, potions);
-    Upkeep::HandOut(bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); });
-    InitPetTalents();  // free points, outside the switch (WU21b)
-    if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, source, [this] { InitSkills(); }))
-        InitProfessionSkills();
-    Upkeep::HandOut(
-        bot, UpkeepKind::TrainerSpell, keepsPossessions, source, [this] { InitClassSpells(); },
-        [this] { InitAvailableSpells(); });
-    Upkeep::HandOut(bot, UpkeepKind::Reputation, keepsPossessions, source, [this] { InitReputation(); });
-    Upkeep::HandOut(bot, UpkeepKind::SpecialSpell, keepsPossessions, source, [this] { InitSpecialSpells(); });
-    if (Upkeep::Granted(bot, UpkeepKind::Mount, keepsPossessions))
-        InitMounts();
-    Upkeep::HandOut(bot, UpkeepKind::Key, keepsPossessions, source, [this] { InitKeyring(); });
+    InitAmmo();
+    InitFood();
+    InitReagents();
+    InitConsumables();
+    InitPotions();
+    InitPet();
+    InitPetTalents();
+    InitSkills();
+    InitClassSpells();
+    InitAvailableSpells();
+    InitReputation();
+    InitSpecialSpells();
+    InitMounts();
+    InitKeyring();
     if (!sPlayerbotAIConfig.EquipAndSpecPersistence ||
         bot->GetLevel() < sPlayerbotAIConfig.EquipAndSpecPersistenceLevel)
     {
-        Upkeep::HandOut(bot, UpkeepKind::Talent, keepsPossessions, source,
-                        [this] { InitTalentsTree(true, true, true); });
+        InitTalentsTree(true, true, true);
     }
     if (bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
         ApplyEnchantAndGemsNew();
-    Upkeep::HandOut(bot, UpkeepKind::Repair, keepsPossessions, source,
-                    [this] { bot->DurabilityRepairAll(false, 1.0f, false); });
+    bot->DurabilityRepairAll(false, 1.0f, false);
     if (bot->isDead())
-        Upkeep::HandOut(bot, UpkeepKind::Resurrect, keepsPossessions, source,
-                        [this] { bot->ResurrectPlayer(1.0f, false); });
+        bot->ResurrectPlayer(1.0f, false);
     uint32 money = urand(level * 1000, level * 5 * 1000);
-    if (bot->GetMoney() < money && Upkeep::Granted(bot, UpkeepKind::Gold, keepsPossessions))
-    {
-        Upkeep::Note(bot, UpkeepKind::Gold, source, 0, money - bot->GetMoney());
+    if (bot->GetMoney() < money)
         bot->SetMoney(money);
-    }
     // bot->SaveToDB(false, false);
 }
 
