@@ -285,8 +285,16 @@ uint32_t LoadConfigFamily(ConfigFamily<Struct> const& family, Struct& out, Reade
                     double const typeUpper = std::is_same_v<T, uint8_t> ? 255.0 : row.Upper;
                     double const upper = row.Upper < typeUpper ? row.Upper : typeUpper;
                     double const number = static_cast<double>(value);
-                    // written so that a NaN is outside (a plain < and > pass it)
-                    if (!(number >= row.Lower && number <= upper))
+                    // A NaN (the text "nan") keeps the default on every row, Clamp or KeepDefault, with a warning
+                    if (number != number)
+                    {
+                        warn(key + " = " + ConfigValueText(value) + " is not a number, using " +
+                             ConfigValueText(fallback));
+                        ++warnings;
+                        value = fallback;
+                    }
+                    // written so that any other non-number is outside (a plain < and > pass it)
+                    else if (!(number >= row.Lower && number <= upper))
                     {
                         R const kept = row.OutOfRange == ConfigOutOfRange::KeepDefault ? fallback
                                        : number < row.Lower                            ? static_cast<R>(row.Lower)
