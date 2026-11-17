@@ -21,6 +21,7 @@
 #include "BridgeBotTopics.h"
 #include "BridgeNames.h"
 #include "BridgeNeedsTopic.h"
+#include "BridgePerception.h"
 #include "BridgeTexts.h"
 #include "CharacterCache.h"
 #include "Creature.h"
@@ -56,13 +57,6 @@ namespace PlayerbotBridge
 {
 namespace
 {
-bool Visible(Player* observer, Unit* target)
-{
-    return target && target->IsInWorld() && observer->IsInMap(target) && observer->InSamePhase(target) &&
-           observer->IsWithinDistInMap(target, observer->GetSightRange()) &&
-           observer->CanSeeOrDetect(target, false, true);
-}
-
 // Cached zone and area ids; never a terrain lookup.
 std::string AreaName(uint32 areaId)
 {
@@ -469,7 +463,8 @@ char const* TaskWord(AiObjectContext* context, int32 giver)
 // giver with a task, a friendly NPC with a service. False for anything else (a plain NPC, a pet, a trigger).
 bool UnitCandidate(Player* bot, PlayerbotAI* ai, Unit* unit, float distance, std::vector<AroundCandidate>& out)
 {
-    if (!unit || unit == bot || !unit->IsAlive() || !Visible(bot, unit) || unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+    if (!unit || unit == bot || !unit->IsAlive() || !Perceives(bot, unit) ||
+        unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
         return false;
     Creature* creature = unit->ToCreature();
     if (creature && creature->IsTrigger())
@@ -596,7 +591,7 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
     if (Unit* victim = bot->GetVictim())
     {
         facts.victim = true;
-        facts.victimVisible = Visible(bot, victim);
+        facts.victimVisible = Perceives(bot, victim);
         facts.victimName = victim->GetName();
         facts.victimLevel = victim->GetLevel();
         facts.victimHealthPct = victim->GetHealthPct();
@@ -650,7 +645,7 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
     {
         facts.partnerOnline = true;
         facts.partnerInGroup = group && group->IsMember(partnerGuid);
-        facts.partnerVisible = Visible(bot, partner);
+        facts.partnerVisible = Perceives(bot, partner);
         facts.partnerZone = AreaName(partner->GetZoneId());
         facts.partnerSameMap = bot->IsInMap(partner) && bot->InSamePhase(partner);
         if (facts.partnerSameMap)

@@ -20,6 +20,7 @@
 #include "AttackAction.h"
 #include "BridgeGoals.h"
 #include "BridgeNames.h"
+#include "BridgePerception.h"
 #include "BridgeSpellRule.h"
 #include "BridgeTexts.h"
 #include "CensusMgr.h"
@@ -71,11 +72,9 @@ struct ActFacts
 
 namespace
 {
-bool Visible(Player* observer, Unit* target, float distance)
-{
-    return target && target->IsInWorld() && observer->IsInMap(target) && observer->InSamePhase(target) &&
-           observer->IsWithinDistInMap(target, distance) && observer->CanSeeOrDetect(target, false, true);
-}
+// The reach of a position order (the place near the bot, the path to it at most twice as long): a row constant, no
+// longer the order's distance. What a bot perceives is BridgePerception.h's one rule.
+constexpr float PositionRadius = 30.0f;
 
 Result Refuse(Refusal& why, Refusal reason)
 {
@@ -294,7 +293,7 @@ bool Near(Player* player, Order const& order)
     double const dx = order.X - player->GetPositionX();
     double const dy = order.Y - player->GetPositionY();
     double const dz = order.Z - player->GetPositionZ();
-    double const radius = order.VisibilityDistance;
+    double const radius = PositionRadius;
     return dx * dx + dy * dy + dz * dz <= radius * radius;
 }
 
@@ -548,7 +547,7 @@ Result EmoteOnce(ActFacts const& act)
 
     Player* bot = act.Bot;
     TextEmotes const emote = EmoteIds[choice];
-    bool const seen = Visible(bot, act.Partner, act.Request.VisibilityDistance);
+    bool const seen = Perceives(bot, act.Partner);
     if (seen)
         bot->SetFacingToObject(act.Partner);
 
@@ -1236,8 +1235,7 @@ Result ExecuteSteps(PostMapJoin const& phase, std::span<Order const> steps, std:
 
 bool PositionReachable(PostMapJoin const& phase, Order const& order)
 {
-    if (!phase.Current() || !FinitePosition(order) || !std::isfinite(order.VisibilityDistance) ||
-        order.VisibilityDistance <= 0.0f)
+    if (!phase.Current() || !FinitePosition(order))
         return false;
 
     Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
@@ -1247,7 +1245,7 @@ bool PositionReachable(PostMapJoin const& phase, Order const& order)
     // Stricter than MoveTo's own search: a complete navmesh path only, never a partial path or a shortcut.
     PathGenerator path(bot);
     path.CalculatePath(static_cast<float>(order.X), static_cast<float>(order.Y), static_cast<float>(order.Z), false);
-    return path.GetPathType() == PATHFIND_NORMAL && path.getPathLength() <= 2.0f * order.VisibilityDistance;
+    return path.GetPathType() == PATHFIND_NORMAL && path.getPathLength() <= 2.0f * PositionRadius;
 }
 
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize, Refusal* why)
@@ -1661,7 +1659,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
             return Refuse(why, Refusal::UnknownName);
 
         act.Target = ObjectAccessor::GetUnit(*bot, ObjectGuid(target));
-        if (!Visible(bot, act.Target, act.Request.VisibilityDistance))
+        if (!Perceives(bot, act.Target))
             return Refuse(why, Refusal::TargetNotVisible);
     }
 
@@ -1729,8 +1727,7 @@ bool Malformed(AbilityRow const* row, Order const& order)
            Forms(order.QuestId != 0, order.QuestName) != (Takes(*row, OrderField::QuestId) ? 1 : 0) ||
            order.QuestName.size() > MaxName ||
            Takes(*row, OrderField::Shape) != (FormationName(order.Shape) != nullptr) ||
-           (order.Enabled && !Takes(*row, OrderField::Enabled)) || !std::isfinite(order.VisibilityDistance) ||
-           order.VisibilityDistance <= 0.0f ||
+           (order.Enabled && !Takes(*row, OrderField::Enabled)) ||
            (Takes(*row, OrderField::Icon) &&
             static_cast<std::size_t>(order.Icon) >= std::size(BridgeTexts::Acts::RAID_ICONS)) ||
            (Takes(*row, OrderField::Position) && !FinitePosition(order));
@@ -1782,7 +1779,7 @@ Result ExecuteSteps(PostMapJoin const& phase, std::span<Order const> steps, std:
             return IsUnavailable(order.Operation) ? Result::Unavailable : Result::Rejected;
 
         if (order.Bot != first.Bot || order.Controller != first.Controller || order.Group != first.Group ||
-            order.VisibilityDistance != first.VisibilityDistance || Malformed(row, order))
+            Malformed(row, order))
             return Result::Rejected;
 
         rows[index] = row;
