@@ -643,14 +643,12 @@ public:
     bool HasPlayerNearby(float range = sPlayerbotAIConfig.ReactDistance);
     bool AllowActive(ActivityType activityType);
     bool AllowActivity(ActivityType activityType = ALL_ACTIVITY, bool checkNow = false);
-    bool IsActivityAllowedCached() const { return allowActive[ALL_ACTIVITY]; }
     // LFG state of the bot and of its group, cached because LFGMgr's getters insert on read and must not run on a map
     // thread. RefreshLfgState runs on the world thread only (PlayerbotsMgr::RefreshLfgStates, about once a second).
     void RefreshLfgState();
     lfg::LfgState GetCachedLfgState() const { return lfgBotState; }
     // Called after queueing CMSG_LFG_JOIN, so the bot does not join again before the next refresh reads the real state
     void MarkLfgJoinQueued() { lfgBotState = lfg::LFG_STATE_QUEUED; }
-    uint32 AutoScaleActivity(uint32 mod);
 
     // Check if player is safe to use.
     bool IsSafe(Player* player);
@@ -895,8 +893,6 @@ protected:
     std::map<std::string, time_t> whispers;
     std::pair<ChatMsg, time_t> currentChat;
     static std::set<std::string> unsecuredCommands;
-    bool allowActive[MAX_ACTIVITY_TYPE];
-    time_t allowActiveCheckTimer[MAX_ACTIVITY_TYPE];
     // Written by RefreshLfgState (world thread, maps parked) and by MarkLfgJoinQueued (the bot's own update)
     lfg::LfgState lfgBotState = lfg::LFG_STATE_NONE;
     lfg::LfgState lfgGroupState = lfg::LFG_STATE_NONE;
