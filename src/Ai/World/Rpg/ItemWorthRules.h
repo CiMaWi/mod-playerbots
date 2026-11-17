@@ -72,16 +72,18 @@ inline SpaceClass ClassifyForSpace(ItemFacts const& facts)
 }
 
 // sellMultiplier: what a vendor pays this bot per copper of the item's sell price; laterWorthEach: one Kept item's
-// later worth
+// later worth; useWorthEach: one Use item's worth to this bot (item use WI9a, demand's worth per unit), 0: the buy
+// price or the sell price times BUY_PER_SELL_PRICE
 inline uint32_t ItemWorth(SpaceClass spaceClass, uint32_t sellPrice, uint32_t buyPrice, uint32_t count,
-                          float sellMultiplier, uint32_t laterWorthEach = 0)
+                          float sellMultiplier, uint32_t laterWorthEach = 0, uint32_t useWorthEach = 0)
 {
     if (spaceClass == SpaceClass::Priceless)
         return WORTH_PRICELESS;
 
     double each = sellPrice * static_cast<double>(std::max(sellMultiplier, 0.0f));
     if (spaceClass == SpaceClass::Use)
-        each = std::max<double>(buyPrice, static_cast<double>(sellPrice) * BUY_PER_SELL_PRICE);
+        each = useWorthEach ? static_cast<double>(useWorthEach)
+                            : std::max<double>(buyPrice, static_cast<double>(sellPrice) * BUY_PER_SELL_PRICE);
     else if (spaceClass == SpaceClass::Kept)
         each = laterWorthEach;
 
