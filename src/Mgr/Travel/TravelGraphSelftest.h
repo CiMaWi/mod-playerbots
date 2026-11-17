@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "RouteRules.h"
 #include "TravelGraph.h"
 
 // TravelGraph::Selftest's body (TravelGraph.h declares it), shared by tests/travel-graph-selftest.cpp and
@@ -88,8 +89,8 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     expect(flightsWithoutLength, 0, "flight links without a path length");
     expect(waitStops, _stats.waitStops, "stops with a wait point");
     check(thundercaller >= 2, "The Thundercaller rides " + std::to_string(thundercaller) + " (expected both ways)");
-    char const* const typeNames[TRAVEL_LINK_TYPES] = {"none",   "walk",   "portal",       "transport",
-                                                      "flight", "type 5", "static portal"};
+    char const* const typeNames[TRAVEL_LINK_TYPES] = {"none",   "walk",   "portal",        "transport",
+                                                      "flight", "type 5", "static portal", "air"};
     std::string counts = "links by type:";
     for (std::size_t type = 1; type < TRAVEL_LINK_TYPES; ++type)
         if (_stats.linksByType[type])
@@ -129,7 +130,9 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     check(gridMisses == 0,
           "nearest nodes differ from the scan in " + std::to_string(gridMisses) + " of " + std::to_string(gridQueries));
 
-    // 4. Three routes over the simple cost. Places by name, nearest to a known position (names are not unique)
+    // 4. Three routes over the route search (TravelRoute::Search, the bot's own costs: a level 80 bot with every flight
+    // path known and a full purse, the vessels' periods the graph read). Places by name, nearest to a known position
+    // (names are not unique)
     struct Place
     {
         char const* name;
@@ -146,15 +149,18 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         std::uint32_t mustObject;  // the object of a mustUse link, 0 = any
         float minSeconds;
         float maxSeconds;
+        std::uint8_t team;  // 0 Alliance, 1 Horde
     };
-    // Ranges (simple cost: run 7 yd/s, fly 32 yd/s, ship or zeppelin 180 s, portal 3 s; the shipped graph gives 373,
-    // 468 and 967 s):
+    // Ranges (run 7 yd/s, fly 32 yd/s, a vessel half its period plus its ride, portal 3 s):
     // - Goldshire -> Ironforge: about 1200 yd of running to Stormwind's flight master (170 s) and the 6500 yd flight
     //   (200 s; about 3.5 min in the game); on foot through the Deeprun Tram the walk alone takes more than 5 min
+    //   The merged graph (round 2) joins Stormwind and Ironforge by the Deeprun Tram (object 176085, 365 s in all),
+    //   which the bot's own costs prefer to the flight, so the case wants the tram
     // - Orgrimmar -> Undercity: about 1900 yd of running (inn to tower, tower to inn with the Undercity elevators) and
-    //   The Thundercaller (180 s). A graph with static portals takes Orgrimmar's portal to the Blasted Lands, the
-    //   Dark Portal, a flight to Shattrath and its portal to Undercity (about 420 s) instead: the simple cost has no
-    //   level or side
+    //   The Thundercaller (180 s); the merged graph's route walks 950 s of it, so the ceiling is 1000 s. Before round
+    //   3b (navigation N1) the Tirisfal tower had no walk down and a graph with static portals took Orgrimmar's
+    //   portal to the Blasted Lands, the Dark Portal, a flight to Shattrath and its portal to Undercity; since round
+    //   3b the zeppelin is the route again (494 s)
     // - Darnassus -> Stormwind: the portal to Rut'theran Village, at least one ship and long flights; the shipped graph
     //   has no walk link onto The Bravery at Auberdine, so its route flies to Ratchet and sails to Booty Bay (The
     //   Maiden's Fancy). More than 30 min would be a detour. A graph with static portals (the navigation plan's)
@@ -165,24 +171,27 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         {"Goldshire -> Ironforge",
          {"Goldshire innkeeper", 0, -9462.7f, 16.2f},
          {"flightMaster", 0, -4821.8f, -1152.4f},
-         TravelLinkType::Flight,
-         0,
+         TravelLinkType::Transport,
+         176085u,
          250.0f,
-         600.0f},
+         600.0f,
+         0},
         {"Orgrimmar -> Undercity",
          {"Orgrimmar innkeeper", 1, 1633.9f, -4439.4f},
          {"Undercity innkeeper", 0, 1637.0f, 220.0f},
-         staticPortals ? TravelLinkType::StaticPortal : TravelLinkType::Transport,
-         staticPortals ? 183327u : 164871u,
+         TravelLinkType::Transport,
+         164871u,
          300.0f,
-         900.0f},
+         1000.0f,
+         1},
         {"Darnassus -> Stormwind",
          {"Darnassus", 1, 9947.0f, 2482.0f},
          {"Stormwind City innkeeper", 0, -8867.8f, 673.7f},
          staticPortals ? TravelLinkType::StaticPortal : TravelLinkType::Transport,
          0,
          staticPortals ? 120.0f : 600.0f,
-         1800.0f},
+         1800.0f,
+         0},
     };
 
     for (RouteCase const& route : cases)
@@ -192,49 +201,71 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         if (!check(from != NO_NODE && to != NO_NODE, std::string(route.label) + ": places not found"))
             continue;
 
-        TravelGraphRoute const found = SimpleRoute(from, to);
-        if (!check(found.found, std::string(route.label) + ": no route"))
+        TravelRoute::Request request;
+        request.snapshot.position = {_nodes[from].mapId, _nodes[from].x, _nodes[from].y, _nodes[from].z};
+        request.snapshot.team = route.team;
+        request.snapshot.level = 80;
+        request.snapshot.money = 2000000000u;
+        request.snapshot.thrift = 0;
+        request.snapshot.allowTransport = true;
+        request.snapshot.knownTaxi.fill(0xFFFFFFFFu);
+        request.goal = {_nodes[to].mapId, _nodes[to].x, _nodes[to].y, _nodes[to].z};
+        TravelRoute::Result const found = TravelRoute::Search(*this, request, TravelRoute::StuckEdges{}, {});
+        if (!check(found.ok, std::string(route.label) + ": no route"))
             continue;
 
-        std::uint32_t legs[TRAVEL_LINK_TYPES]{};
-        float yards[TRAVEL_LINK_TYPES]{};
+        static constexpr char const* LEG_NAMES[] = {"walk",   "portal", "flight",       "transport",
+                                                    "hearth", "fly",    "static portal"};
+        auto const wanted = [&route]()
+        {
+            switch (route.mustUse)
+            {
+                case TravelLinkType::Portal:
+                    return TravelRoute::LegType::Portal;
+                case TravelLinkType::Flight:
+                    return TravelRoute::LegType::Flight;
+                case TravelLinkType::Transport:
+                    return TravelRoute::LegType::Transport;
+                case TravelLinkType::StaticPortal:
+                    return TravelRoute::LegType::StaticPortal;
+                default:
+                    return TravelRoute::LegType::Walk;
+            }
+        }();
+        std::uint32_t legs[7]{};
+        float legSeconds[7]{};
         bool usedObject = !route.mustObject;
         std::string chain;
         float sum = 0.0f;
-        bool chained = true;
-        std::uint32_t at = from;
-        for (std::uint32_t const linkIndex : found.links)
+        for (TravelRoute::Leg const& leg : found.legs)
         {
-            TravelGraphLink const& link = _links[linkIndex];
-            chained = chained && link.from == at;
-            at = link.to;
-            sum += SimpleCost(link);
-            std::size_t const type = static_cast<std::size_t>(link.type);
+            std::size_t const type = static_cast<std::size_t>(leg.type);
+            sum += leg.seconds;
             ++legs[type];
-            yards[type] += link.type == TravelLinkType::Walk ? link.distance : link.pathLength;
-            usedObject = usedObject || (link.type == route.mustUse && link.object == route.mustObject);
-            if (link.type != TravelLinkType::Walk)
-                chain += std::string("; ") + typeNames[type] + " " + std::to_string(link.object) + " " +
-                         std::string(GetName(link.from)) + " -> " + std::string(GetName(link.to));
+            legSeconds[type] += leg.seconds;
+            usedObject = usedObject || (leg.type == wanted && leg.object == route.mustObject);
+            if (leg.type != TravelRoute::LegType::Walk && !leg.nodes.empty())
+                chain += std::string("; ") + LEG_NAMES[type] + " " + std::to_string(leg.object) + " " +
+                         std::string(GetName(leg.nodes.front())) + " -> " + std::string(GetName(leg.nodes.back()));
         }
-        check(chained && at == to, std::string(route.label) + ": links do not chain from start to goal");
-        check(std::fabs(sum - found.seconds) <= 0.01f * found.seconds + 0.1f,
-              std::string(route.label) + ": cost " + num(found.seconds) + " s is not the sum of its links " + num(sum));
-        check(legs[static_cast<std::size_t>(route.mustUse)] > 0,
-              std::string(route.label) + ": no " + typeNames[static_cast<std::size_t>(route.mustUse)] + " link");
-        check(usedObject, std::string(route.label) + ": no link of object " + std::to_string(route.mustObject));
-        check(found.seconds >= route.minSeconds && found.seconds <= route.maxSeconds,
-              std::string(route.label) + ": " + num(found.seconds) + " s outside " + num(route.minSeconds) + ".." +
+        check(std::fabs(sum - found.totalSeconds) <= 0.01f * found.totalSeconds + 0.1f,
+              std::string(route.label) + ": cost " + num(found.totalSeconds) + " s is not the sum of its legs " +
+                  num(sum));
+        check(legs[static_cast<std::size_t>(wanted)] > 0,
+              std::string(route.label) + ": no " + LEG_NAMES[static_cast<std::size_t>(wanted)] + " leg");
+        check(usedObject, std::string(route.label) + ": no leg of object " + std::to_string(route.mustObject));
+        check(found.totalSeconds >= route.minSeconds && found.totalSeconds <= route.maxSeconds,
+              std::string(route.label) + ": " + num(found.totalSeconds) + " s outside " + num(route.minSeconds) + ".." +
                   num(route.maxSeconds) + " s");
 
         std::string note = std::string(route.label) + ": " + std::string(GetName(from)) + " (" +
                            std::to_string(_nodes[from].id) + ") -> " + std::string(GetName(to)) + " (" +
-                           std::to_string(_nodes[to].id) + "), " + num(found.seconds) + " s over " +
-                           std::to_string(found.links.size()) + " links:";
-        for (std::size_t type = 1; type < TRAVEL_LINK_TYPES; ++type)
+                           std::to_string(_nodes[to].id) + "), " + num(found.totalSeconds) + " s over " +
+                           std::to_string(found.legs.size()) + " legs:";
+        for (std::size_t type = 0; type < 7; ++type)
             if (legs[type])
-                note += std::string(" ") + typeNames[type] + " " + std::to_string(legs[type]) + " (" +
-                        num(yards[type]) + " yd)";
+                note += std::string(" ") + LEG_NAMES[type] + " " + std::to_string(legs[type]) + " (" +
+                        num(legSeconds[type]) + " s)";
         notes.push_back(note + chain);
     }
 

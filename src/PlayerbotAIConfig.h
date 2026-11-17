@@ -23,6 +23,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
+#include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
@@ -464,25 +465,8 @@ public:
     bool PvpGearBuySaveTowardBetter;
     uint32 PvpGearBuyCheckIntervalMinutes;
     uint32 PvpGearBuyBatchPerTick;
-    float SkillReactFactorLow;
-    float SkillReactFactorHigh;
-    bool SkillFullAbilityInPvE;
-    bool SkillReactActive;
-    uint32 SkillNoticeMissPercentLow;
-    uint32 SkillNoticeMissPercentHigh;
-    uint32 SkillNoticeDelayMsLow;
-    uint32 SkillNoticeDelayMsHigh;
-    uint32 SkillNoticeWindowMs;
-    bool SkillNoticeActive;
-    // Playerbots.Skill.Distribution and its parameters: a bot's fixed percentile maps to its skill through it
-    bool SkillDistributionUniform;
-    float SkillMean;
-    float SkillSd;
-    float SkillMin;
-    float SkillMax;
-    // Playerbots.Skill.ExemptRealMasterBots: bots with a game-client master play at full ability (1, phase D) or keep
-    // their skill (0, DT.2)
-    bool SkillExemptRealMasterBots;
+    // Playerbots.Skill.*: reaction stretch, notice model, distribution, real-master exemption (SkillConfig.h)
+    SkillConfig Skill;
     // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
     // off on a lab (Playerbots.Ladder.ServerId labN)
     bool SkillGrowthEnable;
@@ -492,31 +476,20 @@ public:
     // Playerbots.Skill.Attributes.*: loadings, spreads and the correlation matrix (factorised at load) of the attribute
     // model (BotAttributes.h); the defaults make every ability the skill and every trait neutral
     BotAttributeParams SkillAttributes;
-    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Contexts is a
-    // tactic scope mask (default the PvP contexts)
-    uint8 NaturalReactionContexts;
+    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h)
     ReactionParams NaturalReaction;
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
     // started match (NaturalReaction.h)
-    uint32 NaturalCadenceCheckMs;
-    uint32 NaturalCadenceStaggerMs;
-    uint8 NaturalCadenceContexts;
-    // Playerbots.Natural.Cadence.SkillStretch (G6d-a): the skill's stretch (Skill.React*) stays where the cadence and
-    // the reaction model both run, so it scales the cadence's check interval (0: factor 1 there, the reaction model
-    // carries the skill)
-    bool NaturalCadenceSkillStretch;
+    CadenceParams NaturalCadence;
     // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
     bool ArenaOnlyEnable;
     bool ArenaOnlySpreadContinents;
     // Playerbots.RandomBotTestNamePrefix: new random bots are named prefix + a letters-only counter (empty = pool)
     std::string RandomBotTestNamePrefix;
-    // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope (indexed by TacticId), and the mask of
-    // the tactics enabled in config (0 while the system is off)
-    bool TacticsEnable;
-    std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
+    // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope, the mask of the enabled tactics
+    TacticsConfig Tactics;
     // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
     bool TacticStrategyWanted(TacticId id) const;
-    uint32 TacticsConfigMask;
     // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
     // pass, from the switches and scopes at load and reload
     std::array<uint8, TACTIC_CONTEXT_COUNT> TacticFollowersFor{};
