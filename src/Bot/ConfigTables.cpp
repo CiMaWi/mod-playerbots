@@ -36,6 +36,8 @@
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "UpkeepConfig.h"
+#include "WorldPvp.h"
+#include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
 
 namespace
@@ -335,6 +337,8 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
         MakeEntry(UpkeepFamily, sPlayerbotAIConfig.Upkeep),
         MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
+        MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
+        MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
@@ -425,6 +429,9 @@ void LoadConfigTables()
         if (!known)
             WarnConfigRow(key + " is set but not a known key of " + owner + "*, ignored");
     }
+
+    // The world PvP values built from the rows (the enthusiasm and ghost values, once per load, WorldPvp.h)
+    ::WorldPvp::PublishConfigValues(sPlayerbotAIConfig.WorldPvp);
 }
 
 void PrintConfigTables(ChatHandler* handler, std::string const& prefix)

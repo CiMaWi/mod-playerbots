@@ -1981,8 +1981,6 @@ Playerbots.Upkeep.HandoutShare = 0
 # fight by its enthusiasm (Enthusiasm's thresholds, below) on an enemy player within ScanYards; within GraveyardYards
 # of a graveyard or spirit healer its join threshold rises by Enthusiasm.JoinGraveyard. (Ranges: ScanYards 1-200;
 # GraveyardYards 0-2000.) Defaults: 40, 80
-Playerbots.WorldPvp.ScanYards = 40
-Playerbots.WorldPvp.GraveyardYards = 80
 
 # The flight from enemy players (FleeAttackersAction). A bot that flees runs from the enemy players in PvP combat with
 # it. Its flight ends as escaped when it is out of PvP combat or Flee.EscapeYards from every one of them; as cornered
@@ -1998,7 +1996,6 @@ Playerbots.WorldPvp.GraveyardYards = 80
 # the enemy has gone it runs to its corpse, and GhostSpiritHealerSeconds after its release (counted from the release,
 # never reset by a recheck) it takes the spirit healer instead. (Ranges: GhostEnemyYards 0-2000; GhostRecheckSeconds
 # 1-600; GhostSpiritHealerSeconds 0-86400.) Defaults: 40, 15, 300
-Playerbots.WorldPvp.GhostEnemyYards = 40
 Playerbots.WorldPvp.GhostRecheckSeconds = 15
 Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 
@@ -2012,15 +2009,6 @@ Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 # The numbers are starting values that lab nights tune. (Ranges: Max 1-1000; RecoveryPerHour 0-1000;
 # DepletionPerMinute 0.1-1000; the edits 0-1000; GroupDeathYards 0-2000; GroupDeathShare 0-1.)
 # Defaults: 100, 15, 20, 50, 25, 75, 10, 60, 0.3
-Playerbots.WorldPvp.Enthusiasm.Max = 100
-Playerbots.WorldPvp.Enthusiasm.RecoveryPerHour = 15
-Playerbots.WorldPvp.Enthusiasm.DepletionPerMinute = 20
-Playerbots.WorldPvp.Enthusiasm.DeathEdit = 50
-Playerbots.WorldPvp.Enthusiasm.DeathEditConfident = 25
-Playerbots.WorldPvp.Enthusiasm.DeathEditUnconfident = 75
-Playerbots.WorldPvp.Enthusiasm.KillEdit = 10
-Playerbots.WorldPvp.Enthusiasm.GroupDeathYards = 60
-Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 
 # Starting costs enthusiasm: a pick that begins a fight (a start, not a join) while the bot is not engaged costs
 # StartCost points at once, and the bot starts only while its value less the cost is still at or above its entering
@@ -2031,8 +2019,6 @@ Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 # share when (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit;
 # one outside it pays nothing and keeps its KillEdit. (Ranges: StartCost 0-1000; StartCostShare 0-100.)
 # Defaults: 15, 100
-Playerbots.WorldPvp.Enthusiasm.StartCost = 15
-Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 
 # Enthusiasm's thresholds, in points. A bot attacks an enemy player when its enthusiasm is above its join threshold
 # for that target: JoinBase - JoinAggression x aggression (-1..+1; at the scale's top the bot never starts a fight);
@@ -2052,19 +2038,6 @@ Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 # ends. A bot with a real master never leaves.
 # (Ranges: all points 0-1000; AggressionJoinFactor 0-1; GroupHoldYards 0-2000.) Defaults: 60, 40, 0.25, 20, 30, 15,
 # 50, 40, 30, 15, 20, 15, 40
-Playerbots.WorldPvp.Enthusiasm.JoinBase = 60
-Playerbots.WorldPvp.Enthusiasm.JoinAggression = 40
-Playerbots.WorldPvp.Enthusiasm.AggressionJoinFactor = 0.25
-Playerbots.WorldPvp.Enthusiasm.JoinGreen = 20
-Playerbots.WorldPvp.Enthusiasm.JoinFactionAttacked = 30
-Playerbots.WorldPvp.Enthusiasm.JoinFactionHelpfulness = 15
-Playerbots.WorldPvp.Enthusiasm.JoinGroupAttacked = 50
-Playerbots.WorldPvp.Enthusiasm.JoinGraveyard = 40
-Playerbots.WorldPvp.Enthusiasm.JoinBalanceMax = 30
-Playerbots.WorldPvp.Enthusiasm.FleeBase = 15
-Playerbots.WorldPvp.Enthusiasm.FleeCaution = 20
-Playerbots.WorldPvp.Enthusiasm.FleeGroupHold = 15
-Playerbots.WorldPvp.Enthusiasm.GroupHoldYards = 40
 
 # Enthusiasm's local balance: the living players of each faction within BalanceYards yd of the bot, the bot
 # included, each weighted by its level colour to the bot (Weight.*) times its health share; the balance is the bot's
@@ -2073,16 +2046,6 @@ Playerbots.WorldPvp.Enthusiasm.GroupHoldYards = 40
 # at even to DepletionFactorBehind, and the join threshold's balance term likewise from - JoinBalanceMax through 0 to
 # + JoinBalanceMax. (Ranges: BalanceYards 1-2000; Weight.* 0-100; DepletionFactorLead 0.01-1; DepletionFactorBehind
 # 1-100; BalanceLead 0.51-1; BalanceBehind 0-0.49.) Defaults: 40, 0.25, 0.5, 1, 2, 4, 0.5, 3, 0.75, 0.25
-Playerbots.WorldPvp.Enthusiasm.BalanceYards = 40
-Playerbots.WorldPvp.Enthusiasm.Weight.Grey = 0.25
-Playerbots.WorldPvp.Enthusiasm.Weight.Green = 0.5
-Playerbots.WorldPvp.Enthusiasm.Weight.Yellow = 1
-Playerbots.WorldPvp.Enthusiasm.Weight.Orange = 2
-Playerbots.WorldPvp.Enthusiasm.Weight.Red = 4
-Playerbots.WorldPvp.Enthusiasm.DepletionFactorLead = 0.5
-Playerbots.WorldPvp.Enthusiasm.DepletionFactorBehind = 3
-Playerbots.WorldPvp.Enthusiasm.BalanceLead = 0.75
-Playerbots.WorldPvp.Enthusiasm.BalanceBehind = 0.25
 
 # Item use. Percent of persistent bots chosen by guid that make up the control cohort of the item use comparison:
 # they spend and buff by the old rules, the rest by the new ones (0-100). 0: no control cohort. Default: 0

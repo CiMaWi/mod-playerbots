@@ -90,11 +90,13 @@
             "file": "config-table-selftest.cpp",
             "includes": [
                 "src/Bot",
+                "src/Ai/World/Pvp",
                 "src/Ai/World/Rpg",
                 "src/Bot/Tactics",
                 "{core}/src/common"
             ],
             "sources": [
+                "src/Ai/World/Pvp/WorldPvpConfig.cpp",
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
                 "src/Ai/World/Rpg/UpkeepConfig.cpp",
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",
