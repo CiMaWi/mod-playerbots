@@ -90,7 +90,7 @@ std::vector<std::string> DistProblems(ConfigFamily<Struct> const& family,
                                       std::map<std::string, std::string> const& dist)
 {
     std::vector<std::string> problems;
-    Struct const defaults{};
+    Struct const defaults = ConfigFamilyDefaults(family);
     std::set<std::string> rowKeys;
     for (ConfigRow<Struct> const& row : family.Rows)
     {
@@ -117,7 +117,7 @@ template <typename Struct>
 std::vector<std::string> RowProblems(ConfigFamily<Struct> const& family, std::map<std::string, int>& seen)
 {
     std::vector<std::string> problems;
-    Struct const defaults{};
+    Struct const defaults = ConfigFamilyDefaults(family);
     for (ConfigRow<Struct> const& row : family.Rows)
     {
         std::string const key = std::string(family.Prefix) + row.Key;
@@ -129,10 +129,10 @@ std::vector<std::string> RowProblems(ConfigFamily<Struct> const& family, std::ma
         std::visit(
             [&](auto member)
             {
-                using T = std::remove_cvref_t<decltype(defaults.*member)>;
+                using T = ConfigTargetType<Struct, decltype(member)>;
                 if constexpr (!std::is_same_v<T, std::string> && !std::is_same_v<T, bool>)
                 {
-                    double const value = static_cast<double>(defaults.*member);
+                    double const value = static_cast<double>(ConfigTargetValue(defaults, member));
                     if (value < row.Lower || value > row.Upper)
                         problems.push_back(key + ": default outside its bounds");
                 }
@@ -435,6 +435,89 @@ void TestSharedStruct()
     Check(UnknownConfigKeys(SharedHoldFamily, keys).size() == 4,
           "unknown: without code tails every rowless key is unknown");
 }
+// CS22e: uint8 and double members, array elements, family defaults that are not the initializer, a parser that
+// fills another member, a code tail that covers every key below it
+struct WideConfig
+{
+    uint8_t Percent = 100;
+    double Gain = 0.8f;  // a double the old code read as a float
+    std::array<float, 3> Loading = {1.0f, 1.0f, 0.0f};
+    std::string Scope = "a";
+    uint32_t ScopeBits = 1;
+};
+
+float& WideLoading(WideConfig& out, uint32_t index) { return out.Loading[index]; }
+
+bool ParseWideScope(std::string const& text, WideConfig& out)
+{
+    if (text != "a" && text != "b")
+        return false;
+    out.ScopeBits = text == "a" ? 1 : 2;
+    return true;
+}
+
+constexpr std::array<ConfigRow<WideConfig>, 4> WideRows = {{
+    {"Percent", &WideConfig::Percent, 0, 100},
+    {"Gain", &WideConfig::Gain, 0.0f, 10.0f},
+    {"Loading.B", ConfigElement<WideConfig, float>{&WideLoading, 1}, 0.0f, 1.0f},
+    {"Scope", &WideConfig::Scope, 0, 0, ConfigKind::Tuning, ConfigOutOfRange::Clamp, &ParseWideScope},
+}};
+
+WideConfig const WideDefaults = {100, 0.8f, {1.0f, 1.0f, 0.0f}, "b", 2};
+ConfigFamily<WideConfig> const WideFamily{"Test.Wide.", WideRows, nullptr, &WideDefaults};
+
+void TestWideTypes()
+{
+    WideConfig config;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    Check(LoadConfigFamily(WideFamily, config, empty, warn) == 0, "wide: no key, no warning");
+    Check(config.Percent == 100 && config.Gain == static_cast<double>(0.8f) && config.Loading[1] == 1.0f,
+          "wide: uint8, double and element take their defaults");
+    Check(config.Scope == "b" && config.ScopeBits == 2,
+          "wide: the family's Defaults, not the initializer, and the "
+          "parser fills its member from the default text");
+
+    FakeReader probe;
+    probe.values = {{"Test.Wide.Percent", "300"},
+                    {"Test.Wide.Gain", "2.5"},
+                    {"Test.Wide.Loading.B", "0.25"},
+                    {"Test.Wide.Scope", "zzz"}};
+    config.ScopeBits = 7;
+    Check(LoadConfigFamily(WideFamily, config, probe, warn) == 2,
+          "wide: a uint8 above its bound and a refused "
+          "scope warn");
+    Check(config.Percent == 100 && config.Gain == 2.5 && config.Loading[1] == 0.25f && config.Loading[0] == 1.0f,
+          "wide: uint8 clamped, double read, one element set and its neighbour left");
+    Check(config.Scope == "b" && config.ScopeBits == 2, "wide: a refused text parses the default into its member");
+    Check(std::find(warnings.begin(), warnings.end(), "Test.Wide.Percent = 300 is outside 0 to 100, using 100") !=
+              warnings.end(),
+          "wide: the uint8 warning names the read value");
+
+    probe.values["Test.Wide.Percent"] = "50";
+    probe.values["Test.Wide.Scope"] = "a";
+    LoadConfigFamily(WideFamily, config, probe, warn);
+    Check(config.Percent == 50 && config.ScopeBits == 1, "wide: in-range uint8 and a parsed scope");
+    Check(ConfigRowLine(WideFamily, WideRows[0], config) ==
+              "Test.Wide.Percent = 50 * (default 100, bounds 0 to 100, tuning)",
+          "wide: a uint8 prints as a number");
+    Check(ConfigRowLine(WideFamily, WideRows[1], WideDefaults) ==
+              "Test.Wide.Gain = 0.8 (default 0.8, bounds 0 to 10, tuning)",
+          "wide: a double prints as the float it was read as");
+    Check(ConfigRowLine(WideFamily, WideRows[2], config) ==
+              "Test.Wide.Loading.B = 0.25 * (default 1, bounds 0 to 1, tuning)",
+          "wide: an element prints with its default");
+    Check(ConfigRowLine(WideFamily, WideRows[3], config) == "Test.Wide.Scope = a * (default b, tuning)",
+          "wide: the default comes from the family's Defaults");
+
+    std::array<char const*, 1> const corr = {"Corr."};
+    Check(KnowsConfigKey(WideFamily, "Test.Wide.Corr.A-B", corr) &&
+              !KnowsConfigKey(WideFamily, "Test.Wide.CorrX", corr) &&
+              KnowsConfigKey(WideFamily, "Test.Wide.Loading.B") && !KnowsConfigKey(WideFamily, "Test.Other.Gain"),
+          "wide: a code tail ending in a dot covers the keys below it, rows know their keys");
+}
 }  // namespace
 
 // A removed switch whose parent prefix holds live keys: the family's prefix is the full key, its one row's key empty
@@ -499,6 +582,7 @@ int main(int argc, char** argv)
     TestUnknownRetiredPrint();
     TestRetiredFullKey();
     TestSharedStruct();
+    TestWideTypes();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

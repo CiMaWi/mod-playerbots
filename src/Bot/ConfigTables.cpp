@@ -8,6 +8,7 @@
 
 #include <array>
 #include <functional>
+#include <set>
 #include <vector>
 
 #include "ArenaCcConfig.h"
@@ -31,7 +32,8 @@ struct ConfigTableEntry
 {
     std::string Prefix;
     std::function<void()> Load;
-    std::function<std::vector<std::string>(std::vector<std::string> const&)> Unknown;
+    // does the family (a row or a code tail) know the key
+    std::function<bool(std::string const&)> Knows;
     // the lines of the rows whose full key starts with the filter
     std::function<void(std::string const&, std::vector<std::string>&)> Print;
 };
@@ -56,8 +58,7 @@ ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target,
             family, target, [](std::string const& key, auto fallback, bool warnIfMissing)
             { return sConfigMgr->GetOption<decltype(fallback)>(key, fallback, warnIfMissing); }, WarnConfigRow);
     };
-    entry.Unknown = [&family, codeTails](std::vector<std::string> const& keys)
-    { return UnknownConfigKeys(family, keys, codeTails); };
+    entry.Knows = [&family, codeTails](std::string const& key) { return KnowsConfigKey(family, key, codeTails); };
     entry.Print = [&family, &target](std::string const& filter, std::vector<std::string>& lines)
     {
         for (ConfigRow<Struct> const& row : family.Rows)
@@ -354,13 +355,32 @@ public:
 };
 }  // namespace
 
+// A key is unknown when it lies under a family's prefix (equals a full-key family's prefix) and no family knows it:
+// several families share a prefix (Playerbots.Skill. holds the skill, gate, growth and attribute rows)
 void LoadConfigTables()
 {
+    std::set<std::string> keys;
     for (ConfigTableEntry const& entry : Registry())
     {
         entry.Load();
-        for (std::string const& key : entry.Unknown(sConfigMgr->GetKeysByString(entry.Prefix)))
-            WarnConfigRow(key + " is set but not a known key of " + entry.Prefix + "*, ignored");
+        bool const fullKey = entry.Prefix.back() != '.';
+        for (std::string const& key : sConfigMgr->GetKeysByString(entry.Prefix))
+            if (!fullKey || key == entry.Prefix)
+                keys.insert(key);
+    }
+
+    for (std::string const& key : keys)
+    {
+        bool known = false;
+        std::string owner;
+        for (ConfigTableEntry const& entry : Registry())
+        {
+            known = known || entry.Knows(key);
+            if (entry.Prefix.back() == '.' && key.rfind(entry.Prefix, 0) == 0 && entry.Prefix.size() > owner.size())
+                owner = entry.Prefix;
+        }
+        if (!known)
+            WarnConfigRow(key + " is set but not a known key of " + owner + "*, ignored");
     }
 }
 
