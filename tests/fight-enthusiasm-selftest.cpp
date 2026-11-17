@@ -7,10 +7,11 @@
 // Standalone check of a bot's enthusiasm as its AI holds it (src/Ai/World/Pvp/FightEnthusiasm.h, WP23): the seed, the
 // engaged edges and a new balance settle with the old state first, a bot enters only above its join threshold and its
 // flee floor (the flee threshold plus an even fight's drain in one pick; a bot at its flee threshold never re-enters),
-// the scan skip, the pick, the one-off edits, the entering row's terms and the leaving (WP24: engaged by a held target,
-// the group hold, the leave check once per episode, the chase, the stalemate, who is left alone, no re-entry), who
-// starts by the rules, the pet's call-off, the reach test and the nearest graveyard. Build
-// (Git Bash, module root):
+// the scan skip, the pick (WP39: a read makes none; the attack's note does, once), the one-off edits, the entering
+// row's terms and the leaving (WP24: engaged by a held target, the group hold, the leave check once per episode, the
+// chase, the stalemate, who is left alone, no re-entry; WP38a: the pet's react state saved at the leave edge and given
+// back once on the disengaged edge), who starts by the rules, the reach test and the nearest graveyard. Build (Git
+// Bash, module root):
 //   clang-cl /nologo /std:c++20 /EHsc /W4 /WX /Od /I src/Ai/World/Pvp tests/fight-enthusiasm-selftest.cpp
 #include <cmath>
 #include <cstdint>
@@ -227,6 +228,52 @@ void TestSkip()
           "context: read again after its interval");
 }
 
+// WP39: reading the enemy-player target makes no pick, writes no row and charges nothing; the attack's note opens
+// the pick, writes its row and charges the start cost once; a second note on the open pick does neither
+void TestPickNote()
+{
+    EnthusiasmValues const v = Defaults();
+    BotEnthusiasm bot = At(50.0, 0);
+    bot.inShare = true;
+    int checks = 0;
+    Entering start;
+    start.enters = true;
+    start.pays = PaysStart(bot, JoinFacts());
+    auto const evaluate = [&]()
+    {
+        ++checks;
+        return start;
+    };
+    uint32_t const t = MINUTE;
+    double const value = ValueAt(bot, t, v);
+    bool const read = ReadsEnter(bot, 42, t, evaluate) && ReadsEnter(bot, 42, t, evaluate);
+    Check(read && checks == 2 && bot.pickGuid == 0 && !IsPick(bot, 42, t) && Near(ValueAt(bot, t, v), value),
+          "pick: a read may enter, yet makes no pick, writes no row and charges nothing");
+    BotEnthusiasm paid = bot;
+    EditBy(paid, EditCause::Start, t, v);
+    PickNote const note = NotePick(bot, 42, t, v, evaluate);
+    Check(start.pays && note.enters && note.opened && note.charged && Near(note.before, value) &&
+              Near(ValueAt(bot, t, v), ValueAt(paid, t, v)) && ValueAt(bot, t, v) < value && IsPick(bot, 42, t) &&
+              checks == 3,
+          "pick: the note opens it, writes its row and charges the start cost");
+    double const after = ValueAt(bot, t + SECOND, v);  // the value a second on, with no further edit
+    PickNote const again = NotePick(bot, 42, t + SECOND, v, evaluate);
+    Check(again.enters && !again.opened && !again.charged && Near(ValueAt(bot, t + SECOND, v), after) && checks == 3,
+          "pick: a second note on the open pick writes no row and charges nothing, without a new check");
+    Check(ReadsEnter(bot, 42, t + SECOND, evaluate) && checks == 3, "pick: a read of the open pick needs no check");
+    start.enters = false;
+    PickNote const refused = NotePick(bot, 7, t + SECOND, v, evaluate);
+    Check(!refused.enters && !refused.opened && !refused.charged && IsPick(bot, 42, t + SECOND) &&
+              Near(ValueAt(bot, t + SECOND, v), after),
+          "pick: a refused note is no attack: no pick, no row, no cost");
+    start.enters = true;
+    start.pays = false;
+    PickNote const join = NotePick(bot, 9, t + SECOND, v, evaluate);
+    Check(join.enters && join.opened && !join.charged && IsPick(bot, 9, t + SECOND) &&
+              Near(ValueAt(bot, t + SECOND, v), after),
+          "pick: a join opens its pick and row and costs nothing");
+}
+
 void TestEdits()
 {
     EnthusiasmValues const v = Defaults();
@@ -363,6 +410,19 @@ void TestLeave()
     Check(!Leaves(bot, 10.0, false, true), "leave: not dead");
     Check(!Leaves(bot, 10.0, true, false), "leave: not a bot that does not start by the rules");
     Check(!Leaves(bot, 15.0, true, true), "leave: at the threshold it stays (MustLeave is strict)");
+    // The real master's guard, every way: only a bot with no real master, engaged and below its flee threshold leaves
+    for (int flags = 0; flags < 8; ++flags)
+    {
+        BotEnthusiasm probe = Engaged(10.0, 0.0f, 0, v);
+        probe.realMaster = (flags & 1) != 0;
+        probe.engaged = (flags & 2) != 0;
+        double const value = (flags & 4) != 0 ? 10.0 : 20.0;
+        bool const expected = !probe.realMaster && probe.engaged && value < probe.fleeNow;
+        Check(Leaves(probe, value, true, true) == expected,
+              "leave: real master " + std::to_string(flags & 1) + ", engaged " + std::to_string((flags >> 1) & 1) +
+                  ", below the flee threshold " + std::to_string((flags >> 2) & 1) +
+                  (expected ? ": it leaves" : ": it stays"));
+    }
     bot.realMaster = true;
     Check(!Leaves(bot, 10.0, true, true), "leave: a bot with a real master never leaves");
     bot.realMaster = false;
@@ -390,6 +450,48 @@ void TestLeave()
     NewGroup(held, true, 0, v);
     Check(Near(held.fleeNow, 0.0f) && !Leaves(held, ValueAt(held, HOUR, v), true, true),
           "leave: Caution 0 with the group hold (threshold 0) never leaves");
+}
+
+// WP38a: the leave edge (CheckLeave: MarkLeft, then the pet set passive) keeps the pet's react state, and Refresh
+// gives it back once after the disengaged edge, never while the leave holds or on the engaged edge
+void TestPetReact()
+{
+    EnthusiasmValues const v = Defaults();
+    constexpr uint8_t PASSIVE = 0;  // ReactStates
+    constexpr uint8_t DEFENSIVE = 1;
+    constexpr uint8_t AGGRESSIVE = 2;
+    BotEnthusiasm bot = Engaged(10.0, 0.0f, 0, v);
+    Check(bot.petReact == NO_PET_REACT && RestoredPetReact(bot) == NO_PET_REACT, "pet: nothing saved before a leave");
+    SetPick(bot, 42, 0);
+    MarkLeft(bot, false, SECOND);
+    SavePetReact(bot, DEFENSIVE);
+    Check(bot.left && bot.pickGuid == 0 && bot.petReact == DEFENSIVE,
+          "pet: the leave edge ends the pick and keeps the pet's react state");
+    SavePetReact(bot, PASSIVE);  // the pet is passive by then
+    Check(bot.petReact == DEFENSIVE, "pet: a second save before the restore keeps the first state");
+    Check(RestoredPetReact(bot) == NO_PET_REACT && bot.petReact == DEFENSIVE, "pet: nothing given back while left");
+    Check(!Observe(bot, true, 2 * SECOND, v) && RestoredPetReact(bot) == NO_PET_REACT && bot.petReact == DEFENSIVE,
+          "pet: no edge, the pet stays passive");
+    Check(Observe(bot, false, 3 * SECOND, v) && RestoredPetReact(bot) == DEFENSIVE,
+          "pet: the disengaged edge gives the state back");
+    Check(RestoredPetReact(bot) == NO_PET_REACT && bot.petReact == NO_PET_REACT, "pet: the state is given back once");
+    // A new episode: its engaged edge gives nothing back, its leave saves the state it finds
+    Check(Observe(bot, true, 4 * SECOND, v) && RestoredPetReact(bot) == NO_PET_REACT,
+          "pet: the engaged edge gives nothing back");
+    MarkLeft(bot, true, 5 * SECOND);
+    SavePetReact(bot, AGGRESSIVE);
+    Check(RestoredPetReact(bot) == NO_PET_REACT, "pet: a fleeing bot's pet stays passive");
+    Observe(bot, false, 6 * SECOND, v);
+    Check(RestoredPetReact(bot) == AGGRESSIVE, "pet: the next leave keeps the state it found");
+    // A bot without a pet at its leave saves nothing: nothing to give back
+    BotEnthusiasm lone = Engaged(10.0, 0.0f, 0, v);
+    MarkLeft(lone, false, SECOND);
+    Observe(lone, false, 2 * SECOND, v);
+    Check(RestoredPetReact(lone) == NO_PET_REACT, "pet: no pet at the leave, nothing given back");
+    // The leave dismisses guardians only: the pet (a guardian too) goes passive, a totem or companion stays
+    Check(DismissedAtLeave(true, false), "pet: the leave dismisses a guardian");
+    Check(!DismissedAtLeave(true, true), "pet: the leave keeps the pet");
+    Check(!DismissedAtLeave(false, false), "pet: the leave keeps a totem or a companion");
 }
 
 void TestGroup()
@@ -444,11 +546,31 @@ void TestPlaces()
     place.openWorld = true;
     place.persistent = false;
     Check(!StartsByRules(place) && !TracksEngaged(place), "a non-persistent bot keeps today's path");
+    place.persistent = true;
 
-    constexpr uint64_t ENEMY = 77;
-    Check(PetCalledOff(true, ENEMY, ENEMY) && !PetCalledOff(false, ENEMY, ENEMY) && !PetCalledOff(true, 0, ENEMY) &&
-              !PetCalledOff(true, ENEMY + 1, ENEMY),
-          "a bot leaving an enemy alone calls its pet off that enemy's side, and only off that one");
+    // A bot with a real master is in the rules (the place has no master term): it never starts, it joins its
+    // master's fights only (MastersFight); a lone bot under the realmaster constraint has no master to join
+    constexpr uint64_t MASTER = 5;
+    constexpr uint64_t STRANGER = 9;
+    BanFacts ban;
+    ban.realMaster = true;
+    ban.mastersFight = MastersFight(true, MASTER, MASTER);
+    BanReason const mastersOwn = Banned(ban);
+    ban.mastersFight = MastersFight(true, STRANGER, MASTER);
+    BanReason const stranger = Banned(ban);
+    ban.mastersFight = MastersFight(true, 0, MASTER);
+    BanReason const noFight = Banned(ban);
+    ban.mastersFight = MastersFight(true, STRANGER, 0);
+    BanReason const lone = Banned(ban);
+    ban.realMaster = false;
+    ban.mastersFight = MastersFight(false, MASTER, MASTER);
+    BanReason const noMaster = Banned(ban);
+    Check(StartsByRules(place) && mastersOwn == BanReason::None && stranger == BanReason::RealMaster &&
+              noFight == BanReason::RealMaster && lone == BanReason::RealMaster && noMaster == BanReason::None &&
+              !MastersFight(false, MASTER, MASTER) && !MastersFight(true, 0, 0),
+          std::string("real master: in the rules; its master's fight ") + Word(mastersOwn) + ", a stranger's " +
+              Word(stranger) + ", no fight " + Word(noFight) + ", a lone bot " + Word(lone) + "; no master " +
+              Word(noMaster));
 
     int sightAsked = 0;
     auto const seen = [&sightAsked]()
@@ -469,6 +591,24 @@ void TestPlaces()
 }
 }  // namespace
 
+// The values built once per config load: both kinds from one config, a second load from a changed one gives its own and
+// leaves the first as it was (the published copy is never edited)
+void TestConfigValues()
+{
+    WorldPvpConfig config;
+    ConfigValues const first(config);
+    config.Enthusiasm.RecoveryPerHour = 40.0f;
+    config.GhostRecheckSeconds = 9;
+    config.GhostEnemyYards = 60;
+    ConfigValues const second(config);
+    Check(Near(first.enthusiasm.recoveryPerHour, 15.0) && first.ghost.recheckMs == 15 * SECOND &&
+              first.ghost.enemyYards == 40.0f,
+          "config values: the first load keeps the defaults");
+    Check(Near(second.enthusiasm.recoveryPerHour, 40.0) && second.ghost.recheckMs == 9 * SECOND &&
+              second.ghost.enemyYards == 60.0f,
+          "config values: a reload with another config gives the new rate and ghost values");
+}
+
 int main()
 {
     TestSeed();
@@ -476,13 +616,16 @@ int main()
     TestBalanceSettle();
     TestEnters();
     TestSkip();
+    TestPickNote();
     TestEdits();
     TestTerms();
     TestChase();
     TestStalemate();
     TestLeave();
+    TestPetReact();
     TestGroup();
     TestPlaces();
+    TestConfigValues();
     std::printf("fight-enthusiasm-selftest: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

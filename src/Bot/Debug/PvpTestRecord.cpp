@@ -110,7 +110,7 @@ std::string CountersToJson(PvpTestBotRecord const& bot)
 
 std::string BotToJson(PvpTestBotRecord const& bot)
 {
-    // skill is null when Playerbots.Skill.Enable is 0 or the player is not a bot
+    // skill is null when the player is not a bot or has no skill
     return Acore::StringFormat(
         "{{\"guid\":{},\"name\":{},\"class\":{},\"classId\":{},\"race\":{},\"level\":{},\"spec\":{},\"gearScore\":{},"
         "\"skill\":{},\"entered\":{},\"damage\":{},\"healing\":{},\"killingBlows\":{},\"deaths\":{},"

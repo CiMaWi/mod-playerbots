@@ -287,7 +287,6 @@ void RunFocusTargetSelftest(Check&& check)
 
     // The prices at the gate: below it the focus costs a new target's price, from it rare < focus < new target
     ReactionParams params;
-    params.Ease.Enable = true;
     params.Ease.FocusDexterity = Threshold;
     auto const priceAt = [&params](uint8 dexterity)
     {

@@ -36,7 +36,7 @@ constexpr uint8 SkillMin = 1;
 constexpr uint8 SkillMax = 99;
 constexpr uint32 PercentMax = 100;
 
-// The bot's hidden skill; false when it has none (Playerbots.Skill.Enable = 0 or no profile)
+// The bot's hidden skill; false when it has none (no profile)
 bool BotSkill(ObjectGuid guid, float& skill)
 {
     std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(guid.GetCounter());
@@ -78,9 +78,7 @@ uint32 BestTeamRating(ObjectGuid player)
 
 uint32 ScoreOf(ObjectGuid player, ObjectGuid bot)
 {
-    return sPlayerbotAIConfig.AcquaintanceEnable
-               ? AcquaintanceMgr::Instance().GetScore(player.GetCounter(), bot.GetCounter())
-               : 0;
+    return AcquaintanceMgr::Instance().GetScore(player.GetCounter(), bot.GetCounter());
 }
 
 // Name or guid of any character; empty when there is none
@@ -235,7 +233,8 @@ bool ArenaRecruit::HandleRecruitCommand(ChatHandler* handler, char const* args)
 {
     if (!sPlayerbotAIConfig.ArenaRecruitEnable)
     {
-        handler->PSendSysMessage("Arena recruiting rule is off (Playerbots.ArenaRecruit.Enable = 0).");
+        handler->PSendSysMessage(
+            "Arena recruiting rule is off (Playerbots.ArenaRecruit.Enable = 0 or Playerbots.Ladder.Role = 2).");
         return true;
     }
 

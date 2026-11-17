@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Enthusiasm.h"
+#include "GhostWait.h"
 
 // A bot's enthusiasm as its AI holds it (WP23, PlayerbotAI::enthusiasm) and the steps the glue (FightEnthusiasm.cpp)
 // takes on it: who starts by the rules, the reach test, the seed, the engaged edges, the cached traits, local balance
@@ -20,20 +21,22 @@
 // tests/fight-enthusiasm-selftest.cpp checks the same code the server runs
 namespace WorldPvp
 {
-// The traits, the real master and the prohibited zone are read again after this long
+// The traits, the real master (RealMasterOf) and the prohibited zone are read again after this long
 constexpr uint32_t ENTHUSIASM_CONTEXT_MS = 5 * 1000;
 // The local balance and the graveyard's distance are read again after this long: the scan's cadence
 // (EnemyPlayerValue, 1 s)
 constexpr uint32_t BALANCE_REFRESH_MS = 1000;
 
-// Where a bot is, for the choice between the rules and today's attack on sight
+// Where a bot is, for the choice between the rules and today's attack on sight. No master term: a bot with a real
+// master is in the rules too, which ban it every target outside its master's fight (MastersFight)
 struct BotPlace
 {
+    // IsPersistentBot(), read at each call
     bool persistent = false;
     // An open-world map (not instanceable)
     bool openWorld = false;
     bool battleground = false;
-    // A PvpTest fighter (WP.6)
+    // A PvpTest fighter (WP.6): the constraint row onsight
     bool forced = false;
 };
 
@@ -45,18 +48,17 @@ constexpr bool StartsByRules(BotPlace const& place)
 }
 
 // Whose engaged edges are tracked (and written as PvpEnthusiasm engaged rows): the bots that start by the rules and
-// PvpTest's forced fighters in the same places, whose rows carry the pvptest tag
+// PvpTest's forced fighters (onsight) in the same places, whose rows carry the pvptest tag
 constexpr bool TracksEngaged(BotPlace const& place)
 {
     return place.persistent && place.openWorld && !place.battleground;
 }
 
-// A player's pets are on its side: the bot calls its pet off a unit of side `petVictimSide` (the player the pet's
-// victim belongs to, 0 for none) when it leaves side `leftSide` alone (`leavesAlone`). Kept on, a hunter's pet went on
-// attacking the enemy its owner had left alone, and both sides stayed in PvP combat (WP6 chase-b15)
-constexpr bool PetCalledOff(bool leavesAlone, uint64_t petVictimSide, uint64_t leftSide)
+// The target fights the bot's real master (BanFacts::mastersFight): the player its victim belongs to is that master.
+// Raw guids, 0 for none (a lone bot under the realmaster constraint has a real master but no master to join)
+constexpr bool MastersFight(bool realMaster, uint64_t victimSide, uint64_t master)
 {
-    return leavesAlone && petVictimSide != 0 && petVictimSide == leftSide;
+    return realMaster && victimSide != 0 && victimSide == master;
 }
 
 // The most height between a bot and an enemy player it attacks (EnemyPlayerValue; a cannon has no limit)
@@ -97,6 +99,9 @@ enum JoinTerm : uint32_t
     TERM_BALANCE = 32,
     TERM_WEAK_AGGRESSION = 64,
 };
+
+// No saved pet react state (the ReactStates values are 0 to 2)
+constexpr uint8_t NO_PET_REACT = 0xFF;
 
 struct BotEnthusiasm
 {
@@ -144,6 +149,9 @@ struct BotEnthusiasm
     // An enemy player in PvP combat with the bot has it or its pet as its victim or selected target; read with the
     // balance while engaged and at the leave edge
     bool attacked = false;
+    // The pet's react state before the leave edge set it passive (SavePetReact), NO_PET_REACT for none; restored on
+    // the disengaged edge (RestoredPetReact)
+    uint8_t petReact = NO_PET_REACT;
 };
 
 // Engaged (PLAN 3.2): on an open-world map, in PvP combat or holding an enemy player (or its pet) as its victim; a
@@ -310,6 +318,31 @@ inline void MarkLeft(BotEnthusiasm& bot, bool attacked, uint32_t nowMs)
     bot.pickGuid = 0;
 }
 
+// The leave edge sets the pet passive (WP38a): its react state before (a ReactStates value) is kept until the
+// disengaged edge; a second save before the restore keeps the first (the pet is passive by then)
+inline void SavePetReact(BotEnthusiasm& bot, uint8_t react)
+{
+    if (bot.petReact == NO_PET_REACT)
+        bot.petReact = react;
+}
+
+// The units the leave dismisses (WP38a-5): the bot's guardians (unit-type mask) other than its pet, which goes passive
+// instead. Totems and companions are no guardians and stay. A guardian is not called off by the pet step and its
+// script may fight on without a victim (a fire elemental's nova), and its hits keep its owner in PvP combat with the
+// foe: wp-leave stalemate-b70, a shaman's elemental on a death knight until its two minutes ran out
+inline bool DismissedAtLeave(bool guardian, bool pet) { return guardian && !pet; }
+
+// The pet's react state to restore, once, after the disengaged edge (not engaged, not left); NO_PET_REACT while the
+// leave holds or when none was saved
+inline uint8_t RestoredPetReact(BotEnthusiasm& bot)
+{
+    if (bot.engaged || bot.left)
+        return NO_PET_REACT;
+    uint8_t const react = bot.petReact;
+    bot.petReact = NO_PET_REACT;
+    return react;
+}
+
 // A bot that left leaves alone every enemy player (and its pets) that does not attack it; it answers whoever does
 // (a cornered bot stands and fights). The caller checks that the bot starts by the rules
 inline bool LeftAloneBy(BotEnthusiasm const& bot, bool attacksBot) { return bot.left && !attacksBot; }
@@ -339,6 +372,61 @@ inline bool PaysStart(BotEnthusiasm const& bot, JoinFacts const& facts)
     return PaysStart(!FightOngoing(facts), bot.engaged, bot.inShare);
 }
 
+// The entering check of one enemy (the glue's Evaluate): the bans, the join threshold and whether the bot enters
+struct Entering
+{
+    bool enters = false;
+    bool pays = false;  // a start the bot pays for (PaysStart)
+    BanReason ban = BanReason::None;
+    JoinFacts facts;
+    float join = 0.0f;
+    double value = 0.0;
+};
+
+// Reading the enemy-player target (MayEnter, WP39): an open pick on `guid`, else what the entering check `evaluate`
+// says (run only then). The state is const: a read makes no pick, writes no row and charges nothing
+template <typename Evaluate>
+bool ReadsEnter(BotEnthusiasm const& bot, uint64_t guid, uint32_t nowMs, Evaluate&& evaluate)
+{
+    return IsPick(bot, guid, nowMs) || evaluate().enters;
+}
+
+// What the attack's note did (NotePick)
+struct PickNote
+{
+    bool enters = false;   // the bot attacks
+    bool opened = false;   // a new pick: its fight_start or fight_join row follows (of `entering`)
+    bool charged = false;  // the start cost was paid; `before`: the value before it
+    double before = 0.0;
+    Entering entering;
+};
+
+// The attack's note (AttackEnemyPlayerAction, WP39): an open pick on `guid` holds (no row, no cost, no check); a new
+// one the entering check `evaluate` allows opens for PICK_MS, and a start the bot pays for charges the start cost
+template <typename Evaluate>
+PickNote NotePick(BotEnthusiasm& bot, uint64_t guid, uint32_t nowMs, EnthusiasmValues const& values,
+                  Evaluate&& evaluate)
+{
+    PickNote note;
+    if (IsPick(bot, guid, nowMs))
+    {
+        note.enters = true;
+        return note;
+    }
+    note.entering = evaluate();
+    if (!note.entering.enters)
+        return note;
+    note.enters = true;
+    note.opened = true;
+    SetPick(bot, guid, nowMs);
+    if (note.entering.pays)
+    {
+        note.charged = true;
+        note.before = EditBy(bot, EditCause::Start, nowMs, values);
+    }
+    return note;
+}
+
 // The rows JoinThreshold applied to these facts (JoinTerm bits); none when Aggression alone puts a start at the top
 inline uint32_t JoinTerms(JoinFacts const& facts, EnthusiasmValues const& values)
 {
@@ -364,6 +452,15 @@ inline uint32_t JoinTerms(JoinFacts const& facts, EnthusiasmValues const& values
         terms |= TERM_WEAK_AGGRESSION;
     return terms;
 }
+
+// The values built once per config load (WorldPvp.h PublishConfigValues) from one WorldPvpConfig, immutable after
+struct ConfigValues
+{
+    EnthusiasmValues enthusiasm;
+    GhostValues ghost;
+
+    explicit ConfigValues(WorldPvpConfig const& config) : enthusiasm(FromConfig(config)), ghost(config) {}
+};
 }  // namespace WorldPvp
 
 #endif

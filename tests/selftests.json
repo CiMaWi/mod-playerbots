@@ -89,6 +89,33 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "config-table-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Ai/World/Rpg",
+                "src/Bot/Tactics",
+                "{core}/src/common"
+            ],
+            "sources": [
+                "src/Ai/World/Rpg/BankMailConfig.cpp",
+                "src/Bot/Tactics/ArenaCcConfig.cpp",
+                "src/Bot/Tactics/ArenaCoverConfig.cpp",
+                "src/Bot/Tactics/ArenaDefensiveConfig.cpp",
+                "src/Bot/Tactics/ArenaFocusConfig.cpp",
+                "src/Bot/Tactics/ArenaInterruptConfig.cpp",
+                "src/Bot/Tactics/ArenaKiteConfig.cpp",
+                "src/Bot/Tactics/NaturalCastConfig.cpp",
+                "src/Bot/Tactics/NaturalReactionConfig.cpp",
+                "src/Bot/Tactics/SkillConfig.cpp",
+                "src/Bot/Tactics/TacticScope.cpp",
+                "src/Bot/Tactics/TacticsConfig.cpp"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "config-table: \\d+ passed, 0 failed"
+        },
+        {
             "file": "enthusiasm-selftest.cpp",
             "includes": [
                 "src/Ai/World/Pvp"
@@ -155,6 +182,89 @@
             "includes": [
                 "src/Ai/World/Rpg",
                 "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-offer-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-spend-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-dump-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-index-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-kinds-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-parity-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-old-packets.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-use-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Item"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -232,7 +342,8 @@
         {
             "file": "route-check-selftest.cpp",
             "includes": [
-                "src/Mgr/Travel"
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg"
             ],
             "success": "(\\d+)/\\1 passed"
         },
@@ -316,6 +427,7 @@
         {
             "file": "travel-graph-selftest.cpp",
             "includes": [
+                "src/Ai/World/Rpg",
                 "src/Mgr/Travel"
             ],
             "args": [
@@ -341,6 +453,13 @@
                 "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "mesh-move-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "(\\d+)/\\1 passed"
         },
         {
             "file": "travel-walk-selftest.cpp",

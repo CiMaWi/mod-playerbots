@@ -49,8 +49,9 @@ char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit, bool const
     if (enemy->HasSpiritOfRedemptionAura())
         return REFUSAL_NOT_TARGET;
 
-    // If with master, only attack if master is PvP flagged
-    Player* master = botAI->GetMaster();
+    // If with master, only attack if master is PvP flagged; a bot by the rules has its ban instead (the real master's
+    // fight, WorldPvp::MastersFight)
+    Player* master = byRules ? nullptr : botAI->GetMaster();
     if (master && !master->IsPvP() && !master->IsFFAPvP())
         return REFUSAL_MASTER;
 
@@ -82,10 +83,9 @@ Unit* EnemyPlayerValue::Calculate()
 {
     // The enemy scan (with the nearest enemy players' refresh when due); WorldPvp balance counts the local balance
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldPvp scan") : nullptr);
-    // World PvP (WP23): the enthusiasm's engaged edge, traits and local balance before any step reads them
+    // World PvP (WP23, WP39): a rule bot's reads refresh its enthusiasm; this value only answers whom it would enter
+    // on, the attack makes the pick
     bool const byRules = WorldPvp::StartsByRules(botAI);
-    if (byRules)
-        WorldPvp::RefreshEnthusiasm(botAI);
     bool controllingCannon = false;
     bool controllingVehicle = false;
     bool passenger = false;
@@ -112,7 +112,9 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& [guid, combatRef] : bot->GetCombatManager().GetPvPCombatRefs())
     {
         Unit* pTarget = combatRef->GetOther(bot);
-        // World PvP (WP24): not an enemy a bot that left its fight leaves alone (one that does not attack it)
+        // World PvP (WP24, WP38a): the combat references are the other way to an enemy besides the target list, and a
+        // reference outlives the leave by the combat timer: a bot that left its fight leaves an enemy alone here too
+        // (one that does not attack it), or both sides of a stalemate take each other up again and flee
         if (IsUnavailableCombatTarget(bot, pTarget) || WorldPvp::LeftAlone(botAI, pTarget))
             continue;
         if (pTarget == pVictim || !pTarget->IsPlayer() ||
@@ -186,10 +188,9 @@ Unit* EnemyPlayerValue::Calculate()
         if (!bot->IsWithinDist(pTarget, aggroDistance))
             continue;
 
-        // A bot entering by enthusiasm writes its entering row once the enemy is in reach (and a new pick)
+        // A rule bot's candidates passed MayEnter (nearest enemy players): the first in reach
         if (controllingCannon ? bot->IsWithinLOSInMap(pTarget) : WorldPvp::Reaches(bot, pTarget))
-            if (!byRules || WorldPvp::NoteEntering(botAI, pTarget))
-                return pTarget;
+            return pTarget;
     }
 
     // 3. Check party attackers. A bot entering by enthusiasm joins its group's fight by step 2 (the group row of its

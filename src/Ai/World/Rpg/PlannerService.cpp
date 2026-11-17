@@ -866,7 +866,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
     bool const first = !state.lastSnapshotMs;
     bool const due =
         first || state.snapshotDue || sinceSnapshot >= config.PlannerSnapshotMinutes * MINUTE * IN_MILLISECONDS;
-    if (config.PlannerGoals && !Weighted(bot) && IndexesReady() && QuestsReady())
+    if (!Weighted(bot) && IndexesReady() && QuestsReady())
     {
         if (!due || (!first && sinceSnapshot < GoalApply::MIN_SNAPSHOT_MS))
             return;
@@ -908,7 +908,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start, unless
     // its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting again clears that mark. An
     // external goal goes on in the weighted group too: it has no planner goals, but the bridge may set one
-    if ((!weighted || goals.slot.HasExternal()) && config.PlannerGoals && goals.slot.Query().Is() && !goals.switchTo)
+    if ((!weighted || goals.slot.HasExternal()) && goals.slot.Query().Is() && !goals.switchTo)
     {
         GoalApply::Active const current = goals.slot.Query();
         if (GoalApply::RunsCircuit(current) && goals.run.running && StartQuest(botAI, bot, goals, tests))
@@ -943,7 +943,6 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
 
     GoalApply::IdleInput in;
     in.weighted = weighted;
-    in.switchOn = config.PlannerGoals;
     in.ready = IndexesReady() && QuestsReady();
     in.freshPlan = goals.switchTo || (goals.plan && !goals.planUsed &&
                                       getMSTimeDiff(goals.planMs, now) <= config.PlannerStaleSeconds * IN_MILLISECONDS);
@@ -987,13 +986,13 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
 bool KeepsQuest(PlayerbotAI* botAI, uint32 quest)
 {
     GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    return sPlayerbotAIConfig.WorldTravel.PlannerGoals && goals && goals->plan && GoalApply::Keeps(goals->keep, quest);
+    return goals && goals->plan && GoalApply::Keeps(goals->keep, quest);
 }
 
 int PlannedPoi(PlayerbotAI* botAI, uint32 quest, std::vector<std::pair<float, float>> const& points)
 {
     GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    if (!sPlayerbotAIConfig.WorldTravel.PlannerGoals || !goals || !goals->plan)
+    if (!goals || !goals->plan)
         return -1;
     return GoalApply::NearestToTasks(goals->plan->circuit, quest, points);
 }
@@ -1014,8 +1013,7 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
     Planner::BotState& state = botAI->planner;
     GoalApply::BridgeFacts facts;
     // The planner's scope as OnIdle sees it: only there does the goal go on and end
-    facts.inScope =
-        sPlayerbotAIConfig.WorldTravel.PlannerGoals && (state.stateKey & STATE_SCOPE_BIT) && InScopeNow(botAI);
+    facts.inScope = (state.stateKey & STATE_SCOPE_BIT) && InScopeNow(botAI);
     if (facts.inScope && state.goals)
         facts.current = state.goals->slot.Query();
     bool const trip = order == BridgeOrder::GoTo || order == BridgeOrder::MeetAt;
@@ -1033,8 +1031,10 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
         RowTimer const timer("bridge route order");
         TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *at);
         std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
-        // The ground route answers "is there a route" (fly legs never change it): no flight search on a map thread
-        return TravelRoute::GroundSearch(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams()).ok;
+        // Without flight maps a flyer's fly legs are priced, not flown: no flight search on a map thread (contract C3)
+        TravelRoute::Params params = TravelRoute::ConfiguredParams();
+        params.flightMaps = nullptr;
+        return TravelRoute::Search(TravelGraph::Instance(), request, *stuck, params).ok;
     };
     BridgeAnswer const answer = GoalApply::BridgeCheck(order, facts);
     if (answer != BridgeAnswer::Done)
@@ -1205,15 +1205,13 @@ std::vector<std::string> PlannerStatus()
     { return fallbacks[static_cast<std::size_t>(reason)].load(std::memory_order_relaxed); };
     auto const count = [](std::atomic<uint64> const& counter) { return counter.load(std::memory_order_relaxed); };
     lines.push_back(Acore::StringFormat(
-        "PLANNER goals: switch {}, bots {} planner, {} weighted; goals {} applied, {} continued, {} resumed, {} "
-        "switched; {} waits; fallbacks off {}, not_ready {}, failed {}, no_plan {}, late {}, rejected {}; {} stray "
-        "results, {} out of scope, {} stalled goals skipped",
-        sPlayerbotAIConfig.WorldTravel.PlannerGoals ? "on" : "off", plannerBots, weightedBots, count(goalsApplied),
-        count(goalsContinued), count(goalsResumed), count(goalSwitches), count(planWaits),
-        fallback(GoalApply::Fallback::Off), fallback(GoalApply::Fallback::NotReady),
-        fallback(GoalApply::Fallback::Failed), fallback(GoalApply::Fallback::NoPlan),
-        fallback(GoalApply::Fallback::Late), fallback(GoalApply::Fallback::Rejected), count(strayResults),
-        count(scopeRefused), count(stalledSkips)));
+        "PLANNER goals: bots {} planner, {} weighted; goals {} applied, {} continued, {} resumed, {} switched; {} "
+        "waits; fallbacks not_ready {}, failed {}, no_plan {}, late {}, rejected {}; {} stray results, {} out of "
+        "scope, {} stalled goals skipped",
+        plannerBots, weightedBots, count(goalsApplied), count(goalsContinued), count(goalsResumed), count(goalSwitches),
+        count(planWaits), fallback(GoalApply::Fallback::NotReady), fallback(GoalApply::Fallback::Failed),
+        fallback(GoalApply::Fallback::NoPlan), fallback(GoalApply::Fallback::Late),
+        fallback(GoalApply::Fallback::Rejected), count(strayResults), count(scopeRefused), count(stalledSkips)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));
     return lines;

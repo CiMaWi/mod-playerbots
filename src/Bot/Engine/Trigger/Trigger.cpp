@@ -48,7 +48,7 @@ bool Trigger::needCheck(uint32 now)
     // A reaction trigger checks at the natural cadence's faster interval while it runs (the bool first: O(1))
     uint32 const interval = ReactionCheckIntervalMs(uint32(checkInterval),
                                                     botAI->GetTactics().IsNaturalCadenceActive() && IsReactionTrigger(),
-                                                    sPlayerbotAIConfig.NaturalCadenceCheckMs);
+                                                    sPlayerbotAIConfig.NaturalCadence.CheckMs);
     if (!lastCheckTime || now - lastCheckTime >= interval)
     {
         lastCheckTime = now;

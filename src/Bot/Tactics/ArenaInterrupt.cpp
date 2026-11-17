@@ -252,17 +252,16 @@ void CountInterruptHit(PlayerbotAI* botAI, Unit* target, InterruptHit const& hit
 
     // Which delay set the kick: "commit" (the commit point; the kick went within BOUND_TOLERANCE_MS of the first check
     // that let it go), "reaction" (the reaction model alone: no commit point, or it ran past the commit), or
-    // "commit+reaction" where the model counts from the first query and not from the bar's start (no
-    // Natural.Reaction.EndToEnd, or a bar older than REACTION_MAX_STAMP_AGE_MS then): the kick then lands at commit
-    // plus reaction; "off" without the tactic's decision
+    // "commit+reaction" where the model counts from the first query and not from the bar's start (a bar older than
+    // REACTION_MAX_STAMP_AGE_MS then): the kick then lands at commit plus reaction; "off" without the tactic's
+    // decision
     char const* bound = "off";
     if (botAI->TacticEnabledHere(TacticId::Interrupt))
     {
         InterruptCastSlot const* slot = botAI->GetTactics().GetInterruptState().Latest(target->GetGUID().GetCounter());
         if (slot && slot->SpellId == hit.SpellId && slot->ActiveAtMs != 0)
         {
-            bool const firstQueryStamp = !sPlayerbotAIConfig.NaturalReaction.EndToEnd ||
-                                         slot->ActiveAtMs - slot->StartMs > REACTION_MAX_STAMP_AGE_MS;
+            bool const firstQueryStamp = slot->ActiveAtMs - slot->StartMs > REACTION_MAX_STAMP_AGE_MS;
             if (slot->Decision.CommitMs == 0)
                 bound = "reaction";
             else if (firstQueryStamp)
@@ -511,9 +510,8 @@ bool BotTactics::DecideInterrupt(Unit* enemy)
         if (config.TacticInterrupt.SeeCancelLag)
         {
             ReactionParams const& reaction = config.NaturalReaction;
-            slot->SeeLagMs = ArenaInterrupt::HoldReactionMs(
-                reactionState, reactionTypes, ReactionEase::Common,
-                reaction.EndToEnd ? reaction.PingMs + reaction.DisplayMs : 0, reaction.MinMs);
+            slot->SeeLagMs = ArenaInterrupt::HoldReactionMs(reactionState, reactionTypes, ReactionEase::Common,
+                                                            reaction.PingMs + reaction.DisplayMs, reaction.MinMs);
         }
         uint64 const hash = ReactionEventHash(bot->GetGUID().GetCounter(),
                                               static_cast<uint8>(SkillNoticeCategory::Interrupt), startMs) ^
@@ -523,8 +521,8 @@ bool BotTactics::DecideInterrupt(Unit* enemy)
             config.SkillGate.CurveExponent, config.TacticInterrupt);
         ArenaInterrupt::Input input;
         input.CastMs = bar.CastMs;
-        input.Deep = ArenaInterrupt::UsesDeep(TacticActive(TacticId::Interrupt), HasFullSkillAbility(),
-                                              config.NaturalReaction.Think.Enable, reactionTypes, hash);
+        input.Deep =
+            ArenaInterrupt::UsesDeep(TacticActive(TacticId::Interrupt), HasFullSkillAbility(), reactionTypes, hash);
         if (follows)
         {
             input.ReadyMs = state.KickReadyMs(nowMs);
@@ -553,9 +551,8 @@ bool BotTactics::DecideInterrupt(Unit* enemy)
                 ArenaInterrupt::InterruptHoldInput& hold = input.Hold;
                 casting = FillInterruptHold(botAI, bot, enemy, params, state, nowMs, hold);
                 ReactionParams const& reaction = config.NaturalReaction;
-                hold.ReactionMs = ArenaInterrupt::HoldReactionMs(
-                    reactionState, reactionTypes, ReactionEase::Common,
-                    reaction.EndToEnd ? reaction.PingMs + reaction.DisplayMs : 0, reaction.MinMs);
+                hold.ReactionMs = ArenaInterrupt::HoldReactionMs(reactionState, reactionTypes, ReactionEase::Common,
+                                                                 reaction.PingMs + reaction.DisplayMs, reaction.MinMs);
                 hold.HeldMs = state.Hold.HeldMs(nowMs);
                 hold.Expired = state.Hold.Expired;
                 healer = hold.HealerSeen;

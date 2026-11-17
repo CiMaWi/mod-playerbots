@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "LootInteraction.h"
+#include "MountRules.h"
 #include "StatusEndRules.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
@@ -153,7 +154,7 @@ void CheckCadence()
     Adapter adapter;
     adapter.ExpectedContact = Contact::OffSurface;
     for (std::uint32_t const time : {0, 400, 999, 1000, 1500, 4300, 4301})
-        Maintain(cadence, time, MAP, nullptr, adapter);
+        Maintain(cadence, time, MAP, nullptr, adapter, CAR);
     Check(adapter.Probes == 3, "the pre-action path samples at the first tick, at one second and once after a gap");
     Check(adapter.LastGapMs == 3300, "the late update reports the elapsed gap rather than issuing catch-up probes");
 
@@ -161,15 +162,15 @@ void CheckCadence()
     cadence = {};
     adapter = {};
     adapter.ExpectedContact = Contact::OffSurface;
-    Maintain(cadence, BEFORE_WRAP, MAP, nullptr, adapter);
-    Maintain(cadence, 499, MAP, nullptr, adapter);
+    Maintain(cadence, BEFORE_WRAP, MAP, nullptr, adapter, CAR);
+    Maintain(cadence, 499, MAP, nullptr, adapter, CAR);
     Check(adapter.Probes == 1, "999 ms over clock wrap is not yet due");
-    Maintain(cadence, 500, MAP, nullptr, adapter);
+    Maintain(cadence, 500, MAP, nullptr, adapter, CAR);
     Check(adapter.Probes == 2 && adapter.LastGapMs == 1000, "1000 ms over clock wrap is due");
-    Maintain(cadence, 501, MAP + 1, nullptr, adapter);
+    Maintain(cadence, 501, MAP + 1, nullptr, adapter, CAR);
     Check(adapter.Probes == 3, "the first destination map tick revalidates before the normal cadence");
     cadence.Revalidate = true;
-    Maintain(cadence, 502, MAP + 1, nullptr, adapter);
+    Maintain(cadence, 502, MAP + 1, nullptr, adapter, CAR);
     Check(adapter.Probes == 4, "a validity interruption revalidates on the next valid tick");
 }
 
@@ -1146,7 +1147,8 @@ void CheckDiscardedOwner()
         adapter.Calls.clear();
         Maintain(cadence, 1010, MAP, nullptr, adapter);
         Check(adapter.Aboard.Guid == (exiting ? CAR : 0) && adapter.Spline.Finalized &&
-                  adapter.Calls == std::vector<std::string_view>{"read", "probe"},
+                  adapter.Calls == (exiting ? std::vector<std::string_view>{"read", "probe"}
+                                            : std::vector<std::string_view>{"read"}),
               "departure after replacing the owner sees no crossing and preserves membership");
     }
 
@@ -1207,7 +1209,7 @@ void CheckUnconsumedBoardTransfer()
         };
         std::variant<std::monostate, Travel> data;
         std::uint32_t startT = 10;
-        std::uint16_t constraints = 0;
+        std::uint32_t constraints = 0;
     } info;
     info.data = Info::Travel{};
     auto& before = std::get<Info::Travel>(info.data);
@@ -1266,16 +1268,87 @@ void CheckFollowAndNoTrip()
 {
     Adapter adapter;
     Sample sample = Reconcile(adapter, nullptr, MotionState::None, CAR);
-    Check(!sample.Before.Guid && sample.After.Guid == CAR, "master attach uses the same exact contact and frame seam");
+    Check(!sample.Before.Guid && sample.After.Guid == CAR, "a follower on its master's transport: attached");
     adapter.ExpectedContact = Contact::OffSurface;
     sample = Reconcile(adapter, nullptr, MotionState::None, NEARER_CAR);
     Check(sample.After.Guid == CAR, "master attach request cannot detach a different current ride");
+}
+
+// WT62 (WT.48): boarding has one owner, the trip. A bot on no transport is probed only for the vessel it means to
+// board (the test adapter's contact is NEARER_CAR for a probe that names none)
+void CheckBoardingByIntent()
+{
+    Cadence cadence;
+    Adapter adapter;
+    Maintain(cadence, 0, MAP, nullptr, adapter);
+    Check(!adapter.Aboard.Guid && adapter.Probes == 0 && adapter.Samples == 0,
+          "a hull sweeps a waiting bot with no leg: not attached");
+
+    TravelRoute::Leg leg;
+    leg.type = TravelRoute::LegType::Transport;
+    leg.object = 17;
+    leg.from = {MAP, DECK.X, DECK.Y, DECK.Z};
+    leg.to = {MAP + 1, 100.0f, 100.0f, 8.0f};
+    TravelLegs::Trip trip;
+    trip.legs.push_back(leg);
+    trip.sight.found = true;
+    trip.sight.guid = CAR;
+    Check(!TravelLegs::BoardingIntent(trip), "no boarding intent on the approach to the wait point");
+    trip.boarding = TravelLegs::Boarding::Wait;
+    cadence = {};
+    adapter = {};
+    Maintain(cadence, 0, MAP, nullptr, adapter, TravelLegs::BoardingIntent(trip));
+    TravelLegs::Observation seen;
+    seen.bot = {MAP, DECK.X, DECK.Y, DECK.Z};
+    seen.nowMs = 10;
+    seen.aboard = adapter.Aboard.Entry;
+    seen.aboardGuid = adapter.Aboard.Guid;
+    TravelLegs::StepLeg(trip, seen);
+    Check(adapter.Aboard.Guid == CAR && adapter.LastExpected == CAR && trip.passengerGuid == CAR &&
+              trip.boarding == TravelLegs::Boarding::Ride && trip.transportNotes.size() == 1 &&
+              trip.transportNotes[0].event == TravelLegs::TransportEvent::Boarded,
+          "the leg's vessel docks under the bot: Boarded");
+    Check(!TravelLegs::BoardingIntent(trip), "the ride owns its vessel: no boarding intent");
+
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {NEARER_CAR, 17, true};
+    Maintain(cadence, 0, MAP, nullptr, adapter, CAR);
+    Check(adapter.LastExpected == NEARER_CAR && adapter.Aboard.Guid == NEARER_CAR,
+          "a rider is probed for the vessel it rides, not for an intent");
+}
+
+// WT62 review finding 1: a follower means to board its master's transport, a lift or the tram as well as a ship. It is
+// attached by feet contact and leaves by the off-surface rule, as any rider; no other bot is probed
+void CheckFollowerByMaster()
+{
+    constexpr std::uint64_t LIFT = 44;
+    constexpr std::uint64_t BOAT = 45;
+    Check(ChooseIntent({CAR, NEARER_CAR, LIFT, BOAT}) == CAR &&
+              ChooseIntent({0, NEARER_CAR, LIFT, BOAT}) == NEARER_CAR && ChooseIntent({0, 0, LIFT, BOAT}) == LIFT &&
+              ChooseIntent({0, 0, 0, BOAT}) == BOAT && !ChooseIntent({}),
+          "intent order: aboard placement, leg, master's transport, the battleground boat");
 
     Cadence cadence;
+    Adapter adapter;
+    Maintain(cadence, 0, MAP, nullptr, adapter, ChooseIntent({0, 0, LIFT, 0}));
+    Check(adapter.Aboard.Guid == LIFT && adapter.LastExpected == LIFT && adapter.Probes == 1,
+          "a follower whose master rides a lift or the tram: attached");
+
+    cadence = {};
     adapter = {};
-    Maintain(cadence, 0, MAP, nullptr, adapter);
-    Check(adapter.Aboard.Guid == NEARER_CAR && adapter.LastExpected == 0,
-          "no trip and no master can attach from observed feet contact");
+    Maintain(cadence, 0, MAP, nullptr, adapter, ChooseIntent({}));
+    Check(!adapter.Aboard.Guid && adapter.Probes == 0 && adapter.Samples == 0,
+          "a follower whose master is not aboard: not attached");
+
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {LIFT, 17, true};
+    adapter.ExpectedContact = Contact::OffSurface;
+    for (std::uint32_t now = 0; now <= 4 * PASSENGER_INTERVAL_MS && adapter.Aboard.Guid; now += PASSENGER_INTERVAL_MS)
+        Maintain(cadence, now, MAP, nullptr, adapter, ChooseIntent({}));
+    Check(!adapter.Aboard.Guid && adapter.Probes == OFF_SURFACE_SAMPLES,
+          "a follower that steps off the lift after its master: detached by the off-surface rule");
 }
 
 struct LootAdapter
@@ -1350,8 +1423,70 @@ struct LootAdapter
         State.Clear();
         CacheValid = false;
     }
-    bool MayMount() const { return LootInteraction::MountAllowed(State.Guid != 0, Window != 0); }
+    bool MayMount() const
+    {
+        MountRules::Facts facts;
+        facts.lootInteraction = State.Guid != 0;
+        facts.lootWindow = Window != 0;
+        return MountRules::Policy(facts, MountRules::Kind::Ground).allowed;
+    }
 };
+
+// The one mount owner (WT44): each rule against both mount paths, the mount action's ground request
+// (CheckMountStateAction::Execute) and a fly leg's request (MountToFly)
+void CheckMountPolicy()
+{
+    using MountRules::Facts;
+    using MountRules::Kind;
+    using MountRules::Policy;
+    for (Kind const path : {Kind::Ground, Kind::Flying})
+    {
+        std::string const name = path == Kind::Ground ? "mount action" : "fly leg";
+        MountRules::Verdict const free = Policy(Facts{}, path);
+        Check(free.allowed && !free.waits && free.kind == path && std::string_view(free.why) == "allowed",
+              name + ": no loot, no constraint, no on-foot trip: allowed, the kind the caller asked for");
+
+        Facts interaction;
+        interaction.lootInteraction = true;
+        Facts window;
+        window.lootWindow = true;
+        Facts near;
+        near.lootNear = true;
+        bool vetoed = true;
+        for (Facts const& facts : {interaction, window, near})
+        {
+            MountRules::Verdict const verdict = Policy(facts, path);
+            vetoed = vetoed && !verdict.allowed && verdict.waits && verdict.kind == Kind::None &&
+                     std::string_view(verdict.why) == "loot";
+        }
+        Check(vetoed, name + ": loot veto (interaction, open window, corpse in reach): waits, uncounted");
+
+        Facts onFoot;
+        onFoot.onFoot = true;
+        MountRules::Verdict const foot = Policy(onFoot, path);
+        Check(!foot.allowed && !foot.waits && std::string_view(foot.why) == "on_foot",
+              name + ": on-foot rule (a transport leg, a tame): refused");
+
+        Facts noMount;
+        noMount.noMount = true;
+        noMount.onFoot = true;
+        MountRules::Verdict const test = Policy(noMount, path);
+        Check(!test.allowed && !test.waits && std::string_view(test.why) == "nomount",
+              name + ": test constraint nomount: refused, ahead of the on-foot rule");
+
+        Facts all = noMount;
+        all.lootNear = true;
+        Check(std::string_view(Policy(all, path).why) == "loot", name + ": loot first: the bot loots, then rides");
+    }
+    Check(!Policy(Facts{}, Kind::None).allowed, "no kind asked: nothing to mount");
+    Check(std::string_view(MountRules::HowWord(MountRules::How::Plain)) == "plain" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Transport)) == "transport" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Loot)) == "loot" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Taxi)) == "taxi" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Fly)) == "fly" &&
+              std::string_view(MountRules::HowWord(MountRules::How::Hearth)) == "hearth",
+          "Dismount(how): one word per dismount path for the trace");
+}
 
 void CheckLootScheduler()
 {
@@ -1526,7 +1661,7 @@ void CheckProgressScheduler()
             Check(SubmitRoute(wait, request, submit) && wait.waiting && wait.requestId == 17,
                   "scheduled first request after loot calls the submitter and publishes its actual pending ID");
             maintain(loot.Now + 100'000, Owner::Exempt);
-            Check(state.Reason() == Overdue::RouteAnswer &&
+            Check(state.Reason() == Overdue::Due &&
                       TravelLegs::Judge(wait, 16, start, loot.Now + 2) == TravelLegs::Verdict::Drop &&
                       TravelLegs::Judge(wait, 17, goal, loot.Now + 2) == TravelLegs::Verdict::Refresh &&
                       TravelLegs::Judge(wait, 17, start, loot.Now + 100'000) == TravelLegs::Verdict::Refresh,
@@ -1626,7 +1761,7 @@ void CheckProgressScheduler()
     maintain(100 + bound, Owner::Exempt);
     Check(state.Reason() == Overdue::None && state.RouteMs() == 0, "valid transport wait is exempt from walk budgets");
     maintain(1100 + bound, Owner::Exempt);
-    Check(state.Reason() == Overdue::Transport && ScheduledWork(true, state.Reason(), true, true) == Work::Recover,
+    Check(state.Reason() == Overdue::Due && ScheduledWork(true, state.Reason(), true, true) == Work::Recover,
           "overdue transport remains independently bounded and takes precedence over loot");
 
     state = {};
@@ -1636,7 +1771,7 @@ void CheckProgressScheduler()
     maintain(120'100, Owner::Exempt);
     Check(state.Reason() == Overdue::None, "off-first cannot be prematurely recovered as a stalled walk");
     maintain(121'100, Owner::Exempt);
-    Check(state.Reason() == Overdue::Transport, "overdue off-first is available to the scheduled follower");
+    Check(state.Reason() == Overdue::Due, "overdue off-first is available to the scheduled follower");
 }
 void CheckSuccessorAndPartialPaths()
 {
@@ -1980,7 +2115,7 @@ void CheckGeometricDetoursAndBounds()
             if (now - started <= bound)
                 Check(state.Reason() == Overdue::None, "oscillation remains eligible through the exact active bound");
         }
-        Overdue const expected = routeFirst ? Overdue::RouteDeadline : Overdue::LegDeadline;
+        Overdue const expected = routeFirst ? Overdue::RouteDeadline : Overdue::Due;
         Check(state.Reason() == expected && state.RouteMs() == now - started && state.LegMs() == now - started &&
                   ScheduledWork(true, state.Reason(), false, false) == Work::Recover && state.TakeReason() == expected,
               "actual leg or route expiry ends repeated-ground motion through scheduled recovery");
@@ -2029,6 +2164,110 @@ void CheckResponseWorkProgress()
     }
 }
 
+// The exit cases of WT44b, through Maintain and the follower's StepLeg: one expiry (NextDeadlineMs), one leg clock
+void CheckOneExpiry()
+{
+    using namespace TravelProgress;
+    using TravelLegs::LegType;
+    auto const nodes = [](uint32_t) { return TravelRoute::Point{}; };
+    TravelRoute::Point const start{MAP, 0.0f, 0.0f, 0.0f};
+    TravelRoute::Point const goal{MAP, 1000.0f, 0.0f, 0.0f};
+    TravelRoute::Leg leg;
+    leg.from = start;
+    leg.to = goal;
+    leg.seconds = 100.0f;
+
+    State state;
+    TravelLegs::Trip trip;
+    TravelLegs::RouteWait wait;
+    auto const maintain = [&](uint32_t now, Owner owner)
+    {
+        Maintain(state, {now, owner, owner == Owner::Combat, 0}, trip, wait, 100.0f,
+                 [] { return TravelProgress::Motion{}; });
+    };
+    auto const step = [&](uint32_t now, TravelRoute::Point const& at, uint64_t aboard = 0)
+    {
+        TravelLegs::Observation seen;
+        seen.bot = at;
+        seen.nowMs = now;
+        seen.aboard = static_cast<uint32_t>(aboard);
+        seen.aboardGuid = aboard;
+        seen.legMs = state.LegMs();
+        return TravelLegs::StepLeg(trip, seen);
+    };
+
+    // A fight on a walk does not expire the leg: the walk budget, the leg and the route clock pause and resume at the
+    // same balance; the first sample after the fight adds nothing for the span it ends
+    leg.type = LegType::Walk;
+    trip.legs = {leg};
+    TravelLegs::StartLeg(trip, 0, 100, nodes);
+    maintain(100, Owner::Walk);
+    maintain(30'100, Owner::Walk);
+    maintain(30'101, Owner::Combat);
+    uint32_t const fight = TravelLegs::LegTimeoutMs(leg) + WALK_BUDGET_MS;
+    maintain(30'101 + fight, Owner::Combat);
+    maintain(30'102 + fight, Owner::Walk);
+    Check(state.Reason() == Overdue::None && state.LegMs() == 30'000 && state.WalkMs() == 30'000 &&
+              state.RouteMs() == 30'000 && step(30'102 + fight, start).act != TravelLegs::Act::Fail,
+          "a fight on a walk does not expire the leg: no reason, the clocks unchanged by the fight");
+    maintain(30'102 + fight + 59'000, Owner::Walk);
+    Check(state.Reason() == Overdue::None, "after the fight the walk budget resumes below its bound");
+    maintain(30'102 + fight + 60'000, Owner::Walk);
+    Check(state.Reason() == Overdue::Walk && state.WalkMs() == WALK_BUDGET_MS,
+          "the walk budget expires at the balance it had before the fight plus the walk after it");
+
+    // A ride is bounded by the vessel's deadline: RIDE_PERIODS of the read period from the boarding, not the leg's
+    // fallback timeout; the guard is due and the follower fails the leg at the same tick, neither before
+    state = {};
+    leg.type = LegType::Transport;
+    trip = {};
+    trip.legs = {leg};
+    TravelLegs::StartLeg(trip, 0, 100, nodes);
+    trip.boarding = TravelLegs::Boarding::Ride;
+    trip.passengerGuid = CAR;
+    trip.boardedMs = 10'000;
+    trip.periodMs = 300'000;
+    uint32_t const ride = TravelLegs::TransportRideMs(trip, trip.legs[0]);
+    Check(ride == 660'000 && ride != TravelLegs::LegTimeoutMs(trip.legs[0]),
+          "the ride's bound is the read period's, not the leg's fallback");
+    TravelRoute::Point const sea{MAP, 500.0f, 0.0f, 0.0f};
+    maintain(10'000, Owner::Exempt);
+    maintain(10'000 + ride - 999, Owner::Exempt);
+    Check(state.Reason() == Overdue::None && step(10'000 + ride, sea, CAR).act != TravelLegs::Act::Fail,
+          "a ride within its bound: nothing due, the follower rides on");
+    maintain(10'001 + ride, Owner::Exempt);
+    TravelLegs::Decision const late = step(10'001 + ride, sea, CAR);
+    Check(state.Reason() == Overdue::Due && late.act == TravelLegs::Act::Fail &&
+              late.reason == TravelLegs::FailReason::Timeout,
+          "a ride is bounded by the vessel's deadline: the guard and the follower agree at one ms past it");
+
+    // A late route answer is bounded once per request: the guard wakes the follower once, the follower asks again
+    // (a new request, its own keep), MAX_RESUBMITS times; a pending answer adds nothing to the route clock
+    state = {};
+    trip = {};
+    uint32_t now = 1'000;
+    wait = {17, MAP, now, true, start};
+    maintain(now, Owner::Exempt);
+    unsigned wakes = 0;
+    bool refused = false;
+    while (!refused && now < 1'000 + 10 * TravelRoute::ANSWER_KEEP_MS)
+    {
+        now += 1'000;
+        maintain(now, Owner::Exempt);
+        if (state.Reason() == Overdue::None)
+            continue;
+        ++wakes;
+        Check(state.TakeReason() == Overdue::Due && now - wait.requestedMs == TravelRoute::ANSWER_KEEP_MS + 1'000,
+              "a late route answer wakes the follower at its first sample past the answer's keep");
+        if (TravelLegs::Resubmit(trip))
+            wait = {wait.requestId + 1, MAP, now, true, start};
+        else
+            refused = true;
+    }
+    Check(wakes == TravelLegs::MAX_RESUBMITS + 1u && refused && state.RouteMs() == 0,
+          "a late route answer is bounded once: one wake per request, MAX_RESUBMITS asked again, then NoAnswer");
+}
+
 }  // namespace
 
 int main()
@@ -2052,11 +2291,15 @@ int main()
     CheckIneligibleMaintenance();
     CheckUnconsumedBoardTransfer();
     CheckFollowAndNoTrip();
+    CheckBoardingByIntent();
+    CheckFollowerByMaster();
+    CheckMountPolicy();
     CheckLootScheduler();
     CheckProgressScheduler();
     CheckSuccessorAndPartialPaths();
     CheckGeometricDetoursAndBounds();
     CheckResponseWorkProgress();
+    CheckOneExpiry();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

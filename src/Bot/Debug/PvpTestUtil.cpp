@@ -7,6 +7,7 @@
 #include "PvpTestUtil.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <sstream>
 
@@ -21,6 +22,16 @@
 #include "StringFormat.h"
 #include "World.h"
 
+namespace
+{
+// Constant-initialized: no static-init order and no guard on the per-aura reads
+std::atomic<bool> pvpTestHooks{false};
+}  // namespace
+
+void SetPvpTestHooks(bool on) { pvpTestHooks.store(on, std::memory_order_relaxed); }
+
+bool PvpTestHooksOn() { return pvpTestHooks.load(std::memory_order_relaxed); }
+
 namespace PvpTestUtil
 {
 bool CommandFail(ChatHandler* handler, std::string const& text)
@@ -30,12 +41,13 @@ bool CommandFail(ChatHandler* handler, std::string const& text)
     return false;
 }
 
+// The startup read, not the reloadable member: a command never runs with the harness's hooks unregistered
 bool CheckEnabled(ChatHandler* handler)
 {
-    if (sPlayerbotAIConfig.PvpTestEnable)
+    if (PvpTestHooksOn())
         return true;
 
-    return CommandFail(handler, "The PvP test harness is disabled (Playerbots.PvpTest.Enable = 0)");
+    return CommandFail(handler, "The PvP test harness is disabled (Playerbots.PvpTest.Enable = 0 at startup)");
 }
 
 std::string ToLower(std::string text)

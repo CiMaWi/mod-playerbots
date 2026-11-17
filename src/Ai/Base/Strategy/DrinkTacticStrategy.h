@@ -19,9 +19,7 @@
 
 class PlayerbotAI;
 
-// The Drink tactic (G3b, PLAN 3.15; numbers DrinkConfig, policy ArenaDrink.h). 13g-0: the names exist with stub bodies
-// (the triggers are never active, the actions never useful, the multiplier passes everything), so that G3b edits
-// DrinkTacticStrategy.cpp only.
+// The Drink tactic (G3b, PLAN 3.15; numbers DrinkConfig, policy ArenaDrink.h; code in DrinkTacticStrategy.cpp).
 
 // "tactic drink": "prep drink" and "safe to drink" -> the drinks, in the battleground non-combat engine and the
 // combat engine (the safe-window break), with the Drink tactic enabled or the harness on

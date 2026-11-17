@@ -35,6 +35,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
+#include "PvpTestUtil.h"
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
 #include "ThreadCheck.h"
@@ -615,16 +616,15 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     PlayerbotRepository::instance().Load(botAI);
     // WT11a: every bot's personality, rolled and saved at its first login (the map only after startup's load)
     BotTraitMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter(), bot->getRace(true), bot->getClass());
-    if (sPlayerbotAIConfig.SkillEnable)
-    {
-        uint32 const low = bot->GetGUID().GetCounter();
-        uint8 const skill = BotProfileMgr::instance().LoadOrCreate(low);
-        // G6b: the fixed attributes read the first roll (0 = the skill while growth is off)
-        botAI->SetPvpSkill(skill, BotProfileMgr::instance().FirstRoll(low));
-    }
+    uint32 const low = bot->GetGUID().GetCounter();
+    uint8 const skill = BotProfileMgr::instance().LoadOrCreate(low);
+    // G6b: the fixed attributes read the first roll (0 = the skill while growth is off)
+    botAI->SetPvpSkill(skill, BotProfileMgr::instance().FirstRoll(low));
     botAI->ResetTacticMask();
-    // G5a: Avoid.EnsureTrinket's trinket left by a crash or a save before its restore comes off first (its mark)
-    CcCleanEnsuredTrinket(botAI);
+    // G5a: Avoid.EnsureTrinket's trinket left by a crash or a save before its restore comes off first (its mark).
+    // Only a harness match writes the mark: a server without the harness's hooks leaves it for one (CS25b).
+    if (PvpTestHooksOn())
+        CcCleanEnsuredTrinket(botAI);
     // PvP gear left on by a stop during a match comes off (also with PvP gear off); a ladder bot without a PvP
     // loadout gets the base tier (memory, async write)
     PvpGearMgr::Instance().OnBotLogin(bot);

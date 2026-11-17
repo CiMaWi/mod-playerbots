@@ -9,6 +9,7 @@
 #include "BankRulesInput.h"
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
+#include "CheckMountStateAction.h"
 #include "DestroyItemAction.h"
 #include "Event.h"
 #include "GuildMgr.h"
@@ -17,6 +18,7 @@
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
 #include "LootStrategyValue.h"
+#include "MountRules.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
@@ -172,7 +174,7 @@ struct OpenLootAction::InteractionAdapter
 
         if (Bot.IsMounted())
         {
-            Bot.RemoveAurasByType(SPELL_AURA_MOUNTED);
+            CheckMountStateAction::Dismount(&Bot, MountRules::How::Loot);
             Action.botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
             Stack.Trace("prepare", "ground_dismount");
             return true;
@@ -239,7 +241,7 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
         if (!key)
             return false;
 
-        UseItemAction useItem(botAI);
+        UseItemAction useItem(botAI, "use", false, "", ItemUse::Caller::Errand);
         return useItem.UseItemOnGameObject(key, lootObject.guid);
     }
 

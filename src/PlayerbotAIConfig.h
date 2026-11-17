@@ -16,12 +16,14 @@
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "DBCEnums.h"
+#include "ItemUseConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
+#include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
@@ -71,12 +73,6 @@ enum class AutoPartyBuffMode : uint8
     DISABLED = 0,
     RAID_ONLY = 1,
     GROUP_OR_RAID = 2
-};
-
-enum ArenaRatingMode : uint32
-{
-    ARENA_RATING_MODE_RANDOM = 0,
-    ARENA_RATING_MODE_EARNED = 1,
 };
 
 // Playerbots.Ladder.Role
@@ -135,6 +131,7 @@ public:
 
     bool Initialize();
     void LoadRandomBotLevelConfig();
+    void LoadWorldPvpConfig();
     bool IsInRandomAccountList(uint32 id);
     bool IsInRandomQuestItemList(uint32 id);
     bool IsPvpProhibited(uint32 zoneId, uint32 areaId);
@@ -315,7 +312,6 @@ public:
     uint32 RandomBotAutoJoinRatedArenaQueueSlots;
     // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free bot team queues, no slot or count limit
     bool RandomBotAutoJoinRatedArenaUncapped;
-    bool RandomBotArenaGroupOnWorldThread;
 
     uint32 RandomBotTeleLowerLevel, RandomBotTeleHigherLevel;
     std::map<uint32, std::pair<uint32, uint32>> ZoneBrackets;
@@ -395,7 +391,6 @@ public:
     uint32 CommandServerPort;
     bool PerfMonEnabled;
     bool DebugThreadChecks;
-    bool SkipIdleTriggerChecks;
     bool SummonWhenGroup;
     ShowHideCosmetic RandomBotShowHelmet;
     ShowHideCosmetic RandomBotShowCloak;
@@ -406,13 +401,6 @@ public:
     uint32 RandomBotHordeRatio;
     bool DisableDeathKnightLogin;
     bool LimitTalentsExpansion;
-    uint32 BotActiveAlone;
-    uint32 BotActiveAloneDurationSeconds;
-    uint32 BotActiveAloneForceWhenInRadius;
-    bool BotActiveAloneForceWhenInZone;
-    bool BotActiveAloneForceWhenInMap;
-    bool BotActiveAloneForceWhenIsFriend;
-    bool BotActiveAloneForceWhenInGuild;
     bool TestPlayerEnable;
     std::string TestPlayerAccount;
     bool PvpTestEnable;
@@ -426,7 +414,6 @@ public:
     float PvpTestFightY;
     float PvpTestFightZ;
     float PvpTestFightO;
-    bool AcquaintanceEnable;
     uint32 AcquaintanceFlushSeconds;
     uint32 AcquaintanceDirectCooldownSeconds;
     uint32 AcquaintanceGroupJoinCooldownSeconds;
@@ -442,10 +429,8 @@ public:
     uint32 AcquaintanceGuildSampleSeconds;
     uint32 AcquaintanceNearbyIntervalSeconds;
     float AcquaintanceNearbyRadius;
-    bool LadderEnable;
     uint32 LadderRole;
     std::string LadderServerId;
-    bool MatchLogEnable;
     uint32 MatchLogTraceEvery;
     uint32 MatchLogTraceMaxEvents;
     uint32 MatchLogTraceMaxBytes;
@@ -472,38 +457,18 @@ public:
     uint32 LadderMatchmakerMaxPicks;
     bool LadderMatchmakerSkirmish;
     bool LadderMatchmakerPoolOnly;
-    bool PvpGearEnable;
     std::string PvpGearTierOrder;
     std::string PvpGearBaseTier;
-    bool PvpGearWear;
     bool PvpGearWearBetweenMatches;
     bool PvpGearBuyEnable;
     std::string PvpGearBuySlotPriority;
     bool PvpGearBuySaveTowardBetter;
     uint32 PvpGearBuyCheckIntervalMinutes;
     uint32 PvpGearBuyBatchPerTick;
-    bool SkillEnable;
-    float SkillReactFactorLow;
-    float SkillReactFactorHigh;
-    bool SkillFullAbilityInPvE;
-    bool SkillReactActive;
-    uint32 SkillNoticeMissPercentLow;
-    uint32 SkillNoticeMissPercentHigh;
-    uint32 SkillNoticeDelayMsLow;
-    uint32 SkillNoticeDelayMsHigh;
-    uint32 SkillNoticeWindowMs;
-    bool SkillNoticeActive;
-    // Playerbots.Skill.Distribution and its parameters: a bot's fixed percentile maps to its skill through it
-    bool SkillDistributionUniform;
-    float SkillMean;
-    float SkillSd;
-    float SkillMin;
-    float SkillMax;
-    // Playerbots.Skill.ExemptRealMasterBots: bots with a game-client master play at full ability (1, phase D) or keep
-    // their skill (0, DT.2)
-    bool SkillExemptRealMasterBots;
+    // Playerbots.Skill.*: reaction stretch, notice model, distribution, real-master exemption (SkillConfig.h)
+    SkillConfig Skill;
     // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
-    // off without Playerbots.Skill.Enable and on a lab (Playerbots.Ladder.ServerId labN)
+    // off on a lab (Playerbots.Ladder.ServerId labN)
     bool SkillGrowthEnable;
     SkillGrowthParams SkillGrowth;
     // Playerbots.Skill.CurveExponent, KnowledgeSpread, Effort*, StyleSpread: the tactic gate's skill parameters
@@ -511,33 +476,20 @@ public:
     // Playerbots.Skill.Attributes.*: loadings, spreads and the correlation matrix (factorised at load) of the attribute
     // model (BotAttributes.h); the defaults make every ability the skill and every trait neutral
     BotAttributeParams SkillAttributes;
-    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Active needs
-    // Playerbots.Skill.Enable; Contexts is a tactic scope mask (default the PvP contexts)
-    bool NaturalReactionEnable;
-    bool NaturalReactionActive;
-    uint8 NaturalReactionContexts;
+    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h)
     ReactionParams NaturalReaction;
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
-    // started match (NaturalReaction.h). NearRealPlayerYards is read but inert: no cached proximity flag exists yet.
-    bool NaturalCadenceEnable;
-    uint32 NaturalCadenceCheckMs;
-    uint32 NaturalCadenceStaggerMs;
-    uint8 NaturalCadenceContexts;
-    float NaturalCadenceNearRealPlayerYards;
-    // Playerbots.Natural.Cadence.SkillStretch (G6d-a): the skill's stretch (Skill.React*) stays where the cadence and
-    // the reaction model both run, so it scales the cadence's check interval (0: factor 1 there, the reaction model
-    // carries the skill)
-    bool NaturalCadenceSkillStretch;
+    // started match (NaturalReaction.h)
+    CadenceParams NaturalCadence;
     // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
     bool ArenaOnlyEnable;
     bool ArenaOnlySpreadContinents;
     // Playerbots.RandomBotTestNamePrefix: new random bots are named prefix + a letters-only counter (empty = pool)
     std::string RandomBotTestNamePrefix;
-    // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope (indexed by TacticId), and the mask of
-    // the tactics enabled in config (0 while the system is off)
-    bool TacticsEnable;
-    std::array<TacticSettings, TACTIC_COUNT> TacticConfig;
-    uint32 TacticsConfigMask;
+    // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope, the mask of the enabled tactics
+    TacticsConfig Tactics;
+    // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
+    bool TacticStrategyWanted(TacticId id) const;
     // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
     // pass, from the switches and scopes at load and reload
     std::array<uint8, TACTIC_CONTEXT_COUNT> TacticFollowersFor{};
@@ -570,6 +522,8 @@ public:
     uint32 FleeBoundSeconds = 30;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
+    // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)
+    ItemUseConfig ItemUse;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
     LosConfig TacticLos;
     PillarConfig TacticPillar;
@@ -578,19 +532,6 @@ public:
     KiteConfig TacticKite;
     DrinkConfig TacticDrink;
     JumpConfig TacticJump;
-    bool BotActiveAloneSmartScale;
-    uint32 BotActiveAloneSmartScaleDiffLimitFloor;
-    uint32 BotActiveAloneSmartScaleDiffLimitCeiling;
-    uint32 BotActiveAloneSmartScaleWhenMinLevel;
-    uint32 BotActiveAloneSmartScaleWhenMaxLevel;
-    uint32 BotActiveAloneSmartScalePercentile;
-    // Situation budgets (ActivityBudget): per-situation smart scale floor and ceiling, indexed by BotSituation
-    // (open world, dungeon, boss, PvP); 0 = the global value. SituationForce: -1 = detect, else a BotSituation.
-    bool SituationEnable;
-    uint32 SituationIntervalMs;
-    int32 SituationForce;
-    uint32 SituationDiffLimitFloor[4];
-    uint32 SituationDiffLimitCeiling[4];
 
     bool FreeMethodLoot;
     int32 LootNeedRollLevel;
@@ -625,9 +566,6 @@ public:
     int32 EnableRandomBotTrading;
     uint32 TweakValue;  // Debugging config
 
-    uint32 RandomBotArenaTeamMaxRating;
-    uint32 RandomBotArenaTeamMinRating;
-    uint32 RandomBotArenaTeamRatingMode;
     uint32 RandomBotArenaTeam2v2Count;
     uint32 RandomBotArenaTeam3v3Count;
     uint32 RandomBotArenaTeam5v5Count;
@@ -636,7 +574,7 @@ public:
     bool ArenaTeamSeedEnable;
     float ArenaTeamSeedSpread;
     float ArenaTeamSeedNoiseSd;
-    // Playerbots.ArenaTeam.*: team formation by partner score (earned rating mode only)
+    // Playerbots.ArenaTeam.*: team formation by partner score
     bool ArenaTeamFormationEnable;
     uint32 ArenaTeamUpdateSeconds;
     uint32 ArenaTeamMaxRoster2v2;

@@ -19,9 +19,7 @@
 
 class PlayerbotAI;
 
-// The Kite tactic (G3a, PLAN 3.15; numbers KiteConfig, policy ArenaKite.h). 13g-0: the names exist with stub bodies
-// (the trigger is never active, the action never useful, the multiplier passes everything), so that G3a edits
-// KiteTacticStrategy.cpp only.
+// The Kite tactic (G3a, PLAN 3.15; numbers KiteConfig, policy ArenaKite.h; code in KiteTacticStrategy.cpp).
 
 // "tactic kite": "melee on me" -> "kite step", in every context with the Kite tactic enabled or the harness on
 class TacticKiteStrategy : public Strategy

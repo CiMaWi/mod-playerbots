@@ -132,7 +132,7 @@ inline std::uint32_t Rounded(float value)
 // What the plan, options and quest_plan topics read: the published view, only for a bot in the planner's scope
 struct PlanInput
 {
-    bool inScope{false};  // no real master, persistent and Planner.Goals on: otherwise the planner sets no goal
+    bool inScope{false};  // no real master and persistent: otherwise the planner sets no goal
     bool seen{false};     // the planner published the bot
     GoalApply::PlanView view;
     std::uint32_t nowMs{0};
