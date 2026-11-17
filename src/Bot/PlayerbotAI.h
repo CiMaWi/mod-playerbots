@@ -643,6 +643,9 @@ public:
     bool HasPlayerNearby(float range = sPlayerbotAIConfig.ReactDistance);
     bool AllowActive(ActivityType activityType);
     bool AllowActivity(ActivityType activityType = ALL_ACTIVITY, bool checkNow = false);
+    // mod-ale Lua binding: kept so upstream's module still builds; under always-active the answers are exact
+    bool IsActivityAllowedCached() const { return true; }
+    uint32 AutoScaleActivity(uint32 mod) { return mod; }
     // LFG state of the bot and of its group, cached because LFGMgr's getters insert on read and must not run on a map
     // thread. RefreshLfgState runs on the world thread only (PlayerbotsMgr::RefreshLfgStates, about once a second).
     void RefreshLfgState();
