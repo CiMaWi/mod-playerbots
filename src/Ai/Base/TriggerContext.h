@@ -17,6 +17,7 @@
 #include "GenericTriggers.h"
 #include "GuildTriggers.h"
 #include "HealthTriggers.h"
+#include "ItemFightTriggers.h"
 #include "KiteTacticStrategy.h"
 #include "LfgTriggers.h"
 #include "LootTriggers.h"
@@ -77,6 +78,11 @@ public:
         creators["healer low mana"] = &TriggerContext::HealerLowMana;
 
         creators["generic boost"] = &TriggerContext::generic_boost;
+        // the "item fight" strategy triggers, one per need (item use WI15b)
+        for (ItemUse::Need const need : ItemUse::FIGHT_NEEDS)
+            creators[ItemUse::FightTriggerName(need)] = [need](PlayerbotAI* botAI)
+            { return new ItemFightTrigger(botAI, need); };
+        creators["item flight"] = [](PlayerbotAI* botAI) { return new ItemFlightTrigger(botAI); };
         creators["loss of control"] = &TriggerContext::loss_of_control;
         creators["fear charm sleep"] = &TriggerContext::fear_charm_sleep;
         creators["fear sleep sap"] = &TriggerContext::fear_sleep_sap;

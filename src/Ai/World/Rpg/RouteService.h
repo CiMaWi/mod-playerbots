@@ -255,6 +255,8 @@ private:
             std::shared_ptr<StuckEdges const> const stuck = _stuck.Current();  // one copy: fixed for this search
             Answer answer;
             answer.requestId = job.request.snapshot.requestId;
+            if (!job.params.flightMaps)
+                job.request.noFly = true;  // no flight maps yet: no fly edges and no air links (Search)
             answer.result = Search(_graph, job.request, *stuck, job.params);
             std::uint32_t const searchUs = Micros(Clock::now() - picked);
             std::uint32_t const waitUs = Micros(picked - job.submitted);
@@ -304,7 +306,7 @@ private:
 };
 
 // Server side (RouteService.cpp), map thread: the bot as the search sees it, and the tuning values from the config
-// (WorldTravel.StuckPenalty, TransportWaitSeconds; worldserver TaxiFlightSpeed)
+// (WorldTravel.StuckPenalty; worldserver TaxiFlightSpeed)
 Snapshot FillSnapshot(Player const* bot, std::uint32_t requestId);
 Params ConfiguredParams();
 // World thread: starts RouteService::Instance() with WorldTravel.RouteThreads workers and its PerfMonitor rows

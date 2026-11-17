@@ -82,8 +82,8 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
 
     // The roster's count, plus main's ladder pool as CalculateTotalAccountCount has it
     uint32 target = Population::RosterBotCount(sPlayerbotAIConfig.MaxRandomBots);
-    if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)
-        target += 2 * sPlayerbotAIConfig.LadderPoolTeams;
+    if (sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_MAIN)
+        target += 2 * sPlayerbotAIConfig.Ladder.PoolTeams;
 
     std::vector<PopulationPolicy::RefillAccount> list;
     uint32 held = 0;
@@ -225,7 +225,7 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
     const auto raceAndGender = CombineRaceAndGender(race, gender);
 
     std::string name;
-    if (!sPlayerbotAIConfig.RandomBotTestNamePrefix.empty())
+    if (!sPlayerbotAIConfig.Lone.TestNamePrefix.empty())
         name = CreateTestBotName();
     else if (!nameCache.empty())
     {
@@ -543,8 +543,8 @@ uint32 RandomPlayerbotFactory::CalculateTotalAccountCount()
     maxBots = static_cast<int>(Population::RosterAccountBotCount(static_cast<uint32>(maxBots)));
 
     // Main's ladder pool may be away on arena servers, outside the online count
-    if (sPlayerbotAIConfig.LadderRole == LADDER_ROLE_MAIN)
-        maxBots += 2 * sPlayerbotAIConfig.LadderPoolTeams;
+    if (sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_MAIN)
+        maxBots += 2 * sPlayerbotAIConfig.Ladder.PoolTeams;
 
     // Calculate number of accounts needed for RNDbots
     // Result is rounded up for maxBots not cleanly divisible by the divisor
@@ -857,7 +857,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
         }
 
         // Test names (Playerbots.RandomBotTestNamePrefix) need no name pool
-        if (!nameCached && sPlayerbotAIConfig.RandomBotTestNamePrefix.empty())
+        if (!nameCached && sPlayerbotAIConfig.Lone.TestNamePrefix.empty())
         {
             nameCached = true;
             LOG_INFO("playerbots", "Creating cache for names per gender and race...");
@@ -1272,7 +1272,7 @@ uint32 RandomPlayerbotFactory::SeedRating(double meanPercentile, double spread, 
 bool RandomPlayerbotFactory::SeedTeamRating(ArenaTeam* team)
 {
     // Only at the team's start: complete and never played, so the earned ratings stay the core's afterwards
-    if (!sPlayerbotAIConfig.ArenaTeamSeedEnable || !team || team->GetMembersSize() < team->GetType() ||
+    if (!sPlayerbotAIConfig.ArenaTeamOptions.SeedEnable || !team || team->GetMembersSize() < team->GetType() ||
         team->GetStats().SeasonGames)
         return false;
 
@@ -1284,8 +1284,8 @@ bool RandomPlayerbotFactory::SeedTeamRating(ArenaTeam* team)
     // Box-Muller on the core's random source: every team and run draws its own noise
     double const u1 = 1.0 - rand_norm();
     double const z = std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * 3.14159265358979323846 * rand_norm());
-    uint32 const rating =
-        SeedRating(mean, sPlayerbotAIConfig.ArenaTeamSeedSpread, z * sPlayerbotAIConfig.ArenaTeamSeedNoiseSd);
+    uint32 const rating = SeedRating(mean, sPlayerbotAIConfig.ArenaTeamOptions.SeedSpread,
+                                     z * sPlayerbotAIConfig.ArenaTeamOptions.SeedNoiseSd);
     team->SetRatingForAll(rating);
     for (ArenaTeamMember& member : team->GetMembers())
     {
@@ -1304,7 +1304,7 @@ std::string RandomPlayerbotFactory::CreateTestBotName()
     // One counter per process; the in-memory character cache skips the names already taken (earlier runs), so a
     // rerun goes on after the last test name without a query
     static uint32 counter = 0;
-    std::string const& prefix = sPlayerbotAIConfig.RandomBotTestNamePrefix;
+    std::string const& prefix = sPlayerbotAIConfig.Lone.TestNamePrefix;
     size_t const room = MAX_PLAYER_NAME > prefix.size() ? MAX_PLAYER_NAME - prefix.size() : 0;
     while (true)
     {

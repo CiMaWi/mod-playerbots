@@ -8,15 +8,50 @@
 
 #include <array>
 #include <functional>
+#include <set>
 #include <vector>
 
+#include "AcquaintanceConfig.h"
+#include "ArenaCcConfig.h"
+#include "ArenaCoverConfig.h"
+#include "ArenaDefensiveConfig.h"
+#include "ArenaFocusConfig.h"
+#include "ArenaInterruptConfig.h"
+#include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
+#include "ArenaRecruitConfig.h"
+#include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
+#include "BotAttributeTypes.h"
 #include "Chat.h"
 #include "Config.h"
 #include "ConfigTable.h"
+#include "FleeConfig.h"
+#include "ItemUseConfig.h"
+#include "LadderConfig.h"
 #include "Log.h"
+#include "LoneKeys.h"
+#include "MatchLogConfig.h"
+#include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
+#include "NaturalReactionConfig.h"
+#include "NaturalTraceConfig.h"
+#include "NaturalTurnConfig.h"
 #include "PlayerbotAIConfig.h"
+#include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
 #include "ScriptMgr.h"
+#include "SkillConfig.h"
+#include "SkillGrowthConfig.h"
+#include "TacticGateConfig.h"
+#include "TacticIds.h"
+#include "TestPlayerConfig.h"
+#include "UpkeepConfig.h"
+#include "WorldLog.h"
+#include "WorldLogConfig.h"
+#include "WorldPvp.h"
+#include "WorldPvpConfig.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {
@@ -25,15 +60,21 @@ struct ConfigTableEntry
 {
     std::string Prefix;
     std::function<void()> Load;
-    std::function<std::vector<std::string>(std::vector<std::string> const&)> Unknown;
+    // does the family (a row or a code tail) know the key
+    std::function<bool(std::string const&)> Knows;
     // the lines of the rows whose full key starts with the filter
     std::function<void(std::string const&, std::vector<std::string>&)> Print;
 };
 
 void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
 
+// The keys under Playerbots.Skill. that PlayerbotAIConfig still reads by hand: the attribute correlation pairs
+constexpr std::array<char const*, 1> SkillCodeTails = {"Attributes.Corr."};
+
+// codeTails: the keys under the family's prefix that code outside the table reads (not unknown)
 template <typename Struct>
-ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target)
+ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target,
+                           std::span<char const* const> codeTails = {})
 {
     ConfigTableEntry entry;
     entry.Prefix = family.Prefix;
@@ -43,7 +84,7 @@ ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target)
             family, target, [](std::string const& key, auto fallback, bool warnIfMissing)
             { return sConfigMgr->GetOption<decltype(fallback)>(key, fallback, warnIfMissing); }, WarnConfigRow);
     };
-    entry.Unknown = [&family](std::vector<std::string> const& keys) { return UnknownConfigKeys(family, keys); };
+    entry.Knows = [&family, codeTails](std::string const& key) { return KnowsConfigKey(family, key, codeTails); };
     entry.Print = [&family, &target](std::string const& filter, std::vector<std::string>& lines)
     {
         for (ConfigRow<Struct> const& row : family.Rows)
@@ -270,10 +311,65 @@ ConfigFamily<RetiredSwitches> const RetiredMatchmakerEnableFamily{"Playerbots.La
                                                                   RetiredMatchmakerEnableRows};
 
 // CS22c-j add one line per family
-std::vector<ConfigTableEntry> const& Registry()
+std::vector<ConfigTableEntry> BuildRegistry()
 {
-    static std::vector<ConfigTableEntry> const entries = {
+    std::vector<ConfigTableEntry> entries = {
         MakeEntry(BankMailFamily, sPlayerbotAIConfig.BankMail),
+        MakeEntry(HoldFamily, sPlayerbotAIConfig.TacticFocus),
+        MakeEntry(FocusFamily, sPlayerbotAIConfig.TacticFocus),
+        MakeEntry(FocusTargetFamily, sPlayerbotAIConfig.TacticFocus),
+        MakeEntry(CcFamily, sPlayerbotAIConfig.TacticCc),
+        MakeEntry(AvoidFamily, sPlayerbotAIConfig.TacticCc),
+        MakeEntry(InterruptFamily, sPlayerbotAIConfig.TacticInterrupt),
+        MakeEntry(DefensiveFamily, sPlayerbotAIConfig.TacticDefensive),
+        MakeEntry(FakeFamily, sPlayerbotAIConfig.TacticFake),
+        MakeEntry(LosFamily, sPlayerbotAIConfig.TacticLos),
+        MakeEntry(PillarFamily, sPlayerbotAIConfig.TacticPillar),
+        MakeEntry(KiteFamily, sPlayerbotAIConfig.TacticKite),
+        MakeEntry(DrinkFamily, sPlayerbotAIConfig.TacticDrink),
+        MakeEntry(JumpFamily, sPlayerbotAIConfig.TacticJump),
+        MakeEntry(SkillFamily, sPlayerbotAIConfig.Skill, SkillCodeTails),
+        MakeEntry(SkillGateFamily, sPlayerbotAIConfig.SkillGate),
+        MakeEntry(SkillGrowthFamily, sPlayerbotAIConfig.SkillGrowth),
+        MakeEntry(SkillAttributeLoadingFamily, sPlayerbotAIConfig.SkillAttributes),
+        MakeEntry(SkillAttributeSpreadFamily, sPlayerbotAIConfig.SkillAttributes),
+        MakeEntry(ReactionFamily, sPlayerbotAIConfig.NaturalReaction),
+        MakeEntry(ReactionChoiceFamily, sPlayerbotAIConfig.NaturalReaction.Choice),
+        MakeEntry(ReactionLoadFamily, sPlayerbotAIConfig.NaturalReaction.Load),
+        MakeEntry(ReactionEaseFamily, sPlayerbotAIConfig.NaturalReaction.Ease),
+        MakeEntry(ReactionThinkFamily, sPlayerbotAIConfig.NaturalReaction.Think),
+        MakeEntry(ReactionAnticipateFamily, sPlayerbotAIConfig.NaturalReaction.Anticipate),
+        MakeEntry(ReactionQueueFamily, sPlayerbotAIConfig.NaturalReaction.Queue),
+        MakeEntry(ReactionReevalFamily, sPlayerbotAIConfig.NaturalReaction.Reeval),
+        MakeEntry(ReactionMemoryFamily, sPlayerbotAIConfig.NaturalReaction.Memory),
+        MakeEntry(CadenceFamily, sPlayerbotAIConfig.NaturalCadence),
+        MakeEntry(NaturalFacingFamily, sPlayerbotAIConfig.NaturalFacing),
+        MakeEntry(NaturalTrackFamily, sPlayerbotAIConfig.NaturalTrack),
+        MakeEntry(NaturalPathFamily, sPlayerbotAIConfig.NaturalPath),
+        MakeEntry(NaturalTraceFamily, sPlayerbotAIConfig.NaturalTraceConfig),
+        MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
+        MakeEntry(UpkeepFamily, sPlayerbotAIConfig.Upkeep),
+        MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
+        MakeEntry(LadderFamily, sPlayerbotAIConfig.Ladder),
+        MakeEntry(MatchmakerFamily, sPlayerbotAIConfig.Ladder.Matchmaker),
+        MakeEntry(ArenaTeamFamily, sPlayerbotAIConfig.ArenaTeamOptions),
+        MakeEntry(ArenaRecruitFamily, sPlayerbotAIConfig.ArenaRecruitOptions),
+        MakeEntry(PvpGearFamily, sPlayerbotAIConfig.PvpGear),
+        MakeEntry(AcquaintanceFamily, sPlayerbotAIConfig.Acquaintance),
+        MakeEntry(MatchLogFamily, sPlayerbotAIConfig.MatchLog),
+        MakeEntry(PvpTestFamily, sPlayerbotAIConfig.PvpTest),
+        MakeEntry(TestPlayerFamily, sPlayerbotAIConfig.TestPlayer),
+        MakeEntry(ArenaOnlyFamily, sPlayerbotAIConfig.ArenaOnly),
+        MakeEntry(ItemUseFamily, sPlayerbotAIConfig.ItemUse),
+        MakeEntry(SightRangeCapFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(RatedQueueSlotsFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(RatedQueueUncappedFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(TestNamePrefixFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(DebugThreadChecksFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(TestMissLogFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(WorldLogFamily, WorldLog::Options()),
+        MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
+        MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
@@ -310,6 +406,16 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredNearRealPlayerYardsFamily, RetiredSwitchValues),
         MakeEntry(RetiredMatchmakerEnableFamily, RetiredSwitchValues),
     };
+    // One family per tactic (Playerbots.Tactics.<ConfigName>.), then the system switch: its Finish reads them
+    for (uint32 index = 0; index < TACTIC_COUNT; ++index)
+        entries.push_back(MakeEntry(TacticSettingsFamily(index), sPlayerbotAIConfig.Tactics.Settings[index]));
+    entries.push_back(MakeEntry(TacticsEnableFamily, sPlayerbotAIConfig.Tactics));
+    return entries;
+}
+
+std::vector<ConfigTableEntry> const& Registry()
+{
+    static std::vector<ConfigTableEntry> const entries = BuildRegistry();
     return entries;
 }
 
@@ -322,19 +428,47 @@ public:
     void OnAfterConfigLoad(bool reload) override
     {
         if (reload)
+        {
             LoadConfigTables();
+            // The walk set the role-derived values (formation, recruiting, PvP gear buying, the seed) to their keys'
+            // again
+            sPlayerbotAIConfig.ApplyLadderRole();
+            WorldLog::LoadConfig(true);
+        }
     }
 };
 }  // namespace
 
+// A key is unknown when it lies under a family's prefix (equals a full-key family's prefix) and no family knows it:
+// several families share a prefix (Playerbots.Skill. holds the skill, gate, growth and attribute rows)
 void LoadConfigTables()
 {
+    std::set<std::string> keys;
     for (ConfigTableEntry const& entry : Registry())
     {
         entry.Load();
-        for (std::string const& key : entry.Unknown(sConfigMgr->GetKeysByString(entry.Prefix)))
-            WarnConfigRow(key + " is set but not a known key of " + entry.Prefix + "*, ignored");
+        bool const fullKey = entry.Prefix.back() != '.';
+        for (std::string const& key : sConfigMgr->GetKeysByString(entry.Prefix))
+            if (!fullKey || key == entry.Prefix)
+                keys.insert(key);
     }
+
+    for (std::string const& key : keys)
+    {
+        bool known = false;
+        std::string owner;
+        for (ConfigTableEntry const& entry : Registry())
+        {
+            known = known || entry.Knows(key);
+            if (entry.Prefix.back() == '.' && key.rfind(entry.Prefix, 0) == 0 && entry.Prefix.size() > owner.size())
+                owner = entry.Prefix;
+        }
+        if (!known)
+            WarnConfigRow(key + " is set but not a known key of " + owner + "*, ignored");
+    }
+
+    // The world PvP values built from the rows (the enthusiasm and ghost values, once per load, WorldPvp.h)
+    ::WorldPvp::PublishConfigValues(sPlayerbotAIConfig.WorldPvp);
 }
 
 void PrintConfigTables(ChatHandler* handler, std::string const& prefix)

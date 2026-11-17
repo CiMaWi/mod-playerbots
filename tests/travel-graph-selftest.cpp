@@ -16,12 +16,26 @@
 #include <string>
 #include <vector>
 
+#include "RouteRules.h"
 #include "TravelGraph.h"
 #include "TravelGraphSelftest.h"
 #include "TravelGraphSql.h"
 
 namespace
 {
+// The route search from one node to another, as a bot with transports allowed (the graph's own positions)
+TravelRoute::Result RouteBetween(TravelGraph const& graph, std::uint32_t from, std::uint32_t to)
+{
+    TravelGraphNode const& a = graph.GetNode(from);
+    TravelGraphNode const& b = graph.GetNode(to);
+    TravelRoute::Request request;
+    request.snapshot.position = {a.mapId, a.x, a.y, a.z};
+    request.snapshot.level = 80;
+    request.snapshot.allowTransport = true;
+    request.goal = {b.mapId, b.x, b.y, b.z};
+    return TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
+}
+
 TravelGraphBuilder::LinkRow Walk(std::uint32_t fromId, std::uint32_t toId, std::uint32_t type = 1)
 {
     TravelGraphBuilder::LinkRow row;
@@ -46,14 +60,14 @@ std::uint32_t BuilderChecks(std::vector<std::string>& failures)
 
     std::string error;
     TravelGraphBuilder builder;
-    builder.AddNode(20, "c", 0, 0.0f, 0.0f, 0.0f);
+    builder.AddNode(20, "c", 0, 140.0f, 0.0f, 0.0f);
     builder.AddNode(10, "a", 0, 0.0f, 0.0f, 0.0f);
-    builder.AddNode(15, "b", 0, 0.0f, 0.0f, 0.0f);
+    builder.AddNode(15, "b", 0, 70.0f, 0.0f, 0.0f);
     builder.AddLink(Walk(10, 15));
     builder.AddLink(Walk(15, 20));
     builder.AddLink(Walk(10, 10));     // to itself
     builder.AddLink(Walk(10, 99));     // unknown node
-    builder.AddLink(Walk(15, 10, 7));  // unknown type
+    builder.AddLink(Walk(15, 10, 8));  // unknown type
     builder.AddLink(Walk(15, 10, 5));  // unknown type
     check(builder.EndLinks(error), "a small graph ends its links");
     builder.AddPoint(10, 15, 0, 0, 0.0f, 0.0f, 0.0f);
@@ -70,9 +84,11 @@ std::uint32_t BuilderChecks(std::vector<std::string>& failures)
           "nodes ordered by id");
     TravelGraphLink const& link = graph.LinksOf(0)[0];
     check(link.pathCount == 4 && std::fabs(link.pathLength - 7.0f) < 0.001f, "path length summed on one map");
-    TravelGraphRoute const route = graph.SimpleRoute(0, 2);
-    check(route.found && route.links.size() == 2 && std::fabs(route.seconds - 20.0f) < 0.001f, "a two-link route");
-    check(!graph.SimpleRoute(2, 0).found, "no route against the links");
+    TravelRoute::Result const route = RouteBetween(graph, 0, 2);
+    check(route.ok && std::fabs(route.totalSeconds - 20.0f) < 0.5f, "a two-link route");
+    TravelRoute::Result const back = RouteBetween(graph, 2, 0);
+    check(!back.ok || (back.legs.size() == 1 && back.legs[0].type == TravelRoute::LegType::Walk),
+          "no route against the links (only the straight walk off the graph)");
 
     TravelGraphBuilder disordered;
     disordered.AddNode(1, "a", 0, 0.0f, 0.0f, 0.0f);
@@ -95,14 +111,21 @@ std::uint32_t BuilderChecks(std::vector<std::string>& failures)
     // Land 1 - wait point 2 - stop 3 = ride = stop 4 - wait point 5 - land 6, a walk 1 - 3 onto the stop, a static
     // portal 1 - 6 and a dangling wait-point link 6 - 7 (7 has no ride). Node id 0 is a node like any other
     TravelGraphBuilder waits;
+    // Places for the route search, which prices a walk off the links by its yards: the far land (4, 5) lies 20000 yd
+    // east, the portal's landing (6, 7) 50000 yd north, so only the crossing and the portal reach them quickly
     for (std::uint32_t id = 0; id <= 7; ++id)
-        waits.AddNode(id, "n", 0, 100.0f * static_cast<float>(id), 0.0f, 0.0f);
+    {
+        float const x = 100.0f * static_cast<float>(id) + (id == 4 || id == 5 ? 20000.0f : 0.0f);
+        float const y = id >= 6 ? 50000.0f : 0.0f;
+        waits.AddNode(id, "n", 0, x, y, 0.0f);
+    }
     auto const row = [](std::uint32_t from, std::uint32_t to, std::uint32_t type, std::uint32_t object)
     {
         TravelGraphBuilder::LinkRow made = Walk(from, to, type);
         made.object = object;
         made.distance = type == 1 || !object ? 30.0f : 0.1f;
-        made.extraCost = type == 6 ? 3.0f : 0.0f;  // a static portal's seconds
+        made.extraCost = type == 6 ? 3.0f : 0.0f;          // a static portal's seconds
+        made.periodMs = type == 3 && object ? 240000 : 0;  // a ship's period (the loader reads the core's)
         return made;
     };
     for (auto const& [from, to] : {std::pair{0u, 1u}, std::pair{1u, 2u}, std::pair{1u, 3u}, std::pair{5u, 6u}})
@@ -124,19 +147,21 @@ std::uint32_t BuilderChecks(std::vector<std::string>& failures)
     check(waited.GetNode(waited.IndexOfId(3)).waitStop && waited.GetNode(waited.IndexOfId(4)).waitStop &&
               !waited.GetNode(waited.IndexOfId(2)).waitStop && !waited.GetNode(waited.IndexOfId(7)).waitStop,
           "a stop is a wait-point link's end with a ride");
-    auto const passedIds = [&waited](TravelGraphRoute const& route)
+    auto const passedIds = [&waited](TravelRoute::Result const& route)
     {
         std::vector<std::uint32_t> passed;
-        for (std::uint32_t const index : route.links)
-            passed.push_back(waited.GetNode(waited.GetLink(index).to).id);
+        for (TravelRoute::Leg const& leg : route.legs)
+            for (std::uint32_t const node : leg.nodes)
+                if (passed.empty() || passed.back() != waited.GetNode(node).id)
+                    passed.push_back(waited.GetNode(node).id);
         return passed;
     };
-    TravelGraphRoute const crossing = waited.SimpleRoute(waited.IndexOfId(0), waited.IndexOfId(5));
-    check(crossing.found && passedIds(crossing) == std::vector<std::uint32_t>{1, 2, 3, 4, 5},
-          "the simple route crosses through both wait points, not by the walk onto the stop");
-    TravelGraphRoute const portal = waited.SimpleRoute(waited.IndexOfId(0), waited.IndexOfId(6));
-    check(portal.found && passedIds(portal) == std::vector<std::uint32_t>{1, 6},
-          "the simple route takes the static portal (WT55d)");
+    TravelRoute::Result const crossing = RouteBetween(waited, waited.IndexOfId(0), waited.IndexOfId(5));
+    check(crossing.ok && passedIds(crossing) == std::vector<std::uint32_t>{0, 1, 2, 3, 4, 5},
+          "the route crosses through both wait points, not by the walk onto the stop");
+    TravelRoute::Result const portal = RouteBetween(waited, waited.IndexOfId(0), waited.IndexOfId(6));
+    check(portal.ok && passedIds(portal) == std::vector<std::uint32_t>{0, 1, 6},
+          "the route takes the static portal (WT55d)");
     auto const arrivals = waited.ArrivalsOnto(0);
     check(arrivals.size() == 2 && arrivals[0].node == waited.IndexOfId(4) && arrivals[1].node == waited.IndexOfId(6) &&
               arrivals[1].fixedSeconds == 3.0f,

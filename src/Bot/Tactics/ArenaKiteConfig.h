@@ -9,11 +9,20 @@
 
 #include "Define.h"
 
+template <typename Struct>
+struct ConfigFamily;
+
 // The numbers of the Kite tactic (Playerbots.Tactics.Kite.*, G3a), the Drink tactic (Playerbots.Tactics.Drink.*, G3b)
 // and the Jump tactic (Playerbots.Tactics.Jump.*, G2g), read once at config load (PlayerbotAIConfig::TacticKite,
 // TacticDrink, TacticJump); the initial values are the conf.dist defaults (proposals). Kept apart from the pure
 // policy headers (ArenaKite.h, ArenaDrink.h, ArenaJump.h) so that the policy can change without rebuilding every
 // PlayerbotAIConfig.h user.
+// Kite: a healer or caster with an enemy melee on it (within MeleeYards, targeting it) kites: the class snare first
+// (SnareFirst), then a pillar step (PillarMaxYards), a tested jump spot (JumpMinSavedYards) or a StepYards step towards
+// a partner at least PartnerMinYards away, at most every StepIntervalMs. A bot below EffortMin gives up after
+// GiveUpMsAtEffort0, one at effort 100 after GiveUpMsAtEffort100; an episode ends after EpisodeMs. From
+// MemoryFromSkill the bot reads where enemies broke line of sight in the last MemoryWindowMs. Below KnownFromSkill
+// (PanicBelowSkill) the old flee stays.
 struct KiteConfig
 {
     uint32 KnownFromSkill = 40;    // below it the bot runs (flee) or keeps casting
@@ -33,6 +42,13 @@ struct KiteConfig
     uint32 PanicBelowSkill = 40;  // below it the bot panics (flee) instead of kiting
 };
 
+// Drink: before the gates open (more than PrepMinLeftMs left, mana below PrepBelowPct, effort at least PrepEffortMin),
+// and in a safe window (out of combat, mana below SafeBelowPct, healers SafeBelowPctHealer, no enemy within
+// EnemyYards or in sight, none seen for QuietMs, the partner above PartnerMinHpPct, effort at least EffortMin); an
+// enemy within BreakEnemyYards stands the bot up. A bot without drinks logs at most every NoDrinkLogMs. With the tactic
+// on, a bot that knows it (KnownFromSkill) in an arena or battleground drinks only by these rules: the old food rule's
+// drink (mana below HighMana, no look at enemies) is off for it there; below KnownFromSkill the old rule runs
+// unchanged.
 struct DrinkConfig
 {
     uint32 KnownFromSkill = 45;
@@ -49,6 +65,9 @@ struct DrinkConfig
     uint32 NoDrinkLogMs = 60000;  // the "no drink" log line at most this often per bot
 };
 
+// Jump: only measured spots; aggression at least ChaseFromAggression jumps down to chase, caution at least
+// EscapeFromCaution to escape; MinSavedYards the way a jump must save; LandingTolX10 the landing tolerance in tenths
+// of a yard; Test*: the numbers of `.playerbots tactics jump test`.
 struct JumpConfig
 {
     uint32 KnownFromSkill = 70;
@@ -62,5 +81,9 @@ struct JumpConfig
     uint32 TestSettleMs = 1500;
     uint32 TestMaxStuckMs = 8000;
 };
+
+extern ConfigFamily<KiteConfig> const KiteFamily;
+extern ConfigFamily<DrinkConfig> const DrinkFamily;
+extern ConfigFamily<JumpConfig> const JumpFamily;
 
 #endif

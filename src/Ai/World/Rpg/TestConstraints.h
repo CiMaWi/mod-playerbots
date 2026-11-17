@@ -21,27 +21,30 @@
 // selftest line
 namespace TestConstraints
 {
-constexpr std::uint16_t PLANNER = 1;      // planner goals and jobs
-constexpr std::uint16_t STATUS = 2;       // the weighted random status pick
-constexpr std::uint16_t ERRAND = 4;       // vendor errands and inn binds
-constexpr std::uint16_t HEARTH = 8;       // hearth legs, the off-mesh hearth and the planner's inn goal
-constexpr std::uint16_t NOFIGHT = 16;     // starts no fight; creatures ignore the bot and its pets
-constexpr std::uint16_t NODAMAGE = 32;    // takes no damage
-constexpr std::uint16_t FLYFAIL = 64;     // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
-constexpr std::uint16_t FLYABORT = 128;   // as flyfail, as the trip's last failure: the trip ends once the bot is down
-constexpr std::uint16_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
-constexpr std::uint16_t NOTAXI = 512;     // plans no flight leg (travel WT55a: walk-only trips)
+constexpr std::uint32_t PLANNER = 1;      // planner goals and jobs
+constexpr std::uint32_t STATUS = 2;       // the weighted random status pick
+constexpr std::uint32_t ERRAND = 4;       // vendor errands and inn binds
+constexpr std::uint32_t HEARTH = 8;       // hearth legs, the off-mesh hearth and the planner's inn goal
+constexpr std::uint32_t NOFIGHT = 16;     // starts no fight; creatures ignore the bot and its pets
+constexpr std::uint32_t NODAMAGE = 32;    // takes no damage
+constexpr std::uint32_t FLYFAIL = 64;     // a fly leg fails in the air past its middle (the way down, upkeep WU26b)
+constexpr std::uint32_t FLYABORT = 128;   // as flyfail, as the trip's last failure: the trip ends once the bot is down
+constexpr std::uint32_t NODESTROY = 256;  // destroys no bag item for space (bank-mail WB7d)
+constexpr std::uint32_t NOTAXI = 512;     // plans no flight leg (travel WT55a: walk-only trips)
 // mounts on its own no more (living-conversation LC17a; 1024, not 512, which travel's notaxi takes)
-constexpr std::uint16_t NOMOUNT = 1024;
-constexpr std::uint16_t FLEE = 2048;     // in PvP combat it flees from the enemy players attacking it (world PvP)
-constexpr std::uint16_t NOUSE = 4096;    // uses no item on its own; only the console's requests pass (item use WI2)
-constexpr std::uint16_t NOSPEND = 8192;  // counts as a member of the item use control cohort (item use WI10)
+constexpr std::uint32_t NOMOUNT = 1024;
+constexpr std::uint32_t FLEE = 2048;     // in PvP combat it flees from the enemy players attacking it (world PvP)
+constexpr std::uint32_t NOUSE = 4096;    // uses no item on its own; only the console's requests pass (item use WI2)
+constexpr std::uint32_t NOSPEND = 8192;  // counts as a member of the item use control cohort (item use WI10)
 // world PvP's rules count its master, in a bot group its leader, as a game client (world-pvp WP37a)
-constexpr std::uint16_t REALMASTER = 16384;
+constexpr std::uint32_t REALMASTER = 16384;
 // a PvpTest fighter: world PvP's rules leave the bot out (today's attack on sight) and its engaged rows carry the
 // pvptest tag (world-pvp WP37b)
-constexpr std::uint16_t ONSIGHT = 32768;
-constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
+constexpr std::uint32_t ONSIGHT = 32768;
+// plans no own flying, it flies only on a taxi (travel WT61b; the first bit past 16, the set is 32 bits
+// since travel landing 6)
+constexpr std::uint32_t NOFLY = 65536;
+constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
 {
@@ -53,7 +56,7 @@ struct Row
 {
     char const* name;
     Kind kind;
-    std::uint16_t bit;
+    std::uint32_t bit;
     char const* where;  // the gate that reads it, or what apply and undo do
 };
 
@@ -75,20 +78,21 @@ constexpr Row ROWS[] = {
     {"realmaster", Kind::State, REALMASTER, "world PvP rules: its master, in a bot group its leader, is a game client"},
     {"onsight", Kind::State, ONSIGHT,
      "world PvP rules: the bot is outside them (attack on sight), its engaged rows tagged"},
+    {"nofly", Kind::State, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
 };
 
-constexpr std::uint16_t BitsOf(Kind kind)
+constexpr std::uint32_t BitsOf(Kind kind)
 {
-    std::uint16_t bits = 0;
+    std::uint32_t bits = 0;
     for (Row const& row : ROWS)
         if (row.kind == kind)
             bits |= row.bit;
     return bits;
 }
 
-constexpr std::uint16_t CHOICES = BitsOf(Kind::Choice);
-constexpr std::uint16_t STATES = BitsOf(Kind::State);
-constexpr std::uint16_t HOLD = PLANNER | STATUS | ERRAND | HEARTH;  // `route hold`: every choice row
+constexpr std::uint32_t CHOICES = BitsOf(Kind::Choice);
+constexpr std::uint32_t STATES = BitsOf(Kind::State);
+constexpr std::uint32_t HOLD = PLANNER | STATUS | ERRAND | HEARTH;  // `route hold`: every choice row
 static_assert(HOLD == CHOICES && !(CHOICES & STATES), "hold is the choice rows; a bit is one row's");
 
 inline char const* KindName(Kind kind) { return kind == Kind::Choice ? "choice" : "state"; }
@@ -102,7 +106,7 @@ inline std::string Names()
     return out;
 }
 
-inline std::string Format(std::uint16_t set)
+inline std::string Format(std::uint32_t set)
 {
     std::string out;
     for (Row const& row : ROWS)
@@ -118,7 +122,7 @@ inline std::string Format(std::uint16_t set)
 
 struct Parsed
 {
-    std::uint16_t set{0};
+    std::uint32_t set{0};
     std::string bad;  // the first unknown name; set is then 0
 };
 
@@ -133,7 +137,7 @@ inline Parsed Parse(std::string_view list)
             break;
         list.remove_prefix(start);
         std::string_view const word = list.substr(0, list.find_first_of(", "));
-        std::uint16_t bit = 0;
+        std::uint32_t bit = 0;
         for (Row const& row : ROWS)
             if (word == row.name)
                 bit = row.bit;
@@ -146,19 +150,19 @@ inline Parsed Parse(std::string_view list)
 }
 
 // The set after an order: its off bits cleared, its on bits set
-inline std::uint16_t Next(std::uint16_t set, std::uint16_t on, std::uint16_t off)
+inline std::uint32_t Next(std::uint32_t set, std::uint32_t on, std::uint32_t off)
 {
-    return static_cast<std::uint16_t>((set & ~off) | on);
+    return static_cast<std::uint32_t>((set & ~off) | on);
 }
 
 // A choice row turning on ends the bot's current status (it stands idle and the idle gate keeps it there); a state
 // row changing never does
-inline bool EndsStatus(std::uint16_t before, std::uint16_t after) { return (after & ~before & CHOICES) != 0; }
+inline bool EndsStatus(std::uint32_t before, std::uint32_t after) { return (after & ~before & CHOICES) != 0; }
 
 // The errand row turning off frees the errand checks at once: the retry wait after the last check (ERRAND_RETRY_MS,
 // ItemWorthRules.h) starts over from no check, so a check from before the hold does not delay the released bot's first
 // errand by up to five minutes
-inline bool FreesErrands(std::uint16_t before, std::uint16_t after) { return (before & ~after & ERRAND) != 0; }
+inline bool FreesErrands(std::uint32_t before, std::uint32_t after) { return (before & ~after & ERRAND) != 0; }
 
 // The gates. What an idle bot's status update may do on its own
 struct IdleGate
@@ -167,59 +171,62 @@ struct IdleGate
     bool status{true};   // the weighted status pick
 };
 
-inline IdleGate GateOf(std::uint16_t set) { return {!(set & PLANNER), !(set & STATUS)}; }
-inline bool ErrandAllowed(std::uint16_t set) { return !(set & ERRAND); }
-inline bool HearthAllowed(std::uint16_t set) { return !(set & HEARTH); }
+inline IdleGate GateOf(std::uint32_t set) { return {!(set & PLANNER), !(set & STATUS)}; }
+inline bool ErrandAllowed(std::uint32_t set) { return !(set & ERRAND); }
+inline bool HearthAllowed(std::uint32_t set) { return !(set & HEARTH); }
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
-inline bool StartsFights(std::uint16_t set) { return !(set & NOFIGHT); }
+inline bool StartsFights(std::uint32_t set) { return !(set & NOFIGHT); }
 // flyfail and flyabort, read by the fly leg's follower on a tick in the air (NewRpgRoute.cpp; nothing to apply or
 // undo): the leg fails as its timeout would, once the bot has flown half the leg's straight 2D length and is in the
 // air, so the failure lies where a test chose the leg's middle (over land, over water)
-inline bool FlyLegFails(std::uint16_t set, float flownYards, float legYards, bool inTheAir)
+inline bool FlyLegFails(std::uint32_t set, float flownYards, float legYards, bool inTheAir)
 {
     return (set & FLY_FAILS) && inTheAir && flownYards * 2.0f >= legYards;
 }
 // flyabort: the failure finds the trip's replans spent (TravelLegs::AfterFailure, MAX_REPLANS), so the trip aborts and
 // comes down first (AbortDescent)
-inline bool FlyFailAborts(std::uint16_t set) { return (set & FLYABORT) != 0; }
+inline bool FlyFailAborts(std::uint32_t set) { return (set & FLYABORT) != 0; }
 // flee, read by the world PvP retreat trigger (WorldPvpStrategy.cpp); its apply and undo do nothing
-inline bool Flees(std::uint16_t set) { return (set & FLEE) != 0; }
+inline bool Flees(std::uint32_t set) { return (set & FLEE) != 0; }
 // realmaster, read by world PvP's real master (WorldPvp::RealMasterOf, GhostWait.cpp; nothing to apply or undo): the
 // bot never starts, joins its master's fights, never leaves by enthusiasm and its ghost waits for no enemy
-inline bool HasRealMaster(std::uint16_t set) { return (set & REALMASTER) != 0; }
+inline bool HasRealMaster(std::uint32_t set) { return (set & REALMASTER) != 0; }
 // onsight, read by world PvP's place of a bot (FightEnthusiasm.cpp PlaceOf, the engaged rows; nothing to apply or
 // undo): PvpTest's fighters keep today's attack on sight and their engaged rows carry the pvptest tag
-inline bool OnSight(std::uint16_t set) { return (set & ONSIGHT) != 0; }
+inline bool OnSight(std::uint32_t set) { return (set & ONSIGHT) != 0; }
 // nodestroy, read by the smart destroy action (DestroyItemAction.cpp; nothing to apply or undo): a held bot keeps
 // the full bags a test gives it, neither the bag-space destroy nor the destroy for a loot frees a slot
-inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
+inline bool DestroysForSpace(std::uint32_t set) { return !(set & NODESTROY); }
 // notaxi, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no flight
 // master, so the route and the bot take no taxi (also after the bot learns a flight node on the way)
-inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
+inline bool TaxiAllowed(std::uint32_t set) { return !(set & NOTAXI); }
+// nofly, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no own flying
+// (no fly leg, no air link), so a bot with a flying mount flies only on a taxi and walks where a walker walks
+inline bool OwnFlyingAllowed(std::uint32_t set) { return !(set & NOFLY); }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
-inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
-// nouse, read by the item use gates (UseItemAction, UseTrinketAction, PlayerbotAI::ImbueItem; nothing to apply or
+inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }
+// nouse, read by the item use gates (UseItemAction, UseItemFightAction, PlayerbotAI::ImbueItem; nothing to apply or
 // undo): the bot uses no item on its own, so a test's console request is the only use
-inline bool UsesItemsOnItsOwn(std::uint16_t set) { return !(set & NOUSE); }
+inline bool UsesItemsOnItsOwn(std::uint32_t set) { return !(set & NOUSE); }
 // nospend, read by the item spend rule and the buff picker (nothing to apply or undo): true when the bot spends
 // normally; the control cohort reads !SpendsOnItsOwn
-inline bool SpendsOnItsOwn(std::uint16_t set) { return !(set & NOSPEND); }
+inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
 struct StateOps
 {
-    std::uint16_t bit;
+    std::uint32_t bit;
     void (*apply)(Target&);
     void (*undo)(Target&);
 };
 
 template <class Target, std::size_t N>
-constexpr std::uint16_t Covered(StateOps<Target> const (&ops)[N])
+constexpr std::uint32_t Covered(StateOps<Target> const (&ops)[N])
 {
-    std::uint16_t bits = 0;
+    std::uint32_t bits = 0;
     for (StateOps<Target> const& op : ops)
         bits |= op.bit;
     return bits;
@@ -227,7 +234,7 @@ constexpr std::uint16_t Covered(StateOps<Target> const (&ops)[N])
 
 // The state rows turned on are applied, those turned off undone
 template <class Target, std::size_t N>
-void ChangeStates(StateOps<Target> const (&ops)[N], Target& target, std::uint16_t before, std::uint16_t after)
+void ChangeStates(StateOps<Target> const (&ops)[N], Target& target, std::uint32_t before, std::uint32_t after)
 {
     for (StateOps<Target> const& op : ops)
     {
@@ -242,7 +249,7 @@ void ChangeStates(StateOps<Target> const (&ops)[N], Target& target, std::uint16_
 
 // Every set state row applied again: a pet summoned after the constraint was set gets it too
 template <class Target, std::size_t N>
-void KeepStates(StateOps<Target> const (&ops)[N], Target& target, std::uint16_t set)
+void KeepStates(StateOps<Target> const (&ops)[N], Target& target, std::uint32_t set)
 {
     for (StateOps<Target> const& op : ops)
         if (set & op.bit)
