@@ -7,10 +7,12 @@
 #include <vector>
 
 #include "CensusMgr.h"
+#include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "MountRules.h"
 #include "MoveSpline.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
@@ -75,8 +77,7 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, Worl
         return MoveFarTo(flightMaster) ? TaxiStart::Moving : TaxiStart::Stalled;
 
     botAI->RemoveShapeshift();
-    if (bot->IsMounted())
-        bot->Dismount();
+    CheckMountStateAction::Dismount(bot, MountRules::How::Taxi);
 
     // Learning the master's own node is natural: a player learns it here too
     bot->GetSession()->SendLearnNewTaxiNode(flightMaster);
@@ -113,12 +114,11 @@ void NewRpgBaseAction::ContinueCrossMapTaxi()
     if (!mm || mm->GetCurrentMovementGeneratorType() != FLIGHT_MOTION_TYPE)
         return;
 
-    // Check if we are at our destination.
+    // A next node (none: the bot is at its destination) on another map
     uint32 nextDest = bot->m_taxi.GetTaxiDestination();
     if (!nextDest)
         return;
 
-    // Confirm next node needs different map.
     TaxiNodesEntry const* nextNode = sTaxiNodesStore.LookupEntry(nextDest);
     if (!nextNode || nextNode->map_id == bot->GetMapId())
         return;

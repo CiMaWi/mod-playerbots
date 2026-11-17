@@ -15,11 +15,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "MountRules.h"
 #include "RouteRules.h"
 #include "TravelLegTypes.h"
 #include "TravelLifecycle.h"
@@ -387,7 +389,7 @@ struct Observation
     bool boardMotion{false};  // the bot's own boarding move onto the transport it is aboard has not reported yet
     std::optional<TravelLifecycle::Outcome> passengerOutcome;
     std::uint32_t quayLeg{NO_NODE};
-    std::optional<std::uint32_t> activeLegMs;
+    std::uint32_t legMs{0};  // the leg clock (TravelProgress::State::LegMs): the time the bot could act on the leg
 };
 
 struct Decision
@@ -464,12 +466,6 @@ inline Verdict Judge(RouteWait const& wait, std::uint32_t answerId, Point const&
     return verdict;
 }
 
-// No answer within its life: the service has dropped it (or the request)
-inline bool WaitExpired(RouteWait const& wait, std::uint32_t nowMs)
-{
-    return nowMs - wait.requestedMs > TravelRoute::ANSWER_KEEP_MS;
-}
-
 // A late or lost answer is no failed leg: the route is asked again from where the bot stands, at most MAX_RESUBMITS
 // times per trip (the trip's deadline bounds them too); false: the leg fails as NoAnswer
 inline bool Resubmit(Trip& trip)
@@ -514,10 +510,7 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
         case LegType::Hearth:
             // The route's seconds hold the cooldown wait and the cast
             return static_cast<std::uint32_t>(leg.seconds * 1000.0f) + HEARTH_SLACK_MS;
-        case LegType::Transport:
-            // Off the transport before a scan read its period (StepTransport); aboard RIDE_PERIODS from the boarding
-            return LEG_SLACK_MS + WAIT_PERIODS * FallbackPeriodMs(leg);
-        default:
+        default:  // a transport leg runs on its vessel's bounds (NextDeadlineMs)
             return LEG_SLACK_MS;
     }
 }
@@ -651,6 +644,18 @@ inline void NoteMountTry(Trip& trip, std::uint32_t nowMs)
     trip.mountTriedMs = nowMs;
 }
 
+// A fly leg's try at the mount owner's verdict (MountToFly, WT44): MountRules::FlyTryOf, then the count. Refused and
+// Cast are real tries (NoteMountTry); Refused leaves the verdict's word for the fly_leg_failed row (nomount, on_foot)
+inline MountRules::FlyTry TakeFlyTry(Trip& trip, MountRules::Verdict const& verdict, bool settled, std::uint32_t nowMs)
+{
+    MountRules::FlyTry const step = MountRules::FlyTryOf(verdict, settled);
+    if (step == MountRules::FlyTry::Refused || step == MountRules::FlyTry::Cast)
+        NoteMountTry(trip, nowMs);
+    if (step == MountRules::FlyTry::Refused)
+        trip.mountWhy = verdict.why;
+    return step;
+}
+
 // The leg's time in combat until now (a running stretch included)
 inline std::uint32_t CombatMs(LegRecord const& record, std::uint32_t nowMs)
 {
@@ -762,37 +767,21 @@ inline bool DockedAt(Trip const& trip, Point const& dock)
     return flat <= SHIP_DOCK_YARDS && std::fabs(sight.at.z - dock.z) <= STATIC_DOCK_Z_YARDS;
 }
 
-// The leg's vessel took the bot aboard at the leg's start before it boarded (WT54): its deck docked under the bot
-// waiting beside the stop and the passenger rule attached it. That is the boarding; no crossing was needed. Only on
-// the current transport leg before its ride, the leg's entry, and within a docked hull's reach of the start node
-inline bool TakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+// The vessel the bot means to board (WT62, WT.48): its transport leg's sighted vessel, past the approach and before
+// the ride; 0 none. The passenger check probes a bot on no transport for this vessel only (BotTravel::PreGate)
+inline std::uint64_t BoardingIntent(Trip const& trip)
 {
-    if (trip.legIdx >= trip.legs.size() || trip.passengerGuid || !aboard)
-        return false;
-    Leg const& leg = trip.legs[trip.legIdx];
-    Point const& stop = StopFrom(leg);
-    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != stop.mapId)
-        return false;
-    float const dx = bot.x - stop.x;
-    float const dy = bot.y - stop.y;
-    return std::sqrt(dx * dx + dy * dy) <= (trip.sight.isStatic ? STATIC_DOCK_YARDS : SHIP_DOCK_YARDS);
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Transport || trip.passengerGuid ||
+        trip.boarding == Boarding::Approach)
+        return 0;
+    return trip.sight.guid;
 }
 
-// The walk to a ship's or zeppelin's leg ended aboard (WT54-6, the WT47 class "aboard before boarding"): the leg's
-// vessel, docked over the walk's last yards, took the bot aboard before the walk reached its end. The walk is done and
-// the transport leg's TakenAboard counts the boarding. Only for the walk right before that leg, its entry, and within
-// a docked hull's reach of its start; the caller leaves elevators and the tram out (their stops share x and y)
-inline bool WalkTakenAboard(Trip const& trip, Point const& bot, std::uint32_t aboard)
+// The vessel of the bot's boarding intent docked under it at the wait point and the passenger check attached it: that
+// is the boarding, no crossing was needed
+inline bool BoardedByIntent(Trip const& trip, std::uint64_t aboardGuid)
 {
-    if (!aboard || trip.legIdx + 1 >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk)
-        return false;
-    Leg const& leg = trip.legs[trip.legIdx + 1];
-    Point const& stop = StopFrom(leg);
-    if (leg.type != LegType::Transport || aboard != leg.object || bot.mapId != stop.mapId)
-        return false;
-    float const dx = bot.x - stop.x;
-    float const dy = bot.y - stop.y;
-    return std::sqrt(dx * dx + dy * dy) <= SHIP_DOCK_YARDS;
+    return aboardGuid && aboardGuid == BoardingIntent(trip);
 }
 
 inline std::uint32_t TransportPeriodMs(Trip const& trip, Leg const& leg)
@@ -812,19 +801,28 @@ inline std::uint32_t TransportRideMs(Trip const& trip, Leg const& leg)
     return LEG_SLACK_MS + RIDE_PERIODS * TransportPeriodMs(trip, leg);
 }
 
-inline bool TransportWaitExpired(Trip const& trip, Leg const& leg, std::uint32_t nowMs)
-{
-    return nowMs - trip.legStartMs > TransportWaitMs(trip, leg);
-}
+constexpr std::int64_t NO_DEADLINE = std::numeric_limits<std::int64_t>::max();
 
-inline bool TransportRideExpired(Trip const& trip, Leg const& leg, std::uint32_t nowMs)
+// The trip's one expiry, read by the follower (StepLeg, StepOffFirst, TakeRoute) and the progress guard (Maintain): the
+// ms left before the current state is overdue, negative once it is. A pending route answer, the get-off and a transport
+// leg run on the wall clock (the service's keep, the vessel's timetable), every other leg on the leg clock legMs (the
+// time the bot could act on it, TravelProgress::State::LegMs). route: the request the follower waits for, if any
+inline std::int64_t NextDeadlineMs(Trip const& trip, std::uint32_t nowMs, std::uint32_t legMs,
+                                   RouteWait const* route = nullptr)
 {
-    return nowMs - trip.boardedMs > TransportRideMs(trip, leg);
-}
-
-inline bool OffFirstExpired(OffFirst const& off, std::uint32_t nowMs)
-{
-    return off.sinceMs && nowMs - off.sinceMs > off.boundMs;
+    auto const left = [](std::uint32_t elapsedMs, std::uint32_t boundMs)
+    { return static_cast<std::int64_t>(boundMs) - static_cast<std::int64_t>(elapsedMs); };
+    if (route && route->waiting)
+        return left(nowMs - route->requestedMs, TravelRoute::ANSWER_KEEP_MS);
+    if (trip.offFirst.sinceMs)
+        return left(nowMs - trip.offFirst.sinceMs, trip.offFirst.boundMs);
+    if (trip.legIdx >= trip.legs.size())
+        return NO_DEADLINE;
+    Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type == LegType::Transport)
+        return trip.passengerGuid ? left(nowMs - trip.boardedMs, TransportRideMs(trip, leg))
+                                  : left(nowMs - trip.legStartMs, TransportWaitMs(trip, leg));
+    return left(legMs, LegTimeoutMs(leg));
 }
 
 // The follower's look for the quay beside the current transport leg's dock node: found, or none (the node stays)
@@ -900,7 +898,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         trip.boardedMs = nowMs;
         enter(Boarding::Ride);
     }
-    else if (seen.aboardGuid && !seen.boardMotion && TakenAboard(trip, seen.bot, seen.aboard))
+    else if (!seen.boardMotion && BoardedByIntent(trip, seen.aboardGuid))
     {
         trip.passengerGuid = seen.aboardGuid;
         note(TransportEvent::Boarded, seconds(trip.waitSinceMs ? trip.waitSinceMs : trip.legStartMs));
@@ -925,7 +923,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
             note(TransportEvent::Lost, seconds(trip.boardedMs));
             return fail(FailReason::TransportLost);
         }
-        if (TransportRideExpired(trip, leg, nowMs))
+        if (NextDeadlineMs(trip, nowMs, seen.legMs) < 0)
             return fail(FailReason::Timeout);
         if (seen.bot.mapId != leg.from.mapId && seen.bot.mapId != leg.to.mapId)
             return fail(FailReason::WrongMap);
@@ -959,7 +957,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
     if (seen.aboardGuid)
         return {Act::Wait, leg.to, FailReason::None};
 
-    if (TransportWaitExpired(trip, leg, nowMs))
+    if (NextDeadlineMs(trip, nowMs, seen.legMs) < 0)
         return fail(FailReason::Timeout);
     if (seen.bot.mapId != leg.from.mapId)
         return fail(FailReason::WrongMap);
@@ -1024,7 +1022,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
 {
     Leg const& leg = trip.legs[trip.legIdx];
     bool const lastLeg = trip.legIdx + 1 == trip.legs.size();
-    std::uint32_t const legMs = seen.activeLegMs.value_or(seen.nowMs - trip.legStartMs);
+    auto const overdue = [&trip, &seen] { return NextDeadlineMs(trip, seen.nowMs, seen.legMs) < 0; };
     auto const fail = [](FailReason reason) { return Decision{Act::Fail, {}, reason}; };
     auto const within = [&seen](Point const& at, float yards)
     { return seen.bot.mapId == at.mapId && Distance(seen.bot, at) <= yards; };
@@ -1035,11 +1033,6 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
         {
             if (seen.bot.mapId != leg.to.mapId)
                 return fail(FailReason::WrongMap);
-            if (WalkTakenAboard(trip, seen.bot, seen.aboard))
-            {
-                trip.next = static_cast<std::uint32_t>(trip.waypoints.size());
-                return {Act::Done, leg.to, FailReason::None};
-            }
             bool const leadsToQuay = seen.quayLeg == trip.legIdx + 1;
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
             float const waypointYards = leadsToQuay && trip.hasQuay ? QUAY_REACH_YARDS : WAYPOINT_YARDS;
@@ -1058,7 +1051,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             }
             if (trip.next >= count)
                 return {Act::Done, leg.to, FailReason::None};
-            if (legMs > LegTimeoutMs(leg))
+            if (overdue())
                 return fail(FailReason::Timeout);
             return {Act::Walk, trip.waypoints[trip.next].at, FailReason::None};
         }
@@ -1069,7 +1062,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
                 leg.from.mapId != leg.to.mapId ? seen.bot.mapId == leg.to.mapId : within(leg.to, PORTAL_EXIT_YARDS);
             if (exited)
                 return {Act::Done, leg.to, FailReason::None};
-            if (legMs > PORTAL_TIMEOUT_MS)
+            if (overdue())
                 return fail(FailReason::Portal);
             if (seen.bot.mapId != leg.from.mapId)
                 return fail(FailReason::WrongMap);
@@ -1093,7 +1086,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
                 trip.seenInFlight = true;
                 return {Act::Ride, leg.to, FailReason::None};
             }
-            if (legMs > LegTimeoutMs(leg))
+            if (overdue())
                 return fail(FailReason::Timeout);
             if (trip.seenInFlight)
                 return fail(FailReason::Landing);
@@ -1139,7 +1132,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
                     return {Act::Done, leg.to, FailReason::None};
                 return fail(FailReason::Landing);
             }
-            if (legMs > LegTimeoutMs(leg))
+            if (overdue())
                 return fail(FailReason::Timeout);
             if (!trip.seenInFlight)
             {
@@ -1163,7 +1156,7 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             // The hearthstone's teleport is a far teleport (the trip survives it): done on the bind's map near the bind
             if (within(leg.to, HEARTH_ARRIVE_YARDS))
                 return {Act::Done, leg.to, FailReason::None};
-            if (legMs > LegTimeoutMs(leg))
+            if (overdue())
                 return fail(FailReason::Timeout);
             if (seen.bot.mapId != leg.from.mapId)
                 return fail(FailReason::WrongMap);
@@ -1229,7 +1222,7 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
         trip.transportNotes.push_back({TransportEvent::Lost, off.entry, 0});
         return OffStep::Lost;
     }
-    if (OffFirstExpired(off, seen.nowMs))
+    if (off.sinceMs && NextDeadlineMs(trip, seen.nowMs, seen.legMs) < 0)
     {
         trip.transportNotes.push_back({TransportEvent::StuckAboard, off.entry, (seen.nowMs - off.sinceMs) / 1000});
         off.sinceMs = 0;
@@ -1252,8 +1245,7 @@ Decision Advance(Trip& trip, Observation seen, NodeAt const& nodeAt)
         if (decision.act != Act::Done)
             return decision;
         StartLeg(trip, trip.legIdx + 1, seen.nowMs, nodeAt);
-        if (seen.activeLegMs)
-            seen.activeLegMs = 0;
+        seen.legMs = 0;  // the next leg's clock starts with it
     }
     if (trip.legIdx >= trip.legs.size())
         return {Act::Arrived, seen.bot, FailReason::None};
@@ -1623,13 +1615,31 @@ inline bool HasWalkTarget(Trip const& trip, bool bindInn)
     return trip.legIdx < trip.legs.size() ? trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk : bindInn;
 }
 
-// The passenger code owns the trip's progress: a passenger move runs, the bot is off a ship's first stop, or the
-// current leg is a transport ride
-inline bool PassengerOwnsProgress(Trip const& trip, bool passengerMoves)
+// What the bot stands in or on that moves it, read from the core (NewRpgInternal::PassengerOwnsTravel)
+struct Aboard
+{
+    bool transport{false};  // the core's passenger link or the on-transport movement flag
+    bool inFlight{false};   // a taxi
+    bool vehicle{false};
+};
+
+enum class TravelOwner : std::uint8_t
+{
+    Follower,  // the travel follower moves the bot: its walk budget, off-mesh probe and route clock apply
+    Passenger  // the passenger code, a taxi or a vehicle moves it; the follower only steps the leg's own expiry
+};
+
+// Who moves the bot on its trip, the one answer for the progress guard's owner and the follower's walk-failure and
+// loot gates: a passenger move runs, the bot is getting off a ship first, the current leg is a transport leg, or it is
+// aboard, in flight or in a vehicle. Whose boarding a ride is (WT62's BoardedByIntent, StepTravel's ownsBoard) is
+// another question
+inline TravelOwner OwnerOf(Trip const& trip, bool passengerMoves, Aboard const& aboard)
 {
     bool const transportLeg =
         trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
-    return passengerMoves || trip.offFirst.sinceMs || transportLeg;
+    bool const passenger = passengerMoves || trip.offFirst.sinceMs || transportLeg || aboard.transport ||
+                           aboard.inFlight || aboard.vehicle;
+    return passenger ? TravelOwner::Passenger : TravelOwner::Follower;
 }
 }  // namespace TravelLegs
 
