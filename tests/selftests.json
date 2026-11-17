@@ -92,6 +92,7 @@
                 "src/Bot",
                 "src/Ai/World/Pvp",
                 "src/Ai/World/Rpg",
+                "src/Bot/Debug",
                 "src/Bot/Tactics",
                 "{core}/src/common"
             ],
@@ -100,6 +101,7 @@
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
                 "src/Ai/World/Rpg/UpkeepConfig.cpp",
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",
+                "src/Bot/Debug/WorldLogConfig.cpp",
                 "src/Bot/FleeConfig.cpp",
                 "src/Bot/NaturalTraceConfig.cpp",
                 "src/Bot/Tactics/ArenaCcConfig.cpp",

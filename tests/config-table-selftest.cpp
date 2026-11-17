@@ -42,6 +42,7 @@
 #include "TacticIds.h"
 #include "TacticScope.h"
 #include "UpkeepConfig.h"
+#include "WorldLogConfig.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
 
@@ -404,6 +405,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalPathFamily, 25, "Natural path");
         visit(NaturalTraceFamily, 8, "Natural trace");
         visit(FleeFamily, 3, "Flee");
+        visit(WorldLogFamily, 8, "World log");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
         visit(UpkeepFamily, 1, "Upkeep");
@@ -953,6 +955,26 @@ void TestWorldFamilies()
               pvp.Enthusiasm.JoinBase == 80.0f && pvp.Enthusiasm.BalanceLead == 0.75f &&
               pvp.Enthusiasm.StartCostShare == 100,
           "world pvp: whole numbers clamp; a float out of range keeps its default (as pvpRange did); each warns");
+
+    WorldLogOptions log;
+    FakeReader logEmpty;
+    LoadConfigFamily(WorldLogFamily, log, logEmpty, warn);
+    Check(log.Dir.empty() && log.StateSeconds == 60 && log.SegmentMinutes == 60 && log.QueueRows == 200000 &&
+              log.RecorderSeconds == 300 && log.RecorderActions == 128 && log.RecorderEvents == 64 &&
+              log.RecorderCooldownSeconds == 600 && logEmpty.missingWarnings.size() == 3,
+          "world log: the defaults; Dir, StateSeconds and SegmentMinutes are listed");
+    FakeReader logReader;
+    logReader.values = {
+        {"Playerbots.WorldLog.Dir", "C:/logs"},         {"Playerbots.WorldLog.StateSeconds", "1"},
+        {"Playerbots.WorldLog.SegmentMinutes", "7"},    {"Playerbots.WorldLog.QueueRows", "99999999"},
+        {"Playerbots.WorldLog.RecorderSeconds", "0"},   {"Playerbots.WorldLog.RecorderActions", "0"},
+        {"Playerbots.WorldLog.RecorderEvents", "9000"}, {"Playerbots.WorldLog.RecorderCooldownSeconds", "999999"}};
+    uint32_t const logWarnings = LoadConfigFamily(WorldLogFamily, log, logReader, warn);
+    Check(logWarnings == 5 && log.Dir == "C:/logs" && log.StateSeconds == 5 && log.SegmentMinutes == 7 &&
+              log.QueueRows == 10000000 && log.RecorderSeconds == 0 && log.RecorderActions == 1 &&
+              log.RecorderEvents == 4096 && log.RecorderCooldownSeconds == 86400,
+          "world log: the rows clamp with a warning; SegmentMinutes 7 stays a row value (the round-down to 6 is "
+          "WorldLogFormat's, checked by world-log)");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute
