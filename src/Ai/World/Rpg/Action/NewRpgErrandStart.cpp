@@ -342,7 +342,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
         for (Item* item :
              AI_VALUE2(std::vector<Item*>, "inventory items", "usage " + std::to_string(static_cast<uint32>(usage))))
-            if (WorldTravel::InGeneralSlot(bot, item))
+            if (WorldTravel::InGeneralSlot(bot, item) &&
+                WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR, true))
                 ++sellableSlots;
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
 
