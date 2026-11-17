@@ -42,4 +42,10 @@ struct AcquaintanceConfig
     float NearbyRadius = 30.0f;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (AcquaintanceConfig.cpp)
+extern ConfigFamily<AcquaintanceConfig> const AcquaintanceFamily;
+
 #endif

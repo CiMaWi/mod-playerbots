@@ -11,12 +11,14 @@
 #include <set>
 #include <vector>
 
+#include "AcquaintanceConfig.h"
 #include "ArenaCcConfig.h"
 #include "ArenaCoverConfig.h"
 #include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
@@ -25,8 +27,11 @@
 #include "Config.h"
 #include "ConfigTable.h"
 #include "FleeConfig.h"
+#include "ItemUseConfig.h"
 #include "LadderConfig.h"
 #include "Log.h"
+#include "LoneKeys.h"
+#include "MatchLogConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
@@ -34,11 +39,13 @@
 #include "NaturalTurnConfig.h"
 #include "PlayerbotAIConfig.h"
 #include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
 #include "ScriptMgr.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
+#include "TestPlayerConfig.h"
 #include "UpkeepConfig.h"
 #include "WorldLog.h"
 #include "WorldLogConfig.h"
@@ -348,6 +355,18 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(ArenaTeamFamily, sPlayerbotAIConfig.ArenaTeamOptions),
         MakeEntry(ArenaRecruitFamily, sPlayerbotAIConfig.ArenaRecruitOptions),
         MakeEntry(PvpGearFamily, sPlayerbotAIConfig.PvpGear),
+        MakeEntry(AcquaintanceFamily, sPlayerbotAIConfig.Acquaintance),
+        MakeEntry(MatchLogFamily, sPlayerbotAIConfig.MatchLog),
+        MakeEntry(PvpTestFamily, sPlayerbotAIConfig.PvpTest),
+        MakeEntry(TestPlayerFamily, sPlayerbotAIConfig.TestPlayer),
+        MakeEntry(ArenaOnlyFamily, sPlayerbotAIConfig.ArenaOnly),
+        MakeEntry(ItemUseFamily, sPlayerbotAIConfig.ItemUse),
+        MakeEntry(SightRangeCapFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(RatedQueueSlotsFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(RatedQueueUncappedFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(TestNamePrefixFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(DebugThreadChecksFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(TestMissLogFamily, sPlayerbotAIConfig.Lone),
         MakeEntry(WorldLogFamily, WorldLog::Options()),
         MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
         MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),

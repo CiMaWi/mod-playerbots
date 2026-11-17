@@ -20,19 +20,24 @@
 #include <string>
 #include <vector>
 
+#include "AcquaintanceConfig.h"
 #include "ArenaCcConfig.h"
 #include "ArenaCoverConfig.h"
 #include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
 #include "FleeConfig.h"
+#include "ItemUseConfig.h"
 #include "LadderConfig.h"
+#include "LoneKeys.h"
+#include "MatchLogConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -40,11 +45,13 @@
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "TacticScope.h"
+#include "TestPlayerConfig.h"
 #include "UpkeepConfig.h"
 #include "WorldLogConfig.h"
 #include "WorldPvpConfig.h"
@@ -360,6 +367,60 @@ void TestUnknownRetiredPrint()
     Check(ConfigBoundText(0.25) == "0.25" && ConfigValueText(1.5f) == "1.5", "print: fractional text is the shortest");
 }
 
+// CS22j: the parsed rows (the fight spot, the test name prefix) and the lone full-key families
+void TestLastFamilies()
+{
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    PvpTestConfig const spot{};
+    PvpTestConfig fight;
+    FakeReader empty;
+    Check(
+        LoadConfigFamily(PvpTestFamily, fight, empty, warn) == 0 && fight.FightMap == 0 && fight.FightX == spot.FightX,
+        "PvpTest: no key keeps the default spot");
+    FakeReader place;
+    place.values = {{"Playerbots.PvpTest.FightLocation", "1 -10.5 20 30.25 0.5"}};
+    Check(LoadConfigFamily(PvpTestFamily, fight, place, warn) == 0 && fight.FightMap == 1 && fight.FightX == -10.5f &&
+              fight.FightY == 20.0f && fight.FightZ == 30.25f && fight.FightO == 0.5f,
+          "PvpTest: FightLocation fills the five fight members");
+    FakeReader noSpot;
+    noSpot.values = {{"Playerbots.PvpTest.FightLocation", ""}};
+    Check(
+        LoadConfigFamily(PvpTestFamily, fight, noSpot, warn) == 0 && fight.FightMap == 0 && fight.FightX == spot.FightX,
+        "PvpTest: an empty FightLocation is the default spot, without a warning");
+    FakeReader badSpot;
+    badSpot.values = {{"Playerbots.PvpTest.FightLocation", "1 2 three"}};
+    fight.FightMap = 9;
+    Check(LoadConfigFamily(PvpTestFamily, fight, badSpot, warn) == 1 && fight.FightMap == 0 &&
+              fight.FightY == spot.FightY,
+          "PvpTest: a bad FightLocation keeps the default spot, with a warning");
+
+    LoneKeys lone;
+    auto const prefixOf = [&](char const* text)
+    {
+        FakeReader reader;
+        reader.values = {{"Playerbots.RandomBotTestNamePrefix", text}};
+        lone = LoneKeys{};
+        uint32_t const count = LoadConfigFamily(TestNamePrefixFamily, lone, reader, warn);
+        return std::make_pair(lone.TestNamePrefix, count);
+    };
+    Check(prefixOf("tESTx") == std::make_pair(std::string("Testx"), 0u), "TestNamePrefix: lower case, capital first");
+    Check(prefixOf("") == std::make_pair(std::string(), 0u), "TestNamePrefix: empty is the name pool");
+    Check(prefixOf("ab1") == std::make_pair(std::string(), 1u),
+          "TestNamePrefix: a digit keeps the pool, with a warning");
+    Check(prefixOf("x") == std::make_pair(std::string(), 1u) &&
+              prefixOf("abcdefghij") == std::make_pair(std::string(), 1u),
+          "TestNamePrefix: 2 to 9 letters only");
+
+    FakeReader sight;
+    sight.values = {{"Playerbots.BotSightRangeCap", "-5"}, {"Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", "0"}};
+    lone = LoneKeys{};
+    Check(LoadConfigFamily(SightRangeCapFamily, lone, sight, warn) == 1 && lone.SightRangeCap == 0.0f &&
+              LoadConfigFamily(RatedQueueSlotsFamily, lone, sight, warn) == 1 && lone.RatedQueueSlots == 1,
+          "LoneKeys: a negative sight cap and no queue slot clamp to their lower bounds, with a warning");
+}
+
 void TestDistChecks(std::map<std::string, std::string> const& dist)
 {
     std::map<std::string, int> seen;
@@ -422,6 +483,18 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(ArenaTeamFamily, 28, "Arena team");
         visit(LadderFamily, 5, "Ladder");
         visit(MatchmakerFamily, 10, "Ladder matchmaker");
+        visit(AcquaintanceFamily, 15, "Acquaintance");
+        visit(MatchLogFamily, 3, "Match log");
+        visit(PvpTestFamily, 3, "PvP test");
+        visit(TestPlayerFamily, 2, "Test player");
+        visit(ArenaOnlyFamily, 2, "Arena only");
+        visit(ItemUseFamily, 2, "Item use");
+        visit(SightRangeCapFamily, 1, "BotSightRangeCap");
+        visit(RatedQueueSlotsFamily, 1, "RandomBotAutoJoinRatedArenaQueueSlots");
+        visit(RatedQueueUncappedFamily, 1, "RandomBotAutoJoinRatedArenaUncapped");
+        visit(TestNamePrefixFamily, 1, "RandomBotTestNamePrefix");
+        visit(DebugThreadChecksFamily, 1, "DebugThreadChecks");
+        visit(TestMissLogFamily, 1, "Test.MissLog");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -1128,6 +1201,7 @@ int main(int argc, char** argv)
 
     TestBankMailWalk();
     TestTypesWalk();
+    TestLastFamilies();
     TestUnknownRetiredPrint();
     TestRetiredFullKey();
     TestSharedStruct();

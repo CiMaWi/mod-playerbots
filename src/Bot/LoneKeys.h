@@ -16,8 +16,8 @@
 
 struct LoneKeys
 {
-    // Playerbots.BotSightRangeCap (0..): each bot's own sight range on world maps (core Player::SetSightRangeCap), set at
-    // login; 0 = off
+    // Playerbots.BotSightRangeCap (0..): each bot's own sight range on world maps (core Player::SetSightRangeCap), set
+    // at login; 0 = off
     float SightRangeCap = 0.0f;
     // Playerbots.RandomBotAutoJoinRatedArenaQueueSlots (1..): up to that many matches' worth of captains may queue
     int32 RatedQueueSlots = 1;
@@ -32,5 +32,21 @@ struct LoneKeys
     // ("PreGate miss: <step>", "Live miss: <follower>")
     bool TestMissLog = false;
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// Playerbots.BotSightRangeCap (LoneKeys.cpp)
+extern ConfigFamily<LoneKeys> const SightRangeCapFamily;
+// Playerbots.RandomBotAutoJoinRatedArenaQueueSlots
+extern ConfigFamily<LoneKeys> const RatedQueueSlotsFamily;
+// Playerbots.RandomBotAutoJoinRatedArenaUncapped
+extern ConfigFamily<LoneKeys> const RatedQueueUncappedFamily;
+// Playerbots.RandomBotTestNamePrefix
+extern ConfigFamily<LoneKeys> const TestNamePrefixFamily;
+// Playerbots.DebugThreadChecks
+extern ConfigFamily<LoneKeys> const DebugThreadChecksFamily;
+// Playerbots.Test.MissLog
+extern ConfigFamily<LoneKeys> const TestMissLogFamily;
 
 #endif
