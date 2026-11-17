@@ -63,9 +63,9 @@ constexpr float WATER_PER_HOUR = 4.0f;  // the mana classes but mages
 constexpr std::array<float, WorldTravel::LEVEL_BAND_COUNT> AMMO_PER_HOUR = {200.0f, 400.0f, 600.0f, 600.0f,
                                                                             600.0f};  // hunters
 constexpr float NON_HUNTER_AMMO_PER_HOUR = 20.0f;  // warriors and rogues with a bow, crossbow or gun (WU28)
-constexpr float REAGENT_PER_HOUR = 1.0f;   // the classes the index lists for a reagent
-constexpr float POISON_PER_HOUR = 2.0f;    // rogues: an application per weapon lasts an hour
-constexpr float PET_FOOD_PER_HOUR = 2.0f;  // hunters whose pet's diet is known
+constexpr float REAGENT_PER_HOUR = 1.0f;           // the classes the index lists for a reagent
+constexpr float POISON_PER_HOUR = 2.0f;            // rogues: an application per weapon lasts an hour
+constexpr float PET_FOOD_PER_HOUR = 2.0f;          // hunters whose pet's diet is known
 
 // The game's riding speeds, times running speed
 constexpr float RUN_SPEED = 1.0f;
