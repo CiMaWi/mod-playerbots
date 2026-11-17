@@ -165,13 +165,6 @@ inline bool FactoryApplies(bool honestRandomBot, uint32_t level, uint32_t played
     return honestRandomBot && level > 1 && NewCharacter(playedSeconds);
 }
 
-// Whether a randomize clears the bags and sets the gold. A bot that keeps its possessions (family rule 2) is only
-// given a fresh kit when it is created or by a full init, an operator command.
-inline bool RandomizeWipes(bool fullInit, bool keepsPossessions, uint32_t playedSeconds)
-{
-    return fullInit || !keepsPossessions || NewCharacter(playedSeconds);
-}
-
 // The level-up cleanup of old consumables deletes reagents. Item class 15 (Misc) subclass 0 is Junk, which holds the
 // hearthstone; the Misc reagent subclass is 1. (The core's ITEM_SUBCLASS_REAGENT is 0 for class 5, Reagent.)
 constexpr uint32_t ITEM_CLASS_REAGENT_ID = 5;
