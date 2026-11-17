@@ -47,6 +47,25 @@ enum class HistoryRow : uint8_t
     Boss
 };
 
+// The row words of the history, lately and known topics (BotStateItem::word)
+inline char const* HistoryWord(uint8_t code)
+{
+    switch (static_cast<HistoryRow>(code))
+    {
+        case HistoryRow::Event:
+            return BridgeTexts::Lookups::ROW_EVENT;
+        case HistoryRow::Zone:
+            return BridgeTexts::Lookups::ROW_ZONE;
+        case HistoryRow::Dungeon:
+            return BridgeTexts::Lookups::ROW_DUNGEON;
+        case HistoryRow::Boss:
+            return BridgeTexts::Lookups::ROW_BOSS;
+    }
+    return "";
+}
+inline char const* DeedWord(uint8_t) { return BridgeTexts::Lookups::ROW_DEED; }
+inline char const* KnownWord(uint8_t) { return BridgeTexts::Lookups::ROW_BOT; }
+
 // One topic entry: Name a word or a name, Text a sentence; Value and Extra as BridgeBotState.h describes the topic
 struct Entry
 {

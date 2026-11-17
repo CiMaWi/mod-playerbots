@@ -1033,6 +1033,55 @@ inline constexpr char const* NEEDS_ROW_RESERVE = "reserve";
 
 // The needs topic's row word for the shortfall the bot saves up for.
 inline constexpr char const* NEEDS_ROW_SAVING = "saving";
+
+// The row words (BotStateItem::word) of the state topics, sent beside each row's code: one word of [a-z_] per kind of
+// row, so a reader of the rows needs no table of codes. Not the `name` values above.
+inline constexpr char const* ROW_GOAL = "goal";
+inline constexpr char const* ROW_SOURCE = "source";
+inline constexpr char const* ROW_REASON = "reason";
+inline constexpr char const* ROW_STOP = "stop";
+inline constexpr char const* ROW_OPTION = "option";
+inline constexpr char const* ROW_CURRENT = "current";
+inline constexpr char const* ROW_TOTAL = "total";
+inline constexpr char const* ROW_LEG = "leg";
+inline constexpr char const* ROW_FAILED = "failed";
+inline constexpr char const* ROW_TAKE = "take";
+inline constexpr char const* ROW_TASK = "task";
+inline constexpr char const* ROW_TURN_IN = "turn_in";
+inline constexpr char const* ROW_CARRIED = "carried";
+inline constexpr char const* ROW_DEFERRED = "deferred";
+inline constexpr char const* ROW_FREE = "free";
+inline constexpr char const* ROW_SELL = "sell";
+inline constexpr char const* ROW_BAG = "bag";
+inline constexpr char const* ROW_MAIL = "mail";
+inline constexpr char const* ROW_MAIL_SEEN = "mail_seen";
+inline constexpr char const* ROW_MAIL_EXPECTED = "mail_expected";
+inline constexpr char const* ROW_KEPT = "kept";
+inline constexpr char const* ROW_BANK_FREE = "bank_free";
+inline constexpr char const* ROW_HEARTH = "hearth";
+inline constexpr char const* ROW_FLIGHT_HERE = "flight_here";
+inline constexpr char const* ROW_FLIGHT_ELSEWHERE = "flight_elsewhere";
+inline constexpr char const* ROW_EVENT = "event";
+inline constexpr char const* ROW_ZONE = "zone";
+inline constexpr char const* ROW_DUNGEON = "dungeon";
+inline constexpr char const* ROW_BOSS = "boss";
+inline constexpr char const* ROW_DEED = "deed";
+inline constexpr char const* ROW_BOT = "bot";
+inline constexpr char const* ROW_NEED_PROVIDED = "provided";
+inline constexpr char const* ROW_NEED_NOTHING = "nothing";
+inline constexpr char const* ROW_NEED_PENDING = "pending";
+inline constexpr char const* ROW_NEED_DUE = "due";
+inline constexpr char const* ROW_NEED_PASSING = "passing";
+inline constexpr char const* ROW_NEED_RESERVE = "reserve";
+inline constexpr char const* ROW_NEED_SAVING = "saving";
+
+// The bags topic's sentences of the rows the bridge has no phrase for (the numbers stay in value and extra).
+inline constexpr char const* BAGS_TEXT_MAIL_WAITING = "Mail is waiting for the bot at the mailbox.";
+inline constexpr char const* BAGS_TEXT_MAIL_SEEN = "The bot saw gold in its mail and left it there.";
+inline constexpr char const* BAGS_TEXT_MAIL_EXPECTED = "The bot expects gold to arrive by mail.";
+inline constexpr char const* BAGS_TEXT_KEPT_BANK = " waits in the bank for a later level.";
+inline constexpr char const* BAGS_TEXT_KEPT_BAGS = " is carried for a later level.";
+inline constexpr char const* BAGS_TEXT_BANK_FREE = "The bot has room left in its bank.";
 }  // namespace Lookups
 }  // namespace BridgeTexts
 

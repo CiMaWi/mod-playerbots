@@ -15,6 +15,7 @@
 
 #include "BridgeBotTopics.h"
 #include "BridgeNeedsTopic.h"
+#include "RecordWords.h"
 
 namespace
 {
@@ -38,7 +39,7 @@ std::uint8_t Code(BotStateItem const& item) { return item.code; }
 template <typename Row>
 bool Is(BotStateItem const& item, Row row)
 {
-    return item.code == static_cast<std::uint8_t>(row);
+    return item.code == static_cast<std::uint8_t>(row) && item.word == RowWord(row);
 }
 
 Goals::Option OptionOf(Goals::GoalKind kind, std::uint32_t target, char const* reason, float perMinute, float minutes)
@@ -635,6 +636,107 @@ int main()
                    bothItems[index].extra == both.needs[index].funded &&
                    Is(bothItems[index], both.needs[index].due ? NeedRow::Due : NeedRow::Passing);
         Check(same, "needs: the topic's entries name the same needs as the command's list, in order");
+    }
+
+    // LCB1d: every row carries its word beside its code (Is() above also holds the item to RowWord of its row), the
+    // words are the ones the module used to derive from the codes, and the bags rows the bridge has no phrase for
+    // carry a sentence
+    {
+        auto const words = [](auto const& rows, std::initializer_list<char const*> expected)
+        {
+            std::size_t index = 0;
+            bool same = rows.size() == expected.size();
+            for (char const* word : expected)
+                same = same && index < rows.size() && std::string(RowWord(rows[index++])) == word;
+            return same;
+        };
+        Check(words(std::vector<PlanRow>{PlanRow::Goal, PlanRow::Source, PlanRow::Reason, PlanRow::Stop},
+                    {"goal", "source", "reason", "stop"}) &&
+                  words(std::vector<OptionRow>{OptionRow::Option, OptionRow::Current}, {"option", "current"}) &&
+                  words(std::vector<RouteRow>{RouteRow::Total, RouteRow::Leg, RouteRow::Failed},
+                        {"total", "leg", "failed"}) &&
+                  words(std::vector<QuestRow>{QuestRow::Take, QuestRow::Task, QuestRow::TurnIn, QuestRow::Carried,
+                                              QuestRow::Deferred},
+                        {"take", "task", "turn_in", "carried", "deferred"}) &&
+                  words(std::vector<BagRow>{BagRow::Free, BagRow::Sell, BagRow::Bag, BagRow::MailWaiting,
+                                            BagRow::MailSeen, BagRow::MailExpected, BagRow::Kept, BagRow::BankFree},
+                        {"free", "sell", "bag", "mail", "mail_seen", "mail_expected", "kept", "bank_free"}) &&
+                  words(std::vector<PlaceRow>{PlaceRow::Hearth, PlaceRow::Flight, PlaceRow::FlightAway},
+                        {"hearth", "flight_here", "flight_elsewhere"}),
+              "words: each planner topic's row words as the module's table named them");
+        Check(std::string(RecordWords::HistoryWord(0)) == "event" &&
+                  std::string(RecordWords::HistoryWord(1)) == "zone" &&
+                  std::string(RecordWords::HistoryWord(2)) == "dungeon" &&
+                  std::string(RecordWords::HistoryWord(3)) == "boss" &&
+                  std::string(RecordWords::DeedWord(0)) == "deed" && std::string(RecordWords::KnownWord(0)) == "bot",
+              "words: history, lately and known rows");
+        Check(std::string(RowWord(NeedRow::Provided)) == "provided" && std::string(RowWord(NeedRow::Due)) == "due" &&
+                  std::string(RowWord(NeedRow::Passing)) == "passing" &&
+                  std::string(RowWord(NeedRow::Saving)) == "saving",
+              "words: needs rows");
+
+        // A fixture with every optional row: each item of every old planner topic has a word of [a-z_]
+        auto const wordy = [](std::vector<BotStateItem> const& list)
+        {
+            bool fine = !list.empty();
+            for (BotStateItem const& item : list)
+            {
+                fine = fine && !item.word.empty() &&
+                       item.word.find_first_not_of("abcdefghijklmnopqrstuvwxyz_") == std::string::npos;
+            }
+            return fine;
+        };
+        PlanInput in = InScope();
+        SetGoal(in, Goals::GoalKind::Quest, 1, GoalApply::Source::Planner, "circuit");
+        PlanItems(in, items);
+        Check(wordy(items), "words: every plan row has a word");
+        OptionsItems(in, items);
+        Check(items.empty() || wordy(items), "words: every options row has a word");
+        QuestPlanItems(in, items);
+        Check(items.empty() || wordy(items), "words: every quest_plan row has a word");
+        BagsInput bags;
+        bags.freeSlots = 4;
+        bags.slots = 52;
+        bags.mailWaiting = 3;
+        bags.mailSeenCopper = 5000;
+        bags.mailExpectedCopper = 700;
+        bags.keepsPossessions = true;
+        bags.kept.push_back({"Linen Cloth", 20, true, false});
+        bags.kept.push_back({"Healing Potion", 5, false, true});
+        bags.bankFree = 20;
+        bags.bankSlots = 28;
+        BagsItems(bags, items);
+        bool texts = wordy(items) && items.size() == 7;
+        for (BotStateItem const& item : items)
+        {
+            bool const mailOrBank = Is(item, BagRow::MailWaiting) || Is(item, BagRow::MailSeen) ||
+                                    Is(item, BagRow::MailExpected) || Is(item, BagRow::Kept) ||
+                                    Is(item, BagRow::BankFree);
+            texts = texts && (mailOrBank ? !item.text.empty() && item.text.size() <= 200 && !HasDigit(item.text)
+                                         : item.text.empty());
+        }
+        Check(texts,
+              "words: bags rows 3-7 carry a word and a sentence under 200 bytes with no number, rows 0-2 no text");
+        Check(items.size() == 7 && items[4].text == "Healing Potion is carried for a later level." &&
+                  items[5].text == "Linen Cloth waits in the bank for a later level.",
+              "words: a kept row's sentence names the item and where it is");
+        bags.kept.clear();
+        bags.kept.push_back({std::string(300, 'x'), 20, true, false});
+        BagsItems(bags, items);
+        Check(items.size() >= 5 && items[4].text.size() <= 200,
+              "words: a very long item name still fits the 200 bytes");
+        PlacesInput places;
+        places.hearthArea = "Goldshire";
+        places.known.push_back({10, "Here", {0, 1.0f, 1.0f, 0.0f}});
+        places.known.push_back({20, "There", {1, 1.0f, 1.0f, 0.0f}});
+        PlacesItems(places, items);
+        Check(
+            wordy(items) && items.size() == 3 && items[1].word == "flight_here" && items[2].word == "flight_elsewhere",
+            "words: places rows hearth, flight_here, flight_elsewhere");
+        RouteInput route;
+        route.known = false;
+        RouteItems(route, items);
+        Check(wordy(items) && items[0].word == "failed", "words: route rows");
     }
 
     std::printf("bridge-bot-topics selftest: %d passed, %d failed\n", passed, failed);
