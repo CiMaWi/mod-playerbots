@@ -66,6 +66,13 @@
             "success": "PASS \\d+ checks"
         },
         {
+            "file": "bridge-item-rule-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "PASS \\d+ checks"
+        },
+        {
             "file": "bridge-spell-rule-selftest.cpp",
             "includes": [
                 "src/Bot"
@@ -199,6 +206,34 @@
             "file": "goal-model-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-demand-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-buff-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
             ],
             "success": "\\d+ passed, 0 failed"
         },

@@ -9,6 +9,7 @@
 #include "CensusMgr.h"
 #include "Event.h"
 #include "InventorySlots.h"
+#include "ItemDemand.h"
 #include "ItemCountValue.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
@@ -148,7 +149,8 @@ bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
         {
             ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());
             candidate.Worth = ItemUsageValue::ItemWorth(item->GetTemplate(), usage, item->GetCount(), sellMultiplier,
-                                                        BankMail::CarriedWorthEach(botAI, item->GetEntry()));
+                                                        BankMail::CarriedWorthEach(botAI, item->GetEntry()),
+                                                        ItemUse::DemandWorthEach(botAI, item->GetEntry()));
             if (usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH)
                 ++sellableSlots;
         }

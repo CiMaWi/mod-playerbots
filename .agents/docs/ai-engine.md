@@ -74,13 +74,14 @@ change, confirm:
 - Something a conversation partner can ask a bot to do is an ability: one `Intent` value (append only) in
   `src/Bot/BridgeIntentEffect.h` and one row in `src/Bot/BridgeAbilities.cpp` (name, sentence, parameters, group
   rule, check, refusals, effect, lasting part, completion, state phrase). `Execute` does not change; the row's effect
-  calls the playerbots action or planner goal; `IntentCount` (`src/Bot/BridgeAbilities.h`) counts the new value,
-  and mod-ollama-chat needs a `ChannelIntent` value, its `ChannelIntentCount` and a `BridgeIntentPairs` entry
-  (`mod-ollama-chat_handler.cpp`; static_asserts fail until all agree), after which its stepped wire takes the act
-  from the catalogue; and `tests/bridge-intent-effect-selftest.cpp` must see the row apply
-  and give every refusal it lists. A parameter's kind, the `Order` field that carries it (one parameter per field) and
-  a unit's filter (whom its name may mean) are described in the header comment of `src/Bot/BridgeAbilities.h`;
-  `RunRow` looks a name up (`src/Bot/BridgeNames.h`) after the common and group rules. A row with a new kind and no
+  calls the playerbots action or planner goal; `IntentCount` (`src/Bot/BridgeAbilities.h`) counts the new value.
+  mod-ollama-chat's frozen 22 `BridgeIntentPairs` verbs need nothing more: its stepped wire takes any later act
+  (`cast`, `use_item`) from the catalogue, and a refusal must be one of the 18 `Refusal` values
+  (`OrderRefusal` is a closed switch), so a new cause collapses onto them (`src/Bot/BridgeItemRule.h` for
+  `use_item`, whose exact cause stays in the ItemUse row); and `tests/bridge-intent-effect-selftest.cpp` must see
+  the row apply and give every refusal it lists. A parameter's kind, the `Order` field that carries it (one parameter
+  per field) and a unit's filter (whom its name may mean) are described in the header comment of
+  `src/Bot/BridgeAbilities.h`; `RunRow` looks a name up (`src/Bot/BridgeNames.h`) after the common and group rules. A row with a new kind and no
   real row yet is proven on the selftest's test-only rows. Something a partner can ask a bot about is a topic: one
   `BotStateTopic` value (append only) in `src/Bot/BridgeBotState.h`, one row in `TopicTable`
   (`src/Bot/BridgeAbilities.h`: name, sentence, argument (at most one name of any kind), limit, `Lines` for a topic
