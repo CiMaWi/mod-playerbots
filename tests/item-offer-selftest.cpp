@@ -5,9 +5,11 @@
  */
 
 // Item use plan WI14: the offer (PLAN 3.5) and the aim of an area item (3.7). Hand cases per need, a seeded search
-// over random situations and lists that counts the invariants O1-O8 and A1-A2 (each must stay 0, the search must not
-// be empty and must offer every need), and the printed choices for sample situations. The lane 1 CheapCheck is a stub
-// in this file (INTERFACE 2.3: the real ItemUseRules.h replaces it from WIT2). Run: item-offer-selftest <module root>
+// over random situations and lists that counts the invariants O1-O11, A1-A4 and G1-G4 (WI18, the gadgets: a rooting
+// item never on a casting target, no helper below OVERWHELMED_DANGER, no resurrection while fighting, no repair with a
+// vendor near or in a fight) (each must stay 0, the search must not
+// be empty and must offer every need), and the printed choices for sample situations. O3 asks lane 1's real
+// CheapCheck (ItemUseRules.h, since WI15a) over views built from the situation. Run: item-offer-selftest <module root>
 // [seed] [--choices]
 
 #include <array>
@@ -22,7 +24,9 @@
 #include <vector>
 
 #include "ItemOfferRules.h"
+#include "ItemUsableRules.h"
 #include "ItemUseFacts.h"
+#include "ItemUseRules.h"
 
 using namespace ItemUse;
 
@@ -45,31 +49,15 @@ void Check(bool ok, std::string const& what)
 constexpr std::uint32_t PVP_TRINKET = 42292;
 constexpr std::uint32_t PVP_TRINKET_OTHER = 65547;
 
-// One usable effect with the record facts the stub reads (lane 1's Check reads them from the Record)
+// One usable effect with its record (lane 1's CheapCheck reads the Record; fight and notInArena may be redrawn)
 struct Item
 {
     UsableEntry entry;
+    Record record;
     FightNeed fight{FightNeed::Any};
     bool notInArena{false};
     bool cooling{false};
     std::string name;
-};
-
-// ---- Stub of lane 1's CheapCheck (INTERFACE 1.8 shapes: a bot view and a target view) ----
-struct BotView
-{
-    bool inFight{false};
-    bool inArena{false};
-    bool potionDrunk{false};
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-};
-
-struct TargetView
-{
-    Target target;
-    NearUnit const* unit{nullptr};  // the unit the guid names, nullptr: none
 };
 
 float Dist(float ax, float ay, float az, float bx, float by, float bz)
@@ -80,103 +68,93 @@ float Dist(float ax, float ay, float az, float bx, float by, float bz)
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-Cause StubCheck(Item const& item, BotView const& bot, TargetView const& view)
+// ---- Lane 1's CheapCheck over views of the situation ----
+// The record the offer saw: the item's, with the entry's target facts and the drawn fight and arena needs
+Record RecordOf(Item const& item)
 {
+    Record record = item.record;
     UsableEntry const& e = item.entry;
-    if (item.cooling || !e.ready)
-        return Cause::NotReady;
-    if (e.potion && bot.potionDrunk)
-        return Cause::Potion;
-    if (e.count == 0)
-        return Cause::NoCharges;
-    if (item.fight == FightNeed::Peace && bot.inFight)
-        return Cause::InFight;
-    if (item.fight == FightNeed::Fight && !bot.inFight)
-        return Cause::NotInFight;
-    if (item.notInArena && bot.inArena)
-        return Cause::Arena;
-
-    Target const& t = view.target;
-    bool kindOk = false;
-    switch (e.shape)
-    {
-        case Shape::None:
-            kindOk = t.kind == TargetKind::None;
-            break;
-        case Shape::Self:
-            kindOk = t.kind == TargetKind::Self;
-            break;
-        case Shape::Friend:
-            kindOk = t.kind == TargetKind::Self || t.kind == TargetKind::Unit;
-            break;
-        case Shape::Enemy:
-            kindOk = t.kind == TargetKind::Unit;
-            break;
-        case Shape::AnyUnit:
-            kindOk = t.kind == TargetKind::Self || t.kind == TargetKind::Unit;
-            break;
-        case Shape::Ground:
-            kindOk = t.kind == TargetKind::Spot;
-            break;
-        default:
-            kindOk = false;
-            break;
-    }
-    if (!kindOk)
-        return t.kind == TargetKind::None ? Cause::NoTarget : Cause::BadTarget;
-
-    if (t.kind == TargetKind::Unit)
-    {
-        if (!view.unit)
-            return Cause::NoTarget;
-        NearUnit const& u = *view.unit;
-        bool const dead = !(u.healthPct > 0.0f);
-        if (dead != t.dead)
-            return Cause::BadTarget;
-        if (e.shape == Shape::Enemy && u.friendly)
-            return Cause::BadTarget;
-        if (e.shape == Shape::Friend && !u.friendly)
-            return Cause::BadTarget;
-        float const reach = u.friendly ? (e.rangeFriendYards > 0.0f ? e.rangeFriendYards : 5.0f)
-                                       : (e.rangeYards > 0.0f ? e.rangeYards : 5.0f);
-        float const d = Dist(bot.x, bot.y, bot.z, u.x, u.y, u.z);
-        if (d < e.minRangeYards)
-            return Cause::TooClose;
-        if (d > reach)
-            return Cause::Range;
-    }
-    if (t.kind == TargetKind::Spot)
-    {
-        float const d = Dist(bot.x, bot.y, bot.z, t.x, t.y, t.z);
-        if (d < e.minRangeYards)
-            return Cause::TooClose;
-        if (d > e.rangeYards)
-            return Cause::Range;
-    }
-    return Cause::None;
+    record.shape = e.shape;
+    record.radiusYards = e.radiusYards;
+    record.rangeYards = e.rangeYards;
+    record.minRangeYards = e.minRangeYards;
+    record.rangeFriendYards = e.rangeFriendYards;
+    record.consumed = e.consumed;
+    record.potion = e.potion;
+    record.needs.fight = item.fight;
+    record.needs.notInArena = item.notInArena;
+    return record;
 }
 
-BotView ViewOf(Situation const& s)
+// The bot as the search draws it: it holds the item, may use it (level 80, every class and race, the skill), and a
+// cooling item has its cooldown left
+BotView BotViewOf(Item const& item, Record const& record, Situation const& s)
 {
     BotView v;
+    v.level = 80;
+    v.classBit = 0xFFFFFFFFu;
+    v.raceBit = 0xFFFFFFFFu;
+    v.skillValue = record.needs.skillRank;
+    v.held = item.entry.count;
+    v.equipped = true;
+    v.cooldownLeftMs = item.cooling ? 1000 : 0;
+    v.chargesLeft = static_cast<std::int32_t>(item.entry.count);
+    v.potionDrunk = s.potionDrunk;
     v.inFight = s.inFight;
     v.inArena = s.inArena;
-    v.potionDrunk = s.potionDrunk;
+    v.outdoors = !record.needs.indoors;
     v.x = s.x;
     v.y = s.y;
     v.z = s.z;
     return v;
 }
 
-TargetView ViewOf(Situation const& s, Target const& t)
+TargetView TargetViewOf(Situation const& s, Target const& t)
 {
     TargetView v;
-    v.target = t;
-    if (t.kind == TargetKind::Unit)
-        for (std::size_t i = 0; i < s.unitCount && i < MAX_NEAR; ++i)
-            if (s.units[i].guid == t.guid)
-                v.unit = &s.units[i];
+    v.kind = t.kind;
+    switch (t.kind)
+    {
+        case TargetKind::None:
+        case TargetKind::Self:
+            v.found = true;
+            v.isBot = true;
+            v.alive = s.healthPct > 0.0f;
+            v.friendly = true;
+            v.healthFull = s.healthPct >= 100.0f;
+            break;
+        case TargetKind::Unit:
+            for (std::size_t i = 0; i < s.unitCount && i < MAX_NEAR; ++i)
+                if (s.units[i].guid == t.guid)
+                {
+                    NearUnit const& u = s.units[i];
+                    v.found = true;
+                    v.alive = u.healthPct > 0.0f;
+                    v.friendly = u.friendly;
+                    v.hostile = !u.friendly;
+                    v.healthFull = u.healthPct >= 100.0f;
+                    v.yards = Dist(s.x, s.y, s.z, u.x, u.y, u.z);
+                }
+            break;
+        case TargetKind::Spot:
+            v.found = true;
+            v.yards = Dist(s.x, s.y, s.z, t.x, t.y, t.z);
+            break;
+        default:
+            break;
+    }
     return v;
+}
+
+Cause RealCheck(Item const& item, Situation const& s, Target const& t)
+{
+    Record const record = RecordOf(item);
+    Request request;
+    request.item.entry = item.entry.item.entry;
+    request.target = t;
+    request.caller = Caller::Fight;
+    request.spellId = record.spellId;
+    return CheapCheck(record, request, BotViewOf(item, record, s), TargetViewOf(s, t));
 }
 
 // ---- Independent recomputation of the aim's facts (A1, A2, covers) ----
@@ -250,6 +228,7 @@ Item FromRecord(Record const& r, std::string const& name, std::uint32_t id)
 {
     Classified const c = Classify(r);
     Item item;
+    item.record = r;
     UsableEntry& e = item.entry;
     e.record = id;
     e.item.entry = r.itemEntry;
@@ -267,6 +246,8 @@ Item FromRecord(Record const& r, std::string const& name, std::uint32_t id)
     e.minRangeYards = r.minRangeYards;
     e.rangeFriendYards = r.rangeFriendYards;
     e.pvpTrinket = IsPvpTrinket(r);
+    e.channeled = r.channeled;
+    e.stopsCast = c.kind == Kind::Control && StopsCast(r);
     item.fight = r.needs.fight;
     item.notInArena = r.needs.notInArena;
     item.name = name;
@@ -310,6 +291,8 @@ Item Synth(std::string const& name, Kind kind, Sub sub, Shape shape, std::int32_
     e.rangeYards = range;
     e.radiusYards = radius;
     e.rangeFriendYards = 30.0f;
+    item.record.spellId = 1;  // a use effect; the rest of the record follows the entry (RecordOf)
+    item.record.life = kind == Kind::Resurrect ? Life::Dead : Life::Alive;
     item.name = "synthetic " + name;
     return item;
 }
@@ -493,6 +476,13 @@ struct Counters
     std::uint64_t potionOffers{0};
     std::uint64_t keeps{0};
     std::uint64_t o1{0}, o2{0}, o3{0}, o4{0}, o5{0}, o6{0}, o7{0}, o8{0}, a1{0}, a2{0}, coversWrong{0}, forbidWrong{0};
+    std::uint64_t o9{0}, o10{0}, o11{0}, channelOffers{0}, arenaSituations{0};
+    // WI17: A3 a pick out of sight or a lazy sight order that picks otherwise, A4 an area use that pulls a unit
+    // outside the fight, worthWrong an area offer below AREA_MIN_HITS without a strong enemy covered
+    std::uint64_t a3{0}, a4{0}, worthWrong{0}, sightQuestions{0}, areaOffers{0};
+    // WI18: G1 root_caster, G2 helper_trivial, G3 res_in_fight, G4 repair_vendor; casterStops: control offers on a
+    // casting target (the search must draw them)
+    std::uint64_t g1{0}, g2{0}, g3{0}, g4{0}, casterStops{0};
 };
 
 void CheckAim(Situation const& s, UsableEntry const& e, AimSpots spots, std::mt19937_64& rng, Counters& c)
@@ -506,11 +496,38 @@ void CheckAim(Situation const& s, UsableEntry const& e, AimSpots spots, std::mt1
         if (p.forbidden != IndepForbidden(s, p.x, p.y, p.z, e.radiusYards, selfCentred))
             ++c.forbidWrong;
     }
-    // the harness sets sight
-    for (std::size_t k = 0; k < spots.count; ++k)
-        spots.spots[k].inSight = (rng() % 5) != 0;
+    // the harness sets sight (WI17: through the situation's bits, as the sampler does), and the sampler's lazy order
+    // must reach the same pick asking only what NextSightCheck asks
+    std::uint32_t truth = 0;
+    for (std::size_t k = 0; k < 32; ++k)
+        if ((rng() % 5) != 0)
+            truth |= std::uint32_t(1) << k;
+    Situation sighted = s;
+    sighted.aimSight = truth;
+    spots = AimCandidates(sighted, e);
     ++c.aims;
     std::int8_t const pick = AimPick(spots);
+    std::uint32_t known = 0;
+    std::uint32_t seen = 0;
+    for (std::int8_t k = NextSightCheck(spots, selfCentred, known, seen); k >= 0;
+         k = NextSightCheck(spots, selfCentred, known, seen))
+    {
+        std::uint32_t const bit = std::uint32_t(1) << k;
+        if ((known & bit) != 0)
+        {
+            ++c.a3;  // asked twice: the order would not end
+            break;
+        }
+        known |= bit;
+        seen |= truth & bit;
+        ++c.sightQuestions;
+    }
+    Situation lazy = s;
+    lazy.aimSight = seen;
+    if (AimPick(AimCandidates(lazy, e)) != pick)
+        ++c.a3;
+    if (pick >= 0 && !selfCentred && (truth & (std::uint32_t(1) << pick)) == 0)
+        ++c.a3;
     if (pick < 0)
     {
         for (std::size_t k = 0; k < spots.count; ++k)
@@ -569,7 +586,7 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
     UsableEntry const& e = item.entry;
     if (e.consumed != o.consumed)
         ++c.o3;
-    if (StubCheck(item, ViewOf(s), ViewOf(s, o.target)) != Cause::None)
+    if (RealCheck(item, s, o.target) != Cause::None)
         ++c.o3;
     if (e.pvpTrinket)
         ++c.o5;
@@ -577,6 +594,43 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
         ++c.o7;
     if (o.need == Need::Boost && s.holdsBurst)
         ++c.o8;
+    // G1-G4 (WI18)
+    if (o.need == Need::Control && o.target.kind == TargetKind::Unit)
+        for (std::size_t i = 0; i < s.unitCount; ++i)
+            if (s.units[i].guid == o.target.guid && s.units[i].casts)
+            {
+                ++c.casterStops;
+                if (!e.stopsCast)
+                    ++c.g1;
+            }
+    if (o.need == Need::Helper && Danger(s) < OVERWHELMED_DANGER)
+        ++c.g2;
+    if (o.need == Need::Resurrect && s.inFight && !s.fightEnded)
+        ++c.g3;
+    if (o.need == Need::Repair && (s.vendorNear || s.inFight))
+        ++c.g4;
+    // O9 (WI16): no consumed heal in an arena (the PvP tactics' potion gate)
+    if (s.inArena && e.consumed && e.kind == Kind::Heal)
+        ++c.o9;
+    // O10 (WI16): a channel only while nothing hits the bot, no held foe stands in melee reach and it stands; a
+    // channelled heal not while bandaged
+    if (e.channeled)
+    {
+        ++c.channelOffers;
+        bool hit = false;
+        for (std::size_t i = 0; i < s.unitCount; ++i)
+        {
+            NearUnit const& u = s.units[i];
+            bool const foe = !u.friendly && u.inFight && u.healthPct > 0.0f;
+            float const dx = u.x - s.x;
+            float const dy = u.y - s.y;
+            float const dz = u.z - s.z;
+            bool const reach = std::sqrt(dx * dx + dy * dy + dz * dz) <= 5.0f;
+            hit = hit || (foe && u.onBot && !u.controlled) || (foe && u.controlled && reach);
+        }
+        if (hit || s.moving || (e.kind == Kind::Heal && s.recentlyBandaged))
+            ++c.o10;
+    }
     if (o.consumed)
     {
         ++c.consumedOffers;
@@ -586,6 +640,42 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
     if (o.need == Need::DamageArea && o.target.kind == TargetKind::Spot &&
         IndepForbidden(s, o.target.x, o.target.y, o.target.z, e.radiusYards, IndepSelfCentred(e)))
         ++c.a1;
+    // A4 (WI17): the area the use covers (the spot, the unit it is aimed at, or the bot) holds no unit outside the
+    // fight; and it is worth it: AREA_MIN_HITS covered, or one strong enemy
+    if (o.need == Need::DamageArea)
+    {
+        ++c.areaOffers;
+        float x = s.x;
+        float y = s.y;
+        float z = s.z;
+        if (o.target.kind == TargetKind::Spot)
+        {
+            x = o.target.x;
+            y = o.target.y;
+            z = o.target.z;
+        }
+        else if (o.target.kind == TargetKind::Unit)
+            for (std::size_t i = 0; i < s.unitCount; ++i)
+                if (s.units[i].guid == o.target.guid)
+                {
+                    x = s.units[i].x;
+                    y = s.units[i].y;
+                    z = s.units[i].z;
+                }
+        bool strong = false;
+        for (std::size_t i = 0; i < s.unitCount; ++i)
+        {
+            NearUnit const& u = s.units[i];
+            if (u.friendly || !(u.healthPct > 0.0f) || Dist(x, y, z, u.x, u.y, u.z) > e.radiusYards)
+                continue;
+            if (!u.inFight)
+                ++c.a4;
+            else if (!u.controlled && u.rank != Rank::Normal && u.rank != Rank::Player)
+                strong = true;
+        }
+        if (!(IndepCovers(s, x, y, z, e.radiusYards) >= AREA_MIN_HITS || strong))
+            ++c.worthWrong;
+    }
     float const danger = Danger(s);
     for (std::size_t j = 0; j < items.size(); ++j)
     {
@@ -601,10 +691,14 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
         // O2: a free ready answer of the same need beats every consumed one
         if (o.consumed && !other.consumed)
             ++c.o2;
-        // O4: a stronger ready one of the same class that would be allowed
-        if (other.consumed == e.consumed && other.rank > e.rank &&
+        // O4: a stronger ready one of the same class that would be allowed (WI16: a consumed class is potion or not)
+        if (other.consumed == e.consumed && (!e.consumed || other.potion == e.potion) && other.rank > e.rank &&
             (!other.consumed || Spend(SpendCaseFor(s, other, danger, hits, false)).spend))
             ++c.o4;
+        // O11 (WI16, the chain): a potion while a non-potion consumed answer of the need would be spent
+        if (o.consumed && e.potion && other.consumed && !other.potion &&
+            Spend(SpendCaseFor(s, other, danger, hits, false)).spend)
+            ++c.o11;
     }
 }
 
@@ -648,6 +742,8 @@ Situation GenSituation(std::mt19937_64& rng)
     s.earnCopperPerMinute = Chance(rng, 0.2) ? 1 : static_cast<std::uint32_t>(rng() % 3000);
     s.repairCopper = static_cast<std::uint32_t>(rng() % 6000);
     s.control = Chance(rng, 0.05);
+    s.moving = Chance(rng, 0.2);
+    s.recentlyBandaged = Chance(rng, 0.15);
 
     std::size_t const units = rng() % (MAX_NEAR + 1);
     std::size_t const clusters = 1 + rng() % 3;
@@ -676,6 +772,25 @@ Situation GenSituation(std::mt19937_64& rng)
         u.casts = Chance(rng, 0.2);
         s.units[s.unitCount++] = u;
     }
+    // WI17: bystanders inside the clusters (not in the fight, some of them controlled), where the aim must step
+    // around them; and a partial sight of the candidate spots, as the sampler leaves it
+    for (std::size_t k = 0; k < clusters && s.unitCount < MAX_NEAR; ++k)
+    {
+        if (!Chance(rng, 0.35))
+            continue;
+        NearUnit u;
+        u.guid = 2000 + k;
+        u.x = centres[k][0] + Uniform(rng, -3.0f, 3.0f);
+        u.y = centres[k][1] + Uniform(rng, -3.0f, 3.0f);
+        u.z = centres[k][2] + Uniform(rng, -1.0f, 1.0f);
+        u.level = s.level;
+        u.rank = static_cast<Rank>(rng() % 5);
+        u.controlled = Chance(rng, 0.3);
+        u.healthPct = Uniform(rng, 20.0f, 100.0f);
+        s.units[s.unitCount++] = u;
+    }
+    if (Chance(rng, 0.3))
+        s.aimSight = static_cast<std::uint32_t>(rng());
     if (s.unitCount > 0 && Chance(rng, 0.8))
         s.target = static_cast<std::int8_t>(rng() % s.unitCount);
     s.groupDead = 0;
@@ -730,7 +845,10 @@ std::vector<Item> GenList(std::mt19937_64& rng, Situation const& s)
                          consumed, static_cast<std::uint32_t>(rng() % 30000), range, radius);
             item.entry.minRangeYards = Chance(rng, 0.1) ? Uniform(rng, 0.0f, 8.0f) : 0.0f;
             item.entry.potion = consumed && (kind == Kind::Heal || kind == Kind::Mana) && Chance(rng, 0.6);
+            item.entry.channeled = !item.entry.potion && Chance(rng, kind == Kind::Heal ? 0.4 : 0.05);
+            item.record.channeled = item.entry.channeled;
             item.entry.record = static_cast<std::uint32_t>(100000 + i);
+            item.entry.stopsCast = kind == Kind::Control && Chance(rng, 0.5);
             item.fight = static_cast<FightNeed>(rng() % 3);
             item.notInArena = Chance(rng, 0.2);
             if (Chance(rng, 0.03))
@@ -753,6 +871,185 @@ std::vector<Item> GenList(std::mt19937_64& rng, Situation const& s)
 }
 
 // ---- Hand cases ----
+// WI18: the gadgets' hand cases with their real records
+void GadgetCases(Item const& net)
+{
+    std::optional<Item> const tidal = Real("Tidal Charm");
+    std::optional<Item> const sand = Real("Slumber Sand");
+    std::optional<Item> const dummy = Real("Target Dummy");
+    std::optional<Item> const dragonling = Real("Arcanite Dragonling");
+    std::optional<Item> const cables = Real("Goblin Jumper Cables");
+    std::optional<Item> const jeeves = Real("Jeeves");
+    std::optional<Item> const bot74a = Real("Field Repair Bot 74A");
+    Check(tidal && sand && dummy && dragonling && cables && jeeves && bot74a, "the gadget cases' real records exist");
+    if (!tidal || !sand || !dummy || !dragonling || !cables || !jeeves || !bot74a)
+        return;
+    Check(!net.entry.stopsCast && tidal->entry.stopsCast && sand->entry.stopsCast,
+          "the net roots (no stop of a cast), the charm and the sand stun");
+    Check(dragonling->entry.sub == static_cast<std::uint8_t>(Sub::Helper) &&
+              dummy->entry.sub == static_cast<std::uint8_t>(Sub::Decoy) &&
+              jeeves->entry.sub == static_cast<std::uint8_t>(Sub::Repair) &&
+              bot74a->entry.sub == static_cast<std::uint8_t>(Sub::Repair),
+          "the gadgets' roles");
+
+    // a level-80 bot (1000 c a minute) and one enemy that flees: the net saves the chase (RUNNER_MINUTES)
+    Situation runner = Base();
+    runner.level = 80;
+    runner.earnCopperPerMinute = 1000;
+    NearUnit runs = Enemy(1, 112.0f, 100.0f, false, 80);
+    runs.flees = true;
+    Add(runner, runs);
+    runner.target = 0;
+    std::vector<Item> items = {net};
+    Offer o = Run(runner, items);
+    Check(o.any && o.need == Need::Control && o.consumed && o.target.guid == 1 && o.verdict.spend &&
+              o.verdict.reason == SpendReason::Time,
+          "control: the net on a lone runner at level 80, spent for the chase (time)");
+    Print("control: a lone runner, a level-80 bot with the net", runner, items);
+    runner.earnCopperPerMinute = 100;  // a level-20 band's rate: the chase is worth less than the net
+    o = Run(runner, items);
+    Check(!o.any && o.consumed && o.verdict.reason == SpendReason::NotWorth,
+          "control: the net on a lone runner at a low earning rate: kept (not worth)");
+    // WI18b (NeedAt): a bursting bot with a boost trinket and the net: the net while the runner runs, the boost once
+    // it stands; a caster keeps the enum order (lab12 r3-r4: a warrior's boost came first and the runner escaped)
+    runner.earnCopperPerMinute = 1000;
+    runner.bursts = true;
+    Item const boost = Synth("damage trinket", Kind::Boost, Sub::None, Shape::Self, 100, false, 0);
+    items = {boost, net};
+    o = Run(runner, items);
+    Check(o.any && o.need == Need::Control && o.usable == 1 && o.target.guid == 1,
+          "control before boost: the net on the runner while it runs, the boost trinket ready");
+    runner.units[0].flees = false;
+    o = Run(runner, items);
+    Check(o.any && o.need == Need::Boost && o.usable == 0, "control before boost: the runner stands: the boost");
+    runner.units[0].casts = true;
+    o = Run(runner, items);
+    Check(o.any && o.need == Need::Boost && o.usable == 0, "control before boost: a caster keeps the enum order");
+    runner.units[0].casts = false;
+    runner.units[0].flees = true;
+    runner.bursts = false;
+    items = {net};
+    Situation walker = runner;
+    walker.units[0].flees = false;
+    walker.units[0].onBot = true;
+    Check((WantedNeeds(walker) & NeedBit(Need::Control)) == 0, "control: one ordinary enemy on the bot: none wanted");
+
+    // one enemy that casts: a stun answers, a root never
+    Situation caster = Base();
+    NearUnit casts = Enemy(1, 110.0f, 100.0f, true);
+    casts.casts = true;
+    Add(caster, casts);
+    caster.target = 0;
+    Check((WantedNeeds(caster) & NeedBit(Need::Control)) != 0, "control: a casting enemy wants control");
+    items = {net};
+    o = Run(caster, items);
+    Check(!o.any && !o.consumed, "control: the net never on a caster");
+    items = {net, *sand};
+    o = Run(caster, items);
+    Check(o.any && o.need == Need::Control && o.usable == 1 && o.target.guid == 1, "control: the sand on a caster");
+    Print("control: one caster, the net and the sand", caster, items);
+    items = {net, *sand, *tidal};
+    o = Run(caster, items);
+    Check(o.any && o.usable == 2 && !o.consumed, "control: the free charm first");
+    // two on the bot, one of them casting: the caster is the one held, whatever the target
+    Situation two = Base();
+    Add(two, Enemy(1, 104.0f, 100.0f, true));
+    NearUnit castsToo = Enemy(2, 108.0f, 100.0f, true);
+    castsToo.casts = true;
+    Add(two, castsToo);
+    two.target = 1;
+    items = {*tidal};
+    o = Run(two, items);
+    Check(o.any && o.need == Need::Control && o.target.guid == 2, "control: the caster among two, even the target");
+
+    // a helper in danger, none in a fight nearly won
+    Situation bad = Base();
+    bad.healthPct = 35.0f;
+    bad.healthLossPerSecond = 400.0f;
+    for (int i = 0; i < 4; ++i)
+        Add(bad, Enemy(1 + i, 104.0f, 100.0f + i, true, 62, Rank::Elite));
+    bad.target = 0;
+    items = {*dragonling};
+    o = Run(bad, items);
+    Check(o.any && o.need == Need::Helper && !o.consumed, "helper: the dragonling when overwhelmed");
+    Situation won = Base();
+    for (int i = 0; i < 2; ++i)
+    {
+        NearUnit dying = Enemy(1 + i, 104.0f, 100.0f + i, true);
+        dying.healthPct = 5.0f;
+        Add(won, dying);
+    }
+    won.target = 0;
+    o = Run(won, items);
+    Check((WantedNeeds(won) & NeedBit(Need::Helper)) == 0 && !o.any, "helper: none in a fight nearly won");
+
+    // a decoy when overwhelmed: the consumed dummy spent, at the nearest enemy's place within its range
+    items = {*dummy};
+    o = Run(bad, items);
+    Check(o.any && o.need == Need::Decoy && o.consumed && o.verdict.spend && o.target.kind == TargetKind::Spot &&
+              o.target.x == 104.0f && o.target.y == 100.0f,
+          "decoy: the dummy at the nearest enemy's place");
+    Print("decoy: four elites on the bot, the target dummy", bad, items);
+    Situation far = bad;
+    for (std::size_t i = 0; i < far.unitCount; ++i)
+        far.units[i].x = 125.0f;  // beyond the dummy's range (10): the bot's own spot
+    o = Run(far, items);
+    Check(o.any && o.need == Need::Decoy && o.target.kind == TargetKind::Spot && o.target.x == far.x &&
+              o.target.y == far.y,
+          "decoy: the enemies beyond its range: at the bot's own spot");
+    Situation corner = Base();
+    NearUnit faint = Enemy(1, 104.0f, 100.0f, true, 50);
+    faint.healthPct = 3.0f;
+    Add(corner, faint);
+    corner.target = 0;
+    corner.cornered = true;
+    o = Run(corner, items);
+    Check(!o.any && o.consumed && !o.verdict.spend, "decoy: cornered by one nearly dead enemy: the dummy kept");
+
+    // the cables on a dead group member in reach after the fight; not out of reach; not while fighting
+    Situation after = Base();
+    after.inFight = false;
+    after.fightEnded = true;
+    NearUnit corpse;
+    corpse.guid = 77;
+    corpse.x = 104.0f;
+    corpse.y = 100.0f;
+    corpse.friendly = true;
+    corpse.healthPct = 0.0f;
+    Add(after, corpse);
+    after.groupDead = 1;
+    items = {*cables};
+    o = Run(after, items);
+    Check(o.any && o.need == Need::Resurrect && o.target.guid == 77 && o.target.dead,
+          "cables: a dead mate 4 yd off after the fight");
+    Situation away = after;
+    away.units[0].x = 107.0f;
+    o = Run(away, items);
+    Check(!o.any, "cables: the mate 7 yd off, beyond the reach: none (no walk to the corpse)");
+    Situation during = after;
+    during.inFight = true;
+    during.fightEnded = false;
+    Add(during, Enemy(5, 103.0f, 100.0f, true));
+    o = Run(during, items);
+    Check((WantedNeeds(during) & NeedBit(Need::Resurrect)) == 0 && o.need != Need::Resurrect,
+          "cables: none while the fight lasts");
+
+    // repair: Jeeves out of a fight with broken gear; the consumed 74A kept (out of a fight it saves no death)
+    Situation broken = Base();
+    broken.inFight = false;
+    broken.gearBroken = true;
+    items = {*jeeves};
+    o = Run(broken, items);
+    Check(o.any && o.need == Need::Repair && !o.consumed, "repair: Jeeves with broken gear and no vendor");
+    items = {*bot74a};
+    o = Run(broken, items);
+    Check(!o.any && o.consumed && o.verdict.reason == SpendReason::Won, "repair: the 74A kept out of a fight (won)");
+    broken.vendorNear = true;
+    items = {*jeeves};
+    o = Run(broken, items);
+    Check(!o.any, "repair: Jeeves not with a vendor near");
+}
+
 void HandCases()
 {
     std::optional<Item> const potion = Real("Major Healing Potion");
@@ -804,6 +1101,57 @@ void HandCases()
               "heal: a weak nearly dead enemy: keep");
         Print("heal: a trivial fight at 30% (grey enemy at 3%)", easy, items);
     }
+    // 1b. Heal a friend (WI15b): the bot whole, a hurt group member near
+    {
+        Situation s = Base();
+        s.healthPct = 100.0f;
+        Add(s, Enemy(1, 103.0f, 100.0f, false));
+        NearUnit mate;
+        mate.guid = 50;
+        mate.x = 108.0f;
+        mate.y = 100.0f;
+        mate.level = 60;
+        mate.friendly = true;
+        mate.inFight = true;
+        mate.healthPct = 35.0f;
+        mate.health = 1400;
+        Add(s, mate);
+        NearUnit whole = mate;
+        whole.guid = 51;
+        whole.y = 103.0f;
+        whole.healthPct = 50.0f;
+        Add(s, whole);
+        s.target = 0;
+        Item crystals = Synth("friend heal (free)", Kind::Heal, Sub::None, Shape::Friend, 1000, false, 0);
+        Item stone = Synth("self heal (free, stronger)", Kind::Heal, Sub::None, Shape::Self, 2000, false, 0);
+        std::vector<Item> items = {stone, crystals};
+        Offer o = Run(s, items);
+        Check(o.any && o.need == Need::Heal && o.usable == 1 && o.target.kind == TargetKind::Unit &&
+                  o.target.guid == 50 && !o.target.dead,
+              "heal friend: a whole bot heals the most hurt friend with the friend-shaped item, not the self one");
+        Print("heal friend: the bot whole, a mate at 35% and one at 50%", s, items);
+        Situation far = s;
+        far.units[1].x = 140.0f;
+        far.units[2].x = 140.0f;
+        o = Run(far, items);
+        Check(!o.any, "heal friend: hurt friends beyond the item's friend reach get none");
+        Situation self = s;
+        self.healthPct = 40.0f;
+        o = Run(self, items);
+        Check(o.any && o.need == Need::Heal && o.usable == 0 && o.target.kind == TargetKind::Self,
+              "heal friend: a hurt bot heals itself first");
+        Situation fine = s;
+        fine.units[1].healthPct = 90.0f;
+        fine.units[2].healthPct = 90.0f;
+        Check(!(WantedNeeds(fine) & NeedBit(Need::Heal)),
+              "heal friend: no heal wanted when the bot and its friends are whole");
+        NearUnit foe = mate;
+        foe.guid = 52;
+        foe.friendly = false;
+        Situation hostile = fine;
+        Add(hostile, foe);
+        Check(!(WantedNeeds(hostile) & NeedBit(Need::Heal)), "heal friend: a hurt enemy wants no heal");
+    }
     // 2. Mana
     {
         Situation s = Base();
@@ -848,6 +1196,17 @@ void HandCases()
         std::vector<Item> items = {shield};
         Offer o = Run(s, items);
         Check(o.any && o.need == Need::Protect, "protect: losing health at 50%: the protection");
+        // WI16: a flight at full health from one foe asks for the protection too (plan 3.8)
+        s.healthPct = 100.0f;
+        s.healthLossPerSecond = 0.0f;
+        o = Run(s, items);
+        Check(!o.any, "protect: one foe at full health, no flight: none");
+        s.flees = true;
+        o = Run(s, items);
+        Check(o.any && o.need == Need::Protect, "protect: a flight from one foe at full health: the protection");
+        s.flees = false;
+        s.healthPct = 50.0f;
+        s.healthLossPerSecond = 100.0f;
         s.dispelMask = 8;
         Item cure = Synth("dispel item", Kind::Dispel, Sub::None, Shape::Self, 1, false, 0);
         items = {cure};
@@ -979,6 +1338,49 @@ void HandCases()
         spots = AimCandidates(near, sapper->entry);
         Check(spots.count == 1 && spots.spots[0].forbidden,
               "area: below the recoil bound the bot-centred spot is forbidden");
+        Offer charge = Run(near, items);
+        Check(!(charge.any && charge.need == Need::DamageArea),
+              "area: below the recoil bound the charge is not offered");
+        near.healthPct = 80.0f;
+        near.aimSight = 0;
+        Target t;
+        std::uint8_t hits = 0;
+        Check(AnswerTarget(near, sapper->entry, Need::DamageArea, t, hits) && hits == 3 && t.kind == TargetKind::Self,
+              "area: a bot-centred charge needs no sight of a spot");
+
+        // WI17: no candidate in sight: nothing thrown; the lazy sight order asks the best spot first and stops there
+        Situation blind = s;
+        blind.aimSight = 0;
+        items = {*grenade, *bomb};
+        Check(!AnswerTarget(blind, grenade->entry, Need::DamageArea, t, hits), "area: no spot in sight: no aim");
+        Offer const none = Run(blind, items);
+        Check(!(none.any && none.need == Need::DamageArea), "area: no spot in sight: none");
+        AimItem const thrown = AimItemOf(grenade->entry);
+        spots = AimCandidates(s, thrown);
+        std::int8_t const first = NextSightCheck(spots, false, 0, 0);
+        Check(first >= 0 && first == AimPick(spots), "area: the first sight question is the best spot");
+        std::uint32_t const firstBit = first >= 0 ? std::uint32_t(1) << first : 0;
+        Check(NextSightCheck(spots, false, firstBit, firstBit) < 0, "area: the best spot in sight settles the order");
+        std::int8_t const next = NextSightCheck(spots, false, firstBit, 0);
+        Check(next >= 0 && next != first, "area: the best spot out of sight: the next best is asked");
+
+        // WI17: one elite alone is worth an area item, one ordinary enemy or one player is not
+        Situation elite = Base();
+        Add(elite, Enemy(1, 110.0f, 100.0f, true, 60, Rank::Elite));
+        elite.target = 0;
+        Check((WantedNeeds(elite) & NeedBit(Need::DamageArea)) != 0, "area: one elite wants an area item");
+        Check(AnswerTarget(elite, grenade->entry, Need::DamageArea, t, hits) && hits == 1 && t.kind == TargetKind::Spot,
+              "area: one elite: the grenade at its spot, one hit");
+        Print("area: one elite alone", elite, items);
+        Situation single = elite;
+        single.units[0].rank = Rank::Normal;
+        Check((WantedNeeds(single) & NeedBit(Need::DamageArea)) == 0, "area: one ordinary enemy wants none");
+        Check(!AnswerTarget(single, grenade->entry, Need::DamageArea, t, hits), "area: one ordinary enemy: no aim");
+        single.units[0].rank = Rank::Player;
+        Check((WantedNeeds(single) & NeedBit(Need::DamageArea)) == 0, "area: one player wants none");
+        Situation guarded = elite;
+        guarded.units[0].controlled = true;
+        Check((WantedNeeds(guarded) & NeedBit(Need::DamageArea)) == 0, "area: one controlled elite wants none");
     }
     // 6. Control, Helper, Decoy, Resurrect, Repair
     {
@@ -1041,7 +1443,14 @@ void HandCases()
         broken.vendorNear = true;
         o = Run(broken, items);
         Check(!o.any, "repair: a vendor near: none");
+        broken.vendorNear = false;
+        broken.inFight = true;
+        Add(broken, Enemy(5, 104.0f, 100.0f, true));
+        o = Run(broken, items);
+        Check((WantedNeeds(broken) & NeedBit(Need::Repair)) == 0 && o.need != Need::Repair, "repair: in a fight: none");
     }
+    // 6b. The gadgets (WI18): control by what it stops, the chase's time, the decoy's spot, cables and repair bots
+    GadgetCases(*net);
     // 7. The PvP trinket, the arena
     {
         std::optional<std::size_t> trinketRow;
@@ -1070,6 +1479,74 @@ void HandCases()
             items = {trinket, arenaOnly};
             o = Run(s, items);
             Check(!o.any, "arena: a ready==false notInArena entry is not offered");
+        }
+    }
+    // 9. WI16: the chain, the arena, the channel
+    {
+        std::optional<Item> const stoneReal = Real("Healthstone");
+        std::optional<Item> const greater = Real("Greater Healing Potion");
+        std::optional<Item> const lesserMana = Real("Lesser Mana Potion");
+        Check(stoneReal && greater && lesserMana, "the WI16 hand cases' real records exist");
+        if (stoneReal && greater && lesserMana)
+        {
+            Check(stoneReal->entry.consumed && !stoneReal->entry.potion && stoneReal->entry.kind == Kind::Heal,
+                  "Healthstone is a consumed heal, not a potion");
+            Situation s = Base();
+            s.healthPct = 25.0f;
+            s.healthLossPerSecond = 150.0f;
+            for (int i = 0; i < 2; ++i)
+                Add(s, Enemy(1 + i, 103.0f, 100.0f + i, true, 63));
+            s.target = 0;
+            std::vector<Item> items = {*greater, *stoneReal};
+            Offer o = Run(s, items);
+            Check(o.any && o.consumed && o.usable == 1,
+                  "chain: the healthstone before the stronger potion (the potion is the fight's one)");
+            Print("chain: 25% against two, a Greater Healing Potion and a Healthstone", s, items);
+            items[1].entry.ready = false;  // the stone's cooldown
+            o = Run(s, items);
+            Check(o.any && o.consumed && o.usable == 0, "chain: the potion once the stone is cooling");
+            s.potionDrunk = true;
+            o = Run(s, items);
+            Check(!o.any, "chain: no second potion in the fight");
+            s.potionDrunk = false;
+            items[1].entry.ready = true;
+
+            Situation arena = s;
+            arena.inArena = true;
+            arena.stake = Stake::Player;
+            arena.usesMana = true;
+            arena.manaPct = 10.0f;
+            o = Run(arena, items);
+            Check(!o.any || o.need != Need::Heal, "arena: no consumed heal (the tactics' potion gate)");
+            std::vector<Item> withMana = {*greater, *stoneReal, *lesserMana};
+            o = Run(arena, withMana);
+            Check(o.any && o.need == Need::Mana && o.usable == 2, "arena: the mana potion stays the offer's");
+        }
+        if (bandage)
+        {
+            Check(bandage->entry.channeled && bandage->entry.consumed && bandage->entry.kind == Kind::Heal,
+                  "a bandage is a channelled consumed heal");
+            Situation hit = Base();
+            hit.healthPct = 40.0f;
+            Add(hit, Enemy(1, 103.0f, 100.0f, true));
+            hit.target = 0;
+            std::vector<Item> items = {*bandage};
+            Check(!Run(hit, items).any, "bandage: none while an enemy hits the bot");
+            // the enemy is held; the bot lost health to it before (the spend rule needs a danger: WI16b's live case)
+            Situation held = hit;
+            held.units[0].controlled = true;
+            held.healthPct = 25.0f;
+            held.healthLossPerSecond = 300.0f;  // a bandage at 1.2 gold is worth it near death
+            Check(!Run(held, items).any, "bandage: none while a held enemy stands in melee reach (a root still hits)");
+            held.units[0].x = 112.0f;  // the bot stepped away from its rooted foe
+            Offer o = Run(held, items);
+            Check(o.any && o.need == Need::Heal && o.usable == 0 && o.target.kind == TargetKind::Self,
+                  "bandage: the bot bandages itself while its enemy is held");
+            held.moving = true;
+            Check(!Run(held, items).any, "bandage: none while the bot moves");
+            held.moving = false;
+            held.recentlyBandaged = true;
+            Check(!Run(held, items).any, "bandage: none while Recently Bandaged is on the bot");
         }
     }
     // 8. Empty list, unofferable kinds
@@ -1169,6 +1646,8 @@ int main(int argc, char** argv)
     {
         Situation const s = GenSituation(rng);
         ++c.situations;
+        if (s.inArena)
+            ++c.arenaSituations;
         std::vector<Item> const items = GenList(rng, s);
         ++c.lists;
         CheckOffer(s, items, c);
@@ -1209,7 +1688,10 @@ int main(int argc, char** argv)
               << " O4 weaker=" << c.o4 << " O5 pvp_trinket=" << c.o5 << " O6 not_same=" << c.o6
               << " O7 potion_twice=" << c.o7 << " O8 held_burst=" << c.o8 << " A1 forbidden_spot=" << c.a1
               << " A2 fewer=" << c.a2 << " covers_wrong=" << c.coversWrong << " forbidden_wrong=" << c.forbidWrong
-              << "\n";
+              << " O9 arena_heal=" << c.o9 << " O10 channel_held=" << c.o10 << " O11 potion_before_stone=" << c.o11
+              << " (channel offers " << c.channelOffers << ")\n";
+    std::cout << "aim: A3 sighted=" << c.a3 << " A4 new_pull=" << c.a4 << " area_worth=" << c.worthWrong
+              << " (sight questions " << c.sightQuestions << ", area offers " << c.areaOffers << ")\n";
     Check(c.situations > 0 && c.offers > 0 && c.spotsPicked > 0 && c.consumedOffers > 0 && c.potionOffers > 0 &&
               c.keeps > 0,
           "the search is not empty");
@@ -1227,6 +1709,21 @@ int main(int argc, char** argv)
     Check(c.a2 == 0, "A2 fewer");
     Check(c.coversWrong == 0, "covers equal an independent count");
     Check(c.forbidWrong == 0, "forbidden equals an independent check");
+    Check(c.channelOffers > 0 && c.arenaSituations > 0, "the search offers channels and draws arenas");
+    Check(c.o9 == 0, "O9 arena_heal");
+    Check(c.o10 == 0, "O10 channel_held");
+    Check(c.o11 == 0, "O11 potion_before_stone");
+    Check(c.a3 == 0, "A3 sighted");
+    Check(c.a4 == 0, "A4 new_pull");
+    Check(c.worthWrong == 0, "area offers are worth it");
+    Check(c.sightQuestions > 0 && c.areaOffers > 0, "the search asks sight and offers area items");
+    std::cout << "gadgets: G1 root_caster=" << c.g1 << " G2 helper_trivial=" << c.g2 << " G3 res_in_fight=" << c.g3
+              << " G4 repair_vendor=" << c.g4 << " (control offers on a caster " << c.casterStops << ")\n";
+    Check(c.casterStops > 0, "the search offers control on casters");
+    Check(c.g1 == 0, "G1 root_caster");
+    Check(c.g2 == 0, "G2 helper_trivial");
+    Check(c.g3 == 0, "G3 res_in_fight");
+    Check(c.g4 == 0, "G4 repair_vendor");
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

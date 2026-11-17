@@ -32,6 +32,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
+#include "ItemFightCommands.h"
 #include "ItemUseCommands.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
@@ -294,6 +295,8 @@ public:
             {"info", ItemUse::HandleInfoCommand, SEC_PLAYER, Console::Yes},
             {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
             {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
+            {"usable", ItemUse::HandleUsableCommand, SEC_GAMEMASTER, Console::Yes},
+            {"spend", ItemUse::HandleSpendCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

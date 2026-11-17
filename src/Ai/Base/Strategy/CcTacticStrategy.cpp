@@ -2302,7 +2302,7 @@ bool PvpTrinketAction::Execute(Event /*event*/)
     if (!item)
         return false;
 
-    // As UseTrinketAction::UseTrinket: the client's item use, on the bot itself
+    // The client's item use, on the bot itself, as the old trinket action sent it
     uint8 const castCount = 1;
     uint32 const glyphIndex = 0;
     uint8 const castFlags = 0;
