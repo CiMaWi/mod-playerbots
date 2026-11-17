@@ -21,14 +21,19 @@
 #include "BotTraitMgr.h"
 #include "CcTacticStrategy.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "DefensiveTacticStrategy.h"
+#include "Engine.h"
+#include "FleeRules.h"
 #include "Group.h"
 #include "Item.h"
 #include "ItemOfferRules.h"
 #include "ItemSpendRules.h"
 #include "ItemUse.h"
 #include "ItemUseIndex.h"
+#include "ItemWorthRules.h"
 #include "Log.h"
+#include "MoveSpline.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -39,6 +44,8 @@
 #include "SpellInfo.h"
 #include "TestConstraints.h"
 #include "Timer.h"
+#include "World.h"
+#include "WorldLog.h"
 
 namespace ItemUse
 {
@@ -49,6 +56,7 @@ constexpr float BOOST_BALANCE = 50.0f;         // GenericBoostTrigger's default 
 constexpr std::uint32_t OFFER_MS = 1000;       // the fight's offer is made again this often (a use: at once)
 constexpr std::uint32_t BLOCK_MS = 10000;      // an entry Check refused is not offered again for this long
 constexpr float FRIEND_YARDS = 40.0f;          // a group member this near is a unit of the situation
+constexpr std::uint32_t RECENTLY_BANDAGED = 11196;  // the engine's aura after a bandage: no bandage while it lasts
 
 constexpr std::array<std::string_view, 5> ROLE_WORDS = {"tank", "healer", "melee", "ranged", "caster"};
 
@@ -82,13 +90,13 @@ void Add(BotUsable& usable, Record const& record, ItemRef ref, Item* item, std::
         EntryOf(record, classified, ItemUseIndex::Get().IdOf(record), ref, count, CcIsPvpTrinket(item->GetTemplate())));
 }
 
-void CopyFree(BotUsable& usable)
+void CopyFight(BotUsable& usable)
 {
-    usable.free.clear();
+    usable.fight.clear();
     for (UsableEntry const& entry : usable.entries)
-        if (!entry.consumed)
-            usable.free.push_back(entry);
-    usable.freeKinds = MaskOf(usable.free);
+        if (FightListed(entry))
+            usable.fight.push_back(entry);
+    usable.fightKinds = MaskOf(usable.fight);
 }
 
 void AddCarried(Player* bot, BotUsable& usable, Item* item, std::unordered_set<std::uint32_t>& seen)
@@ -129,7 +137,10 @@ void Rebuild(Player* bot, BotUsable& usable)
                 AddCarried(bot, usable, bag->GetItemByPos(static_cast<std::uint8_t>(slot)), seen);
 
     usable.kinds = MaskOf(usable.entries);
-    CopyFree(usable);
+    CopyFight(usable);
+    // what the bot's time is worth (the spend rule's death cost): the level band's rate, as the errands read it
+    usable.earnCopperPerMinute =
+        sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(bot->GetLevel())].EarnCopperPerMinute;
 
     usable.thrift = 0.0f;
     usable.daring = 0.0f;
@@ -179,7 +190,7 @@ bool ReadyOf(Player* bot, UsableEntry const& entry)
     return ReadyNow(bot, piece, item);
 }
 
-// The ready flags of the entries of the kinds; the free copy follows
+// The ready flags of the entries of the kinds; the fight copy follows
 void RefreshReady(Player* bot, BotUsable& usable, KindMask kinds)
 {
     if (!(usable.kinds & kinds))
@@ -187,7 +198,7 @@ void RefreshReady(Player* bot, BotUsable& usable, KindMask kinds)
     for (UsableEntry& entry : usable.entries)
         if (kinds & KindBit(entry.kind))
             entry.ready = ReadyOf(bot, entry);
-    CopyFree(usable);
+    CopyFight(usable);
 }
 
 Rank RankOf(Unit* unit)
@@ -277,7 +288,42 @@ void SampleGroup(Situation& situation, Player* bot)
     }
 }
 
-std::uint32_t DispelMaskOf(Player* bot)
+// The repair bill a death adds to the worn gear (the engine's durability loss on death, DurabilityLoss.OnDeath, of each
+// piece's maximum, priced as StatsAction::EstRepair prices a point) and whether a piece is broken: O(19), once a
+// sample. The bill already due is paid with or without a death, so the spend rule weighs only what the death adds
+std::uint32_t RepairCopperOf(Player* bot, bool& broken)
+{
+    broken = false;
+    std::uint32_t total = 0;
+    float const deathLoss = std::clamp(sWorld->getRate(RATE_DURABILITY_LOSS_ON_DEATH) / 100.0f, 0.0f, 1.0f);
+    for (std::uint8_t slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* piece = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        std::uint32_t const most = piece ? piece->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) : 0;
+        if (!most)
+            continue;
+        std::uint32_t const now = piece->GetUInt32Value(ITEM_FIELD_DURABILITY);
+        if (!now)
+            broken = true;
+        std::uint32_t const lost = std::min(now, static_cast<std::uint32_t>(most * deathLoss));
+        if (!lost)
+            continue;
+        ItemTemplate const* proto = piece->GetTemplate();
+        DurabilityCostsEntry const* costs = sDurabilityCostsStore.LookupEntry(proto->ItemLevel);
+        DurabilityQualityEntry const* quality = sDurabilityQualityStore.LookupEntry((proto->Quality + 1) * 2);
+        if (!costs || !quality)
+            continue;
+        std::uint32_t const multiplier =
+            costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class, proto->SubClass)];
+        total += std::max<std::uint32_t>(
+            1, static_cast<std::uint32_t>(lost * multiplier * static_cast<double>(quality->quality_mod)));
+    }
+    return total;
+}
+
+// The dispel types of the harmful auras on the bot; an aura bots leave on a friend (PlayerbotAI::dispel_whitelist, a
+// Dreamless Sleep potion's: upstream #3024) is left on the bot too
+std::uint32_t DispelMaskOf(PlayerbotAI* botAI, Player* bot)
 {
     std::uint32_t mask = 0;
     for (auto const& applied : bot->GetAppliedAuras())
@@ -286,7 +332,7 @@ std::uint32_t DispelMaskOf(Player* bot)
         if (!application || application->IsPositive())
             continue;
         SpellInfo const* spellInfo = application->GetBase()->GetSpellInfo();
-        if (spellInfo && spellInfo->Dispel && spellInfo->Dispel < 32)
+        if (spellInfo && spellInfo->Dispel && spellInfo->Dispel < 32 && botAI->canDispel(spellInfo, spellInfo->Dispel))
             mask |= 1u << spellInfo->Dispel;
     }
     return mask;
@@ -303,6 +349,8 @@ Situation Sample(PlayerbotAI* botAI, Player* bot, BotUsable& usable, std::uint32
     situation.maxHealth = bot->GetMaxHealth();
     situation.inFight = bot->IsInCombat();
     situation.fightEnded = usable.lastInFight && !situation.inFight;
+    if (situation.inFight && !usable.lastInFight)
+        ++usable.fightSerial;  // a new fight: its item_spend rows begin again
     usable.lastInFight = situation.inFight;
     if (situation.inFight)
         usable.health.Push(nowMs, bot->GetHealth());
@@ -321,18 +369,34 @@ Situation Sample(PlayerbotAI* botAI, Player* bot, BotUsable& usable, std::uint32
         situation.target = 0;
     for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->Get())
         AddUnit(situation, bot, botAI->GetUnit(guid));
+    // the players in PvP combat with the bot, FleeAttackersAction::Foes's source: a caster, or the pack behind a
+    // fleeing bot (its target cleared), is in no "attackers" list (WI16b: a flight sampled no enemy, so "won")
+    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvPCombatRefs())
+    {
+        Unit* const other = ref ? ref->GetOther(bot) : nullptr;
+        if (other && other->IsAlive() && !other->IsTotem())
+            AddUnit(situation, bot, other);
+    }
     SampleGroup(situation, bot);
 
     // GenericBoostTrigger's rule (BurstsNow): against a player the defensive tactic's hold decides, else the balance
     situation.bursts = BurstsNow(botAI, target, BOOST_BALANCE, &situation.holdsBurst);
     situation.stake = target && target->ToPlayer() ? Stake::Player : Stake::Ordinary;
 
-    situation.dispelMask = DispelMaskOf(bot);
+    situation.dispelMask = DispelMaskOf(botAI, bot);
     situation.rooted = bot->HasUnitState(UNIT_STATE_ROOT);
     situation.snared = bot->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED);
     situation.potionDrunk = bot->GetLastPotionId() != 0;
     situation.thrift = usable.thrift;
     situation.daring = usable.daring;
+    situation.earnCopperPerMinute = usable.earnCopperPerMinute;
+    situation.repairCopper = RepairCopperOf(bot, situation.gearBroken);
+    // vendorNear stays false: the repair need's gadgets are WI18's, and so is its source; chases stays false (no
+    // capability needs it yet)
+    FleeRules::Flight const& flight = context->GetValue<FleeRules::Flight&>("flee flight")->Get();
+    SetFlight(situation, flight.active, FleeRules::Cornered(flight));
+    situation.moving = bot->isMoving() || !bot->movespline->Finalized();
+    situation.recentlyBandaged = bot->HasAura(RECENTLY_BANDAGED);
     situation.control = !TestConstraints::SpendsOnItsOwn(botAI->testConstraints) ||
                         (BotKind::IsPersistentBot(bot) &&
                          InControlCohort(bot->GetGUID().GetCounter(), sPlayerbotAIConfig.ItemUse.ControlShare));
@@ -398,10 +462,10 @@ std::span<UsableEntry const> UsableOf(Player* bot)
     return usable ? std::span<UsableEntry const>(usable->entries) : std::span<UsableEntry const>();
 }
 
-std::span<UsableEntry const> FreeUsableOf(Player* bot)
+std::span<UsableEntry const> FightUsableOf(Player* bot)
 {
     BotUsable* usable = Fresh(bot ? GET_PLAYERBOT_AI(bot) : nullptr);
-    return usable ? std::span<UsableEntry const>(usable->free) : std::span<UsableEntry const>();
+    return usable ? std::span<UsableEntry const>(usable->fight) : std::span<UsableEntry const>();
 }
 
 KindMask UsableKindsOf(Player* bot)
@@ -410,10 +474,10 @@ KindMask UsableKindsOf(Player* bot)
     return usable ? usable->kinds : 0;
 }
 
-KindMask FreeKindsOf(PlayerbotAI* botAI)
+KindMask FightKindsOf(PlayerbotAI* botAI)
 {
     BotUsable* usable = Fresh(botAI);
-    return usable ? usable->freeKinds : 0;
+    return usable ? usable->fightKinds : 0;
 }
 
 void MarkUsableDirty(PlayerbotAI* botAI)
@@ -439,6 +503,37 @@ bool BurstsNow(PlayerbotAI* botAI, Unit* target, float balance, bool* holds)
     return botAI->GetAiObjectContext()->GetValue<uint8>("balance")->Get() <= balance;
 }
 
+namespace
+{
+// The item_spend row (world-log.md): one per fight and need at the first verdict, again when the verdict or its
+// reason changes; the offer's 1 s cache bounds the rate, nothing is formatted while the world log is off
+void NoteSpend(Player* bot, BotUsable& usable, Offer const& offer)
+{
+    if (!offer.consumed || offer.usable >= usable.fight.size())
+        return;
+    if (usable.spendFight != usable.fightSerial)
+    {
+        usable.spendFight = usable.fightSerial;
+        usable.spendNoted.fill(0);
+    }
+    SpendVerdict const& verdict = offer.verdict;
+    std::uint8_t const mark =
+        static_cast<std::uint8_t>((verdict.spend ? 0x80 : 0) | (static_cast<std::uint8_t>(verdict.reason) + 1));
+    std::uint8_t& noted = usable.spendNoted[static_cast<std::size_t>(offer.need)];
+    if (noted == mark)
+        return;
+    noted = mark;
+    if (!WorldLog::Active())
+        return;
+    UsableEntry const& entry = usable.fight[offer.usable];
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::ItemSpend, SpendDecision(entry.kind, verdict),
+        SpendReasonWord(verdict.reason), verdict.savesCopper - verdict.costCopper,
+        {{"saves", verdict.savesCopper}, {"cost", verdict.costCopper}, {"danger", verdict.danger * 100.0f}},
+        entry.item.entry);
+}
+}  // namespace
+
 Offer const& FightOffer(PlayerbotAI* botAI)
 {
     static Offer const none{};
@@ -452,11 +547,12 @@ Offer const& FightOffer(PlayerbotAI* botAI)
     std::erase_if(usable->blocked,
                   [nowMs](BotUsable::Blocked const& b) { return static_cast<std::int32_t>(b.untilMs - nowMs) <= 0; });
     for (BotUsable::Blocked const& b : usable->blocked)
-        for (UsableEntry& entry : usable->free)
+        for (UsableEntry& entry : usable->fight)
             if (entry.record == b.record && entry.item.entry == b.entry)
                 entry.ready = false;
-    usable->offer = MakeOffer(situation, usable->free);
+    usable->offer = MakeOffer(situation, usable->fight);
     usable->offerMs = nowMs ? nowMs : 1;
+    NoteSpend(botAI->GetBot(), *usable, usable->offer);
     return usable->offer;
 }
 
@@ -491,10 +587,10 @@ void BlockOffered(PlayerbotAI* botAI, UsableEntry const& entry, Cause cause)
 
 UsableEntry const* OfferedEntry(PlayerbotAI* botAI, Offer const& offer)
 {
-    if (!offer.any || offer.consumed || !botAI || !botAI->botUsable)
+    if (!offer.any || !botAI || !botAI->botUsable)
         return nullptr;
-    std::vector<UsableEntry> const& free = botAI->botUsable->free;
-    return offer.usable < free.size() ? &free[offer.usable] : nullptr;
+    std::vector<UsableEntry> const& fight = botAI->botUsable->fight;
+    return offer.usable < fight.size() ? &fight[offer.usable] : nullptr;
 }
 
 Situation SampleSituation(PlayerbotAI* botAI)
@@ -512,6 +608,65 @@ Situation SampleSituation(PlayerbotAI* botAI)
     return usable->sample;
 }
 
+namespace
+{
+// playerbots item spend: the spend rule's inputs and verdict for each consumed candidate of a wanted need, by the
+// offer's own functions (console only)
+void SpendPrints(std::string const& name, Situation const& situation, NeedMask wanted,
+                 std::vector<UsableEntry> const& fight, Offer const& offer)
+{
+    float const danger = Danger(situation);
+    LOG_INFO("playerbots",
+             "ITEM spend: {} danger {:.2f} earn {}/min repair {} death {} thrift {:.2f} daring {:.2f} control {} "
+             "potion {} won {} flees {} cornered {} moving {} bandaged {} broken {}",
+             name, danger, situation.earnCopperPerMinute, situation.repairCopper,
+             DeathCopper(situation.earnCopperPerMinute, situation.repairCopper), situation.thrift, situation.daring,
+             situation.control ? 1 : 0, situation.potionDrunk ? 1 : 0, OfferDetail::Won(situation) ? 1 : 0,
+             situation.flees ? 1 : 0, situation.cornered ? 1 : 0, situation.moving ? 1 : 0,
+             situation.recentlyBandaged ? 1 : 0, situation.gearBroken ? 1 : 0);
+    std::size_t weighed = 0;
+    for (std::size_t n = 0; n < NEED_COUNT; ++n)
+    {
+        Need const need = static_cast<Need>(n);
+        if (!(wanted & NeedBit(need)))
+            continue;
+        bool freeReady = false;
+        for (UsableEntry const& entry : fight)
+        {
+            Target target;
+            std::uint8_t hits = 1;
+            freeReady = freeReady || (!entry.consumed && EntryUsable(situation, entry) && EntryAnswers(entry, need) &&
+                                      AnswerTarget(situation, entry, need, target, hits));
+        }
+        for (std::size_t i = 0; i < fight.size(); ++i)
+        {
+            UsableEntry const& entry = fight[i];
+            if (!entry.consumed || !EntryAnswers(entry, need))
+                continue;
+            Target target;
+            std::uint8_t hits = 1;
+            bool const usableNow = EntryUsable(situation, entry);
+            bool const aimed = AnswerTarget(situation, entry, need, target, hits);
+            SpendVerdict const verdict = Spend(SpendCaseFor(situation, entry, danger, hits, freeReady));
+            ++weighed;
+            LOG_INFO("playerbots",
+                     "ITEM spend: {} need {} #{} record {} entry {} kind {} rank {} potion {} usable {} aimed {} "
+                     "freeReady {} replace {} -> {} {} saves {:.0f} cost {:.0f}",
+                     name, NeedWord(need), i, entry.record, entry.item.entry, KindWord(entry.kind), entry.rank,
+                     entry.potion ? 1 : 0, usableNow ? 1 : 0, aimed ? 1 : 0, freeReady ? 1 : 0, entry.replaceCopper,
+                     SpendDecision(entry.kind, verdict), SpendReasonWord(verdict.reason), verdict.savesCopper,
+                     verdict.costCopper);
+        }
+    }
+    bool const named = offer.usable < fight.size();
+    LOG_INFO("playerbots", "ITEM spend: {} {} weighed, offer any {} need {} entry {} consumed {} verdict {} {}", name,
+             weighed, offer.any ? 1 : 0, NeedWord(offer.need), named ? fight[offer.usable].item.entry : 0,
+             offer.consumed ? 1 : 0,
+             offer.consumed && named ? SpendDecision(fight[offer.usable].kind, offer.verdict) : std::string("-"),
+             offer.consumed ? SpendReasonWord(offer.verdict.reason) : std::string_view("-"));
+}
+}  // namespace
+
 void TakeUsablePrints(PlayerbotAI* botAI, Player* bot)
 {
     botAI->EndWork(BotWork::ItemUsable);
@@ -524,7 +679,8 @@ void TakeUsablePrints(PlayerbotAI* botAI, Player* bot)
 
     ItemUseIndex const& index = ItemUseIndex::Get();
     std::string const name = bot->GetName();
-    LOG_INFO("playerbots", "ITEM usable: {} {} entries, {} free", name, usable->entries.size(), usable->free.size());
+    LOG_INFO("playerbots", "ITEM usable: {} {} entries, {} in the fight list", name, usable->entries.size(),
+             usable->fight.size());
     for (std::size_t i = 0; i < usable->entries.size(); ++i)
     {
         UsableEntry const& entry = usable->entries[i];
@@ -550,6 +706,16 @@ void TakeUsablePrints(PlayerbotAI* botAI, Player* bot)
              situation.groupDead, situation.dispelMask, situation.rooted ? 1 : 0, situation.snared ? 1 : 0,
              situation.potionDrunk ? 1 : 0, situation.thrift, situation.daring, situation.control ? 1 : 0,
              situation.unitCount, situation.target, NeedWords(wanted));
+    // what the bot's own AI does now (WI16b: a hurt bot after its fight that never ate)
+    Engine* engine = botAI->GetCurrentEngine();
+    LOG_INFO("playerbots",
+             "ITEM usable: {} state {} combat {} pvp refs {} mounted {} stand {} food strategy {} food count {} "
+             "work {:#x} last action '{}'",
+             name, static_cast<int>(botAI->GetState()), bot->IsInCombat() ? 1 : 0,
+             bot->GetCombatManager().GetPvPCombatRefs().size(), bot->IsMounted() ? 1 : 0,
+             static_cast<int>(bot->getStandState()), botAI->HasStrategy("food", BOT_STATE_NON_COMBAT) ? 1 : 0,
+             botAI->GetAiObjectContext()->GetValue<uint32>("item count", "food")->Get(), botAI->GetWork(),
+             engine ? engine->GetLastAction() : std::string("-"));
     for (std::size_t i = 0; i < situation.unitCount; ++i)
     {
         NearUnit const& unit = situation.units[i];
@@ -561,20 +727,22 @@ void TakeUsablePrints(PlayerbotAI* botAI, Player* bot)
                  unit.casts ? 1 : 0, unit.friendly ? 1 : 0, bot->GetExactDist(unit.x, unit.y, unit.z));
     }
 
-    Offer const offer = MakeOffer(situation, usable->free);
+    std::vector<UsableEntry> const& fight = usable->fight;
+    Offer const offer = MakeOffer(situation, fight);
     // the use path's answer to the offer's request now (none: the action would send it)
     std::string_view check = "-";
-    if (offer.any && offer.usable < usable->free.size())
-        check = CauseWord(Check(bot, FightRequest(bot, offer, usable->free[offer.usable])));
+    if (offer.any && offer.usable < fight.size())
+        check = CauseWord(Check(bot, FightRequest(bot, offer, fight[offer.usable])));
     LOG_INFO("playerbots",
              "ITEM usable: {} offer any {} need {} usable {} entry {} target {} {} consumed {} check {} blocked {}",
              name, offer.any ? 1 : 0, NeedWord(offer.need), offer.usable,
-             offer.any && offer.usable < usable->free.size() ? usable->free[offer.usable].item.entry : 0,
+             offer.any && offer.usable < fight.size() ? fight[offer.usable].item.entry : 0,
              static_cast<int>(offer.target.kind), ObjectGuid(offer.target.guid).GetCounter(), offer.consumed ? 1 : 0,
              check, usable->blocked.size());
     for (BotUsable::Blocked const& b : usable->blocked)
         LOG_INFO("playerbots", "ITEM usable: {} blocked entry {} record {} cause {}", name, b.entry, b.record,
                  CauseWord(b.cause));
+    SpendPrints(name, situation, wanted, fight, offer);
 }
 }  // namespace ItemUse
 

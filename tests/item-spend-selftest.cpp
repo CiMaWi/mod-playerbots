@@ -117,7 +117,9 @@ void HandFixtures()
     Check(hurt > one, "danger: the same fight is more dangerous with less health");
     Situation controlled = Fight(20, 100.0f, 0.0f, {Enemy(20, Rank::Normal, 100.0f)});
     controlled.units[0].controlled = true;
-    Check(Danger(controlled) == 0.0f, "danger: a controlled enemy does not hurt (no loss measured)");
+    float const free = Danger(Fight(20, 100.0f, 0.0f, {Enemy(20, Rank::Normal, 100.0f)}));
+    Check(Danger(controlled) > 0.0f && Danger(controlled) < free,
+          "danger: a controlled enemy hurts later (no loss measured): above 0, below the same enemy free");
     Situation group = Fight(20, 100.0f, 0.0f, {Enemy(20, Rank::Elite, 100.0f)});
     group.groupSize = 5;
     Check(Danger(group) < elite, "danger: a group kills the enemy sooner");

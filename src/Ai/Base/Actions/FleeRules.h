@@ -115,6 +115,10 @@ inline void End(Flight& flight, Outcome outcome)
     flight.stood = outcome == Outcome::Cornered || outcome == Outcome::Bound;
 }
 
+// Item use WI16 (lane 2 reads it): the bot is cornered, it ended its flight cornered or by its bound and stands in
+// this PvP combat
+inline bool Cornered(Flight const& flight) { return flight.stood; }
+
 // Whether the trigger of a strategy that wants the bot to flee is on (`wants`: its own reason, now). A flight under
 // way runs to its outcome whatever the strategy wants by then; a bot that stood flees again only in a new PvP combat;
 // no flight begins out of PvP combat

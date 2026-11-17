@@ -296,6 +296,7 @@ public:
             {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
             {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
             {"usable", ItemUse::HandleUsableCommand, SEC_GAMEMASTER, Console::Yes},
+            {"spend", ItemUse::HandleSpendCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

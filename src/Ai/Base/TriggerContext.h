@@ -82,6 +82,7 @@ public:
         for (ItemUse::Need const need : ItemUse::FIGHT_NEEDS)
             creators[ItemUse::FightTriggerName(need)] = [need](PlayerbotAI* botAI)
             { return new ItemFightTrigger(botAI, need); };
+        creators["item flight"] = [](PlayerbotAI* botAI) { return new ItemFlightTrigger(botAI); };
         creators["loss of control"] = &TriggerContext::loss_of_control;
         creators["fear charm sleep"] = &TriggerContext::fear_charm_sleep;
         creators["fear sleep sap"] = &TriggerContext::fear_sleep_sap;

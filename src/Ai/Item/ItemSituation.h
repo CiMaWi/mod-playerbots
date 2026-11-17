@@ -38,6 +38,7 @@ struct UsableEntry  // one use effect of something the bot carries or wears
     float minRangeYards{0.0f};
     float rangeFriendYards{0.0f};
     bool pvpTrinket{false};  // spell 42292 or 65547: the PvP trinket, its tactic's (CcTacticStrategy), never offered
+    bool channeled{false};   // WI16: the use is a channel (a bandage): started only while nothing hits the bot
 };
 
 enum class Rank : std::uint8_t
@@ -123,7 +124,9 @@ struct Situation
     float daring{0.0f};  // -1..1: minus the Caution trait's unit (Q3, settled by WI13; ItemSpendRules.h)
     std::uint32_t earnCopperPerMinute{0};
     std::uint32_t repairCopper{0};
-    bool control{false};  // control cohort or the test's nospend: nothing consumed is spent
+    bool control{false};           // control cohort or the test's nospend: nothing consumed is spent
+    bool moving{false};            // WI16: the bot moves (a channel would break)
+    bool recentlyBandaged{false};  // WI16: the engine's Recently Bandaged (11196) is on the bot: no bandage
 };
 }  // namespace ItemUse
 

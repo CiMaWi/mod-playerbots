@@ -15,8 +15,9 @@
 
 class PlayerbotAI;
 
-// Item use plan WI15b: the "item fight" strategy's triggers, one per need a free entry (no cost but a cooldown) can
-// answer. Gate O(1): the bot's free list has an entry of the need's kind (FreeKindsOf) and the bot fights; only then
+// Item use plan WI15b: the "item fight" strategy's triggers, one per need an entry of the fight list can answer (WI16:
+// the free ones and the consumed of the kinds it reads). Gate O(1): the fight list has an entry of the need's kind
+// (FightKindsOf) and the bot fights; only then
 // the shared fight offer (FightOffer: sampled, made at most once a second); active when the offer's need is this one.
 // The thresholds are the offer's (WantedNeeds), none here.
 namespace ItemUse
@@ -39,6 +40,17 @@ public:
 
 private:
     ItemUse::Need need;
+};
+
+// WI16: a flight under way (the "flee flight" value, FleeAttackersAction) whose offer is a speed or a protection; the
+// strategy puts it above the flee itself, which otherwise takes every tick of the flight (plan 3.8: speed and
+// protection when the flight begins). Gate O(1): the fight list has a speed or protection entry, combat, the flight
+class ItemFlightTrigger : public Trigger
+{
+public:
+    ItemFlightTrigger(PlayerbotAI* botAI) : Trigger(botAI, "item flight", 1) {}
+
+    bool IsActive() override;
 };
 
 #endif

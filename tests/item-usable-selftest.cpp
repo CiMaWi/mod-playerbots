@@ -87,6 +87,29 @@ void KindMasks()
     std::vector<UsableEntry> const free = KeepFree(list);
     Check(free.size() == 2 && MaskOf(free) == (KindBit(Kind::Boost) | KindBit(Kind::DamageOne)),
           "the free part keeps the entries with consumed false");
+
+    // WI16: the fight list: every free entry and the consumed ones of the kinds the offer reads
+    std::vector<UsableEntry> const mixed = {Of(Kind::Boost),         Of(Kind::Heal, true),   Of(Kind::DamageOne, true),
+                                            Of(Kind::Mana, true),    Of(Kind::Move, true),   Of(Kind::Dispel, true),
+                                            Of(Kind::Protect, true), Of(Kind::Control, true)};
+    std::vector<UsableEntry> const fight = KeepFight(mixed);
+    Check(fight.size() == 6 && MaskOf(fight) == (KindBit(Kind::Boost) | KindBit(Kind::Heal) | KindBit(Kind::Mana) |
+                                                 KindBit(Kind::Move) | KindBit(Kind::Dispel) | KindBit(Kind::Protect)),
+          "the fight list keeps the free entries and the consumed heal, mana, move, dispel and protect ones");
+    for (UsableEntry const& entry : mixed)
+        Check(FightListed(entry) == (!entry.consumed || (CONSUMED_FIGHT_KINDS & KindBit(entry.kind)) != 0),
+              "FightListed agrees with the kinds for " + std::string(KindWord(entry.kind)));
+
+    // WI16: the flight facts the sampler sets from world PvP's flight
+    Situation s;
+    SetFlight(s, true, false);
+    Check(s.flees && !s.cornered, "a flight under way: flees");
+    SetFlight(s, false, true);
+    Check(!s.flees && s.cornered, "a flight that ended cornered or bound: cornered");
+    s.inFight = true;
+    Check((WantedNeeds(s) & NeedBit(Need::Decoy)) != 0, "a cornered bot in a fight wants a decoy");
+    SetFlight(s, true, false);
+    Check((WantedNeeds(s) & NeedBit(Need::Speed)) != 0, "a fleeing bot wants speed");
 }
 
 void Ring()

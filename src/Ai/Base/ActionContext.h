@@ -187,7 +187,6 @@ public:
         creators["apply poison"] = &ActionContext::apply_poison;
         creators["apply stone"] = &ActionContext::apply_stone;
         creators["apply oil"] = &ActionContext::apply_oil;
-        creators["try emergency"] = &ActionContext::try_emergency;
         creators["give food"] = &ActionContext::give_food;
         creators["give water"] = &ActionContext::give_water;
         creators["mount"] = &ActionContext::mount;
@@ -422,7 +421,6 @@ private:
     static Action* apply_poison(PlayerbotAI* botAI) { return new ImbueWithPoisonAction(botAI); }
     static Action* apply_oil(PlayerbotAI* botAI) { return new ImbueWithOilAction(botAI); }
     static Action* apply_stone(PlayerbotAI* botAI) { return new ImbueWithStoneAction(botAI); }
-    static Action* try_emergency(PlayerbotAI* botAI) { return new TryEmergencyAction(botAI); }
     static Action* mount(PlayerbotAI* botAI) { return new CastSpellAction(botAI, "mount"); }
     static Action* war_stomp(PlayerbotAI* botAI) { return new CastWarStompAction(botAI); }
     static Action* blood_fury(PlayerbotAI* botAI) { return new CastBloodFuryAction(botAI); }

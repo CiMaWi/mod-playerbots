@@ -17,14 +17,17 @@
 
 namespace ItemUse
 {
-bool HandleUsableCommand(ChatHandler* handler, char const* args)
+namespace
+{
+// The print runs on the bot's map thread (ItemUse::TakeUsablePrints); the bit is the whole order
+bool OrderPrint(ChatHandler* handler, char const* args, char const* word)
 {
     std::istringstream in(args ? args : "");
     std::string name;
     in >> name;
     if (name.empty())
     {
-        handler->SendErrorMessage("Usage: playerbots item usable <bot>");
+        handler->SendErrorMessage("Usage: playerbots item {} <bot>", word);
         return false;
     }
 
@@ -32,13 +35,17 @@ bool HandleUsableCommand(ChatHandler* handler, char const* args)
     PlayerbotAI* botAI = bot ? PlayerbotsMgr::instance().GetPlayerbotAI(bot) : nullptr;
     if (!botAI)
     {
-        handler->SendErrorMessage("ITEM usable: {} is not an online bot", name);
+        handler->SendErrorMessage("ITEM {}: {} is not an online bot", word, name);
         return false;
     }
 
-    // the print runs on the bot's map thread (ItemUse::TakeUsablePrints); the bit is the whole order
     botAI->AddWork(BotWork::ItemUsable);
-    handler->PSendSysMessage("ITEM usable: {} ordered", bot->GetName());
+    handler->PSendSysMessage("ITEM {}: {} ordered", word, bot->GetName());
     return true;
 }
+}  // namespace
+
+bool HandleUsableCommand(ChatHandler* handler, char const* args) { return OrderPrint(handler, args, "usable"); }
+
+bool HandleSpendCommand(ChatHandler* handler, char const* args) { return OrderPrint(handler, args, "spend"); }
 }  // namespace ItemUse
