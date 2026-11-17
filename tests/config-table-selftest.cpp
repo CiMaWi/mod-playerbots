@@ -29,6 +29,7 @@
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
+#include "NaturalReactionConfig.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
@@ -366,6 +367,15 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(SkillGrowthFamily, 5, "Skill growth");
         visit(SkillAttributeLoadingFamily, 12, "Skill attribute loadings");
         visit(SkillAttributeSpreadFamily, 12, "Skill attribute spreads");
+        visit(ReactionFamily, 16, "Reaction");
+        visit(ReactionChoiceFamily, 3, "Reaction choice");
+        visit(ReactionLoadFamily, 7, "Reaction load");
+        visit(ReactionEaseFamily, 9, "Reaction ease");
+        visit(ReactionThinkFamily, 8, "Reaction think");
+        visit(ReactionAnticipateFamily, 2, "Reaction anticipate");
+        visit(ReactionQueueFamily, 4, "Reaction queue");
+        visit(ReactionReevalFamily, 4, "Reaction reeval");
+        visit(ReactionMemoryFamily, 2, "Reaction memory");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -667,6 +677,63 @@ void TestSkillFamilies()
           "skill: an unknown distribution keeps normal with a warning");
 }
 
+// CS22f: the natural reaction (Max at least Min, the ease prices strictly rising, the contexts text into a mask)
+void TestReactionFamilies()
+{
+    ReactionParams reaction;
+    ReactionEaseParams ease;
+    ReactionQueueParams queue;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    LoadConfigFamily(ReactionFamily, reaction, empty, warn);
+    LoadConfigFamily(ReactionEaseFamily, ease, empty, warn);
+    Check(reaction.MedianMsAtSkill1 == 690.0f && reaction.ServerTickMs == -1 && reaction.BehindMaxMs == 400 &&
+              reaction.ContextsText == "Arena,Battleground" &&
+              reaction.Contexts ==
+                  (TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground)),
+          "reaction: the defaults, the contexts mask from the text");
+    Check(ease.MsAt1[3] == 450 && ease.MsAt99[1] == 80 && ease.FocusDexterity == 40, "reaction: the ease defaults");
+    Check(std::count(empty.missingWarnings.begin(), empty.missingWarnings.end(), "Playerbots.Natural.Reaction.MinMs") ==
+                  1 &&
+              std::count(empty.missingWarnings.begin(), empty.missingWarnings.end(),
+                         "Playerbots.Natural.Reaction.Ease.RareMsAtSkill1") == 0,
+          "reaction: a missing listed key warns, an unlisted price does not");
+
+    FakeReader reader;
+    reader.values = {{"Playerbots.Natural.Reaction.BehindPenaltyMinMs", "500"},
+                     {"Playerbots.Natural.Reaction.BehindPenaltyMaxMs", "300"},
+                     {"Playerbots.Natural.Reaction.ServerTickMs", "-5"},
+                     {"Playerbots.Natural.Reaction.MinMs", "20000"},
+                     {"Playerbots.Natural.Reaction.Contexts", "World, Pve"}};
+    uint32 const warned = LoadConfigFamily(ReactionFamily, reaction, reader, warn);
+    Check(
+        warned == 2 && reaction.BehindMinMs == 500 && reaction.BehindMaxMs == 500 && reaction.ServerTickMs == -1 &&
+            reaction.MinMs == 10000 &&
+            reaction.Contexts == (TacticContextBit(TacticContext::OpenWorldPvp) | TacticContextBit(TacticContext::Pve)),
+        "reaction: Max raised to Min, two values clamped with a warning, the contexts parsed");
+    reader.values = {{"Playerbots.Natural.Reaction.Contexts", "Arena,Moon"}};
+    Check(LoadConfigFamily(ReactionFamily, reaction, reader, warn) == 1 &&
+              reaction.ContextsText == "Arena,Battleground" &&
+              reaction.Contexts ==
+                  (TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground)),
+          "reaction: a bad contexts text keeps the default text and mask with a warning");
+
+    reader.values = {{"Playerbots.Natural.Reaction.Ease.CommonMsAtSkill1", "500"},
+                     {"Playerbots.Natural.Reaction.Ease.RareMsAtSkill99", "5"},
+                     {"Playerbots.Natural.Reaction.Ease.FocusDexterity", "120"}};
+    LoadConfigFamily(ReactionEaseFamily, ease, reader, warn);
+    Check(ease.MsAt1[0] == 500 && ease.MsAt1[1] == 501 && ease.MsAt1[2] == 502 && ease.MsAt1[3] == 503 &&
+              ease.MsAt99[0] == 0 && ease.MsAt99[1] == 5 && ease.MsAt99[2] == 120 && ease.FocusDexterity == 99,
+          "reaction: each ease price raised to 1 ms above the one before, the dexterity clamped");
+    reader.values = {{"Playerbots.Natural.Reaction.Queue.MinMsAtSkill1", "400"},
+                     {"Playerbots.Natural.Reaction.Queue.MinMsAtSkill99", "5"}};
+    LoadConfigFamily(ReactionQueueFamily, queue, reader, warn);
+    Check(queue.MinMsAt1 == 400 && queue.MaxMsAt1 == 400 && queue.MinMsAt99 == 5 && queue.MaxMsAt99 == 80,
+          "reaction: the queue's Max raised to Min at one end only");
+}
+
 // CS22e: the attribute loadings and spreads, one element row per attribute
 void TestAttributeFamilies()
 {
@@ -789,6 +856,7 @@ int main(int argc, char** argv)
     TestSkillFamilies();
     TestAttributeFamilies();
     TestGrowthFamily();
+    TestReactionFamilies();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

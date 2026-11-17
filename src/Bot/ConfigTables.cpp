@@ -23,6 +23,7 @@
 #include "Config.h"
 #include "ConfigTable.h"
 #include "Log.h"
+#include "NaturalReactionConfig.h"
 #include "PlayerbotAIConfig.h"
 #include "ScriptMgr.h"
 #include "SkillConfig.h"
@@ -310,6 +311,15 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(SkillGrowthFamily, sPlayerbotAIConfig.SkillGrowth),
         MakeEntry(SkillAttributeLoadingFamily, sPlayerbotAIConfig.SkillAttributes),
         MakeEntry(SkillAttributeSpreadFamily, sPlayerbotAIConfig.SkillAttributes),
+        MakeEntry(ReactionFamily, sPlayerbotAIConfig.NaturalReaction),
+        MakeEntry(ReactionChoiceFamily, sPlayerbotAIConfig.NaturalReaction.Choice),
+        MakeEntry(ReactionLoadFamily, sPlayerbotAIConfig.NaturalReaction.Load),
+        MakeEntry(ReactionEaseFamily, sPlayerbotAIConfig.NaturalReaction.Ease),
+        MakeEntry(ReactionThinkFamily, sPlayerbotAIConfig.NaturalReaction.Think),
+        MakeEntry(ReactionAnticipateFamily, sPlayerbotAIConfig.NaturalReaction.Anticipate),
+        MakeEntry(ReactionQueueFamily, sPlayerbotAIConfig.NaturalReaction.Queue),
+        MakeEntry(ReactionReevalFamily, sPlayerbotAIConfig.NaturalReaction.Reeval),
+        MakeEntry(ReactionMemoryFamily, sPlayerbotAIConfig.NaturalReaction.Memory),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
