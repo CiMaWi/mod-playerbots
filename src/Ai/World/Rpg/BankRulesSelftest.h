@@ -711,6 +711,12 @@ inline void CheckStock(Checker& checker)
     BankIn const stocked = StockIn(80, {Potion(13, 20)}, {Potion(12, 20)}, keepSix, 6);
     checker.Check(DueAt(KeptInBank(stocked), 80).count == 0 && DueAt(KeptInBank(stocked), 255).count == 20,
                   "stock for later is due at no level: it makes no bank trip");
+    // The visit after the first: the banked stack stays stock for later, the bags' third stack does not take its place
+    BankPlan const again = PlanBankVisit(StockIn(80, {Potion(1, 20), Potion(3, 20)}, {Potion(2, 20)}, keepSix, 6));
+    checker.Show("stock: the next visit, 2 bag stacks and the banked one", again);
+    checker.Check(again.steps.empty() && GuidIs(again, 2, BankChoice::Leave, BankReason::KeptStock) &&
+                      GuidIs(again, 1, BankChoice::Keep, BankReason::Due) && !VerdictOfGuid(again, 3),
+                  "the next visit moves nothing: the banked stack stays, the bags keep the rest");
 
     // WB.2 holds for a surplus entry (demand sells it): stock for later worth no more than it sells for is not kept
     std::vector<StockEntry> const cheap = {{POTION, POTION_SELL, 0, 0}};
