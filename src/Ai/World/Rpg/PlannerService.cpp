@@ -1031,8 +1031,10 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
         RowTimer const timer("bridge route order");
         TravelRoute::Request const request(TravelRoute::FillSnapshot(bot, 0), *at);
         std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
-        // The ground route answers "is there a route" (fly legs never change it): no flight search on a map thread
-        return TravelRoute::GroundSearch(TravelGraph::Instance(), request, *stuck, TravelRoute::ConfiguredParams()).ok;
+        // Without flight maps a flyer's fly legs are priced, not flown: no flight search on a map thread (contract C3)
+        TravelRoute::Params params = TravelRoute::ConfiguredParams();
+        params.flightMaps = nullptr;
+        return TravelRoute::Search(TravelGraph::Instance(), request, *stuck, params).ok;
     };
     BridgeAnswer const answer = GoalApply::BridgeCheck(order, facts);
     if (answer != BridgeAnswer::Done)
