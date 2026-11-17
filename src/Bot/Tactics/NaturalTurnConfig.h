@@ -54,4 +54,10 @@ struct TurnConfig
     uint32 CastRetryMs = 50;   // the next check a cast waits for the arc to hold
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (NaturalTurnConfig.cpp)
+extern ConfigFamily<TurnConfig> const NaturalFacingFamily;
+
 #endif

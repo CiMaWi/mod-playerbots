@@ -1863,31 +1863,8 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # Playerbots.PerfMonEnabled the rows NaturalTurn::Step (the pre-gate cost), NaturalTurn::Face, NaturalTurn::Packet
 # (heartbeats sent by turns) and NaturalTurn::Snap (snaps at the four points while it is off for the bot) show the
 # cost and the packet counts. Default: off (the instant snap).
-# Playerbots.Natural.Facing.Enable = 0
-# Playerbots.Natural.Facing.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Facing.OutsidePvpInSight = 0
-# Playerbots.Natural.Facing.InSightYards = 60
-# Playerbots.Natural.Facing.InSightCacheMs = 1000
-# Playerbots.Natural.Facing.Mode = 1
-# Playerbots.Natural.Facing.MsFor180AtSkill1 = 450
-# Playerbots.Natural.Facing.MsFor180AtSkill99 = 90
-# Playerbots.Natural.Facing.MinMs = 40
-# Playerbots.Natural.Facing.ErrorDegAtSkill1 = 14
-# Playerbots.Natural.Facing.ErrorDegAtSkill99 = 2
-# Playerbots.Natural.Facing.ErrorSigmaPct = 40
-# Playerbots.Natural.Facing.CorrectionPctAtSkill1 = 70
-# Playerbots.Natural.Facing.CorrectionPctAtSkill99 = 35
-# Playerbots.Natural.Facing.CorrectionDelayMinMs = 120
-# Playerbots.Natural.Facing.CorrectionDelayMaxMs = 250
-# Playerbots.Natural.Facing.CorrectionResidualPct = 25
-# Playerbots.Natural.Facing.KeyboardPctAtSkill1 = 35
-# Playerbots.Natural.Facing.KeyboardPctAtSkill99 = 0
-# Playerbots.Natural.Facing.KeyboardDegPerS = 180
-# Playerbots.Natural.Facing.PacketMinDeg = 8
-# Playerbots.Natural.Facing.PacketMinMs = 80
-# Playerbots.Natural.Facing.SplineMinDeg = 25
-# Playerbots.Natural.Facing.CastRetryMs = 50
-# (Ranges: Mode 1-2, percents 0-100, degrees 0-360, ms 0-60000, InSightYards 0-500, KeyboardDegPerS 0-60000.)
+Playerbots.Natural.Facing.Enable = 0
+Playerbots.Natural.Facing.Mode = 1
 
 # Natural chasing and tracking (G2b): in Contexts (as above) a bot chasing a target sees it as it was Lag ms ago (a
 # ring of the target's past positions, one sample per SampleMs, RingSamples of them), the lag log-normal around
