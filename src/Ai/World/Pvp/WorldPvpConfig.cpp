@@ -48,7 +48,7 @@ constexpr std::array<EnthusiasmRow, 34> EnthusiasmRows = {{
      ConfigOutOfRange::KeepDefault},
     {"StartCost", &WorldPvpEnthusiasmConfig::StartCost, 0.0f, MaxPoints, ConfigKind::Tuning,
      ConfigOutOfRange::KeepDefault},
-    {"StartCostShare", &WorldPvpEnthusiasmConfig::StartCostShare, 0, 100},
+    {"StartCostShare", &WorldPvpEnthusiasmConfig::StartCostShare, 0, 100, ConfigKind::TuningListed},
     {"JoinBase", &WorldPvpEnthusiasmConfig::JoinBase, 0.0f, MaxPoints, ConfigKind::Tuning,
      ConfigOutOfRange::KeepDefault},
     {"JoinAggression", &WorldPvpEnthusiasmConfig::JoinAggression, 0.0f, MaxPoints, ConfigKind::Tuning,

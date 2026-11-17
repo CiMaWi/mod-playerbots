@@ -2004,6 +2004,7 @@ Playerbots.WorldPvp.Enthusiasm.RecoveryPerHour = 15
 # share when (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit;
 # one outside it pays nothing and keeps its KillEdit. (Ranges: StartCost 0-1000; StartCostShare 0-100.)
 # Defaults: 15, 100
+Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 
 # Enthusiasm's thresholds, in points. A bot attacks an enemy player when its enthusiasm is above its join threshold
 # for that target: JoinBase - JoinAggression x aggression (-1..+1; at the scale's top the bot never starts a fight);
