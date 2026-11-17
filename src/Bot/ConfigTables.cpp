@@ -18,6 +18,7 @@
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
 #include "BankMailConfig.h"
+#include "BotAttributeTypes.h"
 #include "Chat.h"
 #include "Config.h"
 #include "ConfigTable.h"
@@ -44,7 +45,7 @@ struct ConfigTableEntry
 void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
 
 // The keys under Playerbots.Skill. that PlayerbotAIConfig still reads by hand
-constexpr std::array<char const*, 2> SkillCodeTails = {"Attributes.", "Growth."};
+constexpr std::array<char const*, 2> SkillCodeTails = {"Attributes.Corr.", "Growth."};
 
 // codeTails: the keys under the family's prefix that code outside the table reads (not unknown)
 template <typename Struct>
@@ -305,6 +306,8 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(JumpFamily, sPlayerbotAIConfig.TacticJump),
         MakeEntry(SkillFamily, sPlayerbotAIConfig.Skill, SkillCodeTails),
         MakeEntry(SkillGateFamily, sPlayerbotAIConfig.SkillGate),
+        MakeEntry(SkillAttributeLoadingFamily, sPlayerbotAIConfig.SkillAttributes),
+        MakeEntry(SkillAttributeSpreadFamily, sPlayerbotAIConfig.SkillAttributes),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),

@@ -8,7 +8,9 @@
 
 #include <array>
 #include <limits>
+#include <utility>
 
+#include "BotAttributeTypes.h"
 #include "ConfigTable.h"
 #include "TacticGateConfig.h"
 #include "TacticScope.h"
@@ -17,6 +19,7 @@ namespace
 {
 using SkillRow = ConfigRow<SkillConfig>;
 using GateRow = ConfigRow<TacticGateParams>;
+using AttributeRow = ConfigRow<BotAttributeParams>;
 
 constexpr uint32 MaxNoticeMissPercent = 95;
 constexpr uint32 MaxNoticeDelayMs = 10000;
@@ -72,7 +75,27 @@ constexpr std::array<GateRow, 6> SkillGateRows = {{
     {"EffortSpread", &TacticGateParams::EffortSpread, 0, MaxSpread, ConfigKind::TuningListed},
     {"StyleSpread", &TacticGateParams::StyleSpread, 0, MaxSpread, ConfigKind::TuningListed},
 }};
+
+float& LoadingAt(BotAttributeParams& out, uint32_t index) { return out.Loading[index]; }
+float& SpreadAt(BotAttributeParams& out, uint32_t index) { return out.Spread[index]; }
+
+// One row per attribute, keyed by its name, 0 to upper; the defaults are BotAttributeParams' initializers (Loading 1
+// for the abilities and 0 for the traits, Spread 0)
+template <std::size_t... Index>
+constexpr std::array<AttributeRow, BOT_ATTRIBUTE_COUNT> AttributeRows(float& (*at)(BotAttributeParams&, uint32_t),
+                                                                      double upper, std::index_sequence<Index...>)
+{
+    return {{AttributeRow{BOT_ATTRIBUTE_DEFINITIONS[Index].Name,
+                          ConfigElement<BotAttributeParams, float>{at, static_cast<uint32_t>(Index)}, 0.0, upper}...}};
+}
+
+constexpr std::array<AttributeRow, BOT_ATTRIBUTE_COUNT> LoadingRows =
+    AttributeRows(&LoadingAt, 1.0, std::make_index_sequence<BOT_ATTRIBUTE_COUNT>{});
+constexpr std::array<AttributeRow, BOT_ATTRIBUTE_COUNT> SpreadRows =
+    AttributeRows(&SpreadAt, 3.0, std::make_index_sequence<BOT_ATTRIBUTE_COUNT>{});
 }  // namespace
 
+ConfigFamily<BotAttributeParams> const SkillAttributeLoadingFamily{"Playerbots.Skill.Attributes.Loading.", LoadingRows};
+ConfigFamily<BotAttributeParams> const SkillAttributeSpreadFamily{"Playerbots.Skill.Attributes.Spread.", SpreadRows};
 ConfigFamily<SkillConfig> const SkillFamily{"Playerbots.Skill.", SkillRows, &FinishSkill};
 ConfigFamily<TacticGateParams> const SkillGateFamily{"Playerbots.Skill.", SkillGateRows};

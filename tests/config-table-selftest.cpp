@@ -26,6 +26,7 @@
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
 #include "BankMailConfig.h"
+#include "BotAttributeTypes.h"
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
 #include "SkillConfig.h"
@@ -361,11 +362,13 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(TacticsEnableFamily, 1, "Tactics.Enable");
         visit(SkillFamily, 14, "Skill");
         visit(SkillGateFamily, 6, "Skill gate");
+        visit(SkillAttributeLoadingFamily, 12, "Skill attribute loadings");
+        visit(SkillAttributeSpreadFamily, 12, "Skill attribute spreads");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
     for (auto const& [key, value] : dist)
-        for (char const* prefix : {"Playerbots.Skill.Attributes.", "Playerbots.Skill.Growth."})
+        for (char const* prefix : {"Playerbots.Skill.Attributes.Corr.", "Playerbots.Skill.Growth."})
             if (key.rfind(prefix, 0) == 0)
                 known.insert(key);
     forEachFamily(
@@ -663,6 +666,45 @@ void TestSkillFamilies()
           "skill: an unknown distribution keeps normal with a warning");
 }
 
+// CS22e: the attribute loadings and spreads, one element row per attribute
+void TestAttributeFamilies()
+{
+    BotAttributeParams attributes;
+    attributes.Loading.fill(0.5f);
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+    FakeReader reader;
+    reader.values = {{"Playerbots.Skill.Attributes.Loading.Focus", "0.6"},
+                     {"Playerbots.Skill.Attributes.Spread.Grit", "5"},
+                     {"Playerbots.Skill.Attributes.Spread.Teamwork", "1"}};
+    uint32 const warned = LoadConfigFamily(SkillAttributeLoadingFamily, attributes, reader, warn) +
+                          LoadConfigFamily(SkillAttributeSpreadFamily, attributes, reader, warn);
+    uint32 const focus = static_cast<uint32>(BotAttribute::Focus);
+    uint32 const grit = static_cast<uint32>(BotAttribute::Grit);
+    uint32 const teamwork = static_cast<uint32>(BotAttribute::Teamwork);
+    bool defaults = true;
+    for (uint32 index = 0; index < BOT_ATTRIBUTE_COUNT; ++index)
+    {
+        std::string const loading =
+            std::string(SkillAttributeLoadingFamily.Prefix) + SkillAttributeLoadingFamily.Rows[index].Key;
+        defaults = defaults && loading == std::string("Playerbots.Skill.Attributes.Loading.") +
+                                              BOT_ATTRIBUTE_DEFINITIONS[index].Name;
+        if (index != focus)
+            defaults = defaults && attributes.Loading[index] == (IsBotPersonality(index) ? 0.0f : 1.0f);
+        if (index != grit && index != teamwork)
+            defaults = defaults && attributes.Spread[index] == 0.0f;
+    }
+    Check(defaults, "attributes: rows keyed by name, defaults 1 (abilities), 0 (traits) and spread 0");
+    Check(warned == 1 && attributes.Loading[focus] == 0.6f && attributes.Spread[grit] == 3.0f &&
+              attributes.Spread[teamwork] == 1.0f,
+          "attributes: a loading and a spread read, a spread above 3 clamped with a warning");
+    Check(reader.missingWarnings.empty(), "attributes: missing keys do not warn");
+    std::array<char const*, 1> const corr = {"Attributes.Corr."};
+    ConfigFamily<BotAttributeParams> const skillPrefix{"Playerbots.Skill.", SkillAttributeLoadingFamily.Rows};
+    Check(KnowsConfigKey(skillPrefix, "Playerbots.Skill.Attributes.Corr.Wisdom-Teamwork", corr),
+          "attributes: a Corr pair is a code-owned key");
+}
+
 void TestRetiredFullKey()
 {
     std::vector<std::string> const keys = {"Playerbots.Fake.Enable", "Playerbots.Fake.EnableX",
@@ -716,6 +758,7 @@ int main(int argc, char** argv)
     TestWideTypes();
     TestTacticFamilies();
     TestSkillFamilies();
+    TestAttributeFamilies();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";
