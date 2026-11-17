@@ -860,12 +860,12 @@ void TakeUsablePrints(PlayerbotAI* botAI, Player* bot)
     Engine* engine = botAI->GetCurrentEngine();
     LOG_INFO("playerbots",
              "ITEM usable: {} state {} combat {} pvp refs {} mounted {} stand {} food strategy {} food count {} "
-             "work {:#x} last action '{}'",
+             "work {:#x} last action '{}' vendor {} phase {:#x}",
              name, static_cast<int>(botAI->GetState()), bot->IsInCombat() ? 1 : 0,
              bot->GetCombatManager().GetPvPCombatRefs().size(), bot->IsMounted() ? 1 : 0,
              static_cast<int>(bot->getStandState()), botAI->HasStrategy("food", BOT_STATE_NON_COMBAT) ? 1 : 0,
              botAI->GetAiObjectContext()->GetValue<uint32>("item count", "food")->Get(), botAI->GetWork(),
-             engine ? engine->GetLastAction() : std::string("-"));
+             engine ? engine->GetLastAction() : std::string("-"), situation.vendorNear ? 1 : 0, bot->GetPhaseMask());
     for (std::size_t i = 0; i < situation.unitCount; ++i)
     {
         NearUnit const& unit = situation.units[i];

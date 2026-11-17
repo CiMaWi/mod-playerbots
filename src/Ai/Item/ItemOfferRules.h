@@ -25,18 +25,18 @@
 // allocation, no clock and no global state: the same situation and list give the same offer.
 //
 // The offer. WantedNeeds says which needs the situation has (thresholds below). The needs are tried in their enum
-// order; for each, the entries that answer it (EntryAnswers: the need's kind and sub, a fitting shape, never the
-// PvP trinket, which stays its tactic's) and are usable (ready, uses left) and whose target can be built
-// (AnswerTarget). A free entry (not consumed) wins at once over any consumed one (free before consumed). Among one
-// class the stronger: higher rank, then the lower price, then the lower list index. Consumed entries are weighed by
-// the spend rule (Spend) in that order; the first it spends answers the need, a weaker cheaper one only when the
-// stronger is refused. The first need with an answer wins, except a potion: when the winning need's answer is a
-// potion, every wanted need's spent potion is gathered and BestPotionNeed picks the need where it saves most (one
-// potion per fight). A heal goes to the bot while it is below the heal bar, else (WI15b) to the most hurt friendly
-// unit below it within the item's friend reach, by an item of the friend or any-unit shape. Nothing answers: any ==
-// false; when a consumed candidate was weighed, need, usable, consumed and verdict hold the first wanted need's
-// strongest weighed candidate and its keep verdict (the item_spend row's keep:<kind>, SpendDecision), else consumed ==
-// false.
+// order (NeedAt: Control just before Boost while the enemy it holds runs, WI18b); for each, the entries that answer it
+// (EntryAnswers: the need's kind and sub, a fitting shape, never the PvP trinket, which stays its tactic's) and are
+// usable (ready, uses left) and whose target can be built (AnswerTarget). A free entry (not consumed) wins at once over
+// any consumed one (free before consumed). Among one class the stronger: higher rank, then the lower price, then the
+// lower list index. Consumed entries are weighed by the spend rule (Spend) in that order; the first it spends answers
+// the need, a weaker cheaper one only when the stronger is refused. The first need with an answer wins, except a
+// potion: when the winning need's answer is a potion, every wanted need's spent potion is gathered and BestPotionNeed
+// picks the need where it saves most (one potion per fight). A heal goes to the bot while it is below the heal bar,
+// else (WI15b) to the most hurt friendly unit below it within the item's friend reach, by an item of the friend or
+// any-unit shape. Nothing answers: any == false; when a consumed candidate was weighed, need, usable, consumed and
+// verdict hold the first wanted need's strongest weighed candidate and its keep verdict (the item_spend row's
+// keep:<kind>, SpendDecision), else consumed == false.
 //
 // WI16 (PLAN 3.8, the chain): among the consumed answers of one need a non-potion is weighed before a potion (a
 // healthstone or a rune before the fight's one potion), each class strongest first. Two rules of usable (EntryUsable):
@@ -913,6 +913,23 @@ inline SpendCase SpendCaseFor(Situation const& situation, UsableEntry const& ent
     return spendCase;
 }
 
+// The need the offer tries at turn n (0 .. NEED_COUNT - 1; WI18b): the enum order, except that Control comes just
+// before Boost while the enemy a control item holds runs. A boost is not wanted while a runner can still be stopped:
+// its use would take the turn the runner needs to get away (lab12: a warrior's boost came first and the runner
+// escaped). A caster keeps the enum order.
+constexpr Need NeedAt(std::size_t n, bool controlFirst)
+{
+    std::size_t const boost = static_cast<std::size_t>(Need::Boost);
+    std::size_t const control = static_cast<std::size_t>(Need::Control);
+    if (!controlFirst || n < boost || n > control)
+        return static_cast<Need>(n);
+    return n == boost ? Need::Control : static_cast<Need>(n - 1);
+}
+static_assert(NeedAt(static_cast<std::size_t>(Need::Boost), true) == Need::Control &&
+                  NeedAt(static_cast<std::size_t>(Need::Control), true) == Need::DamageArea &&
+                  NeedAt(static_cast<std::size_t>(Need::Boost), false) == Need::Boost,
+              "Control moves just before Boost, the needs between move one on");
+
 // Which kind is wanted now and which item answers it best; see the header comment. Entries past index 255 are not
 // read (usable is one byte).
 inline Offer MakeOffer(Situation const& situation, std::span<UsableEntry const> list)
@@ -929,10 +946,12 @@ inline Offer MakeOffer(Situation const& situation, std::span<UsableEntry const> 
     std::array<SpendCase, NEED_COUNT> potionCases{};
     std::array<Offer, NEED_COUNT> potionOffers{};
     std::size_t potions = 0;
+    std::int8_t const held = (wanted & NeedBit(Need::Control)) ? ControlTarget(situation) : -1;
+    bool const runnerFirst = held >= 0 && situation.units[static_cast<std::size_t>(held)].flees;
 
     for (std::size_t n = 0; n < NEED_COUNT; ++n)
     {
-        Need const need = static_cast<Need>(n);
+        Need const need = NeedAt(n, runnerFirst);
         if (!(wanted & NeedBit(need)))
             continue;
 
