@@ -17,6 +17,8 @@
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaRecruitConfig.h"
+#include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "Chat.h"
@@ -31,6 +33,7 @@
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "PlayerbotAIConfig.h"
+#include "PvpGearConfig.h"
 #include "ScriptMgr.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
@@ -342,6 +345,9 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
         MakeEntry(LadderFamily, sPlayerbotAIConfig.Ladder),
         MakeEntry(MatchmakerFamily, sPlayerbotAIConfig.Ladder.Matchmaker),
+        MakeEntry(ArenaTeamFamily, sPlayerbotAIConfig.ArenaTeamOptions),
+        MakeEntry(ArenaRecruitFamily, sPlayerbotAIConfig.ArenaRecruitOptions),
+        MakeEntry(PvpGearFamily, sPlayerbotAIConfig.PvpGear),
         MakeEntry(WorldLogFamily, WorldLog::Options()),
         MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
         MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),

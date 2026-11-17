@@ -24,4 +24,10 @@ struct ArenaRecruitConfig
     uint32 LoyaltyMinWinPercent = 55;        // 0-100: and its win share
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (ArenaRecruitConfig.cpp)
+extern ConfigFamily<ArenaRecruitConfig> const ArenaRecruitFamily;
+
 #endif

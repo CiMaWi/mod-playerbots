@@ -26,6 +26,8 @@
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaRecruitConfig.h"
+#include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
@@ -37,6 +39,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
+#include "PvpGearConfig.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
@@ -411,6 +414,9 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
         visit(UpkeepFamily, 1, "Upkeep");
         visit(WorldTravelFamily, 21, "World travel");
+        visit(PvpGearFamily, 8, "PvP gear");
+        visit(ArenaRecruitFamily, 8, "Arena recruit");
+        visit(ArenaTeamFamily, 28, "Arena team");
         visit(LadderFamily, 5, "Ladder");
         visit(MatchmakerFamily, 10, "Ladder matchmaker");
     };

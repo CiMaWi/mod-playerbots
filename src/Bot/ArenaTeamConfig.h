@@ -50,4 +50,10 @@ struct ArenaTeamConfig
     float CompLearningTemperatureTop = 0.05f;     // 0.01-10
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (ArenaTeamConfig.cpp)
+extern ConfigFamily<ArenaTeamConfig> const ArenaTeamFamily;
+
 #endif
