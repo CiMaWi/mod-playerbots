@@ -728,13 +728,11 @@ bool PlayerbotAIConfig::Initialize()
     }
     DisableDeathKnightLogin = sConfigMgr->GetOption<bool>("Playerbots.DisableDeathKnightLogin", 0);
     LimitTalentsExpansion = sConfigMgr->GetOption<bool>("Playerbots.LimitTalentsExpansion", 0);
-    BotActiveAlone = sConfigMgr->GetOption<int32>("Playerbots.BotActiveAlone", 10);
-    BotActiveAloneDurationSeconds = sConfigMgr->GetOption<int32>("Playerbots.BotActiveAloneDurationSeconds", 30);
-    BotActiveAloneForceWhenInRadius = sConfigMgr->GetOption<uint32>("Playerbots.BotActiveAloneForceWhenInRadius", 150);
-    BotActiveAloneForceWhenInZone = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInZone", 1);
-    BotActiveAloneForceWhenInMap = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInMap", 0);
-    BotActiveAloneForceWhenIsFriend = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenIsFriend", 0);
-    BotActiveAloneForceWhenInGuild = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInGuild", 1);
+    // The activity ladder is gone (CS24b): a config that still throttles is told once
+    if (sConfigMgr->GetOption<int32>("Playerbots.BotActiveAlone", 100) < 100 ||
+        sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", false))
+        LOG_WARN("server.loading",
+                 "Playerbots.BotActiveAlone / Playerbots.botActiveAloneSmartScale: ignored: every bot is always active");
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
@@ -1712,12 +1710,6 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Jump.TestAirTimeoutMs", TacticJump.TestAirTimeoutMs, MaxFocusMs);
     focusNumber("Jump.TestSettleMs", TacticJump.TestSettleMs, MaxFocusMs);
     focusNumber("Jump.TestMaxStuckMs", TacticJump.TestMaxStuckMs, MaxFocusMs);
-
-    BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
-    BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
-    BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);
-    BotActiveAloneSmartScaleWhenMinLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMinLevel", 1);
-    BotActiveAloneSmartScaleWhenMaxLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMaxLevel", 80);
 
     RandomBotsWalkingRPG = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG", false);
     RandomBotsWalkingRPGInDoors = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG.InDoors", false);
