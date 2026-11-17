@@ -2398,7 +2398,7 @@ Playerbots.Tactics.Natural.Enable = 0
 # Playerbots.Tactics.Cc.OpponentMemoryEnable = 0
 #
 # Trinket and Dispel (G5a; Playerbots.Tactics.Trinket.Enable / Dispel.Enable): a bot that knows the Trinket tactic
-# breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use trinket" then never
+# breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use item fight" never
 # spends it as a boost) or a racial (every man for himself, will of the forsaken, escape artist), the trinket first;
 # below the tactic's known skill it does not tell a CC that matters and breaks any CC with WastedBreakPct. From
 # WastedBreakNeverFromSkill (Wisdom) a bot breaks only a CC that matters. CautiousLowHealthPct moves the low-health

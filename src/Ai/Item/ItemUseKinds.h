@@ -65,8 +65,8 @@ constexpr std::string_view KindWord(Kind kind)
 // The finer word inside a kind (Classified::sub). One list for every kind; a kind uses only its own words:
 // move: speed fall jump; summon: helper decoy repair object; mana: mana rage energy runic; food_drink: food drink
 // food_drink well_fed; learn: recipe glyph spell; open: lock create. A summoned game object (a feast, a mailbox, a
-// portal, a chair) is summon/object; helper, decoy and repair are kept for a creature's role, which the Record does
-// not carry yet (the summoned creature's flags), so WI12 gives a summoned creature sub none.
+// portal, a chair) is summon/object; a summoned creature's role (helper, decoy, repair) comes from its entry (the
+// SUMMON effect's MiscValue) by the table KindDetail::SUMMON_ROLES (WI18); any other creature is sub none.
 enum class Sub : std::uint8_t
 {
     None,
@@ -307,6 +307,7 @@ struct Found
     bool create{false};
     bool summon{false};
     bool summonObject{false};
+    std::int32_t summonEntry{0};  // WI18: the creature the first SUMMON effect calls (its MiscValue), 0: none
     bool dispel{false};
     std::int32_t dispelCount{0};
     std::int32_t protect{-1};
@@ -492,6 +493,8 @@ inline void Read(EffectFact const& effect, Record const& record, Found& found)
         case SUMMON:
         case SUMMON_PET:
             found.summon = true;
+            if (!found.summonEntry)
+                found.summonEntry = effect.misc;
             break;
         case TRANS_DOOR:
         case SUMMON_OBJECT_WILD:
@@ -546,6 +549,37 @@ inline void Read(EffectFact const& effect, Record const& record, Found& found)
         else
             found.harmDirect = true;
     }
+}
+
+// WI18: the gadgets' creatures by role (the census, tests/fixtures/item-use-dump.txt and the world DB's
+// creature_template): a decoy (the target dummies, the explosive decoy), a helper that fights (the dragonlings, the
+// flame turret), a repair vendor (the field repair bots, Jeeves). Any other summoned creature (a vanity pet, a sheep, a
+// mine, an alarm) has no role the offer reads. A role from the creature's own flags would need lane 1's Record to carry
+// them; the table is the census's answer.
+struct SummonRole
+{
+    std::int32_t creature;
+    Sub sub;
+};
+
+constexpr std::array<SummonRole, 11> SUMMON_ROLES = {{{2673, Sub::Decoy},
+                                                      {2674, Sub::Decoy},
+                                                      {12426, Sub::Decoy},
+                                                      {29134, Sub::Decoy},
+                                                      {2678, Sub::Helper},
+                                                      {8615, Sub::Helper},
+                                                      {12473, Sub::Helper},
+                                                      {17458, Sub::Helper},
+                                                      {14337, Sub::Repair},
+                                                      {24780, Sub::Repair},
+                                                      {35642, Sub::Repair}}};
+
+constexpr Sub SummonSub(std::int32_t creature)
+{
+    for (SummonRole const& role : SUMMON_ROLES)
+        if (role.creature == creature)
+            return role.sub;
+    return Sub::None;
 }
 
 constexpr Classified Is(Kind kind, std::int64_t rank, Sub sub = Sub::None)
@@ -661,7 +695,7 @@ inline Classified Classify(Record const& record)
         if (found.dispel)
             return Is(Kind::Dispel, found.dispelCount);
         if (found.summon)
-            return Is(Kind::Summon, 0, found.summonObject ? Sub::Object : Sub::None);
+            return Is(Kind::Summon, 0, found.summonObject ? Sub::Object : KindDetail::SummonSub(found.summonEntry));
         if (found.heal > 0 || found.power > 0)
             return Not("helps_and_harms");
         return Not(found.script ? "harm_script_only" : "harm_other");
@@ -694,7 +728,7 @@ inline Classified Classify(Record const& record)
     if (found.move != Sub::None)
         return Is(Kind::Move, found.moveAmount, found.move);
     if (found.summon)
-        return Is(Kind::Summon, 0, found.summonObject ? Sub::Object : Sub::None);
+        return Is(Kind::Summon, 0, found.summonObject ? Sub::Object : KindDetail::SummonSub(found.summonEntry));
     if (found.buff >= 0)
         return Is(record.durationMs <= BOOST_MAX_MS ? Kind::Boost : Kind::LongBuff, found.buff);
     if (found.toy)

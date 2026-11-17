@@ -286,8 +286,8 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     uint8 tab = GetPlayerSpecTab(player);
 
     if (!player->InBattleground())
-        engine->addStrategiesNoInit("racials", "chat", "default", "cast time", "potions", "duel", "boost", "world pvp",
-                                    nullptr);
+        engine->addStrategiesNoInit("racials", "item fight", "chat", "default", "cast time", "duel", "boost",
+                                    "world pvp", nullptr);
 
     if (sPlayerbotAIConfig.AutoAvoidAoe && facade->HasGameClientMaster())
         engine->addStrategy("avoid aoe", false);
@@ -487,10 +487,12 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         if (player->InArena())
         {
             engine->addStrategy("arena", false);
-            engine->addStrategiesNoInit("boost", "racials", "chat", "default", "aoe", "cast time", "dps assist", nullptr);
+            engine->addStrategiesNoInit("boost", "racials", "item fight", "chat", "default", "aoe", "cast time",
+                                        "dps assist", nullptr);
         }
         else
-            engine->addStrategiesNoInit("boost", "racials", "chat", "default", "aoe", "potions", "cast time", "dps assist", nullptr);
+            engine->addStrategiesNoInit("boost", "racials", "item fight", "chat", "default", "aoe", "cast time",
+                                        "dps assist", nullptr);
 
         engine->removeStrategy("custom::say", false);
         engine->removeStrategy("threat", false);
@@ -653,8 +655,11 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
 
     if (!player->InBattleground())
     {
+        // item use WI16: "item fight" here too: a bot in combat with no target runs this engine ("drop target"), as a
+        // fleeing bot does, and its fight items still answer (its triggers ask for combat first)
         nonCombatEngine->addStrategiesNoInit("nc", "food", "chat", "follow", "default", "force rebuff", "quest", "loot",
-                                            "gather", "duel", "pvp", "buff", "mount", "emote", "world pvp", nullptr);
+                                             "gather", "duel", "pvp", "buff", "mount", "emote", "world pvp",
+                                             "item fight", nullptr);
     }
 
     if (sPlayerbotAIConfig.AutoSaveMana && PlayerbotAI::IsHeal(player, true))
