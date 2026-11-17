@@ -12,7 +12,6 @@
 #include <sstream>
 
 #include "AcquaintanceMgr.h"
-#include "ActivityBudget.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
@@ -127,11 +126,6 @@ public:
             {"teams", ArenaTeamFormation::HandleTeamsCommand, SEC_GAMEMASTER, Console::Yes},
             {"comps", ArenaTeamFormation::HandleCompsCommand, SEC_GAMEMASTER, Console::Yes},
             {"recruit", ArenaRecruit::HandleRecruitCommand, SEC_GAMEMASTER, Console::Yes},
-        };
-
-        static ChatCommandTable playerbotsSituationCommandTable = {
-            {"status", ActivityBudget::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
-            {"force", ActivityBudget::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsLadderPoolCommandTable = {
@@ -294,11 +288,12 @@ public:
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // Item use WI2c: the index census, one record and the dump (read only)
+        // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order
         static ChatCommandTable playerbotsItemCommandTable = {
             {"census", ItemUse::HandleCensusCommand, SEC_PLAYER, Console::Yes},
             {"info", ItemUse::HandleInfoCommand, SEC_PLAYER, Console::Yes},
             {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
+            {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -319,7 +314,6 @@ public:
             {"testplayer", playerbotsTestPlayerCommandTable},
             {"pvptest", playerbotsPvpTestCommandTable},
             {"arena", playerbotsArenaCommandTable},
-            {"situation", playerbotsSituationCommandTable},
             {"ladder", playerbotsLadderCommandTable},
             {"pvpgear", playerbotsPvpGearCommandTable},
             {"matchlog", playerbotsMatchLogCommandTable},

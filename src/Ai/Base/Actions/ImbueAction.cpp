@@ -5,8 +5,26 @@
  */
 
 #include "ImbueAction.h"
+
 #include "Event.h"
+#include "ItemUse.h"
 #include "Playerbots.h"
+
+namespace
+{
+// A coating on the bot's worn weapon through the item use path (caller buff, item-use WI5). Check first: the trigger
+// holds while the coating's cast runs, and a refusal then writes no row
+void CoatWorn(Player* bot, Item* coating, uint8 slot)
+{
+    Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    if (!weapon)
+        return;
+
+    ItemUse::Request const request = ItemUse::OnItem(coating, weapon, ItemUse::Caller::Buff);
+    if (ItemUse::Check(bot, request) == ItemUse::Cause::None)
+        ItemUse::Use(bot, request);
+}
+}  // namespace
 
 ImbueWithPoisonAction::ImbueWithPoisonAction(PlayerbotAI* botAI) : Action(botAI, "apply poison") {}
 
@@ -67,7 +85,7 @@ bool ImbueWithPoisonAction::Execute(Event /*event*/)
 
         if (poison)
         {
-            botAI->ImbueItem(poison, EQUIPMENT_SLOT_MAINHAND);
+            CoatWorn(bot, poison, EQUIPMENT_SLOT_MAINHAND);
             botAI->SetNextCheckDelay(5);
         }
     }
@@ -92,7 +110,7 @@ bool ImbueWithPoisonAction::Execute(Event /*event*/)
 
         if (poison)
         {
-            botAI->ImbueItem(poison, EQUIPMENT_SLOT_OFFHAND);
+            CoatWorn(bot, poison, EQUIPMENT_SLOT_OFFHAND);
             botAI->SetNextCheckDelay(5);
         }
     }
@@ -125,7 +143,7 @@ bool ImbueWithStoneAction::Execute(Event /*event*/)
         stone = botAI->FindStoneFor(weapon);
         if (stone)
         {
-            botAI->ImbueItem(stone, EQUIPMENT_SLOT_MAINHAND);
+            CoatWorn(bot, stone, EQUIPMENT_SLOT_MAINHAND);
             botAI->SetNextCheckDelay(5);
         }
     }
@@ -137,7 +155,7 @@ bool ImbueWithStoneAction::Execute(Event /*event*/)
         stone = botAI->FindStoneFor(weapon);
         if (stone)
         {
-            botAI->ImbueItem(stone, EQUIPMENT_SLOT_OFFHAND);
+            CoatWorn(bot, stone, EQUIPMENT_SLOT_OFFHAND);
             botAI->SetNextCheckDelay(5);
         }
     }
@@ -169,7 +187,7 @@ bool ImbueWithOilAction::Execute(Event /*event*/)
         oil = botAI->FindOilFor(weapon);
         if (oil)
         {
-            botAI->ImbueItem(oil, EQUIPMENT_SLOT_MAINHAND);
+            CoatWorn(bot, oil, EQUIPMENT_SLOT_MAINHAND);
             botAI->SetNextCheckDelay(5);
         }
     }
