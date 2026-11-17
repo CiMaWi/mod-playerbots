@@ -932,6 +932,8 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     snapshot.allowTransport = true;
     if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
         snapshot.knownTaxi.fill(0);
+    if (!TestConstraints::OwnFlyingAllowed(botAI->testConstraints))  // nofly: a taxi is the bot's only flying
+        snapshot.flyOutland = snapshot.flyNorthrend = false;
     // With what the trip's failed legs left out and the spots it could not take off at (TravelLegs::NextRequest)
     TravelRoute::Request const request = TravelLegs::NextRequest(
         data.trip, snapshot,
