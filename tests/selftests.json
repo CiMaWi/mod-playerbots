@@ -97,7 +97,8 @@
             "sources": [
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
                 "src/Bot/Tactics/ArenaCcConfig.cpp",
-                "src/Bot/Tactics/ArenaFocusConfig.cpp"
+                "src/Bot/Tactics/ArenaFocusConfig.cpp",
+                "src/Bot/Tactics/ArenaInterruptConfig.cpp"
             ],
             "args": [
                 "{repo}"
