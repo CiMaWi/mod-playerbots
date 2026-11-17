@@ -5,18 +5,19 @@
  */
 
 #include "UseItemAction.h"
+
 #include "AcceptQuestAction.h"
 #include "BotTravel.h"
 #include "ChatHelper.h"
 #include "Event.h"
 #include "ItemPackets.h"
 #include "ItemUsageValue.h"
+#include "ItemUse.h"
 #include "LootObjectStack.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
-#include "TestConstraints.h"
 
 static constexpr uint32 SPELL_LEARNING_1 = 483;
 static constexpr uint32 SPELL_LEARNING_2 = 55884;
@@ -158,7 +159,8 @@ bool UseItemAction::UseItemOnItem(Item* item, Item* itemTarget) { return UseItem
 
 bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Unit* unitTarget)
 {
-    if (!TestConstraints::UsesItemsOnItsOwn(botAI->testConstraints))  // nouse (item-use WI2): goes with WI5's builder
+    // the test's nouse: a bot that makes no request of its own reaches none of the side effects below either
+    if (!ItemUse::Allowed(bot, caller))
         return false;
 
     if (bot->CanUseItem(item) != EQUIP_ERR_OK)
@@ -167,18 +169,10 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
     if (bot->IsNonMeleeSpellCast(false))
         return false;
 
-    uint8 bagIndex = item->GetBagSlot();
-    uint8 slot = item->GetSlot();
-    uint8 cast_count = 1;
-    ObjectGuid item_guid = item->GetGUID();
-    uint32 glyphIndex = 0;
-    uint8 castFlags = 0;
-    uint32 targetFlag = TARGET_FLAG_NONE;
     GameObject* goTarget = goGuid ? botAI->GetGameObject(goGuid) : nullptr;
     if (goGuid && (!goTarget || !goTarget->isSpawned()))
         return false;
 
-    uint32 spellId = 0;
     ItemTemplate const* itemProto = item->GetTemplate();
     bool const isGenericLearnItem =
         itemProto->Spells[0].SpellId == SPELL_LEARNING_1 || itemProto->Spells[0].SpellId == SPELL_LEARNING_2;
@@ -214,30 +208,10 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
         }
     }
 
-    // Only check index 0 for generic-learn items; slot 1 is the taught spell id
-    uint8 const spellSlotLimit = isGenericLearnItem ? 1 : MAX_ITEM_PROTO_SPELLS;
-
-    for (uint8 i = 0; i < spellSlotLimit; ++i)
-    {
-        if (itemProto->Spells[i].SpellId > 0)
-        {
-            spellId = itemProto->Spells[i].SpellId;
-            bool canCast = goTarget ? botAI->CanCastSpell(spellId, goTarget, false, item)
-                                    : botAI->CanCastSpell(spellId, bot, false, itemTarget, item);
-            if (!canCast)
-                return false;
-        }
-    }
-
-    WorldPacket packet(CMSG_USE_ITEM);
-    packet << bagIndex << slot << cast_count << spellId << item_guid << glyphIndex << castFlags;
-
-    bool targetSelected = false;
-
-    std::string itemText = chat->FormatItem(item->GetTemplate());
+    std::string itemText = chat->FormatItem(itemProto);
     std::string targetText;
 
-    if (item->GetTemplate()->Stackable > 1)
+    if (itemProto->Stackable > 1)
     {
         uint32 count = item->GetCount();
         if (count > 1)
@@ -246,19 +220,21 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
             itemText += " (the last one!)";
     }
 
+    // The use is a request to the item use path (item-use WI5). Its target is the one the old packet named first,
+    // which the game's handler read, in the old order: the object, the item, the master's unit, the unit
+    ItemUse::Request request = ItemUse::OnSelf(item, caller);
+    bool targetSelected = false;
+
     if (goTarget)
     {
-        targetFlag = TARGET_FLAG_GAMEOBJECT;
-
-        packet << targetFlag;
-        packet << goGuid.WriteAsPacked();
+        request = ItemUse::OnObject(item, goTarget, caller);
         targetText = chat->FormatGameobject(goTarget);
         targetSelected = true;
     }
 
     if (itemTarget)
     {
-        if (item->GetTemplate()->Class == ITEM_CLASS_GEM)
+        if (itemProto->Class == ITEM_CLASS_GEM)
         {
             bool fit = SocketItem(itemTarget, item) || SocketItem(itemTarget, item, true);
             if (!fit)
@@ -267,49 +243,46 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
 
             return fit;
         }
-        else
+
+        if (!targetSelected)
         {
-            targetFlag = TARGET_FLAG_ITEM;
-            packet << targetFlag;
-            packet << itemTarget->GetGUID().WriteAsPacked();
+            request = ItemUse::OnItem(item, itemTarget, caller);
             targetText = chat->FormatItem(itemTarget->GetTemplate());
             targetSelected = true;
         }
     }
 
     Player* master = GetMaster();
-    if (!targetSelected && item->GetTemplate()->Class != ITEM_CLASS_CONSUMABLE && master &&
-        IsRealPlayer(botAI->GetMaster()) && !selfOnly)
+    if (!targetSelected && itemProto->Class != ITEM_CLASS_CONSUMABLE && master && IsRealPlayer(botAI->GetMaster()) &&
+        !selfOnly)
     {
         if (ObjectGuid masterSelection = master->GetTarget())
         {
-            Unit* unit = botAI->GetUnit(masterSelection);
-            if (unit)
+            if (Unit* unit = botAI->GetUnit(masterSelection))
             {
-                targetFlag = TARGET_FLAG_UNIT;
-                packet << targetFlag << masterSelection.WriteAsPacked();
+                request = ItemUse::OnUnit(item, unit, caller);
                 targetText = unit->GetName();
                 targetSelected = true;
             }
         }
     }
 
-    if (!targetSelected && item->GetTemplate()->Class != ITEM_CLASS_CONSUMABLE && unitTarget)
+    if (!targetSelected && itemProto->Class != ITEM_CLASS_CONSUMABLE && unitTarget)
     {
-        targetFlag = TARGET_FLAG_UNIT;
-        packet << targetFlag << unitTarget->GetGUID().WriteAsPacked();
+        request = ItemUse::OnUnit(item, unitTarget, caller);
         targetText = unitTarget->GetName();
         targetSelected = true;
     }
 
-    if (uint32 questId = item->GetTemplate()->StartQuest)
+    // A quest-start item has no use spell: the bot accepts its quest directly, outside the item use path (WI5)
+    if (uint32 questId = itemProto->StartQuest)
     {
         if (Quest const* qInfo = sObjectMgr->GetQuestTemplate(questId))
         {
             // The master-driven "use <item>" path accepts what the player could; the automatic
             // path filters with QuestAction::CanAcceptQuest before calling UseItem.
             AcceptQuestAction acceptQuestAction(botAI);
-            return acceptQuestAction.AcceptQuest(qInfo, item_guid);
+            return acceptQuestAction.AcceptQuest(qInfo, item->GetGUID());
         }
     }
 
@@ -323,16 +296,18 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
         return false;
     }
 
+    // A use spell that takes an item: the bot's own item for it, or the trade window's slot while trading
+    uint32 tradeSpellId = 0;
     for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; i++)
     {
-        uint32 spellId = item->GetTemplate()->Spells[i].SpellId;
-        if (!spellId)
-            continue;
-
-        if (!botAI->CanCastSpell(spellId, bot, false))
+        uint32 spellId = itemProto->Spells[i].SpellId;
+        if (!spellId || itemProto->Spells[i].SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
             continue;
 
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo)
+            continue;
+
         if (spellInfo->Targets & TARGET_FLAG_ITEM)
         {
             Item* itemForSpell = AI_VALUE2(Item*, "item for spell", spellId);
@@ -347,18 +322,18 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
                 if (selfOnly)
                     return false;
 
-                targetFlag = TARGET_FLAG_TRADE_ITEM;
-                packet << targetFlag << (uint8)1 << ObjectGuid((uint64)TRADE_SLOT_NONTRADED).WriteAsPacked();
-                targetSelected = true;
-                targetText = "traded item";
+                if (!targetSelected)
+                {
+                    tradeSpellId = spellId;
+                    targetText = "traded item";
+                    targetSelected = true;
+                }
             }
-            else
+            else if (!targetSelected)
             {
-                targetFlag = TARGET_FLAG_ITEM;
-                packet << targetFlag;
-                packet << itemForSpell->GetGUID().WriteAsPacked();
-                targetSelected = true;
+                request = ItemUse::OnItem(item, itemForSpell, caller);
                 targetText = chat->FormatItem(itemForSpell->GetTemplate());
+                targetSelected = true;
             }
             uint32 castTime = spellInfo->CalcCastTime();
             botAI->SetNextCheckDelay(castTime + sPlayerbotAIConfig.ReactDelay);
@@ -367,17 +342,15 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
         break;
     }
 
+    if (tradeSpellId)
+        return UseOnTradeSlot(item, tradeSpellId, itemText);
+
     if (!targetSelected)
     {
-        targetFlag = TARGET_FLAG_NONE;
-        packet << targetFlag;
-
-        // Use the actual target if provided
+        // a consumable on a unit (a soulstone on a friend): the unit is the request's target
         if (unitTarget)
         {
-            packet << unitTarget->GetGUID();
-            targetSelected = true;
-
+            request = ItemUse::OnUnit(item, unitTarget, caller);
             if (unitTarget == bot || !unitTarget->IsInWorld() || unitTarget->IsDuringRemoveFromWorld())
                 targetText = "self";
             else if (unitTarget->IsHostileTo(bot))
@@ -386,18 +359,19 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
                 targetText = unitTarget->GetName();
         }
         else
-        {
-            packet << bot->GetPackGUID();
-            targetSelected = true;
             targetText = "self";
-        }
+        targetSelected = true;
     }
 
-    ItemTemplate const* proto = item->GetTemplate();
-    bool isDrink = proto->Spells[0].SpellCategory == 59;
-    bool isFood = proto->Spells[0].SpellCategory == 11;
-    if (proto->Class == ITEM_CLASS_CONSUMABLE &&
-        (proto->SubClass == ITEM_SUBCLASS_FOOD || proto->SubClass == ITEM_SUBCLASS_CONSUMABLE) && (isFood || isDrink))
+    // Check first: a caller that polls (its trigger holds while a cast runs) writes no row per update
+    if (ItemUse::Check(bot, request) != ItemUse::Cause::None)
+        return false;
+
+    bool isDrink = itemProto->Spells[0].SpellCategory == 59;
+    bool isFood = itemProto->Spells[0].SpellCategory == 11;
+    if (itemProto->Class == ITEM_CLASS_CONSUMABLE &&
+        (itemProto->SubClass == ITEM_SUBCLASS_FOOD || itemProto->SubClass == ITEM_SUBCLASS_CONSUMABLE) &&
+        (isFood || isDrink))
     {
         if (bot->IsInCombat())
             return false;
@@ -406,22 +380,15 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
         bot->CastStop();
         float hp = bot->GetHealthPct();
         float mp = bot->GetPower(POWER_MANA) * 100.0f / bot->GetMaxPower(POWER_MANA);
-        float p = 0.f;
-        if (isDrink && isFood)
-        {
-            p = std::min(hp, mp);
-            TellConsumableUse(item, "Feasting", p);
-        }
-        else if (isDrink)
-        {
-            p = mp;
-            TellConsumableUse(item, "Drinking", p);
-        }
-        else if (isFood)
-        {
-            p = std::min(hp, mp);
-            TellConsumableUse(item, "Eating", p);
-        }
+        float const p = isDrink && !isFood ? mp : std::min(hp, mp);
+        // the line is made first: the use can consume the last one
+        std::string const consumableLine =
+            ConsumableLine(item, isDrink && isFood ? "Feasting" : (isDrink ? "Drinking" : "Eating"), p);
+        if (ItemUse::Use(bot, request).outcome == ItemUse::Outcome::Refused)
+            return false;
+
+        if (!consumableLine.empty())
+            botAI->TellMasterNoFacing(consumableLine);
 
         if (!bot->IsInCombat() && !bot->InBattleground())
             SetDuration((uint32)std::max(10.0f * IN_MILLISECONDS, 27.0f * IN_MILLISECONDS * (100 - p) / 100.0f));
@@ -429,31 +396,35 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
         if (!bot->IsInCombat() && bot->InBattleground())
             SetDuration((uint32)std::max(10.0f * IN_MILLISECONDS, 20.0f * IN_MILLISECONDS * (100 - p) / 100.0f));
 
-        // botAI->SetNextCheckDelay(27000.0f * (100 - p) / 100.0f);
-        //  botAI->SetNextCheckDelay(20000);
-        bot->GetSession()->HandleUseItemOpcode(packet);
-
         return true;
     }
 
-    if (!spellId)
-        return false;
-
-    // botAI->SetNextCheckDelay(sPlayerbotAIConfig.GlobalCoolDown);
     std::string useText =
         targetSelected
             ? PlayerbotTextMgr::instance().GetBotTextOrDefault("use_item_on_target", "Using %item on %target",
                                                                {{"%item", itemText}, {"%target", targetText}})
             : PlayerbotTextMgr::instance().GetBotTextOrDefault("use_item", "Using %item", {{"%item", itemText}});
     botAI->TellMasterNoFacing(useText);
+    return ItemUse::Use(bot, request).outcome != ItemUse::Outcome::Refused;
+}
+
+// Enchanting an item in the trade window stays outside the item use path (item-use INTERFACE 6.6, WI5): its target
+// is the trade window's slot, which no request names. The chat `use` reaches it while a player trades with the bot
+bool UseItemAction::UseOnTradeSlot(Item* item, uint32 spellId, std::string const& itemText)
+{
+    WorldPacket packet(CMSG_USE_ITEM);
+    packet << item->GetBagSlot() << item->GetSlot() << uint8(1) << spellId << item->GetGUID() << uint32(0) << uint8(0);
+    packet << uint32(TARGET_FLAG_TRADE_ITEM) << uint8(1) << ObjectGuid(uint64(TRADE_SLOT_NONTRADED)).WriteAsPacked();
+    botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+        "use_item_on_target", "Using %item on %target", {{"%item", itemText}, {"%target", "traded item"}}));
     bot->GetSession()->HandleUseItemOpcode(packet);
     return true;
 }
 
-void UseItemAction::TellConsumableUse(Item* item, std::string const action, float percent)
+std::string UseItemAction::ConsumableLine(Item* item, std::string const action, float percent)
 {
     if (!sPlayerbotAIConfig.AnnounceConsumableUse)
-        return;
+        return "";
 
     std::ostringstream out;
     out << action << " " << chat->FormatItem(item->GetTemplate());
@@ -462,7 +433,7 @@ void UseItemAction::TellConsumableUse(Item* item, std::string const action, floa
         out << "/x" << item->GetCount();
 
     out << " (" << round(percent) << "%)";
-    botAI->TellMasterNoFacing(out.str());
+    return out.str();
 }
 
 bool UseItemAction::SocketItem(Item* item, Item* gem, bool replace)

@@ -14,7 +14,7 @@ class PlayerbotAI;
 class DrinkAction : public UseItemAction
 {
 public:
-    DrinkAction(PlayerbotAI* botAI) : UseItemAction(botAI, "drink") {}
+    DrinkAction(PlayerbotAI* botAI) : UseItemAction(botAI, "drink", false, "", ItemUse::Caller::Upkeep) {}
 
     bool Execute(Event event) override;
     bool isUseful() override;
@@ -22,14 +22,17 @@ public:
 
 protected:
     // The tactic drinks (G3b: prep drink, safe drink) are DrinkActions under their own names; the item stays "drink"
-    DrinkAction(PlayerbotAI* botAI, std::string const name) : UseItemAction(botAI, name, false, "drink") {}
+    DrinkAction(PlayerbotAI* botAI, std::string const name)
+        : UseItemAction(botAI, name, false, "drink", ItemUse::Caller::Upkeep)
+    {
+    }
 };
 
 class EatAction : public UseItemAction
 {
 public:
     // "food" is the inventory category; the action and chat command are named "eat".
-    EatAction(PlayerbotAI* botAI) : UseItemAction(botAI, "eat", false, "food") {}
+    EatAction(PlayerbotAI* botAI) : UseItemAction(botAI, "eat", false, "food", ItemUse::Caller::Upkeep) {}
 
     bool Execute(Event event) override;
     bool isUseful() override;
