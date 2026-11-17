@@ -21,6 +21,7 @@
 #include "BridgeGoals.h"
 #include "BridgeNames.h"
 #include "BridgeSpellRule.h"
+#include "BridgeTexts.h"
 #include "CensusMgr.h"
 #include "EmoteAction.h"
 #include "FollowActions.h"
@@ -528,16 +529,13 @@ Result MarkOnce(ActFacts const& act, Refusal&)
     return act.BotGroup->GetTargetIcon(icon) == act.Target->GetGUID() ? Result::Applied : Result::Failed;
 }
 
-// The gestures: the word on the wire and its text emote, in the same order.
-constexpr char const* const EmoteWords[] = {"wave",  "bow",  "cheer", "laugh",   "dance",   "salute",      "kneel",
-                                            "point", "cry",  "shy",   "thank",   "hello",   "bye",         "nod",
-                                            "no",    "yawn", "sigh",  "whistle", "applaud", "congratulate"};
+// The gestures: the word on the wire (BridgeTexts::Acts::EMOTE_WORDS) and its text emote, in the same order.
 constexpr TextEmotes EmoteIds[] = {TEXT_EMOTE_WAVE,  TEXT_EMOTE_BOW,     TEXT_EMOTE_CHEER,   TEXT_EMOTE_LAUGH,
                                    TEXT_EMOTE_DANCE, TEXT_EMOTE_SALUTE,  TEXT_EMOTE_KNEEL,   TEXT_EMOTE_POINT,
                                    TEXT_EMOTE_CRY,   TEXT_EMOTE_SHY,     TEXT_EMOTE_THANK,   TEXT_EMOTE_HELLO,
                                    TEXT_EMOTE_BYE,   TEXT_EMOTE_NOD,     TEXT_EMOTE_NO,      TEXT_EMOTE_YAWN,
                                    TEXT_EMOTE_SIGH,  TEXT_EMOTE_WHISTLE, TEXT_EMOTE_APPLAUD, TEXT_EMOTE_CONGRATULATE};
-static_assert(std::size(EmoteWords) == std::size(EmoteIds), "one text emote per gesture word");
+static_assert(std::size(BridgeTexts::Acts::EMOTE_WORDS) == std::size(EmoteIds), "one text emote per gesture word");
 
 // A text emote as EmoteActionBase::Emote sends one (through the opcode handler: the animation, the line to those
 // around, the emote hooks), at the partner when the bot sees it: facing it and naming it every time, where the action
@@ -756,55 +754,42 @@ bool InGroup(GroupRule rule, ActFacts const& act)
     }
 }
 
-// Choice parameters: the raid icons by index, the formation shapes by FormationShape value minus one.
-constexpr char const* const RaidIcons[] = {"star", "circle", "diamond", "triangle", "moon", "square", "cross", "skull"};
-constexpr char const* const FormationShapes[] = {"close", "spread", "line"};
+// Choice parameters: the raid icons by index and the formation shapes by FormationShape value minus one (their words
+// are in BridgeTexts.h).
 
 // LC.29: an attack by name means an enemy creature, never a player. AttackParams are the old form's own target.
 constexpr ParamRow AttackParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The enemy you have targeted, by name.", {}, UnitFilter::Enemy}};
-constexpr ParamRow AttackByNameParams[] = {{"target",
-                                            ParamKind::Unit,
-                                            OrderField::Target,
-                                            "A hostile or neutral creature you can see, by name.",
-                                            {},
-                                            UnitFilter::Enemy}};
+    {"target", ParamKind::Unit, OrderField::Target, BridgeTexts::Acts::ATTACK_TARGET, {}, UnitFilter::Enemy}};
+constexpr ParamRow AttackByNameParams[] = {
+    {"target", ParamKind::Unit, OrderField::Target, BridgeTexts::Acts::ATTACK_BY_NAME_TARGET, {}, UnitFilter::Enemy}};
 constexpr ParamRow PullParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "One creature near your group, by name.", {}, UnitFilter::Enemy}};
+    {"target", ParamKind::Unit, OrderField::Target, BridgeTexts::Acts::PULL_TARGET, {}, UnitFilter::Enemy}};
 constexpr ParamRow CastParams[] = {
-    {"spell", ParamKind::Spell, OrderField::SpellName, "A helpful spell of yours, by name.", {}},
-    {"target",
-     ParamKind::Unit,
-     OrderField::Target,
-     "Whom it is for, by name; your own name for yourself.",
-     {},
-     UnitFilter::Friend}};
+    {"spell", ParamKind::Spell, OrderField::SpellName, BridgeTexts::Acts::CAST_SPELL, {}},
+    {"target", ParamKind::Unit, OrderField::Target, BridgeTexts::Acts::CAST_TARGET, {}, UnitFilter::Friend}};
 constexpr ParamRow MarkParams[] = {
-    {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}, UnitFilter::Anyone},
-    {"icon", ParamKind::Choice, OrderField::Icon, "The raid icon to put on it.", RaidIcons}};
-constexpr ParamRow FocusHealParams[] = {{"target",
-                                         ParamKind::Unit,
-                                         OrderField::Target,
-                                         "The group member to heal first, by name.",
-                                         {},
-                                         UnitFilter::GroupMember}};
+    {"target", ParamKind::Unit, OrderField::Target, BridgeTexts::Acts::MARK_TARGET, {}, UnitFilter::Anyone},
+    {"icon", ParamKind::Choice, OrderField::Icon, BridgeTexts::Acts::MARK_ICON, BridgeTexts::Acts::RAID_ICONS}};
+constexpr ParamRow FocusHealParams[] = {
+    {"target", ParamKind::Unit, OrderField::Target, BridgeTexts::Acts::FOCUS_HEAL_TARGET, {}, UnitFilter::GroupMember}};
 constexpr ParamRow SaveManaParams[] = {
-    {"enabled", ParamKind::Flag, OrderField::Enabled, "Yes to save mana, no to spend it freely.", {}}};
-constexpr ParamRow FormationParams[] = {
-    {"shape", ParamKind::Choice, OrderField::Shape, "How the group keeps together.", FormationShapes}};
+    {"enabled", ParamKind::Flag, OrderField::Enabled, BridgeTexts::Acts::SAVE_MANA_ENABLED, {}}};
+constexpr ParamRow FormationParams[] = {{"shape", ParamKind::Choice, OrderField::Shape,
+                                         BridgeTexts::Acts::FORMATION_SHAPE, BridgeTexts::Acts::FORMATION_SHAPES}};
 constexpr ParamRow PositionParams[] = {
-    {"place", ParamKind::Place, OrderField::Position, "A spot near you, as x,y,z,map.", {}}};
+    {"place", ParamKind::Place, OrderField::Position, BridgeTexts::Acts::POSITION_PLACE, {}}};
 constexpr ParamRow TripParams[] = {
-    {"place", ParamKind::Place, OrderField::PlaceName, "A known place's name, or x,y,z,map.", {}}};
+    {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::TRIP_PLACE, {}}};
 constexpr ParamRow QuestParams[] = {
-    {"quest", ParamKind::Quest, OrderField::QuestId, "A quest in your log, by its title.", {}}};
-constexpr ParamRow EmoteParams[] = {{"emote", ParamKind::Choice, OrderField::Choice, "The gesture.", EmoteWords}};
+    {"quest", ParamKind::Quest, OrderField::QuestId, BridgeTexts::Acts::QUEST_QUEST, {}}};
+constexpr ParamRow EmoteParams[] = {
+    {"emote", ParamKind::Choice, OrderField::Choice, BridgeTexts::Acts::EMOTE_EMOTE, BridgeTexts::Acts::EMOTE_WORDS}};
 constexpr ParamRow ShareQuestParams[] = {
-    {"quest", ParamKind::Quest, OrderField::QuestId, "A quest in your log, by its title.", {}}};
+    {"quest", ParamKind::Quest, OrderField::QuestId, BridgeTexts::Acts::QUEST_QUEST, {}}};
 constexpr ParamRow AcceptQuestParams[] = {{"quest",
                                            ParamKind::Quest,
                                            OrderField::QuestId,
-                                           "The quest a group member shared with you, by its title.",
+                                           BridgeTexts::Acts::ACCEPT_QUEST_QUEST,
                                            {},
                                            UnitFilter::Anyone,
                                            QuestFrom::Shared}};
@@ -848,24 +833,24 @@ constexpr NoEffectVerb NoEffect[] = {
 // Indexed by Refusal; the words and sentences the bridge wire already uses.
 constexpr RefusalText RefusalTexts[] = {
     {Refusal::None, "none", ""},
-    {Refusal::Dead, "dead", "I am in no state to do anything right now."},
-    {Refusal::Battleground, "battleground", "Not here; I have my own fight to see to."},
-    {Refusal::Travelling, "travelling", "I cannot do that while I am in flight."},
-    {Refusal::NotWithYou, "not_with_you", "We are not travelling together."},
-    {Refusal::TooFar, "too_far", "You are too far away for me to reach."},
-    {Refusal::NotInGroup, "not_in_group", "We are not in the same group."},
-    {Refusal::Unreachable, "unreachable", "I cannot get to that spot from here."},
-    {Refusal::TargetNotVisible, "target_not_visible", "I cannot see that target from here."},
-    {Refusal::NoTarget, "no_target", "I have no target to attack."},
-    {Refusal::CannotNow, "cannot_now", "I cannot do that right now."},
-    {Refusal::NotPlanner, "not_planner", "My own plans are not mine to change right now."},
-    {Refusal::GoalHeld, "goal_held", "My group has a goal I am holding to."},
-    {Refusal::UnknownPlace, "unknown_place", "I do not know that place."},
-    {Refusal::NoRoute, "no_route", "I cannot find a way there."},
-    {Refusal::NoSuchQuest, "no_such_quest", "That quest is not in my log."},
-    {Refusal::NothingHere, "nothing_here", "There is nothing for me to do here."},
-    {Refusal::AlreadyThere, "already_there", "I am already there."},
-    {Refusal::UnknownName, "unknown_name", "I do not know what you mean by that."}};
+    {Refusal::Dead, "dead", BridgeTexts::Refusals::DEAD},
+    {Refusal::Battleground, "battleground", BridgeTexts::Refusals::BATTLEGROUND},
+    {Refusal::Travelling, "travelling", BridgeTexts::Refusals::TRAVELLING},
+    {Refusal::NotWithYou, "not_with_you", BridgeTexts::Refusals::NOT_WITH_YOU},
+    {Refusal::TooFar, "too_far", BridgeTexts::Refusals::TOO_FAR},
+    {Refusal::NotInGroup, "not_in_group", BridgeTexts::Refusals::NOT_IN_GROUP},
+    {Refusal::Unreachable, "unreachable", BridgeTexts::Refusals::UNREACHABLE},
+    {Refusal::TargetNotVisible, "target_not_visible", BridgeTexts::Refusals::TARGET_NOT_VISIBLE},
+    {Refusal::NoTarget, "no_target", BridgeTexts::Refusals::NO_TARGET},
+    {Refusal::CannotNow, "cannot_now", BridgeTexts::Refusals::CANNOT_NOW},
+    {Refusal::NotPlanner, "not_planner", BridgeTexts::Refusals::NOT_PLANNER},
+    {Refusal::GoalHeld, "goal_held", BridgeTexts::Refusals::GOAL_HELD},
+    {Refusal::UnknownPlace, "unknown_place", BridgeTexts::Refusals::UNKNOWN_PLACE},
+    {Refusal::NoRoute, "no_route", BridgeTexts::Refusals::NO_ROUTE},
+    {Refusal::NoSuchQuest, "no_such_quest", BridgeTexts::Refusals::NO_SUCH_QUEST},
+    {Refusal::NothingHere, "nothing_here", BridgeTexts::Refusals::NOTHING_HERE},
+    {Refusal::AlreadyThere, "already_there", BridgeTexts::Refusals::ALREADY_THERE},
+    {Refusal::UnknownName, "unknown_name", BridgeTexts::Refusals::UNKNOWN_NAME}};
 
 constexpr bool RefusalTextsInOrder()
 {
@@ -881,7 +866,7 @@ static_assert(RefusalTextsInOrder(), "one text per Refusal, in the enum's order"
 constexpr AbilityRow Rows[] = {
     {.Operation = Intent::Follow,
      .Name = "follow",
-     .Sentence = "Follow the person you are talking to; they must be in your group and near you.",
+     .Sentence = BridgeTexts::Acts::FOLLOW_SENTENCE,
      .Params = {},
      .Group = GroupRule::PartnerInGroup,
      .GroupRefusal = Refusal::NotWithYou,
@@ -890,10 +875,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return FollowOnce(act.Ai, act.Partner); },
      .Lasting = Part::Movement,
      .Done = Completion::Holds,
-     .StatePhrase = "following you"},
+     .StatePhrase = BridgeTexts::Acts::FOLLOW_STATE},
     {.Operation = Intent::Stay,
      .Name = "stay",
-     .Sentence = "Stop and hold your current spot until told otherwise.",
+     .Sentence = BridgeTexts::Acts::STAY_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -902,10 +887,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return StayOnce(act.Ai, act.Bot); },
      .Lasting = Part::Movement,
      .Done = Completion::Holds,
-     .StatePhrase = "holding this spot"},
+     .StatePhrase = BridgeTexts::Acts::STAY_STATE},
     {.Operation = Intent::Flee,
      .Name = "flee",
-     .Sentence = "Back away once from the enemy you are fighting.",
+     .Sentence = BridgeTexts::Acts::FLEE_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -914,10 +899,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal& why) { return FleeOnce(act.Ai, act.Bot, why); },
      .Lasting = Part::None,
      .Done = Completion::Arrived,
-     .StatePhrase = "backing away from my enemy"},
+     .StatePhrase = BridgeTexts::Acts::FLEE_STATE},
     {.Operation = Intent::Attack,
      .Name = "attack",
-     .Sentence = "Attack a hostile or neutral creature you can see, by its name; never a player or a pet.",
+     .Sentence = BridgeTexts::Acts::ATTACK_SENTENCE,
      .Params = AttackByNameParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -926,10 +911,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = AttackOnce,
      .Lasting = Part::None,
      .Done = Completion::TargetGone,
-     .StatePhrase = "attacking {target}"},
+     .StatePhrase = BridgeTexts::Acts::ATTACK_STATE},
     {.Operation = Intent::Mark,
      .Name = "mark",
-     .Sentence = "Put a raid icon on a unit you can see; in a raid only as its leader or an assistant.",
+     .Sentence = BridgeTexts::Acts::MARK_SENTENCE,
      .Params = MarkParams,
      .Group = GroupRule::BotGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -938,10 +923,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = MarkOnce,
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "marking {target}"},
+     .StatePhrase = BridgeTexts::Acts::MARK_STATE},
     {.Operation = Intent::FocusHealing,
      .Name = "focus_healing",
-     .Sentence = "As a healer, heal one member of your group before the others.",
+     .Sentence = BridgeTexts::Acts::FOCUS_HEALING_SENTENCE,
      .Params = FocusHealParams,
      .Group = GroupRule::BotGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -951,10 +936,10 @@ constexpr AbilityRow Rows[] = {
      { return FocusHealOnce(act.Ai, act.Bot, act.BotGroup, act.Target, why); },
      .Lasting = Part::FocusHeal,
      .Done = Completion::Holds,
-     .StatePhrase = "healing {target} first"},
+     .StatePhrase = BridgeTexts::Acts::FOCUS_HEALING_STATE},
     {.Operation = Intent::SaveMana,
      .Name = "save_mana",
-     .Sentence = "Save mana in fights, or spend it freely, in the group you share with the speaker.",
+     .Sentence = BridgeTexts::Acts::SAVE_MANA_SENTENCE,
      .Params = SaveManaParams,
      .Group = GroupRule::PartnerInGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -963,10 +948,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return SaveManaOnce(act.Ai, act.Bot, act.Request.Enabled); },
      .Lasting = Part::ManaSave,
      .Done = Completion::Holds,
-     .StatePhrase = "minding my mana"},
+     .StatePhrase = BridgeTexts::Acts::SAVE_MANA_STATE},
     {.Operation = Intent::Formation,
      .Name = "formation",
-     .Sentence = "Change how you keep to the group you share with the speaker.",
+     .Sentence = BridgeTexts::Acts::FORMATION_SENTENCE,
      .Params = FormationParams,
      .Group = GroupRule::PartnerInGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -975,10 +960,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return FormationOnce(act.Ai, act.Request); },
      .Lasting = Part::Formation,
      .Done = Completion::Holds,
-     .StatePhrase = "keeping a {shape} formation"},
+     .StatePhrase = BridgeTexts::Acts::FORMATION_STATE},
     {.Operation = Intent::Position,
      .Name = "position",
-     .Sentence = "Walk to a spot near you that you can reach on foot.",
+     .Sentence = BridgeTexts::Acts::POSITION_SENTENCE,
      .Params = PositionParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -987,10 +972,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal& why) { return PositionOnce(act.Phase, act.Ai, act.Request, why); },
      .Lasting = Part::None,
      .Done = Completion::Arrived,
-     .StatePhrase = "walking to a spot nearby"},
+     .StatePhrase = BridgeTexts::Acts::POSITION_STATE},
     {.Operation = Intent::GoTo,
      .Name = "go_to",
-     .Sentence = "Travel to a place you know, by your own route.",
+     .Sentence = BridgeTexts::Acts::GO_TO_SENTENCE,
      .Params = TripParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -999,10 +984,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::GoalEnds,
-     .StatePhrase = "travelling to {place}"},
+     .StatePhrase = BridgeTexts::Acts::GO_TO_STATE},
     {.Operation = Intent::Quest,
      .Name = "quest",
-     .Sentence = "Work on or turn in a quest from your log.",
+     .Sentence = BridgeTexts::Acts::QUEST_SENTENCE,
      .Params = QuestParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1011,10 +996,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::GoalEnds,
-     .StatePhrase = "working on {quest}"},
+     .StatePhrase = BridgeTexts::Acts::QUEST_STATE},
     {.Operation = Intent::Errands,
      .Name = "errands",
-     .Sentence = "Run your errands in a town near you.",
+     .Sentence = BridgeTexts::Acts::ERRANDS_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1023,10 +1008,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::GoalEnds,
-     .StatePhrase = "running my errands"},
+     .StatePhrase = BridgeTexts::Acts::ERRANDS_STATE},
     {.Operation = Intent::SetHearth,
      .Name = "set_hearth",
-     .Sentence = "Go to the nearest fitting inn and make it your home.",
+     .Sentence = BridgeTexts::Acts::SET_HEARTH_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1035,10 +1020,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::GoalEnds,
-     .StatePhrase = "going to an inn to set my hearthstone"},
+     .StatePhrase = BridgeTexts::Acts::SET_HEARTH_STATE},
     {.Operation = Intent::GrindHere,
      .Name = "grind_here",
-     .Sentence = "Hunt monsters around where you are.",
+     .Sentence = BridgeTexts::Acts::GRIND_HERE_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1047,10 +1032,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::GoalEnds,
-     .StatePhrase = "hunting around here"},
+     .StatePhrase = BridgeTexts::Acts::GRIND_HERE_STATE},
     {.Operation = Intent::GatherHere,
      .Name = "gather_here",
-     .Sentence = "Gather herbs or ore around where you are.",
+     .Sentence = BridgeTexts::Acts::GATHER_HERE_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1059,10 +1044,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::GoalEnds,
-     .StatePhrase = "gathering around here"},
+     .StatePhrase = BridgeTexts::Acts::GATHER_HERE_STATE},
     {.Operation = Intent::MeetAt,
      .Name = "meet_at",
-     .Sentence = "Travel to a place to meet the person you are talking to there.",
+     .Sentence = BridgeTexts::Acts::MEET_AT_SENTENCE,
      .Params = TripParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1071,10 +1056,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::GoalEnds,
-     .StatePhrase = "going to meet you at {place}"},
+     .StatePhrase = BridgeTexts::Acts::MEET_AT_STATE},
     {.Operation = Intent::PausePlan,
      .Name = "pause_plan",
-     .Sentence = "Set your own plans aside and wait here, for ten minutes at most.",
+     .Sentence = BridgeTexts::Acts::PAUSE_PLAN_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1083,10 +1068,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::Holds,
-     .StatePhrase = "waiting here for now"},
+     .StatePhrase = BridgeTexts::Acts::PAUSE_PLAN_STATE},
     {.Operation = Intent::ResumePlan,
      .Name = "resume_plan",
-     .Sentence = "Go back to your own plans.",
+     .Sentence = BridgeTexts::Acts::RESUME_PLAN_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1095,10 +1080,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = GoalOnce,
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "back to my own plans"},
+     .StatePhrase = BridgeTexts::Acts::RESUME_PLAN_STATE},
     {.Operation = Intent::Emote,
      .Name = "emote",
-     .Sentence = "Make a gesture, at the person you are talking to when you see them.",
+     .Sentence = BridgeTexts::Acts::EMOTE_SENTENCE,
      .Params = EmoteParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1107,10 +1092,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return EmoteOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "making a {emote} gesture"},
+     .StatePhrase = BridgeTexts::Acts::EMOTE_STATE},
     {.Operation = Intent::Roll,
      .Name = "roll",
-     .Sentence = "Roll a random number from 1 to 100; your group sees it.",
+     .Sentence = BridgeTexts::Acts::ROLL_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1119,11 +1104,11 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return RollOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "rolling a die"},
+     .StatePhrase = BridgeTexts::Acts::ROLL_STATE},
     // No group rule: an ungrouped bot has no open check, so it answers as a grouped one without one.
     {.Operation = Intent::Ready,
      .Name = "ready",
-     .Sentence = "Answer your group's open ready check: you are ready.",
+     .Sentence = BridgeTexts::Acts::READY_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1132,10 +1117,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return ReadyOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "ready"},
+     .StatePhrase = BridgeTexts::Acts::READY_STATE},
     {.Operation = Intent::LeaveGroup,
      .Name = "leave_group",
-     .Sentence = "Leave your group.",
+     .Sentence = BridgeTexts::Acts::LEAVE_GROUP_SENTENCE,
      .Params = {},
      .Group = GroupRule::BotGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -1144,11 +1129,11 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return LeaveOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "leaving the group"},
+     .StatePhrase = BridgeTexts::Acts::LEAVE_GROUP_STATE},
     // No group rule: it makes the group.
     {.Operation = Intent::JoinGroup,
      .Name = "join_group",
-     .Sentence = "Join the group of the person you are talking to, or invite them to yours.",
+     .Sentence = BridgeTexts::Acts::JOIN_GROUP_SENTENCE,
      .Params = {},
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1157,10 +1142,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return JoinOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "joining your group"},
+     .StatePhrase = BridgeTexts::Acts::JOIN_GROUP_STATE},
     {.Operation = Intent::ShareQuest,
      .Name = "share_quest",
-     .Sentence = "Share a quest of your log with your group.",
+     .Sentence = BridgeTexts::Acts::SHARE_QUEST_SENTENCE,
      .Params = ShareQuestParams,
      .Group = GroupRule::BotGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -1169,10 +1154,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return ShareOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "sharing {quest}"},
+     .StatePhrase = BridgeTexts::Acts::SHARE_QUEST_STATE},
     {.Operation = Intent::AcceptQuest,
      .Name = "accept_quest",
-     .Sentence = "Take the quest a group member has just shared with you.",
+     .Sentence = BridgeTexts::Acts::ACCEPT_QUEST_SENTENCE,
      .Params = AcceptQuestParams,
      .Group = GroupRule::BotGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -1181,10 +1166,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return AcceptOnce(act); },
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "taking up {quest}"},
+     .StatePhrase = BridgeTexts::Acts::ACCEPT_QUEST_STATE},
     {.Operation = Intent::Pull,
      .Name = "pull",
-     .Sentence = "As your group's tank or with a ranged attack, draw one creature near your group into a fight.",
+     .Sentence = BridgeTexts::Acts::PULL_SENTENCE,
      .Params = PullParams,
      .Group = GroupRule::BotGroup,
      .GroupRefusal = Refusal::NotInGroup,
@@ -1193,11 +1178,10 @@ constexpr AbilityRow Rows[] = {
      .Effect = PullOnce,
      .Lasting = Part::None,
      .Done = Completion::TargetGone,
-     .StatePhrase = "pulling {target}"},
+     .StatePhrase = BridgeTexts::Acts::PULL_STATE},
     {.Operation = Intent::Cast,
      .Name = "cast",
-     .Sentence = "Cast a helpful spell of yours (a buff, a heal, a cure, a resurrection, conjured food or water, a "
-                 "portal) on a friend or yourself.",
+     .Sentence = BridgeTexts::Acts::CAST_SENTENCE,
      .Params = CastParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1206,11 +1190,11 @@ constexpr AbilityRow Rows[] = {
      .Effect = CastOnce,
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
-     .StatePhrase = "casting {spell} on {target}"},
+     .StatePhrase = BridgeTexts::Acts::CAST_STATE},
     // The old form's own-target attack (mod-ollama-chat's frozen verbs, LC.23); the catalogue offers attack.
     {.Operation = Intent::AttackOwnTarget,
      .Name = "attack_own_target",
-     .Sentence = "Attack the enemy you have targeted.",
+     .Sentence = BridgeTexts::Acts::ATTACK_OWN_TARGET_SENTENCE,
      .Params = AttackParams,
      .Group = GroupRule::None,
      .GroupRefusal = Refusal::None,
@@ -1219,7 +1203,7 @@ constexpr AbilityRow Rows[] = {
      .Effect = AttackOnce,
      .Lasting = Part::None,
      .Done = Completion::TargetGone,
-     .StatePhrase = "attacking {target}",
+     .StatePhrase = BridgeTexts::Acts::ATTACK_STATE,
      .OldFormOnly = true}};
 
 // The rows the catalogue lists come first; the old form's rows close the table (AbilityRows is the first part).
@@ -1747,7 +1731,8 @@ bool Malformed(AbilityRow const* row, Order const& order)
            Takes(*row, OrderField::Shape) != (FormationName(order.Shape) != nullptr) ||
            (order.Enabled && !Takes(*row, OrderField::Enabled)) || !std::isfinite(order.VisibilityDistance) ||
            order.VisibilityDistance <= 0.0f ||
-           (Takes(*row, OrderField::Icon) && static_cast<std::size_t>(order.Icon) >= std::size(RaidIcons)) ||
+           (Takes(*row, OrderField::Icon) &&
+            static_cast<std::size_t>(order.Icon) >= std::size(BridgeTexts::Acts::RAID_ICONS)) ||
            (Takes(*row, OrderField::Position) && !FinitePosition(order));
 }
 

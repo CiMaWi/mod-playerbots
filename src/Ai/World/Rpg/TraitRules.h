@@ -17,6 +17,8 @@
 #include <string_view>
 #include <vector>
 
+#include "BridgeTexts.h"
+
 // The Player-free rules of a bot's personality: 30 traits rolled once per bot (seeded by guid and version), shifted by
 // race and class, a few correlated pairs, one to three interests, and the words the LLM gets for them.
 // Header-only so tests/trait-selftest.cpp checks the same code the server runs.
@@ -197,46 +199,9 @@ constexpr InterestWeight CLASS_INTERESTS[] = {
     {11, Interest::Exploring, INTEREST_SOME},
 };
 
-// Words per pole: [0] noticeable, [1] strong. In-world words only: no numbers, nothing about mechanics
-struct TraitWords
-{
-    std::string_view Name;  // the GM command's name for the trait
-    std::array<std::string_view, 2> Low;
-    std::array<std::string_view, 2> High;
-};
-
-constexpr std::array<TraitWords, TRAIT_COUNT> WORDS = {{
-    {"drive", {"rather relaxed", "very relaxed"}, {"rather driven", "very driven"}},
-    {"curiosity", {"rather settled", "very settled"}, {"rather curious", "very curious"}},
-    {"caution", {"rather daring", "reckless"}, {"rather careful", "very careful"}},
-    {"aggression", {"rather peaceable", "very gentle"}, {"rather combative", "belligerent"}},
-    {"sociability", {"rather solitary", "a loner"}, {"rather sociable", "very gregarious"}},
-    {"helpfulness", {"rather self-reliant", "very self-reliant"}, {"rather helpful", "very helpful"}},
-    {"leadership", {"rather deferential", "very deferential"}, {"rather commanding", "very commanding"}},
-    {"loyalty", {"rather fickle", "very fickle"}, {"rather loyal", "fiercely loyal"}},
-    {"generosity", {"rather stingy", "very stingy"}, {"rather generous", "very generous"}},
-    {"thrift", {"rather free-spending", "a spendthrift"}, {"rather frugal", "very frugal"}},
-    {"greed", {"rather content", "very content"}, {"rather greedy", "very greedy"}},
-    {"orderliness", {"rather messy", "very messy"}, {"rather tidy", "very tidy"}},
-    {"thoroughness", {"rather brisk", "very brisk"}, {"rather thorough", "very thorough"}},
-    {"competitiveness", {"rather easygoing", "very easygoing"}, {"rather competitive", "fiercely competitive"}},
-    {"patience", {"rather hot-tempered", "very hot-tempered"}, {"rather patient", "very patient"}},
-    {"courtesy", {"rather selfish", "very selfish"}, {"rather courteous", "very courteous"}},
-    {"rootedness", {"rather footloose", "a wanderer"}, {"rather home-loving", "a homebody"}},
-    {"talkativeness", {"rather taciturn", "very taciturn"}, {"rather chatty", "very chatty"}},
-    {"warmth", {"rather guarded", "very guarded"}, {"rather warm", "very warm"}},
-    {"humour", {"rather earnest", "very earnest"}, {"rather jokey", "a joker"}},
-    {"register", {"rather plain-spoken", "very plain-spoken"}, {"rather formal", "very formal"}},
-    {"confidence", {"rather modest", "very modest"}, {"rather boastful", "very boastful"}},
-    {"outlook", {"rather gloomy", "very gloomy"}, {"rather cheerful", "very cheerful"}},
-    {"piety", {"rather worldly", "very worldly"}, {"rather devout", "deeply devout"}},
-    {"zeal", {"rather pragmatic", "very pragmatic"}, {"rather patriotic", "fiercely patriotic"}},
-    {"lore", {"rather practical", "very practical"}, {"rather bookish", "very bookish"}},
-    {"suspicion", {"rather trusting", "very trusting"}, {"rather suspicious", "very suspicious"}},
-    {"theatricality", {"rather reserved", "very reserved"}, {"rather dramatic", "very dramatic"}},
-    {"mischief", {"rather upright", "very upright"}, {"rather mischievous", "a trickster"}},
-    {"worldliness", {"rather green", "very green"}, {"rather seasoned", "a veteran"}},
-}};
+using BridgeTexts::Nature::TraitWords;
+using BridgeTexts::Nature::WORDS;
+static_assert(WORDS.size() == TRAIT_COUNT, "BridgeTexts.h holds a row per trait");
 
 // LC15c: the area of each trait, in the Trait enum's order; the bridge groups the words by it (LC.33). The wire names
 // are the bridge's TRAIT_AREAS (bridge/claude/envelope.mjs): talk, others, work, wants.
@@ -253,13 +218,8 @@ constexpr std::array<uint8_t, TRAIT_COUNT> TRAIT_AREAS = {
 
 constexpr std::string_view AreaOf(Trait trait) { return AREA_NAMES[TRAIT_AREAS[static_cast<std::size_t>(trait)]]; }
 
-// No commas: the names are joined into comma lists
-constexpr std::array<std::string_view, INTEREST_COUNT> INTEREST_NAMES = {
-    "fishing",      "cooking", "collecting pets and mounts",
-    "crafting",     "trading", "duelling",
-    "exploring",    "lore",    "inns and ale",
-    "fine clothes",
-};
+using BridgeTexts::Nature::INTEREST_NAMES;
+static_assert(INTEREST_NAMES.size() == INTEREST_COUNT);
 
 constexpr std::size_t Index(Trait trait) { return static_cast<std::size_t>(trait); }
 
@@ -452,7 +412,7 @@ inline std::string Word(Trait trait, int value)
         std::string_view const strong = pole[1];
         constexpr std::string_view VERY = "very ";
         if (grade == 4 && strong.substr(0, VERY.size()) == VERY)
-            return "extremely " + std::string(strong.substr(VERY.size()));
+            return BridgeTexts::Nature::EXTREMELY + std::string(strong.substr(VERY.size()));
 
         return std::string(strong);
     }
@@ -460,7 +420,7 @@ inline std::string Word(Trait trait, int value)
     constexpr std::string_view RATHER = "rather ";
     std::string_view const mild = pole[0];
     if (grade == 1 && mild.substr(0, RATHER.size()) == RATHER)
-        return "somewhat " + std::string(mild.substr(RATHER.size()));
+        return BridgeTexts::Nature::SOMEWHAT + std::string(mild.substr(RATHER.size()));
 
     return std::string(mild);
 }

@@ -20,6 +20,7 @@
 #include "BridgeAround.h"
 #include "BridgeBotTopics.h"
 #include "BridgeNames.h"
+#include "BridgeTexts.h"
 #include "CharacterCache.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -241,7 +242,7 @@ void ReadRoute(Player* bot, std::string const& argument, std::vector<BotStateIte
     std::optional<TravelRoute::Point> const goal = TravelPlaces::Resolve(argument);
     in.known = goal.has_value();
     TravelPlaces::Place const* named = TravelPlaces::Find(argument);
-    in.place = named ? named->name : "position";
+    in.place = named ? named->name : BridgeTexts::Lookups::ROUTE_LITERAL_PLACE;
     if (goal)
     {
         auto const started = std::chrono::steady_clock::now();
@@ -406,10 +407,13 @@ static_assert(ReadersInOrder(), "one reader per topic row, in the rows' order");
 char const* ServiceWord(Creature const* creature)
 {
     static constexpr std::pair<NPCFlags, char const*> Services[] = {
-        {UNIT_NPC_FLAG_INNKEEPER, "innkeeper"}, {UNIT_NPC_FLAG_FLIGHTMASTER, "flightmaster"},
-        {UNIT_NPC_FLAG_BANKER, "banker"},       {UNIT_NPC_FLAG_AUCTIONEER, "auctioneer"},
-        {UNIT_NPC_FLAG_TRAINER, "trainer"},     {UNIT_NPC_FLAG_REPAIR, "repair"},
-        {UNIT_NPC_FLAG_VENDOR_MASK, "vendor"}};
+        {UNIT_NPC_FLAG_INNKEEPER, BridgeTexts::Around::INNKEEPER},
+        {UNIT_NPC_FLAG_FLIGHTMASTER, BridgeTexts::Around::FLIGHTMASTER},
+        {UNIT_NPC_FLAG_BANKER, BridgeTexts::Around::BANKER},
+        {UNIT_NPC_FLAG_AUCTIONEER, BridgeTexts::Around::AUCTIONEER},
+        {UNIT_NPC_FLAG_TRAINER, BridgeTexts::Around::TRAINER},
+        {UNIT_NPC_FLAG_REPAIR, BridgeTexts::Around::REPAIR},
+        {UNIT_NPC_FLAG_VENDOR_MASK, BridgeTexts::Around::VENDOR}};
     for (auto const& [flag, word] : Services)
         if (creature->HasNpcFlag(flag))
             return word;
@@ -422,9 +426,9 @@ char const* ServiceWord(Creature const* creature)
 char const* TaskWord(AiObjectContext* context, int32 giver)
 {
     if (context->GetValue<bool>("can turn in quest npc", giver)->Get())
-        return "reward";
+        return BridgeTexts::Around::TASK_REWARD;
     if (context->GetValue<bool>("can accept quest npc", giver)->Get())
-        return "quest";
+        return BridgeTexts::Around::TASK_QUEST;
 
     return nullptr;
 }
@@ -451,9 +455,10 @@ bool UnitCandidate(Player* bot, PlayerbotAI* ai, Unit* unit, float distance, std
     if (Player* player = unit->ToPlayer())
     {
         PlayerbotAI* other = GET_PLAYERBOT_AI(player);
-        char const* const detail = bot->GetGroup() && bot->GetGroup()->IsMember(player->GetGUID()) ? "group"
-                                   : other && other->IsBotAI()                                     ? "bot"
-                                                                                                   : "player";
+        char const* const detail = bot->GetGroup() && bot->GetGroup()->IsMember(player->GetGUID())
+                                       ? BridgeTexts::Around::PERSON_GROUP
+                                   : other && other->IsBotAI() ? BridgeTexts::Around::PERSON_BOT
+                                                               : BridgeTexts::Around::PERSON_PLAYER;
         out.push_back({name, AroundKind::Person, detail, distance});
         return true;
     }
@@ -489,11 +494,11 @@ void ObjectCandidate(Player* bot, PlayerbotAI* ai, GameObject* object, std::vect
     char const* detail = nullptr;
     AroundKind kind = AroundKind::Object;
     if (info->type == GAMEOBJECT_TYPE_MAILBOX)
-        detail = "mailbox";
+        detail = BridgeTexts::Around::OBJECT_MAILBOX;
     else if (info->type == GAMEOBJECT_TYPE_SPELL_FOCUS)
-        detail = info->spellFocus.focusId == SpellFocusAnvil   ? "anvil"
-                 : info->spellFocus.focusId == SpellFocusForge ? "forge"
-                 : info->spellFocus.focusId == SpellFocusFire  ? "fire"
+        detail = info->spellFocus.focusId == SpellFocusAnvil   ? BridgeTexts::Around::OBJECT_ANVIL
+                 : info->spellFocus.focusId == SpellFocusForge ? BridgeTexts::Around::OBJECT_FORGE
+                 : info->spellFocus.focusId == SpellFocusFire  ? BridgeTexts::Around::OBJECT_FIRE
                                                                : nullptr;
     else if (info->type == GAMEOBJECT_TYPE_QUESTGIVER)
     {
