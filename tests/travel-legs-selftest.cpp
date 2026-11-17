@@ -926,6 +926,46 @@ void CheckFlyLeg()
     spent.spotFails = TravelLegs::MAX_SPOT_FAILS;
     Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Abort,
           "fly: with both bounds spent the trip ends");
+    // The trip's route requests keep the spots where the bot could not take off (WT61b review: the snapshot closes
+    // only the spot of the moment, so two refused spots took turns)
+    Trip spots = StartedTrip({leg}, 0);
+    TravelRoute::Snapshot grounded;
+    grounded.position = {1, 0.0f, 0.0f, 80.0f};
+    grounded.takeoffHere = false;
+    Point const far{1, 900.0f, 0.0f, 80.0f};
+    TravelRoute::Request const asked = TravelLegs::NextRequest(spots, grounded, far);
+    Check(spots.noTakeoffs.size() == 1 && asked.noTakeoffs.size() == 1 && asked.NoTakeoffAt(grounded.position) &&
+              asked.NoTakeoffAt({1, 6.0f, 0.0f, 80.0f}) && !asked.NoTakeoffAt({1, 30.0f, 0.0f, 80.0f}) &&
+              !asked.NoTakeoffAt({0, 0.0f, 0.0f, 80.0f}),
+          "fly: a route asked where the bot cannot take off closes that spot for the trip");
+    TravelLegs::NextRequest(spots, grounded, far);
+    Check(spots.noTakeoffs.size() == 1, "fly: the same spot is kept once");
+    grounded.position.x = 30.0f;
+    TravelRoute::Request const second = TravelLegs::NextRequest(spots, grounded, far);
+    Check(second.noTakeoffs.size() == 2 && second.NoTakeoffAt({1, 0.0f, 0.0f, 80.0f}) &&
+              second.NoTakeoffAt(grounded.position),
+          "fly: the next refused spot joins the first, which stays closed");
+    grounded.position.x = 60.0f;
+    grounded.takeoffHere = true;
+    Check(TravelLegs::NextRequest(spots, grounded, far).noTakeoffs.size() == 2 && spots.noTakeoffs.size() == 2,
+          "fly: a spot the bot may take off at is not kept");
+    grounded.takeoffHere = false;
+    for (std::uint32_t i = 0; i < 2 * TravelLegs::NO_TAKEOFF_SPOTS; ++i)
+    {
+        grounded.position.x += 30.0f;
+        TravelLegs::NextRequest(spots, grounded, far);
+    }
+    Check(spots.noTakeoffs.size() == TravelLegs::NO_TAKEOFF_SPOTS, "fly: the kept spots are bounded");
+    spots.noFly = true;
+    spots.noDirect = true;
+    spots.avoid = {3};
+    spots.avoidEdges = {{7, 9}};
+    spots.avoidWalks = {{grounded.position, far}};
+    TravelRoute::Request const carried = TravelLegs::NextRequest(spots, grounded, far);
+    Check(carried.noFly && carried.noDirect && carried.avoidNodes == spots.avoid &&
+              carried.avoidEdges == spots.avoidEdges && carried.avoidWalks.size() == 1 &&
+              carried.snapshot.position.x == grounded.position.x && carried.goal.x == far.x,
+          "a trip's route request carries what its failed legs left out");
     // A failed fly leg over an air link (WT61): the trip's later routes leave the link out, a refused takeoff too
     Leg airLeg = leg;
     airLeg.air = true;
