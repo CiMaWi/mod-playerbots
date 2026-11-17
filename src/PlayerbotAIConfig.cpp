@@ -861,24 +861,25 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
     PvpGearBuyBatchPerTick =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
-    SkillReactFactorLow =
+    Skill = SkillConfig{};
+    Skill.ReactFactorLow =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);
-    SkillReactFactorHigh =
+    Skill.ReactFactorHigh =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill99", 1.0f), 0.1f, 10.0f);
-    SkillFullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
-    SkillReactActive = SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f;
-    SkillNoticeMissPercentLow =
+    Skill.FullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
+    Skill.ReactActive = Skill.ReactFactorLow != 1.0f || Skill.ReactFactorHigh != 1.0f;
+    Skill.NoticeMissPercentLow =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill1", 0), 0, 95);
-    SkillNoticeMissPercentHigh =
+    Skill.NoticeMissPercentHigh =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill99", 0), 0, 95);
-    SkillNoticeDelayMsLow =
+    Skill.NoticeDelayMsLow =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill1", 0), 0, 10000);
-    SkillNoticeDelayMsHigh =
+    Skill.NoticeDelayMsHigh =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill99", 0), 0, 10000);
-    SkillNoticeWindowMs =
+    Skill.NoticeWindowMs =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
-    SkillNoticeActive = SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
-                        SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0;
+    Skill.NoticeActive = Skill.NoticeMissPercentLow != 0 || Skill.NoticeMissPercentHigh != 0 ||
+                         Skill.NoticeDelayMsLow != 0 || Skill.NoticeDelayMsHigh != 0;
     {
         std::string distribution = sConfigMgr->GetOption<std::string>("Playerbots.Skill.Distribution", "normal");
         std::transform(distribution.begin(), distribution.end(), distribution.begin(),
@@ -886,13 +887,14 @@ bool PlayerbotAIConfig::Initialize()
         if (distribution != "normal" && distribution != "uniform")
             LOG_ERROR("server.loading", "Playerbots.Skill.Distribution = {}: unknown, normal is used", distribution);
 
-        SkillDistributionUniform = distribution == "uniform";
-        SkillMean = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Mean", 50.0f), 1.0f, 99.0f);
-        SkillSd = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Sd", 15.0f), 0.1f, 100.0f);
-        SkillMin = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Min", 1.0f), 1.0f, 99.0f);
-        SkillMax = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Max", 99.0f), SkillMin, 99.0f);
+        Skill.Distribution = distribution;
+        Skill.DistributionUniform = distribution == "uniform";
+        Skill.Mean = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Mean", 50.0f), 1.0f, 99.0f);
+        Skill.Sd = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Sd", 15.0f), 0.1f, 100.0f);
+        Skill.Min = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Min", 1.0f), 1.0f, 99.0f);
+        Skill.Max = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Max", 99.0f), Skill.Min, 99.0f);
     }
-    SkillExemptRealMasterBots = sConfigMgr->GetOption<bool>("Playerbots.Skill.ExemptRealMasterBots", true);
+    Skill.ExemptRealMasterBots = sConfigMgr->GetOption<bool>("Playerbots.Skill.ExemptRealMasterBots", true);
     {
         // G6b: never on a lab (DT.7); the hub's config apply forces a lab's server id to its instance id (labN)
         bool const growth = sConfigMgr->GetOption<bool>("Playerbots.Skill.Growth.Enable", false);

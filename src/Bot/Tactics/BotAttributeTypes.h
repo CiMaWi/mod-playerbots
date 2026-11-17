@@ -84,7 +84,7 @@ inline AttributeMatrix IdentityAttributeMatrix()
     return matrix;
 }
 
-// Playerbots.Skill.Distribution and its parameters (PlayerbotAIConfig::SkillDistributionUniform, SkillMean, ...)
+// Playerbots.Skill.Distribution and its parameters (SkillConfig::DistributionUniform, Mean, ...)
 struct SkillDistributionParams
 {
     bool Uniform = false;

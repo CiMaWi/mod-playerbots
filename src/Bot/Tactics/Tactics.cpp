@@ -2376,7 +2376,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "  skill gate: {}; real master {}, Playerbots.Skill.ExemptRealMasterBots {}, curve {:.2f}",
         botAI->GetPvpSkill() == 0 ? "full ability (skill 0)" : (exempt ? "full ability (exempt)" : "skill applies"),
-        realMaster ? "yes" : "no", config.SkillExemptRealMasterBots ? 1 : 0, config.SkillGate.CurveExponent);
+        realMaster ? "yes" : "no", config.Skill.ExemptRealMasterBots ? 1 : 0, config.SkillGate.CurveExponent);
     handler->PSendSysMessage(
         "  effective: known {}, effort {}, react factor {:.3f}, notice miss {} %, delay up to {} ms",
         full ? "all" : FormatTacticMask(gate.KnownMask), full ? SKILL_GATE_FULL : gate.Effort,

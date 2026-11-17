@@ -292,7 +292,7 @@ float SkillMultiplier::GetValue(Action* action)
     if (botAI->IsSkillExempt())
         return 1.0f;
 
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
+    if (sPlayerbotAIConfig.Skill.FullAbilityInPvE && !botAI->IsPvpFight())
         return 1.0f;
 
     // Delay switching, never engaging: without a live target the assist actions are how a bot starts to fight
@@ -350,7 +350,7 @@ bool SkillMultiplier::HasNoticed(SkillNoticeCategory category) const
     // A window is NoticeWindowMs plus the bot's longest delay, so even the slowest bot has NoticeWindowMs of noticing
     // per window. Each bot's windows start at its own phase so that bots do not notice in step.
     uint64 const guid = bot->GetGUID().GetCounter();
-    uint32 const length = sPlayerbotAIConfig.SkillNoticeWindowMs + delayMs;
+    uint32 const length = sPlayerbotAIConfig.Skill.NoticeWindowMs + delayMs;
     uint64 const shifted = static_cast<uint64>(getMSTime()) + SplitMix64(guid ^ PhaseSalt) % length;
     uint64 const window = shifted / length;
     uint32 const elapsed = static_cast<uint32>(shifted % length);
@@ -555,7 +555,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
         static_cast<int32>(now - busy.SkipEndMs) >= 0)
         event.Active = false;
 
-    if (ReactionEventStarts(event, now, sPlayerbotAIConfig.SkillNoticeWindowMs))
+    if (ReactionEventStarts(event, now, sPlayerbotAIConfig.Skill.NoticeWindowMs))
     {
         PerfMonitorScope startScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::EventStart"));
         // Once per event: the context, the target (a target switch brings its own) and the view cone
