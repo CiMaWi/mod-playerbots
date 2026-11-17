@@ -739,6 +739,10 @@ void TestTacticFamilies()
     Check(std::string(drink.Prefix) == "Playerbots.Tactics.Drink." && drink.Rows[0].Kind == ConfigKind::NotYet &&
               jump.Rows[0].Kind == ConfigKind::NotYet && kite.Rows[0].Kind == ConfigKind::Test,
           "tactics: Drink and Jump's switches are not-yet switches, the others test switches");
+    ConfigFamily<TacticSettings> const& trinket = TacticSettingsFamily(static_cast<uint32>(TacticId::Trinket));
+    Check(trinket.Rows[1].Kind == ConfigKind::TuningListed && trinket.Rows[0].Kind == ConfigKind::Test &&
+              kite.Rows[1].Kind == ConfigKind::Tuning,
+          "tactics: Trinket's scope is listed (a hub test sets it), the other scopes unlisted tuning values");
 
     reader.values["Playerbots.Tactics.Enable"] = "0";
     LoadConfigFamily(TacticsEnableFamily, config, reader, warn);

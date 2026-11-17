@@ -17,7 +17,7 @@
 #include "Creature.h"
 #include "ErrandRules.h"
 #include "InventorySlots.h"
-#include "ItemDemand.h"
+#include "ItemDemandShop.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailVisit.h"
@@ -181,14 +181,10 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, Planner::UpkeepIndex co
                        item);
 }
 
-// The shopping list at the errand's vendor (upkeep WU6, §3.6): the needs from a fresh snapshot (the sell and the
-// repair changed the gold), each stock in Fund's order bought in whole lots within its funded share (PlanShopping),
-// the vendor's own rows rechecked (gold only, a limited row's live count). An item the bot's item usage would sell
-// (VENDOR, AH or NONE: the generic sell of the next visit) is never bought, but for what demand keeps once bought (item
-// use WI9b: its use items, and a persistent bot's food and water, whose stock demand keeps to upkeep's target; a
-// consumable it does not hold yet has no verdict, so the item usage calls it a sale). A repair paid at this stop
-// already spent what the gold pays; the gear left worn costs more than the rest, so it holds no gold back here. A
-// failed purchase skips the item; the bot goes on. At most one row per stock kind
+// The shopping list at the errand's vendor (upkeep WU6, §3.6): each stock need of a fresh snapshot in Fund's order,
+// bought in whole lots within its funded share (PlanShopping), the vendor's own rows rechecked (gold only, a limited
+// row's live count). What the bot's item usage would sell (VENDOR, AH or NONE: the generic sell of the next visit) is
+// never bought (item use's exceptions: ItemDemandShop.h). A failed purchase skips the item. One row per stock kind
 void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
@@ -198,22 +194,16 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
         return;
 
     Player* bot = botAI->GetBot();
-    Planner::Snapshot snapshot = Planner::FillSnapshot(bot, 0);
+    Planner::Snapshot snapshot = Planner::FillSnapshot(bot, 0);  // fresh: the sell and the repair changed the gold
     if (repaired)
-        snapshot.repairCost = 0;
+        snapshot.repairCost = 0;  // its gold is spent; the worn gear left costs more than the rest: none held back
     UpkeepNeeds::NeedList const needs =
         UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
     std::vector<UpkeepNeeds::ShopLine> const lines =
         UpkeepNeeds::PlanShopping(needs, *index, snapshot, vendor->GetEntry());
-    bool const demandBot = ItemUse::DemandAnswers(botAI);
     for (UpkeepNeeds::ShopLine const& line : lines)
     {
-        bool const use = line.kind == Planner::UpkeepStock::Use;
-        // A use item's rows name demand's slot (heal, mana, scroll, ...): the words are literals
-        char const* const word = use ? ItemUse::DemandSlotWord(static_cast<ItemUse::DemandSlot>(line.useSlot)).data()
-                                     : UpkeepNeeds::ShopWord(line.kind);
-        bool const demandKeeps =
-            use || (demandBot && (line.kind == Planner::UpkeepStock::Food || line.kind == Planner::UpkeepStock::Water));
+        auto const [word, fundWord, fund, demandKeeps] = ItemUse::ViewShopLine(botAI, line);
         if (line.outcome == UpkeepNeeds::ShopOutcome::Budget)
         {
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "budget",
@@ -252,8 +242,7 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
             }
         if (slot == rows->GetItemCount() || !lots)
         {
-            // A limited row whose current stock fills no lot is sold out, apart from a vendor that never sells it
-            char const* const reason = slot == rows->GetItemCount() ? "not_sold" : "sold_out";
+            char const* const reason = slot == rows->GetItemCount() ? "not_sold" : "sold_out";  // ItemDemandShop.h
             WorldLog::Decision(
                 bot, WorldLogFormat::DecisionKind::Upkeep, "skip", reason, static_cast<float>(line.wanted),
                 {{word, static_cast<float>(line.units)}, {"target", static_cast<float>(line.target)}}, line.item);
@@ -278,7 +267,7 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
                            static_cast<float>(paid),
                            {{word, static_cast<float>(bought * line.lotSize)},
                             {"target", static_cast<float>(line.target)},
-                            {use ? "above" : "funded", static_cast<float>(use ? line.above : line.funded)}},
+                            {fundWord, static_cast<float>(fund)}},
                            line.item);
     }
 
