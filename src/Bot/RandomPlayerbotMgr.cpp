@@ -1933,10 +1933,6 @@ void RandomPlayerbotMgr::Revive(Player* player)
     SetEventValue(bot, "dead", 0, 0);
     SetEventValue(bot, "revive", 0, 0);
 
-    // A persistent bot is never resurrected in place nor moved away from its corpse
-    if (BotKind::LivingWorld())
-        return;
-
     EventLog::SourceScope reviveScope("mgr_revive");
     Refresh(player);
     RandomTeleportGrindForLevel(player);
