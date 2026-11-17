@@ -562,7 +562,7 @@ bool ArenaPlanAction::Execute(Event /*event*/)
 
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     int8 const elected = ElectPlanner(candidates.data(), memberCount,
-                                      config.TacticConfig[static_cast<uint32>(TacticId::Plan)].KnownFromSkill);
+                                      config.Tactics.Settings[static_cast<uint32>(TacticId::Plan)].KnownFromSkill);
     match.Planner = elected != FOCUS_NONE && members[elected] == bot;
 
     ObjectGuid const skull = group->GetTargetIcon(FOCUS_ICON_SKULL);
@@ -823,7 +823,7 @@ bool ArenaPlanAction::Execute(Event /*event*/)
 
 void FocusClearArenaMarks(Battleground* bg)
 {
-    if (!sPlayerbotAIConfig.TacticsEnable || !bg || !bg->isArena())
+    if (!sPlayerbotAIConfig.Tactics.Enable || !bg || !bg->isArena())
         return;
 
     for (TeamId const team : {TEAM_ALLIANCE, TEAM_HORDE})

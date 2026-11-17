@@ -14,33 +14,23 @@
 #include "WorldPvpConfig.h"
 
 class Corpse;
+class Player;
 class PlayerbotAI;
 
 // The ghost's wait (WP7, no camping, the victim's side): a persistent bot's ghost in the open world stays dead while an
 // enemy player stands at its corpse, runs to it once the enemy has gone and takes the spirit healer after its wait,
-// as a player would. Also the bot's persistence cache that world PvP reads (StartsByRules). The rules are
+// as a player would. Also the bot's real master as world PvP's rules read it (RealMasterOf). The rules are
 // player-free, so tests/ghost-wait-selftest.cpp checks the same code the server runs; GhostWait.cpp is the glue
 namespace WorldPvp
 {
-// A bot's persistence (the old KeepsPossessions value) is checked again after this long (a master can change)
-constexpr uint32_t PERSISTENT_RECHECK_MS = 60 * 1000;
-
-// What world PvP keeps of a bot besides its enthusiasm (PlayerbotAI::pvpMemory, lazily; not saved): its persistence
-// as last checked and its ghost's wait. ghostSinceMs is when the wait began, 0 once the spirit healer was chosen
+// What world PvP keeps of a bot besides its enthusiasm (PlayerbotAI::pvpMemory, lazily; not saved): its ghost's
+// wait. ghostSinceMs is when the wait began, 0 once the spirit healer was chosen
 struct PvpMemory
 {
-    bool persistentKnown = false;
-    bool persistent = false;
-    uint32_t persistentCheckMs = 0;
     bool ghostWaiting = false;
     uint32_t ghostSinceMs = 0;
     uint32_t ghostNextCheckMs = 0;
 };
-
-inline bool PersistenceDue(PvpMemory const& memory, uint32_t nowMs)
-{
-    return !memory.persistentKnown || nowMs - memory.persistentCheckMs >= PERSISTENT_RECHECK_MS;
-}
 
 // The wait's numbers (WorldPvpConfig's Ghost* options) in milliseconds; the default is the config's default
 struct GhostValues
@@ -172,15 +162,24 @@ inline void GhostRevived(PvpMemory& memory)
     memory.ghostNextCheckMs = 0;
 }
 
-// The glue (GhostWait.cpp), the bot's map thread. Whether the bot is persistent (cached, PERSISTENT_RECHECK_MS);
-// false for no AI
-bool IsPersistent(PlayerbotAI* botAI, uint32_t nowMs);
+// A bot's real master (WP.6): `has` for a game client's player or a selfbot as master (HasGameClientMaster), and
+// `master` that player. Under the test constraint realmaster any master counts, in a bot group its leader: `has`
+// then holds also for a lone bot, whose `master` is null (it may join no one's fight)
+struct RealMasterFacts
+{
+    bool has = false;
+    Player* master = nullptr;
+};
+
+// The glue (GhostWait.cpp), the bot's map thread. The bot's real master, read uncached (two pointer checks, the
+// group leader's lookup only under the constraint); nothing for no AI. Not to be kept past the call
+RealMasterFacts RealMasterOf(PlayerbotAI* botAI);
 // FindCorpseAction and ReviveFromCorpseAction: a persistent ghost in the open world with an enemy player (alive, of
 // the other team, flagged or not) within GhostEnemyYards of its corpse waits as a ghost, runs to its corpse once the
 // enemy has gone and takes the spirit healer GhostSpiritHealerSeconds after its release (the corpse's ghost time: a
 // recheck never resets it). One corpse search per recheck, the last answer in between; a GhostWait row when a wait
-// starts and when it ends. Step Corpse for every other ghost (a game-client master, a battleground or instance, not
-// persistent, its corpse on another map)
+// starts and when it ends. Step Corpse for every other ghost (a real master, RealMasterOf: it follows its master; a
+// battleground or instance; not persistent, IsPersistentBot; its corpse on another map)
 GhostPlan PlanGhostFor(PlayerbotAI* botAI, Corpse const* corpse);
 }  // namespace WorldPvp
 

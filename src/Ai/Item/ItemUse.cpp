@@ -22,6 +22,7 @@
 #include "DBCStores.h"
 #include "GameObject.h"
 #include "Item.h"
+#include "ItemUsableRules.h"
 #include "ItemUseIndex.h"
 #include "ItemUseKinds.h"
 #include "ItemUsePacket.h"
@@ -779,6 +780,22 @@ Request Worn(Player* bot, std::uint8_t slot, Caller caller)
     request.target.kind = TargetKind::None;
     request.item.slot = slot;
     return request;
+}
+
+bool ReadyNow(Player* bot, Record const& record, Item* item)
+{
+    if (!bot || !item)
+        return false;
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(record.spellId);
+    if (!spellInfo)
+        return false;
+    BotView view = ViewOfBot(bot, record, spellInfo, item, false);
+    view.busy = false;
+    Request request;
+    request.item.entry = record.itemEntry;
+    request.spellId = record.spellId;
+    request.target.kind = TargetKind::Self;
+    return ReadyCause(CheapCheck(record, request, view, ViewOfUnit(bot, record, bot, TargetKind::Self)));
 }
 
 void PostOrder(PlayerbotAI* botAI, std::uint64_t botGuid, Order order)

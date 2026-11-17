@@ -74,7 +74,7 @@ bool BgActiveTrigger::IsActive()
 // Playerbots.ArenaOnly.Enable: checked on every pass, so an invited team member follows its captain at once (else
 // every 10 s)
 BgInviteActiveTrigger::BgInviteActiveTrigger(PlayerbotAI* botAI)
-    : Trigger(botAI, "bg invite active", sPlayerbotAIConfig.ArenaOnlyEnable ? 1 : 10)
+    : Trigger(botAI, "bg invite active", sPlayerbotAIConfig.ArenaOnly.Enable ? 1 : 10)
 {
 }
 
@@ -92,7 +92,7 @@ bool BgInviteActiveTrigger::IsActive()
             continue;
 
         // Playerbots.ArenaOnly.Enable: the bot's own invite flag (O(1), no queue lookup on every pass)
-        if (sPlayerbotAIConfig.ArenaOnlyEnable)
+        if (sPlayerbotAIConfig.ArenaOnly.Enable)
         {
             if (bot->IsInvitedForBattlegroundQueueType(queueTypeId))
                 return true;

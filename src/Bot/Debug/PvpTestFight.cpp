@@ -28,9 +28,10 @@
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
+#include "TestOrders.h"
 #include "World.h"
 #include "WorldPacket.h"
-#include "WorldPvp.h"
 #include "WorldSession.h"
 
 using namespace PvpTestUtil;
@@ -107,11 +108,11 @@ Spot MemberSpot(size_t side, size_t index, size_t count)
 {
     float const forward = side == 0 ? SideOffset : -SideOffset;
     float const lateral = (static_cast<float>(index) - static_cast<float>(count - 1) / 2.0f) * MemberSpread;
-    float const facing = sPlayerbotAIConfig.PvpTestFightO;
+    float const facing = sPlayerbotAIConfig.PvpTest.FightO;
     Spot spot;
-    spot.X = sPlayerbotAIConfig.PvpTestFightX + std::cos(facing) * forward - std::sin(facing) * lateral;
-    spot.Y = sPlayerbotAIConfig.PvpTestFightY + std::sin(facing) * forward + std::cos(facing) * lateral;
-    spot.Z = sPlayerbotAIConfig.PvpTestFightZ + SpawnHeight;
+    spot.X = sPlayerbotAIConfig.PvpTest.FightX + std::cos(facing) * forward - std::sin(facing) * lateral;
+    spot.Y = sPlayerbotAIConfig.PvpTest.FightY + std::sin(facing) * forward + std::cos(facing) * lateral;
+    spot.Z = sPlayerbotAIConfig.PvpTest.FightZ + SpawnHeight;
     spot.O = Position::NormalizeOrientation(side == 0 ? facing + Pi : facing);
     return spot;
 }
@@ -125,6 +126,18 @@ void Restore(Player* player)
         player->SetPower(POWER_MANA, player->GetMaxPower(POWER_MANA));
 }
 
+// World PvP (WP.6): a fighter keeps today's attack on sight and its engaged rows are tagged pvptest, so the rules and
+// the checks leave it out: the constraint row onsight, set once when the fight takes it and cleared at the tear-down.
+// The world thread posts it; the bot's map thread takes it at its next AI update (a bot outside the new rpg strategy
+// refuses it: a lab fixture's bots run it)
+void SetOnSight(PlayerbotAI* botAI, bool on)
+{
+    TravelOrder order;
+    order.postedMs = getMSTime();
+    (on ? order.on : order.off) = TestConstraints::ONSIGHT;
+    TravelOrders::Post(botAI, std::move(order));
+}
+
 // Points a brawler at an opponent the way AttackAction does, so the combat engine takes over
 void Aim(Player* player, Player* target)
 {
@@ -132,10 +145,6 @@ void Aim(Player* player, Player* target)
     if (!botAI)
         return;
 
-    // World PvP (WP.6): forced fighters keep today's attack on sight and their engaged rows are tagged pvptest, so
-    // the rules and the checks leave them out
-    WorldPvp::MarkForced(player->GetGUID());
-    WorldPvp::MarkForced(target->GetGUID());
     player->SetSelection(target->GetGUID());
     botAI->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Set({target->GetGUID()});
     botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
@@ -727,14 +736,17 @@ void PvpTestFightJob::SaveOriginsAndTeleport()
             group->RemoveMember(_members[index]);
 
         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+        {
             botAI->Reset();
+            SetOnSight(botAI, true);
+        }
 
         player->RemoveAurasByType(SPELL_AURA_MOUNTED);
         size_t const side = SideOf(index);
         size_t const first = side == 0 ? 0 : _sideASize;
         size_t const count = side == 0 ? _sideASize : _members.size() - _sideASize;
         Spot const spot = MemberSpot(side, index - first, count);
-        player->TeleportTo(sPlayerbotAIConfig.PvpTestFightMap, spot.X, spot.Y, spot.Z, spot.O);
+        player->TeleportTo(sPlayerbotAIConfig.PvpTest.FightMap, spot.X, spot.Y, spot.Z, spot.O);
     }
 }
 
@@ -750,10 +762,10 @@ void PvpTestFightJob::UpdateArrive()
             return;
         }
 
-        bool const there =
-            player->IsInWorld() && !player->IsBeingTeleported() &&
-            player->GetMapId() == sPlayerbotAIConfig.PvpTestFightMap &&
-            player->GetExactDist2d(sPlayerbotAIConfig.PvpTestFightX, sPlayerbotAIConfig.PvpTestFightY) < ArrivalRadius;
+        bool const there = player->IsInWorld() && !player->IsBeingTeleported() &&
+                           player->GetMapId() == sPlayerbotAIConfig.PvpTest.FightMap &&
+                           player->GetExactDist2d(sPlayerbotAIConfig.PvpTest.FightX,
+                                                  sPlayerbotAIConfig.PvpTest.FightY) < ArrivalRadius;
         _arrived[index] = there;
         if (!there)
             waiting.push_back(_names[index]);
@@ -835,8 +847,8 @@ void PvpTestFightJob::UpdateArrive()
     _statsBegun = true;
     _fightStartMs = _totalMs;
     LOG_INFO("playerbots", "PVPTEST {} {} vs {}: at the fight spot in {} (map {} {:.1f} {:.1f} {:.1f}), match {}",
-             _params.Kind, _sideA.Label, _sideB.Label, _result.Map, sPlayerbotAIConfig.PvpTestFightMap,
-             sPlayerbotAIConfig.PvpTestFightX, sPlayerbotAIConfig.PvpTestFightY, sPlayerbotAIConfig.PvpTestFightZ,
+             _params.Kind, _sideA.Label, _sideB.Label, _result.Map, sPlayerbotAIConfig.PvpTest.FightMap,
+             sPlayerbotAIConfig.PvpTest.FightX, sPlayerbotAIConfig.PvpTest.FightY, sPlayerbotAIConfig.PvpTest.FightZ,
              _params.MatchId);
 
     if (IsDuel())
@@ -966,11 +978,11 @@ void PvpTestFightJob::UpdateDuel()
         return;
     }
 
-    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTestTimeoutSeconds * MsPerSecond)
+    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTest.TimeoutSeconds * MsPerSecond)
     {
         _result.Outcome = "timeout";
         _result.Reason =
-            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTestTimeoutSeconds);
+            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTest.TimeoutSeconds);
         challenger->DuelComplete(DUEL_INTERRUPTED);
         EndFight();
     }
@@ -1001,11 +1013,11 @@ void PvpTestFightJob::UpdateBrawl()
         return;
     }
 
-    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTestTimeoutSeconds * MsPerSecond)
+    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTest.TimeoutSeconds * MsPerSecond)
     {
         _result.Outcome = "timeout";
         _result.Reason =
-            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTestTimeoutSeconds);
+            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTest.TimeoutSeconds);
         EndFight();
         return;
     }
@@ -1090,7 +1102,8 @@ void PvpTestFightJob::UpdateTearDown()
                 botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(player));
             }
 
-            WorldPvp::ClearForced(player->GetGUID());
+            if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+                SetOnSight(botAI, false);
             player->TeleportTo(origin.MapId, origin.X, origin.Y, origin.Z, origin.O);
             origin.SentBack = true;
             pending = true;
@@ -1131,6 +1144,11 @@ void PvpTestFightJob::FinishTearDown(bool timedOut)
                      _sideB.Label, _names[index]);
             continue;
         }
+
+        // A bot the tear-down did not get to (it timed out) loses its row here; the row is not saved with the bot
+        if (!origin.SentBack)
+            if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+                SetOnSight(botAI, false);
 
         bool const sameMap = player->GetMapId() == origin.MapId;
         LOG_INFO("playerbots", "PVPTEST {} {} vs {}: {} back on map {} ({}), {:.1f} yards from where it was",

@@ -44,4 +44,10 @@ struct TacticGateParams
     uint8 StyleSpread = 0;                    // Playerbots.Skill.StyleSpread, 0-50
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family of the gate (SkillConfig.cpp)
+extern ConfigFamily<TacticGateParams> const SkillGateFamily;
+
 #endif

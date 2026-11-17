@@ -1586,10 +1586,6 @@ Playerbots.WorldLog.Dir = ""
 Playerbots.WorldLog.StateSeconds = 60
 Playerbots.WorldLog.SegmentMinutes = 60
 Playerbots.WorldLog.QueueRows = 200000
-Playerbots.WorldLog.RecorderSeconds = 300
-Playerbots.WorldLog.RecorderActions = 128
-Playerbots.WorldLog.RecorderEvents = 64
-Playerbots.WorldLog.RecorderCooldownSeconds = 600
 
 # Acquaintances
 # The server records which random bots each real player has met and how well: one row per (player, bot)
@@ -1619,22 +1615,10 @@ Playerbots.WorldLog.RecorderCooldownSeconds = 600
 #   GuildSampleSeconds (5..3600): the online random bots of the player's guild get guild time.
 #   NearbyIntervalSeconds (0..3600, 0 = off): the random bots within NearbyRadius yards (1..100; same map and phase,
 #     not in a battleground, not in the player's group) get nearby time. The weakest kind; turn it off on its own.
+# Only GuildSampleSeconds is listed below; every other key above keeps its default until a line sets it (the defaults
+# and bounds are in src/Bot/AcquaintanceConfig.h; "playerbots config Playerbots.Acquaintance." prints them).
 #
-Playerbots.Acquaintance.FlushSeconds = 30
-Playerbots.Acquaintance.DirectCooldownSeconds = 60
-Playerbots.Acquaintance.GroupJoinCooldownSeconds = 600
-Playerbots.Acquaintance.PointsDirect = 10
-Playerbots.Acquaintance.PointsGroupJoin = 20
-Playerbots.Acquaintance.PointsGuildJoin = 15
-Playerbots.Acquaintance.PointsPvpKill = 5
-Playerbots.Acquaintance.PointsPerGroupMinute = 5
-Playerbots.Acquaintance.PointsPerGuildHour = 6
-Playerbots.Acquaintance.PointsPerNearbyMinute = 1
-Playerbots.Acquaintance.MaxScore = 1000000
-Playerbots.Acquaintance.GroupSampleSeconds = 10
 Playerbots.Acquaintance.GuildSampleSeconds = 60
-Playerbots.Acquaintance.NearbyIntervalSeconds = 10
-Playerbots.Acquaintance.NearbyRadius = 30
 
 # Runtime arena team moves (with Playerbots.Ladder.Role = 1 or 2, below)
 # The GM/console commands .playerbots ladder depart <arenaTeamId> | arrive <arenaTeamId> | status [<id>] move
@@ -1808,86 +1792,13 @@ Playerbots.Natural.Reaction.PingMs = 60
 Playerbots.Natural.Reaction.DisplayMs = 30
 Playerbots.Natural.Reaction.ServerTickMs = -1
 
-# Reaction types (G0h3, in Playerbots.Natural.Reaction.Contexts): each part has prices at attribute 1
-# and 99 (Playerbots.Skill.Attributes.*; with their defaults every ability is the skill), lerped along
-# Playerbots.Skill.CurveExponent. Every cost lies inside the reaction (the trace's ready), so the end-to-end target
-# keeps its sum. The playerbots.reaction trace lines add type (0 simple, 1 choice, 2 anticipated), options, load
-# (other events pending), ease (0 common, 1 rare, 2 focus target, 3 new target), think (ms), cost (choice + load +
-# ease + think, ms), busy and own (see Reeval).
-# Choice (Wisdom): Hick's law, MsPerDoubling per doubling of the real options (one option: none; at most MaxOptions,
-#   1-64). Counted from what the bot has already built: a target switch and crowd control from its attackers list;
-#   an interrupt and a dispel are one option (no count without a new scan). 0-2000 ms.
-# Load (Focus): per other pending event (at most MaxEvents, 1-5) MsPerEvent more and MissPercentPerEvent (0-100) more
-#   miss share; an event that outranks every pending one (interrupt, defensive, cc break, dispel, crowd control, target
-#   switch) keeps TopProtect (0-1) of both off.
-# Ease (Dexterity): the price of the answer's button: Common (interrupts, dispels, crowd control) < Rare (defensive
-#   cooldowns, cc breaks, strangulate, mass dispel) < Focus (an action on the focus target, G4e; below FocusDexterity,
-#   1-99, a new target's price) < NewTarget (a target switch, or an action on an enemy other than the bot's target).
-#   Each price is raised to 1 ms above the one before at both ends if needed, so the order holds at every Dexterity.
-# Think (Wisdom): a decision's time, the Shortcut (the first event seen, no judgement: today's interrupt) or the Deep
-#   check (charged by later tactics, which take it DeepPercent, 0-100, of the time); PatienceWaitMs (Patience trait 0
-#   and 100, straight line) is how long a bot waits for a better moment (read by later tactics).
-# Anticipate (Foresight): an interrupt the opponent memory predicts (the enemy cast the same spell the time before)
-#   saves Share (0-0.95) of the draw, never below MinMs; it is no choice.
-# Queue (Speed): a bot whose own cast or GCD ends before its next check checks MinMs-MaxMs after the end instead
-#   (never later; its own timer, no wake-up), as a human mashing the button.
-# Reeval (the user's notes of 2026-10-30): Enable stops the bot's own cast (MinOwnRemainingMs or more left) for a kick
-#   of its target's cast of at least ImportantCastMs (a stand-in for judging the spell) that the own cast would end
-#   too late for, once its reaction to the cast bar is over (draw and shortcut think cost, end to end from the bar's
-#   start) and its interrupt is ready; the kick follows in the same check. Once per enemy cast; after a stop the kick
-#   did not follow (its trigger or a higher action picked something else) none for 30 s. An opt-in stand-in until
-#   G5b's judgement: it never weighs the own cast (a heal on a dying partner is stopped too). A kick that a bot busy
-#   with its own cast, the kick's cooldown or the GCD would land only within BusyMarginMs of the cast's end or after
-#   it is dropped, when being busy is what makes it late (one late from its reaction alone is tried).
-#   The trace's busy field: 1 stopped its own cast for the kick, 2 skipped; own: ms of own cast within the event.
-# Memory (DT.12): per bot and match (cleared when it ends), the cast bars the bot sees on its target and attackers
-#   (at most 8 enemies) at its own checks; a bar gone before its end without a visible interrupt (school lock,
-#   silence, stun, fear, death) is a cancel. The fake rate counts from MinCasts (1-100) casts; a bar gone within
-#   EndToleranceMs of its end finished. Anticipate reads it.
-# Movement: avoid aoe as a reaction, stamped with the ground effect's start (a trap or trigger NPC: the first look);
-#   only bots with the avoid aoe strategy have it (Playerbots.AutoAvoidAoe, bots with a real master).
-# Times 0-10000 ms. On a running server .reload config then .playerbots rndbot reload: changed prices reach a
-# logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's prices.
-# Default: the prices below
-Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill1 = 120
-Playerbots.Natural.Reaction.Choice.MsPerDoublingAtSkill99 = 50
-Playerbots.Natural.Reaction.Choice.MaxOptions = 8
-Playerbots.Natural.Reaction.Load.MsPerEventAtSkill1 = 200
-Playerbots.Natural.Reaction.Load.MsPerEventAtSkill99 = 80
-Playerbots.Natural.Reaction.Load.MissPercentPerEventAtSkill1 = 10
-Playerbots.Natural.Reaction.Load.MissPercentPerEventAtSkill99 = 2
-Playerbots.Natural.Reaction.Load.TopProtectAtSkill1 = 0
-Playerbots.Natural.Reaction.Load.TopProtectAtSkill99 = 0.8
-Playerbots.Natural.Reaction.Load.MaxEvents = 3
-Playerbots.Natural.Reaction.Ease.CommonMsAtSkill1 = 0
-Playerbots.Natural.Reaction.Ease.CommonMsAtSkill99 = 0
-Playerbots.Natural.Reaction.Ease.RareMsAtSkill1 = 250
-Playerbots.Natural.Reaction.Ease.RareMsAtSkill99 = 80
-Playerbots.Natural.Reaction.Ease.FocusMsAtSkill1 = 350
-Playerbots.Natural.Reaction.Ease.FocusMsAtSkill99 = 120
-Playerbots.Natural.Reaction.Ease.NewTargetMsAtSkill1 = 450
-Playerbots.Natural.Reaction.Ease.NewTargetMsAtSkill99 = 180
+# Reaction types (G0h3): their prices (Choice, Load, Ease, Think, Anticipate, Queue, Reeval, Memory) are tuning
+# values without a line here; they are documented at ReactionParams (src/Bot/Tactics/NaturalReactionConfig.h) and
+# `playerbots config Playerbots.Natural.Reaction` prints each with its default and bounds. Listed: FocusDexterity
+# (1-99: below it an action on the focus target costs a new target's price) and Reeval.Enable (an opt-in stand-in until
+# G5b's judgement, see Reeval at ReactionParams). Default: FocusDexterity 40, Reeval.Enable 0
 Playerbots.Natural.Reaction.Ease.FocusDexterity = 40
-Playerbots.Natural.Reaction.Think.ShortcutMsAtSkill1 = 40
-Playerbots.Natural.Reaction.Think.ShortcutMsAtSkill99 = 20
-Playerbots.Natural.Reaction.Think.DeepMsAtSkill1 = 400
-Playerbots.Natural.Reaction.Think.DeepMsAtSkill99 = 150
-Playerbots.Natural.Reaction.Think.DeepPercentAtSkill1 = 0
-Playerbots.Natural.Reaction.Think.DeepPercentAtSkill99 = 100
-Playerbots.Natural.Reaction.Think.PatienceWaitMsAt0 = 0
-Playerbots.Natural.Reaction.Think.PatienceWaitMsAt100 = 1500
-Playerbots.Natural.Reaction.Anticipate.ShareAtSkill1 = 0.1
-Playerbots.Natural.Reaction.Anticipate.ShareAtSkill99 = 0.5
-Playerbots.Natural.Reaction.Queue.MinMsAtSkill1 = 60
-Playerbots.Natural.Reaction.Queue.MaxMsAtSkill1 = 250
-Playerbots.Natural.Reaction.Queue.MinMsAtSkill99 = 10
-Playerbots.Natural.Reaction.Queue.MaxMsAtSkill99 = 80
 Playerbots.Natural.Reaction.Reeval.Enable = 0
-Playerbots.Natural.Reaction.Reeval.ImportantCastMs = 1500
-Playerbots.Natural.Reaction.Reeval.MinOwnRemainingMs = 300
-Playerbots.Natural.Reaction.Reeval.BusyMarginMs = 100
-Playerbots.Natural.Reaction.Memory.MinCasts = 3
-Playerbots.Natural.Reaction.Memory.EndToleranceMs = 150
 # Positioning: regain los, break los and pillar step (G2e, G2f) as reactions, stamped by the first query; a reaction only
 # like Movement (no notice counter, no D4 delay). Default: 0 (they go at once)
 Playerbots.Natural.Reaction.Positioning.Enable = 0
@@ -1936,31 +1847,8 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # Playerbots.PerfMonEnabled the rows NaturalTurn::Step (the pre-gate cost), NaturalTurn::Face, NaturalTurn::Packet
 # (heartbeats sent by turns) and NaturalTurn::Snap (snaps at the four points while it is off for the bot) show the
 # cost and the packet counts. Default: off (the instant snap).
-# Playerbots.Natural.Facing.Enable = 0
-# Playerbots.Natural.Facing.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Facing.OutsidePvpInSight = 0
-# Playerbots.Natural.Facing.InSightYards = 60
-# Playerbots.Natural.Facing.InSightCacheMs = 1000
-# Playerbots.Natural.Facing.Mode = 1
-# Playerbots.Natural.Facing.MsFor180AtSkill1 = 450
-# Playerbots.Natural.Facing.MsFor180AtSkill99 = 90
-# Playerbots.Natural.Facing.MinMs = 40
-# Playerbots.Natural.Facing.ErrorDegAtSkill1 = 14
-# Playerbots.Natural.Facing.ErrorDegAtSkill99 = 2
-# Playerbots.Natural.Facing.ErrorSigmaPct = 40
-# Playerbots.Natural.Facing.CorrectionPctAtSkill1 = 70
-# Playerbots.Natural.Facing.CorrectionPctAtSkill99 = 35
-# Playerbots.Natural.Facing.CorrectionDelayMinMs = 120
-# Playerbots.Natural.Facing.CorrectionDelayMaxMs = 250
-# Playerbots.Natural.Facing.CorrectionResidualPct = 25
-# Playerbots.Natural.Facing.KeyboardPctAtSkill1 = 35
-# Playerbots.Natural.Facing.KeyboardPctAtSkill99 = 0
-# Playerbots.Natural.Facing.KeyboardDegPerS = 180
-# Playerbots.Natural.Facing.PacketMinDeg = 8
-# Playerbots.Natural.Facing.PacketMinMs = 80
-# Playerbots.Natural.Facing.SplineMinDeg = 25
-# Playerbots.Natural.Facing.CastRetryMs = 50
-# (Ranges: Mode 1-2, percents 0-100, degrees 0-360, ms 0-60000, InSightYards 0-500, KeyboardDegPerS 0-60000.)
+Playerbots.Natural.Facing.Enable = 0
+Playerbots.Natural.Facing.Mode = 1
 
 # Natural chasing and tracking (G2b): in Contexts (as above) a bot chasing a target sees it as it was Lag ms ago (a
 # ring of the target's past positions, one sample per SampleMs, RingSamples of them), the lag log-normal around
@@ -1978,31 +1866,7 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # OutsidePvpInSight as in Facing. With Playerbots.PerfMonEnabled the row NaturalMove::Track shows the cost; tactics
 # counters trackChases and trackLagMs (the age of what it saw, summed); GM: .playerbots tactics selftest track.
 # Default: off (the exact target position).
-# Playerbots.Natural.Track.Enable = 0
-# Playerbots.Natural.Track.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Track.OutsidePvpInSight = 0
-# Playerbots.Natural.Track.InSightYards = 60
-# Playerbots.Natural.Track.InSightCacheMs = 1000
-# Playerbots.Natural.Track.LagMsAtSkill1 = 500
-# Playerbots.Natural.Track.LagMsAtSkill99 = 110
-# Playerbots.Natural.Track.LagSigmaPct = 25
-# Playerbots.Natural.Track.VelocityFromSkill = 35
-# Playerbots.Natural.Track.PatternFromSkill = 65
-# Playerbots.Natural.Track.TurnRateFromSkill = 50
-# Playerbots.Natural.Track.GainPctAtSkill1 = 0
-# Playerbots.Natural.Track.GainPctAtSkill99 = 90
-# Playerbots.Natural.Track.GainSigmaPct = 20
-# Playerbots.Natural.Track.HistoryMsAtSkill1 = 0
-# Playerbots.Natural.Track.HistoryMsAtSkill99 = 1500
-# Playerbots.Natural.Track.RingSamples = 16
-# Playerbots.Natural.Track.SampleMs = 50
-# Playerbots.Natural.Track.MaxLeadYards = 6
-# Playerbots.Natural.Track.SkipLeadRule = 1
-# Playerbots.Natural.Track.MinMoveYards = 1
-# Playerbots.Natural.Track.JukeDeg = 60
-# Playerbots.Natural.Track.StuckMs = 3000
-# Playerbots.Natural.Track.RefreshMs = 250
-# (Ranges: skills 0-100, RingSamples 4-32, percents 0-100, degrees 0-360, ms 0-60000, yards 0-500, SkipLeadRule 0-1.)
+Playerbots.Natural.Track.Enable = 0
 # RefreshMs (13e-decide): while the bot waits for its last tracked chase move (MoveTo's destination hold), a new
 # tracked point replaces it once that move is RefreshMs old and the point moved more than 1 yd; 0 keeps the hold.
 
@@ -2020,32 +1884,12 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 #   Walk.Enable    walking on short legs (at most Walk.MaxLegYards) out of combat
 # With Playerbots.PerfMonEnabled the rows NaturalPath::* show the cost; tactics counters pathOffsets, pathStrafes,
 # pathHops and pathHopsRefused; GM: .playerbots tactics selftest path. Default: off (straight paths).
-# Playerbots.Natural.Path.Enable = 0
-# Playerbots.Natural.Path.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Path.OutsidePvpInSight = 0
-# Playerbots.Natural.Path.InSightYards = 60
-# Playerbots.Natural.Path.InSightCacheMs = 1000
-# Playerbots.Natural.Path.Offsets.Enable = 1
-# Playerbots.Natural.Path.OffsetYardsAtSkill1 = 1.5
-# Playerbots.Natural.Path.OffsetYardsAtSkill99 = 0.4
-# Playerbots.Natural.Path.OffsetSigmaPct = 30
-# Playerbots.Natural.Path.MinLegYards = 12
-# Playerbots.Natural.Path.Curves.Enable = 0
-# Playerbots.Natural.Path.Strafe.Enable = 0
-# Playerbots.Natural.Path.Strafe.FromSkill = 50
-# Playerbots.Natural.Path.Strafe.LegMinYards = 2
-# Playerbots.Natural.Path.Strafe.LegMaxYards = 4
-# Playerbots.Natural.Path.Strafe.EveryMsAtSkill50 = 4000
-# Playerbots.Natural.Path.Strafe.EveryMsAtSkill99 = 1500
-# Playerbots.Natural.Path.Hops.Enable = 0
-# Playerbots.Natural.Path.Hops.FromSkill = 60
-# Playerbots.Natural.Path.Hops.EveryMsAtSkill60 = 12000
-# Playerbots.Natural.Path.Hops.EveryMsAtSkill99 = 5000
-# Playerbots.Natural.Path.Hops.EdgeYards = 8
-# Playerbots.Natural.Path.Hops.MaxLegYards = 6
-# Playerbots.Natural.Path.Walk.Enable = 0
-# Playerbots.Natural.Path.Walk.MaxLegYards = 6
-# (Ranges: skills 0-100, percents 0-100, ms 0-60000, yards 0-500, OffsetYards 0-20.)
+Playerbots.Natural.Path.Enable = 0
+Playerbots.Natural.Path.Offsets.Enable = 1
+Playerbots.Natural.Path.Curves.Enable = 0
+Playerbots.Natural.Path.Strafe.Enable = 0
+Playerbots.Natural.Path.Hops.Enable = 0
+Playerbots.Natural.Path.Walk.Enable = 0
 
 # Honest world travel of persistent bots (in a living world; arena instances with Playerbots.ArenaOnly.Enable
 # or the arena role keep their own cycle). These bots are never resurrected in place, never take the stuck
@@ -2056,18 +1900,12 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # graveyard) is skipped while a real player is within SightYards of the bot or of the destination, and tried again
 # later; other setups keep the old 150 yd check around the bot. (Ranges: SightYards 0-2000, 0 = no sight check;
 # CorpseRunFailures 0-100; StuckAvoidSeconds 0-86400.) Defaults: 300, 2, 600
-Playerbots.WorldTravel.SightYards = 300
-Playerbots.WorldTravel.CorpseRunFailures = 2
-Playerbots.WorldTravel.StuckAvoidSeconds = 600
 
 # Route planning over the shipped travel graph, costed in seconds (walk, portal, flight with its fare, ship or
 # zeppelin, hearthstone). RouteThreads workers (read at startup) search off the map threads; an edge on which a bot
 # recorded a Stuck event costs StuckPenalty times more for StuckAvoidSeconds (after 3 such events it is skipped); a ship
-# or zeppelin costs TransportWaitSeconds of waiting (half its period) plus the crossing. (Ranges: RouteThreads 1-8;
-# StuckPenalty 1-100; TransportWaitSeconds 0-3600.) Defaults: 1, 5, 120
-Playerbots.WorldTravel.RouteThreads = 1
-Playerbots.WorldTravel.StuckPenalty = 5
-Playerbots.WorldTravel.TransportWaitSeconds = 120
+# or zeppelin costs half its period (read from the core) of waiting plus the crossing. (Ranges: RouteThreads 1-8;
+# StuckPenalty 1-100.) Defaults: 1, 5
 
 # Items, slots and bags of persistent bots. Every item has a worth in copper: what a vendor pays for what the bot
 # would sell, the buy price of what it uses (upgrades, consumables, reagents, ammo); quest items, kept items, upgrades
@@ -2085,13 +1923,6 @@ Playerbots.WorldTravel.TransportWaitSeconds = 120
 # hours were chosen so that a bot buys the small vendor bags while levelling and the 2 g 10-slot bag only when it
 # is short of room. (Ranges: list values 0-1000000, ThriftPercent 0-1000, BudgetPercent 0-100, MarginPercent
 # 0-1000.)
-Playerbots.WorldTravel.Slots.LootPerHour = 15,20,25,25,30
-Playerbots.WorldTravel.Slots.TripMinutes = 10,10,8,8,6
-Playerbots.WorldTravel.Slots.EarnCopperPerMinute = 30,100,250,500,1000
-Playerbots.WorldTravel.Bags.HorizonHours = 20,30,40,40,100
-Playerbots.WorldTravel.Bags.ThriftPercent = 100
-Playerbots.WorldTravel.Bags.BudgetPercent = 50
-Playerbots.WorldTravel.Destroy.MarginPercent = 50
 
 # Inventory errands of persistent bots. A bot whose general bags are at least 80% full checks, at most every 5
 # minutes, whether a trip to the nearest friendly vendor on its map (at most a 10-minute walk) is worth it: the slots
@@ -2101,7 +1932,6 @@ Playerbots.WorldTravel.Destroy.MarginPercent = 50
 # and records an Inventory event errand_run; a trip given up after 20 minutes records errand_abort. The same rule
 # tells a full bot looting in the world not to destroy items when a trip is worth it. (Range: 0-1440; 0 = no trip
 # just for selling.) Default: 30
-Playerbots.WorldTravel.Errands.NextStopMinutes = 30
 
 # Every bot has a personality (30 traits and one to three interests, rolled once per bot and stored in
 # playerbots_bot_traits); the GM command `.playerbots traits <bot>` shows it. AllowEdit lets the same command set or
@@ -2119,12 +1949,7 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
 # Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
 # from the planner's ranked goals.
-Playerbots.WorldTravel.Planner.Threads = 2
-Playerbots.WorldTravel.Planner.SnapshotMinutes = 5
-Playerbots.WorldTravel.Planner.ResultStaleSeconds = 30
-Playerbots.WorldTravel.Planner.RecheckYards = 100
 Playerbots.WorldTravel.Planner.NoopSeconds = 0
-Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
@@ -2140,8 +1965,6 @@ Playerbots.Upkeep.HandoutShare = 0
 # fight by its enthusiasm (Enthusiasm's thresholds, below) on an enemy player within ScanYards; within GraveyardYards
 # of a graveyard or spirit healer its join threshold rises by Enthusiasm.JoinGraveyard. (Ranges: ScanYards 1-200;
 # GraveyardYards 0-2000.) Defaults: 40, 80
-Playerbots.WorldPvp.ScanYards = 40
-Playerbots.WorldPvp.GraveyardYards = 80
 
 # The flight from enemy players (FleeAttackersAction). A bot that flees runs from the enemy players in PvP combat with
 # it. Its flight ends as escaped when it is out of PvP combat or Flee.EscapeYards from every one of them; as cornered
@@ -2151,16 +1974,12 @@ Playerbots.WorldPvp.GraveyardYards = 80
 # the bound it stands and fights and does not flee again in that PvP combat. A persistent bot in the open world flees
 # when it left its fight by its enthusiasm and an enemy player attacks it (Enthusiasm's thresholds, below).
 # (Ranges: EscapeYards 1-2000; CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
-Playerbots.Flee.EscapeYards = 40
-Playerbots.Flee.CorneredSeconds = 6
-Playerbots.Flee.BoundSeconds = 30
 
 # No camping (persistent bots in the open world). The ghost of a bot whose corpse has an enemy player (alive, of the
 # other team, flagged or not) within GhostEnemyYards waits as a ghost and checks again every GhostRecheckSeconds; once
 # the enemy has gone it runs to its corpse, and GhostSpiritHealerSeconds after its release (counted from the release,
 # never reset by a recheck) it takes the spirit healer instead. (Ranges: GhostEnemyYards 0-2000; GhostRecheckSeconds
 # 1-600; GhostSpiritHealerSeconds 0-86400.) Defaults: 40, 15, 300
-Playerbots.WorldPvp.GhostEnemyYards = 40
 Playerbots.WorldPvp.GhostRecheckSeconds = 15
 Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 
@@ -2174,15 +1993,7 @@ Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 # The numbers are starting values that lab nights tune. (Ranges: Max 1-1000; RecoveryPerHour 0-1000;
 # DepletionPerMinute 0.1-1000; the edits 0-1000; GroupDeathYards 0-2000; GroupDeathShare 0-1.)
 # Defaults: 100, 15, 20, 50, 25, 75, 10, 60, 0.3
-Playerbots.WorldPvp.Enthusiasm.Max = 100
 Playerbots.WorldPvp.Enthusiasm.RecoveryPerHour = 15
-Playerbots.WorldPvp.Enthusiasm.DepletionPerMinute = 20
-Playerbots.WorldPvp.Enthusiasm.DeathEdit = 50
-Playerbots.WorldPvp.Enthusiasm.DeathEditConfident = 25
-Playerbots.WorldPvp.Enthusiasm.DeathEditUnconfident = 75
-Playerbots.WorldPvp.Enthusiasm.KillEdit = 10
-Playerbots.WorldPvp.Enthusiasm.GroupDeathYards = 60
-Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 
 # Starting costs enthusiasm: a pick that begins a fight (a start, not a join) while the bot is not engaged costs
 # StartCost points at once, and the bot starts only while its value less the cost is still at or above its entering
@@ -2193,7 +2004,6 @@ Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 # share when (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit;
 # one outside it pays nothing and keeps its KillEdit. (Ranges: StartCost 0-1000; StartCostShare 0-100.)
 # Defaults: 15, 100
-Playerbots.WorldPvp.Enthusiasm.StartCost = 15
 Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 
 # Enthusiasm's thresholds, in points. A bot attacks an enemy player when its enthusiasm is above its join threshold
@@ -2214,19 +2024,6 @@ Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 # ends. A bot with a real master never leaves.
 # (Ranges: all points 0-1000; AggressionJoinFactor 0-1; GroupHoldYards 0-2000.) Defaults: 60, 40, 0.25, 20, 30, 15,
 # 50, 40, 30, 15, 20, 15, 40
-Playerbots.WorldPvp.Enthusiasm.JoinBase = 60
-Playerbots.WorldPvp.Enthusiasm.JoinAggression = 40
-Playerbots.WorldPvp.Enthusiasm.AggressionJoinFactor = 0.25
-Playerbots.WorldPvp.Enthusiasm.JoinGreen = 20
-Playerbots.WorldPvp.Enthusiasm.JoinFactionAttacked = 30
-Playerbots.WorldPvp.Enthusiasm.JoinFactionHelpfulness = 15
-Playerbots.WorldPvp.Enthusiasm.JoinGroupAttacked = 50
-Playerbots.WorldPvp.Enthusiasm.JoinGraveyard = 40
-Playerbots.WorldPvp.Enthusiasm.JoinBalanceMax = 30
-Playerbots.WorldPvp.Enthusiasm.FleeBase = 15
-Playerbots.WorldPvp.Enthusiasm.FleeCaution = 20
-Playerbots.WorldPvp.Enthusiasm.FleeGroupHold = 15
-Playerbots.WorldPvp.Enthusiasm.GroupHoldYards = 40
 
 # Enthusiasm's local balance: the living players of each faction within BalanceYards yd of the bot, the bot
 # included, each weighted by its level colour to the bot (Weight.*) times its health share; the balance is the bot's
@@ -2235,16 +2032,6 @@ Playerbots.WorldPvp.Enthusiasm.GroupHoldYards = 40
 # at even to DepletionFactorBehind, and the join threshold's balance term likewise from - JoinBalanceMax through 0 to
 # + JoinBalanceMax. (Ranges: BalanceYards 1-2000; Weight.* 0-100; DepletionFactorLead 0.01-1; DepletionFactorBehind
 # 1-100; BalanceLead 0.51-1; BalanceBehind 0-0.49.) Defaults: 40, 0.25, 0.5, 1, 2, 4, 0.5, 3, 0.75, 0.25
-Playerbots.WorldPvp.Enthusiasm.BalanceYards = 40
-Playerbots.WorldPvp.Enthusiasm.Weight.Grey = 0.25
-Playerbots.WorldPvp.Enthusiasm.Weight.Green = 0.5
-Playerbots.WorldPvp.Enthusiasm.Weight.Yellow = 1
-Playerbots.WorldPvp.Enthusiasm.Weight.Orange = 2
-Playerbots.WorldPvp.Enthusiasm.Weight.Red = 4
-Playerbots.WorldPvp.Enthusiasm.DepletionFactorLead = 0.5
-Playerbots.WorldPvp.Enthusiasm.DepletionFactorBehind = 3
-Playerbots.WorldPvp.Enthusiasm.BalanceLead = 0.75
-Playerbots.WorldPvp.Enthusiasm.BalanceBehind = 0.25
 
 # Item use. Percent of persistent bots chosen by guid that make up the control cohort of the item use comparison:
 # they spend and buff by the old rules, the rest by the new ones (0-100). 0: no control cohort. Default: 0
@@ -2295,16 +2082,12 @@ Playerbots.Ladder.Matchmaker.DelayMaxSeconds = 8
 
 # MMR distance at which a team is half as likely as a team at the group's MMR (1-5000)
 # Default: 150
-Playerbots.Ladder.Matchmaker.MmrWidth = 150
 
 # MMR window around the group at its queue (1-5000) and its growth per second of wait (0-1000)
 # Default: 200, 5
-Playerbots.Ladder.Matchmaker.Window = 200
-Playerbots.Ladder.Matchmaker.WindowGrowth = 5
 
 # Number of teams a player faced last that are not drawn again (0-20)
 # Default: 3
-Playerbots.Ladder.Matchmaker.RecentOpponents = 3
 
 # Seconds a drawn team has to form its group, and then to be paired, before it leaves the queue (5-3600)
 # Default: 60
@@ -2312,17 +2095,14 @@ Playerbots.Ladder.Matchmaker.TimeoutSeconds = 60
 
 # Teams drawn at most for one queue of the player (1-100)
 # Default: 3
-Playerbots.Ladder.Matchmaker.MaxPicks = 3
 
 # Answer skirmish (unrated) queues too, drawn without the MMR weight
 # Default: 1
-Playerbots.Ladder.Matchmaker.Skirmish = 1
 
 # Draw only pool teams (Playerbots.Ladder.PoolTeams, the ladder residents in memory here). 0: every 2v2 team of
 # random bots in memory, also the formation rosters of up to 4 (the captain and the next free members play; a
 # member in a battleground or its queue still makes the team busy)
 # Default: 1
-Playerbots.Ladder.Matchmaker.PoolOnly = 1
 
 # PvP gear for ladder bots (a random bot at the maximum level in an arena team; real players and their bots are never
 # touched). The server builds a catalogue at startup from the PvP vendors (npc_vendor rows whose ExtendedCost
@@ -2341,7 +2121,6 @@ Playerbots.Ladder.Matchmaker.PoolOnly = 1
 # "<prefix> Gladiator's ..." belongs to that tier; an item without such a name (e.g. the faction medallions) belongs to
 # the highest tier whose named items start at or below its item level. Unknown prefixes simply match nothing.
 # Default: "Hateful/Savage,Deadly,Furious,Relentless,Wrathful"
-Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathful"
 
 # The tier every ladder bot starts a season with (and gets at its first login): a tier name or prefix from
 # Playerbots.PvpGear.TierOrder. A slot the tier has no item for (e.g. the Hateful/Savage vendors sell no weapons) takes
@@ -2350,7 +2129,6 @@ Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathfu
 # arena rating allows (e.g. the Furious weapons are all item level 239 at rating 2350); a slot with no such item takes
 # one from the tiers above, then from the tiers below, and only then one that needs a higher rating.
 # Default: "" (the first tier)
-Playerbots.PvpGear.BaseTier = ""
 
 # Ladder bots buy PvP gear upgrades with their honor and arena points at the vendor prices and rating requirements.
 # After every rated arena match and every
@@ -2370,7 +2148,6 @@ Playerbots.PvpGear.Buy.Enable = 0
 # rings, trinkets, or one slot ("ring 1", "trinket 2", "main hand"). Slots left out follow in the default order
 # (the value below lists the first ten; neck, rings, trinkets and ranged follow).
 # Default: "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged"
-Playerbots.PvpGear.Buy.SlotPriority = "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back"
 
 # 1: a bot saves toward the best upgrade its rating allows: while it cannot pay it, it buys no lesser piece for that
 # slot, and the slots after it in the priority spend only what is left after that piece's price. A piece that needs a
@@ -2378,7 +2155,6 @@ Playerbots.PvpGear.Buy.SlotPriority = "weapon,chest,legs,head,shoulders,hands,fe
 # arena points, the honor still buys honor pieces. 0: in priority order, each slot gets the best upgrade the bot can
 # pay.
 # Default: 1
-Playerbots.PvpGear.Buy.SaveTowardBetter = 1
 
 # Minutes between two checks of every online ladder bot (1-1440; the checks after a rated arena match come on top).
 # Default: 60
@@ -2444,13 +2220,12 @@ Playerbots.Skill.NoticeWindowMs = 1500
 # Skill distribution. Every bot keeps a fixed percentile (from its guid, stored in playerbots_bot_profile.percentile);
 # its skill is that percentile mapped through this distribution, rounded and clamped to 1-99. Changing the
 # distribution or its parameters only stretches or shrinks the spread at the next start: every bot keeps its rank.
-#    normal  = mean Mean, standard deviation Sd (default 50 and 15: exactly the skills rolled before)
+#    normal  = mean Mean, standard deviation Sd (default 50 and 15: exactly the skills rolled before; config table
+#              rows, documented at SkillConfig)
 #    uniform = evenly from Min to Max
 # The GM command .playerbots skill <bot> reroll re-applies the distribution to the bot's percentile (it no longer draws
 # a new one); set <1-99> sets the skill and the matching percentile. .playerbots skill selftest checks the mapping.
 Playerbots.Skill.Distribution = normal
-Playerbots.Skill.Mean = 50
-Playerbots.Skill.Sd = 15
 Playerbots.Skill.Min = 1
 Playerbots.Skill.Max = 99
 
@@ -2472,11 +2247,9 @@ Playerbots.Skill.ExemptRealMasterBots = 1
 # with 0 every skill goes back to its first roll at the next start (as before), so turning growth off drops it, and
 # .playerbots skill <bot> reroll drops it too. .playerbots skill <bot> shows the first roll and the potential,
 # .playerbots skill the growth counters, .playerbots tactics selftest growth checks the curve.
+# GainPerMatch, RealPlayerFactor, PotentialMin and PotentialMax are config table rows, documented at
+# SkillGrowthParams (src/Bot/Tactics/SkillGrowthConfig.h).
 Playerbots.Skill.Growth.Enable = 0
-Playerbots.Skill.Growth.GainPerMatch = 0.8
-Playerbots.Skill.Growth.RealPlayerFactor = 3.0
-Playerbots.Skill.Growth.PotentialMin = 10
-Playerbots.Skill.Growth.PotentialMax = 40
 
 # Skill curve. Every lerp from AtSkill1 to AtSkill99 (the reaction factor, the notice miss chance and delay, the
 # tactics' use chances, effort) runs along position' = 1 - (1 - position)^CurveExponent, where position goes from 0 at
@@ -2537,30 +2310,8 @@ Playerbots.Skill.StyleSpread = 0
 # stored PvP loadout (unpin <bot>[,...]|all, the copy's logout and the server shutdown put its own back; show [<bot>];
 # logout <bot> logs a random bot out); pvptest arena copyA=<template> / copyB=<template> does it for a match, and the
 # match records carry copyOf (the template's guid). A crash while pinned leaves the template's talents on the copy.
-Playerbots.Skill.Attributes.Loading.Speed = 1.0
-Playerbots.Skill.Attributes.Loading.Wisdom = 1.0
-Playerbots.Skill.Attributes.Loading.Focus = 1.0
-Playerbots.Skill.Attributes.Loading.Dexterity = 1.0
-Playerbots.Skill.Attributes.Loading.Foresight = 1.0
-Playerbots.Skill.Attributes.Loading.Knowledge = 1.0
-Playerbots.Skill.Attributes.Loading.Discipline = 1.0
-Playerbots.Skill.Attributes.Loading.Grit = 1.0
-Playerbots.Skill.Attributes.Loading.Aggression = 0.0
-Playerbots.Skill.Attributes.Loading.Caution = 0.0
-Playerbots.Skill.Attributes.Loading.Patience = 0.0
-Playerbots.Skill.Attributes.Loading.Teamwork = 0.0
-Playerbots.Skill.Attributes.Spread.Speed = 0.0
-Playerbots.Skill.Attributes.Spread.Wisdom = 0.0
-Playerbots.Skill.Attributes.Spread.Focus = 0.0
-Playerbots.Skill.Attributes.Spread.Dexterity = 0.0
-Playerbots.Skill.Attributes.Spread.Foresight = 0.0
-Playerbots.Skill.Attributes.Spread.Knowledge = 0.0
-Playerbots.Skill.Attributes.Spread.Discipline = 0.0
-Playerbots.Skill.Attributes.Spread.Grit = 0.0
-Playerbots.Skill.Attributes.Spread.Aggression = 0.0
-Playerbots.Skill.Attributes.Spread.Caution = 0.0
-Playerbots.Skill.Attributes.Spread.Patience = 0.0
-Playerbots.Skill.Attributes.Spread.Teamwork = 0.0
+# Loading.<Name> and Spread.<Name> are config table rows, documented at BotAttributeParams
+# (src/Bot/Tactics/BotAttributeTypes.h); ".playerbots config Playerbots.Skill.Attributes." prints them.
 Playerbots.Skill.Attributes.Corr.Wisdom-Teamwork = 0.3
 Playerbots.Skill.Attributes.Corr.Wisdom-Patience = 0.3
 Playerbots.Skill.Attributes.Corr.Speed-Dexterity = 0.3
@@ -2574,10 +2325,10 @@ Playerbots.Skill.Attributes.Corr.Aggression-Caution = -0.2
 # GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate|reaction|attributes|focus]
 Playerbots.Tactics.Enable = 0
 
-# Per tactic (all keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,
-# a comma list of the contexts it acts in: Arena, Battleground, World (open-world PvP: duels and PvP combat outside
-# battlegrounds), Pve, or All / None. An unknown context logs a warning and keeps the default. The names and their
-# default scopes:
+# Per tactic: Playerbots.Tactics.<Name>.Enable (default 0) puts the tactic into every bot's mask. Its other keys
+# (Scope: the contexts it acts in; KnownFromSkill, UseChanceAtSkill1/99: the skill gate) are config table rows,
+# documented at TacticSettings (src/Bot/Tactics/TacticIds.h); ".playerbots config Playerbots.Tactics.<Name>." prints
+# them with their defaults and bounds. The names and their default scopes:
 #   Hold        Arena,Battleground,World   target hold
 #   Plan        Arena,Battleground         team plan (kill and crowd-control marks)
 #   Cc          Arena,Battleground,World   crowd control use and chains
@@ -2595,117 +2346,30 @@ Playerbots.Tactics.Enable = 0
 #   Natural     All                        natural reaction, facing, tracking, paths (PvE: in sight of a real player)
 #   Jump        Arena                      tactical jumps
 #   FocusTarget Arena,Battleground,World   kicks and crowd control on a focus target, the own target kept (G4e)
-# The skill gate: Playerbots.Tactics.<Name>.KnownFromSkill, 0-100 (default 0 =
-# every bot knows it; 100 = no bot), the skill from which a bot knows the tactic, moved per bot by
-# Playerbots.Skill.KnowledgeSpread; below it the bot never uses the tactic. Playerbots.Tactics.<Name>.UseChanceAtSkill1
-# and .UseChanceAtSkill99, 0-100 % (default 100 and 100): the chance that a bot that knows the tactic uses it in a
-# window of Playerbots.Skill.NoticeWindowMs, lerped by skill from skill 1 to skill 99 (Playerbots.Skill.CurveExponent
-# applies). One answer per bot, tactic and window (a hash, not a roll per update). The defaults leave a tactic as its
-# Enable and Scope make it.
-# Example (the defaults):
-# Playerbots.Tactics.Hold.Enable = 0
-# Playerbots.Tactics.Hold.Scope = Arena,Battleground,World
-# Playerbots.Tactics.Hold.KnownFromSkill = 0
-# Playerbots.Tactics.Hold.UseChanceAtSkill1 = 100
-# Playerbots.Tactics.Hold.UseChanceAtSkill99 = 100
-# Playerbots.Tactics.Plan.Enable = 0
-# Playerbots.Tactics.Plan.Scope = Arena,Battleground
-# Playerbots.Tactics.Plan.KnownFromSkill = 0
-# Playerbots.Tactics.Cc.Enable = 0
-# Playerbots.Tactics.Cc.Scope = Arena,Battleground,World
-# Playerbots.Tactics.Cc.KnownFromSkill = 0
-# Playerbots.Tactics.OwnCc.Enable = 0
-# Playerbots.Tactics.OwnCc.Scope = All
-# Playerbots.Tactics.Trinket.Enable = 0
-# Playerbots.Tactics.Trinket.Scope = Arena,Battleground,World
-# Playerbots.Tactics.Trinket.KnownFromSkill = 0
-# Playerbots.Tactics.Dispel.Enable = 0
-# Playerbots.Tactics.Dispel.Scope = All
-# Playerbots.Tactics.Dispel.KnownFromSkill = 0
-# Playerbots.Tactics.Kite.Enable = 0
-# Playerbots.Tactics.Drink.Enable = 0
-# Playerbots.Tactics.Jump.Enable = 0
-# Playerbots.Tactics.Natural.Enable = 0
+Playerbots.Tactics.Hold.Enable = 0
+Playerbots.Tactics.Plan.Enable = 0
+Playerbots.Tactics.Cc.Enable = 0
+Playerbots.Tactics.OwnCc.Enable = 0
+Playerbots.Tactics.Trinket.Enable = 0
+Playerbots.Tactics.Dispel.Enable = 0
+Playerbots.Tactics.Kite.Enable = 0
+Playerbots.Tactics.Drink.Enable = 0
+Playerbots.Tactics.Jump.Enable = 0
+Playerbots.Tactics.Natural.Enable = 0
 
-# Target hold and team plan: the numbers of the Hold and Plan tactics (all keys optional, the defaults below; read only
-# where those tactics are enabled). The defaults are proposals, not tuned yet (G6a tunes them). An ...AtSkill1 /
-# ...AtSkill99 pair is lerped over the bot's Wisdom (judgement; the re-mark delay over its Speed) along
-# Playerbots.Skill.CurveExponent; with the attribute defaults that is the skill, and skill 0 takes the skill-99 value.
-# The personality traits move some values (neutral 50 moves nothing): Patience lengthens both holds (up to x1.25),
-# Aggression raises both execute thresholds (up to 10 points: an earlier execute), Caution widens the swap off a
-# defensive (up to 15 points), Teamwork raises the chance to follow the partner (up to x1.5), shortens the follow delay
-# (down to x0.7) and raises the margin a bot other than the planner needs to re-mark (up to x1.5).
-#
-# Hold (one bot's target, every context in Playerbots.Tactics.Hold.Scope): a bot keeps its target for HoldMs, then
-# switches only to a candidate that scores HysteresisPct points better (a point is one percent of health; a switch's
-# reaction cost adds a point per 100 ms). It always switches when the target dies, leaves range, is out of its sight
-# for longer than LosLostMs or turns immune. A candidate at or below ExecPct % health (its target above it, no
-# defensive up) overrides the hold with ExecChance % per 3 s window. Low skill shows tunnel vision (long hold, a
-# hysteresis of 100 that health alone never reaches, no execute): it switches only for death, range and immunity.
-# Without marks, FollowChance % (one answer per 10 s window) is the chance to take the partner's target once the
-# partner has had it for FollowDelayMs: none at low skill, sometimes and late at mid skill.
-# Playerbots.Tactics.Hold.HoldMsAtSkill1 = 20000
-# Playerbots.Tactics.Hold.HoldMsAtSkill99 = 1500
-# Playerbots.Tactics.Hold.HysteresisPctAtSkill1 = 100
-# Playerbots.Tactics.Hold.HysteresisPctAtSkill99 = 8
-# Playerbots.Tactics.Hold.ExecPctAtSkill1 = 15
-# Playerbots.Tactics.Hold.ExecPctAtSkill99 = 25
-# Playerbots.Tactics.Hold.ExecChanceAtSkill1 = 0
-# Playerbots.Tactics.Hold.ExecChanceAtSkill99 = 90
-# Playerbots.Tactics.Hold.FollowChanceAtSkill1 = 0
-# Playerbots.Tactics.Hold.FollowChanceAtSkill99 = 80
-# Playerbots.Tactics.Hold.FollowDelayMsAtSkill1 = 4000
-# Playerbots.Tactics.Hold.FollowDelayMsAtSkill99 = 1000
-# Playerbots.Tactics.Hold.LosLostMs = 1500
-#
-# Focus (the team plan, arenas): the group's target icons carry the plan, skull = kill target, moon = crowd-control
-# target (moon only when the team can control). The planner is the team's alive bot with the higher skill (ties: the
-# lower guid) at or above Playerbots.Tactics.Plan.KnownFromSkill (the Plan tactic's gate key above; 40 is the proposal
-# when the plan is on; there is no Focus.KnownFromSkill); with a real player in the group he marks and no bot plans.
-# The planner re-plans every PlanIntervalMs and keeps the kill target for HoldMs; after the hold another enemy must
-# score HysteresisPct points better (health, healer, range and sight of the team's bots, defensives, trinket, physical
-# immunity for a physical team, stun or fear). It switches at once when the kill target dies, turns immune to
-# everything, falls into the team's breakable crowd control (never a kill target) or is out of every own bot's sight
-# for longer than LosLostMs; an enemy at or below ExecPct % health (no defensive up) overrides the hold with
-# ExecChance % per 3 s window; a kill target with a defensive up is left for an enemy within DefensiveSwapPct points
-# of its health. Marks are set at the start and change only on events (the kill target dies or turns immune, a big
-# opening), at most once per MinRemarkSeconds, RemarkDelayMs after the event (a human delay), never within
-# HumanMarkRespectSeconds of a real player's mark. Any other bot, in a real player's group too, re-marks only when its
-# own judgement beats the marked target by StrongMargin score points, so rarely.
-# Playerbots.Tactics.Focus.PlanIntervalMsAtSkill1 = 2300
-# Playerbots.Tactics.Focus.PlanIntervalMsAtSkill99 = 300
-# Playerbots.Tactics.Focus.HoldMsAtSkill1 = 5300
-# Playerbots.Tactics.Focus.HoldMsAtSkill99 = 2000
-# Playerbots.Tactics.Focus.HysteresisPctAtSkill1 = 28
-# Playerbots.Tactics.Focus.HysteresisPctAtSkill99 = 8
-# Playerbots.Tactics.Focus.ExecPctAtSkill1 = 15
-# Playerbots.Tactics.Focus.ExecPctAtSkill99 = 25
-# Playerbots.Tactics.Focus.ExecChanceAtSkill1 = 30
-# Playerbots.Tactics.Focus.ExecChanceAtSkill99 = 90
-# Playerbots.Tactics.Focus.RemarkDelayMsAtSkill1 = 2500
-# Playerbots.Tactics.Focus.RemarkDelayMsAtSkill99 = 800
-# Playerbots.Tactics.Focus.StrongMarginAtSkill1 = 50
-# Playerbots.Tactics.Focus.StrongMarginAtSkill99 = 30
-# Playerbots.Tactics.Focus.MinRemarkSeconds = 8
-# Playerbots.Tactics.Focus.HumanMarkRespectSeconds = 10
-# Playerbots.Tactics.Focus.LosLostMs = 1500
-# Playerbots.Tactics.Focus.DefensiveSwapPct = 25
-# The planner's snapshot of an enemy is what its team sees (health, auras, cast bars, sight); from
-# AddonKnowledgeFromSkill (the planner's Knowledge, the skill with the attribute defaults; skill 0 always) it also
-# remembers what an addon would: a defensive seen used this match counts as spent.
-# Playerbots.Tactics.Focus.AddonKnowledgeFromSkill = 40
+# Target hold and team plan: the numbers of the Hold and Plan tactics (Playerbots.Tactics.Hold.*, .Focus.*) and of
+# the focus target (.FocusTarget.*) are config table rows, documented at FocusConfig
+# (src/Bot/Tactics/ArenaFocusConfig.h); ".playerbots config Playerbots.Tactics." prints them with their defaults and
+# bounds (a value out of bounds is capped with a warning). Only the moon mode is listed here: a hub test sets it.
 # The moon: MoonMode 1 marks one whenever the team has a class with a crowd-control option (G1b's rule); 0 never
 # marks one; 2 marks one only for a team that plays crowd control (the planner's Cc tactic enabled here) and keeps it
 # only while a CC lands on it or a teammate's cast bar shows one at it: MoonGraceMs after the mark or the last such
 # sight the planner clears it (the team's damage may go there again) and sets none for MoonRetryMs. In mode 2 the
 # target hold also lets a bot leave the skull for a moon that is not controlled. The mode is read at each match's
-# start; ".playerbots tactics moon <0|1|2>" switches it on a running server from the next match (a restart or
-# ".playerbots rndbot reload" restores this value; ".reload config" alone does not re-read it).
+# start; ".playerbots tactics moon <0|1|2>" switches it on a running server from the next match (a restart,
+# ".playerbots rndbot reload" or ".reload config" restores this value).
 # Playerbots.Tactics.Focus.MoonMode = 1
-# Playerbots.Tactics.Focus.MoonGraceMs = 5000
-# Playerbots.Tactics.Focus.MoonRetryMs = 10000
-# (Ranges: ms keys 0-120000, percents 0-100, StrongMargin 0-255, seconds 0-600, AddonKnowledgeFromSkill 0-99, MoonMode
-# 0-2; larger values are capped.)
+# (Range 0-2; a larger value is capped.)
 
 # Crowd control and its avoidance: the numbers of the Cc, OwnCc and Trinket tactics (all keys optional, the defaults
 # below; the Cc tactic reads them from G4b, OwnCc and Trinket in later steps). The defaults are proposals, not tuned
@@ -2720,26 +2384,9 @@ Playerbots.Tactics.Enable = 0
 # When a bot knows crowd control at all is Playerbots.Tactics.Cc.KnownFromSkill (the gate key above; 30 is the
 # proposal when the tactic is on).
 #
-# Cc: from DrAwareFromSkill (Knowledge) a bot remembers the CC it saw land on each enemy, like a DR addon (never the
-# server's own counters): it casts nothing its memory says lands immune or for less than MinExpectedMs (the third CC
-# of a group, a quarter of its duration), and not the DR group already on the target. Below it the bot casts into DR.
-# DrMissPct is the share of CC seen landing on a started count that the memory misses (Knowledge). From
-# ChainsFromSkill (Knowledge) a bot chains: it starts its CC so that it lands ChainLeadMs before the one on the target
-# ends (Foresight); below it, it waits until the target is free. WrongTargetPct: the CC goes on whoever is near instead
-# of the CC target (Wisdom; one answer per bot and 10 s). A patient bot (the Patience trait above 50) holds its CC up
-# to PatientHoldMs x its patience for the kill window; a bot whose effort is below 50 stops controlling when its team
-# is BehindStopPct health points behind.
-# Playerbots.Tactics.Cc.DrAwareFromSkill = 40
-# Playerbots.Tactics.Cc.ChainsFromSkill = 65
-# Playerbots.Tactics.Cc.MinExpectedMs = 3000
-# Playerbots.Tactics.Cc.DrMissPctAtSkill1 = 40
-# Playerbots.Tactics.Cc.DrMissPctAtSkill99 = 0
-# Playerbots.Tactics.Cc.ChainLeadMsAtSkill1 = 0
-# Playerbots.Tactics.Cc.ChainLeadMsAtSkill99 = 300
-# Playerbots.Tactics.Cc.WrongTargetPctAtSkill1 = 50
-# Playerbots.Tactics.Cc.WrongTargetPctAtSkill99 = 0
-# Playerbots.Tactics.Cc.PatientHoldMs = 3000
-# Playerbots.Tactics.Cc.BehindStopPct = 30
+# The numbers of Cc and Avoid (Playerbots.Tactics.Cc.*, .Avoid.*) are config table rows, documented at CcConfig
+# (src/Bot/Tactics/ArenaCcConfig.h); ".playerbots config Playerbots.Tactics." prints them with their defaults and bounds
+# (a value out of bounds is capped with a warning). Listed below are the keys a hub test sets.
 #
 # Chains (G4c): with ChainEnable = 1 a bot from ChainsFromSkill also casts on a target its team holds in a loss of
 # control: a CC of another DR group than the one on it (the memory says which still lands), started so that it lands
@@ -2749,26 +2396,9 @@ Playerbots.Tactics.Enable = 0
 # CC this match and, after OpponentMinEvents of them, lands the next CC DispelMarginMs before the expected dispel.
 # Playerbots.Tactics.Cc.ChainEnable = 0
 # Playerbots.Tactics.Cc.OpponentMemoryEnable = 0
-# Playerbots.Tactics.Cc.OpponentMinEvents = 2
-# Playerbots.Tactics.Cc.DispelMarginMs = 300
-#
-# Avoid: OwnBreakPct is the share of the bot's damage that breaks its team's breakable CC (Focus); from
-# OwnBreakNeverFromSkill (Focus) a bot never breaks it (100: every bot below full ability can). A bot breaks a CC on
-# itself (trinket, racials) when it matters: a stun, fear, horror, incapacitate, disorient, sleep or cyclone with
-# MinLeftMs or more left while the bot or its partner is at or below LowHealthPct % health or being burst; any other
-# CC it breaks with WastedBreakPct (Wisdom; one answer per bot and 10 s), except that from IgnoreRootsFromSkill
-# (Wisdom) it never breaks a root, snare or silence.
-# Playerbots.Tactics.Avoid.OwnBreakPctAtSkill1 = 60
-# Playerbots.Tactics.Avoid.OwnBreakPctAtSkill99 = 5
-# Playerbots.Tactics.Avoid.OwnBreakNeverFromSkill = 65
-# Playerbots.Tactics.Avoid.WastedBreakPctAtSkill1 = 70
-# Playerbots.Tactics.Avoid.WastedBreakPctAtSkill99 = 0
-# Playerbots.Tactics.Avoid.IgnoreRootsFromSkill = 65
-# Playerbots.Tactics.Avoid.MinLeftMs = 2500
-# Playerbots.Tactics.Avoid.LowHealthPct = 40
 #
 # Trinket and Dispel (G5a; Playerbots.Tactics.Trinket.Enable / Dispel.Enable): a bot that knows the Trinket tactic
-# breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use trinket" then never
+# breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use item fight" never
 # spends it as a boost) or a racial (every man for himself, will of the forsaken, escape artist), the trinket first;
 # below the tactic's known skill it does not tell a CC that matters and breaks any CC with WastedBreakPct. From
 # WastedBreakNeverFromSkill (Wisdom) a bot breaks only a CC that matters. CautiousLowHealthPct moves the low-health
@@ -2780,7 +2410,6 @@ Playerbots.Tactics.Enable = 0
 # or the logout (a crash: at the next login, by the item's mark), 2 withholds every bot's PvP trinket (the racial and
 # dispel fallbacks), 0 leaves the gear as it is; .playerbots tactics ensuretrinket 0|1|2 switches it on a running
 # server (the next fight start takes it).
-# Playerbots.Tactics.Avoid.WastedBreakNeverFromSkill = 65
 # Playerbots.Tactics.Avoid.CautiousLowHealthPct = 0
 # Playerbots.Tactics.Avoid.EnsureTrinket = 0
 #
@@ -2793,14 +2422,13 @@ Playerbots.Tactics.Enable = 0
 # warlock 256, druid 1024) whose bots skip that guard, e.g. 272 (priest and warlock): their periodic damage is on every
 # enemy, so the DoT guard takes their fear away whenever they keep their team's CC; 0 = every bot keeps the guard.
 # Playerbots.Tactics.Avoid.AoeGuardEnable = 0
-# Playerbots.Tactics.Avoid.AoeGuardMarginYards = 2
 # Playerbots.Tactics.Avoid.AoeGuardExemptClasses = 0
 # Playerbots.Tactics.Avoid.DotGuardEnable = 0
 # Playerbots.Tactics.Avoid.DotGuardExemptClasses = 0
 # Playerbots.Tactics.Avoid.PetCallOffEnable = 0
 # Playerbots.Tactics.Avoid.ExcludeFightEnemies = 0
-# (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability), switches 0-1,
-# OpponentMinEvents 0-20, AoeGuardMarginYards 0-20, EnsureTrinket 0-2; larger values are capped.)
+# (Ranges: CautiousLowHealthPct 0-100, EnsureTrinket 0-2, the switches 0-1; larger values are capped. A class mask
+# keeps bits 0-10, other bits are dropped.)
 #
 # Interrupt (G5b; Playerbots.Tactics.Interrupt.Enable, scope All: PvE too). Off (the default), every interrupt
 # trigger kicks the first interruptible cast it sees, and "X on enemy healer" the first helpful cast of an attacker
@@ -2817,33 +2445,20 @@ Playerbots.Tactics.Enable = 0
 # the commit point, and the kick lands at the commit point plus the reaction time. "X on enemy healer" takes the
 # best cast of the fight's enemies other than the target (a heal on a low friend, a CC, a heal, damage), kept
 # HealerCacheMs ms.
-# Playerbots.Tactics.Interrupt.Enable = 0
-# Playerbots.Tactics.Interrupt.KnownFromSkill = 0
-# Playerbots.Tactics.Interrupt.HealSharePctAtSkill1 = 30
-# Playerbots.Tactics.Interrupt.HealSharePctAtSkill99 = 70
-# Playerbots.Tactics.Interrupt.DamageSharePct = 50
-# Playerbots.Tactics.Interrupt.CcSharePct = 0
-# Playerbots.Tactics.Interrupt.MaxSharePct = 90
-# Playerbots.Tactics.Interrupt.SigmaPctAtSkill1 = 40
-# Playerbots.Tactics.Interrupt.SigmaPctAtSkill99 = 15
-# Playerbots.Tactics.Interrupt.UrgentHpPct = 30
-# Playerbots.Tactics.Interrupt.CancelSharePct = 15
-# Playerbots.Tactics.Interrupt.CancelMinCasts = 3
-# Playerbots.Tactics.Interrupt.PatienceSharePct = 10
-# Playerbots.Tactics.Interrupt.HoldForHealer = 1
-# Playerbots.Tactics.Interrupt.HealerCacheMs = 200
+Playerbots.Tactics.Interrupt.Enable = 0
+# The numbers of the Interrupt tactic are config table rows, documented at InterruptConfig
+# (src/Bot/Tactics/ArenaInterruptConfig.h); ".playerbots config Playerbots.Tactics.Interrupt" prints them with their
+# defaults and bounds (a value out of bounds is capped with a warning). Listed below are the keys a hub test sets.
 #
 # The use draw (G5c-c): per cast, a bot notices it with UsePctAtSkill1..99 % (lerped by skill; the rest it lets go,
 # "unnoticed"), on the shortcut and the judging path alike. 100 and 100 (the defaults): every cast, as before.
 # Playerbots.Tactics.Interrupt.UsePctAtSkill1 = 100
-# Playerbots.Tactics.Interrupt.UsePctAtSkill99 = 100
 # The attention gap (G5c-c): once its kick is ready, a bot notices interruptible casts only after a gap, drawn per
 # ready window (exponential, at most 3 means) with the mean AttentionMsAtSkill1..99 ms, lerped by skill on a convex
 # curve (the gap shrinks fast with skill: at 30000 and 0 the mean is about 19 s at skill 20, 7.5 s at 50, 1.1 s at
 # 80). A cast it does not notice it lets go ("unnoticed"); this keeps weak bots from kicking at every cooldown.
 # 0 and 0 (the defaults): no gap, as before.
 # Playerbots.Tactics.Interrupt.AttentionMsAtSkill1 = 0
-# Playerbots.Tactics.Interrupt.AttentionMsAtSkill99 = 0
 #
 # The hold policy (G5c-c). HoldPolicy 0 (the default): the HoldForHealer rule above. HoldPolicy 1: a judging bot holds
 # its kick on a damage cast only while a cast heal of an enemy healer in reach and sight is likely and its window
@@ -2865,24 +2480,7 @@ Playerbots.Tactics.Enable = 0
 # counts now, so the kick is not spent on a damage cast just before the heal), times HoldTrendPctAtKnowledge1..99 %
 # (a bot that knows less reads the trend less far ahead). 0: the current health only.
 # Playerbots.Tactics.Interrupt.HoldPolicy = 0
-# Playerbots.Tactics.Interrupt.HoldKnowPctAtKnowledge1 = 40
-# Playerbots.Tactics.Interrupt.HoldKnowPctAtKnowledge99 = 100
-# Playerbots.Tactics.Interrupt.HoldAssumedCastMs = 2000
-# Playerbots.Tactics.Interrupt.HoldInstantSeenMs = 8000
-# Playerbots.Tactics.Interrupt.HoldHpHighPct = 80
-# Playerbots.Tactics.Interrupt.HoldHpLowPct = 40
-# Playerbots.Tactics.Interrupt.HoldRecentCastHealMs = 6000
-# Playerbots.Tactics.Interrupt.HoldRecentHpShiftPct = 10
-# Playerbots.Tactics.Interrupt.HoldInstantCoverPct = 80
-# Playerbots.Tactics.Interrupt.HoldWindowMarginMs = 300
-# Playerbots.Tactics.Interrupt.HoldMotivationPctAtKnowledge1 = 30
-# Playerbots.Tactics.Interrupt.HoldMotivationPctAtKnowledge99 = 100
-# Playerbots.Tactics.Interrupt.HoldMsAtPatience0 = 1000
-# Playerbots.Tactics.Interrupt.HoldMsAtPatience100 = 6000
-# Playerbots.Tactics.Interrupt.HoldResetMs = 6000
 # Playerbots.Tactics.Interrupt.HoldTrendHorizonMs = 10000
-# Playerbots.Tactics.Interrupt.HoldTrendPctAtKnowledge1 = 50
-# Playerbots.Tactics.Interrupt.HoldTrendPctAtKnowledge99 = 100
 #
 # SeeCancelLag (13e-decide): 1 = a cast bar that ends (finished, cancelled or cut) stays in the judging kicker's view
 # for its reaction delay (the reaction model's median plus ping, display and the deep check), so a kick it committed on
@@ -2900,218 +2498,38 @@ Playerbots.Tactics.Enable = 0
 # the cost of the stance change's rage and one tick. 0 (the default): an Arms warrior never interrupts. Read when the
 # bot's engine is built (login or strategy reset), not on a config reload.
 # Playerbots.Tactics.Interrupt.ArmsPummel = 0
-# (Ranges: percents 0-100, CancelMinCasts 0-20, HoldForHealer and HoldPolicy 0-1, HealerCacheMs 0-5000,
-# HoldAssumedCastMs 0-10000, HoldWindowMarginMs 0-2000, AttentionMs and the other Hold ms keys 0-60000.)
+# (Ranges: UsePctAtSkill1 0-100, HoldPolicy, SeeCancelLag and ArmsPummel 0-1, AttentionMsAtSkill1 and
+# HoldTrendHorizonMs 0-60000; larger values are capped.)
 #
 # Focus target (G4e; Playerbots.Tactics.FocusTarget.Enable, scope Arena,Battleground,World). On, a bot from
 # Playerbots.Natural.Reaction.Ease.FocusDexterity keeps a focus target (in an arena the moon, taken over the enemy
 # healer with MoonPctAtTeamwork1..99 % by Teamwork; else the enemy healer or the CC target) and kicks or controls it
 # at the focus ease, its own target kept; an interrupt on the focus scores KickBonus over other casts of its kind.
 # Below the threshold the action is priced as a new target. Off (the default): no focus target.
-# Playerbots.Tactics.FocusTarget.Enable = 0
-# Playerbots.Tactics.FocusTarget.MoonPctAtTeamwork1 = 50
-# Playerbots.Tactics.FocusTarget.MoonPctAtTeamwork99 = 100
-# Playerbots.Tactics.FocusTarget.KickBonus = 50
-# (Ranges: percents 0-100, KickBonus 0-255.)
+Playerbots.Tactics.FocusTarget.Enable = 0
+# (MoonPctAtTeamwork1/99 and KickBonus are config table rows, documented at FocusConfig.)
 #
 # Defensives on burst and the partner protected (G5d; Playerbots.Tactics.Defensive.Enable, scope All, and
-# Playerbots.Tactics.Protect.Enable, scope Arena,Battleground,World). With Defensive on, the strategy "tactic
-# defensive" presses the class's self-defensives (mage ice block, paladin divine shield, rogue cloak or evasion, death
-# knight icebound fortitude, hunter deterrence, druid barkskin or survival instincts, disc priest pain suppression,
-# shadow priest dispersion, protection warrior shield wall; healthstones and potions with PotionEnable) when health is
-# at or below HpPctAtSkill1..99 per cent AND (the bot is under burst OR focused). Burst: health lost within
-# BurstWindowMs of at least BurstLossPctAtSkill1..99 per cent, from a ring of 16 health samples taken every SampleMs.
-# Focused: at least FocusedMinEnemies enemy players whose victim or cast target is the bot (what the combat log and the
-# cast bars show; read in Arena, Battleground and open-world PvP only); a focused bot presses FocusedHpBonusPct points
-# earlier. A low-skill bot presses only at CriticalHpPct, or at the gates opening with the chance
-# OpenerPctAtSkill1..99; low effort waits LateMsAtEffort0..100 ms after the trigger holds; Caution moves the threshold
-# by up to CautionShiftPct points; two presses are at least MinGapMs apart; no press while a defensive is up or every
-# self-defensive is on cooldown. With Protect on, PartyMemberToProtect returns a partner (PvP scope only: hand of
-# protection drops a tank's threat) that an enemy within Protect.DistanceYards attacks now (its victim or cast target),
-# whose health is at or below Protect.HpPctAtSkill1..99 per cent and who has no defensive of its own up; the existing
-# protect actions (hand of protection, pain suppression, intervene) use it with their own cooldowns. A disc priest
-# with Protect on and a living partner keeps pain suppression for the partner: on itself only at CriticalHpPct (the
-# Defensive tactic's opener, burst and focused presses skip it). Opponent memory (Foresight; from skill
-# Opponent.FromSkill): the bot remembers when each enemy was last seen with a major defensive up (immunities: ice
-# block, divine shield, deterrence, dispersion; physical stops: evasion, hand of protection; magic stops: cloak of
-# shadows, anti-magic shell). It holds its burst while a defensive that stops its own damage is up (an immunity, or the
-# stop of its damage type: melee and hunters physical, casters magic; minor reductions such as barkskin or pain
-# suppression never hold), and while the enemy owns such a defensive not seen up within Opponent.ExpireMs (believed
-# ready) until the enemy uses it: at most BurstHoldMaxMs from the first such hold since its last use (0: no such hold)
-# and never with the enemy at or below BurstHoldFloorPct per cent health. A stop that is up (not an immunity) holds
-# the burst under the same cap, counted per episode of the aura, and the same floor (13e-polish; an immunity holds while
-# it lasts). "Focused" counts only against an enemy team
-# of at least FocusedMinTeam players at the match's start (the arena's size; battlegrounds and the open world always):
-# in 2v2 both enemies on the bot are the normal case, so there only burst and the plain line press. Opponent.Enable 0
-# turns the memory off. Protect.AttackedWithinMs, Protect.MinGapMs, Opponent.MinEvents and
-# Opponent.LeadPctAtForesight99 (the lead of the hold before 13e-decide) are read but not used.
-# Playerbots.Tactics.Defensive.Enable = 0
-# Playerbots.Tactics.Protect.Enable = 0
-# Playerbots.Tactics.Defensive.BurstWindowMs = 2000
-# Playerbots.Tactics.Defensive.BurstLossPctAtSkill1 = 55
-# Playerbots.Tactics.Defensive.BurstLossPctAtSkill99 = 30
-# Playerbots.Tactics.Defensive.SampleMs = 250
-# Playerbots.Tactics.Defensive.FocusedMinEnemies = 2
-# Playerbots.Tactics.Defensive.FocusedMinTeam = 3
-# Playerbots.Tactics.Defensive.HpPctAtSkill1 = 25
-# Playerbots.Tactics.Defensive.HpPctAtSkill99 = 60
-# Playerbots.Tactics.Defensive.FocusedHpBonusPct = 15
-# Playerbots.Tactics.Defensive.CriticalHpPct = 20
-# Playerbots.Tactics.Defensive.OpenerPctAtSkill1 = 40
-# Playerbots.Tactics.Defensive.OpenerPctAtSkill99 = 0
-# Playerbots.Tactics.Defensive.LateMsAtEffort0 = 1200
-# Playerbots.Tactics.Defensive.LateMsAtEffort100 = 0
-# Playerbots.Tactics.Defensive.CautionShiftPct = 10
-# Playerbots.Tactics.Defensive.MinGapMs = 1500
+# Playerbots.Tactics.Protect.Enable, scope Arena,Battleground,World); the numbers are config table rows,
+# documented at DefensiveConfig.
+Playerbots.Tactics.Defensive.Enable = 0
+Playerbots.Tactics.Protect.Enable = 0
 # Playerbots.Tactics.Defensive.PotionEnable = 1
-# Playerbots.Tactics.Defensive.PotionHpPct = 35
-# Playerbots.Tactics.Defensive.Protect.HpPctAtSkill1 = 20
-# Playerbots.Tactics.Defensive.Protect.HpPctAtSkill99 = 40
-# Playerbots.Tactics.Defensive.Protect.AttackedWithinMs = 3000
-# Playerbots.Tactics.Defensive.Protect.DistanceYards = 30
-# Playerbots.Tactics.Defensive.Protect.MinGapMs = 2000
 # Playerbots.Tactics.Defensive.Opponent.Enable = 1
-# Playerbots.Tactics.Defensive.Opponent.LeadPctAtForesight99 = 20
-# Playerbots.Tactics.Defensive.Opponent.MinEvents = 1
-# Playerbots.Tactics.Defensive.Opponent.FromSkill = 40
-# Playerbots.Tactics.Defensive.Opponent.ExpireMs = 120000
-# Playerbots.Tactics.Defensive.BurstHoldMaxMs = 8000
-# Playerbots.Tactics.Defensive.BurstHoldFloorPct = 30
-# (Ranges: percents 0-100, ms 0-120000, FocusedMinEnemies and FocusedMinTeam 0-8, Protect.DistanceYards 0-100,
-# PotionEnable and Opponent.Enable 0-1, Opponent.MinEvents 0-20, Opponent.FromSkill 0-100.)
 #
-# Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World). With it on, a bot from
-# KnownFromSkill (Knowledge) that starts a kickable cast of at least MinCastMs sees whether an enemy player of its
-# fight could kick it (its class has a kick aimed at one enemy; it is within that kick's reach (melee 5, Wind Shear
-# 25, Counterspell and Silence 30, Silencing Shot 35 yards) capped at KickerRangeYards, plus KickerRangeSlackYards;
-# and it faces the bot or targets it when KickerNeedFacing is 1) and has seen no kick used within KickSeenMs (bots
-# from KickMemoryFromSkill remember the kicks they saw used within 40 yards); it then fakes with the chance
-# ChancePctAtSkill70..99 per cent and cancels the cast at a drawn point of the bar (CancelPctAtPatience0..100 per cent
-# of the cast time, log-normal spread CancelSigmaPct; never earlier than CancelMinMs into the cast and never within
-# CancelMinLeftMs of its end), on the bot's first update at that instant, if the kicker still threatens it (else the
-# cast finishes). The next fake is at least RepeatMsAtPatience0..100 ms later (jitter RepeatJitterPct per cent), at
-# most MaxPerMinute a minute. A kick at the bot within BaitedWindowMs after the cancel counts as baited (counters
-# fakes, kicksBaited, kickSeen). Nothing tells a kicker it faces a fake; its own memory of seen cancels is all it has
-# (Playerbots.Tactics.Interrupt). HealGuardPct (13e-decide): a heal is never faked while its target is below this
-# health, nor, by the group's only healer, while any friend is below it. Only fight casts are faked: in combat, and no
-# conjure, created item, pet summon, enchant or trade skill (13e-polish).
-# Playerbots.Tactics.Fake.Enable = 0
-# Playerbots.Tactics.Fake.KnownFromSkill = 70
-# Playerbots.Tactics.Fake.MinCastMs = 1500
-# Playerbots.Tactics.Fake.CancelPctAtPatience0 = 35
-# Playerbots.Tactics.Fake.CancelPctAtPatience100 = 75
-# Playerbots.Tactics.Fake.CancelSigmaPct = 15
-# Playerbots.Tactics.Fake.CancelMinMs = 300
-# Playerbots.Tactics.Fake.CancelMinLeftMs = 250
-# Playerbots.Tactics.Fake.RepeatMsAtPatience0 = 4000
-# Playerbots.Tactics.Fake.RepeatMsAtPatience100 = 10000
-# Playerbots.Tactics.Fake.RepeatJitterPct = 30
-# Playerbots.Tactics.Fake.MaxPerMinute = 6
-# Playerbots.Tactics.Fake.KickerRangeYards = 30
-# Playerbots.Tactics.Fake.KickerRangeSlackYards = 3
-# Playerbots.Tactics.Fake.KickerNeedFacing = 1
-# Playerbots.Tactics.Fake.KickSeenMs = 8000
-# Playerbots.Tactics.Fake.KickMemoryFromSkill = 40
-# Playerbots.Tactics.Fake.ChancePctAtSkill70 = 40
-# Playerbots.Tactics.Fake.ChancePctAtSkill99 = 90
-# Playerbots.Tactics.Fake.BaitedWindowMs = 300
-# Playerbots.Tactics.Fake.HealGuardPct = 70
-# (Ranges: skills 0-100, percents 0-100, ms 0-120000, MaxPerMinute 0-600, yards 0-100, KickerNeedFacing 0-1.)
+# Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World); the numbers are config table
+# rows, documented at FakeConfig.
+Playerbots.Tactics.Fake.Enable = 0
 
 # Line of sight and pillar play (G2e, G2f; Playerbots.Tactics.Los.Enable, scope Arena,Battleground,World, and
-# Playerbots.Tactics.Pillar.Enable, scope Arena). Los: a ranged bot that loses sight of its target, or a healer of an
-# alive partner, moves to a point that sees it again instead of running into melee or not healing (cover points in
-# arenas), known from KnownFromSkill; the lower the skill the later (LateMsAtSkill1..99 ms) and the more often into the
-# open (IntoOpenPctAtSkill1..99); from HidesFromCasterFromSkill the point also hides the bot from the enemy caster; a
-# healer below EffortMin stays put. A point is held at least HoldMs, at most MaxRelocs relocations per RelocWindowMs
-# (else counter relocGuards); a cover search runs at most every SearchIntervalMs with at most MaxRaysPerSearch rays;
-# the cover plan takes at most RaysPerSecond rays per bot and second; a regain not finished in TimeoutMs is a timeout.
-# Pillar: a bot that an enemy casts at (a cast of HardCastMs or more, or crowd control) that no interrupt can stop steps
-# behind a pillar (one hop of at most StepYards) and a melee chaser is pulled round it, from KnownFromSkill; below it
-# the bot hides at random (RandomHidePctAtSkill1..59) or never; the cautious style hides CautiousEarlyMs earlier;
-# Ring of Valor: no move in the first RvIdleMs (the elevators). The notice delay of these moves is the Positioning part
-# of Playerbots.Natural.Reaction.*. Counters losRegains, losTimeouts, partnerLosLostMs, losBreaks, castsLosBroken,
-# pillarSteps, relocGuards. Default: off.
-# Playerbots.Tactics.Los.Enable = 0
-# Playerbots.Tactics.Los.KnownFromSkill = 25
-# Playerbots.Tactics.Los.LateMsAtSkill1 = 2500
-# Playerbots.Tactics.Los.LateMsAtSkill99 = 500
-# Playerbots.Tactics.Los.IntoOpenPctAtSkill1 = 25
-# Playerbots.Tactics.Los.IntoOpenPctAtSkill99 = 0
-# Playerbots.Tactics.Los.HidesFromCasterFromSkill = 70
-# Playerbots.Tactics.Los.EffortMin = 25
-# Playerbots.Tactics.Los.HoldMs = 2500
-# Playerbots.Tactics.Los.MaxRelocs = 3
-# Playerbots.Tactics.Los.RelocWindowMs = 10000
-# Playerbots.Tactics.Los.SearchIntervalMs = 1500
-# Playerbots.Tactics.Los.MaxRaysPerSearch = 40
-# Playerbots.Tactics.Los.RaysPerSecond = 5
-# Playerbots.Tactics.Los.TimeoutMs = 6000
-# Playerbots.Tactics.Pillar.Enable = 0
-# Playerbots.Tactics.Pillar.KnownFromSkill = 60
-# Playerbots.Tactics.Pillar.HardCastMs = 1500
-# Playerbots.Tactics.Pillar.StepYards = 6
-# Playerbots.Tactics.Pillar.RandomHidePctAtSkill1 = 30
-# Playerbots.Tactics.Pillar.RandomHidePctAtSkill59 = 5
-# Playerbots.Tactics.Pillar.CautiousEarlyMs = 300
-# Playerbots.Tactics.Pillar.RvIdleMs = 21000
-# (Ranges: skills 0-99, percents 0-100, ms 0-120000, rays and relocations 0-1000, yards 0-1000.)
+# Playerbots.Tactics.Pillar.Enable, scope Arena); the numbers are config table rows, documented at LosConfig.
+Playerbots.Tactics.Los.Enable = 0
+Playerbots.Tactics.Pillar.Enable = 0
 
 # Kiting, drinking and jumps (G3a, G3b, G2g; the Drink tactic works (G3b), Kite and Jump read their numbers only so far).
 # Playerbots.Tactics.Kite.Enable (scope Arena,Battleground,World), Playerbots.Tactics.Drink.Enable (scope
 # Arena,Battleground) and Playerbots.Tactics.Jump.Enable (scope Arena) are the tactic table's switches (default 0).
-# Kite: a healer or caster with an enemy melee on it (within MeleeYards, targeting it) kites: the class snare first
-# (SnareFirst), then a pillar step (PillarMaxYards), a tested jump spot (JumpMinSavedYards) or a StepYards step towards
-# a partner at least PartnerMinYards away, at most every StepIntervalMs. A bot below EffortMin gives up after
-# GiveUpMsAtEffort0, one at effort 100 after GiveUpMsAtEffort100; an episode ends after EpisodeMs. From
-# MemoryFromSkill the bot reads where enemies broke line of sight in the last MemoryWindowMs. Below KnownFromSkill
-# (PanicBelowSkill) the old flee stays.
-# Drink: before the gates open (more than PrepMinLeftMs left, mana below PrepBelowPct, effort at least PrepEffortMin),
-# and in a safe window (out of combat, mana below SafeBelowPct, healers SafeBelowPctHealer, no enemy within
-# EnemyYards or in sight, none seen for QuietMs, the partner above PartnerMinHpPct, effort at least EffortMin); an
-# enemy within BreakEnemyYards stands the bot up. A bot without drinks logs at most every NoDrinkLogMs. With the tactic
-# on, a bot that knows it (KnownFromSkill) in an arena or battleground drinks only by these rules: the old food rule's
-# drink (mana below HighMana, no look at enemies) is off for it there; below KnownFromSkill the old rule runs unchanged.
-# Jump: only measured spots; aggression at least ChaseFromAggression jumps down to chase, caution at least
-# EscapeFromCaution to escape; MinSavedYards the way a jump must save; LandingTolX10 the landing tolerance in tenths
-# of a yard; Test*: the numbers of `.playerbots tactics jump test`.
-# Playerbots.Tactics.Kite.KnownFromSkill = 40
-# Playerbots.Tactics.Kite.EffortMin = 20
-# Playerbots.Tactics.Kite.MeleeYards = 8
-# Playerbots.Tactics.Kite.StepYards = 9
-# Playerbots.Tactics.Kite.StepIntervalMs = 1500
-# Playerbots.Tactics.Kite.EpisodeMs = 20000
-# Playerbots.Tactics.Kite.GiveUpMsAtEffort0 = 3000
-# Playerbots.Tactics.Kite.GiveUpMsAtEffort100 = 12000
-# Playerbots.Tactics.Kite.SnareFirst = 1
-# Playerbots.Tactics.Kite.PillarMaxYards = 12
-# Playerbots.Tactics.Kite.PartnerMinYards = 12
-# Playerbots.Tactics.Kite.JumpMinSavedYards = 6
-# Playerbots.Tactics.Kite.MemoryFromSkill = 60
-# Playerbots.Tactics.Kite.MemoryWindowMs = 15000
-# Playerbots.Tactics.Kite.PanicBelowSkill = 40
-# Playerbots.Tactics.Drink.KnownFromSkill = 45
-# Playerbots.Tactics.Drink.EffortMin = 30
-# Playerbots.Tactics.Drink.PrepEffortMin = 10
-# Playerbots.Tactics.Drink.PrepBelowPct = 95
-# Playerbots.Tactics.Drink.PrepMinLeftMs = 12000
-# Playerbots.Tactics.Drink.SafeBelowPct = 60
-# Playerbots.Tactics.Drink.SafeBelowPctHealer = 70
-# Playerbots.Tactics.Drink.EnemyYards = 30
-# Playerbots.Tactics.Drink.QuietMs = 2000
-# Playerbots.Tactics.Drink.PartnerMinHpPct = 50
-# Playerbots.Tactics.Drink.BreakEnemyYards = 20
-# Playerbots.Tactics.Drink.NoDrinkLogMs = 60000
-# Playerbots.Tactics.Jump.KnownFromSkill = 70
-# Playerbots.Tactics.Jump.ChaseFromAggression = 60
-# Playerbots.Tactics.Jump.EscapeFromCaution = 40
-# Playerbots.Tactics.Jump.MinSavedYards = 6
-# Playerbots.Tactics.Jump.LandingTolX10 = 20
-# Playerbots.Tactics.Jump.TestJumps = 10
-# Playerbots.Tactics.Jump.TestWalkTimeoutMs = 12000
-# Playerbots.Tactics.Jump.TestAirTimeoutMs = 6000
-# Playerbots.Tactics.Jump.TestSettleMs = 1500
-# Playerbots.Tactics.Jump.TestMaxStuckMs = 8000
+# (Kite, Drink and Jump numbers are config table rows, documented at KiteConfig, DrinkConfig and JumpConfig.)
 
 #
 #
@@ -3615,20 +3033,10 @@ Playerbots.ArenaTeam.Seed.NoiseSd = 100
 # Default: 1 (on; forced off with Playerbots.Ladder.Role = 2; a test sets 0 for fixed teams)
 Playerbots.ArenaTeam.Formation.Enable = 1
 Playerbots.ArenaTeam.UpdateSeconds = 60
-Playerbots.ArenaTeam.MaxRoster2v2 = 4
-Playerbots.ArenaTeam.MaxRoster3v3 = 6
-Playerbots.ArenaTeam.MaxRoster5v5 = 10
-Playerbots.ArenaTeam.MinMembers = 2
-Playerbots.ArenaTeam.RandomPair = 1
-Playerbots.ArenaTeam.RepickEachQueue = 1
 Playerbots.ArenaTeam.LossStreakToConsider = 3
 Playerbots.ArenaTeam.LeaveChanceBottom = 20
 Playerbots.ArenaTeam.LeaveChanceTop = 50
 Playerbots.ArenaTeam.MinTeamStaySeconds = 600
-Playerbots.ArenaTeam.ToleranceBottom = 40
-Playerbots.ArenaTeam.ToleranceTop = 8
-Playerbots.ArenaTeam.SynergyWeight = 0.4
-Playerbots.ArenaTeam.RecruitsPerPass = 4
 Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 
 # Comp learning (needs Formation.Enable): the partner score above also learns which comps win, from the hub's
@@ -3657,13 +3065,6 @@ Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 #   TemperatureBottom, TemperatureTop (0.01..10.0): the softmax temperature of the recruit pick.
 #
 Playerbots.ArenaTeam.CompLearning.Enable = 0
-Playerbots.ArenaTeam.CompLearning.File = ""
-Playerbots.ArenaTeam.CompLearning.WeightBottom = 0.2
-Playerbots.ArenaTeam.CompLearning.WeightTop = 0.5
-Playerbots.ArenaTeam.CompLearning.ExploreBottom = 0.3
-Playerbots.ArenaTeam.CompLearning.ExploreTop = 0.05
-Playerbots.ArenaTeam.CompLearning.TemperatureBottom = 0.25
-Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 
 # Scouting: a real player's arena team invite to a randombot goes through a hidden rule instead of being accepted
 # always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
@@ -3682,13 +3083,6 @@ Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 # evaluates the rule without an invite (and shows the skill; decisions are logged at debug level, Logger.playerbots=5).
 # Default: 1 (on; forced off with Playerbots.Ladder.Role = 2; a test sets 0 for fixed teams)
 Playerbots.ArenaRecruit.Enable = 1
-Playerbots.ArenaRecruit.RatingAtSkill1 = 0
-Playerbots.ArenaRecruit.RatingAtSkill99 = 2000
-Playerbots.ArenaRecruit.DeltaBase = 300
-Playerbots.ArenaRecruit.DeltaPerAcquaintancePoint = 4.0
-Playerbots.ArenaRecruit.DeltaMax = 1500
-Playerbots.ArenaRecruit.LoyaltyMinGames = 5
-Playerbots.ArenaRecruit.LoyaltyMinWinPercent = 55
 
 # Delete all randombot (and any addclass bot) arena teams on startup. While enabled,
 # no new randombot arena teams are created or joined. Set back to 0 and restart the
