@@ -91,10 +91,22 @@
             "includes": [
                 "src/Bot",
                 "src/Ai/World/Rpg",
+                "src/Bot/Tactics",
                 "{core}/src/common"
             ],
             "sources": [
-                "src/Ai/World/Rpg/BankMailConfig.cpp"
+                "src/Ai/World/Rpg/BankMailConfig.cpp",
+                "src/Bot/Tactics/ArenaCcConfig.cpp",
+                "src/Bot/Tactics/ArenaCoverConfig.cpp",
+                "src/Bot/Tactics/ArenaDefensiveConfig.cpp",
+                "src/Bot/Tactics/ArenaFocusConfig.cpp",
+                "src/Bot/Tactics/ArenaInterruptConfig.cpp",
+                "src/Bot/Tactics/ArenaKiteConfig.cpp",
+                "src/Bot/Tactics/NaturalCastConfig.cpp",
+                "src/Bot/Tactics/NaturalReactionConfig.cpp",
+                "src/Bot/Tactics/SkillConfig.cpp",
+                "src/Bot/Tactics/TacticScope.cpp",
+                "src/Bot/Tactics/TacticsConfig.cpp"
             ],
             "args": [
                 "{repo}"
