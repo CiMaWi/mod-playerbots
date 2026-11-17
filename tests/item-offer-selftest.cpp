@@ -910,6 +910,25 @@ void GadgetCases(Item const& net)
     o = Run(runner, items);
     Check(!o.any && o.consumed && o.verdict.reason == SpendReason::NotWorth,
           "control: the net on a lone runner at a low earning rate: kept (not worth)");
+    // WI18b (NeedAt): a bursting bot with a boost trinket and the net: the net while the runner runs, the boost once
+    // it stands; a caster keeps the enum order (lab12 r3-r4: a warrior's boost came first and the runner escaped)
+    runner.earnCopperPerMinute = 1000;
+    runner.bursts = true;
+    Item const boost = Synth("damage trinket", Kind::Boost, Sub::None, Shape::Self, 100, false, 0);
+    items = {boost, net};
+    o = Run(runner, items);
+    Check(o.any && o.need == Need::Control && o.usable == 1 && o.target.guid == 1,
+          "control before boost: the net on the runner while it runs, the boost trinket ready");
+    runner.units[0].flees = false;
+    o = Run(runner, items);
+    Check(o.any && o.need == Need::Boost && o.usable == 0, "control before boost: the runner stands: the boost");
+    runner.units[0].casts = true;
+    o = Run(runner, items);
+    Check(o.any && o.need == Need::Boost && o.usable == 0, "control before boost: a caster keeps the enum order");
+    runner.units[0].casts = false;
+    runner.units[0].flees = true;
+    runner.bursts = false;
+    items = {net};
     Situation walker = runner;
     walker.units[0].flees = false;
     walker.units[0].onBot = true;
