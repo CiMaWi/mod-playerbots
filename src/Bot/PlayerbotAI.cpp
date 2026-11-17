@@ -5664,7 +5664,7 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
     else if (command == "constraints")
         return "constraints " + TestConstraints::Format(testConstraints);
     else if (command == "hold")
-        return "hold " + TestConstraints::Format(static_cast<uint16>(testConstraints & TestConstraints::HOLD));
+        return "hold " + TestConstraints::Format(static_cast<uint32>(testConstraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;

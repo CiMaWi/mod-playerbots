@@ -1021,8 +1021,7 @@ void TestWorldFamilies()
                        got.TripMinutes == want.TripMinutes && got.EarnCopperPerMinute == want.EarnCopperPerMinute &&
                        got.BagHorizonHours == want.BagHorizonHours;
     }
-    Check(defaultBands && travel.RouteThreads == 1 && travel.TransportWaitSeconds == 120 &&
-              travelEmpty.missingWarnings.size() == 2,
+    Check(defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 2,
           "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit and Planner.NoopSeconds are "
           "listed");
     FakeReader travelReader;
@@ -1031,16 +1030,14 @@ void TestWorldFamilies()
                            {"Playerbots.WorldTravel.Slots.LootPerHour", "9999999,2,3,4,5"},
                            {"Playerbots.WorldTravel.RouteThreads", "0"},
                            {"Playerbots.WorldTravel.Planner.ResultStaleSeconds", "1"},
-                           {"Playerbots.WorldTravel.TransportWaitSeconds", "99999"},
                            {"Playerbots.WorldTravel.Traits.AllowEdit", "1"}};
     uint32_t const travelWarnings = LoadConfigFamily(WorldTravelFamily, travel, travelReader, warn);
-    Check(travelWarnings == 4 && travel.SlotBands[4].TripMinutes == 5 && travel.SlotBands[0].TripMinutes == 1 &&
+    Check(travelWarnings == 3 && travel.SlotBands[4].TripMinutes == 5 && travel.SlotBands[0].TripMinutes == 1 &&
               travel.SlotBands[0].LootSlotsPerHour == 1000000 && travel.SlotBands[1].LootSlotsPerHour == 2 &&
               travel.SlotBands[0].BagHorizonHours == 20 && travel.SlotBands[4].BagHorizonHours == 100 &&
-              travel.RouteThreads == 1 && travel.PlannerStaleSeconds == 5 && travel.TransportWaitSeconds == 3600 &&
-              travel.TraitsAllowEdit,
+              travel.RouteThreads == 1 && travel.PlannerStaleSeconds == 5 && travel.TraitsAllowEdit,
           "travel: a band list sets each band (a value above 1000000 is cut), a list of another length keeps the "
-          "defaults, the clamps lift to 1 and 5 and cut to 3600");
+          "defaults, the clamps lift to 1 and 5");
 
     WorldPvpConfig pvp;
     FakeReader pvpEmpty;

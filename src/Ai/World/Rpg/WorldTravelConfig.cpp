@@ -52,13 +52,12 @@ bool ParseBands(std::string const& text, WorldTravelConfig& out)
 constexpr uint32_t DayInSeconds = 86400;
 constexpr uint32_t HourInSeconds = 3600;
 
-constexpr std::array<TravelRow, 21> TravelRows = {{
+constexpr std::array<TravelRow, 20> TravelRows = {{
     {"SightYards", &WorldTravelConfig::SightYards, 0, 2000},
     {"CorpseRunFailures", &WorldTravelConfig::CorpseRunFailures, 0, 100},
     {"StuckAvoidSeconds", &WorldTravelConfig::StuckAvoidSeconds, 0, DayInSeconds},
     {"RouteThreads", &WorldTravelConfig::RouteThreads, 1, 8},
     {"StuckPenalty", &WorldTravelConfig::StuckPenalty, 1, 100},
-    {"TransportWaitSeconds", &WorldTravelConfig::TransportWaitSeconds, 0, HourInSeconds},
     {"Slots.LootPerHour", &WorldTravelConfig::SlotsLootPerHour, 0, 0, ConfigKind::Tuning, ConfigOutOfRange::Clamp,
      &ParseBands<&WorldTravel::SlotBand::LootSlotsPerHour>},
     {"Slots.TripMinutes", &WorldTravelConfig::SlotsTripMinutes, 0, 0, ConfigKind::Tuning, ConfigOutOfRange::Clamp,

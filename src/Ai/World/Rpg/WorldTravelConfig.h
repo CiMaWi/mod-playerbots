@@ -23,11 +23,9 @@ struct WorldTravelConfig
     uint32 CorpseRunFailures = 2;
     // Seconds a destination given up after a Stuck event is not walked to again
     uint32 StuckAvoidSeconds = 600;
-    // Route search (RouteRules.h): worker threads, the cost factor of an edge flagged by a Stuck event, and the
-    // expected wait for a ship or zeppelin (half its period) until WT19 knows the real periods
+    // Route search (RouteRules.h): worker threads and the cost factor of an edge flagged by a Stuck event
     uint32 RouteThreads = 1;
     uint32 StuckPenalty = 5;
-    uint32 TransportWaitSeconds = 120;
     // Slot and bag worth by level band (ItemWorthRules.h) until a bot has measured its own loot rate
     // Each key holds one comma-separated value per level band (5 values; another count keeps the defaults), parsed into
     // SlotBands by the table's parser (WorldTravelConfig.cpp); the texts are the defaults of DEFAULT_SLOT_BANDS
