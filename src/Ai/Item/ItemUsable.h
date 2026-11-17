@@ -63,6 +63,8 @@ std::span<UsableEntry const> UsableOf(Player* bot);
 std::span<UsableEntry const> FightUsableOf(Player* bot);
 KindMask UsableKindsOf(Player* bot);
 KindMask FightKindsOf(PlayerbotAI* botAI);
+// WI18: the fight list holds a repair gadget (the out-of-combat repair trigger's gate; a scan of the short list)
+bool FightHoldsRepair(PlayerbotAI* botAI);
 // The next UsableOf rebuilds and the next FightOffer is made again (after a use that changes a count or a cooldown)
 void MarkUsableDirty(PlayerbotAI* botAI);
 // GenericBoostTrigger's rule, its one definition (the trigger and the sampler call it): against a player the

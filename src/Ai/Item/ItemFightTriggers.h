@@ -19,11 +19,17 @@ class PlayerbotAI;
 // the free ones and the consumed of the kinds it reads). Gate O(1): the fight list has an entry of the need's kind
 // (FightKindsOf) and the bot fights; only then
 // the shared fight offer (FightOffer: sampled, made at most once a second); active when the offer's need is this one.
-// The thresholds are the offer's (WantedNeeds), none here.
+// The thresholds are the offer's (WantedNeeds), none here. WI18: the gadgets' needs; resurrection and repair are
+// answered out of combat only (the offer's own gate), behind a gate of their own: a dead member's body in the group, a
+// repair gadget held.
 namespace ItemUse
 {
-constexpr std::array<Need, 8> FIGHT_NEEDS = {Need::Heal,  Need::Mana,  Need::Protect,   Need::Dispel,
-                                             Need::Speed, Need::Boost, Need::DamageOne, Need::DamageArea};
+constexpr std::array<Need, 13> FIGHT_NEEDS = {
+    Need::Heal,       Need::Mana,    Need::Protect, Need::Dispel, Need::Speed,     Need::Boost, Need::DamageOne,
+    Need::DamageArea, Need::Control, Need::Helper,  Need::Decoy,  Need::Resurrect, Need::Repair};
+
+// The needs answered only out of a fight
+constexpr bool AfterFightNeed(Need need) { return need == Need::Resurrect || need == Need::Repair; }
 
 inline std::string FightTriggerName(Need need) { return "item fight " + std::string(NeedWord(need)); }
 }  // namespace ItemUse

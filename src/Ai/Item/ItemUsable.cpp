@@ -20,11 +20,14 @@
 #include "BotKind.h"
 #include "BotTraitMgr.h"
 #include "CcTacticStrategy.h"
+#include "CellImpl.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "DefensiveTacticStrategy.h"
 #include "Engine.h"
 #include "FleeRules.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "Item.h"
 #include "ItemOfferRules.h"
@@ -56,6 +59,7 @@ constexpr float BOOST_BALANCE = 50.0f;         // GenericBoostTrigger's default 
 constexpr std::uint32_t OFFER_MS = 1000;       // the fight's offer is made again this often (a use: at once)
 constexpr std::uint32_t BLOCK_MS = 10000;      // an entry Check refused is not offered again for this long
 constexpr float FRIEND_YARDS = 40.0f;          // a group member this near is a unit of the situation
+constexpr float VENDOR_YARDS = 60.0f;          // WI18 [E]: a repair vendor this near is "on the way": no repair gadget
 constexpr std::uint32_t RECENTLY_BANDAGED = 11196;  // the engine's aura after a bandage: no bandage while it lasts
 
 constexpr std::array<std::string_view, 5> ROLE_WORDS = {"tank", "healer", "melee", "ranged", "caster"};
@@ -273,7 +277,12 @@ bool AddUnit(Situation& situation, Player* bot, Unit* unit, bool sightKnown = fa
     return true;
 }
 
-void SampleGroup(Situation& situation, Player* bot)
+// WI18: a member's body lies where it died (not released: a ghost stands at the graveyard)
+bool LiesDead(Player* member) { return member->getDeathState() == DeathState::Corpse; }
+
+// The group's members near; withDead (WI18: the fight list holds a resurrection) adds the bodies near too, a friendly
+// unit with no health that only the resurrection need reads
+void SampleGroup(Situation& situation, Player* bot, bool withDead)
 {
     Group* group = bot->GetGroup();
     if (!group)
@@ -288,9 +297,42 @@ void SampleGroup(Situation& situation, Player* bot)
             ++situation.groupDead;
         else if (member->GetHealthPct() < HEAL_HEALTH_PCT)
             ++situation.groupHurt;
-        if (member->IsAlive() && bot->IsWithinDistInMap(member, FRIEND_YARDS))
-            AddUnit(situation, bot, member);
+        if ((member->IsAlive() || (withDead && LiesDead(member))) && bot->IsWithinDistInMap(member, FRIEND_YARDS) &&
+            AddUnit(situation, bot, member) && !member->IsAlive())
+            situation.units[situation.unitCount - 1].healthPct = 0.0f;
     }
+}
+
+// WI18: the fight list holds a gadget of the role (a summon's sub); ready: one whose cooldown is over
+bool HoldsSub(std::vector<UsableEntry> const& fight, Sub sub, bool ready)
+{
+    for (UsableEntry const& entry : fight)
+        if (entry.kind == Kind::Summon && entry.sub == static_cast<std::uint8_t>(sub) && (entry.ready || !ready))
+            return true;
+    return false;
+}
+
+// WI18: a living repair vendor that is not hostile, within VENDOR_YARDS (a summoned repair bot counts: no second one)
+struct RepairVendorCheck
+{
+    Player* bot;
+    bool operator()(Creature* creature) const
+    {
+        return creature->IsAlive() && creature->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && !bot->IsHostileTo(creature) &&
+               bot->IsWithinDistInMap(creature, VENDOR_YARDS);
+    }
+};
+
+// A grid search that stops at the first vendor, with no sight test (lab12 WI18b: the town vendors stand indoors, out
+// of the bot's sight, so the cached "nearest npcs" missed them); asked only with broken gear out of a fight and a
+// ready repair gadget, at most once a second (the offer's sample)
+bool VendorNear(Player* bot)
+{
+    Creature* found = nullptr;
+    RepairVendorCheck check{bot};
+    Acore::CreatureSearcher<RepairVendorCheck> searcher(bot, found, check);
+    Cell::VisitObjects(bot, searcher, VENDOR_YARDS);
+    return found != nullptr;
 }
 
 // WI17: how far from the bot an area item of the fight list can reach (its range and radius; a bot-centred one its
@@ -472,7 +514,7 @@ Situation Sample(PlayerbotAI* botAI, Player* bot, BotUsable& usable, std::uint32
         if (other && other->IsAlive() && !other->IsTotem())
             AddUnit(situation, bot, other);
     }
-    SampleGroup(situation, bot);
+    SampleGroup(situation, bot, (usable.fightKinds & KindBit(Kind::Resurrect)) != 0);
     // WI17: the units an area item could pull, only in a fight with one held
     if (situation.inFight)
         if (float const reach = AimReachOf(usable.fight); reach > 0.0f)
@@ -490,8 +532,10 @@ Situation Sample(PlayerbotAI* botAI, Player* bot, BotUsable& usable, std::uint32
     situation.daring = usable.daring;
     situation.earnCopperPerMinute = usable.earnCopperPerMinute;
     situation.repairCopper = RepairCopperOf(bot, situation.gearBroken);
-    // vendorNear stays false: the repair need's gadgets are WI18's, and so is its source; chases stays false (no
-    // capability needs it yet)
+    // WI18: the vendor only when a repair gadget could be wanted; chases stays unset on purpose (a fleeing enemy is
+    // NearUnit::flees)
+    situation.vendorNear =
+        situation.gearBroken && !situation.inFight && HoldsSub(usable.fight, Sub::Repair, true) && VendorNear(bot);
     FleeRules::Flight const& flight = context->GetValue<FleeRules::Flight&>("flee flight")->Get();
     SetFlight(situation, flight.active, FleeRules::Cornered(flight));
     situation.moving = bot->isMoving() || !bot->movespline->Finalized();
@@ -577,6 +621,12 @@ KindMask FightKindsOf(PlayerbotAI* botAI)
 {
     BotUsable* usable = Fresh(botAI);
     return usable ? usable->fightKinds : 0;
+}
+
+bool FightHoldsRepair(PlayerbotAI* botAI)
+{
+    BotUsable* usable = Fresh(botAI);
+    return usable && (usable->fightKinds & KindBit(Kind::Summon)) && HoldsSub(usable->fight, Sub::Repair, false);
 }
 
 void MarkUsableDirty(PlayerbotAI* botAI)
