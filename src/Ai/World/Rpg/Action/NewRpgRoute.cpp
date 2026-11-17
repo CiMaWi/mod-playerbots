@@ -1238,7 +1238,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         LogWalkLink(bot, data, trip.walk, false);
         trip.walk = {};
     }
-    // A takeoff refused where the bot stands keeps flying: the replan starts no flight at this spot (AddFlyLegs)
+    // A takeoff refused where the bot stands keeps flying: the replan takes off elsewhere (Snapshot::takeoffHere)
     bool const spotClosed =
         reason == TravelLegs::FailReason::Takeoff && CheckMountStateAction::NoTakeoffHere(bot) != nullptr;
     bool const aborts = TravelLegs::AfterFailure(trip, reason, spotClosed) == TravelLegs::Recovery::Abort;

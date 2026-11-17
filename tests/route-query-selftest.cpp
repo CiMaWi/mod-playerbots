@@ -102,9 +102,9 @@ int main(int argc, char** argv)
     half.nodes = {0, 1, 2};
     check(RouteQuery::WaitPointText(graph, half).empty(), "wait points text: three nodes alone name no wait point");
 
-    // fly (WT61): Skettis' rise in Terokkar Forest (graph node 2420, the navigation plan's island 530:island9 of 27
-    // nodes) is reached from Shattrath by an air link only; a bot that may fly gets an air leg, listed unflown without
-    // flight maps, one that may not no route
+    // fly (WT61, WT61b): Skettis' rise in Terokkar Forest (graph node 2420, the navigation plan's island 530:island9 of
+    // 27 nodes) is reached from Shattrath by air only; a bot that may fly gets a fly leg, listed unflown without flight
+    // maps, one that may not no route
     {
         char const* const args = "-1832.0,5298.3,-12.3,530 -3720.35,3789.91,302.888,530 horde";
         check(RouteQuery::Parse(std::string(args) + " fly", parsed, error) && parsed.fly &&
@@ -114,14 +114,13 @@ int main(int argc, char** argv)
         for (std::string const& line : flying)
             std::cout << "  " << line << "\n";
         TravelRoute::Result const flown = TravelRoute::Search(graph, RouteQuery::RequestOf(parsed), {}, {});
-        auto const air =
-            std::find_if(flown.legs.begin(), flown.legs.end(), [](TravelRoute::Leg const& leg) { return leg.air; });
-        check(flown.ok && air != flown.legs.end() && air->nodes.size() == 2 && air->type == TravelRoute::LegType::Walk,
-              "fly: Skettis by an unflown air link");
-        check(std::any_of(
-                  flying.begin(), flying.end(), [](std::string const& line)
-                  { return line.find(" air ") != std::string::npos && line.find(", unflown") != std::string::npos; }),
-              "fly: the query prints the air leg");
+        auto const fly = std::find_if(flown.legs.begin(), flown.legs.end(), [](TravelRoute::Leg const& leg)
+                                      { return leg.type == TravelRoute::LegType::Fly; });
+        check(flown.ok && fly != flown.legs.end() && fly->flightPoints.empty() && flown.flightSearches == 0,
+              "fly: Skettis by an unflown fly leg");
+        check(std::any_of(flying.begin(), flying.end(),
+                          [](std::string const& line) { return line.find(", unflown") != std::string::npos; }),
+              "fly: the query prints the unflown fly leg");
         TravelRoute::Params dijkstra;
         dijkstra.heuristic = false;
         TravelRoute::Result const plain = TravelRoute::Search(graph, RouteQuery::RequestOf(parsed), {}, dijkstra);

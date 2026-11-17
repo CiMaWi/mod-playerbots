@@ -149,7 +149,7 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
     std::stringstream text;
     text << in.rdbuf();
     std::string const source = text.str();
-    check(source.find("GroundSearch") != std::string::npos, "RouteRules.h not read");
+    check(source.find("GraphSearch") != std::string::npos, "RouteRules.h not read");
     for (char const* token : {"StraightWalk", "CLIMB_", "fabs(a.z - b.z)"})
         check(source.find(token) == std::string::npos, std::string("the planner's source holds ") + token);
 
@@ -513,7 +513,7 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         at.push_back({MAP, 100.0f * static_cast<float>(node), 0.0f, 100.0f});
     for (std::uint32_t node = 0; node < SIDE_NODES; ++node)
         at.push_back({MAP, 400.0f + 60.0f * static_cast<float>(node), 700.0f, 300.0f});
-    auto const build = [&at](TravelGraph& graph, bool air, bool bridge)
+    auto const build = [&at](TravelGraph& graph, std::uint32_t airLinks, bool bridge)
     {
         TravelGraphBuilder builder;
         for (std::uint32_t node = A; node <= J; ++node)
@@ -535,8 +535,8 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
             link(A + node, A + node + 1, 1, 0.0f);
             link(I + node, I + node + 1, 1, 0.0f);
         }
-        if (air)
-            link(B, I, 7, 0.0f);
+        for (std::uint32_t k = 0; k < airLinks; ++k)
+            link(B - k, I + k, 7, 0.0f);
         if (bridge)
             link(A, J, 1, 6000.0f);
         std::string error;
@@ -549,7 +549,9 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     TravelGraph withAir;
     TravelGraph without;
     TravelGraph bridged;
-    std::string const error = build(withAir, true, false) + build(without, false, false) + build(bridged, true, true);
+    TravelGraph threeAir;
+    std::string const error =
+        build(withAir, 1, false) + build(without, 0, false) + build(bridged, 1, true) + build(threeAir, 3, true);
     if (!check(error.empty() && withAir.IsReady() && withAir.Stats().linksByType[7] == 2 &&
                    without.Stats().linksByType[7] == 0 && withAir.Stats().skippedLinks == 0,
                "the loader keeps the air links (2 and 0): " + error + " air " +
@@ -606,11 +608,14 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     TravelRoute::Result const reference = search(withAir, flyer, island, dijkstra);
     check(reference.ok && std::fabs(reference.totalSeconds - flown.totalSeconds) < 0.01f,
           "A* and Dijkstra plan the same seconds over an air link");
+    // Without flight maps every point may take off and land (WT61b): the flyer's legs are fly legs, listed unflown
     TravelRoute::Result const unflown = search(withAir, flyer, island, {});
-    check(unflown.ok && airLegs(unflown) == 1 &&
-              std::none_of(unflown.legs.begin(), unflown.legs.end(),
-                           [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Fly; }),
-          "without flight maps the air leg is listed unflown");
+    check(unflown.ok && unflown.flightSearches == 0 &&
+              std::any_of(unflown.legs.begin(), unflown.legs.end(),
+                          [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Fly; }) &&
+              std::all_of(unflown.legs.begin(), unflown.legs.end(),
+                          [](TravelRoute::Leg const& leg) { return leg.flightPoints.empty(); }),
+          "without flight maps the fly legs are listed unflown");
     check(search(withAir, walker, island, open).failure == TravelRoute::Failure::NoRoute,
           "a bot that may not fly gets no route onto the island");
     TravelRoute::Request grounded{flyer, island};
@@ -639,6 +644,10 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
           "a failed air flight leaves the link out: the bot takes the bridge");
     TravelRoute::Result const over = search(bridged, flyer, island, open);
     check(over.ok && airLegs(over) == 1, "with the bridge the open island is still reached by air");
+    // WT61b: more failed flights than the search's tries never hide the ground way (the last search flies no edge)
+    TravelRoute::Result const afterThree = search(threeAir, flyer, island, closedIsland);
+    check(afterThree.ok && airLegs(afterThree) == 0 && afterThree.flightSearches >= 1,
+          "three failed air flights: the bot does not take the bridge");
     TravelRoute::Snapshot fromB = flyer;
     fromB.position = at[B];
     fromB.takeoffHere = false;

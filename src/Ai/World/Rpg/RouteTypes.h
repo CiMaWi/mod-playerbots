@@ -70,7 +70,7 @@ struct Leg
     Point stopTo;
     bool waitFrom{false};
     bool waitTo{false};
-    // A graph air link (WT61): the walk leg between its two nodes the search found, flown by AddFlyLegs (a Fly leg)
+    // A graph air link (WT61): the fly leg between its two nodes the search found (the trip leaves it out on failure)
     bool air{false};
 };
 }  // namespace TravelRoute

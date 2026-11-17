@@ -573,9 +573,11 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     Request const hellfire{rider, thrallmar};
     Params flying;
     flying.flightMaps = mapSet({flatMap(honorHold, thrallmar, open)});
-    Result const ground = Search(graph, hellfire, StuckEdges{}, aStar);
+    Request groundOnly = hellfire;  // the reference: the same bot with flying closed
+    groundOnly.noFly = true;
+    Result const ground = Search(graph, groundOnly, StuckEdges{}, aStar);
     Result const flownOver = Search(graph, hellfire, StuckEdges{}, flying);
-    bool const routed = sound(ground, hellfire, "k) Honor Hold -> Thrallmar on the ground");
+    bool const routed = sound(ground, groundOnly, "k) Honor Hold -> Thrallmar on the ground");
     if (!routed || !sound(flownOver, hellfire, "k) Honor Hold -> Thrallmar flying"))
         return checks;
     Leg const* fly = flyLeg(flownOver);
@@ -587,8 +589,7 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
               same(fly->flightPoints.back(), fly->to) && fly->flightLevels >= 1 && fly->flightYards > 0.0f &&
               fly->flightClearance == rider.flightStyle.clearanceYards,
           "k) the fly leg's flight does not run from its start to its end");
-    check(flownOver.flightSearches >= 1 && flownOver.flightSearches <= FLY_SEARCHES_MAX,
-          "k) " + std::to_string(flownOver.flightSearches) + " flight searches");
+    check(flownOver.flightSearches == 1, "k) " + std::to_string(flownOver.flightSearches) + " flight searches");
     notes.push_back("k) " + std::to_string(flownOver.flightSearches) + " flight searches in " +
                     num(flownOver.flightMicros) + " us");
     Params flyingDijkstra = flying;
@@ -609,6 +610,113 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
                      a.flightPoints[p].z == b.flightPoints[p].z;
     }
     check(stable, "k) the same request twice gave different fly legs");
+
+    // WT61b, fly edges in the search. Without flight maps a flyer's route is priced with its fly legs, unflown
+    Result const unflownOver = Search(graph, hellfire, StuckEdges{}, aStar);
+    Leg const* unflownLeg = flyLeg(unflownOver);
+    check(unflownOver.ok && legCount(unflownOver, LegType::Fly) == 1 && unflownLeg &&
+              unflownLeg->flightPoints.empty() && unflownOver.flightSearches == 0,
+          "k) without flight maps a flyer's route is not one unflown fly leg");
+    // Between two outdoor points (Hellfire, west of Honor Hold -> the Temple of Telhamat, every flight master known)
+    // the walker's route takes a taxi or a detour; a 280% flyer's is one fly leg, and a walker's is the one with flying
+    // closed
+    Snapshot swift = rider;
+    swift.flySpeed = 7.0f * 3.8f;
+    swift.money = 1000000;
+    swift.knownTaxi.fill(0xFFFFFFFFu);
+    Point const outdoorStart{FLY_MAP_OUTLAND, -815.9f, 2724.6f, 111.4f};
+    Point const telhamat{FLY_MAP_OUTLAND, 199.1f, 4238.4f, 121.8f};
+    swift.position = outdoorStart;
+    Request const overTaxi{swift, telhamat};
+    Request closedTaxi = overTaxi;
+    closedTaxi.noFly = true;
+    Snapshot walkerBot = swift;
+    walkerBot.flyOutland = false;
+    walkerBot.flySpeed = 0.0f;
+    Request const walkerTrip{walkerBot, telhamat};
+    Params wide;
+    wide.flightMaps = mapSet({flatMap(outdoorStart, telhamat, open)});
+    Result const taxiWalk = Search(graph, closedTaxi, StuckEdges{}, wide);
+    Result const taxiFly = Search(graph, overTaxi, StuckEdges{}, wide);
+    Result const walkerRoute = Search(graph, walkerTrip, StuckEdges{}, wide);
+    if (sound(taxiWalk, closedTaxi, "k) Hellfire -> Telhamat, flying closed") &&
+        sound(taxiFly, overTaxi, "k) Hellfire -> Telhamat flying") &&
+        sound(walkerRoute, walkerTrip, "k) Hellfire -> Telhamat, a walker"))
+    {
+        float const straightWalk = Distance(outdoorStart, telhamat) / swift.runSpeed;
+        check(legCount(taxiWalk, LegType::Flight) >= 1 || taxiWalk.totalSeconds > 1.3f * straightWalk,
+              "k) fixture: the walk to Telhamat takes no taxi and no detour");
+        check(taxiFly.legs.size() == 1 && legCount(taxiFly, LegType::Fly) == 1,
+              "k) a flyer between two outdoor points: not one fly leg without a taxi or a walk");
+        bool equal = walkerRoute.legs.size() == taxiWalk.legs.size() &&
+                     std::fabs(walkerRoute.totalSeconds - taxiWalk.totalSeconds) < 0.001f;
+        for (std::size_t i = 0; equal && i < walkerRoute.legs.size(); ++i)
+            equal = walkerRoute.legs[i].type == taxiWalk.legs[i].type &&
+                    walkerRoute.legs[i].nodes == taxiWalk.legs[i].nodes;
+        check(equal, "k) a walker's route to Telhamat is not the flyer's with flying closed");
+    }
+
+    // A* = Dijkstra for flyers on 30 random pairs of Outland and Northrend nodes (no flight maps: fly edges priced,
+    // unflown), and the search's cost for a flyer and a walker on the same pairs (expanded nodes, microseconds; the
+    // walkers' seconds and legs summed, to compare builds)
+    std::vector<std::uint32_t> flyNodes;
+    for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
+        if (graph.GetNode(index).mapId == FLY_MAP_OUTLAND || graph.GetNode(index).mapId == FLY_MAP_NORTHREND)
+            flyNodes.push_back(index);
+    if (check(!flyNodes.empty(), "k) no nodes on Outland and Northrend"))
+    {
+        std::mt19937 flyRandom(20261117u);
+        std::uniform_int_distribution<std::size_t> anyFlyNode(0, flyNodes.size() - 1);
+        std::uint32_t flyMismatches = 0;
+        std::uint32_t flyRouted = 0;
+        std::uint64_t flyExpanded = 0;
+        std::uint64_t walkExpanded = 0;
+        double flyMicros = 0.0;
+        double walkMicros = 0.0;
+        double walkSeconds = 0.0;
+        std::size_t walkLegs = 0;
+        for (std::uint32_t i = 0; i < 30; ++i)
+        {
+            TravelGraphNode const& a = graph.GetNode(flyNodes[anyFlyNode(flyRandom)]);
+            TravelGraphNode const& b = graph.GetNode(flyNodes[anyFlyNode(flyRandom)]);
+            Snapshot pairBot = swift;
+            pairBot.position = {a.mapId, a.x, a.y, a.z};
+            pairBot.team = static_cast<std::uint8_t>(i % 2);
+            pairBot.level = 80;
+            pairBot.flyNorthrend = true;
+            pairBot.allowTransport = true;
+            Snapshot pairWalker = pairBot;
+            pairWalker.flySpeed = 0.0f;
+            Request const flyPair{pairBot, {b.mapId, b.x, b.y, b.z}};
+            Request const walkPair{pairWalker, {b.mapId, b.x, b.y, b.z}};
+            Clock::time_point const started = Clock::now();
+            Result const flyRoute = Search(graph, flyPair, StuckEdges{}, aStar);
+            flyMicros += micros(started);
+            Clock::time_point const walkStarted = Clock::now();
+            Result const walkRoute = Search(graph, walkPair, StuckEdges{}, aStar);
+            walkMicros += micros(walkStarted);
+            Result const flyReference = Search(graph, flyPair, StuckEdges{}, dijkstraParams);
+            if (flyRoute.ok != flyReference.ok || std::fabs(flyRoute.totalSeconds - flyReference.totalSeconds) >
+                                                      0.001f * flyReference.totalSeconds + 0.05f)
+            {
+                ++flyMismatches;
+                notes.push_back("k) flyer mismatch: pair " + std::to_string(i) + " " + std::to_string(a.id) + " -> " +
+                                std::to_string(b.id) + ": A* " + num(flyRoute.totalSeconds) + " s, Dijkstra " +
+                                num(flyReference.totalSeconds) + " s");
+            }
+            flyRouted += flyRoute.ok ? 1 : 0;
+            flyExpanded += flyRoute.expandedNodes;
+            walkExpanded += walkRoute.expandedNodes;
+            walkSeconds += walkRoute.ok ? walkRoute.totalSeconds : 0.0f;
+            walkLegs += walkRoute.legs.size();
+        }
+        check(flyMismatches == 0, "k) " + std::to_string(flyMismatches) + " flyer A*/Dijkstra mismatches");
+        notes.push_back("k) 30 flyer pairs: " + std::to_string(flyRouted) + " routed, " +
+                        std::to_string(flyMismatches) + " mismatches, expanded flyer " +
+                        std::to_string(flyExpanded / 30) + " / walker " + std::to_string(walkExpanded / 30) +
+                        " per search, " + num(flyMicros / 30.0) + " / " + num(walkMicros / 30.0) +
+                        " us per search; walkers " + num(walkSeconds) + " s, " + std::to_string(walkLegs) + " legs");
+    }
 
     // A bot that cannot take off where it stands (indoors, in water, a WMO no-fly area over open cells) walks to the
     // leg's first graph node and flies from there
@@ -671,9 +779,11 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     Snapshot townRider = rider;
     townRider.position = westOfHold;
     Request const fromWest{townRider, thrallmar};
-    Result const groundWest = Search(graph, fromWest, StuckEdges{}, aStar);
+    Request westOnGround = fromWest;
+    westOnGround.noFly = true;
+    Result const groundWest = Search(graph, westOnGround, StuckEdges{}, aStar);
     Result const fromTown = Search(graph, fromWest, StuckEdges{}, towns);
-    if (sound(groundWest, fromWest, "k) west of Honor Hold -> Thrallmar on the ground") &&
+    if (sound(groundWest, westOnGround, "k) west of Honor Hold -> Thrallmar on the ground") &&
         sound(fromTown, fromWest, "k) no-fly ground at both ends"))
     {
         Leg const* townFly = flyLeg(fromTown);
@@ -783,18 +893,13 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     landing.flightMaps = mapSet({crystalsongMap});
     Result const dalaranBare = Search(graph, fromDalaran, StuckEdges{}, crystalsong);
     Result const dalaranFlown = Search(graph, fromDalaran, StuckEdges{}, landing);
-    // The merged graph (navigation round 2) has no walk off Dalaran's platform to Crystalsong, and round 3's air
-    // links have no end on the platform (the navigation plan's list): until one joins it the search finds none
-    bool const dalaranRoutes = dalaranBare.ok || dalaranFlown.ok;
-    if (!dalaranRoutes)
-        notes.push_back("k) Dalaran: no route on the merged graph until an air link leaves the platform (checks wait)");
-    if (dalaranRoutes && sound(dalaranBare, fromDalaran, "k) Runeweaver Square -> Wintergarde without a takeoff spot"))
-    {
-        Leg const* bare = flyLeg(dalaranBare);
-        check(!bare || FlyEnd(crystalsongMap, bare->from),
-              "k) Dalaran without a takeoff spot: a fly leg starts on the city's platform");
-    }
-    if (dalaranRoutes && sound(dalaranFlown, fromDalaran, "k) Runeweaver Square -> Wintergarde via Krasus' Landing"))
+    // The merged graph has no walk off Dalaran's platform to Crystalsong: without the spot there is no route (WT61b)
+    Leg const* bare = flyLeg(dalaranBare);
+    check(!bare || FlyEnd(crystalsongMap, bare->from),
+          "k) Dalaran without a takeoff spot: a fly leg starts on the city's platform");
+    notes.push_back(std::string("k) Runeweaver Square -> Wintergarde without a takeoff spot: ") +
+                    (dalaranBare.ok ? describe(dalaranBare) : FailureWord(dalaranBare.failure)));
+    if (sound(dalaranFlown, fromDalaran, "k) Runeweaver Square -> Wintergarde via Krasus' Landing"))
     {
         check(viaSpot(dalaranFlown, 0, 1) && same(dalaranFlown.legs[0].from, runeweaver) &&
                   same(dalaranFlown.legs[0].to, krasus) && same(dalaranFlown.legs[1].from, krasus),
@@ -815,26 +920,28 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
 
     // The fallbacks keep the ground route: noFly, no flying speed, no height map of the bot's map, a closed map, and a
     // goal on a void-ringed island (open within 150 yd, closed from 150 to 450 yd: the flight search finds no path)
-    auto const walksAsGround =
-        [&](Request const& request, Params const& params, std::string const& label, std::uint32_t searches)
+    //    (each failed flight closes its fly edge's ends, FLY_TRIES searches, then the last one walks)
+    auto const walksAsGround = [&](Request const& request, Params const& params, std::string const& label, bool failing)
     {
         Result const kept = Search(graph, request, StuckEdges{}, params);
-        check(kept.ok && legCount(kept, LegType::Fly) == 0 && kept.flightSearches == searches &&
+        bool const searches =
+            failing ? kept.flightSearches >= 1 && kept.flightSearches <= FLY_TRIES : kept.flightSearches == 0;
+        check(kept.ok && legCount(kept, LegType::Fly) == 0 && searches &&
                   std::fabs(kept.totalSeconds - ground.totalSeconds) < 0.01f,
               "k) " + label + ": not the ground route (" + std::to_string(kept.flightSearches) + " searches)");
     };
     Request grounded = hellfire;
     grounded.noFly = true;
-    walksAsGround(grounded, flying, "noFly", 0);
+    walksAsGround(grounded, flying, "noFly", false);
     Request slow = hellfire;
     slow.snapshot.flySpeed = 0.0f;
-    walksAsGround(slow, flying, "no flying speed", 0);
+    walksAsGround(slow, flying, "no flying speed", false);
     Params elsewhere;
     elsewhere.flightMaps = mapSet({flatMap(valianceKeep, fizzcrank, open)});
-    walksAsGround(hellfire, elsewhere, "no Outland height map", 0);
+    walksAsGround(hellfire, elsewhere, "no Outland height map", false);
     Params closed;
     closed.flightMaps = mapSet({flatMap(honorHold, thrallmar, [](float, float) { return false; })});
-    walksAsGround(hellfire, closed, "a closed map", 0);
+    walksAsGround(hellfire, closed, "a closed map", false);
     Params ringed;
     ringed.flightMaps = mapSet({flatMap(honorHold, thrallmar,
                                         [&](float x, float y)
@@ -842,7 +949,7 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
                                             float const yards = awayFrom(thrallmar, x, y);
                                             return yards < 150.0f || yards > 450.0f;
                                         })});
-    walksAsGround(hellfire, ringed, "a void-ringed goal", 1);
+    walksAsGround(hellfire, ringed, "a void-ringed goal", true);
 
     // Northrend: without Cold Weather Flying the snapshot allows no flying there; with it the tundra is flown
     Params both;

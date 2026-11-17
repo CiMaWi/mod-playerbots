@@ -1404,7 +1404,7 @@ inline void NoteAirFailed(Trip& trip)
 // Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it. A failed fly leg:
 // the trip's later routes walk (noFly), else the replan would offer the same flight. A takeoff refused where the bot
 // stands (spotClosed: a no-fly area, a battle, indoors, water) keeps flying: the replan's snapshot closes that spot
-// (Snapshot::takeoffHere, AddFlyLegs), so the bot walks to the next open point and tries there. Such replans have their
+// (Snapshot::takeoffHere, Search), so the bot walks to the next open point and tries there. Such replans have their
 // own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is
 // an ordinary takeoff failure. A failed fly leg over an air link replans without that link, a spot failure too
 // (NoteAirFailed). A timed-out transport leg, a lost ride and a walk back after no exit replan without
