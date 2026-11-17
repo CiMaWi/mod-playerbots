@@ -45,8 +45,9 @@ struct DemandCache
     bool valid{false};
 };
 
-// A fresh answer from the bot's bags (no cache)
-DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot);
+// A fresh answer from the bot's bags (no cache); withBank: the bank's item slots join the list (the bank's use stock,
+// item use WI9b)
+DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot, bool withBank = false);
 // The cached answer; entry: the item asked about (its count is checked against the answer's), 0: none
 DemandAnswer const& DemandOf(PlayerbotAI* botAI, std::uint32_t entry = 0);
 // Demand's verdict on one item; DemandVerdict::None: not demand's item (not a consumable, not persistent, no index)
