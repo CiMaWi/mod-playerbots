@@ -113,6 +113,9 @@ inline std::size_t ReadRows(std::filesystem::path const& file, std::string const
 
 inline std::uint32_t U(std::string const& value) { return static_cast<std::uint32_t>(std::stoul(value)); }
 inline float F(std::string const& value) { return std::stof(value); }
+// The offline twin has no core to read a vessel's period from (the server's loader does): a ship or zeppelin gets
+// this one and, with no ride read, half of it for the crossing
+constexpr std::uint32_t TEST_VESSEL_PERIOD_MS = 240000;
 
 // The uint32 fields of a WDBC file's records; empty when the file is missing or malformed
 inline std::vector<std::vector<std::uint32_t>> ReadDbc(std::filesystem::path const& file)
@@ -220,6 +223,9 @@ inline bool Load(std::filesystem::path const& root, std::filesystem::path const&
                                      row.distance = F(v[4]);
                                      row.swim = F(v[5]);
                                      row.extraCost = F(v[6]);
+                                     // No core to read a vessel's period from: a fixed test period
+                                     if (row.type == 3 && row.object && row.extraCost < 1.0f)
+                                         row.periodMs = TEST_VESSEL_PERIOD_MS;
                                      row.maxCreature[0] = U(v[8]);
                                      row.maxCreature[1] = U(v[9]);
                                      row.maxCreature[2] = U(v[10]);

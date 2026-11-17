@@ -58,6 +58,8 @@ constexpr std::size_t AVOID_WALKS = 4;                // walks off the graph a t
 constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leaves out (deaths, timed-out transports)
 constexpr std::uint8_t LEG_DEATHS = 2;                // deaths on one leg fail it (FailReason::Death)
 constexpr std::uint8_t TRIP_DEATHS = 3;               // deaths on one trip end it
+// Spots a trip takes off at no more: one per route it may ask where the bot cannot take off (NextRequest)
+constexpr std::size_t NO_TAKEOFF_SPOTS = MAX_SPOT_FAILS + MAX_REPLANS + 1;
 // Fly legs (own flying mount, WU10)
 constexpr float FLY_WAYPOINT_YARDS = 25.0f;    // a flight waypoint is reached this close (3D)
 constexpr float FLY_CLIMB_YARDS = 30.0f;       // the climb after the takeoff and the descent before the landing
@@ -484,8 +486,9 @@ inline bool IsNoOp(Leg const& leg)
            Distance(leg.from, leg.to) <= WAYPOINT_YARDS;
 }
 
-// A transport's period before a scan read it (MIN_PERIOD_MS at least)
-inline std::uint32_t FallbackPeriodMs(Leg const& leg)
+// An elevator's period, which the graph does not know (a vessel's comes with the leg, from the core): twice the leg's
+// seconds, MIN_PERIOD_MS at least
+inline std::uint32_t LiftPeriodMs(Leg const& leg)
 {
     return std::max(static_cast<std::uint32_t>(leg.seconds * PERIOD_FACTOR * 1000.0f), MIN_PERIOD_MS);
 }
@@ -786,7 +789,9 @@ inline bool BoardedByIntent(Trip const& trip, std::uint64_t aboardGuid)
 
 inline std::uint32_t TransportPeriodMs(Trip const& trip, Leg const& leg)
 {
-    return trip.periodMs ? trip.periodMs : FallbackPeriodMs(leg);
+    if (trip.periodMs)
+        return trip.periodMs;
+    return leg.periodMs ? leg.periodMs : LiftPeriodMs(leg);
 }
 
 // Off the transport (approach, wait, board) the leg fails WAIT_PERIODS periods after its start
@@ -1379,15 +1384,55 @@ inline void NoteTransportTimeout(Trip& trip)
         trip.avoidEdges.push_back(edge);
 }
 
+// A fly leg over an air link (Leg::air, WT61) that failed: later routes of this trip leave the link out, both ways
+// (WT.45 rule 3). A takeoff refused where the bot stands counts too: the search closes only the bot's own spot then,
+// and an air link starts at one fixed node, so the replans walked the bot back to it (lab10, 3836 -> 3833)
+inline void NoteAirFailed(Trip& trip)
+{
+    if (trip.legIdx >= trip.legs.size())
+        return;
+    Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type != LegType::Fly || !leg.air || leg.nodes.size() != 2)
+        return;
+    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes.front(), leg.nodes.back()};
+    if (trip.avoidEdges.size() < AVOID_EDGES &&
+        std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
+        trip.avoidEdges.push_back(edge);
+}
+
+// The trip's next route request, from the bot's snapshot: what the trip's failed legs left out (the nodes and the
+// straight walk of NoteStuck, the edges of NoteDeath, NoteTransportTimeout, NoteRefused and NoteAirFailed, the walks
+// of NoteWalkRefused, flying after a failed fly leg) and the spots where the bot could not take off. A snapshot that
+// may not take off where the bot stands adds its spot (the trip's start indoors; each replan after a refused takeoff
+// is asked at the refused spot): the snapshot alone closes only the spot of the moment, so the route after the next
+// refusal took off at the spot before again (lab10, WT61b: two nodes of a cave in turn until MAX_SPOT_FAILS)
+inline TravelRoute::Request NextRequest(Trip& trip, TravelRoute::Snapshot const& snapshot, Point const& goal)
+{
+    TravelRoute::Request request{snapshot, goal};
+    request.avoidNodes = trip.avoid;
+    request.noDirect = trip.noDirect;
+    request.avoidEdges = trip.avoidEdges;
+    request.avoidWalks = trip.avoidWalks;
+    request.noFly = trip.noFly;
+    request.noTakeoffs = trip.noTakeoffs;
+    if (!snapshot.takeoffHere && trip.noTakeoffs.size() < NO_TAKEOFF_SPOTS && !request.NoTakeoffAt(snapshot.position))
+    {
+        trip.noTakeoffs.push_back(snapshot.position);
+        request.noTakeoffs.push_back(snapshot.position);
+    }
+    return request;
+}
+
 // After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
 // at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
 // the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
 // Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it. A failed fly leg:
 // the trip's later routes walk (noFly), else the replan would offer the same flight. A takeoff refused where the bot
-// stands (spotClosed: a no-fly area, a battle, indoors, water) keeps flying: the replan's snapshot closes that spot
-// (Snapshot::takeoffHere, AddFlyLegs), so the bot walks to the next open point and tries there. Such replans have their
-// own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is
-// an ordinary takeoff failure. A timed-out transport leg, a lost ride and a walk back after no exit replan without
+// stands (spotClosed: a no-fly area, a battle, indoors, water) keeps flying: the replan's request closes that spot and
+// the trip's earlier ones (NextRequest), so the bot walks to the next open point and tries there. Such replans have
+// their own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later
+// one is an ordinary takeoff failure. A failed fly leg over an air link replans without that link, a spot failure too
+// (NoteAirFailed). A timed-out transport leg, a lost ride and a walk back after no exit replan without
 // its link (NoteTransportTimeout), and so does a walk link refused for no path (NoteRefused); a walk off the graph the
 // navmesh refused replans without that walk (NoteWalkRefused)
 inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
@@ -1396,6 +1441,8 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
     bool const keepsFlying = reason == FailReason::NoAnswer || spotRetry;
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly && !keepsFlying)
         trip.noFly = true;
+    if (reason != FailReason::NoAnswer)
+        NoteAirFailed(trip);
     std::uint32_t const combatSinceMs = trip.record.combatSinceMs;
     trip.record = LegRecord{};  // the failed leg's record ends (a running combat stretch goes on)
     trip.record.combatSinceMs = combatSinceMs;

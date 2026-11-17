@@ -169,6 +169,10 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
     if (bot->IsNonMeleeSpellCast(false))
         return false;
 
+    // nothing is used on a flight path: the stop below would end the taxi's spline and leave the bot hanging in the air
+    if (bot->IsInFlight())
+        return false;
+
     GameObject* goTarget = goGuid ? botAI->GetGameObject(goGuid) : nullptr;
     if (goGuid && (!goTarget || !goTarget->isSpawned()))
         return false;

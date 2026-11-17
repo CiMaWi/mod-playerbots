@@ -405,6 +405,7 @@
         {
             "file": "travel-graph-selftest.cpp",
             "includes": [
+                "src/Ai/World/Rpg",
                 "src/Mgr/Travel"
             ],
             "args": [
