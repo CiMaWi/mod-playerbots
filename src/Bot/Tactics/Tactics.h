@@ -12,6 +12,7 @@
 
 #include "Define.h"
 #include "TacticIds.h"
+#include "TacticScope.h"
 
 class ChatHandler;
 
@@ -19,9 +20,6 @@ char const* TacticName(TacticId id);
 char const* TacticContextName(TacticContext context);
 // Harness name or config name, any case
 std::optional<TacticId> FindTactic(std::string const& name);
-// "Arena,Battleground,World,Pve" (any case, also All and None) into a scope mask; false on an unknown or empty entry
-bool ParseTacticScope(std::string const& text, uint8& scope, std::string& error);
-std::string FormatTacticScope(uint8 scope);
 // "+x,-y" applied left to right to the base mask ("+all"/"-all" too); an empty edit is the empty mask
 bool ApplyTacticMaskEdit(uint32 baseMask, std::string const& edit, uint32& mask, std::string& error);
 // The tactics of a mask as "hold,cc", "none" when empty
