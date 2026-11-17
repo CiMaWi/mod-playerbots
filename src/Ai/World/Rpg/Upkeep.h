@@ -22,6 +22,11 @@ bool Granted(Player* bot, UpkeepKind kind);
 bool Granted(Player* bot, UpkeepKind kind, bool keepsPossessions);
 // The kind's honesty row (Honesty<word>) for a handout that ran
 void Note(Player* bot, UpkeepKind kind, char const* source, uint32 id = 0, int64 amount = 0);
+// The handout cohort (CS.14): a persistent bot inside Playerbots.Upkeep.HandoutShare (LifecycleRules::InCohort)
+bool InCohort(Player* bot);
+// The cohort's one path to upstream's handouts: RandomPlayerbotMgr::Refresh and one decision row, upkeep "cohort"
+// with the caller as reason ("timer" or "console"). A dead bot or one in a battleground is left alone (false).
+bool RefreshCohort(Player* bot, char const* reason);
 // The food cheat (Playerbots.BotCheats "food"): eating and drinking without an item, for every bot granted Food
 bool FoodCheat(PlayerbotAI* botAI);
 // The equipped ammo while the bot still holds some of it, else 0: the core never clears PLAYER_AMMO_ID when the
