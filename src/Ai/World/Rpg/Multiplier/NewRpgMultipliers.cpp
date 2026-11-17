@@ -18,7 +18,13 @@ float NewRpgQuestGiverMultiplier::GetValue(Action* action)
     if (!TestConstraints::StartsFights(botAI->testConstraints))
         return 0.0f;
 
-    switch (botAI->rpgInfo.GetStatus())
+    NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+    // A bot on a trip picks no mob: it fights what attacks it, then its walk goes on (WT44: on a walk past a camp a bot
+    // pulled mob after mob off its route and did not arrive in five minutes)
+    if (status == RPG_TRAVEL)
+        return 0.0f;
+
+    switch (status)
     {
         case RPG_GO_GRIND:
         case RPG_GO_CAMP:

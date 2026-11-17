@@ -318,6 +318,12 @@ inline constexpr TopicRow TopicTable[] = {{.Topic = BotStateTopic::Inventory,
                                            .Sentence = BridgeTexts::Lookups::KNOWN_SENTENCE,
                                            .Params = {},
                                            .Limit = 12,
+                                           .Lines = true},
+                                          {.Topic = BotStateTopic::Needs,
+                                           .Name = "needs",
+                                           .Sentence = BridgeTexts::Lookups::NEEDS_SENTENCE,
+                                           .Params = {},
+                                           .Limit = 8,
                                            .Lines = true}};
 
 constexpr bool TopicTableInOrder()
@@ -326,7 +332,7 @@ constexpr bool TopicTableInOrder()
         if (static_cast<std::size_t>(TopicTable[index].Topic) != index)
             return false;
 
-    return static_cast<std::size_t>(BotStateTopic::Known) + 1 == std::size(TopicTable);
+    return static_cast<std::size_t>(BotStateTopic::Needs) + 1 == std::size(TopicTable);
 }
 static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
 static_assert(TopicRowsValid(TopicTable), "a topic takes at most one parameter, a name; a new one answers lines");

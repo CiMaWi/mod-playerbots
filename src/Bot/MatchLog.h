@@ -18,7 +18,7 @@ class ChatHandler;
 class Player;
 struct PvpTestMatchRecord;
 
-// Playerbots.MatchLog.Enable: every arena match that ends on this server writes exactly one JSON record (the C2
+// The match log: every arena match that ends on this server writes exactly one JSON record (the C2
 // schema 1 of PvpTestRecord, additive) to <LogsDir>/pvptest/matches-<date>.jsonl, whoever played it: organic bot
 // matches, harness matches (the harness job owns its record, MatchLog hands it the extra fields) and matches with a
 // real player. Ids are <server>-<ts>-<n>. The arena hooks run on the map thread of the arena instance; the captures

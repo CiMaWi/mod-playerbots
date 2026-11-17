@@ -21,12 +21,12 @@
 
 class PlayerbotAI;
 
-// The Los and Pillar tactics (G2e, G2f, PLAN 3.15; policy in ArenaCover.h, numbers LosConfig and PillarConfig). 13f-0:
-// the names exist with stub bodies (the triggers are never active, the actions never useful, the multiplier passes
-// everything), so that G2e and G2f edit LosTacticStrategy.cpp only.
+// The Los and Pillar tactics (G2e, G2f, PLAN 3.15; policy in ArenaCover.h, numbers LosConfig and PillarConfig; code
+// in LosTacticStrategy.cpp).
 
 // "tactic los": "target out of los" and "partner out of los" -> "regain los", in every context with the Los tactic
-// enabled or the harness on (AiFactory); the triggers test the tactic (mask, scope, gate) at run time
+// enabled (its own switch only, not the harness; AiFactory); the triggers test the tactic (mask, scope, gate) at run
+// time
 class TacticLosStrategy : public Strategy
 {
 public:

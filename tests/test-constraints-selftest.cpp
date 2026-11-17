@@ -40,8 +40,8 @@ struct Order
     std::string place;
     bool stop{false};
     std::uint32_t postedMs{0};
-    std::uint16_t on{0};
-    std::uint16_t off{0};
+    std::uint32_t on{0};
+    std::uint32_t off{0};
     std::uint32_t aboard{0};
 };
 
@@ -90,24 +90,36 @@ void ApplyNoDamage(ModelUnits& units)
     ++units.applies;
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
-void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
-void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
-void ReadByRoute(ModelUnits&) {}     // notaxi: the route request reads the bit (TaxiAllowed)
-void ReadByCast(ModelUnits&) {}      // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
-void ReadByMount(ModelUnits&) {}     // nomount: the check mount state action reads the bit (MountsOnItsOwn)
-void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
+void ReadByFollower(ModelUnits&) {}    // flyfail, flyabort: the follower reads the bit (FlyLegFails)
+void ReadByDestroy(ModelUnits&) {}     // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByRoute(ModelUnits&) {}       // notaxi, nofly: the route request reads them (TaxiAllowed, OwnFlyingAllowed)
+void ReadByMount(ModelUnits&) {}       // nomount: the check mount state action reads the bit (MountsOnItsOwn)
+void ReadByFlee(ModelUnits&) {}        // flee: the world PvP retreat trigger reads the bit (Flees)
+void ReadByUse(ModelUnits&) {}         // nouse: the item use gates read the bit (UsesItemsOnItsOwn)
+void ReadBySpend(ModelUnits&) {}       // nospend: the spend rule and buff picker read the bit (SpendsOnItsOwn)
+void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
+void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
+void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
 
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {
-    {NOFIGHT, ApplyNoFight, UndoNoFight},      {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {FLYFAIL, ReadByFollower, ReadByFollower}, {FLYABORT, ReadByFollower, ReadByFollower},
-    {NODESTROY, ReadByDestroy, ReadByDestroy}, {NOTAXI, ReadByRoute, ReadByRoute},
-    {NOMOUNT, ReadByMount, ReadByMount},       {FLEE, ReadByFlee, ReadByFlee},
-    {NOCAST, ReadByCast, ReadByCast}};
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
+                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
+                                              {FLYFAIL, ReadByFollower, ReadByFollower},
+                                              {FLYABORT, ReadByFollower, ReadByFollower},
+                                              {NODESTROY, ReadByDestroy, ReadByDestroy},
+                                              {NOTAXI, ReadByRoute, ReadByRoute},
+                                              {NOMOUNT, ReadByMount, ReadByMount},
+                                              {FLEE, ReadByFlee, ReadByFlee},
+                                              {NOUSE, ReadByUse, ReadByUse},
+                                              {NOSPEND, ReadBySpend, ReadBySpend},
+                                              {REALMASTER, ReadByRealMaster, ReadByRealMaster},
+                                              {ONSIGHT, ReadByOnSight, ReadByOnSight},
+                                              {NOFLY, ReadByRoute, ReadByRoute},
+                                              {NOCAST, ReadByCast, ReadByCast}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
 {
-    std::uint16_t set{0};
+    std::uint32_t set{0};
     Status status{Status::Idle};
     std::optional<Order> pending;
     bool inCombat{false};
@@ -132,7 +144,7 @@ struct ModelBot
             pending.reset();
             if (order.on || order.off)
             {
-                std::uint16_t const before = set;
+                std::uint32_t const before = set;
                 set = Next(before, order.on, order.off);
                 ChangeStates(MODEL_OPS, units, before, set);
                 ++constraintRows;
@@ -161,14 +173,14 @@ struct ModelBot
     }
 };
 
-Order On(std::uint16_t bits)
+Order On(std::uint32_t bits)
 {
     Order order;
     order.on = bits;
     return order;
 }
 
-Order Off(std::uint16_t bits)
+Order Off(std::uint32_t bits)
 {
     Order order;
     order.off = bits;
@@ -176,11 +188,11 @@ Order Off(std::uint16_t bits)
 }
 
 // `route release <bot> <kept>`
-Order Release(std::uint16_t kept)
+Order Release(std::uint32_t kept)
 {
     Order order;
     order.on = kept;
-    order.off = static_cast<std::uint16_t>(HOLD & ~kept);
+    order.off = static_cast<std::uint32_t>(HOLD & ~kept);
     return order;
 }
 
@@ -246,6 +258,27 @@ bool RowWorks(Row const& row)
     if (name == "flee")
         return untouched && Flees(FLEE) && !Flees(HOLD | (STATES & ~FLEE)) && StartsFights(FLEE) &&
                !EndsStatus(0, FLEE);
+    // Read by world PvP's real master only: nothing to apply; no other row and not the hold sets it; it ends no status
+    if (name == "realmaster")
+        return untouched && HasRealMaster(REALMASTER) && !HasRealMaster(HOLD) &&
+               !HasRealMaster(HOLD | (STATES & ~REALMASTER)) && StartsFights(REALMASTER) && !Flees(REALMASTER) &&
+               (REALMASTER & HOLD) == 0 && !EndsStatus(0, REALMASTER);
+    // Read by world PvP's place of a bot only: nothing to apply; no other row and not the hold sets it; it ends no
+    // status
+    if (name == "onsight")
+        return untouched && OnSight(ONSIGHT) && !OnSight(HOLD) && !OnSight(HOLD | (STATES & ~ONSIGHT)) &&
+               StartsFights(ONSIGHT) && !Flees(ONSIGHT) && !HasRealMaster(ONSIGHT) && (ONSIGHT & HOLD) == 0 &&
+               !EndsStatus(0, ONSIGHT);
+    // Only nouse stops the bot's own item use, only nospend puts it in the control cohort; nothing on the bot changes,
+    // the hold never sets them, they end no status
+    if (name == "nouse")
+        return untouched && !UsesItemsOnItsOwn(NOUSE) && !UsesItemsOnItsOwn(HOLD | NOUSE) && UsesItemsOnItsOwn(0) &&
+               UsesItemsOnItsOwn(STATES & ~NOUSE) && SpendsOnItsOwn(NOUSE) && (NOUSE & HOLD) == 0 &&
+               !EndsStatus(0, NOUSE);
+    if (name == "nospend")
+        return untouched && !SpendsOnItsOwn(NOSPEND) && !SpendsOnItsOwn(HOLD | NOSPEND) && SpendsOnItsOwn(0) &&
+               SpendsOnItsOwn(STATES & ~NOSPEND) && UsesItemsOnItsOwn(NOSPEND) && (NOSPEND & HOLD) == 0 &&
+               !EndsStatus(0, NOSPEND);
     // Only nodestroy stops the destroy; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nodestroy")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -255,12 +288,17 @@ bool RowWorks(Row const& row)
     if (name == "notaxi")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !TaxiAllowed(NOTAXI) && !TaxiAllowed(HOLD | NOTAXI) && TaxiAllowed(0) && TaxiAllowed(STATES & ~NOTAXI) &&
-               TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI);
+               TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI) && OwnFlyingAllowed(NOTAXI);
     // Only nocast stops the bot's own casts; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nocast")
-        return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
-               !CastsOnItsOwn(NOCAST) && !CastsOnItsOwn(HOLD | NOCAST) && CastsOnItsOwn(0) &&
-               CastsOnItsOwn(HOLD | NOFIGHT | NODAMAGE | NOMOUNT) && (NOCAST & HOLD) == 0 && !EndsStatus(0, NOCAST);
+        return untouched && !CastsOnItsOwn(NOCAST) && !CastsOnItsOwn(HOLD | NOCAST) && CastsOnItsOwn(0) &&
+               CastsOnItsOwn(STATES & ~NOCAST) && CastsOnItsOwn(HOLD) && (NOCAST & HOLD) == 0 && !EndsStatus(0, NOCAST);
+    // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
+    // never sets it, it ends no status
+    if (name == "nofly")
+        return untouched && !OwnFlyingAllowed(NOFLY) && !OwnFlyingAllowed(HOLD | NOFLY) && OwnFlyingAllowed(0) &&
+               OwnFlyingAllowed(STATES & ~NOFLY) && OwnFlyingAllowed(HOLD) && TaxiAllowed(NOFLY) &&
+               (NOFLY & HOLD) == 0 && !EndsStatus(0, NOFLY);
     // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -289,7 +327,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nocast",
+              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -301,6 +339,13 @@ void TestTable()
           "nodestroy: a state row, parsed and formatted");
     Check(Parse("notaxi").set == NOTAXI && Format(NOTAXI | NOFIGHT) == "nofight,notaxi",
           "notaxi: a state row, parsed and formatted");
+    Check(Parse("nofly,notaxi").set == (NOFLY | NOTAXI) && Format(NOFLY | NOTAXI) == "notaxi,nofly" &&
+              (NOFLY & (CHOICES | NOTAXI | FLY_FAILS)) == 0,
+          "nofly: a state row of its own beside notaxi, parsed and formatted");
+    Check(Parse("nouse,nospend").set == (NOUSE | NOSPEND) &&
+              Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
+              ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,
+          "item use rows: nouse and nospend are state rows, parsed and formatted");
 }
 
 void TestHeldIdle()

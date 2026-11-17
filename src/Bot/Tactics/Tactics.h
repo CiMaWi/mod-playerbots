@@ -12,6 +12,7 @@
 
 #include "Define.h"
 #include "TacticIds.h"
+#include "TacticScope.h"
 
 class ChatHandler;
 
@@ -19,9 +20,6 @@ char const* TacticName(TacticId id);
 char const* TacticContextName(TacticContext context);
 // Harness name or config name, any case
 std::optional<TacticId> FindTactic(std::string const& name);
-// "Arena,Battleground,World,Pve" (any case, also All and None) into a scope mask; false on an unknown or empty entry
-bool ParseTacticScope(std::string const& text, uint8& scope, std::string& error);
-std::string FormatTacticScope(uint8 scope);
 // "+x,-y" applied left to right to the base mask ("+all"/"-all" too); an empty edit is the empty mask
 bool ApplyTacticMaskEdit(uint32 baseMask, std::string const& edit, uint32& mask, std::string& error);
 // The tactics of a mask as "hold,cc", "none" when empty
@@ -50,11 +48,9 @@ public:
     // HoldForHealer, UsePctAtSkill1/99 and AttentionMsAtSkill1/99 on the running server (G5c-c-run's policy A/B on one
     // server; the next interrupt decision takes them; a restart or rndbot reload restores the conf values)
     static bool HandleInterruptCommand(ChatHandler* handler, char const* args);
-    // .playerbots tactics cover scan: scans the arena the GM or the harness bot stands in for its pillars (G2d; 13f-0:
-    // prints that it is not implemented yet)
+    // .playerbots tactics cover scan: scans the arena the GM or the harness bot stands in for its pillars (G2d)
     static bool HandleCoverCommand(ChatHandler* handler, char const* args);
-    // .playerbots tactics jump scan [bot] and .playerbots tactics jump test <map> <id|all> [n] [bot] (G2g; 13g-0:
-    // print that they are not implemented yet)
+    // .playerbots tactics jump scan [bot] and .playerbots tactics jump test <map> <id|all> [n] [bot] (G2g)
     static bool HandleJumpScanCommand(ChatHandler* handler, char const* args);
     static bool HandleJumpTestCommand(ChatHandler* handler, char const* args);
 };

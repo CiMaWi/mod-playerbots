@@ -164,26 +164,23 @@ uint8 BotProfileMgr::SkillFromPercentile(double percentile, bool uniform, double
 
 uint8 BotProfileMgr::SkillFromPercentile(double percentile)
 {
-    return SkillFromPercentile(percentile, sPlayerbotAIConfig.SkillDistributionUniform, sPlayerbotAIConfig.SkillMean,
-                               sPlayerbotAIConfig.SkillSd, sPlayerbotAIConfig.SkillMin, sPlayerbotAIConfig.SkillMax);
+    return SkillFromPercentile(percentile, sPlayerbotAIConfig.Skill.DistributionUniform, sPlayerbotAIConfig.Skill.Mean,
+                               sPlayerbotAIConfig.Skill.Sd, sPlayerbotAIConfig.Skill.Min, sPlayerbotAIConfig.Skill.Max);
 }
 
 double BotProfileMgr::PercentileFromSkill(uint8 skill)
 {
     double p = 0.5;
-    if (!sPlayerbotAIConfig.SkillDistributionUniform)
-        p = NormalCdf((skill - sPlayerbotAIConfig.SkillMean) / sPlayerbotAIConfig.SkillSd);
-    else if (sPlayerbotAIConfig.SkillMax > sPlayerbotAIConfig.SkillMin)
-        p = (skill - sPlayerbotAIConfig.SkillMin) / (sPlayerbotAIConfig.SkillMax - sPlayerbotAIConfig.SkillMin);
+    if (!sPlayerbotAIConfig.Skill.DistributionUniform)
+        p = NormalCdf((skill - sPlayerbotAIConfig.Skill.Mean) / sPlayerbotAIConfig.Skill.Sd);
+    else if (sPlayerbotAIConfig.Skill.Max > sPlayerbotAIConfig.Skill.Min)
+        p = (skill - sPlayerbotAIConfig.Skill.Min) / (sPlayerbotAIConfig.Skill.Max - sPlayerbotAIConfig.Skill.Min);
 
     return std::clamp(p, 1e-6, 1.0 - 1e-6);
 }
 
 void BotProfileMgr::Load()
 {
-    if (!sPlayerbotAIConfig.SkillEnable)
-        return;
-
     std::lock_guard<std::mutex> guard(_lock);
     EnsureLoaded();
 }
@@ -262,10 +259,10 @@ void BotProfileMgr::EnsureLoaded()
 
     LOG_INFO("playerbots", "Bot profiles loaded: {}", SummaryLocked());
     std::string const shape =
-        sPlayerbotAIConfig.SkillDistributionUniform
-            ? Acore::StringFormat("uniform {:.0f}-{:.0f}", sPlayerbotAIConfig.SkillMin, sPlayerbotAIConfig.SkillMax)
-            : Acore::StringFormat("normal mean {:.1f}, sd {:.1f}", sPlayerbotAIConfig.SkillMean,
-                                  sPlayerbotAIConfig.SkillSd);
+        sPlayerbotAIConfig.Skill.DistributionUniform
+            ? Acore::StringFormat("uniform {:.0f}-{:.0f}", sPlayerbotAIConfig.Skill.Min, sPlayerbotAIConfig.Skill.Max)
+            : Acore::StringFormat("normal mean {:.1f}, sd {:.1f}", sPlayerbotAIConfig.Skill.Mean,
+                                  sPlayerbotAIConfig.Skill.Sd);
     LOG_INFO("playerbots", "Bot profiles: distribution {}, {} percentiles migrated, {} skills remapped", shape,
              _percentileColumn ? migrated : 0, remapped);
     if (sPlayerbotAIConfig.SkillGrowthEnable)
@@ -354,9 +351,6 @@ BotProfile BotProfileMgr::SetSkill(uint32 guid, uint8 skill)
 
 double BotProfileMgr::Percentile(uint32 guid)
 {
-    if (!sPlayerbotAIConfig.SkillEnable)
-        return LegacyPercentile(guid);
-
     std::lock_guard<std::mutex> guard(_lock);
     EnsureLoaded();
     auto const it = _profiles.find(guid);
@@ -648,12 +642,6 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
     if (args && std::string(args) == "selftest")
         return HandleSelftest(handler);
 
-    if (!sPlayerbotAIConfig.SkillEnable)
-    {
-        handler->PSendSysMessage("Bot skill is off (Playerbots.Skill.Enable = 0).");
-        return true;
-    }
-
     std::istringstream in(args ? args : "");
     std::string target;
     std::string verb;
@@ -747,7 +735,7 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
                                  static_cast<uint32>(SkillGrowthPotential(first, low, sPlayerbotAIConfig.SkillGrowth)));
     }
 
-    if (botAI && sPlayerbotAIConfig.SkillNoticeActive)
+    if (botAI && sPlayerbotAIConfig.Skill.NoticeActive)
     {
         // Multiplier verdicts since the skill was last set, not executed casts
         SkillNoticeCounters const& counters = botAI->GetSkillNoticeCounters();

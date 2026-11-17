@@ -114,14 +114,14 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
     uint64 const guid = attributeTemplate ? attributeTemplate : (bot ? bot->GetGUID().GetCounter() : 0);
     // The attributes from the skill and the guid (BotAttributes.h; with the defaults every ability is the skill).
     // DT.14: the learnable ones read the (grown) skill, the fixed ones the first roll (G6b; the skill without growth)
-    SkillDistributionParams const distribution{config.SkillDistributionUniform, config.SkillMean, config.SkillSd,
-                                               config.SkillMin, config.SkillMax};
+    SkillDistributionParams const distribution{config.Skill.DistributionUniform, config.Skill.Mean, config.Skill.Sd,
+                                               config.Skill.Min, config.Skill.Max};
     attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, firstRoll, guid);
     // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
-    tacticGate = ComputeTacticGate(config.SkillGate, config.TacticConfig,
+    tacticGate = ComputeTacticGate(config.SkillGate, config.Tactics.Settings,
                                    AttributeGateInputs(config.SkillAttributes, attributes, skill), guid);
-    // Speed carries the reaction draw, D3's stretch and D4's notice delay; Focus D4's miss share. Cached whatever
-    // Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots.
+    // Speed carries the reaction draw, D3's stretch and D4's notice delay; Focus D4's miss share. Cached whether
+    // the natural reaction is active or not, so a .reload config can turn it on for logged-in bots.
     uint8 const speed = attributes.Get(BotAttribute::Speed);
     reactionState = ComputeReactionState(config.NaturalReaction, speed, config.SkillGate.CurveExponent);
     // The tactic states' numbers (hold and plan, crowd control, defensive, fake, facing, tracking, paths), whatever
@@ -157,15 +157,16 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
     typeInputs.Foresight = attributes.Get(BotAttribute::Foresight);
     typeInputs.Patience = attributes.Get(BotAttribute::Patience);
     reactionTypes = ComputeReactionTypeState(config.NaturalReaction, typeInputs, exponent);
-    if (config.SkillReactActive)
-        skillReactFactor = SkillLerp(config.SkillReactFactorLow, config.SkillReactFactorHigh, speedPosition, exponent);
+    if (config.Skill.ReactActive)
+        skillReactFactor =
+            SkillLerp(config.Skill.ReactFactorLow, config.Skill.ReactFactorHigh, speedPosition, exponent);
 
-    if (config.SkillNoticeActive)
+    if (config.Skill.NoticeActive)
     {
-        skillNoticeMissPercent = SkillLerpRounded(config.SkillNoticeMissPercentLow, config.SkillNoticeMissPercentHigh,
+        skillNoticeMissPercent = SkillLerpRounded(config.Skill.NoticeMissPercentLow, config.Skill.NoticeMissPercentHigh,
                                                   focusPosition, exponent);
         skillNoticeDelayMs =
-            SkillLerpRounded(config.SkillNoticeDelayMsLow, config.SkillNoticeDelayMsHigh, speedPosition, exponent);
+            SkillLerpRounded(config.Skill.NoticeDelayMsLow, config.Skill.NoticeDelayMsHigh, speedPosition, exponent);
     }
 }
 
@@ -358,7 +359,6 @@ bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
     TacticCheckInputs inputs;
     inputs.Counting = botAI->IsPvpTestCounting();
     inputs.Leftover = opponentMemory.MatchId != 0 || (focusState && focusState->Target.Pick.Guid != 0);
-    inputs.MemoryEnable = config.NaturalReaction.Memory.Enable;
     inputs.Mask = botAI->GetTacticMask();
     inputs.Stored = botAI->GetTacticContext();
     inputs.Probed = probed;
@@ -370,17 +370,13 @@ bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
         return false;
     }
 
-    ReactionParams const& reaction = config.NaturalReaction;
-    if (reaction.Memory.Enable)
+    if (PerfMonitor::IsEnabled())
     {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
-            ObserveOpponents(botAI, bot, busyModel, nowMs);
-        }
-        else
-            ObserveOpponents(botAI, bot, busyModel, nowMs);
+        PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
+        ObserveOpponents(botAI, bot, busyModel, nowMs);
     }
+    else
+        ObserveOpponents(botAI, bot, busyModel, nowMs);
 
     // G2b: the tracking ring follows the bot's target at every check of a fight, not only at its chase calls
     if (sPlayerbotAIConfig.NaturalTrack.Enable)
@@ -421,7 +417,7 @@ void BotTactics::LogLiveMiss() const
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     Battleground* const battleground = bot->GetBattleground();
     bool const match = battleground && battleground->GetStatus() == STATUS_IN_PROGRESS;
-    if (config.NaturalReaction.Memory.Enable && (match || opponentMemory.MatchId != 0))
+    if (match || opponentMemory.MatchId != 0)
         LOG_INFO("playerbots", "Live miss: ObserveOpponents {}", bot->GetName());
 
     std::array<bool, TACTIC_FOLLOWER_COUNT> const passes = {
@@ -564,7 +560,7 @@ bool BotTactics::HasFullSkillAbility()
     if (botAI->GetPvpSkill() == 0)
         return true;
 
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
+    if (sPlayerbotAIConfig.Skill.FullAbilityInPvE && !botAI->IsPvpFight())
         return true;
 
     return botAI->IsSkillExempt();
@@ -576,7 +572,7 @@ bool BotTactics::TacticActive(TacticId id)
         return false;
 
     return TacticGatePasses(tacticGate, id, HasFullSkillAbility(), bot->GetGUID().GetCounter(),
-                            sPlayerbotAIConfig.SkillNoticeWindowMs, getMSTime());
+                            sPlayerbotAIConfig.Skill.NoticeWindowMs, getMSTime());
 }
 
 void BotTactics::SetFightEnemiesSnapshot(GuidVector const& enemies)
@@ -605,21 +601,7 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
     bool const measured = PerfMonitor::IsEnabled();
     // The timing row's work bit follows timingCombat (one atomic write at its change)
     bool const timedBefore = timingCombat;
-    if (!config.NaturalCadenceEnable && !measured)
-    {
-        // Off: upstream's check interval and stagger, the stretch everywhere
-        if (timedBefore)
-            botAI->EndWork(BotWork::TimingRow);
-
-        timingScope = false;
-        timingCombat = false;
-        cadenceCombat = false;
-        stretchOff = false;
-        botAI->checkStaggerMs = UPSTREAM_CHECK_STAGGER_MS;
-        return;
-    }
-
-    timingScope = ScopeAllows(config.NaturalCadenceContexts, context);
+    timingScope = ScopeAllows(config.NaturalCadence.Contexts, context);
     timingCombat = timingScope && (bot->IsInCombat() || botAI->currentState == BOT_STATE_COMBAT);
     if (timingCombat && (bot->InBattleground() || bot->InArena()))
     {
@@ -631,10 +613,9 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
     if (timingCombat != timedBefore)
         botAI->SetWork(BotWork::TimingRow, timingCombat);
 
-    cadenceCombat = config.NaturalCadenceEnable && timingCombat;
-    stretchOff = config.NaturalCadenceEnable && timingScope && config.NaturalReactionActive &&
-                 ScopeAllows(config.NaturalReactionContexts, context);
-    botAI->checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
+    cadenceCombat = timingCombat;
+    stretchOff = timingScope && ScopeAllows(config.NaturalReaction.Contexts, context);
+    botAI->checkStaggerMs = cadenceCombat ? config.NaturalCadence.StaggerMs : UPSTREAM_CHECK_STAGGER_MS;
     if (!measured || !timingScope)
         return;
 
@@ -647,10 +628,10 @@ float BotTactics::GetEffectiveSkillReactFactor() const
 {
     // Where the natural cadence and reaction both run, the reaction model carries the skill, unless
     // Natural.Cadence.SkillStretch keeps the stretch (G6d-a)
-    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive ||
-        !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadenceSkillStretch))
+    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.Skill.ReactActive ||
+        !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadence.SkillStretch))
         return 1.0f;
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
+    if (sPlayerbotAIConfig.Skill.FullAbilityInPvE && !botAI->IsPvpFight())
         return 1.0f;
     return skillReactFactor;
 }

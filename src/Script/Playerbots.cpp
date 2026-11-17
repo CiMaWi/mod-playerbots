@@ -6,7 +6,6 @@
 
 #include "Playerbots.h"
 #include "AcquaintanceMgr.h"
-#include "ActivityBudget.h"
 #include "ArenaTeamFormation.h"
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
@@ -14,6 +13,7 @@
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
+#include "BotTravel.h"
 #include "CcTacticStrategy.h"
 #include "Channel.h"
 #include "ChatCommandLine.h"
@@ -30,8 +30,10 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "ItemUseIndex.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
+#include "LootObjectStack.h"
 #include "MatchLog.h"
 #include "Matchmaker.h"
 #include "NaturalCast.h"
@@ -47,6 +49,7 @@
 #include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
+#include "PvpTestUtil.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "ServerScript.h"
@@ -264,6 +267,20 @@ public:
     void OnPlayerCreatureKillCredit(Player* player, Creature* killed) override
     {
         GuildTaskMgr::instance().CheckKillTask(player, killed);
+        // The bot's own kill (its pet's, its totem's, a tapped one: the hook fires for the loot recipient) enters its
+        // loot list at once (WT44): found only by the "often" scan, the corpse lay out of reach when a trip or the
+        // mount carried the bot on first. Add records the guid; whether it can be looted is checked when picked. The
+        // nearest-loot cache (500 ms) is dropped, so the next loot trigger and mount request see the corpse
+        PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player);
+        if (!botAI)
+            return;
+        AiObjectContext* const context = botAI->GetAiObjectContext();
+        bool const added = context->GetValue<LootObjectStack*>("available loot")->Get()->Add(killed->GetGUID());
+        context->GetValue<LootObject>("nearest loot")->Reset();
+        char const* word = "known";
+        if (added)
+            word = killed->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE) ? "lootable" : "empty";
+        botAI->GetTravel().TraceTravelInteraction("loot_add", word, killed->GetGUID());
     }
 
     void OnPlayerBeforePetitionSign(Player* player, ObjectGuid /*petitionGuid*/, bool& alreadySignedByAccount) override
@@ -652,6 +669,7 @@ public:
             Planner::StartQuestIndex();      // the same for the quest index
             Planner::StartUpkeepIndex();     // and for the upkeep index
             Planner::StartFlightMap();       // the flying height maps, read on their own thread
+            ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
@@ -664,8 +682,6 @@ public:
             // Playerbots.PerfMonEnabled: one PerfMonitor row per call ("WorldHook ...", totals per world tick), so
             // the pmon dump splits the serial world-thread cost; without the monitor the scopes do nothing
             PerfMonitorScope const hookScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldHook total"));
-            // Smart scale percentile; returns at once when off
-            TimeHookCall("WorldHook ActivityBudget", [] { ActivityBudget::Instance().Update(); });
             // Headless sessions whose login holder is in flight
             TimeHookCall("WorldHook PendingLogins", [] { PlayerbotHolder::UpdatePendingLogins(); });
             // Per-bot packet queues, world thread only
@@ -774,12 +790,12 @@ public:
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
         FocusClearArenaMarks(bg);          // Map thread: the team plan's skull and moon go (Playerbots.Tactics.Enable)
-        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record (Playerbots.MatchLog.Enable)
+        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record
         PvpGearMgr::QueueMatchEnd(bg);     // Map thread: a rated arena's players get a buy check on the world thread
         BotProfileMgr::QueueMatchEnd(bg);  // Map thread: the bots' skill growth (Playerbots.Skill.Growth.Enable)
     }
 
-    // Map thread: a ladder bot puts its PvP loadout on (Playerbots.PvpGear.Wear; queued to the world thread)
+    // Map thread: a ladder bot puts its PvP loadout on (queued to the world thread)
     void OnBattlegroundAddPlayer(Battleground* /*bg*/, Player* player) override { PvpGearMgr::QueueWear(player); }
 
     // Map thread: the loadout comes off and the PvE gear back on (queued to the world thread)
@@ -806,7 +822,7 @@ void AddPlayerbotsSelfBotAfkScripts();
 void AddPvpTestFightScripts();
 void AddGhostWaitScripts();
 void AddWorldPvpScripts();
-void AddCcTacticScripts();
+void AddCcTacticScripts(bool harness);
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -822,6 +838,7 @@ void AddSC_match_trace();
 void AddSC_matchmaker();
 void AddSC_natural_trace();
 void AddSC_population();
+void AddSC_config_tables();
 
 void AddPlayerbotsScripts()
 {
@@ -836,10 +853,17 @@ void AddPlayerbotsScripts()
     new PlayerBotsBGScript();
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
-    AddPvpTestFightScripts();
+    // CS25b: the PvP harness's hooks only where Playerbots.PvpTest.Enable is on at startup. The config files are
+    // loaded by now, PlayerbotAIConfig only later (OnBeforeWorldInitialized): read the option itself.
+    bool const pvpTestHooks = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
+    SetPvpTestHooks(pvpTestHooks);
+    LOG_INFO("server.loading", "PvpTest harness hooks: {} (Playerbots.PvpTest.Enable = {})",
+             pvpTestHooks ? "registered" : "not registered", pvpTestHooks ? 1 : 0);
+    if (pvpTestHooks)
+        AddPvpTestFightScripts();
     AddWorldPvpScripts();
     AddGhostWaitScripts();
-    AddCcTacticScripts();
+    AddCcTacticScripts(pvpTestHooks);
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();
     AddSC_MagtheridonBotScripts();
@@ -857,4 +881,5 @@ void AddPlayerbotsScripts()
     AddSC_matchmaker();
     AddSC_natural_trace();
     AddSC_population();
+    AddSC_config_tables();
 }

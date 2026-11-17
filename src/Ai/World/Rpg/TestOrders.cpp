@@ -57,30 +57,27 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-// flyfail and flyabort change nothing on the bot: the fly leg's follower reads the bit (TestConstraints::FlyLegFails)
-void ReadByFollower(Player&) {}
-// nodestroy changes nothing on the bot: the smart destroy action reads the bit (TestConstraints::DestroysForSpace)
-void ReadByDestroy(Player&) {}
-// notaxi changes nothing on the bot: the route request reads the bit (TestConstraints::TaxiAllowed)
-void ReadByRoute(Player&) {}
-// nomount changes nothing on the bot: the check mount state action reads the bit (TestConstraints::MountsOnItsOwn)
-void ReadByMount(Player&) {}
-// flee changes nothing on the bot: the world PvP retreat trigger reads the bit (TestConstraints::Flees)
-void ReadByFlee(Player&) {}
-// nocast changes nothing on the bot: PlayerbotAI::CastSpell reads the bit (TestConstraints::CastsOnItsOwn)
-void ReadByCast(Player&) {}
+// The other state rows change nothing on the bot: the code they constrain reads the bit (TestConstraints::FlyLegFails,
+// DestroysForSpace, TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn,
+// HasRealMaster, OnSight, OwnFlyingAllowed, CastsOnItsOwn)
+void ReadWhereUsed(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
     {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {TestConstraints::FLYFAIL, ReadByFollower, ReadByFollower},
-    {TestConstraints::FLYABORT, ReadByFollower, ReadByFollower},
-    {TestConstraints::NODESTROY, ReadByDestroy, ReadByDestroy},
-    {TestConstraints::NOTAXI, ReadByRoute, ReadByRoute},
-    {TestConstraints::NOMOUNT, ReadByMount, ReadByMount},
-    {TestConstraints::FLEE, ReadByFlee, ReadByFlee},
-    {TestConstraints::NOCAST, ReadByCast, ReadByCast},
+    {TestConstraints::FLYFAIL, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::FLYABORT, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NODESTROY, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOTAXI, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOMOUNT, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::FLEE, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOUSE, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOSPEND, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::REALMASTER, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::ONSIGHT, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOFLY, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOCAST, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
@@ -90,8 +87,8 @@ static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "e
 // errand row turning off forgets the last errand check (TestConstraints::FreesErrands)
 void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order, bool tripFollows)
 {
-    uint16 const before = botAI->testConstraints;
-    uint16 const after = TestConstraints::Next(before, order.on, order.off);
+    uint32 const before = botAI->testConstraints;
+    uint32 const after = TestConstraints::Next(before, order.on, order.off);
     botAI->testConstraints = after;
     botAI->SetWork(BotWork::Constraints, (after & TestConstraints::STATES) != 0);
     botAI->planner.snapshotDue = true;
@@ -114,7 +111,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     NewRpgInfo& info = botAI->rpgInfo;
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
-    uint16 const before = botAI->testConstraints;
+    uint32 const before = botAI->testConstraints;
     if (constrained)
         ApplyConstraints(botAI, bot, order, trip);
     // A released errand choice is made at once: an errand check stamped before the hold (an inn trip, the login)
@@ -215,7 +212,7 @@ bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
     return ApplyTravelOrder(botAI, bot, order);
 }
 
-void TravelOrders::KeepConstraints(Player* bot, uint16 constraints)
+void TravelOrders::KeepConstraints(Player* bot, uint32 constraints)
 {
     TestConstraints::KeepStates(STATE_OPS, *bot, constraints);
 }

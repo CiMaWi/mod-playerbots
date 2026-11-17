@@ -20,6 +20,7 @@
 #include "AllSpellScript.h"
 #include "Battleground.h"
 #include "Chat.h"
+#include "ItemUse.h"
 #include "Log.h"
 #include "Map.h"
 #include "MatchLog.h"
@@ -869,6 +870,7 @@ public:
 
     void OnSpellCast(Spell* spell, Unit* caster, SpellInfo const* spellInfo, bool /*skipCheck*/) override
     {
+        ItemUse::OnSpellCast(spell, caster);
         if (NaturalTrace::Any())
             NaturalTrace::OnSpellCast(spell, caster, spellInfo);
 
@@ -881,6 +883,7 @@ public:
 
     void OnSpellCastCancel(Spell* spell, Unit* caster, SpellInfo const* spellInfo, bool bySelf) override
     {
+        ItemUse::OnSpellCastCancel(spell, caster);
         if (NaturalTrace::Any())
             NaturalTrace::OnSpellCastCancel(spell, caster, spellInfo, bySelf);
 

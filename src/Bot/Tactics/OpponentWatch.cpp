@@ -105,8 +105,7 @@ bool StopOwnCastForKickDue(PlayerbotAI* botAI, Player* bot, uint32 ownLeftMs, ui
         uint64 const guid = bot->GetGUID().GetCounter();
         uint32 ready = ReactionMs(botAI->GetTactics().GetReactionState(), params.MinMs,
                                   SplitMix64((guid << 32) ^ enemyGuid ^ endMs ^ BusyWatchSalt));
-        if (params.Think.Enable)
-            ready += botAI->GetTactics().GetReactionTypes().ThinkShortcutMs;
+        ready += botAI->GetTactics().GetReactionTypes().ThinkShortcutMs;
 
         uint32 const tick =
             params.ServerTickMs >= 0 ? static_cast<uint32>(params.ServerTickMs) : botAI->GetLastUpdateDiff() / 2;

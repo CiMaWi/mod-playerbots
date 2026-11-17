@@ -14,6 +14,7 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include "AiFactory.h"
 #include "ArenaCc.h"
@@ -38,6 +39,7 @@
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
 #include "PvpTestCounters.h"
+#include "PvpTestUtil.h"
 #include "ScriptMgr.h"
 #include "Spell.h"
 #include "SpellAuraDefines.h"
@@ -358,8 +360,7 @@ bool CcTeamBehind(Player* bot, CcParams const& params)
 bool CcFeedOn()
 {
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
-    return config.TacticsEnable &&
-           (config.TacticConfig[static_cast<uint32>(TacticId::Cc)].Enable || config.PvpTestEnable);
+    return config.TacticStrategyWanted(TacticId::Cc);
 }
 
 // The bots that see a CC land on or leave the unit (DT.12: the combat log of their own fight): the caster and the
@@ -467,7 +468,7 @@ void CcNoteChainLanding(Unit* unit, Player* caster, Aura const* aura, uint8 grou
 // ended it (the aura's DR'd and capped duration less what was left)
 void CcCountHeld(Unit const* unit, Player* caster, Aura const* aura)
 {
-    if (!sPlayerbotAIConfig.PvpTestEnable || !unit->IsPlayer())
+    if (!PvpTestHooksOn() || !unit->IsPlayer())
         return;
 
     PlayerbotAI* const casterAI = GET_PLAYERBOT_AI(caster);
@@ -636,8 +637,7 @@ void CcNoteDispelRemoval(Unit* unit, Aura const* aura)
 {
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     Player* const player = unit->ToPlayer();
-    if (!player || !config.TacticsEnable ||
-        !(config.TacticConfig[static_cast<uint32>(TacticId::Dispel)].Enable || config.PvpTestEnable))
+    if (!player || !config.TacticStrategyWanted(TacticId::Dispel))
         return;
 
     uint32 const nowMs = getMSTime();
@@ -739,16 +739,23 @@ void CcNoteEnemyTrinket(Unit* unit, Aura const* aura)
               nowMs + CC_OPPONENT_TRINKET_COOLDOWN_MS, nowMs);
 }
 
+// The DR memory's feed (the aura hooks) everywhere; the damage hooks only with the harness's hooks (CS25b: every hit
+// of every unit passes them, for the own-break count and DefensiveNoteLethalHit). Never an empty list: UnitScript
+// enables every hook for one.
+std::vector<uint16> CcTacticHooks(bool harness)
+{
+    std::vector<uint16> hooks = {UNITHOOK_ON_AURA_APPLY, UNITHOOK_ON_AURA_REMOVE};
+    if (harness)
+        hooks.insert(hooks.end(), {UNITHOOK_ON_DAMAGE, UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
+                                   UNITHOOK_MODIFY_MELEE_DAMAGE, UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN});
+
+    return hooks;
+}
+
 class CcTacticUnitScript : public UnitScript
 {
 public:
-    CcTacticUnitScript()
-        : UnitScript("CcTacticUnitScript", true,
-                     {UNITHOOK_ON_AURA_APPLY, UNITHOOK_ON_AURA_REMOVE, UNITHOOK_ON_DAMAGE,
-                      UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK, UNITHOOK_MODIFY_MELEE_DAMAGE,
-                      UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN})
-    {
-    }
+    explicit CcTacticUnitScript(bool harness) : UnitScript("CcTacticUnitScript", true, CcTacticHooks(harness)) {}
 
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
     {
@@ -818,13 +825,14 @@ public:
     void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode) override
     {
         Aura const* const aura = aurApp->GetBase();
-        bool const byDamage = CcConsumeOwnBreak(unit, aura, mode);
+        // Without the damage hooks no own break is pending
+        bool const byDamage = PvpTestHooksOn() && CcConsumeOwnBreak(unit, aura, mode);
         // G5a review: a CC that dispel cc on party was cast for goes by a dispel (counted there, not at the cast)
         if (mode == AURA_REMOVE_BY_ENEMY_SPELL)
             CcNoteDispelRemoval(unit, aura);
 
         // An expiry feeds only the harness's ccHeldMs (G4c-a review NOTE 3: without the harness G4b's cost)
-        if (!CcFeedOn() || (mode == AURA_REMOVE_BY_EXPIRE && !sPlayerbotAIConfig.PvpTestEnable))
+        if (!CcFeedOn() || (mode == AURA_REMOVE_BY_EXPIRE && !PvpTestHooksOn()))
             return;
 
         Player* caster = nullptr;
@@ -1248,14 +1256,15 @@ void CcCountOwnBreak(Unit* attacker, Unit* victim)
 {
     // Every damage event of every unit: the victim's pending break goes first (a damage event that is not a counting
     // bot's leaves none, so its removal is never charged to a bot), then the harness switch, a player source, the aura
-    // lists. Another victim's pending break stays (a damage shield's reverse damage nests in the outer hit).
+    // lists. Another victim's pending break stays (a damage shield's reverse damage nests in the outer hit). Only the
+    // harness registers the hook that calls this (CS25b).
     for (CcPendingBreak& pending : ccPendingBreaks)
     {
         if (pending.Victim == victim)
             pending.Victim = nullptr;
     }
 
-    if (!sPlayerbotAIConfig.PvpTestEnable || !attacker || !victim || attacker == victim)
+    if (!attacker || !victim || attacker == victim)
         return;
 
     Unit* const source = attacker->GetCharmerOrOwnerOrSelf();
@@ -2360,7 +2369,7 @@ bool DispelCcOnPartyAction::Execute(Event /*event*/)
 
 Unit* PartyMemberCcToDispelValue::Calculate() { return CcDispelPick(botAI); }
 
-void AddCcTacticScripts() { new CcTacticUnitScript(); }
+void AddCcTacticScripts(bool harness) { new CcTacticUnitScript(harness); }
 
 // G5d: the Defensive and Protect tactics, the game side (policy in ArenaDefensive.h)
 namespace

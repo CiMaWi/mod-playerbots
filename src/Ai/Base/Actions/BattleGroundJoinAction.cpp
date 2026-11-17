@@ -11,7 +11,6 @@
 #include "BattlegroundMgr.h"
 #include "Event.h"
 #include "GameTime.h"
-#include "GroupMgr.h"
 #include "LadderMgr.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotOperations.h"
@@ -108,9 +107,8 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     if (arenateam->GetMembersSize() < ((uint32)arenateam->GetType()))
         return false;
 
-    // RandomBotArenaGroupOnWorldThread: the world thread forms the group (ArenaGroupFormationOperation, queued below on
-    // an earlier pass); once it stands, the captain queues with it
-    bool const groupOnWorldThread = sPlayerbotAIConfig.RandomBotArenaGroupOnWorldThread;
+    // The world thread forms the group (ArenaGroupFormationOperation, queued below on an earlier pass); once it stands,
+    // the captain queues with it
     // Playerbots.ArenaTeam.RepickEachQueue: a roster larger than the team size gets a fresh random pair once the
     // standing group has played its match
     bool repick = false;
@@ -122,7 +120,7 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
         return !busy;
     };
 
-    if (groupOnWorldThread && LeadsCompleteArenaTeamGroup(bot, arenateam, (uint32)arenateam->GetType()))
+    if (LeadsCompleteArenaTeamGroup(bot, arenateam, (uint32)arenateam->GetType()))
     {
         if (!ArenaTeamFormation::Instance().ShouldRepick(bot, arenateam))
             return standingGroupReady();
@@ -183,14 +181,7 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
                 continue;
             }
 
-            // with the option on, ArenaGroupFormationOperation does both on the world thread
-            if (!groupOnWorldThread)
-            {
-                if (member->GetGroup())
-                    member->GetGroup()->RemoveMember(member->GetGUID());
-
-                memberBotAI->Reset();
-            }
+            // ArenaGroupFormationOperation removes the member from its group and resets its AI on the world thread
         }
 
         if (member)
@@ -216,74 +207,8 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     }
 
     // Map thread: the group forming and the teleports run on the world thread; the captain queues on a later pass
-    if (groupOnWorldThread)
-    {
-        PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<ArenaGroupFormationOperation>(
-            bot->GetGUID(), members, (uint32)arenateam->GetType(), arenateam->GetId(), arenateam->GetName(), repick));
-        return false;
-    }
-
-    Group* group = new Group();
-
-    // disband leaders group
-    if (bot->GetGroup())
-        bot->GetGroup()->Disband(true);
-
-    if (!group->Create(bot))
-    {
-        LOG_INFO("playerbots", "Team #{} <{}>: Can't create group for arena queue", arenateam->GetId(),
-                 arenateam->GetName());
-        return false;
-    }
-    else
-        sGroupMgr->AddGroup(group);
-
-    LOG_INFO("playerbots", "Bot {} <{}>: Leader of <{}>", bot->GetGUID().ToString().c_str(), bot->GetName(),
-             arenateam->GetName());
-
-    for (auto i = begin(members); i != end(members); ++i)
-    {
-        if (*i == bot->GetGUID())
-            continue;
-
-        // if (count >= (int)arenateam->GetType())
-        // break;
-
-        if (group->GetMembersCount() >= (uint32)arenateam->GetType())
-            break;
-
-        Player* member = ObjectAccessor::FindConnectedPlayer(*i);
-        if (!member)
-            continue;
-
-        if (!group->AddMember(member))
-            continue;
-
-        PlayerbotAI* memberBotAI = GET_PLAYERBOT_AI(member);
-        if (!memberBotAI)
-            continue;
-
-        memberBotAI->Reset();
-        member->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
-        member->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), 0);
-
-        LOG_INFO("playerbots", "Bot {} <{}>: Member of <{}>", member->GetGUID().ToString().c_str(),
-                 member->GetName().c_str(), arenateam->GetName().c_str());
-    }
-
-    if (group && group->GetMembersCount() >= (uint32)arenateam->GetType())
-    {
-        LOG_INFO("playerbots", "Team #{} <{}> Group is ready for match", arenateam->GetId(),
-                 arenateam->GetName().c_str());
-        return true;
-    }
-    else
-    {
-        LOG_INFO("playerbots", "Team #{} <{}> Group is not ready for match (not enough members)", arenateam->GetId(),
-                 arenateam->GetName().c_str());
-        group->Disband();
-    }
-
+    PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<ArenaGroupFormationOperation>(
+        bot->GetGUID(), members, (uint32)arenateam->GetType(), arenateam->GetId(), arenateam->GetName(), repick));
     return false;
 }
 
@@ -424,7 +349,7 @@ bool BGJoinAction::isUseful()
     if (bot->InBattlegroundQueue())
         return false;
 
-    // Playerbots.Ladder.Enable: a member of a departing arena team does not queue
+    // Ladder moves (Playerbots.Ladder.Role): a member of a departing arena team does not queue
     if (LadderMgr::Instance().IsQueueBlocked(bot))
         return false;
 

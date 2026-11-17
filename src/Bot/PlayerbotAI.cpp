@@ -16,7 +16,6 @@
 #include <sstream>
 #include <string>
 
-#include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "BankMailService.h"
 #include "Battleground.h"
@@ -48,6 +47,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "ItemUse.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
@@ -175,12 +175,6 @@ PlayerbotAI::PlayerbotAI()
 {
     for (uint8 i = 0; i < BOT_STATE_MAX; i++)
         engines[i] = nullptr;
-
-    for (uint8 i = 0; i < MAX_ACTIVITY_TYPE; i++)
-    {
-        allowActiveCheckTimer[i] = 0;
-        allowActive[i] = false;
-    }
 }
 
 PlayerbotAI::PlayerbotAI(Player* bot)
@@ -196,12 +190,6 @@ PlayerbotAI::PlayerbotAI(Player* bot)
 {
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
         bot->SetTaxiCheater(true);
-
-    for (uint8 i = 0; i < MAX_ACTIVITY_TYPE; i++)
-    {
-        allowActiveCheckTimer[i] = 0;
-        allowActive[i] = false;
-    }
 
     accountId = bot->GetSession()->GetAccountId();
     aiObjectContext = AiFactory::createAiObjectContext(bot, this);
@@ -292,6 +280,10 @@ PlayerbotAI::~PlayerbotAI()
     if (aiObjectContext)
         delete aiObjectContext;
 
+    // a timed item use still waiting ends with its row (logout)
+    if (bot)
+        ItemUse::EndPending(this, bot, ItemUse::UseEvent::LoggedOut);
+
     if (bot)
         PlayerbotsMgr::instance().RemovePlayerBotData(bot->GetGUID(), true);
 }
@@ -344,6 +336,14 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         if (((early & BotWork::Order) && TravelOrders::TakeAndApply(this, bot)) || (GetWork() & BotWork::Aboard))
             nextAICheckDelay = 0;
 
+        // A timed item use is followed to its end (its row), before a new order may meet the bot busy
+        if (GetWork() & BotWork::ItemTimed)
+            ItemUse::Update(this, bot, getMSTime());
+
+        // A test's item use order (playerbots item use): used on this map thread, the outcome is its ItemUse row
+        if (GetWork() & BotWork::ItemOrder)
+            ItemUse::TakeOrders(this, bot);
+
         // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
         // be a minute apart for an idle bot, time enough for a new pet to start a fight
         if (GetWork() & BotWork::Constraints)
@@ -370,10 +370,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP (WP23, WP24): the enthusiasm's engaged edge and leave check while in PvP combat or engaged (one
-    // empty() check and a flag while neither)
-    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
-        WorldPvp::NoteEngaged(this, bot, getMSTime());
+    // World PvP (WP23, WP24, WP38b): the engaged edge and leave check while in PvP combat or engaged, then the fight
+    // episode's end (one empty() check and two flags while neither)
+    WorldPvp::NoteEpisode(this, bot, getMSTime());
 
     lastUpdateDiff = elapsed;
     // The work mask's second load: zero skips the timing row and the tactics' pre-gate hook, and travel's registered
@@ -424,7 +423,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     }
 
     perf.MarkPregate();
-    AllowActivity();
 
     // Wake up if combat state changed (unless casting).
     bool isCasting = bot->IsNonMeleeSpellCast(true);
@@ -475,7 +473,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G0h3-b where the natural reaction runs (its contexts, combat in a started match, a skill): the opponent memory,
     // the busy bot and the queue-like follow-up
     uint32 const nowMs = getMSTime();
-    ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
     bool const busyModel = tactics->stretchOff && tactics->cadenceCombat && pvpSkill != 0;
     // The tactics' check hook: the opponent memory, the tracking ring and the interrupt, focus and defensive
     // followers, for a bot the live test admits (the meter's count of live AI checks)
@@ -599,7 +596,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 else
                 {
                     // Wait for spell cast
-                    if (busyModel && reaction.Queue.Enable)
+                    if (busyModel)
                         yieldQueued(ownLeft);
                     else
                         YieldThread(bot, GetReactDelay());
@@ -667,7 +664,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         tactics->NoteUnfollowedStop(nowMs);
 
     // The GCD of the spell the bot cast last (its end noted once, when it begins): the queue's follow-up
-    if (busyModel && reaction.Queue.Enable && nextAICheckDelay == 0)
+    if (busyModel && nextAICheckDelay == 0)
     {
         LastSpellCast const& last = aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get();
         SpellInfo const* const info = last.id ? sSpellMgr->GetSpellInfo(last.id) : nullptr;
@@ -799,7 +796,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();
 
-    if (sPlayerbotAIConfig.TacticsEnable)
+    if (sPlayerbotAIConfig.Tactics.Enable)
     {
         tacticContext.store(static_cast<uint8>(tactics->GetCheckProbe()), std::memory_order_relaxed);
         // Harness matches keep the "fight enemies" snapshot of .playerbots tactics show current
@@ -1904,7 +1901,7 @@ void PlayerbotAI::DoNextAction(bool min)
         aiObjectContext->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<ObjectGuid>("pull strategy target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<LootObject>("loot target")->Set(LootObject());
-        // A dead bot's flight from enemy players is over; it may flee again in its next PvP combat
+        // A dead bot's flight from enemy players is over, one under way too; it may flee again in its next PvP combat
         aiObjectContext->GetValue<FleeRules::Flight&>("flee flight")->Get() = FleeRules::Flight();
 
         // The dead engine has no battleground strategy, so its "dead" trigger cannot reset this route.
@@ -5064,6 +5061,9 @@ Player* PlayerbotAI::GetGroupLeader()
 
 uint32 PlayerbotAI::GetFixedBotNumber(uint32 maxNum)
 {
+    // Length of one grouper/guilder type time slot; the retired DurationSeconds key default
+    constexpr uint32 GroupTypeSlotSeconds = 30;
+
     if (maxNum == 0)
         return 0;
 
@@ -5077,7 +5077,7 @@ uint32 PlayerbotAI::GetFixedBotNumber(uint32 maxNum)
     h ^= h >> 16;
 
     // Current time slot
-    uint32 timeSlot = (getMSTime() / 1000) / sPlayerbotAIConfig.BotActiveAloneDurationSeconds;
+    uint32 timeSlot = (getMSTime() / 1000) / GroupTypeSlotSeconds;
 
     // Mix timeSlot into the hash to reshuffle every rotation window
     uint32 mixed = h ^ (timeSlot * 0x9e3779b9);  // with multiplicative constant
@@ -5183,189 +5183,13 @@ bool PlayerbotAI::AllowActive(ActivityType activityType)
     if (activityType == PACKET_ACTIVITY)
         return true;
 
-    // all bots forced active, no rotation or scaling needed
-    if (sPlayerbotAIConfig.BotActiveAlone >= 100 && !sPlayerbotAIConfig.BotActiveAloneSmartScale)
-        return true;
-
-    // bot is in combat, always defend yourself
-    if (activityType != OUT_OF_PARTY_ACTIVITY && activityType != PACKET_ACTIVITY)
-    {
-        if (bot->IsInCombat())
-            return true;
-    }
-
-    // bot is inside a BG, dungeon, or raid — always active
-    if (!WorldPosition(bot).isOverworld())
-        return true;
-
-    // bot is waiting in a BG queue — stay active to speed up join
-    if (bot->InBattlegroundQueue())
-        return true;
-
-    // bot is in a guild that contains a real player
-    if (sPlayerbotAIConfig.BotActiveAloneForceWhenInGuild)
-    {
-        if (IsInRealGuild())  // checks cache list
-            return true;
-    }
-
-    // a real player is in the same zone (e.g. Elwynn Forest), same continent or within configured yard radius
-    // combined into a single loop to multiple iterations since this function is called so often
-    bool checkMap = sPlayerbotAIConfig.BotActiveAloneForceWhenInMap;
-    bool checkZone = sPlayerbotAIConfig.BotActiveAloneForceWhenInZone;
-    bool checkRadius = sPlayerbotAIConfig.BotActiveAloneForceWhenInRadius > 0;
-    if (checkMap || checkZone || checkRadius)
-    {
-        uint32 botMapId = bot->GetMapId();
-        uint32 botZoneId = checkZone ? bot->GetZoneId() : 0;
-        float sqRange = 0.0f;
-        WorldPosition botPos(bot);
-        if (checkRadius)
-        {
-            float range = static_cast<float>(sPlayerbotAIConfig.BotActiveAloneForceWhenInRadius);
-            sqRange = range * range;
-        }
-
-        for (auto& player : sRandomPlayerbotMgr.GetPlayers())
-        {
-            if (!player || player->GetMapId() != botMapId)
-                continue;
-
-            bool isGM = player->IsGameMaster();
-
-            // map check
-            if (checkMap && !(isGM && !player->IsVisible()))
-                return true;
-
-            // zone check
-            if (checkZone && !(isGM && !player->IsVisible()) && player->GetZoneId() == botZoneId)
-                return true;
-
-            // radius check
-            if (checkRadius && (!isGM || player->isGMVisible()))
-            {
-                if (botPos.sqDistance(WorldPosition(player)) < sqRange)
-                    return true;
-
-                WorldObject* viewObj = player->GetViewpoint();
-                if (viewObj && viewObj != player && botPos.sqDistance(WorldPosition(viewObj)) < sqRange)
-                    return true;
-            }
-        }
-    }
-
-    // reaction engine: always active when a real player is within react distance (no config gate)
-    if (activityType == REACT_ACTIVITY && HasPlayerNearby())
-        return true;
-
-    // bot has a real player master (not another bot)
-    if (GetMaster())
-    {
-        PlayerbotAI* masterBotAI = GET_PLAYERBOT_AI(GetMaster());
-        if (!masterBotAI || IsSelfBot(GetMaster()))
-            return true;
-    }
-
-    // bot is grouped with a real player (or a bot owned by one)
-    Group* group = bot->GetGroup();
-    if (group)
-    {
-        for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
-        {
-            Player* member = gref->GetSource();
-            if (!member || !member->IsInWorld() || member->GetMapId() != bot->GetMapId())
-                continue;
-
-            if (member == bot)
-                continue;
-
-            PlayerbotAI* memberBotAI = GET_PLAYERBOT_AI(member);
-
-            // group member is a real player or owned by one — stay active
-            if (!memberBotAI || memberBotAI->HasGameClientMaster())
-                return true;
-
-            // if group leader (bot) is inactive, follow suit
-            if (group->IsLeader(member->GetGUID()))
-            {
-                if (!memberBotAI->AllowActivity(PARTY_ACTIVITY))
-                    return false;
-            }
-        }
-    }
-
-    // bot or its group is in LFG — stay active (state cached on the world thread by RefreshLfgState)
-    if (lfgBotState != lfg::LFG_STATE_NONE || lfgGroupState != lfg::LFG_STATE_NONE)
-        return true;
-
-    // a real player has this bot on their friends list
-    if (sPlayerbotAIConfig.BotActiveAloneForceWhenIsFriend)
-    {
-        // shouldnt be needed analyse in future
-        if (!bot->GetGUID())
-            return false;
-
-        for (auto& player : sRandomPlayerbotMgr.GetPlayers())
-        {
-            if (!player || !player->GetSession() || !player->IsInWorld() || player->IsDuringRemoveFromWorld() ||
-                player->GetSession()->IsLoggingOut())
-                continue;
-
-            PlayerbotAI* playerAI = GET_PLAYERBOT_AI(player);
-            if (!playerAI || !IsSelfBot(player))
-                continue;
-
-            PlayerSocial* social = player->GetSocial();
-            if (social && social->HasFriend(bot->GetGUID()))
-                return true;
-        }
-    }
-
-    // pathfinding only runs for bots forced active by the rules above —
-    // skip it for bots that would only be active via random rotation
-    if (activityType == DETAILED_MOVE_ACTIVITY)
-        return false;
-
-    // #######################################################################################
-    // Acitivity throttling logic
-    // #######################################################################################
-    if (sPlayerbotAIConfig.BotActiveAlone <= 0)
-        return false;
-
-    // base threshold capped at 100
-    uint32 mod = sPlayerbotAIConfig.BotActiveAlone > 100 ? 100 : sPlayerbotAIConfig.BotActiveAlone;
-
-    // reduce threshold based on server tick time when SmartScale is enabled
-    if (sPlayerbotAIConfig.BotActiveAloneSmartScale &&
-        bot->GetLevel() >= sPlayerbotAIConfig.BotActiveAloneSmartScaleWhenMinLevel &&
-        bot->GetLevel() <= sPlayerbotAIConfig.BotActiveAloneSmartScaleWhenMaxLevel)
-    {
-        mod = AutoScaleActivity(mod);
-    }
-
-    // deterministic rotation — bot is active if its hash falls below the threshold
-    uint32 ActivityNumber = GetFixedBotNumber(100);
-    return ActivityNumber < mod;
+    // Every bot is always active (DP.11)
+    return true;
 }
 
-bool PlayerbotAI::AllowActivity(ActivityType activityType, bool checkNow)
+bool PlayerbotAI::AllowActivity(ActivityType activityType, [[maybe_unused]] bool checkNow)
 {
-    const int activityIndex = static_cast<int>(activityType);
-
-    if (!allowActiveCheckTimer[activityIndex])
-        allowActiveCheckTimer[activityIndex] = getMSTime();
-
-    // 4500ms base + 0–499ms per-bot offset = 4500–4999ms, capping at just under 5 seconds
-    uint32 offset = bot->GetGUID().GetCounter() % 500;
-
-    if (!checkNow && getMSTime() < (allowActiveCheckTimer[activityIndex] + 4500 + offset))
-        return allowActive[activityIndex];
-
-    const bool allowed = AllowActive(activityType);
-    allowActive[activityIndex] = allowed;
-    allowActiveCheckTimer[activityIndex] = getMSTime();
-
-    return allowed;
+    return AllowActive(activityType);
 }
 
 void PlayerbotAI::RefreshLfgState()
@@ -5380,34 +5204,6 @@ void PlayerbotAI::RefreshLfgState()
 
     Group* group = bot->GetGroup();
     lfgGroupState = group ? sLFGMgr->GetState(group->GetGUID()) : lfg::LFG_STATE_NONE;
-}
-
-uint32 PlayerbotAI::AutoScaleActivity(uint32 mod)
-{
-    // Current server update time (ms), and the floor/ceiling values for bot scaling: the configured ones, or the
-    // situation budget's (Playerbots.Situation.Enable)
-    ActivityBudget const& budget = ActivityBudget::Instance();
-    uint32 maxDiff = budget.GetTickMs();
-    uint32 diffLimitFloor = budget.GetDiffLimitFloor();
-    uint32 diffLimitCeiling = budget.GetDiffLimitCeiling();
-
-    if (diffLimitCeiling <= diffLimitFloor)
-    {
-        // Perfrom binary decision if ceiling <= floor: Either all bots are active or none are
-        return (maxDiff > diffLimitCeiling) ? 0 : mod;
-    }
-
-    if (maxDiff > diffLimitCeiling)
-        return 0;
-
-    if (maxDiff <= diffLimitFloor)
-        return mod;
-
-    // Calculate lag progress from floor to ceiling (0 to 1)
-    double lagProgress = (maxDiff - diffLimitFloor) / (double)(diffLimitCeiling - diffLimitFloor);
-
-    // Apply the percentage of active bots (the complement of lag progress) to the mod value
-    return static_cast<uint32>(mod * (1 - lagProgress));
 }
 
 bool PlayerbotAI::IsOpposing(Player* player) { return IsOpposing(player->getRace(), bot->getRace()); }
@@ -5874,7 +5670,7 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
     else if (command == "constraints")
         return "constraints " + TestConstraints::Format(testConstraints);
     else if (command == "hold")
-        return "hold " + TestConstraints::Format(static_cast<uint16>(testConstraints & TestConstraints::HOLD));
+        return "hold " + TestConstraints::Format(static_cast<uint32>(testConstraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;
@@ -6578,43 +6374,24 @@ void PlayerbotAI::ImbueItem(Item* item, uint8 targetInventorySlot)
     ImbueItem(item, TARGET_FLAG_ITEM, targetItem->GetGUID());
 }
 
-// generic item use method
+// generic item use method: a request to the item use path (caller script, item-use WI5), used at once on the bot's
+// map thread (its callers are actions); the mask names the target: none the bot, unit, item, or game object
 void PlayerbotAI::ImbueItem(Item* item, uint32 targetFlag, ObjectGuid targetGUID)
 {
-    if (!item)
+    if (!item || !ItemUse::Allowed(bot, ItemUse::Caller::Script))
         return;
 
-    uint32 glyphIndex = 0;
-    uint8 castFlags = 0;
-    uint8 bagIndex = item->GetBagSlot();
-    uint8 slot = item->GetSlot();
-    uint8 cast_count = 0;
-    ObjectGuid item_guid = item->GetGUID();
+    ItemUse::Request request = ItemUse::OnSelf(item, ItemUse::Caller::Script);
+    if (targetFlag & TARGET_FLAG_UNIT)
+        request.target.kind = ItemUse::TargetKind::Unit;
+    else if (targetFlag & TARGET_FLAG_ITEM)
+        request.target.kind = ItemUse::TargetKind::OwnItem;
+    else if (targetFlag & TARGET_FLAG_GAMEOBJECT)
+        request.target.kind = ItemUse::TargetKind::Object;
+    if (request.target.kind != ItemUse::TargetKind::Self)
+        request.target.guid = targetGUID.GetRawValue();
 
-    uint32 spellId = 0;
-    for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
-    {
-        if (item->GetTemplate()->Spells[i].SpellId > 0)
-        {
-            spellId = item->GetTemplate()->Spells[i].SpellId;
-            break;
-        }
-    }
-
-    WorldPacket* packet = new WorldPacket(CMSG_USE_ITEM);
-    *packet << bagIndex;
-    *packet << slot;
-    *packet << cast_count;
-    *packet << spellId;
-    *packet << item_guid;
-    *packet << glyphIndex;
-    *packet << castFlags;
-    *packet << targetFlag;
-
-    if (targetFlag & (TARGET_FLAG_UNIT | TARGET_FLAG_ITEM | TARGET_FLAG_GAMEOBJECT))
-        *packet << targetGUID.WriteAsPacked();
-
-    bot->GetSession()->QueuePacket(packet);
+    ItemUse::Use(bot, request);
 }
 
 void PlayerbotAI::EnchantItemT(uint32 spellid, uint8 slot)
@@ -7370,16 +7147,14 @@ void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason
 
 uint32 PlayerbotAI::GetReactDelay()
 {
-    // A bot on a ship's, zeppelin's or lift's leg checks as often as its follower scans the transport (WT54-11): a
-    // stop lasts seconds, and at a rest area's 2-20 s, or a slow skill's stretch, bots waiting on Thunder Bluff's tower
-    // slept through the zeppelin's stop, riders through their far stop, and a scan pair never saw Kamagua's ship still
-    if (!bot->IsInCombat() && TravelKeepsOnFoot(this))
-        return TravelLegs::TRANSPORT_SCAN_MS;
+    // Out of combat travel sets its own pace (BotTravel::PaceMs: a transport leg's scan, the loot's pace)
+    if (std::optional<uint32> const paceMs = bot->IsInCombat() ? std::nullopt : botTravel->PaceMs())
+        return *paceMs;
     // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
     float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
-    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs,
+    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadence.CheckMs,
                                  factor);
 }
 
@@ -7432,17 +7207,8 @@ uint32 PlayerbotAI::ComputeReactDelay()
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
         return base * 5;
 
-    // When not resting, on a mailbox or banker visit, on an errand trip or a route's trip, return 10-30 times the
-    // base. A visit or a trip takes one step a check: at the rest area's pace below, a visit of two mails took minutes
-    // in a city (WB7d), a trip's steps from Dalaran's banker to its vendor a floor below up to 30 s each (WB8b), and a
-    // route's first step at a city's portal came after the portal leg's 20 s had run out (WT55d)
-    if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || BankMail::VisitRuns(bankMail) ||
-        std::holds_alternative<NewRpgInfo::Errands>(rpgInfo.data) ||
-        std::holds_alternative<NewRpgInfo::Travel>(rpgInfo.data))
-        return base * urand(10, 30);
-
-    // In other cases, return 20-200 times the base
-    return base * urand(20, 200);
+    // Out of combat and outside a match, every bot checks every 1 to 3 s, resting or not
+    return base * urand(10, 30);
 }
 
 void PlayerbotAI::PetFollow()

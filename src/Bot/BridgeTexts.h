@@ -661,6 +661,73 @@ inline constexpr char const* LATELY_SENTENCE = "What you did of note lately, new
 
 // The catalogue's sentence of the topic known.
 inline constexpr char const* KNOWN_SENTENCE = "The others you have shared deeds with, and what you shared.";
+
+// The catalogue's sentence of the topic needs.
+inline constexpr char const* NEEDS_SENTENCE =
+    "What you need: what you must pay for soon, what you are short of and what you are saving for. "
+    "It changes, so look here before you answer what you need, also before you say you need nothing.";
+
+// The needs topic's answer for a bot the upkeep rules do not govern.
+inline constexpr char const* NEEDS_PROVIDED =
+    "My gear and gold are provided for; I have nothing to pay for and nothing to save up for myself.";
+
+// The needs topic's answer while the upkeep index is not ready.
+inline constexpr char const* NEEDS_PENDING = "I have not worked out what I need to pay for yet.";
+
+// The needs topic's answer with nothing to pay for.
+inline constexpr char const* NEEDS_NOTHING = "I have nothing to pay for right now.";
+
+// What a repair need buys.
+inline constexpr char const* NEEDS_REPAIRS = "repairs";
+
+// Follows the count of spells a training need buys, one or more: "3 spells at the warrior trainer".
+inline constexpr char const* NEEDS_ONE_SPELL = " spell";
+inline constexpr char const* NEEDS_SPELLS = " spells";
+
+// Joins the spells to the trainer; the class word (Facts::CLASS_WORDS) and NEEDS_TRAINER follow.
+inline constexpr char const* NEEDS_AT_THE = " at the ";
+inline constexpr char const* NEEDS_TRAINER = " trainer";
+
+// The trainer's class word for a class without one.
+inline constexpr char const* NEEDS_ANY_CLASS = "class";
+
+// What a pet need buys: a stable slot that keeps the old pet, or a new pet.
+inline constexpr char const* NEEDS_OLD_PET_SLOT = "a stable slot for the old pet";
+inline constexpr char const* NEEDS_NEW_PET = "a new pet";
+
+// Opens a need without a price: due now, or paid when a trip passes by; what it buys follows.
+inline constexpr char const* NEEDS_MUST_GET = "I must get ";
+inline constexpr char const* NEEDS_WILL_GET = "I will get ";
+
+// Opens a need with a price: due now, or paid when a trip passes by; what it buys follows.
+inline constexpr char const* NEEDS_MUST_PAY = "I must pay for ";
+inline constexpr char const* NEEDS_WILL_PAY = "I will pay for ";
+
+// Follows what a need buys when the bot pays for it as a trip passes by.
+inline constexpr char const* NEEDS_WHEN_PASSING = " when I pass by";
+
+// Follows what a need without a price buys; what going without costs follows.
+inline constexpr char const* NEEDS_NO_COST = ", at no cost; going without means ";
+
+// How much of a need's price the bot's gold covers: all, a part (the amount between the two), none.
+inline constexpr char const* NEEDS_ALL_SET_ASIDE = "the gold is set aside";
+inline constexpr char const* NEEDS_PART_OPENS = "only ";
+inline constexpr char const* NEEDS_PART_SET_ASIDE = " is set aside";
+inline constexpr char const* NEEDS_NONE_SET_ASIDE = "none of it is set aside";
+
+// Follows the gold set aside for a need with a price; what going without costs follows.
+inline constexpr char const* NEEDS_GOING_WITHOUT = "; going without means ";
+
+// What the bot saves for when no need and no riding rank names it.
+inline constexpr char const* NEEDS_WHAT_IS_COMING = "what is coming";
+
+// The reserve: NEEDS_RESERVE_KEEP, the gold kept back, NEEDS_RESERVE_HOLD, the gold the bot holds.
+inline constexpr char const* NEEDS_RESERVE_KEEP = "I keep ";
+inline constexpr char const* NEEDS_RESERVE_HOLD = " back for what is coming and hold ";
+
+// The saving entry: NEEDS_SAVING, the shortfall, NEEDS_SHORT_FOR, what the bot saves for.
+inline constexpr char const* NEEDS_SAVING = "I am saving: ";
+inline constexpr char const* NEEDS_SHORT_FOR = " short for ";
 }  // namespace Lookups
 
 // ---------------------------------------------------------------------------------------------
@@ -907,6 +974,21 @@ inline constexpr char const* BAGS_BANK_FREE = "bank_free";
 
 // The route topic's failure word for a place the bot does not know.
 inline constexpr char const* ROUTE_UNKNOWN_PLACE = "unknown_place";
+
+// The needs topic's row word for a bot the upkeep rules do not govern.
+inline constexpr char const* NEEDS_ROW_PROVIDED = "provided";
+
+// The needs topic's row word while the upkeep index is not ready.
+inline constexpr char const* NEEDS_ROW_PENDING = "pending";
+
+// The needs topic's row word with nothing to pay for.
+inline constexpr char const* NEEDS_ROW_NOTHING = "nothing";
+
+// The needs topic's row word for the gold kept back.
+inline constexpr char const* NEEDS_ROW_RESERVE = "reserve";
+
+// The needs topic's row word for the shortfall the bot saves up for.
+inline constexpr char const* NEEDS_ROW_SAVING = "saving";
 }  // namespace Lookups
 }  // namespace BridgeTexts
 

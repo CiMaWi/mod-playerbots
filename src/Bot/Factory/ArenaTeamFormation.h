@@ -21,7 +21,7 @@ class ArenaTeam;
 class ChatHandler;
 class Player;
 
-// Bot arena teams formed by partner score (Playerbots.ArenaTeam.*, earned rating mode only): a roster may hold more
+// Bot arena teams formed by partner score (Playerbots.ArenaTeam.*): a roster may hold more
 // members than the team size, each queue takes a random pair of it, after a loss the member with the longest loss
 // streak may leave, and teams short of members recruit bots without a team (close skill, complementary class). Teams
 // low on the ladder are forgiving (rare leaves, wide skill tolerance, weighted-random picks), teams at the top strict.
@@ -37,7 +37,7 @@ public:
         return instance;
     }
 
-    // Formation.Enable on, the earned rating mode, bot arena teams not being deleted
+    // Formation.Enable on, bot arena teams not being deleted
     static bool IsActive();
     // Most members a bot team of this type holds (the core allows type * 2)
     static uint32 MaxRoster(uint32 type);

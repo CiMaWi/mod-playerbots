@@ -23,7 +23,7 @@
 // the first interruptible cast it notices as soon as its reaction allows (today's behaviour); a judging bot classifies
 // the cast, holds its kick on damage for a healer in reach and commits late on heals, with log-normal noise. The kick
 // lands at the later of the commit point and the reaction model's due time when the model counts from the bar's start
-// (Natural.Reaction.EndToEnd, a bar younger than REACTION_MAX_STAMP_AGE_MS); else the model counts from the first
+// (a bar younger than REACTION_MAX_STAMP_AGE_MS); else the model counts from the first
 // query, which is the commit point, and the kick lands at commit plus reaction. With HoldPolicy 1 (G5c-c) the hold on
 // damage is DecideHold's: it holds only while a cast heal is likely (an enemy low; instant heals the bot recognises
 // lower the health at which it expects one, a cast heal seen lately raises it) and its window reachable (reaction,
@@ -186,14 +186,14 @@ inline Params ComputeParams(uint8 skill, uint8 patience, uint8 knowledge, float 
     return params;
 }
 
-// The deep path: the bot knows the tactic (TacticActive) and, with G0h3's think part on, takes the deep check by its
-// Wisdom (ThinkDeepPercent); full ability (skill 0, PvE with Skill.FullAbilityInPvE, exempt) always judges
-inline bool UsesDeep(bool known, bool fullAbility, bool thinkEnable, ReactionTypeState const& types, uint64 hash)
+// The deep path: the bot knows the tactic (TacticActive) and takes the deep check by its Wisdom (ThinkDeepPercent);
+// full ability (skill 0, PvE with Skill.FullAbilityInPvE, exempt) always judges
+inline bool UsesDeep(bool known, bool fullAbility, ReactionTypeState const& types, uint64 hash)
 {
     if (!known)
         return false;
 
-    if (fullAbility || !thinkEnable)
+    if (fullAbility)
         return true;
 
     return ChooseThinkDepth(types, hash) == ReactionThinkDepth::Deep;

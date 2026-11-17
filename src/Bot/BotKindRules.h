@@ -20,12 +20,13 @@ enum class MasterKind
     SelfBot      // a person's own character with the AI on: a person sits at that client too
 };
 
-// A, the instance's role: a living world is neither the arena role nor an ArenaOnly lab. Until the population's
-// role becomes the instance's (CS23), it also needs the key Playerbots.Population.Persistent.
-inline bool LivingWorld(bool persistentKey, bool arenaRole, bool arenaOnly)
-{
-    return persistentKey && !arenaRole && !arenaOnly;
-}
+// A, the instance's role: a living world is neither the arena role nor an ArenaOnly lab
+inline bool LivingWorld(bool arenaRole, bool arenaOnly) { return !arenaRole && !arenaOnly; }
+
+// Whether the instance's population follows the targets (roster rotation and retirement): the role value
+// Playerbots.Population.FollowTargets, and only in a living world (forced off on the arena role and on an ArenaOnly
+// lab, whatever the key says)
+inline bool FollowsTargets(bool livingWorld, bool followTargetsKey) { return livingWorld && followTargetsKey; }
 
 // A and B: a random bot of a living world, whoever leads it
 inline bool IsPersistentBot(bool livingWorld, bool randomBot) { return livingWorld && randomBot; }
@@ -39,6 +40,20 @@ inline bool MasterCounts(MasterKind master)
 
 // A and B and not C: a persistent bot nobody at a game client leads keeps what it owns (upkeep, bank, mail, planner)
 inline bool KeepsPossessions(bool persistentBot, MasterKind master) { return persistentBot && !MasterCounts(master); }
+
+// What the ladder role (Playerbots.Ladder.Role) decides about bot arena teams and PvP gear
+struct ArenaRoleValues
+{
+    bool Formation;   // Playerbots.ArenaTeam.Formation.Enable: on unless role 2 (a test sets 0 for fixed teams)
+    bool Recruit;     // Playerbots.ArenaRecruit.Enable: the same
+    bool Matchmaker;  // the ladder's matchmaker: on exactly at role 1 (it answers real players' 2v2 queues)
+    bool Buy;         // Playerbots.PvpGear.Buy.Enable: on at role 2; elsewhere a test toggle
+};
+
+inline ArenaRoleValues ArenaRole(bool mainRole, bool arenaRole, bool formationKey, bool recruitKey, bool buyKey)
+{
+    return {formationKey && !arenaRole, recruitKey && !arenaRole, mainRole, buyKey || arenaRole};
+}
 }  // namespace BotKindRules
 
 #endif

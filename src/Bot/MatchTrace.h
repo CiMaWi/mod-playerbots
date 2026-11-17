@@ -63,7 +63,7 @@ struct TraceUnit
     uint8 ClassId = 0;
 };
 
-// Playerbots.MatchLog.TraceEvery (with Playerbots.MatchLog.Enable): one arena match in N, chosen by the FNV-1a hash of
+// Playerbots.MatchLog.TraceEvery: one arena match in N, chosen by the FNV-1a hash of
 // its match id, keeps a trace: the casts (start, finish, cancel) of the participants, CC applied and removed, deaths,
 // the executed actions of the skill categories and the positions every second. At the match end the trace is one JSON
 // line in <LogsDir>/pvptest/traces-<date>.jsonl, keyed by the match id of its record in matches-<date>.jsonl.

@@ -278,7 +278,7 @@ PvpTestArenaJob::PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide s
         uint32 forcedMask = 0;
         std::string tacticsError;
         if (forcedTactics &&
-            ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, *forcedTactics, forcedMask, tacticsError))
+            ApplyTacticMaskEdit(sPlayerbotAIConfig.Tactics.ConfigMask, *forcedTactics, forcedMask, tacticsError))
         {
             sideRecord.ForcedTactics = *forcedTactics;
             sideRecord.ForcedTacticMask = forcedMask;
@@ -709,7 +709,7 @@ void PvpTestArenaJob::CaptureRoster()
             bot.Spec = AiFactory::GetPlayerSpecName(player);
             if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
             {
-                if (forcedSkill && sPlayerbotAIConfig.SkillEnable)
+                if (forcedSkill)
                 {
                     botAI->SetPvpSkill(forcedSkill);
                     _skillsApplied = true;
@@ -719,7 +719,7 @@ void PvpTestArenaJob::CaptureRoster()
                     botAI->SetTacticMask(*forcedMask, true);
 
                 bot.GearScore = botAI->GetEquipGearScore(player);
-                if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
+                if (botAI->GetPvpSkill())
                     bot.Skill = botAI->GetPvpSkill();
 
                 bot.CopyOf = botAI->GetTactics().GetAttributeTemplate();
@@ -1674,14 +1674,14 @@ bool DrawCompRoster(PvpTestPlan& plan, std::set<ObjectGuid> const& inUse, PvpTes
 // G0c: a side's tactic mask edit, checked against the names here so the match starts with a valid one
 bool ParseTactics(std::string const& value, std::optional<std::string>& tactics, std::string& error)
 {
-    if (!sPlayerbotAIConfig.TacticsEnable)
+    if (!sPlayerbotAIConfig.Tactics.Enable)
     {
         error = "Forced tactics need Playerbots.Tactics.Enable = 1";
         return false;
     }
 
     uint32 mask = 0;
-    if (!ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, value, mask, error))
+    if (!ApplyTacticMaskEdit(sPlayerbotAIConfig.Tactics.ConfigMask, value, mask, error))
         return false;
 
     tactics = value;
@@ -1690,12 +1690,6 @@ bool ParseTactics(std::string const& value, std::optional<std::string>& tactics,
 
 bool ParseSkill(std::string const& value, uint8& skill, std::string& error)
 {
-    if (!sPlayerbotAIConfig.SkillEnable)
-    {
-        error = "Forced skills need Playerbots.Skill.Enable = 1";
-        return false;
-    }
-
     Optional<uint32> const number = Acore::StringTo<uint32>(value);
     if (!number || *number < BotProfileMgr::MinSkill || *number > BotProfileMgr::MaxSkill)
     {
