@@ -240,6 +240,7 @@ TargetView ViewOfItem(Item* target)
     view.itemSubClass = proto->SubClass;
     view.itemInvType = proto->InventoryType;
     view.itemLevel = static_cast<std::uint16_t>(proto->ItemLevel);
+    view.requiredLevel = static_cast<std::uint16_t>(proto->RequiredLevel);
     view.itemHasCoating = target->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) != 0;
     return view;
 }
