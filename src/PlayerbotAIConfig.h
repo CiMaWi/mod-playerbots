@@ -475,19 +475,11 @@ public:
     // Playerbots.Skill.Attributes.*: loadings, spreads and the correlation matrix (factorised at load) of the attribute
     // model (BotAttributes.h); the defaults make every ability the skill and every trait neutral
     BotAttributeParams SkillAttributes;
-    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h). Contexts is a
-    // tactic scope mask (default the PvP contexts)
-    uint8 NaturalReactionContexts;
+    // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h)
     ReactionParams NaturalReaction;
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
     // started match (NaturalReaction.h)
-    uint32 NaturalCadenceCheckMs;
-    uint32 NaturalCadenceStaggerMs;
-    uint8 NaturalCadenceContexts;
-    // Playerbots.Natural.Cadence.SkillStretch (G6d-a): the skill's stretch (Skill.React*) stays where the cadence and
-    // the reaction model both run, so it scales the cadence's check interval (0: factor 1 there, the reaction model
-    // carries the skill)
-    bool NaturalCadenceSkillStretch;
+    CadenceParams NaturalCadence;
     // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
     bool ArenaOnlyEnable;
     bool ArenaOnlySpreadContinents;

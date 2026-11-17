@@ -1000,29 +1000,29 @@ bool PlayerbotAIConfig::Initialize()
         std::string const contexts =
             sConfigMgr->GetOption<std::string>("Playerbots.Natural.Reaction.Contexts", "Arena,Battleground");
         std::string error;
-        NaturalReactionContexts = reactionMatches;
-        if (!ParseTacticScope(contexts, NaturalReactionContexts, error))
+        NaturalReaction.Contexts = reactionMatches;
+        if (!ParseTacticScope(contexts, NaturalReaction.Contexts, error))
         {
             LOG_ERROR("server.loading", "Playerbots.Natural.Reaction.Contexts: {}; Arena,Battleground is used", error);
-            NaturalReactionContexts = reactionMatches;
+            NaturalReaction.Contexts = reactionMatches;
         }
 
-        NaturalCadenceSkillStretch = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.SkillStretch", false);
-        NaturalCadenceCheckMs =
+        NaturalCadence.SkillStretch = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.SkillStretch", false);
+        NaturalCadence.CheckMs =
             std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);
-        NaturalCadenceStaggerMs = std::clamp<uint32>(
+        NaturalCadence.StaggerMs = std::clamp<uint32>(
             sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.StaggerMs", 20), 0, UPSTREAM_CHECK_STAGGER_MS);
         uint8 const matches =
             static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
         std::string const cadenceContexts =
             sConfigMgr->GetOption<std::string>("Playerbots.Natural.Cadence.Contexts", "Arena,Battleground");
         std::string cadenceError;
-        NaturalCadenceContexts = matches;
-        if (!ParseTacticScope(cadenceContexts, NaturalCadenceContexts, cadenceError))
+        NaturalCadence.Contexts = matches;
+        if (!ParseTacticScope(cadenceContexts, NaturalCadence.Contexts, cadenceError))
         {
             LOG_ERROR("server.loading", "Playerbots.Natural.Cadence.Contexts: {}; Arena,Battleground is used",
                       cadenceError);
-            NaturalCadenceContexts = matches;
+            NaturalCadence.Contexts = matches;
         }
 
         // G2a and G2b: the natural facing and tracking (Playerbots.Natural.Facing.* and .Track.*), optional keys
