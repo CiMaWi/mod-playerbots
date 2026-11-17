@@ -735,8 +735,8 @@ bool PlayerbotAIConfig::Initialize()
         LOG_WARN(
             "server.loading",
             "Playerbots.BotActiveAlone / Playerbots.botActiveAloneSmartScale: ignored: every bot is always active");
-    TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
-    TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
+    TestPlayer.Enable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
+    TestPlayer.Account = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     PvpTest.Enable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
     TestMissLog = sConfigMgr->GetOption<bool>("Playerbots.Test.MissLog", false);
     PvpTest.TimeoutSeconds =

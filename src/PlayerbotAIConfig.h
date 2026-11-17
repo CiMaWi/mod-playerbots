@@ -44,6 +44,7 @@
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
+#include "TestPlayerConfig.h"
 #include "UpkeepConfig.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
@@ -411,8 +412,8 @@ public:
     uint32 RandomBotHordeRatio;
     bool DisableDeathKnightLogin;
     bool LimitTalentsExpansion;
-    bool TestPlayerEnable;
-    std::string TestPlayerAccount;
+    // TestPlayer: see TestPlayerConfig.h
+    TestPlayerConfig TestPlayer;
     // PvpTest: see PvpTestConfig.h
     PvpTestConfig PvpTest;
     // Playerbots.Test.MissLog (test only; CS5 design 6.3, 6.4): log a skipped pre-gate step or check follower whose
