@@ -2574,10 +2574,10 @@ Playerbots.Skill.Attributes.Corr.Aggression-Caution = -0.2
 # GM commands: .playerbots tactics show <bot> | stats [reset] | selftest [scope|gate|reaction|attributes|focus]
 Playerbots.Tactics.Enable = 0
 
-# Per tactic (all keys optional): Playerbots.Tactics.<Name>.Enable (default 0) and Playerbots.Tactics.<Name>.Scope,
-# a comma list of the contexts it acts in: Arena, Battleground, World (open-world PvP: duels and PvP combat outside
-# battlegrounds), Pve, or All / None. An unknown context logs a warning and keeps the default. The names and their
-# default scopes:
+# Per tactic: Playerbots.Tactics.<Name>.Enable (default 0) puts the tactic into every bot's mask. Its other keys
+# (Scope: the contexts it acts in; KnownFromSkill, UseChanceAtSkill1/99: the skill gate) are config table rows,
+# documented at TacticSettings (src/Bot/Tactics/TacticIds.h); ".playerbots config Playerbots.Tactics.<Name>." prints
+# them with their defaults and bounds. The names and their default scopes:
 #   Hold        Arena,Battleground,World   target hold
 #   Plan        Arena,Battleground         team plan (kill and crowd-control marks)
 #   Cc          Arena,Battleground,World   crowd control use and chains
@@ -2595,37 +2595,16 @@ Playerbots.Tactics.Enable = 0
 #   Natural     All                        natural reaction, facing, tracking, paths (PvE: in sight of a real player)
 #   Jump        Arena                      tactical jumps
 #   FocusTarget Arena,Battleground,World   kicks and crowd control on a focus target, the own target kept (G4e)
-# The skill gate: Playerbots.Tactics.<Name>.KnownFromSkill, 0-100 (default 0 =
-# every bot knows it; 100 = no bot), the skill from which a bot knows the tactic, moved per bot by
-# Playerbots.Skill.KnowledgeSpread; below it the bot never uses the tactic. Playerbots.Tactics.<Name>.UseChanceAtSkill1
-# and .UseChanceAtSkill99, 0-100 % (default 100 and 100): the chance that a bot that knows the tactic uses it in a
-# window of Playerbots.Skill.NoticeWindowMs, lerped by skill from skill 1 to skill 99 (Playerbots.Skill.CurveExponent
-# applies). One answer per bot, tactic and window (a hash, not a roll per update). The defaults leave a tactic as its
-# Enable and Scope make it.
-# Example (the defaults):
-# Playerbots.Tactics.Hold.Enable = 0
-# Playerbots.Tactics.Hold.Scope = Arena,Battleground,World
-# Playerbots.Tactics.Hold.KnownFromSkill = 0
-# Playerbots.Tactics.Hold.UseChanceAtSkill1 = 100
-# Playerbots.Tactics.Hold.UseChanceAtSkill99 = 100
-# Playerbots.Tactics.Plan.Enable = 0
-# Playerbots.Tactics.Plan.Scope = Arena,Battleground
-# Playerbots.Tactics.Plan.KnownFromSkill = 0
-# Playerbots.Tactics.Cc.Enable = 0
-# Playerbots.Tactics.Cc.Scope = Arena,Battleground,World
-# Playerbots.Tactics.Cc.KnownFromSkill = 0
-# Playerbots.Tactics.OwnCc.Enable = 0
-# Playerbots.Tactics.OwnCc.Scope = All
-# Playerbots.Tactics.Trinket.Enable = 0
-# Playerbots.Tactics.Trinket.Scope = Arena,Battleground,World
-# Playerbots.Tactics.Trinket.KnownFromSkill = 0
-# Playerbots.Tactics.Dispel.Enable = 0
-# Playerbots.Tactics.Dispel.Scope = All
-# Playerbots.Tactics.Dispel.KnownFromSkill = 0
-# Playerbots.Tactics.Kite.Enable = 0
-# Playerbots.Tactics.Drink.Enable = 0
-# Playerbots.Tactics.Jump.Enable = 0
-# Playerbots.Tactics.Natural.Enable = 0
+Playerbots.Tactics.Hold.Enable = 0
+Playerbots.Tactics.Plan.Enable = 0
+Playerbots.Tactics.Cc.Enable = 0
+Playerbots.Tactics.OwnCc.Enable = 0
+Playerbots.Tactics.Trinket.Enable = 0
+Playerbots.Tactics.Dispel.Enable = 0
+Playerbots.Tactics.Kite.Enable = 0
+Playerbots.Tactics.Drink.Enable = 0
+Playerbots.Tactics.Jump.Enable = 0
+Playerbots.Tactics.Natural.Enable = 0
 
 # Target hold and team plan: the numbers of the Hold and Plan tactics (Playerbots.Tactics.Hold.*, .Focus.*) and of
 # the focus target (.FocusTarget.*) are config table rows, documented at FocusConfig
@@ -2715,8 +2694,7 @@ Playerbots.Tactics.Enable = 0
 # the commit point, and the kick lands at the commit point plus the reaction time. "X on enemy healer" takes the
 # best cast of the fight's enemies other than the target (a heal on a low friend, a CC, a heal, damage), kept
 # HealerCacheMs ms.
-# Playerbots.Tactics.Interrupt.Enable = 0
-# Playerbots.Tactics.Interrupt.KnownFromSkill = 0
+Playerbots.Tactics.Interrupt.Enable = 0
 # The numbers of the Interrupt tactic are config table rows, documented at InterruptConfig
 # (src/Bot/Tactics/ArenaInterruptConfig.h); ".playerbots config Playerbots.Tactics.Interrupt" prints them with their
 # defaults and bounds (a value out of bounds is capped with a warning). Listed below are the keys a hub test sets.
@@ -2777,25 +2755,25 @@ Playerbots.Tactics.Enable = 0
 # healer with MoonPctAtTeamwork1..99 % by Teamwork; else the enemy healer or the CC target) and kicks or controls it
 # at the focus ease, its own target kept; an interrupt on the focus scores KickBonus over other casts of its kind.
 # Below the threshold the action is priced as a new target. Off (the default): no focus target.
-# Playerbots.Tactics.FocusTarget.Enable = 0
+Playerbots.Tactics.FocusTarget.Enable = 0
 # (MoonPctAtTeamwork1/99 and KickBonus are config table rows, documented at FocusConfig.)
 #
 # Defensives on burst and the partner protected (G5d; Playerbots.Tactics.Defensive.Enable, scope All, and
 # Playerbots.Tactics.Protect.Enable, scope Arena,Battleground,World); the numbers are config table rows,
 # documented at DefensiveConfig.
-# Playerbots.Tactics.Defensive.Enable = 0
-# Playerbots.Tactics.Protect.Enable = 0
+Playerbots.Tactics.Defensive.Enable = 0
+Playerbots.Tactics.Protect.Enable = 0
 # Playerbots.Tactics.Defensive.PotionEnable = 1
 # Playerbots.Tactics.Defensive.Opponent.Enable = 1
 #
 # Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World); the numbers are config table
 # rows, documented at FakeConfig.
-# Playerbots.Tactics.Fake.Enable = 0
+Playerbots.Tactics.Fake.Enable = 0
 
 # Line of sight and pillar play (G2e, G2f; Playerbots.Tactics.Los.Enable, scope Arena,Battleground,World, and
 # Playerbots.Tactics.Pillar.Enable, scope Arena); the numbers are config table rows, documented at LosConfig.
-# Playerbots.Tactics.Los.Enable = 0
-# Playerbots.Tactics.Pillar.Enable = 0
+Playerbots.Tactics.Los.Enable = 0
+Playerbots.Tactics.Pillar.Enable = 0
 
 # Kiting, drinking and jumps (G3a, G3b, G2g; the Drink tactic works (G3b), Kite and Jump read their numbers only so far).
 # Playerbots.Tactics.Kite.Enable (scope Arena,Battleground,World), Playerbots.Tactics.Drink.Enable (scope

@@ -102,7 +102,9 @@
                 "src/Bot/Tactics/ArenaFocusConfig.cpp",
                 "src/Bot/Tactics/ArenaInterruptConfig.cpp",
                 "src/Bot/Tactics/ArenaKiteConfig.cpp",
-                "src/Bot/Tactics/NaturalCastConfig.cpp"
+                "src/Bot/Tactics/NaturalCastConfig.cpp",
+                "src/Bot/Tactics/TacticScope.cpp",
+                "src/Bot/Tactics/TacticsConfig.cpp"
             ],
             "args": [
                 "{repo}"

@@ -1398,37 +1398,6 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.ControlShare", ItemUse.ControlShare, false), 0, 100);
     ItemUse.UseEndGraceMs = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.UseEndGraceMs", ItemUse.UseEndGraceMs, false), 0, 10000);
-    Tactics = TacticsConfig{};
-    Tactics.Enable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
-    for (uint32 index = 0; index < TACTIC_COUNT; ++index)
-    {
-        TacticDefinition const& definition = TACTIC_DEFINITIONS[index];
-        std::string const prefix = std::string("Playerbots.Tactics.") + definition.ConfigName;
-        TacticSettings& settings = Tactics.Settings[index];
-        // The per-tactic keys are optional (commented in playerbots.conf.dist): no missing-key warnings
-        settings.Enable = sConfigMgr->GetOption<bool>(prefix + ".Enable", false, false);
-        settings.Scope = definition.DefaultScope;
-        std::string const scope = sConfigMgr->GetOption<std::string>(prefix + ".Scope", "", false);
-        std::string error;
-        if (!scope.empty() && !ParseTacticScope(scope, settings.Scope, error))
-        {
-            LOG_WARN("playerbots", "{}.Scope: {}; using {}", prefix, error, FormatTacticScope(definition.DefaultScope));
-            settings.Scope = definition.DefaultScope;
-        }
-
-        auto const percent = [&prefix](char const* key, uint32 fallback)
-        {
-            return static_cast<uint8>(
-                std::clamp<uint32>(sConfigMgr->GetOption<uint32>(prefix + key, fallback, false), 0, 100));
-        };
-        settings.KnownFromSkill = percent(".KnownFromSkill", 0);
-        settings.UseChanceAtSkill1 = percent(".UseChanceAtSkill1", 100);
-        settings.UseChanceAtSkill99 = percent(".UseChanceAtSkill99", 100);
-
-        if (Tactics.Enable && settings.Enable)
-            Tactics.ConfigMask |= TacticBit(static_cast<TacticId>(index));
-    }
-
     // CS5 design 6.4: which of the check hook's followers can pass their guard in each context
     TacticFollowerSwitches followerSwitches;
     followerSwitches.TacticsEnable = Tactics.Enable;
