@@ -35,7 +35,6 @@ void LogTravelGate(Player const& player, TravelTraceIdentity const& trace, uint3
 char const* ContactName(TravelLifecycle::Contact contact);
 char const* MotionStateName(TravelLifecycle::MotionState state);
 char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome);
-bool UnderWay(Transport const& transport);
 std::string_view MountPathWord(BotTravel::MountPath path);
 
 class PassengerAdapter
@@ -50,23 +49,20 @@ public:
         return TravelTransportGeometry::SplineControl{_player}.ReadSpline();
     }
 
+    // The surface under the bot of the one vessel the caller names (the ridden one, the boarding's, the leg's or the
+    // master's; WT62): no other transport is looked for
     TravelLifecycle::Surface Probe(uint64 expected, bool riding)
     {
         using TravelLifecycle::Contact;
-        Transport* surface = expected ? Resolve(expected) : LegacyBotProbe();
+        Transport* surface = Resolve(expected);
         if (!surface)
-            return {expected, 0, expected ? Contact::Unavailable : Contact::OffSurface};
+            return {expected, 0, Contact::Unavailable};
 
         uint64 const guid = surface->GetGUID().GetRawValue();
         uint32 const entry = surface->GetEntry();
         if (!surface->m_model || !surface->isSpawned() || !_player.InSamePhase(surface))
             return {guid, entry, Contact::Unavailable};
         if (!riding && _player.IsFlying())
-            return {guid, entry, Contact::OffSurface};
-        // A bot with no boarding of its own (no expected vessel) is not taken aboard by a hull sweeping through its
-        // spot on the pier or in the water (WT54-9, F1): only a vessel at its stop takes a still bot aboard, and not
-        // one that swims under its hull (WT54-10: sea-level starts at a docked ship, then no exit at its far stop)
-        if (!riding && !expected && (UnderWay(*surface) || _player.IsInWater()))
             return {guid, entry, Contact::OffSurface};
 
         constexpr float RAY_RISE_YARDS = 0.5f;
@@ -155,14 +151,6 @@ public:
             return;
         }
 
-        Transport const* legacyNull = nullptr;
-        Transport const* legacyBot = nullptr;
-        if (ReadMembership().Available)
-        {
-            legacyNull = LegacyProbe(nullptr);
-            legacyBot = LegacyBotProbe();
-        }
-
         auto const spline = ReadSpline();
         Transport const* transport = _player.GetTransport();
         if (!transport && motion && ReadMembership().Available)
@@ -173,15 +161,14 @@ public:
         TravelLifecycle::Point const endpoint = motion ? motion->Endpoint : TravelLifecycle::Point{};
         LOG_DEBUG("playerbots",
                   "[TravelLifecycle] sample bot={} trip={} leg={} generation={} tick_ms={} probe_gap_ms={} map={} "
-                  "world={:.3f},{:.3f},{:.3f} local={:.3f},{:.3f},{:.3f} expected={} entry={} legacy_null={} "
-                  "legacy_bot={} surface={} contact={} motion={} spline={} frame={} endpoint={:.3f},{:.3f},{:.3f} "
+                  "world={:.3f},{:.3f},{:.3f} local={:.3f},{:.3f},{:.3f} expected={} entry={} surface={} contact={} "
+                  "motion={} spline={} frame={} endpoint={:.3f},{:.3f},{:.3f} "
                   "spline_now={} spline_finalized={} motion_result={} before={} after={} result={} available={} "
                   "period_ms={} dock={}",
                   _player.GetGUID().GetCounter(), _trace->Trip, _trace->Leg, _trace->Generation, nowMs, gapMs,
                   spline.Map, spline.Position.X, spline.Position.Y, spline.Position.Z, local.GetPositionX(),
                   local.GetPositionY(), local.GetPositionZ(), motion ? motion->Transport : 0,
-                  motion ? motion->Entry : sample.Observed.Entry, legacyNull ? legacyNull->GetGUID().GetRawValue() : 0,
-                  legacyBot ? legacyBot->GetGUID().GetRawValue() : 0, sample.Observed.Guid,
+                  motion ? motion->Entry : sample.Observed.Entry, sample.Observed.Guid,
                   ContactName(sample.Observed.Where),
                   motion ? (motion->Kind == TravelLifecycle::MotionKind::Board ? "board" : "exit") : "none",
                   motion ? motion->Spline : 0, spline.Local ? "local" : "world", endpoint.X, endpoint.Y, endpoint.Z,
@@ -201,22 +188,8 @@ private:
         return transport && transport->IsInWorld() && transport->FindMap() == _player.FindMap() ? transport : nullptr;
     }
 
-    Transport* LegacyProbe(Player* reference) const
-    {
-        return _player.GetMap()->GetTransportForPos(_player.GetPhaseMask(), _player.GetPositionX(),
-                                                    _player.GetPositionY(), _player.GetPositionZ(), reference);
-    }
-
-    Transport* LegacyBotProbe()
-    {
-        if (!_legacyBot)
-            _legacyBot = LegacyProbe(&_player);
-        return *_legacyBot;
-    }
-
     Player& _player;
     std::optional<TravelTraceIdentity> _trace;
-    std::optional<Transport*> _legacyBot;
 };
 
 #endif

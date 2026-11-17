@@ -45,6 +45,7 @@
 #include "Map.h"
 #include "ModelIgnoreFlags.h"
 #include "MotionMaster.h"
+#include "MountRules.h"
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "NewRpgAction.h"
@@ -426,17 +427,21 @@ bool CheckLanding(Player* bot, TravelLegs::Trip& trip)
 }
 
 // A fly leg's mount (WU10): off a ground mount, then the bot's fastest flying mount (CheckMountStateAction::
-// CastFlyingMount; the engine's "check mount state" refused a bot standing still on open ground, WU11b). A try in
-// combat, while casting or where the bot cannot take off is skipped and does not count (the follower asks again; the
-// last fails the leg at once); so is a try while the bot moves or sits: the cast checks refuse it in the tick of the
-// stop (WU11b: Edhoon's "cast result 255, moving true"), so it stops or stands up now and casts on a later tick. A
-// counted try that starts no cast leaves its word for the fly_leg_failed row (no_strategy: no mount strategy;
-// no_mount: no flying mount known; refused: the cast check refused every one)
+// CastFlyingMount; the engine's "check mount state" refused a bot standing still on open ground, WU11b), as the mount
+// owner's policy allows (AskMountPolicy, WT44). A try in combat, while casting, while the bot loots or where it cannot
+// take off is skipped and does not count (the follower asks again; the last fails the leg at once); so is a try while
+// the bot moves or sits: the cast checks refuse it in the tick of the stop (WU11b: Edhoon's "cast result 255, moving
+// true"), so it stops or stands up now and casts later. A counted try that starts no cast leaves its word for the
+// fly_leg_failed row (the policy's nomount or on_foot; no_strategy; no_mount: no flying mount; refused: every cast)
 bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 nowMs)
 {
     if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(true) || CheckMountStateAction::NoTakeoffHere(bot))
         return true;
-    if (bot->isMoving() || !bot->IsStandState())
+    MountRules::Verdict const verdict = CheckMountStateAction::AskMountPolicy(bot, botAI, MountRules::Kind::Flying);
+    auto const step = TravelLegs::TakeFlyTry(trip, verdict, !bot->isMoving() && bot->IsStandState(), nowMs);
+    if (step == MountRules::FlyTry::Wait || step == MountRules::FlyTry::Refused)
+        return true;
+    if (step == MountRules::FlyTry::Settle)
     {
         if (bot->isMoving())
             bot->StopMoving();
@@ -444,9 +449,7 @@ bool MountToFly(Player* bot, PlayerbotAI* botAI, TravelLegs::Trip& trip, uint32 
             bot->SetStandState(UNIT_STAND_STATE_STAND);
         return true;
     }
-    TravelLegs::NoteMountTry(trip, nowMs);
-    if (bot->IsMounted())
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    CheckMountStateAction::Dismount(bot, MountRules::How::Fly);
     if (!botAI->HasStrategy("mount", BOT_STATE_NON_COMBAT))
         trip.mountWhy = "no_strategy";
     else
@@ -607,16 +610,12 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     }
     Transport* const ridden = bot->GetTransport();
     TravelLegs::Trip const& trip = data->trip;
-    // A route may have been superseded aboard. Only the route with this ride or its own boarding result may use it.
+    // A route may have been superseded aboard. Only the route whose boarding the ride is may use it: its own boarding
+    // result, or the leg's vessel docked under the bot at the wait point and attached by the passenger check (WT62)
     bool const ownsBoard = data->passengerMotion && data->passengerMotion->Kind == MotionKind::Board &&
                            data->passengerMotion->Transport == membership.Guid;
-    // Taken aboard by the leg's vessel at the leg's start (its deck docked under the waiting bot) is the boarding
-    TravelRoute::Point const standing{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-    // or on the walk to that leg's start (the walk is done, WT54-6); not by an elevator or the tram
-    bool const takenAboard =
-        ridden && (TravelLegs::TakenAboard(trip, standing, membership.Entry) ||
-                   (!ridden->IsStaticTransport() && TravelLegs::WalkTakenAboard(trip, standing, membership.Entry)));
-    if (ridden && !takenAboard && (!AtTransportLeg(trip) || (!trip.passengerGuid && !ownsBoard)))
+    bool const boardedByIntent = ridden && TravelLegs::BoardedByIntent(trip, membership.Guid);
+    if (ridden && !boardedByIntent && (!AtTransportLeg(trip) || (!trip.passengerGuid && !ownsBoard)))
     {
         OffFirstBegins(bot, *data);
         return true;
@@ -677,7 +676,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         seen.takeoffHere = !CheckMountStateAction::NoTakeoffHere(bot);
     seen.money = bot->GetMoney();
     seen.nowMs = getMSTime();
-    seen.activeLegMs = data->progress.LegMs();
+    seen.legMs = data->progress.LegMs();
     seen.aboard = membership.Entry;
     seen.aboardGuid = membership.Guid;
     seen.membershipAvailable = membership.Available;
@@ -969,13 +968,14 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
                   now - data.route.requestedMs);
         return RequestRoute(data);
     };
+    auto const answerLate = [&] { return TravelLegs::NextDeadlineMs(data.trip, now, 0, &data.route) < 0; };
     if (!answer)
-        return TravelLegs::WaitExpired(data.route, now) ? askAgain("got no answer") : true;
+        return answerLate() ? askAgain("got no answer") : true;
     TravelRoute::Point const current{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     switch (TravelLegs::Judge(data.route, answer->requestId, current, now))
     {
         case TravelLegs::Verdict::Drop:
-            return TravelLegs::WaitExpired(data.route, now) ? askAgain("got only a stale answer") : true;
+            return answerLate() ? askAgain("got only a stale answer") : true;
         case TravelLegs::Verdict::Refresh:
             return askAgain(bot->GetMapId() != data.route.mapId ? "changed maps" : "moved or took the answer too late");
         case TravelLegs::Verdict::Apply:

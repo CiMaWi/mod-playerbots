@@ -418,6 +418,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "mesh-move-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
             "file": "travel-walk-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg"

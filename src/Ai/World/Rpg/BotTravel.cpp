@@ -6,18 +6,24 @@
 
 #include "BotTravel.h"
 
+#include "BattlegroundSA.h"
 #include "BotTravelInternal.h"
 #include "CensusMgr.h"
 #include "CheckMountStateAction.h"
+#include "GameObject.h"
 #include "Log.h"
 #include "LootObjectStack.h"
+#include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NaturalTrace.h"
+#include "NewRpgAction.h"
 #include "NewRpgInfo.h"
+#include "NewRpgInternal.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 #include "PointMovementGenerator.h"
 #include "Transport.h"
 #include "TransportMgr.h"
@@ -25,6 +31,35 @@
 #include "TravelLifecycle.h"
 #include "TravelProgress.h"
 #include "WorldLog.h"
+
+namespace
+{
+// A follower's intent (WT62, WT.48): its master's transport, a lift or the tram as well as a ship. Only the master's
+// membership is read, and only on the bot's map; no surface is searched for it
+uint64 MasterTransportGuid(Player const& bot, Player const* master)
+{
+    if (!master || master == &bot || !master->IsInWorld() || master->FindMap() != bot.FindMap())
+        return 0;
+    Transport const* const transport = master->GetTransport();
+    return transport ? transport->GetGUID().GetRawValue() : 0;
+}
+
+// The one narrow rule for bots without a leg (WT62 Do 3): Strand of the Ancients places attackers above its two boats,
+// static transports that a client reports standing on. A bot has no client: it means to board the nearer boat
+uint64 BattlegroundBoatGuid(Player const& bot)
+{
+    BattlegroundMap* const map = bot.FindMap() ? bot.FindMap()->ToBattlegroundMap() : nullptr;
+    Battleground* const bg = map ? map->GetBG() : nullptr;
+    // The rolled type: a game from the random queue carries BATTLEGROUND_RB as its own
+    if (!bg || bg->GetBgTypeID(true) != BATTLEGROUND_SA)
+        return 0;
+    GameObject const* nearer = bg->GetBGObject(BG_SA_BOAT_ONE);
+    GameObject const* const other = bg->GetBGObject(BG_SA_BOAT_TWO);
+    if (!nearer || (other && bot.GetExactDist2dSq(other) < bot.GetExactDist2dSq(nearer)))
+        nearer = other;
+    return nearer ? nearer->GetGUID().GetRawValue() : 0;
+}
+}  // namespace
 
 std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel)
 {
@@ -95,20 +130,6 @@ char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
     return "pending";
 }
 
-// A ship or zeppelin between its stops (MotionTransport::IsMoving is private): the core holds it at a stop frame while
-// its path timer lies in that frame's [ArriveTime, DepartureTime)
-bool UnderWay(Transport const& transport)
-{
-    MotionTransport const* const ship = transport.ToMotionTransport();
-    if (!ship || !ship->GetPeriod() || ship->GetKeyFrames().size() <= 1)
-        return false;
-    uint32 const timer = ship->GetPathProgress() % ship->GetPeriod();
-    for (KeyFrame const& frame : ship->GetKeyFrames())
-        if (frame.IsStopFrame() && frame.ArriveTime <= timer && timer < frame.DepartureTime)
-            return false;
-    return true;
-}
-
 BotTravel::BotTravel(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
 bool BotTravel::ReconcileFollowPassenger(Transport const& expected)
@@ -163,14 +184,15 @@ std::string_view MountPathWord(BotTravel::MountPath path)
     return path == BotTravel::MountPath::Packet ? "packet" : "timer";
 }
 
-void BotTravel::TraceTravelMount(MountPath path, bool accepted)
+void BotTravel::TraceTravelMount(MountPath path, char const* veto)
 {
+    bool const accepted = !veto;
     if (path == MountPath::None || !NaturalTrace::IsSelected(bot))
         return;
 
     ObjectGuid const loot = activeLootInteraction ? activeLootInteraction->InteractionGuid() : bot->GetLootGUID();
     uint32 const generation = activeLootInteraction ? activeLootInteraction->InteractionGeneration() : 0;
-    TraceTravelInteraction(accepted ? "mount_accept" : "mount_veto", accepted ? "issued" : "loot", loot, generation,
+    TraceTravelInteraction(accepted ? "mount_accept" : "mount_veto", accepted ? "issued" : veto, loot, generation,
                            MountPathWord(path));
     if (accepted)
     {
@@ -213,11 +235,9 @@ void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, 
 
     auto const* leg = travel.CurrentLeg();
     bool const combat = bot->IsInCombat();
-    bool const passenger = TravelLegs::PassengerOwnsProgress(travel.trip, travel.passengerMotion.has_value()) ||
-                           bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
     // The flight down after a failed fly leg (TravelLegs::StartDescent) counts as riding: a trip never ends in the air
     bool const external =
-        passenger || bot->IsInFlight() || bot->GetVehicle() || travel.route.waiting || travel.trip.descending;
+        NewRpgInternal::PassengerOwnsTravel(*bot, travel) || travel.route.waiting || travel.trip.descending;
     Owner owner = Owner::Exempt;
     if (combat)
         owner = Owner::Combat;
@@ -243,9 +263,10 @@ void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, 
         TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
 }
 
-void BotTravel::BeginAboard(uint32 entry)
+void BotTravel::BeginAboard(uint32 entry, uint64 guid)
 {
     aboardEntry = entry;
+    aboardGuid = guid;
     aboardSinceMs = getMSTime();
     passengerCadence.Revalidate = true;
     if (entry)
@@ -273,13 +294,62 @@ void BotTravel::LogPreGateMisses(uint32 work) const
         LOG_INFO("playerbots", "PreGate miss: MountTrace {}", bot->GetName());
 }
 
+// A bot on a ship's, zeppelin's or lift's leg checks as often as its follower scans the transport (WT54-11): a stop
+// lasts seconds, and at a rest area's 2-20 s, or a slow skill's stretch, bots waiting on Thunder Bluff's tower slept
+// through the zeppelin's stop, riders through their far stop, and a scan pair never saw Kamagua's ship still. A bot's
+// own short steps check at the loot's pace, one step a check: a loot interaction's (stop, dismount, request, the
+// window, its close) inside LootInteraction::PhaseMs, and a trip's until its route is taken (the request, the
+// answer). At a trip's 1-3 s times a slow skill's stretch a step took up to 10 s: the loot budget ran out before the
+// window opened, and a walk began 36 s after its loot (WT44)
+std::optional<uint32> BotTravel::PaceMs() const
+{
+    if (TravelKeepsOnFoot(botAI))
+        return TravelLegs::TRANSPORT_SCAN_MS;
+    auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
+    if ((botAI->GetWork() & BotWork::Loot) || awaitsRoute)
+        return sPlayerbotAIConfig.LootDelay;
+    return std::nullopt;
+}
+
+void BotTravel::NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted)
+{
+    if (!WorldLog::Active())
+        return;
+    if (MeshMove::Note(meshMoves, kind, MeshMove::Classify(pathType, lastStep), counted))
+    {
+        MeshMove::Spot& spot = meshMoves.last[static_cast<size_t>(kind)];
+        spot = {bot->GetMapId(), bot->GetZoneId(), bot->GetAreaId(), bot->GetPositionX(), bot->GetPositionY()};
+    }
+}
+
 void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
                         std::optional<TravelTraceIdentity> const& traceTravel)
 {
+    // WT71: the moves the mesh did not carry, one MeshMiss row per kind with a miss (id = not carried, amount =
+    // ordered)
+    if (MeshMove::FlushDue(meshMoves, maintenanceMs))
+        MeshMove::Flush(meshMoves, maintenanceMs,
+                        [&](MeshMove::Kind kind, uint32 missed, uint32 ordered, MeshMove::Spot const& spot)
+                        {
+                            WorldLogFormat::Place place;
+                            place.map = spot.map;
+                            place.zone = spot.zone;
+                            place.area = spot.area;
+                            place.x = spot.x;
+                            place.y = spot.y;
+                            EventLog::EmitAt(bot->GetGUID().GetCounter(), place, MeshMove::EVENT_TYPE,
+                                             MeshMove::KindWord(kind), missed, ordered);
+                        });
     bool const revalidateProgress = passengerCadence.Revalidate;
     PassengerAdapter passenger(*bot, traceTravel);
+    // Boarding has one owner (WT62, WT.48): a bot on no transport is probed only for the vessel it means to board
+    uint64 const intent = TravelLifecycle::ChooseIntent(
+        {(botAI->GetWork() & BotWork::Aboard) ? aboardGuid : 0, travel ? TravelLegs::BoardingIntent(travel->trip) : 0,
+         MasterTransportGuid(*bot, botAI->GetMaster()), BattlegroundBoatGuid(*bot)});
     TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
-                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger);
+                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger,
+                              intent);
     // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
     // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence. Travel's
     // registered steps read their bits on fresh loads: the passenger check or the loot watch can set a later one
@@ -294,6 +364,7 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
                      placed ? "placed" : "failed", sinceMs);
             EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
             aboardEntry = 0;
+            aboardGuid = 0;
             botAI->EndWork(BotWork::Aboard);
         }
         else
