@@ -143,15 +143,17 @@ std::string ConfigRowLine(ConfigFamily<Struct> const& family, ConfigRow<Struct> 
 }
 
 // The keys of the list that start with the family's prefix and that no row of the family knows. A retired row knows its
-// key: old configs may still set it.
+// key: old configs may still set it. A family named by a full key (no trailing dot) holds that key only: a longer key
+// with the same start is a live sibling (Playerbots.PvpGear.Wear, Playerbots.PvpGear.WearBetweenMatches).
 template <typename Struct>
 std::vector<std::string> UnknownConfigKeys(ConfigFamily<Struct> const& family, std::vector<std::string> const& keys)
 {
     std::vector<std::string> unknown;
     std::string const prefix = family.Prefix;
+    bool const fullKey = !prefix.empty() && prefix.back() != '.';
     for (std::string const& key : keys)
     {
-        if (key.compare(0, prefix.size(), prefix) != 0)
+        if (key.compare(0, prefix.size(), prefix) != 0 || (fullKey && key.size() != prefix.size()))
             continue;
         bool known = false;
         for (ConfigRow<Struct> const& row : family.Rows)

@@ -23,7 +23,7 @@
 // Pure functions: no bots, no config singleton, so .playerbots tactics selftest reaction drives them with synthetic
 // hashes, skills and times. PlayerbotAI::SetPvpSkill caches a ReactionState per bot; SkillMultiplier keeps one
 // ReactionEvent per notice category and the bot's ReactionFocus. Hidden like the skill: only GM commands show them.
-// End to end (EndToEnd): the target counts from the event's server time (a cast bar's start, an aura's application)
+// End to end: the target counts from the event's server time (a cast bar's start, an aura's application)
 // and adds the modelled round trip, the display and the server ticks of a human's answer; the bot passes at its first
 // check at or after the target minus its own check latency, learnt from how far its passes miss their targets (at a
 // steady interval: its mean check overshoot), so its action lands on the target on average. No check is woken for
@@ -95,14 +95,14 @@ enum class ReactionStampSource : uint8
 };
 
 // One per bot and notice category: the event the category's action answers. An event begins at the first query
-// after a quiet gap; the reaction time counts from there, with EndToEnd from the event's server time.
+// after a quiet gap; the reaction time counts from there, or from the event's server time once stamped.
 struct ReactionEvent
 {
     uint32 StartMs = 0;
     uint32 LastQueryMs = 0;
     uint32 ReadyAfterMs = 0;  // reaction time plus penalties, from StartMs
-    uint32 StampAgeMs = 0;    // the event's server time this long before StartMs (0 without EndToEnd)
-    uint32 TargetMs = 0;      // end-to-end target from the server time (ReadyAfterMs without EndToEnd)
+    uint32 StampAgeMs = 0;    // the event's server time this long before StartMs (0 unstamped)
+    uint32 TargetMs = 0;      // end-to-end target from the server time (ReadyAfterMs unstamped)
     uint32 DueAfterMs = 0;    // the pass from StartMs: target minus stamp age and the bot's latency, at least 0
     uint8 StampSource = 0;    // ReactionStampSource
     bool Active = false;
@@ -130,7 +130,7 @@ enum class ReactionBusyAnswer : uint8
 };
 
 // One per bot: the category the bot attends to (0 = none) and when it last acted on it, and the bot's check latency
-// (EndToEnd only)
+// (stamped events only)
 struct ReactionFocus
 {
     uint8 Category = 0;
@@ -371,22 +371,21 @@ inline bool ReactionEventPending(ReactionEvent const& event, uint32 nowMs)
 }
 
 // Begins an event: one draw, the penalties and the miss decision (missPercent: D4's per-window chance, per event).
-// With the bot's G0h3 prices (types) the parts that are on add their costs and the load its miss share; a predicted
-// event (Anticipate) is no choice. The defaults give G0h2's event.
+// With the bot's G0h3 prices (types) the parts add their costs and the load its miss share; a predicted event
+// (Anticipate) is no choice. The default inputs and prices give G0h2's event.
 inline void StartReactionEvent(ReactionEvent& event, ReactionFocus const& focus, ReactionState const& state,
                                ReactionParams const& params, uint64 guid, uint8 category, uint32 missPercent,
                                bool behind, uint32 nowMs, ReactionTypeState const& types = ReactionTypeState(),
                                ReactionEventInputs const& inputs = ReactionEventInputs())
 {
     uint64 const hash = ReactionEventHash(guid, category, nowMs);
-    bool const predicted = params.Anticipate.Enable && inputs.Predicted && types.AnticipateShare > 0.0f;
-    bool const choice = !predicted && params.Choice.Enable && inputs.Options >= 2;
-    uint32 const load = params.Load.Enable ? std::min(inputs.Load, params.Load.MaxEvents) : 0;
-    ReactionEase const ease = params.Ease.Enable ? inputs.Ease : ReactionEase::Common;
-    event.ThinkMs = params.Think.Enable && inputs.Thinks ? ThinkCostMs(types, inputs.Depth) : 0;
+    bool const predicted = inputs.Predicted && types.AnticipateShare > 0.0f;
+    bool const choice = !predicted && inputs.Options >= 2;
+    uint32 const load = std::min(inputs.Load, params.Load.MaxEvents);
+    ReactionEase const ease = inputs.Ease;
+    event.ThinkMs = inputs.Thinks ? ThinkCostMs(types, inputs.Depth) : 0;
     event.CostMs = (choice ? HickCostMs(types, inputs.Options, params.Choice.MaxOptions) : 0) +
-                   LoadPenaltyMs(types, load, inputs.LoadTop) + (params.Ease.Enable ? EaseCostMs(types, ease) : 0) +
-                   event.ThinkMs;
+                   LoadPenaltyMs(types, load, inputs.LoadTop) + EaseCostMs(types, ease) + event.ThinkMs;
     event.Type = static_cast<uint8>(predicted ? ReactionType::Anticipated
                                               : (choice ? ReactionType::Choice : ReactionType::Simple));
     event.Options = static_cast<uint8>(std::min<uint32>(inputs.Options, 255));
@@ -420,21 +419,15 @@ inline void StartReactionEvent(ReactionEvent& event, ReactionFocus const& focus,
 // The end-to-end target: the event's reaction plus the modelled round trip, the display and the server ticks
 inline uint32 EndToEndTargetMs(ReactionParams const& params, uint32 readyMs, uint32 tickMs)
 {
-    if (!params.EndToEnd)
-        return readyMs;
-
     return readyMs + params.PingMs + params.DisplayMs + tickMs;
 }
 
-// With EndToEnd, right after StartReactionEvent: the event happened stampAgeMs before its first query (too old: at
+// Right after StartReactionEvent: the event happened stampAgeMs before its first query (too old: at
 // the first query, source Stale). The pass is due at the target minus the stamp age and the bot's latency, never
 // before the first query; a bot that first looks after that (busy, or a cast seen late) passes at once
 inline void StampReactionEvent(ReactionEvent& event, ReactionFocus const& focus, ReactionParams const& params,
                                uint32 stampAgeMs, ReactionStampSource source, uint32 tickMs)
 {
-    if (!params.EndToEnd)
-        return;
-
     if (stampAgeMs > REACTION_MAX_STAMP_AGE_MS)
     {
         stampAgeMs = 0;
@@ -570,7 +563,7 @@ inline bool InterruptOutOfReach(ReactionReevalParams const& params, uint32 ready
                                 uint32 enemyRemainingMs)
 {
     int64 const reach = static_cast<int64>(enemyRemainingMs) - static_cast<int64>(params.BusyMarginMs);
-    return params.BusySkip && static_cast<int64>(readyInMs) >= reach && static_cast<int64>(freeInMs) < reach;
+    return static_cast<int64>(readyInMs) >= reach && static_cast<int64>(freeInMs) < reach;
 }
 
 // The kick's due time from now without the own cast that kept the bot from looking (event.OwnMs before now) or a

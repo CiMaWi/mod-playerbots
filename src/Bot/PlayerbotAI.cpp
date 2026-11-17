@@ -474,7 +474,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G0h3-b where the natural reaction runs (its contexts, combat in a started match, a skill): the opponent memory,
     // the busy bot and the queue-like follow-up
     uint32 const nowMs = getMSTime();
-    ReactionParams const& reaction = sPlayerbotAIConfig.NaturalReaction;
     bool const busyModel = tactics->stretchOff && tactics->cadenceCombat && pvpSkill != 0;
     // The tactics' check hook: the opponent memory, the tracking ring and the interrupt, focus and defensive
     // followers, for a bot the live test admits (the meter's count of live AI checks)
@@ -598,7 +597,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 else
                 {
                     // Wait for spell cast
-                    if (busyModel && reaction.Queue.Enable)
+                    if (busyModel)
                         yieldQueued(ownLeft);
                     else
                         YieldThread(bot, GetReactDelay());
@@ -666,7 +665,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         tactics->NoteUnfollowedStop(nowMs);
 
     // The GCD of the spell the bot cast last (its end noted once, when it begins): the queue's follow-up
-    if (busyModel && reaction.Queue.Enable && nextAICheckDelay == 0)
+    if (busyModel && nextAICheckDelay == 0)
     {
         LastSpellCast const& last = aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get();
         SpellInfo const* const info = last.id ? sSpellMgr->GetSpellInfo(last.id) : nullptr;
@@ -7363,11 +7362,9 @@ void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason
 
 uint32 PlayerbotAI::GetReactDelay()
 {
-    // A bot on a ship's, zeppelin's or lift's leg checks as often as its follower scans the transport (WT54-11): a
-    // stop lasts seconds, and at a rest area's 2-20 s, or a slow skill's stretch, bots waiting on Thunder Bluff's tower
-    // slept through the zeppelin's stop, riders through their far stop, and a scan pair never saw Kamagua's ship still
-    if (!bot->IsInCombat() && TravelKeepsOnFoot(this))
-        return TravelLegs::TRANSPORT_SCAN_MS;
+    // Out of combat travel sets its own pace (BotTravel::PaceMs: a transport leg's scan, the loot's pace)
+    if (std::optional<uint32> const paceMs = bot->IsInCombat() ? std::nullopt : botTravel->PaceMs())
+        return *paceMs;
     // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not

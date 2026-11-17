@@ -25,7 +25,7 @@ class ArenaTeam;
 class ChatHandler;
 class Player;
 
-// Runtime moves of one bot arena team (Playerbots.Ladder.Enable or Playerbots.Ladder.Role). Depart drops the team from
+// Runtime moves of one bot arena team (Playerbots.Ladder.Role = 1 or 2). Depart drops the team from
 // memory once no member is queued or in a battleground and every member has logged out; arrive loads it back from its
 // DB rows with two async queries. Never disbands and never deletes a team row. With a ladder role the members' state
 // (hosted or away) is kept in the playerbots table playerbots_ladder_roster, written only by depart and arrive and read
@@ -58,7 +58,7 @@ public:
         return instance;
     }
 
-    // The moves' commands work (Playerbots.Ladder.Enable or a ladder role)
+    // The moves' commands work (a ladder role)
     static bool MovesOn();
 
     // Startup (PlayerbotAIConfig::Initialize, before the bot arena team registry is built): with a ladder role, loads

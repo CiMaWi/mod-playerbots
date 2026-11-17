@@ -591,15 +591,14 @@ void RunInterruptSelftest(ChatHandler* handler)
     check(Int::Score(Int::Kind::Damage, 100, Urgent) > 0 && Int::Score(Int::Kind::Other, 100, Urgent) == 0,
           "damage scores, other does not");
 
-    // The deep path: known, then full ability or the think part off, else Wisdom's deep percent
+    // The deep path: known, then full ability, else Wisdom's deep percent
     ReactionTypeState types;
     types.ThinkDeepPercent = 0;
-    check(!Int::UsesDeep(false, true, true, types, 1), "a bot that does not know the tactic takes the shortcut");
-    check(Int::UsesDeep(true, true, true, types, 1), "full ability judges");
-    check(Int::UsesDeep(true, false, false, types, 1), "with the think part off a knowing bot judges");
-    check(!Int::UsesDeep(true, false, true, types, 1), "deep percent 0 takes the shortcut");
+    check(!Int::UsesDeep(false, true, types, 1), "a bot that does not know the tactic takes the shortcut");
+    check(Int::UsesDeep(true, true, types, 1), "full ability judges");
+    check(!Int::UsesDeep(true, false, types, 1), "deep percent 0 takes the shortcut");
     types.ThinkDeepPercent = 100;
-    check(Int::UsesDeep(true, false, true, types, 1), "deep percent 100 judges");
+    check(Int::UsesDeep(true, false, types, 1), "deep percent 100 judges");
 
     // The numbers at the conf.dist defaults; skill 0 has the skill-99 ones
     InterruptConfig const config{};
@@ -2385,35 +2384,29 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         exempt ? 0u : botAI->GetTactics().GetSkillNoticeMissPercent(),
         exempt ? 0u : botAI->GetTactics().GetSkillNoticeDelayMs());
     ReactionState const& reaction = botAI->GetTactics().GetReactionState();
-    handler->PSendSysMessage("  natural reaction: {} (contexts {}); median {:.0f} ms, sigma {:.3f}",
-                             config.NaturalReactionActive ? "on" : "off",
+    handler->PSendSysMessage("  natural reaction: contexts {}; median {:.0f} ms, sigma {:.3f}",
                              FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
     ReactionParams const& timing = config.NaturalReaction;
     handler->PSendSysMessage(
-        "  natural timing: cadence {} (contexts {}), check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
-        "check {}, stretch {}; end to end {} (with the faster check; ping {} ms, display {} ms, ticks {})",
-        config.NaturalCadenceEnable ? "on" : "off", FormatTacticScope(config.NaturalCadenceContexts),
-        config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs,
+        "  natural timing: cadence contexts {}, check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
+        "check {}, stretch {}; end to end with the faster check (ping {} ms, display {} ms, ticks {})",
+        FormatTacticScope(config.NaturalCadenceContexts), config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs,
         botAI->GetTactics().IsInNaturalTimingScope() ? "yes" : "no",
         botAI->GetTactics().IsInNaturalTimingCombat() ? "yes" : "no",
         botAI->GetTactics().IsNaturalCadenceActive() ? "yes" : "no",
         SkillStretchApplies(botAI->GetTactics().IsSkillStretchOff(), config.NaturalCadenceSkillStretch) ? "on" : "off",
-        timing.EndToEnd ? "on" : "off", timing.PingMs, timing.DisplayMs,
+        timing.PingMs, timing.DisplayMs,
         timing.ServerTickMs < 0 ? std::string("half the map update")
                                 : Acore::StringFormat("{} ms", timing.ServerTickMs));
     ReactionTypeState const& prices = botAI->GetTactics().GetReactionTypes();
     auto const onOff = [](bool on) { return on ? "on" : "off"; };
     handler->PSendSysMessage(
-        "  reaction types: choice {} ({:.0f} ms per doubling), load {} ({} ms, {} % per event, top {:.2f}), ease {} "
-        "({}/{}/{}/{} ms), think {} ({}/{} ms, deep {} %, wait {} ms), anticipate {} ({:.2f}), queue {} ({}-{} ms), "
-        "reeval {}, busy skip {}, memory {}, movement {}",
-        onOff(timing.Choice.Enable), prices.HickMsPerDoubling, onOff(timing.Load.Enable), prices.LoadMsPerEvent,
-        prices.LoadMissPercentPerEvent, prices.LoadTopProtect, onOff(timing.Ease.Enable), prices.EaseMs[0],
-        prices.EaseMs[1], prices.EaseMs[2], prices.EaseMs[3], onOff(timing.Think.Enable), prices.ThinkShortcutMs,
-        prices.ThinkDeepMs, prices.ThinkDeepPercent, prices.PatienceWaitMs, onOff(timing.Anticipate.Enable),
-        prices.AnticipateShare, onOff(timing.Queue.Enable), prices.QueueMinMs, prices.QueueMaxMs,
-        onOff(timing.Reeval.Enable), onOff(timing.Reeval.BusySkip), onOff(timing.Memory.Enable),
-        onOff(timing.MovementEnable));
+        "  reaction types: choice {:.0f} ms per doubling, load {} ms / {} % per event (top {:.2f}), ease {}/{}/{}/{} "
+        "ms, think {}/{} ms (deep {} %, wait {} ms), anticipate {:.2f}, queue {}-{} ms, reeval {}",
+        prices.HickMsPerDoubling, prices.LoadMsPerEvent, prices.LoadMissPercentPerEvent, prices.LoadTopProtect,
+        prices.EaseMs[0], prices.EaseMs[1], prices.EaseMs[2], prices.EaseMs[3], prices.ThinkShortcutMs,
+        prices.ThinkDeepMs, prices.ThinkDeepPercent, prices.PatienceWaitMs, prices.AnticipateShare, prices.QueueMinMs,
+        prices.QueueMaxMs, onOff(timing.Reeval.Enable));
     handler->PSendSysMessage("  cached: effort {}, style aggression {} / caution {} / patience {}", gate.Effort,
                              botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Aggression),
                              botAI->GetTactics().GetSkillStyle(SkillStyleTrait::Caution),
@@ -2478,7 +2471,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         // G5c-c: the hold policy's numbers at the bot's Knowledge and Patience, the window's reaction, the episodes
         uint32 const windowMs =
             ArenaInterrupt::HoldReactionMs(reaction, botAI->GetTactics().GetReactionTypes(), ReactionEase::Common,
-                                           timing.EndToEnd ? timing.PingMs + timing.DisplayMs : 0, timing.MinMs);
+                                           timing.PingMs + timing.DisplayMs, timing.MinMs);
         bool const kickReady = decisions.KickReady(nowMs);
         handler->PSendSysMessage(
             "  interrupt hold: policy {}; use {:.2f}, attention {:.0f} ms; know {:.2f}, dilution {:.2f}, trend {:.0f} "
