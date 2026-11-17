@@ -291,6 +291,10 @@ void CheckExclusions()
     Check(coatingRecord.exclude == Exclude::Coating && coatingRecord.targetItemClass == ITEM_CLASS_WEAPON &&
               coatingRecord.targetItemSubClassMask == 0x5 && coatingRecord.targetItemMinLevel == 10,
           "coating: a temporary enchantment on an own weapon");
+    SpellData poison = coating;
+    poison.allowLowLevelBuff = true;
+    Check(MakeRecord(Item(6947, -1), poison, BUY_PER_SELL).targetItemMinLevel == 0,
+          "poison: the low level buff attribute sets no level floor on the weapon");
     Check(ExcludeOf(elixir, ShapeOf(elixir)) == Exclude::None, "a plain aura excludes nothing");
 
     SpellData many = elixir;

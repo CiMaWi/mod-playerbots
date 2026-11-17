@@ -30,7 +30,7 @@ public:
 class MountDrakeAction : public UseItemAction
 {
 public:
-    MountDrakeAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mount drake") {}
+    MountDrakeAction(PlayerbotAI* botAI) : UseItemAction(botAI, "mount drake", false, "", ItemUse::Caller::Errand) {}
     bool Execute(Event event) override;
     bool isPossible() override;
 };
